@@ -1861,7 +1861,7 @@ func (c *Controller) maybeCloseParentIssue(ctx context.Context, prState *PRState
 		return
 	}
 
-	c.closeParentNow(ctx, parentNum)
+	c.closeParentNow(ctx, parentNum, nil)
 }
 
 // openSubIssueCount returns the number of open sub-issues for a parent,
@@ -1938,7 +1938,23 @@ func (c *Controller) isChildNoOp(issueNum int) bool {
 
 // closeParentNow adds pilot-done, removes stale labels, posts a summary comment,
 // and closes the parent issue. All errors are logged as warnings without propagating.
-func (c *Controller) closeParentNow(ctx context.Context, parentNum int) {
+//
+// mergedPRs optionally names the child PRs that shipped this epic's work (GH-3939,
+// populated by reconcileEpicParent's merged-PR verification); nil/empty falls back
+// to the plain "sub-issues are complete" comment used by the older count-only
+// callers (maybeCloseParentIssue, recoverStaleParentIssues).
+func (c *Controller) closeParentNow(ctx context.Context, parentNum int, mergedPRs []int) {
+	// GH-3939: guard against re-closing an already-closed parent — two close
+	// paths (reactive maybeCloseParentIssue and the periodic reconcileEpicParents
+	// sweep) can both observe "no open children" for the same parent before either
+	// has closed it, which would otherwise double-post the summary comment and
+	// re-run label churn. Fail-open on lookup error so a transient API failure
+	// never blocks a legitimate close.
+	if issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, parentNum); err == nil && strings.EqualFold(issue.State, "closed") {
+		c.log.Debug("closeParentNow: parent already closed, no-op", slog.Int("parent", parentNum))
+		return
+	}
+
 	c.log.Info("closeParentNow: all sub-issues done, closing parent", slog.Int("parent", parentNum))
 
 	// Label cleanup: add pilot-done, remove stale labels.
@@ -1951,8 +1967,11 @@ func (c *Controller) closeParentNow(ctx context.Context, parentNum int) {
 		}
 	}
 
-	// Post summary comment.
+	// Post summary comment, naming the merged child PRs when known.
 	comment := fmt.Sprintf("All sub-issues for GH-%d are complete. Closing parent issue automatically.", parentNum)
+	if len(mergedPRs) > 0 {
+		comment += fmt.Sprintf("\n\nMerged PRs: %s", formatMergedPRRefs(mergedPRs))
+	}
 	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, parentNum, comment); err != nil {
 		c.log.Warn("closeParentNow: failed to post comment", slog.Int("parent", parentNum), slog.Any("error", err))
 	}
@@ -1961,6 +1980,16 @@ func (c *Controller) closeParentNow(ctx context.Context, parentNum int) {
 	if err := c.ghClient.UpdateIssueState(ctx, c.owner, c.repo, parentNum, "closed"); err != nil {
 		c.log.Warn("closeParentNow: failed to close parent issue", slog.Int("parent", parentNum), slog.Any("error", err))
 	}
+}
+
+// formatMergedPRRefs renders merged PR numbers as a comma-separated "#N" list
+// for the parent-close summary comment (GH-3939).
+func formatMergedPRRefs(nums []int) string {
+	parts := make([]string, len(nums))
+	for i, n := range nums {
+		parts[i] = fmt.Sprintf("#%d", n)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // recoverStaleParentIssues scans open pilot parent issues at startup and closes any
@@ -1988,7 +2017,7 @@ func (c *Controller) recoverStaleParentIssues(ctx context.Context) {
 		if openCount > 0 {
 			continue
 		}
-		c.closeParentNow(ctx, parentNum)
+		c.closeParentNow(ctx, parentNum, nil)
 		closed++
 	}
 
@@ -3195,6 +3224,14 @@ func (c *Controller) Run(ctx context.Context) error {
 	mergedScanTicker := time.NewTicker(mergedScanInterval)
 	defer mergedScanTicker.Stop()
 
+	// GH-3939: Periodic epic-parent reconciliation. maybeCloseParentIssue only
+	// fires reactively (when a sibling's own PR merges) and recoverStaleParentIssues
+	// only runs once at startup, so a parent left behind by any other close path
+	// (e.g. a child closed out-of-band) would otherwise never be revisited. This
+	// ticker sweeps every open decomposed parent each poll cycle.
+	epicParentTicker := time.NewTicker(basePollInterval)
+	defer epicParentTicker.Stop()
+
 	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
@@ -3209,6 +3246,9 @@ func (c *Controller) Run(ctx context.Context) error {
 			if err := c.ScanRecentlyMergedPRs(ctx); err != nil {
 				c.log.Warn("periodic merged PR scan failed", "error", err)
 			}
+		case <-epicParentTicker.C:
+			// GH-3939: poll-cycle epic-parent auto-close sweep.
+			c.reconcileEpicParents(ctx)
 		case <-ticker.C:
 			c.processAllPRs(ctx)
 
