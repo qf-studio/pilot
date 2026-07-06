@@ -642,6 +642,10 @@ Examples:
 							// TASK-352: scope self-heal to the project's fs path (matches
 							// executions.project_path) so merged work flips failed→completed.
 							gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectPath(projectPath))
+							// GH-3931: apply the per-project release overlay (GH-3930) when configured.
+							if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil && proj.Release != nil {
+								gwBoardOpts = append(gwBoardOpts, autopilot.WithReleaseOverride(proj.Release))
+							}
 							gwAutopilotController = autopilot.NewController(
 								cfg.Orchestrator.Autopilot,
 								apGHClient,
@@ -1672,6 +1676,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					// TASK-352: scope self-heal to the project's fs path. Fresh slice so
 					// the per-project loop below does not alias this controller's option.
 					ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(projectPath))
+					// GH-3931: apply the per-project release overlay (GH-3930) when configured.
+					if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil && proj.Release != nil {
+						ctrlOpts = append(ctrlOpts, autopilot.WithReleaseOverride(proj.Release))
+					}
 					controller := autopilot.NewController(
 						cfg.Orchestrator.Autopilot,
 						apGHClient,
@@ -1697,6 +1705,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				// TASK-352: scope self-heal to this project's fs path (matches
 				// executions.project_path). Fresh slice to avoid aliasing the shared opts.
 				ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(proj.Path))
+				// GH-3931: apply the per-project release overlay (GH-3930) when configured.
+				if proj.Release != nil {
+					ctrlOpts = append(ctrlOpts, autopilot.WithReleaseOverride(proj.Release))
+				}
 				controller := autopilot.NewController(
 					cfg.Orchestrator.Autopilot,
 					apGHClient,
