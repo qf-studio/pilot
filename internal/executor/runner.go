@@ -1570,6 +1570,46 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 }
 
+// classifyZeroDeliveryEpicCompletion reclassifies an epic-parent result that
+// reports Success=true but carries no evidence any real work happened —
+// zero tokens burned by Claude (planning or children), zero files changed,
+// and no commit or PR anywhere — as a no_op instead of a silent "completed".
+// Mirrors the GH-3224 ghost-SHA guard shape (bug_pilot_ghost_closes.md
+// Variant 4): a bare Success flag is not proof of work; the row must carry a
+// deliverable. GH-3938.
+//
+// Scoped to IsEpic results: non-epic zero-deliverable completions (e.g.
+// analysis-only LocalMode tasks, GH-3846's synthetic-dispatch coverage) are
+// legitimate and must not be touched here.
+func classifyZeroDeliveryEpicCompletion(result *ExecutionResult) {
+	if result == nil || !result.Success || !result.IsEpic {
+		return
+	}
+	if result.TokensInput != 0 || result.TokensOutput != 0 || result.FilesChanged != 0 {
+		return
+	}
+	if result.CommitSHA != "" || result.PRUrl != "" {
+		return
+	}
+	result.Success = false
+	result.Outcome = "no_op"
+	result.Error = "epic completed with zero tokens, zero files changed, and no commit/PR — reclassified as no_op"
+}
+
+// recordEpicTerminalEvent writes the epic-parent's terminal execution_events
+// milestone (completed / no_op / failed) so `pilot trace` shows the full
+// lifecycle instead of stopping at spec_validated. GH-3938.
+func (r *Runner) recordEpicTerminalEvent(executionID string, result *ExecutionResult) {
+	switch {
+	case result.Outcome == "no_op":
+		r.recordExecutionEvent(executionID, memory.StageNoOp, result.Error)
+	case !result.Success:
+		r.recordExecutionEvent(executionID, memory.StageFailed, truncateForLog(result.Error, 200))
+	default:
+		r.recordExecutionEvent(executionID, memory.StageCompleted, result.Output)
+	}
+}
+
 // executeWithOptions is the internal implementation that allows controlling worktree creation.
 // When allowWorktree is false, it skips worktree creation even if configured.
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
@@ -1795,6 +1835,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		if planFn == nil {
 			planFn = r.PlanEpic
 		}
+		// GH-3938: mark the point Claude is actually invoked for this task —
+		// epic planning is a real Claude Code call, and the epic-parent path
+		// previously emitted nothing past spec_validated, leaving `pilot trace`
+		// silent for the entire epic lifecycle.
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageClaudeStarted, "epic planning invoked claude")
 		plan, err := planFn(ctx, task, executionPath)
 		if err != nil {
 			// GH-1687: Planning failure is non-fatal — fall through to direct execution
@@ -1841,12 +1886,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						slog.String("dispatched", task.ID),
 						slog.String("plan_parent", planParent),
 					)
+					mismatchErr := fmt.Sprintf("epic plan parent %q does not match dispatched task %q — refusing sub-issue creation", planParent, task.ID)
+					r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(mismatchErr, 200))
 					return &ExecutionResult{
 						TaskID:   task.ID,
 						Success:  false,
 						IsEpic:   true,
 						EpicPlan: plan,
-						Error:    fmt.Sprintf("epic plan parent %q does not match dispatched task %q — refusing sub-issue creation", planParent, task.ID),
+						Error:    mismatchErr,
 						Duration: time.Since(start),
 					}, nil
 				}
@@ -1874,10 +1921,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 								slog.Int("recovered_count", len(recovered)),
 							)
 							r.reportProgress(task.ID, "Complete", 100, "All sub-issues already completed")
+							recoveredSummary := formatDecomposedChildrenSummary(recovered)
+							r.recordExecutionEvent(task.LogExecutionID(), memory.StageDecomposed, recoveredSummary)
+							r.recordExecutionEvent(task.LogExecutionID(), memory.StageCompleted, recoveredSummary)
 							return &ExecutionResult{
 								TaskID:    task.ID,
 								Success:   true,
-								Output:    fmt.Sprintf("Epic already completed: %d sub-issues recovered", len(recovered)),
+								Output:    fmt.Sprintf("Epic already completed: %s", recoveredSummary),
 								Duration:  time.Since(start),
 								IsEpic:    true,
 								EpicPlan:  plan,
@@ -1897,10 +1947,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						)
 						issues = open
 					} else {
+						createErr := fmt.Sprintf("failed to create sub-issues: %v", err)
+						r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(createErr, 200))
 						return &ExecutionResult{
 							TaskID:   task.ID,
 							Success:  false,
-							Error:    fmt.Sprintf("failed to create sub-issues: %v", err),
+							Error:    createErr,
 							Duration: time.Since(start),
 							IsEpic:   true,
 							EpicPlan: plan,
@@ -1916,12 +1968,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// GH-3779: also collect each child's terminal state so the PR-finalize
 				// guard below can tell a genuine no-op epic (all children no-op'd) from
 				// one whose deliverables shipped entirely via child sub-issue PRs.
-				childStates, err := r.executeSubIssuesTracked(ctx, task, issues, executionPath, task.ProjectPath)
+				// GH-3938: childMetrics carries the real tokens/files/cost every child
+				// actually burned, rolled up onto the epic-parent's own result below.
+				childStates, childMetrics, err := r.executeSubIssuesTracked(ctx, task, issues, executionPath, task.ProjectPath)
 				if err != nil {
+					execErr := fmt.Sprintf("sub-issue execution failed: %v", err)
+					r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(execErr, 200))
 					return &ExecutionResult{
 						TaskID:   task.ID,
 						Success:  false,
-						Error:    fmt.Sprintf("sub-issue execution failed: %v", err),
+						Error:    execErr,
 						Duration: time.Since(start),
 						IsEpic:   true,
 						EpicPlan: plan,
@@ -1935,11 +1991,29 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				epicResult := &ExecutionResult{
 					TaskID:    task.ID,
 					Success:   true,
-					Output:    fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
+					Output:    fmt.Sprintf("Epic completed: %s", formatDecomposedChildrenSummary(issues)),
 					Duration:  time.Since(start),
 					IsEpic:    true,
 					EpicPlan:  plan,
 					ModelName: r.fallbackModelName(),
+				}
+				// GH-3938: roll up the children's real Claude usage onto the parent's
+				// own executions row — previously left at zero even after a long
+				// sequential run, since only pass/fail strings were tracked per child.
+				if childMetrics != nil {
+					epicResult.TokensInput = childMetrics.TokensInput
+					epicResult.TokensOutput = childMetrics.TokensOutput
+					epicResult.TokensTotal = childMetrics.TokensTotal
+					epicResult.CacheCreationInputTokens = childMetrics.CacheCreationInputTokens
+					epicResult.CacheReadInputTokens = childMetrics.CacheReadInputTokens
+					epicResult.ResearchTokens = childMetrics.ResearchTokens
+					epicResult.FilesChanged = childMetrics.FilesChanged
+					epicResult.LinesAdded = childMetrics.LinesAdded
+					epicResult.LinesRemoved = childMetrics.LinesRemoved
+					epicResult.EstimatedCostUSD = childMetrics.EstimatedCostUSD
+					if childMetrics.ModelName != "" {
+						epicResult.ModelName = childMetrics.ModelName
+					}
 				}
 
 				if task.CreatePR && task.Branch != "" {
@@ -1953,6 +2027,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				} else {
 					r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 				}
+				// GH-3938 / GH-3224 ghost-SHA guard shape: a bare Success=true is not
+				// proof of work. If this epic run shipped zero tokens, zero file
+				// changes, and no commit/PR anywhere — not even via finalizeEpicBranchPR
+				// — reclassify it as no_op instead of silently persisting a "completed"
+				// row that hides the fact nothing happened.
+				classifyZeroDeliveryEpicCompletion(epicResult)
+				r.recordEpicTerminalEvent(task.LogExecutionID(), epicResult)
 				return epicResult, nil
 			}
 		} // else: plan succeeded

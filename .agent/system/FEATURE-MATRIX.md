@@ -421,6 +421,7 @@
 | Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
+| Epic-parent lifecycle instrumentation | ✅ | executor | `pilot trace <task-id>` | - | Epic-parent path emits `claude_started`/`decomposed`/terminal (`completed`/`no_op`/`failed`) execution_events past `spec_validated`; children's real token/file/cost metrics roll up onto the parent's own row (previously zero even on long runs); zero-tokens+zero-files+no-commit/PR completions reclassify to `no_op`; decomposition posts an honest "decomposed into N children: #a, #b, #c" comment sourced from the actual created sub-issues (GH-3938, v2.222.0) |
 
 ## Test Coverage
 
