@@ -1114,6 +1114,146 @@ func TestEngine_ConfigError_NoMatchingRule(t *testing.T) {
 	}
 }
 
+// TestHandleReleaseMissing verifies the release_missing alert (GH-3927): a
+// release tag was created but no GitHub Release appeared within the
+// verification window. Covers fire, disabled-rule, and cooldown paths.
+func TestHandleReleaseMissing(t *testing.T) {
+	releaseMissingEvent := Event{
+		Type:  EventTypeReleaseMissing,
+		Error: "tag v1.2.3 exists in qf-studio/studio-sdk but no GitHub Release was published within 10m0s — check the repo's release workflow (or the release is a draft)",
+		Metadata: map[string]string{
+			"repo": "qf-studio/studio-sdk",
+			"tag":  "v1.2.3",
+			"pr":   "64",
+		},
+		Timestamp: time.Now(),
+	}
+
+	t.Run("fires alert with repo/tag metadata", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "release_missing",
+					Type:     AlertTypeReleaseMissing,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(releaseMissingEvent)
+
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].Type != AlertTypeReleaseMissing {
+			t.Errorf("expected alert type %s, got %s", AlertTypeReleaseMissing, alerts[0].Type)
+		}
+		if !strings.Contains(alerts[0].Message, "v1.2.3") {
+			t.Errorf("expected alert message to mention tag, got %q", alerts[0].Message)
+		}
+		if alerts[0].Metadata["repo"] != "qf-studio/studio-sdk" || alerts[0].Metadata["tag"] != "v1.2.3" || alerts[0].Metadata["pr"] != "64" {
+			t.Errorf("expected repo/tag/pr metadata to be preserved, got %+v", alerts[0].Metadata)
+		}
+	})
+
+	t.Run("disabled rule stays silent", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "release_missing",
+					Type:     AlertTypeReleaseMissing,
+					Enabled:  false,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(releaseMissingEvent)
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts for disabled rule, got %d", got)
+		}
+	})
+
+	t.Run("cooldown suppresses repeat fires", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "release_missing",
+					Type:     AlertTypeReleaseMissing,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 30 * time.Minute,
+				},
+			},
+			Defaults: AlertDefaults{
+				SuppressDuplicates: false,
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(releaseMissingEvent)
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		// Second event within the cooldown window for the same rule must not fire again.
+		secondEvent := releaseMissingEvent
+		secondEvent.Metadata = map[string]string{"repo": "qf-studio/other-repo", "tag": "v9.9.9", "pr": "1"}
+		engine.ProcessEvent(secondEvent)
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 1 {
+			t.Errorf("expected cooldown to suppress second alert, got %d alerts", got)
+		}
+	})
+}
+
 func TestEngine_ChannelAcceptsSeverity(t *testing.T) {
 	config := &AlertConfig{Enabled: true}
 	engine := NewEngine(config)

@@ -62,6 +62,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeEvalRegression: {"eval_regression", true},
 		// Escalation (GH-848)
 		AlertTypeEscalation: {"escalation", true},
+		// Post-tag release verification (GH-3927)
+		AlertTypeReleaseMissing: {"release_missing", true},
 	}
 
 	if len(rules) != len(expectedRules) {

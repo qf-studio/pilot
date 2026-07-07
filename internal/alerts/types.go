@@ -48,6 +48,9 @@ const (
 
 	// Eval regression detection (GH-2065)
 	AlertTypeEvalRegression AlertType = "eval_regression"
+
+	// Post-tag release verification (GH-3927)
+	AlertTypeReleaseMissing AlertType = "release_missing"
 )
 
 // Alert represents an alert event
@@ -351,6 +354,17 @@ func defaultRules() []AlertRule {
 			Channels:    []string{}, // Will route to PagerDuty channels by severity
 			Cooldown:    1 * time.Hour,
 			Description: "Escalate to PagerDuty after repeated failures for the same source",
+		},
+		// Post-tag release verification (GH-3927)
+		{
+			Name:        "release_missing",
+			Type:        AlertTypeReleaseMissing,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Release tag exists but no GitHub Release was published within the verification window",
 		},
 	}
 }

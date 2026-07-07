@@ -106,6 +106,10 @@ const (
 	// credential (e.g. a GitHub token) fails an authenticated validation
 	// call at startup, so a dead credential doesn't fail silently.
 	EventTypeConfigError EventType = "config_error"
+
+	// Post-tag release verification (GH-3927): fired when a release tag was
+	// created but no GitHub Release appeared within the verification window.
+	EventTypeReleaseMissing EventType = "release_missing"
 )
 
 const (
@@ -336,6 +340,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleSecurityEvent(ctx, event)
 	case EventTypeConfigError:
 		e.handleConfigError(ctx, event)
+	case EventTypeReleaseMissing:
+		e.handleReleaseMissing(ctx, event)
 	case EventTypeBudgetExceeded, EventTypeBudgetWarning:
 		e.handleBudgetEvent(ctx, event)
 	case EventTypeAutopilotMetrics:
@@ -519,6 +525,21 @@ func (e *Engine) handleConfigError(ctx context.Context, event Event) {
 			continue
 		}
 		if rule.Type == AlertTypeServiceUnhealthy && e.shouldFire(rule) {
+			alert := e.createAlert(rule, event, event.Error)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+}
+
+// handleReleaseMissing fires AlertTypeReleaseMissing rules when a release tag
+// was created but no GitHub Release appeared within the verification window
+// (GH-3927). Message comes from event.Error; metadata carries repo, tag, pr.
+func (e *Engine) handleReleaseMissing(ctx context.Context, event Event) {
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if rule.Type == AlertTypeReleaseMissing && e.shouldFire(rule) {
 			alert := e.createAlert(rule, event, event.Error)
 			e.fireAlert(ctx, rule, alert)
 		}
