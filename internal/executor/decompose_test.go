@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 func TestDecomposeConfig_Defaults(t *testing.T) {
@@ -908,5 +910,108 @@ func TestDecomposeWithContext_HeuristicEnforcesWordCountGate(t *testing.T) {
 	}
 	if !strings.Contains(result.Reason, "heuristic mode") {
 		t.Errorf("Expected reason to mention heuristic mode, got %q", result.Reason)
+	}
+}
+
+// TestDecomposedSubtasks_ExecutionEventsJoinParentRow is a regression test for
+// GH-4032: subtasks minted by createSubtasks never get their own dispatcher-
+// assigned executions row (they run inline inside the parent's single
+// Execute() call), so before this fix Task.LogExecutionID() fell back to the
+// subtask's own human-readable ID (e.g. "GH-4021-2"). That ID has no matching
+// row in `executions`, so every InsertExecutionEvent call for a subtask (e.g.
+// the runner.go:1707 spec_validated write) tripped the execution_events
+// FOREIGN KEY constraint (SQLite error 787).
+//
+// This decomposes a parent task into >=2 subtasks the same way the runner
+// does, then writes the spec_validated and quality-gates-passed milestones
+// for every subtask straight through the store — exactly the calls
+// recordExecutionEvent makes during real execution — and asserts none of
+// them error and all of them land in the parent execution's ledger.
+func TestDecomposedSubtasks_ExecutionEventsJoinParentRow(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const parentExecutionID = "11111111-2222-3333-4444-555555555555"
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          parentExecutionID,
+		TaskID:      "GH-4021",
+		ProjectPath: "/test/project",
+		Status:      "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution failed: %v", err)
+	}
+
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "medium",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 10,
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	parent := &Task{
+		ID:          "GH-4021",
+		ExecutionID: parentExecutionID,
+		Title:       "Fix ledger FK violation for decomposed subtasks",
+		Description: `This task requires multiple coordinated changes:
+
+1. Root-cause the FOREIGN KEY constraint failure for subtask ledger writes
+2. Route subtask execution events to the parent's executions row
+3. Add regression coverage decomposing a task into multiple subtasks`,
+		ProjectPath: "/test/project",
+	}
+
+	result := decomposer.Decompose(parent)
+	if !result.Decomposed {
+		t.Fatalf("expected task to be decomposed, reason: %s", result.Reason)
+	}
+	if len(result.Subtasks) < 2 {
+		t.Fatalf("expected >=2 subtasks, got %d", len(result.Subtasks))
+	}
+
+	const qualityGatesPassed memory.Stage = "quality_gates_passed"
+
+	for _, subtask := range result.Subtasks {
+		if subtask.LogExecutionID() != parentExecutionID {
+			t.Errorf("subtask %s: LogExecutionID() = %q, want parent execution ID %q",
+				subtask.ID, subtask.LogExecutionID(), parentExecutionID)
+		}
+
+		if err := store.InsertExecutionEvent(subtask.LogExecutionID(), memory.StageSpecValidated, "task spec validated"); err != nil {
+			t.Errorf("subtask %s: InsertExecutionEvent(spec_validated) failed (FK error?): %v", subtask.ID, err)
+		}
+		if err := store.InsertExecutionEvent(subtask.LogExecutionID(), qualityGatesPassed, "quality gates passed"); err != nil {
+			t.Errorf("subtask %s: InsertExecutionEvent(quality_gates_passed) failed (FK error?): %v", subtask.ID, err)
+		}
+	}
+
+	events, err := store.ListExecutionEvents(parentExecutionID)
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+
+	wantCount := len(result.Subtasks) * 2
+	if len(events) != wantCount {
+		t.Fatalf("got %d events on the parent execution row, want %d (2 per subtask)", len(events), wantCount)
+	}
+
+	var specValidatedCount, qualityGatesCount int
+	for _, e := range events {
+		switch e.Stage {
+		case memory.StageSpecValidated:
+			specValidatedCount++
+		case qualityGatesPassed:
+			qualityGatesCount++
+		}
+	}
+	if specValidatedCount != len(result.Subtasks) {
+		t.Errorf("got %d spec_validated events, want %d", specValidatedCount, len(result.Subtasks))
+	}
+	if qualityGatesCount != len(result.Subtasks) {
+		t.Errorf("got %d quality_gates_passed events, want %d", qualityGatesCount, len(result.Subtasks))
 	}
 }

@@ -2670,9 +2670,9 @@ func TestTask_MemberID_Field(t *testing.T) {
 }
 
 // TestTask_LogExecutionID verifies the join-ID precedence: the dispatcher-assigned
-// execution UUID when present, falling back to the human-readable task ID for tasks
-// that never got a dedicated executions row (decomposed subtasks, epic sub-issues,
-// local/bench runs). GH-3764.
+// execution UUID when present, then the borrowed parent execution ID for decomposed
+// subtasks (GH-4032), falling back to the human-readable task ID for tasks that
+// never got a dedicated executions row (epic sub-issues, local/bench runs). GH-3764.
 func TestTask_LogExecutionID(t *testing.T) {
 	tests := []struct {
 		name string
@@ -2688,6 +2688,16 @@ func TestTask_LogExecutionID(t *testing.T) {
 			"falls back to ID when ExecutionID is empty",
 			&Task{ID: "GH-3714"},
 			"GH-3714",
+		},
+		{
+			"prefers ParentExecutionID over ID for decomposed subtasks",
+			&Task{ID: "GH-4021-2", ParentExecutionID: "11111111-2222-3333-4444-555555555555"},
+			"11111111-2222-3333-4444-555555555555",
+		},
+		{
+			"ExecutionID wins over ParentExecutionID if both set",
+			&Task{ID: "GH-4021-2", ExecutionID: "own-uuid", ParentExecutionID: "parent-uuid"},
+			"own-uuid",
 		},
 	}
 	for _, tt := range tests {
