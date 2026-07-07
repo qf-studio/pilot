@@ -1879,11 +1879,19 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 
 	if c.config.ResolvedEnv().SkipPostMergeCI {
 		// Fast path: skip post-merge CI, check if we should release immediately
-		if c.shouldTriggerRelease() && !c.resolvedRelease().RequireCI {
-			c.log.Info("skipping post-merge CI: proceeding to release",
-				"pr", prState.PRNumber,
+		if c.releaseConfigured() && !c.resolvedRelease().RequireCI {
+			action, scopeKey, scopeTitle := c.releaseActionFor(ctx, prState.IssueNumber)
+			if action == releaseActionRelease {
+				c.log.Info("skipping post-merge CI: proceeding to release",
+					"pr", prState.PRNumber,
+				)
+				prState.Stage = StageReleasing
+				return nil
+			}
+			c.log.Info("skipping post-merge CI: holding PR for scope release",
+				"pr", prState.PRNumber, "scope", scopeKey, "scope_title", scopeTitle,
 			)
-			prState.Stage = StageReleasing
+			c.removePR(prState.PRNumber)
 			return nil
 		}
 		c.log.Info("skipping post-merge CI: PR complete", "pr", prState.PRNumber)
@@ -2146,9 +2154,15 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 	switch status {
 	case CISuccess:
 		c.log.Info("post-merge CI passed", "pr", prState.PRNumber, "sha", ShortSHA(mainSHA))
-		if c.shouldTriggerRelease() {
-			prState.Stage = StageReleasing
-			return nil
+		if c.releaseConfigured() {
+			action, scopeKey, scopeTitle := c.releaseActionFor(ctx, prState.IssueNumber)
+			if action == releaseActionRelease {
+				prState.Stage = StageReleasing
+				return nil
+			}
+			c.log.Info("holding merged PR for scope release",
+				"pr", prState.PRNumber, "scope", scopeKey, "scope_title", scopeTitle,
+			)
 		}
 		c.removePR(prState.PRNumber)
 
@@ -2233,10 +2247,62 @@ func (c *Controller) resolvedRelease() *ReleaseConfig {
 	return c.resolvedReleaseCfg
 }
 
-// shouldTriggerRelease returns true if auto-release is configured.
+// shouldTriggerRelease returns true if auto-release is configured for the
+// per-merge cadence specifically (Trigger "on_merge"). Use releaseConfigured
+// for gates that must also cover the on_scope_close/on_schedule cadences
+// (which release too, just not on every merge — see releaseActionFor).
 func (c *Controller) shouldTriggerRelease() bool {
 	rel := c.resolvedRelease()
 	return rel != nil && rel.Enabled && rel.Trigger == "on_merge"
+}
+
+// releaseConfigured returns true if auto-release is enabled at ANY trigger
+// cadence (on_merge, on_scope_close, on_schedule). This gates the four
+// release-decision sites (handleMerged fast path, handlePostMergeCI,
+// checkExternalMergeOrClose, ScanRecentlyMergedPRs) so on_scope_close/
+// on_schedule merges are still routed through releaseActionFor — and
+// possibly held — instead of being silently drained like Trigger "manual"
+// (GH-3989).
+func (c *Controller) releaseConfigured() bool {
+	rel := c.resolvedRelease()
+	return rel != nil && rel.Enabled
+}
+
+// releaseAction is the outcome of releaseActionFor: whether a merged PR
+// should proceed to StageReleasing now or be held for a later scope/schedule
+// release.
+type releaseAction int
+
+const (
+	// releaseActionRelease proceeds to StageReleasing immediately.
+	releaseActionRelease releaseAction = iota
+	// releaseActionHold drains the PR without releasing; the merge is fully
+	// reconstructable from GitHub once the scope/schedule fires (GH-3989 Issue B/F).
+	releaseActionHold
+)
+
+// releaseActionFor decides, for a merged PR linked to issueNumber (0 if
+// none/standalone), whether to release now or hold — based on the effective
+// release Trigger. Callers must have already confirmed releaseConfigured().
+//
+//   - Trigger "on_schedule" holds every merge unconditionally (no scheduler
+//     ships in this issue — the hold is inert-but-safe until Issue F lands).
+//   - Trigger "on_scope_close" holds only merges whose issue is a scope
+//     member per heldByScope; standalone merges release per-merge as today.
+//   - Any other trigger ("on_merge") releases immediately.
+func (c *Controller) releaseActionFor(ctx context.Context, issueNumber int) (action releaseAction, scopeKey, scopeTitle string) {
+	rel := c.resolvedRelease()
+	switch {
+	case rel.ScheduleReleaseEnabled():
+		return releaseActionHold, "schedule", ""
+	case rel.ScopeReleaseEnabled():
+		if key, title, held := c.heldByScope(ctx, issueNumber); held {
+			return releaseActionHold, key, title
+		}
+		return releaseActionRelease, "", ""
+	default:
+		return releaseActionRelease, "", ""
+	}
 }
 
 // tagCoveringCommit returns the name of an existing release tag that already
@@ -3317,7 +3383,10 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 	// neither auto-release nor board sync is enabled (e.g. a plain GH-issue-source
 	// deployment). Internal gates below handle release-trigger and board-writeback
 	// per-mode; both are idempotent so duplicate calls are safe.
-	releaseEnabled := c.shouldTriggerRelease()
+	// releaseEnabled means "release configured at any trigger cadence" — a
+	// PR under on_scope_close/on_schedule still needs the self-heal/board
+	// bookkeeping above and the hold check below, not just on_merge (GH-3989).
+	releaseEnabled := c.releaseConfigured()
 	boardEnabled := c.boardSync != nil && c.doneStatus != ""
 	rel := c.resolvedRelease()
 
@@ -3347,7 +3416,7 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 		// Filter for Pilot branches (pilot/GH-* or pilot/*), or human-authored
 		// PRs when release.tag_human_merges is enabled (GH-3928). rel.TagHumanMerges
 		// is only read when releaseEnabled is true, which guarantees rel != nil
-		// (shouldTriggerRelease short-circuits on a nil rel).
+		// (releaseConfigured short-circuits on a nil rel).
 		isPilotPR := strings.HasPrefix(pr.Head.Ref, "pilot/")
 		tagHuman := releaseEnabled && rel.TagHumanMerges
 		if !isPilotPR && !tagHuman {
@@ -3502,6 +3571,17 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 				"branch", pr.Head.Ref,
 				"title", pr.Title,
 			)
+		}
+
+		// GH-3989: on_scope_close/on_schedule may hold this PR instead of
+		// registering it at StageReleasing. Held PRs are simply skipped here —
+		// no StageReleasing registration — since they're fully reconstructable
+		// from GitHub once the scope/schedule fires.
+		if action, scopeKey, scopeTitle := c.releaseActionFor(ctx, issueNum); action == releaseActionHold {
+			c.log.Info("holding merged PR for scope release (scan)",
+				"pr", pr.Number, "scope", scopeKey, "scope_title", scopeTitle,
+			)
+			continue
 		}
 
 		// Create PR state and trigger release
@@ -3843,15 +3923,29 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		}
 
 		// GH-411: Trigger release for externally merged PRs if auto-release is enabled
-		if c.shouldTriggerRelease() && prState.Stage != StageReleasing {
-			c.log.Info("triggering release for externally merged PR", "pr", prState.PRNumber)
-			// Update SHA to merge commit if available
-			if ghPR.MergeCommitSHA != "" {
-				prState.HeadSHA = ghPR.MergeCommitSHA
+		if c.releaseConfigured() && prState.Stage != StageReleasing {
+			action, scopeKey, _ := c.releaseActionFor(ctx, prState.IssueNumber)
+			if action == releaseActionRelease {
+				c.log.Info("triggering release for externally merged PR", "pr", prState.PRNumber)
+				// Update SHA to merge commit if available
+				if ghPR.MergeCommitSHA != "" {
+					prState.HeadSHA = ghPR.MergeCommitSHA
+				}
+				prState.Stage = StageReleasing
+				c.persistPRState(prState)
+				return false // Continue processing to handle release
 			}
-			prState.Stage = StageReleasing
-			c.persistPRState(prState)
-			return false // Continue processing to handle release
+
+			// GH-3989: held for scope/schedule release — drain the PR like any
+			// other externally-merged, non-releasing PR, but leave a one-time
+			// breadcrumb on the issue so held-vs-forgotten is visible from GitHub.
+			c.log.Info("holding externally merged PR for scope release", "pr", prState.PRNumber, "scope", scopeKey)
+			if prState.IssueNumber > 0 {
+				comment := fmt.Sprintf("held for scope release %s", scopeKey)
+				if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); err != nil {
+					c.log.Warn("failed to post scope-hold comment after external merge", "issue", prState.IssueNumber, "error", err)
+				}
+			}
 		}
 
 		c.removePR(prState.PRNumber)

@@ -351,7 +351,12 @@ func DefaultConfig() *Config {
 type ReleaseConfig struct {
 	// Enabled controls whether auto-release is active.
 	Enabled bool `yaml:"enabled"`
-	// Trigger determines when to release: "on_merge" or "manual".
+	// Trigger determines when to release: "on_merge" (release per merged PR,
+	// the default), "manual" (never auto-release), "on_scope_close" (hold
+	// members of an open epic or a shared "scope:" label until the scope
+	// completes, then release once), or "on_schedule" (hold everything for a
+	// cron release train — see Schedule). See internal/config Config.Validate
+	// for the enum check (GH-3989).
 	Trigger string `yaml:"trigger"`
 	// VersionStrategy determines how to bump version: "conventional_commits" or "pr_labels".
 	VersionStrategy string `yaml:"version_strategy"`
@@ -387,6 +392,47 @@ type ReleaseConfig struct {
 	// whether a release is actually cut, so enabling this is safe even for
 	// repos with mixed commit-message discipline (GH-3928).
 	TagHumanMerges bool `yaml:"tag_human_merges,omitempty"`
+	// ScopeLabelPrefix is the label prefix identifying a release scope for
+	// Trigger "on_scope_close" (e.g. a "scope:checkout" label groups PRs that
+	// must all land before releasing). Empty defaults to "scope:", matching
+	// the label-propagation prefix in internal/executor/epic.go (GH-3989).
+	ScopeLabelPrefix string `yaml:"scope_label_prefix,omitempty"`
+	// ScopeLookback bounds how far back to look for scope membership signals
+	// (e.g. sibling sub-issues) when Trigger is "on_scope_close". Zero
+	// defaults to 24h. Not yet consumed by hold detection in this issue —
+	// reserved for the scope-completion reconciler (GH-3989 Issue B).
+	ScopeLookback time.Duration `yaml:"scope_lookback,omitempty"`
+	// Schedule is a robfig/cron/v3 standard cron expression (5 fields:
+	// minute hour dom month dow) used when Trigger is "on_schedule" to cut a
+	// release train. Required when Trigger is "on_schedule"; see
+	// internal/config Config.Validate for the parse check (GH-3989).
+	Schedule string `yaml:"schedule,omitempty"`
+	// ScheduleTimezone is the IANA timezone the Schedule cron expression is
+	// evaluated in. Empty defaults to the daemon's local timezone.
+	ScheduleTimezone string `yaml:"schedule_timezone,omitempty"`
+}
+
+// ScopeReleaseEnabled reports whether this release config is active and
+// configured to hold scope members for a single release-on-scope-close
+// (Trigger "on_scope_close"). A nil receiver returns false.
+func (r *ReleaseConfig) ScopeReleaseEnabled() bool {
+	return r != nil && r.Enabled && r.Trigger == "on_scope_close"
+}
+
+// ScheduleReleaseEnabled reports whether this release config is active and
+// configured to hold all merges for a cron release train (Trigger
+// "on_schedule"). A nil receiver returns false.
+func (r *ReleaseConfig) ScheduleReleaseEnabled() bool {
+	return r != nil && r.Enabled && r.Trigger == "on_schedule"
+}
+
+// effectiveScopeLabelPrefix returns ScopeLabelPrefix, defaulting empty to
+// "scope:".
+func (r *ReleaseConfig) effectiveScopeLabelPrefix() string {
+	if r.ScopeLabelPrefix == "" {
+		return "scope:"
+	}
+	return r.ScopeLabelPrefix
 }
 
 // Publish mode values for ReleaseConfig.Publish / ProjectReleaseConfig.Publish (GH-3926).
@@ -430,15 +476,21 @@ func (r *ReleaseConfig) VerifyReleaseEnabled() bool {
 // ProjectReleaseConfig overlays release settings for a single project on top
 // of the global and per-environment ReleaseConfig blocks. Unset fields
 // inherit the base value — e.g. a project may override Publish while leaving
-// Enabled nil to inherit the global setting. Trigger, VersionStrategy, and
-// RequireCI are intentionally NOT overlayable here — they stay env/global-only
-// (a project overriding when releases fire or how versions bump would make
-// the release cadence inconsistent across repos sharing one autopilot config).
-// See internal/config ProjectConfig.Release (GH-3930); overlay resolution
-// (Apply) and controller wiring land here and in GH-3931.
+// Enabled nil to inherit the global setting. VersionStrategy and RequireCI
+// stay env/global-only (a project overriding how versions bump, or whether
+// releases wait on CI, would make version hygiene inconsistent across repos
+// sharing one autopilot config). Trigger, ScopeLabelPrefix, Schedule, and
+// ScheduleTimezone ARE overlayable — as of GH-3989 release *cadence* is
+// per-repo by design, since different repos in one autopilot config
+// legitimately want different release trains (e.g. a fast-moving repo on
+// on_merge next to a scope-gated one on on_scope_close). This reverses the
+// prior exclusion of Trigger from this struct (GH-3930/GH-3931).
+// See internal/config ProjectConfig.Release (GH-3930).
 type ProjectReleaseConfig struct {
 	// Enabled overrides ReleaseConfig.Enabled for this project. Nil inherits.
 	Enabled *bool `yaml:"enabled,omitempty"`
+	// Trigger overrides ReleaseConfig.Trigger for this project. Empty inherits.
+	Trigger string `yaml:"trigger,omitempty"`
 	// Publish overrides ReleaseConfig.Publish for this project. Empty inherits.
 	Publish string `yaml:"publish,omitempty"`
 	// TagPrefix overrides ReleaseConfig.TagPrefix for this project. Empty inherits.
@@ -453,6 +505,12 @@ type ProjectReleaseConfig struct {
 	VerifyTimeout time.Duration `yaml:"verify_timeout,omitempty"`
 	// TagHumanMerges overrides ReleaseConfig.TagHumanMerges for this project. Nil inherits.
 	TagHumanMerges *bool `yaml:"tag_human_merges,omitempty"`
+	// ScopeLabelPrefix overrides ReleaseConfig.ScopeLabelPrefix for this project. Empty inherits.
+	ScopeLabelPrefix string `yaml:"scope_label_prefix,omitempty"`
+	// Schedule overrides ReleaseConfig.Schedule for this project. Empty inherits.
+	Schedule string `yaml:"schedule,omitempty"`
+	// ScheduleTimezone overrides ReleaseConfig.ScheduleTimezone for this project. Empty inherits.
+	ScheduleTimezone string `yaml:"schedule_timezone,omitempty"`
 }
 
 // Apply overlays this project-level config on top of base (the resolved
@@ -484,6 +542,9 @@ func (p *ProjectReleaseConfig) Apply(base *ReleaseConfig) *ReleaseConfig {
 	if p.Enabled != nil {
 		result.Enabled = *p.Enabled
 	}
+	if p.Trigger != "" {
+		result.Trigger = p.Trigger
+	}
 	if p.Publish != "" {
 		result.Publish = p.Publish
 	}
@@ -505,6 +566,15 @@ func (p *ProjectReleaseConfig) Apply(base *ReleaseConfig) *ReleaseConfig {
 	if p.TagHumanMerges != nil {
 		result.TagHumanMerges = *p.TagHumanMerges
 	}
+	if p.ScopeLabelPrefix != "" {
+		result.ScopeLabelPrefix = p.ScopeLabelPrefix
+	}
+	if p.Schedule != "" {
+		result.Schedule = p.Schedule
+	}
+	if p.ScheduleTimezone != "" {
+		result.ScheduleTimezone = p.ScheduleTimezone
+	}
 	return &result
 }
 
@@ -520,6 +590,8 @@ func DefaultReleaseConfig() *ReleaseConfig {
 		RequireCI:         true,
 		GenerateSummary:   true,
 		VerifyTimeout:     10 * time.Minute,
+		ScopeLabelPrefix:  "scope:",
+		ScopeLookback:     24 * time.Hour,
 	}
 }
 

@@ -637,3 +637,165 @@ func TestConfig_Validate_ReleasePublish(t *testing.T) {
 		})
 	}
 }
+
+// GH-3989: Validate release.trigger enum + schedule/schedule_timezone
+// parseability at the global, per-environment, and per-project overlay
+// levels — mirrors TestConfig_Validate_ReleasePublish's structure.
+func TestConfig_Validate_ReleaseTrigger(t *testing.T) {
+	tests := []struct {
+		name      string
+		buildCfg  func() *Config
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "valid triggers at all levels",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Trigger: "on_scope_close"},
+						Environments: map[string]*autopilot.EnvironmentConfig{
+							"prod": {Release: &autopilot.ReleaseConfig{Trigger: "manual"}},
+						},
+					},
+				}
+				cfg.Projects[0].Release = &autopilot.ProjectReleaseConfig{Trigger: ""}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid trigger at global level",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Trigger: "bogus"},
+					},
+				}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `orchestrator.autopilot.release.trigger must be "", "on_merge", "manual", "on_scope_close", or "on_schedule"`,
+		},
+		{
+			name: "invalid trigger at environment level",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Environments: map[string]*autopilot.EnvironmentConfig{
+							"prod": {Release: &autopilot.ReleaseConfig{Trigger: "bogus"}},
+						},
+					},
+				}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `orchestrator.autopilot.environments[prod].release.trigger must be`,
+		},
+		{
+			name: "invalid trigger at project overlay level",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Projects[0].Release = &autopilot.ProjectReleaseConfig{Trigger: "bogus"}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `projects[0].release.trigger must be`,
+		},
+		{
+			name: "on_schedule without schedule is rejected",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Trigger: "on_schedule"},
+					},
+				}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `orchestrator.autopilot.release.schedule is required when trigger is "on_schedule"`,
+		},
+		{
+			name: "on_schedule with invalid cron expression is rejected",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Trigger: "on_schedule", Schedule: "not a cron"},
+					},
+				}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `orchestrator.autopilot.release.schedule "not a cron" is not a valid cron expression`,
+		},
+		{
+			name: "on_schedule with valid cron expression passes",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Trigger: "on_schedule", Schedule: "0 21 * * FRI"},
+					},
+				}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid schedule_timezone is rejected",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Trigger: "on_schedule", Schedule: "0 21 * * FRI", ScheduleTimezone: "Not/A_Zone"},
+					},
+				}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `orchestrator.autopilot.release.schedule_timezone "Not/A_Zone" is invalid`,
+		},
+		{
+			name: "valid schedule_timezone passes",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Trigger: "on_schedule", Schedule: "0 21 * * FRI", ScheduleTimezone: "Europe/Berlin"},
+					},
+				}
+				return cfg
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.buildCfg()
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
+				} else if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}

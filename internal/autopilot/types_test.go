@@ -112,6 +112,76 @@ func TestProjectReleaseConfig_Apply(t *testing.T) {
 			t.Errorf("VerifyTimeout = %v, want inherited %v", got.VerifyTimeout, 10*time.Minute)
 		}
 	})
+
+	// GH-3989: Trigger, ScopeLabelPrefix, Schedule, and ScheduleTimezone are
+	// now overlayable per-project — release cadence is per-repo by design.
+	t.Run("trigger override", func(t *testing.T) {
+		base := &ReleaseConfig{Enabled: true, Trigger: "on_merge"}
+		p := &ProjectReleaseConfig{Trigger: "on_scope_close"}
+		got := p.Apply(base)
+		if got.Trigger != "on_scope_close" {
+			t.Errorf("Trigger = %q, want %q", got.Trigger, "on_scope_close")
+		}
+	})
+
+	t.Run("trigger unset inherits from base", func(t *testing.T) {
+		base := &ReleaseConfig{Enabled: true, Trigger: "on_scope_close"}
+		p := &ProjectReleaseConfig{Publish: "api"}
+		got := p.Apply(base)
+		if got.Trigger != "on_scope_close" {
+			t.Errorf("Trigger = %q, want inherited %q", got.Trigger, "on_scope_close")
+		}
+	})
+
+	t.Run("scope_label_prefix, schedule, and schedule_timezone override", func(t *testing.T) {
+		base := &ReleaseConfig{Enabled: true, ScopeLabelPrefix: "scope:", Schedule: "0 21 * * FRI", ScheduleTimezone: "UTC"}
+		p := &ProjectReleaseConfig{ScopeLabelPrefix: "team:", Schedule: "0 9 * * MON", ScheduleTimezone: "Europe/Berlin"}
+		got := p.Apply(base)
+		if got.ScopeLabelPrefix != "team:" {
+			t.Errorf("ScopeLabelPrefix = %q, want %q", got.ScopeLabelPrefix, "team:")
+		}
+		if got.Schedule != "0 9 * * MON" {
+			t.Errorf("Schedule = %q, want %q", got.Schedule, "0 9 * * MON")
+		}
+		if got.ScheduleTimezone != "Europe/Berlin" {
+			t.Errorf("ScheduleTimezone = %q, want %q", got.ScheduleTimezone, "Europe/Berlin")
+		}
+	})
+}
+
+func TestReleaseConfig_ScopeAndScheduleEnabled(t *testing.T) {
+	tests := []struct {
+		name         string
+		rel          *ReleaseConfig
+		wantScope    bool
+		wantSchedule bool
+	}{
+		{name: "nil receiver", rel: nil, wantScope: false, wantSchedule: false},
+		{name: "disabled", rel: &ReleaseConfig{Enabled: false, Trigger: "on_scope_close"}, wantScope: false, wantSchedule: false},
+		{name: "on_merge", rel: &ReleaseConfig{Enabled: true, Trigger: "on_merge"}, wantScope: false, wantSchedule: false},
+		{name: "on_scope_close", rel: &ReleaseConfig{Enabled: true, Trigger: "on_scope_close"}, wantScope: true, wantSchedule: false},
+		{name: "on_schedule", rel: &ReleaseConfig{Enabled: true, Trigger: "on_schedule"}, wantScope: false, wantSchedule: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.rel.ScopeReleaseEnabled(); got != tt.wantScope {
+				t.Errorf("ScopeReleaseEnabled() = %v, want %v", got, tt.wantScope)
+			}
+			if got := tt.rel.ScheduleReleaseEnabled(); got != tt.wantSchedule {
+				t.Errorf("ScheduleReleaseEnabled() = %v, want %v", got, tt.wantSchedule)
+			}
+		})
+	}
+}
+
+func TestDefaultReleaseConfig_ScopeDefaults(t *testing.T) {
+	got := DefaultReleaseConfig()
+	if got.ScopeLabelPrefix != "scope:" {
+		t.Errorf("ScopeLabelPrefix = %q, want %q", got.ScopeLabelPrefix, "scope:")
+	}
+	if got.ScopeLookback != 24*time.Hour {
+		t.Errorf("ScopeLookback = %v, want %v", got.ScopeLookback, 24*time.Hour)
+	}
 }
 
 func TestReleaseConfig_VerifyReleaseEnabled(t *testing.T) {

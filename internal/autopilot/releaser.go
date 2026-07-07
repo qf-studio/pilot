@@ -353,11 +353,19 @@ func (r *Releaser) GetCurrentVersionForRepo(ctx context.Context, owner, repo str
 }
 
 // ShouldRelease determines if a release should be created based on config and bump type.
+// Accepts all three auto-release triggers (on_merge, on_scope_close,
+// on_schedule) — "manual" and unset never auto-release. Hold semantics for
+// on_scope_close/on_schedule (deciding whether THIS merge should release now
+// vs. wait) are enforced upstream by Controller.releaseActionFor; by the time
+// a PR reaches handleReleasing/DetectBumpType it has already cleared any hold
+// (GH-3989).
 func (r *Releaser) ShouldRelease(bumpType BumpType) bool {
 	if !r.config.Enabled {
 		return false
 	}
-	if r.config.Trigger != "on_merge" {
+	switch r.config.Trigger {
+	case "on_merge", "on_scope_close", "on_schedule":
+	default:
 		return false
 	}
 	return bumpType != BumpNone

@@ -500,6 +500,12 @@ projects:
   # off by an overlay that only sets `publish`. Example: a project with no
   # tag-triggered release workflow of its own, so Pilot publishes the GitHub
   # Release directly via the API.
+  #
+  # `trigger`, `scope_label_prefix`, `schedule`, and `schedule_timezone` are
+  # also overlayable here (GH-3989) - release cadence is per-repo by design,
+  # so one repo can run `on_merge` while another in the same autopilot config
+  # runs `on_scope_close`:
+  #     release: { trigger: on_scope_close }
   # - name: "studio-sdk"
   #   path: "/path/to/studio-sdk"
   #   github:
@@ -527,7 +533,23 @@ autopilot:
   # Automatic release creation on PR merge (GH-3926).
   release:
     enabled: false
-    trigger: on_merge                  # "on_merge" (default) or "manual"
+    # Release cadence (GH-3989):
+    #   on_merge       (default) - cut a release for every merged PR.
+    #   manual         - never auto-release.
+    #   on_scope_close - hold merges belonging to an open epic (parent issue)
+    #                    or a shared "scope:"-prefixed label; standalone
+    #                    merges still release per-merge. The scope releases
+    #                    once when it completes (scope-close reconciler ships
+    #                    in a follow-up issue; this issue is config + hold
+    #                    semantics only - held work is fully reconstructable
+    #                    from GitHub in the meantime).
+    #   on_schedule    - hold every merge for a cron release train (see
+    #                    `schedule` below). No scheduler ships in this issue
+    #                    either; the hold is inert-but-safe until it does.
+    trigger: on_merge
+    # scope_label_prefix: "scope:"       # on_scope_close only; default "scope:"
+    # schedule: "0 21 * * FRI"           # on_schedule only; robfig/cron/v3 standard (5-field) syntax
+    # schedule_timezone: "Europe/Berlin" # on_schedule only; empty = daemon local time
     version_strategy: conventional_commits
     tag_prefix: "v"
     generate_changelog: true
