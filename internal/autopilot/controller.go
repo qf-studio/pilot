@@ -3138,6 +3138,11 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 	// per-mode; both are idempotent so duplicate calls are safe.
 	releaseEnabled := c.shouldTriggerRelease()
 	boardEnabled := c.boardSync != nil && c.doneStatus != ""
+	// rel is used below to gate human-PR tagging (GH-3928); safe when
+	// releaseEnabled is false because Go short-circuits before dereferencing
+	// a nil rel in the tagHuman expression.
+	rel := c.resolvedRelease()
+	tagHuman := releaseEnabled && rel.TagHumanMerges
 
 	scanWindow := c.config.MergedPRScanWindow
 	if scanWindow == 0 {
@@ -3162,8 +3167,20 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 	triggered := 0
 
 	for _, pr := range prs {
-		// Filter for Pilot branches (pilot/GH-* or pilot/*)
-		if !strings.HasPrefix(pr.Head.Ref, "pilot/") {
+		// Filter for Pilot branches (pilot/GH-* or pilot/*), OR — when opted in via
+		// release.tag_human_merges — any human-authored PR merged to the default
+		// branch (GH-3928). Branch naming no longer decides whether a release is
+		// cut; DetectBumpType's conventional-commit gate does that downstream.
+		isPilotPR := strings.HasPrefix(pr.Head.Ref, "pilot/")
+		if !isPilotPR && !tagHuman {
+			continue
+		}
+
+		// Human PRs merged into a non-default base (e.g. a feature/integration
+		// branch) are silently skipped rather than tracked — guardReleaseSHAReachable
+		// would otherwise noisily escalate them later since they can never be
+		// released from the default branch (GH-3928).
+		if !isPilotPR && pr.Base.Ref != c.resolveMainBranchName() {
 			continue
 		}
 
@@ -3186,7 +3203,7 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			continue
 		}
 
-		// Extract issue number from branch name (optional)
+		// Extract issue number from branch name (optional; stays 0 for human PRs)
 		var issueNum int
 		if strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
 			_, _ = fmt.Sscanf(pr.Head.Ref, "pilot/GH-%d", &issueNum)
@@ -3200,18 +3217,27 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 		// recordedMerges so handleMerging + scanner can both call it.
 		// Use pr.CreatedAt for a meaningful time-to-merge sample; fall back to
 		// mergedAt so the histogram still records on PRs missing CreatedAt.
-		createdAt, _ := time.Parse(time.RFC3339, pr.CreatedAt)
-		if createdAt.IsZero() {
-			createdAt = mergedAt
+		// Gated on isPilotPR (GH-3928): human PRs must not pollute Pilot's own
+		// merge-success metrics.
+		if isPilotPR {
+			createdAt, _ := time.Parse(time.RFC3339, pr.CreatedAt)
+			if createdAt.IsZero() {
+				createdAt = mergedAt
+			}
+			c.recordMergeSuccess(&PRState{PRNumber: pr.Number, CreatedAt: createdAt})
 		}
-		c.recordMergeSuccess(&PRState{PRNumber: pr.Number, CreatedAt: createdAt})
 
 		// TASK-352: Self-heal execution records for externally-merged PRs (gh pr
 		// merge / GitHub UI). These never pass through handleMerging, so their
 		// "failed" rows would otherwise never flip to "completed". Like
 		// recordMergeSuccess above, this fires before the release-tag/activePRs skip
 		// gates because the heal must happen on every discovered merged Pilot PR.
-		c.selfHealForPR(ctx, issueNum, pr.HTMLURL)
+		// Gated on isPilotPR (GH-3928): a human PR has no Pilot execution record to
+		// heal — issueNum is 0 for human branches too, so selfHealForPR would no-op
+		// anyway, but the explicit gate keeps intent clear.
+		if isPilotPR {
+			c.selfHealForPR(ctx, issueNum, pr.HTMLURL)
+		}
 
 		// TASK-356 #2: board write-back for externally-merged PRs. Large PRs that
 		// hit the stage approval-misconfig (require_approval=true + approval disabled)
@@ -3221,8 +3247,9 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 		// recordMergeSuccess/selfHealForPR above, this fires on every discovered merged
 		// Pilot PR (before the release-tag/activePRs skip gates) and is independent of
 		// whether release is enabled. UpdateProjectItemStatus is idempotent and silently
-		// skips issues that aren't on the board.
-		if boardEnabled && issueNum > 0 {
+		// skips issues that aren't on the board. Gated on isPilotPR (GH-3928): human
+		// PRs must not move board cards Pilot never created.
+		if isPilotPR && boardEnabled && issueNum > 0 {
 			if nodeID, nodeErr := c.ghClient.GetIssueNodeID(ctx, c.owner, c.repo, issueNum); nodeErr != nil {
 				c.log.Warn("board sync on external merge: failed to resolve issue node id",
 					"pr", pr.Number, "issue", issueNum, "error", nodeErr)
@@ -3290,12 +3317,20 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			}
 		}
 
-		c.log.Info("found merged Pilot PR needing release",
-			"pr", pr.Number,
-			"branch", pr.Head.Ref,
-			"merged_at", mergedAt,
-			"merge_sha", ShortSHA(pr.MergeCommitSHA),
-		)
+		if isPilotPR {
+			c.log.Info("found merged Pilot PR needing release",
+				"pr", pr.Number,
+				"branch", pr.Head.Ref,
+				"merged_at", mergedAt,
+				"merge_sha", ShortSHA(pr.MergeCommitSHA),
+			)
+		} else {
+			c.log.Info("found merged human PR needing release",
+				"pr", pr.Number,
+				"branch", pr.Head.Ref,
+				"title", pr.Title,
+			)
+		}
 
 		// Create PR state and trigger release
 		prState := &PRState{

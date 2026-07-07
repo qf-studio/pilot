@@ -782,3 +782,87 @@ func TestHandleReleasing_DivergedSHARefused(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleReleasing_HumanPR_NoIssueComment verifies GH-3928: a scanner-registered
+// human PR has IssueNumber == 0 (no associated Pilot issue), so handleReleasing must
+// never call POST /issues/*/comments for it — neither on the escalation path
+// (escalateReleasingFailed already gates on IssueNumber > 0) nor on the happy path
+// (clean tag+publish never posts an issue comment regardless). Both paths are
+// exercised here so a future regression that removes the IssueNumber > 0 gate is
+// caught even though today it's redundant with the diverged-SHA case.
+func TestHandleReleasing_HumanPR_NoIssueComment(t *testing.T) {
+	tests := []struct {
+		name          string
+		compareStatus string // "" uses the happy-path default of "ahead"
+		wantErr       bool
+		wantStage     PRStage
+	}{
+		{name: "happy path: clean tag+publish", compareStatus: "ahead", wantStage: ""},
+		{name: "escalation path: diverged SHA refused", compareStatus: "diverged", wantStage: StageFailed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var commentPosts int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
+					commentPosts++
+					w.WriteHeader(http.StatusCreated)
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`[]`))
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/releases/latest"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(github.Release{TagName: "v1.0.0"})
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat: add a thing")})
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"name":   "main",
+						"commit": map[string]string{"sha": "humanmainsha"},
+					})
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]string{"status": tt.compareStatus})
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+					w.WriteHeader(http.StatusCreated)
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			c := newReleasingController(t, server.URL)
+			prState := &PRState{
+				PRNumber:    900,
+				HeadSHA:     "humansha900",
+				IssueNumber: 0, // human PR — no associated Pilot issue
+				Stage:       StageReleasing,
+			}
+			c.mu.Lock()
+			c.activePRs[900] = prState
+			c.mu.Unlock()
+
+			if err := c.handleReleasing(context.Background(), prState); err != nil {
+				t.Fatalf("handleReleasing returned error: %v", err)
+			}
+			if commentPosts != 0 {
+				t.Errorf("POST /issues/*/comments called %d times, want 0 for a human PR (IssueNumber=0)", commentPosts)
+			}
+			if tt.wantStage != "" && prState.Stage != tt.wantStage {
+				t.Errorf("Stage = %s, want %s", prState.Stage, tt.wantStage)
+			}
+			if tt.wantStage == StageFailed {
+				return
+			}
+			c.mu.RLock()
+			_, tracked := c.activePRs[900]
+			c.mu.RUnlock()
+			if tracked {
+				t.Error("PR must drain from activePRs after a clean tag+release")
+			}
+		})
+	}
+}

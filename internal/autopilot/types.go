@@ -371,6 +371,13 @@ type ReleaseConfig struct {
 	// behaves like "workflow". See internal/config Config.Validate for the
 	// enum check (GH-3930).
 	Publish string `yaml:"publish,omitempty"`
+	// TagHumanMerges opts a project into release tagging for merged PRs whose
+	// head branch is NOT a pilot/* branch (i.e. human-authored PRs). Default
+	// false — zero behavior change for existing configs. Conventional-commit
+	// hygiene (DetectBumpType) still gates whether a release is actually cut,
+	// so enabling this is safe even for repos with mixed commit styles
+	// (GH-3928).
+	TagHumanMerges bool `yaml:"tag_human_merges,omitempty"`
 }
 
 // Publish mode values for ReleaseConfig.Publish / ProjectReleaseConfig.Publish (GH-3926).
@@ -416,6 +423,8 @@ type ProjectReleaseConfig struct {
 	GenerateChangelog *bool `yaml:"generate_changelog,omitempty"`
 	// NotifyOnRelease overrides ReleaseConfig.NotifyOnRelease for this project. Nil inherits.
 	NotifyOnRelease *bool `yaml:"notify_on_release,omitempty"`
+	// TagHumanMerges overrides ReleaseConfig.TagHumanMerges for this project. Nil inherits (GH-3928).
+	TagHumanMerges *bool `yaml:"tag_human_merges,omitempty"`
 }
 
 // Apply overlays this project-level config on top of base (the resolved
@@ -458,6 +467,9 @@ func (p *ProjectReleaseConfig) Apply(base *ReleaseConfig) *ReleaseConfig {
 	}
 	if p.NotifyOnRelease != nil {
 		result.NotifyOnRelease = *p.NotifyOnRelease
+	}
+	if p.TagHumanMerges != nil {
+		result.TagHumanMerges = *p.TagHumanMerges
 	}
 	return &result
 }

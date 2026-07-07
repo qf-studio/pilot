@@ -506,10 +506,12 @@ projects:
   #     owner: "qf-studio"
   #     repo: "studio-sdk"
   #   release:
-  #     publish: api    # only set publish: api on repos with NO tag-triggered release
-  #                     # workflow - pre-creating the release makes GoReleaser's asset
-  #                     # upload 422-collide and silently skips downstream publish steps
-  #                     # (Homebrew tap). Repos with GoReleaser must stay workflow.
+  #     publish: api             # only set publish: api on repos with NO tag-triggered release
+  #                               # workflow - pre-creating the release makes GoReleaser's asset
+  #                               # upload 422-collide and silently skips downstream publish steps
+  #                               # (Homebrew tap). Repos with GoReleaser must stay workflow.
+  #     tag_human_merges: true    # opt this project into tagging human-authored merges too
+  #                               # (GH-3928) - overrides the global/env setting for this project only.
 
 # Autopilot settings
 autopilot:
@@ -546,6 +548,18 @@ autopilot:
     #   tag_only  - the tag is created and nothing publishes a release; use
     #             for repos with an intentionally manual release process.
     publish: workflow
+    # tag_human_merges (GH-3928, default false): also scan for and tag merged
+    # PRs whose head branch is NOT pilot/* (i.e. human-authored PRs merged
+    # directly to the default branch). Off by default - zero behavior change
+    # for existing configs. When enabled, DetectBumpType still decides whether
+    # a release is actually cut: a squash-merged PR's commit subject on the
+    # default branch is the PR TITLE, so a conventional `feat:`/`fix:` PR
+    # title triggers a release and a non-conventional title (or `docs:`/
+    # `chore:`/`refactor:`) produces none, exactly like Pilot PRs. Human PRs
+    # merged into a non-default base branch are skipped, and they never touch
+    # Pilot's merge-success metrics, self-heal, or board write-back - those
+    # stay scoped to pilot/* branches.
+    tag_human_merges: false
 
   # Define named environment configurations
   # Each environment can have different branch, approval, and CI settings

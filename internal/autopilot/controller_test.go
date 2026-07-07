@@ -7384,6 +7384,242 @@ func TestController_ScanRecentlyMergedPRs_FlagMatrix(t *testing.T) {
 	}
 }
 
+// TestController_ScanRecentlyMergedPRs_HumanMerges verifies GH-3928:
+// release.tag_human_merges opts a project into scanning merged PRs whose head
+// branch is NOT pilot/*. Default (flag off) behavior is unchanged; enabling it
+// tracks eligible human PRs for release while keeping Pilot-only side effects
+// (merge metrics, self-heal, board write-back) scoped to pilot/* branches.
+func TestController_ScanRecentlyMergedPRs_HumanMerges(t *testing.T) {
+	recentMergedAt := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	oldMergedAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+
+	newServer := func(prs []*github.PullRequest, tags []*github.Tag) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls"):
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(prs)
+			case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/tags"):
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(tags)
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+	}
+
+	newHumanMergeController := func(t *testing.T, server *httptest.Server, tagHumanMerges bool) *Controller {
+		t.Helper()
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		cfg.Release = &ReleaseConfig{
+			Enabled:        true,
+			Trigger:        "on_merge",
+			TagPrefix:      "v",
+			TagHumanMerges: tagHumanMerges,
+		}
+		cfg.MergedPRScanWindow = 30 * time.Minute
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+		c.SetStateStore(newTestStateStore(t))
+		return c
+	}
+
+	t.Run("flag off: human PR not registered", func(t *testing.T) {
+		humanPR := &github.PullRequest{
+			Number:         801,
+			Head:           github.PRRef{Ref: "feat/add-thing", SHA: "humansha801"},
+			Base:           github.PRRef{Ref: "main"},
+			HTMLURL:        "https://github.com/owner/repo/pull/801",
+			Title:          "feat: add thing",
+			Merged:         true,
+			MergedAt:       recentMergedAt,
+			MergeCommitSHA: "merge-human-801",
+		}
+		server := newServer([]*github.PullRequest{humanPR}, nil)
+		defer server.Close()
+		c := newHumanMergeController(t, server, false)
+
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs: %v", err)
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[801]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("human PR must not be registered when tag_human_merges is false")
+		}
+	})
+
+	t.Run("flag on: human PR merged to main in-window registered at StageReleasing", func(t *testing.T) {
+		humanPR := &github.PullRequest{
+			Number:         802,
+			Head:           github.PRRef{Ref: "feat/add-thing2", SHA: "humansha802"},
+			Base:           github.PRRef{Ref: "main"},
+			HTMLURL:        "https://github.com/owner/repo/pull/802",
+			Title:          "feat: add another thing",
+			Merged:         true,
+			MergedAt:       recentMergedAt,
+			MergeCommitSHA: "merge-human-802",
+		}
+		server := newServer([]*github.PullRequest{humanPR}, nil)
+		defer server.Close()
+		c := newHumanMergeController(t, server, true)
+
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs: %v", err)
+		}
+		c.mu.RLock()
+		prState, tracked := c.activePRs[802]
+		c.mu.RUnlock()
+		if !tracked {
+			t.Fatal("human PR must be registered when tag_human_merges is true")
+		}
+		if prState.Stage != StageReleasing {
+			t.Errorf("Stage = %v, want StageReleasing", prState.Stage)
+		}
+		if prState.IssueNumber != 0 {
+			t.Errorf("IssueNumber = %d, want 0", prState.IssueNumber)
+		}
+		if prState.HeadSHA != humanPR.MergeCommitSHA {
+			t.Errorf("HeadSHA = %q, want %q", prState.HeadSHA, humanPR.MergeCommitSHA)
+		}
+	})
+
+	t.Run("flag on: human PR to non-default base skipped", func(t *testing.T) {
+		humanPR := &github.PullRequest{
+			Number:         803,
+			Head:           github.PRRef{Ref: "feat/add-thing3", SHA: "humansha803"},
+			Base:           github.PRRef{Ref: "release-branch"},
+			HTMLURL:        "https://github.com/owner/repo/pull/803",
+			Title:          "feat: add thing three",
+			Merged:         true,
+			MergedAt:       recentMergedAt,
+			MergeCommitSHA: "merge-human-803",
+		}
+		server := newServer([]*github.PullRequest{humanPR}, nil)
+		defer server.Close()
+		c := newHumanMergeController(t, server, true)
+
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs: %v", err)
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[803]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("human PR merged into a non-default base must be skipped")
+		}
+	})
+
+	t.Run("flag on: already-tagged human PR skipped", func(t *testing.T) {
+		humanPR := &github.PullRequest{
+			Number:         804,
+			Head:           github.PRRef{Ref: "feat/add-thing4", SHA: "humansha804"},
+			Base:           github.PRRef{Ref: "main"},
+			HTMLURL:        "https://github.com/owner/repo/pull/804",
+			Title:          "feat: add thing four",
+			Merged:         true,
+			MergedAt:       recentMergedAt,
+			MergeCommitSHA: "merge-human-804",
+		}
+		tag := &github.Tag{Name: "v1.5.0", Commit: struct {
+			SHA string `json:"sha"`
+		}{SHA: humanPR.MergeCommitSHA}}
+		server := newServer([]*github.PullRequest{humanPR}, []*github.Tag{tag})
+		defer server.Close()
+		c := newHumanMergeController(t, server, true)
+
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs: %v", err)
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[804]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("already-tagged human PR must be skipped")
+		}
+	})
+
+	t.Run("flag on: human PR merged outside window skipped", func(t *testing.T) {
+		humanPR := &github.PullRequest{
+			Number:         805,
+			Head:           github.PRRef{Ref: "feat/add-thing5", SHA: "humansha805"},
+			Base:           github.PRRef{Ref: "main"},
+			HTMLURL:        "https://github.com/owner/repo/pull/805",
+			Title:          "feat: add thing five",
+			Merged:         true,
+			MergedAt:       oldMergedAt,
+			MergeCommitSHA: "merge-human-805",
+		}
+		server := newServer([]*github.PullRequest{humanPR}, nil)
+		defer server.Close()
+		c := newHumanMergeController(t, server, true)
+
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs: %v", err)
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[805]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("human PR merged outside the scan window must be skipped")
+		}
+	})
+
+	t.Run("flag on: pilot PR gets recordMergeSuccess/self-heal, human PR does not", func(t *testing.T) {
+		pilotPR := &github.PullRequest{
+			Number:         806,
+			Head:           github.PRRef{Ref: "pilot/GH-900", SHA: "pilotsha806"},
+			Base:           github.PRRef{Ref: "main"},
+			HTMLURL:        "https://github.com/owner/repo/pull/806",
+			Title:          "feat(api): pilot change",
+			Merged:         true,
+			MergedAt:       recentMergedAt,
+			MergeCommitSHA: "merge-pilot-806",
+		}
+		humanPR := &github.PullRequest{
+			Number:         807,
+			Head:           github.PRRef{Ref: "feat/add-thing6", SHA: "humansha807"},
+			Base:           github.PRRef{Ref: "main"},
+			HTMLURL:        "https://github.com/owner/repo/pull/807",
+			Title:          "feat: add thing six",
+			Merged:         true,
+			MergedAt:       recentMergedAt,
+			MergeCommitSHA: "merge-human-807",
+		}
+		server := newServer([]*github.PullRequest{pilotPR, humanPR}, nil)
+		defer server.Close()
+		c := newHumanMergeController(t, server, true)
+		evalMock := &mockEvalStore{}
+		c.SetEvalStore(evalMock)
+
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs: %v", err)
+		}
+
+		c.mu.RLock()
+		pilotRecorded := c.recordedMerges[806]
+		humanRecorded := c.recordedMerges[807]
+		c.mu.RUnlock()
+		if !pilotRecorded {
+			t.Error("pilot PR must record merge-success metrics")
+		}
+		if humanRecorded {
+			t.Error("human PR must NOT record merge-success metrics")
+		}
+
+		healedPilot := false
+		for _, h := range evalMock.selfHealed {
+			if h.TaskID == "GH-900" {
+				healedPilot = true
+			}
+		}
+		if !healedPilot {
+			t.Error("pilot PR's issue must be self-healed")
+		}
+	})
+}
+
 // TestController_RecordMergeSuccess_Idempotency verifies recordMergeSuccess
 // fires exactly once per PR number even when called multiple times from
 // different code paths (e.g. handleMerging + ScanRecentlyMergedPRs both
