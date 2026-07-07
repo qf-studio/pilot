@@ -1884,6 +1884,19 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			r.log.Warn("Failed to update parent progress", "error", err)
 		}
 
+		// GH-4033: refresh the parent's own stuck-monitor entry as each child
+		// starts. UpdateIssueProgress above only posts a GitHub comment — it
+		// never reaches the alerts engine — so without this the parent's
+		// taskLastProgress[parent.ID] entry is last touched once, right before
+		// this loop starts (the "Executing" progress report above), and then
+		// frozen for the entire sequential sub-issue run. A long-running epic
+		// (several children, each a real Claude Code call) then has its
+		// stuck_for measured from that single pre-loop timestamp instead of
+		// from the most recent child's actual execution start, and the
+		// orphan-eviction sweep (4x the stuck threshold) can evict a parent
+		// whose child is still legitimately executing.
+		r.reportProgress(parent.ID, "Executing", 50+(40*i/total), progressMsg)
+
 		// Create task from sub-issue
 		// GH-2177: Use real repo path so sub-issues can create branches from main,
 		// not from inside the parent's worktree (which locks the branch).
