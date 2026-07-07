@@ -2097,6 +2097,129 @@ func (s *Store) GetLifetimeTaskCounts(projectPath string) (*LifetimeTaskCounts, 
 	return &tc, nil
 }
 
+// ModelDirectionKey identifies a token bucket by model and direction, mirroring
+// autopilot's internal tokenKey so lifetime baselines line up with the
+// in-memory Prometheus counter they hydrate (GH-4041).
+type ModelDirectionKey struct {
+	Model     string
+	Direction string
+}
+
+// ModelResultKey identifies an execution bucket by model and outcome, mirroring
+// autopilot's internal execKey (GH-4041).
+type ModelResultKey struct {
+	Model  string
+	Result string
+}
+
+// LifetimeCounterBaselines holds per-label lifetime totals aggregated from the
+// executions table, used to restore Prometheus counter baselines on daemon
+// startup so external dashboards match the store's lifetime totals across
+// restarts instead of resetting to zero (GH-4041). Read-only — computed from
+// existing columns, no schema changes.
+type LifetimeCounterBaselines struct {
+	TokensByModelDirection  map[ModelDirectionKey]int64
+	CostByModel             map[string]float64
+	ExecutionsByModelResult map[ModelResultKey]int64
+}
+
+// GetLifetimeCounterBaselines aggregates lifetime token, cost, and execution
+// totals from the executions table, broken down the same way the live
+// Prometheus counters are keyed (model+direction for tokens, model for cost,
+// model+result for executions). GH-4041.
+//
+// The execution "result" label collapses the executions table's richer status
+// vocabulary (completed/failed/declined/no_op/stalled/rate_limited/infra/
+// skipped) into the three values RecordExecution ever actually receives live
+// (runner.go TerminalStatus / outcomeLabel): "success" for completed,
+// "stalled" for stalled, everything else terminal folds into "failed" — so a
+// restart does not introduce label values the live path never produces.
+func (s *Store) GetLifetimeCounterBaselines() (*LifetimeCounterBaselines, error) {
+	baselines := &LifetimeCounterBaselines{
+		TokensByModelDirection:  make(map[ModelDirectionKey]int64),
+		CostByModel:             make(map[string]float64),
+		ExecutionsByModelResult: make(map[ModelResultKey]int64),
+	}
+
+	// Rows with zero tokens (dispatcher queue rows, early-failure rows) are
+	// excluded so they don't dilute the baseline, mirroring GetLifetimeTokens.
+	tokRows, err := s.db.Query(`
+		SELECT
+			COALESCE(NULLIF(model_name, ''), 'unknown'),
+			COALESCE(SUM(tokens_input), 0),
+			COALESCE(SUM(tokens_output), 0),
+			COALESCE(SUM(tokens_cache_write), 0),
+			COALESCE(SUM(tokens_cache_read), 0),
+			COALESCE(SUM(estimated_cost_usd), 0)
+		FROM executions
+		WHERE tokens_total > 0
+		GROUP BY model_name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get lifetime token/cost baselines: %w", err)
+	}
+	defer func() { _ = tokRows.Close() }()
+
+	for tokRows.Next() {
+		var model string
+		var input, output, cacheWrite, cacheRead int64
+		var cost float64
+		if err := tokRows.Scan(&model, &input, &output, &cacheWrite, &cacheRead, &cost); err != nil {
+			return nil, fmt.Errorf("failed to scan lifetime token/cost baseline row: %w", err)
+		}
+		if input > 0 {
+			baselines.TokensByModelDirection[ModelDirectionKey{Model: model, Direction: "input"}] = input
+		}
+		if output > 0 {
+			baselines.TokensByModelDirection[ModelDirectionKey{Model: model, Direction: "output"}] = output
+		}
+		if cacheWrite > 0 {
+			baselines.TokensByModelDirection[ModelDirectionKey{Model: model, Direction: "cache_creation"}] = cacheWrite
+		}
+		if cacheRead > 0 {
+			baselines.TokensByModelDirection[ModelDirectionKey{Model: model, Direction: "cache_read"}] = cacheRead
+		}
+		if cost != 0 {
+			baselines.CostByModel[model] += cost
+		}
+	}
+	if err := tokRows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate lifetime token/cost baselines: %w", err)
+	}
+
+	execRows, err := s.db.Query(`
+		SELECT
+			COALESCE(NULLIF(model_name, ''), 'unknown'),
+			CASE
+				WHEN status = 'completed' THEN 'success'
+				WHEN status = 'stalled' THEN 'stalled'
+				ELSE 'failed'
+			END AS result,
+			COUNT(*)
+		FROM executions
+		WHERE status NOT IN ('queued', 'pending', 'running')
+		GROUP BY model_name, result
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get lifetime execution baselines: %w", err)
+	}
+	defer func() { _ = execRows.Close() }()
+
+	for execRows.Next() {
+		var model, result string
+		var count int64
+		if err := execRows.Scan(&model, &result, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan lifetime execution baseline row: %w", err)
+		}
+		baselines.ExecutionsByModelResult[ModelResultKey{Model: model, Result: result}] += count
+	}
+	if err := execRows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate lifetime execution baselines: %w", err)
+	}
+
+	return baselines, nil
+}
+
 // EndSession marks a session as ended.
 func (s *Store) EndSession(sessionID string) error {
 	return s.withRetry("EndSession", func() error {

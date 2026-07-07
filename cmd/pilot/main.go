@@ -1160,6 +1160,16 @@ Examples:
 				if gwRunner != nil {
 					gwRunner.SetMetricsRecorder(gwAutopilotController.Metrics())
 				}
+				// GH-4041: restore Prometheus counter baselines from the store's
+				// lifetime execution history before p.Start() below brings up the
+				// /metrics handler, so external dashboards don't observe a
+				// reset-to-zero on restart. Fail loud rather than silently start
+				// with zero baselines.
+				if gwStore != nil {
+					if hydrateErr := autopilot.HydrateFromStore(context.Background(), gwStore, gwAutopilotController.Metrics()); hydrateErr != nil {
+						return fmt.Errorf("failed to hydrate metrics from store: %w", hydrateErr)
+					}
+				}
 			}
 			// TASK-332: Wire alert metrics into the Prometheus exporter
 			if gwAlertsEngine != nil {
@@ -1935,6 +1945,16 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			gwServer.SetMetricsSource(autopilotController.Metrics())
 			// GH-2855: wire token/cost/execution counters into executor
 			runner.SetMetricsRecorder(autopilotController.Metrics())
+			// GH-4041: restore Prometheus counter baselines from the store's
+			// lifetime execution history before the /metrics handler starts
+			// serving scrapes below, so external dashboards don't observe a
+			// reset-to-zero on restart. Fail loud rather than silently start
+			// with zero baselines.
+			if store != nil {
+				if hydrateErr := autopilot.HydrateFromStore(ctx, store, autopilotController.Metrics()); hydrateErr != nil {
+					return fmt.Errorf("failed to hydrate metrics from store: %w", hydrateErr)
+				}
+			}
 		}
 
 		// GH-2080: Wire PR review webhook events to autopilot controller in polling mode
