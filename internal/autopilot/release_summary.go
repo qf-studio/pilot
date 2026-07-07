@@ -107,12 +107,22 @@ func (g *ReleaseSummaryGenerator) waitForRelease(ctx context.Context, owner, rep
 
 // waitForReleaseWithInterval polls with configurable interval (testable).
 func (g *ReleaseSummaryGenerator) waitForReleaseWithInterval(ctx context.Context, owner, repo, tag string, interval time.Duration) (*github.Release, error) {
-	deadline := time.After(releasePollTimeout)
+	return waitForReleaseByTag(ctx, g.ghClient, g.log, owner, repo, tag, interval, releasePollTimeout)
+}
+
+// waitForReleaseByTag polls GetReleaseByTag on the given client until the
+// release appears or timeout elapses. Extracted from
+// ReleaseSummaryGenerator.waitForReleaseWithInterval so the post-tag release
+// verification backstop (GH-3927) can reuse the same polling loop with its
+// own client, logger, and configurable timeout (ReleaseConfig.VerifyTimeout)
+// without needing summary-generation state.
+func waitForReleaseByTag(ctx context.Context, ghClient *github.Client, log *slog.Logger, owner, repo, tag string, interval, timeout time.Duration) (*github.Release, error) {
+	deadline := time.After(timeout)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// Check immediately before first tick
-	release, err := g.ghClient.GetReleaseByTag(ctx, owner, repo, tag)
+	release, err := ghClient.GetReleaseByTag(ctx, owner, repo, tag)
 	if err == nil && release != nil {
 		return release, nil
 	}
@@ -122,17 +132,17 @@ func (g *ReleaseSummaryGenerator) waitForReleaseWithInterval(ctx context.Context
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-deadline:
-			return nil, fmt.Errorf("timed out waiting for release %s (polled %v)", tag, releasePollTimeout)
+			return nil, fmt.Errorf("timed out waiting for release %s (polled %v)", tag, timeout)
 		case <-ticker.C:
-			release, err := g.ghClient.GetReleaseByTag(ctx, owner, repo, tag)
+			release, err := ghClient.GetReleaseByTag(ctx, owner, repo, tag)
 			if err != nil {
-				g.log.Warn("failed to fetch release", "tag", tag, "error", err)
+				log.Warn("failed to fetch release", "tag", tag, "error", err)
 				continue
 			}
 			if release != nil {
 				return release, nil
 			}
-			g.log.Debug("release not yet published, waiting", "tag", tag)
+			log.Debug("release not yet published, waiting", "tag", tag)
 		}
 	}
 }
