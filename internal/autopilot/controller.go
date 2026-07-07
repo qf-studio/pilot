@@ -304,6 +304,16 @@ type Controller struct {
 	// alertedMissingReleases (GH-3991).
 	alertedStaleScopes map[string]bool
 
+	// epicVeto tracks, per epic parent issue number, how many consecutive
+	// reconcile passes have failed the SAME close-veto (same blocking child +
+	// same reason), guarded by mu. Lets reconcileEpicParent tell "still
+	// converging" (veto changes or clears) apart from "permanently stuck"
+	// (identical veto, epicCloseVetoBreakerThreshold times running) and break
+	// the re-dispatch loop instead of burning tokens forever (GH-4006).
+	// In-memory only: a daemon restart resets the streak, which only delays
+	// (never skips) the eventual escalation.
+	epicVeto map[int]*epicCloseVetoTracking
+
 	// cachedBotLogin holds the authenticated GitHub login for the Pilot token.
 	// Populated lazily by getBotLogin; protected by mu. GH-3417.
 	cachedBotLogin string
@@ -332,6 +342,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		log:                    slog.Default().With("component", "autopilot"),
 		alertedMissingReleases: make(map[string]bool),
 		alertedStaleScopes:     make(map[string]bool),
+		epicVeto:               make(map[int]*epicCloseVetoTracking),
 	}
 
 	// Options must apply before the releaser is constructed below: the
@@ -2084,7 +2095,10 @@ func (c *Controller) closeParentNow(ctx context.Context, parentNum int, mergedPR
 	if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, parentNum, []string{"pilot-done"}); err != nil {
 		c.log.Warn("closeParentNow: failed to add pilot-done label", slog.Int("parent", parentNum), slog.Any("error", err))
 	}
-	for _, stale := range []string{"pilot-failed", "pilot-in-progress", "pilot-blocked"} {
+	// GH-4006: also clear a needs-clarification label left by an earlier
+	// escalateEpicCloseVeto pass whose veto later resolved — harmless if it
+	// was never applied (RemoveLabel on an absent label is a no-op).
+	for _, stale := range []string{"pilot-failed", "pilot-in-progress", "pilot-blocked", github.LabelNeedsClarification} {
 		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, parentNum, stale); err != nil {
 			c.log.Warn("closeParentNow: failed to remove label", slog.String("label", stale), slog.Int("parent", parentNum), slog.Any("error", err))
 		}

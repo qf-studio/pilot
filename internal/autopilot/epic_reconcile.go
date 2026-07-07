@@ -4,7 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/alerts"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // maxEpicReconcile caps how many open, pilot-labeled parent-with-sub-issues
@@ -12,6 +16,26 @@ import (
 // recoverStaleParentIssues' maxRecover — bounded so one pathological repo with
 // hundreds of open epics can't turn a poll tick into an unbounded API burst.
 const maxEpicReconcile = 50
+
+// epicCloseVetoBreakerThreshold caps how many consecutive reconcile passes a
+// parent may fail the SAME close-veto (identical blocking child + reason)
+// before the loop breaker escalates. Without this, a permanently-vetoed
+// parent gets re-dispatched by the poller forever: #3927 ran 6 completed
+// executions in ~2h before a human closed it manually (GH-4006) because its
+// ghost-closed child #3952 could never produce a merged PR under its own
+// issue number — the actual fix shipped via a different issue's PR (#3980).
+const epicCloseVetoBreakerThreshold = 3
+
+// epicCloseVetoTracking is the in-memory streak for one epic parent's
+// close-veto: which child is blocking, why, how many consecutive reconcile
+// passes have seen that exact pair, and whether the breaker has already
+// escalated it (so escalateEpicCloseVeto fires its label/comment/alert once).
+type epicCloseVetoTracking struct {
+	child     int
+	reason    string
+	count     int
+	escalated bool
+}
 
 // subIssueState is one native GitHub sub-issue's number and open/closed state.
 // Unlike GetOpenSubIssueNumbers (which discards closed children), reconcileEpicParent
@@ -185,6 +209,9 @@ func (c *Controller) reconcileEpicParent(ctx context.Context, parentNum int) {
 		// Routine, not a veto — an epic mid-flight looks like this on every tick,
 		// so this stays at Debug to avoid spamming logs while children finish.
 		c.log.Debug("reconcileEpicParents: siblings still open", slog.Int("parent", parentNum), slog.Int("open", openBlocking))
+		// The epic re-entered a "still building" phase (a new/reopened sibling) —
+		// forget any prior close-veto streak so it doesn't carry over (GH-4006).
+		c.clearEpicCloseVeto(parentNum)
 		return
 	}
 
@@ -192,8 +219,12 @@ func (c *Controller) reconcileEpicParent(ctx context.Context, parentNum int) {
 	if veto != nil {
 		c.log.Warn("reconcileEpicParents: close vetoed",
 			slog.Int("parent", parentNum), slog.Int("child", veto.Child), slog.String("veto_reason", veto.Reason))
+		if c.recordEpicCloseVeto(parentNum, veto) {
+			c.escalateEpicCloseVeto(ctx, parentNum, veto)
+		}
 		return
 	}
+	c.clearEpicCloseVeto(parentNum)
 
 	closed, title := c.closeParentNow(ctx, parentNum, mergedPRs)
 	// GH-3990: an epic just completed — enqueue its scope release. Gated on
@@ -317,4 +348,90 @@ func (c *Controller) searchClosedPilotIssuesWithSubIssues(ctx context.Context, l
 		}
 	}
 	return numbers, nil
+}
+
+// recordEpicCloseVeto tracks parentNum's veto against its previous sighting
+// (GH-4006). A different blocking child or a different reason resets the
+// streak — the epic's blocking condition changed, so the escalation clock
+// starts over; the identical signature bumps the count. Returns true exactly
+// once, on the pass that first reaches epicCloseVetoBreakerThreshold, so
+// escalateEpicCloseVeto fires its label/comment/alert a single time instead of
+// repeating on every subsequent poll while the same veto persists.
+func (c *Controller) recordEpicCloseVeto(parentNum int, veto *childCloseVeto) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.epicVeto == nil {
+		c.epicVeto = make(map[int]*epicCloseVetoTracking)
+	}
+	st, ok := c.epicVeto[parentNum]
+	if !ok || st.child != veto.Child || st.reason != veto.Reason {
+		st = &epicCloseVetoTracking{child: veto.Child, reason: veto.Reason}
+		c.epicVeto[parentNum] = st
+	}
+	st.count++
+	if st.count >= epicCloseVetoBreakerThreshold && !st.escalated {
+		st.escalated = true
+		return true
+	}
+	return false
+}
+
+// clearEpicCloseVeto forgets parentNum's close-veto streak (GH-4006), called
+// once its children verify shipped or it re-enters a "still building" phase —
+// so a resolved stall doesn't leave a stale escalated flag behind that would
+// suppress a genuinely new veto on this parent later.
+func (c *Controller) clearEpicCloseVeto(parentNum int) {
+	c.mu.Lock()
+	delete(c.epicVeto, parentNum)
+	c.mu.Unlock()
+}
+
+// escalateEpicCloseVeto breaks the parent re-dispatch loop once its close-veto
+// has persisted for epicCloseVetoBreakerThreshold consecutive reconcile passes
+// (GH-4006): adds LabelNeedsClarification — already excluded from dispatch by
+// the poller — posts one explanatory comment naming the blocking child and
+// why, and fires a single epic_close_vetoed alert. Best-effort throughout:
+// errors are logged, never propagated, matching closeParentNow's style.
+func (c *Controller) escalateEpicCloseVeto(ctx context.Context, parentNum int, veto *childCloseVeto) {
+	c.log.Warn("reconcileEpicParents: close veto persisted, breaking re-dispatch loop",
+		slog.Int("parent", parentNum), slog.Int("child", veto.Child), slog.String("veto_reason", veto.Reason),
+		slog.Int("attempts", epicCloseVetoBreakerThreshold))
+
+	if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, parentNum, []string{github.LabelNeedsClarification}); err != nil {
+		c.log.Warn("escalateEpicCloseVeto: failed to add needs-clarification label",
+			slog.Int("parent", parentNum), slog.Any("error", err))
+	}
+
+	comment := fmt.Sprintf(
+		"⚠️ **Epic auto-close is permanently blocked**\n\n"+
+			"GH-%d has failed the shipped-check %d reconcile passes in a row for the same reason: "+
+			"child #%d %s.\n\n"+
+			"Pilot will not re-dispatch this issue while `%s` is present.\n\n"+
+			"**To resume:**\n"+
+			"- Close this parent manually if the work is verified complete, or\n"+
+			"- Give child #%d a merged PR (or a verified no-op ledger row) referencing it so the next "+
+			"reconciliation pass confirms it shipped, then remove the `%s` label.",
+		parentNum, epicCloseVetoBreakerThreshold, veto.Child, veto.Reason,
+		github.LabelNeedsClarification, veto.Child, github.LabelNeedsClarification,
+	)
+	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, parentNum, comment); err != nil {
+		c.log.Warn("escalateEpicCloseVeto: failed to post comment", slog.Int("parent", parentNum), slog.Any("error", err))
+	}
+
+	if c.alertsEngine == nil {
+		c.log.Error("epic_close_vetoed alert not delivered: SetAlertsEngine was never called", slog.Int("parent", parentNum))
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventType("epic_close_vetoed"),
+		Error:     fmt.Sprintf("epic parent #%d permanently blocked: child #%d %s", parentNum, veto.Child, veto.Reason),
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo":   c.repoKey(),
+			"parent": strconv.Itoa(parentNum),
+			"child":  strconv.Itoa(veto.Child),
+			"reason": veto.Reason,
+		},
+	})
 }
