@@ -2201,6 +2201,8 @@ func taskStatePriority(status string) int {
 func (m Model) renderTasks() string {
 	var content strings.Builder
 
+	iw := m.effectivePanelTotalWidth() - 4
+
 	if len(m.tasks) == 0 {
 		content.WriteString("  No tasks in queue")
 	} else {
@@ -2225,7 +2227,7 @@ func (m Model) renderTasks() string {
 				offset = queueIdx
 				queueIdx++
 			}
-			content.WriteString(m.renderTask(task, i == m.selectedTask, offset))
+			content.WriteString(m.renderTask(task, i == m.selectedTask, offset, iw))
 		}
 	}
 
@@ -2234,10 +2236,18 @@ func (m Model) renderTasks() string {
 
 // renderTask renders a single task row with state-aware icons, bars, and meta.
 //
-// Layout (65 inner chars):
+// Layout (width-aware, minimum 65 inner chars):
 //
-//	sel(2) + icon+state(8) + space(1) + id(7) + space(1) + title(20) + gap(2) + bar(16) + gap(1) + meta(5)
-func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int) string {
+//	sel(2) + icon+state(9) + space(1) + id(7) + space(1) + title(flex, min 20) + gap(2) + bar(16) + gap(1) + meta(5)
+//
+// Everything but the title is fixed; the title expands to fill iw (GH-3970),
+// mirroring how renderStandaloneLine flexes titles in HISTORY.
+func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw int) string {
+	const fixedCols = 45 // non-title columns (44) + 1 reserve so the row never exceeds iw
+	titleW := iw - fixedCols
+	if titleW < 20 {
+		titleW = 20
+	}
 	var icon, stateLabel, meta string
 	var iconStyle, barStyle lipgloss.Style
 
@@ -2309,11 +2319,11 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int) stri
 
 	// Left side: selector + icon+state + id + title
 	// Right side: bar + meta (right-aligned)
-	return fmt.Sprintf("%s%s %-7s %-20s  %s %s",
+	return fmt.Sprintf("%s%s %-7s %s  %s %s",
 		selector,
 		iconState,
 		task.ID,
-		truncateVisual(task.Title, 20),
+		padOrTruncate(truncateVisual(task.Title, titleW), titleW),
 		progressBar,
 		renderedMeta,
 	)
