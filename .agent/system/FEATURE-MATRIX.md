@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-07 (v2.151.0)
+**Last Updated:** 2026-07-06 (v2.151.0)
 
 ## Legend
 
@@ -20,7 +20,6 @@
 | Task execution | ✅ | executor | `pilot task` | - | Claude Code subprocess |
 | Branch creation | ✅ | executor | `--no-branch` disables | - | Auto `pilot/TASK-XXX` |
 | PR creation | ✅ | executor | `--create-pr` | - | Via `gh pr create` |
-| Direct-path duplicate-PR guard | ✅ | executor | - | - | Pre-push merged-branch short-circuit + pre-create open-PR adoption on the non-epic path, mirrors TASK-359 Shape C (GH-4022) |
 | Progress display | ✅ | executor | - | - | Lipgloss visual bar |
 | Navigator detection | ✅ | executor | - | - | Auto-prefix if `.agent/` exists |
 | AGENTS.md loading | ✅ | executor | - | - | LoadAgentsFile reads project AGENTS.md (v0.24.1) |
@@ -313,6 +312,7 @@
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus metrics | ✅ | gateway | - | - | `/metrics` endpoint in Prometheus text format (v0.37.0) |
+| Prometheus counter baselines on restart | ✅ | autopilot/memory | - | - | `HydrateFromStore` restores lifetime per-(model,direction/result) token/cost/execution counters from `executions` table before `/metrics` starts serving, so `pilot_tokens_consumed_total`/`pilot_execution_cost_usd_total`/`pilot_executions_total`/`pilot_success_rate` survive daemon restarts instead of resetting to zero (GH-4041) |
 | External-merge metrics | ✅ | autopilot | - | - | Record PRsMerged/IssuesProcessed/PRTimeToMerge for externally-merged PRs via scanner (v2.147.0, GH-2981) |
 | JSON structured logging | ✅ | - | - | `logging.format` | Optional JSON log output mode (v0.38.0) |
 | Qwen Code backend | ✅ | executor | `--backend qwen` | `executor.backend` | Alibaba Qwen Code CLI with stream-json (v1.9.0, GH-1314) |
@@ -407,7 +407,6 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
-| Aggregated scope release notes + LLM wiring | ✅ | autopilot | - | `release.generate_summary` | `on_scope_close`/`on_schedule` carriers get a deterministic body (headline, grouped Features/Fixes/Other with exact `#PR`/`GH-issue` attribution, breaking changes, compare + stats footer) via `BuildScopeReleaseNotes`; LLM "What's New" (Haiku) is now wired end-to-end via `SetReleaseSummaryGenerator` at every controller construction site, reading `ANTHROPIC_API_KEY` (v2.232.0, GH-3992) |
 
 ## Epic Management
 

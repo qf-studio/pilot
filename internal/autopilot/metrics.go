@@ -227,6 +227,24 @@ func (m *Metrics) RecordExecution(model, result string) {
 	m.ExecutionsByResult[execKey{Model: model, Result: result}]++
 }
 
+// HydrateExecutions adds a store-lifetime baseline to the {model, result}
+// execution counter. Unlike RecordExecution (per-event, +1), this adds an
+// arbitrary count — intended for one-time startup hydration from the store
+// before /metrics starts serving scrapes (GH-4041), not live recording.
+func (m *Metrics) HydrateExecutions(model, result string, n int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ExecutionsByResult[execKey{Model: model, Result: result}] += n
+}
+
+// HydrateIssuesProcessed adds a store-lifetime baseline to the issues-processed
+// counter. See HydrateExecutions (GH-4041).
+func (m *Metrics) HydrateIssuesProcessed(result string, n int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.IssuesProcessed[result] += n
+}
+
 // --- Gauge updates ---
 
 // UpdateActivePRs recalculates active PR counts by stage from a snapshot.
