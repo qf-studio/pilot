@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -507,4 +508,220 @@ func TestReconcileClosedEpicScopes(t *testing.T) {
 	if got := atomic.LoadInt64(&searchCalls); got != firstSearch {
 		t.Errorf("verifyChildrenShippedForClose search calls after second sweep = %d, want unchanged at %d (idempotent)", got, firstSearch)
 	}
+}
+
+// TestEpicCloseVetoBreaker covers GH-4006's loop breaker: a parent whose
+// close-veto never changes (a ghost-closed child that can never produce its
+// own merged PR, e.g. #3927/#3952) must stop being silently re-vetoed forever
+// — after epicCloseVetoBreakerThreshold consecutive reconcile passes it adds
+// LabelNeedsClarification (which already excludes the issue from dispatch),
+// posts exactly ONE explanatory comment, and fires exactly ONE
+// epic_close_vetoed alert, even as further passes keep observing the same
+// veto. A veto that resolves before the threshold (the child's PR merges
+// late) must close the parent normally with no escalation at all.
+func TestEpicCloseVetoBreaker(t *testing.T) {
+	const parentNum = 500
+	const childNum = 1
+
+	t.Run("permanent veto escalates once and never repeats", func(t *testing.T) {
+		var (
+			addLabelsCalls []string
+			commentBodies  []string
+			closeCalled    bool
+		)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"state":"open"}`, parentNum)
+
+			case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+				resp := map[string]interface{}{
+					"data": map[string]interface{}{
+						"node": map[string]interface{}{
+							"subIssues": map[string]interface{}{
+								"totalCount": 1,
+								"nodes":      []map[string]interface{}{{"number": childNum, "state": "CLOSED"}},
+							},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+
+			case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+				// Ghost-closed child: closed, but never produces a merged PR
+				// under its own issue number (its work shipped via a different
+				// issue's branch/PR — the class of bug this task does not fix).
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": []map[string]interface{}{}})
+
+			case r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/labels", parentNum):
+				var payload struct {
+					Labels []string `json:"labels"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&payload)
+				addLabelsCalls = append(addLabelsCalls, payload.Labels...)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[]"))
+
+			case r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/comments", parentNum):
+				var payload struct {
+					Body string `json:"body"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&payload)
+				commentBodies = append(commentBodies, payload.Body)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"id":1}`))
+
+			case r.Method == http.MethodPatch && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+				closeCalled = true
+				w.WriteHeader(http.StatusOK)
+
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+		sink := &fakeAlertSink{}
+		c.SetAlertsEngine(sink)
+
+		for i := 0; i < epicCloseVetoBreakerThreshold; i++ {
+			c.reconcileEpicParent(context.Background(), parentNum)
+		}
+
+		if closeCalled {
+			t.Error("parent should never close while permanently vetoed")
+		}
+		if len(commentBodies) != 1 {
+			t.Fatalf("expected exactly one escalation comment after %d passes, got %d: %v",
+				epicCloseVetoBreakerThreshold, len(commentBodies), commentBodies)
+		}
+		if !strings.Contains(commentBodies[0], fmt.Sprintf("child #%d", childNum)) {
+			t.Errorf("comment should name the blocking child, got: %q", commentBodies[0])
+		}
+		if !strings.Contains(commentBodies[0], "no merged PR") {
+			t.Errorf("comment should explain why the child fails the shipped-check, got: %q", commentBodies[0])
+		}
+		foundLabel := false
+		for _, l := range addLabelsCalls {
+			if l == github.LabelNeedsClarification {
+				foundLabel = true
+			}
+		}
+		if !foundLabel {
+			t.Errorf("expected %s label to be added, got labels: %v", github.LabelNeedsClarification, addLabelsCalls)
+		}
+		if len(sink.events) != 1 {
+			t.Fatalf("expected exactly one alert fired, got %d", len(sink.events))
+		}
+		if sink.events[0].Type != alerts.EventType("epic_close_vetoed") {
+			t.Errorf("alert type = %q, want epic_close_vetoed", sink.events[0].Type)
+		}
+
+		// Further passes past the threshold must not repeat the comment or alert.
+		c.reconcileEpicParent(context.Background(), parentNum)
+		if len(commentBodies) != 1 {
+			t.Errorf("expected no additional comment beyond the escalation, got %d: %v", len(commentBodies), commentBodies)
+		}
+		if len(sink.events) != 1 {
+			t.Errorf("expected no additional alert beyond the escalation, got %d", len(sink.events))
+		}
+	})
+
+	t.Run("veto resolves before threshold — counter resets and parent closes normally", func(t *testing.T) {
+		pass := 0
+		var closeCalled bool
+		var commentBodies []string
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"state":"open"}`, parentNum)
+
+			case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+				resp := map[string]interface{}{
+					"data": map[string]interface{}{
+						"node": map[string]interface{}{
+							"subIssues": map[string]interface{}{
+								"totalCount": 1,
+								"nodes":      []map[string]interface{}{{"number": childNum, "state": "CLOSED"}},
+							},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+
+			case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+				items := []map[string]interface{}{}
+				if pass >= 2 {
+					// Third pass: the child's PR finally merges — the veto resolves
+					// before it ever reaches epicCloseVetoBreakerThreshold.
+					items = append(items, map[string]interface{}{
+						"id": 1, "number": 900 + childNum, "title": "fix: child",
+						"state":        "closed",
+						"pull_request": map[string]interface{}{"merged_at": "2026-01-01T00:00:00Z"},
+					})
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": items})
+
+			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels"):
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[]"))
+
+			case r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/comments", parentNum):
+				var payload struct {
+					Body string `json:"body"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&payload)
+				commentBodies = append(commentBodies, payload.Body)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"id":1}`))
+
+			case r.Method == http.MethodPatch && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+				closeCalled = true
+				w.WriteHeader(http.StatusOK)
+
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+		sink := &fakeAlertSink{}
+		c.SetAlertsEngine(sink)
+
+		// Two vetoed passes (below threshold), then the child's PR merges.
+		for ; pass < 2; pass++ {
+			c.reconcileEpicParent(context.Background(), parentNum)
+		}
+		if closeCalled {
+			t.Fatal("parent should not close while still vetoed")
+		}
+
+		c.reconcileEpicParent(context.Background(), parentNum)
+
+		if !closeCalled {
+			t.Error("expected parent to close once the child's PR merges")
+		}
+		for _, body := range commentBodies {
+			if strings.Contains(body, "permanently blocked") {
+				t.Errorf("did not expect an escalation comment once the veto resolved, got: %q", body)
+			}
+		}
+		if len(sink.events) != 0 {
+			t.Errorf("expected no epic_close_vetoed alert once the veto resolved, got %d", len(sink.events))
+		}
+	})
 }
