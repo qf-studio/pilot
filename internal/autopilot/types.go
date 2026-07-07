@@ -410,6 +410,11 @@ type ReleaseConfig struct {
 	// ScheduleTimezone is the IANA timezone the Schedule cron expression is
 	// evaluated in. Empty defaults to the daemon's local timezone.
 	ScheduleTimezone string `yaml:"schedule_timezone,omitempty"`
+	// ScopeStaleAfter bounds how long a release scope (epic or label) may sit
+	// with at least one shipped member and at least one untouched open member
+	// before reconcileLabelScopes fires a scope_stale alert. Zero defaults to
+	// 168h (one week) via effectiveScopeStaleAfter (GH-3991).
+	ScopeStaleAfter time.Duration `yaml:"scope_stale_after,omitempty"`
 }
 
 // ScopeReleaseEnabled reports whether this release config is active and
@@ -433,6 +438,15 @@ func (r *ReleaseConfig) effectiveScopeLabelPrefix() string {
 		return "scope:"
 	}
 	return r.ScopeLabelPrefix
+}
+
+// effectiveScopeStaleAfter returns ScopeStaleAfter, defaulting zero (or
+// negative) to 168h (one week) — see the field doc (GH-3991).
+func (r *ReleaseConfig) effectiveScopeStaleAfter() time.Duration {
+	if r.ScopeStaleAfter <= 0 {
+		return 168 * time.Hour
+	}
+	return r.ScopeStaleAfter
 }
 
 // Publish mode values for ReleaseConfig.Publish / ProjectReleaseConfig.Publish (GH-3926).
@@ -592,6 +606,7 @@ func DefaultReleaseConfig() *ReleaseConfig {
 		VerifyTimeout:     10 * time.Minute,
 		ScopeLabelPrefix:  "scope:",
 		ScopeLookback:     24 * time.Hour,
+		ScopeStaleAfter:   168 * time.Hour,
 	}
 }
 
