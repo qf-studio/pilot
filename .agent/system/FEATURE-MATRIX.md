@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-07 (v2.151.0)
+**Last Updated:** 2026-07-06 (v2.151.0)
 
 ## Legend
 
@@ -406,7 +406,7 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
-| Release tagging for human-authored merges | ✅ | autopilot | - | - | `release.tag_human_merges` (default false) opts `ScanRecentlyMergedPRs` into tagging merged non-`pilot/*` PRs into the default branch; `DetectBumpType` still gates on conventional-commit hygiene; Pilot-only side effects (merge metrics, self-heal, board sync) stay gated on `isPilotPR` (v2.225.1, GH-3928) |
+| Release cycles: trigger config + hold semantics | ✅ | autopilot | - | `release.trigger`, `release.scope_label_prefix`, `release.schedule`, `release.schedule_timezone` | `on_scope_close`/`on_schedule` triggers hold merges at all four release-decision sites (`handleMerged` fast path, `handlePostMergeCI`, `checkExternalMergeOrClose`, `ScanRecentlyMergedPRs`) via `Controller.releaseActionFor`/`heldByScope`; held work is inert-but-safe (fully reconstructable from GitHub) — the scope-close reconciler and cron scheduler that actually fire the release ship in follow-up issues. `on_merge` behavior is byte-identical (v2.226.x, GH-3989) |
 
 ## Epic Management
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 
 	"github.com/qf-studio/pilot/internal/adapters/asana"
@@ -708,6 +709,44 @@ var validReleasePublishValues = map[string]bool{
 	"":         true, // Empty inherits the default (workflow)
 }
 
+// validReleaseTriggerValues are the accepted values for release.trigger,
+// checked at the global, per-environment, and per-project overlay levels
+// (GH-3989).
+var validReleaseTriggerValues = map[string]bool{
+	"":               true, // Empty inherits the default (on_merge)
+	"on_merge":       true,
+	"manual":         true,
+	"on_scope_close": true,
+	"on_schedule":    true,
+}
+
+// validateReleaseTriggerFields validates the trigger enum and, when trigger
+// is "on_schedule", that schedule is present and parses as a robfig/cron/v3
+// standard (5-field: minute hour dom month dow) cron expression; when
+// schedule_timezone is set, it must be a loadable IANA location. pathPrefix
+// identifies the release block in the returned error (e.g.
+// "orchestrator.autopilot.release"). Shared by the global, per-environment,
+// and per-project-overlay release blocks (GH-3989).
+func validateReleaseTriggerFields(pathPrefix, trigger, schedule, timezone string) error {
+	if !validReleaseTriggerValues[trigger] {
+		return fmt.Errorf("%s.trigger must be \"\", \"on_merge\", \"manual\", \"on_scope_close\", or \"on_schedule\", got %q", pathPrefix, trigger)
+	}
+	if trigger == "on_schedule" {
+		if schedule == "" {
+			return fmt.Errorf("%s.schedule is required when trigger is \"on_schedule\"", pathPrefix)
+		}
+		if _, err := cron.ParseStandard(schedule); err != nil {
+			return fmt.Errorf("%s.schedule %q is not a valid cron expression: %w", pathPrefix, schedule, err)
+		}
+	}
+	if timezone != "" {
+		if _, err := time.LoadLocation(timezone); err != nil {
+			return fmt.Errorf("%s.schedule_timezone %q is invalid: %w", pathPrefix, timezone, err)
+		}
+	}
+	return nil
+}
+
 // Validate checks the configuration for errors and returns an error if invalid.
 // It validates required fields, port ranges, authentication settings, and routing config.
 func (c *Config) Validate() error {
@@ -768,10 +807,15 @@ func (c *Config) Validate() error {
 
 		// GH-3930: Validate release.publish enum on the global release block
 		// and on every per-environment release block.
+		// GH-3989: Validate release.trigger + schedule/schedule_timezone
+		// alongside publish, at the same three levels.
 		if c.Orchestrator.Autopilot != nil {
 			if release := c.Orchestrator.Autopilot.Release; release != nil {
 				if !validReleasePublishValues[release.Publish] {
 					return fmt.Errorf("orchestrator.autopilot.release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", release.Publish)
+				}
+				if err := validateReleaseTriggerFields("orchestrator.autopilot.release", release.Trigger, release.Schedule, release.ScheduleTimezone); err != nil {
+					return err
 				}
 			}
 			for envName, env := range c.Orchestrator.Autopilot.Environments {
@@ -781,17 +825,26 @@ func (c *Config) Validate() error {
 				if !validReleasePublishValues[env.Release.Publish] {
 					return fmt.Errorf("orchestrator.autopilot.environments[%s].release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", envName, env.Release.Publish)
 				}
+				envPath := fmt.Sprintf("orchestrator.autopilot.environments[%s].release", envName)
+				if err := validateReleaseTriggerFields(envPath, env.Release.Trigger, env.Release.Schedule, env.Release.ScheduleTimezone); err != nil {
+					return err
+				}
 			}
 		}
 	}
 
 	// GH-3930: Validate release.publish enum on each project's release overlay.
+	// GH-3989: Validate release.trigger + schedule/schedule_timezone alongside.
 	for i, p := range c.Projects {
 		if p == nil || p.Release == nil {
 			continue
 		}
 		if !validReleasePublishValues[p.Release.Publish] {
 			return fmt.Errorf("projects[%d].release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", i, p.Release.Publish)
+		}
+		projectPath := fmt.Sprintf("projects[%d].release", i)
+		if err := validateReleaseTriggerFields(projectPath, p.Release.Trigger, p.Release.Schedule, p.Release.ScheduleTimezone); err != nil {
+			return err
 		}
 	}
 
