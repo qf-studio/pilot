@@ -1114,6 +1114,165 @@ func TestEngine_ConfigError_NoMatchingRule(t *testing.T) {
 	}
 }
 
+// TestHandleReleaseMissing covers the fire, disabled, and cooldown paths for
+// AlertTypeReleaseMissing (GH-3952).
+func TestHandleReleaseMissing(t *testing.T) {
+	t.Run("fires with repo/tag/pr metadata", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "release_missing",
+					Type:     AlertTypeReleaseMissing,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type: EventTypeReleaseMissing,
+			Metadata: map[string]string{
+				"repo": "qf-studio/pilot",
+				"tag":  "v2.223.0",
+				"pr":   "3951",
+			},
+			Timestamp: time.Now(),
+		})
+
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].Type != AlertTypeReleaseMissing {
+			t.Errorf("expected alert type %s, got %s", AlertTypeReleaseMissing, alerts[0].Type)
+		}
+		if !strings.Contains(alerts[0].Message, "qf-studio/pilot") ||
+			!strings.Contains(alerts[0].Message, "v2.223.0") ||
+			!strings.Contains(alerts[0].Message, "3951") {
+			t.Errorf("expected alert message to mention repo/tag/pr, got %q", alerts[0].Message)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "release_missing",
+					Type:     AlertTypeReleaseMissing,
+					Enabled:  false, // Disabled
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type: EventTypeReleaseMissing,
+			Metadata: map[string]string{
+				"repo": "qf-studio/pilot",
+				"tag":  "v2.223.0",
+				"pr":   "3951",
+			},
+			Timestamp: time.Now(),
+		})
+
+		engine.flushForTest()
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+
+	t.Run("cooldown suppresses repeat fires", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "release_missing",
+					Type:     AlertTypeReleaseMissing,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 30 * time.Minute,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		firstEvent := Event{
+			Type: EventTypeReleaseMissing,
+			Metadata: map[string]string{
+				"repo": "qf-studio/pilot",
+				"tag":  "v2.223.0",
+				"pr":   "3951",
+			},
+			Timestamp: time.Now(),
+		}
+		engine.ProcessEvent(firstEvent)
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		// Second event within the cooldown window should be suppressed.
+		engine.ProcessEvent(Event{
+			Type: EventTypeReleaseMissing,
+			Metadata: map[string]string{
+				"repo": "qf-studio/pilot",
+				"tag":  "v2.224.0",
+				"pr":   "3960",
+			},
+			Timestamp: time.Now(),
+		})
+		engine.flushForTest()
+
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Errorf("expected 1 alert (second suppressed by cooldown), got %d", len(alerts))
+		}
+	})
+}
+
 func TestEngine_ChannelAcceptsSeverity(t *testing.T) {
 	config := &AlertConfig{Enabled: true}
 	engine := NewEngine(config)
