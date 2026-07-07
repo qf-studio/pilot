@@ -259,6 +259,25 @@ func (g *GitOperations) FindMergedPRByBranch(ctx context.Context, branch string)
 	return parseFirstPRURL(output), nil
 }
 
+// FindOpenPRByBranch returns the URL of an open PR whose head is branch, or ""
+// if none exists. GH-4022: lets the direct (non-epic) executor path adopt an
+// already-open PR from a prior/retried dispatch of the same branch instead of
+// racing gh CLI into a duplicate PR.
+func (g *GitOperations) FindOpenPRByBranch(ctx context.Context, branch string) (string, error) {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+		"--head", branch,
+		"--state", "open",
+		"--json", "url",
+		"--limit", "1",
+	)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to list open PRs for %s: %w: %s", branch, err, output)
+	}
+	return parseFirstPRURL(output), nil
+}
+
 // parseFirstPRURL extracts the first "url" field from `gh pr list --json url`
 // output (a JSON array like [{"url":"https://github.com/o/r/pull/1"}]). Returns
 // "" for an empty array or unparseable input.

@@ -20,6 +20,7 @@
 | Task execution | ✅ | executor | `pilot task` | - | Claude Code subprocess |
 | Branch creation | ✅ | executor | `--no-branch` disables | - | Auto `pilot/TASK-XXX` |
 | PR creation | ✅ | executor | `--create-pr` | - | Via `gh pr create` |
+| Direct-path duplicate-PR guard | ✅ | executor | - | - | Pre-push merged-branch short-circuit + pre-create open-PR adoption on the non-epic path, mirrors TASK-359 Shape C (GH-4022) |
 | Progress display | ✅ | executor | - | - | Lipgloss visual bar |
 | Navigator detection | ✅ | executor | - | - | Auto-prefix if `.agent/` exists |
 | AGENTS.md loading | ✅ | executor | - | - | LoadAgentsFile reads project AGENTS.md (v0.24.1) |
