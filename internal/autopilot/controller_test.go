@@ -7438,6 +7438,218 @@ func TestController_ScanRecentlyMergedPRs_FlagMatrix(t *testing.T) {
 	}
 }
 
+// TestScanRecentlyMergedPRs_HumanMerges verifies release.tag_human_merges
+// (GH-3928): opting human-authored merged PRs (non pilot/* branches) into the
+// release scanner, gated off by default, without affecting Pilot-only side
+// effects (merge metrics, self-heal, board write-back).
+func TestScanRecentlyMergedPRs_HumanMerges(t *testing.T) {
+	recentMergedAt := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	oldMergedAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+
+	humanPR := github.PullRequest{
+		Number:         900,
+		Head:           github.PRRef{Ref: "feat/add-thing", SHA: "humansha900"},
+		Base:           github.PRRef{Ref: "main"},
+		HTMLURL:        "https://github.com/owner/repo/pull/900",
+		Title:          "feat: add a thing",
+		Merged:         true,
+		MergedAt:       recentMergedAt,
+		MergeCommitSHA: "merge-sha-900",
+	}
+
+	// newCase spins up a fresh server + controller per subtest so state
+	// (activePRs, recordedMerges, self-heal calls) never leaks across cases.
+	newCase := func(t *testing.T, tagHuman bool, prs []github.PullRequest, taggedSHA string) (*Controller, *mockEvalStore, *mockBoardSyncer) {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls"):
+				out := make([]*github.PullRequest, len(prs))
+				for i := range prs {
+					out[i] = &prs[i]
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(out)
+			case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/tags"):
+				w.WriteHeader(http.StatusOK)
+				if taggedSHA == "" {
+					_, _ = w.Write([]byte("[]"))
+					return
+				}
+				_ = json.NewEncoder(w).Encode([]github.Tag{
+					{Name: "v1.0.0", Commit: struct {
+						SHA string `json:"sha"`
+					}{SHA: taggedSHA}},
+				})
+			case r.URL.Path == "/repos/owner/repo/issues/901":
+				// Node ID for the pilot PR's linked issue (board write-back).
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]string{"node_id": "I_kwDOissue901"})
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		cfg.Release = &ReleaseConfig{
+			Enabled:        true,
+			Trigger:        "on_merge",
+			TagPrefix:      "v",
+			TagHumanMerges: tagHuman,
+		}
+		cfg.MergedPRScanWindow = 30 * time.Minute
+
+		boardMock := &mockBoardSyncer{}
+		c := NewController(cfg, ghClient, nil, "owner", "repo",
+			withBoardSyncerForTest(boardMock, "Done", "Failed", "In Review", "In Dev"))
+		c.SetStateStore(newTestStateStore(t))
+		evalMock := &mockEvalStore{}
+		c.SetEvalStore(evalMock)
+		return c, evalMock, boardMock
+	}
+
+	t.Run("flag off: human PR not registered", func(t *testing.T) {
+		c, _, _ := newCase(t, false, []github.PullRequest{humanPR}, "")
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[humanPR.Number]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("human PR must not be registered when tag_human_merges is off")
+		}
+	})
+
+	t.Run("flag on: human PR merged to main in-window is registered", func(t *testing.T) {
+		c, _, _ := newCase(t, true, []github.PullRequest{humanPR}, "")
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+		}
+		c.mu.RLock()
+		prState, tracked := c.activePRs[humanPR.Number]
+		c.mu.RUnlock()
+		if !tracked {
+			t.Fatal("human PR must be registered when tag_human_merges is on")
+		}
+		if prState.Stage != StageReleasing {
+			t.Errorf("Stage = %v, want StageReleasing", prState.Stage)
+		}
+		if prState.IssueNumber != 0 {
+			t.Errorf("IssueNumber = %d, want 0 (human PR has no linked issue)", prState.IssueNumber)
+		}
+		if prState.HeadSHA != humanPR.MergeCommitSHA {
+			t.Errorf("HeadSHA = %q, want %q (merge commit SHA)", prState.HeadSHA, humanPR.MergeCommitSHA)
+		}
+	})
+
+	t.Run("flag on: human PR to non-default base is skipped", func(t *testing.T) {
+		nonDefaultBasePR := humanPR
+		nonDefaultBasePR.Base = github.PRRef{Ref: "release/1.x"}
+		c, _, _ := newCase(t, true, []github.PullRequest{nonDefaultBasePR}, "")
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[humanPR.Number]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("human PR merged into a non-default base must be skipped")
+		}
+	})
+
+	t.Run("flag on: already-tagged merge commit is skipped", func(t *testing.T) {
+		c, _, _ := newCase(t, true, []github.PullRequest{humanPR}, humanPR.MergeCommitSHA)
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[humanPR.Number]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("human PR whose merge commit is already tagged must be skipped")
+		}
+	})
+
+	t.Run("flag on: merged outside window is skipped", func(t *testing.T) {
+		staleHumanPR := humanPR
+		staleHumanPR.MergedAt = oldMergedAt
+		c, _, _ := newCase(t, true, []github.PullRequest{staleHumanPR}, "")
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[humanPR.Number]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("human PR merged outside the scan window must be skipped")
+		}
+	})
+
+	t.Run("flag on: pilot PR still gets merge metrics and self-heal, human PR does not", func(t *testing.T) {
+		pilotPR := github.PullRequest{
+			Number:         901,
+			Head:           github.PRRef{Ref: "pilot/GH-901", SHA: "pilotsha901"},
+			Base:           github.PRRef{Ref: "main"},
+			HTMLURL:        "https://github.com/owner/repo/pull/901",
+			Title:          "feat: pilot change",
+			Merged:         true,
+			MergedAt:       recentMergedAt,
+			MergeCommitSHA: "merge-sha-901",
+		}
+		c, evalMock, boardMock := newCase(t, true, []github.PullRequest{pilotPR, humanPR}, "")
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+		}
+
+		if !c.recordedMerges[pilotPR.Number] {
+			t.Error("pilot PR must record merge success metrics")
+		}
+		if c.recordedMerges[humanPR.Number] {
+			t.Error("human PR must NOT record merge success metrics")
+		}
+
+		var pilotHealed, humanHealed bool
+		for _, h := range evalMock.selfHealed {
+			if h.TaskID == "GH-901" {
+				pilotHealed = true
+			}
+			if h.TaskID == "GH-900" {
+				humanHealed = true
+			}
+		}
+		if !pilotHealed {
+			t.Error("pilot PR must trigger self-heal")
+		}
+		if humanHealed {
+			t.Error("human PR must NOT trigger self-heal (IssueNumber is always 0)")
+		}
+
+		// Board write-back requires issueNum > 0: fires once for the pilot PR
+		// (issue 901, parsed from pilot/GH-901) and never for the human PR
+		// (issueNum always 0).
+		if len(boardMock.calls) != 1 {
+			t.Errorf("board sync calls = %d, want 1 (only the pilot PR has a linked issue)", len(boardMock.calls))
+		} else if boardMock.calls[0].issueNodeID != "I_kwDOissue901" {
+			t.Errorf("board sync issueNodeID = %q, want the pilot PR's issue node id", boardMock.calls[0].issueNodeID)
+		}
+
+		// Both should still be registered for release.
+		c.mu.RLock()
+		_, pilotTracked := c.activePRs[pilotPR.Number]
+		_, humanTracked := c.activePRs[humanPR.Number]
+		c.mu.RUnlock()
+		if !pilotTracked {
+			t.Error("pilot PR must be registered for release")
+		}
+		if !humanTracked {
+			t.Error("human PR must be registered for release")
+		}
+	})
+}
+
 // TestController_RecordMergeSuccess_Idempotency verifies recordMergeSuccess
 // fires exactly once per PR number even when called multiple times from
 // different code paths (e.g. handleMerging + ScanRecentlyMergedPRs both

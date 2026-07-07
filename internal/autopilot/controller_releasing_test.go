@@ -364,6 +364,95 @@ func TestHandleReleasing_APIModeDuplicateRelease(t *testing.T) {
 	}
 }
 
+// TestHandleReleasing_HumanPR_NoIssueComment verifies handleReleasing tolerates
+// IssueNumber == 0 (human-authored PRs scanned via release.tag_human_merges,
+// GH-3928, never have a linked issue): the escalation path must not attempt to
+// post a GitHub issue comment, and the happy path must tag+publish cleanly.
+func TestHandleReleasing_HumanPR_NoIssueComment(t *testing.T) {
+	t.Run("escalation path: no issue comment posted", func(t *testing.T) {
+		issueCommentPosted := false
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+				// Persistent API failure on every tag lookup forces the retry-cap path.
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"server error"}`))
+			case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
+				issueCommentPosted = true
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(github.PRComment{ID: 1})
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		cfg.Environment = EnvStage
+		cfg.MaxReleasingAttempts = 3
+		cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", TagPrefix: "v"}
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+		prState := &PRState{
+			PRNumber:    900,
+			HeadSHA:     "humansha900",
+			IssueNumber: 0, // human PR: no linked issue
+			Stage:       StageReleasing,
+			// Pre-set to 2; next call increments to 3 == cap.
+			ReleasingAttempts: 2,
+		}
+		c.mu.Lock()
+		c.activePRs[900] = prState
+		c.mu.Unlock()
+
+		err := c.handleReleasing(context.Background(), prState)
+		if err != nil {
+			t.Fatalf("at cap, handleReleasing must return nil (not error), got: %v", err)
+		}
+		if prState.Stage != StageFailed {
+			t.Errorf("Stage = %s, want StageFailed after retry cap", prState.Stage)
+		}
+		if issueCommentPosted {
+			t.Error("escalation must NOT post a GitHub issue comment when IssueNumber == 0")
+		}
+	})
+
+	t.Run("happy path: tag+publish cleanly with no linked issue", func(t *testing.T) {
+		server := publishModeTestServer(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/releases/tags/"):
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/releases"):
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(github.Release{
+					TagName: "v1.1.0",
+					HTMLURL: "https://github.com/owner/repo/releases/tag/v1.1.0",
+				})
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+		})
+		defer server.Close()
+
+		c := newReleasingControllerWithPublish(t, server.URL, "api")
+		prState := &PRState{PRNumber: 901, HeadSHA: "humansha901", IssueNumber: 0, Stage: StageReleasing}
+		c.mu.Lock()
+		c.activePRs[901] = prState
+		c.mu.Unlock()
+
+		if err := c.handleReleasing(context.Background(), prState); err != nil {
+			t.Fatalf("handleReleasing returned error: %v", err)
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[901]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("PR must drain from activePRs once tagged and published")
+		}
+	})
+}
+
 // TestHandleReleasing_GetTagForSHAError verifies that a tag-lookup failure makes
 // handleReleasing return an error (retry next poll) WITHOUT attempting to create
 // a tag and WITHOUT removing the PR from tracking. (TASK-316, path 1)
