@@ -88,6 +88,60 @@ func TestProjectReleaseConfig_Apply(t *testing.T) {
 			t.Errorf("TagPrefix = %q, want %q", got.TagPrefix, "release-")
 		}
 	})
+
+	t.Run("verify_release and verify_timeout override", func(t *testing.T) {
+		base := &ReleaseConfig{Enabled: true, VerifyRelease: boolPtr(true), VerifyTimeout: 10 * time.Minute}
+		p := &ProjectReleaseConfig{VerifyRelease: boolPtr(false), VerifyTimeout: 5 * time.Minute}
+		got := p.Apply(base)
+		if got.VerifyRelease == nil || *got.VerifyRelease {
+			t.Errorf("VerifyRelease = %v, want false", got.VerifyRelease)
+		}
+		if got.VerifyTimeout != 5*time.Minute {
+			t.Errorf("VerifyTimeout = %v, want %v", got.VerifyTimeout, 5*time.Minute)
+		}
+	})
+
+	t.Run("verify_release and verify_timeout unset inherit from base", func(t *testing.T) {
+		base := &ReleaseConfig{Enabled: true, VerifyRelease: boolPtr(true), VerifyTimeout: 10 * time.Minute}
+		p := &ProjectReleaseConfig{Publish: "api"}
+		got := p.Apply(base)
+		if got.VerifyRelease == nil || !*got.VerifyRelease {
+			t.Errorf("VerifyRelease = %v, want inherited true", got.VerifyRelease)
+		}
+		if got.VerifyTimeout != 10*time.Minute {
+			t.Errorf("VerifyTimeout = %v, want inherited %v", got.VerifyTimeout, 10*time.Minute)
+		}
+	})
+}
+
+func TestReleaseConfig_VerifyReleaseEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		rel  *ReleaseConfig
+		want bool
+	}{
+		{name: "nil receiver", rel: nil, want: false},
+		{name: "unset defaults to true in workflow mode", rel: &ReleaseConfig{Publish: "workflow"}, want: true},
+		{name: "unset defaults to true when publish empty (workflow)", rel: &ReleaseConfig{}, want: true},
+		{name: "unset defaults to false in api mode", rel: &ReleaseConfig{Publish: "api"}, want: false},
+		{name: "unset defaults to false in tag_only mode", rel: &ReleaseConfig{Publish: "tag_only"}, want: false},
+		{name: "explicit true in api mode wins", rel: &ReleaseConfig{Publish: "api", VerifyRelease: boolPtr(true)}, want: true},
+		{name: "explicit false in workflow mode wins", rel: &ReleaseConfig{Publish: "workflow", VerifyRelease: boolPtr(false)}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.rel.VerifyReleaseEnabled(); got != tt.want {
+				t.Errorf("VerifyReleaseEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultReleaseConfig_VerifyTimeout(t *testing.T) {
+	got := DefaultReleaseConfig()
+	if got.VerifyTimeout != 10*time.Minute {
+		t.Errorf("DefaultReleaseConfig().VerifyTimeout = %v, want %v", got.VerifyTimeout, 10*time.Minute)
+	}
 }
 
 func TestReleaseConfig_PublishMode(t *testing.T) {
