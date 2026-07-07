@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -14,6 +15,12 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 )
+
+// ErrTaskAlreadyActive wraps QueueTask's duplicate-task rejection so callers
+// can distinguish expected dedup (task already queued or running) from a
+// genuine queueing failure via errors.Is, instead of string-matching the
+// error text (GH-4008).
+var ErrTaskAlreadyActive = errors.New("task already queued or running")
 
 // DispatcherConfig configures the task dispatcher behavior.
 type DispatcherConfig struct {
@@ -385,6 +392,22 @@ func (d *Dispatcher) hasLiveWorker(projectPath string) bool {
 	return ok
 }
 
+// IsActive reports whether taskID is already queued or running, using the
+// same source of truth QueueTask's duplicate-task check uses. Callers that
+// dispatch on a poll loop can pre-check this before announcing/attempting a
+// dispatch, so a task legitimately waiting behind other work doesn't
+// generate a repeated dispatch-attempt + rejection on every tick (GH-4008).
+// A store error fails open (returns false) — QueueTask's own check remains
+// the authoritative guard.
+func (d *Dispatcher) IsActive(taskID string) bool {
+	active, err := d.store.IsTaskQueued(taskID)
+	if err != nil {
+		d.log.Warn("Failed to check task active state", slog.String("task_id", taskID), slog.Any("error", err))
+		return false
+	}
+	return active
+}
+
 // QueueTask adds a task to the execution queue and returns the execution ID.
 // The task will be executed by the project's worker in FIFO order.
 // If a decomposer is configured and the task is complex, it will be split
@@ -395,7 +418,7 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 	if err != nil {
 		d.log.Warn("Failed to check for duplicate task", slog.Any("error", err))
 	} else if exists {
-		return "", fmt.Errorf("task %s is already queued or running", task.ID)
+		return "", fmt.Errorf("task %s: %w", task.ID, ErrTaskAlreadyActive)
 	}
 
 	// Try decomposition if decomposer is configured
