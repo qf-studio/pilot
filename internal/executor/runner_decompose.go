@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/webhooks"
 )
 
@@ -197,6 +199,16 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		r.escalateDecomposedNoOp(ctx, parentTask, subtasks, executionPath, aggregateResult)
 	}
 
+	// GH-4028 / TASK-359 Layer 1: subtasks run with task.Branch cleared (see
+	// "subtask.Branch = ..." above), so the direct path's push+PR block
+	// (task.CreatePR && task.Branch != "") never fires for any subtask —
+	// including the final one, which carries the parent's real CreatePR
+	// intent. The decomposed parent must finalize push+PR itself once all
+	// subtasks (and any no-op escalation) are done.
+	if aggregateResult.Success && parentTask.CreatePR && parentTask.Branch != "" && aggregateResult.PRUrl == "" {
+		r.finalizeDecomposedParentPR(ctx, parentTask, git, aggregateResult)
+	}
+
 	aggregateResult.Duration = time.Since(start)
 	aggregateResult.EstimatedCostUSD = estimateCostWithCache(
 		aggregateResult.TokensInput+aggregateResult.ResearchTokens,
@@ -332,4 +344,189 @@ func (r *Runner) escalateDecomposedNoOp(ctx context.Context, parentTask *Task, s
 	}
 	agg.Success = false
 	agg.Error = fmt.Sprintf("no new commit produced — all %d subtask(s) were no-ops after one escalated retry (task %s)", len(subtasks), parentTask.ID)
+}
+
+// finalizeDecomposedParentPR runs the decomposed-parent's push → PR-create →
+// record pr_created sequence with the SAME error contract as the direct path
+// (runner.go executeWithOptions ~line 3782) and finalizeEpicBranchPR
+// (TASK-359 Layer 1): a push or PR-create failure marks the execution
+// failed, never leaving a "completed" row with an empty pr_url.
+//
+// GH-4028: every subtask executes with task.Branch cleared (so the direct
+// path's own `task.CreatePR && task.Branch != ""` push+PR block never runs
+// for a subtask), so the parent branch was never pushed and no PR was ever
+// opened even though the final subtask carried the parent's CreatePR
+// intent. This is called once, after all subtasks (and any no-op
+// escalation) have finished, using the parent task's own Branch/CreatePR.
+func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult) {
+	log := r.log
+
+	// TASK-359 Shape C / GH-4022: an already-merged branch short-circuits
+	// push+CreatePR — check first, since a merged branch's remote copy may
+	// already have been deleted by autopilot.
+	if r.checkAlreadyMergedBranch(ctx, git, task, result, nil) {
+		return
+	}
+
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch, _ = git.GetDefaultBranch(ctx)
+		if baseBranch == "" {
+			baseBranch = "main"
+		}
+	}
+
+	// GH-2743-style no-commits guard: a decomposed parent that reaches this
+	// point with no commits vs base produced nothing on the branch — unlike
+	// the epic path (children may have shipped their own PRs), a
+	// decomposed-task branch with zero commits is a genuine failure.
+	if guardCount, _ := git.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+		result.Success = false
+		result.Error = "decomposed-parent branch has no commits vs base branch"
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+
+	r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")
+
+	var pushErr error
+	for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
+		pushErr = git.Push(ctx, task.Branch)
+		if pushErr == nil {
+			break
+		}
+		// GH-1389: a worktree push may report a chdir error even though the
+		// data reached the remote.
+		if git.RemoteBranchExists(ctx, task.Branch) {
+			log.Warn("Decomposed-parent push reported error but branch exists on remote, continuing",
+				slog.String("task_id", task.ID),
+				slog.String("branch", task.Branch),
+				slog.Any("error", pushErr),
+			)
+			pushErr = nil
+			break
+		}
+		if attempt < gitPushRetryAttempts {
+			log.Warn("Decomposed-parent push failed, retrying",
+				slog.String("task_id", task.ID),
+				slog.Int("attempt", attempt),
+				slog.Int("max_attempts", gitPushRetryAttempts),
+				slog.Any("error", pushErr),
+			)
+			time.Sleep(gitPushRetryDelay)
+		}
+	}
+	if pushErr != nil {
+		result.Success = false
+		result.Error = formatGitStepFailureWithRecovery(ctx, git, "push", gitPushRetryAttempts, pushErr, task.ID, task.Branch, result.CommitSHA)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+
+	// GH-457: use the actual pushed HEAD as the CommitSHA source of truth.
+	if pushedSHA, shaErr := git.GetCurrentCommitSHA(ctx); shaErr == nil && pushedSHA != "" {
+		result.CommitSHA = pushedSHA
+	}
+
+	// GH-4022: adopt an already-open PR for this branch instead of racing
+	// gh CLI into a duplicate. Runs after push so the branch is guaranteed
+	// to exist on the remote for the lookup.
+	if r.adoptOpenBranchPR(ctx, git, task, result, nil) {
+		return
+	}
+
+	r.reportProgress(task.ID, "Creating PR", 98, "Creating pull request...")
+
+	issueNum := strings.TrimPrefix(task.ID, "GH-")
+	prTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
+
+	// Route PR/MR creation through the adapter-specific creator when
+	// available, mirroring the direct path's registry → non-GitHub
+	// PRCreator → gh CLI fallback order (runner.go ~line 3967).
+	var prURL string
+	var createErr error
+	ghSDKCreator := PRCreator(nil)
+	if task.SourceAdapter == "github" && task.SourceRepo != "" {
+		ghSDKCreator = r.prCreatorFor("github:" + task.SourceRepo)
+	}
+	switch {
+	case ghSDKCreator != nil:
+		prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
+		for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
+			prURL, createErr = ghSDKCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+			if createErr == nil {
+				break
+			}
+			if attempt < prCreateRetryAttempts {
+				log.Warn("Decomposed-parent PR creation failed (SDK), retrying",
+					slog.String("task_id", task.ID),
+					slog.Int("attempt", attempt),
+					slog.Int("max_attempts", prCreateRetryAttempts),
+					slog.Any("error", createErr),
+				)
+				time.Sleep(prCreateRetryDelay)
+			}
+		}
+	case r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github":
+		closeKeyword := ""
+		if task.SourceIssueID != "" {
+			closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
+		}
+		prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
+		for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
+			prURL, createErr = r.prCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+			if createErr == nil {
+				break
+			}
+			if attempt < prCreateRetryAttempts {
+				log.Warn("Decomposed-parent MR creation failed, retrying",
+					slog.String("task_id", task.ID),
+					slog.Int("attempt", attempt),
+					slog.Int("max_attempts", prCreateRetryAttempts),
+					slog.Any("error", createErr),
+				)
+				time.Sleep(prCreateRetryDelay)
+			}
+		}
+	default:
+		prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
+		for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
+			prURL, createErr = git.CreatePR(ctx, prTitle, prBody, baseBranch)
+			if createErr == nil {
+				break
+			}
+			if attempt < prCreateRetryAttempts {
+				log.Warn("Decomposed-parent PR creation failed, retrying",
+					slog.String("task_id", task.ID),
+					slog.Int("attempt", attempt),
+					slog.Int("max_attempts", prCreateRetryAttempts),
+					slog.Any("error", createErr),
+				)
+				time.Sleep(prCreateRetryDelay)
+			}
+		}
+	}
+
+	if createErr != nil {
+		result.Success = false
+		result.Error = formatGitStepFailureWithRecovery(ctx, git, "pr-create", prCreateRetryAttempts, createErr, task.ID, task.Branch, result.CommitSHA)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+
+	// TASK-359 Layer 1 invariant: a PR-mode task that finished without a PR
+	// URL is NOT a success. Guards against CreatePR returning a non-error
+	// empty URL.
+	if prURL == "" {
+		result.Success = false
+		result.Error = "decomposed-parent finalize produced no PR URL"
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+
+	result.PRUrl = prURL
+	log.Info("Decomposed-parent PR created", slog.String("task_id", task.ID), slog.String("pr_url", prURL))
+	r.saveLogEntry(task.LogExecutionID(), "info", "PR created: "+prURL)
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StagePRCreated, "pr created: "+prURL)
+	r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("PR created: %s", prURL))
 }
