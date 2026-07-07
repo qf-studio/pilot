@@ -510,6 +510,7 @@ projects:
   #                     # workflow - pre-creating the release makes GoReleaser's asset
   #                     # upload 422-collide and silently skips downstream publish steps
   #                     # (Homebrew tap). Repos with GoReleaser must stay workflow.
+  #     tag_human_merges: true  # also tag this project's human-authored merges (GH-3928)
 
 # Autopilot settings
 autopilot:
@@ -546,6 +547,17 @@ autopilot:
     #   tag_only  - the tag is created and nothing publishes a release; use
     #             for repos with an intentionally manual release process.
     publish: workflow
+    # Opt-in: also consider merged PRs whose head branch is NOT pilot/* for
+    # release tagging (GH-3928). Default false - zero behavior change; only
+    # pilot/* branches are scanned. When true, ScanRecentlyMergedPRs also
+    # picks up human-authored PRs merged into the environment's default
+    # branch. Whether a release is actually cut still depends entirely on
+    # conventional-commit hygiene: squash-merge means the PR TITLE becomes
+    # the commit subject, so a `feat: ...`/`fix: ...` title bumps a version
+    # and a non-conventional title (or `docs:`/`chore:`/`refactor:`) produces
+    # no release. Merge metrics, self-heal, and board sync are unaffected -
+    # those remain Pilot-PR-only regardless of this flag.
+    tag_human_merges: false
 
   # Define named environment configurations
   # Each environment can have different branch, approval, and CI settings

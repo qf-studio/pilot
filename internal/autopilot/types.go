@@ -380,6 +380,13 @@ type ReleaseConfig struct {
 	// release to appear before firing a release_missing alert. Zero means
 	// unset; DefaultReleaseConfig sets the 10m default (GH-3927).
 	VerifyTimeout time.Duration `yaml:"verify_timeout,omitempty"`
+	// TagHumanMerges opts ScanRecentlyMergedPRs into considering merged PRs
+	// whose head branch is NOT pilot/* for release tagging. Default false —
+	// zero behavior change for existing configs. Conventional-commit hygiene
+	// (via DetectBumpType on the squash-merge PR title) still decides
+	// whether a release is actually cut, so enabling this is safe even for
+	// repos with mixed commit-message discipline (GH-3928).
+	TagHumanMerges bool `yaml:"tag_human_merges,omitempty"`
 }
 
 // Publish mode values for ReleaseConfig.Publish / ProjectReleaseConfig.Publish (GH-3926).
@@ -444,6 +451,8 @@ type ProjectReleaseConfig struct {
 	VerifyRelease *bool `yaml:"verify_release,omitempty"`
 	// VerifyTimeout overrides ReleaseConfig.VerifyTimeout for this project. Zero inherits.
 	VerifyTimeout time.Duration `yaml:"verify_timeout,omitempty"`
+	// TagHumanMerges overrides ReleaseConfig.TagHumanMerges for this project. Nil inherits.
+	TagHumanMerges *bool `yaml:"tag_human_merges,omitempty"`
 }
 
 // Apply overlays this project-level config on top of base (the resolved
@@ -492,6 +501,9 @@ func (p *ProjectReleaseConfig) Apply(base *ReleaseConfig) *ReleaseConfig {
 	}
 	if p.VerifyTimeout != 0 {
 		result.VerifyTimeout = p.VerifyTimeout
+	}
+	if p.TagHumanMerges != nil {
+		result.TagHumanMerges = *p.TagHumanMerges
 	}
 	return &result
 }
