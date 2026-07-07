@@ -529,6 +529,18 @@ projects:
   #                     # upload 422-collide and silently skips downstream publish steps
   #                     # (Homebrew tap). Repos with GoReleaser must stay workflow.
   #     tag_human_merges: true  # also tag this project's human-authored merges (GH-3928)
+  #
+  # on_schedule example (GH-3993): batch everything merged since the last tag
+  # into one release train, cut every Friday at 21:00 in Europe/Berlin.
+  # - name: some-product
+  #   path: "/path/to/some-product"
+  #   github:
+  #     owner: "qf-studio"
+  #     repo: "some-product"
+  #   release:
+  #     trigger: on_schedule
+  #     schedule: "0 21 * * FRI"          # Fridays 21:00
+  #     schedule_timezone: "Europe/Berlin"
 
 # Autopilot settings
 autopilot:
@@ -556,12 +568,22 @@ autopilot:
     #                    semantics only - held work is fully reconstructable
     #                    from GitHub in the meantime).
     #   on_schedule    - hold every merge for a cron release train (see
-    #                    `schedule` below). No scheduler ships in this issue
-    #                    either; the hold is inert-but-safe until it does.
+    #                    `schedule` below). At each tick, everything merged
+    #                    since the last tag is batched into one validated
+    #                    release (GH-3993). Restart across a tick still fires
+    #                    it exactly once (missed-tick recovery, bounded by
+    #                    `scope_lookback` below); a miss older than that
+    #                    window needs a manual re-trigger. DST transitions
+    #                    follow robfig/cron/v3's cron.WithLocation semantics
+    #                    (no special-casing). Urgent hotfix under
+    #                    `on_schedule`: everything still waits for the next
+    #                    tick by design - flip `trigger` to `on_merge`
+    #                    temporarily (config reload) if it can't wait.
     trigger: on_merge
     # scope_label_prefix: "scope:"       # on_scope_close only; default "scope:"
     # schedule: "0 21 * * FRI"           # on_schedule only; robfig/cron/v3 standard (5-field) syntax
     # schedule_timezone: "Europe/Berlin" # on_schedule only; empty = daemon local time
+    # scope_lookback: 24h                # on_scope_close AND on_schedule; also bounds missed-tick recovery
     version_strategy: conventional_commits
     tag_prefix: "v"
     generate_changelog: true
