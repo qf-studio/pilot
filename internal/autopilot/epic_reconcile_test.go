@@ -724,4 +724,89 @@ func TestEpicCloseVetoBreaker(t *testing.T) {
 			t.Errorf("expected no epic_close_vetoed alert once the veto resolved, got %d", len(sink.events))
 		}
 	})
+
+	t.Run("all children shipped — closes normally, no needs-clarification label or alert", func(t *testing.T) {
+		var addLabelsCalls []string
+		var closeCalled bool
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"state":"open"}`, parentNum)
+
+			case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+				resp := map[string]interface{}{
+					"data": map[string]interface{}{
+						"node": map[string]interface{}{
+							"subIssues": map[string]interface{}{
+								"totalCount": 1,
+								"nodes":      []map[string]interface{}{{"number": childNum, "state": "CLOSED"}},
+							},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+
+			case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+				// Child shipped cleanly — a merged PR under its own issue number.
+				items := []map[string]interface{}{{
+					"id": 1, "number": 900 + childNum, "title": "fix: child",
+					"state":        "closed",
+					"pull_request": map[string]interface{}{"merged_at": "2026-01-01T00:00:00Z"},
+				}}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": items})
+
+			case r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/labels", parentNum):
+				var payload struct {
+					Labels []string `json:"labels"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&payload)
+				addLabelsCalls = append(addLabelsCalls, payload.Labels...)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[]"))
+
+			case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/labels/"):
+				w.WriteHeader(http.StatusOK)
+
+			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"id":1}`))
+
+			case r.Method == http.MethodPatch && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+				closeCalled = true
+				w.WriteHeader(http.StatusOK)
+
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+		sink := &fakeAlertSink{}
+		c.SetAlertsEngine(sink)
+
+		// Run several passes — a healthy, fully-shipped epic must never trip
+		// the veto breaker regardless of how many reconcile passes observe it
+		// (it only closes once, the rest are no-ops on an already-closed issue).
+		c.reconcileEpicParent(context.Background(), parentNum)
+
+		if !closeCalled {
+			t.Fatal("expected parent to close when all children shipped")
+		}
+		for _, l := range addLabelsCalls {
+			if l == github.LabelNeedsClarification {
+				t.Errorf("did not expect %s to be added for a normally-shipped epic, got labels: %v",
+					github.LabelNeedsClarification, addLabelsCalls)
+			}
+		}
+		if len(sink.events) != 0 {
+			t.Errorf("expected no epic_close_vetoed alert for a normally-shipped epic, got %d", len(sink.events))
+		}
+	})
 }
