@@ -106,6 +106,11 @@ const (
 	// credential (e.g. a GitHub token) fails an authenticated validation
 	// call at startup, so a dead credential doesn't fail silently.
 	EventTypeConfigError EventType = "config_error"
+
+	// Release missing events (GH-3952): fired when a merged pilot/GH-* PR
+	// did not produce its expected release tag, so a stalled release
+	// pipeline doesn't go unnoticed.
+	EventTypeReleaseMissing EventType = "release_missing"
 )
 
 const (
@@ -336,6 +341,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleSecurityEvent(ctx, event)
 	case EventTypeConfigError:
 		e.handleConfigError(ctx, event)
+	case EventTypeReleaseMissing:
+		e.handleReleaseMissing(ctx, event)
 	case EventTypeBudgetExceeded, EventTypeBudgetWarning:
 		e.handleBudgetEvent(ctx, event)
 	case EventTypeAutopilotMetrics:
@@ -520,6 +527,23 @@ func (e *Engine) handleConfigError(ctx context.Context, event Event) {
 		}
 		if rule.Type == AlertTypeServiceUnhealthy && e.shouldFire(rule) {
 			alert := e.createAlert(rule, event, event.Error)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+}
+
+// handleReleaseMissing fires AlertTypeReleaseMissing rules when a merged PR
+// did not produce its expected release tag (GH-3952). Metadata carries repo,
+// tag, and pr so operators can find the stalled release from the alert alone.
+func (e *Engine) handleReleaseMissing(ctx context.Context, event Event) {
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if rule.Type == AlertTypeReleaseMissing && e.shouldFire(rule) {
+			message := fmt.Sprintf("Release missing for %s: expected tag %s after PR #%s was merged",
+				event.Metadata["repo"], event.Metadata["tag"], event.Metadata["pr"])
+			alert := e.createAlert(rule, event, message)
 			e.fireAlert(ctx, rule, alert)
 		}
 	}

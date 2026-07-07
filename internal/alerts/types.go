@@ -48,6 +48,10 @@ const (
 
 	// Eval regression detection (GH-2065)
 	AlertTypeEvalRegression AlertType = "eval_regression"
+
+	// Release monitoring (GH-3952): a merged pilot/GH-* PR that never
+	// produced its expected release tag.
+	AlertTypeReleaseMissing AlertType = "release_missing"
 )
 
 // Alert represents an alert event
@@ -351,6 +355,17 @@ func defaultRules() []AlertRule {
 			Channels:    []string{}, // Will route to PagerDuty channels by severity
 			Cooldown:    1 * time.Hour,
 			Description: "Escalate to PagerDuty after repeated failures for the same source",
+		},
+		// Release monitoring (GH-3952)
+		{
+			Name:        "release_missing",
+			Type:        AlertTypeReleaseMissing,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when a merged PR did not produce its expected release tag",
 		},
 	}
 }
