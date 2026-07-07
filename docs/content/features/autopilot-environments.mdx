@@ -256,6 +256,27 @@ All three environments share the same circuit breaker and rate limiting. If Pilo
 
 ---
 
+## Release Cadence & Scope Notes
+
+`release.trigger` controls when auto-release cuts a version, independently of the `dev`/`stage`/`prod` environment:
+
+| Trigger | Behavior |
+|---------|----------|
+| `on_merge` (default) | Release per merged PR. |
+| `manual` | Never auto-release. |
+| `on_scope_close` | Hold every merge belonging to an open epic (parent issue) or a shared `scope:`-prefixed label until the scope completes, then cut one release for the whole batch. Standalone merges (no epic/label) still release per-merge. |
+| `on_schedule` | Hold every merge for a cron release train (`schedule`, standard 5-field robfig/cron/v3 syntax). At each tick, everything merged since the last tag is batched into one release. |
+
+`scope_label_prefix` (default `"scope:"`) sets the label prefix `on_scope_close` groups by; `schedule`/`schedule_timezone` configure the `on_schedule` cron. All four — `trigger`, `scope_label_prefix`, `schedule`, `schedule_timezone` — are overlayable per-project under `projects:`, so one repo can run `on_merge` while another runs `on_scope_close` or `on_schedule` in the same autopilot config.
+
+A batched release (`on_scope_close`/`on_schedule`) gets an aggregated notes body instead of the single-PR changelog: a scope headline, commits grouped into Features/Bug Fixes/Other Changes with exact `#PR`/`GH-issue` attribution per entry, a Breaking Changes section, an LLM "What's New" summary (see `generate_summary` above), and a compare-link + PR/commit-count footer.
+
+<Callout type="warning">
+  Aggregated scope notes are only composed for `publish: api` or `publish: workflow` — `publish: tag_only` never creates a GitHub Release object, so there's nothing to attach notes to.
+</Callout>
+
+---
+
 ## CLI Override
 
 The `--autopilot` flag overrides the YAML `environment` setting:

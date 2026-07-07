@@ -28,6 +28,12 @@ const (
 
 	// anthropicAPIURL is the Anthropic Messages API endpoint.
 	anthropicAPIURL = "https://api.anthropic.com/v1/messages"
+
+	// maxSummaryCommitLines caps how many commit first-lines are sent to the
+	// LLM per summary request — a release train (on_schedule) or a large
+	// scope can carry far more commits than a single per-merge release, and
+	// an unbounded prompt risks the request growing arbitrarily large (GH-3992).
+	maxSummaryCommitLines = 200
 )
 
 // ReleaseSummaryGenerator enriches GitHub releases with LLM-generated summaries.
@@ -151,6 +157,9 @@ func waitForReleaseByTag(ctx context.Context, ghClient *github.Client, log *slog
 func (g *ReleaseSummaryGenerator) generateSummary(ctx context.Context, tag string, commits []*github.Commit) (string, error) {
 	if len(commits) == 0 {
 		return fmt.Sprintf("## What's New in %s\n\nMaintenance release.", tag), nil
+	}
+	if len(commits) > maxSummaryCommitLines {
+		commits = commits[:maxSummaryCommitLines]
 	}
 
 	// Build commit list for the prompt

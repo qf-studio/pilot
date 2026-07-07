@@ -2632,13 +2632,40 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 
 	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tagName)
 
+	// GH-3992: a scope carrier's deterministic notes (headline, grouped
+	// Features/Fixes/Other with exact per-member "(#PR, GH-Issue)"
+	// attribution, breaking changes, compare footer) are computed once here
+	// and reused both as the "api"-mode release body below and as the
+	// "workflow"-mode enrichment addition in afterTagCreated — one GitHub
+	// round trip per member PR regardless of publish mode.
+	var scopeNotesBody string
+	if isScope {
+		scopeNotesBody = BuildScopeReleaseNotes(ScopeNotesInput{
+			Owner:      owner,
+			Repo:       repo,
+			ScopeKey:   prState.ScopeKey,
+			ScopeTitle: prState.ScopeTitle,
+			Members:    c.buildScopeMembers(ctx, owner, repo, prState.ScopeMemberPRs),
+			LastTag:    currentVersion.String(rel.TagPrefix),
+			NewTag:     tagName,
+		})
+	}
+
 	// GH-3926: branch on the resolved publish mode. "workflow" (default)
 	// preserves the original behavior byte-for-byte — Pilot only tags, the
 	// repo's own tag-triggered CI (e.g. GoReleaser) publishes the release.
 	switch rel.PublishMode() {
 	case ReleasePublishAPI:
 		body := ""
-		if rel.GenerateChangelog {
+		switch {
+		case isScope:
+			// GH-3992: the scope notes ARE the body — no separate
+			// GenerateChangelog call, since it only ever attributes every
+			// entry to the single anchor PR (prState.PRNumber), not each
+			// member. The async enrichReleaseNotes below still prepends the
+			// LLM "What's New" on top when generate_summary is on.
+			body = scopeNotesBody
+		case rel.GenerateChangelog:
 			body = GenerateChangelog(commits, prState.PRNumber)
 		}
 		release, relErr := c.releaser.CreateReleaseForRepo(ctx, owner, repo, tagName, body)
@@ -2680,8 +2707,11 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 
 	// Enrichment + post-tag release verification (GH-3927), unified into a
 	// single goroutine so "workflow" mode polls for the release exactly once
-	// (afterTagCreated does not launch anything for "tag_only").
-	c.afterTagCreated(owner, repo, tagName, prState.PRNumber, prState.IssueNumber, commits, rel)
+	// (afterTagCreated does not launch anything for "tag_only"). scopeNotesBody
+	// is "" for a non-scope release — afterTagCreated's "api" branch ignores
+	// it (already folded into the body above); its "workflow" branch uses it
+	// to compose the scope-aware enrichment (GH-3992).
+	c.afterTagCreated(owner, repo, tagName, prState.PRNumber, prState.IssueNumber, commits, rel, scopeNotesBody)
 
 	// Send notification
 	if rel.NotifyOnRelease && c.notifier != nil {
@@ -2820,12 +2850,15 @@ func (c *Controller) escalateReleasingFailed(ctx context.Context, prState *PRSta
 // handleReleasing was called with) so a poll-tick cancellation cannot kill
 // verification or enrichment mid-flight — mirrors the pre-existing enrichment
 // goroutine this replaces.
-func (c *Controller) afterTagCreated(owner, repo, tagName string, prNumber, issueNumber int, commits []*github.Commit, rel *ReleaseConfig) {
+func (c *Controller) afterTagCreated(owner, repo, tagName string, prNumber, issueNumber int, commits []*github.Commit, rel *ReleaseConfig, scopeNotes string) {
 	if rel.PublishMode() == ReleasePublishTagOnly {
 		return
 	}
 
 	if rel.PublishMode() == ReleasePublishAPI {
+		// GH-3992: for a scope carrier, scopeNotes is already the release
+		// body handleReleasing created above — enrichReleaseNotes's plain
+		// prepend-only EnrichRelease is unchanged and correct here too.
 		logging.SafeGo("autopilot-controller", func() {
 			c.enrichReleaseNotes(owner, repo, tagName, commits, rel)
 		})
@@ -2838,7 +2871,7 @@ func (c *Controller) afterTagCreated(owner, repo, tagName string, prNumber, issu
 		timeout = releasePollTimeout
 	}
 	logging.SafeGo("autopilot-controller", func() {
-		c.verifyReleaseAfterTag(context.Background(), owner, repo, tagName, prNumber, issueNumber, commits, rel, releasePollInterval, timeout)
+		c.verifyReleaseAfterTag(context.Background(), owner, repo, tagName, prNumber, issueNumber, commits, rel, releasePollInterval, timeout, scopeNotes)
 	})
 }
 
@@ -2856,19 +2889,65 @@ func (c *Controller) enrichReleaseNotes(owner, repo, tagName string, commits []*
 	}
 }
 
+// enrichScopeReleaseNotes is enrichReleaseNotes' scope-carrier counterpart for
+// "workflow" publish mode: GoReleaser owns the release GitHub just published,
+// so the final body must compose LLM "## What's New" + the deterministic
+// scopeNotes + GoReleaser's original body, instead of enrichReleaseNotes'
+// prepend-only composition. Unlike enrichReleaseNotes, this does NOT
+// early-return when GenerateSummary is off or c.releaseSummary is nil — the
+// deterministic scope notes must ship regardless of whether the LLM step ran
+// (GH-3992 edge cases: `generate_summary: false` and no ANTHROPIC_API_KEY
+// both still get scope notes, just without the "What's New" section).
+// Best-effort like enrichReleaseNotes: logs and returns on failure.
+func (c *Controller) enrichScopeReleaseNotes(owner, repo, tagName string, commits []*github.Commit, rel *ReleaseConfig, scopeNotes string) {
+	enrichCtx, cancel := context.WithTimeout(context.Background(), releasePollTimeout+releaseSummaryTimeout)
+	defer cancel()
+
+	release, err := waitForReleaseByTag(enrichCtx, c.ghClient, c.log, owner, repo, tagName, releasePollInterval, releasePollTimeout)
+	if err != nil {
+		c.log.Warn("failed to enrich scope release notes: release never appeared", "tag", tagName, "error", err)
+		return
+	}
+
+	var summary string
+	if rel.GenerateSummary && c.releaseSummary != nil {
+		if s, sErr := c.releaseSummary.generateSummary(enrichCtx, tagName, commits); sErr != nil {
+			c.log.Warn("scope release: LLM summary generation failed, shipping without What's New", "tag", tagName, "error", sErr)
+		} else {
+			summary = s
+		}
+	}
+
+	body := scopeNotes
+	if summary != "" {
+		body = summary + "\n\n" + scopeNotes
+	}
+	body += "\n\n" + release.Body
+
+	if _, err := c.ghClient.UpdateRelease(enrichCtx, owner, repo, release.ID, &github.ReleaseInput{Body: body}); err != nil {
+		c.log.Warn("failed to update scope release body", "tag", tagName, "error", err)
+		return
+	}
+	c.log.Info("scope release enriched with notes", "tag", tagName)
+}
+
 // verifyReleaseAfterTag is the synchronous body of afterTagCreated's "workflow"
 // verification goroutine, factored out (interval/timeout as params) so tests can
 // call it directly with short values instead of racing a background goroutine
 // against the real releasePollInterval/VerifyTimeout. On success it enriches like
 // "api" mode; on timeout it fires a release_missing alert unless VerifyRelease
 // was explicitly disabled. GH-3927.
-func (c *Controller) verifyReleaseAfterTag(ctx context.Context, owner, repo, tagName string, prNumber, issueNumber int, commits []*github.Commit, rel *ReleaseConfig, interval, timeout time.Duration) {
+func (c *Controller) verifyReleaseAfterTag(ctx context.Context, owner, repo, tagName string, prNumber, issueNumber int, commits []*github.Commit, rel *ReleaseConfig, interval, timeout time.Duration, scopeNotes string) {
 	verifyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if _, err := waitForReleaseByTag(verifyCtx, c.ghClient, c.log, owner, repo, tagName, interval, timeout); err != nil {
 		if rel.VerifyReleaseEnabled() {
 			c.fireReleaseMissingAlert(owner, repo, tagName, prNumber, issueNumber, timeout)
 		}
+		return
+	}
+	if scopeNotes != "" {
+		c.enrichScopeReleaseNotes(owner, repo, tagName, commits, rel, scopeNotes)
 		return
 	}
 	c.enrichReleaseNotes(owner, repo, tagName, commits, rel)

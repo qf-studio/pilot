@@ -3,6 +3,7 @@ package autopilot
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -557,5 +558,113 @@ func TestScanRecentlyMergedPRs_SkipsScopeMemberPending(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&gitRefPosts); got != 0 {
 		t.Errorf("git/refs POST count = %d, want 0 (scanner must not cut a per-merge tag for a scope member)", got)
+	}
+}
+
+// TestScopeCarrierAPIMode_ReleaseBodyContainsAllElements drives a scope
+// carrier through publish mode "api" and verifies the release body created by
+// CreateReleaseForRepo (handleReleasing's synchronous body — the LLM
+// "What's New" addition is applied asynchronously afterward and is covered
+// separately by TestEnrichScopeReleaseNotes) contains the locked notes
+// requirements: scope headline, grouped Features with exact #PR + GH-issue
+// attribution, a Breaking Changes section, and a compare + stats footer
+// (GH-3992).
+func TestScopeCarrierAPIMode_ReleaseBodyContainsAllElements(t *testing.T) {
+	var createdBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/branches/main":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "main", "commit": map[string]string{"sha": "mainsha"}})
+		case r.URL.Path == "/repos/owner/repo/commits/mainsha/check-runs":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{Name: "ci", Status: "completed", Conclusion: "success"}},
+			})
+		case strings.Contains(r.URL.Path, "/pulls/101") && strings.HasSuffix(r.URL.Path, "/commits"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat(checkout)!: drop legacy coupon codes")})
+		case r.URL.Path == "/repos/owner/repo/pulls/101":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.PullRequest{Number: 101, Body: "Closes #201", Merged: true})
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.Release{TagName: "v1.0.0"})
+		case strings.HasSuffix(r.URL.Path, "/tags"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "/compare/"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "identical"})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/releases":
+			var input map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			createdBody, _ = input["body"].(string)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(github.Release{ID: 99, HTMLURL: "https://github.com/owner/repo/releases/tag/v2.0.0"})
+		case strings.HasSuffix(r.URL.Path, "/git/refs"):
+			w.WriteHeader(http.StatusCreated)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	stateStore := newTestStateStore(t)
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.CIWaitTimeout = 5 * time.Second
+	cfg.Release = &ReleaseConfig{
+		Enabled:           true,
+		Trigger:           "on_scope_close",
+		ScopeLabelPrefix:  "scope:",
+		TagPrefix:         "v",
+		RequireCI:         true,
+		VerifyRelease:     boolPtr(false),
+		Publish:           ReleasePublishAPI,
+		GenerateChangelog: true,
+		GenerateSummary:   true,
+	}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.SetStateStore(stateStore)
+	c.SetReleaseSummaryGenerator(&ReleaseSummaryGenerator{
+		ghClient:   ghClient,
+		apiKey:     testutil.FakeAnthropicKey,
+		httpClient: http.DefaultClient,
+		apiURL:     "http://127.0.0.1:0", // never called synchronously by handleReleasing's api-mode body
+		log:        slog.Default(),
+	})
+
+	if err := stateStore.EnqueueScopeRelease("owner/repo", "epic:1", "Checkout epic", []int{101}); err != nil {
+		t.Fatalf("EnqueueScopeRelease failed: %v", err)
+	}
+	c.startPendingScopeReleases(context.Background())
+
+	carrier, ok := c.GetPRState(101)
+	if !ok {
+		t.Fatal("expected carrier registered")
+	}
+	if err := c.handlePostMergeCI(context.Background(), carrier); err != nil {
+		t.Fatalf("handlePostMergeCI() error = %v", err)
+	}
+	if err := c.handleReleasing(context.Background(), carrier); err != nil {
+		t.Fatalf("handleReleasing() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"# Checkout epic",
+		"## Features",
+		"(#101, GH-201)",
+		"## ⚠ Breaking Changes",
+		"**Full Changelog**:",
+		"_1 PRs, 1 commits_",
+	} {
+		if !strings.Contains(createdBody, want) {
+			t.Errorf("release body missing %q\n--- got ---\n%s", want, createdBody)
+		}
 	}
 }

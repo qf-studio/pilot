@@ -24,6 +24,7 @@ Pilot delegates AI execution to **Claude Code**, which manages its own authentic
 | **Telegram** | `TELEGRAM_BOT_TOKEN` env var or config | No |
 | **LLM classifier** (smart intent routing) | `ANTHROPIC_API_KEY` env var | No — falls back to keyword matching |
 | **Epic decomposition** (Haiku subtask parser) | `ANTHROPIC_API_KEY` env var | No — falls back to regex parser |
+| **Release summaries** (`autopilot.release.generate_summary`, Haiku "What's New") | `ANTHROPIC_API_KEY` env var | No — releases still ship without the summary section |
 | **Discord** | `DISCORD_BOT_TOKEN` env var or `adapters.discord.bot_token` in config | Yes, if using Discord |
 | **Plane** | `PLANE_API_KEY` env var or `adapters.plane.api_key` in config | Yes, if using Plane |
 
@@ -38,7 +39,7 @@ Pilot delegates AI execution to **Claude Code**, which manages its own authentic
 | `GITHUB_TOKEN` | GitHub personal access token (`repo` + `workflow` scopes) | If using GitHub |
 | `GITLAB_TOKEN` | GitLab personal or project access token | If using GitLab |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token for chat interface | No |
-| `ANTHROPIC_API_KEY` | Enables LLM intent classifier and structured subtask parsing | No |
+| `ANTHROPIC_API_KEY` | Enables LLM intent classifier, structured subtask parsing, and autopilot release "What's New" summaries | No |
 | `OPENAI_API_KEY` | Enables Whisper voice transcription in Telegram | No |
 | `SLACK_BOT_TOKEN` | Slack bot token for notifications | No |
 | `DISCORD_BOT_TOKEN` | Discord bot token for chat interface | No |

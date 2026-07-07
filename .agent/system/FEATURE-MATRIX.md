@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-07 (v2.151.0)
+**Last Updated:** 2026-07-06 (v2.151.0)
 
 ## Legend
 
@@ -406,8 +406,7 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
-| Per-project release opt-in | ✅ | autopilot | - | `projects[].release` | Global/env `release:` cascade applies only to the default repo; `projects:` controllers release only with their own `release:` block (`WithReleaseNotOptedIn` forces disabled otherwise). Startup logs tag posture as `source=project-not-opted-in`; WARN emitted per non-opted-in project when global release is enabled (v2.230.0, GH-4001) |
-| Epic close-veto loop breaker | ✅ | autopilot | - | - | `reconcileEpicParent` tracks consecutive identical close-vetoes per parent; after 3 (`epicCloseVetoBreakerThreshold`) it adds `pilot-needs-clarification` (excludes from dispatch), posts one comment naming the blocking child, fires one `epic_close_vetoed` alert (v2.232.0, GH-4006) |
+| Aggregated scope release notes + LLM wiring | ✅ | autopilot | - | `release.generate_summary` | `on_scope_close`/`on_schedule` carriers get a deterministic body (headline, grouped Features/Fixes/Other with exact `#PR`/`GH-issue` attribution, breaking changes, compare + stats footer) via `BuildScopeReleaseNotes`; LLM "What's New" (Haiku) is now wired end-to-end via `SetReleaseSummaryGenerator` at every controller construction site, reading `ANTHROPIC_API_KEY` (v2.232.0, GH-3992) |
 
 ## Epic Management
 

@@ -579,6 +579,12 @@ autopilot:
     #                    `on_schedule`: everything still waits for the next
     #                    tick by design - flip `trigger` to `on_merge`
     #                    temporarily (config reload) if it can't wait.
+    #
+    # `on_scope_close`/`on_schedule` release notes (GH-3992): the aggregated
+    # scope body (headline, grouped Features/Fixes/Other with #PR + GH-issue
+    # links, breaking changes, What's New, compare footer) is only composed
+    # for `publish: api` or `publish: workflow` — `tag_only` never creates a
+    # release object, so there is nothing to attach notes to.
     trigger: on_merge
     # scope_label_prefix: "scope:"       # on_scope_close only; default "scope:"
     # schedule: "0 21 * * FRI"           # on_schedule only; robfig/cron/v3 standard (5-field) syntax
@@ -589,6 +595,10 @@ autopilot:
     generate_changelog: true
     notify_on_release: true
     require_ci: true
+    # generate_summary prepends an LLM (Haiku) "## What's New" summary to the
+    # release body. Requires ANTHROPIC_API_KEY in the daemon's environment —
+    # unset means the summary step is silently skipped (releases still ship,
+    # just without it). Has no effect under `publish: tag_only` (GH-3992).
     generate_summary: true
     # Who actually publishes the GitHub Release once the tag is created:
     #   workflow  (default when empty) - Pilot only creates the tag; the repo's
