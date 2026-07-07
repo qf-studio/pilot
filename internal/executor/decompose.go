@@ -322,6 +322,13 @@ func (d *TaskDecomposer) createSubtasks(parent *Task, parts []string, partType s
 			BaseBranch:  parent.BaseBranch,
 			CreatePR:    false, // Only final subtask creates PR
 			Verbose:     parent.Verbose,
+			// GH-4032: subtasks never get their own dispatcher-assigned executions
+			// row (they run inline inside the parent's single Execute() call), so
+			// borrow the parent's resolved execution ID for ledger writes. Without
+			// this, LogExecutionID() fell back to the subtask's own ID (e.g.
+			// "GH-4021-2"), which has no matching executions row and trips the
+			// execution_events FOREIGN KEY constraint on every stage write.
+			ParentExecutionID: parent.LogExecutionID(),
 		}
 
 		// Last subtask creates the PR

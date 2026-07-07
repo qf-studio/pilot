@@ -416,17 +416,29 @@ type Task struct {
 	// State is the current issue state in the source adapter (GH-2867).
 	// Examples: "open", "closed", "merged"
 	State string
+	// ParentExecutionID is the resolved LogExecutionID() of the parent task that
+	// spawned this one via in-process decomposition (decompose.go createSubtasks).
+	// Decomposed subtasks never get their own dispatcher-assigned executions row —
+	// they run inline inside the parent's single Execute() call — so without this,
+	// LogExecutionID() fell back to the subtask's human-readable ID (e.g.
+	// "GH-4021-2"), which has no matching executions row and trips the
+	// execution_events FOREIGN KEY constraint on every stage write (GH-4032).
+	ParentExecutionID string
 }
 
 // LogExecutionID returns the ID that runner-side writes (execution_logs.execution_id,
-// pattern_feedback.execution_id) should join against the executions table with.
-// It prefers ExecutionID (the dispatcher-assigned UUID); tasks that never got a
-// dedicated executions row — decomposed subtasks and epic sub-issues built directly
-// via &Task{} (decompose.go, epic.go), or local/bench runs outside the dispatcher —
-// fall back to the human-readable ID so logging still works, just without a join. GH-3764.
+// pattern_feedback.execution_id, execution_events.execution_id) should join against
+// the executions table with. It prefers ExecutionID (the dispatcher-assigned UUID),
+// then ParentExecutionID (borrowed from the parent task for decomposed subtasks,
+// GH-4032), then falls back to the human-readable ID — the last resort for epic
+// sub-issues built directly via &Task{} (epic.go) and local/bench runs outside the
+// dispatcher, where logging still works, just without a join. GH-3764.
 func (t *Task) LogExecutionID() string {
 	if t.ExecutionID != "" {
 		return t.ExecutionID
+	}
+	if t.ParentExecutionID != "" {
+		return t.ParentExecutionID
 	}
 	return t.ID
 }
