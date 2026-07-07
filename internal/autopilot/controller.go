@@ -264,6 +264,16 @@ type Controller struct {
 	// main.go, not just the default one.
 	alertsEngine alertSink
 
+	// alertedMissingReleases deduplicates release_missing alerts per
+	// "owner/repo@tag", guarded by mu. Needed because the alerts engine's
+	// cooldown is keyed by rule name (shouldFire -> lastAlertTimes[rule.Name]),
+	// not by source — without this map a second repo/tag breaking inside the
+	// same cooldown window would be silently swallowed. Both afterTagCreated
+	// (goroutine path) and the ScanRecentlyMergedPRs backstop share it, since a
+	// hot-upgrade restart can kill the former mid-flight and let the scanner
+	// catch the same tag. GH-3927.
+	alertedMissingReleases map[string]bool
+
 	// cachedBotLogin holds the authenticated GitHub login for the Pilot token.
 	// Populated lazily by getBotLogin; protected by mu. GH-3417.
 	cachedBotLogin string
@@ -279,17 +289,18 @@ type Controller struct {
 // NewController creates an autopilot controller with all required components.
 func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.Manager, owner, repo string, opts ...ControllerOption) *Controller {
 	c := &Controller{
-		config:         cfg,
-		ghClient:       ghClient,
-		approvalMgr:    approvalMgr,
-		owner:          owner,
-		repo:           repo,
-		activePRs:      make(map[int]*PRState),
-		recordedMerges: make(map[int]bool),
-		prFailures:     make(map[int]*prFailureState),
-		lastProgressAt: time.Now(), // Initialize to now to avoid false alarm on startup
-		metrics:        NewMetrics(),
-		log:            slog.Default().With("component", "autopilot"),
+		config:                 cfg,
+		ghClient:               ghClient,
+		approvalMgr:            approvalMgr,
+		owner:                  owner,
+		repo:                   repo,
+		activePRs:              make(map[int]*PRState),
+		recordedMerges:         make(map[int]bool),
+		prFailures:             make(map[int]*prFailureState),
+		lastProgressAt:         time.Now(), // Initialize to now to avoid false alarm on startup
+		metrics:                NewMetrics(),
+		log:                    slog.Default().With("component", "autopilot"),
+		alertedMissingReleases: make(map[string]bool),
 	}
 
 	// Options must apply before the releaser is constructed below: the
@@ -2455,21 +2466,10 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		)
 	}
 
-	// Enrich release with LLM-generated summary (best-effort, non-blocking).
-	// Runs in a goroutine because in "workflow" mode it polls for GoReleaser to
-	// publish the release (up to 5 min); in "api" mode GetReleaseByTag succeeds
-	// immediately since the release was just created above. Skipped entirely
-	// for "tag_only" — no release will ever appear, so the poll would just
-	// burn 5 min before warning.
-	if rel.PublishMode() != ReleasePublishTagOnly && c.releaseSummary != nil && rel.GenerateSummary {
-		logging.SafeGo("autopilot-controller", func() {
-			enrichCtx, cancel := context.WithTimeout(context.Background(), releasePollTimeout+releaseSummaryTimeout)
-			defer cancel()
-			if err := c.releaseSummary.EnrichRelease(enrichCtx, owner, repo, tagName, commits); err != nil {
-				c.log.Warn("failed to enrich release notes", "tag", tagName, "error", err)
-			}
-		})
-	}
+	// Enrichment + post-tag release verification (GH-3927), unified into a
+	// single goroutine so "workflow" mode polls for the release exactly once
+	// (afterTagCreated does not launch anything for "tag_only").
+	c.afterTagCreated(owner, repo, tagName, prState.PRNumber, prState.IssueNumber, commits, rel)
 
 	// Send notification
 	if rel.NotifyOnRelease && c.notifier != nil {
@@ -2581,6 +2581,126 @@ func (c *Controller) escalateReleasingFailed(ctx context.Context, prState *PRSta
 	prState.Error = reason
 	c.metrics.RecordPRFailed()
 	c.metrics.RecordIssueProcessed("failed")
+}
+
+// afterTagCreated runs once a release tag has been created, unifying release-note
+// enrichment with post-tag release verification (GH-3927) into a single per-mode
+// goroutine so "workflow" mode polls for the release exactly once:
+//   - "tag_only": no release will ever appear — nothing is launched.
+//   - "api": the GitHub Release already exists (Pilot just created it above) —
+//     enrichment-only, no polling needed.
+//   - "workflow": polls waitForReleaseByTag for up to rel.VerifyTimeout. On
+//     success, enriches like "api". On timeout, fires a release_missing alert
+//     (unless VerifyRelease was explicitly disabled) via fireReleaseMissingAlert.
+//
+// Uses context.Background()+timeout inside the goroutine (not the ctx
+// handleReleasing was called with) so a poll-tick cancellation cannot kill
+// verification or enrichment mid-flight — mirrors the pre-existing enrichment
+// goroutine this replaces.
+func (c *Controller) afterTagCreated(owner, repo, tagName string, prNumber, issueNumber int, commits []*github.Commit, rel *ReleaseConfig) {
+	if rel.PublishMode() == ReleasePublishTagOnly {
+		return
+	}
+
+	if rel.PublishMode() == ReleasePublishAPI {
+		logging.SafeGo("autopilot-controller", func() {
+			c.enrichReleaseNotes(owner, repo, tagName, commits, rel)
+		})
+		return
+	}
+
+	// "workflow": verify the release appears within VerifyTimeout before enriching.
+	timeout := rel.VerifyTimeout
+	if timeout <= 0 {
+		timeout = releasePollTimeout
+	}
+	logging.SafeGo("autopilot-controller", func() {
+		c.verifyReleaseAfterTag(context.Background(), owner, repo, tagName, prNumber, issueNumber, commits, rel, releasePollInterval, timeout)
+	})
+}
+
+// enrichReleaseNotes generates and attaches an LLM release summary. Best-effort:
+// logs and returns on failure rather than propagating an error, since a missing
+// summary should never affect release state.
+func (c *Controller) enrichReleaseNotes(owner, repo, tagName string, commits []*github.Commit, rel *ReleaseConfig) {
+	if c.releaseSummary == nil || !rel.GenerateSummary {
+		return
+	}
+	enrichCtx, cancel := context.WithTimeout(context.Background(), releasePollTimeout+releaseSummaryTimeout)
+	defer cancel()
+	if err := c.releaseSummary.EnrichRelease(enrichCtx, owner, repo, tagName, commits); err != nil {
+		c.log.Warn("failed to enrich release notes", "tag", tagName, "error", err)
+	}
+}
+
+// verifyReleaseAfterTag is the synchronous body of afterTagCreated's "workflow"
+// verification goroutine, factored out (interval/timeout as params) so tests can
+// call it directly with short values instead of racing a background goroutine
+// against the real releasePollInterval/VerifyTimeout. On success it enriches like
+// "api" mode; on timeout it fires a release_missing alert unless VerifyRelease
+// was explicitly disabled. GH-3927.
+func (c *Controller) verifyReleaseAfterTag(ctx context.Context, owner, repo, tagName string, prNumber, issueNumber int, commits []*github.Commit, rel *ReleaseConfig, interval, timeout time.Duration) {
+	verifyCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if _, err := waitForReleaseByTag(verifyCtx, c.ghClient, c.log, owner, repo, tagName, interval, timeout); err != nil {
+		if rel.VerifyReleaseEnabled() {
+			c.fireReleaseMissingAlert(owner, repo, tagName, prNumber, issueNumber, timeout)
+		}
+		return
+	}
+	c.enrichReleaseNotes(owner, repo, tagName, commits, rel)
+}
+
+// fireReleaseMissingAlert fires a release_missing alert (GH-3927) for a tag whose
+// GitHub Release never appeared within the verification window, and comments on
+// the source issue (in c.owner/c.repo, mirroring escalateReleasingFailed) when
+// known. Deduplicated per "owner/repo@tag" via alertedMissingReleases: the alerts
+// engine's cooldown is keyed by rule name, not by source, so without
+// controller-side dedup a second break inside the same cooldown window would be
+// silently swallowed. Shared by afterTagCreated and the ScanRecentlyMergedPRs
+// backstop, since a hot-upgrade restart can kill the former mid-flight.
+func (c *Controller) fireReleaseMissingAlert(owner, repo, tag string, prNumber, issueNumber int, timeout time.Duration) {
+	key := owner + "/" + repo + "@" + tag
+	c.mu.Lock()
+	if c.alertedMissingReleases == nil {
+		c.alertedMissingReleases = make(map[string]bool)
+	}
+	if c.alertedMissingReleases[key] {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedMissingReleases[key] = true
+	c.mu.Unlock()
+
+	msg := fmt.Sprintf(
+		"tag %s exists in %s/%s but no GitHub Release was published within %s — check the repo's release workflow (or the release is a draft)",
+		tag, owner, repo, timeout,
+	)
+	c.log.Warn("release verification: no GitHub Release published within window",
+		"owner", owner, "repo", repo, "tag", tag, "pr", prNumber, "timeout", timeout,
+	)
+
+	if c.alertsEngine == nil {
+		c.log.Error("release_missing alert not delivered: SetAlertsEngine was never called", "tag", tag)
+	} else {
+		c.alertsEngine.ProcessEvent(alerts.Event{
+			Type:      alerts.EventType("release_missing"),
+			Error:     msg,
+			Timestamp: time.Now(),
+			Metadata: map[string]string{
+				"repo": owner + "/" + repo,
+				"tag":  tag,
+				"pr":   strconv.Itoa(prNumber),
+			},
+		})
+	}
+
+	if issueNumber > 0 {
+		comment := fmt.Sprintf("⚠️ **Release verification failed**: %s", msg)
+		if _, cerr := c.ghClient.AddComment(context.Background(), c.owner, c.repo, issueNumber, comment); cerr != nil {
+			c.log.Warn("failed to post release-missing comment", "issue", issueNumber, "error", cerr)
+		}
+	}
 }
 
 // guardReleaseSHAReachable verifies that prState.HeadSHA is reachable from the default
@@ -3150,6 +3270,44 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 	}
 }
 
+// backstopCheckReleaseMissing is the scanner-side counterpart to afterTagCreated's
+// verification (GH-3927). A hot-upgrade restart kills afterTagCreated's in-flight
+// goroutine, and autopilot_pr_state rows are deleted on completion by design, so
+// there is no persistence to resume verification from — this backstop re-derives
+// it from GitHub state alone during ScanRecentlyMergedPRs's already-tagged branch.
+// Fires (through the shared alertedMissingReleases dedup) when: publish mode is
+// "workflow" or "api" (both expect a GitHub Release to exist — "tag_only" never
+// does), verification is enabled, the merge is older than VerifyTimeout, and no
+// GitHub Release exists for tag. Known limitation: only covers gaps up to
+// MergedPRScanWindow (default 30m) after the goroutine would have fired, since
+// that is how far back this scan looks.
+func (c *Controller) backstopCheckReleaseMissing(ctx context.Context, rel *ReleaseConfig, prNumber, issueNumber int, tag string, mergedAt time.Time) {
+	if rel == nil || !rel.VerifyReleaseEnabled() {
+		return
+	}
+	mode := rel.PublishMode()
+	if mode != ReleasePublishWorkflow && mode != ReleasePublishAPI {
+		return
+	}
+	timeout := rel.VerifyTimeout
+	if timeout <= 0 {
+		timeout = releasePollTimeout
+	}
+	if time.Since(mergedAt) <= timeout {
+		return
+	}
+	release, err := c.ghClient.GetReleaseByTag(ctx, c.owner, c.repo, tag)
+	if err != nil {
+		c.log.Warn("backstop: failed to check release for already-tagged PR, skipping",
+			"pr", prNumber, "tag", tag, "error", err)
+		return
+	}
+	if release != nil {
+		return
+	}
+	c.fireReleaseMissingAlert(c.owner, c.repo, tag, prNumber, issueNumber, timeout)
+}
+
 // ScanRecentlyMergedPRs scans for Pilot PRs that were merged externally.
 // This catches PRs that need release triggering but were merged outside of
 // autopilot (e.g. via `gh pr merge` or the GitHub UI).
@@ -3161,6 +3319,7 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 	// per-mode; both are idempotent so duplicate calls are safe.
 	releaseEnabled := c.shouldTriggerRelease()
 	boardEnabled := c.boardSync != nil && c.doneStatus != ""
+	rel := c.resolvedRelease()
 
 	scanWindow := c.config.MergedPRScanWindow
 	if scanWindow == 0 {
@@ -3309,6 +3468,7 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 					"merge_sha", ShortSHA(pr.MergeCommitSHA),
 					"tag", existingTag,
 				)
+				c.backstopCheckReleaseMissing(ctx, rel, pr.Number, issueNum, existingTag, mergedAt)
 				continue
 			}
 		}
