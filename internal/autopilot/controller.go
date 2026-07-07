@@ -2021,16 +2021,25 @@ func (c *Controller) isChildNoOp(issueNum int) bool {
 // populated by reconcileEpicParent's merged-PR verification); nil/empty falls back
 // to the plain "sub-issues are complete" comment used by the older count-only
 // callers (maybeCloseParentIssue, recoverStaleParentIssues).
-func (c *Controller) closeParentNow(ctx context.Context, parentNum int, mergedPRs []int) {
+// closeParentNow returns closed=true only when this call actually transitioned
+// the parent to closed — false for an already-closed no-op or a failed
+// UpdateIssueState call. GH-3990: reconcileEpicParent gates enqueueScopeRelease
+// on this so a scope release is never enqueued for a close that didn't happen.
+// parentTitle is best-effort (empty if the pre-close GetIssue failed).
+func (c *Controller) closeParentNow(ctx context.Context, parentNum int, mergedPRs []int) (closed bool, parentTitle string) {
 	// GH-3939: guard against re-closing an already-closed parent — two close
 	// paths (reactive maybeCloseParentIssue and the periodic reconcileEpicParents
 	// sweep) can both observe "no open children" for the same parent before either
 	// has closed it, which would otherwise double-post the summary comment and
 	// re-run label churn. Fail-open on lookup error so a transient API failure
 	// never blocks a legitimate close.
-	if issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, parentNum); err == nil && strings.EqualFold(issue.State, "closed") {
-		c.log.Debug("closeParentNow: parent already closed, no-op", slog.Int("parent", parentNum))
-		return
+	issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, parentNum)
+	if err == nil {
+		parentTitle = issue.Title
+		if strings.EqualFold(issue.State, "closed") {
+			c.log.Debug("closeParentNow: parent already closed, no-op", slog.Int("parent", parentNum))
+			return false, parentTitle
+		}
 	}
 
 	c.log.Info("closeParentNow: all sub-issues done, closing parent", slog.Int("parent", parentNum))
@@ -2057,7 +2066,9 @@ func (c *Controller) closeParentNow(ctx context.Context, parentNum int, mergedPR
 	// Close the parent issue.
 	if err := c.ghClient.UpdateIssueState(ctx, c.owner, c.repo, parentNum, "closed"); err != nil {
 		c.log.Warn("closeParentNow: failed to close parent issue", slog.Int("parent", parentNum), slog.Any("error", err))
+		return false, parentTitle
 	}
+	return true, parentTitle
 }
 
 // formatMergedPRRefs renders merged PR numbers as a comma-separated "#N" list
@@ -2105,6 +2116,9 @@ func (c *Controller) recoverStaleParentIssues(ctx context.Context) {
 // Start runs one-time startup recovery sweeps. Call before the main Run loop.
 func (c *Controller) Start(ctx context.Context) {
 	c.recoverStaleParentIssues(ctx)
+	// GH-3990: claim any scope releases left pending (or re-drive any left
+	// 'releasing' with no live carrier) by a daemon restart.
+	c.startPendingScopeReleases(ctx)
 }
 
 // handlePostMergeCI monitors deployment/post-merge checks (non-blocking).
@@ -2135,6 +2149,14 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 	}
 	if time.Since(prState.PostMergeCIStartedAt) > ciTimeout {
 		c.log.Warn("post-merge CI timeout", "pr", prState.PRNumber, "waited", time.Since(prState.PostMergeCIStartedAt))
+		if prState.ScopeKey != "" {
+			// GH-3990: re-queue the scope for a fresh carrier attempt instead of
+			// leaving this one wedged at StageFailed forever — drain it now so the
+			// anchor PR slot frees for the retry.
+			c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI timeout after %v", ciTimeout))
+			c.removePR(prState.PRNumber)
+			return nil
+		}
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("post-merge CI timeout after %v", ciTimeout)
 		return nil
@@ -2154,6 +2176,13 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 	switch status {
 	case CISuccess:
 		c.log.Info("post-merge CI passed", "pr", prState.PRNumber, "sha", ShortSHA(mainSHA))
+		if prState.ScopeKey != "" {
+			// GH-3990: this is the scope carrier itself — the hold decision
+			// already happened when the scope was enqueued; proceed straight to
+			// releasing rather than re-consulting releaseActionFor/heldByScope.
+			prState.Stage = StageReleasing
+			return nil
+		}
 		if c.releaseConfigured() {
 			action, scopeKey, scopeTitle := c.releaseActionFor(ctx, prState.IssueNumber)
 			if action == releaseActionRelease {
@@ -2185,6 +2214,11 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 			if learnErr := c.learningLoop.LearnFromCIFailure(ctx, projectPath, ciLogs, failedChecks); learnErr != nil {
 				c.log.Warn("Failed to learn from post-merge CI failure", slog.Any("error", learnErr))
 			}
+		}
+		// GH-3990: the fix-issue flow above is unchanged — additionally re-queue
+		// the scope release for a fresh carrier attempt.
+		if prState.ScopeKey != "" {
+			c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI failed at %s", ShortSHA(mainSHA)))
 		}
 		c.removePR(prState.PRNumber)
 
@@ -2356,70 +2390,92 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 
 	rel := c.resolvedRelease()
 
+	// GH-3990: a scope-release carrier's HeadSHA is the post-merge-CI-validated
+	// main SHA captured on first entry to StagePostMergeCI, not the anchor
+	// member PR's own (unrelated) head commit. Set it explicitly before any of
+	// the logic below reads prState.HeadSHA.
+	isScope := prState.ScopeKey != ""
+	if isScope {
+		prState.HeadSHA = prState.PostMergeSHA
+		if len(prState.ScopeMemberPRs) == 0 {
+			// Restart path: autopilot_pr_state persists ScopeKey but not the
+			// in-memory-only ScopeMemberPRs/ScopeTitle fields.
+			c.hydrateScopeMembers(prState)
+		}
+	}
+
 	// Resolve the actual repo owner/name from the PR URL.
 	// Cross-repo PRs (e.g. auth-service) have a PRURL pointing to a different repo
 	// than c.owner/c.repo (the pilot repo). All release API calls must target the
 	// correct repo to avoid stuck-forever releasing state.
 	owner, repo := prState.RepoOwnerAndName(c.owner, c.repo)
 
-	// Race condition guard: Check if this commit is already covered by a tag.
-	// When multiple PRs merge rapidly, each triggers handleReleasing but only
-	// the first should create a tag. Subsequent PRs see their commit is already
-	// covered (by an earlier release) and skip. "Covered" means either the
-	// commit is tagged exactly, OR it is an ANCESTOR of an existing release
-	// tag's commit — e.g. it was already shipped inside a later squash-merge or
-	// a manual tag on a descendant commit. Without the ancestor check we cut a
-	// redundant, lower-content release for already-shipped work (the spurious
-	// v2.178.0 incident: #3494's commit was an ancestor of v2.177.0).
-	existingTag, err := c.tagCoveringCommit(ctx, owner, repo, prState.HeadSHA)
-	if err != nil {
-		// Transient lookup failure: do NOT fall through to CreateTagForRepo. If a
-		// tag already exists but we couldn't see it, the create call fails with
-		// "Reference already exists", returns an error, and the PR stays in
-		// StageReleasing forever (re-tried every poll). Return the error so this
-		// PR is retried cleanly on the next poll once the lookup recovers. (TASK-316)
-		return c.checkReleasingRetryOrEscalate(ctx, prState,
-			fmt.Errorf("failed to check existing tags for PR #%d: %w", prState.PRNumber, err))
-	}
-	if existingTag != "" {
-		// GH-3926: publish mode "api" idempotence — if a prior pass created
-		// this tag (or the tag it's an ancestor of) but a transient failure
-		// meant the GitHub Release was never published, publish it now instead
-		// of silently draining the PR with no release ever created.
-		c.ensureReleasePublished(ctx, rel, owner, repo, existingTag, prState)
-		c.log.Info("commit already covered by existing tag, skipping release",
-			"pr", prState.PRNumber,
-			"sha", ShortSHA(prState.HeadSHA),
-			"tag", existingTag,
-		)
-		c.removePR(prState.PRNumber)
-		return nil
-	}
+	if !isScope {
+		// Race condition guard: Check if this commit is already covered by a tag.
+		// When multiple PRs merge rapidly, each triggers handleReleasing but only
+		// the first should create a tag. Subsequent PRs see their commit is already
+		// covered (by an earlier release) and skip. "Covered" means either the
+		// commit is tagged exactly, OR it is an ANCESTOR of an existing release
+		// tag's commit — e.g. it was already shipped inside a later squash-merge or
+		// a manual tag on a descendant commit. Without the ancestor check we cut a
+		// redundant, lower-content release for already-shipped work (the spurious
+		// v2.178.0 incident: #3494's commit was an ancestor of v2.177.0).
+		//
+		// GH-3990: skipped for a scope carrier — an interleaved standalone release
+		// landing on the same commit range would otherwise falsely drain the scope
+		// before its own tag is cut. The autopilot_scope_release row is the dedup
+		// for scope releases (ClaimScopeRelease's single-winner claim).
+		existingTag, err := c.tagCoveringCommit(ctx, owner, repo, prState.HeadSHA)
+		if err != nil {
+			// Transient lookup failure: do NOT fall through to CreateTagForRepo. If a
+			// tag already exists but we couldn't see it, the create call fails with
+			// "Reference already exists", returns an error, and the PR stays in
+			// StageReleasing forever (re-tried every poll). Return the error so this
+			// PR is retried cleanly on the next poll once the lookup recovers. (TASK-316)
+			return c.checkReleasingRetryOrEscalate(ctx, prState,
+				fmt.Errorf("failed to check existing tags for PR #%d: %w", prState.PRNumber, err))
+		}
+		if existingTag != "" {
+			// GH-3926: publish mode "api" idempotence — if a prior pass created
+			// this tag (or the tag it's an ancestor of) but a transient failure
+			// meant the GitHub Release was never published, publish it now instead
+			// of silently draining the PR with no release ever created.
+			c.ensureReleasePublished(ctx, rel, owner, repo, existingTag, prState)
+			c.log.Info("commit already covered by existing tag, skipping release",
+				"pr", prState.PRNumber,
+				"sha", ShortSHA(prState.HeadSHA),
+				"tag", existingTag,
+			)
+			c.removePR(prState.PRNumber)
+			return nil
+		}
 
-	// Published-release guard: tagCoveringCommit uses a bounded window of 10 tags.
-	// This exhaustive lookup (paginates all tags) catches the case where the SHA
-	// was tagged more than 10 releases ago and treats it as already released.
-	exactTag, err := c.ghClient.GetTagForSHA(ctx, owner, repo, prState.HeadSHA)
-	if err != nil {
-		return c.checkReleasingRetryOrEscalate(ctx, prState,
-			fmt.Errorf("failed to check published release for PR #%d: %w", prState.PRNumber, err))
-	}
-	if exactTag != "" {
-		// GH-3926: same idempotence as the existingTag drain above.
-		c.ensureReleasePublished(ctx, rel, owner, repo, exactTag, prState)
-		c.log.Info("commit already tagged (exact match in full tag history) — treating as released",
-			"pr", prState.PRNumber,
-			"sha", ShortSHA(prState.HeadSHA),
-			"tag", exactTag,
-		)
-		c.removePR(prState.PRNumber)
-		return nil
+		// Published-release guard: tagCoveringCommit uses a bounded window of 10 tags.
+		// This exhaustive lookup (paginates all tags) catches the case where the SHA
+		// was tagged more than 10 releases ago and treats it as already released.
+		exactTag, err := c.ghClient.GetTagForSHA(ctx, owner, repo, prState.HeadSHA)
+		if err != nil {
+			return c.checkReleasingRetryOrEscalate(ctx, prState,
+				fmt.Errorf("failed to check published release for PR #%d: %w", prState.PRNumber, err))
+		}
+		if exactTag != "" {
+			// GH-3926: same idempotence as the existingTag drain above.
+			c.ensureReleasePublished(ctx, rel, owner, repo, exactTag, prState)
+			c.log.Info("commit already tagged (exact match in full tag history) — treating as released",
+				"pr", prState.PRNumber,
+				"sha", ShortSHA(prState.HeadSHA),
+				"tag", exactTag,
+			)
+			c.removePR(prState.PRNumber)
+			return nil
+		}
 	}
 
 	// Reachability guard: refuse to tag a commit that is not reachable from the
 	// default branch. A diverged SHA (e.g. from a force-push or a PR merged to a
 	// non-main branch) can never be released from main; failing immediately avoids
-	// unbounded retries on a permanently unreleasable commit.
+	// unbounded retries on a permanently unreleasable commit. Kept for scope
+	// carriers too.
 	if reachErr := c.guardReleaseSHAReachable(ctx, owner, repo, prState); reachErr != nil {
 		c.escalateReleasingFailed(ctx, prState, reachErr.Error())
 		return nil
@@ -2432,11 +2488,21 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		currentVersion = SemVer{}
 	}
 
-	// Get PR commits for bump detection
-	commits, err := c.ghClient.GetPRCommits(ctx, owner, repo, prState.PRNumber)
-	if err != nil {
-		return c.checkReleasingRetryOrEscalate(ctx, prState,
-			fmt.Errorf("failed to get PR commits: %w", err))
+	// Get commits for bump detection: a scope carrier unions every member PR's
+	// commits; a regular release reads just its own PR's commits.
+	var commits []*github.Commit
+	if isScope {
+		commits, err = c.scopeReleaseCommits(ctx, owner, repo, prState, currentVersion, rel)
+		if err != nil {
+			return c.checkReleasingRetryOrEscalate(ctx, prState,
+				fmt.Errorf("failed to get scope release commits for %s: %w", prState.ScopeKey, err))
+		}
+	} else {
+		commits, err = c.ghClient.GetPRCommits(ctx, owner, repo, prState.PRNumber)
+		if err != nil {
+			return c.checkReleasingRetryOrEscalate(ctx, prState,
+				fmt.Errorf("failed to get PR commits: %w", err))
+		}
 	}
 
 	// Detect bump type from commits
@@ -2445,6 +2511,11 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 
 	if !c.releaser.ShouldRelease(bumpType) {
 		c.log.Info("no release needed", "pr", prState.PRNumber, "bump", bumpType)
+		if isScope {
+			// GH-3990: a no-op scope (no releasable commits across any member)
+			// must never retry — record it done with an empty tag.
+			c.markScopeReleaseDone(prState, "")
+		}
 		c.removePR(prState.PRNumber)
 		return nil
 	}
@@ -2477,6 +2548,9 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 				"pr", prState.PRNumber,
 				"sha", ShortSHA(prState.HeadSHA),
 			)
+			if isScope {
+				c.markScopeReleaseDone(prState, prState.ReleaseVersion)
+			}
 			c.removePR(prState.PRNumber)
 			return nil
 		}
@@ -2553,6 +2627,9 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	c.recordExecutionEvent(prState, memory.StageReleased,
 		fmt.Sprintf("pr #%d: released %s (tag %s)", prState.PRNumber, prState.ReleaseVersion, tagName))
 
+	if isScope {
+		c.markScopeReleaseDone(prState, tagName)
+	}
 	c.removePR(prState.PRNumber)
 	return nil
 }
@@ -2647,6 +2724,14 @@ func (c *Controller) escalateReleasingFailed(ctx context.Context, prState *PRSta
 	prState.Error = reason
 	c.metrics.RecordPRFailed()
 	c.metrics.RecordIssueProcessed("failed")
+
+	// GH-3990: a scope-release carrier must not stay wedged at StageFailed —
+	// flip the scope back to pending (or terminal-failed past the retry cap)
+	// and drain the carrier so the anchor PR slot frees for the next attempt.
+	if prState.ScopeKey != "" {
+		c.handleScopeReleaseFailure(ctx, prState, reason)
+		c.removePR(prState.PRNumber)
+	}
 }
 
 // afterTagCreated runs once a release tag has been created, unifying release-note
@@ -3505,6 +3590,21 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			continue
 		}
 
+		// GH-3990: skip a merged PR that is a pending/in-flight scope-release
+		// member — the carrier will tag it. This closes the window where the
+		// scope has already completed (issue+parent closed, so heldByScope
+		// would fail open) and the scanner would otherwise cut a redundant
+		// per-merge tag for it ahead of the carrier.
+		if c.stateStore != nil {
+			if pending, err := c.stateStore.ScopeMemberPending(c.repoKey(), pr.Number); err != nil {
+				c.log.Warn("failed to check scope-member pending state, will track to be safe",
+					"pr", pr.Number, "error", err)
+			} else if pending {
+				c.log.Debug("skipping PR: member of a pending/in-flight scope release", "pr", pr.Number)
+				continue
+			}
+		}
+
 		// Skip if already tracked in activePRs (avoid duplicate processing)
 		c.mu.RLock()
 		_, alreadyTracked := c.activePRs[pr.Number]
@@ -3675,6 +3775,13 @@ func (c *Controller) Run(ctx context.Context) error {
 		case <-epicParentTicker.C:
 			// GH-3939: poll-cycle epic-parent auto-close sweep.
 			c.reconcileEpicParents(ctx)
+			// GH-3990: sweep closed epics that completed without an enqueued
+			// scope release (daemon down at close time, or crashed between
+			// close and enqueue).
+			c.reconcileClosedEpicScopes(ctx)
+			// GH-3990: claim any scope releases now unblocked, and re-drive
+			// stale 'releasing' rows with no live carrier.
+			c.startPendingScopeReleases(ctx)
 		case <-ticker.C:
 			c.processAllPRs(ctx)
 
@@ -3888,6 +3995,13 @@ func (c *Controller) evictNotFoundPR(prNumber int) {
 // Returns true if the PR was removed from tracking, false otherwise.
 // Accepts cached ghPR to avoid redundant API calls.
 func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRState, ghPR *github.PullRequest) bool {
+	// GH-3990: this PRState is a scope-release carrier, not the real PR entry
+	// for prState.PRNumber (its anchor is an already-merged member PR reused
+	// as the release vehicle). The external-merge hijack must never touch it —
+	// the carrier's own StagePostMergeCI/StageReleasing flow owns its lifecycle.
+	if prState.ScopeKey != "" {
+		return false
+	}
 
 	// Check if PR was merged externally
 	if ghPR.Merged {

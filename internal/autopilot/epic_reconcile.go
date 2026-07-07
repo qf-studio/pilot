@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // maxEpicReconcile caps how many open, pilot-labeled parent-with-sub-issues
@@ -194,5 +195,126 @@ func (c *Controller) reconcileEpicParent(ctx context.Context, parentNum int) {
 		return
 	}
 
-	c.closeParentNow(ctx, parentNum, mergedPRs)
+	closed, title := c.closeParentNow(ctx, parentNum, mergedPRs)
+	// GH-3990: an epic just completed — enqueue its scope release. Gated on
+	// closed=true so a no-op/failed close never enqueues a release for work
+	// that didn't actually finish closing.
+	if closed && c.resolvedRelease().ScopeReleaseEnabled() {
+		c.enqueueScopeRelease(ctx, fmt.Sprintf("epic:%d", parentNum), title, mergedPRs)
+	}
+}
+
+// reconcileClosedEpicScopes sweeps closed, pilot-labeled epic parents updated
+// within the configured scope lookback window that have native sub-issues but
+// no scope-release row yet, and enqueues one. This covers the window
+// reconcileEpicParent's reactive enqueue can miss entirely: the epic closed
+// while the daemon was down, or the daemon crashed between closeParentNow
+// succeeding and enqueueScopeRelease running (GH-3990).
+func (c *Controller) reconcileClosedEpicScopes(ctx context.Context) {
+	rel := c.resolvedRelease()
+	if !rel.ScopeReleaseEnabled() || c.stateStore == nil {
+		return
+	}
+
+	lookback := rel.ScopeLookback
+	if lookback <= 0 {
+		lookback = 24 * time.Hour
+	}
+
+	candidates, err := c.searchClosedPilotIssuesWithSubIssues(ctx, maxEpicReconcile, lookback)
+	if err != nil {
+		c.log.Warn("reconcileClosedEpicScopes: search failed", slog.Any("error", err))
+		return
+	}
+
+	repo := c.repoKey()
+	for _, parentNum := range candidates {
+		scopeKey := fmt.Sprintf("epic:%d", parentNum)
+
+		existing, err := c.stateStore.GetScopeRelease(repo, scopeKey)
+		if err != nil {
+			c.log.Warn("reconcileClosedEpicScopes: failed to check existing scope row",
+				slog.Int("parent", parentNum), slog.Any("error", err))
+			continue
+		}
+		if existing != nil {
+			// Already enqueued (any state) — idempotent, no further API calls.
+			continue
+		}
+
+		children, hasNativeLinks, err := c.getAllSubIssueNumbers(ctx, parentNum)
+		if err != nil || !hasNativeLinks {
+			continue
+		}
+		mergedPRs, veto := c.verifyChildrenShippedForClose(ctx, parentNum, children)
+		if veto != nil {
+			c.log.Warn("reconcileClosedEpicScopes: closed parent has an unverified child, skipping enqueue",
+				slog.Int("parent", parentNum), slog.Int("child", veto.Child), slog.String("veto_reason", veto.Reason))
+			continue
+		}
+
+		title := ""
+		if issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, parentNum); err == nil {
+			title = issue.Title
+		}
+		c.enqueueScopeRelease(ctx, scopeKey, title, mergedPRs)
+	}
+}
+
+// searchClosedPilotIssuesWithSubIssues returns issue numbers for CLOSED issues
+// labeled both "pilot" and "pilot-done" that have at least one sub-issue and
+// were updated within lookback. Mirrors SearchOpenPilotIssuesWithSubIssues's
+// query shape (in-package GraphQL, no SDK change — GH-3990); results are
+// ordered newest-updated-first so the scan can stop as soon as it crosses the
+// lookback cutoff instead of paging through the whole closed-issue history.
+func (c *Controller) searchClosedPilotIssuesWithSubIssues(ctx context.Context, limit int, lookback time.Duration) ([]int, error) {
+	const query = `query($owner: String!, $repo: String!, $first: Int!) {
+		repository(owner: $owner, name: $repo) {
+			issues(first: $first, states: [CLOSED], labels: ["pilot", "pilot-done"], orderBy: {field: UPDATED_AT, direction: DESC}) {
+				nodes {
+					number
+					updatedAt
+					subIssuesSummary {
+						total
+					}
+				}
+			}
+		}
+	}`
+
+	var result struct {
+		Repository struct {
+			Issues struct {
+				Nodes []struct {
+					Number           int       `json:"number"`
+					UpdatedAt        time.Time `json:"updatedAt"`
+					SubIssuesSummary struct {
+						Total int `json:"total"`
+					} `json:"subIssuesSummary"`
+				} `json:"nodes"`
+			} `json:"issues"`
+		} `json:"repository"`
+	}
+
+	variables := map[string]interface{}{
+		"owner": c.owner,
+		"repo":  c.repo,
+		"first": limit,
+	}
+	if err := c.ghClient.ExecuteGraphQL(ctx, query, variables, &result); err != nil {
+		return nil, fmt.Errorf("search closed pilot issues with sub-issues for %s/%s: %w", c.owner, c.repo, err)
+	}
+
+	cutoff := time.Now().Add(-lookback)
+	var numbers []int
+	for _, node := range result.Repository.Issues.Nodes {
+		if node.UpdatedAt.Before(cutoff) {
+			// Results are ordered newest-first — everything after this is older still.
+			break
+		}
+		if node.SubIssuesSummary.Total > 0 {
+			numbers = append(numbers, node.Number)
+		}
+	}
+	return numbers, nil
 }

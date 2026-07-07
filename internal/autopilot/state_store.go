@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,6 +109,27 @@ func (s *StateStore) migrate() error {
 		// multiple project-scoped controllers share one SQLite DB.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN repo TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE autopilot_pr_failures ADD COLUMN repo TEXT NOT NULL DEFAULT ''`,
+		// GH-3990: durable scope-release state — one row per epic/label scope held
+		// under Trigger "on_scope_close", tracking its carrier release through
+		// pending -> releasing -> done/failed.
+		`CREATE TABLE IF NOT EXISTS autopilot_scope_release (
+			repo TEXT NOT NULL,
+			scope_key TEXT NOT NULL,
+			scope_title TEXT NOT NULL DEFAULT '',
+			member_prs TEXT NOT NULL DEFAULT '',
+			anchor_pr INTEGER NOT NULL DEFAULT 0,
+			state TEXT NOT NULL DEFAULT 'pending',
+			final_sha TEXT NOT NULL DEFAULT '',
+			tag TEXT NOT NULL DEFAULT '',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (repo, scope_key)
+		)`,
+		// GH-3990: scope_key namespaces a PR's release scope ("epic:<N>" |
+		// "label:<name>" | "train:<RFC3339>") — persisted so a scope-release
+		// carrier's identity survives a restart via LoadAllPRStates.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN scope_key TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, m := range migrations {
@@ -360,6 +382,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			post_merge_sha TEXT NOT NULL DEFAULT '',
 			post_merge_ci_started_at DATETIME,
 			rebase_attempts INTEGER NOT NULL DEFAULT 0,
+			scope_key TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -372,7 +395,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			merge_attempts, error, created_at, updated_at,
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
-			post_merge_sha, post_merge_ci_started_at, rebase_attempts
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -380,7 +403,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			merge_attempts, error, created_at, updated_at,
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
-			post_merge_sha, post_merge_ci_started_at, rebase_attempts
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -523,8 +546,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			merge_attempts, error, created_at, updated_at,
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
-			post_merge_sha, post_merge_ci_started_at, rebase_attempts
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -545,7 +568,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			approval_requested_at = excluded.approval_requested_at,
 			post_merge_sha = excluded.post_merge_sha,
 			post_merge_ci_started_at = excluded.post_merge_ci_started_at,
-			rebase_attempts = excluded.rebase_attempts
+			rebase_attempts = excluded.rebase_attempts,
+			scope_key = excluded.scope_key
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -553,7 +577,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.MergeAttempts, pr.Error, nullTime(pr.CreatedAt),
 		pr.ReleaseVersion, string(pr.ReleaseBumpType), pr.MergeNotificationPosted,
 		pr.ApprovalRequestID, pr.ApprovalDecision, nullTime(pr.ApprovalRequestedAt),
-		pr.PostMergeSHA, nullTime(pr.PostMergeCIStartedAt), pr.RebaseAttempts,
+		pr.PostMergeSHA, nullTime(pr.PostMergeCIStartedAt), pr.RebaseAttempts, pr.ScopeKey,
 	)
 	return err
 }
@@ -567,7 +591,7 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			merge_attempts, error, created_at,
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
-			post_merge_sha, post_merge_ci_started_at, rebase_attempts
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -590,7 +614,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			merge_attempts, error, created_at,
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
-			post_merge_sha, post_merge_ci_started_at, rebase_attempts
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -610,7 +634,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.MergeAttempts, &pr.Error, &createdAt,
 			&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
 			&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
-			&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts,
+			&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
 		); err != nil {
 			return nil, err
 		}
@@ -864,7 +888,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.MergeAttempts, &pr.Error, &createdAt,
 		&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
 		&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
-		&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts,
+		&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
 	)
 	if err != nil {
 		return nil, err
@@ -897,4 +921,235 @@ func nullTime(t time.Time) sql.NullTime {
 		return sql.NullTime{}
 	}
 	return sql.NullTime{Time: t, Valid: true}
+}
+
+// ScopeRelease is one durable scope-release row: the set of merged member PRs
+// held under release Trigger "on_scope_close" for a single epic/label scope,
+// and the carrier release's progress through pending -> releasing ->
+// done/failed (GH-3990).
+type ScopeRelease struct {
+	Repo       string
+	ScopeKey   string
+	ScopeTitle string
+	MemberPRs  []int
+	AnchorPR   int
+	State      string
+	FinalSHA   string
+	Tag        string
+	Attempts   int
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+// encodeIntCSV renders a sorted []int as a comma-separated string for storage
+// in a TEXT column (autopilot_scope_release.member_prs).
+func encodeIntCSV(nums []int) string {
+	parts := make([]string, len(nums))
+	for i, n := range nums {
+		parts[i] = strconv.Itoa(n)
+	}
+	return strings.Join(parts, ",")
+}
+
+// decodeIntCSV parses a comma-separated int list written by encodeIntCSV.
+// Malformed entries are skipped rather than erroring — a corrupt stored value
+// should degrade to "fewer members" rather than fail the caller.
+func decodeIntCSV(s string) []int {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	nums := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil {
+			continue
+		}
+		nums = append(nums, n)
+	}
+	return nums
+}
+
+// EnqueueScopeRelease durably records that scopeKey's members are ready to
+// release as one carrier once startPendingScopeReleases claims the row.
+// Idempotent: a second call for the same (repo, scopeKey) is a no-op via
+// INSERT OR IGNORE, so the epic-close reactive path and the closed-epic
+// lookback sweep can both call it without duplicating or clobbering an
+// in-flight/completed row. memberPRs should be pre-sorted ascending; anchor_pr
+// is its highest element (GH-3990).
+func (s *StateStore) EnqueueScopeRelease(repo, scopeKey, scopeTitle string, memberPRs []int) error {
+	anchor := 0
+	if len(memberPRs) > 0 {
+		anchor = memberPRs[len(memberPRs)-1]
+	}
+	_, err := s.db.Exec(`
+		INSERT OR IGNORE INTO autopilot_scope_release
+			(repo, scope_key, scope_title, member_prs, anchor_pr, state)
+		VALUES (?, ?, ?, ?, ?, 'pending')
+	`, repo, scopeKey, scopeTitle, encodeIntCSV(memberPRs), anchor)
+	return err
+}
+
+// ClaimScopeRelease atomically transitions one pending scope-release row to
+// 'releasing'. Returns claimed=true only when THIS call performed the
+// transition (RowsAffected==1) — the same single-winner discipline
+// PersistedReleasingAge/ClaimExecution-style callers rely on elsewhere, so the
+// epicParentTicker sweep and a startup backstop can both attempt the same row
+// without registering two carriers for it (GH-3990).
+func (s *StateStore) ClaimScopeRelease(repo, scopeKey string) (bool, error) {
+	result, err := s.db.Exec(`
+		UPDATE autopilot_scope_release
+		SET state = 'releasing', updated_at = CURRENT_TIMESTAMP
+		WHERE repo = ? AND scope_key = ? AND state = 'pending'
+	`, repo, scopeKey)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// GetScopeRelease returns one scope-release row by repo+scopeKey, or nil, nil
+// if not found.
+func (s *StateStore) GetScopeRelease(repo, scopeKey string) (*ScopeRelease, error) {
+	row := s.db.QueryRow(`
+		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, created_at, updated_at
+		FROM autopilot_scope_release WHERE repo = ? AND scope_key = ?
+	`, repo, scopeKey)
+	sr, err := scanScopeRelease(row.Scan)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return sr, nil
+}
+
+// ListScopeReleases returns every scope-release row for repo whose state is
+// one of states.
+func (s *StateStore) ListScopeReleases(repo string, states ...string) ([]*ScopeRelease, error) {
+	if len(states) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(states))
+	args := make([]interface{}, 0, len(states)+1)
+	args = append(args, repo)
+	for i, st := range states {
+		placeholders[i] = "?"
+		args = append(args, st)
+	}
+	query := fmt.Sprintf(`
+		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, created_at, updated_at
+		FROM autopilot_scope_release WHERE repo = ? AND state IN (%s)
+	`, strings.Join(placeholders, ", "))
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*ScopeRelease
+	for rows.Next() {
+		sr, err := scanScopeRelease(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sr)
+	}
+	return out, rows.Err()
+}
+
+// MarkScopeReleaseDone marks a scope-release row terminal-success. tag is ""
+// for a no-op release (BumpNone — the scope's commits carry no releasable
+// change), recorded so a no-op scope never retries.
+func (s *StateStore) MarkScopeReleaseDone(repo, scopeKey, tag, finalSHA string) error {
+	_, err := s.db.Exec(`
+		UPDATE autopilot_scope_release
+		SET state = 'done', tag = ?, final_sha = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE repo = ? AND scope_key = ?
+	`, tag, finalSHA, repo, scopeKey)
+	return err
+}
+
+// MarkScopeReleasePending re-queues a scope-release row as 'pending' so the
+// next startPendingScopeReleases sweep claims a fresh carrier for it.
+// incrementAttempts distinguishes a genuine carrier failure (true — bumps the
+// retry-cap counter handleScopeReleaseFailure checks) from crash recovery
+// (false — a 'releasing' row left with no live carrier after a restart, which
+// is not itself a failure of the release).
+func (s *StateStore) MarkScopeReleasePending(repo, scopeKey string, incrementAttempts bool) error {
+	q := `UPDATE autopilot_scope_release SET state = 'pending', updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ?`
+	if incrementAttempts {
+		q = `UPDATE autopilot_scope_release SET state = 'pending', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ?`
+	}
+	_, err := s.db.Exec(q, repo, scopeKey)
+	return err
+}
+
+// MarkScopeReleaseFailed marks a scope-release row terminal-failed, once
+// handleScopeReleaseFailure's attempt cap has been exceeded.
+func (s *StateStore) MarkScopeReleaseFailed(repo, scopeKey string) error {
+	_, err := s.db.Exec(`
+		UPDATE autopilot_scope_release SET state = 'failed', updated_at = CURRENT_TIMESTAMP
+		WHERE repo = ? AND scope_key = ?
+	`, repo, scopeKey)
+	return err
+}
+
+// ScopeMemberPending reports whether prNumber is a member of any non-terminal
+// (pending or releasing) scope-release row for repo. ScanRecentlyMergedPRs
+// consults this to skip a member PR whose scope has already completed and
+// closed the epic parent (heldByScope would fail open there) — otherwise the
+// scanner would cut a redundant per-merge tag for it ahead of the carrier
+// (GH-3990).
+func (s *StateStore) ScopeMemberPending(repo string, prNumber int) (bool, error) {
+	rows, err := s.db.Query(`
+		SELECT member_prs FROM autopilot_scope_release
+		WHERE repo = ? AND state IN ('pending', 'releasing')
+	`, repo)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var memberCSV string
+		if err := rows.Scan(&memberCSV); err != nil {
+			return false, err
+		}
+		for _, n := range decodeIntCSV(memberCSV) {
+			if n == prNumber {
+				return true, nil
+			}
+		}
+	}
+	return false, rows.Err()
+}
+
+// scanScopeRelease scans one row into a ScopeRelease via the given scan func —
+// satisfied by both *sql.Row.Scan (GetScopeRelease) and *sql.Rows.Scan
+// (ListScopeReleases), so both callers share one column-order source of truth.
+func scanScopeRelease(scan func(dest ...interface{}) error) (*ScopeRelease, error) {
+	var sr ScopeRelease
+	var memberCSV string
+	var createdAt, updatedAt sql.NullTime
+	err := scan(
+		&sr.Repo, &sr.ScopeKey, &sr.ScopeTitle, &memberCSV, &sr.AnchorPR,
+		&sr.State, &sr.FinalSHA, &sr.Tag, &sr.Attempts, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	sr.MemberPRs = decodeIntCSV(memberCSV)
+	if createdAt.Valid {
+		sr.CreatedAt = createdAt.Time
+	}
+	if updatedAt.Valid {
+		sr.UpdatedAt = updatedAt.Time
+	}
+	return &sr, nil
 }
