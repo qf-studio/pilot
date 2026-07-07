@@ -56,10 +56,14 @@ func stageLadderPosition(s memory.Stage) int {
 
 // buildStageStrip renders a fixed-denominator pipeline-progress fraction
 // (e.g. "4/7 ✗ ci_failed", "7/7 released") from an execution's
-// execution_events timeline (GH-3849; revised to a fraction in TASK-383).
-// `reached` is the ladder position of the last stage actually completed —
-// derived via stageLadderPosition, never from len(events) — so retries never
-// inflate the fraction.
+// execution_events timeline (GH-3849; revised to a fraction in TASK-383;
+// revised to a running-max reducer in GH-4023). `reached` is the highest
+// ladder position observed across the whole stream — derived via
+// stageLadderPosition, never from len(events) — so retries never inflate
+// the fraction and a later regression (e.g. a stray pr_created/failed event
+// recorded after released, GH-4023) never pulls the displayed rung backward.
+// The terminal-status glyph (✗) is attached to whichever event defined that
+// max rung, not to the last event in the stream.
 //
 // Falls back to "–" when no events are recorded: executions predating the
 // events table (GH-3844), or before the dispatcher/runner emitted events per
@@ -70,26 +74,40 @@ func buildStageStrip(events []*memory.Event, executionFailed bool) string {
 		return "–"
 	}
 
-	current := events[len(events)-1].Stage
-	failed := stageStripFailureStages[current] || executionFailed
+	var (
+		reached       = -1
+		label         memory.Stage
+		failed        bool
+		lastGoodPos   int
+		lastGoodStage memory.Stage
+	)
 
-	label := current
-	reached := stageLadderPosition(current)
-	if reached == 0 {
-		// current stage carries no ladder rung of its own — walk back to
-		// the last event that does, so a generic failure/stall/retry run
-		// still reports how far the pipeline actually got.
-		for i := len(events) - 2; i >= 0; i-- {
-			if pos := stageLadderPosition(events[i].Stage); pos > 0 {
-				reached = pos
-				label = events[i].Stage
-				break
-			}
+	for _, e := range events {
+		// Resolve this event's own ladder position, walking back to the
+		// last stage that named a real rung when this one doesn't (a
+		// generic failure/stall/retry carries no rung of its own).
+		pos := stageLadderPosition(e.Stage)
+		resolvedPos := pos
+		resolvedLabel := e.Stage
+		if pos > 0 {
+			lastGoodPos = pos
+			lastGoodStage = e.Stage
+		} else if lastGoodPos > 0 {
+			resolvedPos = lastGoodPos
+			resolvedLabel = lastGoodStage
+		}
+
+		// Only advance (or hold at) the running max — a resolved position
+		// behind the current max is a regression and must not overwrite it.
+		if resolvedPos >= reached {
+			reached = resolvedPos
+			label = resolvedLabel
+			failed = stageStripFailureStages[e.Stage]
 		}
 	}
 
 	prefix := ""
-	if failed {
+	if failed || executionFailed {
 		prefix = "✗ "
 	}
 

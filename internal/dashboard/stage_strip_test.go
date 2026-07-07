@@ -161,6 +161,52 @@ func TestBuildStageStrip_TruncatesLongLabel(t *testing.T) {
 	}
 }
 
+// TestBuildStageStrip_MaxRungNoRegression covers GH-4023: a later
+// pr_created/failed recorded after released must not pull the displayed
+// rung backward. The reducer must track the maximum ladder position
+// observed across the whole stream, and the terminal glyph attaches to
+// whichever event defined that max — not to the last event in the stream.
+func TestBuildStageStrip_MaxRungNoRegression(t *testing.T) {
+	events := []*memory.Event{
+		evt(memory.StagePRCreated),
+		evt(memory.StageMerged),
+		evt(memory.StageReleased),
+		evt(memory.StagePRCreated),
+		evt(memory.StageFailed),
+	}
+	got := buildStageStrip(events, false)
+	want := "7/7 released"
+	if got != want {
+		t.Errorf("max-rung no regression: got %q, want %q", got, want)
+	}
+	if strings.Contains(got, "✗") {
+		t.Errorf("max rung was reached at released, a later failed event must not add a failure marker: %q", got)
+	}
+}
+
+// TestBuildStageStrip_MaxRungHealthyPath guards against an off-by-one in
+// the running-max reducer on a full, unbroken ladder climb — every rung
+// must be visited in order and the final fraction must still land on 7/7.
+func TestBuildStageStrip_MaxRungHealthyPath(t *testing.T) {
+	events := []*memory.Event{
+		evt(memory.StageSpecValidated),
+		evt(memory.StageRunning),
+		evt(memory.StageCommit),
+		evt(memory.StagePRCreated),
+		evt(memory.StageCIPassed),
+		evt(memory.StageMerged),
+		evt(memory.StageReleased),
+	}
+	got := buildStageStrip(events, false)
+	want := "7/7 released"
+	if got != want {
+		t.Errorf("max-rung healthy path: got %q, want %q", got, want)
+	}
+	if strings.Contains(got, "✗") {
+		t.Errorf("healthy full-ladder path should not contain a failure marker: %q", got)
+	}
+}
+
 func TestStageLadderPosition_AllStages(t *testing.T) {
 	cases := []struct {
 		stage memory.Stage
