@@ -1072,6 +1072,74 @@ func TestWaitForExecution_ClassifiedOutcomesAreTerminal(t *testing.T) {
 	}
 }
 
+// GH-4021: recoverStaleRunningTasks deletes a task's orphaned "running" row
+// once it observes the task actually completed under a different execution
+// ID (cleanup after a redundant re-dispatch). A waiter still polling that
+// exact execID must resolve the vanished row as success — not surface
+// "sql: no rows" as a failure. GH-3992: this raced a false task_failed alert
+// for work that had already shipped.
+func TestWaitForExecution_RowDeletedAfterCompletion_ResolvesAsSuccess(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+
+	const orphanID = "exec-orphan"
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          orphanID,
+		TaskID:      "GH-99",
+		ProjectPath: "/tmp/p",
+		Status:      "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution(orphan): %v", err)
+	}
+
+	const completedID = "exec-completed"
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          completedID,
+		TaskID:      "GH-99",
+		ProjectPath: "/tmp/p",
+		Status:      "completed",
+		PRUrl:       "https://github.com/owner/repo/pull/1",
+	}); err != nil {
+		t.Fatalf("SaveExecution(completed): %v", err)
+	}
+
+	type result struct {
+		exec *memory.Execution
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go func() {
+		exec, err := dispatcher.WaitForExecution(ctx, orphanID, 10*time.Millisecond)
+		resultCh <- result{exec, err}
+	}()
+
+	// Let the waiter observe the "running" row at least once (capturing its
+	// task/project identity) before it's deleted out from under it — this
+	// mirrors the real race, where the row exists when the wait starts.
+	time.Sleep(30 * time.Millisecond)
+	if err := store.DeleteExecution(orphanID); err != nil {
+		t.Fatalf("DeleteExecution: %v", err)
+	}
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			t.Fatalf("WaitForExecution returned error, want success: %v", res.err)
+		}
+		if res.exec.Status != "completed" {
+			t.Errorf("Status = %q, want %q", res.exec.Status, "completed")
+		}
+		if res.exec.ID != completedID {
+			t.Errorf("resolved execution ID = %q, want %q (the genuinely completed row)", res.exec.ID, completedID)
+		}
+	case <-ctx.Done():
+		t.Fatal("WaitForExecution did not return before timeout")
+	}
+}
+
 // GH-3732: restart adoption. A fresh Dispatcher (empty in-memory workers map)
 // must recreate a worker for every project that still has queued rows in
 // SQLite, so a daemon restart resumes FIFO processing instead of stranding

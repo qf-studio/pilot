@@ -1932,6 +1932,14 @@ func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 			slog.Any("error", err),
 		)
 	}
+	// GH-4021: A pilot-retry-* label from an earlier PR-closed-without-merge
+	// cycle must not survive a later poller-detected merge, or it arms a
+	// redundant auto-retry against already-shipped work.
+	for _, label := range []string{LabelRetryReady, LabelRetry1, LabelRetry2, LabelRetryExhausted} {
+		if err := p.client.RemoveLabel(ctx, p.owner, p.repo, issue.Number, label); err != nil {
+			p.logger.Debug("retry label cleanup", slog.Int("issue", issue.Number), slog.String("label", label), slog.Any("error", err))
+		}
+	}
 	p.markProcessed(issue.Number)
 	return true
 }
@@ -2163,6 +2171,28 @@ func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) b
 
 	// Check if merged work already exists before retrying
 	if p.hasMergedWork(ctx, issue) {
+		return false
+	}
+
+	// GH-4021: Mirror the normal-dispatch hasOpenPRAwaitingMerge guard here
+	// too. hasMergedWork's DB fallback above is skipped whenever
+	// LabelRetryReady is set, on the assumption that any completed row
+	// surviving under that label is stale from the PR-closed-without-merge
+	// event that set it — true once notifyExternalClose (GH-3818/D10)
+	// reclassifies that row to "failed", but there's a window between a
+	// later retry's execution completing (PR created, row completed) and
+	// its PR actually merging where hasMergedWork sees neither a merged PR
+	// nor (thanks to the label-based skip) the completed row. GH-3992: the
+	// auto-retry fired in exactly that window — PR #4018 was open, not yet
+	// merged — and dispatched a redundant third run. An open PR is
+	// unambiguous evidence work is already in flight regardless of label
+	// staleness, so check it before invalidating anything.
+	if p.hasOpenPRAwaitingMerge(ctx, issue) {
+		// Mirror the normal path (markProcessed, don't remove the label):
+		// the PR will either merge (hasMergedWork closes the issue and
+		// clears retry labels) or close without merging (re-arms this same
+		// retry-ready path next poll). Throttles re-checks in the meantime.
+		p.markProcessed(issue.Number)
 		return false
 	}
 

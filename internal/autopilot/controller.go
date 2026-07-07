@@ -1765,6 +1765,10 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			// 404 is expected if label doesn't exist - silently ignore
 			c.log.Debug("pilot-failed label cleanup", "issue", prState.IssueNumber, "error", err)
 		}
+		// GH-4021: A pilot-retry-* label from an earlier PR-closed-without-merge
+		// cycle must not survive a later successful merge — left in place it
+		// arms a redundant auto-retry against already-shipped work.
+		c.clearRetryLabels(ctx, prState.IssueNumber)
 		// Close the issue after successful merge
 		if err := c.ghClient.UpdateIssueState(ctx, c.owner, c.repo, prState.IssueNumber, "closed"); err != nil {
 			c.log.Warn("failed to close issue after merge", "issue", prState.IssueNumber, "error", err)
@@ -4177,6 +4181,8 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
 				c.log.Debug("pilot-failed label cleanup on external merge", "issue", prState.IssueNumber, "error", err)
 			}
+			// GH-4021: same stale-label cleanup as the polled-merge path.
+			c.clearRetryLabels(ctx, prState.IssueNumber)
 			// Close the issue
 			if err := c.ghClient.UpdateIssueState(ctx, c.owner, c.repo, prState.IssueNumber, "closed"); err != nil {
 				c.log.Warn("failed to close issue after external merge", "issue", prState.IssueNumber, "error", err)
@@ -4264,6 +4270,22 @@ func (c *Controller) getBotLogin(ctx context.Context) string {
 	c.cachedBotLogin = user.Login
 	c.mu.Unlock()
 	return user.Login
+}
+
+// clearRetryLabels removes any pilot-retry-* bookkeeping labels once an issue's
+// work has genuinely shipped (merged, internally or externally). Left in place,
+// a stale pilot-retry-ready/pilot-retry-N label survives to the next poll and
+// arms a redundant auto-retry dispatch against already-shipped work — GH-4021:
+// pilot-retry-ready outlived a successful merge by five minutes and fired a
+// third, redundant dispatch that raced the orphan-row cleanup into a false
+// task_failed alert.
+func (c *Controller) clearRetryLabels(ctx context.Context, issueNumber int) {
+	for _, label := range []string{github.LabelRetryReady, github.LabelRetry1, github.LabelRetry2, github.LabelRetryExhausted} {
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, issueNumber, label); err != nil {
+			// 404 is expected when the label was never set - silently ignore.
+			c.log.Debug("retry label cleanup", "issue", issueNumber, "label", label, "error", err)
+		}
+	}
 }
 
 // notifyExternalClose runs once autopilot observes a PR closed without a merge —

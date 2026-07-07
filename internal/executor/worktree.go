@@ -1026,6 +1026,57 @@ func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) (int, int64,
 	return orphanCount, totalBytes, nil
 }
 
+// PruneOrphanedWorktreeForTask removes any worktree directory belonging to
+// taskID (matches the "pilot-worktree-<sanitized-taskID>-<timestamp>" naming
+// from CreateWorktree/CreateWorktreeWithBranch). Unlike CleanupOrphanedWorktrees
+// — a startup-only sweep that treats every pilot worktree as stale — this is
+// scoped to a single task, so it's safe to call while the daemon is live and
+// other tasks may have their own active worktrees.
+//
+// GH-4021: recoverStaleRunningTasks deletes a task's orphaned "running" DB row
+// once it observes the task actually completed (a redundant re-dispatch that
+// never got to clean up after itself), but left the worktree directory on
+// disk until the next full restart swept it. Pruning it here reclaims the
+// space immediately instead of waiting for a restart.
+func PruneOrphanedWorktreeForTask(ctx context.Context, repoPath, taskID string) (int, error) {
+	tmpDir := os.TempDir()
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read temp directory %s: %w", tmpDir, err)
+	}
+
+	prefix := "pilot-worktree-" + sanitizeBranchName(taskID) + "-"
+	removed := 0
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		worktreePath := filepath.Join(tmpDir, entry.Name())
+
+		removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", worktreePath)
+		removeCmd.Dir = repoPath
+		_ = removeCmd.Run()
+
+		if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
+			slog.Warn("Failed to remove orphaned task worktree",
+				slog.String("path", worktreePath),
+				slog.String("task_id", taskID),
+				slog.Any("error", rmErr),
+			)
+			continue
+		}
+		removed++
+	}
+
+	if removed > 0 && repoPath != "" {
+		pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune", "-v")
+		pruneCmd.Dir = repoPath
+		_ = pruneCmd.Run()
+	}
+
+	return removed, nil
+}
+
 // dirSizeBytes returns the total size of a directory tree in bytes.
 // Returns 0 on any error — used for best-effort logging only.
 func dirSizeBytes(path string) int64 {

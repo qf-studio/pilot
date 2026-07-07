@@ -2858,6 +2858,97 @@ func TestController_handleMerging_Success_RemovesFailedLabel(t *testing.T) {
 	}
 }
 
+// GH-4021: a pilot-retry-* label from an earlier PR-closed-without-merge
+// cycle must be cleared on a later successful merge, or it survives to arm a
+// redundant auto-retry against already-shipped work (GH-3992).
+func TestController_handleMerging_Success_ClearsRetryLabels(t *testing.T) {
+	retryReadyRemoved := false
+	retry1Removed := false
+	retry2Removed := false
+	retryExhaustedRemoved := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "success"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/repos/owner/repo/pulls/42/merge" && r.Method == http.MethodPut:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"sha":     "merged123",
+				"merged":  true,
+				"message": "Pull Request successfully merged",
+			})
+		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == http.MethodGet:
+			pr := github.PullRequest{
+				Number: 42,
+				State:  "open",
+				Head: github.PRRef{
+					Ref: "pilot/GH-10",
+					SHA: "abc1234",
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(pr)
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{{Name: github.LabelDone}})
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels/"+github.LabelRetryReady && r.Method == http.MethodDelete:
+			retryReadyRemoved = true
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels/"+github.LabelRetry1 && r.Method == http.MethodDelete:
+			retry1Removed = true
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels/"+github.LabelRetry2 && r.Method == http.MethodDelete:
+			retry2Removed = true
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels/"+github.LabelRetryExhausted && r.Method == http.MethodDelete:
+			retryExhaustedRemoved = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+	prState, _ := c.GetPRState(42)
+	prState.Stage = StageMerging
+
+	ctx := context.Background()
+
+	if err := c.ProcessPR(ctx, 42, nil); err != nil {
+		t.Fatalf("ProcessPR returned error: %v", err)
+	}
+
+	if !retryReadyRemoved {
+		t.Error("pilot-retry-ready label should have been removed on merge")
+	}
+	if !retry1Removed {
+		t.Error("pilot-retry-1 label should have been removed on merge")
+	}
+	if !retry2Removed {
+		t.Error("pilot-retry-2 label should have been removed on merge")
+	}
+	if !retryExhaustedRemoved {
+		t.Error("pilot-retry-exhausted label should have been removed on merge")
+	}
+}
+
 // Test consecutive API failure counter logic
 func TestController_ConsecutiveAPIFailures(t *testing.T) {
 	// Mock HTTP server that always returns error for check runs API

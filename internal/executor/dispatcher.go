@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -295,6 +296,15 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 			)
 			if err := d.store.DeleteExecution(exec.ID); err != nil {
 				d.log.Error("Failed to delete orphan running row", slog.String("id", exec.ID), slog.Any("error", err))
+			}
+			// GH-4021: the orphaned run's worktree outlives the DB row it was
+			// tracked under — prune it now instead of leaving it for the next
+			// restart's full CleanupOrphanedWorktrees sweep.
+			if pruned, pruneErr := PruneOrphanedWorktreeForTask(d.ctx, exec.ProjectPath, exec.TaskID); pruneErr != nil {
+				d.log.Warn("Failed to prune orphaned task worktree",
+					slog.String("task_id", exec.TaskID), slog.Any("error", pruneErr))
+			} else if pruned > 0 {
+				d.log.Info("Pruned orphaned task worktree", slog.String("task_id", exec.TaskID), slog.Int("count", pruned))
 			}
 			continue
 		}
@@ -620,6 +630,11 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
+	// GH-4021: remembers the row's identity from the last successful poll so
+	// a later sql.ErrNoRows (the row vanished between ticks) can be resolved
+	// against HasCompletedExecution instead of surfacing as a waiter error.
+	var lastTaskID, lastProjectPath string
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -627,8 +642,29 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 		case <-ticker.C:
 			exec, err := d.store.GetExecution(execID)
 			if err != nil {
+				// GH-4021: recoverStaleRunningTasks deletes this exact "running"
+				// row out from under us once it observes a genuine completed
+				// execution for the same task (orphan-row cleanup after a
+				// redundant re-dispatch) — the row disappearing is that success,
+				// not a failure. Resolve it as such instead of returning
+				// "sql: no rows", which the caller reports as a false
+				// task_failed alert for work that actually shipped.
+				if errors.Is(err, sql.ErrNoRows) && lastTaskID != "" {
+					if completed, hcErr := d.store.HasCompletedExecution(lastTaskID, lastProjectPath); hcErr == nil && completed {
+						if completedExec, gErr := d.store.GetLatestExecutionByTaskID(lastTaskID); gErr == nil {
+							d.log.Info("Execution row vanished after orphan recovery — task already completed, resolving wait as success",
+								slog.String("execution_id", execID),
+								slog.String("task_id", lastTaskID),
+							)
+							return completedExec, nil
+						}
+					}
+				}
 				return nil, fmt.Errorf("failed to get execution: %w", err)
 			}
+
+			lastTaskID = exec.TaskID
+			lastProjectPath = exec.ProjectPath
 
 			// Check if terminal state. The TASK-358 classified worker outcomes
 			// (no_op, declined, skipped, stalled, rate_limited, infra) are terminal

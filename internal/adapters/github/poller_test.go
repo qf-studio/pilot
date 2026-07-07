@@ -2757,6 +2757,60 @@ func TestPoller_RetryReady_InvalidatesCompletedExecution(t *testing.T) {
 	}
 }
 
+// GH-3992/GH-4021: pilot-retry-ready must not re-dispatch while a PR from a
+// later, successful run is still open awaiting merge. hasMergedWork's DB
+// completed-execution fallback is intentionally skipped under this label
+// (any completed row is assumed stale from the close-without-merge event
+// that set the label), so an open PR was the only reliable signal left —
+// and nothing checked for it before this fix. In the incident, the
+// auto-retry fired 5 minutes after a successful retry completed but 2
+// minutes before its PR actually merged, dispatching a redundant third run
+// whose orphan-row cleanup later raced the waiter into a false task_failed
+// alert.
+func TestPoller_RetryReady_SkipsWhenOpenPRAwaitingMerge(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 42, State: "open", Title: "Retry-ready with PR still open",
+			Labels:    []Label{{Name: "pilot"}, {Name: LabelRetryReady}},
+			CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case r.URL.Path == "/repos/owner/repo/pulls" && r.URL.Query().Get("state") == "closed":
+			_, _ = w.Write([]byte(`[]`))
+		case r.URL.Path == "/repos/owner/repo/pulls" && r.URL.Query().Get("state") == "open":
+			_, _ = w.Write([]byte(`[{"number": 4018, "state": "open", "head": {"ref": "pilot/GH-42"}}]`))
+		default:
+			_ = json.NewEncoder(w).Encode(issues)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithRetryGracePeriod(0),
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&callCount); got != 0 {
+		t.Errorf("OnIssue called %d times, want 0 (retry-ready must skip re-dispatch while its PR is open awaiting merge)", got)
+	}
+}
+
 // GH-2341: Search API may lag up to ~30s after a merge. hasMergedWork must
 // supplement with a direct REST PR lookup by branch to catch that window.
 func TestPoller_HasMergedWork_SearchLag_BranchFallback(t *testing.T) {
