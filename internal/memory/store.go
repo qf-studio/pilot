@@ -349,6 +349,12 @@ func (s *Store) migrate() error {
 			FOREIGN KEY (execution_id) REFERENCES executions(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_execution_events_execution_id ON execution_events(execution_id)`,
+		// GH-4033: separate "when the runner actually started this execution" from
+		// created_at ("when it was queued"). A decomposed subtask's row is created at
+		// decomposition time but can sit queued behind a sibling for a while before the
+		// worker picks it up — the stuck-monitor must time it from started_at, not
+		// created_at, or a legitimately-running subtask gets evicted as stale.
+		`ALTER TABLE executions ADD COLUMN started_at DATETIME`,
 	}
 
 	for _, migration := range migrations {
@@ -484,14 +490,18 @@ type Execution struct {
 	// UserID identifies the user/tenant that owns this execution.
 	// Empty in single-tenant deployments; populated when multi-user mode is enabled.
 	// Used as the pivot for `usage_events` aggregation (GH-2429).
-	UserID      string
-	Status      string
-	Output      string
-	Error       string
-	DurationMs  int64
-	PRUrl       string
-	CommitSHA   string
-	CreatedAt   time.Time
+	UserID     string
+	Status     string
+	Output     string
+	Error      string
+	DurationMs int64
+	PRUrl      string
+	CommitSHA  string
+	CreatedAt  time.Time
+	// StartedAt is when the row actually transitioned to "running" (the runner
+	// began execution), as opposed to CreatedAt (when it was queued/decomposed).
+	// Nil until the worker picks it up. GH-4033.
+	StartedAt   *time.Time
 	CompletedAt *time.Time
 	// Metrics fields (TASK-13)
 	TokensInput      int64
@@ -1329,6 +1339,21 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 		})
 	}
 
+	// GH-4033: stamp started_at when the worker actually begins running this
+	// execution, so the stuck-monitor's clock reference isn't the row's
+	// created_at (queue/decomposition time) — a decomposed subtask can sit
+	// queued behind a sibling for a while before this fires.
+	if status == "running" {
+		return s.withRetry("UpdateExecutionStatus", func() error {
+			_, err := s.db.Exec(`
+				UPDATE executions
+				SET status = ?, error = COALESCE(?, error), started_at = CURRENT_TIMESTAMP
+				WHERE id = ?
+			`, status, errStr, id)
+			return err
+		})
+	}
+
 	return s.withRetry("UpdateExecutionStatus", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
@@ -1457,13 +1482,22 @@ func (s *Store) UpdateExecutionEffort(id, effortLevel, complexityLevel string) e
 
 // GetStaleRunningExecutions returns executions that have been in "running" status
 // for longer than the specified duration. Used to detect crashed workers on restart.
+//
+// GH-4033: staleness is measured from started_at (when the worker actually began
+// running this execution), NOT created_at (when the row was queued/decomposed).
+// A decomposed subtask's row is created at decomposition time but can legitimately
+// sit queued behind a sibling for a while before the worker picks it up; timing
+// from created_at evicted such subtasks as "stuck" while they were still actively
+// running. COALESCE falls back to created_at for rows written before this column
+// existed (started_at is NULL) or rows inserted directly with status='running'
+// (bypassing UpdateExecutionStatus, e.g. in tests).
 func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execution, error) {
 	staleTime := time.Now().Add(-staleDuration)
 	rows, err := s.db.Query(`
-		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, started_at, completed_at
 		FROM executions
-		WHERE status = 'running' AND created_at < ?
-		ORDER BY created_at ASC
+		WHERE status = 'running' AND COALESCE(started_at, created_at) < ?
+		ORDER BY COALESCE(started_at, created_at) ASC
 	`, staleTime)
 	if err != nil {
 		return nil, err
@@ -1473,9 +1507,13 @@ func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execu
 	var executions []*Execution
 	for rows.Next() {
 		var exec Execution
+		var startedAt sql.NullTime
 		var completedAt sql.NullTime
-		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt); err != nil {
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &startedAt, &completedAt); err != nil {
 			return nil, err
+		}
+		if startedAt.Valid {
+			exec.StartedAt = &startedAt.Time
 		}
 		if completedAt.Valid {
 			exec.CompletedAt = &completedAt.Time
