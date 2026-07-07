@@ -781,6 +781,23 @@ type PRState struct {
 	// safe because a restart re-enters the handler that sets it before the PR
 	// can reach notifyExternalClose again.
 	TerminalLabel string
+	// ScopeKey marks this PRState as a scope-release CARRIER — registered by
+	// startPendingScopeReleases on behalf of a completed epic ("epic:<N>") or
+	// label scope ("label:<name>") once release Trigger "on_scope_close" has
+	// held all its members. Empty means "not a scope carrier" (the common
+	// case). Persisted, so a restart can recognize the carrier row via
+	// LoadAllPRStates without re-querying the scope table (GH-3990).
+	ScopeKey string
+	// ScopeTitle is the human-readable scope title (epic issue title or scope
+	// label name), used in carrier logging/notifications. In-memory only —
+	// hydrateScopeMembers restores it from the autopilot_scope_release table
+	// when empty after a restart (GH-3990).
+	ScopeTitle string
+	// ScopeMemberPRs lists the merged member PR numbers this scope carrier
+	// releases on behalf of; their union of commits determines the carrier's
+	// release content. In-memory only — restored the same way as ScopeTitle
+	// (GH-3990).
+	ScopeMemberPRs []int
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -822,12 +839,18 @@ func (ps *PRState) snapshot() *PRState {
 		ReleasingFirstAt:        ps.ReleasingFirstAt,
 		EscalationReason:        ps.EscalationReason,
 		TerminalLabel:           ps.TerminalLabel,
+		ScopeKey:                ps.ScopeKey,
+		ScopeTitle:              ps.ScopeTitle,
 	}
-	// DiscoveredChecks is a slice — copy the backing array so consumers can't
-	// mutate the live PR's slice through the snapshot.
+	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
+	// so consumers can't mutate the live PR's slice through the snapshot.
 	if ps.DiscoveredChecks != nil {
 		cp.DiscoveredChecks = make([]string, len(ps.DiscoveredChecks))
 		copy(cp.DiscoveredChecks, ps.DiscoveredChecks)
+	}
+	if ps.ScopeMemberPRs != nil {
+		cp.ScopeMemberPRs = make([]int, len(ps.ScopeMemberPRs))
+		copy(cp.ScopeMemberPRs, ps.ScopeMemberPRs)
 	}
 	return cp
 }

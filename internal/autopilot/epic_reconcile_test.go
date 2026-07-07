@@ -11,7 +11,9 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -327,5 +329,182 @@ func TestReconcileEpicParents_Wrapper(t *testing.T) {
 
 	if !closeCalled {
 		t.Error("expected reconcileEpicParents to close the fully-shipped parent via the search-driven sweep")
+	}
+}
+
+// TestReconcileEpicParent_EnqueuesScopeRelease verifies that once
+// closeParentNow actually closes a fully-shipped epic and Trigger
+// "on_scope_close" is active, reconcileEpicParent enqueues a durable scope
+// release row naming the merged child PRs (GH-3990).
+func TestReconcileEpicParent_EnqueuesScopeRelease(t *testing.T) {
+	const parentNum = 300
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"title":"Checkout epic","state":"open"}`, parentNum)
+
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"node": map[string]interface{}{
+						"subIssues": map[string]interface{}{
+							"totalCount": 1,
+							"nodes":      []map[string]interface{}{{"number": 1, "state": "CLOSED"}},
+						},
+					},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+			items := []map[string]interface{}{{
+				"id": 1, "number": 901, "title": "fix: child",
+				"state":        "closed",
+				"pull_request": map[string]interface{}{"merged_at": "2026-01-01T00:00:00Z"},
+			}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": items})
+
+		case r.Method == http.MethodPatch && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_scope_close"}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	stateStore := newTestStateStore(t)
+	c.SetStateStore(stateStore)
+
+	c.reconcileEpicParent(context.Background(), parentNum)
+
+	row, err := stateStore.GetScopeRelease("owner/repo", fmt.Sprintf("epic:%d", parentNum))
+	if err != nil {
+		t.Fatalf("GetScopeRelease failed: %v", err)
+	}
+	if row == nil {
+		t.Fatal("expected a scope release row enqueued after the epic closed")
+	}
+	if row.ScopeTitle != "Checkout epic" {
+		t.Errorf("ScopeTitle = %q, want %q", row.ScopeTitle, "Checkout epic")
+	}
+	if len(row.MemberPRs) != 1 || row.MemberPRs[0] != 901 {
+		t.Errorf("MemberPRs = %v, want [901]", row.MemberPRs)
+	}
+}
+
+// TestReconcileClosedEpicScopes covers the lookback sweep (GH-3990): a closed,
+// pilot+pilot-done epic with sub-issues and no scope row gets one enqueued;
+// a second sweep after the row exists makes zero further release API calls
+// (idempotence).
+func TestReconcileClosedEpicScopes(t *testing.T) {
+	const parentNum = 400
+
+	var graphqlCalls, searchCalls int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			query, _ := body["query"].(string)
+
+			if strings.Contains(query, "repository(owner:") {
+				resp := map[string]interface{}{
+					"data": map[string]interface{}{
+						"repository": map[string]interface{}{
+							"issues": map[string]interface{}{
+								"nodes": []map[string]interface{}{{
+									"number":           parentNum,
+									"updatedAt":        time.Now().UTC().Format(time.RFC3339),
+									"subIssuesSummary": map[string]int{"total": 1},
+								}},
+							},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+
+			atomic.AddInt64(&graphqlCalls, 1)
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"node": map[string]interface{}{
+						"subIssues": map[string]interface{}{
+							"totalCount": 1,
+							"nodes":      []map[string]interface{}{{"number": 1, "state": "CLOSED"}},
+						},
+					},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+			atomic.AddInt64(&searchCalls, 1)
+			items := []map[string]interface{}{{
+				"id": 1, "number": 902, "title": "fix: child",
+				"state":        "closed",
+				"pull_request": map[string]interface{}{"merged_at": "2026-01-01T00:00:00Z"},
+			}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": items})
+
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"node_id":"I_parent400","number":%d,"title":"Closed while daemon was down","state":"closed"}`, parentNum)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_scope_close", ScopeLookback: 24 * time.Hour}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	stateStore := newTestStateStore(t)
+	c.SetStateStore(stateStore)
+
+	c.reconcileClosedEpicScopes(context.Background())
+
+	row, err := stateStore.GetScopeRelease("owner/repo", fmt.Sprintf("epic:%d", parentNum))
+	if err != nil {
+		t.Fatalf("GetScopeRelease failed: %v", err)
+	}
+	if row == nil {
+		t.Fatal("expected reconcileClosedEpicScopes to enqueue a scope release for the closed epic")
+	}
+	if len(row.MemberPRs) != 1 || row.MemberPRs[0] != 902 {
+		t.Errorf("MemberPRs = %v, want [902]", row.MemberPRs)
+	}
+
+	firstGraphQL := atomic.LoadInt64(&graphqlCalls)
+	firstSearch := atomic.LoadInt64(&searchCalls)
+	if firstGraphQL == 0 || firstSearch == 0 {
+		t.Fatalf("expected verification API calls on first sweep, got graphql=%d search=%d", firstGraphQL, firstSearch)
+	}
+
+	// Second sweep: the scope row already exists — GetScopeRelease must
+	// short-circuit before any verification API calls.
+	c.reconcileClosedEpicScopes(context.Background())
+
+	if got := atomic.LoadInt64(&graphqlCalls); got != firstGraphQL {
+		t.Errorf("getAllSubIssueNumbers graphql calls after second sweep = %d, want unchanged at %d (idempotent)", got, firstGraphQL)
+	}
+	if got := atomic.LoadInt64(&searchCalls); got != firstSearch {
+		t.Errorf("verifyChildrenShippedForClose search calls after second sweep = %d, want unchanged at %d (idempotent)", got, firstSearch)
 	}
 }
