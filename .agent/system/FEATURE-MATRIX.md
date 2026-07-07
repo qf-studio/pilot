@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-07 (v2.151.0)
+**Last Updated:** 2026-07-06 (v2.151.0)
 
 ## Legend
 
@@ -406,9 +406,7 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
-| Release cycles: trigger config + hold semantics | ✅ | autopilot | - | `release.trigger`, `release.scope_label_prefix`, `release.schedule`, `release.schedule_timezone` | `on_scope_close`/`on_schedule` triggers hold merges at all four release-decision sites (`handleMerged` fast path, `handlePostMergeCI`, `checkExternalMergeOrClose`, `ScanRecentlyMergedPRs`) via `Controller.releaseActionFor`/`heldByScope`; held work is inert-but-safe (fully reconstructable from GitHub) — the scope-close reconciler and cron scheduler that actually fire the release ship in follow-up issues. `on_merge` behavior is byte-identical (v2.226.x, GH-3989) |
-| Scope release carrier execution | ✅ | autopilot | - | `autopilot.release.trigger: on_scope_close` | `autopilot_scope_release` durable table (pending→releasing→done/failed) + `startPendingScopeReleases`/`handleReleasing` cut ONE tag covering every held member once an epic completes, gated on post-merge-CI-validated main SHA; crash-safe (claim+re-drive), capped retries with `scope_release_failed` alert (GH-3990) |
-| Label-scope release reconciler | ✅ | autopilot | - | `release.scope_label_prefix`, `release.scope_stale_after` | `reconcileLabelScopes` completes `scope:<name>` label groups with no epic parent — every member closed+shipped enqueues one scope release; abandoned scopes (shipped + stale open member) fire a deduped `scope_stale` alert (GH-3991, v2.229.0) |
+| Per-project release opt-in | ✅ | autopilot | - | `projects[].release` | Global/env `release:` cascade applies only to the default repo; `projects:` controllers release only with their own `release:` block (`WithReleaseNotOptedIn` forces disabled otherwise). Startup logs tag posture as `source=project-not-opted-in`; WARN emitted per non-opted-in project when global release is enabled (v2.230.0, GH-4001) |
 
 ## Epic Management
 

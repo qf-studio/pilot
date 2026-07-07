@@ -1,11 +1,13 @@
 package autopilot
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -224,6 +226,103 @@ func TestResolvedRelease_Precedence(t *testing.T) {
 			t.Error("releaser should be initialized when the project overlay alone enables release")
 		}
 	})
+}
+
+// TestWithReleaseNotOptedIn verifies GH-4001: a projects-loop controller
+// wired with WithReleaseNotOptedIn (i.e. the project declares no `release:`
+// block) must never inherit the global/env release cascade, and the
+// "resolved release policy" log must tag it distinctly
+// (source=project-not-opted-in) from an explicit `release: { enabled: false }`
+// overlay, even though both resolve to the same disabled outcome.
+func TestWithReleaseNotOptedIn(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+
+	t.Run("forces disabled even when global release is enabled", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge"}
+
+		c := NewController(cfg, ghClient, nil, "owner", "repo", WithReleaseNotOptedIn())
+
+		rel := c.resolvedRelease()
+		if rel == nil || rel.Enabled {
+			t.Fatalf("resolvedRelease() = %+v, want disabled", rel)
+		}
+		if c.releaser != nil {
+			t.Error("releaser should be nil when the project has not opted in")
+		}
+	})
+
+	t.Run("logs source=project-not-opted-in", func(t *testing.T) {
+		var buf bytes.Buffer
+		h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+		prev := slog.Default()
+		slog.SetDefault(slog.New(h))
+		defer slog.SetDefault(prev)
+
+		cfg := DefaultConfig()
+		cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge"}
+		NewController(cfg, ghClient, nil, "owner", "repo", WithReleaseNotOptedIn())
+
+		out := buf.String()
+		if !strings.Contains(out, "source=project-not-opted-in") {
+			t.Errorf("expected source=project-not-opted-in in log, got: %s", out)
+		}
+	})
+
+	t.Run("explicit release:false overlay is tagged project-overlay, not not-opted-in", func(t *testing.T) {
+		var buf bytes.Buffer
+		h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+		prev := slog.Default()
+		slog.SetDefault(slog.New(h))
+		defer slog.SetDefault(prev)
+
+		cfg := DefaultConfig()
+		cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge"}
+		disabled := false
+		c := NewController(cfg, ghClient, nil, "owner", "repo", WithReleaseOverride(&ProjectReleaseConfig{Enabled: &disabled}))
+
+		rel := c.resolvedRelease()
+		if rel == nil || rel.Enabled {
+			t.Fatalf("resolvedRelease() = %+v, want disabled", rel)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "source=global+project-overlay") {
+			t.Errorf("expected source=global+project-overlay in log, got: %s", out)
+		}
+		if strings.Contains(out, "project-not-opted-in") {
+			t.Errorf("explicit disable must not be tagged project-not-opted-in, got: %s", out)
+		}
+	})
+}
+
+// TestGlobalReleaseEnabled covers GH-4001's migration-WARN gate: main.go
+// only warns about a non-opted-in project when the global/env release
+// cascade it would have inherited is actually enabled.
+func TestGlobalReleaseEnabled(t *testing.T) {
+	tests := []struct {
+		name          string
+		globalRelease *ReleaseConfig
+		envRelease    *ReleaseConfig
+		want          bool
+	}{
+		{name: "neither set", want: false},
+		{name: "global enabled", globalRelease: &ReleaseConfig{Enabled: true}, want: true},
+		{name: "global disabled", globalRelease: &ReleaseConfig{Enabled: false}, want: false},
+		{name: "env enabled overrides global disabled", globalRelease: &ReleaseConfig{Enabled: false}, envRelease: &ReleaseConfig{Enabled: true}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Release = tt.globalRelease
+			if tt.envRelease != nil {
+				cfg.activeEnvName = "test"
+				cfg.activeEnvConfig = &EnvironmentConfig{Release: tt.envRelease}
+			}
+			if got := GlobalReleaseEnabled(cfg); got != tt.want {
+				t.Errorf("GlobalReleaseEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestController_OnPRCreated(t *testing.T) {

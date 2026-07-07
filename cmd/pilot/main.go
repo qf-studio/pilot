@@ -1700,6 +1700,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 			}
 
+			// GH-4001: release automation is per-project opt-in for projects-loop
+			// controllers — resolved once here so the WARN below fires only when
+			// global release would otherwise have cascaded to a non-opted-in repo.
+			globalReleaseEnabled := autopilot.GlobalReleaseEnabled(cfg.Orchestrator.Autopilot)
+
 			// GH-929: Create controllers for each project with GitHub config
 			for _, proj := range cfg.Projects {
 				if proj.GitHub == nil || proj.GitHub.Owner == "" || proj.GitHub.Repo == "" {
@@ -1712,9 +1717,23 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				// TASK-352: scope self-heal to this project's fs path (matches
 				// executions.project_path). Fresh slice to avoid aliasing the shared opts.
 				ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(proj.Path))
-				// GH-3931: apply the per-project release overlay (GH-3930) when configured.
+				// GH-4001: a project's own `release:` block keeps today's overlay
+				// semantics (GH-3931/GH-3930); no block means this repo never
+				// opted into release automation and must not inherit the
+				// global/env cascade — two incidents (studio-sdk 2026-07-06,
+				// Navigator 2026-07-07 near-miss) came from a forgotten repo
+				// silently releasing.
 				if proj.Release != nil {
 					ctrlOpts = append(ctrlOpts, autopilot.WithReleaseOverride(proj.Release))
+				} else {
+					ctrlOpts = append(ctrlOpts, autopilot.WithReleaseNotOptedIn())
+					if globalReleaseEnabled {
+						logging.WithComponent("autopilot").Warn(
+							"project has no release: block — it will NOT auto-release even though global release is enabled (GH-4001); add a release block to opt in",
+							slog.String("project", proj.Name),
+							slog.String("repo", repoFullName),
+						)
+					}
 				}
 				controller := autopilot.NewController(
 					cfg.Orchestrator.Autopilot,

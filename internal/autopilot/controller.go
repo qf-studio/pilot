@@ -176,6 +176,25 @@ func WithReleaseOverride(o *ProjectReleaseConfig) ControllerOption {
 	}
 }
 
+// WithReleaseNotOptedIn marks this controller's repo as NOT opted into
+// release automation via a project-level `release:` block (GH-4001).
+// Release automation for projects-loop controllers is per-project opt-in: a
+// repo with no `release:` block must never inherit the global/env cascade
+// (a forgotten repo silently tagging releases has caused two incidents —
+// studio-sdk 2026-07-06, Navigator 2026-07-07 near-miss). This forces the
+// resolved release config to disabled regardless of global/env settings,
+// and tags the "resolved release policy" startup log with
+// source=project-not-opted-in so the posture is loud and greppable rather
+// than silently inherited. Do not combine with WithReleaseOverride on the
+// same controller — whichever option runs last wins.
+func WithReleaseNotOptedIn() ControllerOption {
+	return func(c *Controller) {
+		disabled := false
+		c.projectRelease = &ProjectReleaseConfig{Enabled: &disabled}
+		c.releaseNotOptedIn = true
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -245,6 +264,12 @@ type Controller struct {
 	// wired via WithReleaseOverride. Nil = no project-level override. Applied
 	// once during NewController — see resolvedReleaseCfg. GH-3926.
 	projectRelease *ProjectReleaseConfig
+
+	// releaseNotOptedIn is true when projectRelease was synthesized by
+	// WithReleaseNotOptedIn rather than a real per-project `release:` block
+	// (GH-4001). Only affects the "resolved release policy" log source tag —
+	// resolvedReleaseCfg is already forced disabled either way.
+	releaseNotOptedIn bool
 
 	// resolvedReleaseCfg is the effective release config computed once in
 	// NewController: env-scoped config wins over global, then projectRelease
@@ -339,9 +364,14 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	relCfg := baseRelCfg
 	if c.projectRelease != nil {
 		relCfg = c.projectRelease.Apply(baseRelCfg)
-		if relSource == "none" {
+		switch {
+		case c.releaseNotOptedIn:
+			// GH-4001: no per-project `release:` block — never inherit the
+			// global/env cascade, regardless of relSource above.
+			relSource = "project-not-opted-in"
+		case relSource == "none":
 			relSource = "project-only"
-		} else {
+		default:
 			relSource += "+project-overlay"
 		}
 	}
@@ -2277,6 +2307,16 @@ func resolveRelease(cfg *Config) *ReleaseConfig {
 		return env.Release
 	}
 	return cfg.Release
+}
+
+// GlobalReleaseEnabled reports whether the resolved env/global release
+// config is enabled, ignoring any per-project overlay. main.go's
+// projects-loop wiring (GH-4001) uses this to decide whether a project with
+// no `release:` block needs a migration WARN — that project used to inherit
+// this cascade and, as of GH-4001, no longer does.
+func GlobalReleaseEnabled(cfg *Config) bool {
+	rel := resolveRelease(cfg)
+	return rel != nil && rel.Enabled
 }
 
 // resolvedRelease returns the effective release config: per-environment config
