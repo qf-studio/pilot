@@ -283,6 +283,36 @@ func (r *Releaser) CreateTagForRepo(ctx context.Context, owner, repo string, prS
 	return tagName, nil
 }
 
+// CreateReleaseForRepo publishes a GitHub Release for tagName in the specified
+// repository via the REST API (publish mode "api", GH-3926). When body is
+// empty, GenerateNotes is requested so GitHub compiles release notes from the
+// commits since the previous release.
+func (r *Releaser) CreateReleaseForRepo(ctx context.Context, owner, repo, tagName, body string) (*github.Release, error) {
+	input := &github.ReleaseInput{
+		TagName:       tagName,
+		Name:          tagName,
+		Body:          body,
+		GenerateNotes: body == "",
+	}
+	release, err := r.ghClient.CreateRelease(ctx, owner, repo, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create release %s: %w", tagName, err)
+	}
+	return release, nil
+}
+
+// isDuplicateReleaseError reports whether err indicates a release already
+// exists for the requested tag. GitHub returns HTTP 422 with an
+// `"already_exists"` error code when POSTing /releases for a tag that already
+// has a release — treated as success so a retry after a transient failure
+// doesn't loop forever trying to recreate it.
+func isDuplicateReleaseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "already_exists")
+}
+
 // GetCurrentVersionForRepo gets the current version from the specified repository.
 func (r *Releaser) GetCurrentVersionForRepo(ctx context.Context, owner, repo string) (SemVer, error) {
 	release, err := r.ghClient.GetLatestRelease(ctx, owner, repo)

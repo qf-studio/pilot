@@ -373,17 +373,93 @@ type ReleaseConfig struct {
 	Publish string `yaml:"publish,omitempty"`
 }
 
+// Publish mode values for ReleaseConfig.Publish / ProjectReleaseConfig.Publish (GH-3926).
+const (
+	// ReleasePublishWorkflow leaves publishing to the repo's own tag-triggered
+	// CI (e.g. GoReleaser). This is the default when Publish is empty.
+	ReleasePublishWorkflow = "workflow"
+	// ReleasePublishAPI has Pilot publish the GitHub Release itself via the
+	// REST API immediately after tagging.
+	ReleasePublishAPI = "api"
+	// ReleasePublishTagOnly pushes the tag and publishes nothing.
+	ReleasePublishTagOnly = "tag_only"
+)
+
+// PublishMode returns the normalized publish mode, defaulting empty to
+// ReleasePublishWorkflow so callers never need to special-case "". A nil
+// receiver also returns the default. See internal/config Config.Validate for
+// the enum check (GH-3930).
+func (r *ReleaseConfig) PublishMode() string {
+	if r == nil || r.Publish == "" {
+		return ReleasePublishWorkflow
+	}
+	return r.Publish
+}
+
 // ProjectReleaseConfig overlays release settings for a single project on top
 // of the global and per-environment ReleaseConfig blocks. Unset fields
 // inherit the base value — e.g. a project may override Publish while leaving
-// Enabled nil to inherit the global setting. See internal/config
-// ProjectConfig.Release (GH-3930); overlay resolution (Apply/PublishMode) and
-// controller wiring land in GH-3929/GH-3931.
+// Enabled nil to inherit the global setting. Trigger, VersionStrategy, and
+// RequireCI are intentionally NOT overlayable here — they stay env/global-only
+// (a project overriding when releases fire or how versions bump would make
+// the release cadence inconsistent across repos sharing one autopilot config).
+// See internal/config ProjectConfig.Release (GH-3930); overlay resolution
+// (Apply) and controller wiring land here and in GH-3931.
 type ProjectReleaseConfig struct {
 	// Enabled overrides ReleaseConfig.Enabled for this project. Nil inherits.
 	Enabled *bool `yaml:"enabled,omitempty"`
 	// Publish overrides ReleaseConfig.Publish for this project. Empty inherits.
 	Publish string `yaml:"publish,omitempty"`
+	// TagPrefix overrides ReleaseConfig.TagPrefix for this project. Empty inherits.
+	TagPrefix string `yaml:"tag_prefix,omitempty"`
+	// GenerateChangelog overrides ReleaseConfig.GenerateChangelog for this project. Nil inherits.
+	GenerateChangelog *bool `yaml:"generate_changelog,omitempty"`
+	// NotifyOnRelease overrides ReleaseConfig.NotifyOnRelease for this project. Nil inherits.
+	NotifyOnRelease *bool `yaml:"notify_on_release,omitempty"`
+}
+
+// Apply overlays this project-level config on top of base (the resolved
+// global/environment ReleaseConfig), returning a new *ReleaseConfig with only
+// the fields this overlay explicitly sets overridden. Trigger, VersionStrategy,
+// and RequireCI always come from base — see the ProjectReleaseConfig doc.
+//
+// A nil receiver returns base unchanged (no overlay configured). When base is
+// nil (no release configured at the env/global level), Apply returns nil
+// unless the overlay itself turns releasing on (Enabled != nil && *Enabled),
+// in which case it starts from DefaultReleaseConfig() — a project block
+// consisting only of `release: { enabled: true, publish: api }` must work
+// without a global release block. GH-3926/GH-3930.
+func (p *ProjectReleaseConfig) Apply(base *ReleaseConfig) *ReleaseConfig {
+	if p == nil {
+		return base
+	}
+
+	var result ReleaseConfig
+	switch {
+	case base != nil:
+		result = *base
+	case p.Enabled != nil && *p.Enabled:
+		result = *DefaultReleaseConfig()
+	default:
+		return nil
+	}
+
+	if p.Enabled != nil {
+		result.Enabled = *p.Enabled
+	}
+	if p.Publish != "" {
+		result.Publish = p.Publish
+	}
+	if p.TagPrefix != "" {
+		result.TagPrefix = p.TagPrefix
+	}
+	if p.GenerateChangelog != nil {
+		result.GenerateChangelog = *p.GenerateChangelog
+	}
+	if p.NotifyOnRelease != nil {
+		result.NotifyOnRelease = *p.NotifyOnRelease
+	}
+	return &result
 }
 
 // DefaultReleaseConfig returns sensible defaults for release configuration.

@@ -407,6 +407,7 @@
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
 | Poll-cycle epic-parent auto-close | ✅ | autopilot | - | - | `reconcileEpicParents` sweeps open decomposed parents every poll tick, verifying each closed child shipped a merged PR (not just "closed") before closing the parent with a summary comment naming the merged PRs; a closed-without-merge child vetoes the close with an explicit logged reason (GH-3939) |
+| Per-project release publish mode | ✅ | autopilot | - | `release.publish`, `projects[].release` | `workflow` (default, unchanged)/`api` (Pilot calls `CreateRelease` after tagging)/`tag_only`; project overlay (`ProjectReleaseConfig.Apply`) resolves project > env > global; idempotent retry via `ensureReleasePublished` if CreateRelease fails after a successful tag (v2.222.3, GH-3926) |
 
 ## Epic Management
 
