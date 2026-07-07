@@ -147,6 +147,55 @@ func TestReleaseSummaryGenerator_GenerateSummary(t *testing.T) {
 	}
 }
 
+// TestReleaseSummaryGenerator_GenerateSummary_CapsCommitLines verifies the
+// maxSummaryCommitLines guard (GH-3992): a scope release's member-PR commit
+// union can run into the hundreds, and the prompt sent to the LLM must stay
+// bounded to the most recent maxSummaryCommitLines commits.
+func TestReleaseSummaryGenerator_GenerateSummary_CapsCommitLines(t *testing.T) {
+	const total = maxSummaryCommitLines + 100
+
+	commits := make([]*github.Commit, 0, total)
+	for i := 0; i < total; i++ {
+		commits = append(commits, makeCommit(fmt.Sprintf("chore: commit number %d", i)))
+	}
+
+	var capturedBody summaryRequest
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"content":[{"text":"## What's New in v1.0.0\n\n- stuff happened"}]}`)
+	}))
+	defer apiServer.Close()
+
+	gen := NewReleaseSummaryGenerator(nil, testutil.FakeAnthropicKey, slog.Default())
+	gen.SetAPIURL(apiServer.URL)
+
+	if _, err := gen.generateSummary(context.Background(), "v1.0.0", commits); err != nil {
+		t.Fatalf("generateSummary() error = %v", err)
+	}
+
+	promptCommitLines := 0
+	for _, line := range strings.Split(capturedBody.Messages[0].Content, "\n") {
+		if strings.HasPrefix(line, "- ") {
+			promptCommitLines++
+		}
+	}
+	if promptCommitLines != maxSummaryCommitLines {
+		t.Errorf("prompt contains %d commit lines, want %d", promptCommitLines, maxSummaryCommitLines)
+	}
+
+	// Only the most recent maxSummaryCommitLines commits should survive —
+	// the earliest (dropped) commit must be absent, the latest must remain.
+	if strings.Contains(capturedBody.Messages[0].Content, "commit number 0\n") {
+		t.Error("prompt unexpectedly contains the oldest (should-be-dropped) commit")
+	}
+	if !strings.Contains(capturedBody.Messages[0].Content, fmt.Sprintf("commit number %d", total-1)) {
+		t.Error("prompt is missing the most recent commit")
+	}
+}
+
 // testSummaryGenerator is a minimal clone of the LLM call logic for testing with a custom URL.
 type testSummaryGenerator struct {
 	apiKey     string

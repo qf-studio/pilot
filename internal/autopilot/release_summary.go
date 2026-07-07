@@ -169,10 +169,20 @@ func waitForReleaseByTag(ctx context.Context, ghClient *github.Client, log *slog
 	}
 }
 
+// maxSummaryCommitLines caps how many commit first-lines are sent to the LLM
+// for a "What's New" summary. A scope release can aggregate hundreds of
+// commits across many member PRs; past this cap the prompt cost grows
+// unbounded for no summarization benefit, so only the most recent
+// maxSummaryCommitLines are included (GH-3992).
+const maxSummaryCommitLines = 200
+
 // generateSummary calls Haiku to produce a human-friendly summary from commit messages.
 func (g *ReleaseSummaryGenerator) generateSummary(ctx context.Context, tag string, commits []*github.Commit) (string, error) {
 	if len(commits) == 0 {
 		return fmt.Sprintf("## What's New in %s\n\nMaintenance release.", tag), nil
+	}
+	if len(commits) > maxSummaryCommitLines {
+		commits = commits[len(commits)-maxSummaryCommitLines:]
 	}
 
 	// Build commit list for the prompt
