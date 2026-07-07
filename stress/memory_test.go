@@ -337,11 +337,10 @@ func TestMemory_LargePayloads(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	go poller.Start(ctx)
 
-	for atomic.LoadInt64(&processedCount) < int64(numIssues) {
-		time.Sleep(100 * time.Millisecond)
-	}
+	waitForProcessed(t, func() int64 { return atomic.LoadInt64(&processedCount) }, int64(numIssues), 25*time.Second)
 
 	cancel()
 	poller.WaitForActive()
