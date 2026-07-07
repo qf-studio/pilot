@@ -274,6 +274,11 @@ type Controller struct {
 	// catch the same tag. GH-3927.
 	alertedMissingReleases map[string]bool
 
+	// alertedStaleScopes deduplicates scope_stale alerts per scope key
+	// ("epic:<N>" / "label:<name>"), guarded by mu — same rationale as
+	// alertedMissingReleases (GH-3991).
+	alertedStaleScopes map[string]bool
+
 	// cachedBotLogin holds the authenticated GitHub login for the Pilot token.
 	// Populated lazily by getBotLogin; protected by mu. GH-3417.
 	cachedBotLogin string
@@ -301,6 +306,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		metrics:                NewMetrics(),
 		log:                    slog.Default().With("component", "autopilot"),
 		alertedMissingReleases: make(map[string]bool),
+		alertedStaleScopes:     make(map[string]bool),
 	}
 
 	// Options must apply before the releaser is constructed below: the
@@ -3779,6 +3785,10 @@ func (c *Controller) Run(ctx context.Context) error {
 			// scope release (daemon down at close time, or crashed between
 			// close and enqueue).
 			c.reconcileClosedEpicScopes(ctx)
+			// GH-3991: poll-cycle label-scope completion sweep — the second
+			// scope kind (sibling issues sharing a "scope:<name>" label, no
+			// epic parent).
+			c.reconcileLabelScopes(ctx)
 			// GH-3990: claim any scope releases now unblocked, and re-drive
 			// stale 'releasing' rows with no live carrier.
 			c.startPendingScopeReleases(ctx)
