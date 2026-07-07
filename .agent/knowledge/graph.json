@@ -1499,6 +1499,19 @@
         "summary": "Extraction-era SDK ports go stale vs evolving in-tree code: SDK GetTagForSHA shipped bounded (20 tags) while in-tree moved to exhaustive pagination \u2014 would have stalled release draining. Caught by running the consumer test suite against the SDK client (TestHandleReleasing_ExhaustiveTagDrain). Before cutover: diff SDK methods against CURRENT in-tree source; typed-error/pagination/retry drift compiles fine and fails only behaviorally.",
         "type": "pitfall",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_sdk_ports_go_stale_vs_intree.md"
+      },
+      "mem-089": {
+        "type": "pitfall",
+        "summary": "Epic parent's stuck-monitor entry freezes once sub-issue execution starts \u2014 false eviction on long sequential epics. executeSubIssuesTracked posted per-child progress to GitHub via UpdateIssueProgress, which never reaches the alerts engine, so the parent's taskLastProgress entry was touched once before the loop then frozen for the whole run. GH-4021: evicted with stuck_for=41m0s while sub-issue 2 was actively running. Fixed by calling r.reportProgress(parent.ID, ...) inside the loop per child (GH-4033, merged via 51fd3348).",
+        "path": "memories/pitfalls/mem-089.md",
+        "confidence": 0.9,
+        "concepts": [
+          "alerts",
+          "executor",
+          "epic-decomposition"
+        ],
+        "created": "2026-07-07",
+        "last_validated": "2026-07-07"
       }
     }
   },
