@@ -566,6 +566,8 @@ orchestrator:
 | `release.generate_changelog` | bool | `true` | Auto-generate changelog |
 | `release.require_ci` | bool | `true` | Require CI pass before release |
 
+**Release automation is per-project opt-in.** The `orchestrator.autopilot.release` block above only applies to the default repo (`adapters.github.repo`). Any additional repo listed under top-level `projects:` releases only if that project declares its own `release:` block — even an empty `release: {}` — which then inherits the rest of its settings from the resolved env/global config above. A project with no `release:` block never tags or releases, regardless of the global setting; startup logs show the resolved posture per repo (`resolved release policy ... source=project-not-opted-in` vs `source=global`/`...+project-overlay`). See the `projects:` section for the per-project overlay syntax.
+
 ---
 
 ## Quality
@@ -1793,7 +1795,31 @@ memory:
 | `projects[].navigator` | bool | `false` | Enable context intelligence for this project |
 | `projects[].github.owner` | string | — | GitHub organization or user |
 | `projects[].github.repo` | string | — | GitHub repository name |
+| `projects[].release` | object | — | Per-project release overlay (opt-in — see below) |
 | `default_project` | string | — | Name of the project used when none is specified |
+
+**Release opt-in (GH-4001)**
+
+A project in `projects:` never auto-releases unless it declares its own
+`release:` block, even if `orchestrator.autopilot.release.enabled` is
+`true` globally:
+
+```yaml
+projects:
+  - name: "backend"
+    path: "/path/to/backend"
+    github:
+      owner: "myorg"
+      repo: "backend"
+    release:
+      enabled: true   # opts this repo into the global/env release cascade
+```
+
+An empty `release: {}` is enough to opt in — every other field then
+inherits from the resolved env/global config. Omitting `release:` entirely
+disables release automation for that repo regardless of global settings;
+Pilot logs the resolved posture per repo at startup
+(`resolved release policy ... source=project-not-opted-in`).
 
 **Repo allowlist guardrail**
 

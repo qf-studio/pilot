@@ -501,6 +501,18 @@ projects:
   # tag-triggered release workflow of its own, so Pilot publishes the GitHub
   # Release directly via the API.
   #
+  # OPT-IN REQUIRED (GH-4001): this applies ONLY to `projects:` entries
+  # (below) — a project listed here with NO `release:` block never tags or
+  # releases, even when autopilot.release above is enabled. The global
+  # release config only cascades to the default repo (adapters.github.repo).
+  # This is intentional: a repo added to `projects:` for issue-polling/PR
+  # automation but never meant to auto-release (e.g. a plugin repo whose
+  # releases drive an auto-updater) must not silently start tagging just
+  # because global release got turned on for other repos. To opt a project
+  # in, add at minimum `release: { enabled: true }` (or any block below —
+  # setting any field opts the project in and inherits the rest from the
+  # resolved env/global config).
+  #
   # `trigger`, `scope_label_prefix`, `schedule`, and `schedule_timezone` are
   # also overlayable here (GH-3989) - release cadence is per-repo by design,
   # so one repo can run `on_merge` while another in the same autopilot config
