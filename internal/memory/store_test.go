@@ -1912,6 +1912,116 @@ func TestGetStaleQueuedExecutions(t *testing.T) {
 	}
 }
 
+// TestGetStaleRunningExecutions_UsesStartedAtNotCreatedAt is the GH-4033
+// regression test: a decomposed subtask's execution row is created (queued) at
+// decomposition time but can legitimately sit behind a FIFO sibling for a while
+// before the worker actually starts it. Staleness must be measured from
+// started_at (execution start), not created_at (queue time), or a subtask still
+// actively running gets evicted as "stuck" once its queue age alone crosses the
+// threshold — exactly what happened to GH-4021 (queued 18:09, started 18:34,
+// evicted 18:50 with a reported stuck_for of 41m computed off the 18:09 queue time).
+func TestGetStaleRunningExecutions_UsesStartedAtNotCreatedAt(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	staleDuration := time.Hour
+	now := time.Now()
+
+	tests := []struct {
+		name      string
+		createdAt time.Time
+		startedAt *time.Time // nil leaves started_at NULL
+		wantStale bool
+	}{
+		{
+			// GH-4021 shape: queued well past the threshold (subtask sat behind
+			// a sibling), but execution only began recently — must NOT be
+			// evicted while it's still legitimately running.
+			name:      "decomposed subtask queued past threshold but started recently",
+			createdAt: now.Add(-2 * time.Hour),
+			startedAt: timePtr(now.Add(-2 * time.Minute)),
+			wantStale: false,
+		},
+		{
+			// Genuinely stuck: execution itself started past the threshold.
+			name:      "execution started past threshold",
+			createdAt: now.Add(-3 * time.Hour),
+			startedAt: timePtr(now.Add(-2 * time.Hour)),
+			wantStale: true,
+		},
+		{
+			// Never transitioned through UpdateExecutionStatus (started_at NULL,
+			// e.g. a row inserted directly with status='running') — falls back
+			// to created_at.
+			name:      "no started_at falls back to created_at",
+			createdAt: now.Add(-2 * time.Hour),
+			startedAt: nil,
+			wantStale: true,
+		},
+		{
+			name:      "fresh execution not stale",
+			createdAt: now,
+			startedAt: timePtr(now),
+			wantStale: false,
+		},
+	}
+
+	var wantStaleIDs []string
+	for i, tt := range tests {
+		id := fmt.Sprintf("exec-gh4033-%d", i)
+		if err := store.SaveExecution(&Execution{
+			ID:          id,
+			TaskID:      fmt.Sprintf("GH-4021-%d", i+1),
+			ProjectPath: "/proj",
+			Status:      "running",
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", id, err)
+		}
+		if _, err := store.db.Exec(
+			`UPDATE executions SET created_at = ? WHERE id = ?`, tt.createdAt, id,
+		); err != nil {
+			t.Fatalf("set created_at for %s: %v", id, err)
+		}
+		if tt.startedAt != nil {
+			if _, err := store.db.Exec(
+				`UPDATE executions SET started_at = ? WHERE id = ?`, *tt.startedAt, id,
+			); err != nil {
+				t.Fatalf("set started_at for %s: %v", id, err)
+			}
+		}
+		if tt.wantStale {
+			wantStaleIDs = append(wantStaleIDs, id)
+		}
+	}
+
+	results, err := store.GetStaleRunningExecutions(staleDuration)
+	if err != nil {
+		t.Fatalf("GetStaleRunningExecutions: %v", err)
+	}
+
+	gotIDs := make(map[string]bool, len(results))
+	for _, r := range results {
+		gotIDs[r.ID] = true
+	}
+
+	for i, tt := range tests {
+		id := fmt.Sprintf("exec-gh4033-%d", i)
+		if gotIDs[id] != tt.wantStale {
+			t.Errorf("%s: id=%s wantStale=%v gotStale=%v", tt.name, id, tt.wantStale, gotIDs[id])
+		}
+	}
+
+	if len(results) != len(wantStaleIDs) {
+		t.Errorf("expected %d stale executions, got %d (%v)", len(wantStaleIDs), len(results), gotIDs)
+	}
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
+
 func TestUpdateExecutionStatusByTaskID_UpdatesFailedToCompleted(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()

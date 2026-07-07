@@ -2417,6 +2417,102 @@ func TestEngine_TaskProgressUpdatesStuckState(t *testing.T) {
 	}
 }
 
+// TestEngine_EvaluateStuckTasks_EpicParentRefreshedByChildExecution pins
+// GH-4033: an epic parent's stuck_for must be computed from the most recent
+// child sub-issue's execution-start activity, not from the one-time
+// pre-loop timestamp recorded before the sequential sub-issue fan-out began.
+// Mirrors the GH-4021 incident: the parent's last alerts-visible touch was
+// long before sub-issue 2 actually started executing (everything in between
+// — GitHub issue comments via UpdateIssueProgress, and each child's own
+// progress under its own task ID — never reaches the parent's
+// taskLastProgress entry), and the orphan sweep evicted the parent with
+// stuck_for=41m0s even though sub-issue 2 was actively running.
+func TestEngine_EvaluateStuckTasks_EpicParentRefreshedByChildExecution(t *testing.T) {
+	tests := []struct {
+		name              string
+		childTouchAgo     time.Duration // 0 means no child-execution-start touch fires
+		wantParentEvicted bool
+	}{
+		{
+			name:              "child running past pre-loop-time threshold but not its own start-time threshold: no false eviction",
+			childTouchAgo:     16 * time.Minute, // sub-issue 2 execution start, 16m before the sweep
+			wantParentEvicted: false,
+		},
+		{
+			name:              "no child ever started executing: parent legitimately orphaned",
+			childTouchAgo:     0,
+			wantParentEvicted: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &AlertConfig{
+				Enabled: true,
+				Channels: []ChannelConfig{
+					{Name: "test-channel", Type: "webhook", Enabled: true},
+				},
+				Rules: []AlertRule{
+					{
+						Name:    "task_stuck",
+						Type:    AlertTypeTaskStuck,
+						Enabled: true,
+						Condition: RuleCondition{
+							ProgressUnchangedFor: 10 * time.Minute,
+						},
+						Severity: SeverityWarning,
+						Channels: []string{"test-channel"},
+						Cooldown: 0,
+					},
+				},
+			}
+
+			mockCh := newMockChannel("test-channel", "webhook")
+			dispatcher := NewDispatcher(config)
+			dispatcher.RegisterChannel(mockCh)
+
+			engine := NewEngine(config, WithDispatcher(dispatcher))
+
+			// Parent's last alerts-visible touch (the pre-loop "Executing"
+			// progress report) was 41 min ago — past the 4x10m=40m orphan
+			// threshold on its own.
+			engine.handleTaskStarted(Event{
+				Type:      EventTypeTaskStarted,
+				TaskID:    "GH-4021",
+				Phase:     "Executing",
+				Timestamp: time.Now().Add(-41 * time.Minute),
+			})
+
+			if tt.childTouchAgo > 0 {
+				// epic.go's executeSubIssuesTracked loop now reports progress
+				// under the PARENT's own task ID at each child's execution
+				// start (GH-4033 fix), so this models sub-issue 2 starting.
+				engine.handleTaskProgress(Event{
+					Type:      EventTypeTaskProgress,
+					TaskID:    "GH-4021",
+					Phase:     "Executing",
+					Progress:  60,
+					Timestamp: time.Now().Add(-tt.childTouchAgo),
+				})
+			}
+
+			ctx := context.Background()
+			engine.evaluateStuckTasks(ctx)
+
+			engine.mu.RLock()
+			_, parentExists := engine.taskLastProgress["GH-4021"]
+			engine.mu.RUnlock()
+
+			if tt.wantParentEvicted && parentExists {
+				t.Error("expected parent GH-4021 to be evicted as orphaned, but it still exists")
+			}
+			if !tt.wantParentEvicted && !parentExists {
+				t.Error("expected parent GH-4021 to survive (child actively executing), but it was evicted")
+			}
+		})
+	}
+}
+
 // =============================================================================
 // Event Queue Full Test
 // =============================================================================
