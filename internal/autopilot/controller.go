@@ -2169,6 +2169,9 @@ func (c *Controller) Start(ctx context.Context) {
 	// GH-3990: claim any scope releases left pending (or re-drive any left
 	// 'releasing' with no live carrier) by a daemon restart.
 	c.startPendingScopeReleases(ctx)
+	// GH-3993: start the on_schedule release-train cron (no-op unless
+	// resolvedRelease().ScheduleReleaseEnabled()).
+	c.startScheduleRelease(ctx)
 }
 
 // handlePostMergeCI monitors deployment/post-merge checks (non-blocking).
@@ -2548,16 +2551,25 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		currentVersion = SemVer{}
 	}
 
-	// Get commits for bump detection: a scope carrier unions every member PR's
-	// commits; a regular release reads just its own PR's commits.
+	// Get commits for bump detection: a "train:" scope carrier is defined as
+	// "everything since the last tag" (CompareCommits, not a member-PR union
+	// — GH-3993); any other scope carrier (epic:/label:) unions every member
+	// PR's own commits; a regular release reads just its own PR's commits.
 	var commits []*github.Commit
-	if isScope {
+	switch {
+	case isScope && strings.HasPrefix(prState.ScopeKey, "train:"):
+		commits, err = c.trainReleaseCommits(ctx, owner, repo, prState, currentVersion, rel)
+		if err != nil {
+			return c.checkReleasingRetryOrEscalate(ctx, prState,
+				fmt.Errorf("failed to get train release commits for %s: %w", prState.ScopeKey, err))
+		}
+	case isScope:
 		commits, err = c.scopeReleaseCommits(ctx, owner, repo, prState, currentVersion, rel)
 		if err != nil {
 			return c.checkReleasingRetryOrEscalate(ctx, prState,
 				fmt.Errorf("failed to get scope release commits for %s: %w", prState.ScopeKey, err))
 		}
-	} else {
+	default:
 		commits, err = c.ghClient.GetPRCommits(ctx, owner, repo, prState.PRNumber)
 		if err != nil {
 			return c.checkReleasingRetryOrEscalate(ctx, prState,
