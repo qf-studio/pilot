@@ -63,11 +63,26 @@ func extractFailureExcerpt(logs string, maxChars int) string {
 		excerpt = lines
 	}
 
-	result := strings.Join(excerpt, "\n")
-	if len(result) > maxChars {
-		result = result[:maxChars] + "\n... (truncated)"
+	return truncateKeepingTail(strings.Join(excerpt, "\n"), maxChars)
+}
+
+// truncateKeepingTail caps s to maxChars while preserving both ends: the
+// head (where the failure marker and its lead-in context live) and the tail
+// (where the trailing `FAIL <pkg>` summary lives). A naive head-only cut can
+// silently drop the summary line on a large panic/stack-trace dump that
+// exceeds maxChars on its own.
+func truncateKeepingTail(s string, maxChars int) string {
+	if len(s) <= maxChars {
+		return s
 	}
-	return result
+	const marker = "\n... (truncated) ...\n"
+	budget := maxChars - len(marker)
+	if budget <= 0 {
+		return s[:maxChars] + "\n... (truncated)"
+	}
+	headLen := budget * 7 / 10
+	tailLen := budget - headLen
+	return s[:headLen] + marker + s[len(s)-tailLen:]
 }
 
 // FeedbackLoop creates issues when CI fails or bugs are detected.

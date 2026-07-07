@@ -1362,6 +1362,40 @@ func TestFeedbackLoop_CreateFailureIssue_FailureExcerptAtEnd(t *testing.T) {
 	}
 }
 
+// TestExtractFailureExcerpt_OversizedExcerptKeepsTrailingSummary covers the
+// case where the failure excerpt itself (marker to end of log) exceeds
+// maxChars, e.g. a panic with a very large goroutine dump. Naively
+// truncating from the head would drop the trailing `FAIL <pkg>` summary,
+// which defeats the point of the excerpt.
+func TestExtractFailureExcerpt_OversizedExcerptKeepsTrailingSummary(t *testing.T) {
+	preamble := strings.Repeat("Current runner version: '2.319.1'\nRunner Image Provisioner\n", 40)
+	unrelatedTestOutput := strings.Repeat("=== RUN   TestSomethingUnrelated\n--- PASS: TestSomethingUnrelated (0.00s)\n", 10)
+	hugeStackDump := strings.Repeat("goroutine 1 [running]:\nsome.deeply.nested.function(...)\n\t/path/to/file.go:123 +0x45\n", 200)
+	logs := preamble + unrelatedTestOutput +
+		"panic: test timed out after 10m0s\n" +
+		hugeStackDump +
+		"FAIL\tgithub.com/qf-studio/pilot/internal/stress\t600.012s\n"
+
+	if len("panic: test timed out after 10m0s\n"+hugeStackDump) <= maxCIErrorExcerptChars {
+		t.Fatal("test fixture excerpt should exceed maxCIErrorExcerptChars to exercise the oversized path")
+	}
+
+	excerpt := extractFailureExcerpt(logs, maxCIErrorExcerptChars)
+
+	if !strings.Contains(excerpt, "panic: test timed out after 10m0s") {
+		t.Error("excerpt should retain the panic marker near the head")
+	}
+	if !strings.Contains(excerpt, "FAIL\tgithub.com/qf-studio/pilot/internal/stress") {
+		t.Error("excerpt should retain the trailing FAIL summary even when the excerpt itself is oversized")
+	}
+	if strings.Contains(excerpt, "Current runner version") {
+		t.Error("excerpt should not contain runner-provisioning preamble")
+	}
+	if len(excerpt) > maxCIErrorExcerptChars+len("\n... (truncated) ...\n") {
+		t.Errorf("excerpt length %d exceeds budget", len(excerpt))
+	}
+}
+
 func mustFLJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
