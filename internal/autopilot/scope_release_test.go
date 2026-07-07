@@ -559,3 +559,95 @@ func TestScanRecentlyMergedPRs_SkipsScopeMemberPending(t *testing.T) {
 		t.Errorf("git/refs POST count = %d, want 0 (scanner must not cut a per-merge tag for a scope member)", got)
 	}
 }
+
+// TestScopeCarrier_APIPublish_BodyIsScopeNotes verifies handleReleasing's
+// publish-mode-"api" branch for a scope carrier: the POST /releases body is
+// the aggregated scope release notes (headline + Features/Fixes attributed
+// to each member PR and its linked issue + compare footer) rather than
+// GenerateChangelog's per-PR output (GH-3992).
+func TestScopeCarrier_APIPublish_BodyIsScopeNotes(t *testing.T) {
+	var releaseBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/301") && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.PullRequest{Number: 301, Body: "Closes #401"})
+		case strings.HasSuffix(r.URL.Path, "/pulls/302") && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.PullRequest{Number: 302, Body: "Closes #402"})
+		case strings.Contains(r.URL.Path, "/pulls/301/commits"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat(checkout): add express pay")})
+		case strings.Contains(r.URL.Path, "/pulls/302/commits"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("fix(checkout): correct tax calc")})
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.Release{TagName: "v1.0.0"})
+		case strings.HasSuffix(r.URL.Path, "/tags"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "/branches/"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "main", "commit": map[string]string{"sha": "mainsha"}})
+		case strings.Contains(r.URL.Path, "/compare/"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "identical"})
+		case strings.HasSuffix(r.URL.Path, "/git/refs"):
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/repos/owner/repo/releases"):
+			var input struct {
+				Body string `json:"body"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			releaseBody = input.Body
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(github.Release{ID: 1, TagName: "v1.1.0", HTMLURL: "https://github.com/owner/repo/releases/tag/v1.1.0"})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{
+		Enabled:   true,
+		Trigger:   "on_scope_close",
+		TagPrefix: "v",
+		Publish:   ReleasePublishAPI,
+	}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	carrier := &PRState{
+		PRNumber:       302,
+		Stage:          StageReleasing,
+		PostMergeSHA:   "mainsha",
+		ScopeKey:       "epic:1",
+		ScopeTitle:     "Checkout Revamp",
+		ScopeMemberPRs: []int{301, 302},
+	}
+	c.mu.Lock()
+	c.activePRs[302] = carrier
+	c.mu.Unlock()
+
+	if err := c.handleReleasing(context.Background(), carrier); err != nil {
+		t.Fatalf("handleReleasing() error = %v", err)
+	}
+
+	wantSubstrs := []string{
+		"# Checkout Revamp",
+		"## Features",
+		"- add express pay (#301, GH-401)",
+		"## Bug Fixes",
+		"- correct tax calc (#302, GH-402)",
+		"**Full Changelog**: https://github.com/owner/repo/compare/v1.0.0...v1.1.0",
+		"_2 PRs, 2 commits_",
+	}
+	for _, want := range wantSubstrs {
+		if !strings.Contains(releaseBody, want) {
+			t.Errorf("release body missing %q\ngot:\n%s", want, releaseBody)
+		}
+	}
+}

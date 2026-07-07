@@ -657,6 +657,16 @@ Examples:
 							// GH-2685: wire the controller as the approval state writer so
 							// async approval decisions update the in-memory PRState.
 							approvalMgr.WithStateWriter(gwAutopilotController)
+							// GH-3992: wire the LLM release-summary generator (Haiku
+							// "What's New") so releases (including scope carriers) get
+							// enriched. NewReleaseSummaryGenerator returns nil when no
+							// ANTHROPIC_API_KEY is set — SetReleaseSummaryGenerator(nil)
+							// is a no-op guard already handled throughout handleReleasing,
+							// so this is graceful no-op-by-default (env-fallback precedent:
+							// internal/comms/factory.go BuildClassifier).
+							gwAutopilotController.SetReleaseSummaryGenerator(
+								autopilot.NewReleaseSummaryGenerator(apGHClient, os.Getenv("ANTHROPIC_API_KEY"), logging.WithComponent("autopilot")),
+							)
 						}
 					}
 				}
@@ -1748,6 +1758,18 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					slog.String("project", proj.Name),
 					slog.String("repo", repoFullName),
 				)
+			}
+
+			// GH-3992: wire the LLM release-summary generator (Haiku "What's
+			// New") into every controller sharing this apGHClient/token. Built
+			// once and reused — EnrichRelease/EnrichScopeRelease take
+			// owner/repo per call, so one generator serves every repo. Nil
+			// ANTHROPIC_API_KEY => NewReleaseSummaryGenerator returns nil =>
+			// SetReleaseSummaryGenerator(nil), identical to today's behavior
+			// (env-fallback precedent: internal/comms/factory.go BuildClassifier).
+			releaseSummaryGen := autopilot.NewReleaseSummaryGenerator(apGHClient, os.Getenv("ANTHROPIC_API_KEY"), logging.WithComponent("autopilot"))
+			for _, c := range autopilotControllers {
+				c.SetReleaseSummaryGenerator(releaseSummaryGen)
 			}
 		}
 	}

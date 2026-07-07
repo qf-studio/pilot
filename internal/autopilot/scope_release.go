@@ -263,6 +263,50 @@ func (c *Controller) scopeReleaseCommits(ctx context.Context, owner, repo string
 	return c.ghClient.CompareCommits(ctx, owner, repo, lastTag, prState.HeadSHA)
 }
 
+// closingIssueRegex extracts the issue number a PR body declares it closes,
+// matching the "Closes #N" / "Fixes #N" / "Resolves #N" convention Pilot
+// writes into every PR body it creates (runner.go prBody). Case-insensitive,
+// first match wins (GH-3992).
+var closingIssueRegex = regexp.MustCompile(`(?i)\b(?:closes|fixes|resolves)\s+#(\d+)`)
+
+// closingIssueNumber returns the issue number a PR body closes, or 0 when no
+// recognizable reference is present.
+func closingIssueNumber(body string) int {
+	matches := closingIssueRegex.FindStringSubmatch(body)
+	if matches == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(matches[1])
+	return n
+}
+
+// scopeReleaseMembers builds the per-member PR/commit/issue breakdown for a
+// scope carrier's aggregated release notes: each member PR's own commits
+// (preserving exact PR attribution, unlike scopeReleaseCommits' deduped
+// union used for bump detection) plus the issue it closes. A member whose PR
+// or commit lookup fails is skipped (logged) rather than failing the whole
+// release — the notes ship with whatever members were resolvable (GH-3992).
+func (c *Controller) scopeReleaseMembers(ctx context.Context, owner, repo string, prState *PRState) []ScopeMember {
+	members := make([]ScopeMember, 0, len(prState.ScopeMemberPRs))
+	for _, pr := range prState.ScopeMemberPRs {
+		commits, err := c.ghClient.GetPRCommits(ctx, owner, repo, pr)
+		if err != nil {
+			c.log.Warn("scope release notes: failed to fetch member PR commits",
+				"scope", prState.ScopeKey, "member_pr", pr, "error", err)
+			continue
+		}
+		issue := 0
+		if prObj, err := c.ghClient.GetPullRequest(ctx, owner, repo, pr); err != nil {
+			c.log.Warn("scope release notes: failed to fetch member PR for issue linkage",
+				"scope", prState.ScopeKey, "member_pr", pr, "error", err)
+		} else {
+			issue = closingIssueNumber(prObj.Body)
+		}
+		members = append(members, ScopeMember{PR: pr, Issue: issue, Commits: commits})
+	}
+	return members
+}
+
 // markScopeReleaseDone records a scope carrier's successful (or no-op)
 // completion in the state store. tag is "" for a no-op release (BumpNone).
 // No-op when prState is not a scope carrier or no state store is wired.

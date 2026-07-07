@@ -28,6 +28,12 @@ const (
 
 	// anthropicAPIURL is the Anthropic Messages API endpoint.
 	anthropicAPIURL = "https://api.anthropic.com/v1/messages"
+
+	// maxSummaryCommitLines caps how many commit first-lines are sent to the
+	// LLM per summary request — a large scope carrier can union hundreds of
+	// commits, and the prompt only needs enough signal to write 3-5 bullets
+	// (GH-3992).
+	maxSummaryCommitLines = 200
 )
 
 // ReleaseSummaryGenerator enriches GitHub releases with LLM-generated summaries.
@@ -74,6 +80,27 @@ func (g *ReleaseSummaryGenerator) SetAPIURL(url string) {
 // from the commit messages, and prepends it to the release body.
 // Returns nil on any failure — release enrichment is best-effort.
 func (g *ReleaseSummaryGenerator) EnrichRelease(ctx context.Context, owner, repo, tag string, commits []*github.Commit) error {
+	return g.enrichReleaseBody(ctx, owner, repo, tag, commits, "")
+}
+
+// EnrichScopeRelease enriches a scope carrier's release the same way as
+// EnrichRelease, but inserts the aggregated scope release notes between the
+// LLM "What's New" summary and the release's existing body — used for publish
+// mode "workflow", where GoReleaser (not Pilot) owns the initial body, so the
+// scope notes were never part of it (GH-3992). For publish mode "api" the
+// scope notes are already the body Pilot set at release-creation time —
+// callers should use EnrichRelease there instead so the notes aren't
+// duplicated.
+func (g *ReleaseSummaryGenerator) EnrichScopeRelease(ctx context.Context, owner, repo, tag string, commits []*github.Commit, scopeNotes string) error {
+	return g.enrichReleaseBody(ctx, owner, repo, tag, commits, scopeNotes)
+}
+
+// enrichReleaseBody is the shared body of EnrichRelease/EnrichScopeRelease:
+// poll for the release, generate the LLM summary, then compose
+// summary + [middle] + existing body and update the release. middle is
+// inserted only when non-empty, so EnrichRelease's byte-for-byte behavior
+// (summary + "\n\n" + release.Body) is unchanged for non-scope releases.
+func (g *ReleaseSummaryGenerator) enrichReleaseBody(ctx context.Context, owner, repo, tag string, commits []*github.Commit, middle string) error {
 	// Poll for GoReleaser to publish the release
 	release, err := g.waitForRelease(ctx, owner, repo, tag)
 	if err != nil {
@@ -86,8 +113,12 @@ func (g *ReleaseSummaryGenerator) EnrichRelease(ctx context.Context, owner, repo
 		return fmt.Errorf("generating summary: %w", err)
 	}
 
-	// Prepend summary to existing GoReleaser changelog body
-	enrichedBody := summary + "\n\n" + release.Body
+	parts := []string{summary}
+	if middle != "" {
+		parts = append(parts, middle)
+	}
+	parts = append(parts, release.Body)
+	enrichedBody := strings.Join(parts, "\n\n")
 
 	_, err = g.ghClient.UpdateRelease(ctx, owner, repo, release.ID, &github.ReleaseInput{
 		Body: enrichedBody,
@@ -153,9 +184,14 @@ func (g *ReleaseSummaryGenerator) generateSummary(ctx context.Context, tag strin
 		return fmt.Sprintf("## What's New in %s\n\nMaintenance release.", tag), nil
 	}
 
-	// Build commit list for the prompt
+	// Build commit list for the prompt, capped at maxSummaryCommitLines so a
+	// large scope carrier's commit union doesn't blow up the prompt.
+	cappedCommits := commits
+	if len(cappedCommits) > maxSummaryCommitLines {
+		cappedCommits = cappedCommits[:maxSummaryCommitLines]
+	}
 	var commitLines []string
-	for _, c := range commits {
+	for _, c := range cappedCommits {
 		msg := c.Commit.Message
 		// Use only first line of commit message
 		if idx := strings.Index(msg, "\n"); idx >= 0 {

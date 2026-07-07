@@ -122,6 +122,10 @@ orchestrator:
       require_ci: true           # wait for post-merge CI
 ```
 
+<Callout type="info">
+  `release.trigger` also supports `on_scope_close` (hold merges for an open epic or a shared `scope:`-prefixed label, then cut one aggregated release with a "What's New" summary and per-PR/issue changelog) and `on_schedule` (hold everything for a cron release train). See [Configuration → Autopilot](/getting-started/configuration#autopilot) for `scope_label_prefix`, `schedule`, and the `publish` modes each trigger supports.
+</Callout>
+
 ### When to Use
 
 - Team projects with shared staging branches

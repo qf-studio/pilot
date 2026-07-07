@@ -304,6 +304,38 @@ func TestTelegramNotifier_NotifyReleased(t *testing.T) {
 	}
 }
 
+// TestTelegramNotifier_NotifyReleased_ScopeCarrier verifies a scope carrier
+// (prState.ScopeTitle != "") renders "Scope: <title> (<K> PRs)" instead of
+// "From PR: #N", since attributing a multi-PR release to just its anchor PR
+// would be misleading (GH-3992).
+func TestTelegramNotifier_NotifyReleased_ScopeCarrier(t *testing.T) {
+	var receivedText string
+	notifier, server := newTestNotifier(t, &receivedText)
+	defer server.Close()
+
+	prState := &PRState{
+		PRNumber:        42,
+		ReleaseVersion:  "v1.2.0",
+		ReleaseBumpType: BumpMinor,
+		EnvironmentName: "staging",
+		ScopeKey:        "epic:7",
+		ScopeTitle:      "Checkout Revamp",
+		ScopeMemberPRs:  []int{40, 41, 42},
+	}
+
+	err := notifier.NotifyReleased(context.Background(), prState, "https://github.com/owner/repo/releases/tag/v1.2.0")
+	if err != nil {
+		t.Fatalf("NotifyReleased error: %v", err)
+	}
+
+	if !strings.Contains(receivedText, "Scope: Checkout Revamp (3 PRs)") {
+		t.Errorf("expected scope headline, got: %s", receivedText)
+	}
+	if strings.Contains(receivedText, "From PR:") {
+		t.Errorf("scope carrier must not render From PR:, got: %s", receivedText)
+	}
+}
+
 func TestNewTelegramNotifier(t *testing.T) {
 	client := telegram.NewClient("test-token")
 	notifier := NewTelegramNotifier(client, "123456")

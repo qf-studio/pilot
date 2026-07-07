@@ -24,6 +24,7 @@ Pilot delegates AI execution to **Claude Code**, which manages its own authentic
 | **Telegram** | `TELEGRAM_BOT_TOKEN` env var or config | No |
 | **LLM classifier** (smart intent routing) | `ANTHROPIC_API_KEY` env var | No — falls back to keyword matching |
 | **Epic decomposition** (Haiku subtask parser) | `ANTHROPIC_API_KEY` env var | No — falls back to regex parser |
+| **Release summaries** (Haiku "What's New" section) | `ANTHROPIC_API_KEY` env var | No — releases ship without a summary |
 | **Discord** | `DISCORD_BOT_TOKEN` env var or `adapters.discord.bot_token` in config | Yes, if using Discord |
 | **Plane** | `PLANE_API_KEY` env var or `adapters.plane.api_key` in config | Yes, if using Plane |
 
@@ -38,7 +39,7 @@ Pilot delegates AI execution to **Claude Code**, which manages its own authentic
 | `GITHUB_TOKEN` | GitHub personal access token (`repo` + `workflow` scopes) | If using GitHub |
 | `GITLAB_TOKEN` | GitLab personal or project access token | If using GitLab |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token for chat interface | No |
-| `ANTHROPIC_API_KEY` | Enables LLM intent classifier and structured subtask parsing | No |
+| `ANTHROPIC_API_KEY` | Enables LLM intent classifier, structured subtask parsing, and the release-summary "What's New" generator | No |
 | `OPENAI_API_KEY` | Enables Whisper voice transcription in Telegram | No |
 | `SLACK_BOT_TOKEN` | Slack bot token for notifications | No |
 | `DISCORD_BOT_TOKEN` | Discord bot token for chat interface | No |
@@ -532,12 +533,16 @@ orchestrator:
 
     release:
       enabled: false
-      trigger: "on_merge"
+      trigger: "on_merge"                 # on_merge, manual, on_scope_close, on_schedule
+      scope_label_prefix: "scope:"        # on_scope_close only
+      # schedule: "0 21 * * FRI"          # on_schedule only — robfig/cron/v3 5-field syntax
       version_strategy: "conventional_commits"
       tag_prefix: "v"
       generate_changelog: true
+      generate_summary: true              # LLM "What's New" section (needs ANTHROPIC_API_KEY)
       notify_on_release: true
       require_ci: true
+      publish: "workflow"                 # workflow, api, tag_only
 ```
 
 | Field | Type | Default | Description |
@@ -560,11 +565,22 @@ orchestrator:
 | `approval_timeout` | duration | `1h` | Time before approval request expires |
 | `merged_pr_scan_window` | duration | `30m` | Window to scan for recently merged PRs |
 | `release.enabled` | bool | `false` | Auto-create releases on merge |
-| `release.trigger` | string | `"on_merge"` | When to trigger release |
+| `release.trigger` | string | `"on_merge"` | `on_merge` — release every merged PR. `manual` — never auto-release. `on_scope_close` — hold merges belonging to an open epic (parent issue) or a shared `scope:`-prefixed label and cut one aggregated release when the scope completes; standalone merges still release per-merge. `on_schedule` — hold every merge for a cron release train (see `schedule`) |
+| `release.scope_label_prefix` | string | `"scope:"` | `on_scope_close` only — label prefix that groups sibling issues (no epic parent) into one release scope |
+| `release.schedule` | string | — | `on_schedule` only — robfig/cron/v3 standard 5-field cron expression for the release train |
+| `release.schedule_timezone` | string | daemon local | `on_schedule` only — IANA timezone the `schedule` cron expression is evaluated in |
 | `release.version_strategy` | string | `"conventional_commits"` | How to determine version bump |
 | `release.tag_prefix` | string | `"v"` | Git tag prefix |
 | `release.generate_changelog` | bool | `true` | Auto-generate changelog |
+| `release.generate_summary` | bool | `true` | Prepend an LLM "What's New" section (Haiku, via `ANTHROPIC_API_KEY`) — no key set means releases ship without a summary |
 | `release.require_ci` | bool | `true` | Require CI pass before release |
+| `release.publish` | string | `"workflow"` | `workflow` — Pilot only tags; the repo's own tag-triggered CI (e.g. GoReleaser) publishes the release. `api` — Pilot publishes the GitHub Release itself immediately after tagging (only for repos with no tag-triggered release workflow). `tag_only` — push the tag, publish nothing |
+
+<Callout type="warning">
+Aggregated scope-release notes (`on_scope_close`/`on_schedule`) require `release.publish: workflow` or `release.publish: api` — `tag_only` never creates a GitHub Release object for the notes to attach to.
+</Callout>
+
+Per-project overlays (under `projects:`) can override any `release.*` field for a single repo — for example, a repo with no GoReleaser workflow can set `release: { publish: api }` while the global default stays `workflow`. The same applies to `trigger`: one project can use `on_scope_close` while another stays on `on_merge`.
 
 **Release automation is per-project opt-in.** The `orchestrator.autopilot.release` block above only applies to the default repo (`adapters.github.repo`). Any additional repo listed under top-level `projects:` releases only if that project declares its own `release:` block — even an empty `release: {}` — which then inherits the rest of its settings from the resolved env/global config above. A project with no `release:` block never tags or releases, regardless of the global setting; startup logs show the resolved posture per repo (`resolved release policy ... source=project-not-opted-in` vs `source=global`/`...+project-overlay`). See the `projects:` section for the per-project overlay syntax.
 
@@ -1795,7 +1811,7 @@ memory:
 | `projects[].navigator` | bool | `false` | Enable context intelligence for this project |
 | `projects[].github.owner` | string | — | GitHub organization or user |
 | `projects[].github.repo` | string | — | GitHub repository name |
-| `projects[].release` | object | — | Per-project release overlay (opt-in — see below) |
+| `projects[].release` | object | — | Per-project release overlay (opt-in — see below) — any field, e.g. `trigger`, `publish`, `scope_label_prefix`; lets one repo use `on_scope_close`/`publish: api` while others stay on the global default |
 | `default_project` | string | — | Name of the project used when none is specified |
 
 **Release opt-in (GH-4001)**
