@@ -433,12 +433,13 @@ func TestStress_GoroutineStability(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	go poller.Start(ctx)
 
-	// Wait for all issues to process
-	for atomic.LoadInt64(&processedCount) < int64(numIssues) {
-		time.Sleep(50 * time.Millisecond)
-	}
+	// GH-3959: bounded wait instead of an unbounded busy-loop — see memory_test.go's
+	// waitForProcessed doc comment for why an unbounded loop here can hang until the
+	// package's 10m timeout kills the whole `stress` package.
+	waitForProcessed(t, func() int64 { return atomic.LoadInt64(&processedCount) }, int64(numIssues), 12*time.Second)
 
 	cancel()
 	poller.WaitForActive()

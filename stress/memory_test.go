@@ -337,11 +337,19 @@ func TestMemory_LargePayloads(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	go poller.Start(ctx)
 
-	for atomic.LoadInt64(&processedCount) < int64(numIssues) {
-		time.Sleep(100 * time.Millisecond)
-	}
+	// GH-3959: this loop used to busy-wait with no deadline of its own, relying
+	// solely on the poller's 30s ctx. If ctx expired before all issues were
+	// dispatched/processed (e.g. under CI load), startParallel's ctx.Done()
+	// branch stops the dispatch loop for good, processedCount never reaches
+	// numIssues, and this loop spun forever — hanging until the package's 10m
+	// timeout killed the whole `stress` package (server.Close() never reached,
+	// leaving its goroutine parked in httptest.(*Server).goServe). Use the
+	// same bounded waitForProcessed helper the sibling memory tests already
+	// use (TASK-353) so this fails fast with a clear message instead.
+	waitForProcessed(t, func() int64 { return atomic.LoadInt64(&processedCount) }, int64(numIssues), 25*time.Second)
 
 	cancel()
 	poller.WaitForActive()
