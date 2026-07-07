@@ -302,6 +302,29 @@ func TestMemory_LargePayloads(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// mem-048: the poller's dispatch cycle also calls GetIssue (GH-2341 fresh
+		// label re-check) and the merged-work guard (GH-1983/GH-3269: search +
+		// branch lookup) for every candidate. Those routes must be served with
+		// correctly-shaped, cheap responses — otherwise they fall through to the
+		// full 2MB issue-list branch below, which fails to decode into the
+		// expected shape and multiplies large-payload traffic per issue on every
+		// poll tick (known pitfall: unserved routes in the poller poll/dispatch
+		// cycle stall the stress suite).
+		if strings.Contains(r.URL.Path, "/issues/") {
+			parts := strings.Split(r.URL.Path, "/")
+			if n, perr := strconv.Atoi(parts[len(parts)-1]); perr == nil && n >= 1 && n <= numIssues {
+				_ = json.NewEncoder(w).Encode(issues[n-1])
+				return
+			}
+		}
+		if strings.HasPrefix(r.URL.Path, "/search/issues") {
+			_, _ = w.Write([]byte(`{"total_count":0,"items":[]}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/pulls") {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		// C6/TASK-346: paginate-aware mock — full list on page 1, empty after, so
 		// ListIssues pagination terminates instead of looping to maxPages. TASK-353.
 		if p := r.URL.Query().Get("page"); p != "" && p != "1" {
@@ -339,9 +362,11 @@ func TestMemory_LargePayloads(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	go poller.Start(ctx)
 
-	for atomic.LoadInt64(&processedCount) < int64(numIssues) {
-		time.Sleep(100 * time.Millisecond)
-	}
+	// GH-3959: bounded wait (mirrors waitForProcessed used elsewhere in this
+	// file, TASK-353) — an unbounded busy-wait here let any transient dispatch
+	// slowness escalate into a full 10m package-timeout kill instead of a fast,
+	// clear failure.
+	waitForProcessed(t, func() int64 { return atomic.LoadInt64(&processedCount) }, int64(numIssues), 25*time.Second)
 
 	cancel()
 	poller.WaitForActive()
