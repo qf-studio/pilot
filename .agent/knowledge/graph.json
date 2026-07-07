@@ -1499,6 +1499,19 @@
         "summary": "Extraction-era SDK ports go stale vs evolving in-tree code: SDK GetTagForSHA shipped bounded (20 tags) while in-tree moved to exhaustive pagination \u2014 would have stalled release draining. Caught by running the consumer test suite against the SDK client (TestHandleReleasing_ExhaustiveTagDrain). Before cutover: diff SDK methods against CURRENT in-tree source; typed-error/pagination/retry drift compiles fine and fails only behaviorally.",
         "type": "pitfall",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_sdk_ports_go_stale_vs_intree.md"
+      },
+      "mem-089": {
+        "type": "decision",
+        "summary": "GH-3994 subtask 2: decided to honor require_ci uniformly by routing checkExternalMergeOrClose (GH-411 hijack) and ScanRecentlyMergedPRs (scan-recovery) through StagePostMergeCI when require_ci=true, instead of short-circuiting to StageReleasing. Rejected deprecating require_ci and rejected documenting it as webhook-path-only \u2014 both leave the release-before-CI gap live on the majority-case merge paths (external merge, restart scan-recovery). handlePostMergeCI already has the CI-poll -> StageReleasing state machine; the fix reuses it rather than duplicating CI-check logic inline.",
+        "concepts": [
+          "autopilot",
+          "release",
+          "ci"
+        ],
+        "confidence": 0.9,
+        "created": "2026-07-07",
+        "file": ".agent/knowledge/memories/decisions/decision_require_ci_polled_merge_paths.md",
+        "origin_task": "GH-3994-2"
       }
     }
   },
@@ -2411,10 +2424,10 @@
       "TASK-368"
     ]
   },
-  "last_updated": "2026-07-06T12:16:33.258633+00:00",
+  "last_updated": "2026-07-07T22:50:00+00:00",
   "stats": {
-    "total_nodes": 135,
+    "total_nodes": 136,
     "total_edges": 167,
-    "memory_count": 86
+    "memory_count": 87
   }
 }
