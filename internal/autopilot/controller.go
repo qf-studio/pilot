@@ -12,11 +12,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
+
+// alertSink is the minimal interface the controller needs to fire alerts.
+// Satisfied by *alerts.Engine; kept as an interface so tests can inject a
+// fake sink instead of standing up a real engine. GH-3927.
+type alertSink interface {
+	ProcessEvent(alerts.Event)
+}
 
 // approvalPersister is the subset of memory.Store used for approval persistence
 // and execution-event audit-trail writes in the executions / execution_events
@@ -249,6 +257,12 @@ type Controller struct {
 	// can immediately re-mark the issue as processed, closing the merge→done
 	// race window before label propagation catches up.
 	onIssueDone func(issueNumber int)
+
+	// alertsEngine is the alert sink wired via SetAlertsEngine (optional, nil =
+	// alerting disabled for this controller). Consumed by post-tag release
+	// verification (GH-3927). GH-3954: every controller must receive this via
+	// main.go, not just the default one.
+	alertsEngine alertSink
 
 	// cachedBotLogin holds the authenticated GitHub login for the Pilot token.
 	// Populated lazily by getBotLogin; protected by mu. GH-3417.
@@ -608,6 +622,15 @@ func (c *Controller) RestoreState() (int, error) {
 // phantom re-dispatch. GH-3271.
 func (c *Controller) SetOnIssueDone(fn func(issueNumber int)) {
 	c.onIssueDone = fn
+}
+
+// SetAlertsEngine wires an alert sink into the controller so future work
+// (post-tag release verification, GH-3927) can call c.alertsEngine.ProcessEvent
+// instead of silently dropping alert-worthy events. Nil disables alerting for
+// this controller. Must be called once at startup, before Run(), same as
+// SetOnIssueDone above. GH-3954.
+func (c *Controller) SetAlertsEngine(engine alertSink) {
+	c.alertsEngine = engine
 }
 
 // OnPRCreated registers a new PR for autopilot processing.

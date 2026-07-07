@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -43,6 +44,59 @@ func TestNewController(t *testing.T) {
 	}
 	if c.feedbackLoop == nil {
 		t.Error("feedbackLoop should be initialized")
+	}
+}
+
+// fakeAlertSink is a minimal alertSink recorder for tests, avoiding the need
+// to stand up a real *alerts.Engine with a dispatcher.
+type fakeAlertSink struct {
+	events []alerts.Event
+}
+
+func (f *fakeAlertSink) ProcessEvent(event alerts.Event) {
+	f.events = append(f.events, event)
+}
+
+// TestSetAlertsEngine verifies the setter stores the sink, and that separate
+// controllers (as constructed per-repo in cmd/pilot/main.go) each get their
+// own independent engine instead of only the default controller receiving
+// one — GH-3954 fixed a wiring bug where every controller but the default
+// silently had a nil alertsEngine.
+func TestSetAlertsEngine(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+
+	c1 := NewController(cfg, ghClient, nil, "owner", "repo1")
+	c2 := NewController(cfg, ghClient, nil, "owner", "repo2")
+
+	if c1.alertsEngine != nil {
+		t.Fatal("alertsEngine should be nil before SetAlertsEngine is called")
+	}
+
+	sink1 := &fakeAlertSink{}
+	sink2 := &fakeAlertSink{}
+	c1.SetAlertsEngine(sink1)
+	c2.SetAlertsEngine(sink2)
+
+	if c1.alertsEngine != alertSink(sink1) {
+		t.Error("c1.alertsEngine should be sink1")
+	}
+	if c2.alertsEngine != alertSink(sink2) {
+		t.Error("c2.alertsEngine should be sink2")
+	}
+
+	c1.alertsEngine.ProcessEvent(alerts.Event{Type: alerts.EventTypeBudgetWarning})
+	if len(sink1.events) != 1 {
+		t.Errorf("sink1 should have recorded 1 event, got %d", len(sink1.events))
+	}
+	if len(sink2.events) != 0 {
+		t.Errorf("sink2 should have recorded 0 events (independent per-controller wiring), got %d", len(sink2.events))
+	}
+
+	// SetAlertsEngine(nil) must be a safe no-op disable, not a panic.
+	c1.SetAlertsEngine(nil)
+	if c1.alertsEngine != nil {
+		t.Error("alertsEngine should be nil after SetAlertsEngine(nil)")
 	}
 }
 

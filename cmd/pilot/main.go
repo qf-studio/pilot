@@ -746,6 +746,13 @@ Examples:
 					}
 				}
 
+				// GH-3954: wire the alerts engine into the gateway autopilot controller
+				// so it can fire alert-worthy events (e.g. post-tag release verification,
+				// GH-3927) instead of only the default polling-path controller receiving it.
+				if gwAutopilotController != nil && gwAlertsEngine != nil {
+					gwAutopilotController.SetAlertsEngine(gwAlertsEngine)
+				}
+
 				// Create monitor and TUI program for dashboard mode
 				if dashboardMode {
 					gwRunner.SuppressProgressLogs(true)
@@ -2649,6 +2656,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							p.MarkProcessed(n)
 						}
 					})
+				}
+
+				// GH-3954: wire the alerts engine into every controller, not just the
+				// default one — fixes the prior pattern where only autopilotController
+				// (single-repo backwards-compat default) received alerting, leaving every
+				// other project-configured repo's controller unable to fire alerts (e.g.
+				// post-tag release verification, GH-3927).
+				if alertsEngine != nil {
+					for _, ctrl := range autopilotControllers {
+						ctrl.SetAlertsEngine(alertsEngine)
+					}
 				}
 
 				// Wire sub-issue merge-wait so epic sub-issues block until their PR merges (GH-2179)
