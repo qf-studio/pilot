@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -133,6 +134,45 @@ func TestDispatcher_DuplicateTask(t *testing.T) {
 	_, err = dispatcher.QueueTask(ctx, task)
 	if err == nil {
 		t.Error("expected error for duplicate task, got nil")
+	}
+	if !errors.Is(err, ErrTaskAlreadyActive) {
+		t.Errorf("expected err to wrap ErrTaskAlreadyActive, got: %v", err)
+	}
+}
+
+// TestDispatcher_IsActive verifies IsActive uses the same source of truth as
+// QueueTask's duplicate check (GH-4008), so pollers can pre-check before
+// announcing a dispatch attempt.
+func TestDispatcher_IsActive(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	ctx := context.Background()
+
+	if dispatcher.IsActive("TEST-ACTIVE") {
+		t.Error("expected IsActive=false before task is queued")
+	}
+
+	task := &Task{
+		ID:          "TEST-ACTIVE",
+		Title:       "Active Test",
+		Description: "Test description",
+		ProjectPath: "/tmp/test-project",
+	}
+	if _, err := dispatcher.QueueTask(ctx, task); err != nil {
+		t.Fatalf("failed to queue task: %v", err)
+	}
+
+	if !dispatcher.IsActive("TEST-ACTIVE") {
+		t.Error("expected IsActive=true once task is queued")
 	}
 }
 

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -10,7 +12,34 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/memory"
 )
+
+// newHandlerTestDispatcher creates a real dispatcher backed by a temporary
+// on-disk store, matching production schema/migrations, for tests that need
+// to exercise QueueTask/IsActive dedup behavior end-to-end (GH-4008).
+func newHandlerTestDispatcher(t *testing.T) *executor.Dispatcher {
+	t.Helper()
+	tmpDir, err := os.MkdirTemp("", "pilot-test-handler-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+
+	return dispatcher
+}
 
 // TestHandleIssueGeneric_BudgetExceeded verifies that handleIssueGeneric returns early
 // when the budget enforcer is paused, without reaching the execution step.
@@ -91,6 +120,111 @@ func TestHandleIssueGeneric_MonitorRegistration(t *testing.T) {
 	}
 	if state.Title != "Linear task title" {
 		t.Errorf("expected task title %q, got %q", "Linear task title", state.Title)
+	}
+}
+
+// TestHandleIssueGeneric_AlreadyActive_SkipsDispatch verifies that when the
+// dispatcher already has taskID queued/running, handleIssueGeneric returns
+// early — nil error, Success=false, no monitor registration, no QueueTask
+// attempt — instead of announcing a dispatch and then failing with
+// "already queued or running" (GH-4008).
+func TestHandleIssueGeneric_AlreadyActive_SkipsDispatch(t *testing.T) {
+	dispatcher := newHandlerTestDispatcher(t)
+
+	taskID := "GH-4008-ACTIVE"
+	seedTask := &executor.Task{ID: taskID, Title: "seed", ProjectPath: "/tmp/pilot-gh-4008-does-not-exist"}
+	if _, err := dispatcher.QueueTask(context.Background(), seedTask); err != nil {
+		t.Fatalf("failed to seed queued task: %v", err)
+	}
+
+	monitor := executor.NewMonitor()
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
+	info := IssueInfo{TaskID: taskID, Title: "seed", Adapter: "github", LogEmoji: "🐙"}
+	task := &executor.Task{ID: taskID, Title: "seed", Branch: "pilot/" + taskID}
+
+	hr, err := handleIssueGeneric(context.Background(), deps, info, task)
+	if err != nil {
+		t.Fatalf("expected nil error for already-active task, got: %v", err)
+	}
+	if hr.Success {
+		t.Error("expected Success=false for already-active task")
+	}
+	if _, ok := monitor.Get(taskID); ok {
+		t.Error("expected monitor registration to be skipped for an already-active task")
+	}
+}
+
+// TestHandleIssueGeneric_QueueTaskRace_DowngradesToDebug verifies that when
+// QueueTask itself rejects a task as already-active — the TOCTOU race
+// between the pre-check and the enqueue attempt — handleIssueGeneric still
+// returns a nil error instead of propagating the rejection as a failure.
+// info.TaskID and task.ID are deliberately different: the pre-check (keyed
+// on info.TaskID) passes because that ID was never queued, but the actual
+// QueueTask call (keyed on task.ID) hits the already-active task seeded
+// below, deterministically reproducing the race window (GH-4008).
+func TestHandleIssueGeneric_QueueTaskRace_DowngradesToDebug(t *testing.T) {
+	dispatcher := newHandlerTestDispatcher(t)
+
+	activeTaskID := "GH-4008-RACE-ACTUAL"
+	seedTask := &executor.Task{ID: activeTaskID, Title: "seed", ProjectPath: "/tmp/pilot-gh-4008-does-not-exist"}
+	if _, err := dispatcher.QueueTask(context.Background(), seedTask); err != nil {
+		t.Fatalf("failed to seed queued task: %v", err)
+	}
+
+	monitor := executor.NewMonitor()
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
+	info := IssueInfo{TaskID: "GH-4008-RACE-PRECHECK", Title: "race", Adapter: "github", LogEmoji: "🐙"}
+	task := &executor.Task{ID: activeTaskID, Title: "race", Branch: "pilot/" + activeTaskID}
+
+	hr, err := handleIssueGeneric(context.Background(), deps, info, task)
+	if err != nil {
+		t.Fatalf("expected nil error for race-path already-active rejection, got: %v", err)
+	}
+	if hr.Success {
+		t.Error("expected Success=false for race-path already-active rejection")
+	}
+}
+
+// TestHandleIssueGeneric_GenuineQueueFailure_StillErrors verifies that a
+// non-dedup QueueTask failure still propagates as an error — GH-4008 only
+// downgrades the specific "already active" dedup rejection, not real
+// queueing failures.
+func TestHandleIssueGeneric_GenuineQueueFailure_StillErrors(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-handler-fail-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Force a genuine (non-dedup) queueing failure by closing the store's
+	// underlying DB out from under the dispatcher.
+	if err := store.Close(); err != nil {
+		t.Fatalf("failed to close store: %v", err)
+	}
+
+	monitor := executor.NewMonitor()
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
+	taskID := "GH-4008-FAIL"
+	info := IssueInfo{TaskID: taskID, Title: "fail", Adapter: "github", LogEmoji: "🐙"}
+	task := &executor.Task{ID: taskID, Title: "fail", Branch: "pilot/" + taskID}
+
+	_, err = handleIssueGeneric(context.Background(), deps, info, task)
+	if err == nil {
+		t.Fatal("expected error for genuine queue failure, got nil")
+	}
+	if errors.Is(err, executor.ErrTaskAlreadyActive) {
+		t.Errorf("expected a genuine failure, not the already-active dedup rejection: %v", err)
 	}
 }
 

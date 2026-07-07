@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -71,6 +72,19 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	taskID := info.TaskID
 	title := info.Title
 	projectPath := deps.ProjectPath
+
+	// GH-4008: pre-check whether this task is already queued or running,
+	// before any monitor/alert side effects fire. Prevents the noisy
+	// "Dispatching..." + ERROR "already queued or running" pair that
+	// repeated every poll cycle while a task legitimately waited behind
+	// other work — the dispatcher's own duplicate check (QueueTask) remains
+	// the authoritative guard; this is a cheap pre-check to skip the attempt
+	// entirely in the common case.
+	if deps.Dispatcher != nil && deps.Dispatcher.IsActive(taskID) {
+		logging.WithComponent("dispatch").Debug("Task already queued or running, skipping dispatch",
+			slog.String("task_id", taskID))
+		return &HandlerResult{Success: false, BranchName: task.Branch}, nil
+	}
 
 	// 1. Register with monitor
 	if deps.Monitor != nil {
@@ -145,7 +159,16 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	if deps.Dispatcher != nil {
 		execID, qErr := deps.Dispatcher.QueueTask(ctx, task)
 		if qErr != nil {
-			execErr = fmt.Errorf("failed to queue task: %w", qErr)
+			if errors.Is(qErr, executor.ErrTaskAlreadyActive) {
+				// GH-4008: race between the pre-check above and QueueTask's own
+				// guard — expected dedup, not a failure. Downgrade to Debug so
+				// it never surfaces as an ERROR to callers (e.g. the SDK poller
+				// logs "Failed to process issue" on any non-nil handler error).
+				logging.WithComponent("dispatch").Debug("Task already queued or running (race), skipping dispatch",
+					slog.String("task_id", taskID), slog.Any("error", qErr))
+			} else {
+				execErr = fmt.Errorf("failed to queue task: %w", qErr)
+			}
 		} else {
 			if deps.Monitor != nil {
 				deps.Monitor.Queue(taskID)
