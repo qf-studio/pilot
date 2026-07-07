@@ -1570,6 +1570,68 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 }
 
+// checkAlreadyMergedBranch consults FindMergedPRByBranch on the direct
+// (non-epic) execution path, BEFORE push+CreatePR. GH-4022: mirrors the
+// TASK-359 Shape C short-circuit on the epic finalization path
+// (finalizeEpicBranchPR above, Shape C check), which runs the same lookup
+// AFTER push. The direct path must check first: a retried/duplicate dispatch
+// of a branch whose PR already merged may find autopilot has already deleted
+// the remote branch, so push would fail (or resurrect stale work) here.
+//
+// On a hit, the existing PR's pr_created + merged events are recorded so the
+// execution row carries a deliverable reference instead of stranding with an
+// empty pr_url and possibly opening a second PR for the same work.
+// Regression shape: execution 76c1c97f (retried dispatch raced a merge and
+// opened a duplicate PR because the direct path never re-checked branch state
+// before push+create).
+func (r *Runner) checkAlreadyMergedBranch(ctx context.Context, git *GitOperations, task *Task, result *ExecutionResult, recorder *replay.Recorder) bool {
+	mergedURL, mergedErr := git.FindMergedPRByBranch(ctx, task.Branch)
+	if mergedErr != nil || mergedURL == "" {
+		return false
+	}
+	result.PRUrl = mergedURL
+	r.log.Info("Branch already merged, skipping push and PR creation",
+		slog.String("task_id", task.ID),
+		slog.String("branch", task.Branch),
+		slog.String("pr_url", mergedURL),
+	)
+	r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("work already merged: %s", mergedURL))
+	r.saveLogEntry(task.LogExecutionID(), "info", "branch already merged, existing PR: "+mergedURL)
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StagePRCreated, "pr already exists (pre-push merge check): "+mergedURL)
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StageMerged, "branch already merged: "+mergedURL)
+	if recorder != nil {
+		recorder.SetPRUrl(mergedURL)
+	}
+	return true
+}
+
+// adoptOpenBranchPR consults FindOpenPRByBranch on the direct execution path,
+// AFTER push (the branch must exist on the remote for gh CLI to find it) but
+// BEFORE CreatePR. GH-4022: a retried dispatch that already pushed this
+// branch in a prior run may find an open PR awaiting review — reuse it
+// instead of racing gh CLI into a duplicate PR for the same branch. Unlike
+// checkAlreadyMergedBranch, push still runs first here so any new commits
+// from this run reach the existing open PR.
+func (r *Runner) adoptOpenBranchPR(ctx context.Context, git *GitOperations, task *Task, result *ExecutionResult, recorder *replay.Recorder) bool {
+	openURL, openErr := git.FindOpenPRByBranch(ctx, task.Branch)
+	if openErr != nil || openURL == "" {
+		return false
+	}
+	result.PRUrl = openURL
+	r.log.Info("Branch already has an open PR, adopting instead of creating a duplicate",
+		slog.String("task_id", task.ID),
+		slog.String("branch", task.Branch),
+		slog.String("pr_url", openURL),
+	)
+	r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("adopted existing PR: %s", openURL))
+	r.saveLogEntry(task.LogExecutionID(), "info", "adopted existing open PR: "+openURL)
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StagePRCreated, "adopted existing open pr: "+openURL)
+	if recorder != nil {
+		recorder.SetPRUrl(openURL)
+	}
+	return true
+}
+
 // classifyZeroDeliveryEpicCompletion reclassifies an epic-parent result that
 // reports Success=true but carries no evidence any real work happened —
 // zero tokens burned by Claude (planning or children), zero files changed,
@@ -3721,6 +3783,14 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// Create PR if requested and we have commits
 			r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")
 
+			// GH-4022: an already-merged branch short-circuits push+CreatePR —
+			// must run BEFORE the no-commits guard below and before push, since a
+			// merged branch may already be deleted on the remote (see
+			// checkAlreadyMergedBranch doc comment).
+			if r.checkAlreadyMergedBranch(ctx, git, task, result, recorder) {
+				return result, nil
+			}
+
 			// Determine base branch before the no-commits guard.
 			baseBranch := task.BaseBranch
 			if baseBranch == "" {
@@ -3838,6 +3908,14 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 					return result, nil
 				}
+			}
+
+			// GH-4022: adopt an already-open PR for this branch (e.g. a retried
+			// dispatch that pushed in a prior run) instead of racing gh CLI into a
+			// duplicate PR. Runs after push so the branch is guaranteed to exist on
+			// the remote for the gh CLI lookup.
+			if r.adoptOpenBranchPR(ctx, git, task, result, recorder) {
+				return result, nil
 			}
 
 			r.reportProgress(task.ID, "Creating PR", 98, "Creating pull request...")
