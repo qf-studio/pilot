@@ -12,6 +12,15 @@ import (
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
+// closesIssueRegex extracts the issue number from a "Closes #N" (or
+// Fixes/Resolves, singular or plural) reference in a PR body — the
+// convention Pilot's own PR bodies use when created from a source issue
+// (internal/executor/runner.go). Best-effort: a member PR with no such
+// reference (e.g. a human-authored merge) simply gets Issue == 0 in its
+// ScopeMember, which BuildScopeReleaseNotes renders without the GH-<N> half
+// of the attribution (GH-3992).
+var closesIssueRegex = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)`)
+
 // maxScopeReleaseAttempts caps how many times a scope-release carrier may fail
 // (post-merge CI red/timeout, or a handleReleasing escalation) before the
 // scope is given up on and flagged for human attention via a
@@ -261,6 +270,37 @@ func (c *Controller) scopeReleaseCommits(ctx context.Context, owner, repo string
 	c.log.Warn("scope release: member commit union empty, falling back to compare against last tag",
 		"scope", prState.ScopeKey, "last_tag", lastTag, "head_sha", ShortSHA(prState.HeadSHA))
 	return c.ghClient.CompareCommits(ctx, owner, repo, lastTag, prState.HeadSHA)
+}
+
+// buildScopeMembers resolves each member PR's own commits and, best-effort,
+// the GitHub issue it closed (parsed from the PR body via closesIssueRegex)
+// so BuildScopeReleaseNotes can render exact per-entry "(#PR, GH-Issue)"
+// attribution. A per-member lookup failure logs a warning and leaves that
+// member with a zero Issue / empty Commits rather than failing the whole
+// scope release — the deterministic notes are best-effort, matching
+// scopeReleaseCommits' own per-member tolerance (GH-3992).
+func (c *Controller) buildScopeMembers(ctx context.Context, owner, repo string, memberPRs []int) []ScopeMember {
+	members := make([]ScopeMember, 0, len(memberPRs))
+	for _, pr := range memberPRs {
+		member := ScopeMember{PR: pr}
+
+		if commits, err := c.ghClient.GetPRCommits(ctx, owner, repo, pr); err != nil {
+			c.log.Warn("buildScopeMembers: failed to fetch member PR commits", "pr", pr, "error", err)
+		} else {
+			member.Commits = commits
+		}
+
+		if pull, err := c.ghClient.GetPullRequest(ctx, owner, repo, pr); err != nil {
+			c.log.Warn("buildScopeMembers: failed to fetch member PR for issue attribution", "pr", pr, "error", err)
+		} else if m := closesIssueRegex.FindStringSubmatch(pull.Body); m != nil {
+			if n, convErr := strconv.Atoi(m[1]); convErr == nil {
+				member.Issue = n
+			}
+		}
+
+		members = append(members, member)
+	}
+	return members
 }
 
 // markScopeReleaseDone records a scope carrier's successful (or no-op)

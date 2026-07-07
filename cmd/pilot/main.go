@@ -657,6 +657,12 @@ Examples:
 							// GH-2685: wire the controller as the approval state writer so
 							// async approval decisions update the in-memory PRState.
 							approvalMgr.WithStateWriter(gwAutopilotController)
+							// GH-3992: wire the LLM release summary generator — nil (graceful
+							// no-op) when ANTHROPIC_API_KEY is unset, matching
+							// NewReleaseSummaryGenerator's documented degradation.
+							gwAutopilotController.SetReleaseSummaryGenerator(
+								autopilot.NewReleaseSummaryGenerator(apGHClient, os.Getenv("ANTHROPIC_API_KEY"), logging.WithComponent("autopilot")),
+							)
 						}
 					}
 				}
@@ -1650,6 +1656,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// stays for the approval handler and legacy paths until later phases.
 			apGHClient := githubSDK.NewClient(ghToken)
 
+			// GH-3992: one shared LLM release summary generator for every
+			// controller constructed below (default + per-project) — nil
+			// (graceful no-op) when ANTHROPIC_API_KEY is unset.
+			releaseSummaryGen := autopilot.NewReleaseSummaryGenerator(apGHClient, os.Getenv("ANTHROPIC_API_KEY"), logging.WithComponent("autopilot"))
+
 			// GH-1870: Build board sync option for autopilot controllers.
 			var autopilotBoardOpts []autopilot.ControllerOption
 			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
@@ -1695,6 +1706,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 						parts[1],
 						ctrlOpts...,
 					)
+					controller.SetReleaseSummaryGenerator(releaseSummaryGen)
 					autopilotControllers[cfg.Adapters.GitHub.Repo] = controller
 					autopilotController = controller // Default for backwards compat
 				}
@@ -1743,6 +1755,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					proj.GitHub.Repo,
 					ctrlOpts...,
 				)
+				controller.SetReleaseSummaryGenerator(releaseSummaryGen)
 				autopilotControllers[repoFullName] = controller
 				logging.WithComponent("autopilot").Info("created controller for project",
 					slog.String("project", proj.Name),

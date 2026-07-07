@@ -59,7 +59,7 @@ func TestAfterTagCreated_WorkflowMode_ReleaseAppears(t *testing.T) {
 	c.SetAlertsEngine(sink)
 
 	rel := &ReleaseConfig{Publish: ReleasePublishWorkflow, VerifyRelease: boolPtr(true), VerifyTimeout: time.Second}
-	c.verifyReleaseAfterTag(context.Background(), "owner", "repo", "v1.2.3", 42, 7, nil, rel, 5*time.Millisecond, 500*time.Millisecond)
+	c.verifyReleaseAfterTag(context.Background(), "owner", "repo", "v1.2.3", 42, 7, nil, rel, 5*time.Millisecond, 500*time.Millisecond, "")
 
 	if len(sink.events) != 0 {
 		t.Errorf("expected no alert when the release appears in time, got %d events", len(sink.events))
@@ -90,7 +90,7 @@ func TestAfterTagCreated_WorkflowMode_Timeout_FiresAlert(t *testing.T) {
 	c.SetAlertsEngine(sink)
 
 	rel := &ReleaseConfig{Publish: ReleasePublishWorkflow, VerifyRelease: boolPtr(true), VerifyTimeout: 20 * time.Millisecond}
-	c.verifyReleaseAfterTag(context.Background(), "owner", "repo", "v9.9.9", 42, 7, nil, rel, 5*time.Millisecond, 20*time.Millisecond)
+	c.verifyReleaseAfterTag(context.Background(), "owner", "repo", "v9.9.9", 42, 7, nil, rel, 5*time.Millisecond, 20*time.Millisecond, "")
 
 	if len(sink.events) != 1 {
 		t.Fatalf("expected exactly 1 release_missing event, got %d", len(sink.events))
@@ -103,7 +103,7 @@ func TestAfterTagCreated_WorkflowMode_Timeout_FiresAlert(t *testing.T) {
 	}
 
 	// Same tag again — dedup must suppress a second event.
-	c.verifyReleaseAfterTag(context.Background(), "owner", "repo", "v9.9.9", 42, 7, nil, rel, 5*time.Millisecond, 20*time.Millisecond)
+	c.verifyReleaseAfterTag(context.Background(), "owner", "repo", "v9.9.9", 42, 7, nil, rel, 5*time.Millisecond, 20*time.Millisecond, "")
 	if len(sink.events) != 1 {
 		t.Errorf("dedup: expected still exactly 1 event after re-verifying the same tag, got %d", len(sink.events))
 	}
@@ -121,7 +121,7 @@ func TestAfterTagCreated_WorkflowMode_VerifyDisabled_NoAlert(t *testing.T) {
 	c.SetAlertsEngine(sink)
 
 	rel := &ReleaseConfig{Publish: ReleasePublishWorkflow, VerifyRelease: boolPtr(false), VerifyTimeout: 20 * time.Millisecond}
-	c.verifyReleaseAfterTag(context.Background(), "owner", "repo", "v5.5.5", 1, 0, nil, rel, 5*time.Millisecond, 20*time.Millisecond)
+	c.verifyReleaseAfterTag(context.Background(), "owner", "repo", "v5.5.5", 1, 0, nil, rel, 5*time.Millisecond, 20*time.Millisecond, "")
 
 	if len(sink.events) != 0 {
 		t.Errorf("expected no alert when VerifyRelease is explicitly false, got %d events", len(sink.events))
@@ -144,7 +144,7 @@ func TestAfterTagCreated_TagOnly_NoPolling(t *testing.T) {
 	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
 
 	rel := &ReleaseConfig{Publish: ReleasePublishTagOnly, VerifyRelease: boolPtr(true), VerifyTimeout: time.Second}
-	c.afterTagCreated("owner", "repo", "v1.0.0", 1, 0, nil, rel)
+	c.afterTagCreated("owner", "repo", "v1.0.0", 1, 0, nil, rel, "")
 
 	// afterTagCreated returns synchronously without launching a goroutine for
 	// tag_only, so no sleep/wait is needed before asserting.
