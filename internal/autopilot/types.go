@@ -371,6 +371,15 @@ type ReleaseConfig struct {
 	// behaves like "workflow". See internal/config Config.Validate for the
 	// enum check (GH-3930).
 	Publish string `yaml:"publish,omitempty"`
+	// VerifyRelease controls post-tag verification that a GitHub Release
+	// actually appears (GH-3927). Nil defers to VerifyReleaseEnabled's
+	// per-publish-mode default (true in "workflow" mode); explicit false
+	// opts out regardless of mode.
+	VerifyRelease *bool `yaml:"verify_release,omitempty"`
+	// VerifyTimeout bounds how long post-tag verification polls for the
+	// release to appear before firing a release_missing alert. Zero means
+	// unset; DefaultReleaseConfig sets the 10m default (GH-3927).
+	VerifyTimeout time.Duration `yaml:"verify_timeout,omitempty"`
 }
 
 // Publish mode values for ReleaseConfig.Publish / ProjectReleaseConfig.Publish (GH-3926).
@@ -396,6 +405,21 @@ func (r *ReleaseConfig) PublishMode() string {
 	return r.Publish
 }
 
+// VerifyReleaseEnabled resolves whether post-tag release verification
+// (GH-3927) should run. An explicit VerifyRelease always wins; an unset
+// (nil) value defaults to true only in "workflow" publish mode, since that
+// is the mode where the chain can break silently after the tag (a broken
+// or missing release workflow). A nil receiver returns false.
+func (r *ReleaseConfig) VerifyReleaseEnabled() bool {
+	if r == nil {
+		return false
+	}
+	if r.VerifyRelease != nil {
+		return *r.VerifyRelease
+	}
+	return r.PublishMode() == ReleasePublishWorkflow
+}
+
 // ProjectReleaseConfig overlays release settings for a single project on top
 // of the global and per-environment ReleaseConfig blocks. Unset fields
 // inherit the base value — e.g. a project may override Publish while leaving
@@ -416,6 +440,10 @@ type ProjectReleaseConfig struct {
 	GenerateChangelog *bool `yaml:"generate_changelog,omitempty"`
 	// NotifyOnRelease overrides ReleaseConfig.NotifyOnRelease for this project. Nil inherits.
 	NotifyOnRelease *bool `yaml:"notify_on_release,omitempty"`
+	// VerifyRelease overrides ReleaseConfig.VerifyRelease for this project. Nil inherits.
+	VerifyRelease *bool `yaml:"verify_release,omitempty"`
+	// VerifyTimeout overrides ReleaseConfig.VerifyTimeout for this project. Zero inherits.
+	VerifyTimeout time.Duration `yaml:"verify_timeout,omitempty"`
 }
 
 // Apply overlays this project-level config on top of base (the resolved
@@ -459,6 +487,12 @@ func (p *ProjectReleaseConfig) Apply(base *ReleaseConfig) *ReleaseConfig {
 	if p.NotifyOnRelease != nil {
 		result.NotifyOnRelease = *p.NotifyOnRelease
 	}
+	if p.VerifyRelease != nil {
+		result.VerifyRelease = p.VerifyRelease
+	}
+	if p.VerifyTimeout != 0 {
+		result.VerifyTimeout = p.VerifyTimeout
+	}
 	return &result
 }
 
@@ -473,6 +507,7 @@ func DefaultReleaseConfig() *ReleaseConfig {
 		NotifyOnRelease:   true,
 		RequireCI:         true,
 		GenerateSummary:   true,
+		VerifyTimeout:     10 * time.Minute,
 	}
 }
 
