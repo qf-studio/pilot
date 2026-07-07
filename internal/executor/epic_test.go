@@ -2517,6 +2517,54 @@ func TestRunner_Execute_EpicRecoversThenExecutesOpenChildren(t *testing.T) {
 	}
 }
 
+// TestExecuteSubIssuesTracked_TouchesParentProgressPerChild is a wiring
+// regression test for GH-4033: executeSubIssuesTracked must report progress
+// under the PARENT's own task ID as each child sub-issue starts executing,
+// not just once before the sequential loop begins. UpdateIssueProgress (a
+// `gh issue comment` call) never reaches the alerts engine, so without this
+// touch the parent's stuck-monitor entry (internal/alerts/engine.go
+// taskLastProgress) goes stale for the entire sequential run and can be
+// falsely evicted as an orphan while a child is still actively executing
+// (see internal/alerts/engine_test.go
+// TestEngine_EvaluateStuckTasks_EpicParentRefreshedByChildExecution for the
+// eviction-level regression test).
+func TestExecuteSubIssuesTracked_TouchesParentProgressPerChild(t *testing.T) {
+	r := NewRunner()
+	r.skipPreflightChecks = true
+	r.dryRun = true // UpdateIssueProgress becomes a no-op instead of shelling out to gh
+
+	processor := &fakeAlertProcessor{}
+	r.SetAlertProcessor(processor)
+
+	r.executeFunc = func(_ context.Context, task *Task) (*ExecutionResult, error) {
+		return &ExecutionResult{TaskID: task.ID, Success: true}, nil
+	}
+
+	parent := &Task{ID: "GH-4021", ProjectPath: "/test/project"}
+	issues := []CreatedIssue{
+		{Number: 4022, Identifier: "4022", URL: "https://github.com/o/r/issues/4022",
+			Subtask: PlannedSubtask{Title: "part 1", Description: "do part 1"}},
+		{Number: 4023, Identifier: "4023", URL: "https://github.com/o/r/issues/4023",
+			Subtask: PlannedSubtask{Title: "part 2", Description: "do part 2"}},
+	}
+
+	_, _, err := r.executeSubIssuesTracked(context.Background(), parent, issues, "/test/project", "/test/project")
+	if err != nil {
+		t.Fatalf("executeSubIssuesTracked returned unexpected error: %v", err)
+	}
+
+	var parentProgressEvents int
+	for _, e := range processor.events {
+		if e.Type == AlertEventTypeTaskProgress && e.TaskID == parent.ID {
+			parentProgressEvents++
+		}
+	}
+	if parentProgressEvents < len(issues) {
+		t.Errorf("expected at least %d task_progress events for parent %s (one per child start), got %d",
+			len(issues), parent.ID, parentProgressEvents)
+	}
+}
+
 // staticAllowlist is a test helper that allows a fixed set of "owner/repo"
 // pairs. projectPath comparison is ignored (tests don't need that dimension).
 type staticAllowlist struct {
