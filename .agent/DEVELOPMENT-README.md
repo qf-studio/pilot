@@ -120,7 +120,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.222.2 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.223.0 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (July 3–4 2026):** **29-hour autonomous shift on Pilot's own codebase — ~60 PRs / 25 releases (v2.201.2 → v2.213.x). Runtime self-verification (TASK-379, all 8 waves) + restart/epic defect burn-down (TASK-382) SHIPPED; onboarding hardening (TASK-378) advanced.** (Earlier June detail below.)
 - **Runtime self-verification — [TASK-379](tasks/TASK-379-runtime-self-verification.md) SHIPPED (V1–V8):** live auth probes in `doctor`/`/ready` + fail-loud degraded paths (V1–V3), 401-escalation + disabled-subsystem panel + config redaction (V4), execution-ledger consistency + `execution_events` + `pilot trace` + dashboard strip (V5/V6), shared Anthropic request builder retiring the #3700/#3703 400-class (V7), and a **scheduled synthetic end-to-end canary** (V8) on sandbox `qf-studio/pilot-canary-sandbox` — **validated live** (issue→daemon→PR→merge, `workflow_dispatch` run `28713784142`). Two first-run bugs caught & fixed on main (#3866 poll-step `gh --jq --arg`, #3869 spec-completeness header gate). Canary cron `disabled_manually` pending an auto-merge design decision (merge automation is project-specific). Retires the wiring-bug class from AUDIT-2026-05-25.
