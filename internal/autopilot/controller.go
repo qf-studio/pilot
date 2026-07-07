@@ -3839,15 +3839,27 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			continue
 		}
 
-		// Create PR state and trigger release
+		// Create PR state and trigger release. GH-3994: honor require_ci on the
+		// scan-recovery path too — route through the existing post-merge CI
+		// poll/gate instead of hardcoding CIStatus: CISuccess (a lie when CI was
+		// never actually checked) and short-circuiting straight to StageReleasing.
+		stage := StageReleasing
+		ciStatus := CISuccess // Assume CI passed if merged, unless require_ci gates it below
+		postMergeSHA := ""
+		if releaseEnabled && rel.RequireCI {
+			stage = StagePostMergeCI
+			ciStatus = ""
+			postMergeSHA = pr.MergeCommitSHA
+		}
 		prState := &PRState{
 			PRNumber:        pr.Number,
 			PRURL:           pr.HTMLURL,
 			IssueNumber:     issueNum,
 			BranchName:      pr.Head.Ref,
 			HeadSHA:         pr.MergeCommitSHA,
-			Stage:           StageReleasing,
-			CIStatus:        CISuccess, // Assume CI passed if merged
+			Stage:           stage,
+			CIStatus:        ciStatus,
+			PostMergeSHA:    postMergeSHA,
 			CreatedAt:       time.Now(),
 			EnvironmentName: c.config.EnvironmentName(),
 			PRTitle:         pr.Title,
@@ -4206,7 +4218,17 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 				if ghPR.MergeCommitSHA != "" {
 					prState.HeadSHA = ghPR.MergeCommitSHA
 				}
-				prState.Stage = StageReleasing
+				// GH-3994: honor require_ci on the external-merge hijack path —
+				// route through the existing post-merge CI poll/gate instead of
+				// short-circuiting straight to StageReleasing. The merge commit
+				// SHA is already known, so seed PostMergeSHA directly rather than
+				// letting handlePostMergeCI's first-tick GetBranch lookup re-derive it.
+				if c.resolvedRelease().RequireCI {
+					prState.PostMergeSHA = ghPR.MergeCommitSHA
+					prState.Stage = StagePostMergeCI
+				} else {
+					prState.Stage = StageReleasing
+				}
 				c.persistPRState(prState)
 				return false // Continue processing to handle release
 			}

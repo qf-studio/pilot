@@ -70,3 +70,15 @@ fix — they must be updated in lockstep, not left passing against dead code.
 
 Related: [[pitfall_release_before_ci_polled_merge_paths]] (if filed),
 `.agent/tasks/archive/gh-3994-1.md`, `.agent/tasks/gh-3994-2.md`.
+
+**Shipped (GH-3994 subtask 5, 2026-07-07):** both sites now gate on
+`c.resolvedRelease().RequireCI` exactly as specified above —
+`checkExternalMergeOrClose` (controller.go, GH-411 block) and
+`ScanRecentlyMergedPRs` (controller.go, scan-recovery block) route to
+`StagePostMergeCI` with `PostMergeSHA` seeded from the already-known merge
+commit SHA when `true`, and keep the direct `StageReleasing` short-circuit
+(scan path's `CIStatus: CISuccess` included) when `false`. Subtask 1's repro
+tests (`internal/autopilot/controller_require_ci_repro_test.go`) were
+rewritten in lockstep to pin the fixed behavior instead of the bug; subtask
+3's `require_ci: false` regression test
+(`controller_gh411_release_trigger_pin_test.go`) passes unmodified.
