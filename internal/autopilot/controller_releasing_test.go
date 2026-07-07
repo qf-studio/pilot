@@ -687,6 +687,121 @@ func TestHandleReleasing_RetryCapEscalates(t *testing.T) {
 	}
 }
 
+// TestHandleReleasing_HumanPR_NoIssueComment verifies GH-3928: a scanner-registered
+// human PR (IssueNumber == 0, no linked GitHub issue) never attempts to post an
+// issue comment — neither on the escalation path (retry cap) nor on the happy
+// path (clean tag + publish).
+func TestHandleReleasing_HumanPR_NoIssueComment(t *testing.T) {
+	t.Run("escalation path", func(t *testing.T) {
+		commentPosted := false
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+				// Persistent API failure on every tag lookup forces escalation.
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"server error"}`))
+			case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
+				commentPosted = true
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(github.PRComment{ID: 1})
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		cfg.Environment = EnvStage
+		cfg.MaxReleasingAttempts = 3
+		cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", TagPrefix: "v", TagHumanMerges: true}
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+		prState := &PRState{
+			PRNumber:          920,
+			HeadSHA:           "humansha920",
+			IssueNumber:       0, // human-authored branch, no linked issue
+			Stage:             StageReleasing,
+			ReleasingAttempts: 2, // next call increments to 3 == cap
+		}
+		c.mu.Lock()
+		c.activePRs[920] = prState
+		c.mu.Unlock()
+
+		if err := c.handleReleasing(context.Background(), prState); err != nil {
+			t.Fatalf("at cap, handleReleasing must return nil (not error), got: %v", err)
+		}
+		if prState.Stage != StageFailed {
+			t.Errorf("Stage = %s, want StageFailed after retry cap", prState.Stage)
+		}
+		if commentPosted {
+			t.Error("escalation comment must NOT be posted when IssueNumber == 0 (human PR, no linked issue)")
+		}
+	})
+
+	t.Run("happy path", func(t *testing.T) {
+		commentPosted := false
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
+				commentPosted = true
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(github.PRComment{ID: 1})
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/releases/latest"):
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(github.Release{TagName: "v1.0.0"})
+			case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat: add a thing")})
+			case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"name":   "main",
+					"commit": map[string]string{"sha": "humanprmainsha"},
+				})
+			case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "ahead"})
+			case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+				w.WriteHeader(http.StatusCreated)
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+		}))
+		defer server.Close()
+
+		c := newReleasingControllerWithPublish(t, server.URL, "tag_only")
+		prState := &PRState{
+			PRNumber:     930,
+			HeadSHA:      "humansha930",
+			IssueNumber:  0, // human-authored branch, no linked issue
+			BranchName:   "feat/human-change",
+			TargetBranch: "main",
+			Stage:        StageReleasing,
+		}
+		c.mu.Lock()
+		c.activePRs[930] = prState
+		c.mu.Unlock()
+
+		if err := c.handleReleasing(context.Background(), prState); err != nil {
+			t.Fatalf("handleReleasing returned error: %v", err)
+		}
+		if prState.ReleaseVersion == "" {
+			t.Error("expected a release version to be computed (feat commit should bump minor)")
+		}
+		if commentPosted {
+			t.Error("no issue comment should ever be posted for a human PR with IssueNumber == 0")
+		}
+		c.mu.RLock()
+		_, tracked := c.activePRs[930]
+		c.mu.RUnlock()
+		if tracked {
+			t.Error("PR must drain from activePRs after a successful tag")
+		}
+	})
+}
+
 // TestHandleReleasing_RetryCapBelowCapReturnsError verifies that a failure when
 // ReleasingAttempts is still below MaxReleasingAttempts returns a retryable error
 // rather than escalating to StageFailed.

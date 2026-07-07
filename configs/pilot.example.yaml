@@ -506,10 +506,11 @@ projects:
   #     owner: "qf-studio"
   #     repo: "studio-sdk"
   #   release:
-  #     publish: api    # only set publish: api on repos with NO tag-triggered release
-  #                     # workflow - pre-creating the release makes GoReleaser's asset
-  #                     # upload 422-collide and silently skips downstream publish steps
-  #                     # (Homebrew tap). Repos with GoReleaser must stay workflow.
+  #     publish: api            # only set publish: api on repos with NO tag-triggered release
+  #                             # workflow - pre-creating the release makes GoReleaser's asset
+  #                             # upload 422-collide and silently skips downstream publish steps
+  #                             # (Homebrew tap). Repos with GoReleaser must stay workflow.
+  #     tag_human_merges: true  # opt this repo into tagging human-authored merges too (GH-3928)
 
 # Autopilot settings
 autopilot:
@@ -546,6 +547,20 @@ autopilot:
     #   tag_only  - the tag is created and nothing publishes a release; use
     #             for repos with an intentionally manual release process.
     publish: workflow
+    # Opt-in: also tag releases for merged PRs whose head branch is NOT
+    # pilot/* (GH-3928). Default false - existing configs see zero behavior
+    # change; only pilot/* merges are scanned for release candidates.
+    #
+    # When enabled, ScanRecentlyMergedPRs additionally considers PRs merged
+    # by a human directly into the environment's default branch. Because PRs
+    # are almost always squash-merged, the PR TITLE becomes the squash
+    # commit's subject line - so a conventional-commit PR title (e.g.
+    # "feat: add rate limiting") drives the version bump exactly like a
+    # pilot/* branch's commits do, and a non-conventional title (e.g. "Fix
+    # typo") produces no release (DetectBumpType -> BumpNone). Merge-success
+    # metrics, execution self-heal, and project-board write-back only ever
+    # fire for pilot/* PRs - human merges are release candidates only.
+    tag_human_merges: false
 
   # Define named environment configurations
   # Each environment can have different branch, approval, and CI settings
