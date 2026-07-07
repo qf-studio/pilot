@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/qf-studio/pilot/internal/ghissue"
@@ -11,6 +12,63 @@ import (
 	"github.com/qf-studio/pilot/internal/text"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
+
+// ciFailureExcerptRe matches the start of an actionable CI failure: a Go test
+// failure header, a panic, or a GitHub Actions error annotation. These lines
+// are typically prefixed by a runner timestamp, so the patterns are not
+// anchored to line start.
+var ciFailureExcerptRe = regexp.MustCompile(`--- FAIL:|panic:|##\[error\]`)
+
+// maxCIErrorExcerptChars caps the size of the CI Error Logs section embedded
+// in fix-request issue bodies to stay well within GitHub's issue body limit.
+const maxCIErrorExcerptChars = 4000
+
+// ciFailureExcerptFallbackLines is how many trailing lines to keep when no
+// failure marker is found in the log (e.g. plain build/lint output).
+const ciFailureExcerptFallbackLines = 150
+
+// extractFailureExcerpt returns the actionable slice of CI logs to embed in a
+// fix-request issue body: from the first failure marker onward (this
+// naturally includes the trailing `FAIL <pkg>` summary since it always
+// follows the failure in a Go test log), or the last N lines when no marker
+// is found.
+//
+// GH-3958: excerpting from the head of the log only captured GitHub Actions
+// runner-provisioning preamble ("Current runner version", "Runner Image
+// Provisioner"...) and never the actual failure, which sits near the end of
+// the log. Every auto-generated fix issue self-rejected as vague as a result.
+func extractFailureExcerpt(logs string, maxChars int) string {
+	lines := strings.Split(logs, "\n")
+
+	start := -1
+	for i, line := range lines {
+		if ciFailureExcerptRe.MatchString(line) {
+			start = i
+			break
+		}
+	}
+
+	var excerpt []string
+	switch {
+	case start >= 0:
+		if start > 3 {
+			start -= 3 // small lead-in context before the failure marker
+		} else {
+			start = 0
+		}
+		excerpt = lines[start:]
+	case len(lines) > ciFailureExcerptFallbackLines:
+		excerpt = lines[len(lines)-ciFailureExcerptFallbackLines:]
+	default:
+		excerpt = lines
+	}
+
+	result := strings.Join(excerpt, "\n")
+	if len(result) > maxChars {
+		result = result[:maxChars] + "\n... (truncated)"
+	}
+	return result
+}
 
 // FeedbackLoop creates issues when CI fails or bugs are detected.
 // It closes the autonomous loop by automatically creating fix issues
@@ -168,12 +226,7 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 	if logs != "" {
 		sb.WriteString("<details><summary>CI Error Logs</summary>\n\n")
 		sb.WriteString("```\n")
-		if len(logs) > 2000 {
-			sb.WriteString(logs[:2000])
-			sb.WriteString("\n... (truncated)")
-		} else {
-			sb.WriteString(logs)
-		}
+		sb.WriteString(extractFailureExcerpt(logs, maxCIErrorExcerptChars))
 		sb.WriteString("\n```\n\n")
 		sb.WriteString("</details>\n\n")
 	}

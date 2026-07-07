@@ -3,6 +3,7 @@ package autopilot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -1228,6 +1229,136 @@ func TestCreateReviewIssue(t *testing.T) {
 	}
 	if !strings.Contains(createdBody, "autopilot-meta") {
 		t.Error("body should contain autopilot-meta")
+	}
+}
+
+// TestExtractFailureExcerpt_FailureAtEnd covers GH-3958: fix-request issues
+// were excerpting from the head of the CI log (runner-provisioning preamble)
+// instead of the actual failure, which sits at the end of a Go test log.
+func TestExtractFailureExcerpt_FailureAtEnd(t *testing.T) {
+	provisioningPreamble := strings.Repeat(
+		"Current runner version: '2.319.1'\nRunner Image Provisioner\nRunner Image: ubuntu-24.04\n", 40,
+	)
+	normalTestOutput := strings.Repeat("=== RUN   TestSomethingUnrelated\n--- PASS: TestSomethingUnrelated (0.00s)\n", 30)
+
+	tests := []struct {
+		name        string
+		logs        string
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name: "go test FAIL block at end of log",
+			logs: provisioningPreamble + normalTestOutput +
+				"--- FAIL: TestFoo (0.00s)\n" +
+				"    foo_test.go:42: assertion failed: got 1, want 2\n" +
+				"FAIL\n" +
+				"FAIL\tgithub.com/qf-studio/pilot/internal/foo\t0.004s\n",
+			wantContain: []string{
+				"--- FAIL: TestFoo",
+				"assertion failed: got 1, want 2",
+				"FAIL\tgithub.com/qf-studio/pilot/internal/foo",
+			},
+			wantAbsent: []string{"Current runner version", "Runner Image Provisioner"},
+		},
+		{
+			name: "panic timeout at end of log (GH-3956 shape)",
+			logs: provisioningPreamble + normalTestOutput +
+				"panic: test timed out after 10m0s\n" +
+				"\nrunning tests:\n\tTestMemory_LargePayloads (9m50s)\n" +
+				"FAIL\tgithub.com/qf-studio/pilot/internal/stress\t600.012s\n",
+			wantContain: []string{
+				"panic: test timed out after 10m0s",
+				"TestMemory_LargePayloads",
+				"FAIL\tgithub.com/qf-studio/pilot/internal/stress",
+			},
+			wantAbsent: []string{"Current runner version", "Runner Image Provisioner"},
+		},
+		{
+			name: "no failure marker falls back to trailing lines",
+			logs: func() string {
+				var sb strings.Builder
+				for i := 1; i <= 300; i++ {
+					sb.WriteString(fmt.Sprintf("build output line %d\n", i))
+				}
+				return sb.String()
+			}(),
+			wantContain: []string{"build output line 300", "build output line 152"},
+			wantAbsent:  []string{"build output line 1\n", "build output line 151\n"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			excerpt := extractFailureExcerpt(tt.logs, maxCIErrorExcerptChars)
+			for _, want := range tt.wantContain {
+				if !strings.Contains(excerpt, want) {
+					t.Errorf("excerpt missing %q\nexcerpt:\n%s", want, excerpt)
+				}
+			}
+			for _, absent := range tt.wantAbsent {
+				if strings.Contains(excerpt, absent) {
+					t.Errorf("excerpt should not contain %q", absent)
+				}
+			}
+		})
+	}
+}
+
+// TestFeedbackLoop_CreateFailureIssue_FailureExcerptAtEnd verifies the fix
+// end-to-end through CreateFailureIssue: a fix-request issue body must
+// contain the actionable failure excerpt, not just log-head preamble.
+func TestFeedbackLoop_CreateFailureIssue_FailureExcerptAtEnd(t *testing.T) {
+	capturedBody := ""
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST" {
+			var input github.IssueInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			capturedBody = input.Body
+
+			resp := github.Issue{Number: 200}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+
+	preamble := strings.Repeat("Current runner version: '2.319.1'\nRunner Image Provisioner\n", 60)
+	unrelatedTestOutput := strings.Repeat("=== RUN   TestSomethingUnrelated\n--- PASS: TestSomethingUnrelated (0.00s)\n", 30)
+	logs := preamble + unrelatedTestOutput +
+		"panic: test timed out after 10m0s\n" +
+		"FAIL\tgithub.com/qf-studio/pilot/internal/stress\t600.012s\n"
+
+	prState := &PRState{PRNumber: 42, HeadSHA: "abc1234"}
+
+	_, err := fl.CreateFailureIssue(
+		context.Background(),
+		prState,
+		FailureCIPreMerge,
+		[]string{"test"},
+		logs,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("CreateFailureIssue() error = %v", err)
+	}
+
+	if !strings.Contains(capturedBody, "panic: test timed out after 10m0s") {
+		t.Error("body should contain the panic excerpt, not just log-head preamble")
+	}
+	if !strings.Contains(capturedBody, "FAIL\tgithub.com/qf-studio/pilot/internal/stress") {
+		t.Error("body should contain the trailing FAIL summary")
+	}
+	if strings.Contains(capturedBody, "Current runner version") {
+		t.Error("body should not contain runner-provisioning preamble when a failure marker is present")
 	}
 }
 
