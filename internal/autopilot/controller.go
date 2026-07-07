@@ -3344,8 +3344,20 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 	triggered := 0
 
 	for _, pr := range prs {
-		// Filter for Pilot branches (pilot/GH-* or pilot/*)
-		if !strings.HasPrefix(pr.Head.Ref, "pilot/") {
+		// Filter for Pilot branches (pilot/GH-* or pilot/*), or human-authored
+		// PRs when release.tag_human_merges is enabled (GH-3928). rel.TagHumanMerges
+		// is only read when releaseEnabled is true, which guarantees rel != nil
+		// (shouldTriggerRelease short-circuits on a nil rel).
+		isPilotPR := strings.HasPrefix(pr.Head.Ref, "pilot/")
+		tagHuman := releaseEnabled && rel.TagHumanMerges
+		if !isPilotPR && !tagHuman {
+			continue
+		}
+
+		// Human PRs only count toward releases when merged into the default
+		// branch — merges into feature/integration branches are silently
+		// skipped here rather than escalated later by guardReleaseSHAReachable.
+		if !isPilotPR && pr.Base.Ref != c.resolveMainBranchName() {
 			continue
 		}
 
@@ -3382,35 +3394,39 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 		// recordedMerges so handleMerging + scanner can both call it.
 		// Use pr.CreatedAt for a meaningful time-to-merge sample; fall back to
 		// mergedAt so the histogram still records on PRs missing CreatedAt.
-		createdAt, _ := time.Parse(time.RFC3339, pr.CreatedAt)
-		if createdAt.IsZero() {
-			createdAt = mergedAt
-		}
-		c.recordMergeSuccess(&PRState{PRNumber: pr.Number, CreatedAt: createdAt})
+		// GH-3928: gated on isPilotPR — human merges must not pollute merge
+		// metrics, execution self-heal, or the board.
+		if isPilotPR {
+			createdAt, _ := time.Parse(time.RFC3339, pr.CreatedAt)
+			if createdAt.IsZero() {
+				createdAt = mergedAt
+			}
+			c.recordMergeSuccess(&PRState{PRNumber: pr.Number, CreatedAt: createdAt})
 
-		// TASK-352: Self-heal execution records for externally-merged PRs (gh pr
-		// merge / GitHub UI). These never pass through handleMerging, so their
-		// "failed" rows would otherwise never flip to "completed". Like
-		// recordMergeSuccess above, this fires before the release-tag/activePRs skip
-		// gates because the heal must happen on every discovered merged Pilot PR.
-		c.selfHealForPR(ctx, issueNum, pr.HTMLURL)
+			// TASK-352: Self-heal execution records for externally-merged PRs (gh pr
+			// merge / GitHub UI). These never pass through handleMerging, so their
+			// "failed" rows would otherwise never flip to "completed". Like
+			// recordMergeSuccess above, this fires before the release-tag/activePRs skip
+			// gates because the heal must happen on every discovered merged Pilot PR.
+			c.selfHealForPR(ctx, issueNum, pr.HTMLURL)
 
-		// TASK-356 #2: board write-back for externally-merged PRs. Large PRs that
-		// hit the stage approval-misconfig (require_approval=true + approval disabled)
-		// are merged manually (`gh pr merge` / GitHub UI) and never pass through
-		// handleMerging, so their board card stays stuck "In Review". Move it to Done
-		// here, mirroring the on-merge write-back in handleMerging. Like
-		// recordMergeSuccess/selfHealForPR above, this fires on every discovered merged
-		// Pilot PR (before the release-tag/activePRs skip gates) and is independent of
-		// whether release is enabled. UpdateProjectItemStatus is idempotent and silently
-		// skips issues that aren't on the board.
-		if boardEnabled && issueNum > 0 {
-			if nodeID, nodeErr := c.ghClient.GetIssueNodeID(ctx, c.owner, c.repo, issueNum); nodeErr != nil {
-				c.log.Warn("board sync on external merge: failed to resolve issue node id",
-					"pr", pr.Number, "issue", issueNum, "error", nodeErr)
-			} else if err := c.boardSync.UpdateProjectItemStatus(ctx, nodeID, c.doneStatus); err != nil {
-				c.log.Warn("board sync on external merge failed",
-					"pr", pr.Number, "issue", issueNum, "error", err)
+			// TASK-356 #2: board write-back for externally-merged PRs. Large PRs that
+			// hit the stage approval-misconfig (require_approval=true + approval disabled)
+			// are merged manually (`gh pr merge` / GitHub UI) and never pass through
+			// handleMerging, so their board card stays stuck "In Review". Move it to Done
+			// here, mirroring the on-merge write-back in handleMerging. Like
+			// recordMergeSuccess/selfHealForPR above, this fires on every discovered merged
+			// Pilot PR (before the release-tag/activePRs skip gates) and is independent of
+			// whether release is enabled. UpdateProjectItemStatus is idempotent and silently
+			// skips issues that aren't on the board.
+			if boardEnabled && issueNum > 0 {
+				if nodeID, nodeErr := c.ghClient.GetIssueNodeID(ctx, c.owner, c.repo, issueNum); nodeErr != nil {
+					c.log.Warn("board sync on external merge: failed to resolve issue node id",
+						"pr", pr.Number, "issue", issueNum, "error", nodeErr)
+				} else if err := c.boardSync.UpdateProjectItemStatus(ctx, nodeID, c.doneStatus); err != nil {
+					c.log.Warn("board sync on external merge failed",
+						"pr", pr.Number, "issue", issueNum, "error", err)
+				}
 			}
 		}
 
@@ -3473,12 +3489,20 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			}
 		}
 
-		c.log.Info("found merged Pilot PR needing release",
-			"pr", pr.Number,
-			"branch", pr.Head.Ref,
-			"merged_at", mergedAt,
-			"merge_sha", ShortSHA(pr.MergeCommitSHA),
-		)
+		if isPilotPR {
+			c.log.Info("found merged Pilot PR needing release",
+				"pr", pr.Number,
+				"branch", pr.Head.Ref,
+				"merged_at", mergedAt,
+				"merge_sha", ShortSHA(pr.MergeCommitSHA),
+			)
+		} else {
+			c.log.Info("found merged human PR needing release",
+				"pr", pr.Number,
+				"branch", pr.Head.Ref,
+				"title", pr.Title,
+			)
+		}
 
 		// Create PR state and trigger release
 		prState := &PRState{
