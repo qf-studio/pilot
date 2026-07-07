@@ -23,19 +23,19 @@ func TestHydrateFromStore_PerLabelValues(t *testing.T) {
 	execs := []*memory.Execution{
 		{
 			ID: "h-1", TaskID: "TASK-1", ProjectPath: "/p", Status: "completed",
-			ModelName: "claude-sonnet-4-5",
+			ModelName:   "claude-sonnet-4-5",
 			TokensInput: 1000, TokensOutput: 500, TokensTotal: 1500,
 			EstimatedCostUSD: 0.05,
 		},
 		{
 			ID: "h-2", TaskID: "TASK-2", ProjectPath: "/p", Status: "completed",
-			ModelName: "claude-sonnet-4-5",
+			ModelName:   "claude-sonnet-4-5",
 			TokensInput: 2000, TokensOutput: 1000, TokensTotal: 3000,
 			EstimatedCostUSD: 0.10,
 		},
 		{
 			ID: "h-3", TaskID: "TASK-3", ProjectPath: "/p", Status: "failed",
-			ModelName: "claude-opus-4-6",
+			ModelName:   "claude-opus-4-6",
 			TokensInput: 500, TokensOutput: 250, TokensTotal: 750,
 			EstimatedCostUSD: 0.02,
 		},
@@ -137,7 +137,7 @@ func TestHydrateFromStore_RestartContinuity(t *testing.T) {
 
 	if err := store.SaveExecution(&memory.Execution{
 		ID: "restart-1", TaskID: "TASK-1", ProjectPath: "/p", Status: "completed",
-		ModelName: "claude-sonnet-4-5",
+		ModelName:   "claude-sonnet-4-5",
 		TokensInput: 1000, TokensOutput: 500, TokensTotal: 1500,
 		EstimatedCostUSD: 0.05,
 	}); err != nil {
@@ -157,7 +157,7 @@ func TestHydrateFromStore_RestartContinuity(t *testing.T) {
 	// More work happens against the same store before the simulated restart.
 	if err := store.SaveExecution(&memory.Execution{
 		ID: "restart-2", TaskID: "TASK-2", ProjectPath: "/p", Status: "completed",
-		ModelName: "claude-sonnet-4-5",
+		ModelName:   "claude-sonnet-4-5",
 		TokensInput: 500, TokensOutput: 250, TokensTotal: 750,
 		EstimatedCostUSD: 0.02,
 	}); err != nil {

@@ -44,19 +44,19 @@ func TestGetLifetimeCounterBaselines_PerLabel(t *testing.T) {
 	execs := []*Execution{
 		{
 			ID: "base-1", TaskID: "TASK-1", ProjectPath: "/p", Status: "completed",
-			ModelName: "claude-sonnet-4-5",
+			ModelName:   "claude-sonnet-4-5",
 			TokensInput: 1000, TokensOutput: 500, TokensTotal: 1500,
 			TokensCacheRead: 200, TokensCacheWrite: 100, EstimatedCostUSD: 0.05,
 		},
 		{
 			ID: "base-2", TaskID: "TASK-2", ProjectPath: "/p", Status: "completed",
-			ModelName: "claude-sonnet-4-5",
+			ModelName:   "claude-sonnet-4-5",
 			TokensInput: 2000, TokensOutput: 1000, TokensTotal: 3000,
 			EstimatedCostUSD: 0.10,
 		},
 		{
 			ID: "base-3", TaskID: "TASK-3", ProjectPath: "/p", Status: "failed",
-			ModelName: "claude-opus-4-6",
+			ModelName:   "claude-opus-4-6",
 			TokensInput: 500, TokensOutput: 250, TokensTotal: 750,
 			EstimatedCostUSD: 0.02,
 		},
