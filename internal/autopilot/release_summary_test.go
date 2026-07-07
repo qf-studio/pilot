@@ -274,6 +274,108 @@ func TestReleaseSummaryGenerator_EnrichRelease(t *testing.T) {
 	}
 }
 
+// TestReleaseSummaryGenerator_EnrichScopeRelease_ComposesInOrder verifies the
+// GH-3992 "workflow" mode enrichment composition: the final release body is
+// LLM summary, then the aggregated scope notes, then GoReleaser's original
+// body — in that order, each separated by a blank line.
+func TestReleaseSummaryGenerator_EnrichScopeRelease_ComposesInOrder(t *testing.T) {
+	var updatedBody string
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/releases/tags/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"id":42,"tag_name":"v1.1.0","body":"* original goreleaser changelog"}`)
+		case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/releases/42"):
+			var input map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			updatedBody, _ = input["body"].(string)
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"id":42,"tag_name":"v1.1.0","body":"updated"}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ghServer.Close()
+
+	anthropicServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"content":[{"text":"## What's New in v1.1.0\n\n- Great scope stuff"}]}`)
+	}))
+	defer anthropicServer.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, ghServer.URL)
+	gen := NewReleaseSummaryGenerator(ghClient, testutil.FakeAnthropicKey, slog.Default())
+	gen.SetAPIURL(anthropicServer.URL)
+
+	scopeNotes := "# Epic: Widgets\n\n## Features\n- add resize handle (#10, GH-100)"
+	commits := []*github.Commit{makeCommit("feat(widgets): add resize handle")}
+
+	if err := gen.EnrichScopeRelease(context.Background(), "owner", "repo", "v1.1.0", commits, scopeNotes); err != nil {
+		t.Fatalf("EnrichScopeRelease() error = %v", err)
+	}
+
+	summaryIdx := strings.Index(updatedBody, "What's New")
+	scopeIdx := strings.Index(updatedBody, "Epic: Widgets")
+	originalIdx := strings.Index(updatedBody, "original goreleaser changelog")
+
+	if summaryIdx == -1 || scopeIdx == -1 || originalIdx == -1 {
+		t.Fatalf("updated body missing expected section, got: %q", updatedBody)
+	}
+	if summaryIdx >= scopeIdx || scopeIdx >= originalIdx {
+		t.Errorf("expected order summary < scopeNotes < original body, got indices %d, %d, %d in %q",
+			summaryIdx, scopeIdx, originalIdx, updatedBody)
+	}
+}
+
+// TestReleaseSummaryGenerator_EnrichRelease_NoScopeNotes verifies EnrichRelease
+// (the non-scope path) still prepends only the LLM summary — scope-notes
+// composition is opt-in via EnrichScopeRelease only.
+func TestReleaseSummaryGenerator_EnrichRelease_NoScopeNotes(t *testing.T) {
+	var updatedBody string
+	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/releases/tags/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"id":7,"tag_name":"v1.0.0","body":"* original changelog"}`)
+		case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/releases/7"):
+			var input map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			updatedBody, _ = input["body"].(string)
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, `{"id":7,"tag_name":"v1.0.0","body":"updated"}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ghServer.Close()
+
+	anthropicServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"content":[{"text":"## What's New in v1.0.0\n\n- Great stuff"}]}`)
+	}))
+	defer anthropicServer.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, ghServer.URL)
+	gen := NewReleaseSummaryGenerator(ghClient, testutil.FakeAnthropicKey, slog.Default())
+	gen.SetAPIURL(anthropicServer.URL)
+
+	commits := []*github.Commit{makeCommit("feat: something")}
+	if err := gen.EnrichRelease(context.Background(), "owner", "repo", "v1.0.0", commits); err != nil {
+		t.Fatalf("EnrichRelease() error = %v", err)
+	}
+
+	if !strings.Contains(updatedBody, "What's New") || !strings.Contains(updatedBody, "original changelog") {
+		t.Fatalf("updated body missing expected sections, got: %q", updatedBody)
+	}
+	summaryIdx := strings.Index(updatedBody, "What's New")
+	originalIdx := strings.Index(updatedBody, "original changelog")
+	if summaryIdx >= originalIdx {
+		t.Errorf("expected summary before original body, got: %q", updatedBody)
+	}
+}
+
 func TestReleaseSummaryGenerator_WaitForRelease_Timeout(t *testing.T) {
 	// Server always returns 404 — release never published
 	ghServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

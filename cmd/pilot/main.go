@@ -657,6 +657,13 @@ Examples:
 							// GH-2685: wire the controller as the approval state writer so
 							// async approval decisions update the in-memory PRState.
 							approvalMgr.WithStateWriter(gwAutopilotController)
+
+							// GH-3992: wire the LLM release-summary generator so "What's New"
+							// enrichment actually runs. NewReleaseSummaryGenerator returns nil
+							// on an empty key (graceful — releases still ship without it).
+							gwAutopilotController.SetReleaseSummaryGenerator(
+								autopilot.NewReleaseSummaryGenerator(apGHClient, os.Getenv("ANTHROPIC_API_KEY"), logging.WithComponent("autopilot")),
+							)
 						}
 					}
 				}
@@ -1649,6 +1656,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// M7 4d.1: autopilot consumes the studio-sdk client; ghClient (in-tree)
 			// stays for the approval handler and legacy paths until later phases.
 			apGHClient := githubSDK.NewClient(ghToken)
+			// GH-3992: LLM release-summary API key, resolved once and reused for
+			// every controller below. NewReleaseSummaryGenerator returns nil on an
+			// empty key (graceful — releases still ship without a summary).
+			releaseSummaryAPIKey := os.Getenv("ANTHROPIC_API_KEY")
 
 			// GH-1870: Build board sync option for autopilot controllers.
 			var autopilotBoardOpts []autopilot.ControllerOption
@@ -1695,6 +1706,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 						parts[1],
 						ctrlOpts...,
 					)
+					controller.SetReleaseSummaryGenerator(autopilot.NewReleaseSummaryGenerator(apGHClient, releaseSummaryAPIKey, logging.WithComponent("autopilot")))
 					autopilotControllers[cfg.Adapters.GitHub.Repo] = controller
 					autopilotController = controller // Default for backwards compat
 				}
@@ -1724,6 +1736,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					proj.GitHub.Repo,
 					ctrlOpts...,
 				)
+				controller.SetReleaseSummaryGenerator(autopilot.NewReleaseSummaryGenerator(apGHClient, releaseSummaryAPIKey, logging.WithComponent("autopilot")))
 				autopilotControllers[repoFullName] = controller
 				logging.WithComponent("autopilot").Info("created controller for project",
 					slog.String("project", proj.Name),

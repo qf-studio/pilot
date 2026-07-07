@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-07 (v2.151.0)
+**Last Updated:** 2026-07-06 (v2.151.0)
 
 ## Legend
 
@@ -406,8 +406,6 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
-| Release cycles: trigger config + hold semantics | ✅ | autopilot | - | `release.trigger`, `release.scope_label_prefix`, `release.schedule`, `release.schedule_timezone` | `on_scope_close`/`on_schedule` triggers hold merges at all four release-decision sites (`handleMerged` fast path, `handlePostMergeCI`, `checkExternalMergeOrClose`, `ScanRecentlyMergedPRs`) via `Controller.releaseActionFor`/`heldByScope`; held work is inert-but-safe (fully reconstructable from GitHub) — the scope-close reconciler and cron scheduler that actually fire the release ship in follow-up issues. `on_merge` behavior is byte-identical (v2.226.x, GH-3989) |
-| Scope release carrier execution | ✅ | autopilot | - | `autopilot.release.trigger: on_scope_close` | `autopilot_scope_release` durable table (pending→releasing→done/failed) + `startPendingScopeReleases`/`handleReleasing` cut ONE tag covering every held member once an epic completes, gated on post-merge-CI-validated main SHA; crash-safe (claim+re-drive), capped retries with `scope_release_failed` alert (GH-3990) |
 
 ## Epic Management
 
@@ -595,3 +593,5 @@ quality:
 | Decomposed-child base-branch pinning | v2.184.x | executor | Resolve `BaseBranch` from main-repo git context before worktree creation; decomposed children never PR against a sibling branch (GH-3540) |
 | GitHub-poller auth-failure escalation | v2.207.x | adapters/github + health | Consecutive 401/non-ratelimit-403 fetch errors escalate to ERROR log + alert at threshold (`WithAlertProcessor`/`WithTokenSource`); `pilot doctor` disabled-subsystems panel; `pilot config show` secret redaction + `--reveal` (TASK-379 V4 / GH-3839) |
 | Executor prompt memory injection | v2.219.x | executor | `BuildPrompt` appends a "Known pitfalls from project memory" block ranked via `graphrecall.RecallRelevant`, gated on `MemoryInjection.Enabled`/non-LocalMode/Navigator/recall hits, capped at `min(MaxMemories,5)` entries and ~1500 chars (TASK-387 / GH-3909) |
+| Aggregated scope release notes | v2.230.x | autopilot | `BuildScopeReleaseNotes` composes a scope carrier's release body — headline, grouped Features/Bug Fixes/Other Changes with `#PR`/`GH-issue` attribution per member commit, `## ⚠ Breaking Changes`, compare-link + stats footer; `publish: api` uses it as the body directly, `publish: workflow` composes it into the LLM enrichment step via `EnrichScopeRelease` alongside GoReleaser's original body (TASK-389 / GH-3992) |
+| LLM release-summary generator wired | v2.230.x | cmd/pilot | `SetReleaseSummaryGenerator` now called at every autopilot controller construction site (`ANTHROPIC_API_KEY` env, nil generator when unset); "What's New" enrichment actually runs instead of always being nil (TASK-389 / GH-3992) |

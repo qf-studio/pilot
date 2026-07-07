@@ -560,11 +560,18 @@ orchestrator:
 | `approval_timeout` | duration | `1h` | Time before approval request expires |
 | `merged_pr_scan_window` | duration | `30m` | Window to scan for recently merged PRs |
 | `release.enabled` | bool | `false` | Auto-create releases on merge |
-| `release.trigger` | string | `"on_merge"` | When to trigger release |
+| `release.trigger` | string | `"on_merge"` | When to trigger release: `on_merge` (every merge), `manual` (never), `on_scope_close` (hold until an epic/shared-label scope completes, then cut one aggregated release), `on_schedule` (hold for a cron release train, see `release.schedule`) |
+| `release.scope_label_prefix` | string | `"scope:"` | `on_scope_close` only — label prefix that groups sibling issues into one release scope |
+| `release.schedule` | string | — | `on_schedule` only — cron expression (robfig/cron/v3, 5-field) for the release train |
+| `release.schedule_timezone` | string | daemon local time | `on_schedule` only — IANA timezone for `release.schedule` |
 | `release.version_strategy` | string | `"conventional_commits"` | How to determine version bump |
 | `release.tag_prefix` | string | `"v"` | Git tag prefix |
 | `release.generate_changelog` | bool | `true` | Auto-generate changelog |
+| `release.generate_summary` | bool | `true` | LLM-generated "What's New" summary attached to the release (requires `ANTHROPIC_API_KEY`) |
+| `release.publish` | string | `"workflow"` | Who publishes the GitHub Release: `workflow` (repo's own tag-triggered CI, e.g. GoReleaser), `api` (Pilot publishes directly), `tag_only` (tag only, nothing publishes). Scope release notes (`on_scope_close`/`on_schedule`) require `workflow` or `api` — `tag_only` never creates a release object to attach notes to |
 | `release.require_ci` | bool | `true` | Require CI pass before release |
+
+Per-project overrides live under `projects[].release` and follow the same fields — see the `release:` overlay example in `configs/pilot.example.yaml` for overriding `trigger`/`publish` on a single repo.
 
 ---
 

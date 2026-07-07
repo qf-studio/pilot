@@ -119,16 +119,23 @@ func (n *TelegramNotifier) NotifyReleased(ctx context.Context, prState *PRState,
 		bumpLabel = "patch release"
 	}
 
+	// GH-3992: a scope carrier releases on behalf of every member PR, so the
+	// notification names the scope instead of a single source PR.
+	sourceLine := fmt.Sprintf("From PR: #%d", prState.PRNumber)
+	if prState.ScopeTitle != "" {
+		sourceLine = fmt.Sprintf("Scope: %s (%d PRs)", escapeMarkdown(prState.ScopeTitle), len(prState.ScopeMemberPRs))
+	}
+
 	msg := fmt.Sprintf("%s✨ *Release %s Published*\n\n"+
 		"Version: `%s`\n"+
 		"Type: %s\n"+
-		"From PR: #%d\n\n"+
+		"%s\n\n"+
 		"[View Release](%s)",
 		envPrefix(prState),
 		escapeMarkdown(prState.ReleaseVersion),
 		prState.ReleaseVersion,
 		bumpLabel,
-		prState.PRNumber,
+		sourceLine,
 		releaseURL,
 	)
 

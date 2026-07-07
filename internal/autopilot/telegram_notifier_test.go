@@ -304,6 +304,40 @@ func TestTelegramNotifier_NotifyReleased(t *testing.T) {
 	}
 }
 
+// TestTelegramNotifier_NotifyReleased_ScopeCarrier verifies that a scope
+// carrier's release notification names the scope and member count instead of
+// a single source PR (GH-3992).
+func TestTelegramNotifier_NotifyReleased_ScopeCarrier(t *testing.T) {
+	var receivedText string
+	notifier, server := newTestNotifier(t, &receivedText)
+	defer server.Close()
+
+	prState := &PRState{
+		PRNumber:        99,
+		ReleaseVersion:  "v2.0.0",
+		ReleaseBumpType: BumpMinor,
+		EnvironmentName: "staging",
+		ScopeKey:        "epic:1",
+		ScopeTitle:      "Epic: Ship Widgets",
+		ScopeMemberPRs:  []int{10, 11, 12},
+	}
+
+	err := notifier.NotifyReleased(context.Background(), prState, "https://github.com/owner/repo/releases/tag/v2.0.0")
+	if err != nil {
+		t.Fatalf("NotifyReleased error: %v", err)
+	}
+
+	wantContains := []string{"Scope: Epic: Ship Widgets (3 PRs)"}
+	for _, want := range wantContains {
+		if !strings.Contains(receivedText, want) {
+			t.Errorf("expected notification to contain %q, got: %s", want, receivedText)
+		}
+	}
+	if strings.Contains(receivedText, "From PR:") {
+		t.Errorf("scope carrier notification should not mention 'From PR:', got: %s", receivedText)
+	}
+}
+
 func TestNewTelegramNotifier(t *testing.T) {
 	client := telegram.NewClient("test-token")
 	notifier := NewTelegramNotifier(client, "123456")

@@ -74,6 +74,24 @@ func (g *ReleaseSummaryGenerator) SetAPIURL(url string) {
 // from the commit messages, and prepends it to the release body.
 // Returns nil on any failure — release enrichment is best-effort.
 func (g *ReleaseSummaryGenerator) EnrichRelease(ctx context.Context, owner, repo, tag string, commits []*github.Commit) error {
+	return g.enrichRelease(ctx, owner, repo, tag, commits, "")
+}
+
+// EnrichScopeRelease is EnrichRelease's scope-carrier counterpart: on top of
+// prepending the LLM summary, it also inserts scopeNotes (the aggregated
+// scope changelog built by BuildScopeReleaseNotes) ahead of the original
+// body. Needed only for publish mode "workflow" — GoReleaser owns the
+// release's initial body there, so it never contains scope-aware content;
+// "api" mode has Pilot pass scopeNotes as the body at creation time already,
+// so EnrichRelease's plain prepend is sufficient there (GH-3992).
+func (g *ReleaseSummaryGenerator) EnrichScopeRelease(ctx context.Context, owner, repo, tag string, commits []*github.Commit, scopeNotes string) error {
+	return g.enrichRelease(ctx, owner, repo, tag, commits, scopeNotes)
+}
+
+// enrichRelease is the shared body of EnrichRelease/EnrichScopeRelease: poll
+// for the release, generate the LLM summary, and update the body to
+// summary + [scopeNotes] + original body.
+func (g *ReleaseSummaryGenerator) enrichRelease(ctx context.Context, owner, repo, tag string, commits []*github.Commit, scopeNotes string) error {
 	// Poll for GoReleaser to publish the release
 	release, err := g.waitForRelease(ctx, owner, repo, tag)
 	if err != nil {
@@ -86,8 +104,12 @@ func (g *ReleaseSummaryGenerator) EnrichRelease(ctx context.Context, owner, repo
 		return fmt.Errorf("generating summary: %w", err)
 	}
 
-	// Prepend summary to existing GoReleaser changelog body
-	enrichedBody := summary + "\n\n" + release.Body
+	// Prepend summary (and scope notes, when present) to the existing body.
+	enrichedBody := summary
+	if scopeNotes != "" {
+		enrichedBody += "\n\n" + scopeNotes
+	}
+	enrichedBody += "\n\n" + release.Body
 
 	_, err = g.ghClient.UpdateRelease(ctx, owner, repo, release.ID, &github.ReleaseInput{
 		Body: enrichedBody,

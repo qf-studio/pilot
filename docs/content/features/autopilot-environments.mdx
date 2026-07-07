@@ -226,6 +226,23 @@ github_review:
 
 ---
 
+## Release Scopes (`on_scope_close` / `on_schedule`)
+
+By default (`release.trigger: on_merge`), every merged PR cuts its own release. Two alternate triggers hold merges and release them together instead:
+
+- **`on_scope_close`** — merges belonging to an open epic (parent issue) or a shared `scope:`-prefixed label (`release.scope_label_prefix`, default `"scope:"`) are held until the whole scope completes, then released as one aggregated release covering every member PR.
+- **`on_schedule`** — every merge is held for a cron release train (`release.schedule`, robfig/cron/v3 5-field syntax; `release.schedule_timezone` for the cron's timezone, default daemon local time) and released together on the next scheduled tick.
+
+A scope release's notes aggregate every held member PR: a headline, grouped **Features** / **Bug Fixes** / **Other Changes** sections (each entry linking its source `#PR` and `GH-<issue>`), a **⚠ Breaking Changes** section when any commit signals one, an LLM "What's New" summary (`release.generate_summary`), and a compare-link + stats footer.
+
+<Callout type="warning">
+  Scope release notes require a `release.publish` mode that actually creates a GitHub Release — `workflow` (the repo's own tag-triggered CI, e.g. GoReleaser) or `api` (Pilot publishes directly). `tag_only` still holds and tags correctly under `on_scope_close`/`on_schedule`, but no release object exists to attach notes to.
+</Callout>
+
+`release.trigger`, `release.scope_label_prefix`, `release.schedule`, and `release.schedule_timezone` can all be overlaid per-project under `projects[].release`, so one repo can run `on_merge` while another in the same autopilot config runs `on_scope_close` — see `configs/pilot.example.yaml`.
+
+---
+
 ## Environment Comparison Matrix
 
 ### PR Lifecycle by Environment

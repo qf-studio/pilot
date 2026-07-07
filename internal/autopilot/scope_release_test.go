@@ -559,3 +559,99 @@ func TestScanRecentlyMergedPRs_SkipsScopeMemberPending(t *testing.T) {
 		t.Errorf("git/refs POST count = %d, want 0 (scanner must not cut a per-merge tag for a scope member)", got)
 	}
 }
+
+// TestScopeCarrier_APIPublish_ReleaseBodyIsAggregatedScopeNotes verifies that
+// under publish mode "api" a scope carrier's release body is
+// BuildScopeReleaseNotes' output — headline, grouped Features/Bug Fixes
+// sections with #PR/GH-issue attribution, the breaking-changes section, and
+// the compare-link + stats footer — passed straight to CreateReleaseForRepo
+// (GH-3992).
+func TestScopeCarrier_APIPublish_ReleaseBodyIsAggregatedScopeNotes(t *testing.T) {
+	var releaseBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/branches/main":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "main", "commit": map[string]string{"sha": "mainsha"}})
+		case r.URL.Path == "/repos/owner/repo/commits/mainsha/check-runs":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{Name: "ci", Status: "completed", Conclusion: "success"}},
+			})
+		case r.URL.Path == "/repos/owner/repo/pulls/201":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.PullRequest{Number: 201, Head: github.PRRef{Ref: "pilot/GH-501"}})
+		case r.URL.Path == "/repos/owner/repo/pulls/202":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.PullRequest{Number: 202, Head: github.PRRef{Ref: "pilot/GH-502"}})
+		case strings.HasSuffix(r.URL.Path, "/pulls/201/commits"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat(widgets): add resize handle")})
+		case strings.HasSuffix(r.URL.Path, "/pulls/202/commits"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("fix(widgets)!: correct breaking resize bug")})
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.Release{TagName: "v1.0.0"})
+		case strings.HasSuffix(r.URL.Path, "/tags"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "/compare/"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "identical"})
+		case strings.HasSuffix(r.URL.Path, "/git/refs"):
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/releases"):
+			var input map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			releaseBody, _ = input["body"].(string)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(github.Release{ID: 1, HTMLURL: "https://github.com/owner/repo/releases/tag/v1.1.0"})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{
+		Enabled: true, Trigger: "on_scope_close", TagPrefix: "v",
+		Publish: ReleasePublishAPI, GenerateChangelog: true,
+		VerifyRelease: boolPtr(false),
+	}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	carrier := &PRState{
+		PRNumber:       202,
+		Stage:          StageReleasing,
+		PostMergeSHA:   "mainsha",
+		ScopeKey:       "epic:1",
+		ScopeTitle:     "Epic: Ship Widgets",
+		ScopeMemberPRs: []int{201, 202},
+	}
+	c.mu.Lock()
+	c.activePRs[202] = carrier
+	c.mu.Unlock()
+
+	if err := c.handleReleasing(context.Background(), carrier); err != nil {
+		t.Fatalf("handleReleasing() error = %v", err)
+	}
+
+	wantContains := []string{
+		"# Epic: Ship Widgets",
+		"## Features",
+		"- add resize handle (#201, GH-501)",
+		"## ⚠ Breaking Changes",
+		"- correct breaking resize bug (#202, GH-502)",
+		"**Full Changelog**: https://github.com/owner/repo/compare/v1.0.0...v1.1.0",
+		"_2 PRs, 2 commits_",
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(releaseBody, want) {
+			t.Errorf("release body missing %q, got: %s", want, releaseBody)
+		}
+	}
+}
