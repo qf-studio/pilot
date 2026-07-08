@@ -392,6 +392,18 @@
           "testing",
           "workflow"
         ]
+      },
+      "TASK-390": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/grot-dashboard-redesign/.agent/tasks/TASK-390-grot-dashboard-redesign.md",
+        "title": "Dashboard TUI redesign \u2014 grot design system",
+        "status": "unknown",
+        "concepts": [
+          "context",
+          "api",
+          "testing",
+          "deployment",
+          "knowledge"
+        ]
       }
     },
     "memories": {
@@ -2350,6 +2362,11 @@
       "from": "TASK-368",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-390",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -2379,12 +2396,14 @@
     "knowledge": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "deployment": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "authentication": [
       "TASK-386",
@@ -2393,17 +2412,20 @@
     "testing": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "api": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "context": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "markers": [
       "TASK-387",
@@ -2424,10 +2446,10 @@
       "TASK-368"
     ]
   },
-  "last_updated": "2026-07-06T12:16:33.258633+00:00",
+  "last_updated": "2026-07-08T09:36:40.664447+00:00",
   "stats": {
-    "total_nodes": 135,
-    "total_edges": 167,
-    "memory_count": 86
+    "total_nodes": 137,
+    "total_edges": 168,
+    "memory_count": 87
   }
 }
