@@ -75,21 +75,6 @@ var (
 	progressEmptyStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#3d4450")) // slate
 
-	progressBarDoneStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#7ec699")) // sage green for done bars
-
-	progressBarFailedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#d48a8a")) // dusty rose for failed bars
-
-	shimmerDimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#3d4450")) // slate
-
-	shimmerMidStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6e7681")) // between slate and mid gray
-
-	shimmerBrightStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#8b949e")) // mid gray
-
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#8b949e"))
 
@@ -374,7 +359,6 @@ type Model struct {
 	// Metrics cards
 	metricsCard   MetricsCardData
 	sparklineTick bool
-	shimmerTick   int // Counter for queue shimmer animation (increments each tick)
 
 	// Upgrade state
 	updateInfo      *UpdateInfo
@@ -1035,7 +1019,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.sparklineTick = !m.sparklineTick
-		m.shimmerTick++
 		m.dbSyncTick++
 		// GH-2248: Re-sync history and metrics from SQLite every 5 seconds
 		// so external DB changes (orphan cleanup, manual edits) are reflected.
@@ -1762,7 +1745,7 @@ func (m Model) renderTasks() string {
 			return sorted[i].ID < sorted[j].ID
 		})
 
-		queueIdx := 0 // shimmer offset counter for queued items
+		queueIdx := 0 // position counter for queued items' "#N" label
 		for i, task := range sorted {
 			if i > 0 {
 				content.WriteString("\n")
@@ -1811,7 +1794,7 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 		titleW = 20
 	}
 	var icon, stateLabel, meta string
-	var iconStyle, barStyle lipgloss.Style
+	var iconStyle lipgloss.Style
 
 	switch task.Status {
 	case "done":
@@ -1819,13 +1802,11 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 		stateLabel = "done"
 		meta = extractPRNumber(task.PRURL)
 		iconStyle = statusDoneStyle
-		barStyle = progressBarDoneStyle
 	case "running":
 		icon = "●"
 		stateLabel = "running"
 		meta = fmt.Sprintf("%4d%%", task.Progress)
 		iconStyle = statusRunningStyle
-		barStyle = progressBarStyle
 	case "queued":
 		icon = "◌"
 		stateLabel = "queued"
@@ -1836,7 +1817,6 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 		stateLabel = "failed"
 		meta = truncateVisual(task.Phase, 5)
 		iconStyle = statusFailedStyle
-		barStyle = progressBarFailedStyle
 	default: // pending
 		icon = "·"
 		stateLabel = "pending"
@@ -1859,21 +1839,20 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 		selector = dimStyle.Render("▸") + " "
 	}
 
-	// Progress bar (14 chars inside brackets, 16 total with [])
+	// Progress bar: grot segment meter (■■■□□), 16 cells — same grammar as
+	// renderEpicProgressBar/stageMeter, replacing the old [████░░]/[▓▒░░]
+	// bracket bars.
+	const barWidth = 16
 	var progressBar string
 	switch task.Status {
 	case "done":
-		bar := barStyle.Render(strings.Repeat("█", 14))
-		progressBar = "[" + bar + "]"
+		progressBar = segmentMeter(1, 1, barWidth, grotTheme.Success)
 	case "running":
-		progressBar = m.renderProgressBar(task.Progress, 14)
-	case "queued":
-		progressBar = m.renderShimmerBar(14, queueOffset)
+		progressBar = segmentMeter(task.Progress, 100, barWidth, grotTheme.Accent)
 	case "failed":
-		progressBar = m.renderFailedBar(task.Progress, 14)
-	default: // pending
-		bar := progressEmptyStyle.Render(strings.Repeat(" ", 14))
-		progressBar = "[" + bar + "]"
+		progressBar = segmentMeter(task.Progress, 100, barWidth, grotTheme.Error)
+	default: // queued, pending — no known progress yet
+		progressBar = meterTrack.Render(strings.Repeat("■", barWidth))
 	}
 
 	// Render meta with state-appropriate color
@@ -1891,7 +1870,8 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 	)
 }
 
-// renderProgressBar renders a standard progress bar for running tasks.
+// renderProgressBar renders a standard bracketed progress bar, used by the
+// upgrade-notification panel (the queue panel uses the grot segment meter).
 func (m Model) renderProgressBar(progress int, width int) string {
 	filled := progress * width / 100
 	empty := width - filled
@@ -1900,63 +1880,6 @@ func (m Model) renderProgressBar(progress int, width int) string {
 		progressEmptyStyle.Render(strings.Repeat("░", empty))
 
 	return "[" + bar + "]"
-}
-
-// renderFailedBar renders a progress bar frozen at the failure point in dusty rose.
-func (m Model) renderFailedBar(progress int, width int) string {
-	filled := progress * width / 100
-	empty := width - filled
-
-	bar := progressBarFailedStyle.Render(strings.Repeat("█", filled)) +
-		progressEmptyStyle.Render(strings.Repeat("░", empty))
-
-	return "[" + bar + "]"
-}
-
-// renderShimmerBar renders an animated shimmer bar for queued tasks.
-// A 3-char bright spot (░▒▓▒░) slides across the bar, staggered by offset.
-func (m Model) renderShimmerBar(width, offset int) string {
-	bar := make([]rune, width)
-	for i := range bar {
-		bar[i] = '░'
-	}
-
-	// Center of bright spot, staggered per queue position
-	center := (m.shimmerTick + offset*3) % width
-
-	// Apply shimmer pattern: ░▒▓▒░
-	type shimmerChar struct {
-		offset int
-		char   rune
-		style  lipgloss.Style
-	}
-	pattern := []shimmerChar{
-		{-2, '░', shimmerDimStyle},
-		{-1, '▒', shimmerMidStyle},
-		{0, '▓', shimmerBrightStyle},
-		{1, '▒', shimmerMidStyle},
-		{2, '░', shimmerDimStyle},
-	}
-
-	// Build styled string character by character
-	var result strings.Builder
-	result.WriteString("[")
-	for i := 0; i < width; i++ {
-		styled := false
-		for _, p := range pattern {
-			pos := (center + p.offset + width) % width
-			if pos == i {
-				result.WriteString(p.style.Render(string(p.char)))
-				styled = true
-				break
-			}
-		}
-		if !styled {
-			result.WriteString(shimmerDimStyle.Render("░"))
-		}
-	}
-	result.WriteString("]")
-	return result.String()
 }
 
 // extractPRNumber extracts "#1234" from a GitHub PR URL like "https://github.com/owner/repo/pull/1234".
