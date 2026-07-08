@@ -61,6 +61,12 @@ const (
 	ErrorTypeTimeout ClaudeCodeErrorType = "timeout"
 	// ErrorTypeOOM indicates the process was OOM-killed (exit 137/139) (GH-2112)
 	ErrorTypeOOM ClaudeCodeErrorType = "oom_killed"
+	// ErrorTypeShutdownTerminated indicates the process exited with an
+	// OOM-signature exit code (137/139) but the run context was already
+	// cancelled by our own shutdown/timeout path — the process was killed
+	// by us (SIGTERM/SIGKILL via context cancellation), not the kernel's
+	// OOM killer. GH-4105.
+	ErrorTypeShutdownTerminated ClaudeCodeErrorType = "shutdown_terminated"
 	// ErrorTypeSessionNotFound indicates the session for --from-pr or --resume was not found (GH-1267)
 	ErrorTypeSessionNotFound ClaudeCodeErrorType = "session_not_found"
 	// ErrorTypeNoChanges indicates Claude exited 0 but produced no diff — typically
@@ -98,13 +104,25 @@ func (e *ClaudeCodeError) ErrorMessage() string { return e.Message }
 func (e *ClaudeCodeError) ErrorStderr() string { return e.Stderr }
 
 // classifyClaudeCodeError examines stderr output and exit code to classify the error.
-func classifyClaudeCodeError(stderr string, originalErr error) *ClaudeCodeError {
+// ctxCancelled indicates whether the run's context was already cancelled (by our
+// own shutdown or timeout path) at the time the process exited — GH-4105.
+func classifyClaudeCodeError(stderr string, originalErr error, ctxCancelled bool) *ClaudeCodeError {
 	// GH-2112: Check exit code first — OOM kills (137=SIGKILL, 139=SIGSEGV) often
 	// produce no stderr, so exit code is the only reliable signal.
 	if exitCode := extractExitCode(originalErr); exitCode == 137 || exitCode == 139 {
 		sigName := "SIGKILL"
 		if exitCode == 139 {
 			sigName = "SIGSEGV"
+		}
+		// GH-4105: if we ourselves cancelled the context (shutdown/timeout),
+		// the resulting SIGKILL/SIGSEGV-shaped exit is expected process
+		// teardown, not a genuine out-of-memory kill.
+		if ctxCancelled {
+			return &ClaudeCodeError{
+				Type:    ErrorTypeShutdownTerminated,
+				Message: fmt.Sprintf("Process terminated by %s after context cancellation (exit code %d)", sigName, exitCode),
+				Stderr:  strings.TrimSpace(stderr),
+			}
 		}
 		return &ClaudeCodeError{
 			Type:    ErrorTypeOOM,
@@ -207,8 +225,8 @@ func extractExitCode(err error) int {
 
 // parseClaudeCodeError examines stderr output and exit code to classify the error.
 // This function matches the specification in GH-917 and returns error interface.
-func parseClaudeCodeError(stderr string, originalErr error) error {
-	return classifyClaudeCodeError(stderr, originalErr)
+func parseClaudeCodeError(stderr string, originalErr error, ctxCancelled bool) error {
+	return classifyClaudeCodeError(stderr, originalErr, ctxCancelled)
 }
 
 // ClaudeCodeBackend implements Backend for Claude Code CLI.
@@ -710,9 +728,12 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 
 		result.Success = false
 
-		// GH-917: Classify the error for better handling
+		// GH-917: Classify the error for better handling.
+		// GH-4105: pass whether the run context was already cancelled (our own
+		// shutdown/timeout path) so 137/139 exits during teardown aren't
+		// misclassified as OOM kills.
 		stderr := stderrOutput.String()
-		ccErr := parseClaudeCodeError(stderr, err).(*ClaudeCodeError)
+		ccErr := parseClaudeCodeError(stderr, err, ctx.Err() != nil).(*ClaudeCodeError)
 
 		// GH-2328: surface the raw stderr + classification so the runner can
 		// write them to execution_logs. Without this, "unknown: exit status 1"
