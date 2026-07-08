@@ -43,15 +43,25 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 		metrics.HydrateExecutions(key.Model, key.Result, n)
 	}
 
+	// TASK-392: hydrate the same three keys the live path ever records
+	// (RecordIssueProcessed call sites only ever pass success/failed/
+	// rate_limited). taskCounts.Failed already counts genuine failures only
+	// (status='failed') — unlike Total-Succeeded-RateLimited, it does not
+	// pull in declined/no_op/stalled/infra/skipped, so hydration no longer
+	// mislabels non-failure terminal outcomes as "failed".
 	taskCounts, err := store.GetLifetimeTaskCounts("")
 	if err != nil {
 		return fmt.Errorf("hydrate metrics from store: lifetime task counts: %w", err)
 	}
 	metrics.HydrateIssuesProcessed("success", int64(taskCounts.Succeeded))
 	metrics.HydrateIssuesProcessed("rate_limited", int64(taskCounts.RateLimited))
-	if failed := taskCounts.Total - taskCounts.Succeeded - taskCounts.RateLimited; failed > 0 {
-		metrics.HydrateIssuesProcessed("failed", int64(failed))
+	metrics.HydrateIssuesProcessed("failed", int64(taskCounts.Failed))
+
+	issueLevel, err := store.GetIssueLevelCounts("")
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: issue-level counts: %w", err)
 	}
+	metrics.SetIssueLevelCounts(int64(issueLevel.Shipped), int64(issueLevel.Attempted))
 
 	return nil
 }

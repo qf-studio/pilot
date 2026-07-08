@@ -23,7 +23,8 @@
   "panels": [
     {
       "id": 1,
-      "title": "Success Rate (1h)",
+      "title": "Issue Success Rate",
+      "description": "Unique issues shipped / attempted, deduped by task_id across retries (pilot_issue_level_success_rate). Repointed off the per-attempt rate (TASK-392) — retries no longer drag this down for issues that eventually shipped.",
       "type": "stat",
       "gridPos": {
         "x": 0,
@@ -83,8 +84,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum(increase(pilot_executions_total{result=\"success\"}[1h])) or vector(0)) / clamp_min(sum(increase(pilot_executions_total[1h])), 1) * 100",
-          "legendFormat": "Success Rate",
+          "expr": "pilot_issue_level_success_rate * 100",
+          "legendFormat": "Issue Success Rate",
           "refId": "A"
         }
       ]

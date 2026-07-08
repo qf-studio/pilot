@@ -1286,6 +1286,96 @@ func TestGetLifetimeTaskCounts(t *testing.T) {
 	}
 }
 
+// TestGetIssueLevelCounts table-drives the TASK-392 dedupe-by-task_id query:
+// unique-issue attempt/ship counts must collapse multiple retry rows for the
+// same task_id into a single attempt, and only count it shipped if at least
+// one of those rows reached "completed".
+func TestGetIssueLevelCounts(t *testing.T) {
+	tests := []struct {
+		name          string
+		execs         []*Execution
+		projectPath   string
+		wantAttempted int
+		wantShipped   int
+	}{
+		{
+			name:          "empty table",
+			execs:         nil,
+			wantAttempted: 0,
+			wantShipped:   0,
+		},
+		{
+			name: "retried then shipped task dedupes to one attempt one ship",
+			execs: []*Execution{
+				{ID: "ilc-1", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "failed"},
+				{ID: "ilc-2", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "failed"},
+				{ID: "ilc-3", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "completed"},
+			},
+			wantAttempted: 1,
+			wantShipped:   1,
+		},
+		{
+			name: "mixed statuses across distinct issues",
+			execs: []*Execution{
+				{ID: "ilc-4", TaskID: "TASK-A", ProjectPath: "/p", Status: "completed"},
+				{ID: "ilc-5", TaskID: "TASK-B", ProjectPath: "/p", Status: "failed"},
+				{ID: "ilc-6", TaskID: "TASK-C", ProjectPath: "/p", Status: "declined"},
+				{ID: "ilc-7", TaskID: "TASK-D", ProjectPath: "/p", Status: "rate_limited"},
+			},
+			wantAttempted: 4,
+			wantShipped:   1,
+		},
+		{
+			name: "never-shipped retried task counts as attempted, not shipped",
+			execs: []*Execution{
+				{ID: "ilc-8", TaskID: "TASK-STUCK", ProjectPath: "/p", Status: "failed"},
+				{ID: "ilc-9", TaskID: "TASK-STUCK", ProjectPath: "/p", Status: "rate_limited"},
+			},
+			wantAttempted: 1,
+			wantShipped:   0,
+		},
+		{
+			name: "project filter scopes dedupe to matching path",
+			execs: []*Execution{
+				{ID: "ilc-10", TaskID: "TASK-X", ProjectPath: "/alpha", Status: "completed"},
+				{ID: "ilc-11", TaskID: "TASK-Y", ProjectPath: "/beta", Status: "completed"},
+				{ID: "ilc-12", TaskID: "TASK-Y", ProjectPath: "/beta", Status: "failed"},
+			},
+			projectPath:   "/beta",
+			wantAttempted: 1,
+			wantShipped:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			for _, e := range tt.execs {
+				if err := store.SaveExecution(e); err != nil {
+					t.Fatalf("SaveExecution %s: %v", e.ID, err)
+				}
+			}
+
+			counts, err := store.GetIssueLevelCounts(tt.projectPath)
+			if err != nil {
+				t.Fatalf("GetIssueLevelCounts: %v", err)
+			}
+			if counts.Attempted != tt.wantAttempted {
+				t.Errorf("Attempted = %d, want %d", counts.Attempted, tt.wantAttempted)
+			}
+			if counts.Shipped != tt.wantShipped {
+				t.Errorf("Shipped = %d, want %d", counts.Shipped, tt.wantShipped)
+			}
+		})
+	}
+}
+
 func TestBriefHistory(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -217,9 +217,23 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeGauge(w, "pilot_api_error_rate", snap.APIErrorRate)
 
 	// pilot_success_rate
-	writeHelp(w, "pilot_success_rate", "Issue processing success rate (0-1)")
+	writeHelp(w, "pilot_success_rate", "Per-attempt issue processing success rate (0-1), excluding rate_limited attempts. Retries inflate the denominator — prefer pilot_issue_level_success_rate for eventual-delivery health")
 	writeType(w, "pilot_success_rate", "gauge")
 	writeGauge(w, "pilot_success_rate", snap.SuccessRate)
+
+	// pilot_issues_shipped_total / pilot_issues_attempted_total (TASK-392)
+	writeHelp(w, "pilot_issues_shipped_total", "Number of unique issues that reached completed status, deduped by task_id across retry attempts")
+	writeType(w, "pilot_issues_shipped_total", "gauge")
+	writeGauge(w, "pilot_issues_shipped_total", float64(snap.IssuesShipped))
+
+	writeHelp(w, "pilot_issues_attempted_total", "Number of unique issues attempted, deduped by task_id across retry attempts")
+	writeType(w, "pilot_issues_attempted_total", "gauge")
+	writeGauge(w, "pilot_issues_attempted_total", float64(snap.IssuesAttempted))
+
+	// pilot_issue_level_success_rate
+	writeHelp(w, "pilot_issue_level_success_rate", "Unique-issue success rate (0-1): pilot_issues_shipped_total / pilot_issues_attempted_total, deduped across retries")
+	writeType(w, "pilot_issue_level_success_rate", "gauge")
+	writeGauge(w, "pilot_issue_level_success_rate", snap.IssueLevelSuccessRate)
 
 	// --- Histograms ---
 

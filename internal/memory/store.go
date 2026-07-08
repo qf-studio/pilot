@@ -2135,6 +2135,40 @@ func (s *Store) GetLifetimeTaskCounts(projectPath string) (*LifetimeTaskCounts, 
 	return &tc, nil
 }
 
+// IssueLevelCounts holds unique-issue outcome counts, deduped by task_id
+// across retry attempts. Contrast with LifetimeTaskCounts, which counts every
+// executions row (one row per attempt) — a task retried twice before
+// shipping contributes 1 to IssueLevelCounts.Shipped but 3 rows (2 failed +
+// 1 completed) to LifetimeTaskCounts. TASK-392: this is what "did the issue
+// eventually ship" should be measured against, not per-attempt totals.
+type IssueLevelCounts struct {
+	Attempted int // distinct task_id with at least one execution row
+	Shipped   int // distinct task_id with at least one 'completed' execution row
+}
+
+// GetIssueLevelCounts returns unique-issue attempt/ship counts, deduped by
+// task_id. If projectPath is non-empty, only executions for that project are
+// counted. TASK-392.
+func (s *Store) GetIssueLevelCounts(projectPath string) (*IssueLevelCounts, error) {
+	const cols = `
+		SELECT
+			COUNT(DISTINCT task_id),
+			COUNT(DISTINCT CASE WHEN status = 'completed' THEN task_id END)
+		FROM executions`
+	var row *sql.Row
+	if projectPath != "" {
+		row = s.db.QueryRow(cols+` WHERE project_path = ?`, projectPath)
+	} else {
+		row = s.db.QueryRow(cols)
+	}
+
+	var c IssueLevelCounts
+	if err := row.Scan(&c.Attempted, &c.Shipped); err != nil {
+		return nil, fmt.Errorf("failed to get issue-level counts: %w", err)
+	}
+	return &c, nil
+}
+
 // ModelDirectionKey identifies a token bucket by model and direction, mirroring
 // autopilot's internal tokenKey so lifetime baselines line up with the
 // in-memory Prometheus counter they hydrate (GH-4041).
