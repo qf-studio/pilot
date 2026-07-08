@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
@@ -316,6 +317,27 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 			)
 			continue
 		}
+
+		// GH-4092: a stale "running" row does not mean the work was lost — the
+		// worker may have shipped a PR (autopilot merged it) and only the row's
+		// own status update raced the reap. HasCompletedExecution above only
+		// catches a *separate* completed row for the same task; this row IS the
+		// one being reaped, so it never satisfies that check. Consult the task
+		// branch's PR state directly before failing it.
+		branch := fmt.Sprintf("pilot/%s", exec.TaskID)
+		if mergedURL, mergedErr := staleRunningMergedPRCheck(d.ctx, exec.ProjectPath, branch); mergedErr == nil && mergedURL != "" {
+			d.log.Info("Stale running task's branch already merged; healing to completed instead of failed",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.String("pr_url", mergedURL),
+			)
+			durationMs := time.Since(exec.CreatedAt).Milliseconds()
+			if err := d.store.MarkExecutionCompleted(exec.ID, mergedURL, "", durationMs); err != nil {
+				d.log.Error("Failed to heal stale running task to completed", slog.String("id", exec.ID), slog.Any("error", err))
+			}
+			continue
+		}
+
 		d.log.Warn("Marking stale running task as failed",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
@@ -329,6 +351,20 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 	}
 
 	return resetCount
+}
+
+// staleRunningMergedPRCheck reports the URL of a merged PR for branch in
+// projectPath, or "" if none exists. Used by recoverStaleRunningTasks to
+// distinguish a genuinely orphaned worker from one whose work already shipped
+// (GH-4092). Production shells out via GitOperations.FindMergedPRByBranch
+// (the same gh-CLI dependency CreatePR already relies on); tests override
+// this var directly, mirroring isParentDoneLiveFallback in epic.go — real
+// subprocess calls never run during `go test`.
+var staleRunningMergedPRCheck = func(ctx context.Context, projectPath, branch string) (string, error) {
+	if testing.Testing() {
+		return "", nil
+	}
+	return NewGitOperations(projectPath).FindMergedPRByBranch(ctx, branch)
 }
 
 // recoverStaleQueuedTasks marks orphaned queued tasks as failed: either a

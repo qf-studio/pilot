@@ -53,6 +53,16 @@ type Engine struct {
 	metrics *AlertMetrics
 }
 
+// minOrphanEvictionThreshold floors evaluateStuckTasks' orphan-eviction window
+// regardless of how short the task_stuck rule's ProgressUnchangedFor is
+// configured. It mirrors the executor's worst-case single-attempt budget: a
+// Complex task's 60m default timeout doubled by the runner's watchdog
+// (runner.go watchdogTimeout = 2 * timeout) = 120m. GH-4092: eviction fired at
+// a fixed 4×threshold (40m at the 10m default) while workers were still
+// legitimately executing, mistaking a flat-progress self-correction loop for a
+// crashed one.
+const minOrphanEvictionThreshold = 120 * time.Minute
+
 type progressState struct {
 	Progress      int
 	UpdatedAt     time.Time
@@ -590,6 +600,17 @@ func (e *Engine) evaluateStuckTasks(ctx context.Context) {
 
 		cooldown := rule.Cooldown
 		orphanThreshold := 4 * threshold // Evict entries stuck for 4× the threshold (GH-2204)
+		// GH-4092: a 4×threshold orphan window (40m at the 10m default) evicted
+		// entries for tasks that were still demonstrably alive — a single
+		// long-running Claude turn (self-review/intent-judge veto retry loops)
+		// can legitimately produce no progress-milestone update for tens of
+		// minutes, well inside the executor's own Complex-task timeout (60m
+		// default) and its 2× watchdog kill ceiling (120m, runner.go
+		// watchdogTimeout). Floor the orphan window at that ceiling so eviction
+		// never preempts a task the runner itself hasn't given up on yet.
+		if orphanThreshold < minOrphanEvictionThreshold {
+			orphanThreshold = minOrphanEvictionThreshold
+		}
 
 		for taskID, state := range tasks {
 			stuckDuration := now.Sub(state.UpdatedAt)
