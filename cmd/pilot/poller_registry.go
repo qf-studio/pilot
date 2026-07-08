@@ -31,6 +31,12 @@ type PollerDeps struct {
 	AutopilotController  *autopilot.Controller
 	AutopilotStateStore  *autopilot.StateStore
 	AutopilotControllers map[string]*autopilot.Controller // polling mode: per-repo controllers
+
+	// GitHubPollers is the repo-keyed registry the SDK poller adds itself to so the
+	// main.go sub-issue-skip / done-remark / stale-label loops can reach it — its
+	// handle otherwise never leaves githubPollerRegistration() (GH-4110). Nil when
+	// GitHub polling is off.
+	GitHubPollers *githubPollerRegistry
 }
 
 // PollerRegistration describes a single adapter poller that can be conditionally started.

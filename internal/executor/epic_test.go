@@ -2762,14 +2762,16 @@ echo "https://github.com/owner/repo/issues/$N"
 
 	var mu sync.Mutex
 	var skipped []int
-	runner.SetSubIssuePollerSkip(func(n int) {
+	var skippedRepos []string
+	runner.SetSubIssuePollerSkip(func(n int, repo string) {
 		mu.Lock()
 		skipped = append(skipped, n)
+		skippedRepos = append(skippedRepos, repo)
 		mu.Unlock()
 	})
 
 	plan := &EpicPlan{
-		ParentTask: &Task{ID: "GH-99"},
+		ParentTask: &Task{ID: "GH-99", SourceRepo: "qf-studio/pilot"},
 		Subtasks: []PlannedSubtask{
 			{Title: "feat(sub): first subtask", Description: "First", Order: 1},
 			{Title: "feat(sub): second subtask", Description: "Second", Order: 2},
@@ -2786,6 +2788,7 @@ echo "https://github.com/owner/repo/issues/$N"
 
 	mu.Lock()
 	got := append([]int(nil), skipped...)
+	gotRepos := append([]string(nil), skippedRepos...)
 	mu.Unlock()
 
 	if len(got) != 2 {
@@ -2794,6 +2797,10 @@ echo "https://github.com/owner/repo/issues/$N"
 	for i, issue := range created {
 		if got[i] != issue.Number {
 			t.Errorf("skipped[%d] = %d, want %d (issue.Number)", i, got[i], issue.Number)
+		}
+		// GH-4110: the skip must carry the parent's repo so marking is scoped to it.
+		if gotRepos[i] != "qf-studio/pilot" {
+			t.Errorf("skippedRepos[%d] = %q, want %q (ParentTask.SourceRepo)", i, gotRepos[i], "qf-studio/pilot")
 		}
 	}
 }

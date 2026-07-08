@@ -91,8 +91,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/qf-studio/grot v0.1.0 h1:ehDjZTiQ+IRr6P+gKWVgL+j6Hluq3U2HxFug2ry51rI=
 github.com/qf-studio/grot v0.1.0/go.mod h1:cJGVeAEoskCOQZG1CNgI/CAYXDG6vUUpsqVqi30tLRk=
-github.com/qf-studio/studio-sdk v0.29.0 h1:z+aUP2eOHaElI3uSRNlMzNolW6fTwc0ky64riRdVcWk=
-github.com/qf-studio/studio-sdk v0.29.0/go.mod h1:M/uFBeXsPAtsrO7wiIgE/GgWzfw80ftW6BrQUIOwxUM=
+github.com/qf-studio/studio-sdk v0.30.0 h1:zr/4nqmCSgwNU+OIc0naA7w0nl/MlAnbNzi5CFbo8Sw=
+github.com/qf-studio/studio-sdk v0.30.0/go.mod h1:M/uFBeXsPAtsrO7wiIgE/GgWzfw80ftW6BrQUIOwxUM=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/rivo/uniseg v0.2.0/go.mod h1:J6wj4VEh+S6ZtnVlnTBMWIodfgj8LQOQFoIToxlJtxc=
