@@ -10,23 +10,34 @@ import (
 
 // MetricsPersister periodically saves metrics snapshots to SQLite for history.
 type MetricsPersister struct {
-	controller *Controller
-	store      *memory.Store
-	interval   time.Duration
-	retention  time.Duration // How long to keep snapshots
-	log        *slog.Logger
+	controller    *Controller
+	store         *memory.Store
+	interval      time.Duration
+	retention     time.Duration // How long to keep snapshots
+	log           *slog.Logger
+	metricsSource SnapshotSource
 }
 
 // NewMetricsPersister creates a new MetricsPersister.
-// Saves snapshots every 5 minutes and retains 7 days of history.
+// Saves snapshots every 5 minutes and retains 7 days of history. The
+// persisted snapshot defaults to controller.Metrics() and can be widened to
+// a fleet-wide view via SetMetricsSource (GH-4068).
 func NewMetricsPersister(controller *Controller, store *memory.Store) *MetricsPersister {
 	return &MetricsPersister{
-		controller: controller,
-		store:      store,
-		interval:   5 * time.Minute,
-		retention:  7 * 24 * time.Hour,
-		log:        slog.Default().With("component", "metrics-persister"),
+		controller:    controller,
+		store:         store,
+		interval:      5 * time.Minute,
+		retention:     7 * 24 * time.Hour,
+		log:           slog.Default().With("component", "metrics-persister"),
+		metricsSource: controller.Metrics(),
 	}
+}
+
+// SetMetricsSource overrides the metrics snapshot persisted to history
+// (GH-4068). Pass an *AggregateMetrics to persist fleet-wide totals instead
+// of just this persister's controller.
+func (mp *MetricsPersister) SetMetricsSource(source SnapshotSource) {
+	mp.metricsSource = source
 }
 
 // Run starts the persister loop.
@@ -68,7 +79,7 @@ func (mp *MetricsPersister) refreshIssueLevelCounts() {
 }
 
 func (mp *MetricsPersister) persist() {
-	snap := mp.controller.Metrics().Snapshot()
+	snap := mp.metricsSource.Snapshot()
 
 	// Sum up API errors total
 	var apiErrorsTotal int64
