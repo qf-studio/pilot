@@ -88,22 +88,36 @@ func (t *tripTracker) recentTripCount() int {
 // MetricsAlerter periodically evaluates autopilot metrics and sends events
 // to the alerts engine for rule evaluation.
 type MetricsAlerter struct {
-	controller  *Controller
-	engine      *alerts.Engine
-	interval    time.Duration
-	log         *slog.Logger
-	tripTracker *tripTracker
+	controller    *Controller
+	engine        *alerts.Engine
+	interval      time.Duration
+	log           *slog.Logger
+	tripTracker   *tripTracker
+	metricsSource SnapshotSource
 }
 
-// NewMetricsAlerter creates a new MetricsAlerter.
+// NewMetricsAlerter creates a new MetricsAlerter. Deadlock/stuck-PR detection
+// stays scoped to controller (those concepts — active PRs, last-progress
+// timestamp — are inherently per-repo), but the metrics snapshot used for the
+// success_rate/total_active_prs/queue_depth alert metadata defaults to
+// controller.Metrics() and can be widened to a fleet-wide view via
+// SetMetricsSource (GH-4068).
 func NewMetricsAlerter(controller *Controller, engine *alerts.Engine) *MetricsAlerter {
 	return &MetricsAlerter{
-		controller:  controller,
-		engine:      engine,
-		interval:    30 * time.Second,
-		log:         slog.Default().With("component", "metrics-alerter"),
-		tripTracker: newTripTracker(),
+		controller:    controller,
+		engine:        engine,
+		interval:      30 * time.Second,
+		log:           slog.Default().With("component", "metrics-alerter"),
+		tripTracker:   newTripTracker(),
+		metricsSource: controller.Metrics(),
 	}
+}
+
+// SetMetricsSource overrides the metrics snapshot used for alert metadata
+// (GH-4068). Pass an *AggregateMetrics to report fleet-wide totals instead
+// of just this alerter's controller.
+func (ma *MetricsAlerter) SetMetricsSource(source SnapshotSource) {
+	ma.metricsSource = source
 }
 
 // Run starts the metrics alerter loop.
@@ -128,7 +142,7 @@ func (ma *MetricsAlerter) Run(ctx context.Context) {
 
 // evaluate takes a metrics snapshot and emits an autopilot_metrics event.
 func (ma *MetricsAlerter) evaluate() {
-	snap := ma.controller.Metrics().Snapshot()
+	snap := ma.metricsSource.Snapshot()
 
 	// Calculate stuck PRs (in waiting_ci)
 	var prStuckCount int

@@ -1938,23 +1938,41 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	// GH-1662: Start gateway in background so desktop app can reach /health
 	var gwServer *gateway.Server // hoisted so TASK-332 alert-metrics wiring can run after alerts engine is created
+	// GH-4068: aggregate every controller's Metrics (default + one per
+	// project, not just the backward-compat default) so /metrics, the
+	// metrics alerter, and the metrics persister all reflect fleet-wide PR
+	// activity. Hoisted so the alerter/persister wiring further down (after
+	// pollers start) can reuse it. autopilotControllers always contains the
+	// default controller too (see assignment above), so ranging over it
+	// alone covers both.
+	var fleetMetrics []*autopilot.Metrics
+	for _, c := range autopilotControllers {
+		fleetMetrics = append(fleetMetrics, c.Metrics())
+	}
+	autopilotMetricsAggregate := autopilot.NewAggregateMetrics(fleetMetrics...)
 	if !noGateway && cfg.Gateway != nil {
 		gwServer = gateway.NewServer(cfg.Gateway)
+
 		if autopilotController != nil {
 			gwServer.SetAutopilotProvider(&autopilotProviderAdapter{controller: autopilotController})
-			gwServer.SetMetricsSource(autopilotController.Metrics())
 			// GH-2855: wire token/cost/execution counters into executor
 			runner.SetMetricsRecorder(autopilotController.Metrics())
 			// GH-4041: restore Prometheus counter baselines from the store's
 			// lifetime execution history before the /metrics handler starts
 			// serving scrapes below, so external dashboards don't observe a
 			// reset-to-zero on restart. Fail loud rather than silently start
-			// with zero baselines.
+			// with zero baselines. The default controller is the sole
+			// hydration owner (GH-4068) — hydrating any other controller's
+			// Metrics would double-count once autopilotMetricsAggregate sums
+			// them below.
 			if store != nil {
 				if hydrateErr := autopilot.HydrateFromStore(ctx, store, autopilotController.Metrics()); hydrateErr != nil {
 					return fmt.Errorf("failed to hydrate metrics from store: %w", hydrateErr)
 				}
 			}
+		}
+		if len(fleetMetrics) > 0 {
+			gwServer.SetMetricsSource(autopilotMetricsAggregate)
 		}
 
 		// GH-2080: Wire PR review webhook events to autopilot controller in polling mode
@@ -2674,15 +2692,23 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					fmt.Printf("● autopilot enabled · %s environment (%d repos)\n", cfg.Orchestrator.Autopilot.Environment, len(autopilotControllers))
 				}
 
-				// Start metrics alerter for default controller (GH-728)
+				// Start metrics alerter for default controller (GH-728). The
+				// alerter's stuck-PR/deadlock detection stays scoped to the
+				// default controller (inherently per-repo), but its
+				// success_rate/total_active_prs/queue_depth alert metadata is
+				// widened to the fleet-wide aggregate (GH-4068).
 				if alertsEngine != nil && autopilotController != nil {
 					metricsAlerter := autopilot.NewMetricsAlerter(autopilotController, alertsEngine)
+					metricsAlerter.SetMetricsSource(autopilotMetricsAggregate)
 					go metricsAlerter.Run(ctx)
 				}
 
-				// Start metrics persister for default controller (GH-728)
+				// Start metrics persister for default controller (GH-728).
+				// Persisted snapshots reflect the fleet-wide aggregate, not
+				// just the default controller (GH-4068).
 				if store != nil && autopilotController != nil {
 					metricsPersister := autopilot.NewMetricsPersister(autopilotController, store)
+					metricsPersister.SetMetricsSource(autopilotMetricsAggregate)
 					go metricsPersister.Run(ctx)
 				}
 
