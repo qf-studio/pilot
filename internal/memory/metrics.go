@@ -621,7 +621,8 @@ func (s *Store) ExportMetrics(query MetricsQuery) ([]*ExportedExecution, error) 
 		if linesRemoved.Valid {
 			e.LinesRemoved = int(linesRemoved.Int64)
 		}
-		if modelName.Valid {
+		e.ModelName = "unknown"
+		if modelName.Valid && modelName.String != "" {
 			e.ModelName = modelName.String
 		}
 		if prURL.Valid {
