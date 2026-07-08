@@ -4457,6 +4457,16 @@ func (r *Runner) IsRunning(taskID string) bool {
 	return ok
 }
 
+// RunningCount returns the number of tasks currently executing in this
+// process. Used by the GH-4106/GH-4107 cross-process drain handshake to
+// report accurate in-flight counts — unlike a store-wide active-executions
+// query, this only reflects work owned by this process.
+func (r *Runner) RunningCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.running)
+}
+
 // runSelfReview executes a self-review phase where Claude examines its changes.
 // This catches issues like unwired config, undefined methods, or incomplete implementations.
 // Returns nil if review passes or is skipped, error only for critical failures.

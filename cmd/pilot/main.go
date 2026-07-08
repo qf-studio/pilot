@@ -2329,6 +2329,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 	}
 
+	// GH-4107: respond to another instance's `--replace` drain request —
+	// without this, killExistingTelegramBot's RequestDrain call always times
+	// out (nothing ever reports Drained), so --replace would just delay the
+	// force-kill by the full drain timeout instead of actually draining.
+	startDrainResponder(ctx, dispatcher, runner)
+
 	// GH-539: Create budget enforcer if configured
 	var enforcer *budget.Enforcer
 	if cfg.Budget != nil && cfg.Budget.Enabled && store != nil {

@@ -5,7 +5,10 @@
 
 package upgrade
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // SignalDrain is not supported on Windows: there is no SIGUSR1 equivalent
 // exposed by the Go runtime for arbitrary target processes. Callers on
@@ -15,3 +18,7 @@ import "fmt"
 func SignalDrain(pid int) error {
 	return fmt.Errorf("signal-based drain is not supported on Windows")
 }
+
+// NotifyDrain is a no-op on Windows: there is no signal for SignalDrain to
+// send, so there is nothing to receive. See SignalDrain.
+func NotifyDrain(c chan<- os.Signal) {}

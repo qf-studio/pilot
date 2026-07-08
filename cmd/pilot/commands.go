@@ -968,6 +968,70 @@ func markInterruptedByReplace(store *memory.Store, drainTimeout time.Duration) {
 	}
 }
 
+// drainReportInterval is how often startDrainResponder refreshes the
+// on-disk drain status while a drain is in progress.
+const drainReportInterval = 500 * time.Millisecond
+
+// startDrainResponder installs the receiving half of the GH-4106
+// cross-process drain handshake for this daemon: it waits for another
+// instance's `pilot start --replace` to signal a drain request
+// (upgrade.NotifyDrain/SignalDrain), then stops the dispatcher from picking
+// up new work and reports this process's in-flight execution count via
+// upgrade.ReportDrainStatus until it reaches zero. Without this, the
+// requester's RequestDrain always times out — nothing ever reports
+// Drained — so --replace would just delay the eventual force-kill by the
+// full drain timeout instead of actually draining. GH-4107.
+//
+// dispatcher/runner may be nil (e.g. store failed to open); the responder
+// still acknowledges the drain signal and reports, just with a count that
+// can never be more than 0.
+func startDrainResponder(ctx context.Context, dispatcher *executor.Dispatcher, runner *executor.Runner) {
+	drainCh := make(chan os.Signal, 1)
+	upgrade.NotifyDrain(drainCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-drainCh:
+		}
+
+		if dispatcher != nil {
+			// dispatcher.Stop() blocks until any task a worker is mid-processQueue
+			// on finishes — running it in its own goroutine keeps the status
+			// reporting loop below live (and accurate) for the whole drain
+			// instead of only writing a single report once Stop() returns.
+			go dispatcher.Stop()
+		}
+
+		pid := os.Getpid()
+		statusPath := upgrade.DefaultDrainStatusPath()
+		inFlight := func() int {
+			if runner == nil {
+				return 0
+			}
+			return runner.RunningCount()
+		}
+
+		ticker := time.NewTicker(drainReportInterval)
+		defer ticker.Stop()
+
+		for {
+			count := inFlight()
+			_ = upgrade.ReportDrainStatus(statusPath, pid, true, count)
+			if count == 0 {
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
 // parseInt64 parses a string to int64
 func parseInt64(s string) (int64, error) {
 	var id int64

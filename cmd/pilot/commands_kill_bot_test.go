@@ -176,3 +176,41 @@ func TestTerminateTarget_DrainTimesOut(t *testing.T) {
 		t.Errorf("last event detail = %q, want it to mention --replace restart", last.Detail)
 	}
 }
+
+// TestDrainHandshake_EndToEnd exercises the real GH-4106/GH-4107 handshake
+// end-to-end (no stubbing): startDrainResponder installs the receiving half
+// in this test process, then a real GracefulUpgrader.RequestDrain signals
+// this same process (self-signal, since a test process is a perfectly valid
+// SignalDrain target) and polls the on-disk status file it writes back. This
+// pins the fix for the gap where nothing in the daemon ever answered the
+// drain signal, so RequestDrain always timed out regardless of in-flight
+// count.
+func TestDrainHandshake_EndToEnd(t *testing.T) {
+	tmpHome, err := os.MkdirTemp("", "pilot-test-drain-e2e-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpHome) })
+	t.Setenv("HOME", tmpHome) // redirects upgrade.DefaultDrainStatusPath()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// nil dispatcher/runner: an explicitly supported startDrainResponder path
+	// (store/runner unavailable) — in-flight count is always 0, so the
+	// responder should report Drained on its very first status write.
+	startDrainResponder(ctx, nil, nil)
+
+	g, err := upgrade.NewGracefulUpgrader("test-version", &upgrade.NoOpTaskChecker{})
+	if err != nil {
+		t.Fatalf("NewGracefulUpgrader failed: %v", err)
+	}
+
+	outcome, err := g.RequestDrain(context.Background(), os.Getpid(), &upgrade.DrainConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("RequestDrain failed: %v", err)
+	}
+	if outcome != upgrade.Drained {
+		t.Fatalf("RequestDrain outcome = %v, want Drained", outcome)
+	}
+}
