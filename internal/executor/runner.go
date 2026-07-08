@@ -1942,6 +1942,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// has the full implementation plan but executes it as one unit.
 				task.Description = consolidateEpicPlan(task.Description, plan.Subtasks)
 
+				// GH-4052: the planner already decided this is a single unit of
+				// work — don't let the regex TaskDecomposer below re-explode it
+				// into up to MaxSubtasks in-process subtasks, whether the match
+				// comes from the original description's numbered lists or from
+				// the "Planned Steps" section just injected above.
+				hasNoDecompose = true
+
 				// Fall through to normal execution below (past epic and decomposer blocks)
 			} else {
 				// Multi-package epic: safe to create separate GitHub issues
@@ -2115,7 +2122,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// Check for task decomposition (GH-218)
 	// Decomposition happens before timeout setup because subtasks have their own timeouts
-	if r.decomposer != nil {
+	// GH-4052: also gated on hasNoDecompose, which the single-package epic-consolidation
+	// branch above sets — Decompose()'s internal label re-check no-ops today when labels
+	// are dropped (#4050), so the call site must not rely on it alone.
+	if r.decomposer != nil && !hasNoDecompose {
 		result := r.decomposer.Decompose(task)
 		if result.Decomposed && len(result.Subtasks) > 1 {
 			r.log.Info("Task decomposed",
