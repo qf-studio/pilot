@@ -334,6 +334,9 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 			durationMs := time.Since(exec.CreatedAt).Milliseconds()
 			if err := d.store.MarkExecutionCompleted(exec.ID, mergedURL, "", durationMs); err != nil {
 				d.log.Error("Failed to heal stale running task to completed", slog.String("id", exec.ID), slog.Any("error", err))
+			} else {
+				d.recordExecutionEvent(exec.ID, memory.StageCompleted,
+					fmt.Sprintf("stale_running healed to completed after restart (merged PR: %s)", mergedURL))
 			}
 			continue
 		}
@@ -347,6 +350,10 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 			d.log.Error("Failed to mark stale running task", slog.String("id", exec.ID), slog.Any("error", err))
 		} else {
 			resetCount++
+			// GH-4101: without this, the terminal transition a restart forces on an
+			// orphaned row is invisible in execution_events — the audit trail simply
+			// stops, indistinguishable from a row still legitimately mid-flight.
+			d.recordExecutionEvent(exec.ID, memory.StageFailed, "stale_running recovered after restart")
 		}
 	}
 
@@ -422,10 +429,30 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 			d.log.Error("Failed to mark stale queued task", slog.String("id", exec.ID), slog.Any("error", err))
 		} else {
 			resetCount++
+			// GH-4101: mirrors the stale-running event above — the audit trail must
+			// show why this row went terminal, not just that it did.
+			d.recordExecutionEvent(exec.ID, memory.StageFailed, "stale_queued recovered after restart: project no longer configured")
 		}
 	}
 
 	return resetCount
+}
+
+// recordExecutionEvent writes a best-effort stage-transition record to the
+// execution_events audit trail for dispatcher-driven status changes (stale
+// recovery, GH-4101). Mirrors ProjectWorker.recordExecutionEvent: a nil store
+// or insert failure is logged and swallowed, never blocks recovery — the
+// audit trail is a diagnostic aid, not load-bearing.
+func (d *Dispatcher) recordExecutionEvent(executionID string, stage memory.Stage, detail string) {
+	if d.store == nil {
+		return
+	}
+	if err := d.store.InsertExecutionEvent(executionID, stage, detail); err != nil {
+		d.log.Warn("Failed to record execution event",
+			slog.String("execution_id", executionID),
+			slog.String("stage", string(stage)),
+			slog.Any("error", err))
+	}
 }
 
 // hasLiveWorker reports whether a worker goroutine exists for the given
@@ -1013,14 +1040,21 @@ func dispatchSuccessStage(prURL string) (memory.Stage, bool) {
 // dispatchTerminalStage maps a dispatcher-classified terminal status (see
 // TerminalStatus) to its execution_events Stage, for the subset that mark a
 // durable milestone. Stalled is instrumented at its detection site in
-// runner.go instead (GH-3846); declined/rate_limited/infra have no Stage
-// enum equivalent yet, so they're skipped rather than mismapped.
+// runner.go instead (GH-3846). infra reuses StageFailed (GH-4101) — it has no
+// dedicated Stage enum value, but StageFailed already carries no ladder rung
+// of its own (stageLadderPosition returns 0), and the dashboard's
+// mutedOutcomes set already overrides the rendered label/color for "infra"
+// regardless of the underlying stage (internal/dashboard/stage_strip.go), so
+// reusing it produces no behavior change there. declined/rate_limited still
+// have no Stage enum equivalent, so they're skipped rather than mismapped.
 func dispatchTerminalStage(status string) (memory.Stage, bool) {
 	switch status {
 	case "no_op":
 		return memory.StageNoOp, true
 	case "skipped":
 		return memory.StageSkipped, true
+	case "infra":
+		return memory.StageFailed, true
 	default:
 		return "", false
 	}

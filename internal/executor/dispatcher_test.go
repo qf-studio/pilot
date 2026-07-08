@@ -781,6 +781,129 @@ func TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR(t *testing.T) {
 	}
 }
 
+// TestRecoverStaleRunningTasks_WritesExecutionEvent verifies GH-4101: marking
+// a stale running task failed also writes an execution_events row, closing
+// the gap where a restart/orphan-driven terminal transition was invisible in
+// the audit trail (the root-causing gap in the 2026-07-08 GH-4050
+// duplicate-execution incident, where execution_events for 5ce9bc2c simply
+// stopped with no terminal entry).
+func TestRecoverStaleRunningTasks_WritesExecutionEvent(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-event-run", TaskID: "GH-4101-A", ProjectPath: "/project-event", Status: "running"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	origCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { staleRunningMergedPRCheck = origCheck }()
+
+	config := &DispatcherConfig{StaleRunningThreshold: 0, StaleQueuedThreshold: 0, StaleRecoveryInterval: time.Hour}
+	dispatcher := NewDispatcher(store, NewRunner(), config)
+
+	dispatcher.recoverStaleRunningTasks()
+
+	events, err := store.ListExecutionEvents("exec-event-run")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 execution event, got %d: %+v", len(events), events)
+	}
+	if events[0].Stage != memory.StageFailed {
+		t.Errorf("expected stage %q, got %q", memory.StageFailed, events[0].Stage)
+	}
+	if !strings.Contains(events[0].Detail, "stale_running recovered after restart") {
+		t.Errorf("expected detail to explain the stale_running recovery reason, got %q", events[0].Detail)
+	}
+}
+
+// TestRecoverStaleRunningTasks_HealToCompleted_WritesExecutionEvent verifies
+// the GH-4092 heal-to-completed branch (a stale "running" row whose branch PR
+// already merged) also writes an execution_events row (GH-4101) — not just
+// the fail branch.
+func TestRecoverStaleRunningTasks_HealToCompleted_WritesExecutionEvent(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-event-heal", TaskID: "GH-4101-B", ProjectPath: "/project-event-heal", Status: "running"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	const mergedPRURL = "https://github.com/qf-studio/pilot/pull/9001"
+	origCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, projectPath, branch string) (string, error) {
+		if projectPath == "/project-event-heal" && branch == "pilot/GH-4101-B" {
+			return mergedPRURL, nil
+		}
+		return "", nil
+	}
+	defer func() { staleRunningMergedPRCheck = origCheck }()
+
+	config := &DispatcherConfig{StaleRunningThreshold: 0, StaleQueuedThreshold: 0, StaleRecoveryInterval: time.Hour}
+	dispatcher := NewDispatcher(store, NewRunner(), config)
+
+	dispatcher.recoverStaleRunningTasks()
+
+	events, err := store.ListExecutionEvents("exec-event-heal")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 execution event, got %d: %+v", len(events), events)
+	}
+	if events[0].Stage != memory.StageCompleted {
+		t.Errorf("expected stage %q, got %q", memory.StageCompleted, events[0].Stage)
+	}
+	if !strings.Contains(events[0].Detail, mergedPRURL) {
+		t.Errorf("expected detail to mention the merged PR URL, got %q", events[0].Detail)
+	}
+}
+
+// TestRecoverStaleRunningTasks_FateReconstructableFromEventsAlone is the
+// GH-4101 acceptance test mirroring the GH-4050 incident: reconstruct a
+// restart-orphaned execution's fate using ONLY execution_events (never
+// consulting executions.status), the same investigative path that was
+// unavailable during the incident because the timeline simply stopped.
+func TestRecoverStaleRunningTasks_FateReconstructableFromEventsAlone(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const execID = "exec-fate-run"
+	exec := &memory.Execution{ID: execID, TaskID: "GH-4101-D", ProjectPath: "/project-fate", Status: "running"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	origCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { staleRunningMergedPRCheck = origCheck }()
+
+	config := &DispatcherConfig{StaleRunningThreshold: 0, StaleQueuedThreshold: 0, StaleRecoveryInterval: time.Hour}
+	dispatcher := NewDispatcher(store, NewRunner(), config)
+	dispatcher.recoverStaleRunningTasks()
+
+	// Reconstruct fate from execution_events alone — deliberately never call
+	// store.GetExecution here.
+	events, err := store.ListExecutionEvents(execID)
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("execution_events timeline is empty — fate is unrecoverable from events alone (the GH-4050 gap)")
+	}
+	last := events[len(events)-1]
+	if last.Stage != memory.StageFailed {
+		t.Fatalf("reconstructed fate from events: last stage = %q, want %q (terminal failure)", last.Stage, memory.StageFailed)
+	}
+	if !strings.Contains(last.Detail, "recovered after restart") {
+		t.Errorf("reconstructed fate from events: detail %q does not explain the restart-driven recovery", last.Detail)
+	}
+}
+
 func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -1449,6 +1572,39 @@ func TestRecoverStaleQueuedTasks_MessageAccuracy(t *testing.T) {
 	}
 }
 
+// TestRecoverStaleQueuedTasks_WritesExecutionEvent verifies GH-4101: marking
+// an orphaned queued task failed also writes an execution_events row, so its
+// terminal transition is visible in the audit trail instead of the event
+// stream simply stopping.
+func TestRecoverStaleQueuedTasks_WritesExecutionEvent(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-event-queued", TaskID: "GH-4101-C", ProjectPath: "/project-event-queued", Status: "queued"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	config := &DispatcherConfig{StaleQueuedThreshold: 0}
+	dispatcher := NewDispatcher(store, NewRunner(), config)
+
+	dispatcher.recoverStaleQueuedTasks()
+
+	events, err := store.ListExecutionEvents("exec-event-queued")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 execution event, got %d: %+v", len(events), events)
+	}
+	if events[0].Stage != memory.StageFailed {
+		t.Errorf("expected stage %q, got %q", memory.StageFailed, events[0].Stage)
+	}
+	if !strings.Contains(events[0].Detail, "stale_queued recovered after restart") {
+		t.Errorf("expected detail to explain the stale_queued recovery reason, got %q", events[0].Detail)
+	}
+}
+
 // TestBuildTaskFromExecution_ThreadsExecutionUUID verifies GH-3764: the Task
 // handed to the runner carries the execution row's UUID (exec.ID) separately
 // from the human-readable task ID (exec.TaskID), so downstream log/diagnostic
@@ -1644,10 +1800,10 @@ func TestDispatchSuccessStage(t *testing.T) {
 }
 
 // TestDispatchTerminalStage covers the classified-status → execution_events
-// Stage mapping used at the dispatcher's no_op/skipped instrumentation site
-// (GH-3846). Stalled is instrumented at its detection site in runner.go
-// instead, and declined/rate_limited/infra have no Stage enum equivalent yet
-// — all three must report ok=false rather than a made-up mapping.
+// Stage mapping used at the dispatcher's no_op/skipped/infra instrumentation
+// site (GH-3846, GH-4101). Stalled is instrumented at its detection site in
+// runner.go instead, and declined/rate_limited still have no Stage enum
+// equivalent — both must report ok=false rather than a made-up mapping.
 func TestDispatchTerminalStage(t *testing.T) {
 	tests := []struct {
 		status    string
@@ -1659,7 +1815,7 @@ func TestDispatchTerminalStage(t *testing.T) {
 		{"stalled", "", false},
 		{"declined", "", false},
 		{"rate_limited", "", false},
-		{"infra", "", false},
+		{"infra", memory.StageFailed, true},
 		{"failed", "", false},
 		{"completed", "", false},
 	}
@@ -1831,5 +1987,76 @@ func TestDispatcher_SyntheticDispatch_FailureEventSequence(t *testing.T) {
 		if events[i].Stage != want {
 			t.Errorf("event[%d].Stage = %q, want %q", i, events[i].Stage, want)
 		}
+	}
+}
+
+// syntheticInfraBackend always fails with an infra-classified error signature
+// ("push failed" — see infraErrorSignatures in runner.go), used to drive
+// TerminalStatus to classify the outcome as "infra" without a real git/push
+// failure.
+type syntheticInfraBackend struct{}
+
+func (syntheticInfraBackend) Name() string      { return "synthetic-infra" }
+func (syntheticInfraBackend) IsAvailable() bool { return true }
+func (syntheticInfraBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+	return &BackendResult{Success: false, Error: "push failed: synthetic infra glitch"}, nil
+}
+
+// TestDispatcher_SyntheticDispatch_InfraEventSequence verifies GH-4101: an
+// infra-classified terminal result (TerminalStatus -> "infra") now writes a
+// terminal execution_events row via dispatchTerminalStage. Before this fix,
+// infra was the only classified terminal outcome besides declined/rate_limited
+// with no Stage mapping, so infra-classified runs produced no terminal event —
+// exactly the gap that made the GH-4050 incident's execution_events timeline
+// for 5ce9bc2c simply stop with no terminal entry.
+func TestDispatcher_SyntheticDispatch_InfraEventSequence(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunnerWithBackend(syntheticInfraBackend{})
+	runner.skipPreflightChecks = true
+	runner.SetLogStore(store)
+	runner.SetRecordingEnabled(false)
+
+	dispatcher := NewDispatcher(store, runner, nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	task := &Task{
+		ID:          "GH-SYNTH-INFRA",
+		Title:       "Synthetic dispatch infra failure",
+		Description: "GH-4101 synthetic infra classification coverage",
+		ProjectPath: t.TempDir(),
+	}
+
+	execID, err := dispatcher.QueueTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("failed to queue task: %v", err)
+	}
+
+	exec := waitForTerminalStatus(t, store, execID, 10*time.Second)
+	if exec.Status != "infra" {
+		t.Fatalf("expected status infra, got %q (error: %s)", exec.Status, exec.Error)
+	}
+
+	events, err := store.ListExecutionEvents(execID)
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+
+	var gotTerminal bool
+	for _, e := range events {
+		if e.Stage == memory.StageFailed && strings.Contains(e.Detail, "infra") {
+			gotTerminal = true
+		}
+	}
+	if !gotTerminal {
+		var gotStages []memory.Stage
+		for _, e := range events {
+			gotStages = append(gotStages, e.Stage)
+		}
+		t.Fatalf("expected a terminal StageFailed event mentioning 'infra', got events %v", gotStages)
 	}
 }
