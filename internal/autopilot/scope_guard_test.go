@@ -182,3 +182,92 @@ func TestSizeFloorReason(t *testing.T) {
 		})
 	}
 }
+
+// TestIsBookkeepingPath covers GH-4055 path classification: Navigator
+// bookkeeping/generated content under .agent/** (including nested paths and
+// the knowledge graph) must be recognized separately from shipped code.
+func TestIsBookkeepingPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"internal/autopilot/controller.go", false},
+		{"cmd/pilot/main.go", false},
+		{".agent/tasks/foo.md", true},
+		{".agent/knowledge/graph.json", true},
+		{".agent", true},
+		{".agentfoo/bar.go", false}, // must not match by prefix-of-name alone
+	}
+	for _, tc := range cases {
+		if got := isBookkeepingPath(tc.path); got != tc.want {
+			t.Errorf("isBookkeepingPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestSizeFloorReason_BookkeepingExclusion covers GH-4055: .agent/** additions
+// (Navigator task docs, knowledge graph regen) must not count toward the
+// size-floor gate, while ordinary code additions still do.
+func TestSizeFloorReason_BookkeepingExclusion(t *testing.T) {
+	cases := []struct {
+		name  string
+		files []*github.PRFile
+		want  bool // true if a reason is expected
+	}{
+		{
+			// PR #4047 scenario: 586 total additions, 305 code + 281 bookkeeping.
+			// Previously escalated on the 586 net-additions total; must not now.
+			name: "PR #4047 scenario: 305 code + 281 bookkeeping — no escalation",
+			files: []*github.PRFile{
+				{Filename: "internal/autopilot/controller.go", Status: "modified", Additions: 305},
+				{Filename: ".agent/knowledge/graph.json", Status: "modified", Additions: 281},
+			},
+		},
+		{
+			name: "305 code + 400 code — escalates",
+			files: []*github.PRFile{
+				{Filename: "internal/autopilot/controller.go", Status: "modified", Additions: 305},
+				{Filename: "internal/autopilot/scope_guard.go", Status: "modified", Additions: 400},
+			},
+			want: true,
+		},
+		{
+			name: "0 code + 800 bookkeeping — no escalation",
+			files: []*github.PRFile{
+				{Filename: ".agent/tasks/TASK-999-foo.md", Status: "added", Additions: 800},
+			},
+		},
+		{
+			name: "threshold boundary: 500 code — no escalation",
+			files: []*github.PRFile{
+				{Filename: "internal/autopilot/controller.go", Status: "modified", Additions: 500},
+			},
+		},
+		{
+			name: "threshold boundary: 501 code — escalates",
+			files: []*github.PRFile{
+				{Filename: "internal/autopilot/controller.go", Status: "modified", Additions: 501},
+			},
+			want: true,
+		},
+		{
+			name: "mixed nested bookkeeping paths correctly excluded",
+			files: []*github.PRFile{
+				{Filename: "internal/autopilot/controller.go", Status: "modified", Additions: 300},
+				{Filename: ".agent/tasks/foo.md", Status: "added", Additions: 250},
+				{Filename: ".agent/knowledge/graph.json", Status: "modified", Additions: 250},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SizeFloorReason(tc.files)
+			if tc.want && got == "" {
+				t.Errorf("expected size-floor to fire, got empty reason")
+			}
+			if !tc.want && got != "" {
+				t.Errorf("expected no size-floor fire, got %q", got)
+			}
+		})
+	}
+}
