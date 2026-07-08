@@ -214,9 +214,9 @@ func FormatGateResult(result *GateResult) string {
 	var sb strings.Builder
 
 	if result.Passed {
-		sb.WriteString("✅ Gate PASSED")
+		sb.WriteString("✓ Gate PASSED")
 	} else {
-		sb.WriteString("❌ Gate FAILED")
+		sb.WriteString("✗ Gate FAILED")
 	}
 	sb.WriteString(fmt.Sprintf(" (%s)\n", result.Duration.Round(time.Millisecond)))
 

@@ -129,14 +129,14 @@ Examples:
 			// Final status
 			if report.ReadyToStart() {
 				if errors == 0 && warnings == 0 {
-					fmt.Println("✅ All systems operational!")
+					fmt.Println("✓ All systems operational!")
 				} else if errors == 0 {
-					fmt.Printf("✅ Ready to start (%d warning(s))\n", warnings)
+					fmt.Printf("✓ Ready to start (%d warning(s))\n", warnings)
 				} else {
-					fmt.Printf("⚠️  Ready with issues (%d error(s), %d warning(s))\n", errors, warnings)
+					fmt.Printf("! Ready with issues (%d error(s), %d warning(s))\n", errors, warnings)
 				}
 			} else {
-				fmt.Printf("❌ Not ready - %d critical error(s)\n", errors)
+				fmt.Printf("✗ Not ready - %d critical error(s)\n", errors)
 				fmt.Println("   Fix required dependencies before running Pilot")
 			}
 			fmt.Println()

@@ -154,7 +154,7 @@ func onboardBackendSetup(state *OnboardState) error {
 	fmt.Println()
 	if !selected.Installed {
 		fmt.Printf("  %s %s is not installed. Install it before running Pilot.\n",
-			onboardDimStyle.Render("⚠"),
+			onboardDimStyle.Render("!"),
 			selected.Name)
 	}
 	fmt.Printf("  %s Backend: %s\n",

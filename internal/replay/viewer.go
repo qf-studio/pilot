@@ -362,9 +362,9 @@ func (m *ViewerModel) renderHeader() string {
 		filled := int(progress * float64(barWidth))
 		bar := strings.Repeat("━", filled) + strings.Repeat("─", barWidth-filled)
 
-		playState := "⏸"
+		playState := "○"
 		if m.playing {
-			playState = "▶"
+			playState = "●"
 		}
 
 		speedStr := fmt.Sprintf("%.1fx", m.speed)
@@ -436,9 +436,9 @@ func (m *ViewerModel) formatEventContent(event *StreamEvent) string {
 	switch p.Type {
 	case "system":
 		if p.Subtype == "init" {
-			return "🚀 System initialized"
+			return "▸ System initialized"
 		}
-		return fmt.Sprintf("⚙️ System: %s", p.Subtype)
+		return fmt.Sprintf("▸ System: %s", p.Subtype)
 
 	case "assistant":
 		if p.ToolName != "" {
@@ -452,22 +452,22 @@ func (m *ViewerModel) formatEventContent(event *StreamEvent) string {
 		if p.Text != "" {
 			text := strings.ReplaceAll(p.Text, "\n", " ")
 			text = strings.TrimSpace(text)
-			return fmt.Sprintf("💬 %s", text)
+			return fmt.Sprintf("▸ %s", text)
 		}
-		return "📝 (assistant)"
+		return "▸ (assistant)"
 
 	case "user":
-		return "📥 Tool result"
+		return "▸ Tool result"
 
 	case "result":
 		if p.IsError {
-			return fmt.Sprintf("❌ Error: %s", truncate(p.Result, 60))
+			return fmt.Sprintf("✗ Error: %s", truncate(p.Result, 60))
 		}
 		tokens := ""
 		if p.InputTokens > 0 || p.OutputTokens > 0 {
 			tokens = fmt.Sprintf(" (%d in, %d out)", p.InputTokens, p.OutputTokens)
 		}
-		return fmt.Sprintf("✅ Completed%s", tokens)
+		return fmt.Sprintf("✓ Completed%s", tokens)
 
 	default:
 		return fmt.Sprintf("(%s)", p.Type)

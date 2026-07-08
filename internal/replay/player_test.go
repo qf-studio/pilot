@@ -634,17 +634,17 @@ func TestGetToolIcon(t *testing.T) {
 		tool     string
 		expected string
 	}{
-		{"Read", "\U0001F4D6"},
-		{"Write", "\u270F\uFE0F"},
-		{"Edit", "\U0001F4DD"},
-		{"Bash", "\U0001F4BB"},
-		{"Glob", "\U0001F50D"},
-		{"Grep", "\U0001F50E"},
-		{"Task", "\U0001F916"},
-		{"Skill", "\u26A1"},
-		{"WebFetch", "\U0001F310"},
-		{"WebSearch", "\U0001F50D"},
-		{"UnknownTool", "\U0001F527"},
+		{"Read", "\u25B8"},
+		{"Write", "\u25B8"},
+		{"Edit", "\u25B8"},
+		{"Bash", "\u25B8"},
+		{"Glob", "\u25B8"},
+		{"Grep", "\u25B8"},
+		{"Task", "\u25B8"},
+		{"Skill", "\u25B8"},
+		{"WebFetch", "\u25B8"},
+		{"WebSearch", "\u25B8"},
+		{"UnknownTool", "\u25B8"},
 	}
 
 	for _, tc := range tests {

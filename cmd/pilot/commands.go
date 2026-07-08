@@ -43,7 +43,7 @@ func newStopCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Daemon process management is out of scope - users should use
 			// standard OS signals (Ctrl+C) or process managers (systemd, launchd)
-			fmt.Println("🛑 Stopping Pilot daemon...")
+			fmt.Println("▸ Stopping Pilot daemon...")
 			fmt.Println("   Use Ctrl+C or send SIGTERM to stop the daemon")
 			return nil
 		},
@@ -89,7 +89,7 @@ func newStatusCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Println("📊 Pilot Status")
+			fmt.Println("Pilot Status")
 			fmt.Println("───────────────────────────────────────")
 			fmt.Printf("Gateway: http://%s:%d\n", cfg.Gateway.Host, cfg.Gateway.Port)
 			fmt.Println()
@@ -183,7 +183,7 @@ Examples:
 					if err := os.Rename(configPath, backupPath); err != nil {
 						return fmt.Errorf("failed to backup config: %w", err)
 					}
-					fmt.Printf("   📦 Backed up existing config to %s\n\n", backupPath)
+					fmt.Printf("   Backed up existing config to %s\n\n", backupPath)
 				} else {
 					// Load and display existing config summary
 					return showExistingConfigInfo(configPath)
@@ -201,7 +201,7 @@ Examples:
 			// Show banner
 			banner.PrintWithVersion(version)
 
-			fmt.Println("   ✅ Initialized!")
+			fmt.Println("   ✓ Initialized!")
 			fmt.Printf("   Config: %s\n", configPath)
 			fmt.Println()
 			fmt.Println("   Next steps:")
@@ -233,7 +233,7 @@ func showExistingConfigInfo(configPath string) error {
 		displayPath = strings.Replace(configPath, home, "~", 1)
 	}
 
-	fmt.Printf("⚠️  Config already exists: %s\n\n", displayPath)
+	fmt.Printf("! Config already exists: %s\n\n", displayPath)
 	fmt.Println("   Current settings:")
 
 	// Projects count
@@ -345,7 +345,7 @@ Examples:
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 			go func() {
 				<-sigCh
-				fmt.Println("\n\n⚠️  Cancelling task...")
+				fmt.Println("\n\n! Cancelling task...")
 				cancel()
 			}()
 
@@ -367,7 +367,7 @@ Examples:
 				hasNavigator = true
 			}
 
-			fmt.Println("🚀 Pilot Task Execution")
+			fmt.Println("Pilot Task Execution")
 			fmt.Println("───────────────────────────────────────")
 			fmt.Printf("   Task ID:   %s\n", taskID)
 			fmt.Printf("   Project:   %s\n", projectPath)
@@ -381,7 +381,7 @@ Examples:
 				fmt.Printf("   Navigator: ✓ enabled\n")
 			}
 			fmt.Println()
-			fmt.Println("📋 Task:")
+			fmt.Println("Task:")
 			fmt.Printf("   %s\n", taskDesc)
 			fmt.Println("───────────────────────────────────────")
 			fmt.Println()
@@ -423,7 +423,7 @@ Examples:
 					dryRunBackendCfg = executor.DefaultBackendConfig()
 				}
 
-				fmt.Println("🧪 DRY RUN - showing what would execute:")
+				fmt.Println("DRY RUN - showing what would execute:")
 				fmt.Println()
 				fmt.Printf("Command: %s -p \"<prompt>\" --verbose --output-format stream-json\n", dryRunBackendCfg.Type)
 				fmt.Println("Working directory:", projectPath)
@@ -482,7 +482,7 @@ Examples:
 
 				if !result.Allowed {
 					fmt.Println()
-					fmt.Println("🚫 Task Blocked by Budget")
+					fmt.Println("✗ Task Blocked by Budget")
 					fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 					fmt.Printf("   Reason: %s\n", result.Reason)
 					fmt.Println()
@@ -589,7 +589,7 @@ Examples:
 				removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
 				if err != nil {
 					// Real failure (e.g. temp dir unreadable) — don't fail startup.
-					fmt.Printf("   Worktree:  ⚠ cleanup error (%s)\n", err.Error())
+					fmt.Printf("   Worktree:  ! cleanup error (%s)\n", err.Error())
 				} else if removed > 0 {
 					fmt.Printf("   Worktree:  ✓ cleaned up %d orphaned worktrees (freed %.1f MB)\n", removed, float64(freedBytes)/(1024*1024))
 				}
@@ -751,7 +751,7 @@ Examples:
 				}
 			})
 
-			fmt.Println("⏳ Executing task with Claude Code...")
+			fmt.Println("◌ Executing task with Claude Code...")
 			if verbose {
 				fmt.Println("   (streaming raw JSON)")
 			}
@@ -770,9 +770,9 @@ Examples:
 			if resultJSON != "" {
 				data, jsonErr := json.MarshalIndent(result, "", "  ")
 				if jsonErr != nil {
-					fmt.Printf("   ⚠️  Failed to marshal result JSON: %v\n", jsonErr)
+					fmt.Printf("   ! Failed to marshal result JSON: %v\n", jsonErr)
 				} else if writeErr := os.WriteFile(resultJSON, data, 0644); writeErr != nil {
-					fmt.Printf("   ⚠️  Failed to write result JSON to %s: %v\n", resultJSON, writeErr)
+					fmt.Printf("   ! Failed to write result JSON to %s: %v\n", resultJSON, writeErr)
 				}
 			}
 
@@ -800,7 +800,7 @@ Examples:
 			// Send alerts based on result
 			if result.Success {
 				if result.PRUrl == "" {
-					fmt.Println("   ⚠️  PR not created (check gh auth status)")
+					fmt.Println("   ! PR not created (check gh auth status)")
 				}
 
 				// Send task completed event to alerts engine
@@ -1021,7 +1021,7 @@ Examples:
 			client := github.NewClient(token)
 			ctx := context.Background()
 
-			fmt.Printf("📥 Fetching issue #%d from %s...\n", issueNum, repo)
+			fmt.Printf("▸ Fetching issue #%d from %s...\n", issueNum, repo)
 			issue, err := client.GetIssue(ctx, owner, repoName, int(issueNum))
 			if err != nil {
 				return fmt.Errorf("failed to fetch issue: %w", err)
@@ -1038,7 +1038,7 @@ Examples:
 				hasNavigator = true
 			}
 
-			fmt.Println("🚀 Pilot GitHub Task Execution")
+			fmt.Println("Pilot GitHub Task Execution")
 			fmt.Println("───────────────────────────────────────")
 			fmt.Printf("   Issue:     #%d\n", issue.Number)
 			fmt.Printf("   Title:     %s\n", issue.Title)
@@ -1050,7 +1050,7 @@ Examples:
 				fmt.Printf("   Navigator: ✓ enabled\n")
 			}
 			fmt.Println()
-			fmt.Println("📋 Issue Body:")
+			fmt.Println("Issue Body:")
 			fmt.Println("───────────────────────────────────────")
 			if issue.Body != "" {
 				fmt.Println(issue.Body)
@@ -1082,7 +1082,7 @@ Examples:
 				if ghBackendCfg == nil {
 					ghBackendCfg = executor.DefaultBackendConfig()
 				}
-				fmt.Println("🧪 DRY RUN - showing what would execute:")
+				fmt.Println("DRY RUN - showing what would execute:")
 				fmt.Println()
 				runner, runnerErr := executor.NewRunnerWithConfig(ghBackendCfg)
 				if runnerErr != nil {
@@ -1099,7 +1099,7 @@ Examples:
 			}
 
 			// Add in-progress label
-			fmt.Println("🏷️  Adding in-progress label...")
+			fmt.Println("▸ Adding in-progress label...")
 			if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-in-progress"}); err != nil {
 				logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
 			}
@@ -1116,9 +1116,9 @@ Examples:
 			if cfg.Executor != nil && cfg.Executor.UseWorktree {
 				removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
 				if err != nil {
-					fmt.Printf("🧹 Worktree cleanup error (%s)\n", err.Error())
+					fmt.Printf("▸ Worktree cleanup error (%s)\n", err.Error())
 				} else if removed > 0 {
-					fmt.Printf("🧹 Cleaned up %d orphaned worktrees (freed %.1f MB)\n", removed, float64(freedBytes)/(1024*1024))
+					fmt.Printf("▸ Cleaned up %d orphaned worktrees (freed %.1f MB)\n", removed, float64(freedBytes)/(1024*1024))
 				}
 			}
 
@@ -1129,7 +1129,7 @@ Examples:
 			}
 
 			fmt.Println()
-			fmt.Println("⏳ Executing task with Claude Code...")
+			fmt.Println("◌ Executing task with Claude Code...")
 			fmt.Println()
 
 			result, err := runner.Execute(ctx, task)
@@ -1173,7 +1173,7 @@ Examples:
 
 				fmt.Println()
 				fmt.Println("───────────────────────────────────────")
-				fmt.Println("⚠️  Task completed but no changes made")
+				fmt.Println("! Task completed but no changes made")
 				fmt.Printf("   Duration: %s\n", result.Duration)
 				return fmt.Errorf("execution completed but no commits or PR created")
 			}
@@ -1191,7 +1191,7 @@ Examples:
 
 			fmt.Println()
 			fmt.Println("───────────────────────────────────────")
-			fmt.Println("✅ Task completed successfully!")
+			fmt.Println("✓ Task completed successfully!")
 			fmt.Printf("   Duration: %s\n", result.Duration)
 			if result.PRUrl != "" {
 				fmt.Printf("   PR: %s\n", result.PRUrl)
@@ -1239,7 +1239,7 @@ Examples:
 			// Check if brief config exists
 			briefCfg := cfg.Orchestrator.DailyBrief
 			if briefCfg == nil {
-				fmt.Println("❌ Brief not configured in config.yaml")
+				fmt.Println("✗ Brief not configured in config.yaml")
 				fmt.Println()
 				fmt.Println("   Add the following to your config:")
 				fmt.Println()
@@ -1290,7 +1290,7 @@ Examples:
 
 			// If --now flag, generate and optionally deliver
 			if now || weekly {
-				fmt.Println("📊 Generating Brief")
+				fmt.Println("Generating Brief")
 				fmt.Println("───────────────────────────────────────")
 
 				var brief *briefs.Brief
@@ -1316,7 +1316,7 @@ Examples:
 				// If channels configured, ask to deliver
 				if len(briefsConfig.Channels) > 0 {
 					fmt.Println("───────────────────────────────────────")
-					fmt.Printf("📤 Deliver to %d configured channel(s)? [y/N]: ", len(briefsConfig.Channels))
+					fmt.Printf("▸ Deliver to %d configured channel(s)? [y/N]: ", len(briefsConfig.Channels))
 
 					var input string
 					_, _ = fmt.Scanln(&input)
@@ -1345,9 +1345,9 @@ Examples:
 						fmt.Println()
 						for _, result := range results {
 							if result.Success {
-								fmt.Printf("   ✅ %s delivered\n", result.Channel)
+								fmt.Printf("   ✓ %s delivered\n", result.Channel)
 							} else {
-								fmt.Printf("   ❌ %s failed: %v\n", result.Channel, result.Error)
+								fmt.Printf("   ✗ %s failed: %v\n", result.Channel, result.Error)
 							}
 						}
 					}
@@ -1357,7 +1357,7 @@ Examples:
 			}
 
 			// Default: show status
-			fmt.Println("📊 Brief Scheduler Status")
+			fmt.Println("Brief Scheduler Status")
 			fmt.Println("───────────────────────────────────────")
 			fmt.Printf("   Enabled:  %v\n", briefCfg.Enabled)
 			fmt.Printf("   Schedule: %s\n", briefCfg.Schedule)
@@ -1375,10 +1375,10 @@ Examples:
 			fmt.Println()
 
 			if !briefCfg.Enabled {
-				fmt.Println("💡 Briefs are disabled. Enable in config:")
+				fmt.Println("Briefs are disabled. Enable in config:")
 				fmt.Println("   orchestrator.daily_brief.enabled: true")
 			} else {
-				fmt.Println("💡 Run 'pilot brief --now' to generate immediately")
+				fmt.Println("Run 'pilot brief --now' to generate immediately")
 			}
 
 			return nil
@@ -1466,9 +1466,9 @@ func newPatternsListCmd() *cobra.Command {
 			fmt.Printf("Found %d patterns (showing %d):\n\n", result.TotalMatches, len(result.Patterns))
 
 			for _, p := range result.Patterns {
-				icon := "📘"
+				icon := "▸"
 				if p.IsAntiPattern {
-					icon = "⚠️"
+					icon = "!"
 				}
 				fmt.Printf("%s %s (%.0f%% confidence)\n", icon, p.Title, p.Confidence*100)
 				fmt.Printf("   Type: %s | Uses: %d | Scope: %s\n", p.Type, p.Occurrences, p.Scope)
@@ -1534,9 +1534,9 @@ func newPatternsSearchCmd() *cobra.Command {
 			fmt.Printf("Found %d patterns matching '%s':\n\n", len(patterns), query)
 
 			for _, p := range patterns {
-				icon := "📘"
+				icon := "▸"
 				if p.IsAntiPattern {
-					icon = "⚠️"
+					icon = "!"
 				}
 				fmt.Printf("%s %s (%.0f%%)\n", icon, p.Title, p.Confidence*100)
 				if p.Context != "" {
@@ -1581,7 +1581,7 @@ func newPatternsStatsCmd() *cobra.Command {
 				return fmt.Errorf("failed to get stats: %w", err)
 			}
 
-			fmt.Println("📊 Cross-Project Pattern Statistics")
+			fmt.Println("Cross-Project Pattern Statistics")
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Printf("Total Patterns:     %d\n", stats.TotalPatterns)
 			fmt.Printf("  ├─ Patterns:      %d\n", stats.Patterns)
@@ -1654,7 +1654,7 @@ func newPatternsApplyCmd() *cobra.Command {
 				return fmt.Errorf("failed to apply pattern: %w", err)
 			}
 
-			fmt.Printf("✅ Applied pattern to project:\n")
+			fmt.Printf("✓ Applied pattern to project:\n")
 			fmt.Printf("   Pattern: %s\n", pattern.Title)
 			fmt.Printf("   Type:    %s\n", pattern.Type)
 			fmt.Printf("   Project: %s\n", shortenPath(projectPath))
@@ -1712,7 +1712,7 @@ Use --global to ignore across all projects (deletes the pattern).`,
 				if err := store.DeleteCrossPattern(patternID); err != nil {
 					return fmt.Errorf("failed to delete pattern: %w", err)
 				}
-				fmt.Printf("✅ Deleted pattern globally:\n")
+				fmt.Printf("✓ Deleted pattern globally:\n")
 				fmt.Printf("   Pattern: %s\n", pattern.Title)
 				fmt.Printf("   Type:    %s\n", pattern.Type)
 			} else {
@@ -1734,7 +1734,7 @@ Use --global to ignore across all projects (deletes the pattern).`,
 				if err := store.RecordPatternFeedback(feedback); err != nil {
 					return fmt.Errorf("failed to record ignore: %w", err)
 				}
-				fmt.Printf("✅ Ignored pattern for project:\n")
+				fmt.Printf("✓ Ignored pattern for project:\n")
 				fmt.Printf("   Pattern: %s\n", pattern.Title)
 				fmt.Printf("   Project: %s\n", shortenPath(projectPath))
 			}
@@ -1797,21 +1797,21 @@ func newReplayListCmd() *cobra.Command {
 			if len(recordings) == 0 {
 				fmt.Println("No recordings found.")
 				fmt.Println()
-				fmt.Println("💡 Recordings are created automatically when you run tasks.")
+				fmt.Println("Recordings are created automatically when you run tasks.")
 				return nil
 			}
 
-			fmt.Println("📹 Execution Recordings")
+			fmt.Println("Execution Recordings")
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Println()
 
 			for _, rec := range recordings {
-				statusIcon := "✅"
+				statusIcon := "✓"
 				switch rec.Status {
 				case "failed":
-					statusIcon = "❌"
+					statusIcon = "✗"
 				case "cancelled":
-					statusIcon = "⚠️"
+					statusIcon = "!"
 				}
 
 				fmt.Printf("%s %s\n", statusIcon, rec.ID)
@@ -1823,7 +1823,7 @@ func newReplayListCmd() *cobra.Command {
 
 			fmt.Printf("Showing %d recording(s)\n", len(recordings))
 			fmt.Println()
-			fmt.Println("💡 Use 'pilot replay show <id>' for details")
+			fmt.Println("Use 'pilot replay show <id>' for details")
 			fmt.Println("   Use 'pilot replay play <id>' to replay")
 
 			return nil
@@ -1852,16 +1852,16 @@ func newReplayShowCmd() *cobra.Command {
 			}
 
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			fmt.Printf("📹 RECORDING: %s\n", recording.ID)
+			fmt.Printf("RECORDING: %s\n", recording.ID)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Println()
 
-			statusIcon := "✅"
+			statusIcon := "✓"
 			switch recording.Status {
 			case "failed":
-				statusIcon = "❌"
+				statusIcon = "✗"
 			case "cancelled":
-				statusIcon = "⚠️"
+				statusIcon = "!"
 			}
 
 			fmt.Printf("Status:   %s %s\n", statusIcon, recording.Status)
@@ -1918,7 +1918,7 @@ func newReplayShowCmd() *cobra.Command {
 			fmt.Printf("  Summary:  %s\n", recording.SummaryPath)
 			fmt.Println()
 
-			fmt.Println("💡 Use 'pilot replay play " + recording.ID + "' to replay")
+			fmt.Println("Use 'pilot replay play " + recording.ID + "' to replay")
 			fmt.Println("   Use 'pilot replay analyze " + recording.ID + "' for detailed analysis")
 
 			return nil
@@ -1997,7 +1997,7 @@ Examples:
 			}
 
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			fmt.Printf("▶️  REPLAYING: %s\n", recording.ID)
+			fmt.Printf("▸ REPLAYING: %s\n", recording.ID)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Printf("Task: %s | Events: %d | Duration: %s\n",
 				recording.TaskID, recording.EventCount, recording.Duration.Round(time.Second))
@@ -2020,7 +2020,7 @@ Examples:
 
 			fmt.Println()
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			fmt.Println("⏹️  REPLAY COMPLETE")
+			fmt.Println("✓ REPLAY COMPLETE")
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 			return nil
@@ -2167,7 +2167,7 @@ Examples:
 				return fmt.Errorf("failed to write file: %w", err)
 			}
 
-			fmt.Printf("✅ Exported to: %s\n", output)
+			fmt.Printf("✓ Exported to: %s\n", output)
 			fmt.Printf("   Format: %s | Size: %d bytes\n", format, len(content))
 			if withAnalysis {
 				fmt.Println("   Analysis: ✓ included")
@@ -2215,7 +2215,7 @@ func newReplayDeleteCmd() *cobra.Command {
 				return fmt.Errorf("failed to delete: %w", err)
 			}
 
-			fmt.Printf("✅ Deleted recording: %s\n", recordingID)
+			fmt.Printf("✓ Deleted recording: %s\n", recordingID)
 			return nil
 		},
 	}
@@ -2246,7 +2246,7 @@ func checkForUpdates() {
 
 	if info.UpdateAvail {
 		fmt.Println()
-		fmt.Printf("✨ Update available: %s → %s\n", info.Current, info.Latest)
+		fmt.Printf("↑ Update available: %s → %s\n", info.Current, info.Latest)
 		fmt.Println("   Run 'pilot upgrade' to install")
 		fmt.Println()
 	}
@@ -2586,7 +2586,7 @@ Examples:
 				return fmt.Errorf("failed to create release: %w", err)
 			}
 
-			fmt.Printf("✨ Release %s created!\n", versionStr)
+			fmt.Printf("✓ Release %s created!\n", versionStr)
 			fmt.Printf("   URL: %s\n", release.HTMLURL)
 
 			return nil
@@ -2653,7 +2653,7 @@ Note: Pilot must be running with --env flag for this to work.`,
 					fmt.Println(string(out))
 					return nil
 				}
-				fmt.Println("⚠️  Autopilot is not enabled in configuration")
+				fmt.Println("! Autopilot is not enabled in configuration")
 				fmt.Println("   Start Pilot with --env=<env> to enable autopilot mode")
 				return nil
 			}
@@ -2690,7 +2690,7 @@ Note: Pilot must be running with --env flag for this to work.`,
 				return nil
 			}
 
-			fmt.Println("🤖 Autopilot Status")
+			fmt.Println("Autopilot Status")
 			fmt.Println("───────────────────────────────────────")
 			fmt.Printf("Environment: %s\n", autopilotCfg.EnvironmentName())
 			fmt.Println()
@@ -2714,7 +2714,7 @@ Note: Pilot must be running with --env flag for this to work.`,
 			}
 			fmt.Println()
 
-			fmt.Println("ℹ️  For live PR tracking, check:")
+			fmt.Println("For live PR tracking, check:")
 			fmt.Println("   • Dashboard: pilot start --dashboard --env=<env>")
 			fmt.Println("   • Logs: pilot logs --follow")
 
@@ -2760,7 +2760,7 @@ defined in the config file under autopilot.environments.`,
 					fmt.Println(string(out))
 					return nil
 				}
-				fmt.Println("⚠️  Autopilot is not configured")
+				fmt.Println("! Autopilot is not configured")
 				fmt.Println("   Enable autopilot: pilot autopilot enable")
 				return nil
 			}
@@ -2798,7 +2798,7 @@ defined in the config file under autopilot.environments.`,
 				return nil
 			}
 
-			fmt.Println("🤖 Configured Autopilot Environments")
+			fmt.Println("Configured Autopilot Environments")
 			fmt.Println("───────────────────────────────────────")
 			if len(envMap) == 0 {
 				fmt.Println("No environments configured (using defaults)")

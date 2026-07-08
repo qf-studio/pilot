@@ -75,12 +75,12 @@ func newMetricsSummaryCmd() *cobra.Command {
 
 			// Display summary
 			fmt.Println()
-			fmt.Printf("📊 Pilot Metrics Summary (Last %d Days)\n", days)
+			fmt.Printf("Pilot Metrics Summary (Last %d Days)\n", days)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Println()
 
 			// Execution stats
-			fmt.Println("📈 Executions")
+			fmt.Println("Executions")
 			fmt.Printf("   Total:    %d\n", summary.TotalExecutions)
 			fmt.Printf("   Success:  %d (%.1f%%)\n", summary.SuccessCount, summary.SuccessRate*100)
 			fmt.Printf("   Failed:   %d\n", summary.FailedCount)
@@ -88,7 +88,7 @@ func newMetricsSummaryCmd() *cobra.Command {
 			fmt.Println()
 
 			// Duration stats
-			fmt.Println("⏱️  Duration")
+			fmt.Println("Duration")
 			fmt.Printf("   Total:    %s\n", formatDuration(summary.TotalDurationMs))
 			fmt.Printf("   Average:  %s\n", formatDuration(summary.AvgDurationMs))
 			if summary.MinDurationMs > 0 {
@@ -100,7 +100,7 @@ func newMetricsSummaryCmd() *cobra.Command {
 			fmt.Println()
 
 			// Token stats
-			fmt.Println("🔤 Tokens")
+			fmt.Println("Tokens")
 			fmt.Printf("   Total:    %s\n", formatTokens(summary.TotalTokens))
 			fmt.Printf("   Input:    %s\n", formatTokens(summary.TotalTokensInput))
 			fmt.Printf("   Output:   %s\n", formatTokens(summary.TotalTokensOutput))
@@ -110,7 +110,7 @@ func newMetricsSummaryCmd() *cobra.Command {
 			fmt.Println()
 
 			// Cost stats
-			fmt.Println("💰 Estimated Cost")
+			fmt.Println("Estimated Cost")
 			fmt.Printf("   Total:    $%.2f\n", summary.TotalCostUSD)
 			if summary.TotalExecutions > 0 {
 				fmt.Printf("   Avg/Task: $%.4f\n", summary.AvgCostUSD)
@@ -118,7 +118,7 @@ func newMetricsSummaryCmd() *cobra.Command {
 			fmt.Println()
 
 			// Code changes
-			fmt.Println("📝 Code Changes")
+			fmt.Println("Code Changes")
 			fmt.Printf("   Files:    %d\n", summary.TotalFilesChanged)
 			fmt.Printf("   Added:    +%d lines\n", summary.TotalLinesAdded)
 			fmt.Printf("   Removed:  -%d lines\n", summary.TotalLinesRemoved)
@@ -184,7 +184,7 @@ func newMetricsDailyCmd() *cobra.Command {
 
 			// Display daily breakdown
 			fmt.Println()
-			fmt.Printf("📅 Daily Metrics (Last %d Days)\n", days)
+			fmt.Printf("Daily Metrics (Last %d Days)\n", days)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Printf("%-12s %6s %6s %6s %10s %12s %10s\n", "Date", "Total", "Pass", "Fail", "Duration", "Tokens", "Cost")
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -275,11 +275,11 @@ func newMetricsProjectsCmd() *cobra.Command {
 
 			// Display project breakdown
 			fmt.Println()
-			fmt.Printf("📁 Project Metrics (Last %d Days)\n", days)
+			fmt.Printf("Project Metrics (Last %d Days)\n", days)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 			for _, m := range metrics {
-				fmt.Printf("\n📦 %s\n", m.ProjectName)
+				fmt.Printf("\n%s\n", m.ProjectName)
 				fmt.Printf("   Path:     %s\n", shortenPath(m.ProjectPath))
 				fmt.Printf("   Tasks:    %d (%.1f%% success)\n", m.ExecutionCount, m.SuccessRate*100)
 				fmt.Printf("   Duration: %s\n", formatDuration(m.TotalDurationMs))

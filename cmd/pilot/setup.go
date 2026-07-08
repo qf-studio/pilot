@@ -93,7 +93,7 @@ Examples:
 			}
 
 			if allConfigured {
-				fmt.Println("✅ Everything is configured!")
+				fmt.Println("✓ Everything is configured!")
 				fmt.Println()
 				fmt.Print("Reconfigure anyway? [y/N]: ")
 				if !readYesNo(reader, false) {
@@ -193,11 +193,11 @@ Examples:
 // disableMacSleep disables system sleep on macOS for always-on operation
 func disableMacSleep() error {
 	if runtime.GOOS != "darwin" {
-		fmt.Println("⚠️  --no-sleep only works on macOS")
+		fmt.Println("!  --no-sleep only works on macOS")
 		return nil
 	}
 
-	fmt.Println("🔋 Disabling Mac sleep...")
+	fmt.Println("Disabling Mac sleep...")
 	fmt.Println()
 	fmt.Println("This requires administrator privileges.")
 	fmt.Println("You may be prompted for your password.")
@@ -213,7 +213,7 @@ func disableMacSleep() error {
 	}
 
 	fmt.Println()
-	fmt.Println("✅ Mac sleep disabled")
+	fmt.Println("✓ Mac sleep disabled")
 	fmt.Println()
 	fmt.Println("Your Mac will no longer sleep automatically.")
 	fmt.Println("To re-enable sleep later:")
@@ -262,7 +262,7 @@ func setupTelegram(reader *bufio.Reader, cfg *config.Config) error {
 	fmt.Print("  Validating... ")
 	if err := validateTelegramToken(token); err != nil {
 		fmt.Println("✗")
-		fmt.Printf("  ⚠️  Token validation failed: %v\n", err)
+		fmt.Printf("  !  Token validation failed: %v\n", err)
 		fmt.Print("  Continue anyway? [y/N]: ")
 		if !readYesNo(reader, false) {
 			cfg.Adapters.Telegram.BotToken = ""
@@ -308,7 +308,7 @@ func setupProjects(reader *bufio.Reader, cfg *config.Config) error {
 		// Expand ~ and validate
 		path = expandPath(path)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
-			fmt.Printf("  ⚠️  Path not found: %s\n", path)
+			fmt.Printf("  !  Path not found: %s\n", path)
 			fmt.Print("  Add anyway? [y/N]: ")
 			if !readYesNo(reader, false) {
 				continue
