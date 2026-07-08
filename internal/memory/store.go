@@ -2611,9 +2611,12 @@ func (s *Store) GetRecentLogs(limit int) ([]*LogEntry, error) {
 	return entries, rows.Err()
 }
 
-// GetLogsByExecutionID returns log entries for a specific task ID (execution_logs.execution_id
-// stores the task ID, e.g. "GH-3714", not the execution row's UUID), in chronological order.
-// At most limit entries are returned, keeping the most recent ones if the task has more.
+// GetLogsByExecutionID returns log entries matching executionID against execution_logs.execution_id.
+// Since GH-3764-2, that column is written via Task.LogExecutionID(), which prefers the
+// dispatcher-assigned executions.id UUID over the human-readable task ID (e.g. "GH-3714") —
+// callers should pass the UUID for dispatcher-executed tasks and fall back to the task ID only
+// for executions that never got a dispatcher-assigned ID. Returned in chronological order
+// (oldest first), keeping the most recent limit entries if there are more matches than limit.
 func (s *Store) GetLogsByExecutionID(executionID string, limit int) ([]*LogEntry, error) {
 	rows, err := s.db.Query(`
 		SELECT id, COALESCE(execution_id, ''), timestamp, level, message, COALESCE(component, 'executor')

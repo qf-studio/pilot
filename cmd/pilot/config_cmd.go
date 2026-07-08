@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -385,7 +386,13 @@ Examples:
 
 			// If task ID provided, show specific task logs
 			if len(args) > 0 {
-				return showTaskLogs(args[0], cfg, verbose, jsonOut)
+				store, err := memory.NewStore(cfg.Memory.Path)
+				if err != nil {
+					return fmt.Errorf("failed to open memory store: %w", err)
+				}
+				defer func() { _ = store.Close() }()
+
+				return runTaskLogs(cmd.OutOrStdout(), store, args[0], verbose, jsonOut)
 			}
 
 			// Otherwise, show recent logs
@@ -408,16 +415,10 @@ const (
 	verboseLogDisplayLimit = 500
 )
 
-// showTaskLogs prints logs for a specific task, sourced from the memory store (executions +
+// runTaskLogs writes logs for a specific task to w, sourced from the memory store (executions +
 // execution_logs tables) rather than replay recordings, so it also covers tasks that are
 // still running or finished recently but haven't produced a finalized recording (GH-3724).
-func showTaskLogs(taskID string, cfg *config.Config, verbose, jsonOut bool) error {
-	store, err := memory.NewStore(cfg.Memory.Path)
-	if err != nil {
-		return fmt.Errorf("failed to open memory store: %w", err)
-	}
-	defer func() { _ = store.Close() }()
-
+func runTaskLogs(w io.Writer, store *memory.Store, taskID string, verbose, jsonOut bool) error {
 	exec, err := store.GetLatestExecutionByTaskID(taskID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -430,9 +431,19 @@ func showTaskLogs(taskID string, cfg *config.Config, verbose, jsonOut bool) erro
 	if verbose {
 		limit = verboseLogDisplayLimit
 	}
-	logs, err := store.GetLogsByExecutionID(exec.TaskID, limit)
+	// execution_logs.execution_id is written via Task.LogExecutionID(), which prefers
+	// the dispatcher-assigned executions.id UUID over the human-readable task ID
+	// (GH-3764-2). Try the UUID first; fall back to exec.TaskID for executions that
+	// never got a dispatcher-assigned ID (direct-commit path, pre-GH-3764-2 rows).
+	logs, err := store.GetLogsByExecutionID(exec.ID, limit)
 	if err != nil {
 		return fmt.Errorf("failed to load logs: %w", err)
+	}
+	if len(logs) == 0 && exec.ID != exec.TaskID {
+		logs, err = store.GetLogsByExecutionID(exec.TaskID, limit)
+		if err != nil {
+			return fmt.Errorf("failed to load logs: %w", err)
+		}
 	}
 
 	if jsonOut {
@@ -444,7 +455,7 @@ func showTaskLogs(taskID string, cfg *config.Config, verbose, jsonOut bool) erro
 		if err != nil {
 			return fmt.Errorf("failed to marshal: %w", err)
 		}
-		fmt.Println(string(data))
+		_, _ = fmt.Fprintln(w, string(data))
 		return nil
 	}
 
@@ -457,35 +468,35 @@ func showTaskLogs(taskID string, cfg *config.Config, verbose, jsonOut bool) erro
 		statusIcon = "!"
 	}
 
-	fmt.Printf("Task: %s [%s]\n", exec.TaskID, statusIcon)
-	fmt.Printf("Status: %s\n", exec.Status)
-	fmt.Printf("Duration: %s\n", time.Duration(exec.DurationMs)*time.Millisecond)
-	fmt.Printf("Started: %s\n", exec.CreatedAt.Format("2006-01-02 15:04:05"))
-	fmt.Println()
+	_, _ = fmt.Fprintf(w, "Task: %s [%s]\n", exec.TaskID, statusIcon)
+	_, _ = fmt.Fprintf(w, "Status: %s\n", exec.Status)
+	_, _ = fmt.Fprintf(w, "Duration: %s\n", time.Duration(exec.DurationMs)*time.Millisecond)
+	_, _ = fmt.Fprintf(w, "Started: %s\n", exec.CreatedAt.Format("2006-01-02 15:04:05"))
+	_, _ = fmt.Fprintln(w)
 
 	if exec.TaskBranch != "" || exec.CommitSHA != "" || exec.PRUrl != "" {
 		if exec.TaskBranch != "" {
-			fmt.Printf("Branch: %s\n", exec.TaskBranch)
+			_, _ = fmt.Fprintf(w, "Branch: %s\n", exec.TaskBranch)
 		}
 		if exec.CommitSHA != "" {
-			fmt.Printf("Commit: %s\n", exec.CommitSHA)
+			_, _ = fmt.Fprintf(w, "Commit: %s\n", exec.CommitSHA)
 		}
 		if exec.PRUrl != "" {
-			fmt.Printf("PR: %s\n", exec.PRUrl)
+			_, _ = fmt.Fprintf(w, "PR: %s\n", exec.PRUrl)
 		}
-		fmt.Println()
+		_, _ = fmt.Fprintln(w)
 	}
 
 	if len(logs) == 0 {
-		fmt.Println("No log entries recorded for this task.")
+		_, _ = fmt.Fprintln(w, "No log entries recorded for this task.")
 		return nil
 	}
 
-	fmt.Printf("Log entries (%d):\n", len(logs))
-	fmt.Println(strings.Repeat("-", 50))
+	_, _ = fmt.Fprintf(w, "Log entries (%d):\n", len(logs))
+	_, _ = fmt.Fprintln(w, strings.Repeat("-", 50))
 
 	for _, entry := range logs {
-		fmt.Printf("[%s] %-5s %s: %s\n",
+		_, _ = fmt.Fprintf(w, "[%s] %-5s %s: %s\n",
 			entry.Timestamp.Format("15:04:05"),
 			strings.ToUpper(entry.Level),
 			entry.Component,
