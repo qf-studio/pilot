@@ -10,22 +10,23 @@ import (
 
 // MetricsPersister periodically saves metrics snapshots to SQLite for history.
 type MetricsPersister struct {
-	controller *Controller
-	store      *memory.Store
-	interval   time.Duration
-	retention  time.Duration // How long to keep snapshots
-	log        *slog.Logger
+	source    *AggregateMetrics
+	store     *memory.Store
+	interval  time.Duration
+	retention time.Duration // How long to keep snapshots
+	log       *slog.Logger
 }
 
-// NewMetricsPersister creates a new MetricsPersister.
+// NewMetricsPersister creates a new MetricsPersister over an aggregate
+// metrics source spanning every autopilot controller (GH-4068).
 // Saves snapshots every 5 minutes and retains 7 days of history.
-func NewMetricsPersister(controller *Controller, store *memory.Store) *MetricsPersister {
+func NewMetricsPersister(source *AggregateMetrics, store *memory.Store) *MetricsPersister {
 	return &MetricsPersister{
-		controller: controller,
-		store:      store,
-		interval:   5 * time.Minute,
-		retention:  7 * 24 * time.Hour,
-		log:        slog.Default().With("component", "metrics-persister"),
+		source:    source,
+		store:     store,
+		interval:  5 * time.Minute,
+		retention: 7 * 24 * time.Hour,
+		log:       slog.Default().With("component", "metrics-persister"),
 	}
 }
 
@@ -53,7 +54,7 @@ func (mp *MetricsPersister) Run(ctx context.Context) {
 }
 
 func (mp *MetricsPersister) persist() {
-	snap := mp.controller.Metrics().Snapshot()
+	snap := mp.source.Snapshot()
 
 	// Sum up API errors total
 	var apiErrorsTotal int64

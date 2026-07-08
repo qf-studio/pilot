@@ -1775,13 +1775,24 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 	}
 
+	// GH-4068: one fleet-wide metrics view spanning every controller (default
+	// + per-project) — /metrics, MetricsAlerter, and MetricsPersister below
+	// all read this instead of the single default-repo controller, which
+	// previously left any projects-map controller's PR activity invisible to
+	// them (autopilotController is one of the entries summed here, since the
+	// default-repo controller is also stored under its own key in the map).
+	var aggregateMetrics *autopilot.AggregateMetrics
+	var allControllers []*autopilot.Controller
+	for _, c := range autopilotControllers {
+		allControllers = append(allControllers, c)
+	}
+	if len(allControllers) > 0 {
+		aggregateMetrics = autopilot.NewAggregateMetrics(allControllers)
+	}
+
 	// GH-2685: wire all controllers as the approval state writer so async approval
 	// decisions update the correct in-memory PRState across multi-repo deployments.
 	if len(autopilotControllers) > 0 {
-		var allControllers []*autopilot.Controller
-		for _, c := range autopilotControllers {
-			allControllers = append(allControllers, c)
-		}
 		approvalMgr.WithStateWriter(autopilot.NewMultiControllerStateWriter(allControllers...))
 	}
 
@@ -1942,7 +1953,6 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		gwServer = gateway.NewServer(cfg.Gateway)
 		if autopilotController != nil {
 			gwServer.SetAutopilotProvider(&autopilotProviderAdapter{controller: autopilotController})
-			gwServer.SetMetricsSource(autopilotController.Metrics())
 			// GH-2855: wire token/cost/execution counters into executor
 			runner.SetMetricsRecorder(autopilotController.Metrics())
 			// GH-4041: restore Prometheus counter baselines from the store's
@@ -1950,11 +1960,22 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// serving scrapes below, so external dashboards don't observe a
 			// reset-to-zero on restart. Fail loud rather than silently start
 			// with zero baselines.
+			//
+			// GH-4068: autopilotController.Metrics() is the SOLE hydration
+			// target — it is one of the sources summed into aggregateMetrics
+			// below, so this lifetime baseline is counted exactly once
+			// fleet-wide. Never hydrate any other controller's Metrics, or
+			// the aggregate would double-count on every scrape.
 			if store != nil {
 				if hydrateErr := autopilot.HydrateFromStore(ctx, store, autopilotController.Metrics()); hydrateErr != nil {
 					return fmt.Errorf("failed to hydrate metrics from store: %w", hydrateErr)
 				}
 			}
+		}
+		// GH-4068: /metrics reads the fleet-wide aggregate (default + every
+		// projects-map controller), not just the default controller.
+		if aggregateMetrics != nil {
+			gwServer.SetMetricsSource(aggregateMetrics)
 		}
 
 		// GH-2080: Wire PR review webhook events to autopilot controller in polling mode
@@ -2674,15 +2695,20 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					fmt.Printf("● autopilot enabled · %s environment (%d repos)\n", cfg.Orchestrator.Autopilot.Environment, len(autopilotControllers))
 				}
 
-				// Start metrics alerter for default controller (GH-728)
-				if alertsEngine != nil && autopilotController != nil {
-					metricsAlerter := autopilot.NewMetricsAlerter(autopilotController, alertsEngine)
+				// Start metrics alerter over the fleet-wide aggregate (GH-728,
+				// GH-4068 — previously scoped to the default controller only,
+				// so alert metadata silently excluded every projects-map
+				// controller's PR/queue activity; mirrors the GH-3954
+				// alerts-engine fix below, which fixed the same silo for
+				// direct controller alerts).
+				if alertsEngine != nil && aggregateMetrics != nil {
+					metricsAlerter := autopilot.NewMetricsAlerter(aggregateMetrics, alertsEngine)
 					go metricsAlerter.Run(ctx)
 				}
 
-				// Start metrics persister for default controller (GH-728)
-				if store != nil && autopilotController != nil {
-					metricsPersister := autopilot.NewMetricsPersister(autopilotController, store)
+				// Start metrics persister over the fleet-wide aggregate (GH-728, GH-4068)
+				if store != nil && aggregateMetrics != nil {
+					metricsPersister := autopilot.NewMetricsPersister(aggregateMetrics, store)
 					go metricsPersister.Run(ctx)
 				}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,17 +89,26 @@ func (t *tripTracker) recentTripCount() int {
 // MetricsAlerter periodically evaluates autopilot metrics and sends events
 // to the alerts engine for rule evaluation.
 type MetricsAlerter struct {
-	controller  *Controller
+	source      *AggregateMetrics
 	engine      *alerts.Engine
 	interval    time.Duration
 	log         *slog.Logger
 	tripTracker *tripTracker
+
+	// Fleet-level deadlock bookkeeping (GH-4068). Previously delegated to a
+	// single Controller's lastProgressAt/deadlockAlertSent fields, which only
+	// make sense per-repo; multi-controller mode tracks the same state here,
+	// keyed off the most recent progress across every aggregated controller
+	// (see evaluate()).
+	lastSeenProgressAt time.Time
+	deadlockAlertSent  bool
 }
 
-// NewMetricsAlerter creates a new MetricsAlerter.
-func NewMetricsAlerter(controller *Controller, engine *alerts.Engine) *MetricsAlerter {
+// NewMetricsAlerter creates a new MetricsAlerter over an aggregate metrics
+// source spanning every autopilot controller (GH-4068).
+func NewMetricsAlerter(source *AggregateMetrics, engine *alerts.Engine) *MetricsAlerter {
 	return &MetricsAlerter{
-		controller:  controller,
+		source:      source,
 		engine:      engine,
 		interval:    30 * time.Second,
 		log:         slog.Default().With("component", "metrics-alerter"),
@@ -128,14 +138,14 @@ func (ma *MetricsAlerter) Run(ctx context.Context) {
 
 // evaluate takes a metrics snapshot and emits an autopilot_metrics event.
 func (ma *MetricsAlerter) evaluate() {
-	snap := ma.controller.Metrics().Snapshot()
+	snap := ma.source.Snapshot()
 
 	// Calculate stuck PRs (in waiting_ci)
 	var prStuckCount int
 	var prMaxWaitMin float64
 	var lastStuckPR *PRState
 
-	activePRs := ma.controller.GetActivePRs()
+	activePRs := ma.source.ActivePRs()
 	for _, pr := range activePRs {
 		if pr.Stage == StageWaitingCI && !pr.CIWaitStartedAt.IsZero() {
 			waitMin := time.Since(pr.CIWaitStartedAt).Minutes()
@@ -147,10 +157,16 @@ func (ma *MetricsAlerter) evaluate() {
 		}
 	}
 
-	// GH-849: Deadlock detection - time since last progress
-	lastProgressAt := ma.controller.GetLastProgressAt()
+	// GH-849/GH-4068: Deadlock detection - time since last progress across
+	// every aggregated controller. The sent-flag resets the moment ANY
+	// repo makes progress again (lastProgressAt advances).
+	lastProgressAt := ma.source.LastProgressAt()
+	if lastProgressAt.After(ma.lastSeenProgressAt) {
+		ma.lastSeenProgressAt = lastProgressAt
+		ma.deadlockAlertSent = false
+	}
 	noProgressMin := time.Since(lastProgressAt).Minutes()
-	deadlockAlertSent := ma.controller.IsDeadlockAlertSent()
+	deadlockAlertSent := ma.deadlockAlertSent
 
 	// Find the last known state for deadlock context
 	lastKnownState := ""
@@ -171,7 +187,7 @@ func (ma *MetricsAlerter) evaluate() {
 		Type:      alerts.EventTypeAutopilotMetrics,
 		TaskID:    "autopilot",
 		TaskTitle: "Autopilot Health Check",
-		Project:   fmt.Sprintf("%s/%s", ma.controller.owner, ma.controller.repo),
+		Project:   ma.projectLabel(),
 		Metadata: map[string]string{
 			"failed_queue_depth":    fmt.Sprintf("%d", snap.FailedQueueDepth),
 			"circuit_breaker_trips": fmt.Sprintf("%d", snap.CircuitBreakerTrips),
@@ -196,8 +212,17 @@ func (ma *MetricsAlerter) evaluate() {
 	// This prevents repeated alerts until progress resumes.
 	// Default threshold is 1 hour (60 minutes).
 	if noProgressMin >= 60 && !deadlockAlertSent && len(activePRs) > 0 {
-		ma.controller.MarkDeadlockAlertSent()
+		ma.deadlockAlertSent = true
 	}
+}
+
+// projectLabel joins every aggregated repo's "owner/repo" for alert context.
+func (ma *MetricsAlerter) projectLabel() string {
+	names := ma.source.RepoNames()
+	if len(names) == 0 {
+		return "unknown"
+	}
+	return strings.Join(names, ",")
 }
 
 // RecordCircuitBreakerTrip records a circuit breaker trip and checks if escalation is needed.
@@ -236,7 +261,7 @@ func (ma *MetricsAlerter) emitEscalationAlert(tripCount int, lastPR int, lastRea
 		Type:      alerts.EventTypeEscalation,
 		TaskID:    "autopilot-circuit-breaker",
 		TaskTitle: "Autopilot Circuit Breaker Escalation",
-		Project:   fmt.Sprintf("%s/%s", ma.controller.owner, ma.controller.repo),
+		Project:   ma.projectLabel(),
 		Metadata: map[string]string{
 			"trips_in_hour":        fmt.Sprintf("%d", tripCount),
 			"escalation_threshold": fmt.Sprintf("%d", ma.tripTracker.escalationThreshold),

@@ -130,7 +130,7 @@ func TestMetricsAlerter_RecordCircuitBreakerTrip_NoEscalation(t *testing.T) {
 		repo:  "repo",
 	}
 
-	ma := NewMetricsAlerter(controller, engine)
+	ma := NewMetricsAlerter(NewAggregateMetrics([]*Controller{controller}), engine)
 
 	// Record 2 trips - should not trigger escalation
 	ma.RecordCircuitBreakerTrip(1, "failure 1")
@@ -155,7 +155,7 @@ func TestMetricsAlerter_RecordCircuitBreakerTrip_Escalation(t *testing.T) {
 		repo:  "repo",
 	}
 
-	ma := NewMetricsAlerter(controller, engine)
+	ma := NewMetricsAlerter(NewAggregateMetrics([]*Controller{controller}), engine)
 
 	// Record 3 trips - should trigger escalation
 	ma.RecordCircuitBreakerTrip(1, "failure 1")
