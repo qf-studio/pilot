@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -137,6 +138,62 @@ func TestController_ReconcileOrphanPRs_NonPilotBranchSkipped(t *testing.T) {
 	prs := c.GetActivePRs()
 	if len(prs) != 0 {
 		t.Errorf("expected 0 registered PRs, got %d", len(prs))
+	}
+}
+
+// TestController_ReconcileOrphanPRs_SkipsRecentlyEvictedForPersistFailure
+// verifies that a PR evicted by evictPersistFailedPR is not immediately
+// re-adopted by the next reconciler sweep — otherwise a PR whose row the
+// state store cannot save would adopt-fail-evict every 60s tick forever
+// (GH-4053).
+func TestController_ReconcileOrphanPRs_SkipsRecentlyEvictedForPersistFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/pulls" {
+			prs := []*github.PullRequest{
+				{
+					Number:  4047,
+					HTMLURL: "https://github.com/owner/repo/pull/4047",
+					Head:    github.PRRef{Ref: "pilot/GH-100", SHA: "abc1234"},
+					Base:    github.PRRef{Ref: "main"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(prs)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Simulate a prior eviction: PR 4047 is untracked (as if just evicted)
+	// but was evicted for persist failure moments ago.
+	c.mu.Lock()
+	c.persistFailedPRs[4047] = time.Now()
+	c.mu.Unlock()
+
+	c.reconcileOrphanPRs(context.Background())
+
+	if _, ok := c.GetPRState(4047); ok {
+		t.Fatal("reconciler should not have re-adopted a PR recently evicted for persist failure")
+	}
+	snap := c.metrics.Snapshot()
+	if snap.OrphanPRsRegistered["reconciler"] != 0 {
+		t.Errorf("OrphanPRsRegistered[reconciler] = %d, want 0", snap.OrphanPRsRegistered["reconciler"])
+	}
+
+	// Once the cooldown has elapsed, the PR is eligible for adoption again.
+	c.mu.Lock()
+	c.persistFailedPRs[4047] = time.Now().Add(-2 * persistFailureReadoptCooldown)
+	c.mu.Unlock()
+
+	c.reconcileOrphanPRs(context.Background())
+
+	if _, ok := c.GetPRState(4047); !ok {
+		t.Fatal("reconciler should re-adopt the PR once the persist-failure cooldown has elapsed")
 	}
 }
 
