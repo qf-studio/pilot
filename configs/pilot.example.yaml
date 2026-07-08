@@ -594,6 +594,10 @@ autopilot:
     tag_prefix: "v"
     generate_changelog: true
     notify_on_release: true
+    # require_ci: wait for post-merge CI on the target branch before releasing.
+    # Gates every release path — the webhook-driven merge handler AND the
+    # polled external-merge/scan-recovery paths (GH-3994) — by routing through
+    # the same StagePostMergeCI wait; set false to release immediately on merge.
     require_ci: true
     # generate_summary prepends an LLM (Haiku) "## What's New" summary to the
     # release body. Requires ANTHROPIC_API_KEY in the daemon's environment —
