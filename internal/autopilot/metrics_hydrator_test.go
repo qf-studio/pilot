@@ -206,6 +206,64 @@ func TestHydrateFromStore_IssueLevelCounts(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_PRFamilyCounters pins GH-4093: pilot_prs_merged_total
+// and pilot_prs_failed_total hydrate from the durable execution_events
+// ledger (not from executions/autopilot_pr_state, which is deleted on PR
+// completion), and a bare executor-level task failure with no PR ever
+// created must not inflate PRsFailed.
+func TestHydrateFromStore_PRFamilyCounters(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	type seed struct {
+		id     string
+		stages []memory.Stage
+	}
+	seeds := []seed{
+		{"pr-1", []memory.Stage{memory.StagePRCreated, memory.StageCIPassed, memory.StageMerged}},
+		{"pr-2", []memory.Stage{memory.StagePRCreated, memory.StageCIPassed, memory.StageMerged}},
+		{"pr-3", []memory.Stage{memory.StagePRCreated, memory.StageCIFailed, memory.StageFailed}},
+		// Executor-level failure: no PR was ever created for this attempt.
+		{"pr-4", []memory.Stage{memory.StageQueued, memory.StageRunning, memory.StageFailed}},
+	}
+	for _, s := range seeds {
+		if err := store.SaveExecution(&memory.Execution{
+			ID: s.id, TaskID: "TASK-" + s.id, ProjectPath: "/p", Status: "completed",
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", s.id, err)
+		}
+		for _, stage := range s.stages {
+			if err := store.InsertExecutionEvent(s.id, stage, ""); err != nil {
+				t.Fatalf("InsertExecutionEvent %s/%s: %v", s.id, stage, err)
+			}
+		}
+	}
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	snap := metrics.Snapshot()
+
+	if snap.PRsMerged != 2 {
+		t.Errorf("PRsMerged = %d, want 2", snap.PRsMerged)
+	}
+	if snap.PRsFailed != 1 {
+		t.Errorf("PRsFailed = %d, want 1 (executor-only failure with no PR must be excluded)", snap.PRsFailed)
+	}
+
+	// Acceptance: live merges on top of the hydrated baseline must not
+	// double count — a fresh live RecordPRMerged() call adds exactly 1.
+	metrics.RecordPRMerged()
+	if got := metrics.Snapshot().PRsMerged; got != 3 {
+		t.Errorf("PRsMerged after live merge = %d, want 3 (hydrated 2 + live 1)", got)
+	}
+}
+
 // TestHydrateFromStore_NilStoreIsNoop verifies hydration is a no-op (not an
 // error) when no store is configured, matching how other optional
 // store-backed features degrade in this codebase.

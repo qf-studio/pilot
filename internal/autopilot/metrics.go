@@ -251,6 +251,23 @@ func (m *Metrics) HydrateIssuesProcessed(result string, n int64) {
 	m.IssuesProcessed[result] += n
 }
 
+// HydratePRsMerged adds a store-lifetime baseline to the merged-PR counter.
+// See HydrateExecutions (GH-4093, restores pilot_prs_merged_total across
+// restarts from the durable execution_events ledger).
+func (m *Metrics) HydratePRsMerged(n int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PRsMerged += n
+}
+
+// HydratePRsFailed adds a store-lifetime baseline to the failed-PR counter.
+// See HydrateExecutions (GH-4093).
+func (m *Metrics) HydratePRsFailed(n int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PRsFailed += n
+}
+
 // --- Gauge updates ---
 
 // UpdateActivePRs recalculates active PR counts by stage from a snapshot.
