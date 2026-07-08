@@ -547,18 +547,37 @@ func TestConsolidateEpicPlan(t *testing.T) {
 	if !strings.Contains(result, "Planned Steps") {
 		t.Error("should contain Planned Steps header")
 	}
-	if !strings.Contains(result, "1. **First step** — Do the first thing") {
+	if !strings.Contains(result, "- Step 1: **First step** — Do the first thing") {
 		t.Error("should contain first subtask with description")
 	}
-	if !strings.Contains(result, "2. **Second step** — Do the second thing") {
+	if !strings.Contains(result, "- Step 2: **Second step** — Do the second thing") {
 		t.Error("should contain second subtask with description")
 	}
-	if !strings.Contains(result, "3. **Third step**") {
+	if !strings.Contains(result, "- Step 3: **Third step**") {
 		t.Error("should contain third subtask")
 	}
 	// Third subtask has no description, so no " — " separator
-	if strings.Contains(result, "3. **Third step** —") {
+	if strings.Contains(result, "- Step 3: **Third step** —") {
 		t.Error("third subtask should not have separator when description is empty")
+	}
+}
+
+// TestConsolidateEpicPlan_DoesNotMatchNumberedStepsRegex is a regression guard for
+// GH-4052: consolidateEpicPlan's output must never be re-explodable by the regex
+// TaskDecomposer's extractNumberedSteps, which matches line-anchored "1. " / "1) "
+// and "Step 1:" patterns. Bullet-prefixed output ("- Step N: ...") must not match.
+func TestConsolidateEpicPlan_DoesNotMatchNumberedStepsRegex(t *testing.T) {
+	subtasks := []PlannedSubtask{
+		{Title: "First step", Description: "Do the first thing", Order: 1},
+		{Title: "Second step", Description: "Do the second thing", Order: 2},
+		{Title: "Third step", Description: "Do the third thing", Order: 3},
+	}
+
+	result := consolidateEpicPlan("Original description", subtasks)
+
+	steps := extractNumberedSteps(result)
+	if len(steps) != 0 {
+		t.Errorf("extractNumberedSteps() on consolidateEpicPlan output = %v, want empty (bullet output must not be regex-decomposable)", steps)
 	}
 }
 

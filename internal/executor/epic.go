@@ -373,12 +373,18 @@ func buildPlanningPrompt(task *Task) string {
 // consolidateEpicPlan merges the original task description with the planned subtasks
 // into a single description for non-decomposed execution. The executor gets the full
 // implementation plan but executes it as one unit on one branch.
+//
+// GH-4052: steps are rendered as bullet prose ("- Step N: ...") rather than a
+// line-anchored numbered list ("N. ..."). The regex TaskDecomposer (decompose.go
+// extractNumberedSteps) matches `^\d+[.)]\s+` and `^step\s+\d+[:\s]+` against the
+// task description — a numbered list here would hand it a trivially matchable
+// pattern and re-explode a task the epic planner already decided was single-scope.
 func consolidateEpicPlan(originalDesc string, subtasks []PlannedSubtask) string {
 	var sb strings.Builder
 	sb.WriteString(originalDesc)
 	sb.WriteString("\n\n## Planned Steps (execute all in sequence)\n\n")
 	for _, st := range subtasks {
-		sb.WriteString(fmt.Sprintf("%d. **%s**", st.Order, st.Title))
+		sb.WriteString(fmt.Sprintf("- Step %d: **%s**", st.Order, st.Title))
 		if st.Description != "" {
 			sb.WriteString(" — ")
 			sb.WriteString(st.Description)
