@@ -579,10 +579,7 @@ func (m *Model) hydrateFromStore() {
 		if i >= 5 {
 			break
 		}
-		status := "success"
-		if exec.Status == "failed" {
-			status = "failed"
-		}
+		status := displayStatus(exec.Status)
 		completedAt := exec.CreatedAt
 		if exec.CompletedAt != nil {
 			completedAt = *exec.CompletedAt
@@ -601,7 +598,7 @@ func (m *Model) hydrateFromStore() {
 			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 			CompletedAt: completedAt,
 			PeakRSSMB:   exec.PeakRSSMB,
-			Stage:       buildStageInfo(events, status == "failed"),
+			Stage:       stageInfoForExecution(events, status),
 		})
 	}
 
@@ -847,10 +844,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 			if i >= 5 {
 				break
 			}
-			status := "success"
-			if exec.Status == "failed" {
-				status = "failed"
-			}
+			status := displayStatus(exec.Status)
 			completedAt := exec.CreatedAt
 			if exec.CompletedAt != nil {
 				completedAt = *exec.CompletedAt
@@ -868,7 +862,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 				CompletedAt: completedAt,
 				PeakRSSMB:   exec.PeakRSSMB,
-				Stage:       buildStageInfo(events, status == "failed"),
+				Stage:       stageInfoForExecution(events, status),
 			})
 		}
 

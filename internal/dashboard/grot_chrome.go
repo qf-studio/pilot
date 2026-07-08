@@ -161,6 +161,8 @@ func stageMeter(info StageInfo, width int) string {
 	}
 	hex := grotTheme.Accent
 	switch {
+	case info.Muted:
+		hex = grotTheme.Dim // terminal non-ladder outcome: not climbing, not failed
 	case info.Failed:
 		hex = grotTheme.Error
 	case info.Reached >= stageLadderTotal:
