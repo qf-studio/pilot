@@ -3991,12 +3991,21 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			IssueNumber:     issueNum,
 			BranchName:      pr.Head.Ref,
 			HeadSHA:         pr.MergeCommitSHA,
-			Stage:           StageReleasing,
-			CIStatus:        CISuccess, // Assume CI passed if merged
 			CreatedAt:       time.Now(),
 			EnvironmentName: c.config.EnvironmentName(),
 			PRTitle:         pr.Title,
 			TargetBranch:    pr.Base.Ref,
+		}
+		// GH-3994: require_ci must gate scan-recovery the same way it now gates
+		// checkExternalMergeOrClose — route through StagePostMergeCI instead of
+		// registering directly at StageReleasing with an assumed CISuccess.
+		if rel.RequireCI {
+			prState.Stage = StagePostMergeCI
+			prState.PostMergeSHA = pr.MergeCommitSHA
+			prState.PostMergeCIStartedAt = time.Now()
+		} else {
+			prState.Stage = StageReleasing
+			prState.CIStatus = CISuccess // Assume CI passed if merged
 		}
 
 		// Register and trigger release
@@ -4307,6 +4316,18 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		return false
 	}
 
+	// GH-3994: once a PR has entered StagePostMergeCI — via handleMerged's
+	// webhook path or via the RequireCI branch below — it stays Merged=true
+	// on GitHub for the rest of its life. Without this guard the polled tick
+	// loop calls this function again on every subsequent tick and re-runs the
+	// whole external-merge flow (re-notify, re-close-issue, re-post the merge
+	// comment) and — worse — the GH-411 block below would re-evaluate release
+	// and force the PR straight to StageReleasing on the very next tick,
+	// skipping the CI wait outright. handlePostMergeCI's own tick now owns it.
+	if prState.Stage == StagePostMergeCI {
+		return false
+	}
+
 	// Check if PR was merged externally
 	if ghPR.Merged {
 		c.log.Info("PR merged externally", "pr", prState.PRNumber)
@@ -4346,6 +4367,19 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		if c.releaseConfigured() && prState.Stage != StageReleasing {
 			action, scopeKey, _ := c.releaseActionFor(ctx, prState.IssueNumber)
 			if action == releaseActionRelease {
+				// GH-3994: require_ci must gate the polled/external-merge path the
+				// same way it gates handleMerged — route through StagePostMergeCI
+				// instead of hijacking straight to StageReleasing.
+				if c.resolvedRelease().RequireCI {
+					c.log.Info("externally merged PR requires post-merge CI before releasing", "pr", prState.PRNumber)
+					if ghPR.MergeCommitSHA != "" {
+						prState.PostMergeSHA = ghPR.MergeCommitSHA
+					}
+					prState.PostMergeCIStartedAt = time.Now()
+					prState.Stage = StagePostMergeCI
+					c.persistPRState(prState)
+					return false // Continue processing; handlePostMergeCI takes over next tick
+				}
 				c.log.Info("triggering release for externally merged PR", "pr", prState.PRNumber)
 				// Update SHA to merge commit if available
 				if ghPR.MergeCommitSHA != "" {

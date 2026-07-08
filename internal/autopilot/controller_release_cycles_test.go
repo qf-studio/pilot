@@ -3,6 +3,7 @@ package autopilot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -455,5 +456,233 @@ func TestReleaseTrigger_OnMerge_BackwardCompatSnapshot(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&issueGets); got != 0 {
 		t.Errorf("GetIssue call count = %d, want 0 (on_merge must never consult scope membership)", got)
+	}
+}
+
+// externalMergeCIServer builds a fake GitHub server for the checkExternalMergeOrClose
+// require_ci tests below: GET the PR as merged, serve issue/label/comment bookkeeping
+// endpoints, and count check-runs polls against mainSHA (so tests can assert whether
+// CI was consulted before releasing).
+func externalMergeCIServer(t *testing.T, prNumber int, mergeSHA, mainSHA string, checkRunPolls *int64) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == fmt.Sprintf("/repos/owner/repo/pulls/%d", prNumber):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.PullRequest{
+				Number:         prNumber,
+				State:          "closed",
+				Merged:         true,
+				HTMLURL:        fmt.Sprintf("https://github.com/owner/repo/pull/%d", prNumber),
+				MergeCommitSHA: mergeSHA,
+			})
+		case r.URL.Path == "/repos/owner/repo/branches/main":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"commit": map[string]string{"sha": mainSHA}})
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			if checkRunPolls != nil {
+				atomic.AddInt64(checkRunPolls, 1)
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{Name: "ci", Status: "completed", Conclusion: "success"}},
+			})
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/") && strings.HasSuffix(r.URL.Path, "/comments") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 1})
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.Issue{Number: 10, Title: "issue", State: "open"})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+}
+
+// TestCheckExternalMergeOrClose_RequireCIFalse_DirectRelease is the GH-3994
+// regression pin: with require_ci false (the pre-fix default for a bare
+// ReleaseConfig literal), an externally merged PR must still jump straight to
+// StageReleasing at the merge commit SHA, with zero check-runs polls. This is
+// the exact GH-411 external-merge semantics that must survive the fix.
+func TestCheckExternalMergeOrClose_RequireCIFalse_DirectRelease(t *testing.T) {
+	var checkRunPolls int64
+	server := externalMergeCIServer(t, 42, "merge-sha-42", "mainsha", &checkRunPolls)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", RequireCI: false}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 42, IssueNumber: 10, Stage: StageWaitingCI}
+	c.mu.Lock()
+	c.activePRs[42] = prState
+	c.mu.Unlock()
+
+	ctx := context.Background()
+	ghPR, err := ghClient.GetPullRequest(ctx, "owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("GetPullRequest: %v", err)
+	}
+
+	prState.mu.Lock()
+	resolved := c.checkExternalMergeOrClose(ctx, prState, ghPR)
+	prState.mu.Unlock()
+
+	if resolved {
+		t.Fatal("checkExternalMergeOrClose should return false (continue processing to release), not remove the PR")
+	}
+	if prState.Stage != StageReleasing {
+		t.Errorf("Stage = %v, want StageReleasing (direct jump, require_ci false)", prState.Stage)
+	}
+	if prState.HeadSHA != "merge-sha-42" {
+		t.Errorf("HeadSHA = %q, want merge commit sha", prState.HeadSHA)
+	}
+	if got := atomic.LoadInt64(&checkRunPolls); got != 0 {
+		t.Errorf("check-runs poll count = %d, want 0 (require_ci false must never consult CI)", got)
+	}
+}
+
+// TestCheckExternalMergeOrClose_RequireCITrue_RoutesToPostMergeCI verifies the
+// GH-3994 fix: with require_ci true, an externally merged PR is routed through
+// StagePostMergeCI (PostMergeSHA = merge commit SHA, PostMergeCIStartedAt set)
+// instead of hijacking straight to StageReleasing. Then drives it forward via
+// handlePostMergeCI to confirm CI success reaches StageReleasing (same path as
+// the pre-existing handleMerged flow) — the fix reuses the existing gate,
+// it doesn't invent a new one.
+func TestCheckExternalMergeOrClose_RequireCITrue_RoutesToPostMergeCI(t *testing.T) {
+	var checkRunPolls int64
+	server := externalMergeCIServer(t, 43, "merge-sha-43", "mainsha", &checkRunPolls)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage // SkipPostMergeCI: false
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.CIWaitTimeout = 5 * time.Second
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", RequireCI: true}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 43, IssueNumber: 10, Stage: StageWaitingCI}
+	c.mu.Lock()
+	c.activePRs[43] = prState
+	c.mu.Unlock()
+
+	ctx := context.Background()
+	ghPR, err := ghClient.GetPullRequest(ctx, "owner", "repo", 43)
+	if err != nil {
+		t.Fatalf("GetPullRequest: %v", err)
+	}
+
+	prState.mu.Lock()
+	resolved := c.checkExternalMergeOrClose(ctx, prState, ghPR)
+	prState.mu.Unlock()
+
+	if resolved {
+		t.Fatal("checkExternalMergeOrClose should return false (continue processing), not remove the PR")
+	}
+	if prState.Stage != StagePostMergeCI {
+		t.Fatalf("Stage = %v, want StagePostMergeCI (require_ci true must gate the external-merge hijack)", prState.Stage)
+	}
+	if prState.PostMergeSHA != "merge-sha-43" {
+		t.Errorf("PostMergeSHA = %q, want merge commit sha", prState.PostMergeSHA)
+	}
+	if prState.PostMergeCIStartedAt.IsZero() {
+		t.Error("PostMergeCIStartedAt should be set once StagePostMergeCI begins")
+	}
+	if got := atomic.LoadInt64(&checkRunPolls); got != 0 {
+		t.Errorf("check-runs poll count = %d, want 0 (CI is polled by handlePostMergeCI, not the hijack itself)", got)
+	}
+
+	// Next tick: this PR must NOT be re-hijacked by checkExternalMergeOrClose —
+	// handlePostMergeCI now owns it.
+	prState.mu.Lock()
+	resolvedAgain := c.checkExternalMergeOrClose(ctx, prState, ghPR)
+	prState.mu.Unlock()
+	if resolvedAgain {
+		t.Fatal("checkExternalMergeOrClose should return false on a PostMergeCI-stage PR (guard), not remove it")
+	}
+	if prState.Stage != StagePostMergeCI {
+		t.Fatalf("Stage = %v after a second tick, want StagePostMergeCI unchanged (no re-hijack)", prState.Stage)
+	}
+
+	// Drive it forward: CI succeeds -> StageReleasing (existing StagePostMergeCI semantics, reused).
+	if err := c.handlePostMergeCI(ctx, prState); err != nil {
+		t.Fatalf("handlePostMergeCI() error = %v", err)
+	}
+	if prState.Stage != StageReleasing {
+		t.Errorf("Stage = %v after CI success, want StageReleasing", prState.Stage)
+	}
+	if got := atomic.LoadInt64(&checkRunPolls); got != 1 {
+		t.Errorf("check-runs poll count = %d, want 1 (handlePostMergeCI must consult CI before releasing)", got)
+	}
+}
+
+// TestScanRecentlyMergedPRs_RequireCI_RoutesToPostMergeCI verifies GH-3994's
+// scan-recovery fix: with require_ci true, a merged Pilot PR discovered by the
+// periodic scan (e.g. after a daemon restart) is registered at StagePostMergeCI
+// with PostMergeSHA set to the merge commit SHA, not StageReleasing with an
+// assumed CISuccess.
+func TestScanRecentlyMergedPRs_RequireCI_RoutesToPostMergeCI(t *testing.T) {
+	recentMergedAt := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+
+	var gitRefPosts, issueGets int64
+	base := releaseCyclesServer(t, map[int]scopeMembershipFakeIssue{}, &gitRefPosts, &issueGets)
+	defer base.Close()
+
+	prs := []github.PullRequest{
+		{
+			Number:         60,
+			Head:           github.PRRef{Ref: "pilot/GH-400", SHA: "sha60"},
+			Base:           github.PRRef{Ref: "main"},
+			HTMLURL:        "https://github.com/owner/repo/pull/60",
+			Title:          "feat: needs post-merge CI",
+			Merged:         true,
+			MergedAt:       recentMergedAt,
+			MergeCommitSHA: "merge-sha-60",
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls") && !strings.Contains(r.URL.Path, "/commits") {
+			out := make([]*github.PullRequest, len(prs))
+			for i := range prs {
+				out[i] = &prs[i]
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(out)
+			return
+		}
+		base.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", RequireCI: true, TagPrefix: "v"}
+	cfg.MergedPRScanWindow = 30 * time.Minute
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+		t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+	}
+
+	prState, ok := c.GetPRState(60)
+	if !ok {
+		t.Fatal("PR 60 should be registered (require_ci must not skip tracking)")
+	}
+	if prState.Stage != StagePostMergeCI {
+		t.Errorf("Stage = %v, want StagePostMergeCI (require_ci true must gate scan-recovery)", prState.Stage)
+	}
+	if prState.PostMergeSHA != "merge-sha-60" {
+		t.Errorf("PostMergeSHA = %q, want merge commit sha", prState.PostMergeSHA)
+	}
+	if prState.CIStatus == CISuccess {
+		t.Error("CIStatus must not be pre-set to CISuccess when require_ci is true — CI hasn't run yet")
+	}
+	if got := atomic.LoadInt64(&gitRefPosts); got != 0 {
+		t.Errorf("git/refs POST count = %d, want 0 (must not tag before post-merge CI completes)", got)
 	}
 }
