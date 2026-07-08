@@ -57,10 +57,17 @@ type childCloseVeto struct {
 
 // getAllSubIssueNumbers queries native GitHub sub-issues for parentNum and
 // returns every child regardless of state (open AND closed), plus whether the
-// parent has any native sub-issue links at all. This mirrors the SDK's
-// GetOpenSubIssueNumbers query shape but keeps closed children too — GH-3939's
-// merged-PR verification must inspect exactly the children that open-only
-// listings discard.
+// parent has any linked children at all (native OR text-based). This mirrors
+// the SDK's GetOpenSubIssueNumbers query shape but keeps closed children too —
+// GH-3939's merged-PR verification must inspect exactly the children that
+// open-only listings discard.
+//
+// GH-4099: when the parent has no native sub-issue links (LinkSubIssue is
+// non-fatal at child-creation time, GH-3513, and some epics are decomposed
+// using only the body-marker "Parent: GH-N" convention), falls back to a text
+// search for children referencing this parent — otherwise such epics are
+// invisible to the merged-PR-verified close path even once discovered as a
+// reconcile candidate.
 func (c *Controller) getAllSubIssueNumbers(ctx context.Context, parentNum int) ([]subIssueState, bool, error) {
 	parentID, err := c.ghClient.GetIssueNodeID(ctx, c.owner, c.repo, parentNum)
 	if err != nil {
@@ -98,11 +105,54 @@ func (c *Controller) getAllSubIssueNumbers(ctx context.Context, parentNum int) (
 	}
 
 	if result.Node.SubIssues.TotalCount == 0 {
-		return nil, false, nil
+		return c.getSubIssuesByTextSearch(ctx, parentNum)
 	}
 
 	children := make([]subIssueState, 0, len(result.Node.SubIssues.Nodes))
 	for _, n := range result.Node.SubIssues.Nodes {
+		children = append(children, subIssueState{Number: n.Number, Closed: n.State == "CLOSED"})
+	}
+	return children, true, nil
+}
+
+// getSubIssuesByTextSearch finds every issue (open AND closed) referencing
+// "Parent: GH-{parentNum}" in its body via GitHub's GraphQL search (GH-4099).
+// Returns the same subIssueState + hasLinks shape as the native-link query so
+// callers don't need to special-case the linkage source. Used as the fallback
+// for parents whose children were never LinkSubIssue-linked (GH-3513) or were
+// decomposed using only the body-marker convention.
+func (c *Controller) getSubIssuesByTextSearch(ctx context.Context, parentNum int) ([]subIssueState, bool, error) {
+	const query = `query($q: String!, $first: Int!) {
+		search(query: $q, type: ISSUE, first: $first) {
+			nodes {
+				... on Issue {
+					number
+					state
+				}
+			}
+		}
+	}`
+
+	q := fmt.Sprintf(`repo:%s/%s "Parent: GH-%d" is:issue`, c.owner, c.repo, parentNum)
+	var result struct {
+		Search struct {
+			Nodes []struct {
+				Number int    `json:"number"`
+				State  string `json:"state"`
+			} `json:"nodes"`
+		} `json:"search"`
+	}
+
+	if err := c.ghClient.ExecuteGraphQL(ctx, query, map[string]interface{}{"q": q, "first": 100}, &result); err != nil {
+		return nil, false, fmt.Errorf("text-search sub-issues for %s/%s#%d: %w", c.owner, c.repo, parentNum, err)
+	}
+
+	if len(result.Search.Nodes) == 0 {
+		return nil, false, nil
+	}
+
+	children := make([]subIssueState, 0, len(result.Search.Nodes))
+	for _, n := range result.Search.Nodes {
 		children = append(children, subIssueState{Number: n.Number, Closed: n.State == "CLOSED"})
 	}
 	return children, true, nil
@@ -149,9 +199,9 @@ func (c *Controller) verifyChildrenShippedForClose(ctx context.Context, parentNu
 }
 
 // reconcileEpicParents is the poll-cycle epic-parent auto-close check (GH-3939).
-// On each tick it inspects every open, pilot-labeled issue that has native
-// GitHub sub-issues (a decomposed epic parent) and closes the ones whose
-// children are ALL closed AND shipped a merged PR (or verified no_op).
+// On each tick it inspects every candidate epic parent (see epicParentCandidates)
+// and closes the ones whose children are ALL closed AND shipped a merged PR (or
+// verified no_op).
 //
 // This complements the two existing close paths: maybeCloseParentIssue fires
 // reactively only when a sibling's own PR merges, and recoverStaleParentIssues
@@ -160,38 +210,138 @@ func (c *Controller) verifyChildrenShippedForClose(ctx context.Context, parentNu
 // such a parent converges within one poll cycle instead of staying stuck until
 // the next restart.
 func (c *Controller) reconcileEpicParents(ctx context.Context) {
-	candidates, err := c.ghClient.SearchOpenPilotIssuesWithSubIssues(ctx, c.owner, c.repo, maxEpicReconcile)
-	if err != nil {
-		c.log.Warn("reconcileEpicParents: search failed", slog.Any("error", err))
-		return
-	}
-
-	// GH-3939: mirror recoverStaleParentIssues' cap-hit log — this sweep repeats
-	// every poll cycle (not just once at startup), so a repo that consistently
-	// sits at the cap would otherwise silently and indefinitely skip the overflow
-	// candidates with no operator-visible signal.
-	if len(candidates) == maxEpicReconcile {
-		c.log.Info("reconcileEpicParents: hit limit, some candidates may be skipped", slog.Int("limit", maxEpicReconcile))
-	}
-
-	for _, parentNum := range candidates {
+	for _, parentNum := range c.epicParentCandidates(ctx) {
 		c.reconcileEpicParent(ctx, parentNum)
 	}
+}
+
+// epicParentCandidates merges the two independent epic-parent discovery
+// sources and returns their union, de-duplicated (GH-4099). Shared by
+// recoverStaleParentIssues (startup) and reconcileEpicParents (poll-cycle) so
+// neither sweep depends on only one of:
+//
+//   - Native GitHub sub-issue links via SearchOpenPilotIssuesWithSubIssues,
+//     gated on the PARENT's own "pilot" label and on subIssuesSummary.total>0.
+//   - The body-marker "Parent: GH-N" text convention via
+//     discoverBodyMarkerEpicParents, derived from the CHILD side and therefore
+//     immune to the parent losing its label or never getting a native link.
+//
+// #4020 and #4051 both sat open for hours because they were invisible to the
+// first source (both had subIssuesSummary.total==0 — LinkSubIssue never ran —
+// and #4051 had additionally lost its "pilot" label) and there was no second
+// source to catch them. Each source's own failure is logged and non-fatal to
+// the other, so a transient outage in one query never blocks the sweep.
+func (c *Controller) epicParentCandidates(ctx context.Context) []int {
+	native, err := c.ghClient.SearchOpenPilotIssuesWithSubIssues(ctx, c.owner, c.repo, maxEpicReconcile)
+	if err != nil {
+		c.log.Warn("epicParentCandidates: native-link search failed", slog.Any("error", err))
+	}
+	// GH-3939: this cap-hit log used to live only in recoverStaleParentIssues;
+	// reconcileEpicParents repeats every poll cycle (not just once at startup),
+	// so a repo that consistently sits at the cap would otherwise silently and
+	// indefinitely skip the overflow candidates with no operator-visible signal.
+	if len(native) == maxEpicReconcile {
+		c.log.Info("epicParentCandidates: hit native-link limit, some candidates may be skipped", slog.Int("limit", maxEpicReconcile))
+	}
+
+	bodyMarker, err := c.discoverBodyMarkerEpicParents(ctx)
+	if err != nil {
+		c.log.Warn("epicParentCandidates: body-marker discovery failed", slog.Any("error", err))
+	}
+
+	seen := make(map[int]bool, len(native)+len(bodyMarker))
+	merged := make([]int, 0, len(native)+len(bodyMarker))
+	for _, group := range [][]int{native, bodyMarker} {
+		for _, n := range group {
+			if !seen[n] {
+				seen[n] = true
+				merged = append(merged, n)
+			}
+		}
+	}
+	return merged
+}
+
+// epicParentDiscoveryLookback bounds how far back discoverBodyMarkerEpicParents
+// scans recently-closed pilot subtasks for a "Parent: GH-N" body reference
+// (GH-4099). Wide enough that a parent whose children shipped days apart still
+// surfaces as a candidate, but bounded so the query stays a single cheap page.
+const epicParentDiscoveryLookback = 7 * 24 * time.Hour
+
+// discoverBodyMarkerEpicParents finds candidate epic-parent numbers referenced
+// by recently-closed, pilot-managed child issues' "Parent: GH-N" body marker
+// (GH-4099). See epicParentCandidates for why this candidate source exists
+// alongside the native sub-issue-link search: it is deliberately NOT gated on
+// the parent's own label or native links — it derives candidates purely from
+// the CHILD side, which is reliably labeled "pilot"/"pilot-done" regardless of
+// what happens to the parent's own label or linkage.
+func (c *Controller) discoverBodyMarkerEpicParents(ctx context.Context) ([]int, error) {
+	const query = `query($owner: String!, $repo: String!, $first: Int!) {
+		repository(owner: $owner, name: $repo) {
+			issues(first: $first, states: [CLOSED], labels: ["pilot", "pilot-done"], orderBy: {field: UPDATED_AT, direction: DESC}) {
+				nodes {
+					updatedAt
+					body
+				}
+			}
+		}
+	}`
+
+	var result struct {
+		Repository struct {
+			Issues struct {
+				Nodes []struct {
+					UpdatedAt time.Time `json:"updatedAt"`
+					Body      string    `json:"body"`
+				} `json:"nodes"`
+			} `json:"issues"`
+		} `json:"repository"`
+	}
+
+	variables := map[string]interface{}{
+		"owner": c.owner,
+		"repo":  c.repo,
+		"first": maxEpicReconcile,
+	}
+	if err := c.ghClient.ExecuteGraphQL(ctx, query, variables, &result); err != nil {
+		return nil, fmt.Errorf("discover body-marker epic parents for %s/%s: %w", c.owner, c.repo, err)
+	}
+
+	cutoff := time.Now().Add(-epicParentDiscoveryLookback)
+	seen := make(map[int]bool)
+	var parents []int
+	for _, node := range result.Repository.Issues.Nodes {
+		if node.UpdatedAt.Before(cutoff) {
+			// Results are ordered newest-first — everything after this is older still.
+			break
+		}
+		parentNum := github.ParseParentIssueNumber(node.Body)
+		if parentNum == 0 || seen[parentNum] {
+			continue
+		}
+		seen[parentNum] = true
+		parents = append(parents, parentNum)
+	}
+	return parents, nil
 }
 
 // reconcileEpicParent runs the full close-or-veto decision for a single epic
 // parent. Split out from reconcileEpicParents so tests can drive one parent
 // directly, mirroring how maybeCloseParentIssue/recoverStaleParentIssues are tested.
 func (c *Controller) reconcileEpicParent(ctx context.Context, parentNum int) {
-	children, hasNativeLinks, err := c.getAllSubIssueNumbers(ctx, parentNum)
+	children, hasLinks, err := c.getAllSubIssueNumbers(ctx, parentNum)
 	if err != nil {
 		c.log.Warn("reconcileEpicParents: failed to list children", slog.Int("parent", parentNum), slog.Any("error", err))
 		return
 	}
-	if !hasNativeLinks {
-		// No native sub-issue links to verify against — leave this parent to the
-		// text-search-based paths (maybeCloseParentIssue / recoverStaleParentIssues),
-		// which is the only signal available for pre-native-linking epics.
+	if !hasLinks {
+		// GH-4099: getAllSubIssueNumbers already tried both the native sub-issue
+		// API and the body-marker text-search fallback — neither found a single
+		// child. This parent was a candidate (native link or a child's body
+		// marker pointed at it), so a silent no-op here would hide exactly the
+		// kind of gap that left #4020/#4051 open for hours; log why instead.
+		c.log.Warn("reconcileEpicParents: candidate parent has no discoverable children via native links or text search, skipping",
+			slog.Int("parent", parentNum))
 		return
 	}
 
@@ -273,8 +423,8 @@ func (c *Controller) reconcileClosedEpicScopes(ctx context.Context) {
 			continue
 		}
 
-		children, hasNativeLinks, err := c.getAllSubIssueNumbers(ctx, parentNum)
-		if err != nil || !hasNativeLinks {
+		children, hasLinks, err := c.getAllSubIssueNumbers(ctx, parentNum)
+		if err != nil || !hasLinks {
 			continue
 		}
 		mergedPRs, veto := c.verifyChildrenShippedForClose(ctx, parentNum, children)
