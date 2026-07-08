@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -98,17 +99,38 @@ func ScopeDriftReason(logger *slog.Logger, prTitle, issueTitle string) string {
 // class while sparing ordinary multi-file fixes.
 const SizeFloorThreshold = 500
 
-// SizeFloorReason returns a non-empty reason if the PR's net additions exceed
-// SizeFloorThreshold. Pilot's median PR is well under 100 additions — anything
-// over the floor is large enough that auto-merge is too aggressive even on a
-// passing CI signal.
+// isBookkeepingPath reports whether path is Navigator bookkeeping/generated
+// content (`.agent/**`, e.g. task docs, the knowledge graph) rather than
+// shipped code. GH-4055: these files inflate PR additions with no bearing on
+// the risk the size-floor gate exists to catch — a large `.agent/` diff
+// (task docs, graph.json regen) should never itself trigger escalation.
+func isBookkeepingPath(path string) bool {
+	return path == ".agent" || strings.HasPrefix(path, ".agent/")
+}
+
+// SizeFloorReason returns a non-empty reason if the PR's code additions
+// (excluding Navigator bookkeeping paths, see isBookkeepingPath) exceed
+// SizeFloorThreshold. Pilot's median PR is well under 100 additions —
+// anything over the floor is large enough that auto-merge is too aggressive
+// even on a passing CI signal. GH-4055: PR #4047 (586 total additions, 281 of
+// them `.agent/**`, 305 code) wrongly escalated under the old net-additions
+// count — bookkeeping additions are now tracked separately and excluded from
+// the gate, while still surfaced in the reason string for visibility.
 func SizeFloorReason(files []*github.PRFile) string {
-	var net int
+	var codeAdditions, bookkeepingAdditions int
 	for _, f := range files {
-		net += f.Additions
+		if isBookkeepingPath(f.Filename) {
+			bookkeepingAdditions += f.Additions
+		} else {
+			codeAdditions += f.Additions
+		}
 	}
-	if net > SizeFloorThreshold {
-		return fmt.Sprintf("PR adds %d net lines (> %d threshold)", net, SizeFloorThreshold)
+	if codeAdditions > SizeFloorThreshold {
+		if bookkeepingAdditions > 0 {
+			return fmt.Sprintf("PR adds %d code additions (> %d threshold; %d bookkeeping additions excluded)",
+				codeAdditions, SizeFloorThreshold, bookkeepingAdditions)
+		}
+		return fmt.Sprintf("PR adds %d net lines (> %d threshold)", codeAdditions, SizeFloorThreshold)
 	}
 	return ""
 }
