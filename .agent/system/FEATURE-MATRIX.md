@@ -231,13 +231,13 @@
 
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
-| TUI dashboard | ✅ | dashboard | `--dashboard` | - | Bubbletea terminal UI |
+| TUI dashboard | ✅ | dashboard | `--dashboard` | - | Bubbletea terminal UI on the grot design system (`github.com/qf-studio/grot` `pkg/tui/render`+`theme.Pilot`): rounded cards, border legends, stat cards w/ braille trends, glyph vocabulary, one-line banner w/ daemon liveness dot (TASK-390) |
 | Token metrics card | ✅ | dashboard | - | - | Sparkline + lifetime totals (v0.18.0) |
 | Cost metrics card | ✅ | dashboard | - | - | Sparkline + cost/task (v0.18.0) |
 | Queue metrics card | ✅ | dashboard | - | - | Current queue depth, succeeded/failed (v0.21.2) |
-| Autopilot panel | ✅ | dashboard | - | - | Live PR lifecycle status |
+| Autopilot panel | ✅ | dashboard | - | - | One row per active PR: glyph + 5-cell lifecycle meter (ci→rebase→merge→tag→release) + stage label + age; `↳ ⟲ retry N/M · error` detail only when failures exist; `┤ ● N prs ├` border legend (TASK-390) |
 | Task history | ✅ | dashboard | - | - | Recent 5 completed tasks |
-| Execution stage strip | ✅ | dashboard | - | - | Pipeline-progress fraction on HISTORY cards (e.g. `4/7 ✗ ci_failed`), fed from `execution_events` via a fixed 7-rung ladder position (not raw event count, so retries don't inflate it), cached at hydrate/refresh time not per render (GH-3849, v2.208.0; fraction format TASK-383, v2.213.4) |
+| Execution stage strip | ✅ | dashboard | - | - | Pipeline progress on HISTORY rows as a 7-rung segment meter (`■■■■□□□` + dim stage label; sage/rose/accent by outcome, dim track when no events), fed from `execution_events` via `buildStageInfo` — fixed ladder position, not raw event count, so retries don't inflate it; cached at hydrate/refresh time not per render (GH-3849, v2.208.0; fraction TASK-383; meter TASK-390) |
 | Hot upgrade key | ✅ | dashboard | `u` key | - | In-place upgrade from dashboard |
 | SQLite persistence | ✅ | dashboard | - | - | Metrics survive restarts (v0.21.2) |
 | Queue state panel | ✅ | dashboard | - | - | 5-state: done/running/queued/pending/failed with shimmer (v0.63.0) |

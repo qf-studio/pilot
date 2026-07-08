@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/qf-studio/grot/pkg/tui/render"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -39,117 +39,13 @@ func TestFormatCompact(t *testing.T) {
 	}
 }
 
-func TestNormalizeToSparkline(t *testing.T) {
-	tests := []struct {
-		name   string
-		values []float64
-		width  int
-		want   []int
-	}{
-		{
-			name:   "empty input returns all zeros",
-			values: nil,
-			width:  7,
-			want:   []int{0, 0, 0, 0, 0, 0, 0},
-		},
-		{
-			name:   "single value maps to midpoint",
-			values: []float64{42},
-			width:  7,
-			want:   []int{0, 0, 0, 0, 0, 0, 4},
-		},
-		{
-			name:   "all zeros map to baseline",
-			values: []float64{0, 0, 0, 0, 0, 0, 0},
-			width:  7,
-			want:   []int{1, 1, 1, 1, 1, 1, 1},
-		},
-		{
-			name:   "all same non-zero values map to midpoint",
-			values: []float64{5, 5, 5, 5, 5, 5, 5},
-			width:  7,
-			want:   []int{4, 4, 4, 4, 4, 4, 4},
-		},
-		{
-			name:   "ascending values span 1-8 with zero baseline",
-			values: []float64{0, 1, 2, 3, 4, 5, 6, 7, 8},
-			width:  9,
-			want:   []int{1, 2, 3, 4, 5, 5, 6, 7, 8},
-		},
-		{
-			name:   "fewer values than width left-pads with zeros",
-			values: []float64{0, 100},
-			width:  5,
-			want:   []int{0, 0, 0, 1, 8},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeToSparkline(tt.values, tt.width)
-			if len(got) != len(tt.want) {
-				t.Fatalf("len = %d, want %d", len(got), len(tt.want))
-			}
-			for i := range tt.want {
-				if got[i] != tt.want[i] {
-					t.Errorf("index %d: got %d, want %d (full: %v)", i, got[i], tt.want[i], got)
-					break
-				}
-			}
-		})
-	}
-}
-
-func TestRenderSparkline(t *testing.T) {
-	tests := []struct {
-		name    string
-		levels  []int
-		pulsing bool
-	}{
-		{
-			name:    "pulsing includes dot",
-			levels:  []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6},
-			pulsing: true,
-		},
-		{
-			name:    "not pulsing has space",
-			levels:  []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6},
-			pulsing: false,
-		},
-		{
-			name:    "all zeros",
-			levels:  []int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-			pulsing: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := renderSparkline(tt.levels, tt.pulsing, cardInnerWidth)
-
-			// Visual width must equal cardInnerWidth (17)
-			runeCount := utf8.RuneCountInString(got)
-			if runeCount != cardInnerWidth {
-				t.Errorf("visual width = %d runes, want %d (got %q)", runeCount, cardInnerWidth, got)
-			}
-
-			// Check pulsing indicator
-			runes := []rune(got)
-			lastRune := runes[len(runes)-1]
-			if tt.pulsing && lastRune != '•' {
-				t.Errorf("pulsing=true but last rune = %q, want '•'", lastRune)
-			}
-			if !tt.pulsing && lastRune != ' ' {
-				t.Errorf("pulsing=false but last rune = %q, want ' '", lastRune)
-			}
-		})
-	}
-}
-
-func TestBuildMiniCard(t *testing.T) {
-	card := buildMiniCard("TEST", "42", "detail one", "detail two", "▁▂▃▄▅▆▇█▁▂▃▄▅▆▇█•", cardWidth)
+func TestBuildStatCard(t *testing.T) {
+	card := buildStatCard("test", "42", "detail", []float64{1, 2, 3, 4, 5, 6, 7}, grotTheme.Accent, cardWidth)
 
 	lines := strings.Split(card, "\n")
+	if len(lines) != statCardHeight {
+		t.Errorf("card height = %d lines, want %d", len(lines), statCardHeight)
+	}
 	for i, line := range lines {
 		w := lipgloss.Width(line)
 		if w != cardWidth {
@@ -157,7 +53,7 @@ func TestBuildMiniCard(t *testing.T) {
 		}
 	}
 
-	// Check border characters present
+	// Check grot card chrome: rounded borders + lowercase title in top border
 	if !strings.Contains(card, "╭") {
 		t.Error("missing top-left border ╭")
 	}
@@ -166,6 +62,40 @@ func TestBuildMiniCard(t *testing.T) {
 	}
 	if !strings.Contains(card, "│") {
 		t.Error("missing side border │")
+	}
+	if !strings.Contains(card, "test") {
+		t.Error("missing lowercase title in top border")
+	}
+}
+
+// TASK-390: two-series stacked variant (tokens cached/fresh, queue ✓/✗)
+// keeps the exact card geometry of buildStatCard and fills the band even
+// with a 7-point history (BrailleStacked right-aligns unstretched series).
+func TestBuildStatCardStacked(t *testing.T) {
+	card := buildStatCardStacked("test", "42", "detail",
+		[][]float64{{10, 20, 30, 40, 30, 20, 10}, {1, 2, 3, 4, 3, 2, 1}},
+		[]string{render.Dim(grotTheme.Accent, 0.45), grotTheme.Accent}, cardWidth)
+
+	lines := strings.Split(card, "\n")
+	if len(lines) != statCardHeight {
+		t.Errorf("card height = %d lines, want %d", len(lines), statCardHeight)
+	}
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w != cardWidth {
+			t.Errorf("line %d visual width = %d, want %d: %q", i, w, cardWidth, line)
+		}
+	}
+
+	// Chart rows must contain braille cells across the band, including the
+	// left edge — a right-aligned (unstretched) series would leave it blank.
+	chartRow := lines[statCardHeight-2] // last inner line above bottom border
+	plain := stripANSI(chartRow)
+	inner := strings.TrimSuffix(strings.TrimPrefix(plain, "│"), "│")
+	if strings.TrimSpace(inner) == "" {
+		t.Fatalf("bottom chart row is blank: %q", plain)
+	}
+	if strings.HasPrefix(strings.TrimPrefix(inner, " "), "      ") {
+		t.Errorf("chart band left edge blank — series not stretched: %q", plain)
 	}
 }
 
@@ -187,14 +117,14 @@ func TestRenderMetricsCards(t *testing.T) {
 
 	output := m.renderMetricsCards()
 
-	if !strings.Contains(output, "TOKENS") {
-		t.Error("output missing TOKENS card")
+	if !strings.Contains(output, "tokens") {
+		t.Error("output missing tokens card")
 	}
-	if !strings.Contains(output, "COST") {
-		t.Error("output missing COST card")
+	if !strings.Contains(output, "cost") {
+		t.Error("output missing cost card")
 	}
-	if !strings.Contains(output, "QUEUE") {
-		t.Error("output missing TASKS card")
+	if !strings.Contains(output, "queue") {
+		t.Error("output missing queue card")
 	}
 }
 
@@ -208,14 +138,14 @@ func TestRenderMetricsCards_ZeroState(t *testing.T) {
 	if output == "" {
 		t.Error("zero-state renderMetricsCards returned empty string")
 	}
-	if !strings.Contains(output, "TOKENS") {
-		t.Error("zero-state output missing TOKENS card")
+	if !strings.Contains(output, "tokens") {
+		t.Error("zero-state output missing tokens card")
 	}
-	if !strings.Contains(output, "COST") {
-		t.Error("zero-state output missing COST card")
+	if !strings.Contains(output, "cost") {
+		t.Error("zero-state output missing cost card")
 	}
-	if !strings.Contains(output, "QUEUE") {
-		t.Error("zero-state output missing TASKS card")
+	if !strings.Contains(output, "queue") {
+		t.Error("zero-state output missing queue card")
 	}
 }
 
@@ -236,11 +166,8 @@ func TestRenderTokenCard_CacheBreakdown(t *testing.T) {
 	if !strings.Contains(out, "105.0K") {
 		t.Errorf("renderTokenCard: expected grand total 105.0K in output, got:\n%s", out)
 	}
-	if !strings.Contains(out, "cached") {
-		t.Errorf("renderTokenCard: expected 'cached' label in output, got:\n%s", out)
-	}
-	if !strings.Contains(out, "uncached") {
-		t.Errorf("renderTokenCard: expected 'uncached' label in output, got:\n%s", out)
+	if !strings.Contains(out, "90.0K cached") {
+		t.Errorf("renderTokenCard: expected '90.0K cached' detail in output, got:\n%s", out)
 	}
 }
 
@@ -260,8 +187,8 @@ func TestRenderTokenCard_ZeroCacheTokens(t *testing.T) {
 	if !strings.Contains(out, "50.0K") {
 		t.Errorf("renderTokenCard zero-cache: expected 50.0K total, got:\n%s", out)
 	}
-	if !strings.Contains(out, "uncached") {
-		t.Errorf("renderTokenCard zero-cache: expected 'uncached' label, got:\n%s", out)
+	if !strings.Contains(out, "0 cached") {
+		t.Errorf("renderTokenCard zero-cache: expected '0 cached' detail, got:\n%s", out)
 	}
 }
 
@@ -280,24 +207,24 @@ func TestRenderTaskCard_ShowsQueueDepth(t *testing.T) {
 
 	output := m.renderTaskCard(cardWidth)
 
-	// QUEUE card value must show current queue depth (2), not lifetime total (10)
-	if !strings.Contains(output, "QUEUE") {
-		t.Error("output missing QUEUE header")
+	// queue card value must show current queue depth (2), not lifetime total (10)
+	if !strings.Contains(output, "queue") {
+		t.Error("output missing queue title")
 	}
 	// The main value "2" should appear (queue depth)
 	if !strings.Contains(output, "2") {
-		t.Error("QUEUE card should show current queue depth of 2")
+		t.Error("queue card should show current queue depth of 2")
 	}
 	// Lifetime total "10" should NOT appear as the main value
 	if strings.Contains(output, "10") {
-		t.Error("QUEUE card should not show lifetime total (10)")
+		t.Error("queue card should not show lifetime total (10)")
 	}
-	// Succeeded/failed detail lines should still be present
-	if !strings.Contains(output, "8 succeeded") {
-		t.Error("QUEUE card missing succeeded count")
+	// Succeeded/failed detail line should still be present
+	if !strings.Contains(output, "✓ 8") {
+		t.Error("queue card missing succeeded count")
 	}
-	if !strings.Contains(output, "2 failed") {
-		t.Error("QUEUE card missing failed count")
+	if !strings.Contains(output, "✗ 2") {
+		t.Error("queue card missing failed count")
 	}
 }
 
@@ -461,9 +388,9 @@ func TestHydrateFromStore_CacheTokensRoundTrip(t *testing.T) {
 
 	m := NewModelWithStore("test", store)
 
-	wantCacheRead := 120000  // 80000 + 40000
-	wantCacheWrite := 5000   // 3000 + 2000
-	wantTotal := 11000       // (5000+2000) + (3000+1000)
+	wantCacheRead := 120000 // 80000 + 40000
+	wantCacheWrite := 5000  // 3000 + 2000
+	wantTotal := 11000      // (5000+2000) + (3000+1000)
 
 	if m.metricsCard.CacheReadTokens != wantCacheRead {
 		t.Errorf("CacheReadTokens = %d, want %d", m.metricsCard.CacheReadTokens, wantCacheRead)
@@ -662,7 +589,7 @@ func TestRenderHistory_EmptyState(t *testing.T) {
 	assertPanelLineWidths(t, output)
 
 	plain := stripANSI(output)
-	if !strings.Contains(plain, "HISTORY") {
+	if !strings.Contains(plain, "history") {
 		t.Error("missing HISTORY panel title")
 	}
 	if !strings.Contains(plain, "No completed tasks yet") {
@@ -694,16 +621,16 @@ func TestRenderHistory_StandaloneTask(t *testing.T) {
 
 	plain := stripANSI(output)
 
-	// Check standalone task icons
-	if !strings.Contains(plain, "+ GH-156") {
-		t.Error("success task should have '+' icon")
+	// Check standalone task glyphs
+	if !strings.Contains(plain, "✓ GH-156") {
+		t.Error("success task should have '✓' glyph")
 	}
-	if !strings.Contains(plain, "x GH-157") {
-		t.Error("failed task should have 'x' icon")
+	if !strings.Contains(plain, "✗ GH-157") {
+		t.Error("failed task should have '✗' glyph")
 	}
 
 	// Titles should be present (possibly truncated)
-	if !strings.Contains(plain, "Fix authentication") {
+	if !strings.Contains(plain, "Fix auth") {
 		t.Error("task title should be visible")
 	}
 
@@ -713,10 +640,10 @@ func TestRenderHistory_StandaloneTask(t *testing.T) {
 	}
 }
 
-// TestRenderHistory_StageStrip verifies the compact per-stage glyph strip
-// (GH-3849) renders in place of the plain status icon for happy path,
-// in-progress, and failed-at-stage-N executions, and that the fixed card
-// width invariant still holds regardless of strip length.
+// TestRenderHistory_StageStrip verifies the 7-rung pipeline segment meter
+// (GH-3849; grot restyle) renders with its stage label in a fixed column for
+// happy path, in-progress, and failed-at-stage-N executions, and that the
+// fixed card width invariant holds regardless of stage state.
 func TestRenderHistory_StageStrip(t *testing.T) {
 	m := NewModel("test")
 	m.completedTasks = []CompletedTask{
@@ -726,7 +653,7 @@ func TestRenderHistory_StageStrip(t *testing.T) {
 			Status:      "success",
 			Duration:    "3m",
 			CompletedAt: time.Now().Add(-3 * time.Minute),
-			StageStrip: buildStageStrip([]*memory.Event{
+			Stage: buildStageInfo([]*memory.Event{
 				evt(memory.StageQueued),
 				evt(memory.StageSpecValidated),
 				evt(memory.StageRunning),
@@ -741,7 +668,7 @@ func TestRenderHistory_StageStrip(t *testing.T) {
 			Status:      "success",
 			Duration:    "1m",
 			CompletedAt: time.Now().Add(-1 * time.Minute),
-			StageStrip: buildStageStrip([]*memory.Event{
+			Stage: buildStageInfo([]*memory.Event{
 				evt(memory.StageQueued),
 				evt(memory.StageSpecValidated),
 				evt(memory.StageRunning),
@@ -753,12 +680,19 @@ func TestRenderHistory_StageStrip(t *testing.T) {
 			Status:      "failed",
 			Duration:    "45s",
 			CompletedAt: time.Now().Add(-10 * time.Minute),
-			StageStrip: buildStageStrip([]*memory.Event{
+			Stage: buildStageInfo([]*memory.Event{
 				evt(memory.StageQueued),
 				evt(memory.StageSpecValidated),
 				evt(memory.StageRunning),
 				evt(memory.StageFailed),
 			}, true),
+		},
+		// No stage evidence (pre-events execution): dim track + "–" label.
+		{
+			ID:          "GH-203",
+			Title:       "Legacy execution",
+			Status:      "success",
+			CompletedAt: time.Now().Add(-20 * time.Minute),
 		},
 	}
 
@@ -767,14 +701,19 @@ func TestRenderHistory_StageStrip(t *testing.T) {
 
 	plain := stripANSI(output)
 
-	if !strings.Contains(plain, "6/7 merged") {
-		t.Errorf("happy path stage fraction not found in output:\n%s", plain)
+	// Stage labels render in the fixed column after the 7-cell meter.
+	for _, want := range []string{"■■■■■■■ merged", "■■■■■■■ running", "■■■■■■■ –"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("stage meter+label %q not found in output:\n%s", want, plain)
+		}
 	}
-	if !strings.Contains(plain, "2/7 running") {
-		t.Errorf("in-progress stage fraction not found in output:\n%s", plain)
+	// The N/7 fraction text is gone.
+	if strings.Contains(plain, "/7") {
+		t.Errorf("fraction text should be replaced by the segment meter:\n%s", plain)
 	}
-	if !strings.Contains(plain, "2/7 ✗ running") {
-		t.Errorf("failed-at-stage-N stage fraction not found in output:\n%s", plain)
+	// Failed run carries the ✗ status glyph.
+	if !strings.Contains(plain, "✗ GH-202") {
+		t.Errorf("failed run should carry the ✗ glyph:\n%s", plain)
 	}
 }
 
@@ -828,29 +767,26 @@ func TestRenderHistory_ActiveEpicWithMixedStates(t *testing.T) {
 
 	plain := stripANSI(output)
 
-	// Epic parent line: amber '*' icon, progress bar, counts
-	if !strings.Contains(plain, "* GH-491") {
-		t.Error("active epic should have '*' icon")
+	// Epic parent line: ● active glyph, segment meter, counts
+	if !strings.Contains(plain, "● GH-491") {
+		t.Error("active epic should have '●' glyph")
 	}
-	if !strings.Contains(plain, "[##--]") {
-		t.Errorf("active epic should have [##--] progress bar, got:\n%s", plain)
-	}
-	if !strings.Contains(plain, "2/4") {
-		t.Error("active epic should show 2/4 counts")
+	if !strings.Contains(plain, "■■■■ 2/4") {
+		t.Errorf("active epic should have a 4-cell segment meter with counts, got:\n%s", plain)
 	}
 
-	// Sub-issue lines: indented with per-status icons
-	if !strings.Contains(plain, "    + GH-492") {
-		t.Error("success sub-issue should be indented with '+' icon")
+	// Sub-issue lines: indented with per-status glyphs
+	if !strings.Contains(plain, "    ✓ GH-492") {
+		t.Error("success sub-issue should be indented with '✓' glyph")
 	}
-	if !strings.Contains(plain, "    ~ GH-493") {
-		t.Error("running sub-issue should be indented with '~' icon")
+	if !strings.Contains(plain, "    ● GH-493") {
+		t.Error("running sub-issue should be indented with '●' glyph")
 	}
-	if !strings.Contains(plain, "    . GH-494") {
-		t.Error("pending sub-issue should be indented with '.' icon")
+	if !strings.Contains(plain, "    ◌ GH-494") {
+		t.Error("pending sub-issue should be indented with '◌' glyph")
 	}
-	if !strings.Contains(plain, "    x GH-495") {
-		t.Error("failed sub-issue should be indented with 'x' icon")
+	if !strings.Contains(plain, "    ✗ GH-495") {
+		t.Error("failed sub-issue should be indented with '✗' glyph")
 	}
 
 	// Pending sub-issue should show "--" instead of time
@@ -895,12 +831,12 @@ func TestRenderHistory_CompletedEpicCollapsed(t *testing.T) {
 
 	plain := stripANSI(output)
 
-	// Completed epic: collapsed with '+' icon and [5/5]
-	if !strings.Contains(plain, "+ GH-385") {
-		t.Error("completed epic should have '+' icon (success)")
+	// Completed epic: collapsed with '✓' glyph and 5/5 count
+	if !strings.Contains(plain, "✓ GH-385") {
+		t.Error("completed epic should have '✓' glyph (success)")
 	}
-	if !strings.Contains(plain, "[5/5]") {
-		t.Errorf("completed epic should show [5/5] count, got:\n%s", plain)
+	if !strings.Contains(plain, "5/5") {
+		t.Errorf("completed epic should show 5/5 count, got:\n%s", plain)
 	}
 	if !strings.Contains(plain, "Epic: Roadmap") {
 		t.Error("completed epic title should be visible")
@@ -977,43 +913,49 @@ func TestRenderHistory_MixedStandaloneAndEpic(t *testing.T) {
 	plain := stripANSI(output)
 
 	// All three types should be present
-	if !strings.Contains(plain, "* GH-491") {
-		t.Error("active epic should be present with '*' icon")
+	if !strings.Contains(plain, "● GH-491") {
+		t.Error("active epic should be present with '●' glyph")
 	}
-	if !strings.Contains(plain, "[5/5]") {
-		t.Error("completed epic [5/5] count should be present")
+	if !strings.Contains(plain, "5/5") {
+		t.Error("completed epic 5/5 count should be present")
 	}
-	if !strings.Contains(plain, "+ GH-489") {
-		t.Error("standalone task should be present with '+' icon")
+	if !strings.Contains(plain, "✓ GH-489") {
+		t.Error("standalone task should be present with '✓' glyph")
 	}
 
 	// Sub-issues should appear under active epic, not standalone
-	if !strings.Contains(plain, "    + GH-492") {
+	if !strings.Contains(plain, "    ✓ GH-492") {
 		t.Error("sub-issue GH-492 should be indented under epic")
 	}
 }
 
 func TestRenderEpicProgressBar(t *testing.T) {
+	// The meter is styled (filled gradient vs track color), so plain text is
+	// innerWidth ■ cells in every state — assert the visual-width invariant.
+	// Fill-fraction styling itself is covered by grot's SegmentMeter tests
+	// (and colors are stripped in the no-TTY test environment anyway).
 	tests := []struct {
 		name       string
 		done       int
 		total      int
 		innerWidth int
-		want       string
 	}{
-		{"zero progress", 0, 3, 4, "[----]"},
-		{"partial progress", 2, 4, 4, "[##--]"},
-		{"full progress", 5, 5, 4, "[####]"},
-		{"one of three", 1, 3, 4, "[#---]"},
-		{"zero total", 0, 0, 4, "[----]"},
-		{"wider bar", 3, 6, 6, "[###---]"},
+		{"zero progress", 0, 3, 4},
+		{"partial progress", 2, 4, 4},
+		{"full progress", 5, 5, 4},
+		{"zero total", 0, 0, 4},
+		{"wider bar", 3, 6, 6},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := renderEpicProgressBar(tt.done, tt.total, tt.innerWidth)
-			if got != tt.want {
-				t.Errorf("renderEpicProgressBar(%d, %d, %d) = %q, want %q",
-					tt.done, tt.total, tt.innerWidth, got, tt.want)
+			if w := lipgloss.Width(got); w != tt.innerWidth {
+				t.Errorf("renderEpicProgressBar(%d, %d, %d) visual width = %d, want %d",
+					tt.done, tt.total, tt.innerWidth, w, tt.innerWidth)
+			}
+			if plain := stripANSI(got); plain != strings.Repeat("■", tt.innerWidth) {
+				t.Errorf("renderEpicProgressBar(%d, %d, %d) cells = %q, want %d ■ cells",
+					tt.done, tt.total, tt.innerWidth, plain, tt.innerWidth)
 			}
 		})
 	}
@@ -1180,7 +1122,7 @@ func TestGitGraph_StackedLayoutUsesFullWidth(t *testing.T) {
 	var graphBorderLine string
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "GIT GRAPH") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "git graph") && strings.Contains(plain, "╭") {
 			graphBorderLine = plain
 			break
 		}
@@ -1214,10 +1156,10 @@ func TestGitGraph_SideBySideOnWideTerminal(t *testing.T) {
 	view := m.View()
 	lines := strings.Split(view, "\n")
 
-	// In side-by-side mode, the GIT GRAPH border should NOT be at full terminal width
+	// In side-by-side mode, the git graph border should NOT be at full terminal width
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "GIT GRAPH") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "git graph") && strings.Contains(plain, "╭") {
 			borderWidth := lipgloss.Width(plain)
 			if borderWidth == m.width {
 				t.Errorf("side-by-side graph should not be full terminal width (%d)", m.width)
@@ -1264,7 +1206,7 @@ func TestGitGraph_NarrowTerminalNotSilent(t *testing.T) {
 	view := m.View()
 	plain := stripANSI(view)
 	// At 60 cols stacked, auto-size picks medium (title "GIT")
-	if !strings.Contains(plain, "GIT") {
+	if !strings.Contains(plain, "git") {
 		t.Error("narrow terminal (60 cols) should show stacked GIT panel, got silent/empty")
 	}
 }
@@ -1289,7 +1231,7 @@ func TestDashboardPanels_StretchInStackedMode(t *testing.T) {
 	var queueBorderLine string
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "QUEUE") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "queue") && strings.Contains(plain, "╭") {
 			queueBorderLine = plain
 			break
 		}
@@ -1308,7 +1250,7 @@ func TestDashboardPanels_StretchInStackedMode(t *testing.T) {
 	var historyBorderLine string
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "HISTORY") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "history") && strings.Contains(plain, "╭") {
 			historyBorderLine = plain
 			break
 		}
@@ -1335,7 +1277,7 @@ func TestDashboardPanels_DefaultWidthWhenNoGraph(t *testing.T) {
 	// Find QUEUE panel border
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "QUEUE") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "queue") && strings.Contains(plain, "╭") {
 			borderWidth := lipgloss.Width(plain)
 			if borderWidth != panelTotalWidth {
 				t.Errorf("default QUEUE panel width = %d, want %d (panelTotalWidth)", borderWidth, panelTotalWidth)
@@ -1390,7 +1332,7 @@ func TestRenderEvalStats(t *testing.T) {
 		got := m.renderEvalStats()
 
 		plain := stripANSI(got)
-		if !strings.Contains(plain, "EVAL") {
+		if !strings.Contains(plain, "eval") {
 			t.Error("expected EVAL panel header")
 		}
 		if !strings.Contains(plain, "pass@1") {
@@ -1472,10 +1414,10 @@ func TestRenderEvalStats_ProjectFilter(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		defaultProject  string
-		wantRate        string
-		wantTaskCount   string
+		name           string
+		defaultProject string
+		wantRate       string
+		wantTaskCount  string
 	}{
 		{
 			name:           "scoped to alpha: only 4 passing tasks",
@@ -1679,7 +1621,7 @@ func TestStoreRefreshCmd_ProjectFilter(t *testing.T) {
 func TestRenderBanner(t *testing.T) {
 	m := NewModel("2.102.3")
 	start := time.Now().Add(-90 * time.Minute) // 1h30m ago
-	m.SetBannerMeta("prod", "opus:plan | sonnet:exec", nil, start)
+	m.SetBannerMeta("prod", "opus/sonnet", nil, start)
 	m.SetBannerAdapters([]AdapterStatus{
 		{Name: "GH", Active: true},
 		{Name: "SLACK", Active: false},
@@ -1687,18 +1629,85 @@ func TestRenderBanner(t *testing.T) {
 
 	out := m.renderBanner()
 
-	// Banner uppercases env, MODEL/ENV labels, and adapter names.
-	for _, want := range []string{"v2.102.3", "PROD", "opus:plan", "UTC", "GH", "SLACK", "DAEMON"} {
+	// One grot-grammar line: wordmark + liveness dot, lowercased segments,
+	// uptime + clock. Adapter chips moved to the queue border legend.
+	for _, want := range []string{" pilot ●", "v2.102.3", "prod", "opus/sonnet", "up ", "utc"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("renderBanner() missing %q\nout:\n%s", want, out)
 		}
 	}
+	for _, reject := range []string{"daemon", "gh", "slack", "\n"} {
+		if strings.Contains(out, reject) {
+			t.Errorf("renderBanner() should not contain %q\nout:\n%s", reject, out)
+		}
+	}
 
-	// Verify each rendered line is exactly panelTotalWidth visual chars wide.
-	for i, line := range strings.Split(out, "\n") {
-		w := lipgloss.Width(line)
-		if w != panelTotalWidth {
-			t.Errorf("renderBanner() line %d: visual width = %d, want %d  (line: %q)", i, w, panelTotalWidth, line)
+	if w := lipgloss.Width(out); w != panelTotalWidth {
+		t.Errorf("renderBanner() visual width = %d, want %d", w, panelTotalWidth)
+	}
+}
+
+func TestRenderBannerNarrowDropsSegments(t *testing.T) {
+	// An over-long model stack must degrade by dropping trailing identity
+	// segments — never by corrupting the line or dropping the wordmark.
+	m := NewModel("2.102.3")
+	m.SetBannerMeta("prod", "opus:plan | sonnet:exec | haiku:triage", nil, time.Now().Add(-time.Minute))
+
+	out := m.renderBanner()
+
+	for _, want := range []string{" pilot ●", "v2.102.3", "utc"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderBanner() narrow missing %q\nout:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "sonnet:exec") {
+		t.Errorf("renderBanner() narrow should drop over-long model stack\nout:\n%s", out)
+	}
+	if w := lipgloss.Width(out); w != panelTotalWidth {
+		t.Errorf("renderBanner() narrow visual width = %d, want %d", w, panelTotalWidth)
+	}
+}
+
+func TestBuildAdapterLegend(t *testing.T) {
+	legend := buildAdapterLegend([]AdapterStatus{
+		{Name: "GH", Active: true},
+		{Name: "TG", Active: true},
+		{Name: "SLACK", Active: false},
+		{Name: "DISCORD", Active: false},
+		{Name: "LINEAR", Active: false},
+	})
+
+	// Active adapters named with ● prefix; idle collapsed to a single count.
+	for _, want := range []string{"● gh", "● tg", "○ 3 idle"} {
+		if !strings.Contains(legend, want) {
+			t.Errorf("buildAdapterLegend() missing %q\nout: %q", want, legend)
+		}
+	}
+	for _, reject := range []string{"slack", "discord", "linear"} {
+		if strings.Contains(legend, reject) {
+			t.Errorf("buildAdapterLegend() should not name idle adapter %q\nout: %q", reject, legend)
+		}
+	}
+
+	if got := buildAdapterLegend(nil); got != "" {
+		t.Errorf("buildAdapterLegend(nil) = %q, want empty", got)
+	}
+}
+
+func TestRenderTasksAdapterLegend(t *testing.T) {
+	m := NewModel("1.0.0")
+	m.SetBannerAdapters([]AdapterStatus{
+		{Name: "GH", Active: true},
+		{Name: "SLACK", Active: false},
+	})
+	m.tasks = []TaskDisplay{{ID: "GH-1", Title: "task", Status: "running", Progress: 10}}
+
+	out := m.renderTasks()
+
+	// Queue border legend: running count first, then adapter status.
+	for _, want := range []string{"● 1 running", "● gh", "○ 1 idle"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderTasks() legend missing %q\nout:\n%s", want, out)
 		}
 	}
 }
@@ -1711,7 +1720,7 @@ func TestRenderBannerDefaults(t *testing.T) {
 	if !strings.Contains(out, "v1.0.0") {
 		t.Errorf("renderBanner() missing version")
 	}
-	if !strings.Contains(out, "UTC") {
+	if !strings.Contains(out, "utc") {
 		t.Errorf("renderBanner() missing UTC clock")
 	}
 
@@ -1738,65 +1747,76 @@ func TestAutopilotPanelDisabled(t *testing.T) {
 	}
 }
 
-func TestRenderAutopilotRailPositions(t *testing.T) {
-	// Rail uses glyph-per-node: ✓ (done) / ◐◓◑◒ (current, animated) / ○ (pending) / ✗ (failed).
-	// Spinner index 0 → ◐ for the in-progress node.
+func TestRenderAutopilotRow(t *testing.T) {
+	// One history-grammar row per PR: glyph + #id + title + 5-cell meter +
+	// stage label + age; ↳ detail line only for retries/failures.
+	now := time.Now()
 	tests := []struct {
-		stage    autopilot.PRStage
-		ciStatus autopilot.CIStatus
-		tick     int
-		wantDone int    // count of ✓
-		wantPend int    // count of ○
-		wantFail int    // count of ✗
-		nodeName string // must appear in rail
+		name      string
+		stage     autopilot.PRStage
+		ciStatus  autopilot.CIStatus
+		failures  int
+		err       string
+		wantGlyph string
+		wantLabel string
+		wantLines int
 	}{
-		{autopilot.StageWaitingCI, autopilot.CIPending, 0, 0, 4, 0, "ci"},
-		{autopilot.StageMerging, autopilot.CISuccess, 0, 2, 2, 0, "merge"},
-		{autopilot.StagePostMergeCI, autopilot.CISuccess, 0, 3, 1, 0, "tag"},
-		{autopilot.StageReleasing, autopilot.CISuccess, 0, 4, 0, 0, "release"},
-		// CI failure: ✗ on ci node
-		{autopilot.StageCIFailed, autopilot.CIFailure, 0, 0, 4, 1, "ci"},
-		// Pipeline failure (non-CI)
-		{autopilot.StageFailed, autopilot.CIPending, 0, 0, 4, 1, "ci"},
+		{"waiting ci", autopilot.StageWaitingCI, autopilot.CIPending, 0, "", "●", "ci", 1},
+		{"merging", autopilot.StageMerging, autopilot.CISuccess, 0, "", "●", "merge", 1},
+		{"post-merge ci", autopilot.StagePostMergeCI, autopilot.CISuccess, 0, "", "●", "tag", 1},
+		{"releasing", autopilot.StageReleasing, autopilot.CISuccess, 0, "", "●", "release", 1},
+		{"ci failed, retrying", autopilot.StageCIFailed, autopilot.CIFailure, 1, "", "⟲", "ci", 2},
+		{"pipeline failed", autopilot.StageFailed, autopilot.CIPending, 0, "boom", "✗", "failed", 2},
 	}
 
 	for _, tt := range tests {
-		t.Run(string(tt.stage), func(t *testing.T) {
-			out := renderAutopilotRail(tt.stage, tt.ciStatus, tt.tick)
-			plain := stripANSI(out)
-			if got := strings.Count(plain, "✓"); got != tt.wantDone {
-				t.Errorf("stage %s: ✓ count = %d, want %d (rail: %q)", tt.stage, got, tt.wantDone, plain)
+		t.Run(tt.name, func(t *testing.T) {
+			pr := &autopilot.PRState{
+				PRNumber: 4054, PRTitle: "fix(executor): skip decomposer",
+				Stage: tt.stage, CIStatus: tt.ciStatus, Error: tt.err,
+				CreatedAt: now.Add(-2 * time.Minute),
 			}
-			if got := strings.Count(plain, "○"); got != tt.wantPend {
-				t.Errorf("stage %s: ○ count = %d, want %d (rail: %q)", tt.stage, got, tt.wantPend, plain)
+			lines := renderAutopilotRow(pr, tt.failures, 3, panelInnerWidth)
+			if len(lines) != tt.wantLines {
+				t.Fatalf("line count = %d, want %d:\n%s", len(lines), tt.wantLines, strings.Join(lines, "\n"))
 			}
-			if got := strings.Count(plain, "✗"); got != tt.wantFail {
-				t.Errorf("stage %s: ✗ count = %d, want %d (rail: %q)", tt.stage, got, tt.wantFail, plain)
+			plain := stripANSI(lines[0])
+			if !strings.HasPrefix(plain, "  "+tt.wantGlyph+" #4054") {
+				t.Errorf("row should start with %q glyph + id: %q", tt.wantGlyph, plain)
 			}
-			if !strings.Contains(plain, tt.nodeName) {
-				t.Errorf("stage %s: rail missing node %q (rail: %q)", tt.stage, tt.nodeName, plain)
-			}
-			// Old glyph must not appear
-			if strings.Contains(plain, "●") {
-				t.Errorf("stage %s: rail contains deprecated ● glyph: %q", tt.stage, plain)
-			}
-			// No fake progress bars
-			if strings.Contains(plain, "[█") || strings.Contains(plain, "[░") {
-				t.Errorf("stage %s: rail contains fake progress bar chars: %q", tt.stage, plain)
+			if !strings.Contains(plain, "■■■■■ "+tt.wantLabel) {
+				t.Errorf("row missing meter + stage label %q: %q", tt.wantLabel, plain)
 			}
 		})
 	}
 }
 
-func TestRenderAutopilotRailSpinner(t *testing.T) {
-	// Each tick value should produce a different spinner rune for the active node.
-	spinnerRunes := []string{"◐", "◓", "◑", "◒"}
-	for tick, want := range spinnerRunes {
-		out := renderAutopilotRail(autopilot.StageWaitingCI, autopilot.CIPending, tick)
-		plain := stripANSI(out)
-		if !strings.Contains(plain, want) {
-			t.Errorf("tick=%d: expected spinner rune %q not found in rail: %q", tick, want, plain)
+func TestRenderAutopilotRow_DetailLine(t *testing.T) {
+	pr := &autopilot.PRState{
+		PRNumber: 100, PRTitle: "test PR",
+		Stage: autopilot.StageFailed, CIStatus: autopilot.CIFailure,
+		Error: "TestFoo failed · linux-amd64", CreatedAt: time.Now(),
+	}
+	lines := renderAutopilotRow(pr, 2, 3, panelInnerWidth)
+	if len(lines) != 2 {
+		t.Fatalf("line count = %d, want 2", len(lines))
+	}
+	detail := stripANSI(lines[1])
+	for _, want := range []string{"↳", "⟲ retry 2/3", "TestFoo failed"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail line missing %q: %q", want, detail)
 		}
+	}
+
+	// Clean run: no retry chrome at zero failures.
+	pr.Stage = autopilot.StageWaitingCI
+	pr.Error = ""
+	lines = renderAutopilotRow(pr, 0, 3, panelInnerWidth)
+	if len(lines) != 1 {
+		t.Fatalf("clean run line count = %d, want 1 (no detail line)", len(lines))
+	}
+	if strings.Contains(stripANSI(lines[0]), "0/3") {
+		t.Errorf("clean run should carry no retry fraction: %q", stripANSI(lines[0]))
 	}
 }
 
@@ -1853,9 +1873,9 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				CIStatus:  autopilot.CIRunning,
 				CreatedAt: now.Add(-90 * time.Second),
 			}}, 3, nil),
-			wantLines:   6, // border + empty + line1 + line2 + empty + border
+			wantLines:   5, // border + empty + row + empty + border
 			wantContain: "#2565",
-			wantAbsent:  "[█",
+			wantAbsent:  "0/3", // no retry chrome on a clean run
 		},
 		{
 			name: "ci-failed with error",
@@ -1867,7 +1887,7 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				Error:     "TestInstallToBinaryPath_Cleanup failed · linux-amd64",
 				CreatedAt: now.Add(-4 * time.Minute),
 			}}, 3, map[int]int{2565: 2}),
-			wantLines:   7, // border + empty + line1 + line2 + line3(error) + empty + border
+			wantLines:   6, // border + empty + row + detail(retry+error) + empty + border
 			wantContain: "↳",
 			wantAbsent:  "STATE",
 		},
@@ -1880,8 +1900,8 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				CIStatus:  autopilot.CISuccess,
 				CreatedAt: now.Add(-3 * time.Minute),
 			}}, 3, nil),
-			wantLines:   6, // border + empty + line1 + line2 + empty + border
-			wantContain: "✓",
+			wantLines:   5, // border + empty + row + empty + border
+			wantContain: "rebase",
 			wantAbsent:  "[░",
 		},
 		{
@@ -1893,7 +1913,7 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				CIStatus:  autopilot.CISuccess,
 				CreatedAt: now.Add(-10 * time.Minute),
 			}}, 3, nil),
-			wantLines:   6, // border + empty + line1 + line2 + empty + border
+			wantLines:   5, // border + empty + row + empty + border
 			wantContain: "release",
 			wantAbsent:  "STATE",
 		},
@@ -1907,8 +1927,18 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				Error:     "",
 				CreatedAt: now.Add(-2 * time.Minute),
 			}}, 3, nil),
-			wantLines:  6, // border + empty + line1 + line2 + empty + border (no error line)
+			wantLines:  5, // border + empty + row + empty + border (no detail line)
 			wantAbsent: "↳",
+		},
+		{
+			name: "two active prs",
+			ctl: newFakeCtl([]*autopilot.PRState{
+				{PRNumber: 2565, PRTitle: "fix(upgrade): atomic binary replacement", Stage: autopilot.StageWaitingCI, CIStatus: autopilot.CIRunning, CreatedAt: now.Add(-time.Minute)},
+				{PRNumber: 2566, PRTitle: "feat(api): rate limiting", Stage: autopilot.StageMerging, CIStatus: autopilot.CISuccess, CreatedAt: now.Add(-5 * time.Minute)},
+			}, 3, nil),
+			wantLines:   6, // border + empty + row + row + empty + border
+			wantContain: "#2566",
+			wantAbsent:  "more PR",
 		},
 	}
 
@@ -1917,7 +1947,6 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 			p := &AutopilotPanel{
 				controller: tt.ctl,
 				panelWidth: panelTotalWidth,
-				tick:       0,
 			}
 			out := p.View()
 			plain := stripANSI(out)
@@ -1947,25 +1976,6 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestAutopilotPanelTick_RotatesSpinner(t *testing.T) {
-	ctl := newFakeCtl([]*autopilot.PRState{{
-		PRNumber:  100,
-		PRTitle:   "test PR",
-		Stage:     autopilot.StageWaitingCI,
-		CIStatus:  autopilot.CIPending,
-		CreatedAt: time.Now(),
-	}}, 3, nil)
-
-	spinner := []string{"◐", "◓", "◑", "◒"}
-	for tick, want := range spinner {
-		p := &AutopilotPanel{controller: ctl, panelWidth: panelTotalWidth, tick: tick}
-		plain := stripANSI(p.View())
-		if !strings.Contains(plain, want) {
-			t.Errorf("tick=%d: spinner rune %q not found in output:\n%s", tick, want, plain)
-		}
 	}
 }
 

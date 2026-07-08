@@ -56,11 +56,11 @@ func TestHandleIssueGeneric_BudgetExceeded(t *testing.T) {
 		// Runner and Dispatcher intentionally nil — must not be reached due to budget block
 	}
 	info := IssueInfo{
-		TaskID:   "GH-999",
-		Title:    "Test Issue",
-		URL:      "https://github.com/test/repo/issues/999",
-		Adapter:  "github",
-		LogEmoji: "📥",
+		TaskID:  "GH-999",
+		Title:   "Test Issue",
+		URL:     "https://github.com/test/repo/issues/999",
+		Adapter: "github",
+		LogMark: "▸",
 	}
 	task := &executor.Task{
 		ID:     "GH-999",
@@ -99,11 +99,11 @@ func TestHandleIssueGeneric_MonitorRegistration(t *testing.T) {
 		Enforcer: enforcer,
 	}
 	info := IssueInfo{
-		TaskID:   "APP-123",
-		Title:    "Linear task title",
-		URL:      "https://linear.app/issue/APP-123",
-		Adapter:  "linear",
-		LogEmoji: "📊",
+		TaskID:  "APP-123",
+		Title:   "Linear task title",
+		URL:     "https://linear.app/issue/APP-123",
+		Adapter: "linear",
+		LogMark: "▸",
 	}
 	task := &executor.Task{
 		ID:     "APP-123",
@@ -139,7 +139,7 @@ func TestHandleIssueGeneric_AlreadyActive_SkipsDispatch(t *testing.T) {
 
 	monitor := executor.NewMonitor()
 	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
-	info := IssueInfo{TaskID: taskID, Title: "seed", Adapter: "github", LogEmoji: "🐙"}
+	info := IssueInfo{TaskID: taskID, Title: "seed", Adapter: "github", LogMark: "▸"}
 	task := &executor.Task{ID: taskID, Title: "seed", Branch: "pilot/" + taskID}
 
 	hr, err := handleIssueGeneric(context.Background(), deps, info, task)
@@ -173,7 +173,7 @@ func TestHandleIssueGeneric_QueueTaskRace_DowngradesToDebug(t *testing.T) {
 
 	monitor := executor.NewMonitor()
 	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
-	info := IssueInfo{TaskID: "GH-4008-RACE-PRECHECK", Title: "race", Adapter: "github", LogEmoji: "🐙"}
+	info := IssueInfo{TaskID: "GH-4008-RACE-PRECHECK", Title: "race", Adapter: "github", LogMark: "▸"}
 	task := &executor.Task{ID: activeTaskID, Title: "race", Branch: "pilot/" + activeTaskID}
 
 	hr, err := handleIssueGeneric(context.Background(), deps, info, task)
@@ -216,7 +216,7 @@ func TestHandleIssueGeneric_GenuineQueueFailure_StillErrors(t *testing.T) {
 	monitor := executor.NewMonitor()
 	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
 	taskID := "GH-4008-FAIL"
-	info := IssueInfo{TaskID: taskID, Title: "fail", Adapter: "github", LogEmoji: "🐙"}
+	info := IssueInfo{TaskID: taskID, Title: "fail", Adapter: "github", LogMark: "▸"}
 	task := &executor.Task{ID: taskID, Title: "fail", Branch: "pilot/" + taskID}
 
 	_, err = handleIssueGeneric(context.Background(), deps, info, task)
@@ -338,11 +338,11 @@ func TestHandleIssueGeneric_NilEnforcer(t *testing.T) {
 		// Runner nil and Dispatcher nil — will panic at execution step
 	}
 	info := IssueInfo{
-		TaskID:   "GH-1",
-		Title:    "No enforcer",
-		URL:      "https://github.com/org/repo/issues/1",
-		Adapter:  "github",
-		LogEmoji: "📥",
+		TaskID:  "GH-1",
+		Title:   "No enforcer",
+		URL:     "https://github.com/org/repo/issues/1",
+		Adapter: "github",
+		LogMark: "▸",
 	}
 	task := &executor.Task{
 		ID:     "GH-1",

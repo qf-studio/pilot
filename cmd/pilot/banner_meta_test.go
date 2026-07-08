@@ -15,17 +15,21 @@ import (
 )
 
 // GH-2459: applyDashboardBannerMeta wires env, model stack, and adapter list
-// from config into the dashboard banner so renderBanner() shows real values
-// instead of placeholders.
+// from config into the dashboard. TASK-390 (grot redesign) split the surface:
+// env + model stack render in the banner identity line; adapter chips render
+// in the queue panel border legend (active adapters named, idle collapsed to
+// a count, no daemon chip — daemon liveness is the banner wordmark dot).
 func TestApplyDashboardBannerMeta(t *testing.T) {
 	tests := []struct {
-		name        string
-		cfg         *config.Config
-		wantSubstrs []string
-		notSubstrs  []string
+		name       string
+		cfg        *config.Config
+		wantBanner []string
+		notBanner  []string
+		wantLegend []string
+		notLegend  []string
 	}{
 		{
-			name: "full config — env + model stack + multi adapters",
+			name: "full config — env + model stack in banner, adapters in legend",
 			cfg: &config.Config{
 				Orchestrator: &config.OrchestratorConfig{
 					Autopilot: &autopilot.Config{Environment: autopilot.Environment("stage")},
@@ -40,15 +44,13 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 					Slack:    &slack.Config{Enabled: true},
 				},
 			},
-			wantSubstrs: []string{
-				"STAGE",      // env uppercased in banner
-				"OPUS-4-7",   // plan model
-				"SONNET-4-6", // exec model
-				"GH",         // github abbreviated
-				"TG",         // telegram abbreviated
-				"SLACK",      // slack full
-				"DAEMON",     // always shown
+			wantBanner: []string{
+				"stage",      // env lowercased in banner
+				"opus-4-7",   // plan model
+				"sonnet-4-6", // exec model
 			},
+			notBanner:  []string{"gh", "tg", "slack", "daemon"},
+			wantLegend: []string{"gh", "tg", "slack"},
 		},
 		{
 			name: "single model — no slash separator",
@@ -58,8 +60,9 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 					Discord: &discord.Config{Enabled: true},
 				},
 			},
-			wantSubstrs: []string{"SONNET-4-6", "DISCORD"},
-			notSubstrs:  []string{" / "},
+			wantBanner: []string{"sonnet-4-6"},
+			notBanner:  []string{" / "},
+			wantLegend: []string{"discord"},
 		},
 		{
 			name: "complex == default — collapse to single label, no slash",
@@ -70,35 +73,37 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 				},
 				Adapters: &config.AdaptersConfig{},
 			},
-			wantSubstrs: []string{"OPUS-4-7"},
-			notSubstrs:  []string{" / "},
+			wantBanner: []string{"opus-4-7"},
+			notBanner:  []string{" / "},
 		},
 		{
 			name: "empty config — no panic, banner still renders version + clock",
 			cfg: &config.Config{
 				Adapters: &config.AdaptersConfig{},
 			},
-			wantSubstrs: []string{"v9.9.9", "UTC"},
+			wantBanner: []string{"v9.9.9", "utc"},
 		},
 		{
-			name: "configured-but-disabled adapter still appears as inactive chip",
+			name: "configured-but-disabled adapter collapses to idle count",
 			cfg: &config.Config{
 				Adapters: &config.AdaptersConfig{
 					GitHub:   &ghadapter.Config{Enabled: false},
 					Telegram: &telegram.Config{Enabled: true},
 				},
 			},
-			// Both chips render — Active vs inactive only changes the dot,
-			// not whether the adapter name appears.
-			wantSubstrs: []string{"GH", "TG"},
+			// Active adapters are named; idle ones are config facts, not
+			// live status — they collapse to "○ N idle" without names.
+			wantLegend: []string{"tg", "1 idle"},
+			notLegend:  []string{"gh"},
 		},
 		{
-			name: "no Adapters config — only DAEMON chip + version",
+			name: "no Adapters config — empty legend, banner version only",
 			cfg:  &config.Config{
 				// Adapters: nil intentionally
 			},
-			wantSubstrs: []string{"DAEMON", "v9.9.9"},
-			notSubstrs:  []string{"GH", "TG", "SLACK"},
+			wantBanner: []string{"v9.9.9"},
+			notBanner:  []string{"daemon"},
+			notLegend:  []string{"gh", "tg", "slack"},
 		},
 	}
 
@@ -107,16 +112,27 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 			model := dashboard.NewModel("9.9.9")
 			applyDashboardBannerMeta(&model, tt.cfg, nil)
 
-			out := model.RenderBannerForTest()
+			banner := model.RenderBannerForTest()
+			legend := model.AdapterLegendForTest()
 
-			for _, want := range tt.wantSubstrs {
-				if !strings.Contains(out, want) {
-					t.Errorf("banner missing %q\noutput:\n%s", want, out)
+			for _, want := range tt.wantBanner {
+				if !strings.Contains(banner, want) {
+					t.Errorf("banner missing %q\noutput:\n%s", want, banner)
 				}
 			}
-			for _, no := range tt.notSubstrs {
-				if strings.Contains(out, no) {
-					t.Errorf("banner unexpectedly contains %q\noutput:\n%s", no, out)
+			for _, no := range tt.notBanner {
+				if strings.Contains(banner, no) {
+					t.Errorf("banner unexpectedly contains %q\noutput:\n%s", no, banner)
+				}
+			}
+			for _, want := range tt.wantLegend {
+				if !strings.Contains(legend, want) {
+					t.Errorf("legend missing %q\noutput: %q", want, legend)
+				}
+			}
+			for _, no := range tt.notLegend {
+				if strings.Contains(legend, no) {
+					t.Errorf("legend unexpectedly contains %q\noutput: %q", no, legend)
 				}
 			}
 		})

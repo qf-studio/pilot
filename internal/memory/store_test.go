@@ -2568,7 +2568,7 @@ func TestGetDailyMetrics_ExcludesZeroTokenRows(t *testing.T) {
 	if err := store.SaveExecution(&Execution{ID: "dm-real", TaskID: "T-1", ProjectPath: "/p", Status: "completed", CreatedAt: yesterday}); err != nil {
 		t.Fatalf("SaveExecution: %v", err)
 	}
-	if err := store.SaveExecutionMetrics(&ExecutionMetrics{ExecutionID: "dm-real", TokensInput: 3000, TokensOutput: 1000, TokensTotal: 4000, EstimatedCostUSD: 0.30}); err != nil {
+	if err := store.SaveExecutionMetrics(&ExecutionMetrics{ExecutionID: "dm-real", TokensInput: 3000, TokensOutput: 1000, TokensTotal: 4000, TokensCacheRead: 90000, TokensCacheWrite: 5000, EstimatedCostUSD: 0.30}); err != nil {
 		t.Fatalf("SaveExecutionMetrics: %v", err)
 	}
 
@@ -2588,6 +2588,13 @@ func TestGetDailyMetrics_ExcludesZeroTokenRows(t *testing.T) {
 	// Only the real execution should be counted
 	if days[0].ExecutionCount != 1 {
 		t.Errorf("ExecutionCount = %d, want 1 (zero-token row must be excluded)", days[0].ExecutionCount)
+	}
+	// TASK-390: daily cache sums feed the stacked tokens sparkline.
+	if days[0].CacheReadTokens != 90000 {
+		t.Errorf("CacheReadTokens = %d, want 90000", days[0].CacheReadTokens)
+	}
+	if days[0].CacheWriteTokens != 5000 {
+		t.Errorf("CacheWriteTokens = %d, want 5000", days[0].CacheWriteTokens)
 	}
 }
 

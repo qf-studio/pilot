@@ -73,7 +73,7 @@
       },
       "git-operations": {
         "label": "Git Operations",
-        "description": "Git command wrappers in executor \u2014 clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
+        "description": "Git command wrappers in executor — clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
         "related": [
           "executor"
         ],
@@ -133,7 +133,7 @@
       },
       "anthropic-api": {
         "label": "Anthropic API",
-        "description": "Direct Anthropic Messages API calls (x-api-key, max_tokens required) used by the bot module's llm.Client \u2014 distinct from the Claude Code subprocess the executor uses",
+        "description": "Direct Anthropic Messages API calls (x-api-key, max_tokens required) used by the bot module's llm.Client — distinct from the Claude Code subprocess the executor uses",
         "related": [
           "llm-integration",
           "claude-code-integration"
@@ -167,7 +167,7 @@
       },
       "doctor": {
         "label": "doctor",
-        "description": "pilot doctor health checks (internal/health) \u2014 presence-only today, target: live auth probes via Verifiable interface"
+        "description": "pilot doctor health checks (internal/health) — presence-only today, target: live auth probes via Verifiable interface"
       },
       "canary": {
         "label": "canary",
@@ -288,7 +288,7 @@
         "released": "v2.166.10-11"
       },
       "TASK-359": {
-        "title": "Daemon finalization hardening \u2014 Shapes A/B/C closure",
+        "title": "Daemon finalization hardening — Shapes A/B/C closure",
         "status": "planned",
         "priority": "P1",
         "file": ".agent/tasks/TASK-359-daemon-finalization-hardening.md",
@@ -333,7 +333,7 @@
         ],
         "created": "2026-07-05",
         "file": ".agent/tasks/archive/TASK-385-studio-sdk-v0260-github-surface.md",
-        "label": "studio-sdk v0.26.0 github poll/board/PR surface (studio-sdk#71) \u2014 unblocks M7 4b-4d",
+        "label": "studio-sdk v0.26.0 github poll/board/PR surface (studio-sdk#71) — unblocks M7 4b-4d",
         "priority": "P1",
         "status": "completed"
       },
@@ -378,7 +378,7 @@
       },
       "TASK-368": {
         "path": "/private/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-worktree-GH-3917-1783339382148946000/.agent/tasks/TASK-368-m7-github-cutover-phase4.md",
-        "title": "M7 Phase 4 \u2014 GitHub adapter \u2192 studio-sdk cutover (MANUAL)",
+        "title": "M7 Phase 4 — GitHub adapter → studio-sdk cutover (MANUAL)",
         "status": "unknown",
         "concepts": [
           "knowledge",
@@ -391,6 +391,18 @@
           "authentication",
           "testing",
           "workflow"
+        ]
+      },
+      "TASK-390": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/grot-dashboard-redesign/.agent/tasks/TASK-390-grot-dashboard-redesign.md",
+        "title": "Dashboard TUI redesign — grot design system",
+        "status": "unknown",
+        "concepts": [
+          "testing",
+          "context",
+          "deployment",
+          "api",
+          "knowledge"
         ]
       }
     },
@@ -450,7 +462,7 @@
       },
       "mem-006": {
         "type": "pattern",
-        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH\u2192PLAN\u2192IMPL\u2192VERIFY\u2192COMPLETE), and EXIT_SIGNAL for completion.",
+        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH→PLAN→IMPL→VERIFY→COMPLETE), and EXIT_SIGNAL for completion.",
         "concepts": [
           "executor",
           "navigator-integration"
@@ -502,7 +514,7 @@
       },
       "mem-011": {
         "type": "pitfall",
-        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure \u2014 reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
+        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure — reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
         "concepts": [
           "executor",
           "git-operations"
@@ -588,7 +600,7 @@
       },
       "mem-018": {
         "type": "learning",
-        "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output \u2014 recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
+        "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output — recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
         "concepts": [
           "claude-code-integration",
           "workflow-discipline"
@@ -611,7 +623,7 @@
       },
       "mem-020": {
         "type": "learning",
-        "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser \u2192 Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) \u2014 update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
+        "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser → Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) — update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
         "concepts": [
           "release",
           "autopilot"
@@ -622,7 +634,7 @@
       },
       "mem-021": {
         "type": "learning",
-        "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request \u2014 they loop to maxPages (N\u00d7pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
+        "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request — they loop to maxPages (N×pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
         "concepts": [
           "github-adapter",
           "testing"
@@ -633,7 +645,7 @@
       },
       "mem-022": {
         "type": "decision",
-        "summary": "Release pipeline is tag-only \u2014 goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
+        "summary": "Release pipeline is tag-only — goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
         "concepts": [
           "release"
         ],
@@ -680,7 +692,7 @@
       },
       "mem-026": {
         "type": "learning",
-        "summary": "The Pilot daemon's *finalization* path (push -> PR-create -> label) is the active reliability bottleneck \u2014 the *execution* path (Claude Code subprocess) is reliable. Studio-sdk extraction (PRs #28-#56, 2026-06-02/-03): 9/10 connectors shipped, but ~7/12 finalization runs needed manual recovery (Shape A stall-before-push), 2 hit a retry-race vs human recovery PRs (Shape B), 1 late-duplicate-PR (Shape C). The harness + review gates carried the outcome, not daemon finalization reliability. `no-decompose` label routes through the direct path (fatal error handling) instead of the epic path (warn-only) and was empirically reliable. Canonical fix: TASK-359 (3-layer plan: unified finalizeExecution MANUAL + 4 no-decompose Pilot issues for boundary fixes). RESOLUTION (2026-06-04): Shape A + C CLOSED & live-verified via TASK-359 Layer 1 (v2.166.16, studio-sdk #63/PR#64); Shape B (Layer 2b) + negative token-revoke shipped/unit-covered but not yet live-verified.",
+        "summary": "The Pilot daemon's *finalization* path (push -> PR-create -> label) is the active reliability bottleneck — the *execution* path (Claude Code subprocess) is reliable. Studio-sdk extraction (PRs #28-#56, 2026-06-02/-03): 9/10 connectors shipped, but ~7/12 finalization runs needed manual recovery (Shape A stall-before-push), 2 hit a retry-race vs human recovery PRs (Shape B), 1 late-duplicate-PR (Shape C). The harness + review gates carried the outcome, not daemon finalization reliability. `no-decompose` label routes through the direct path (fatal error handling) instead of the epic path (warn-only) and was empirically reliable. Canonical fix: TASK-359 (3-layer plan: unified finalizeExecution MANUAL + 4 no-decompose Pilot issues for boundary fixes). RESOLUTION (2026-06-04): Shape A + C CLOSED & live-verified via TASK-359 Layer 1 (v2.166.16, studio-sdk #63/PR#64); Shape B (Layer 2b) + negative token-revoke shipped/unit-covered but not yet live-verified.",
         "concepts": [
           "executor",
           "autopilot",
@@ -705,7 +717,7 @@
       },
       "mem-028": {
         "type": "learning",
-        "summary": "When grep for an alleged write API in internal/ returns zero, the root cause is external (config/another bot/GitHub workflow) \u2014 don't draft a Pilot fix",
+        "summary": "When grep for an alleged write API in internal/ returns zero, the root cause is external (config/another bot/GitHub workflow) — don't draft a Pilot fix",
         "concepts": [
           "workflow-discipline",
           "github-adapter"
@@ -717,7 +729,7 @@
       },
       "mem-029": {
         "type": "learning",
-        "summary": "For ad-hoc gh CLI writes to qf-studio (project board edits, etc.) use Pilot's PAT from ~/.pilot/config.yaml via GH_TOKEN env \u2014 OAuth refresh is silently blocked by SAML SSO",
+        "summary": "For ad-hoc gh CLI writes to qf-studio (project board edits, etc.) use Pilot's PAT from ~/.pilot/config.yaml via GH_TOKEN env — OAuth refresh is silently blocked by SAML SSO",
         "concepts": [
           "github-adapter",
           "doctor",
@@ -730,7 +742,7 @@
       },
       "mem-030": {
         "type": "pitfall",
-        "summary": "maybeCloseParentIssue trusted native sub-issue open-count alone; partial LinkSubIssue coverage makes count hit 0 while unlinked siblings are open \u2014 parent closes pilot-done with no PR-merge verification (GH-3513). Fixed PR #3527: native 0 must be confirmed by text search.",
+        "summary": "maybeCloseParentIssue trusted native sub-issue open-count alone; partial LinkSubIssue coverage makes count hit 0 while unlinked siblings are open — parent closes pilot-done with no PR-merge verification (GH-3513). Fixed PR #3527: native 0 must be confirmed by text search.",
         "concepts": [
           "autopilot",
           "epic-decomposition"
@@ -742,7 +754,7 @@
       },
       "mem-031": {
         "type": "pitfall",
-        "summary": "skipSupersededByParent superseded live children off parent.State==closed && pilot-done label \u2014 no merge verification; orphaned complete green PRs in GH-3513. Fixed PR #3527: open pilot/GH-N PR vetoes supersession.",
+        "summary": "skipSupersededByParent superseded live children off parent.State==closed && pilot-done label — no merge verification; orphaned complete green PRs in GH-3513. Fixed PR #3527: open pilot/GH-N PR vetoes supersession.",
         "concepts": [
           "autopilot",
           "poller",
@@ -756,7 +768,7 @@
       },
       "mem-032": {
         "type": "pitfall",
-        "summary": "inherited-spec:true children fetch the parent issue as their spec and re-implement the FULL feature \u2014 N redundant colliding PRs per epic (GH-3513). Fixed PR #3527 with a scope fence in subIssueBody(); sibling-branch PR base routing still unfixed.",
+        "summary": "inherited-spec:true children fetch the parent issue as their spec and re-implement the FULL feature — N redundant colliding PRs per epic (GH-3513). Fixed PR #3527 with a scope fence in subIssueBody(); sibling-branch PR base routing still unfixed.",
         "concepts": [
           "epic-decomposition",
           "executor"
@@ -782,7 +794,7 @@
       },
       "mem-034": {
         "type": "pitfall",
-        "summary": "Subprocess without cmd.Dir: getPostExecutionSummary ran git in the daemon's CWD and reported the wrong repo's HEAD as the commit SHA \u2014 ghost guard then killed real worker commits (TASK-320 false no-ops) or recorded wrong-repo completed SHAs (TASK-355). One bug, both incident families. Fix v2.186.2: worktree git harvest first, summary pinned to executionPath. Lesson: every executor exec.Command must set cmd.Dir; never ask an LLM for what git answers deterministically.",
+        "summary": "Subprocess without cmd.Dir: getPostExecutionSummary ran git in the daemon's CWD and reported the wrong repo's HEAD as the commit SHA — ghost guard then killed real worker commits (TASK-320 false no-ops) or recorded wrong-repo completed SHAs (TASK-355). One bug, both incident families. Fix v2.186.2: worktree git harvest first, summary pinned to executionPath. Lesson: every executor exec.Command must set cmd.Dir; never ask an LLM for what git answers deterministically.",
         "concepts": [
           "executor",
           "git-operations"
@@ -794,7 +806,7 @@
       },
       "mem-035": {
         "type": "learning",
-        "summary": "GH-201 'OAuth loop' ghost issues (#3562-64, #3576) were created by the TEST SUITE: TestCreateSubIssues_ProceedsWhenNoChildren drives CreateSubIssues past the dedup guard with fixture parent GH-201 and executionPath='' \u2014 createSubIssuesViaGitHub has no dryRun guard, so authed gh creates real issues; sibling tests spawn the real claude binary. Teammate/shared-PAT attribution was wrong: tests stamp the same autopilot-meta markers and bypass the DB (zero rows proves test path, not remote actor). Lessons: stub the exec boundary in tests; dryRun must guard every side-effecting path; verify the spawner not the signature. Fix: #3579.",
+        "summary": "GH-201 'OAuth loop' ghost issues (#3562-64, #3576) were created by the TEST SUITE: TestCreateSubIssues_ProceedsWhenNoChildren drives CreateSubIssues past the dedup guard with fixture parent GH-201 and executionPath='' — createSubIssuesViaGitHub has no dryRun guard, so authed gh creates real issues; sibling tests spawn the real claude binary. Teammate/shared-PAT attribution was wrong: tests stamp the same autopilot-meta markers and bypass the DB (zero rows proves test path, not remote actor). Lessons: stub the exec boundary in tests; dryRun must guard every side-effecting path; verify the spawner not the signature. Fix: #3579.",
         "concepts": [
           "executor",
           "testing",
@@ -824,7 +836,7 @@
       },
       "mem-037": {
         "type": "pitfall",
-        "summary": "Autopilot orphans the LAST epic child PRs: the epic's execution run owns child-PR merging, so children whose PRs are created late are left created-but-unmerged when the run ends. The standalone auto-merge loop won't reclaim them because their tracking issues are already CLOSED (it thinks the work is done) \u2014 so green/CLEAN child PRs sit with ZERO autopilot review/comment even under stage's require_approval:false + auto_merge:true + green test/lint. Epic stays OPEN+pilot-in-progress; any 'Blocked by: #<epic>' dependent is gated forever via poller hasPendingDependencies. Recover: merge the orphans in order yourself, then close the epic to release dependents. Late siblings often CONFLICT once one merges (same wiring) \u2014 close the conflicted PR and re-dispatch only its UNIQUE remainder vs updated main, don't hand-resolve in root. Observed 2026-06-26 epic #3665 (bot module): merged #3670/#3674 mid-run, orphaned #3678/#3679. TASK-359 finalization shape.",
+        "summary": "Autopilot orphans the LAST epic child PRs: the epic's execution run owns child-PR merging, so children whose PRs are created late are left created-but-unmerged when the run ends. The standalone auto-merge loop won't reclaim them because their tracking issues are already CLOSED (it thinks the work is done) — so green/CLEAN child PRs sit with ZERO autopilot review/comment even under stage's require_approval:false + auto_merge:true + green test/lint. Epic stays OPEN+pilot-in-progress; any 'Blocked by: #<epic>' dependent is gated forever via poller hasPendingDependencies. Recover: merge the orphans in order yourself, then close the epic to release dependents. Late siblings often CONFLICT once one merges (same wiring) — close the conflicted PR and re-dispatch only its UNIQUE remainder vs updated main, don't hand-resolve in root. Observed 2026-06-26 epic #3665 (bot module): merged #3670/#3674 mid-run, orphaned #3678/#3679. TASK-359 finalization shape.",
         "concepts": [
           "autopilot",
           "epic-decomposition",
@@ -839,7 +851,7 @@
       },
       "mem-038": {
         "type": "pattern",
-        "summary": "Bot module dual-path: fast conversational path (~1-2s, direct LLM via Responder) vs executor path (~15-30s, Claude Code worktree). Intents: greeting/chat/question/issue-intake \u2192 Responder; task/research/planning \u2192 executor. Fallback guarantee: Responder nil (bot disabled) \u2192 identical-to-before executor path. Rate limit via AllowMessage() before all dispatch. Voice seam: VoiceText merged into text when Text empty. Test-at-the-seam lesson: tests must cross adapter\u2192comms boundary (ref mem-036).",
+        "summary": "Bot module dual-path: fast conversational path (~1-2s, direct LLM via Responder) vs executor path (~15-30s, Claude Code worktree). Intents: greeting/chat/question/issue-intake → Responder; task/research/planning → executor. Fallback guarantee: Responder nil (bot disabled) → identical-to-before executor path. Rate limit via AllowMessage() before all dispatch. Voice seam: VoiceText merged into text when Text empty. Test-at-the-seam lesson: tests must cross adapter→comms boundary (ref mem-036).",
         "concepts": [
           "intent-routing",
           "executor",
@@ -852,7 +864,7 @@
       },
       "mem-039": {
         "type": "pitfall",
-        "summary": "Bot's direct LLM client (internal/llm/client.go) omitted required max_tokens and sent non-standard output_config{effort:low}, so every Anthropic Messages call 400'd ('max_tokens: Field required') and the bot replied 'Sorry, I couldn't process that.' Shipped GREEN because TestAnswer_RequestShape asserted output_config present and never checked max_tokens \u2014 the test encoded the bug. Diagnose request-shape bugs with curl (real key): code's request \u2192 400, +max_tokens/-output_config \u2192 200, in 2 calls. Fixed v2.200.1 (#3700): add max_tokens(2048), drop output_config, tests assert both. Lesson (again, see mem-036): assert the REQUIRED fields, not the optional ones.",
+        "summary": "Bot's direct LLM client (internal/llm/client.go) omitted required max_tokens and sent non-standard output_config{effort:low}, so every Anthropic Messages call 400'd ('max_tokens: Field required') and the bot replied 'Sorry, I couldn't process that.' Shipped GREEN because TestAnswer_RequestShape asserted output_config present and never checked max_tokens — the test encoded the bug. Diagnose request-shape bugs with curl (real key): code's request → 400, +max_tokens/-output_config → 200, in 2 calls. Fixed v2.200.1 (#3700): add max_tokens(2048), drop output_config, tests assert both. Lesson (again, see mem-036): assert the REQUIRED fields, not the optional ones.",
         "concepts": [
           "anthropic-api",
           "testing",
@@ -867,7 +879,7 @@
       },
       "mem-040": {
         "type": "pitfall",
-        "summary": "Daemon hot-upgrades to the latest GitHub RELEASE and re-execs (pid preserved \u2192 ps lstart looks unchanged while the on-disk binary swaps). A dev binary cp'd to ~/.local/bin/pilot reverts within ~20min to the last release. A fix merged to main is NOT in the running daemon until a release containing it is cut (autopilot shouldTriggerRelease gap). Observed 2026-06-26: 29MB dev fix at 12:32 reverted to 20.6MB v2.200.0 release by 12:52, bot kept failing. Durable fix: tag-driven release (mem-022) with the fix \u2192 pilot upgrade (prompts y/N) \u2192 restart. v2.200.1 held because it's the latest release. Confirm running binary via lsof txt + stat size + pilot version, not lstart alone.",
+        "summary": "Daemon hot-upgrades to the latest GitHub RELEASE and re-execs (pid preserved → ps lstart looks unchanged while the on-disk binary swaps). A dev binary cp'd to ~/.local/bin/pilot reverts within ~20min to the last release. A fix merged to main is NOT in the running daemon until a release containing it is cut (autopilot shouldTriggerRelease gap). Observed 2026-06-26: 29MB dev fix at 12:32 reverted to 20.6MB v2.200.0 release by 12:52, bot kept failing. Durable fix: tag-driven release (mem-022) with the fix → pilot upgrade (prompts y/N) → restart. v2.200.1 held because it's the latest release. Confirm running binary via lsof txt + stat size + pilot version, not lstart alone.",
         "concepts": [
           "hot-upgrade",
           "release",
@@ -877,13 +889,13 @@
         "confidence": 0.9,
         "severity": "medium",
         "created": "2026-06-26",
-        "incident": "2026-06-26: shipping the bot max_tokens fix \u2014 dev binary installs (12:32) auto-reverted to pre-fix v2.200.0 release (12:52); only cutting v2.200.1 and pilot-upgrading made the fix stick in the live daemon.",
+        "incident": "2026-06-26: shipping the bot max_tokens fix — dev binary installs (12:32) auto-reverted to pre-fix v2.200.0 release (12:52); only cutting v2.200.1 and pilot-upgrading made the fix stick in the live daemon.",
         "file": ".agent/knowledge/memories/pitfalls/bug_daemon_autoupgrade_reverts_dev_binary.md",
         "origin_task": "TASK-374"
       },
       "mem-041": {
         "type": "pitfall",
-        "summary": "LLM intent classifier was doubly broken so the bot misrouted open-ended input. (1) classifier.go sent output_config{effort} \u2192 Haiku 400 'does not support the effort parameter' \u2192 every Classify failed \u2192 silent regex fallback (same class as mem-039; a test asserted output_config present). (2) Prompt routed 'draw/outline/show' as code TASK \u2192 heavy executor + dangling tasks. Fixed v2.200.2 (#3703): drop output_config; add DELIVERABLE TEST (answer/diagram\u2192question/chat, change-code\u2192task, file-ticket\u2192issue_intake). Haiku now primary NL router, regex only guards /-commands. Validate classifier prompts via curl (TUI logs ungreppable). 8/8 live.",
+        "summary": "LLM intent classifier was doubly broken so the bot misrouted open-ended input. (1) classifier.go sent output_config{effort} → Haiku 400 'does not support the effort parameter' → every Classify failed → silent regex fallback (same class as mem-039; a test asserted output_config present). (2) Prompt routed 'draw/outline/show' as code TASK → heavy executor + dangling tasks. Fixed v2.200.2 (#3703): drop output_config; add DELIVERABLE TEST (answer/diagram→question/chat, change-code→task, file-ticket→issue_intake). Haiku now primary NL router, regex only guards /-commands. Validate classifier prompts via curl (TUI logs ungreppable). 8/8 live.",
         "concepts": [
           "intent-routing",
           "anthropic-api",
@@ -898,7 +910,7 @@
       },
       "mem-042": {
         "type": "pitfall",
-        "summary": "Bot answers/issues hit the WRONG repo via two traps. (1) Intake (comms.IssueCreator) resolves owner/repo from a SINGLE hardwired NewIssueCreator entry = cfg.Adapters.GitHub.Repo; resolveRepo falls to repos[0] for unmatched paths, so intake ALWAYS targets adapters.github.repo and /switch doesn't change it. (2) The per-context active project is in-memory and RESETS to default_project on every daemon restart, so Q&A answers about the wrong repo until re-/switch'd. Demo fix: point default_project AND adapters.github.repo at the same repo (+ project_board.enabled:false for label polling). Proper fix: NewIssueCreator entry per cfg.Projects + persist active project across restarts. Board-source repos also need intake\u2192board or label polling.",
+        "summary": "Bot answers/issues hit the WRONG repo via two traps. (1) Intake (comms.IssueCreator) resolves owner/repo from a SINGLE hardwired NewIssueCreator entry = cfg.Adapters.GitHub.Repo; resolveRepo falls to repos[0] for unmatched paths, so intake ALWAYS targets adapters.github.repo and /switch doesn't change it. (2) The per-context active project is in-memory and RESETS to default_project on every daemon restart, so Q&A answers about the wrong repo until re-/switch'd. Demo fix: point default_project AND adapters.github.repo at the same repo (+ project_board.enabled:false for label polling). Proper fix: NewIssueCreator entry per cfg.Projects + persist active project across restarts. Board-source repos also need intake→board or label polling.",
         "concepts": [
           "conversational-bot",
           "intent-routing",
@@ -938,7 +950,7 @@
         "confidence": 0.95,
         "severity": "high",
         "created": "2026-07-04",
-        "incident": "2026-07-03: daemon hot-upgraded to v2.201.2 at 12:50:23+02:00, then sat 7+ hours through v2.202.0-v2.207.0 with zero upgrade attempts (not failures \u2014 total silence) until a manual restart at 20:01.",
+        "incident": "2026-07-03: daemon hot-upgraded to v2.201.2 at 12:50:23+02:00, then sat 7+ hours through v2.202.0-v2.207.0 with zero upgrade attempts (not failures — total silence) until a manual restart at 20:01.",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_self_upgrade_requires_manual_keypress.md",
         "origin_task": "GH-3790-1"
       },
@@ -958,7 +970,7 @@
       },
       "mem-046": {
         "type": "pitfall",
-        "summary": "Autopilot's direct PR-close call sites (handleCIFailed iteration-limit/size-guard/main, handleReviewRequested iteration-limit/main) never posted a PR/issue comment or corrected issue labels \u2014 the only convergence point that could have was notifyExternalClose, whose pilot-done skip-guard (GH-2340) returned with zero comments when the issue already had pilot-done from an earlier, unrelated PR. Result: PR #3802 (fix for #3789) closed CI-red with zero explanation and #3789 kept pilot-done, making discarded work look shipped (TASK-382 D9). Fix (GH-3806): notifyExternalClose now always posts a PR comment (AddPRComment hits /issues/{prNumber}/comments, not /pulls/.../comments) + issue comment from prState.Error on every branch including both skip guards; close sites set prState.Error (specific reason) and new in-memory PRState.TerminalLabel (forces pilot-failed instead of pilot-retry-ready when terminal or superseded by a follow-up issue) instead of commenting inline.",
+        "summary": "Autopilot's direct PR-close call sites (handleCIFailed iteration-limit/size-guard/main, handleReviewRequested iteration-limit/main) never posted a PR/issue comment or corrected issue labels — the only convergence point that could have was notifyExternalClose, whose pilot-done skip-guard (GH-2340) returned with zero comments when the issue already had pilot-done from an earlier, unrelated PR. Result: PR #3802 (fix for #3789) closed CI-red with zero explanation and #3789 kept pilot-done, making discarded work look shipped (TASK-382 D9). Fix (GH-3806): notifyExternalClose now always posts a PR comment (AddPRComment hits /issues/{prNumber}/comments, not /pulls/.../comments) + issue comment from prState.Error on every branch including both skip guards; close sites set prState.Error (specific reason) and new in-memory PRState.TerminalLabel (forces pilot-failed instead of pilot-retry-ready when terminal or superseded by a follow-up issue) instead of commenting inline.",
         "concepts": [
           "autopilot"
         ],
@@ -1009,7 +1021,7 @@
       },
       "mem-050": {
         "type": "pattern",
-        "summary": "autopilot_pr_state rows are deleted on success; absence is not a wiring bug \u2014 executions table is the history",
+        "summary": "autopilot_pr_state rows are deleted on success; absence is not a wiring bug — executions table is the history",
         "file": ".agent/knowledge/memories/patterns/pattern_autopilot_pr_state_ephemeral.md",
         "concepts": [
           "autopilot"
@@ -1223,7 +1235,7 @@
       },
       "mem-066": {
         "type": "pitfall",
-        "summary": "Approval button taps silently dropped \u2014 send path worked, inbound dispatch never wired; partial-wiring class recurs",
+        "summary": "Approval button taps silently dropped — send path worked, inbound dispatch never wired; partial-wiring class recurs",
         "file": ".agent/knowledge/memories/pitfalls/bug_telegram_approval_callback_unwired.md",
         "concepts": [
           "autopilot",
@@ -1262,7 +1274,7 @@
       },
       "mem-069": {
         "type": "learning",
-        "summary": "Verify remote file state via gh api before authoring Pilot issues \u2014 stale local clone causes redundant issues",
+        "summary": "Verify remote file state via gh api before authoring Pilot issues — stale local clone causes redundant issues",
         "file": ".agent/knowledge/memories/learnings/feedback_check_remote_state.md",
         "concepts": [
           "workflow-discipline",
@@ -1300,7 +1312,7 @@
       },
       "mem-072": {
         "type": "learning",
-        "summary": "Org-level setting blocks Actions PR creation; GITHUB_TOKEN pushes do not chain workflows \u2014 diagnosis recipe",
+        "summary": "Org-level setting blocks Actions PR creation; GITHUB_TOKEN pushes do not chain workflows — diagnosis recipe",
         "file": ".agent/knowledge/memories/learnings/feedback_gh_actions_pr_create_perm.md",
         "concepts": [
           "release",
@@ -1351,7 +1363,7 @@
       },
       "mem-076": {
         "type": "learning",
-        "summary": "Stop hook requires StructuredOutput call with branch, commit, files, summary \u2014 binds every pilot-executor session",
+        "summary": "Stop hook requires StructuredOutput call with branch, commit, files, summary — binds every pilot-executor session",
         "file": ".agent/knowledge/memories/learnings/feedback_structured_output_hook.md",
         "concepts": [
           "executor",
@@ -1406,7 +1418,7 @@
       },
       "mem-080": {
         "type": "decision",
-        "summary": "Pilot is a Claude Code orchestration layer, not a replacement \u2014 infrastructure play for the Anthropic ecosystem",
+        "summary": "Pilot is a Claude Code orchestration layer, not a replacement — infrastructure play for the Anthropic ecosystem",
         "file": ".agent/knowledge/memories/decisions/strategy_pilot_positioning.md",
         "concepts": [
           "product-positioning",
@@ -1434,7 +1446,7 @@
       },
       "mem-082": {
         "type": "pitfall",
-        "summary": "Autopilot can be silently disabled at startup when a gate check fails without a log line \u2014 operators unaware execution is off",
+        "summary": "Autopilot can be silently disabled at startup when a gate check fails without a log line — operators unaware execution is off",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_silent_autopilot_gate_disable.md",
         "concepts": [
           "autopilot",
@@ -1462,7 +1474,7 @@
       },
       "mem-084": {
         "type": "pitfall",
-        "summary": "allChildrenDone() returned true for empty child set \u2014 vacuous truth tripped epic-complete exit with zero work done; require >=1 child",
+        "summary": "allChildrenDone() returned true for empty child set — vacuous truth tripped epic-complete exit with zero work done; require >=1 child",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_allchildrendone_vacuous_truth.md",
         "concepts": [
           "epic-decomposition",
@@ -1496,13 +1508,13 @@
         "confidence": 0.9,
         "created": "2026-07-06",
         "severity": "high",
-        "summary": "Extraction-era SDK ports go stale vs evolving in-tree code: SDK GetTagForSHA shipped bounded (20 tags) while in-tree moved to exhaustive pagination \u2014 would have stalled release draining. Caught by running the consumer test suite against the SDK client (TestHandleReleasing_ExhaustiveTagDrain). Before cutover: diff SDK methods against CURRENT in-tree source; typed-error/pagination/retry drift compiles fine and fails only behaviorally.",
+        "summary": "Extraction-era SDK ports go stale vs evolving in-tree code: SDK GetTagForSHA shipped bounded (20 tags) while in-tree moved to exhaustive pagination — would have stalled release draining. Caught by running the consumer test suite against the SDK client (TestHandleReleasing_ExhaustiveTagDrain). Before cutover: diff SDK methods against CURRENT in-tree source; typed-error/pagination/retry drift compiles fine and fails only behaviorally.",
         "type": "pitfall",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_sdk_ports_go_stale_vs_intree.md"
       },
       "mem-089": {
         "type": "pitfall",
-        "summary": "Epic parent's stuck-monitor entry freezes once sub-issue execution starts \u2014 false eviction on long sequential epics. executeSubIssuesTracked posted per-child progress to GitHub via UpdateIssueProgress, which never reaches the alerts engine, so the parent's taskLastProgress entry was touched once before the loop then frozen for the whole run. GH-4021: evicted with stuck_for=41m0s while sub-issue 2 was actively running. Fixed by calling r.reportProgress(parent.ID, ...) inside the loop per child (GH-4033, merged via 51fd3348).",
+        "summary": "Epic parent's stuck-monitor entry freezes once sub-issue execution starts — false eviction on long sequential epics. executeSubIssuesTracked posted per-child progress to GitHub via UpdateIssueProgress, which never reaches the alerts engine, so the parent's taskLastProgress entry was touched once before the loop then frozen for the whole run. GH-4021: evicted with stuck_for=41m0s while sub-issue 2 was actively running. Fixed by calling r.reportProgress(parent.ID, ...) inside the loop per child (GH-4033, merged via 51fd3348).",
         "path": "memories/pitfalls/mem-089.md",
         "confidence": 0.9,
         "concepts": [
@@ -1512,6 +1524,17 @@
         ],
         "created": "2026-07-07",
         "last_validated": "2026-07-07"
+      },
+      "mem-090": {
+        "type": "decision",
+        "summary": "Dashboard chrome delegates to grot pkg/tui (github.com/qf-studio/grot render + theme.Pilot) — one shared design system, imported not vendored (public v0.1.0, MIT, lipgloss-only). Glyph vocabulary replaces emoji on the TUI/daemon surface only; chat adapters + CLI subcommands untouched. Requires go >= 1.25. TASK-390.",
+        "path": "memories/decisions/decision_grot_design_system.md",
+        "confidence": 0.95,
+        "concepts": [
+          "dashboard",
+          "terminal-workflow"
+        ],
+        "created": "2026-07-08"
       }
     }
   },
@@ -2350,6 +2373,21 @@
       "from": "TASK-368",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-390",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "mem-090",
+      "to": "dashboard",
+      "type": "describes"
+    },
+    {
+      "from": "TASK-390",
+      "to": "mem-090",
+      "type": "related"
     }
   ],
   "concept_index": {
@@ -2379,12 +2417,14 @@
     "knowledge": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "deployment": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "authentication": [
       "TASK-386",
@@ -2393,17 +2433,20 @@
     "testing": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "api": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "context": [
       "TASK-386",
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-390"
     ],
     "markers": [
       "TASK-387",
@@ -2424,10 +2467,10 @@
       "TASK-368"
     ]
   },
-  "last_updated": "2026-07-06T12:16:33.258633+00:00",
+  "last_updated": "2026-07-08T14:48:17.163132+00:00",
   "stats": {
-    "total_nodes": 135,
-    "total_edges": 167,
-    "memory_count": 86
+    "total_nodes": 138,
+    "total_edges": 170,
+    "memory_count": 88
   }
 }

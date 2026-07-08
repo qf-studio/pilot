@@ -83,7 +83,7 @@ func discordPollerRegistration() PollerRegistration {
 					)
 				}
 			}()
-			fmt.Println("🎮 Discord bot started")
+			fmt.Println("● discord bot started")
 			logging.WithComponent("start").Info("Discord bot started")
 		},
 	}

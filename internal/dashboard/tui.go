@@ -3,7 +3,6 @@ package dashboard
 import (
 	"fmt"
 	"log/slog"
-	"math"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -13,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/qf-studio/grot/pkg/tui/render"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -26,25 +26,23 @@ const (
 
 // Metrics card dimensions
 const (
-	cardWidth      = 23 // 23*3 = 69 = panelTotalWidth (no gaps)
-	cardInnerWidth = 17 // cardWidth - 6 (border + 2-char padding each side)
-	cardGap        = 0  // no gap — cards fill full panel width
+	cardWidth = 23 // 23*3 = 69 = panelTotalWidth (no gaps)
 )
-
-// sparkBlocks maps normalized levels (0-8) to Unicode block elements for sparkline rendering.
-var sparkBlocks = []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
 
 // MetricsCardData holds aggregated metrics for the dashboard metrics cards.
 type MetricsCardData struct {
-	TotalTokens, InputTokens, OutputTokens   int
-	CacheReadTokens, CacheWriteTokens        int
-	TotalCostUSD, CostPerTask                float64
-	TotalTasks, Succeeded, Failed, Declined  int
+	TotalTokens, InputTokens, OutputTokens  int
+	CacheReadTokens, CacheWriteTokens       int
+	TotalCostUSD, CostPerTask               float64
+	TotalTasks, Succeeded, Failed, Declined int
 	// TASK-358: non-failure terminal outcomes, split out of "failed".
 	NoOp, Stalled, RateLimited, Infra, Skipped int
-	TokenHistory                               []int64   // 7 days
+	TokenHistory                               []int64   // 7 days, fresh (input+output)
+	CachedTokenHistory                         []int64   // 7 days, cache read+write
 	CostHistory                                []float64 // 7 days
 	TaskHistory                                []int     // 7 days
+	SuccessHistory                             []int     // 7 days
+	FailedHistory                              []int     // 7 days
 }
 
 // Styles (muted terminal aesthetic)
@@ -52,9 +50,6 @@ var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#7eb8da")) // steel blue
-
-	borderStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#3d4450")) // slate
 
 	statusRunningStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#7eb8da")) // steel blue
@@ -110,13 +105,6 @@ var (
 
 	warningStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#d4a054")) // amber
-
-	orangeBorderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#d4a054")) // amber
-
-	orangeLabelStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#d4a054")) // amber
 )
 
 // autopilotController is the subset of autopilot.Controller used by AutopilotPanel.
@@ -131,7 +119,6 @@ type autopilotController interface {
 type AutopilotPanel struct {
 	controller autopilotController
 	panelWidth int // dynamic panel width, set before View()
-	tick       int // increments per 1s animation tick, drives ◐ rotation
 }
 
 // NewAutopilotPanel creates an autopilot panel.
@@ -142,90 +129,51 @@ func NewAutopilotPanel(controller *autopilot.Controller) *AutopilotPanel {
 	return &AutopilotPanel{controller: controller, panelWidth: panelTotalWidth}
 }
 
-// SetTick updates the animation tick counter (called from the parent model's tickMsg handler).
-func (p *AutopilotPanel) SetTick(t int) { p.tick = t }
+// maxAutopilotRows caps how many PRs render as rows before collapsing to a
+// "+ N more" summary line.
+const maxAutopilotRows = 4
 
-// View renders the autopilot panel (GH-2620 variant A redesign).
-// Uses renderPanel so the card has the same 1-line top/bottom padding as QUEUE/HISTORY/LOGS.
-// Idle: 5 lines (border, empty, content, empty, border).
-// Active: 6 lines (+ PR identity + pipeline rail).
-// Failed: 7 lines (+ error reason on line 3).
+// View renders the autopilot panel in the history-row grammar: one line per
+// active PR — status glyph, #id, title, 5-cell lifecycle meter
+// (ci→rebase→merge→tag→release), stage label, age — plus a ↳ detail line
+// for retries/failures. The PR count renders as the border legend.
 func (p *AutopilotPanel) View() string {
 	tw := p.panelWidth
 	if tw < panelTotalWidth {
 		tw = panelTotalWidth
 	}
-	inner := tw - 4 // content width: tw minus 2 borders and 2 padding spaces
+	iw := tw - 4
 
 	if p.controller == nil {
-		return renderPanel("AUTOPILOT", "  Disabled", tw)
+		return renderPanel("autopilot", "  Disabled", tw)
 	}
 
 	prs := p.controller.GetActivePRs()
 	if len(prs) == 0 {
-		return renderPanel("AUTOPILOT", "  "+dimStyle.Render("idle · no active PR"), tw)
+		return renderPanel("autopilot", "  "+dimStyle.Render("idle · no active PR"), tw)
 	}
 
-	pr := prs[0]
-
-	// Line 1: "  #NNNN  {title}{padding}{age}"
-	age := p.formatDuration(time.Since(pr.CreatedAt))
-	prefix1 := fmt.Sprintf("  #%d  ", pr.PRNumber)
-	prefix1Len := lipgloss.Width(prefix1)
-	ageLen := len(age)
-	titleMaxLen := inner - prefix1Len - ageLen - 1 // 1 space before age
-	if titleMaxLen < 5 {
-		titleMaxLen = 5
-	}
-	title := truncateString(pr.PRTitle, titleMaxLen)
-	pad1 := inner - prefix1Len - len(title) - ageLen
-	if pad1 < 1 {
-		pad1 = 1
-	}
-	line1 := prefix1 + title + strings.Repeat(" ", pad1) + age
-
-	// Line 2: "  {rail}{padding}{N/M[ ⟲]}"
 	cfg := p.controller.Config()
 	maxFailures := cfg.MaxFailures
 	if maxFailures <= 0 {
 		maxFailures = 5
 	}
-	failures := p.controller.GetPRFailures(pr.PRNumber)
 
-	rail := renderAutopilotRail(pr.Stage, pr.CIStatus, p.tick)
-
-	retryNum := fmt.Sprintf("%d/%d", failures, maxFailures)
-	var retryStr string
-	if failures > 0 {
-		retryStr = dimStyle.Render(retryNum) + " " + warningStyle.Render("⟲")
-	} else {
-		retryStr = dimStyle.Render(retryNum) + " "
-	}
-
-	pad2 := inner - 2 - lipgloss.Width(rail) - lipgloss.Width(retryStr)
-	if pad2 < 1 {
-		pad2 = 1
-	}
-	line2 := "  " + rail + strings.Repeat(" ", pad2) + retryStr
-
-	lines := []string{line1, line2}
-
-	// Line 3 (conditional): "  ↳ {truncated error}" — only on failure with message
-	if pr.Stage == autopilot.StageFailed && pr.Error != "" {
-		const errPrefix = "  ↳ "
-		errMax := inner - len(errPrefix)
-		if errMax < 5 {
-			errMax = 5
+	var lines []string
+	for i, pr := range prs {
+		if i == maxAutopilotRows {
+			lines = append(lines, "  "+dimStyle.Render(fmt.Sprintf("+ %d more", len(prs)-maxAutopilotRows)))
+			break
 		}
-		lines = append(lines, errPrefix+truncateString(pr.Error, errMax))
+		lines = append(lines, renderAutopilotRow(pr, p.controller.GetPRFailures(pr.PRNumber), maxFailures, iw)...)
 	}
 
-	// Overflow: additional active PRs
-	if len(prs) > 1 {
-		lines = append(lines, fmt.Sprintf("  + %d more PR(s)", len(prs)-1))
+	count := fmt.Sprintf("%d prs", len(prs))
+	if len(prs) == 1 {
+		count = "1 pr"
 	}
-
-	return renderPanel("AUTOPILOT", strings.Join(lines, "\n"), tw)
+	legend := statusRunningStyle.Render("●") + " " + dimStyle.Render(count)
+	return renderPanelInfo("autopilot", legend, strings.Join(lines, "\n"), tw)
 }
 
 // pipelineStagePosition maps a PRStage to its 0-based position in the 5-node rail.
@@ -248,50 +196,75 @@ func pipelineStagePosition(stage autopilot.PRStage) int {
 	return 0
 }
 
-// renderAutopilotRail renders the 5-node pipeline rail with glyph-per-node status.
-// Glyphs: ✓ done (sage), ◐◓◑◒ in-progress animated (steel blue), ○ pending (gray), ✗ failed (rose).
-// tick drives the spinner rotation; ciStatus allows the ci node to show ✗ independently of stage.
-// Format example for stage=releasing:
+// autopilotNodes are the 5 lifecycle stages the meter and label measure.
+var autopilotNodes = [...]string{"ci", "rebase", "merge", "tag", "release"}
+
+// autopilotStageLabelWidth fits the longest node name ("release").
+const autopilotStageLabelWidth = 7
+
+// renderAutopilotRow renders one active-PR line (+ optional ↳ detail line)
+// in the history-row grammar:
 //
-//	✓ ci ── ✓ rebase ── ✓ merge ── ✓ tag ── ◐ release
-func renderAutopilotRail(stage autopilot.PRStage, ciStatus autopilot.CIStatus, tick int) string {
-	nodes := []string{"ci", "rebase", "merge", "tag", "release"}
-	spinner := []rune{'◐', '◓', '◑', '◒'}
-	pos := pipelineStagePosition(stage)
-
-	var sb strings.Builder
-	for i, name := range nodes {
-		var glyph string
-		var glyphStyle, nameStyle lipgloss.Style
-
-		switch {
-		case i == 0 && ciStatus == autopilot.CIFailure:
-			// CI check failed — show ✗ on the ci node regardless of current stage
-			glyph = "✗"
-			glyphStyle, nameStyle = statusFailedStyle, statusFailedStyle
-		case stage == autopilot.StageFailed && i == pos:
-			// Pipeline failed at current position — show ✗
-			glyph = "✗"
-			glyphStyle, nameStyle = statusFailedStyle, statusFailedStyle
-		case i < pos:
-			glyph = "✓"
-			glyphStyle, nameStyle = statusCompletedStyle, statusCompletedStyle
-		case i == pos:
-			glyph = string(spinner[tick%4])
-			glyphStyle, nameStyle = statusRunningStyle, titleStyle
-		default:
-			glyph = "○"
-			glyphStyle, nameStyle = dimStyle, dimStyle
-		}
-
-		sb.WriteString(glyphStyle.Render(glyph))
-		sb.WriteString(" ")
-		sb.WriteString(nameStyle.Render(name))
-		if i < len(nodes)-1 {
-			sb.WriteString(dimStyle.Render(" ── "))
-		}
+//	  ● #4054   fix(executor): skip decompos…  ■■□□□ merge      2m
+//	    ↳ ⟲ retry 2/3 · TestFoo failed · linux-amd64
+//
+// indent(2) + glyph(1) + sp(1) + id(6) + sp(2) + title(flex) + sp(2) +
+// meter(5) + sp(1) + stage(7) + sp(2) + age(6) = iw
+// Glyphs: ✗ pipeline failed, ⟲ retrying (CI failure or prior failures),
+// ● climbing. Meter color follows: rose / amber / accent.
+func renderAutopilotRow(pr *autopilot.PRState, failures, maxFailures, iw int) []string {
+	pos := pipelineStagePosition(pr.Stage)
+	label := autopilotNodes[pos]
+	if pr.Stage == autopilot.StageFailed {
+		label = "failed"
 	}
-	return sb.String()
+
+	glyph, glyphStyle, hex := "●", statusRunningStyle, grotTheme.Accent
+	switch {
+	case pr.Stage == autopilot.StageFailed:
+		glyph, glyphStyle, hex = "✗", statusFailedStyle, grotTheme.Error
+	case pr.CIStatus == autopilot.CIFailure || failures > 0:
+		glyph, glyphStyle, hex = "⟲", warningStyle, grotTheme.Warning
+	}
+
+	titleWidth := iw - 2 - 1 - 1 - 6 - 2 - 2 - len(autopilotNodes) - 1 - autopilotStageLabelWidth - 2 - 6
+	if titleWidth < 10 {
+		titleWidth = 10
+	}
+
+	row := fmt.Sprintf("  %s %-6s  %s  %s %s  %s",
+		glyphStyle.Render(glyph),
+		fmt.Sprintf("#%d", pr.PRNumber),
+		padOrTruncate(pr.PRTitle, titleWidth),
+		segmentMeter(pos, len(autopilotNodes), len(autopilotNodes), hex),
+		dimStyle.Render(padOrTruncate(label, autopilotStageLabelWidth)),
+		dimStyle.Render(fmt.Sprintf("%6s", formatDurationShort(time.Since(pr.CreatedAt)))),
+	)
+	lines := []string{row}
+
+	// Detail line: retry progress (amber, only once failures exist — clean
+	// runs carry no retry chrome) and/or the failure reason.
+	detail := ""
+	budget := iw - 6 // indent(4) + "↳ "
+	if failures > 0 {
+		retry := fmt.Sprintf("⟲ retry %d/%d", failures, maxFailures)
+		detail = warningStyle.Render(retry)
+		budget -= lipgloss.Width(retry)
+	}
+	if pr.Stage == autopilot.StageFailed && pr.Error != "" {
+		if detail != "" {
+			detail += dimStyle.Render(" · ")
+			budget -= 3
+		}
+		if budget < 5 {
+			budget = 5
+		}
+		detail += dimStyle.Render(truncateString(pr.Error, budget))
+	}
+	if detail != "" {
+		lines = append(lines, "    "+dimStyle.Render("↳ ")+detail)
+	}
+	return lines
 }
 
 // formatDurationShort formats a duration compactly (e.g., "2m", "1h30m").
@@ -308,11 +281,6 @@ func formatDurationShort(d time.Duration) string {
 		return fmt.Sprintf("%dh", hours)
 	}
 	return fmt.Sprintf("%dh%dm", hours, mins)
-}
-
-// formatDuration wraps formatDurationShort for AutopilotPanel methods.
-func (p *AutopilotPanel) formatDuration(d time.Duration) string {
-	return formatDurationShort(d)
 }
 
 // truncateString truncates a string to maxLen, adding "..." if truncated.
@@ -360,12 +328,12 @@ type CompletedTask struct {
 	// PeakRSSMB is the peak subprocess RSS in MiB from the RSS sampler. GH-3028.
 	// Zero when the sampler had no data (pre-3028 executions, non-Linux/darwin).
 	PeakRSSMB int
-	// StageStrip is a pipeline-progress fraction (e.g. "4/7 ✗ ci_failed") built
-	// from the execution's execution_events timeline (GH-3849; fraction format
-	// TASK-383). Empty when the task wasn't hydrated from the store (e.g.
-	// AddCompletedTask callers), in which case the card falls back to the
-	// plain status icon.
-	StageStrip string
+	// Stage is the pipeline-progress summary built from the execution's
+	// execution_events timeline (GH-3849; structured for the grot segment
+	// meter). Zero-value (Known=false) when the task wasn't hydrated from
+	// the store (e.g. AddCompletedTask callers) — the ladder renders as an
+	// empty track in that case.
+	Stage StageInfo
 }
 
 // UpdateInfo contains information about an available update
@@ -649,7 +617,7 @@ func (m *Model) hydrateFromStore() {
 			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 			CompletedAt: completedAt,
 			PeakRSSMB:   exec.PeakRSSMB,
-			StageStrip:  buildStageStrip(events, status == "failed"),
+			Stage:       buildStageInfo(events, status == "failed"),
 		})
 	}
 
@@ -699,14 +667,20 @@ func (m *Model) loadMetricsHistory() {
 
 	// Fill 7-day arrays oldest→newest (left→right in sparkline)
 	m.metricsCard.TokenHistory = make([]int64, 7)
+	m.metricsCard.CachedTokenHistory = make([]int64, 7)
 	m.metricsCard.CostHistory = make([]float64, 7)
 	m.metricsCard.TaskHistory = make([]int, 7)
+	m.metricsCard.SuccessHistory = make([]int, 7)
+	m.metricsCard.FailedHistory = make([]int, 7)
 	for i := 0; i < 7; i++ {
 		day := now.AddDate(0, 0, -6+i).Format("2006-01-02")
 		if dm, ok := byDate[day]; ok {
 			m.metricsCard.TokenHistory[i] = dm.TotalTokens
+			m.metricsCard.CachedTokenHistory[i] = dm.CacheReadTokens + dm.CacheWriteTokens
 			m.metricsCard.CostHistory[i] = dm.TotalCostUSD
 			m.metricsCard.TaskHistory[i] = dm.ExecutionCount
+			m.metricsCard.SuccessHistory[i] = dm.SuccessCount
+			m.metricsCard.FailedHistory[i] = dm.FailedCount
 		}
 	}
 }
@@ -753,6 +727,11 @@ func (m *Model) SetMetricsScopePath(path string) {
 // RenderBannerForTest exposes renderBanner for cross-package tests
 // (cmd/pilot verifies applyDashboardBannerMeta wiring end-to-end).
 func (m Model) RenderBannerForTest() string { return m.renderBanner() }
+
+// AdapterLegendForTest exposes the queue-panel adapter legend for the same
+// cross-package wiring tests — adapter chips moved out of the banner into
+// the queue border legend in the grot redesign (TASK-390).
+func (m Model) AdapterLegendForTest() string { return buildAdapterLegend(m.bannerAdapters) }
 
 // AdapterStatus describes a configured adapter for the banner status row.
 // Active=true when the adapter was started this session (flag passed); false
@@ -893,7 +872,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 				completedAt = *exec.CompletedAt
 			}
 			// GH-3849: fetched once per periodic refresh (every 5th tick), not
-			// per render frame — View() reads the cached CompletedTask.StageStrip.
+			// per render frame — View() reads the cached CompletedTask.Stage.
 			events, err := store.ListExecutionEvents(exec.ID)
 			if err != nil {
 				slog.Warn("store refresh: failed to load execution events", slog.Any("error", err), slog.String("execution_id", exec.ID))
@@ -905,7 +884,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 				CompletedAt: completedAt,
 				PeakRSSMB:   exec.PeakRSSMB,
-				StageStrip:  buildStageStrip(events, status == "failed"),
+				Stage:       buildStageInfo(events, status == "failed"),
 			})
 		}
 
@@ -1058,9 +1037,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sparklineTick = !m.sparklineTick
 		m.shimmerTick++
 		m.dbSyncTick++
-		if m.autopilotPanel != nil {
-			m.autopilotPanel.SetTick(m.autopilotPanel.tick + 1)
-		}
 		// GH-2248: Re-sync history and metrics from SQLite every 5 seconds
 		// so external DB changes (orphan cleanup, manual edits) are reflected.
 		if m.store != nil && m.dbSyncTick%5 == 0 {
@@ -1269,22 +1245,6 @@ func (m Model) View() string {
 	return result
 }
 
-// renderBanner returns the avionics banner: 3 content rows wrapped with inner
-// padding rows for breathing space.
-//
-//	╭─ PILOT ──────────────────────────────────────────────────────────╮
-//	│                                                                   │
-//	│ 1636/  PILOT v2.103.0      ENV STAGE      MODEL OPUS-4-7 / SONNET │
-//	│                                                                   │
-//	│ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
-//	│                                                                   │
-//	│ DAEMON ●  GH ●  TG ●  SLACK ○  DISCORD ○      UP 4m 12s  16:36 UTC│
-//	│                                                                   │
-//	╰───────────────────────────────────────────────────────────────────╯
-//
-// Adapter dots: ● filled (statusRunningStyle) when active this session,
-// ○ empty (dimStyle) when configured but not flagged. Adapters with no
-// config are not present in m.bannerAdapters and don't render at all.
 // pilotLogo is the ASCII art shown during splash boot.
 const pilotLogo = `
    ██████╗ ██╗██╗      ██████╗ ████████╗
@@ -1391,18 +1351,20 @@ func splashAdapterList(adapters []AdapterStatus) string {
 	return strings.Join(parts, dimStyle.Render(" · "))
 }
 
+// renderBanner returns the grot-style one-line header — the exact grammar of
+// the grot gallery header (bold accent wordmark, dim ·-separated segments),
+// with live status right-aligned:
+//
+//	pilot ● · v2.233.0 · stage · opus/sonnet           up 4m · 16:36 utc
+//
+// The dot after the wordmark is the daemon liveness mark; it pulses with the
+// animation tick. Adapter status lives in the queue panel border legend
+// (buildAdapterLegend), not in the header.
 func (m Model) renderBanner() string {
 	tw := m.effectivePanelTotalWidth()
-	// Match the 3-space inner padding other panels use (e.g. AUTOPILOT, QUEUE).
-	// buildContentLine reserves "│ " on each side (2 chars), so the content
-	// receives tw - 4 cells. Reserving 2 more inside gives a 3-space gutter.
-	const innerGutter = 2
-	w := tw - 4 - innerGutter*2 // usable content width inside the gutter
 
-	// --- Line 1: code/  PILOT vX.Y.Z   ENV xxx   MODEL plan / exec
 	// Strip dev suffix (e.g. "-4-g14764db1-dirty") so the banner shows the
-	// clean release version. The full SHA still appears in the session code
-	// prefix, so no information is lost.
+	// clean release version.
 	ver := m.version
 	if idx := strings.Index(ver, "-"); idx > 0 {
 		ver = ver[:idx]
@@ -1411,191 +1373,58 @@ func (m Model) renderBanner() string {
 		ver = "v" + ver
 	}
 
-	leftPart := labelStyle.Render(ver)
-
-	envSeg := ""
-	if m.envName != "" {
-		envSeg = dimStyle.Render("ENV") + " " + statusRunningStyle.Render(strings.ToUpper(m.envName))
+	dot := daemonDotBright.Render("●")
+	if !m.sparklineTick {
+		dot = daemonDotDim.Render("●")
 	}
 
-	modelSeg := ""
-	if m.modelStack != "" {
-		modelSeg = dimStyle.Render("MODEL") + " " + labelStyle.Render(m.modelStack)
-	}
-
-	line1 := joinSegmentsSpaced(w, leftPart, envSeg, modelSeg)
-
-	// --- Line 2: tick separator
-	line2 := buildTickSeparator(w)
-
-	// --- Line 3: adapter chips (left), uptime + clock (right)
-	upStr := ""
+	sep := dimStyle.Render(" · ")
+	right := ""
 	if !m.startTime.IsZero() {
-		upStr = dimStyle.Render("UP") + " " + labelStyle.Render(formatDurationShort(time.Since(m.startTime)))
+		right = dimStyle.Render("up ") + labelStyle.Render(formatDurationShort(time.Since(m.startTime))) + sep
 	}
-	clockStr := dimStyle.Render(time.Now().UTC().Format("15:04") + " UTC")
-	rightPart := clockStr
-	if upStr != "" {
-		rightPart = upStr + "  " + clockStr
+	right += dimStyle.Render(time.Now().UTC().Format("15:04")+" utc") + " "
+
+	// Identity segments append only while they fit next to the right cluster:
+	// narrow terminals drop env then model — never the wordmark/version.
+	budget := tw - lipgloss.Width(right) - 1
+	left := grotTheme.AccentStyle().Bold(true).Render(" pilot") + " " + dot + sep + labelStyle.Render(ver)
+	var extras []string
+	if m.envName != "" {
+		extras = append(extras, statusRunningStyle.Render(strings.ToLower(m.envName)))
 	}
-
-	// Available room for chips = inner width minus right side and a small gap.
-	chipsBudget := w - lipgloss.Width(rightPart) - 2
-
-	chipsStr := buildAdapterChipsRow(m.bannerAdapters, chipsBudget)
-
-	line3 := padLeftRightLine(w, chipsStr, rightPart)
-
-	// Wrap each line with the inner gutter so the banner aligns with sibling
-	// panels (which start their content 3 chars in from the border).
-	gutter := strings.Repeat(" ", innerGutter)
-	wrap := func(s string) string { return gutter + s + gutter }
-
-	pad := buildEmptyLine(tw)
-	var lines []string
-	lines = append(lines, buildTopBorder("PILOT", tw))
-	lines = append(lines, pad)
-	lines = append(lines, buildContentLine(wrap(line1), tw))
-	lines = append(lines, pad)
-	lines = append(lines, buildContentLine(wrap(line2), tw))
-	lines = append(lines, pad)
-	lines = append(lines, buildContentLine(wrap(line3), tw))
-	lines = append(lines, pad)
-	lines = append(lines, buildBottomBorder(tw))
-	return strings.Join(lines, "\n")
-}
-
-// buildAdapterChipsRow packs DAEMON + per-adapter chips into a row that fits
-// within `budget` visual chars. Strategy:
-//  1. Always include "DAEMON ●".
-//  2. Add active adapters first (●, full name).
-//  3. Add inactive adapters next (○, full name) until budget is reached.
-//  4. If inactive adapters remain that didn't fit, append "+N idle" summary.
-func buildAdapterChipsRow(adapters []AdapterStatus, budget int) string {
-	const sep = "  "
-
-	type chipEntry struct {
-		render   string
-		inactive bool
+	if m.modelStack != "" {
+		extras = append(extras, labelStyle.Render(strings.ToLower(m.modelStack)))
 	}
-
-	daemon := chipEntry{render: dimStyle.Render("DAEMON") + " " + statusRunningStyle.Render("●")}
-	chips := []chipEntry{daemon}
-
-	for _, a := range adapters {
-		if !a.Active {
-			continue
-		}
-		chips = append(chips, chipEntry{
-			render: dimStyle.Render(strings.ToUpper(a.Name)) + " " + statusRunningStyle.Render("●"),
-		})
-	}
-	for _, a := range adapters {
-		if a.Active {
-			continue
-		}
-		chips = append(chips, chipEntry{
-			render:   dimStyle.Render(strings.ToUpper(a.Name)) + " " + dimStyle.Render("○"),
-			inactive: true,
-		})
-	}
-
-	// First pass: include chips greedily until budget runs out.
-	included := []chipEntry{}
-	used := 0
-	for i, c := range chips {
-		extra := lipgloss.Width(c.render)
-		if i > 0 {
-			extra += lipgloss.Width(sep)
-		}
-		if used+extra > budget {
+	for _, seg := range extras {
+		if lipgloss.Width(left)+lipgloss.Width(sep)+lipgloss.Width(seg) > budget {
 			break
 		}
-		included = append(included, c)
-		used += extra
+		left += sep + seg
 	}
 
-	skippedInactive := 0
-	for i := len(included); i < len(chips); i++ {
-		if chips[i].inactive {
-			skippedInactive++
-		}
-	}
-
-	// If we dropped any inactive chips, append a "+N idle" summary, dropping
-	// trailing inactive chips as needed to make room (and updating the count).
-	if skippedInactive > 0 {
-		for {
-			summary := dimStyle.Render(fmt.Sprintf("+%d idle", skippedInactive))
-			cost := lipgloss.Width(sep) + lipgloss.Width(summary)
-			if used+cost <= budget {
-				included = append(included, chipEntry{render: summary})
-				break
-			}
-			// No room — drop trailing chip. If it was inactive, bump the count.
-			if len(included) <= 1 {
-				break // can't drop DAEMON
-			}
-			drop := included[len(included)-1]
-			included = included[:len(included)-1]
-			used -= lipgloss.Width(drop.render) + lipgloss.Width(sep)
-			if drop.inactive {
-				skippedInactive++
-			}
-		}
-	}
-
-	parts := make([]string, 0, len(included))
-	for _, c := range included {
-		parts = append(parts, c.render)
-	}
-	return strings.Join(parts, sep)
+	return padLeftRightLine(tw, left, right)
 }
 
-// joinSegmentsSpaced packs leading + middle + trailing segments into a row of
-// inner width w with the leading segment left-aligned, trailing right-aligned,
-// and middle segments distributed in between with even spacing. Empty segments
-// are skipped.
-func joinSegmentsSpaced(w int, segs ...string) string {
-	var nonEmpty []string
-	for _, s := range segs {
-		if s != "" {
-			nonEmpty = append(nonEmpty, s)
+// buildAdapterLegend renders adapter status in the grot border-legend grammar
+// (dot before label, two-space separated): ● gh  ● tg  ○ 6 idle.
+// Active adapters are named; idle ones (configured but not running) collapse
+// to a count — they are config facts, not live status. The daemon itself has
+// no entry: its liveness mark is the wordmark dot in renderBanner.
+func buildAdapterLegend(adapters []AdapterStatus) string {
+	segs := make([]string, 0, len(adapters)+1)
+	idle := 0
+	for _, a := range adapters {
+		if !a.Active {
+			idle++
+			continue
 		}
+		segs = append(segs, statusRunningStyle.Render("●")+" "+dimStyle.Render(strings.ToLower(a.Name)))
 	}
-	if len(nonEmpty) == 0 {
-		return strings.Repeat(" ", w)
+	if idle > 0 {
+		segs = append(segs, dimStyle.Render(fmt.Sprintf("○ %d idle", idle)))
 	}
-	if len(nonEmpty) == 1 {
-		return padTo(nonEmpty[0], w)
-	}
-
-	// Total visual width of segments
-	used := 0
-	for _, s := range nonEmpty {
-		used += lipgloss.Width(s)
-	}
-	gaps := len(nonEmpty) - 1
-	free := w - used
-	if free < gaps {
-		// Not enough room — fall back to single-space joins.
-		return padTo(strings.Join(nonEmpty, " "), w)
-	}
-	per := free / gaps
-	rem := free % gaps
-
-	var sb strings.Builder
-	for i, s := range nonEmpty {
-		sb.WriteString(s)
-		if i < gaps {
-			extra := 0
-			if i < rem {
-				extra = 1
-			}
-			sb.WriteString(strings.Repeat(" ", per+extra))
-		}
-	}
-	return sb.String()
+	return strings.Join(segs, "  ")
 }
 
 // padLeftRightLine packs left content left-aligned and right content
@@ -1621,14 +1450,6 @@ func padTo(s string, w int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", w-visual)
-}
-
-// buildTickSeparator builds a solid horizontal rule of width w using "─".
-func buildTickSeparator(w int) string {
-	if w <= 0 {
-		return ""
-	}
-	return dimStyle.Render(strings.Repeat("─", w))
 }
 
 // renderDashboard builds the left-side dashboard column (all existing panels).
@@ -1710,138 +1531,6 @@ func (m Model) renderHelp() string {
 	return helpStyle.Render(help)
 }
 
-// renderPanel builds a panel manually with guaranteed width.
-// tw specifies the total visual width including borders.
-// Structure: ╭─ TITLE ─...─╮ / │ (space) content (space) │ / ╰─...─╯
-func renderPanel(title string, content string, tw int) string {
-	var lines []string
-
-	// Top border: ╭─ TITLE ─────────────────────────────────────────────────────╮
-	lines = append(lines, buildTopBorder(title, tw))
-
-	// Empty line padding
-	lines = append(lines, buildEmptyLine(tw))
-
-	// Content lines
-	for _, line := range strings.Split(content, "\n") {
-		lines = append(lines, buildContentLine(line, tw))
-	}
-
-	// Empty line padding
-	lines = append(lines, buildEmptyLine(tw))
-
-	// Bottom border
-	lines = append(lines, buildBottomBorder(tw))
-
-	return strings.Join(lines, "\n")
-}
-
-// buildTopBorder creates: ╭─ TITLE ─────...─────╮ with exact tw width
-func buildTopBorder(title string, tw int) string {
-	// Characters: ╭ (1) + ─ (1) + space (1) + TITLE + space (1) + dashes + ╮ (1)
-	titleUpper := strings.ToUpper(title)
-	prefix := "╭─ "
-	prefixWidth := lipgloss.Width(prefix + titleUpper + " ")
-
-	// Calculate dashes needed (each ─ is 1 visual char)
-	dashCount := tw - prefixWidth - 1 // -1 for ╮
-	if dashCount < 0 {
-		dashCount = 0
-	}
-
-	// Style border chars dim, title bright
-	return borderStyle.Render(prefix) + labelStyle.Render(titleUpper) + borderStyle.Render(" "+strings.Repeat("─", dashCount)+"╮")
-}
-
-// buildBottomBorder creates: ╰─────────────────────────────────────────────────╯
-func buildBottomBorder(tw int) string {
-	// ╰ + dashes + ╯
-	dashCount := tw - 2
-	line := "╰" + strings.Repeat("─", dashCount) + "╯"
-	return borderStyle.Render(line)
-}
-
-// buildEmptyLine creates: │                                                                 │
-func buildEmptyLine(tw int) string {
-	// │ + spaces + │
-	spaceCount := tw - 2
-	border := borderStyle.Render("│")
-	return border + strings.Repeat(" ", spaceCount) + border
-}
-
-// buildContentLine creates: │ (space) content padded/truncated (space) │
-func buildContentLine(content string, tw int) string {
-	// Available width for content = tw - 4 (│ + space + space + │)
-	contentWidth := tw - 4
-
-	// Pad or truncate content to exact width
-	adjusted := padOrTruncate(content, contentWidth)
-
-	// Only style borders, not content
-	border := borderStyle.Render("│")
-	return border + " " + adjusted + " " + border
-}
-
-// renderOrangePanel renders a panel with orange borders and title (for update notifications)
-func renderOrangePanel(title string, content string, tw int) string {
-	var lines []string
-
-	// Top border
-	lines = append(lines, buildOrangeTopBorder(title, tw))
-
-	// Empty line padding
-	lines = append(lines, buildOrangeEmptyLine(tw))
-
-	// Content lines
-	for _, line := range strings.Split(content, "\n") {
-		lines = append(lines, buildOrangeContentLine(line, tw))
-	}
-
-	// Empty line padding
-	lines = append(lines, buildOrangeEmptyLine(tw))
-
-	// Bottom border
-	lines = append(lines, buildOrangeBottomBorder(tw))
-
-	return strings.Join(lines, "\n")
-}
-
-// buildOrangeTopBorder creates orange top border: ╭─ TITLE ─────...─────╮
-func buildOrangeTopBorder(title string, tw int) string {
-	titleUpper := strings.ToUpper(title)
-	prefix := "╭─ "
-	prefixWidth := lipgloss.Width(prefix + titleUpper + " ")
-
-	dashCount := tw - prefixWidth - 1
-	if dashCount < 0 {
-		dashCount = 0
-	}
-
-	return orangeBorderStyle.Render(prefix) + orangeLabelStyle.Render(titleUpper) + orangeBorderStyle.Render(" "+strings.Repeat("─", dashCount)+"╮")
-}
-
-// buildOrangeBottomBorder creates orange bottom border: ╰─────────────────────────────────────────────────╯
-func buildOrangeBottomBorder(tw int) string {
-	dashCount := tw - 2
-	line := "╰" + strings.Repeat("─", dashCount) + "╯"
-	return orangeBorderStyle.Render(line)
-}
-
-// buildOrangeEmptyLine creates orange bordered empty line: │                                                                 │
-func buildOrangeEmptyLine(tw int) string {
-	spaceCount := tw - 2
-	border := orangeBorderStyle.Render("│")
-	return border + strings.Repeat(" ", spaceCount) + border
-}
-
-// buildOrangeContentLine creates orange bordered content line: │ (space) content padded/truncated (space) │
-func buildOrangeContentLine(content string, tw int) string {
-	contentWidth := tw - 4
-	adjusted := padOrTruncate(content, contentWidth)
-	border := orangeBorderStyle.Render("│")
-	return border + " " + adjusted + " " + border
-}
-
 // padOrTruncate ensures content is exactly targetWidth visual chars
 func padOrTruncate(s string, targetWidth int) string {
 	visualWidth := lipgloss.Width(s)
@@ -1920,188 +1609,36 @@ func formatCompact(n int) string {
 	return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 }
 
-// normalizeToSparkline scales float64 values to 0-8 range for sparkline rendering.
-// Left-pads with zeros if fewer values than width. Each returned int maps to a sparkBlocks index.
-func normalizeToSparkline(values []float64, width int) []int {
-	result := make([]int, width)
-	if len(values) == 0 {
-		return result
-	}
+// --- Stat card renderers (grot demo gallery row-1 style) ---
 
-	// Left-pad: place values at the right end
-	offset := width - len(values)
-	if offset < 0 {
-		// More values than width — take the last `width` values
-		values = values[len(values)-width:]
-		offset = 0
-	}
-
-	// Find min/max for scaling
-	minVal := values[0]
-	maxVal := values[0]
-	for _, v := range values[1:] {
-		if v < minVal {
-			minVal = v
-		}
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-
-	span := maxVal - minVal
-	if span == 0 {
-		// All values identical
-		level := 1 // baseline for all-zero
-		if values[0] > 0 {
-			level = 4 // midpoint for uniform non-zero
-		}
-		for i := range values {
-			result[offset+i] = level
-		}
-		return result
-	}
-
-	for i, v := range values {
-		// Scale to 1-8 (reserve 0 for padding, 1 = visible baseline)
-		normalized := (v - minVal) / span * 7
-		level := int(math.Round(normalized)) + 1
-		if v == 0 {
-			level = 1 // visible baseline for zero values
-		}
-		if level < 1 {
-			level = 1
-		}
-		if level > 8 {
-			level = 8
-		}
-		result[offset+i] = level
-	}
-
-	return result
-}
-
-// renderSparkline maps int levels to sparkBlocks rune chars.
-// Appends pulsing indicator (•) when pulsing=true, space otherwise.
-// Total visual width equals ciw chars.
-func renderSparkline(levels []int, pulsing bool, ciw int) string {
-	var b strings.Builder
-	// sparkline data chars = ciw - 1 (for pulsing indicator)
-	dataWidth := ciw - 1
-
-	// Render levels (take last dataWidth values, or pad left)
-	start := 0
-	if len(levels) > dataWidth {
-		start = len(levels) - dataWidth
-	}
-
-	// Left-pad if needed
-	for i := 0; i < dataWidth-len(levels)+start; i++ {
-		b.WriteRune(sparkBlocks[0])
-	}
-
-	for i := start; i < len(levels); i++ {
-		idx := levels[i]
-		if idx < 0 {
-			idx = 0
-		}
-		if idx >= len(sparkBlocks) {
-			idx = len(sparkBlocks) - 1
-		}
-		b.WriteRune(sparkBlocks[idx])
-	}
-
-	if pulsing {
-		b.WriteRune('•')
-	} else {
-		b.WriteRune(' ')
-	}
-
-	return b.String()
-}
-
-// --- Mini-card builder helpers ---
-
-// miniCardEmptyLine returns a bordered empty line at exact cw width.
-func miniCardEmptyLine(cw int) string {
-	border := borderStyle.Render("│")
-	return border + strings.Repeat(" ", cw-2) + border
-}
-
-// miniCardContentLine returns a bordered content line with 2-char padding each side.
-func miniCardContentLine(content string, cw int) string {
-	ciw := cw - 6 // inner width = card width minus borders and padding
-	adjusted := padOrTruncate(content, ciw)
-	border := borderStyle.Render("│")
-	return border + "  " + adjusted + "  " + border
-}
-
-// miniCardHeaderLine returns a header with TITLE left-aligned and VALUE right-aligned.
-func miniCardHeaderLine(title, value string, ciw int) string {
-	styledTitle := titleStyle.Render(strings.ToUpper(title))
-	titleWidth := lipgloss.Width(styledTitle)
-	valueWidth := lipgloss.Width(value)
-	gap := ciw - titleWidth - valueWidth
-	if gap < 1 {
-		gap = 1
-	}
-	return styledTitle + strings.Repeat(" ", gap) + value
-}
-
-// buildMiniCard assembles a full bordered mini-card.
-func buildMiniCard(title, value, detail1, detail2, sparkline string, cw int) string {
-	dashCount := cw - 2
-	top := borderStyle.Render("╭" + strings.Repeat("─", dashCount) + "╮")
-	bottom := borderStyle.Render("╰" + strings.Repeat("─", dashCount) + "╯")
-
-	lines := []string{
-		top,
-		miniCardEmptyLine(cw),
-		miniCardContentLine(miniCardHeaderLine(title, value, cw-6), cw),
-		miniCardEmptyLine(cw),
-		miniCardContentLine(detail1, cw),
-		miniCardContentLine(detail2, cw),
-		miniCardEmptyLine(cw),
-		miniCardContentLine(sparkline, cw),
-		miniCardEmptyLine(cw),
-		bottom,
-	}
-	return strings.Join(lines, "\n")
-}
-
-// --- Card renderers ---
-
-// renderTokenCard renders the TOKENS mini-card with the given card width.
-// Shows a cached/uncached split: cached = cache_read tokens, uncached = input+output.
+// renderTokenCard renders the tokens stat card: grand total (input + output +
+// cache read/write), cached share detail, 7-day stacked braille trend —
+// dim accent base = cached volume, bright accent cap = fresh input+output.
+// The detail line doubles as the color key ("cached" in the base tone).
 func (m Model) renderTokenCard(cw int) string {
-	ciw := cw - 6
 	grandTotal := m.metricsCard.TotalTokens + m.metricsCard.CacheReadTokens + m.metricsCard.CacheWriteTokens
-	value := titleStyle.Render(formatCompact(grandTotal))
-	detail1 := dimStyle.Render(fmt.Sprintf("↑ %s cached", formatCompact(m.metricsCard.CacheReadTokens)))
-	detail2 := dimStyle.Render(fmt.Sprintf("↓ %s uncached", formatCompact(m.metricsCard.TotalTokens)))
+	value := boldLabelStyle.Render(formatCompact(grandTotal))
+	cachedTone := render.Dim(grotTheme.Accent, 0.45)
+	cachedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(cachedTone))
+	detail := cachedStyle.Render(fmt.Sprintf("%s cached", formatCompact(m.metricsCard.CacheReadTokens)))
 
-	// Convert int64 history to float64
-	floats := make([]float64, len(m.metricsCard.TokenHistory))
-	for i, v := range m.metricsCard.TokenHistory {
-		floats[i] = float64(v)
+	cached := make([]float64, len(m.metricsCard.CachedTokenHistory))
+	for i, v := range m.metricsCard.CachedTokenHistory {
+		cached[i] = float64(v)
 	}
-	levels := normalizeToSparkline(floats, ciw-1)
-	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick, ciw))
-
-	return buildMiniCard("tokens", value, detail1, detail2, spark, cw)
+	fresh := make([]float64, len(m.metricsCard.TokenHistory))
+	for i, v := range m.metricsCard.TokenHistory {
+		fresh[i] = float64(v)
+	}
+	return buildStatCardStacked("tokens", value, detail,
+		[][]float64{cached, fresh}, []string{cachedTone, grotTheme.Accent}, cw)
 }
 
-// renderCostCard renders the COST mini-card with the given card width.
+// renderCostCard renders the cumulative-cost stat card with 7-day cost trend.
 func (m Model) renderCostCard(cw int) string {
-	ciw := cw - 6
 	value := costStyle.Render(fmt.Sprintf("$%.2f", m.metricsCard.TotalCostUSD))
-	costPerTask := m.metricsCard.CostPerTask
-	detail1 := dimStyle.Render(fmt.Sprintf("~$%.2f/task", costPerTask))
-	detail2 := ""
-
-	levels := normalizeToSparkline(m.metricsCard.CostHistory, ciw-1)
-	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick, ciw))
-
-	return buildMiniCard("cost", value, detail1, detail2, spark, cw)
+	detail := dimStyle.Render(fmt.Sprintf("~$%.2f/task", m.metricsCard.CostPerTask))
+	return buildStatCard("cost", value, detail, m.metricsCard.CostHistory, grotTheme.Success, cw)
 }
 
 // nonFailureSuffix builds the muted " (N no-op · M infra · …)" breakdown suffix
@@ -2133,50 +1670,50 @@ func nonFailureSuffix(c MetricsCardData) string {
 	return " (" + strings.Join(parts, " · ") + ")"
 }
 
-// renderTaskCard renders the QUEUE mini-card with the given card width.
+// renderTaskCard renders the queue stat card with the given card width.
 // Value shows current queue depth (pending + running), not lifetime totals.
+// TASK-358: "failed" counts genuine failures only. Non-failure terminal
+// outcomes (no-op / infra / …) are shown as a muted suffix so the numbers
+// reconcile and a no-op is no longer miscounted as a failure. Only append the
+// suffix when the whole line fits the card — otherwise show just the headline.
+// Truncating a styled multi-segment string blanks the line (the empty "failed"
+// row seen on v2.166.10).
 func (m Model) renderTaskCard(cw int) string {
-	ciw := cw - 6
-	value := fmt.Sprintf("%d", len(m.tasks))
-	detail1 := statusCompletedStyle.Render(fmt.Sprintf("✓ %d succeeded", m.metricsCard.Succeeded))
-	// TASK-358: "failed" counts genuine failures only. Non-failure terminal
-	// outcomes (no-op / infra / …) are shown as a muted suffix so the numbers
-	// reconcile and a no-op is no longer miscounted as a failure. Only append the
-	// suffix when the whole line fits the card — otherwise show just the headline.
-	// The breakdown is wider than a mini-card on narrow terminals, and truncating
-	// a styled multi-segment string blanks the line (the empty "failed" row seen
-	// on v2.166.10).
-	detail2 := statusFailedStyle.Render(fmt.Sprintf("✗ %d failed", m.metricsCard.Failed))
+	ciw := cw - 4
+	value := boldLabelStyle.Render(fmt.Sprintf("%d", len(m.tasks)))
+	detail := statusCompletedStyle.Render(fmt.Sprintf("✓ %d", m.metricsCard.Succeeded)) +
+		"  " + statusFailedStyle.Render(fmt.Sprintf("✗ %d", m.metricsCard.Failed))
 	if suffix := nonFailureSuffix(m.metricsCard); suffix != "" {
-		withSuffix := detail2 + statusPendingStyle.Render(suffix)
+		withSuffix := detail + statusPendingStyle.Render(suffix)
 		if lipgloss.Width(withSuffix) <= ciw {
-			detail2 = withSuffix
+			detail = withSuffix
 		}
 	}
 
-	// Convert int history to float64
-	floats := make([]float64, len(m.metricsCard.TaskHistory))
-	for i, v := range m.metricsCard.TaskHistory {
-		floats[i] = float64(v)
+	// Stacked outcome trend: sage base = succeeded/day, rose cap = failed/day,
+	// matching the ✓/✗ colors in the detail line (which acts as the key).
+	succeeded := make([]float64, len(m.metricsCard.SuccessHistory))
+	for i, v := range m.metricsCard.SuccessHistory {
+		succeeded[i] = float64(v)
 	}
-	levels := normalizeToSparkline(floats, ciw-1)
-	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick, ciw))
-
-	return buildMiniCard("queue", value, detail1, detail2, spark, cw)
+	failed := make([]float64, len(m.metricsCard.FailedHistory))
+	for i, v := range m.metricsCard.FailedHistory {
+		failed[i] = float64(v)
+	}
+	return buildStatCardStacked("queue depth", value, detail,
+		[][]float64{succeeded, failed}, []string{grotTheme.Success, grotTheme.Error}, cw)
 }
 
-// renderMetricsCards renders all three mini-cards side by side.
+// renderMetricsCards renders the three stat cards side by side with no gaps,
+// like the grot demo gallery row 1. The last card absorbs the remainder.
 func (m Model) renderMetricsCards() string {
 	epw := m.effectivePanelTotalWidth()
 	cw := epw / 3
-	remainder := epw - 3*cw
-	// Distribute remainder as gaps between the 3 cards (2 gaps)
-	gap1 := remainder / 2
-	gap2 := remainder - gap1
+	lastW := epw - 2*cw
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		m.renderTokenCard(cw), strings.Repeat(" ", gap1),
-		m.renderCostCard(cw), strings.Repeat(" ", gap2),
-		m.renderTaskCard(cw))
+		m.renderTokenCard(cw),
+		m.renderCostCard(cw),
+		m.renderTaskCard(lastW))
 }
 
 // taskStatePriority returns sort priority for task states (lower = higher in list).
@@ -2231,7 +1768,24 @@ func (m Model) renderTasks() string {
 		}
 	}
 
-	return renderPanel("QUEUE", content.String(), m.effectivePanelTotalWidth())
+	// Legend in the top border (grot style): ┤ ● 2 running  ● gh  ● tg  ○ 6 idle ├
+	// — running count first, then intake adapter status (buildAdapterLegend).
+	running := 0
+	for _, t := range m.tasks {
+		if t.Status == "running" {
+			running++
+		}
+	}
+	segs := make([]string, 0, 2)
+	if running > 0 {
+		segs = append(segs, statusRunningStyle.Render("●")+" "+dimStyle.Render(fmt.Sprintf("%d running", running)))
+	}
+	if leg := buildAdapterLegend(m.bannerAdapters); leg != "" {
+		segs = append(segs, leg)
+	}
+	info := strings.Join(segs, "  ")
+
+	return renderPanelInfo("queue", info, content.String(), m.effectivePanelTotalWidth())
 }
 
 // renderTask renders a single task row with state-aware icons, bars, and meta.
@@ -2458,18 +2012,10 @@ func (m Model) groupedHistory() []historyGroup {
 	return groups
 }
 
-// renderEpicProgressBar renders a compact progress bar: [##--]
-// innerWidth chars inside brackets, '#' for done, '-' for remaining.
+// renderEpicProgressBar renders a compact epic progress meter (■■□□) in the
+// grot segment-meter style, innerWidth cells wide.
 func renderEpicProgressBar(done, total, innerWidth int) string {
-	if total <= 0 {
-		return "[" + strings.Repeat("-", innerWidth) + "]"
-	}
-	filled := done * innerWidth / total
-	if filled > innerWidth {
-		filled = innerWidth
-	}
-	empty := innerWidth - filled
-	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", empty) + "]"
+	return segmentMeter(done, total, innerWidth, grotTheme.Accent)
 }
 
 // renderEvalStats renders a compact eval stats panel showing latest pass@1 rate
@@ -2546,11 +2092,11 @@ func (m Model) renderEvalStats() string {
 		)
 	}
 
-	evalTitle := "EVAL"
+	info := ""
 	if m.metricsScopePath != "" {
-		evalTitle = "EVAL [global]"
+		info = dimStyle.Render("global")
 	}
-	return renderPanel(evalTitle, line, tw)
+	return renderPanelInfo("eval", info, line, tw)
 }
 
 // renderHistory renders completed tasks history with epic-aware grouping.
@@ -2603,42 +2149,46 @@ func (m Model) renderHistory() string {
 	return renderPanel("HISTORY", content.String(), tw)
 }
 
-// renderStandaloneLine renders a standalone (non-epic) task line.
-// Layout: "  + GH-156  Title...                                    2m ago"
-// indent(2) + strip(variable) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8) = iw
-// When PeakRSSMB > 0 (GH-3028), an RSS indicator ("4.2G") is appended after the time.
-// GH-3849: the leading column shows the cached StageStrip pipeline-progress
-// fraction (e.g. "4/7 ✗ ci_failed") when the task was hydrated from the
-// store; falls back to the plain status icon
-// otherwise (e.g. live completions added via AddCompletedTask).
+// stageLabelWidth is the fixed column for the stage name after the ladder
+// meter ("released", "ci_failed", …) so history rows stay aligned.
+const stageLabelWidth = 10
+
+// renderStandaloneLine renders a standalone (non-epic) task line with fixed
+// columns so rows align regardless of pipeline state:
+//
+//	  ✓ GH-4018  Aggregated scope notes…  ■■■■■■■ released    40m ago 2.0G
+//
+// indent(2) + glyph(1) + sp(1) + id(7) + sp(2) + title(flex) + sp(2) +
+// ladder(7) + sp(1) + stage(10) + sp(2) + time(8) + rss(5) = iw
+// The RSS column (GH-3028, "4.2G") is fixed-width — blank when the sampler
+// had no data — so rows align regardless. GH-3849: the ladder is the 7-rung
+// pipeline segment meter built from the cached StageInfo; rows without stage
+// evidence show a dim track.
 func renderStandaloneLine(task CompletedTask, iw int) string {
 	icon, style := statusIconStyle(task.Status)
-	stripText := task.StageStrip
-	if stripText == "" {
-		stripText = icon
+
+	label := "–"
+	if task.Stage.Known {
+		label = task.Stage.Label
 	}
-	strip := style.Render(stripText)
-	stripWidth := lipgloss.Width(strip)
 
-	timeAgoStr := formatTimeAgo(task.CompletedAt)
-
-	var rssStr string
+	rssStr := "     "
 	if task.PeakRSSMB > 0 {
-		rssStr = fmt.Sprintf(" %s", formatRSSMB(task.PeakRSSMB))
+		rssStr = fmt.Sprintf(" %4s", formatRSSMB(task.PeakRSSMB))
 	}
 
-	// Reserve space: indent(2)+strip+sp(1)+id(7)+sp(2)+sp(2)+time(8)+rss
-	titleWidth := iw - 2 - stripWidth - 1 - 7 - 2 - 2 - 8 - len(rssStr)
+	titleWidth := iw - 2 - 1 - 1 - 7 - 2 - 2 - stageLadderTotal - 1 - stageLabelWidth - 2 - 8 - len(rssStr)
 	if titleWidth < 10 {
 		titleWidth = 10
 	}
-	titleStr := padOrTruncate(task.Title, titleWidth)
 
-	return fmt.Sprintf("  %s %-7s  %s  %8s%s",
-		strip,
+	return fmt.Sprintf("  %s %-7s  %s  %s %s  %s%s",
+		style.Render(icon),
 		task.ID,
-		titleStr,
-		dimStyle.Render(timeAgoStr),
+		padOrTruncate(task.Title, titleWidth),
+		stageMeter(task.Stage, stageLadderTotal),
+		dimStyle.Render(padOrTruncate(label, stageLabelWidth)),
+		dimStyle.Render(fmt.Sprintf("%8s", formatTimeAgo(task.CompletedAt))),
 		dimStyle.Render(rssStr),
 	)
 }
@@ -2656,14 +2206,14 @@ func formatRSSMB(mb int) string {
 	return fmt.Sprintf("%.0fG", gb)
 }
 
-// renderActiveEpicLine renders the parent line for an active epic.
+// renderActiveEpicLine renders the parent line for an active epic:
+//
+//	  ● GH-491  Enable decomposition by default  ■■□□ 2/4    3m
+//
+// indent(2) + glyph(1) + sp(1) + id(7) + sp(2) + title(flex) + sp(1) +
+// meter(4) + sp(1) + counts(5) + sp(1) + time(5) = iw
 func renderActiveEpicLine(task CompletedTask, iw int) string {
 	const progressInnerWidth = 4
-	// Recalculate: total = indent(2)+icon(1)+sp(1)+id(7)+sp(2)+title+sp(2)+right(rightWidth) = 65
-	// title = 65 - 2 - 1 - 1 - 7 - 2 - 2 - rightWidth = 65 - 15 - rightWidth
-	// Let's be precise:
-	// indent(2) + icon(1) + sp(1) + id(7) + sp(2) + title + sp(1) + progress(6) + sp(1) + counts + sp(1) + time
-	// We need the right side to fit. Let's use fixed columns:
 
 	bar := renderEpicProgressBar(task.DoneSubs, task.TotalSubs, progressInnerWidth)
 	counts := fmt.Sprintf("%d/%d", task.DoneSubs, task.TotalSubs)
@@ -2672,10 +2222,8 @@ func renderActiveEpicLine(task CompletedTask, iw int) string {
 		timeStr = formatTimeAgo(task.CompletedAt)
 	}
 
-	// Right part: " [##--] 2/3   3m" — build with fixed width
-	// bar(6) + sp(1) + counts(padded to 5) + sp(1) + time(padded to 5)
 	rightPart := fmt.Sprintf(" %s %-5s %5s", bar, counts, timeStr)
-	rightLen := len(rightPart) // plain ASCII, no ANSI
+	rightLen := lipgloss.Width(rightPart) // meter carries ANSI styling
 
 	// Title gets whatever remains
 	tWidth := iw - 2 - 1 - 1 - 7 - 2 - rightLen
@@ -2686,7 +2234,7 @@ func renderActiveEpicLine(task CompletedTask, iw int) string {
 	titleStr := padOrTruncate(task.Title, tWidth)
 
 	return fmt.Sprintf("  %s %-7s  %s%s",
-		warningStyle.Render("*"),
+		statusRunningStyle.Render("●"),
 		task.ID,
 		titleStr,
 		rightPart,
@@ -2695,10 +2243,10 @@ func renderActiveEpicLine(task CompletedTask, iw int) string {
 
 // renderCompletedEpicLine renders a collapsed completed epic.
 func renderCompletedEpicLine(task CompletedTask, iw int) string {
-	counts := fmt.Sprintf("[%d/%d]", task.DoneSubs, task.TotalSubs)
+	counts := fmt.Sprintf("%d/%d", task.DoneSubs, task.TotalSubs)
 	timeAgoStr := formatTimeAgo(task.CompletedAt)
 
-	// Right part: " [N/N]    Xm ago"
+	// Right part: " N/N    Xm ago"
 	rightPart := fmt.Sprintf(" %s  %8s", counts, timeAgoStr)
 	rightLen := len(rightPart)
 
@@ -2736,37 +2284,40 @@ func renderSubIssueLine(task CompletedTask, iw int) string {
 
 	titleStr := padOrTruncate(task.Title, titleWidth)
 
-	return fmt.Sprintf("    %s %-7s  %s  %8s",
+	return fmt.Sprintf("    %s %-7s  %s  %s",
 		style.Render(icon),
 		task.ID,
 		titleStr,
-		dimStyle.Render(timeStr),
+		dimStyle.Render(fmt.Sprintf("%8s", timeStr)),
 	)
 }
 
-// statusIconStyle returns the icon and style for a task status (top-level tasks).
+// statusIconStyle returns the glyph and style for a task status (top-level
+// tasks) — the design-system vocabulary from the grot_chrome doc block.
 func statusIconStyle(status string) (string, lipgloss.Style) {
 	switch status {
 	case "success":
-		return "+", statusCompletedStyle
+		return "✓", statusCompletedStyle
 	case "failed":
-		return "x", statusFailedStyle
+		return "✗", statusFailedStyle
 	case "stalled":
-		return "~", statusFailedStyle
+		return "✗", statusFailedStyle
 	case "no_op":
-		return "=", statusPendingStyle // TASK-358: no-change run, not a failure
+		return "○", statusPendingStyle // TASK-358: no-change run, not a failure
 	case "declined":
-		return "-", statusPendingStyle // TASK-358: agent declined as unactionable
+		return "○", statusPendingStyle // TASK-358: agent declined as unactionable
 	case "rate_limited":
-		return "%", statusPendingStyle // TASK-358: provider quota hit, transient
+		return "⟲", statusPendingStyle // TASK-358: provider quota hit, transient
 	case "infra":
 		return "!", statusPendingStyle // TASK-358: plumbing/resource failure, not the work
 	case "skipped":
-		return ".", statusPendingStyle // TASK-358: never ran / cancelled
+		return "·", statusPendingStyle // TASK-358: never ran / cancelled
 	case "running":
-		return "~", statusRunningStyle
+		return "●", statusRunningStyle
+	case "pending":
+		return "◌", statusPendingStyle
 	default:
-		return ".", statusPendingStyle
+		return "·", statusPendingStyle
 	}
 }
 
@@ -2872,25 +2423,24 @@ func AddCompletedTask(id, title, status, duration string, parentID string, isEpi
 	}
 }
 
-// renderUpdateNotification renders the update notification panel
+// renderUpdateNotification renders the update notification panel (amber
+// chrome; the "u: upgrade" hint sits in the top-border legend, grot style).
 func (m Model) renderUpdateNotification() string {
 	var content strings.Builder
 	var title string
-	var hint string
+	var info string
 	tw := m.effectivePanelTotalWidth()
 	iw := tw - 4
 
 	switch m.upgradeState {
 	case UpgradeStateAvailable:
-		title = "^ UPDATE"
-		// Left: version info, Right: will be hint below panel
+		title = "update"
 		leftText := fmt.Sprintf("%s -> %s available", m.updateInfo.CurrentVersion, m.updateInfo.LatestVersion)
-		rightText := ""
-		content.WriteString(formatPanelRow(leftText, rightText, iw))
-		hint = "u: upgrade"
+		content.WriteString(formatPanelRow(leftText, "", iw))
+		info = dimStyle.Render("u: upgrade")
 
 	case UpgradeStateInProgress:
-		title = "* UPGRADING"
+		title = "upgrading"
 		bar := m.renderProgressBar(m.upgradeProgress, 30)
 		content.WriteString(fmt.Sprintf("  Installing %s... %s %d%%", m.updateInfo.LatestVersion, bar, m.upgradeProgress))
 		if m.upgradeMessage != "" {
@@ -2898,11 +2448,11 @@ func (m Model) renderUpdateNotification() string {
 		}
 
 	case UpgradeStateComplete:
-		title = "+ UPGRADED"
+		title = "upgraded"
 		content.WriteString(fmt.Sprintf("  Upgrade to %s installed — restart Pilot manually to apply.", m.updateInfo.LatestVersion))
 
 	case UpgradeStateFailed:
-		title = "! UPGRADE FAILED"
+		title = "upgrade failed"
 		if m.upgradeError != "" {
 			content.WriteString("  " + m.upgradeError)
 		} else {
@@ -2916,13 +2466,7 @@ func (m Model) renderUpdateNotification() string {
 		return ""
 	}
 
-	result := renderOrangePanel(title, content.String(), tw)
-	if hint != "" {
-		// Right-align hint under panel
-		hintLine := fmt.Sprintf("%*s", tw, hint)
-		result += "\n" + dimStyle.Render(hintLine)
-	}
-	return result
+	return renderPanelStyled(title, info, content.String(), tw, warnChrome)
 }
 
 // formatPanelRow creates a full-width row with left and right aligned text

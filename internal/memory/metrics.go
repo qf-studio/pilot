@@ -79,7 +79,11 @@ type DailyMetrics struct {
 	FailedCount     int
 	TotalDurationMs int64
 	TotalTokens     int64
-	TotalCostUSD    float64
+	// Cache token sums (TASK-390): TotalTokens is fresh input+output only;
+	// cached volume is tracked separately for the stacked tokens sparkline.
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	TotalCostUSD     float64
 	FilesChanged    int
 	LinesAdded      int
 	LinesRemoved    int
@@ -337,6 +341,8 @@ func (s *Store) GetDailyMetrics(query MetricsQuery) ([]*DailyMetrics, error) {
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
 			COALESCE(SUM(duration_ms), 0) as total_duration,
 			COALESCE(SUM(tokens_total), 0) as total_tokens,
+			COALESCE(SUM(tokens_cache_read), 0) as cache_read,
+			COALESCE(SUM(tokens_cache_write), 0) as cache_write,
 			COALESCE(SUM(estimated_cost_usd), 0) as total_cost,
 			COALESCE(SUM(files_changed), 0) as files_changed,
 			COALESCE(SUM(lines_added), 0) as lines_added,
@@ -363,6 +369,8 @@ func (s *Store) GetDailyMetrics(query MetricsQuery) ([]*DailyMetrics, error) {
 			&m.FailedCount,
 			&m.TotalDurationMs,
 			&m.TotalTokens,
+			&m.CacheReadTokens,
+			&m.CacheWriteTokens,
 			&m.TotalCostUSD,
 			&m.FilesChanged,
 			&m.LinesAdded,

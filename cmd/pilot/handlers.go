@@ -352,11 +352,11 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		ProjectPath:  projectPath,
 	}
 	info := IssueInfo{
-		TaskID:   taskID,
-		Title:    issue.Title,
-		URL:      issue.HTMLURL,
-		Adapter:  "github",
-		LogEmoji: "📥",
+		TaskID:  taskID,
+		Title:   issue.Title,
+		URL:     issue.HTMLURL,
+		Adapter: "github",
+		LogMark: "▸",
 	}
 
 	// Note: monitor.Start() is NOT called here — it's called by runner.executeWithOptions()
@@ -638,11 +638,11 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdk
 		ProjectPath:  projectPath,
 	}
 	info := IssueInfo{
-		TaskID:   taskID,
-		Title:    title,
-		URL:      fmt.Sprintf("https://linear.app/issue/%s", taskID),
-		Adapter:  "linear",
-		LogEmoji: "📊",
+		TaskID:  taskID,
+		Title:   title,
+		URL:     fmt.Sprintf("https://linear.app/issue/%s", taskID),
+		Adapter: "linear",
+		LogMark: "▸",
 	}
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
@@ -699,11 +699,11 @@ func handleJiraSDKIssueWithResult(ctx context.Context, cfg *config.Config, ev sd
 		ProjectPath:  projectPath,
 	}
 	info := IssueInfo{
-		TaskID:   taskID,
-		Title:    title,
-		URL:      fmt.Sprintf("%s/browse/%s", cfg.Adapters.Jira.BaseURL, ev.IssueID),
-		Adapter:  "jira",
-		LogEmoji: "📊",
+		TaskID:  taskID,
+		Title:   title,
+		URL:     fmt.Sprintf("%s/browse/%s", cfg.Adapters.Jira.BaseURL, ev.IssueID),
+		Adapter: "jira",
+		LogMark: "▸",
 	}
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
@@ -761,11 +761,11 @@ func handleAsanaIssueWithResult(ctx context.Context, cfg *config.Config, ev sdkc
 		ProjectPath:  projectPath,
 	}
 	info := IssueInfo{
-		TaskID:   taskID,
-		Title:    title,
-		URL:      fmt.Sprintf("https://app.asana.com/0/0/%s", ev.IssueID),
-		Adapter:  "asana",
-		LogEmoji: "📦",
+		TaskID:  taskID,
+		Title:   title,
+		URL:     fmt.Sprintf("https://app.asana.com/0/0/%s", ev.IssueID),
+		Adapter: "asana",
+		LogMark: "▸",
 	}
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
@@ -921,11 +921,11 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 		ProjectPath:  projectPath,
 	}
 	info := IssueInfo{
-		TaskID:   taskID,
-		Title:    title,
-		URL:      fmt.Sprintf("%s/workspaces/%s/projects/%s/work-items/%s", cfg.Adapters.Plane.BaseURL, cfg.Adapters.Plane.WorkspaceSlug, ev.ProjectID, ev.IssueID),
-		Adapter:  "plane",
-		LogEmoji: "📊",
+		TaskID:  taskID,
+		Title:   title,
+		URL:     fmt.Sprintf("%s/workspaces/%s/projects/%s/work-items/%s", cfg.Adapters.Plane.BaseURL, cfg.Adapters.Plane.WorkspaceSlug, ev.ProjectID, ev.IssueID),
+		Adapter: "plane",
+		LogMark: "▸",
 	}
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
@@ -1042,11 +1042,11 @@ func handleGitlabIssueWithResult(ctx context.Context, cfg *config.Config, client
 		ProjectPath:  projectPath,
 	}
 	info := IssueInfo{
-		TaskID:   taskID,
-		Title:    title,
-		URL:      fmt.Sprintf("%s/%s/-/issues/%s", cfg.Adapters.GitLab.BaseURL, cfg.Adapters.GitLab.Project, ev.IssueID),
-		Adapter:  "gitlab",
-		LogEmoji: "🦊",
+		TaskID:  taskID,
+		Title:   title,
+		URL:     fmt.Sprintf("%s/%s/-/issues/%s", cfg.Adapters.GitLab.BaseURL, cfg.Adapters.GitLab.Project, ev.IssueID),
+		Adapter: "gitlab",
+		LogMark: "▸",
 	}
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
@@ -1155,11 +1155,11 @@ func handleAzureDevOpsIssueWithResult(ctx context.Context, cfg *config.Config, e
 		ProjectPath:  projectPath,
 	}
 	info := IssueInfo{
-		TaskID:   taskID,
-		Title:    title,
-		URL:      fmt.Sprintf("https://dev.azure.com/_workitems/edit/%s", ev.IssueID),
-		Adapter:  "azuredevops",
-		LogEmoji: "🔷",
+		TaskID:  taskID,
+		Title:   title,
+		URL:     fmt.Sprintf("https://dev.azure.com/_workitems/edit/%s", ev.IssueID),
+		Adapter: "azuredevops",
+		LogMark: "▸",
 	}
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
@@ -1253,11 +1253,11 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		ProjectPath:  projectPath,
 	}
 	info := IssueInfo{
-		TaskID:   taskID,
-		Title:    title,
-		URL:      githubIssueURL(cfg, ev.IssueID),
-		Adapter:  "github",
-		LogEmoji: "🐙",
+		TaskID:  taskID,
+		Title:   title,
+		URL:     githubIssueURL(cfg, ev.IssueID),
+		Adapter: "github",
+		LogMark: "▸",
 	}
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)

@@ -39,7 +39,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Download dependencies
         run: go mod download
@@ -68,10 +68,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.0.2
+          # v2.0.2 was built with go1.24 and refuses the go 1.25 target
+          # (TASK-390 bumped the toolchain for grot); 2.8.0 matches local.
+          version: v2.8.0
           args: --timeout=5m --new-from-rev=origin/main
