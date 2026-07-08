@@ -2583,11 +2583,18 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				return github.NewPoller(client, repoFullName, label, interval, pollerOpts...)
 			}
 
+			// M7 4d.2b: when use_sdk_poller is on, the SDK registration fans out a
+			// poller for the default repo AND every projects[] github repo — the
+			// in-tree pollers below skip all of them. This is the single source of
+			// truth for "is a github poller going to exist" so the autopilot-start
+			// gate below counts SDK pollers even when ghPollers ends up empty.
+			sdkGithubPollerEnabled := githubPollerRegistration().Enabled(cfg)
+
 			// Create poller for default repo (adapters.github.repo).
 			// M7 4b: when use_sdk_poller is on, the SDK registration (poller_github.go)
 			// owns the default repo — mark it polled so the projects loop skips it,
-			// but do not start the in-tree poller for it. `projects:` repos stay
-			// in-tree until Phase 4d.
+			// but do not start the in-tree poller for it. M7 4d.2b: projects[] repos
+			// are SDK-owned too when the flag is on.
 			if cfg.Adapters.GitHub.Repo != "" && cfg.Adapters.GitHub.UseSDKPoller {
 				polledRepos[cfg.Adapters.GitHub.Repo] = true
 				if !dashboardMode {
@@ -2620,6 +2627,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 				polledRepos[repoFullName] = true
 
+				// M7 4d.2b: the SDK fan-out owns every projects[] github repo when the
+				// flag is on — skip the in-tree poller for it (mutual exclusion).
+				if sdkGithubPollerEnabled {
+					if !dashboardMode {
+						fmt.Printf("● github polling (sdk, m7 4d.2b) · %s (project: %s)\n", repoFullName, proj.Name)
+					}
+					continue
+				}
+
 				projPath := proj.Path
 				if projPath == "" {
 					projPath = projectPath // Fall back to default project path
@@ -2645,7 +2661,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				go poller.Start(ctx)
 			}
 
-			if len(ghPollers) == 0 {
+			// M7 4d.2b: SDK pollers are created later (StartAdapterPollers) and never
+			// land in ghPollers, so gate on "will any github poller exist" — otherwise
+			// a flag-on config with all repos SDK-owned would look like "no pollers"
+			// and silently skip autopilot startup.
+			hasGithubPollers := len(ghPollers) > 0 || sdkGithubPollerEnabled
+
+			if !hasGithubPollers {
 				logging.WithComponent("github").Warn("GitHub polling enabled but no repos configured — set adapters.github.repo or add project-level github.owner/github.repo",
 					slog.Int("pollers", 0))
 				// GH-3050: surface second silent autopilot gate. Controllers
@@ -2658,7 +2680,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 			}
 
-			if len(ghPollers) > 0 {
+			if hasGithubPollers {
 				if !dashboardMode && execMode == github.ExecutionModeSequential && waitForMerge {
 					fmt.Printf("   ◌ sequential mode · waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
 				}

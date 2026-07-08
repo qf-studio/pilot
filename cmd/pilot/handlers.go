@@ -1193,7 +1193,7 @@ func handleAzureDevOpsIssueWithResult(ctx context.Context, cfg *config.Config, e
 // avoid the GH-GH-42 double-prefix the legacy handler's fmt.Sprintf("GH-%d", ...) would create.
 // Board sync is handled at the SDK-poller level (config-driven); the spec-guard gate runs below
 // (M7 4d.3). Sub-issue handling remains exclusive to the legacy in-tree handler until later phases.
-func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
+func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, repoFullName string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
 	taskID := ev.SequenceID // "GH-42"; already prefixed by the SDK adapter — do NOT re-prefix
 	title := ev.Title
 
@@ -1216,13 +1216,26 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		}
 	}
 
-	// ResolveRepoForEvent is tolerated like the other SDK handlers; ErrRepoNotResolved is non-fatal here.
-	_, repoOwner, repoName, resolveErr := sdkshim.ResolveRepoForEvent(cfg, "github", ev)
-	if resolveErr != nil && resolveErr.Error() != sdkshim.ErrRepoNotResolved.Error() {
-		logging.WithComponent("github").Warn("Unexpected repo resolution error",
-			slog.String("task_id", taskID),
-			slog.Any("error", resolveErr),
-		)
+	// Resolve owner/repo. M7 4d.2c: the per-repo SDK poller passes its repo
+	// explicitly (repoFullName) because resolveGithubRepo matches by repo NAME only
+	// and is ambiguous when two projects share a repo name under different owners
+	// (repo_resolver.go documents this limitation). Event-based resolution remains
+	// the fallback for the webhook / rate-limit-retry paths that don't carry it.
+	var repoOwner, repoName string
+	if repoFullName != "" {
+		if parts := strings.SplitN(repoFullName, "/", 2); len(parts) == 2 {
+			repoOwner, repoName = parts[0], parts[1]
+		}
+	}
+	if repoOwner == "" || repoName == "" {
+		_, ro, rn, resolveErr := sdkshim.ResolveRepoForEvent(cfg, "github", ev)
+		if resolveErr != nil && resolveErr.Error() != sdkshim.ErrRepoNotResolved.Error() {
+			logging.WithComponent("github").Warn("Unexpected repo resolution error",
+				slog.String("task_id", taskID),
+				slog.Any("error", resolveErr),
+			)
+		}
+		repoOwner, repoName = ro, rn
 	}
 
 	// GH-4050: Fetch the real issue so State (and author, for MemberID) flow into the
@@ -1233,7 +1246,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	issueNum, _ := strconv.Atoi(ev.IssueID)
 	var issueState, memberID string
 	var specClient *githubSDK.Client
-	if resolveErr == nil && repoOwner != "" && repoName != "" {
+	if repoOwner != "" && repoName != "" {
 		if ghToken, _ := resolveGitHubToken(cfg); ghToken != "" {
 			specClient = githubSDK.NewClient(ghToken)
 			if realIssue := fetchGithubIssueForSDKTask(ctx, specClient, repoOwner, repoName, issueNum, taskID); realIssue != nil {
@@ -1281,7 +1294,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		// when the daemon re-dispatches a closed/merged parent (GH-201 gate parity).
 		State: issueState,
 	}
-	if resolveErr == nil && repoOwner != "" && repoName != "" {
+	if repoOwner != "" && repoName != "" {
 		// M7 4d.4: lets the runner select the startup-registered SDK PR creator
 		// ("github:owner/repo"); tasks without it keep the gh-CLI path.
 		task.SourceRepo = repoOwner + "/" + repoName
@@ -1300,7 +1313,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	info := IssueInfo{
 		TaskID:  taskID,
 		Title:   title,
-		URL:     githubIssueURL(cfg, ev.IssueID),
+		URL:     githubIssueURL(cfg, repoOwner, repoName, ev.IssueID),
 		Adapter: "github",
 		LogMark: "▸",
 	}
@@ -1337,9 +1350,14 @@ func fetchGithubIssueForSDKTask(ctx context.Context, client *githubSDK.Client, o
 	return issue
 }
 
-// githubIssueURL builds the HTML URL for a GitHub issue from the default adapter repo
-// ("owner/repo"). Returns "" when no default repo is configured.
-func githubIssueURL(cfg *config.Config, issueID string) string {
+// githubIssueURL builds the HTML URL for a GitHub issue. It prefers the resolved
+// owner/repo (M7 4d.2c: under the per-repo poller fan-out an event may belong to a
+// project repo, not the default adapter repo) and falls back to the default adapter
+// repo. Returns "" when neither is available.
+func githubIssueURL(cfg *config.Config, owner, repo, issueID string) string {
+	if owner != "" && repo != "" {
+		return fmt.Sprintf("https://github.com/%s/%s/issues/%s", owner, repo, issueID)
+	}
 	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
 		return fmt.Sprintf("https://github.com/%s/issues/%s", cfg.Adapters.GitHub.Repo, issueID)
 	}
