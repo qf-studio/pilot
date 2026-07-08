@@ -65,18 +65,18 @@ func newUsageSummaryCmd() *cobra.Command {
 
 			// Display summary
 			fmt.Println()
-			fmt.Printf("💰 Usage Summary (Last %d Days)\n", days)
+			fmt.Printf("Usage Summary (Last %d Days)\n", days)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Println()
 
 			// Task usage
-			fmt.Println("📋 Tasks")
+			fmt.Println("Tasks")
 			fmt.Printf("   Count:    %d\n", summary.TaskCount)
 			fmt.Printf("   Cost:     $%.2f\n", summary.TaskCost)
 			fmt.Println()
 
 			// Token usage
-			fmt.Println("🔤 Tokens")
+			fmt.Println("Tokens")
 			fmt.Printf("   Input:    %s\n", formatTokens(summary.TokensInput))
 			fmt.Printf("   Output:   %s\n", formatTokens(summary.TokensOutput))
 			fmt.Printf("   Total:    %s\n", formatTokens(summary.TokensTotal))
@@ -84,14 +84,14 @@ func newUsageSummaryCmd() *cobra.Command {
 			fmt.Println()
 
 			// Compute usage
-			fmt.Println("⚡ Compute")
+			fmt.Println("Compute")
 			fmt.Printf("   Minutes:  %d\n", summary.ComputeMinutes)
 			fmt.Printf("   Cost:     $%.2f\n", summary.ComputeCost)
 			fmt.Println()
 
 			// Storage (if any)
 			if summary.StorageBytes > 0 {
-				fmt.Println("💾 Storage")
+				fmt.Println("Storage")
 				fmt.Printf("   Bytes:    %s\n", formatBytes(summary.StorageBytes))
 				fmt.Printf("   Cost:     $%.2f\n", summary.StorageCost)
 				fmt.Println()
@@ -99,7 +99,7 @@ func newUsageSummaryCmd() *cobra.Command {
 
 			// API calls (if any)
 			if summary.APICallCount > 0 {
-				fmt.Println("🌐 API Calls")
+				fmt.Println("API Calls")
 				fmt.Printf("   Count:    %d\n", summary.APICallCount)
 				fmt.Printf("   Cost:     $%.2f\n", summary.APICallCost)
 				fmt.Println()
@@ -107,7 +107,7 @@ func newUsageSummaryCmd() *cobra.Command {
 
 			// Total
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			fmt.Printf("💵 TOTAL COST:  $%.2f\n", summary.TotalCost)
+			fmt.Printf("TOTAL COST:  $%.2f\n", summary.TotalCost)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Println()
 
@@ -162,7 +162,7 @@ func newUsageDailyCmd() *cobra.Command {
 
 			// Display daily breakdown
 			fmt.Println()
-			fmt.Printf("📅 Daily Usage (Last %d Days)\n", days)
+			fmt.Printf("Daily Usage (Last %d Days)\n", days)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Printf("%-12s %8s %10s %12s %10s %10s\n", "Date", "Tasks", "Task $", "Tokens", "Token $", "Total $")
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -230,7 +230,7 @@ func newUsageProjectsCmd() *cobra.Command {
 
 			// Display project breakdown
 			fmt.Println()
-			fmt.Printf("📁 Usage by Project (Last %d Days)\n", days)
+			fmt.Printf("Usage by Project (Last %d Days)\n", days)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Printf("%-40s %8s %12s %10s %10s\n", "Project", "Tasks", "Tokens", "Compute", "Cost")
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -308,7 +308,7 @@ func newUsageEventsCmd() *cobra.Command {
 
 			// Display events
 			fmt.Println()
-			fmt.Printf("📊 Usage Events (Last %d Days, showing %d)\n", days, len(events))
+			fmt.Printf("Usage Events (Last %d Days, showing %d)\n", days, len(events))
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 			for _, e := range events {

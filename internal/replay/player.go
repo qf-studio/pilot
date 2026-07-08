@@ -122,9 +122,9 @@ func FormatEvent(event *StreamEvent, verbose bool) string {
 	switch parsed.Type {
 	case "system":
 		if parsed.Subtype == "init" {
-			sb.WriteString("🚀 System initialized")
+			sb.WriteString("▸ System initialized")
 		} else {
-			sb.WriteString(fmt.Sprintf("⚙️  System: %s", parsed.Subtype))
+			sb.WriteString(fmt.Sprintf("▸ System: %s", parsed.Subtype))
 		}
 
 	case "assistant":
@@ -136,17 +136,17 @@ func FormatEvent(event *StreamEvent, verbose bool) string {
 			if len(text) > 100 && !verbose {
 				text = text[:97] + "..."
 			}
-			sb.WriteString(fmt.Sprintf("💬 %s", strings.TrimSpace(text)))
+			sb.WriteString(fmt.Sprintf("▸ %s", strings.TrimSpace(text)))
 		}
 
 	case "user":
-		sb.WriteString("📥 Tool result")
+		sb.WriteString("▸ Tool result")
 
 	case "result":
 		if parsed.IsError {
-			sb.WriteString(fmt.Sprintf("❌ Error: %s", truncate(parsed.Result, 80)))
+			sb.WriteString(fmt.Sprintf("✗ Error: %s", truncate(parsed.Result, 80)))
 		} else {
-			sb.WriteString("✅ Completed")
+			sb.WriteString("✓ Completed")
 			if parsed.InputTokens > 0 || parsed.OutputTokens > 0 {
 				sb.WriteString(fmt.Sprintf(" (tokens: %d in, %d out)", parsed.InputTokens, parsed.OutputTokens))
 			}
@@ -206,31 +206,31 @@ func formatToolCall(parsed *ParsedEvent) string {
 	return fmt.Sprintf("%s %s", icon, tool)
 }
 
-// getToolIcon returns an emoji for the tool
+// getToolIcon returns a display marker for the tool
 func getToolIcon(tool string) string {
 	switch tool {
 	case "Read":
-		return "📖"
+		return "▸"
 	case "Write":
-		return "✏️"
+		return "▸"
 	case "Edit":
-		return "📝"
+		return "▸"
 	case "Bash":
-		return "💻"
+		return "▸"
 	case "Glob":
-		return "🔍"
+		return "▸"
 	case "Grep":
-		return "🔎"
+		return "▸"
 	case "Task":
-		return "🤖"
+		return "▸"
 	case "Skill":
-		return "⚡"
+		return "▸"
 	case "WebFetch":
-		return "🌐"
+		return "▸"
 	case "WebSearch":
-		return "🔍"
+		return "▸"
 	default:
-		return "🔧"
+		return "▸"
 	}
 }
 

@@ -170,7 +170,7 @@ func (p *ProgressDisplay) render() {
 
 	// Navigator indicator line (if detected)
 	if p.hasNavigator {
-		navIndicator := navigatorStyle.Render("🧭 Navigator")
+		navIndicator := navigatorStyle.Render("Navigator")
 		mode := p.navMode
 		if mode == "" {
 			mode = "active"
@@ -261,14 +261,14 @@ func (p *ProgressDisplay) StartWithNavigatorCheck(projectPath string) {
 	agentDir := filepath.Join(projectPath, ".agent")
 	if isDir, err := osStatFunc(agentDir); err == nil && isDir {
 		p.hasNavigator = true
-		fmt.Printf("🧭 %s: %s (.agent/ exists)\n",
+		fmt.Printf("%s: %s (.agent/ exists)\n",
 			navigatorStyle.Render("Navigator"),
 			successStyle.Render("✓ detected"))
 		fmt.Printf("   %s: %s\n",
 			dimStyle.Render("Mode"),
 			valueStyle.Render("awaiting skill activation"))
 	} else {
-		fmt.Printf("⚠️  %s: %s (running raw Claude Code)\n",
+		fmt.Printf("! %s: %s (running raw Claude Code)\n",
 			navigatorStyle.Render("Navigator"),
 			dimStyle.Render("not found"))
 	}
@@ -404,7 +404,7 @@ func (p *ProgressDisplay) printExecutionReport(report *ExecutionReport, allFiles
 	divider := "───────────────────────────────────────"
 
 	fmt.Println(divider)
-	fmt.Printf("%s\n", headerStyle.Render("📊 EXECUTION REPORT"))
+	fmt.Printf("%s\n", headerStyle.Render("EXECUTION REPORT"))
 	fmt.Println(divider)
 
 	// Task info
@@ -415,9 +415,9 @@ func (p *ProgressDisplay) printExecutionReport(report *ExecutionReport, allFiles
 
 	// Status
 	if report.Success {
-		fmt.Printf("Status:     %s\n", successStyle.Render("✅ Success"))
+		fmt.Printf("Status:     %s\n", successStyle.Render("✓ Success"))
 	} else {
-		fmt.Printf("Status:     %s\n", errorStyle.Render("❌ Failed"))
+		fmt.Printf("Status:     %s\n", errorStyle.Render("✗ Failed"))
 		if report.ErrorMessage != "" {
 			fmt.Printf("Error:      %s\n", errorStyle.Render(truncateForReport(report.ErrorMessage, 60)))
 		}
@@ -444,7 +444,7 @@ func (p *ProgressDisplay) printExecutionReport(report *ExecutionReport, allFiles
 	// Navigator info
 	if report.HasNavigator {
 		fmt.Println()
-		fmt.Printf("🧭 %s\n", navigatorStyle.Render("Navigator: Active"))
+		fmt.Printf("%s\n", navigatorStyle.Render("Navigator: Active"))
 		if report.NavMode != "" {
 			fmt.Printf("   Mode:    %s\n", valueStyle.Render(report.NavMode))
 		}
@@ -453,19 +453,19 @@ func (p *ProgressDisplay) printExecutionReport(report *ExecutionReport, allFiles
 	// Quality Gates section (GH-209)
 	if report.QualityGates != nil && report.QualityGates.Enabled {
 		fmt.Println()
-		fmt.Printf("%s\n", headerStyle.Render("🔒 Quality Gates:"))
+		fmt.Printf("%s\n", headerStyle.Render("Quality Gates:"))
 		for _, gate := range report.QualityGates.Gates {
 			var icon string
 			var statusStyle lipgloss.Style
 			if gate.Passed {
-				icon = "✅"
+				icon = "✓"
 				statusStyle = successStyle
 			} else {
-				icon = "❌"
+				icon = "✗"
 				statusStyle = errorStyle
 			}
 
-			// Format: "  ✅ build     12s"
+			// Format: "  ✓ build     12s"
 			durationStr := gate.Duration.Round(time.Second).String()
 			fmt.Printf("  %s %-10s %s", icon, statusStyle.Render(gate.Name), dimStyle.Render(durationStr))
 
@@ -491,7 +491,7 @@ func (p *ProgressDisplay) printExecutionReport(report *ExecutionReport, allFiles
 	// Phase timing breakdown
 	if len(p.phaseHistory) > 0 {
 		fmt.Println()
-		fmt.Printf("%s\n", headerStyle.Render("📈 Phases:"))
+		fmt.Printf("%s\n", headerStyle.Render("Phases:"))
 		totalDuration := report.Duration
 		for _, ph := range p.phaseHistory {
 			phaseDuration := ph.EndTime.Sub(ph.StartTime)
@@ -512,7 +512,7 @@ func (p *ProgressDisplay) printExecutionReport(report *ExecutionReport, allFiles
 	// Files changed
 	if len(allFiles) > 0 {
 		fmt.Println()
-		fmt.Printf("%s\n", headerStyle.Render("📁 Files Changed:"))
+		fmt.Printf("%s\n", headerStyle.Render("Files Changed:"))
 		count := 0
 		for f := range allFiles {
 			if count >= 10 {
@@ -529,7 +529,7 @@ func (p *ProgressDisplay) printExecutionReport(report *ExecutionReport, allFiles
 	// Token usage and cost
 	if report.TokensInput > 0 || report.TokensOutput > 0 {
 		fmt.Println()
-		fmt.Printf("%s\n", headerStyle.Render("💰 Tokens:"))
+		fmt.Printf("%s\n", headerStyle.Render("Tokens:"))
 		fmt.Printf("  Input:    %s\n", valueStyle.Render(formatTokenCount(report.TokensInput)))
 		fmt.Printf("  Output:   %s\n", valueStyle.Render(formatTokenCount(report.TokensOutput)))
 		if report.EstimatedCostUSD > 0 {

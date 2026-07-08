@@ -2183,7 +2183,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					}
 				} else {
 					fmt.Println()
-					fmt.Println("❌ Another bot instance is already running")
+					fmt.Println("✗ Another bot instance is already running")
 					fmt.Println()
 					fmt.Println("   Options:")
 					fmt.Println("   • Kill it manually:  pkill -f 'pilot start'")

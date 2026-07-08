@@ -692,7 +692,7 @@ func handleValidationFailure(state *OnboardState, adapterName string, retryFunc 
 	case "1":
 		return retryFunc()
 	case "2":
-		fmt.Println("  ⚠ Continuing without validation")
+		fmt.Println("  ! Continuing without validation")
 		return nil
 	default:
 		fmt.Printf("  ○ Skipped %s\n", adapterName)

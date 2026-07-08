@@ -174,7 +174,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 				deps.Monitor.Queue(taskID)
 			}
 			if deps.Program == nil {
-				fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
+				fmt.Printf("   Queued as execution %s\n", execID[:8])
 			}
 			exec, waitErr := deps.Dispatcher.WaitForExecution(ctx, execID, time.Second)
 			if waitErr != nil {

@@ -140,14 +140,14 @@ func newUpgradeCheckCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Println("🔍 Version Check")
+			fmt.Println("Version Check")
 			fmt.Println("───────────────────────────────────────")
 			fmt.Printf("   Current:  %s\n", info.Current)
 			fmt.Printf("   Latest:   %s\n", info.Latest)
 			fmt.Println()
 
 			if info.UpdateAvail {
-				fmt.Println("✨ A new version is available!")
+				fmt.Println("↑ A new version is available!")
 				fmt.Println()
 				if info.ReleaseNotes != "" {
 					fmt.Println("Release Notes:")
@@ -163,7 +163,7 @@ func newUpgradeCheckCmd() *cobra.Command {
 				}
 				fmt.Println("Run 'pilot upgrade' to install the update.")
 			} else {
-				fmt.Println("✅ You're running the latest version!")
+				fmt.Println("✓ You're running the latest version!")
 			}
 
 			return nil
@@ -219,7 +219,7 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, skipConfirm bool) e
 	}()
 
 	// Check for updates
-	fmt.Println("🔍 Checking for updates...")
+	fmt.Println("Checking for updates...")
 
 	info, err := upgrader.CheckVersion(ctx)
 	if err != nil {
@@ -228,13 +228,13 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, skipConfirm bool) e
 
 	if !info.UpdateAvail {
 		fmt.Println()
-		fmt.Printf("✅ Already running the latest version (%s)\n", info.Current)
+		fmt.Printf("✓ Already running the latest version (%s)\n", info.Current)
 		return nil
 	}
 
 	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println("🚀 Pilot Upgrade")
+	fmt.Println("Pilot Upgrade")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Printf("   Current:  %s\n", info.Current)
 	fmt.Printf("   New:      %s\n", info.Latest)
@@ -258,10 +258,10 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, skipConfirm bool) e
 		if err != nil {
 			switch {
 			case errors.Is(err, errPromptTimeout):
-				fmt.Println("\n⚠️  Upgrade cancelled (timeout).")
+				fmt.Println("\n!  Upgrade cancelled (timeout).")
 				return fmt.Errorf("upgrade cancelled: %w", err)
 			case errors.Is(err, errPromptCancelled):
-				fmt.Println("\n⚠️  Upgrade cancelled.")
+				fmt.Println("\n!  Upgrade cancelled.")
 				return fmt.Errorf("upgrade cancelled: %w", err)
 			default:
 				fmt.Printf("\nUpgrade cancelled (%v).\n", err)
@@ -291,11 +291,11 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, skipConfirm bool) e
 
 	if err := gracefulUpgrader.PerformUpgrade(ctx, info.LatestRelease, opts); err != nil {
 		fmt.Println()
-		fmt.Printf("❌ Upgrade failed: %v\n", err)
+		fmt.Printf("✗ Upgrade failed: %v\n", err)
 
 		if upgrader.HasBackup() {
 			fmt.Println()
-			fmt.Println("💡 A backup of the previous version exists.")
+			fmt.Println("A backup of the previous version exists.")
 			fmt.Println("   Run 'pilot upgrade rollback' to restore it.")
 		}
 
@@ -304,7 +304,7 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, skipConfirm bool) e
 
 	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Printf("✅ Upgrade complete! (%s → %s)\n", info.Current, info.Latest)
+	fmt.Printf("✓ Upgrade complete! (%s → %s)\n", info.Current, info.Latest)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
 	fmt.Println("Run any pilot command to use the new version.")
@@ -324,20 +324,20 @@ func newUpgradeRollbackCmd() *cobra.Command {
 			}
 
 			if !upgrader.HasBackup() {
-				fmt.Println("❌ No backup found.")
+				fmt.Println("✗ No backup found.")
 				fmt.Println()
 				fmt.Println("   A backup is created automatically during upgrade")
 				fmt.Println("   and removed after successful verification.")
 				return nil
 			}
 
-			fmt.Println("🔄 Rolling back to previous version...")
+			fmt.Println("⟲ Rolling back to previous version...")
 
 			if err := upgrader.Rollback(); err != nil {
 				return fmt.Errorf("rollback failed: %w", err)
 			}
 
-			fmt.Println("✅ Rollback complete!")
+			fmt.Println("✓ Rollback complete!")
 			fmt.Println()
 			fmt.Println("   Restart Pilot to use the previous version:")
 			fmt.Println("   pilot start")
@@ -362,7 +362,7 @@ func newUpgradeCleanupCmd() *cobra.Command {
 				return fmt.Errorf("cleanup failed: %w", err)
 			}
 
-			fmt.Println("✅ Cleanup complete")
+			fmt.Println("✓ Cleanup complete")
 			return nil
 		},
 	}

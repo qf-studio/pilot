@@ -72,7 +72,7 @@ func FormatStatusMessage(status *SetupStatus) string {
 	var sb strings.Builder
 
 	if status.OpenAIKeySet {
-		sb.WriteString("✅ Voice transcription is ready!\n")
+		sb.WriteString("✓ Voice transcription is ready!\n")
 		sb.WriteString("Backend: Whisper API")
 		return sb.String()
 	}

@@ -65,13 +65,13 @@ func newTeamCreateCmd() *cobra.Command {
 				return fmt.Errorf("failed to create team: %w", err)
 			}
 
-			fmt.Println("✅ Team created successfully!")
+			fmt.Println("✓ Team created successfully!")
 			fmt.Println()
 			fmt.Printf("   Team ID:   %s\n", team.ID)
 			fmt.Printf("   Name:      %s\n", team.Name)
 			fmt.Printf("   Owner:     %s (%s)\n", ownerEmail, owner.ID)
 			fmt.Println()
-			fmt.Println("💡 Add members with:")
+			fmt.Println("Add members with:")
 			fmt.Printf("   pilot team member add %s <email> --role developer\n", team.ID[:8])
 
 			return nil
@@ -153,14 +153,14 @@ func newTeamShowCmd() *cobra.Command {
 				return fmt.Errorf("failed to get members: %w", err)
 			}
 
-			fmt.Printf("📋 Team: %s\n", team.Name)
+			fmt.Printf("Team: %s\n", team.Name)
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			fmt.Printf("   ID:         %s\n", team.ID)
 			fmt.Printf("   Created:    %s\n", team.CreatedAt.Format("2006-01-02 15:04"))
 			fmt.Printf("   Max Tasks:  %d concurrent\n", team.Settings.MaxConcurrentTasks)
 			fmt.Println()
 
-			fmt.Printf("👥 Members (%d):\n", len(members))
+			fmt.Printf("Members (%d):\n", len(members))
 			if len(members) == 0 {
 				fmt.Println("   (no members)")
 			} else {
@@ -185,7 +185,7 @@ func newTeamShowCmd() *cobra.Command {
 			accesses, err := service.ListProjectAccess(team.ID)
 			if err == nil && len(accesses) > 0 {
 				fmt.Println()
-				fmt.Printf("📂 Project Access (%d):\n", len(accesses))
+				fmt.Printf("Project Access (%d):\n", len(accesses))
 				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 				_, _ = fmt.Fprintln(w, "   PROJECT PATH\tDEFAULT ROLE")
 				for _, a := range accesses {
@@ -231,7 +231,7 @@ func newTeamDeleteCmd() *cobra.Command {
 			}
 
 			if !force {
-				fmt.Printf("⚠️  This will permanently delete team '%s' and all associated data.\n", team.Name)
+				fmt.Printf("!  This will permanently delete team '%s' and all associated data.\n", team.Name)
 				fmt.Print("   Type 'yes' to confirm: ")
 				var confirm string
 				_, _ = fmt.Scanln(&confirm)
@@ -245,7 +245,7 @@ func newTeamDeleteCmd() *cobra.Command {
 				return fmt.Errorf("failed to delete team: %w", err)
 			}
 
-			fmt.Printf("✅ Team '%s' deleted.\n", team.Name)
+			fmt.Printf("✓ Team '%s' deleted.\n", team.Name)
 			return nil
 		},
 	}
@@ -317,7 +317,7 @@ func newTeamMemberAddCmd() *cobra.Command {
 				return fmt.Errorf("failed to add member: %w", err)
 			}
 
-			fmt.Printf("✅ Added %s to team '%s' as %s\n", email, team.Name, role)
+			fmt.Printf("✓ Added %s to team '%s' as %s\n", email, team.Name, role)
 			fmt.Printf("   Member ID: %s\n", member.ID[:8])
 
 			return nil
@@ -372,7 +372,7 @@ func newTeamMemberRemoveCmd() *cobra.Command {
 				return fmt.Errorf("failed to remove member: %w", err)
 			}
 
-			fmt.Printf("✅ Removed %s from team '%s'\n", memberEmail, team.Name)
+			fmt.Printf("✓ Removed %s from team '%s'\n", memberEmail, team.Name)
 			return nil
 		},
 	}
@@ -428,7 +428,7 @@ func newTeamMemberRoleCmd() *cobra.Command {
 				return fmt.Errorf("failed to update role: %w", err)
 			}
 
-			fmt.Printf("✅ Changed %s role from %s to %s\n", memberEmail, member.Role, newRole)
+			fmt.Printf("✓ Changed %s role from %s to %s\n", memberEmail, member.Role, newRole)
 			return nil
 		},
 	}
@@ -539,7 +539,7 @@ func newTeamAuditCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("📜 Audit Log for '%s' (showing %d entries)\n", team.Name, len(entries))
+			fmt.Printf("Audit Log for '%s' (showing %d entries)\n", team.Name, len(entries))
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 			for _, e := range entries {
@@ -631,7 +631,7 @@ Example:
 				return fmt.Errorf("failed to set project access: %w", err)
 			}
 
-			fmt.Printf("✅ Set project access for '%s' on team '%s' (default role: %s)\n", projectPath, team.Name, defaultRole)
+			fmt.Printf("✓ Set project access for '%s' on team '%s' (default role: %s)\n", projectPath, team.Name, defaultRole)
 			return nil
 		},
 	}
@@ -678,7 +678,7 @@ func newTeamProjectRemoveCmd() *cobra.Command {
 				return fmt.Errorf("failed to remove project access: %w", err)
 			}
 
-			fmt.Printf("✅ Removed project access for '%s' from team '%s'\n", projectPath, team.Name)
+			fmt.Printf("✓ Removed project access for '%s' from team '%s'\n", projectPath, team.Name)
 			return nil
 		},
 	}
@@ -721,7 +721,7 @@ func newTeamProjectListCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("📂 Project Access for '%s' (%d entries):\n\n", team.Name, len(accesses))
+			fmt.Printf("Project Access for '%s' (%d entries):\n\n", team.Name, len(accesses))
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "PROJECT PATH\tDEFAULT ROLE")
