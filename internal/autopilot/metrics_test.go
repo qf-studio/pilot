@@ -143,6 +143,59 @@ func TestSuccessRate(t *testing.T) {
 	}
 }
 
+// TestSuccessRate_ExcludesRateLimited pins TASK-392: rate_limited attempts
+// are a scheduling/backoff signal, not a quality outcome, so they must not
+// dilute the per-attempt success rate denominator.
+func TestSuccessRate_ExcludesRateLimited(t *testing.T) {
+	m := NewMetrics()
+
+	m.RecordIssueProcessed("success")
+	m.RecordIssueProcessed("success")
+	m.RecordIssueProcessed("failed")
+	m.RecordIssueProcessed("rate_limited")
+	m.RecordIssueProcessed("rate_limited")
+	m.RecordIssueProcessed("rate_limited")
+
+	snap := m.Snapshot()
+
+	// Denominator is success+failed=3, NOT +rate_limited=6.
+	want := 2.0 / 3.0
+	if snap.SuccessRate != want {
+		t.Errorf("expected success rate %f (rate_limited excluded), got %f", want, snap.SuccessRate)
+	}
+}
+
+// TestIssueLevelSuccessRate pins TASK-392: a task retried twice before
+// shipping (2 failed attempts + 1 completed attempt, same task_id) counts as
+// 1 shipped / 1 attempted at the issue level — 100%, regardless of how many
+// per-attempt failures preceded it.
+func TestIssueLevelSuccessRate(t *testing.T) {
+	m := NewMetrics()
+
+	// Per-attempt view still records every retry as its own event.
+	m.RecordIssueProcessed("failed")
+	m.RecordIssueProcessed("failed")
+	m.RecordIssueProcessed("success")
+
+	// Issue-level view is deduped by task_id: 1 unique issue, shipped.
+	m.SetIssueLevelCounts(1, 1)
+
+	snap := m.Snapshot()
+
+	if snap.IssuesShipped != 1 || snap.IssuesAttempted != 1 {
+		t.Errorf("expected shipped=1 attempted=1, got shipped=%d attempted=%d", snap.IssuesShipped, snap.IssuesAttempted)
+	}
+	if snap.IssueLevelSuccessRate != 1.0 {
+		t.Errorf("expected issue-level success rate 1.0, got %f", snap.IssueLevelSuccessRate)
+	}
+	// Per-attempt rate is unaffected by the issue-level view and stays a
+	// distinct, lower-fidelity efficiency signal (2 failed attempts still count).
+	wantAttemptRate := 1.0 / 3.0
+	if snap.SuccessRate != wantAttemptRate {
+		t.Errorf("expected per-attempt success rate %f, got %f", wantAttemptRate, snap.SuccessRate)
+	}
+}
+
 func TestAPIErrorRate(t *testing.T) {
 	m := NewMetrics()
 

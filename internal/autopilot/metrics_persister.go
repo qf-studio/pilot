@@ -46,10 +46,25 @@ func (mp *MetricsPersister) Run(ctx context.Context) {
 			mp.persist()
 			return
 		case <-ticker.C:
+			mp.refreshIssueLevelCounts()
 			mp.persist()
 			mp.prune()
 		}
 	}
+}
+
+// refreshIssueLevelCounts re-queries the store for unique-issue attempt/ship
+// counts and updates the gauge. Unlike the Counter-backed metrics (tokens,
+// cost, executions), this is a point-in-time re-derivation each cycle rather
+// than an incremental hydration, since dedupe-by-task_id can't be computed
+// from deltas alone. TASK-392.
+func (mp *MetricsPersister) refreshIssueLevelCounts() {
+	counts, err := mp.store.GetIssueLevelCounts("")
+	if err != nil {
+		mp.log.Warn("failed to refresh issue-level counts", slog.Any("error", err))
+		return
+	}
+	mp.controller.Metrics().SetIssueLevelCounts(int64(counts.Shipped), int64(counts.Attempted))
 }
 
 func (mp *MetricsPersister) persist() {

@@ -108,6 +108,104 @@ func TestHydrateFromStore_PerLabelValues(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_NonFailuresExcludedFromFailed pins TASK-392: declined/
+// no_op/stalled/rate_limited/infra/skipped outcomes must not be folded into
+// the hydrated "failed" bucket, mirroring the dispatcher's live taxonomy
+// (TASK-358) where those statuses are distinct from genuine failures.
+func TestHydrateFromStore_NonFailuresExcludedFromFailed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	statuses := []struct {
+		id, status string
+	}{
+		{"nf-1", "completed"},
+		{"nf-2", "failed"},
+		{"nf-3", "declined"},
+		{"nf-4", "no_op"},
+		{"nf-5", "stalled"},
+		{"nf-6", "rate_limited"},
+		{"nf-7", "infra"},
+		{"nf-8", "skipped"},
+	}
+	for _, s := range statuses {
+		if err := store.SaveExecution(&memory.Execution{
+			ID: s.id, TaskID: "TASK-" + s.id, ProjectPath: "/p", Status: s.status,
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", s.id, err)
+		}
+	}
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	snap := metrics.Snapshot()
+
+	// Only the single genuine "failed" row counts as failed — the five
+	// non-failure statuses (declined/no_op/stalled/infra/skipped) must not
+	// be folded in, and rate_limited hydrates into its own key.
+	if got := snap.IssuesProcessed["failed"]; got != 1 {
+		t.Errorf("IssuesProcessed[failed] = %d, want 1 (non-failures must not collapse in)", got)
+	}
+	if got := snap.IssuesProcessed["success"]; got != 1 {
+		t.Errorf("IssuesProcessed[success] = %d, want 1", got)
+	}
+	if got := snap.IssuesProcessed["rate_limited"]; got != 1 {
+		t.Errorf("IssuesProcessed[rate_limited] = %d, want 1", got)
+	}
+}
+
+// TestHydrateFromStore_IssueLevelCounts pins TASK-392: a task retried twice
+// before shipping (2 failed rows + 1 completed row, same task_id) hydrates to
+// issue-level success 100%, distinct from the per-attempt view.
+func TestHydrateFromStore_IssueLevelCounts(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	execs := []*memory.Execution{
+		{ID: "il-1", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "failed"},
+		{ID: "il-2", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "failed"},
+		{ID: "il-3", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "completed"},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.ID, err)
+		}
+	}
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	snap := metrics.Snapshot()
+
+	if snap.IssuesAttempted != 1 {
+		t.Errorf("IssuesAttempted = %d, want 1 (deduped by task_id)", snap.IssuesAttempted)
+	}
+	if snap.IssuesShipped != 1 {
+		t.Errorf("IssuesShipped = %d, want 1", snap.IssuesShipped)
+	}
+	if snap.IssueLevelSuccessRate != 1.0 {
+		t.Errorf("IssueLevelSuccessRate = %f, want 1.0", snap.IssueLevelSuccessRate)
+	}
+
+	// Per-attempt semantics are unchanged by the issue-level fix: rate_limited
+	// is still excluded from the denominator, and every attempt still counts.
+	wantAttemptRate := 1.0 / 3.0
+	if snap.SuccessRate != wantAttemptRate {
+		t.Errorf("SuccessRate = %f, want %f", snap.SuccessRate, wantAttemptRate)
+	}
+}
+
 // TestHydrateFromStore_NilStoreIsNoop verifies hydration is a no-op (not an
 // error) when no store is configured, matching how other optional
 // store-backed features degrade in this codebase.

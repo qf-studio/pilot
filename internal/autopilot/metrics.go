@@ -70,6 +70,12 @@ type Metrics struct {
 	QueueDepth       int // issues with `pilot` label, no `pilot-in-progress`
 	FailedQueueDepth int // issues with `pilot-failed`
 
+	// Issue-level outcome gauges (TASK-392): unique task_id counts, deduped
+	// across retry attempts. Contrast with IssuesProcessed, which is
+	// per-attempt (a task retried twice before shipping contributes 3 events).
+	IssuesShipped   int64 // distinct task_id that reached status='completed'
+	IssuesAttempted int64 // distinct task_id with at least one execution
+
 	// Histograms (stored as recent samples for summary stats)
 	PRTimeToMerge      []time.Duration
 	CIWaitDurations    []time.Duration
@@ -273,6 +279,16 @@ func (m *Metrics) SetFailedQueueDepth(depth int) {
 	m.FailedQueueDepth = depth
 }
 
+// SetIssueLevelCounts updates the issue-level outcome gauges from a
+// store.IssueLevelCounts query (unique task_id, deduped across retries).
+// TASK-392.
+func (m *Metrics) SetIssueLevelCounts(shipped, attempted int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.IssuesShipped = shipped
+	m.IssuesAttempted = attempted
+}
+
 // --- Histogram recording ---
 
 // RecordPRTimeToMerge records the duration from PR creation to merge.
@@ -332,6 +348,8 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		ActivePRsByStage:              copyStageIntMap(m.ActivePRsByStage),
 		QueueDepth:                    m.QueueDepth,
 		FailedQueueDepth:              m.FailedQueueDepth,
+		IssuesShipped:                 m.IssuesShipped,
+		IssuesAttempted:               m.IssuesAttempted,
 		TotalActivePRs:                sumStageMap(m.ActivePRsByStage),
 		AvgPRTimeToMerge:              avgDuration(m.PRTimeToMerge),
 		AvgCIWaitDuration:             avgDuration(m.CIWaitDurations),
@@ -340,13 +358,29 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		SnapshotAt:                    time.Now(),
 	}
 
-	// Calculate success rate
+	// Calculate per-attempt success rate. rate_limited is excluded from the
+	// denominator: it is a scheduling/backoff signal (we deferred the
+	// attempt), not a quality outcome, so it isn't a "failure" the rate
+	// should be penalized for (TASK-392). Any other keys IssuesProcessed
+	// might carry (currently only success/failed/rate_limited are ever
+	// recorded — see RecordIssueProcessed call sites) are included, matching
+	// prior behavior for genuine outcomes.
 	total := int64(0)
-	for _, v := range m.IssuesProcessed {
+	for k, v := range m.IssuesProcessed {
+		if k == "rate_limited" {
+			continue
+		}
 		total += v
 	}
 	if total > 0 {
 		snap.SuccessRate = float64(m.IssuesProcessed["success"]) / float64(total)
+	}
+
+	// Issue-level success rate: unique issues shipped / unique issues
+	// attempted, deduped across retries (TASK-392). Distinct from
+	// SuccessRate above, which is a per-attempt efficiency signal.
+	if snap.IssuesAttempted > 0 {
+		snap.IssueLevelSuccessRate = float64(snap.IssuesShipped) / float64(snap.IssuesAttempted)
 	}
 
 	return snap
@@ -396,13 +430,16 @@ type MetricsSnapshot struct {
 	TotalActivePRs   int
 	QueueDepth       int
 	FailedQueueDepth int
+	IssuesShipped    int64 // TASK-392: distinct task_id reaching 'completed'
+	IssuesAttempted  int64 // TASK-392: distinct task_id with any execution
 
 	// Computed summaries
-	SuccessRate          float64
-	AvgPRTimeToMerge     time.Duration
-	AvgCIWaitDuration    time.Duration
-	AvgExecutionDuration time.Duration
-	APIErrorRate         float64 // errors per minute (5m window)
+	SuccessRate           float64 // per-attempt; excludes rate_limited (TASK-392)
+	IssueLevelSuccessRate float64 // unique-issue, deduped across retries (TASK-392)
+	AvgPRTimeToMerge      time.Duration
+	AvgCIWaitDuration     time.Duration
+	AvgExecutionDuration  time.Duration
+	APIErrorRate          float64 // errors per minute (5m window)
 
 	SnapshotAt time.Time
 }
