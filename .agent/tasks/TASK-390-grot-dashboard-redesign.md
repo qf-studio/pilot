@@ -37,7 +37,7 @@ and a semantic glyph vocabulary instead of emoji.
    - Vocabulary: `●` active `○` inactive `◌` waiting `▸` intake `✓`/`✗` outcome
      `!` warning `↑` update `⟲` retry/restart `·` separator.
 
-3. **feat(dashboard): grot row grammar for banner, history, autopilot**
+3. `1c8edb12` — **feat(dashboard): grot row grammar for banner, history, autopilot**
    - Banner → single grot line: ` pilot ●` wordmark liveness dot (sage,
      pulses on `sparklineTick`) · version · env · model, `up Xm · HH:MM utc`
      right. Narrow widths drop env→model segments, never wordmark/clock.
