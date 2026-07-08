@@ -1497,9 +1497,17 @@ func (m Model) renderDashboard() string {
 	b.WriteString(m.renderHistory())
 	b.WriteString("\n")
 
-	// Logs (if enabled)
+	// Logs (if enabled) — the flex panel: stretches to the bottom of the
+	// terminal in full-width and side-by-side layouts. In stacked mode
+	// (narrow terminal, git graph below) it stays content-sized so the
+	// graph keeps its height; history/autopilot stay dynamic either way.
 	if m.showLogs {
-		b.WriteString(m.renderLogs())
+		flex := 0
+		if m.height > 1 && !m.isStackedMode() {
+			used := strings.Count(b.String(), "\n")
+			flex = m.height - 1 - used // reserve the help footer line
+		}
+		b.WriteString(m.renderLogs(flex))
 		b.WriteString("\n")
 	}
 
@@ -2342,30 +2350,45 @@ func formatTimeAgo(t time.Time) string {
 	return t.Format("Jan 2")
 }
 
-// renderLogs renders the logs section
-func (m Model) renderLogs() string {
-	var content strings.Builder
+// logsFlexMinHeight is the smallest total panel height worth stretching to:
+// 2 borders + 2 padding lines + 1 log line.
+const logsFlexMinHeight = 5
+
+// renderLogs renders the logs section. flexHeight > 0 stretches the panel to
+// exactly that many terminal lines (log tail fills the space, blank-padded
+// below); flexHeight <= 0 keeps the content-sized panel with a 10-line tail —
+// used in stacked mode so the git graph below keeps its room.
+func (m Model) renderLogs(flexHeight int) string {
 	tw := m.effectivePanelTotalWidth()
 	iw := tw - 4
 	w := iw - 4 // Account for indent (2 spaces each side)
 
+	capacity := 10
+	flex := flexHeight >= logsFlexMinHeight
+	if flex {
+		capacity = flexHeight - 4 // 2 borders + 2 padding lines
+	}
+
+	var lines []string
 	if len(m.logs) == 0 {
-		content.WriteString("  No logs yet")
+		lines = append(lines, "  No logs yet")
 	} else {
-		start := len(m.logs) - 10
+		start := len(m.logs) - capacity
 		if start < 0 {
 			start = 0
 		}
-
-		for i, log := range m.logs[start:] {
-			if i > 0 {
-				content.WriteString("\n")
-			}
-			content.WriteString("  " + truncateVisual(log, w))
+		for _, log := range m.logs[start:] {
+			lines = append(lines, "  "+truncateVisual(log, w))
 		}
 	}
-
-	return renderPanel("LOGS", content.String(), tw)
+	if flex {
+		for len(lines) < capacity {
+			lines = append(lines, "")
+		}
+		padded := "\n" + strings.Join(lines, "\n") + "\n"
+		return render.Panel("logs", padded, tw, flexHeight, panelChrome)
+	}
+	return renderPanel("LOGS", strings.Join(lines, "\n"), tw)
 }
 
 // updateMetricsCardMsg updates the metrics card data

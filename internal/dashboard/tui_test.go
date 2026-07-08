@@ -68,6 +68,48 @@ func TestBuildStatCard(t *testing.T) {
 	}
 }
 
+// Logs is the flex panel: in full-width / side-by-side layouts it stretches
+// so its bottom border sits directly above the help footer instead of a
+// ghost-line void; the log tail grows to fill the space.
+func TestLogsPanelFlexHeight(t *testing.T) {
+	m := NewModel("test")
+	m.width = 100
+	m.height = 40
+	m.logs = []string{"alpha", "beta"}
+
+	out := m.View()
+	lines := strings.Split(out, "\n")
+	if len(lines) != m.height {
+		t.Fatalf("View() height = %d lines, want %d", len(lines), m.height)
+	}
+	// Last line is the help footer; the line above it must be the logs
+	// panel's bottom border, not blank padding.
+	if !strings.Contains(lines[m.height-2], "╰") {
+		t.Errorf("expected logs bottom border above help footer, got %q", lines[m.height-2])
+	}
+	if !strings.Contains(out, "alpha") || !strings.Contains(out, "beta") {
+		t.Error("log lines missing from flexed panel")
+	}
+}
+
+// In stacked mode (graph visible, terminal too narrow for side-by-side) the
+// logs panel stays content-sized so the git graph below keeps its height.
+func TestLogsPanelStackedStaysCompact(t *testing.T) {
+	m := NewModel("test")
+	m.width = 60 // < panelTotalWidth+1+20 → stacked once the graph is visible
+	m.height = 50
+	m.logs = []string{"alpha"}
+
+	m.gitGraphMode = GitGraphVisible
+	stacked := strings.Count(m.renderDashboard(), "\n")
+	m.gitGraphMode = GitGraphHidden
+	flexed := strings.Count(m.renderDashboard(), "\n")
+
+	if stacked >= flexed {
+		t.Errorf("stacked dashboard (%d lines) should be shorter than flexed (%d)", stacked, flexed)
+	}
+}
+
 // TASK-390: two-series stacked variant (tokens cached/fresh, queue ✓/✗)
 // keeps the exact card geometry of buildStatCard and fills the band even
 // with a 7-point history (BrailleStacked right-aligns unstretched series).
