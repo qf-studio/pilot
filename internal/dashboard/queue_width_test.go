@@ -67,7 +67,9 @@ func TestRenderTask_TitleExpandsWithWidth(t *testing.T) {
 
 // TestRenderTask_NarrowRegressionPin pins the exact byte output at iw=65 (the
 // default, non-stacked panel content width) so the width-aware refactor does
-// not alter today's rendering for the common case.
+// not alter today's rendering for the common case. TASK-390/GH-4064 moved the
+// bar column from a bracketed block-char bar to the grot segment meter
+// (■■■□□, no brackets) — same 16-cell column width, same alignment.
 func TestRenderTask_NarrowRegressionPin(t *testing.T) {
 	m := NewModel("test")
 	task := TaskDisplay{
@@ -79,15 +81,17 @@ func TestRenderTask_NarrowRegressionPin(t *testing.T) {
 	}
 
 	row := m.renderTask(task, false, 0, 65)
-	const want = "  ✓ done    GH-1234 a very long title...  [██████████████]   #42"
+	const want = "  ✓ done    GH-1234 a very long title...  ■■■■■■■■■■■■■■■■   #42"
 	if row != want {
 		t.Errorf("narrow (iw=65) rendering changed:\ngot:  %q\nwant: %q", row, want)
 	}
 }
 
 // TestRenderTask_BarColumnsAligned checks all five states keep the same
-// 16-char bracketed bar column regardless of panel width (bar-width scaling
-// is explicitly out of scope for GH-3970).
+// 16-cell grot segment-meter bar column (no brackets) regardless of panel
+// width (bar-width scaling is explicitly out of scope for GH-3970). Fill
+// styling is stripped under go test (no TTY), so this asserts cell count and
+// glyph, not color — see grot_chrome_test.go for the width-invariant pattern.
 func TestRenderTask_BarColumnsAligned(t *testing.T) {
 	m := NewModel("test")
 	statuses := []string{"done", "running", "queued", "failed", "pending"}
@@ -96,14 +100,11 @@ func TestRenderTask_BarColumnsAligned(t *testing.T) {
 		for _, status := range statuses {
 			task := TaskDisplay{ID: "GH-1", Title: "t", Status: status, Progress: 50, Phase: "x"}
 			row := m.renderTask(task, false, 0, iw)
-			open := strings.Index(row, "[")
-			closeIdx := strings.Index(row, "]")
-			if open == -1 || closeIdx == -1 {
-				t.Fatalf("iw=%d status=%s: missing bar brackets in %q", iw, status, row)
+			if strings.ContainsAny(row, "[]") {
+				t.Errorf("iw=%d status=%s: bracket bar found in %q", iw, status, row)
 			}
-			barWidth := lipgloss.Width(row[open : closeIdx+1])
-			if barWidth != 16 {
-				t.Errorf("iw=%d status=%s: bar column width = %d, want 16", iw, status, barWidth)
+			if n := strings.Count(row, "■"); n != 16 {
+				t.Errorf("iw=%d status=%s: meter cell count = %d, want 16", iw, status, n)
 			}
 		}
 	}
