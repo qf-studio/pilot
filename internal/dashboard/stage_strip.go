@@ -63,6 +63,45 @@ type StageInfo struct {
 	Label   string // stage name that defined the rung (e.g. "ci_failed")
 	Failed  bool   // rung-defining stage was terminal-failure, or execution failed
 	Known   bool   // false when no events were recorded
+	Muted   bool   // terminal non-ladder outcome (skipped/no_op/…): dim meter
+}
+
+// displayStatus maps an executions.status value to the history-row status
+// vocabulary. "completed" renders as success; every other value (failed,
+// skipped, no_op, declined, rate_limited, infra, stalled, running, pending)
+// passes through so statusIconStyle picks its own glyph. Collapsing every
+// non-failed status to success is how a skipped run — and a still-running
+// one — rendered ✓ in HISTORY (GH-3927 / GH-4064).
+func displayStatus(execStatus string) string {
+	if execStatus == "completed" {
+		return "success"
+	}
+	return execStatus
+}
+
+// mutedOutcomes are terminal statuses that never name a ladder rung: the row
+// label shows the outcome itself (a skipped run must not read "running") and
+// the meter renders muted. stalled is excluded — it keeps the rung label to
+// show where the run died, like failed.
+var mutedOutcomes = map[string]bool{
+	"skipped":      true,
+	"no_op":        true,
+	"declined":     true,
+	"rate_limited": true,
+	"infra":        true,
+}
+
+// stageInfoForExecution derives the history-row StageInfo from the event
+// timeline plus the authoritative executions.status. The label override is
+// status-driven, never event-driven, so GH-4023's stray-late-event guard in
+// buildStageInfo is untouched.
+func stageInfoForExecution(events []*memory.Event, status string) StageInfo {
+	info := buildStageInfo(events, status == "failed" || status == "stalled")
+	if mutedOutcomes[status] && info.Known {
+		info.Label = truncateString(status, maxStageStripLabelWidth)
+		info.Muted = true
+	}
+	return info
 }
 
 // buildStageInfo reduces an execution's execution_events timeline to a

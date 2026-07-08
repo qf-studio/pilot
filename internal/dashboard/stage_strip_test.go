@@ -223,3 +223,67 @@ func TestStageLadderPosition_AllStages(t *testing.T) {
 		}
 	}
 }
+
+// GH-3927 regression: a skipped execution (events end in failed → skipped)
+// must not render as a succeeded run stuck at "running" — the authoritative
+// executions.status owns the label and mutes the meter. Event stream is the
+// verbatim timeline from the production run that surfaced the bug.
+func TestStageInfoForExecution_SkippedRun(t *testing.T) {
+	events := []*memory.Event{
+		evt(memory.StageRunning),
+		evt(memory.StageSpecValidated),
+		evt(memory.StageClaudeStarted),
+		evt(memory.StageFailed),
+		evt(memory.StageSkipped),
+	}
+	got := stageInfoForExecution(events, "skipped")
+	want := StageInfo{Reached: 2, Label: "skipped", Failed: false, Known: true, Muted: true}
+	if got != want {
+		t.Errorf("skipped run: got %+v, want %+v", got, want)
+	}
+}
+
+// GH-4064 regression: a genuinely running execution keeps its ladder label
+// (not muted) — the row glyph ● carries the live state.
+func TestStageInfoForExecution_RunningPassthrough(t *testing.T) {
+	events := []*memory.Event{
+		evt(memory.StageRunning),
+		evt(memory.StageSpecValidated),
+	}
+	got := stageInfoForExecution(events, "running")
+	want := StageInfo{Reached: 2, Label: "running", Failed: false, Known: true, Muted: false}
+	if got != want {
+		t.Errorf("running run: got %+v, want %+v", got, want)
+	}
+}
+
+// stalled keeps the rung label (shows where it died) and flags failure,
+// like failed — it is deliberately not a muted outcome.
+func TestStageInfoForExecution_StalledKeepsRung(t *testing.T) {
+	events := []*memory.Event{
+		evt(memory.StageSpecValidated),
+		evt(memory.StageRunning),
+		evt(memory.StageCommit),
+	}
+	got := stageInfoForExecution(events, "stalled")
+	want := StageInfo{Reached: 3, Label: "commit", Failed: true, Known: true, Muted: false}
+	if got != want {
+		t.Errorf("stalled run: got %+v, want %+v", got, want)
+	}
+}
+
+func TestDisplayStatus(t *testing.T) {
+	cases := map[string]string{
+		"completed":    "success",
+		"failed":       "failed",
+		"skipped":      "skipped",
+		"no_op":        "no_op",
+		"running":      "running",
+		"rate_limited": "rate_limited",
+	}
+	for in, want := range cases {
+		if got := displayStatus(in); got != want {
+			t.Errorf("displayStatus(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
