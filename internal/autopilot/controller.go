@@ -3207,6 +3207,15 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 		"branch", prState.BranchName,
 	)
 
+	// GH-4069: record exactly once per PR-conflict event. handleMergeConflict
+	// is re-entered on every poll tick while the conflict persists (and from
+	// multiple call sites), so guard on ConflictRecorded rather than
+	// incrementing unconditionally.
+	if !prState.ConflictRecorded {
+		c.metrics.RecordPRConflicting()
+		prState.ConflictRecorded = true
+	}
+
 	// Try GitHub auto-update first (merge-from-base, not true rebase)
 	err := c.ghClient.UpdatePullRequestBranch(ctx, c.owner, c.repo, prState.PRNumber)
 	if err == nil {

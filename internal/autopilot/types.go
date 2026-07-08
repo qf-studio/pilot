@@ -820,6 +820,15 @@ type PRState struct {
 	// release content. In-memory only — restored the same way as ScopeTitle
 	// (GH-3990).
 	ScopeMemberPRs []int
+	// ConflictRecorded is true once handleMergeConflict has incremented
+	// pilot_prs_conflicting_total for this PR. handleMergeConflict can be
+	// re-entered many times for the same PR (each poll tick while the
+	// conflict persists, plus the pre-CI and post-CI call sites), so this
+	// guards against inflating the counter beyond one increment per
+	// PR-conflict event (TASK-391). In-memory only: a restart re-detects
+	// the conflict via isMergeConflict and may re-record once, which is an
+	// acceptable trade-off for a low-cardinality observability counter.
+	ConflictRecorded bool
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -864,6 +873,7 @@ func (ps *PRState) snapshot() *PRState {
 		TerminalLabel:           ps.TerminalLabel,
 		ScopeKey:                ps.ScopeKey,
 		ScopeTitle:              ps.ScopeTitle,
+		ConflictRecorded:        ps.ConflictRecorded,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.
