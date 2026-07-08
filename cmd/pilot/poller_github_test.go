@@ -158,7 +158,7 @@ func TestGithubHandlerSDKFunctionInvariants(t *testing.T) {
 	if !strings.Contains(body, "taskID := ev.SequenceID") {
 		t.Error("handleGithubIssueEventSDK must derive taskID from ev.SequenceID verbatim")
 	}
-	if !strings.Contains(body, `SourceAdapter: "github"`) {
+	if !strings.Contains(strings.Join(strings.Fields(body), " "), `SourceAdapter: "github"`) {
 		t.Error(`handleGithubIssueEventSDK must set SourceAdapter: "github"`)
 	}
 	if strings.Contains(body, `"GH-`+`%d"`) {

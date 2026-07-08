@@ -185,20 +185,28 @@ func parseAutopilotIteration(body string) int {
 // Uses the global teamAdapter (set at startup). Returns "" if no adapter is configured
 // or no matching member is found — callers treat "" as "skip RBAC".
 func resolveGitHubMemberID(issue *github.Issue) string {
+	return resolveGitHubMemberIDByLogin(issue.User.Login, issue.User.Email)
+}
+
+// resolveGitHubMemberIDByLogin resolves a GitHub login/email pair to a team member ID
+// (GH-634). Factored out of resolveGitHubMemberID so the SDK-poller path (which fetches
+// issue authorship via studio-sdk's githubSDK.Issue rather than the legacy github.Issue)
+// can reuse the same RBAC lookup (GH-4050).
+func resolveGitHubMemberIDByLogin(login, email string) string {
 	if teamAdapter == nil {
 		return ""
 	}
-	memberID, err := teamAdapter.ResolveGitHubIdentity(issue.User.Login, issue.User.Email)
+	memberID, err := teamAdapter.ResolveGitHubIdentity(login, email)
 	if err != nil {
 		logging.WithComponent("teams").Warn("failed to resolve GitHub identity",
-			slog.String("github_user", issue.User.Login),
+			slog.String("github_user", login),
 			slog.Any("error", err),
 		)
 		return ""
 	}
 	if memberID != "" {
 		logging.WithComponent("teams").Info("resolved GitHub user to team member",
-			slog.String("github_user", issue.User.Login),
+			slog.String("github_user", login),
 			slog.String("member_id", memberID),
 		)
 	}
@@ -1192,6 +1200,22 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	taskDesc := fmt.Sprintf("GitHub Issue %s: %s\n\n%s", taskID, title, ev.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
+	// GH-489/GH-1267: For autopilot-fix issues, reuse the original branch so the fix
+	// lands on the same branch as the failed PR, and extract the PR number for
+	// --from-pr session resumption. Mirrors handleGitHubIssueWithResult (GH-4050).
+	var fromPR int
+	for _, label := range ev.Labels {
+		if label == "autopilot-fix" {
+			if parsed := parseAutopilotBranch(ev.Body); parsed != "" {
+				branchName = parsed
+			}
+			if pr := parseAutopilotPR(ev.Body); pr > 0 {
+				fromPR = pr
+			}
+			break
+		}
+	}
+
 	// ResolveRepoForEvent is tolerated like the other SDK handlers; ErrRepoNotResolved is non-fatal here.
 	_, repoOwner, repoName, resolveErr := sdkshim.ResolveRepoForEvent(cfg, "github", ev)
 	if resolveErr != nil && resolveErr.Error() != sdkshim.ErrRepoNotResolved.Error() {
@@ -1201,40 +1225,61 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		)
 	}
 
-	// M7 4d.3: pre-dispatch spec quality gate on the SDK path (GH-2619 parity —
-	// previously exclusive to the legacy in-tree handler). The issue is
-	// reconstructed from the event; labels ride along so the
-	// pilot-skip-spec-check opt-out works.
+	// GH-4050: Fetch the real issue so State (and author, for MemberID) flow into the
+	// task the same way the legacy in-tree path sets them. sdkcore.IssueEvent doesn't
+	// surface issue state — without it, an empty State + empty Labels combo bypasses
+	// the epic.go parent-done gate and permits spurious sub-issue spawning on
+	// re-dispatch of a closed/merged parent (GH-201 OAuth dispatch loop).
+	issueNum, _ := strconv.Atoi(ev.IssueID)
+	var issueState, memberID string
+	var specClient *githubSDK.Client
 	if resolveErr == nil && repoOwner != "" && repoName != "" {
 		if ghToken, _ := resolveGitHubToken(cfg); ghToken != "" {
-			specClient := githubSDK.NewClient(ghToken)
-			issueNum, _ := strconv.Atoi(ev.IssueID)
-			specLabels := make([]githubSDK.Label, 0, len(ev.Labels))
-			for _, l := range ev.Labels {
-				specLabels = append(specLabels, githubSDK.Label{Name: l})
-			}
-			specIssue := &githubSDK.Issue{Number: issueNum, Title: title, Body: ev.Body, Labels: specLabels}
-			parentResolver := func(parentNum int) (*githubSDK.Issue, error) {
-				return specClient.GetIssue(ctx, repoOwner, repoName, parentNum)
-			}
-			if specResult := ghissue.ValidateSpec(specIssue, parentResolver); !specResult.Valid && specResult.SkipReason == "" {
-				applySpecGuardSDK(ctx, specClient, repoOwner, repoName, specIssue, specResult.FailureReasons)
-				return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: "spec_incomplete"}, nil
+			specClient = githubSDK.NewClient(ghToken)
+			if realIssue := fetchGithubIssueForSDKTask(ctx, specClient, repoOwner, repoName, issueNum, taskID); realIssue != nil {
+				issueState = realIssue.State
+				memberID = resolveGitHubMemberIDByLogin(realIssue.User.Login, realIssue.User.Email)
 			}
 		}
 	}
 
+	// M7 4d.3: pre-dispatch spec quality gate on the SDK path (GH-2619 parity —
+	// previously exclusive to the legacy in-tree handler). The issue is
+	// reconstructed from the event; labels ride along so the
+	// pilot-skip-spec-check opt-out works.
+	if specClient != nil {
+		specLabels := make([]githubSDK.Label, 0, len(ev.Labels))
+		for _, l := range ev.Labels {
+			specLabels = append(specLabels, githubSDK.Label{Name: l})
+		}
+		specIssue := &githubSDK.Issue{Number: issueNum, Title: title, Body: ev.Body, Labels: specLabels}
+		parentResolver := func(parentNum int) (*githubSDK.Issue, error) {
+			return specClient.GetIssue(ctx, repoOwner, repoName, parentNum)
+		}
+		if specResult := ghissue.ValidateSpec(specIssue, parentResolver); !specResult.Valid && specResult.SkipReason == "" {
+			applySpecGuardSDK(ctx, specClient, repoOwner, repoName, specIssue, specResult.FailureReasons)
+			return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: "spec_incomplete"}, nil
+		}
+	}
+
 	task := &executor.Task{
-		ID:            taskID,
-		Title:         title,
-		Description:   taskDesc,
-		ProjectPath:   projectPath,
-		Branch:        branchName,
-		CreatePR:      true,
-		SourceAdapter: "github",
-		SourceIssueID: ev.IssueID,
-		Priority:      sdkshim.PriorityFromSDK(ev.Priority),
-		BaseBranch:    resolveProjectBaseBranch(cfg, projectPath), // GH-2290
+		ID:                 taskID,
+		Title:              title,
+		Description:        taskDesc,
+		ProjectPath:        projectPath,
+		Branch:             branchName,
+		CreatePR:           true,
+		SourceAdapter:      "github",
+		SourceIssueID:      ev.IssueID,
+		Priority:           sdkshim.PriorityFromSDK(ev.Priority),
+		BaseBranch:         resolveProjectBaseBranch(cfg, projectPath), // GH-2290
+		MemberID:           memberID,                                   // GH-634: RBAC lookup
+		Labels:             ev.Labels,                                  // GH-727: flow labels for complexity/no-decompose classifier
+		AcceptanceCriteria: github.ExtractAcceptanceCriteria(ev.Body),  // GH-920: acceptance criteria in prompts
+		FromPR:             fromPR,                                     // GH-1267: session resumption from PR context
+		// Propagate parent state so isParentDone() can refuse sub-issue creation
+		// when the daemon re-dispatches a closed/merged parent (GH-201 gate parity).
+		State: issueState,
 	}
 	if resolveErr == nil && repoOwner != "" && repoName != "" {
 		// M7 4d.4: lets the runner select the startup-registered SDK PR creator
@@ -1272,6 +1317,24 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	}
 
 	return issueResult, execErr
+}
+
+// fetchGithubIssueForSDKTask fetches the real issue via the studio-sdk GitHub client so
+// State (and author, for MemberID resolution) can flow into the executor.Task the SDK-poller
+// path constructs (GH-4050). sdkcore.IssueEvent does not surface issue state itself, so
+// without this fetch the epic.go parent-done gate silently no-ops on every SDK-dispatched
+// task. Returns nil on any fetch error — best-effort, matching the existing spec-guard
+// fetch tolerance elsewhere in this file.
+func fetchGithubIssueForSDKTask(ctx context.Context, client *githubSDK.Client, owner, repo string, issueNum int, taskID string) *githubSDK.Issue {
+	issue, err := client.GetIssue(ctx, owner, repo, issueNum)
+	if err != nil {
+		logging.WithComponent("github").Warn("failed to fetch issue for state/member resolution",
+			slog.String("task_id", taskID),
+			slog.Any("error", err),
+		)
+		return nil
+	}
+	return issue
 }
 
 // githubIssueURL builds the HTML URL for a GitHub issue from the default adapter repo
