@@ -2298,6 +2298,136 @@ func (s *Store) GetLifetimeCounterBaselines() (*LifetimeCounterBaselines, error)
 	return baselines, nil
 }
 
+// LifetimePRCounters holds lifetime PR-family counter baselines derived from
+// the durable execution_events ledger (GH-4093, follow-up to GH-4029/GH-4041).
+// PR #4043 deliberately skipped hydrating pilot_prs_merged_total/
+// pilot_prs_failed_total on the premise that no persisted state survives a
+// restart — that premise was wrong for these two: autopilot_pr_state rows are
+// deleted on PR completion (controller.go persistRemovePR), but every
+// merged/failed transition is also durably logged to execution_events
+// (GH-3844/TASK-379 C3), which is append-only and never pruned.
+type LifetimePRCounters struct {
+	Merged int64
+	Failed int64
+}
+
+// GetLifetimePRCounters queries execution_events for lifetime pilot_prs_merged_total
+// / pilot_prs_failed_total baselines, deduped per execution_id (COUNT(DISTINCT),
+// not COUNT(*)) so a stage logged more than once for the same execution is not
+// double counted.
+//
+// "failed" is ambiguous in the raw ledger: the executor writes stage='failed'
+// for executions that never produced a PR (Claude Code failed before any PR
+// existed — internal/executor/runner.go, dispatcher.go), while the autopilot
+// controller writes stage='failed' for PRs that failed after being created
+// (CI failure, merge failure, release failure — controller.go
+// executionEventStageFor). Both share the same execution_events.stage value,
+// so counting all 'failed' rows would conflate "task never shipped a PR" with
+// "PR-family failure" and wildly overcount pilot_prs_failed_total (most
+// executions fail during coding, not PR review). Restricting to execution_ids
+// that also have a 'pr_created' row scopes both merged and failed to genuine
+// PR outcomes, matching what RecordPRMerged/RecordPRFailed count live.
+func (s *Store) GetLifetimePRCounters() (*LifetimePRCounters, error) {
+	counters := &LifetimePRCounters{}
+
+	rows, err := s.db.Query(`
+		SELECT stage, COUNT(DISTINCT execution_id)
+		FROM execution_events
+		WHERE stage IN (?, ?)
+			AND execution_id IN (
+				SELECT execution_id FROM execution_events WHERE stage = ?
+			)
+		GROUP BY stage
+	`, string(StageMerged), string(StageFailed), string(StagePRCreated))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get lifetime PR counters: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var stage string
+		var count int64
+		if err := rows.Scan(&stage, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan lifetime PR counter row: %w", err)
+		}
+		switch Stage(stage) {
+		case StageMerged:
+			counters.Merged = count
+		case StageFailed:
+			counters.Failed = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate lifetime PR counters: %w", err)
+	}
+
+	return counters, nil
+}
+
+// earliestStageOccurrences returns, per execution_id, the earliest occurred_at
+// for the given stage. Selects the raw column directly (not through a
+// GROUP BY/MIN() aggregate) — the sqlite driver only recovers the DATETIME
+// declared-type for direct column reads; scanning an aggregate result into
+// time.Time fails, so ORDER BY + first-write-wins in Go stands in for MIN().
+func (s *Store) earliestStageOccurrences(stage Stage) (map[string]time.Time, error) {
+	rows, err := s.db.Query(`
+		SELECT execution_id, occurred_at
+		FROM execution_events
+		WHERE stage = ?
+		ORDER BY occurred_at ASC, id ASC
+	`, string(stage))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query %s stage occurrences: %w", stage, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string]time.Time)
+	for rows.Next() {
+		var execID string
+		var occurredAt time.Time
+		if err := rows.Scan(&execID, &occurredAt); err != nil {
+			return nil, fmt.Errorf("failed to scan %s stage occurrence: %w", stage, err)
+		}
+		if _, exists := out[execID]; !exists {
+			out[execID] = occurredAt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate %s stage occurrences: %w", stage, err)
+	}
+	return out, nil
+}
+
+// GetLifetimePRTimeToMerge derives pilot_pr_time_to_merge_seconds histogram
+// samples from execution_events timestamps: for every execution_id that has
+// both a 'pr_created' and a 'merged' row, the sample is the earliest 'merged'
+// occurred_at minus the earliest 'pr_created' occurred_at (GH-4093). Samples
+// with a non-positive duration are dropped defensively — they should not
+// occur (occurred_at is a monotonic write-time clock per InsertExecutionEvent)
+// but a negative bucket observation would corrupt the histogram.
+func (s *Store) GetLifetimePRTimeToMerge() ([]time.Duration, error) {
+	created, err := s.earliestStageOccurrences(StagePRCreated)
+	if err != nil {
+		return nil, err
+	}
+	merged, err := s.earliestStageOccurrences(StageMerged)
+	if err != nil {
+		return nil, err
+	}
+
+	var samples []time.Duration
+	for execID, mergedAt := range merged {
+		createdAt, ok := created[execID]
+		if !ok {
+			continue
+		}
+		if d := mergedAt.Sub(createdAt); d > 0 {
+			samples = append(samples, d)
+		}
+	}
+	return samples, nil
+}
+
 // EndSession marks a session as ended.
 func (s *Store) EndSession(sessionID string) error {
 	return s.withRetry("EndSession", func() error {

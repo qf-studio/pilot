@@ -63,5 +63,46 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 	}
 	metrics.SetIssueLevelCounts(int64(issueLevel.Shipped), int64(issueLevel.Attempted))
 
+	// GH-4093: pilot_prs_merged_total / pilot_prs_failed_total from the durable
+	// execution_events ledger. Must land on this same designated-owner Metrics
+	// (see AggregateMetrics doc comment) exactly once — hydrating any other
+	// controller's Metrics here would double count in the fleet-wide aggregate.
+	prCounters, err := store.GetLifetimePRCounters()
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: lifetime PR counters: %w", err)
+	}
+	metrics.HydratePRsMerged(prCounters.Merged)
+	metrics.HydratePRsFailed(prCounters.Failed)
+
+	// pilot_pr_time_to_merge_seconds: derivable from execution_events
+	// (pr_created -> merged deltas), so hydrate it too rather than leaving it
+	// session-scoped.
+	timeToMerge, err := store.GetLifetimePRTimeToMerge()
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: lifetime PR time-to-merge: %w", err)
+	}
+	for _, d := range timeToMerge {
+		metrics.RecordPRTimeToMerge(d)
+	}
+
+	// The remaining counters are intentionally NOT hydrated here — they have no
+	// durable per-event source to hydrate from (unlike execution_events, which
+	// is an append-only ledger keyed off executions.id) and reset to zero on
+	// every restart by design:
+	//   - pilot_prs_conflicting_total (RecordPRConflicting): no execution_events
+	//     stage exists for "conflicting" — handleMergeConflict does not log to
+	//     the ledger, only to the in-memory counter (GH-4069).
+	//   - pilot_circuit_breaker_trips_total, pilot_api_errors_total,
+	//     pilot_label_cleanups_total, pilot_approval_persist_misses_total,
+	//     pilot_poller_skipped_total, pilot_poller_dispatched_total,
+	//     pilot_poller_deferred_scope_overlap_total, pilot_panics_total: pure
+	//     in-memory operational/diagnostic counters with no matching table or
+	//     ledger row anywhere in the store. The periodic autopilot_metrics
+	//     snapshot table (SaveAutopilotMetrics) records point-in-time values of
+	//     these but is not append-only across restarts — its "latest row"
+	//     reflects the session since the previous restart, not lifetime, so
+	//     using it as a hydration baseline would silently drop everything
+	//     between the last snapshot write and the actual restart. Treated as
+	//     reset-on-restart by design; see FEATURE-MATRIX.md.
 	return nil
 }

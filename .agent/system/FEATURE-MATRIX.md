@@ -204,6 +204,7 @@
 |---------|--------|---------|-------------|------------|-------|
 | Execution history | ✅ | memory | - | `memory.path` | SQLite store |
 | Lifetime metrics | ✅ | memory | - | - | Token/cost/task counts persist across restarts (v0.21.2) |
+| PR-family counter hydration | ✅ | autopilot/memory | - | - | `pilot_prs_merged_total`/`pilot_prs_failed_total`/`pilot_pr_time_to_merge_seconds` hydrated at daemon start from the durable `execution_events` ledger (`Store.GetLifetimePRCounters`/`GetLifetimePRTimeToMerge`), not from `executions`/`autopilot_pr_state` which is deleted on PR completion. `failed` is scoped to execution_ids that also have a `pr_created` event, excluding executor-level task failures that never produced a PR. Lands on the same designated-owner `Metrics` as other `HydrateFromStore` baselines (GH-4068's aggregate), so no double-count with per-controller live recording (GH-4093, follow-up to GH-4029/GH-4041's PR #4043). Reset-on-restart by design (no durable per-event source): `pilot_prs_conflicting_total`, `pilot_circuit_breaker_trips_total`, `pilot_api_errors_total`, `pilot_label_cleanups_total`, `pilot_approval_persist_misses_total`, poller skip/dispatch/deferred counters, `pilot_panics_total` |
 | Cross-project patterns | ✅ | memory | `pilot patterns` | - | Pattern learning |
 | Pattern search | ✅ | memory | `pilot patterns search` | - | Keyword search |
 | Pattern stats | ✅ | memory | `pilot patterns stats` | - | Usage analytics |
