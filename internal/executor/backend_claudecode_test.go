@@ -512,7 +512,7 @@ func TestClassifyClaudeCodeError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := classifyClaudeCodeError(tt.stderr, nil)
+			err := classifyClaudeCodeError(tt.stderr, nil, false)
 			if err.Type != tt.expectType {
 				t.Errorf("classifyClaudeCodeError() type = %q, want %q", err.Type, tt.expectType)
 			}
@@ -559,7 +559,7 @@ func TestParseClaudeCodeError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := parseClaudeCodeError(tt.stderr, nil)
+			err := parseClaudeCodeError(tt.stderr, nil, false)
 			ccErr, ok := err.(*ClaudeCodeError)
 			if !ok {
 				t.Errorf("parseClaudeCodeError() did not return *ClaudeCodeError, got %T", err)
@@ -699,7 +699,78 @@ func TestClassifyClaudeCodeError_OOM(t *testing.T) {
 				cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", tt.exitCode))
 				exitErr = cmd.Run()
 			}
-			err := classifyClaudeCodeError(tt.stderr, exitErr)
+			err := classifyClaudeCodeError(tt.stderr, exitErr, false)
+			if err.Type != tt.expectType {
+				t.Errorf("type = %q, want %q", err.Type, tt.expectType)
+			}
+			if tt.expectMsg != "" && err.Message != tt.expectMsg {
+				t.Errorf("message = %q, want %q", err.Message, tt.expectMsg)
+			}
+		})
+	}
+}
+
+func TestClassifyClaudeCodeError_ShutdownVsOOM(t *testing.T) {
+	// GH-4105: exit 137/139 must be classified as oom_killed only when the run
+	// context was NOT already cancelled by our own shutdown/timeout path.
+	// When the context was cancelled, the same exit codes are expected
+	// teardown noise and must be tagged shutdown_terminated instead.
+	tests := []struct {
+		name         string
+		exitCode     int
+		ctxCancelled bool
+		expectType   ClaudeCodeErrorType
+		expectMsg    string
+	}{
+		{
+			// (a) exit 137, context not cancelled -> oom_killed
+			name:         "exit 137, context not cancelled -> oom_killed",
+			exitCode:     137,
+			ctxCancelled: false,
+			expectType:   ErrorTypeOOM,
+			expectMsg:    "Process killed by SIGKILL (exit code 137)",
+		},
+		{
+			// (b) exit 137, context cancelled -> shutdown classification
+			name:         "exit 137, context cancelled -> shutdown_terminated",
+			exitCode:     137,
+			ctxCancelled: true,
+			expectType:   ErrorTypeShutdownTerminated,
+			expectMsg:    "Process terminated by SIGKILL after context cancellation (exit code 137)",
+		},
+		{
+			// (c) exit 139 mirror
+			name:         "exit 139, context not cancelled -> oom_killed",
+			exitCode:     139,
+			ctxCancelled: false,
+			expectType:   ErrorTypeOOM,
+			expectMsg:    "Process killed by SIGSEGV (exit code 139)",
+		},
+		{
+			name:         "exit 139, context cancelled -> shutdown_terminated",
+			exitCode:     139,
+			ctxCancelled: true,
+			expectType:   ErrorTypeShutdownTerminated,
+			expectMsg:    "Process terminated by SIGSEGV after context cancellation (exit code 139)",
+		},
+		{
+			// (d) clean exit unaffected — no exit error at all, ctxCancelled must not
+			// spuriously trigger the shutdown classification.
+			name:         "clean exit (no error) unaffected by ctxCancelled",
+			exitCode:     0,
+			ctxCancelled: true,
+			expectType:   ErrorTypeUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var exitErr error
+			if tt.exitCode > 0 {
+				cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", tt.exitCode))
+				exitErr = cmd.Run()
+			}
+			err := classifyClaudeCodeError("", exitErr, tt.ctxCancelled)
 			if err.Type != tt.expectType {
 				t.Errorf("type = %q, want %q", err.Type, tt.expectType)
 			}
