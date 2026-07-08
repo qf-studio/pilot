@@ -217,10 +217,18 @@ func renderAutopilotRow(pr *autopilot.PRState, failures, maxFailures, iw int) []
 		titleWidth = 10
 	}
 
+	// Title fallback: states restored from SQLite before pr_title was
+	// persisted (or before the poll backfill runs) identify by branch name
+	// instead of a blank flex column.
+	title := pr.PRTitle
+	if title == "" {
+		title = pr.BranchName
+	}
+
 	row := fmt.Sprintf("  %s %-6s  %s  %s %s  %s",
 		glyphStyle.Render(glyph),
 		fmt.Sprintf("#%d", pr.PRNumber),
-		padOrTruncate(pr.PRTitle, titleWidth),
+		padOrTruncate(title, titleWidth),
 		segmentMeter(pos, len(autopilotNodes), len(autopilotNodes), hex),
 		dimStyle.Render(padOrTruncate(label, autopilotStageLabelWidth)),
 		dimStyle.Render(fmt.Sprintf("%6s", formatDurationShort(time.Since(pr.CreatedAt)))),

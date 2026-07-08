@@ -33,6 +33,7 @@ func TestStateStore_SaveAndLoadPRState(t *testing.T) {
 		IssueNumber:     10,
 		BranchName:      "pilot/GH-10",
 		HeadSHA:         "abc123def456",
+		PRTitle:         "feat(gateway): add webhook handler",
 		Stage:           StageWaitingCI,
 		CIStatus:        CIRunning,
 		LastChecked:     time.Now().Truncate(time.Second),
@@ -72,6 +73,11 @@ func TestStateStore_SaveAndLoadPRState(t *testing.T) {
 	}
 	if loaded.HeadSHA != "abc123def456" {
 		t.Errorf("HeadSHA = %s, want abc123def456", loaded.HeadSHA)
+	}
+	// TASK-390: pr_title survives the restart round-trip — post-merge stages
+	// never re-fetch the PR, so a lost title stays lost on the dashboard.
+	if loaded.PRTitle != pr.PRTitle {
+		t.Errorf("PRTitle = %q, want %q", loaded.PRTitle, pr.PRTitle)
 	}
 	if loaded.Stage != StageWaitingCI {
 		t.Errorf("Stage = %s, want %s", loaded.Stage, StageWaitingCI)
