@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/qf-studio/grot/pkg/tui/render"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -64,6 +65,37 @@ func TestBuildStatCard(t *testing.T) {
 	}
 	if !strings.Contains(card, "test") {
 		t.Error("missing lowercase title in top border")
+	}
+}
+
+// TASK-390: two-series stacked variant (tokens cached/fresh, queue ✓/✗)
+// keeps the exact card geometry of buildStatCard and fills the band even
+// with a 7-point history (BrailleStacked right-aligns unstretched series).
+func TestBuildStatCardStacked(t *testing.T) {
+	card := buildStatCardStacked("test", "42", "detail",
+		[][]float64{{10, 20, 30, 40, 30, 20, 10}, {1, 2, 3, 4, 3, 2, 1}},
+		[]string{render.Dim(grotTheme.Accent, 0.45), grotTheme.Accent}, cardWidth)
+
+	lines := strings.Split(card, "\n")
+	if len(lines) != statCardHeight {
+		t.Errorf("card height = %d lines, want %d", len(lines), statCardHeight)
+	}
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w != cardWidth {
+			t.Errorf("line %d visual width = %d, want %d: %q", i, w, cardWidth, line)
+		}
+	}
+
+	// Chart rows must contain braille cells across the band, including the
+	// left edge — a right-aligned (unstretched) series would leave it blank.
+	chartRow := lines[statCardHeight-2] // last inner line above bottom border
+	plain := stripANSI(chartRow)
+	inner := strings.TrimSuffix(strings.TrimPrefix(plain, "│"), "│")
+	if strings.TrimSpace(inner) == "" {
+		t.Fatalf("bottom chart row is blank: %q", plain)
+	}
+	if strings.HasPrefix(strings.TrimPrefix(inner, " "), "      ") {
+		t.Errorf("chart band left edge blank — series not stretched: %q", plain)
 	}
 }
 

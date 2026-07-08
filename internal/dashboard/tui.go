@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/qf-studio/grot/pkg/tui/render"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -36,9 +37,12 @@ type MetricsCardData struct {
 	TotalTasks, Succeeded, Failed, Declined int
 	// TASK-358: non-failure terminal outcomes, split out of "failed".
 	NoOp, Stalled, RateLimited, Infra, Skipped int
-	TokenHistory                               []int64   // 7 days
+	TokenHistory                               []int64   // 7 days, fresh (input+output)
+	CachedTokenHistory                         []int64   // 7 days, cache read+write
 	CostHistory                                []float64 // 7 days
 	TaskHistory                                []int     // 7 days
+	SuccessHistory                             []int     // 7 days
+	FailedHistory                              []int     // 7 days
 }
 
 // Styles (muted terminal aesthetic)
@@ -663,14 +667,20 @@ func (m *Model) loadMetricsHistory() {
 
 	// Fill 7-day arrays oldest→newest (left→right in sparkline)
 	m.metricsCard.TokenHistory = make([]int64, 7)
+	m.metricsCard.CachedTokenHistory = make([]int64, 7)
 	m.metricsCard.CostHistory = make([]float64, 7)
 	m.metricsCard.TaskHistory = make([]int, 7)
+	m.metricsCard.SuccessHistory = make([]int, 7)
+	m.metricsCard.FailedHistory = make([]int, 7)
 	for i := 0; i < 7; i++ {
 		day := now.AddDate(0, 0, -6+i).Format("2006-01-02")
 		if dm, ok := byDate[day]; ok {
 			m.metricsCard.TokenHistory[i] = dm.TotalTokens
+			m.metricsCard.CachedTokenHistory[i] = dm.CacheReadTokens + dm.CacheWriteTokens
 			m.metricsCard.CostHistory[i] = dm.TotalCostUSD
 			m.metricsCard.TaskHistory[i] = dm.ExecutionCount
+			m.metricsCard.SuccessHistory[i] = dm.SuccessCount
+			m.metricsCard.FailedHistory[i] = dm.FailedCount
 		}
 	}
 }
@@ -717,6 +727,11 @@ func (m *Model) SetMetricsScopePath(path string) {
 // RenderBannerForTest exposes renderBanner for cross-package tests
 // (cmd/pilot verifies applyDashboardBannerMeta wiring end-to-end).
 func (m Model) RenderBannerForTest() string { return m.renderBanner() }
+
+// AdapterLegendForTest exposes the queue-panel adapter legend for the same
+// cross-package wiring tests — adapter chips moved out of the banner into
+// the queue border legend in the grot redesign (TASK-390).
+func (m Model) AdapterLegendForTest() string { return buildAdapterLegend(m.bannerAdapters) }
 
 // AdapterStatus describes a configured adapter for the banner status row.
 // Active=true when the adapter was started this session (flag passed); false
@@ -1597,17 +1612,26 @@ func formatCompact(n int) string {
 // --- Stat card renderers (grot demo gallery row-1 style) ---
 
 // renderTokenCard renders the tokens stat card: grand total (input + output +
-// cache read/write), cached share detail, 7-day token braille trend.
+// cache read/write), cached share detail, 7-day stacked braille trend —
+// dim accent base = cached volume, bright accent cap = fresh input+output.
+// The detail line doubles as the color key ("cached" in the base tone).
 func (m Model) renderTokenCard(cw int) string {
 	grandTotal := m.metricsCard.TotalTokens + m.metricsCard.CacheReadTokens + m.metricsCard.CacheWriteTokens
 	value := boldLabelStyle.Render(formatCompact(grandTotal))
-	detail := dimStyle.Render(fmt.Sprintf("%s cached", formatCompact(m.metricsCard.CacheReadTokens)))
+	cachedTone := render.Dim(grotTheme.Accent, 0.45)
+	cachedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(cachedTone))
+	detail := cachedStyle.Render(fmt.Sprintf("%s cached", formatCompact(m.metricsCard.CacheReadTokens)))
 
-	floats := make([]float64, len(m.metricsCard.TokenHistory))
-	for i, v := range m.metricsCard.TokenHistory {
-		floats[i] = float64(v)
+	cached := make([]float64, len(m.metricsCard.CachedTokenHistory))
+	for i, v := range m.metricsCard.CachedTokenHistory {
+		cached[i] = float64(v)
 	}
-	return buildStatCard("tokens", value, detail, floats, grotTheme.Accent, cw)
+	fresh := make([]float64, len(m.metricsCard.TokenHistory))
+	for i, v := range m.metricsCard.TokenHistory {
+		fresh[i] = float64(v)
+	}
+	return buildStatCardStacked("tokens", value, detail,
+		[][]float64{cached, fresh}, []string{cachedTone, grotTheme.Accent}, cw)
 }
 
 // renderCostCard renders the cumulative-cost stat card with 7-day cost trend.
@@ -1666,11 +1690,18 @@ func (m Model) renderTaskCard(cw int) string {
 		}
 	}
 
-	floats := make([]float64, len(m.metricsCard.TaskHistory))
-	for i, v := range m.metricsCard.TaskHistory {
-		floats[i] = float64(v)
+	// Stacked outcome trend: sage base = succeeded/day, rose cap = failed/day,
+	// matching the ✓/✗ colors in the detail line (which acts as the key).
+	succeeded := make([]float64, len(m.metricsCard.SuccessHistory))
+	for i, v := range m.metricsCard.SuccessHistory {
+		succeeded[i] = float64(v)
 	}
-	return buildStatCard("queue depth", value, detail, floats, grotTheme.Accent, cw)
+	failed := make([]float64, len(m.metricsCard.FailedHistory))
+	for i, v := range m.metricsCard.FailedHistory {
+		failed[i] = float64(v)
+	}
+	return buildStatCardStacked("queue depth", value, detail,
+		[][]float64{succeeded, failed}, []string{grotTheme.Success, grotTheme.Error}, cw)
 }
 
 // renderMetricsCards renders the three stat cards side by side with no gaps,

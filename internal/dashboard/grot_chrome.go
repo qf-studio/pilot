@@ -78,12 +78,36 @@ func buildStatCard(title, value, detail string, history []float64, accentHex str
 		render.Center(value, iw),
 		render.Center(detail, iw),
 	}
-	gradient := render.GradientStyles(
-		[]string{render.Dim(accentHex, 0.35), render.Dim(accentHex, 0.75)}, chartRows)
+	// Uniform tone: at 2 chart rows a per-row gradient collapses into two
+	// flat bands (dark dots below, light dots above), so render one color.
+	tone := render.Dim(accentHex, 0.85)
+	gradient := render.GradientStyles([]string{tone, tone}, chartRows)
 	// BrailleArea right-aligns short series; stretch the 7-day history across
 	// the full band width (iw*2 dot columns) so the trend fills the card.
 	stretched := stretchSeries(history, iw*2)
 	lines = append(lines, render.BrailleArea(stretched, iw, chartRows, gradient)...)
+	return render.Panel(title, strings.Join(lines, "\n"), cw, statCardHeight, panelChrome)
+}
+
+// buildStatCardStacked is buildStatCard with a two-tone trend band:
+// render.BrailleStacked draws series[0] as the base mass and later series
+// stacked on top, each in a FLAT per-series color (no per-row gradient, so
+// no banding). Pair a dim base with a bright cap so the split reads without
+// a legend — the card's detail line carries the color key.
+func buildStatCardStacked(title, value, detail string, series [][]float64, colors []string, cw int) string {
+	iw, ih := render.InnerSize(cw, statCardHeight)
+	chartRows := ih - 2
+	lines := []string{
+		render.Center(value, iw),
+		render.Center(detail, iw),
+	}
+	// Same stretch as buildStatCard: BrailleStacked right-aligns short
+	// series, so resample each onto the full dot-column width first.
+	stretched := make([][]float64, len(series))
+	for i, s := range series {
+		stretched[i] = stretchSeries(s, iw*2)
+	}
+	lines = append(lines, render.BrailleStacked(stretched, iw, chartRows, colors)...)
 	return render.Panel(title, strings.Join(lines, "\n"), cw, statCardHeight, panelChrome)
 }
 
