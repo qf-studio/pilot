@@ -120,7 +120,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.235.4 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.235.5 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (July 3–8 2026):** **29-hour autonomous shift on Pilot's own codebase — ~60 PRs / 25 releases (v2.201.2 → v2.213.x). Runtime self-verification (TASK-379, all 8 waves) + restart/epic defect burn-down (TASK-382) SHIPPED; onboarding hardening (TASK-378) advanced; dashboard grot redesign (TASK-390) implemented, PR pending.** (Earlier June detail below.)
 - **Dashboard grot redesign — [TASK-390](tasks/TASK-390-grot-dashboard-redesign.md), July 8, worktree `grot-dashboard-redesign` (4 commits, NOT pushed/merged):** whole TUI on `github.com/qf-studio/grot` v0.1.0 (go 1.24.2→1.25.0). Grot stat cards + panel chrome, one-line banner with pulsing daemon liveness dot, adapter status → queue border legend, history `N/7` fraction → 7-rung segment meter + structured `StageInfo` (GH-4023 reducer preserved), autopilot rail → per-PR lifecycle-meter rows, emoji → glyph vocabulary on the TUI/daemon surface. Post-merge follow-ups: graph indexing from main checkout, CLI emoji sweep → Pilot.
