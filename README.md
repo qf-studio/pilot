@@ -54,10 +54,6 @@ Pilot picks up tickets from GitHub, Linear, Jira, or Asana—plans the implement
 └─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
 ```
 
-<img width="1200" height="630" alt="Pilot dashboard on the grot design system" src="docs/public/pilot-preview.png" />
-
-
-
 ## Install
 
 ### Homebrew (recommended)
