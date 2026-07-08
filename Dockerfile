@@ -5,7 +5,7 @@
 # which requires Node.js, git, and gh CLI at runtime.
 
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
