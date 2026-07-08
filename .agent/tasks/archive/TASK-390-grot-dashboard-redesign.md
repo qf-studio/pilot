@@ -1,6 +1,6 @@
 # TASK-390: Dashboard TUI redesign — grot design system
 
-**Status:** 🚀 PR opened — implementation complete in worktree (7 commits incl. docs)
+**Status:** ✅ SHIPPED & RELEASED (2026-07-08, v2.234.0 → v2.235.8; PRs #4061 #4065 #4067 #4071 #4072 #4080 #4091)
 **Branch:** `worktree-grot-dashboard-redesign`
 **Date:** 2026-07-08
 **Mode:** MANUAL (interactive session, user-directed worktree implementation)
@@ -90,19 +90,38 @@ live TUI under a scripted pty stalls on termenv OSC/CSI queries — answer
   (Telegram/Slack) and CLI subcommands (`status`/`brief`/`replay`/`onboard`/
   `doctor`) intentionally left — different surfaces.
 
+## Release ledger (sessions 4–5, 2026-07-08 evening)
+
+- **v2.234.0** — #4061 merged; tag by hand. goreleaser + homebrew green on
+  go 1.25 (flagged risk didn't materialize) — but the **Docker workflow did**:
+  Dockerfile builder still pinned `golang:1.24-alpine`, every tag's image
+  failed until #4091 (verified via `workflow_dispatch`).
+- **v2.234.1** — #4065: logs panel flexes to terminal bottom; content-sized
+  in stacked mode so the git graph below keeps its height.
+- **v2.235.0** — #4067 CLI emoji sweep + #4072 queue `SegmentMeter` rows:
+  implemented by Pilot, merged + released by autopilot **fully autonomously**.
+- **v2.235.1** — #4071: history rows show real execution status
+  (`displayStatus` passthrough; muted-outcome labels — a skipped run no
+  longer renders ✓ "running"; GH-4023 reducer untouched).
+- **v2.235.8** — #4080: `pr_title` persisted in `autopilot_pr_state`
+  (ALTER + gh3903 rebuild schema) with branch-name row fallback — autopilot
+  rows survive `--replace` restarts with titles intact.
+- Post-ship investigation (nav-research agent) of duplicate completed
+  executions → **no dedup bug**; filed **#4100** (`--replace` graceful drain
+  + exit-137/oom_killed split) and **#4101** (stale-recovery
+  `execution_events` audit trail). See memories
+  `pattern_selfheal_duplicate_completed_rows` /
+  `pitfall_replace_restart_kills_inflight`.
+
 ## Remaining / follow-ups
 
-- [x] Push branch + open PR (URL in ## Refs) — review + merge pending
-- [ ] Release after merge (self-upgrade distributes; until then dev binary
-      in `~/.local/bin` can be overwritten by hot-upgrade pulling 2.233.10)
-- [ ] Post-merge: index `decision_grot_design_system.md` (+ this task) into
-      `.agent/knowledge/graph.json` from the MAIN checkout (graph.json had
-      concurrent uncommitted edits; indexing deferred to avoid conflicts)
-- [ ] CLI emoji sweep (hundreds of sites, mechanical) — dispatch to Pilot with
-      the glyph table from `internal/dashboard/grot_chrome.go` as spec
-- [ ] Optional: adopt grot `render.SegmentMeter` (`■■■` bars) for progress bars
-      in the queue panel to replace `[████░░]` — deferred, not in scope
-- [ ] Verify goreleaser/homebrew builds are happy on go 1.25 at next release
+- [x] Push branch + open PR + review + merge + release
+- [x] Index `decision_grot_design_system.md` into graph (mem-090, forced by
+      the CI drift gate on PR #4061 — deferral resolved early)
+- [x] CLI emoji sweep → #4063 → PR #4067 (Pilot)
+- [x] Queue progress bars → `SegmentMeter` → #4064 → PR #4072 (Pilot)
+- [x] goreleaser/homebrew on go 1.25 verified (v2.234.0)
+- [ ] #4100 / #4101 restart-safety follow-ups in Pilot queue
 
 ## Refs
 

@@ -232,12 +232,12 @@
 
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
-| TUI dashboard | ✅ | dashboard | `--dashboard` | - | Bubbletea terminal UI on the grot design system (`github.com/qf-studio/grot` `pkg/tui/render`+`theme.Pilot`): rounded cards, border legends, stat cards w/ braille trends, glyph vocabulary, one-line banner w/ daemon liveness dot (TASK-390) |
-| Token metrics card | ✅ | dashboard | - | - | Sparkline + lifetime totals (v0.18.0) |
-| Cost metrics card | ✅ | dashboard | - | - | Sparkline + cost/task (v0.18.0) |
-| Queue metrics card | ✅ | dashboard | - | - | Current queue depth, succeeded/failed (v0.21.2) |
-| Autopilot panel | ✅ | dashboard | - | - | One row per active PR: glyph + 5-cell lifecycle meter (ci→rebase→merge→tag→release) + stage label + age; `↳ ⟲ retry N/M · error` detail only when failures exist; `┤ ● N prs ├` border legend (TASK-390) |
-| Task history | ✅ | dashboard | - | - | Recent 5 completed tasks |
+| TUI dashboard | ✅ | dashboard | `--dashboard` | - | Bubbletea terminal UI on the grot design system (`github.com/qf-studio/grot` `pkg/tui/render`+`theme.Pilot`): rounded cards, border legends, stat cards w/ braille trends, glyph vocabulary, one-line banner w/ daemon liveness dot; logs panel flexes to terminal bottom (content-sized in stacked-graph mode) (TASK-390, v2.234.x) |
+| Token metrics card | ✅ | dashboard | - | - | Stacked braille trend: dim-accent cached mass + bright-accent fresh cap, daily `tokens_cache_read/write` from `GetDailyMetrics`; detail line doubles as color key (TASK-390, v2.234.0) |
+| Cost metrics card | ✅ | dashboard | - | - | Uniform dim-sage braille trend + cost/task (TASK-390, v2.234.0) |
+| Queue metrics card | ✅ | dashboard | - | - | Current queue depth; stacked trend sage succeeded / rose failed per day matching ✓/✗ detail colors (TASK-390, v2.234.0) |
+| Autopilot panel | ✅ | dashboard | - | - | One row per active PR: glyph + 5-cell lifecycle meter (ci→rebase→merge→tag→release) + stage label + age; `↳ ⟲ retry N/M · error` detail only when failures exist; `┤ ● N prs ├` border legend; `pr_title` persisted so rows survive restarts (branch-name fallback) (TASK-390, v2.235.8) |
+| Task history | ✅ | dashboard | - | - | Recent 5 executions with truthful status glyphs — `executions.status` passes through (`·` skipped, `○` no_op, `●` running, …); terminal non-ladder outcomes own the row label + muted meter (TASK-390, v2.235.1) |
 | Execution stage strip | ✅ | dashboard | - | - | Pipeline progress on HISTORY rows as a 7-rung segment meter (`■■■■□□□` + dim stage label; sage/rose/accent by outcome, dim track when no events), fed from `execution_events` via `buildStageInfo` — fixed ladder position, not raw event count, so retries don't inflate it; cached at hydrate/refresh time not per render (GH-3849, v2.208.0; fraction TASK-383; meter TASK-390) |
 | Hot upgrade key | ✅ | dashboard | `u` key | - | In-place upgrade from dashboard |
 | SQLite persistence | ✅ | dashboard | - | - | Metrics survive restarts (v0.21.2) |
