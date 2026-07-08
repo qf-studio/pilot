@@ -106,5 +106,6 @@ live TUI under a scripted pty stalls on termenv OSC/CSI queries — answer
 
 ## Refs
 
+- PR: https://github.com/qf-studio/pilot/pull/4061
 - grot: /Users/aleks.petrov/Projects/startups/grot · github.com/qf-studio/grot
 - Design source: grot `cmd/grot/demo.go` gallery + `pkg/tui/theme.Pilot`
