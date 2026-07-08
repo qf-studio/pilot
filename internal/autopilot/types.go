@@ -752,6 +752,13 @@ type PRState struct {
 	// the counter anyway, giving a freshly-restored row a few more tries before
 	// eviction (GH-3903 404-eviction guard).
 	NotFoundCount int
+	// PersistFailureCount tracks consecutive SavePRState errors for this PR
+	// (e.g. a schema/ON CONFLICT mismatch on an adopted or otherwise
+	// irregular row). Reset to 0 on a successful persist. In-memory only:
+	// once it reaches persistFailureEvictThreshold, persistPRState evicts the
+	// PR from tracking rather than spinning on the same error forever
+	// (GH-4053).
+	PersistFailureCount int
 	// EnvironmentName is the user-friendly environment label (e.g. "staging").
 	EnvironmentName string
 	// PRTitle is the title of the pull request.
@@ -840,6 +847,7 @@ func (ps *PRState) snapshot() *PRState {
 		ReleaseBumpType:         ps.ReleaseBumpType,
 		ConsecutiveAPIFailures:  ps.ConsecutiveAPIFailures,
 		NotFoundCount:           ps.NotFoundCount,
+		PersistFailureCount:     ps.PersistFailureCount,
 		EnvironmentName:         ps.EnvironmentName,
 		PRTitle:                 ps.PRTitle,
 		TargetBranch:            ps.TargetBranch,

@@ -304,6 +304,22 @@ type Controller struct {
 	// alertedMissingReleases (GH-3991).
 	alertedStaleScopes map[string]bool
 
+	// alertedPersistFailures deduplicates pr_persist_failed alerts per PR
+	// number, guarded by mu — same rationale as alertedMissingReleases: a
+	// wedged PR retries every tick, and without this map the alerts engine's
+	// per-rule cooldown would still let through a repeat every cooldown
+	// window instead of firing exactly once per PR (GH-4053).
+	alertedPersistFailures map[int]bool
+
+	// persistFailedPRs records, per PR number, when persistPRState evicted the
+	// PR after persistFailureEvictThreshold consecutive SavePRState failures.
+	// Guarded by mu. reconcileOrphanPRs and restorePilotPRs consult this to
+	// skip re-adopting a PR whose state store row cannot be saved, within
+	// persistFailureReadoptCooldown — otherwise the 60s reconciler sweep would
+	// immediately re-adopt the still-open PR and repeat the identical
+	// adopt-fail-evict cycle forever (GH-4053).
+	persistFailedPRs map[int]time.Time
+
 	// epicVeto tracks, per epic parent issue number, how many consecutive
 	// reconcile passes have failed the SAME close-veto (same blocking child +
 	// same reason), guarded by mu. Lets reconcileEpicParent tell "still
@@ -342,6 +358,8 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		log:                    slog.Default().With("component", "autopilot"),
 		alertedMissingReleases: make(map[string]bool),
 		alertedStaleScopes:     make(map[string]bool),
+		alertedPersistFailures: make(map[int]bool),
+		persistFailedPRs:       make(map[int]time.Time),
 		epicVeto:               make(map[int]*epicCloseVetoTracking),
 	}
 
@@ -524,6 +542,24 @@ func (c *Controller) SetReleaseSummaryGenerator(gen *ReleaseSummaryGenerator) {
 	c.releaseSummary = gen
 }
 
+// persistFailureEvictThreshold bounds how many consecutive SavePRState
+// failures are tolerated for one PR before persistPRState evicts it from
+// tracking. Mirrors notFoundEvictionThreshold's rationale: a row this
+// controller cannot persist (e.g. a schema/ON CONFLICT mismatch surfaced by a
+// reconciler-adopted or otherwise irregular row) can never advance stage —
+// every handler ends in a persist call — so without an eviction it retries
+// silently forever instead of escalating (GH-4053).
+const persistFailureEvictThreshold = 5
+
+// persistFailureReadoptCooldown bounds how long reconcileOrphanPRs and
+// restorePilotPRs skip re-adopting a PR evicted by evictPersistFailedPR. A
+// short cooldown (rather than a permanent skip) lets the same PR be retried
+// once whatever caused the persist failure might have cleared (e.g. a state
+// store hot-swap or migration on daemon restart, which also resets this
+// in-memory map) — but stops the 60s reconciler sweep from re-adopting an
+// unpersistable PR every single tick (GH-4053).
+const persistFailureReadoptCooldown = 1 * time.Hour
+
 // persistPRState saves a PR state to the store if available.
 //
 // TASK-324 concurrency contract: this method is LOCK-FREE with respect to the
@@ -531,14 +567,106 @@ func (c *Controller) SetReleaseSummaryGenerator(gen *ReleaseSummaryGenerator) {
 // stateStore.SavePRState are stable) — OR the prState must not yet be published in
 // c.activePRs (e.g. freshly constructed). It must NOT take prState.mu itself: every
 // caller that holds the live pointer already owns prState.mu, and re-locking would
-// deadlock (Go's sync.Mutex is non-reentrant).
+// deadlock (Go's sync.Mutex is non-reentrant). It MAY take c.mu (via
+// evictPersistFailedPR below): every call site releases c.mu before taking
+// prState.mu, so prState.mu -> c.mu is the only order ever exercised here.
 func (c *Controller) persistPRState(prState *PRState) {
 	if c.stateStore == nil {
 		return
 	}
 	if err := c.stateStore.SavePRState(c.repoKey(), prState); err != nil {
-		c.log.Warn("failed to persist PR state", "pr", prState.PRNumber, "error", err)
+		prState.PersistFailureCount++
+		failures := prState.PersistFailureCount
+		c.log.Warn("failed to persist PR state", "pr", prState.PRNumber, "error", err, "consecutive_failures", failures)
+		c.alertPersistFailureOnce(prState.PRNumber, err)
+		if failures >= persistFailureEvictThreshold {
+			c.evictPersistFailedPR(prState.PRNumber)
+		}
+		return
 	}
+	prState.PersistFailureCount = 0
+}
+
+// alertPersistFailureOnce fires a pr_persist_failed alert the first time a PR
+// fails to persist, deduplicated per PR number via alertedPersistFailures — a
+// wedged PR retries every processAllPRs tick, so without this dedup the
+// same underlying error would otherwise only surface via repeated WARN log
+// lines (GH-4053: reconciler-adopted PR #4047 looped silently on an
+// "ON CONFLICT clause does not match" persist error for 22+ ticks with no
+// alert ever firing).
+func (c *Controller) alertPersistFailureOnce(prNumber int, persistErr error) {
+	c.mu.Lock()
+	if c.alertedPersistFailures == nil {
+		c.alertedPersistFailures = make(map[int]bool)
+	}
+	if c.alertedPersistFailures[prNumber] {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedPersistFailures[prNumber] = true
+	c.mu.Unlock()
+
+	msg := fmt.Sprintf(
+		"PR #%d (%s) cannot be persisted to the state store: %s — it will be evicted from tracking after %d consecutive failures and cannot advance stage until then",
+		prNumber, c.repoKey(), persistErr, persistFailureEvictThreshold,
+	)
+	if c.alertsEngine == nil {
+		c.log.Error("pr_persist_failed alert not delivered: SetAlertsEngine was never called", "pr", prNumber, "error", persistErr)
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventType("pr_persist_failed"),
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo": c.repoKey(),
+			"pr":   strconv.Itoa(prNumber),
+		},
+	})
+}
+
+// evictPersistFailedPR drops a PR that has failed to persist
+// persistFailureEvictThreshold times in a row from in-memory tracking, and
+// records it in persistFailedPRs so reconcileOrphanPRs/restorePilotPRs won't
+// immediately re-adopt it (GH-4053). Unlike a normal removePR, it does not
+// attempt any GitHub-side cleanup — the row is unpersistable, not resolved,
+// and a stuck PR should escalate for human attention (the alert already
+// fired), not have its branch/labels touched based on incomplete state.
+//
+// persistRemovePR issues a plain DELETE (no ON CONFLICT clause), so it is
+// expected to succeed even when the upsert path that got the PR into this
+// state cannot — clearing the stuck row is the same one-time reconciliation
+// a human would otherwise run by hand.
+func (c *Controller) evictPersistFailedPR(prNumber int) {
+	c.mu.Lock()
+	delete(c.activePRs, prNumber)
+	delete(c.prFailures, prNumber)
+	delete(c.recordedMerges, prNumber)
+	if c.persistFailedPRs == nil {
+		c.persistFailedPRs = make(map[int]time.Time)
+	}
+	c.persistFailedPRs[prNumber] = time.Now()
+	c.mu.Unlock()
+
+	c.persistRemovePR(prNumber)
+	c.removePRFailures(prNumber)
+	c.log.Error("evicted PR after repeated persist failures — state store cannot save this PR's row",
+		"pr", prNumber, "repo", c.repoKey(), "threshold", persistFailureEvictThreshold)
+}
+
+// recentlyEvictedForPersistFailure reports whether prNumber was evicted by
+// evictPersistFailedPR within persistFailureReadoptCooldown, so orphan-PR
+// adoption (reconciler sweep and startup scan) can skip it instead of
+// re-registering a PR whose row the state store just proved it cannot save
+// (GH-4053).
+func (c *Controller) recentlyEvictedForPersistFailure(prNumber int) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	evictedAt, ok := c.persistFailedPRs[prNumber]
+	if !ok {
+		return false
+	}
+	return time.Since(evictedAt) < persistFailureReadoptCooldown
 }
 
 // persistRemovePR removes a PR state from the store if available.
@@ -3491,6 +3619,10 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 			c.log.Debug("skipping already-tracked PR in scan", "pr", pr.Number, "branch", pr.Head.Ref)
 			continue
 		}
+		if c.recentlyEvictedForPersistFailure(pr.Number) {
+			c.log.Debug("skipping PR recently evicted for persist failure", "pr", pr.Number, "branch", pr.Head.Ref)
+			continue
+		}
 
 		c.log.Info("restoring Pilot PR for tracking",
 			"pr", pr.Number,
@@ -3555,6 +3687,10 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 		_, tracked := c.activePRs[pr.Number]
 		c.mu.RUnlock()
 		if tracked {
+			continue
+		}
+		if c.recentlyEvictedForPersistFailure(pr.Number) {
+			c.log.Debug("reconciler: skipping PR recently evicted for persist failure", "pr", pr.Number, "branch", pr.Head.Ref)
 			continue
 		}
 
