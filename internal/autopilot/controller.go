@@ -2265,18 +2265,13 @@ func formatMergedPRRefs(nums []int) string {
 
 // recoverStaleParentIssues scans open pilot parent issues at startup and closes any
 // whose sub-issues are all done. Catches parents orphaned when the daemon was down.
+//
+// GH-4099: candidates come from epicParentCandidates, not a bare native-link search
+// — a parent whose "pilot" label was stripped out-of-band, or whose children were
+// only ever linked via the "Parent: GH-N" body-marker convention (LinkSubIssue is
+// non-fatal at creation time, GH-3513), used to be silently invisible here forever.
 func (c *Controller) recoverStaleParentIssues(ctx context.Context) {
-	const maxRecover = 50
-
-	candidates, err := c.ghClient.SearchOpenPilotIssuesWithSubIssues(ctx, c.owner, c.repo, maxRecover)
-	if err != nil {
-		c.log.Warn("recoverStaleParentIssues: search failed", slog.Any("error", err))
-		return
-	}
-
-	if len(candidates) == maxRecover {
-		c.log.Info("recoverStaleParentIssues: hit limit, some candidates may be skipped", slog.Int("limit", maxRecover))
-	}
+	candidates := c.epicParentCandidates(ctx)
 
 	closed := 0
 	for _, parentNum := range candidates {
@@ -2286,13 +2281,14 @@ func (c *Controller) recoverStaleParentIssues(ctx context.Context) {
 			continue
 		}
 		if openCount > 0 {
+			c.log.Debug("recoverStaleParentIssues: siblings still open, skipping", slog.Int("parent", parentNum), slog.Int("open", openCount))
 			continue
 		}
 		c.closeParentNow(ctx, parentNum, nil)
 		closed++
 	}
 
-	c.log.Info("recoverStaleParentIssues: done", slog.Int("closed", closed))
+	c.log.Info("recoverStaleParentIssues: done", slog.Int("closed", closed), slog.Int("candidates", len(candidates)))
 }
 
 // Start runs one-time startup recovery sweeps. Call before the main Run loop.

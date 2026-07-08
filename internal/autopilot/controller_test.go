@@ -5543,6 +5543,271 @@ func TestRecoverStaleParentIssues_TruncatesAt50(t *testing.T) {
 	}
 }
 
+// TestReconcileEpicParents_GH4099CandidateDiscovery reproduces the two
+// real-world shapes that left #4020 and #4051 open for hours while every
+// reconcile pass logged nothing to do (GH-4099):
+//
+//   - "unlabeled parent + body-marker children": the parent has lost its
+//     "pilot" label (out-of-band, e.g. to break a dispatch retry loop) and its
+//     children were only ever linked via the "Parent: GH-N" body-marker
+//     convention (LinkSubIssue never ran — GH-3513) — invisible to the native
+//     SearchOpenPilotIssuesWithSubIssues candidate query no matter what.
+//   - "labeled parent + sub-issue-API children": the pre-existing, already-
+//     working shape — a regression guard proving the fix doesn't disturb it.
+//
+// Both must close via reconcileEpicParents (the poll-cycle sweep) with the
+// standard completion comment naming the merged child PR.
+func TestReconcileEpicParents_GH4099CandidateDiscovery(t *testing.T) {
+	tests := []struct {
+		name          string
+		parentLabeled bool // parent appears in the native candidate search results
+		nativeLinked  bool // children linked via the native GitHub sub-issue API
+		parentNum     int
+		childNum      int
+		mergedPR      int
+	}{
+		{
+			name:          "unlabeled parent + body-marker-only children closes via text-search fallback",
+			parentLabeled: false,
+			nativeLinked:  false,
+			parentNum:     700,
+			childNum:      701,
+			mergedPR:      900,
+		},
+		{
+			name:          "labeled parent + native sub-issue-API children still closes (regression guard)",
+			parentLabeled: true,
+			nativeLinked:  true,
+			parentNum:     710,
+			childNum:      711,
+			mergedPR:      910,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var closeCalled bool
+			var commentBody string
+
+			childBody := fmt.Sprintf("<!--autopilot-meta\nparent: GH-%d\ninherited-spec: true\n-->\n\nParent: GH-%d\n\nDo the thing.",
+				tt.parentNum, tt.parentNum)
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+					var body map[string]interface{}
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					query, _ := body["query"].(string)
+
+					switch {
+					case strings.Contains(query, "body"):
+						// discoverBodyMarkerEpicParents: recently-closed pilot-done
+						// children, regardless of the referenced parent's own label.
+						resp := map[string]interface{}{
+							"data": map[string]interface{}{
+								"repository": map[string]interface{}{
+									"issues": map[string]interface{}{
+										"nodes": []map[string]interface{}{
+											{"updatedAt": time.Now().UTC().Format(time.RFC3339), "body": childBody},
+										},
+									},
+								},
+							},
+						}
+						w.WriteHeader(http.StatusOK)
+						_ = json.NewEncoder(w).Encode(resp)
+
+					case strings.Contains(query, "search(query:"):
+						// getSubIssuesByTextSearch fallback (no native links).
+						resp := map[string]interface{}{
+							"data": map[string]interface{}{
+								"search": map[string]interface{}{
+									"nodes": []map[string]interface{}{
+										{"number": tt.childNum, "state": "CLOSED"},
+									},
+								},
+							},
+						}
+						w.WriteHeader(http.StatusOK)
+						_ = json.NewEncoder(w).Encode(resp)
+
+					case strings.Contains(query, "subIssuesSummary"):
+						// SearchOpenPilotIssuesWithSubIssues (native candidate search).
+						nodes := []map[string]interface{}{}
+						if tt.parentLabeled {
+							total := 0
+							if tt.nativeLinked {
+								total = 1
+							}
+							nodes = append(nodes, map[string]interface{}{
+								"number":           tt.parentNum,
+								"subIssuesSummary": map[string]int{"total": total, "completed": total},
+							})
+						}
+						resp := map[string]interface{}{
+							"data": map[string]interface{}{
+								"repository": map[string]interface{}{
+									"issues": map[string]interface{}{"nodes": nodes},
+								},
+							},
+						}
+						w.WriteHeader(http.StatusOK)
+						_ = json.NewEncoder(w).Encode(resp)
+
+					default:
+						// getAllSubIssueNumbers native per-parent query.
+						totalCount := 0
+						nodes := []map[string]interface{}{}
+						if tt.nativeLinked {
+							totalCount = 1
+							nodes = append(nodes, map[string]interface{}{"number": tt.childNum, "state": "CLOSED"})
+						}
+						resp := map[string]interface{}{
+							"data": map[string]interface{}{
+								"node": map[string]interface{}{
+									"subIssues": map[string]interface{}{
+										"totalCount": totalCount,
+										"nodes":      nodes,
+									},
+								},
+							},
+						}
+						w.WriteHeader(http.StatusOK)
+						_ = json.NewEncoder(w).Encode(resp)
+					}
+
+				case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", tt.parentNum):
+					w.WriteHeader(http.StatusOK)
+					_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"title":"epic","state":"open"}`, tt.parentNum)
+
+				case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+					// SearchPRsForIssue (verifyChildrenShippedForClose).
+					items := []map[string]interface{}{{
+						"id": 1, "number": tt.mergedPR, "title": "fix: child",
+						"state":        "closed",
+						"pull_request": map[string]interface{}{"merged_at": "2026-01-01T00:00:00Z"},
+					}}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": items})
+
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels"):
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[]"))
+
+				case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/labels/"):
+					w.WriteHeader(http.StatusOK)
+
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+					var payload struct {
+						Body string `json:"body"`
+					}
+					_ = json.NewDecoder(r.Body).Decode(&payload)
+					commentBody = payload.Body
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"id":1}`))
+
+				case r.Method == http.MethodPatch && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", tt.parentNum):
+					closeCalled = true
+					w.WriteHeader(http.StatusOK)
+
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			c.reconcileEpicParents(context.Background())
+
+			if !closeCalled {
+				t.Fatalf("expected parent #%d to be closed, it wasn't", tt.parentNum)
+			}
+			if !strings.Contains(commentBody, fmt.Sprintf("GH-%d", tt.parentNum)) {
+				t.Errorf("expected standard completion comment naming GH-%d, got: %q", tt.parentNum, commentBody)
+			}
+			if !strings.Contains(commentBody, fmt.Sprintf("#%d", tt.mergedPR)) {
+				t.Errorf("expected completion comment to name merged PR #%d, got: %q", tt.mergedPR, commentBody)
+			}
+		})
+	}
+}
+
+// TestReconcileEpicParent_NoLinksLogsReason covers GH-4099's fail-loud
+// requirement: a candidate parent that turns out to have no discoverable
+// children via EITHER the native sub-issue API or the body-marker text search
+// must never skip silently — it must log why (previously this path just
+// returned with no log line at all, matching the "closed=0, no visible reason"
+// symptom that hid #4020/#4051 for hours).
+func TestReconcileEpicParent_NoLinksLogsReason(t *testing.T) {
+	const parentNum = 720
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			query, _ := body["query"].(string)
+
+			if strings.Contains(query, "search(query:") {
+				// getSubIssuesByTextSearch: no matching children either.
+				resp := map[string]interface{}{
+					"data": map[string]interface{}{
+						"search": map[string]interface{}{"nodes": []map[string]interface{}{}},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+
+			// getAllSubIssueNumbers native query: no native links.
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"node": map[string]interface{}{
+						"subIssues": map[string]interface{}{
+							"totalCount": 0,
+							"nodes":      []map[string]interface{}{},
+						},
+					},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"state":"open"}`, parentNum)
+
+		case r.Method == http.MethodPatch && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			t.Errorf("parent should not be closed when it has no discoverable children")
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	var logBuf bytes.Buffer
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	c.reconcileEpicParent(context.Background(), parentNum)
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "no discoverable children") {
+		t.Errorf("expected a fail-loud skip-reason log line, got logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, fmt.Sprintf("parent=%d", parentNum)) {
+		t.Errorf("expected skip log to name the parent, got logs:\n%s", logs)
+	}
+}
+
 // TestNotifyExternalClose_MaybeCloseParent verifies that notifyExternalClose
 // calls maybeCloseParentIssue so parent epics are auto-closed when the last
 // sub-issue PR is closed without merge (GH-2198).
