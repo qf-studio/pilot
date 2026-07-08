@@ -2391,6 +2391,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	// GH-929: Start GitHub polling for multiple repos if enabled
 	var ghPollers []*github.Poller
+	// GH-4110: repo-keyed registry of every GitHub poller (in-tree ones added
+	// inline below, the SDK poller from its CreateAndStart). The sub-issue-skip /
+	// done-remark / stale-label callbacks route through this so they reach the SDK
+	// poller and stay scoped to the correct repo.
+	ghPollerRegistry := newGithubPollerRegistry()
 	polledRepos := make(map[string]bool) // Track repos already polled to avoid duplicates
 
 	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
@@ -2597,6 +2602,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					}
 				} else {
 					ghPollers = append(ghPollers, poller)
+					ghPollerRegistry.add(cfg.Adapters.GitHub.Repo, poller)
 					if !dashboardMode {
 						fmt.Printf("● github polling · %s (every %s, mode: %s)\n", cfg.Adapters.GitHub.Repo, interval, modeStr)
 					}
@@ -2628,6 +2634,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					continue
 				}
 				ghPollers = append(ghPollers, poller)
+				ghPollerRegistry.add(repoFullName, poller)
 				if !dashboardMode {
 					fmt.Printf("● github polling · %s (project: %s, every %s, mode: %s)\n", repoFullName, proj.Name, interval, modeStr)
 				}
@@ -2717,22 +2724,24 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)
 				}
 
-				// GH-3240: mark epic-created sub-issues as processed in all pollers so
-				// findOldestUnprocessedIssue does not re-dispatch them.
-				runner.SetSubIssuePollerSkip(func(n int) {
-					for _, p := range ghPollers {
-						p.MarkProcessed(n)
-					}
+				// GH-3240: mark epic-created sub-issues as processed so
+				// findOldestUnprocessedIssue does not re-dispatch them. GH-4110: route
+				// through the repo-keyed registry (reaches the SDK poller, whose handle
+				// never leaves githubPollerRegistration()) and scope the mark to the
+				// sub-issue's repo so it cannot suppress a same-numbered issue elsewhere.
+				runner.SetSubIssuePollerSkip(func(n int, repo string) {
+					ghPollerRegistry.markProcessed(repo, n)
 				})
 
 				// GH-3271: when autopilot marks an issue done after PR-merge, immediately
-				// re-mark it processed in all pollers so a poll tick during the
-				// merge→pilot-done label propagation window cannot re-dispatch it.
-				for _, ctrl := range autopilotControllers {
+				// re-mark it processed so a poll tick during the merge→pilot-done label
+				// propagation window cannot re-dispatch it. GH-4110: scope to the
+				// controller's own repo and route via the registry so the SDK poller is
+				// covered too.
+				for repoKey, ctrl := range autopilotControllers {
+					repoKey := repoKey
 					ctrl.SetOnIssueDone(func(n int) {
-						for _, p := range ghPollers {
-							p.MarkProcessed(n)
-						}
+						ghPollerRegistry.markProcessed(repoKey, n)
 					})
 				}
 
@@ -2767,27 +2776,25 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			if cfg.Adapters.GitHub.Repo != "" && cfg.Adapters.GitHub.StaleLabelCleanup != nil && cfg.Adapters.GitHub.StaleLabelCleanup.Enabled {
 				if store != nil {
 					cleanerOpts := []github.CleanerOption{}
-					// Wire callback to clear processed map when pilot-failed labels are removed
-					if len(ghPollers) > 0 {
-						cleanerOpts = append(cleanerOpts, github.WithOnFailedCleaned(func(issueNumber int) {
-							for _, p := range ghPollers {
-								p.ClearProcessed(issueNumber)
-							}
-						}))
-						// GH-2402: Same wiring for pilot-blocked so removal allows re-dispatch.
-						cleanerOpts = append(cleanerOpts, github.WithOnBlockedCleaned(func(issueNumber int) {
-							for _, p := range ghPollers {
-								p.ClearProcessed(issueNumber)
-							}
-						}))
-						// GH-2589: On startup recovery, clear the persistent processed store
-						// so the issue is re-dispatched on the next poll cycle.
-						cleanerOpts = append(cleanerOpts, github.WithOnStartupRecovered(func(issueNumber int) {
-							for _, p := range ghPollers {
-								p.ClearProcessed(issueNumber)
-							}
-						}))
-					}
+					// Clear the poller's processed map when a stale label is removed so
+					// the issue can be re-dispatched. GH-4110: this cleaner is scoped to
+					// the default repo, so route the clear through the registry keyed by
+					// that repo — it reaches the SDK poller (which is the default repo's
+					// poller when use_sdk_poller is on) and is a no-op if no poller for
+					// that repo is registered, so no ghPollers length guard is needed.
+					defaultRepo := cfg.Adapters.GitHub.Repo
+					cleanerOpts = append(cleanerOpts, github.WithOnFailedCleaned(func(issueNumber int) {
+						ghPollerRegistry.clearProcessed(defaultRepo, issueNumber)
+					}))
+					// GH-2402: Same wiring for pilot-blocked so removal allows re-dispatch.
+					cleanerOpts = append(cleanerOpts, github.WithOnBlockedCleaned(func(issueNumber int) {
+						ghPollerRegistry.clearProcessed(defaultRepo, issueNumber)
+					}))
+					// GH-2589: On startup recovery, clear the processed map so the issue
+					// is re-dispatched on the next poll cycle.
+					cleanerOpts = append(cleanerOpts, github.WithOnStartupRecovered(func(issueNumber int) {
+						ghPollerRegistry.clearProcessed(defaultRepo, issueNumber)
+					}))
 					// GH-2354: when pilot-in-progress is stripped from a closed
 					// issue, remove its task from the dashboard monitor so it
 					// stops showing in the queue view.
@@ -2838,6 +2845,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		AutopilotController:  autopilotController,
 		AutopilotStateStore:  autopilotStateStore,
 		AutopilotControllers: autopilotControllers,
+		GitHubPollers:        ghPollerRegistry, // GH-4110: SDK poller registers itself here
 	}
 	StartAdapterPollers(ctx, pollingDeps, adapterPollerRegistrations())
 

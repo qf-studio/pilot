@@ -1427,8 +1427,14 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 
 		// GH-3240: pre-mark in the poller so the sub-issue is not re-dispatched
 		// on the next poll cycle (the epic will execute it directly via ExecuteSubIssues).
+		// GH-4110: scope the mark to the parent's repo (sub-issues are created in it)
+		// so it reaches that repo's poller and no other.
 		if r.subIssuePollerSkip != nil && issueNumber > 0 {
-			r.subIssuePollerSkip(issueNumber)
+			skipRepo := ""
+			if plan.ParentTask != nil {
+				skipRepo = plan.ParentTask.SourceRepo
+			}
+			r.subIssuePollerSkip(issueNumber, skipRepo)
 		}
 
 		// Track order → issue number for dependency resolution (GH-1794)

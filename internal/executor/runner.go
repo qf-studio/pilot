@@ -570,9 +570,12 @@ type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSH
 // to enforce sequential ordering: sub-issue N+1 only starts after sub-issue N is merged.
 type SubIssueMergeWaitFn func(ctx context.Context, prNumber int) error
 
-// SubIssuePollerSkipFn is called with each newly-created GitHub sub-issue number so the
-// poller marks it as already-processed and does not re-dispatch it (GH-3240).
-type SubIssuePollerSkipFn func(issueNumber int)
+// SubIssuePollerSkipFn is called with each newly-created GitHub sub-issue number and the
+// owner/repo it was created in so the poller for that repo marks it as already-processed
+// and does not re-dispatch it (GH-3240). The repo scopes the mark so a sub-issue number
+// in one repo cannot suppress an unrelated same-numbered issue in another (GH-4110); an
+// empty repo marks all pollers as a safe fallback.
+type SubIssuePollerSkipFn func(issueNumber int, repo string)
 
 // SubIssueCreator is an interface for creating sub-issues in external issue trackers.
 // Adapters like Linear, Jira, GitLab, and Azure DevOps can implement this interface

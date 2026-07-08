@@ -326,6 +326,20 @@ func githubPollerRegistration() PollerRegistration {
 
 			githubPoller := githubSDK.New(sdkCfg).NewPoller(pollerDeps)
 
+			// GH-4110: publish the SDK poller handle to the shared repo-keyed
+			// registry so the main.go sub-issue-skip / done-remark / stale-label
+			// loops can mark/clear it. Without this the handle stays trapped in this
+			// closure and the pilot repo's epic sub-issues get duplicate-dispatched.
+			// NewPoller returns the core.Poller interface (Start only), so assert to
+			// the mark/clear surface and fail loud if a future SDK drops it.
+			if deps.GitHubPollers != nil {
+				if marker, ok := githubPoller.(githubProcessedMarker); ok {
+					deps.GitHubPollers.add(ghCfg.Repo, marker)
+				} else {
+					log.Error("GitHub SDK poller does not expose MarkProcessed/ClearProcessed; cross-poller sub-issue skip and stale-label recovery cannot reach it (GH-4110)")
+				}
+			}
+
 			log.Info("GitHub SDK polling enabled (M7 4b)",
 				slog.String("repo", ghCfg.Repo),
 				slog.String("label", pilotLabel),
