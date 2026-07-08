@@ -1,6 +1,6 @@
 # TASK-390: Dashboard TUI redesign — grot design system
 
-**Status:** ✅ Implemented in worktree `grot-dashboard-redesign` (4 commits, NOT pushed/merged yet)
+**Status:** 🚀 PR opened — implementation complete in worktree (7 commits incl. docs)
 **Branch:** `worktree-grot-dashboard-redesign`
 **Date:** 2026-07-08
 **Mode:** MANUAL (interactive session, user-directed worktree implementation)
@@ -57,9 +57,29 @@ and a semantic glyph vocabulary instead of emoji.
      Rail spinner + panel tick plumbing removed.
    - `statusIconStyle` → glyph vocabulary (✓ ✗ ● ◌ ○ ⟲ ! ·).
 
+4. `be788b94` — **feat(dashboard): stacked series colors for stat cards**
+   (session 3). User feedback: uniform-tone bands made all three cards look
+   identical; the earlier 2-row per-cell-row gradient collapsed into
+   dark/light dot banding. Now `render.BrailleStacked` with flat per-series
+   colors (banding impossible by construction): tokens = dim-accent cached
+   mass + bright-accent fresh cap (detail line in cached tone = color key);
+   queue depth = sage succeeded + rose failed caps (matches ✓/✗ detail);
+   cost = uniform `Dim(sage, 0.85)`. Plumbing: `GetDailyMetrics` aggregates
+   `tokens_cache_read/write` per day; new `CachedTokenHistory` /
+   `SuccessHistory` / `FailedHistory` arrays.
+5. `d567e34b` — **test(cmd): banner meta test to banner + legend contract**
+   — was silently failing since 1c8edb12 (asserted adapter chips in banner);
+   rewritten against the split surfaces via new `AdapterLegendForTest` hook.
+
 Tests: full suite green (47 pkgs); added `grot_chrome_test.go`
 (full-render width invariants + grot chrome landmarks, now exercising a
 live two-PR autopilot fixture). Lint 0 issues.
+
+Visual verification (session 3): dashboard Model rendered against the
+real `~/.pilot/data/pilot.db` with forced truecolor; per-series ANSI codes
+confirmed (bright/dim blue, sage/rose, dim sage). Note for reruns: the
+live TUI under a scripted pty stalls on termenv OSC/CSI queries — answer
+`]11;?` and `[6n` or render the Model directly.
 
 ## Key decisions
 
@@ -72,7 +92,9 @@ live two-PR autopilot fixture). Lint 0 issues.
 
 ## Remaining / follow-ups
 
-- [ ] Push branch + open PR + review + merge
+- [x] Push branch + open PR (URL in ## Refs) — review + merge pending
+- [ ] Release after merge (self-upgrade distributes; until then dev binary
+      in `~/.local/bin` can be overwritten by hot-upgrade pulling 2.233.10)
 - [ ] Post-merge: index `decision_grot_design_system.md` (+ this task) into
       `.agent/knowledge/graph.json` from the MAIN checkout (graph.json had
       concurrent uncommitted edits; indexing deferred to avoid conflicts)
