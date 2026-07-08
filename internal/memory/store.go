@@ -148,7 +148,12 @@ func (s *Store) migrate() error {
 		`ALTER TABLE executions ADD COLUMN files_changed INTEGER DEFAULT 0`,
 		`ALTER TABLE executions ADD COLUMN lines_added INTEGER DEFAULT 0`,
 		`ALTER TABLE executions ADD COLUMN lines_removed INTEGER DEFAULT 0`,
-		`ALTER TABLE executions ADD COLUMN model_name TEXT DEFAULT 'claude-sonnet-4-5'`,
+		// GH-3764(c): no literal default — a guessed model name is worse than an
+		// honest NULL. Existing rows already backfilled with the old
+		// 'claude-sonnet-4-5' default are left untouched (this is an additive
+		// ALTER TABLE; SQLite can't rewrite a column's default in place).
+		// Readers COALESCE(NULLIF(model_name, ''), 'unknown') instead of guessing.
+		`ALTER TABLE executions ADD COLUMN model_name TEXT`,
 		// Task queue columns for storing task details (GH-46)
 		`ALTER TABLE executions ADD COLUMN task_title TEXT`,
 		`ALTER TABLE executions ADD COLUMN task_description TEXT`,
@@ -416,7 +421,8 @@ func (s *Store) reclassifyLegacyOutcomes() error {
 		 WHERE status = 'failed' AND (
 			error LIKE '%stale queued task recovered%' OR
 			error LIKE '%context canceled%' OR
-			error LIKE '%context cancelled%'
+			error LIKE '%context cancelled%' OR
+			error LIKE '%parent task is already done%'
 		 )`,
 		`UPDATE executions SET status = 'stalled'
 		 WHERE status = 'failed' AND (
@@ -599,7 +605,7 @@ const executionDetailColumns = `
 	COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_total, 0),
 	COALESCE(tokens_cache_read, 0), COALESCE(tokens_cache_write, 0),
 	COALESCE(estimated_cost_usd, 0), COALESCE(files_changed, 0), COALESCE(lines_added, 0),
-	COALESCE(lines_removed, 0), COALESCE(model_name, ''),
+	COALESCE(lines_removed, 0), COALESCE(NULLIF(model_name, ''), 'unknown'),
 	COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
 	COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
 	COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, ''),

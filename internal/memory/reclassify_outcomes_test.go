@@ -35,6 +35,7 @@ func TestReclassifyLegacyOutcomes(t *testing.T) {
 		// skipped
 		{ID: "e9", TaskID: "GH-9", ProjectPath: "/p", Status: "failed", Error: "stale queued task recovered (no worker picked up)"},
 		{ID: "e10", TaskID: "GH-10", ProjectPath: "/p", Status: "failed", Error: "failed to start Claude Code: context canceled"},
+		{ID: "e16", TaskID: "GH-16", ProjectPath: "/p", Status: "failed", Error: "failed to create sub-issues: parent task is already done; refusing to create sub-issues"},
 		// infra
 		{ID: "e11", TaskID: "GH-11", ProjectPath: "/p", Status: "failed", Error: "oom_killed: Process killed by SIGKILL (exit code 137)"},
 		{ID: "e12", TaskID: "GH-12", ProjectPath: "/p", Status: "failed", Error: "push failed: failed to push: exit status 1"},
@@ -60,7 +61,7 @@ func TestReclassifyLegacyOutcomes(t *testing.T) {
 		"e1": "no_op", "e2": "no_op", "e3": "no_op", "e3b": "no_op",
 		"e4": "stalled", "e5": "stalled",
 		"e8": "rate_limited",
-		"e9": "skipped", "e10": "skipped",
+		"e9": "skipped", "e10": "skipped", "e16": "skipped",
 		"e11": "infra", "e12": "infra", "e13": "infra",
 		"e6": "failed", "e14": "failed", "e15": "failed", // genuine failures stay failed
 		"e7": "completed", // untouched
@@ -88,11 +89,11 @@ func TestReclassifyLegacyOutcomes(t *testing.T) {
 	assertCount("NoOp", counts.NoOp, 4)
 	assertCount("Stalled", counts.Stalled, 2)
 	assertCount("RateLimited", counts.RateLimited, 1)
-	assertCount("Skipped", counts.Skipped, 2)
+	assertCount("Skipped", counts.Skipped, 3)
 	assertCount("Infra", counts.Infra, 3)
 	assertCount("Succeeded", counts.Succeeded, 1)
 	assertCount("Total", counts.Total, len(seed))
-	assertCount("NonFailure", counts.NonFailure(), 12)
+	assertCount("NonFailure", counts.NonFailure(), 13)
 }
 
 // TestReclassifyLegacyOutcomesIdempotent verifies re-running the backfill makes

@@ -2805,6 +2805,67 @@ func TestEffortLevelColumns_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestModelNameColumn_NoHardcodedDefault verifies GH-3764(c): a fresh executions
+// table's model_name column carries no literal SQL default (dflt_value IS NULL
+// in pragma_table_info), so a future NULL row is never silently backfilled with
+// a guessed model name.
+func TestModelNameColumn_NoHardcodedDefault(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var dfltValue sql.NullString
+	row := store.db.QueryRow(`SELECT dflt_value FROM pragma_table_info('executions') WHERE name = 'model_name'`)
+	if err := row.Scan(&dfltValue); err != nil {
+		t.Fatalf("pragma_table_info model_name: %v", err)
+	}
+	if dfltValue.Valid {
+		t.Errorf("model_name dflt_value = %q, want no default (NULL)", dfltValue.String)
+	}
+}
+
+// TestModelNameColumn_NullRendersUnknown verifies GH-3764(c): a row whose
+// model_name is NULL (e.g. a pre-migration legacy row, simulated here via a raw
+// UPDATE since SaveExecution always writes an explicit value) reads back as
+// "unknown" through GetExecution and ExportMetrics rather than a blank string.
+func TestModelNameColumn_NullRendersUnknown(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	exec := &Execution{ID: "exec-null-model", TaskID: "T-null-model", ProjectPath: "/p", Status: "completed", CreatedAt: now}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE executions SET model_name = NULL WHERE id = ?`, exec.ID); err != nil {
+		t.Fatalf("UPDATE model_name = NULL: %v", err)
+	}
+
+	got, err := store.GetExecution("exec-null-model")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if got.ModelName != "unknown" {
+		t.Errorf("GetExecution ModelName = %q, want %q", got.ModelName, "unknown")
+	}
+
+	exports, err := store.ExportMetrics(MetricsQuery{Start: now.Add(-time.Hour), End: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("ExportMetrics: %v", err)
+	}
+	if len(exports) != 1 {
+		t.Fatalf("len(exports) = %d, want 1", len(exports))
+	}
+	if exports[0].ModelName != "unknown" {
+		t.Errorf("ExportMetrics ModelName = %q, want %q", exports[0].ModelName, "unknown")
+	}
+}
+
 // TestPruneExecutionLogs verifies D5: deletes logs older than the cutoff and
 // leaves newer ones untouched.
 func TestPruneExecutionLogs(t *testing.T) {
