@@ -11,6 +11,10 @@ type GracefulUpgrader struct {
 	upgrader    *Upgrader
 	statePath   string
 	taskChecker TaskChecker
+
+	// clock drives RequestDrain's poll loop (drain.go); defaults to
+	// realClock{} and is swapped for a fake in tests.
+	clock clock
 }
 
 // TaskChecker interface for checking running tasks
@@ -33,6 +37,7 @@ func NewGracefulUpgrader(currentVersion string, taskChecker TaskChecker) (*Grace
 		upgrader:    upgrader,
 		statePath:   DefaultStatePath(),
 		taskChecker: taskChecker,
+		clock:       realClock{},
 	}, nil
 }
 
