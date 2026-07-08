@@ -2298,7 +2298,11 @@ func TestEngine_EvaluateStuckTasks_ProgressResetsCooldown(t *testing.T) {
 }
 
 func TestEngine_EvaluateStuckTasks_OrphanEviction(t *testing.T) {
-	// Tasks stuck for 4× threshold should be evicted from the map.
+	// Tasks stuck past minOrphanEvictionThreshold should be evicted from the
+	// map. GH-4092: the orphan window is floored at minOrphanEvictionThreshold
+	// (120m) regardless of the rule's ProgressUnchangedFor, since a 4×threshold
+	// window (40m at this rule's 10m threshold) evicted entries for tasks that
+	// were still legitimately executing a long single Claude turn.
 	config := &AlertConfig{
 		Enabled: true,
 		Channels: []ChannelConfig{
@@ -2326,16 +2330,19 @@ func TestEngine_EvaluateStuckTasks_OrphanEviction(t *testing.T) {
 	logger := slog.Default()
 	engine := NewEngine(config, WithDispatcher(dispatcher), WithLogger(logger))
 
-	// Add an orphaned task: stuck for 50 min > 4 * 10 min = 40 min orphan threshold
+	// Add an orphaned task: stuck for 130 min > minOrphanEvictionThreshold (120m)
 	engine.mu.Lock()
 	engine.taskLastProgress["GH-ORPHAN"] = progressState{
 		Progress:  0,
-		UpdatedAt: time.Now().Add(-50 * time.Minute),
+		UpdatedAt: time.Now().Add(-130 * time.Minute),
 	}
-	// Also add a non-orphan stuck task: 15 min > 10 min threshold, < 40 min orphan
+	// Also add a non-orphan stuck task: 50 min > 10 min threshold (still alerts)
+	// but well under the 120m orphan floor — a legitimately long-running
+	// Claude turn must not be evicted just because it exceeds the pre-GH-4092
+	// 4×threshold window.
 	engine.taskLastProgress["GH-STUCK"] = progressState{
 		Progress:  0,
-		UpdatedAt: time.Now().Add(-15 * time.Minute),
+		UpdatedAt: time.Now().Add(-50 * time.Minute),
 	}
 	engine.mu.Unlock()
 
@@ -2427,6 +2434,11 @@ func TestEngine_TaskProgressUpdatesStuckState(t *testing.T) {
 // progress under its own task ID — never reaches the parent's
 // taskLastProgress entry), and the orphan sweep evicted the parent with
 // stuck_for=41m0s even though sub-issue 2 was actively running.
+//
+// GH-4092: the orphan window is now floored at minOrphanEvictionThreshold
+// (120m) regardless of the rule's ProgressUnchangedFor, so the pre-loop touch
+// below is pushed past that floor (was 41m, past only the old 4×10m=40m
+// window) to keep this test's "legitimately orphaned" case meaningful.
 func TestEngine_EvaluateStuckTasks_EpicParentRefreshedByChildExecution(t *testing.T) {
 	tests := []struct {
 		name              string
@@ -2474,13 +2486,13 @@ func TestEngine_EvaluateStuckTasks_EpicParentRefreshedByChildExecution(t *testin
 			engine := NewEngine(config, WithDispatcher(dispatcher))
 
 			// Parent's last alerts-visible touch (the pre-loop "Executing"
-			// progress report) was 41 min ago — past the 4x10m=40m orphan
-			// threshold on its own.
+			// progress report) was 130 min ago — past the minOrphanEvictionThreshold
+			// (120m) orphan floor on its own.
 			engine.handleTaskStarted(Event{
 				Type:      EventTypeTaskStarted,
 				TaskID:    "GH-4021",
 				Phase:     "Executing",
-				Timestamp: time.Now().Add(-41 * time.Minute),
+				Timestamp: time.Now().Add(-130 * time.Minute),
 			})
 
 			if tt.childTouchAgo > 0 {

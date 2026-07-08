@@ -696,6 +696,91 @@ func TestRecoverStaleTasks_QueuedSkipsWhenLiveWorker(t *testing.T) {
 	}
 }
 
+// TestRecoverStaleRunningTasks_HealsToCompletedWhenBranchMerged is the GH-4092
+// regression guard: a stale "running" row whose own branch already has a
+// merged PR (autopilot shipped the work; only the row's own status update
+// raced the reap) must heal to "completed" with the PR URL recorded — not
+// "failed". Live incident: GH-4084 was marked failed 3 seconds after its PR
+// #4089 merged.
+func TestRecoverStaleRunningTasks_HealsToCompletedWhenBranchMerged(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-merged-run", TaskID: "GH-4092", ProjectPath: "/project-merged", Status: "running"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	const mergedPRURL = "https://github.com/qf-studio/pilot/pull/4089"
+	origCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, projectPath, branch string) (string, error) {
+		if projectPath == "/project-merged" && branch == "pilot/GH-4092" {
+			return mergedPRURL, nil
+		}
+		return "", nil
+	}
+	defer func() { staleRunningMergedPRCheck = origCheck }()
+
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+		StaleRecoveryInterval: time.Hour,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	dispatcher.recoverStaleRunningTasks()
+
+	got, err := store.GetExecution("exec-merged-run")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if got.Status != "completed" {
+		t.Errorf("expected stale running task with merged branch PR to heal to 'completed', got %q (error=%q)", got.Status, got.Error)
+	}
+	if got.PRUrl != mergedPRURL {
+		t.Errorf("expected pr_url = %q, got %q", mergedPRURL, got.PRUrl)
+	}
+}
+
+// TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR guards the negative
+// case: a genuinely orphaned running row (no live worker, no merged PR on its
+// branch) must still be marked "failed" — the GH-4092 healing path must not
+// swallow real orphans.
+func TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-orphan-run", TaskID: "GH-9999", ProjectPath: "/project-orphan", Status: "running"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	origCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) {
+		return "", nil
+	}
+	defer func() { staleRunningMergedPRCheck = origCheck }()
+
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+		StaleRecoveryInterval: time.Hour,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	dispatcher.recoverStaleRunningTasks()
+
+	got, err := store.GetExecution("exec-orphan-run")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if got.Status != "failed" {
+		t.Errorf("expected genuinely orphaned running task to be marked 'failed', got %q", got.Status)
+	}
+}
+
 func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
