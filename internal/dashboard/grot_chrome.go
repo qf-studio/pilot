@@ -3,6 +3,18 @@ package dashboard
 // Card chrome shared with grot (github.com/qf-studio/grot): the dashboard
 // renders with the same pkg/tui/render primitives and "pilot" theme grot
 // ships, so both tools look identical in the terminal.
+//
+// Glyph vocabulary (no emoji — single-width semantic marks only):
+//
+//	●  active / online / running        ○  inactive / stopping / none
+//	◌  waiting / queued / draining      ▸  intake / selection
+//	✓  success                          ✗  failure
+//	!  warning / attention              ↑  update available
+//	⟲  retry / restart / recovery       ◐◓◑◒  in-progress spinner
+//	·  segment separator                →  transition (a → b)
+//
+// Log lines and panel content compose these marks with the muted theme
+// colors; system messages are lowercase to match the grot card titles.
 
 import (
 	"strings"

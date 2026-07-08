@@ -2384,7 +2384,7 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program
 	gatewayURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
 	go func() {
 		time.Sleep(100 * time.Millisecond) // Wait for program.Run() to start
-		program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot %s started - Gateway: %s", version, gatewayURL))())
+		program.Send(dashboard.AddLog(fmt.Sprintf("● pilot %s started · gateway %s", version, gatewayURL))())
 	}()
 
 	// Run TUI (blocks until quit)

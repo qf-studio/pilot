@@ -289,7 +289,7 @@ Examples:
 			if msg := health.TelegramApprovalStranding(cfg); msg != "" {
 				logging.WithComponent("start").Error(msg,
 					slog.Bool("telegram_polling", cfg.Adapters.Telegram.Polling))
-				fmt.Fprintf(os.Stderr, "⚠️  %s — run 'pilot doctor' for details, or set adapters.telegram.polling: true / start with --telegram\n", msg)
+				fmt.Fprintf(os.Stderr, "!  %s — run 'pilot doctor' for details, or set adapters.telegram.polling: true / start with --telegram\n", msg)
 			}
 
 			// Apply team ID override if flag provided
@@ -1255,7 +1255,7 @@ Examples:
 				} else if publicURL, startErr := tunnelMgr.Start(context.Background()); startErr != nil {
 					logging.WithComponent("start").Warn("failed to start tunnel", slog.Any("error", startErr))
 				} else {
-					fmt.Printf("🌐 Public tunnel: %s\n", publicURL)
+					fmt.Printf("● public tunnel · %s\n", publicURL)
 					fmt.Printf("   Webhooks: %s/webhooks/{linear,github,gitlab,jira}\n", publicURL)
 					defer tunnelMgr.Stop() //nolint:errcheck
 				}
@@ -1276,18 +1276,18 @@ Examples:
 
 			// Show Telegram status in gateway mode (GH-349)
 			if hasTelegram && cfg.Adapters.Telegram.Polling {
-				fmt.Println("📱 Telegram polling active")
+				fmt.Println("● telegram polling active")
 			}
 
 			// Show GitHub status in gateway mode (GH-350)
 			if hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
-				fmt.Printf("🐙 GitHub polling: %s\n", cfg.Adapters.GitHub.Repo)
+				fmt.Printf("● github polling · %s\n", cfg.Adapters.GitHub.Repo)
 			}
 
 			// Show Slack status in gateway mode (GH-652)
 			if hasSlack {
-				fmt.Println("💬 Slack Socket Mode active")
+				fmt.Println("● slack socket mode active")
 			}
 
 			// Show Linear status in gateway mode (GH-393)
@@ -1295,58 +1295,58 @@ Examples:
 				cfg.Adapters.Linear.Polling != nil && cfg.Adapters.Linear.Polling.Enabled {
 				workspaces := cfg.Adapters.Linear.GetWorkspaces()
 				for _, ws := range workspaces {
-					fmt.Printf("📊 Linear polling: %s/%s\n", ws.Name, ws.TeamID)
+					fmt.Printf("● linear polling · %s/%s\n", ws.Name, ws.TeamID)
 				}
 			}
 
 			// Show GitLab status (GH-2045)
 			if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
 				if cfg.Adapters.GitLab.Polling != nil && cfg.Adapters.GitLab.Polling.Enabled {
-					fmt.Println("🦊 GitLab polling active")
+					fmt.Println("● gitlab polling active")
 				} else {
-					fmt.Println("🦊 GitLab webhooks enabled")
+					fmt.Println("● gitlab webhooks enabled")
 				}
 			}
 
 			// Show Jira status (GH-2045)
 			if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
 				if cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
-					fmt.Println("🎫 Jira polling active")
+					fmt.Println("● jira polling active")
 				} else {
-					fmt.Println("🎫 Jira webhooks enabled")
+					fmt.Println("● jira webhooks enabled")
 				}
 			}
 
 			// Show Asana status (GH-2045)
 			if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
 				if cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
-					fmt.Println("📋 Asana polling active")
+					fmt.Println("● asana polling active")
 				} else {
-					fmt.Println("📋 Asana webhooks enabled")
+					fmt.Println("● asana webhooks enabled")
 				}
 			}
 
 			// Show Azure DevOps status (GH-2045)
 			if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
 				if cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
-					fmt.Println("🔷 Azure DevOps polling active")
+					fmt.Println("● azure devops polling active")
 				} else {
-					fmt.Println("🔷 Azure DevOps webhooks enabled")
+					fmt.Println("● azure devops webhooks enabled")
 				}
 			}
 
 			// Show Plane status (GH-2045)
 			if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
 				if cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
-					fmt.Println("✈️  Plane polling active")
+					fmt.Println("● plane polling active")
 				} else {
-					fmt.Println("✈️  Plane webhooks enabled")
+					fmt.Println("● plane webhooks enabled")
 				}
 			}
 
 			// Show Discord status (GH-2045)
 			if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
-				fmt.Println("🎮 Discord gateway enabled")
+				fmt.Println("● discord gateway enabled")
 			}
 
 			// Wait for shutdown signal
@@ -1354,7 +1354,7 @@ Examples:
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 			<-sigCh
-			fmt.Println("\n🛑 Shutting down...")
+			fmt.Println("\n○ shutting down...")
 
 			// Close teams DB if opened (GH-633)
 			if teamsDB != nil {
@@ -2156,7 +2156,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		if err := tgHandler.CheckSingleton(ctx); err != nil {
 			if errors.Is(err, telegram.ErrConflict) {
 				if replace {
-					fmt.Println("🔄 Stopping existing bot instance...")
+					fmt.Println("⟲ stopping existing bot instance...")
 					if err := killExistingTelegramBot(); err != nil {
 						return fmt.Errorf("failed to stop existing instance: %w", err)
 					}
@@ -2350,7 +2350,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 
 		if !dashboardMode {
-			fmt.Printf("💰 Budget enforcement enabled: $%.2f/day, $%.2f/month\n",
+			fmt.Printf("● budget enforcement enabled · $%.2f/day, $%.2f/month\n",
 				cfg.Budget.DailyLimit, cfg.Budget.MonthlyLimit)
 		}
 	} else {
@@ -2568,19 +2568,19 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			if cfg.Adapters.GitHub.Repo != "" && cfg.Adapters.GitHub.UseSDKPoller {
 				polledRepos[cfg.Adapters.GitHub.Repo] = true
 				if !dashboardMode {
-					fmt.Printf("🐙 GitHub polling (SDK, M7 4b): %s (every %s)\n", cfg.Adapters.GitHub.Repo, interval)
+					fmt.Printf("● github polling (sdk, m7 4b) · %s (every %s)\n", cfg.Adapters.GitHub.Repo, interval)
 				}
 			} else if cfg.Adapters.GitHub.Repo != "" {
 				polledRepos[cfg.Adapters.GitHub.Repo] = true
 				poller, err := createPollerForRepo(cfg.Adapters.GitHub.Repo, projectPath)
 				if err != nil {
 					if !dashboardMode {
-						fmt.Printf("⚠️  GitHub polling disabled for %s: %v\n", cfg.Adapters.GitHub.Repo, err)
+						fmt.Printf("!  github polling disabled for %s: %v\n", cfg.Adapters.GitHub.Repo, err)
 					}
 				} else {
 					ghPollers = append(ghPollers, poller)
 					if !dashboardMode {
-						fmt.Printf("🐙 GitHub polling enabled: %s (every %s, mode: %s)\n", cfg.Adapters.GitHub.Repo, interval, modeStr)
+						fmt.Printf("● github polling · %s (every %s, mode: %s)\n", cfg.Adapters.GitHub.Repo, interval, modeStr)
 					}
 				}
 			}
@@ -2611,7 +2611,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 				ghPollers = append(ghPollers, poller)
 				if !dashboardMode {
-					fmt.Printf("🐙 GitHub polling enabled: %s (project: %s, every %s, mode: %s)\n", repoFullName, proj.Name, interval, modeStr)
+					fmt.Printf("● github polling · %s (project: %s, every %s, mode: %s)\n", repoFullName, proj.Name, interval, modeStr)
 				}
 			}
 
@@ -2635,7 +2635,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 			if len(ghPollers) > 0 {
 				if !dashboardMode && execMode == github.ExecutionModeSequential && waitForMerge {
-					fmt.Printf("   ⏳ Sequential mode: waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
+					fmt.Printf("   ◌ sequential mode · waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
 				}
 
 				// Start autopilot processing loops for all controllers
@@ -2671,7 +2671,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 
 				if len(autopilotControllers) > 0 && !dashboardMode {
-					fmt.Printf("🤖 Autopilot enabled: %s environment (%d repos)\n", cfg.Orchestrator.Autopilot.Environment, len(autopilotControllers))
+					fmt.Printf("● autopilot enabled · %s environment (%d repos)\n", cfg.Orchestrator.Autopilot.Environment, len(autopilotControllers))
 				}
 
 				// Start metrics alerter for default controller (GH-728)
@@ -2773,11 +2773,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					cleaner, cleanerErr := github.NewCleaner(client, store, cfg.Adapters.GitHub.Repo, cfg.Adapters.GitHub.StaleLabelCleanup, cleanerOpts...)
 					if cleanerErr != nil {
 						if !dashboardMode {
-							fmt.Printf("⚠️  Stale label cleanup disabled: %v\n", cleanerErr)
+							fmt.Printf("!  stale label cleanup disabled: %v\n", cleanerErr)
 						}
 					} else {
 						if !dashboardMode {
-							fmt.Printf("🧹 Stale label cleanup enabled (every %s, in-progress: %s, failed: %s)\n",
+							fmt.Printf("● stale label cleanup enabled (every %s, in-progress: %s, failed: %s)\n",
 								cfg.Adapters.GitHub.StaleLabelCleanup.Interval,
 								cfg.Adapters.GitHub.StaleLabelCleanup.Threshold,
 								cfg.Adapters.GitHub.StaleLabelCleanup.FailedThreshold)
@@ -2789,7 +2789,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							logging.WithComponent("github-cleanup").Warn("startup recovery failed",
 								slog.Any("error", err))
 						} else if !dashboardMode && n > 0 {
-							fmt.Printf("🔄 Startup recovery: cleared %d stuck pilot-in-progress label(s)\n", n)
+							fmt.Printf("⟲ startup recovery · cleared %d stuck pilot-in-progress label(s)\n", n)
 						}
 						go cleaner.Start(ctx)
 					}
@@ -2831,7 +2831,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				AllowedIDs: cfg.Adapters.Telegram.AllowedIDs,
 			}, nil).NewChatBridge(sdkCore.ChatDeps{Handler: tgHandler})
 			if !dashboardMode {
-				fmt.Println("📱 Telegram SDK chat bridge started")
+				fmt.Println("● telegram sdk chat bridge started")
 			}
 			logging.WithComponent("start").Info("Telegram studio-sdk chat bridge started (sdk_bridge=true)")
 			go func() {
@@ -2841,7 +2841,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}()
 		} else {
 			if !dashboardMode {
-				fmt.Println("📱 Telegram polling started")
+				fmt.Println("● telegram polling started")
 			}
 			tgHandler.StartPolling(ctx)
 		}
@@ -2920,7 +2920,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}()
 
 		if !dashboardMode {
-			fmt.Println("💬 Slack Socket Mode started")
+			fmt.Println("● slack socket mode started")
 		}
 		logging.WithComponent("start").Info("Slack Socket Mode started in polling mode")
 	}
@@ -2992,7 +2992,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	// Dashboard mode: run TUI and handle shutdown via TUI quit
 	if dashboardMode && program != nil {
-		fmt.Println("\n🖥️  Starting TUI dashboard...")
+		fmt.Println("\n● starting tui dashboard...")
 
 		// Start background version checker for hot reload (GH-369)
 		upgradeCfg := cfg.Upgrade
@@ -3002,7 +3002,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		versionChecker := upgrade.NewVersionChecker(version, upgrade.DefaultCheckInterval)
 		versionChecker.OnUpdate(func(info *upgrade.VersionInfo) {
 			program.Send(dashboard.NotifyUpdateAvailable(info.Current, info.Latest, info.ReleaseNotes)())
-			program.Send(dashboard.AddLog(fmt.Sprintf("⬆️ Update available: %s → %s", info.Current, info.Latest))())
+			program.Send(dashboard.AddLog(fmt.Sprintf("↑ update available: %s → %s", info.Current, info.Latest))())
 
 			// GH-3790 root cause: this callback used to only log/notify —
 			// PerformHotUpgrade never ran unless a human pressed 'u' in the
@@ -3021,7 +3021,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			versionChecker.SetStaleThreshold(upgradeCfg.StaleReleaseThreshold)
 			versionChecker.OnStale(func(info *upgrade.VersionInfo) {
 				program.Send(dashboard.AddLog(fmt.Sprintf(
-					"⚠️ %d releases behind (running %s, latest %s) — check ~/.pilot/logs/daemon.log",
+					"! %d releases behind (running %s, latest %s) — check ~/.pilot/logs/daemon.log",
 					info.ReleasesBehind, info.Current, info.Latest))())
 				if alertsEngine != nil {
 					alertsEngine.ProcessEvent(alerts.Event{
@@ -3059,7 +3059,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					}
 
 					// Drain pollers — stop accepting new issues before upgrade
-					program.Send(dashboard.AddLog("⏳ Draining pollers — no new issues will be accepted...")())
+					program.Send(dashboard.AddLog("◌ draining pollers — no new issues will be accepted")())
 					for _, p := range ghPollers {
 						go p.Drain()
 					}
@@ -3069,7 +3069,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					hotUpgrader, err := upgrade.NewHotUpgrader(version, monitor)
 					if err != nil {
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
-						program.Send(dashboard.AddLog(fmt.Sprintf("❌ Upgrade failed: %v", err))())
+						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
 						continue
 					}
 
@@ -3087,13 +3087,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 					if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
-						program.Send(dashboard.AddLog(fmt.Sprintf("❌ Upgrade failed: %v", err))())
+						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
 					} else {
 						// On Unix, process is replaced and this line is never reached.
 						// On Windows, hot restart is not supported — binary is installed
 						// but process continues. Notify user to restart manually.
 						program.Send(dashboard.NotifyUpgradeComplete(true, "")())
-						program.Send(dashboard.AddLog("✅ Upgrade installed! Please restart Pilot to use the new version.")())
+						program.Send(dashboard.AddLog("✓ upgrade installed — restart pilot to apply")())
 					}
 				}
 			}
@@ -3120,18 +3120,18 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		// Add startup logs after TUI starts (Send blocks if Run hasn't been called)
 		go func() {
 			time.Sleep(100 * time.Millisecond) // Wait for Run() to start
-			program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot %s started - Polling mode", version))())
+			program.Send(dashboard.AddLog(fmt.Sprintf("● pilot %s started · polling mode", version))())
 			if hasTelegram {
-				program.Send(dashboard.AddLog("📱 Telegram polling active")())
+				program.Send(dashboard.AddLog("● telegram polling active")())
 			}
 			hasGitHubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
 			if hasGitHubPolling {
 				repoCount := countGitHubRepos(cfg)
 				if repoCount == 0 {
-					program.Send(dashboard.AddLog("🐙 GitHub polling: no repos configured")())
+					program.Send(dashboard.AddLog("○ github polling · no repos configured")())
 				} else {
-					program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %d repo(s) configured", repoCount))())
+					program.Send(dashboard.AddLog(fmt.Sprintf("● github polling · %d repo(s)", repoCount))())
 				}
 			}
 			hasLinearPolling := cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled &&
@@ -3139,53 +3139,53 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			if hasLinearPolling {
 				workspaces := cfg.Adapters.Linear.GetWorkspaces()
 				for _, ws := range workspaces {
-					program.Send(dashboard.AddLog(fmt.Sprintf("📊 Linear polling: %s/%s", ws.Name, ws.TeamID))())
+					program.Send(dashboard.AddLog(fmt.Sprintf("● linear polling · %s/%s", ws.Name, ws.TeamID))())
 				}
 			}
 
 			// Show GitLab status (GH-2045)
 			if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
 				if cfg.Adapters.GitLab.Polling != nil && cfg.Adapters.GitLab.Polling.Enabled {
-					program.Send(dashboard.AddLog("🦊 GitLab polling active")())
+					program.Send(dashboard.AddLog("● gitlab polling active")())
 				} else {
-					program.Send(dashboard.AddLog("🦊 GitLab webhooks enabled")())
+					program.Send(dashboard.AddLog("● gitlab webhooks enabled")())
 				}
 			}
 			// Show Jira status (GH-2045)
 			if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
 				if cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
-					program.Send(dashboard.AddLog("🎫 Jira polling active")())
+					program.Send(dashboard.AddLog("● jira polling active")())
 				} else {
-					program.Send(dashboard.AddLog("🎫 Jira webhooks enabled")())
+					program.Send(dashboard.AddLog("● jira webhooks enabled")())
 				}
 			}
 			// Show Asana status (GH-2045)
 			if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
 				if cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
-					program.Send(dashboard.AddLog("📋 Asana polling active")())
+					program.Send(dashboard.AddLog("● asana polling active")())
 				} else {
-					program.Send(dashboard.AddLog("📋 Asana webhooks enabled")())
+					program.Send(dashboard.AddLog("● asana webhooks enabled")())
 				}
 			}
 			// Show Azure DevOps status (GH-2045)
 			if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
 				if cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
-					program.Send(dashboard.AddLog("🔷 Azure DevOps polling active")())
+					program.Send(dashboard.AddLog("● azure devops polling active")())
 				} else {
-					program.Send(dashboard.AddLog("🔷 Azure DevOps webhooks enabled")())
+					program.Send(dashboard.AddLog("● azure devops webhooks enabled")())
 				}
 			}
 			// Show Plane status (GH-2045)
 			if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
 				if cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
-					program.Send(dashboard.AddLog("✈️  Plane polling active")())
+					program.Send(dashboard.AddLog("● plane polling active")())
 				} else {
-					program.Send(dashboard.AddLog("✈️  Plane webhooks enabled")())
+					program.Send(dashboard.AddLog("● plane webhooks enabled")())
 				}
 			}
 			// Show Discord status (GH-2045)
 			if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
-				program.Send(dashboard.AddLog("🎮 Discord gateway enabled")())
+				program.Send(dashboard.AddLog("● discord gateway enabled")())
 			}
 
 			// GH-3600: surface upgrade verification — running version vs the
@@ -3198,7 +3198,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				if bootReconcile.HotExec {
 					via = "hot restart, config reloaded"
 				}
-				program.Send(dashboard.AddLog(fmt.Sprintf("✅ Upgrade complete: %s → %s (%s)",
+				program.Send(dashboard.AddLog(fmt.Sprintf("✓ upgrade complete: %s → %s (%s)",
 					bootReconcile.PreviousVersion, bootReconcile.NewVersion, via))())
 			case bootReconcile != nil && bootReconcile.Outcome == upgrade.BootRestartFailed:
 				// Drives the sticky "! UPGRADE FAILED" panel.
@@ -3209,9 +3209,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				// Legacy: restart marker without a reconcilable state file
 				prevVersion := os.Getenv("PILOT_PREVIOUS_VERSION")
 				if prevVersion != "" {
-					program.Send(dashboard.AddLog(fmt.Sprintf("✅ Upgraded from %s to %s (config reloaded)", prevVersion, version))())
+					program.Send(dashboard.AddLog(fmt.Sprintf("✓ upgraded from %s to %s (config reloaded)", prevVersion, version))())
 				} else {
-					program.Send(dashboard.AddLog("✅ Pilot restarted (config reloaded)")())
+					program.Send(dashboard.AddLog("✓ pilot restarted (config reloaded)")())
 				}
 			}
 		}()
@@ -3247,7 +3247,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigCh
-	fmt.Println("\n🛑 Shutting down...")
+	fmt.Println("\n○ shutting down...")
 
 	// Terminate all running subprocesses (GH-883)
 	runner.CancelAll()
@@ -3256,10 +3256,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		tgHandler.Stop()
 	}
 	if len(ghPollers) > 0 {
-		fmt.Printf("🐙 Stopping GitHub pollers (%d)...\n", len(ghPollers))
+		fmt.Printf("○ stopping github pollers (%d)...\n", len(ghPollers))
 	}
 	if dispatcher != nil {
-		fmt.Println("📋 Stopping task dispatcher...")
+		fmt.Println("○ stopping task dispatcher...")
 		dispatcher.Stop()
 	}
 	if briefScheduler != nil {

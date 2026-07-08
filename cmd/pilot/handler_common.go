@@ -28,7 +28,7 @@ type IssueInfo struct {
 	Description string
 	URL         string // issue URL for monitor registration
 	Adapter     string // "github", "linear", "jira", "asana", "plane"
-	LogEmoji    string // "📥", "📊", "📦" per adapter
+	LogMark     string // dashboard log mark; "▸" = task intake (design-system glyph)
 }
 
 // HandlerResult holds adapter-agnostic execution outcome returned by handleIssueGeneric.
@@ -95,7 +95,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 
 	// 2. Log to dashboard
 	if deps.Program != nil {
-		deps.Program.Send(dashboard.AddLog(fmt.Sprintf("%s %s: %s", info.LogEmoji, taskID, title))())
+		deps.Program.Send(dashboard.AddLog(fmt.Sprintf("%s %s: %s", info.LogMark, taskID, title))())
 	}
 
 	// 3. Emit task started alert
@@ -149,7 +149,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 
 	// 5. Print to stdout (skip in dashboard mode to avoid corrupting the TUI alt-screen)
 	if deps.Program == nil {
-		fmt.Printf("\n%s %s: %s\n", info.LogEmoji, taskID, title)
+		fmt.Printf("\n%s %s: %s\n", info.LogMark, taskID, title)
 	}
 
 	// 6. Dispatch via dispatcher OR direct execute via runner
