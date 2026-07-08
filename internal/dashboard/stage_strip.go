@@ -1,8 +1,6 @@
 package dashboard
 
 import (
-	"fmt"
-
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -54,24 +52,31 @@ func stageLadderPosition(s memory.Stage) int {
 	return 0
 }
 
-// buildStageStrip renders a fixed-denominator pipeline-progress fraction
-// (e.g. "4/7 ✗ ci_failed", "7/7 released") from an execution's
-// execution_events timeline (GH-3849; revised to a fraction in TASK-383;
-// revised to a running-max reducer in GH-4023). `reached` is the highest
-// ladder position observed across the whole stream — derived via
-// stageLadderPosition, never from len(events) — so retries never inflate
-// the fraction and a later regression (e.g. a stray pr_created/failed event
-// recorded after released, GH-4023) never pulls the displayed rung backward.
-// The terminal-status glyph (✗) is attached to whichever event defined that
-// max rung, not to the last event in the stream.
-//
-// Falls back to "–" when no events are recorded: executions predating the
-// events table (GH-3844), or before the dispatcher/runner emitted events per
-// GH-3846. There is no stage evidence in that case, so a terminal success is
-// never fabricated into "7/7".
-func buildStageStrip(events []*memory.Event, executionFailed bool) string {
+// StageInfo is the structured pipeline-progress summary for a history row:
+// the highest ladder rung reached, the stage that defined that rung, and
+// whether the run terminally failed. Known is false when no events were
+// recorded (executions predating the events table, GH-3844, or before the
+// dispatcher/runner emitted events per GH-3846) — there is no stage evidence
+// in that case, so a terminal success is never fabricated into a full ladder.
+type StageInfo struct {
+	Reached int    // highest ladder rung observed (0..stageLadderTotal)
+	Label   string // stage name that defined the rung (e.g. "ci_failed")
+	Failed  bool   // rung-defining stage was terminal-failure, or execution failed
+	Known   bool   // false when no events were recorded
+}
+
+// buildStageInfo reduces an execution's execution_events timeline to a
+// StageInfo (GH-3849; revised to a fraction in TASK-383; revised to a
+// running-max reducer in GH-4023; revised to structured output for the grot
+// segment-meter rendering). Reached is the highest ladder position observed
+// across the whole stream — derived via stageLadderPosition, never from
+// len(events) — so retries never inflate the rung and a later regression
+// (e.g. a stray pr_created/failed event recorded after released, GH-4023)
+// never pulls the displayed rung backward. The Failed flag is attached to
+// whichever event defined that max rung, not to the last event in the stream.
+func buildStageInfo(events []*memory.Event, executionFailed bool) StageInfo {
 	if len(events) == 0 {
-		return "–"
+		return StageInfo{}
 	}
 
 	var (
@@ -106,10 +111,10 @@ func buildStageStrip(events []*memory.Event, executionFailed bool) string {
 		}
 	}
 
-	prefix := ""
-	if failed || executionFailed {
-		prefix = "✗ "
+	return StageInfo{
+		Reached: reached,
+		Label:   truncateString(string(label), maxStageStripLabelWidth),
+		Failed:  failed || executionFailed,
+		Known:   true,
 	}
-
-	return fmt.Sprintf("%d/%d %s%s", reached, stageLadderTotal, prefix, truncateString(string(label), maxStageStripLabelWidth))
 }

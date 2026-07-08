@@ -102,3 +102,45 @@ func stretchSeries(values []float64, n int) []float64 {
 
 // boldLabelStyle renders stat-card values: bold, label color (grot Stat default).
 var boldLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(grotTheme.Label))
+
+// Daemon liveness dot (banner wordmark): sage bright/dim pair pulsed on the
+// animation tick.
+var (
+	daemonDotBright = lipgloss.NewStyle().Foreground(lipgloss.Color(grotTheme.Success))
+	daemonDotDim    = lipgloss.NewStyle().Foreground(lipgloss.Color(render.Dim(grotTheme.Success, 0.55)))
+)
+
+// meterTrack is the unfilled portion of segment meters (btop-style dark cells).
+var meterTrack = lipgloss.NewStyle().Foreground(lipgloss.Color(grotTheme.DimMore))
+
+// meterStops builds the dim→full gradient stops for a segment meter.
+func meterStops(hex string) []string {
+	return []string{render.Dim(hex, 0.6), hex}
+}
+
+// segmentMeter renders a done/total grot segment meter (■■■□□) in the accent.
+func segmentMeter(done, total, width int, accentHex string) string {
+	frac := 0.0
+	if total > 0 {
+		frac = float64(done) / float64(total)
+	}
+	return render.SegmentMeter(frac, width, meterStops(accentHex), meterTrack)
+}
+
+// stageMeter renders the 7-rung pipeline ladder as a grot segment meter.
+// Color carries the outcome: sage when the run climbed the whole ladder,
+// rose when it died on a rung, accent while still climbing; a run with no
+// stage evidence (StageInfo.Known == false) renders as an all-track meter.
+func stageMeter(info StageInfo, width int) string {
+	if !info.Known {
+		return meterTrack.Render(strings.Repeat("■", width))
+	}
+	hex := grotTheme.Accent
+	switch {
+	case info.Failed:
+		hex = grotTheme.Error
+	case info.Reached >= stageLadderTotal:
+		hex = grotTheme.Success
+	}
+	return segmentMeter(info.Reached, stageLadderTotal, width, hex)
+}

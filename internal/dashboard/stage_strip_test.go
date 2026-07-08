@@ -11,16 +11,16 @@ func evt(stage memory.Stage) *memory.Event {
 	return &memory.Event{Stage: stage}
 }
 
-func TestBuildStageStrip_NoEvents(t *testing.T) {
-	if got := buildStageStrip(nil, false); got != "–" {
-		t.Errorf("no events, not failed: got %q, want %q", got, "–")
+func TestBuildStageInfo_NoEvents(t *testing.T) {
+	if got := buildStageInfo(nil, false); got.Known {
+		t.Errorf("no events, not failed: got %+v, want Known=false", got)
 	}
-	if got := buildStageStrip(nil, true); got != "–" {
-		t.Errorf("no events, failed: got %q, want %q", got, "–")
+	if got := buildStageInfo(nil, true); got.Known {
+		t.Errorf("no events, failed: got %+v, want Known=false", got)
 	}
 }
 
-func TestBuildStageStrip_HappyPath(t *testing.T) {
+func TestBuildStageInfo_HappyPath(t *testing.T) {
 	events := []*memory.Event{
 		evt(memory.StageQueued),
 		evt(memory.StageSpecValidated),
@@ -29,17 +29,14 @@ func TestBuildStageStrip_HappyPath(t *testing.T) {
 		evt(memory.StagePRCreated),
 		evt(memory.StageMerged),
 	}
-	got := buildStageStrip(events, false)
-	want := "6/7 merged"
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: 6, Label: "merged", Failed: false, Known: true}
 	if got != want {
-		t.Errorf("happy path: got %q, want %q", got, want)
-	}
-	if strings.Contains(got, "✗") {
-		t.Errorf("happy path strip should not contain a failure marker: %q", got)
+		t.Errorf("happy path: got %+v, want %+v", got, want)
 	}
 }
 
-func TestBuildStageStrip_Released(t *testing.T) {
+func TestBuildStageInfo_Released(t *testing.T) {
 	events := []*memory.Event{
 		evt(memory.StageQueued),
 		evt(memory.StageSpecValidated),
@@ -50,123 +47,122 @@ func TestBuildStageStrip_Released(t *testing.T) {
 		evt(memory.StageMerged),
 		evt(memory.StageReleased),
 	}
-	got := buildStageStrip(events, false)
-	want := "7/7 released"
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: 7, Label: "released", Failed: false, Known: true}
 	if got != want {
-		t.Errorf("released: got %q, want %q", got, want)
+		t.Errorf("released: got %+v, want %+v", got, want)
 	}
 }
 
-func TestBuildStageStrip_SpecValidatedOnly(t *testing.T) {
+func TestBuildStageInfo_SpecValidatedOnly(t *testing.T) {
 	events := []*memory.Event{evt(memory.StageSpecValidated)}
-	got := buildStageStrip(events, false)
-	want := "1/7 spec_validated"
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: 1, Label: "spec_validated", Failed: false, Known: true}
 	if got != want {
-		t.Errorf("spec_validated only: got %q, want %q", got, want)
+		t.Errorf("spec_validated only: got %+v, want %+v", got, want)
 	}
 }
 
-func TestBuildStageStrip_InProgress(t *testing.T) {
+func TestBuildStageInfo_InProgress(t *testing.T) {
 	events := []*memory.Event{
 		evt(memory.StageQueued),
 		evt(memory.StageSpecValidated),
 		evt(memory.StageRunning),
 	}
-	got := buildStageStrip(events, false)
-	want := "2/7 running"
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: 2, Label: "running", Failed: false, Known: true}
 	if got != want {
-		t.Errorf("in-progress: got %q, want %q", got, want)
+		t.Errorf("in-progress: got %+v, want %+v", got, want)
 	}
 }
 
-func TestBuildStageStrip_FailedAtStageN(t *testing.T) {
+func TestBuildStageInfo_FailedAtStageN(t *testing.T) {
 	events := []*memory.Event{
 		evt(memory.StageQueued),
 		evt(memory.StageSpecValidated),
 		evt(memory.StageRunning),
 		evt(memory.StageFailed),
 	}
-	got := buildStageStrip(events, true)
-	want := "2/7 ✗ running"
+	got := buildStageInfo(events, true)
+	want := StageInfo{Reached: 2, Label: "running", Failed: true, Known: true}
 	if got != want {
-		t.Errorf("failed-at-stage-N: got %q, want %q", got, want)
+		t.Errorf("failed-at-stage-N: got %+v, want %+v", got, want)
 	}
 }
 
-// TestBuildStageStrip_FailedAsFirstEvent covers the edge case where the only
+// TestBuildStageInfo_FailedAsFirstEvent covers the edge case where the only
 // recorded event is itself a failure — there's no prior stage to walk back
-// to, so the fraction reports 0 reached and names the failure stage itself.
-func TestBuildStageStrip_FailedAsFirstEvent(t *testing.T) {
+// to, so Reached reports 0 and Label names the failure stage itself.
+func TestBuildStageInfo_FailedAsFirstEvent(t *testing.T) {
 	events := []*memory.Event{evt(memory.StageFailed)}
-	got := buildStageStrip(events, true)
-	want := "0/7 ✗ failed"
+	got := buildStageInfo(events, true)
+	want := StageInfo{Reached: 0, Label: "failed", Failed: true, Known: true}
 	if got != want {
-		t.Errorf("failed as first event: got %q, want %q", got, want)
+		t.Errorf("failed as first event: got %+v, want %+v", got, want)
 	}
 }
 
-// TestBuildStageStrip_CIFailed asserts the ci_failed off-ramp resolves
+// TestBuildStageInfo_CIFailed asserts the ci_failed off-ramp resolves
 // directly to its own ladder rung (pr_created, reached=4) rather than
 // walking back — it names a real position, unlike a generic failure.
-func TestBuildStageStrip_CIFailed(t *testing.T) {
-	got := buildStageStrip([]*memory.Event{evt(memory.StageCIFailed)}, true)
-	want := "4/7 ✗ ci_failed"
+func TestBuildStageInfo_CIFailed(t *testing.T) {
+	got := buildStageInfo([]*memory.Event{evt(memory.StageCIFailed)}, true)
+	want := StageInfo{Reached: 4, Label: "ci_failed", Failed: true, Known: true}
 	if got != want {
-		t.Errorf("ci_failed: got %q, want %q", got, want)
+		t.Errorf("ci_failed: got %+v, want %+v", got, want)
 	}
 }
 
-func TestBuildStageStrip_Stalled(t *testing.T) {
-	got := buildStageStrip([]*memory.Event{evt(memory.StageStalled)}, true)
-	want := "0/7 ✗ stalled"
+func TestBuildStageInfo_Stalled(t *testing.T) {
+	got := buildStageInfo([]*memory.Event{evt(memory.StageStalled)}, true)
+	want := StageInfo{Reached: 0, Label: "stalled", Failed: true, Known: true}
 	if got != want {
-		t.Errorf("stalled with no prior stage: got %q, want %q", got, want)
+		t.Errorf("stalled with no prior stage: got %+v, want %+v", got, want)
 	}
 }
 
-func TestBuildStageStrip_AwaitingApproval(t *testing.T) {
-	got := buildStageStrip([]*memory.Event{evt(memory.StageAwaitingApproval)}, false)
-	want := "5/7 awaiting_approval"
+func TestBuildStageInfo_AwaitingApproval(t *testing.T) {
+	got := buildStageInfo([]*memory.Event{evt(memory.StageAwaitingApproval)}, false)
+	want := StageInfo{Reached: 5, Label: "awaiting_approval", Failed: false, Known: true}
 	if got != want {
-		t.Errorf("awaiting_approval: got %q, want %q", got, want)
+		t.Errorf("awaiting_approval: got %+v, want %+v", got, want)
 	}
-	if strings.Contains(got, "✗") {
-		t.Errorf("awaiting_approval is a gated in-flight state, not a failure: %q", got)
+	if got.Failed {
+		t.Errorf("awaiting_approval is a gated in-flight state, not a failure: %+v", got)
 	}
 }
 
-// TestBuildStageStrip_RetriesDoNotInflate ensures a long retry-heavy
-// timeline reports the same ladder-position fraction as a short one — the
-// fraction reflects position, not event count.
-func TestBuildStageStrip_RetriesDoNotInflate(t *testing.T) {
+// TestBuildStageInfo_RetriesDoNotInflate ensures a long retry-heavy
+// timeline reports the same ladder position as a short one — Reached
+// reflects position, not event count.
+func TestBuildStageInfo_RetriesDoNotInflate(t *testing.T) {
 	events := make([]*memory.Event, 0, 20)
 	for i := 0; i < 20; i++ {
 		events = append(events, evt(memory.StageRunning))
 	}
-	got := buildStageStrip(events, false)
-	want := "2/7 running"
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: 2, Label: "running", Failed: false, Known: true}
 	if got != want {
-		t.Errorf("retries should not inflate the fraction: got %q, want %q", got, want)
+		t.Errorf("retries should not inflate the rung: got %+v, want %+v", got, want)
 	}
 }
 
-// TestBuildStageStrip_TruncatesLongLabel guards the fixed-width card layout
+// TestBuildStageInfo_TruncatesLongLabel guards the fixed-width card layout
 // against an oversized stage/detail value.
-func TestBuildStageStrip_TruncatesLongLabel(t *testing.T) {
+func TestBuildStageInfo_TruncatesLongLabel(t *testing.T) {
 	events := []*memory.Event{evt(memory.Stage(strings.Repeat("x", 40)))}
-	got := buildStageStrip(events, false)
-	label := strings.SplitN(got, " ", 2)[1]
-	if len(label) > maxStageStripLabelWidth {
-		t.Errorf("label length = %d, want <= %d: %q", len(label), maxStageStripLabelWidth, label)
+	got := buildStageInfo(events, false)
+	if len(got.Label) > maxStageStripLabelWidth {
+		t.Errorf("label length = %d, want <= %d: %q", len(got.Label), maxStageStripLabelWidth, got.Label)
 	}
 }
 
-// TestBuildStageStrip_MaxRungNoRegression covers GH-4023: a later
+// TestBuildStageInfo_MaxRungNoRegression covers GH-4023: a later
 // pr_created/failed recorded after released must not pull the displayed
 // rung backward. The reducer must track the maximum ladder position
-// observed across the whole stream, and the terminal glyph attaches to
+// observed across the whole stream, and the Failed flag attaches to
 // whichever event defined that max — not to the last event in the stream.
-func TestBuildStageStrip_MaxRungNoRegression(t *testing.T) {
+func TestBuildStageInfo_MaxRungNoRegression(t *testing.T) {
 	events := []*memory.Event{
 		evt(memory.StagePRCreated),
 		evt(memory.StageMerged),
@@ -174,20 +170,17 @@ func TestBuildStageStrip_MaxRungNoRegression(t *testing.T) {
 		evt(memory.StagePRCreated),
 		evt(memory.StageFailed),
 	}
-	got := buildStageStrip(events, false)
-	want := "7/7 released"
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: 7, Label: "released", Failed: false, Known: true}
 	if got != want {
-		t.Errorf("max-rung no regression: got %q, want %q", got, want)
-	}
-	if strings.Contains(got, "✗") {
-		t.Errorf("max rung was reached at released, a later failed event must not add a failure marker: %q", got)
+		t.Errorf("max-rung no regression: got %+v, want %+v", got, want)
 	}
 }
 
-// TestBuildStageStrip_MaxRungHealthyPath guards against an off-by-one in
+// TestBuildStageInfo_MaxRungHealthyPath guards against an off-by-one in
 // the running-max reducer on a full, unbroken ladder climb — every rung
-// must be visited in order and the final fraction must still land on 7/7.
-func TestBuildStageStrip_MaxRungHealthyPath(t *testing.T) {
+// must be visited in order and the final rung must still land on 7.
+func TestBuildStageInfo_MaxRungHealthyPath(t *testing.T) {
 	events := []*memory.Event{
 		evt(memory.StageSpecValidated),
 		evt(memory.StageRunning),
@@ -197,13 +190,10 @@ func TestBuildStageStrip_MaxRungHealthyPath(t *testing.T) {
 		evt(memory.StageMerged),
 		evt(memory.StageReleased),
 	}
-	got := buildStageStrip(events, false)
-	want := "7/7 released"
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: 7, Label: "released", Failed: false, Known: true}
 	if got != want {
-		t.Errorf("max-rung healthy path: got %q, want %q", got, want)
-	}
-	if strings.Contains(got, "✗") {
-		t.Errorf("healthy full-ladder path should not contain a failure marker: %q", got)
+		t.Errorf("max-rung healthy path: got %+v, want %+v", got, want)
 	}
 }
 

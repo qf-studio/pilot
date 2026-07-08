@@ -1,6 +1,6 @@
 # TASK-390: Dashboard TUI redesign — grot design system
 
-**Status:** ✅ Implemented in worktree `grot-dashboard-redesign` (3 commits, NOT pushed/merged yet)
+**Status:** ✅ Implemented in worktree `grot-dashboard-redesign` (4 commits, NOT pushed/merged yet)
 **Branch:** `worktree-grot-dashboard-redesign`
 **Date:** 2026-07-08
 **Mode:** MANUAL (interactive session, user-directed worktree implementation)
@@ -37,8 +37,29 @@ and a semantic glyph vocabulary instead of emoji.
    - Vocabulary: `●` active `○` inactive `◌` waiting `▸` intake `✓`/`✗` outcome
      `!` warning `↑` update `⟲` retry/restart `·` separator.
 
+3. **feat(dashboard): grot row grammar for banner, history, autopilot**
+   - Banner → single grot line: ` pilot ●` wordmark liveness dot (sage,
+     pulses on `sparklineTick`) · version · env · model, `up Xm · HH:MM utc`
+     right. Narrow widths drop env→model segments, never wordmark/clock.
+   - Adapter chips → queue border legend `┤ ● 2 running  ● gh  ○ 6 idle ├`
+     (`buildAdapterLegend`); idle adapters collapse to a count; hardcoded
+     `daemon ●` chip deleted (zero-information).
+   - History rows: variable-width `N/7 label` strip → fixed columns with
+     7-rung `render.SegmentMeter` ladder + dim stage label. `buildStageStrip`
+     → `buildStageInfo` returning structured `StageInfo{Reached,Label,Failed,
+     Known}`; GH-4023 max-rung reducer semantics preserved verbatim.
+     Alignment fixes: ANSI-styled `%8s` time padding applied pre-style,
+     RSS column fixed-width, epic `[##--]`/`[N/N]` → `■■□□`/`N/N`.
+   - Autopilot: 5-node rail + always-on `0/3` fraction → one history-grammar
+     row per PR (glyph, #id, title, 5-cell ci→rebase→merge→tag→release
+     meter, stage label, age), `┤ ● N prs ├` border legend, amber
+     `↳ ⟲ retry 2/3 · error` detail line only when failures exist.
+     Rail spinner + panel tick plumbing removed.
+   - `statusIconStyle` → glyph vocabulary (✓ ✗ ● ◌ ○ ⟲ ! ·).
+
 Tests: full suite green (47 pkgs); added `grot_chrome_test.go`
-(full-render width invariants + grot chrome landmarks). Lint 0 issues.
+(full-render width invariants + grot chrome landmarks, now exercising a
+live two-PR autopilot fixture). Lint 0 issues.
 
 ## Key decisions
 

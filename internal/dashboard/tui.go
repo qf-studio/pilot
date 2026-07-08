@@ -115,7 +115,6 @@ type autopilotController interface {
 type AutopilotPanel struct {
 	controller autopilotController
 	panelWidth int // dynamic panel width, set before View()
-	tick       int // increments per 1s animation tick, drives ◐ rotation
 }
 
 // NewAutopilotPanel creates an autopilot panel.
@@ -126,90 +125,51 @@ func NewAutopilotPanel(controller *autopilot.Controller) *AutopilotPanel {
 	return &AutopilotPanel{controller: controller, panelWidth: panelTotalWidth}
 }
 
-// SetTick updates the animation tick counter (called from the parent model's tickMsg handler).
-func (p *AutopilotPanel) SetTick(t int) { p.tick = t }
+// maxAutopilotRows caps how many PRs render as rows before collapsing to a
+// "+ N more" summary line.
+const maxAutopilotRows = 4
 
-// View renders the autopilot panel (GH-2620 variant A redesign).
-// Uses renderPanel so the card has the same 1-line top/bottom padding as QUEUE/HISTORY/LOGS.
-// Idle: 5 lines (border, empty, content, empty, border).
-// Active: 6 lines (+ PR identity + pipeline rail).
-// Failed: 7 lines (+ error reason on line 3).
+// View renders the autopilot panel in the history-row grammar: one line per
+// active PR — status glyph, #id, title, 5-cell lifecycle meter
+// (ci→rebase→merge→tag→release), stage label, age — plus a ↳ detail line
+// for retries/failures. The PR count renders as the border legend.
 func (p *AutopilotPanel) View() string {
 	tw := p.panelWidth
 	if tw < panelTotalWidth {
 		tw = panelTotalWidth
 	}
-	inner := tw - 4 // content width: tw minus 2 borders and 2 padding spaces
+	iw := tw - 4
 
 	if p.controller == nil {
-		return renderPanel("AUTOPILOT", "  Disabled", tw)
+		return renderPanel("autopilot", "  Disabled", tw)
 	}
 
 	prs := p.controller.GetActivePRs()
 	if len(prs) == 0 {
-		return renderPanel("AUTOPILOT", "  "+dimStyle.Render("idle · no active PR"), tw)
+		return renderPanel("autopilot", "  "+dimStyle.Render("idle · no active PR"), tw)
 	}
 
-	pr := prs[0]
-
-	// Line 1: "  #NNNN  {title}{padding}{age}"
-	age := p.formatDuration(time.Since(pr.CreatedAt))
-	prefix1 := fmt.Sprintf("  #%d  ", pr.PRNumber)
-	prefix1Len := lipgloss.Width(prefix1)
-	ageLen := len(age)
-	titleMaxLen := inner - prefix1Len - ageLen - 1 // 1 space before age
-	if titleMaxLen < 5 {
-		titleMaxLen = 5
-	}
-	title := truncateString(pr.PRTitle, titleMaxLen)
-	pad1 := inner - prefix1Len - len(title) - ageLen
-	if pad1 < 1 {
-		pad1 = 1
-	}
-	line1 := prefix1 + title + strings.Repeat(" ", pad1) + age
-
-	// Line 2: "  {rail}{padding}{N/M[ ⟲]}"
 	cfg := p.controller.Config()
 	maxFailures := cfg.MaxFailures
 	if maxFailures <= 0 {
 		maxFailures = 5
 	}
-	failures := p.controller.GetPRFailures(pr.PRNumber)
 
-	rail := renderAutopilotRail(pr.Stage, pr.CIStatus, p.tick)
-
-	retryNum := fmt.Sprintf("%d/%d", failures, maxFailures)
-	var retryStr string
-	if failures > 0 {
-		retryStr = dimStyle.Render(retryNum) + " " + warningStyle.Render("⟲")
-	} else {
-		retryStr = dimStyle.Render(retryNum) + " "
-	}
-
-	pad2 := inner - 2 - lipgloss.Width(rail) - lipgloss.Width(retryStr)
-	if pad2 < 1 {
-		pad2 = 1
-	}
-	line2 := "  " + rail + strings.Repeat(" ", pad2) + retryStr
-
-	lines := []string{line1, line2}
-
-	// Line 3 (conditional): "  ↳ {truncated error}" — only on failure with message
-	if pr.Stage == autopilot.StageFailed && pr.Error != "" {
-		const errPrefix = "  ↳ "
-		errMax := inner - len(errPrefix)
-		if errMax < 5 {
-			errMax = 5
+	var lines []string
+	for i, pr := range prs {
+		if i == maxAutopilotRows {
+			lines = append(lines, "  "+dimStyle.Render(fmt.Sprintf("+ %d more", len(prs)-maxAutopilotRows)))
+			break
 		}
-		lines = append(lines, errPrefix+truncateString(pr.Error, errMax))
+		lines = append(lines, renderAutopilotRow(pr, p.controller.GetPRFailures(pr.PRNumber), maxFailures, iw)...)
 	}
 
-	// Overflow: additional active PRs
-	if len(prs) > 1 {
-		lines = append(lines, fmt.Sprintf("  + %d more PR(s)", len(prs)-1))
+	count := fmt.Sprintf("%d prs", len(prs))
+	if len(prs) == 1 {
+		count = "1 pr"
 	}
-
-	return renderPanel("AUTOPILOT", strings.Join(lines, "\n"), tw)
+	legend := statusRunningStyle.Render("●") + " " + dimStyle.Render(count)
+	return renderPanelInfo("autopilot", legend, strings.Join(lines, "\n"), tw)
 }
 
 // pipelineStagePosition maps a PRStage to its 0-based position in the 5-node rail.
@@ -232,50 +192,75 @@ func pipelineStagePosition(stage autopilot.PRStage) int {
 	return 0
 }
 
-// renderAutopilotRail renders the 5-node pipeline rail with glyph-per-node status.
-// Glyphs: ✓ done (sage), ◐◓◑◒ in-progress animated (steel blue), ○ pending (gray), ✗ failed (rose).
-// tick drives the spinner rotation; ciStatus allows the ci node to show ✗ independently of stage.
-// Format example for stage=releasing:
+// autopilotNodes are the 5 lifecycle stages the meter and label measure.
+var autopilotNodes = [...]string{"ci", "rebase", "merge", "tag", "release"}
+
+// autopilotStageLabelWidth fits the longest node name ("release").
+const autopilotStageLabelWidth = 7
+
+// renderAutopilotRow renders one active-PR line (+ optional ↳ detail line)
+// in the history-row grammar:
 //
-//	✓ ci ── ✓ rebase ── ✓ merge ── ✓ tag ── ◐ release
-func renderAutopilotRail(stage autopilot.PRStage, ciStatus autopilot.CIStatus, tick int) string {
-	nodes := []string{"ci", "rebase", "merge", "tag", "release"}
-	spinner := []rune{'◐', '◓', '◑', '◒'}
-	pos := pipelineStagePosition(stage)
-
-	var sb strings.Builder
-	for i, name := range nodes {
-		var glyph string
-		var glyphStyle, nameStyle lipgloss.Style
-
-		switch {
-		case i == 0 && ciStatus == autopilot.CIFailure:
-			// CI check failed — show ✗ on the ci node regardless of current stage
-			glyph = "✗"
-			glyphStyle, nameStyle = statusFailedStyle, statusFailedStyle
-		case stage == autopilot.StageFailed && i == pos:
-			// Pipeline failed at current position — show ✗
-			glyph = "✗"
-			glyphStyle, nameStyle = statusFailedStyle, statusFailedStyle
-		case i < pos:
-			glyph = "✓"
-			glyphStyle, nameStyle = statusCompletedStyle, statusCompletedStyle
-		case i == pos:
-			glyph = string(spinner[tick%4])
-			glyphStyle, nameStyle = statusRunningStyle, titleStyle
-		default:
-			glyph = "○"
-			glyphStyle, nameStyle = dimStyle, dimStyle
-		}
-
-		sb.WriteString(glyphStyle.Render(glyph))
-		sb.WriteString(" ")
-		sb.WriteString(nameStyle.Render(name))
-		if i < len(nodes)-1 {
-			sb.WriteString(dimStyle.Render(" ── "))
-		}
+//	  ● #4054   fix(executor): skip decompos…  ■■□□□ merge      2m
+//	    ↳ ⟲ retry 2/3 · TestFoo failed · linux-amd64
+//
+// indent(2) + glyph(1) + sp(1) + id(6) + sp(2) + title(flex) + sp(2) +
+// meter(5) + sp(1) + stage(7) + sp(2) + age(6) = iw
+// Glyphs: ✗ pipeline failed, ⟲ retrying (CI failure or prior failures),
+// ● climbing. Meter color follows: rose / amber / accent.
+func renderAutopilotRow(pr *autopilot.PRState, failures, maxFailures, iw int) []string {
+	pos := pipelineStagePosition(pr.Stage)
+	label := autopilotNodes[pos]
+	if pr.Stage == autopilot.StageFailed {
+		label = "failed"
 	}
-	return sb.String()
+
+	glyph, glyphStyle, hex := "●", statusRunningStyle, grotTheme.Accent
+	switch {
+	case pr.Stage == autopilot.StageFailed:
+		glyph, glyphStyle, hex = "✗", statusFailedStyle, grotTheme.Error
+	case pr.CIStatus == autopilot.CIFailure || failures > 0:
+		glyph, glyphStyle, hex = "⟲", warningStyle, grotTheme.Warning
+	}
+
+	titleWidth := iw - 2 - 1 - 1 - 6 - 2 - 2 - len(autopilotNodes) - 1 - autopilotStageLabelWidth - 2 - 6
+	if titleWidth < 10 {
+		titleWidth = 10
+	}
+
+	row := fmt.Sprintf("  %s %-6s  %s  %s %s  %s",
+		glyphStyle.Render(glyph),
+		fmt.Sprintf("#%d", pr.PRNumber),
+		padOrTruncate(pr.PRTitle, titleWidth),
+		segmentMeter(pos, len(autopilotNodes), len(autopilotNodes), hex),
+		dimStyle.Render(padOrTruncate(label, autopilotStageLabelWidth)),
+		dimStyle.Render(fmt.Sprintf("%6s", formatDurationShort(time.Since(pr.CreatedAt)))),
+	)
+	lines := []string{row}
+
+	// Detail line: retry progress (amber, only once failures exist — clean
+	// runs carry no retry chrome) and/or the failure reason.
+	detail := ""
+	budget := iw - 6 // indent(4) + "↳ "
+	if failures > 0 {
+		retry := fmt.Sprintf("⟲ retry %d/%d", failures, maxFailures)
+		detail = warningStyle.Render(retry)
+		budget -= lipgloss.Width(retry)
+	}
+	if pr.Stage == autopilot.StageFailed && pr.Error != "" {
+		if detail != "" {
+			detail += dimStyle.Render(" · ")
+			budget -= 3
+		}
+		if budget < 5 {
+			budget = 5
+		}
+		detail += dimStyle.Render(truncateString(pr.Error, budget))
+	}
+	if detail != "" {
+		lines = append(lines, "    "+dimStyle.Render("↳ ")+detail)
+	}
+	return lines
 }
 
 // formatDurationShort formats a duration compactly (e.g., "2m", "1h30m").
@@ -292,11 +277,6 @@ func formatDurationShort(d time.Duration) string {
 		return fmt.Sprintf("%dh", hours)
 	}
 	return fmt.Sprintf("%dh%dm", hours, mins)
-}
-
-// formatDuration wraps formatDurationShort for AutopilotPanel methods.
-func (p *AutopilotPanel) formatDuration(d time.Duration) string {
-	return formatDurationShort(d)
 }
 
 // truncateString truncates a string to maxLen, adding "..." if truncated.
@@ -344,12 +324,12 @@ type CompletedTask struct {
 	// PeakRSSMB is the peak subprocess RSS in MiB from the RSS sampler. GH-3028.
 	// Zero when the sampler had no data (pre-3028 executions, non-Linux/darwin).
 	PeakRSSMB int
-	// StageStrip is a pipeline-progress fraction (e.g. "4/7 ✗ ci_failed") built
-	// from the execution's execution_events timeline (GH-3849; fraction format
-	// TASK-383). Empty when the task wasn't hydrated from the store (e.g.
-	// AddCompletedTask callers), in which case the card falls back to the
-	// plain status icon.
-	StageStrip string
+	// Stage is the pipeline-progress summary built from the execution's
+	// execution_events timeline (GH-3849; structured for the grot segment
+	// meter). Zero-value (Known=false) when the task wasn't hydrated from
+	// the store (e.g. AddCompletedTask callers) — the ladder renders as an
+	// empty track in that case.
+	Stage StageInfo
 }
 
 // UpdateInfo contains information about an available update
@@ -633,7 +613,7 @@ func (m *Model) hydrateFromStore() {
 			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 			CompletedAt: completedAt,
 			PeakRSSMB:   exec.PeakRSSMB,
-			StageStrip:  buildStageStrip(events, status == "failed"),
+			Stage:       buildStageInfo(events, status == "failed"),
 		})
 	}
 
@@ -877,7 +857,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 				completedAt = *exec.CompletedAt
 			}
 			// GH-3849: fetched once per periodic refresh (every 5th tick), not
-			// per render frame — View() reads the cached CompletedTask.StageStrip.
+			// per render frame — View() reads the cached CompletedTask.Stage.
 			events, err := store.ListExecutionEvents(exec.ID)
 			if err != nil {
 				slog.Warn("store refresh: failed to load execution events", slog.Any("error", err), slog.String("execution_id", exec.ID))
@@ -889,7 +869,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 				CompletedAt: completedAt,
 				PeakRSSMB:   exec.PeakRSSMB,
-				StageStrip:  buildStageStrip(events, status == "failed"),
+				Stage:       buildStageInfo(events, status == "failed"),
 			})
 		}
 
@@ -1042,9 +1022,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sparklineTick = !m.sparklineTick
 		m.shimmerTick++
 		m.dbSyncTick++
-		if m.autopilotPanel != nil {
-			m.autopilotPanel.SetTick(m.autopilotPanel.tick + 1)
-		}
 		// GH-2248: Re-sync history and metrics from SQLite every 5 seconds
 		// so external DB changes (orphan cleanup, manual edits) are reflected.
 		if m.store != nil && m.dbSyncTick%5 == 0 {
@@ -1359,15 +1336,15 @@ func splashAdapterList(adapters []AdapterStatus) string {
 	return strings.Join(parts, dimStyle.Render(" · "))
 }
 
-// renderBanner returns the grot-style two-line header (bold accent name, dim
-// ·-separated segments — same grammar as the grot gallery header, no box):
+// renderBanner returns the grot-style one-line header — the exact grammar of
+// the grot gallery header (bold accent wordmark, dim ·-separated segments),
+// with live status right-aligned:
 //
-//	pilot · v2.233.0 · env stage · model opus/sonnet
-//	daemon ●  gh ●  tg ●  slack ○                      up 4m  16:36 utc
+//	pilot ● · v2.233.0 · stage · opus/sonnet           up 4m · 16:36 utc
 //
-// Adapter dots: ● filled (statusRunningStyle) when active this session,
-// ○ empty (dimStyle) when configured but not flagged. Adapters with no
-// config are not present in m.bannerAdapters and don't render at all.
+// The dot after the wordmark is the daemon liveness mark; it pulses with the
+// animation tick. Adapter status lives in the queue panel border legend
+// (buildAdapterLegend), not in the header.
 func (m Model) renderBanner() string {
 	tw := m.effectivePanelTotalWidth()
 
@@ -1381,117 +1358,58 @@ func (m Model) renderBanner() string {
 		ver = "v" + ver
 	}
 
-	// Line 1: identity — pilot · version · env · model.
+	dot := daemonDotBright.Render("●")
+	if !m.sparklineTick {
+		dot = daemonDotDim.Render("●")
+	}
+
 	sep := dimStyle.Render(" · ")
-	line1 := grotTheme.AccentStyle().Bold(true).Render(" pilot") + sep + labelStyle.Render(ver)
+	right := ""
+	if !m.startTime.IsZero() {
+		right = dimStyle.Render("up ") + labelStyle.Render(formatDurationShort(time.Since(m.startTime))) + sep
+	}
+	right += dimStyle.Render(time.Now().UTC().Format("15:04")+" utc") + " "
+
+	// Identity segments append only while they fit next to the right cluster:
+	// narrow terminals drop env then model — never the wordmark/version.
+	budget := tw - lipgloss.Width(right) - 1
+	left := grotTheme.AccentStyle().Bold(true).Render(" pilot") + " " + dot + sep + labelStyle.Render(ver)
+	var extras []string
 	if m.envName != "" {
-		line1 += sep + dimStyle.Render("env ") + statusRunningStyle.Render(strings.ToLower(m.envName))
+		extras = append(extras, statusRunningStyle.Render(strings.ToLower(m.envName)))
 	}
 	if m.modelStack != "" {
-		line1 += sep + dimStyle.Render("model ") + labelStyle.Render(strings.ToLower(m.modelStack))
+		extras = append(extras, labelStyle.Render(strings.ToLower(m.modelStack)))
 	}
-	line1 = padOrTruncate(line1, tw)
-
-	// Line 2: adapter chips (left), uptime + clock (right). Chips shrink to
-	// their budget ("+N idle" summary) so daemon health always survives.
-	upClock := ""
-	if !m.startTime.IsZero() {
-		upClock = dimStyle.Render("up ") + labelStyle.Render(formatDurationShort(time.Since(m.startTime))) + "  "
-	}
-	upClock += dimStyle.Render(time.Now().UTC().Format("15:04")+" utc") + " "
-
-	chipsBudget := tw - lipgloss.Width(upClock) - 3
-	chips := " " + buildAdapterChipsRow(m.bannerAdapters, chipsBudget)
-	line2 := padLeftRightLine(tw, chips, upClock)
-
-	return line1 + "\n" + line2
-}
-
-// buildAdapterChipsRow packs DAEMON + per-adapter chips into a row that fits
-// within `budget` visual chars. Strategy:
-//  1. Always include "DAEMON ●".
-//  2. Add active adapters first (●, full name).
-//  3. Add inactive adapters next (○, full name) until budget is reached.
-//  4. If inactive adapters remain that didn't fit, append "+N idle" summary.
-func buildAdapterChipsRow(adapters []AdapterStatus, budget int) string {
-	const sep = "  "
-
-	type chipEntry struct {
-		render   string
-		inactive bool
-	}
-
-	daemon := chipEntry{render: dimStyle.Render("daemon") + " " + statusRunningStyle.Render("●")}
-	chips := []chipEntry{daemon}
-
-	for _, a := range adapters {
-		if !a.Active {
-			continue
-		}
-		chips = append(chips, chipEntry{
-			render: dimStyle.Render(strings.ToLower(a.Name)) + " " + statusRunningStyle.Render("●"),
-		})
-	}
-	for _, a := range adapters {
-		if a.Active {
-			continue
-		}
-		chips = append(chips, chipEntry{
-			render:   dimStyle.Render(strings.ToLower(a.Name)) + " " + dimStyle.Render("○"),
-			inactive: true,
-		})
-	}
-
-	// First pass: include chips greedily until budget runs out.
-	included := []chipEntry{}
-	used := 0
-	for i, c := range chips {
-		extra := lipgloss.Width(c.render)
-		if i > 0 {
-			extra += lipgloss.Width(sep)
-		}
-		if used+extra > budget {
+	for _, seg := range extras {
+		if lipgloss.Width(left)+lipgloss.Width(sep)+lipgloss.Width(seg) > budget {
 			break
 		}
-		included = append(included, c)
-		used += extra
+		left += sep + seg
 	}
 
-	skippedInactive := 0
-	for i := len(included); i < len(chips); i++ {
-		if chips[i].inactive {
-			skippedInactive++
+	return padLeftRightLine(tw, left, right)
+}
+
+// buildAdapterLegend renders adapter status in the grot border-legend grammar
+// (dot before label, two-space separated): ● gh  ● tg  ○ 6 idle.
+// Active adapters are named; idle ones (configured but not running) collapse
+// to a count — they are config facts, not live status. The daemon itself has
+// no entry: its liveness mark is the wordmark dot in renderBanner.
+func buildAdapterLegend(adapters []AdapterStatus) string {
+	segs := make([]string, 0, len(adapters)+1)
+	idle := 0
+	for _, a := range adapters {
+		if !a.Active {
+			idle++
+			continue
 		}
+		segs = append(segs, statusRunningStyle.Render("●")+" "+dimStyle.Render(strings.ToLower(a.Name)))
 	}
-
-	// If we dropped any inactive chips, append a "+N idle" summary, dropping
-	// trailing inactive chips as needed to make room (and updating the count).
-	if skippedInactive > 0 {
-		for {
-			summary := dimStyle.Render(fmt.Sprintf("+%d idle", skippedInactive))
-			cost := lipgloss.Width(sep) + lipgloss.Width(summary)
-			if used+cost <= budget {
-				included = append(included, chipEntry{render: summary})
-				break
-			}
-			// No room — drop trailing chip. If it was inactive, bump the count.
-			if len(included) <= 1 {
-				break // can't drop DAEMON
-			}
-			drop := included[len(included)-1]
-			included = included[:len(included)-1]
-			used -= lipgloss.Width(drop.render) + lipgloss.Width(sep)
-			if drop.inactive {
-				skippedInactive++
-			}
-		}
+	if idle > 0 {
+		segs = append(segs, dimStyle.Render(fmt.Sprintf("○ %d idle", idle)))
 	}
-
-	parts := make([]string, 0, len(included))
-	for _, c := range included {
-		parts = append(parts, c.render)
-	}
-	return strings.Join(parts, sep)
+	return strings.Join(segs, "  ")
 }
 
 // padLeftRightLine packs left content left-aligned and right content
@@ -1819,17 +1737,22 @@ func (m Model) renderTasks() string {
 		}
 	}
 
-	// Legend in the top border (grot style): ┤ ● N running ├
+	// Legend in the top border (grot style): ┤ ● 2 running  ● gh  ● tg  ○ 6 idle ├
+	// — running count first, then intake adapter status (buildAdapterLegend).
 	running := 0
 	for _, t := range m.tasks {
 		if t.Status == "running" {
 			running++
 		}
 	}
-	info := ""
+	segs := make([]string, 0, 2)
 	if running > 0 {
-		info = statusRunningStyle.Render("●") + " " + dimStyle.Render(fmt.Sprintf("%d running", running))
+		segs = append(segs, statusRunningStyle.Render("●")+" "+dimStyle.Render(fmt.Sprintf("%d running", running)))
 	}
+	if leg := buildAdapterLegend(m.bannerAdapters); leg != "" {
+		segs = append(segs, leg)
+	}
+	info := strings.Join(segs, "  ")
 
 	return renderPanelInfo("queue", info, content.String(), m.effectivePanelTotalWidth())
 }
@@ -2058,18 +1981,10 @@ func (m Model) groupedHistory() []historyGroup {
 	return groups
 }
 
-// renderEpicProgressBar renders a compact progress bar: [##--]
-// innerWidth chars inside brackets, '#' for done, '-' for remaining.
+// renderEpicProgressBar renders a compact epic progress meter (■■□□) in the
+// grot segment-meter style, innerWidth cells wide.
 func renderEpicProgressBar(done, total, innerWidth int) string {
-	if total <= 0 {
-		return "[" + strings.Repeat("-", innerWidth) + "]"
-	}
-	filled := done * innerWidth / total
-	if filled > innerWidth {
-		filled = innerWidth
-	}
-	empty := innerWidth - filled
-	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", empty) + "]"
+	return segmentMeter(done, total, innerWidth, grotTheme.Accent)
 }
 
 // renderEvalStats renders a compact eval stats panel showing latest pass@1 rate
@@ -2203,42 +2118,46 @@ func (m Model) renderHistory() string {
 	return renderPanel("HISTORY", content.String(), tw)
 }
 
-// renderStandaloneLine renders a standalone (non-epic) task line.
-// Layout: "  + GH-156  Title...                                    2m ago"
-// indent(2) + strip(variable) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8) = iw
-// When PeakRSSMB > 0 (GH-3028), an RSS indicator ("4.2G") is appended after the time.
-// GH-3849: the leading column shows the cached StageStrip pipeline-progress
-// fraction (e.g. "4/7 ✗ ci_failed") when the task was hydrated from the
-// store; falls back to the plain status icon
-// otherwise (e.g. live completions added via AddCompletedTask).
+// stageLabelWidth is the fixed column for the stage name after the ladder
+// meter ("released", "ci_failed", …) so history rows stay aligned.
+const stageLabelWidth = 10
+
+// renderStandaloneLine renders a standalone (non-epic) task line with fixed
+// columns so rows align regardless of pipeline state:
+//
+//	  ✓ GH-4018  Aggregated scope notes…  ■■■■■■■ released    40m ago 2.0G
+//
+// indent(2) + glyph(1) + sp(1) + id(7) + sp(2) + title(flex) + sp(2) +
+// ladder(7) + sp(1) + stage(10) + sp(2) + time(8) + rss(5) = iw
+// The RSS column (GH-3028, "4.2G") is fixed-width — blank when the sampler
+// had no data — so rows align regardless. GH-3849: the ladder is the 7-rung
+// pipeline segment meter built from the cached StageInfo; rows without stage
+// evidence show a dim track.
 func renderStandaloneLine(task CompletedTask, iw int) string {
 	icon, style := statusIconStyle(task.Status)
-	stripText := task.StageStrip
-	if stripText == "" {
-		stripText = icon
+
+	label := "–"
+	if task.Stage.Known {
+		label = task.Stage.Label
 	}
-	strip := style.Render(stripText)
-	stripWidth := lipgloss.Width(strip)
 
-	timeAgoStr := formatTimeAgo(task.CompletedAt)
-
-	var rssStr string
+	rssStr := "     "
 	if task.PeakRSSMB > 0 {
-		rssStr = fmt.Sprintf(" %s", formatRSSMB(task.PeakRSSMB))
+		rssStr = fmt.Sprintf(" %4s", formatRSSMB(task.PeakRSSMB))
 	}
 
-	// Reserve space: indent(2)+strip+sp(1)+id(7)+sp(2)+sp(2)+time(8)+rss
-	titleWidth := iw - 2 - stripWidth - 1 - 7 - 2 - 2 - 8 - len(rssStr)
+	titleWidth := iw - 2 - 1 - 1 - 7 - 2 - 2 - stageLadderTotal - 1 - stageLabelWidth - 2 - 8 - len(rssStr)
 	if titleWidth < 10 {
 		titleWidth = 10
 	}
-	titleStr := padOrTruncate(task.Title, titleWidth)
 
-	return fmt.Sprintf("  %s %-7s  %s  %8s%s",
-		strip,
+	return fmt.Sprintf("  %s %-7s  %s  %s %s  %s%s",
+		style.Render(icon),
 		task.ID,
-		titleStr,
-		dimStyle.Render(timeAgoStr),
+		padOrTruncate(task.Title, titleWidth),
+		stageMeter(task.Stage, stageLadderTotal),
+		dimStyle.Render(padOrTruncate(label, stageLabelWidth)),
+		dimStyle.Render(fmt.Sprintf("%8s", formatTimeAgo(task.CompletedAt))),
 		dimStyle.Render(rssStr),
 	)
 }
@@ -2256,14 +2175,14 @@ func formatRSSMB(mb int) string {
 	return fmt.Sprintf("%.0fG", gb)
 }
 
-// renderActiveEpicLine renders the parent line for an active epic.
+// renderActiveEpicLine renders the parent line for an active epic:
+//
+//	  ● GH-491  Enable decomposition by default  ■■□□ 2/4    3m
+//
+// indent(2) + glyph(1) + sp(1) + id(7) + sp(2) + title(flex) + sp(1) +
+// meter(4) + sp(1) + counts(5) + sp(1) + time(5) = iw
 func renderActiveEpicLine(task CompletedTask, iw int) string {
 	const progressInnerWidth = 4
-	// Recalculate: total = indent(2)+icon(1)+sp(1)+id(7)+sp(2)+title+sp(2)+right(rightWidth) = 65
-	// title = 65 - 2 - 1 - 1 - 7 - 2 - 2 - rightWidth = 65 - 15 - rightWidth
-	// Let's be precise:
-	// indent(2) + icon(1) + sp(1) + id(7) + sp(2) + title + sp(1) + progress(6) + sp(1) + counts + sp(1) + time
-	// We need the right side to fit. Let's use fixed columns:
 
 	bar := renderEpicProgressBar(task.DoneSubs, task.TotalSubs, progressInnerWidth)
 	counts := fmt.Sprintf("%d/%d", task.DoneSubs, task.TotalSubs)
@@ -2272,10 +2191,8 @@ func renderActiveEpicLine(task CompletedTask, iw int) string {
 		timeStr = formatTimeAgo(task.CompletedAt)
 	}
 
-	// Right part: " [##--] 2/3   3m" — build with fixed width
-	// bar(6) + sp(1) + counts(padded to 5) + sp(1) + time(padded to 5)
 	rightPart := fmt.Sprintf(" %s %-5s %5s", bar, counts, timeStr)
-	rightLen := len(rightPart) // plain ASCII, no ANSI
+	rightLen := lipgloss.Width(rightPart) // meter carries ANSI styling
 
 	// Title gets whatever remains
 	tWidth := iw - 2 - 1 - 1 - 7 - 2 - rightLen
@@ -2286,7 +2203,7 @@ func renderActiveEpicLine(task CompletedTask, iw int) string {
 	titleStr := padOrTruncate(task.Title, tWidth)
 
 	return fmt.Sprintf("  %s %-7s  %s%s",
-		warningStyle.Render("*"),
+		statusRunningStyle.Render("●"),
 		task.ID,
 		titleStr,
 		rightPart,
@@ -2295,10 +2212,10 @@ func renderActiveEpicLine(task CompletedTask, iw int) string {
 
 // renderCompletedEpicLine renders a collapsed completed epic.
 func renderCompletedEpicLine(task CompletedTask, iw int) string {
-	counts := fmt.Sprintf("[%d/%d]", task.DoneSubs, task.TotalSubs)
+	counts := fmt.Sprintf("%d/%d", task.DoneSubs, task.TotalSubs)
 	timeAgoStr := formatTimeAgo(task.CompletedAt)
 
-	// Right part: " [N/N]    Xm ago"
+	// Right part: " N/N    Xm ago"
 	rightPart := fmt.Sprintf(" %s  %8s", counts, timeAgoStr)
 	rightLen := len(rightPart)
 
@@ -2336,37 +2253,40 @@ func renderSubIssueLine(task CompletedTask, iw int) string {
 
 	titleStr := padOrTruncate(task.Title, titleWidth)
 
-	return fmt.Sprintf("    %s %-7s  %s  %8s",
+	return fmt.Sprintf("    %s %-7s  %s  %s",
 		style.Render(icon),
 		task.ID,
 		titleStr,
-		dimStyle.Render(timeStr),
+		dimStyle.Render(fmt.Sprintf("%8s", timeStr)),
 	)
 }
 
-// statusIconStyle returns the icon and style for a task status (top-level tasks).
+// statusIconStyle returns the glyph and style for a task status (top-level
+// tasks) — the design-system vocabulary from the grot_chrome doc block.
 func statusIconStyle(status string) (string, lipgloss.Style) {
 	switch status {
 	case "success":
-		return "+", statusCompletedStyle
+		return "✓", statusCompletedStyle
 	case "failed":
-		return "x", statusFailedStyle
+		return "✗", statusFailedStyle
 	case "stalled":
-		return "~", statusFailedStyle
+		return "✗", statusFailedStyle
 	case "no_op":
-		return "=", statusPendingStyle // TASK-358: no-change run, not a failure
+		return "○", statusPendingStyle // TASK-358: no-change run, not a failure
 	case "declined":
-		return "-", statusPendingStyle // TASK-358: agent declined as unactionable
+		return "○", statusPendingStyle // TASK-358: agent declined as unactionable
 	case "rate_limited":
-		return "%", statusPendingStyle // TASK-358: provider quota hit, transient
+		return "⟲", statusPendingStyle // TASK-358: provider quota hit, transient
 	case "infra":
 		return "!", statusPendingStyle // TASK-358: plumbing/resource failure, not the work
 	case "skipped":
-		return ".", statusPendingStyle // TASK-358: never ran / cancelled
+		return "·", statusPendingStyle // TASK-358: never ran / cancelled
 	case "running":
-		return "~", statusRunningStyle
+		return "●", statusRunningStyle
+	case "pending":
+		return "◌", statusPendingStyle
 	default:
-		return ".", statusPendingStyle
+		return "·", statusPendingStyle
 	}
 }
 
