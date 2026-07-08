@@ -35,7 +35,7 @@
 
 <br />
 
-<!-- TODO: Add demo.gif or YouTube embed after recording -->
+<img alt="Pilot dashboard — live queue, autopilot PR lifecycle, execution history, git graph" src="docs/public/pilot-demo.gif" />
 
 ---
 
@@ -54,7 +54,7 @@ Pilot picks up tickets from GitHub, Linear, Jira, or Asana—plans the implement
 └─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
 ```
 
-<img width="1758" height="1124" alt="pilot-preview-screenshot" src="https://github.com/user-attachments/assets/faaff57a-a23e-4cee-a08a-b9fa08ae135d" />
+<img width="1200" height="630" alt="Pilot dashboard on the grot design system" src="docs/public/pilot-preview.png" />
 
 
 
