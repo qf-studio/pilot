@@ -1535,6 +1535,30 @@
           "terminal-workflow"
         ],
         "created": "2026-07-08"
+      },
+      "mem-091": {
+        "type": "pattern",
+        "summary": "Duplicate 'completed' execution rows sharing one pr_url are SelfHealExecutionAfterMerge by design: on PR merge it flips EVERY non-success row (failed/no_op/stalled/rate_limited/infra/skipped) for the task_id to completed. Distinguish benign CI-retry (full events ending in failure, retry ~90s later) from restart-orphan (events just stop, hours-long lifespan). Dedup guard IsTaskQueued is innocent — first row was already terminal.",
+        "path": "memories/patterns/pattern_selfheal_duplicate_completed_rows.md",
+        "confidence": 0.9,
+        "concepts": [
+          "autopilot",
+          "memory",
+          "dashboard"
+        ],
+        "created": "2026-07-08"
+      },
+      "mem-092": {
+        "type": "pitfall",
+        "summary": "pilot start --replace SIGKILLs in-flight executions (bare pgrep SIGTERM, no dispatcher drain, ~1s to CancelAll) and mislabels exit 137 as oom_killed; stale-recovery + infra classification write no execution_events, leaving an audit blind spot. Observed: 10min of epic planning discarded, $3.49/41k tokens re-spent (GH-4050). Fixes queued: #4100 drain + classifier split, #4101 event trail.",
+        "path": "memories/pitfalls/pitfall_replace_restart_kills_inflight.md",
+        "confidence": 0.85,
+        "concepts": [
+          "executor",
+          "hot-upgrade",
+          "workflow-discipline"
+        ],
+        "created": "2026-07-08"
       }
     }
   },
@@ -2388,6 +2412,21 @@
       "from": "TASK-390",
       "to": "mem-090",
       "type": "related"
+    },
+    {
+      "from": "mem-091",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-092",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-091",
+      "to": "mem-092",
+      "type": "related"
     }
   ],
   "concept_index": {
@@ -2467,10 +2506,10 @@
       "TASK-368"
     ]
   },
-  "last_updated": "2026-07-08T14:48:17.163132+00:00",
+  "last_updated": "2026-07-08T19:48:50.400760+00:00",
   "stats": {
-    "total_nodes": 138,
-    "total_edges": 170,
-    "memory_count": 88
+    "total_nodes": 140,
+    "total_edges": 173,
+    "memory_count": 90
   }
 }
