@@ -41,13 +41,13 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 				},
 			},
 			wantSubstrs: []string{
-				"STAGE",      // env uppercased in banner
-				"OPUS-4-7",   // plan model
-				"SONNET-4-6", // exec model
-				"GH",         // github abbreviated
-				"TG",         // telegram abbreviated
-				"SLACK",      // slack full
-				"DAEMON",     // always shown
+				"stage",      // env lowercased in banner
+				"opus-4-7",   // plan model
+				"sonnet-4-6", // exec model
+				"gh",         // github abbreviated
+				"tg",         // telegram abbreviated
+				"slack",      // slack full
+				"daemon",     // always shown
 			},
 		},
 		{
@@ -58,7 +58,7 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 					Discord: &discord.Config{Enabled: true},
 				},
 			},
-			wantSubstrs: []string{"SONNET-4-6", "DISCORD"},
+			wantSubstrs: []string{"sonnet-4-6", "discord"},
 			notSubstrs:  []string{" / "},
 		},
 		{
@@ -70,7 +70,7 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 				},
 				Adapters: &config.AdaptersConfig{},
 			},
-			wantSubstrs: []string{"OPUS-4-7"},
+			wantSubstrs: []string{"opus-4-7"},
 			notSubstrs:  []string{" / "},
 		},
 		{
@@ -78,7 +78,7 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 			cfg: &config.Config{
 				Adapters: &config.AdaptersConfig{},
 			},
-			wantSubstrs: []string{"v9.9.9", "UTC"},
+			wantSubstrs: []string{"v9.9.9", "utc"},
 		},
 		{
 			name: "configured-but-disabled adapter still appears as inactive chip",
@@ -90,15 +90,15 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 			},
 			// Both chips render — Active vs inactive only changes the dot,
 			// not whether the adapter name appears.
-			wantSubstrs: []string{"GH", "TG"},
+			wantSubstrs: []string{"gh", "tg"},
 		},
 		{
 			name: "no Adapters config — only DAEMON chip + version",
 			cfg:  &config.Config{
 				// Adapters: nil intentionally
 			},
-			wantSubstrs: []string{"DAEMON", "v9.9.9"},
-			notSubstrs:  []string{"GH", "TG", "SLACK"},
+			wantSubstrs: []string{"daemon", "v9.9.9"},
+			notSubstrs:  []string{"gh", "tg", "slack"},
 		},
 	}
 

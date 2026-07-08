@@ -593,47 +593,12 @@ func (m Model) renderGitGraph(opts ...int) string {
 	return m.renderGraphPanel(title, contentLines, graphWidth)
 }
 
-// renderGraphPanel builds a bordered panel at the given total width.
-// Focused state uses steel blue border; unfocused uses slate.
+// renderGraphPanel builds a grot-style bordered panel at the given total
+// width. Focused state uses the accent (steel blue) border; unfocused slate.
 func (m Model) renderGraphPanel(title string, contentLines []string, totalWidth int) string {
-	var borderSty lipgloss.Style
+	chrome := panelChrome
 	if m.gitGraphFocus {
-		borderSty = lipgloss.NewStyle().Foreground(lipgloss.Color("#7eb8da")) // steel blue
-	} else {
-		borderSty = lipgloss.NewStyle().Foreground(lipgloss.Color("#3d4450")) // slate
+		chrome = focusChrome
 	}
-
-	innerWidth := totalWidth - 4 // border + space + space + border
-	titleUpper := strings.ToUpper(title)
-
-	// Top border
-	prefixStr := "╭─ " + titleUpper + " "
-	prefixWidth := lipgloss.Width(prefixStr)
-	dashCount := totalWidth - prefixWidth - 1
-	if dashCount < 0 {
-		dashCount = 0
-	}
-	topBorder := borderSty.Render("╭─ ") + labelStyle.Render(titleUpper) +
-		borderSty.Render(" "+strings.Repeat("─", dashCount)+"╮")
-
-	// Empty line
-	emptyLine := borderSty.Render("│") + strings.Repeat(" ", totalWidth-2) + borderSty.Render("│")
-
-	// Content lines
-	border := borderSty.Render("│")
-	var renderedLines []string
-	renderedLines = append(renderedLines, topBorder)
-	renderedLines = append(renderedLines, emptyLine)
-	for _, line := range contentLines {
-		adjusted := padOrTruncate(line, innerWidth)
-		renderedLines = append(renderedLines, border+" "+adjusted+" "+border)
-	}
-	renderedLines = append(renderedLines, emptyLine)
-
-	// Bottom border
-	dashCount = totalWidth - 2
-	bottomBorder := borderSty.Render("╰" + strings.Repeat("─", dashCount) + "╯")
-	renderedLines = append(renderedLines, bottomBorder)
-
-	return strings.Join(renderedLines, "\n")
+	return renderPanelStyled(title, "", strings.Join(contentLines, "\n"), totalWidth, chrome)
 }

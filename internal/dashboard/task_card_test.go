@@ -18,13 +18,13 @@ func TestRenderTaskCard_NarrowDoesNotBlankFailed(t *testing.T) {
 		NoOp: 120, Infra: 305, Skipped: 81, RateLimited: 34, Stalled: 10,
 	}
 
-	out := m.renderTaskCard(23) // real-world narrow card width (ciw = 17)
+	out := m.renderTaskCard(23) // real-world narrow card width (ciw = 19)
 
-	if !strings.Contains(out, "234 failed") {
+	if !strings.Contains(out, "✗ 234") {
 		t.Errorf("narrow card dropped the failed headline; got:\n%s", out)
 	}
-	if !strings.Contains(out, "1508 succeeded") {
-		t.Errorf("narrow card dropped the succeeded line; got:\n%s", out)
+	if !strings.Contains(out, "✓ 1508") {
+		t.Errorf("narrow card dropped the succeeded count; got:\n%s", out)
 	}
 	// Every rendered line must fit the card width exactly (no overflow / blanking).
 	for _, line := range strings.Split(out, "\n") {
@@ -42,7 +42,7 @@ func TestRenderTaskCard_WideShowsBreakdown(t *testing.T) {
 
 	out := m.renderTaskCard(90) // wide card: suffix fits
 
-	for _, want := range []string{"234 failed", "120 no-op", "305 infra"} {
+	for _, want := range []string{"✗ 234", "120 no-op", "305 infra"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("wide card missing %q; got:\n%s", want, out)
 		}

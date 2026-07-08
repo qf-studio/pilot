@@ -340,8 +340,8 @@ func TestRenderGitGraph_AutoSizeSmall(t *testing.T) {
 	got := m.renderGitGraph()
 	plain := stripANSI(got)
 	// Small: title "GIT", no SHA, no author
-	if strings.Contains(plain, "GIT GRAPH") {
-		t.Error("small auto-size should use 'GIT' title, not 'GIT GRAPH'")
+	if strings.Contains(plain, "git graph") {
+		t.Error("small auto-size should use 'GIT' title, not 'git graph'")
 	}
 	if strings.Contains(plain, "abc1234") {
 		t.Error("small auto-size should not contain SHA")
@@ -362,8 +362,8 @@ func TestRenderGitGraph_AutoSizeMedium(t *testing.T) {
 
 	got := m.renderGitGraph()
 	plain := stripANSI(got)
-	if strings.Contains(plain, "GIT GRAPH") {
-		t.Error("medium auto-size should use 'GIT' title, not 'GIT GRAPH'")
+	if strings.Contains(plain, "git graph") {
+		t.Error("medium auto-size should use 'GIT' title, not 'git graph'")
 	}
 	// Medium has refs but no SHA
 	if strings.Contains(plain, "abc1234") {
@@ -385,8 +385,8 @@ func TestRenderGitGraph_AutoSizeFull(t *testing.T) {
 
 	got := m.renderGitGraph()
 	plain := stripANSI(got)
-	if !strings.Contains(plain, "GIT GRAPH") {
-		t.Error("full auto-size should use 'GIT GRAPH' title")
+	if !strings.Contains(plain, "git graph") {
+		t.Error("full auto-size should use 'git graph' title")
 	}
 	if !strings.Contains(plain, "abc1234") {
 		t.Error("full auto-size should contain SHA")
@@ -488,8 +488,8 @@ func TestRenderGitGraph_WithData(t *testing.T) {
 
 	plain := stripANSI(got)
 
-	if !strings.Contains(plain, "GIT GRAPH") {
-		t.Error("missing 'GIT GRAPH' panel title")
+	if !strings.Contains(plain, "git graph") {
+		t.Error("missing 'git graph' panel title")
 	}
 	if !strings.Contains(plain, "feat: add git graph") {
 		t.Errorf("missing commit message in output:\n%s", plain)
@@ -524,12 +524,12 @@ func TestRenderGitGraph_FocusedBorder(t *testing.T) {
 
 	// Both should contain the panel structure
 	focusedPlain := stripANSI(focused)
-	if !strings.Contains(focusedPlain, "GIT GRAPH") {
-		t.Error("focused panel missing GIT GRAPH title")
+	if !strings.Contains(focusedPlain, "git graph") {
+		t.Error("focused panel missing git graph title")
 	}
 	unfocusedPlain := stripANSI(unfocused)
-	if !strings.Contains(unfocusedPlain, "GIT GRAPH") {
-		t.Error("unfocused panel missing GIT GRAPH title")
+	if !strings.Contains(unfocusedPlain, "git graph") {
+		t.Error("unfocused panel missing git graph title")
 	}
 }
 
@@ -741,11 +741,11 @@ func TestViewWithGitGraph_SideBySide(t *testing.T) {
 
 	plain := stripANSI(output)
 
-	if !strings.Contains(plain, "PILOT") {
+	if !strings.Contains(plain, "pilot") {
 		t.Error("View() should contain dashboard header")
 	}
-	if !strings.Contains(plain, "GIT GRAPH") {
-		t.Error("View() should contain GIT GRAPH panel")
+	if !strings.Contains(plain, "git graph") {
+		t.Error("View() should contain git graph panel")
 	}
 }
 
@@ -759,10 +759,10 @@ func TestViewHidden_NoGraph(t *testing.T) {
 	output := m.View()
 	plain := stripANSI(output)
 
-	if strings.Contains(plain, "GIT GRAPH") {
-		t.Error("View() should NOT contain GIT GRAPH when hidden")
+	if strings.Contains(plain, "git graph") {
+		t.Error("View() should NOT contain git graph when hidden")
 	}
-	if !strings.Contains(plain, "PILOT") {
+	if !strings.Contains(plain, "pilot") {
 		t.Error("View() should contain dashboard header")
 	}
 }
@@ -935,8 +935,8 @@ func TestGitGraphTitle_IncludesProjectName(t *testing.T) {
 	output := m.renderGitGraph()
 	plain := stripANSI(output)
 
-	if !strings.Contains(plain, "ASO-GENERATOR") {
-		t.Errorf("git graph title should contain project name (uppercased), got:\n%s", plain)
+	if !strings.Contains(plain, "aso-generator") {
+		t.Errorf("git graph title should contain project name (lowercased), got:\n%s", plain)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -39,117 +38,13 @@ func TestFormatCompact(t *testing.T) {
 	}
 }
 
-func TestNormalizeToSparkline(t *testing.T) {
-	tests := []struct {
-		name   string
-		values []float64
-		width  int
-		want   []int
-	}{
-		{
-			name:   "empty input returns all zeros",
-			values: nil,
-			width:  7,
-			want:   []int{0, 0, 0, 0, 0, 0, 0},
-		},
-		{
-			name:   "single value maps to midpoint",
-			values: []float64{42},
-			width:  7,
-			want:   []int{0, 0, 0, 0, 0, 0, 4},
-		},
-		{
-			name:   "all zeros map to baseline",
-			values: []float64{0, 0, 0, 0, 0, 0, 0},
-			width:  7,
-			want:   []int{1, 1, 1, 1, 1, 1, 1},
-		},
-		{
-			name:   "all same non-zero values map to midpoint",
-			values: []float64{5, 5, 5, 5, 5, 5, 5},
-			width:  7,
-			want:   []int{4, 4, 4, 4, 4, 4, 4},
-		},
-		{
-			name:   "ascending values span 1-8 with zero baseline",
-			values: []float64{0, 1, 2, 3, 4, 5, 6, 7, 8},
-			width:  9,
-			want:   []int{1, 2, 3, 4, 5, 5, 6, 7, 8},
-		},
-		{
-			name:   "fewer values than width left-pads with zeros",
-			values: []float64{0, 100},
-			width:  5,
-			want:   []int{0, 0, 0, 1, 8},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeToSparkline(tt.values, tt.width)
-			if len(got) != len(tt.want) {
-				t.Fatalf("len = %d, want %d", len(got), len(tt.want))
-			}
-			for i := range tt.want {
-				if got[i] != tt.want[i] {
-					t.Errorf("index %d: got %d, want %d (full: %v)", i, got[i], tt.want[i], got)
-					break
-				}
-			}
-		})
-	}
-}
-
-func TestRenderSparkline(t *testing.T) {
-	tests := []struct {
-		name    string
-		levels  []int
-		pulsing bool
-	}{
-		{
-			name:    "pulsing includes dot",
-			levels:  []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6},
-			pulsing: true,
-		},
-		{
-			name:    "not pulsing has space",
-			levels:  []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6},
-			pulsing: false,
-		},
-		{
-			name:    "all zeros",
-			levels:  []int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-			pulsing: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := renderSparkline(tt.levels, tt.pulsing, cardInnerWidth)
-
-			// Visual width must equal cardInnerWidth (17)
-			runeCount := utf8.RuneCountInString(got)
-			if runeCount != cardInnerWidth {
-				t.Errorf("visual width = %d runes, want %d (got %q)", runeCount, cardInnerWidth, got)
-			}
-
-			// Check pulsing indicator
-			runes := []rune(got)
-			lastRune := runes[len(runes)-1]
-			if tt.pulsing && lastRune != '•' {
-				t.Errorf("pulsing=true but last rune = %q, want '•'", lastRune)
-			}
-			if !tt.pulsing && lastRune != ' ' {
-				t.Errorf("pulsing=false but last rune = %q, want ' '", lastRune)
-			}
-		})
-	}
-}
-
-func TestBuildMiniCard(t *testing.T) {
-	card := buildMiniCard("TEST", "42", "detail one", "detail two", "▁▂▃▄▅▆▇█▁▂▃▄▅▆▇█•", cardWidth)
+func TestBuildStatCard(t *testing.T) {
+	card := buildStatCard("test", "42", "detail", []float64{1, 2, 3, 4, 5, 6, 7}, grotTheme.Accent, cardWidth)
 
 	lines := strings.Split(card, "\n")
+	if len(lines) != statCardHeight {
+		t.Errorf("card height = %d lines, want %d", len(lines), statCardHeight)
+	}
 	for i, line := range lines {
 		w := lipgloss.Width(line)
 		if w != cardWidth {
@@ -157,7 +52,7 @@ func TestBuildMiniCard(t *testing.T) {
 		}
 	}
 
-	// Check border characters present
+	// Check grot card chrome: rounded borders + lowercase title in top border
 	if !strings.Contains(card, "╭") {
 		t.Error("missing top-left border ╭")
 	}
@@ -166,6 +61,9 @@ func TestBuildMiniCard(t *testing.T) {
 	}
 	if !strings.Contains(card, "│") {
 		t.Error("missing side border │")
+	}
+	if !strings.Contains(card, "test") {
+		t.Error("missing lowercase title in top border")
 	}
 }
 
@@ -187,14 +85,14 @@ func TestRenderMetricsCards(t *testing.T) {
 
 	output := m.renderMetricsCards()
 
-	if !strings.Contains(output, "TOKENS") {
-		t.Error("output missing TOKENS card")
+	if !strings.Contains(output, "tokens") {
+		t.Error("output missing tokens card")
 	}
-	if !strings.Contains(output, "COST") {
-		t.Error("output missing COST card")
+	if !strings.Contains(output, "cost") {
+		t.Error("output missing cost card")
 	}
-	if !strings.Contains(output, "QUEUE") {
-		t.Error("output missing TASKS card")
+	if !strings.Contains(output, "queue") {
+		t.Error("output missing queue card")
 	}
 }
 
@@ -208,14 +106,14 @@ func TestRenderMetricsCards_ZeroState(t *testing.T) {
 	if output == "" {
 		t.Error("zero-state renderMetricsCards returned empty string")
 	}
-	if !strings.Contains(output, "TOKENS") {
-		t.Error("zero-state output missing TOKENS card")
+	if !strings.Contains(output, "tokens") {
+		t.Error("zero-state output missing tokens card")
 	}
-	if !strings.Contains(output, "COST") {
-		t.Error("zero-state output missing COST card")
+	if !strings.Contains(output, "cost") {
+		t.Error("zero-state output missing cost card")
 	}
-	if !strings.Contains(output, "QUEUE") {
-		t.Error("zero-state output missing TASKS card")
+	if !strings.Contains(output, "queue") {
+		t.Error("zero-state output missing queue card")
 	}
 }
 
@@ -236,11 +134,8 @@ func TestRenderTokenCard_CacheBreakdown(t *testing.T) {
 	if !strings.Contains(out, "105.0K") {
 		t.Errorf("renderTokenCard: expected grand total 105.0K in output, got:\n%s", out)
 	}
-	if !strings.Contains(out, "cached") {
-		t.Errorf("renderTokenCard: expected 'cached' label in output, got:\n%s", out)
-	}
-	if !strings.Contains(out, "uncached") {
-		t.Errorf("renderTokenCard: expected 'uncached' label in output, got:\n%s", out)
+	if !strings.Contains(out, "90.0K cached") {
+		t.Errorf("renderTokenCard: expected '90.0K cached' detail in output, got:\n%s", out)
 	}
 }
 
@@ -260,8 +155,8 @@ func TestRenderTokenCard_ZeroCacheTokens(t *testing.T) {
 	if !strings.Contains(out, "50.0K") {
 		t.Errorf("renderTokenCard zero-cache: expected 50.0K total, got:\n%s", out)
 	}
-	if !strings.Contains(out, "uncached") {
-		t.Errorf("renderTokenCard zero-cache: expected 'uncached' label, got:\n%s", out)
+	if !strings.Contains(out, "0 cached") {
+		t.Errorf("renderTokenCard zero-cache: expected '0 cached' detail, got:\n%s", out)
 	}
 }
 
@@ -280,24 +175,24 @@ func TestRenderTaskCard_ShowsQueueDepth(t *testing.T) {
 
 	output := m.renderTaskCard(cardWidth)
 
-	// QUEUE card value must show current queue depth (2), not lifetime total (10)
-	if !strings.Contains(output, "QUEUE") {
-		t.Error("output missing QUEUE header")
+	// queue card value must show current queue depth (2), not lifetime total (10)
+	if !strings.Contains(output, "queue") {
+		t.Error("output missing queue title")
 	}
 	// The main value "2" should appear (queue depth)
 	if !strings.Contains(output, "2") {
-		t.Error("QUEUE card should show current queue depth of 2")
+		t.Error("queue card should show current queue depth of 2")
 	}
 	// Lifetime total "10" should NOT appear as the main value
 	if strings.Contains(output, "10") {
-		t.Error("QUEUE card should not show lifetime total (10)")
+		t.Error("queue card should not show lifetime total (10)")
 	}
-	// Succeeded/failed detail lines should still be present
-	if !strings.Contains(output, "8 succeeded") {
-		t.Error("QUEUE card missing succeeded count")
+	// Succeeded/failed detail line should still be present
+	if !strings.Contains(output, "✓ 8") {
+		t.Error("queue card missing succeeded count")
 	}
-	if !strings.Contains(output, "2 failed") {
-		t.Error("QUEUE card missing failed count")
+	if !strings.Contains(output, "✗ 2") {
+		t.Error("queue card missing failed count")
 	}
 }
 
@@ -461,9 +356,9 @@ func TestHydrateFromStore_CacheTokensRoundTrip(t *testing.T) {
 
 	m := NewModelWithStore("test", store)
 
-	wantCacheRead := 120000  // 80000 + 40000
-	wantCacheWrite := 5000   // 3000 + 2000
-	wantTotal := 11000       // (5000+2000) + (3000+1000)
+	wantCacheRead := 120000 // 80000 + 40000
+	wantCacheWrite := 5000  // 3000 + 2000
+	wantTotal := 11000      // (5000+2000) + (3000+1000)
 
 	if m.metricsCard.CacheReadTokens != wantCacheRead {
 		t.Errorf("CacheReadTokens = %d, want %d", m.metricsCard.CacheReadTokens, wantCacheRead)
@@ -662,7 +557,7 @@ func TestRenderHistory_EmptyState(t *testing.T) {
 	assertPanelLineWidths(t, output)
 
 	plain := stripANSI(output)
-	if !strings.Contains(plain, "HISTORY") {
+	if !strings.Contains(plain, "history") {
 		t.Error("missing HISTORY panel title")
 	}
 	if !strings.Contains(plain, "No completed tasks yet") {
@@ -1180,7 +1075,7 @@ func TestGitGraph_StackedLayoutUsesFullWidth(t *testing.T) {
 	var graphBorderLine string
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "GIT GRAPH") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "git graph") && strings.Contains(plain, "╭") {
 			graphBorderLine = plain
 			break
 		}
@@ -1214,10 +1109,10 @@ func TestGitGraph_SideBySideOnWideTerminal(t *testing.T) {
 	view := m.View()
 	lines := strings.Split(view, "\n")
 
-	// In side-by-side mode, the GIT GRAPH border should NOT be at full terminal width
+	// In side-by-side mode, the git graph border should NOT be at full terminal width
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "GIT GRAPH") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "git graph") && strings.Contains(plain, "╭") {
 			borderWidth := lipgloss.Width(plain)
 			if borderWidth == m.width {
 				t.Errorf("side-by-side graph should not be full terminal width (%d)", m.width)
@@ -1264,7 +1159,7 @@ func TestGitGraph_NarrowTerminalNotSilent(t *testing.T) {
 	view := m.View()
 	plain := stripANSI(view)
 	// At 60 cols stacked, auto-size picks medium (title "GIT")
-	if !strings.Contains(plain, "GIT") {
+	if !strings.Contains(plain, "git") {
 		t.Error("narrow terminal (60 cols) should show stacked GIT panel, got silent/empty")
 	}
 }
@@ -1289,7 +1184,7 @@ func TestDashboardPanels_StretchInStackedMode(t *testing.T) {
 	var queueBorderLine string
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "QUEUE") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "queue") && strings.Contains(plain, "╭") {
 			queueBorderLine = plain
 			break
 		}
@@ -1308,7 +1203,7 @@ func TestDashboardPanels_StretchInStackedMode(t *testing.T) {
 	var historyBorderLine string
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "HISTORY") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "history") && strings.Contains(plain, "╭") {
 			historyBorderLine = plain
 			break
 		}
@@ -1335,7 +1230,7 @@ func TestDashboardPanels_DefaultWidthWhenNoGraph(t *testing.T) {
 	// Find QUEUE panel border
 	for _, line := range lines {
 		plain := stripANSI(line)
-		if strings.Contains(plain, "QUEUE") && strings.Contains(plain, "╭") {
+		if strings.Contains(plain, "queue") && strings.Contains(plain, "╭") {
 			borderWidth := lipgloss.Width(plain)
 			if borderWidth != panelTotalWidth {
 				t.Errorf("default QUEUE panel width = %d, want %d (panelTotalWidth)", borderWidth, panelTotalWidth)
@@ -1390,7 +1285,7 @@ func TestRenderEvalStats(t *testing.T) {
 		got := m.renderEvalStats()
 
 		plain := stripANSI(got)
-		if !strings.Contains(plain, "EVAL") {
+		if !strings.Contains(plain, "eval") {
 			t.Error("expected EVAL panel header")
 		}
 		if !strings.Contains(plain, "pass@1") {
@@ -1472,10 +1367,10 @@ func TestRenderEvalStats_ProjectFilter(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		defaultProject  string
-		wantRate        string
-		wantTaskCount   string
+		name           string
+		defaultProject string
+		wantRate       string
+		wantTaskCount  string
 	}{
 		{
 			name:           "scoped to alpha: only 4 passing tasks",
@@ -1687,8 +1582,8 @@ func TestRenderBanner(t *testing.T) {
 
 	out := m.renderBanner()
 
-	// Banner uppercases env, MODEL/ENV labels, and adapter names.
-	for _, want := range []string{"v2.102.3", "PROD", "opus:plan", "UTC", "GH", "SLACK", "DAEMON"} {
+	// Banner lowercases env, model stack, and adapter names (grot style).
+	for _, want := range []string{"v2.102.3", "prod", "opus:plan", "utc", "gh", "slack", "daemon"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("renderBanner() missing %q\nout:\n%s", want, out)
 		}
@@ -1711,7 +1606,7 @@ func TestRenderBannerDefaults(t *testing.T) {
 	if !strings.Contains(out, "v1.0.0") {
 		t.Errorf("renderBanner() missing version")
 	}
-	if !strings.Contains(out, "UTC") {
+	if !strings.Contains(out, "utc") {
 		t.Errorf("renderBanner() missing UTC clock")
 	}
 
