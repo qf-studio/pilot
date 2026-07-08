@@ -854,8 +854,18 @@ Examples:
 	return cmd
 }
 
-// killExistingTelegramBot finds and kills any running pilot process with Telegram enabled
-func killExistingTelegramBot() error {
+// killExistingTelegramBot finds any running pilot process with Telegram enabled
+// and asks it to drain in-flight executions before terminating it. For each
+// matched PID: signal drain via the cross-process handshake in
+// internal/upgrade (GH-4106), wait up to drainTimeout for it to report zero
+// in-flight executions, then let it shut down gracefully (Drained) or
+// force-kill it (TimedOut/anything else). A force-kill also stamps an
+// explicit "terminated by --replace restart" classification on any execution
+// row the target left running, so the boot-time exit-137 OOM heuristic
+// (reclassifyLegacyOutcomes, GH-4105) never gets a chance to mislabel it.
+// store may be nil (e.g. memory store failed to open) — classification is
+// then skipped, but drain/terminate still proceeds. GH-4107.
+func killExistingTelegramBot(ctx context.Context, store *memory.Store, drainTimeout time.Duration) error {
 	currentPID := os.Getpid()
 
 	// Find processes matching "pilot start" or "pilot telegram" (for backward compatibility)
@@ -867,7 +877,7 @@ func killExistingTelegramBot() error {
 				continue // No process found
 			}
 			// pgrep not available, try ps-based approach
-			return killExistingBotPS(currentPID, pattern)
+			return killExistingBotPS(ctx, currentPID, pattern, store, drainTimeout)
 		}
 
 		pids := strings.Fields(strings.TrimSpace(string(out)))
@@ -879,11 +889,7 @@ func killExistingTelegramBot() error {
 			if pid == currentPID {
 				continue
 			}
-			proc, err := os.FindProcess(pid)
-			if err != nil {
-				continue
-			}
-			_ = proc.Signal(syscall.SIGTERM)
+			terminateTarget(ctx, pid, store, drainTimeout)
 		}
 	}
 
@@ -891,7 +897,7 @@ func killExistingTelegramBot() error {
 }
 
 // killExistingBotPS uses ps + grep as fallback
-func killExistingBotPS(currentPID int, pattern string) error {
+func killExistingBotPS(ctx context.Context, currentPID int, pattern string, store *memory.Store, drainTimeout time.Duration) error {
 	out, err := exec.Command("sh", "-c", fmt.Sprintf("ps aux | grep '%s' | grep -v grep | awk '{print $2}'", pattern)).Output()
 	if err != nil {
 		return nil
@@ -906,14 +912,60 @@ func killExistingBotPS(currentPID int, pattern string) error {
 		if pid == currentPID {
 			continue
 		}
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			continue
-		}
-		_ = proc.Signal(syscall.SIGTERM)
+		terminateTarget(ctx, pid, store, drainTimeout)
 	}
 
 	return nil
+}
+
+// requestDrainFn performs the GH-4106 cross-process drain handshake for pid.
+// A package-level var (mirroring the runSmokeTest seam in internal/upgrade/
+// restart.go) so tests can stub the outcome without sending real signals or
+// touching an on-disk status file.
+var requestDrainFn = func(ctx context.Context, pid int, cfg *upgrade.DrainConfig) (upgrade.DrainOutcome, error) {
+	g, err := upgrade.NewGracefulUpgrader(version, &upgrade.NoOpTaskChecker{})
+	if err != nil {
+		return upgrade.DrainUnknown, err
+	}
+	return g.RequestDrain(ctx, pid, cfg)
+}
+
+// terminateTarget asks pid to drain, waits up to drainTimeout, then either lets
+// it shut down gracefully (Drained) or force-kills it (TimedOut/DrainUnknown).
+// A force-kill also records an explicit restart classification on any
+// execution row the target left running — GH-4107.
+func terminateTarget(ctx context.Context, pid int, store *memory.Store, drainTimeout time.Duration) {
+	outcome, err := requestDrainFn(ctx, pid, &upgrade.DrainConfig{Timeout: drainTimeout})
+	if err == nil && outcome == upgrade.Drained {
+		if proc, ferr := os.FindProcess(pid); ferr == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+		}
+		return
+	}
+
+	if store != nil {
+		markInterruptedByReplace(store, drainTimeout)
+	}
+	if proc, ferr := os.FindProcess(pid); ferr == nil {
+		_ = proc.Signal(syscall.SIGKILL)
+	}
+}
+
+// markInterruptedByReplace stamps an explicit "terminated by --replace
+// restart" classification on every execution row still marked running, so
+// the boot-time exit-137 OOM heuristic (reclassifyLegacyOutcomes, GH-4105)
+// never gets a chance to mislabel it as an OOM kill. Best-effort: store
+// errors here must not block the force-kill in terminateTarget.
+func markInterruptedByReplace(store *memory.Store, drainTimeout time.Duration) {
+	active, err := store.GetActiveExecutions()
+	if err != nil {
+		return
+	}
+	reason := fmt.Sprintf("terminated by --replace restart: drain timed out after %s", drainTimeout)
+	for _, exec := range active {
+		_ = store.UpdateExecutionStatus(exec.ID, "infra", reason)
+		_ = store.InsertExecutionEvent(exec.ID, memory.StageFailed, reason)
+	}
 }
 
 // parseInt64 parses a string to int64

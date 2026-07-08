@@ -225,6 +225,9 @@ func newStartCmd() *cobra.Command {
 		dashboardMode bool
 		projectPath   string
 		replace       bool
+		// replaceDrainTimeout bounds how long --replace waits for the existing
+		// daemon to drain before force-killing it (GH-4107).
+		replaceDrainTimeout time.Duration
 		// Input adapter flags (override config) - use bool with "changed" check
 		enableTelegram bool
 		enableGithub   bool
@@ -439,9 +442,16 @@ Examples:
 			// Splash screen removed — caused alt-screen flicker between
 			// splash exit and dashboard start (GH-2459 follow-up).
 
+			// GH-4107: --replace-drain-timeout flag wins when explicitly set;
+			// otherwise fall back to config, then the flag's own default (3m).
+			drainTimeout := replaceDrainTimeout
+			if !cmd.Flags().Changed("replace-drain-timeout") && cfg.Upgrade != nil && cfg.Upgrade.ReplaceDrainTimeout > 0 {
+				drainTimeout = cfg.Upgrade.ReplaceDrainTimeout
+			}
+
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
-				return runPollingMode(cmd, cfg, projectPath, replace, dashboardMode, noGateway, bootReconcile)
+				return runPollingMode(cmd, cfg, projectPath, replace, dashboardMode, noGateway, bootReconcile, drainTimeout)
 			}
 
 			// Full daemon mode with gateway
@@ -1369,6 +1379,8 @@ Examples:
 	cmd.Flags().StringVar(&dashboardScope, "dashboard-scope", "project", "Scope dashboard metrics: project (current project only) or all (all projects)")
 	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: config default or cwd)")
 	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
+	cmd.Flags().DurationVar(&replaceDrainTimeout, "replace-drain-timeout", 3*time.Minute,
+		"Max time to wait for an existing --replace target to drain in-flight executions before force-killing it")
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Sequential execution: wait for PR merge before next issue")
 	cmd.Flags().StringVar(&envFlag, "env", "",
@@ -1557,7 +1569,7 @@ func startApprovalExpirySweep(ctx context.Context, handler *approval.TelegramHan
 // desktop app (and any other client hitting /health) can reach the daemon.
 // bootReconcile carries the GH-3600 upgrade verification outcome for the
 // dashboard to surface; may be nil.
-func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool, bootReconcile *upgrade.BootReconcileResult) error {
+func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool, bootReconcile *upgrade.BootReconcileResult, replaceDrainTimeout time.Duration) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -2175,7 +2187,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			if errors.Is(err, telegram.ErrConflict) {
 				if replace {
 					fmt.Println("⟲ stopping existing bot instance...")
-					if err := killExistingTelegramBot(); err != nil {
+					if err := killExistingTelegramBot(ctx, store, replaceDrainTimeout); err != nil {
 						return fmt.Errorf("failed to stop existing instance: %w", err)
 					}
 					fmt.Print("   Waiting for Telegram to release connection")

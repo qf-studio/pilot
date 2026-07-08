@@ -73,6 +73,12 @@ type UpgradeConfig struct {
 	// StaleReleaseThreshold is how many releases behind triggers a WARN log
 	// + alert that self-upgrade may not be firing. 0 disables the check.
 	StaleReleaseThreshold int `yaml:"stale_release_threshold"`
+	// ReplaceDrainTimeout bounds how long `pilot start --replace` waits for an
+	// existing daemon to report zero in-flight executions (via the GH-4106
+	// cross-process drain handshake) before force-killing it. The --replace-
+	// drain-timeout flag overrides this when set. Defaults to 3 minutes when
+	// zero/unset (GH-4107).
+	ReplaceDrainTimeout time.Duration `yaml:"replace_drain_timeout"`
 }
 
 // TeamConfig holds settings for team-based project access control (GH-635).
