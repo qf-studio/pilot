@@ -2309,6 +2309,130 @@ func TestController_ProcessPR_MergeableUnknown_ProceedsToCICheck(t *testing.T) {
 	}
 }
 
+// TestHandleWaitingCI_RecordsCIRunOnPass pins GH-4134: the StageCIPassed
+// transition in handleWaitingCI records exactly one pilot_ci_runs_total{
+// result="pass"} verdict, mirroring the existing RecordCIWaitDuration call
+// at the same transition.
+func TestHandleWaitingCI_RecordsCIRunOnPass(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == "GET":
+			resp := github.PullRequest{
+				Number:         42,
+				Head:           github.PRRef{SHA: "abc1234"},
+				MergeableState: "unknown",
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "success"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.DevCITimeout = 1 * time.Second
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	c.mu.Lock()
+	c.activePRs[42] = &PRState{
+		PRNumber:        42,
+		PRURL:           "https://github.com/owner/repo/pull/42",
+		IssueNumber:     10,
+		HeadSHA:         "abc1234",
+		Stage:           StageWaitingCI,
+		CIStatus:        CIPending,
+		CIWaitStartedAt: time.Now(),
+		CreatedAt:       time.Now(),
+	}
+	c.mu.Unlock()
+
+	if err := c.ProcessPR(context.Background(), 42, nil); err != nil {
+		t.Fatalf("ProcessPR error: %v", err)
+	}
+
+	pr, _ := c.GetPRState(42)
+	if pr.Stage != StageCIPassed {
+		t.Fatalf("Stage = %s, want %s", pr.Stage, StageCIPassed)
+	}
+
+	snap := c.metrics.Snapshot()
+	if got := snap.CIRuns["pass"]; got != 1 {
+		t.Errorf("CIRuns[pass] = %d, want 1", got)
+	}
+	if got := snap.CIRuns["fail"]; got != 0 {
+		t.Errorf("CIRuns[fail] = %d, want 0", got)
+	}
+}
+
+// TestHandleCIFailed_RecordsCIRunOnFail pins GH-4134: a terminal
+// handleCIFailed call records exactly one pilot_ci_runs_total{result="fail"}
+// verdict alongside the existing RecordPRFailed() call.
+func TestHandleCIFailed_RecordsCIRunOnFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/sha789/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST":
+			resp := github.Issue{Number: 300}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber: 44,
+		HeadSHA:  "sha789",
+		Stage:    StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+	if prState.Stage != StageFailed {
+		t.Fatalf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+
+	snap := c.metrics.Snapshot()
+	if got := snap.CIRuns["fail"]; got != 1 {
+		t.Errorf("CIRuns[fail] = %d, want 1", got)
+	}
+	if got := snap.CIRuns["pass"]; got != 0 {
+		t.Errorf("CIRuns[pass] = %d, want 0", got)
+	}
+}
+
 // GH-724: Test that mergeable=false (without dirty state) also triggers conflict detection.
 func TestController_ProcessPR_MergeableFalse_DetectsConflict(t *testing.T) {
 	prClosed := false

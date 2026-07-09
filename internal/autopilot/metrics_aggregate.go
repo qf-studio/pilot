@@ -47,6 +47,7 @@ func NewAggregateMetrics(sources ...*Metrics) *AggregateMetrics {
 func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 	agg := MetricsSnapshot{
 		IssuesProcessed:            make(map[string]int64),
+		CIRuns:                     make(map[string]int64),
 		APIErrors:                  make(map[string]int64),
 		LabelCleanups:              make(map[string]int64),
 		ApprovalPersistMisses:      make(map[string]int64),
@@ -73,6 +74,9 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		agg.PRsMerged += s.PRsMerged
 		agg.PRsFailed += s.PRsFailed
 		agg.PRsConflicting += s.PRsConflicting
+		for k, v := range s.CIRuns {
+			agg.CIRuns[k] += v
+		}
 		agg.CircuitBreakerTrips += s.CircuitBreakerTrips
 		for k, v := range s.APIErrors {
 			agg.APIErrors[k] += v

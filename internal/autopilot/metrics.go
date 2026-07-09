@@ -29,10 +29,17 @@ type Metrics struct {
 	mu sync.RWMutex
 
 	// Counters
-	IssuesProcessed       map[string]int64 // result → count (success, failed, rate_limited)
-	PRsMerged             int64
-	PRsFailed             int64
-	PRsConflicting        int64
+	IssuesProcessed map[string]int64 // result → count (success, failed, rate_limited)
+	PRsMerged       int64
+	PRsFailed       int64
+	PRsConflicting  int64
+	// CIRuns counts distinct CI verdicts by result ("pass"/"fail"), GH-4134.
+	// One entry per StageCIPassed transition or terminal handleCIFailed call —
+	// a multi-iteration CI-fix cascade on one PR is several distinct verdicts
+	// (one per push+CI-run), not one. Unlike PRsFailed (RecordPRFailed), which
+	// also folds in approval rejections and merge/release failures, this is
+	// scoped to CI outcomes only.
+	CIRuns                map[string]int64
 	CircuitBreakerTrips   int64
 	APIErrors             map[string]int64 // endpoint → count
 	LabelCleanups         map[string]int64 // label → count
@@ -98,6 +105,7 @@ type Metrics struct {
 func NewMetrics() *Metrics {
 	return &Metrics{
 		IssuesProcessed:            make(map[string]int64),
+		CIRuns:                     make(map[string]int64),
 		APIErrors:                  make(map[string]int64),
 		LabelCleanups:              make(map[string]int64),
 		ApprovalPersistMisses:      make(map[string]int64),
@@ -178,6 +186,25 @@ func (m *Metrics) RecordPRFailed() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PRsFailed++
+}
+
+// RecordCIRun increments the CI verdict counter for a given result
+// ("pass"/"fail"). GH-4134: called once per distinct CI verdict — the
+// StageCIPassed transition in handleWaitingCI, or a terminal handleCIFailed
+// call — never per fix-iteration retry.
+func (m *Metrics) RecordCIRun(result string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.CIRuns[result]++
+}
+
+// HydrateCIRun adds a store-lifetime baseline to the CI verdict counter for a
+// given result. See HydrateExecutions (GH-4134, restores pilot_ci_runs_total
+// across restarts from the durable execution_events ledger).
+func (m *Metrics) HydrateCIRun(result string, n int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.CIRuns[result] += n
 }
 
 // RecordPRConflicting increments the conflicting PR counter.
@@ -392,6 +419,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		PRsMerged:                     m.PRsMerged,
 		PRsFailed:                     m.PRsFailed,
 		PRsConflicting:                m.PRsConflicting,
+		CIRuns:                        copyStringIntMap(m.CIRuns),
 		CircuitBreakerTrips:           m.CircuitBreakerTrips,
 		APIErrors:                     copyStringIntMap(m.APIErrors),
 		LabelCleanups:                 copyStringIntMap(m.LabelCleanups),
@@ -465,6 +493,7 @@ type MetricsSnapshot struct {
 	PRsMerged             int64
 	PRsFailed             int64
 	PRsConflicting        int64
+	CIRuns                map[string]int64 // GH-4134: result → count (pass, fail)
 	CircuitBreakerTrips   int64
 	APIErrors             map[string]int64
 	LabelCleanups         map[string]int64

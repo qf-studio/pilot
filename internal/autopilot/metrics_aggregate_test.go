@@ -31,6 +31,29 @@ func TestAggregateMetrics_SumsCountersAcrossControllers(t *testing.T) {
 	}
 }
 
+// TestAggregateMetrics_SumsCIRunsAcrossControllers pins GH-4134: a CI verdict
+// recorded on a non-default (projects-map) controller must still show up in
+// the aggregate pilot_ci_runs_total surface, mirroring the PRsMerged/
+// PRsFailed sum-across-controllers guarantee above.
+func TestAggregateMetrics_SumsCIRunsAcrossControllers(t *testing.T) {
+	defaultMetrics := NewMetrics()
+	otherMetrics := NewMetrics()
+
+	otherMetrics.RecordCIRun("pass")
+	otherMetrics.RecordCIRun("pass")
+	defaultMetrics.RecordCIRun("fail")
+
+	agg := NewAggregateMetrics(defaultMetrics, otherMetrics)
+	snap := agg.Snapshot()
+
+	if got := snap.CIRuns["pass"]; got != 2 {
+		t.Errorf("expected aggregate CIRuns[pass]=2 (summed across controllers), got %d", got)
+	}
+	if got := snap.CIRuns["fail"]; got != 1 {
+		t.Errorf("expected aggregate CIRuns[fail]=1, got %d", got)
+	}
+}
+
 // TestAggregateMetrics_SumsActivePRsByStagePerTick verifies pilot_active_prs{stage}
 // sums across controllers on every scrape, not just at hydration/startup.
 func TestAggregateMetrics_SumsActivePRsByStagePerTick(t *testing.T) {

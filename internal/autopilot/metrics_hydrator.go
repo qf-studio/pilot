@@ -79,6 +79,19 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 	metrics.HydratePRsMerged(prCounters.Merged)
 	metrics.HydratePRsFailed(prCounters.Failed)
 
+	// GH-4134: pilot_ci_runs_total{result} from the execution_events ledger —
+	// unlike PRsMerged/PRsFailed there is no pre-ledger source to fall back to
+	// (CI verdicts were never persisted anywhere before this ledger existed),
+	// so this baseline only covers CI verdicts recorded since the ledger's
+	// TASK-379/GH-3844 introduction. Must land on this same designated-owner
+	// Metrics exactly once, same reasoning as the PR counters above.
+	ciRunCounters, err := store.GetLifetimeCIRunCounters()
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: lifetime CI run counters: %w", err)
+	}
+	metrics.HydrateCIRun("pass", ciRunCounters.Pass)
+	metrics.HydrateCIRun("fail", ciRunCounters.Fail)
+
 	// pilot_pr_time_to_merge_seconds: derivable from execution_events
 	// (pr_created -> merged deltas), so hydrate it too rather than leaving it
 	// session-scoped.

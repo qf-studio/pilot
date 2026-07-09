@@ -118,6 +118,87 @@ func TestGetLifetimePRCounters(t *testing.T) {
 	}
 }
 
+// TestGetLifetimeCIRunCounters covers dedupe and mixed pass/fail stages for
+// the GH-4134 pilot_ci_runs_total hydration source.
+func TestGetLifetimeCIRunCounters(t *testing.T) {
+	tests := []struct {
+		name       string
+		executions map[string][]Stage
+		wantPass   int64
+		wantFail   int64
+	}{
+		{
+			name:       "no events",
+			executions: map[string][]Stage{},
+			wantPass:   0,
+			wantFail:   0,
+		},
+		{
+			name: "single ci-passed execution counts once",
+			executions: map[string][]Stage{
+				"exec-1": {StageQueued, StagePRCreated, StageCIPassed, StageMerged},
+			},
+			wantPass: 1,
+			wantFail: 0,
+		},
+		{
+			name: "single ci-failed execution counts once",
+			executions: map[string][]Stage{
+				"exec-1": {StageQueued, StagePRCreated, StageCIFailed, StageFailed},
+			},
+			wantPass: 0,
+			wantFail: 1,
+		},
+		{
+			name: "dedupe: repeated ci_passed event for the same execution counts once",
+			executions: map[string][]Stage{
+				"exec-1": {StagePRCreated, StageCIPassed, StageCIPassed},
+			},
+			wantPass: 1,
+			wantFail: 0,
+		},
+		{
+			name: "multi-iteration fix cascade: each distinct CI verdict counted, not once per PR",
+			executions: map[string][]Stage{
+				"exec-1": {StagePRCreated, StageCIFailed, StageFailed},
+				"exec-2": {StagePRCreated, StageCIFailed, StageFailed},
+				"exec-3": {StagePRCreated, StageCIPassed, StageMerged},
+			},
+			wantPass: 1,
+			wantFail: 2,
+		},
+		{
+			name: "task failure with no CI stage at all is excluded",
+			executions: map[string][]Stage{
+				"exec-1": {StageQueued, StageRunning, StageFailed},
+			},
+			wantPass: 0,
+			wantFail: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newExecutionEventsTestStore(t)
+
+			for execID, stages := range tt.executions {
+				seedExecutionWithEvents(t, store, execID, "GH-1", stages)
+			}
+
+			got, err := store.GetLifetimeCIRunCounters()
+			if err != nil {
+				t.Fatalf("GetLifetimeCIRunCounters failed: %v", err)
+			}
+			if got.Pass != tt.wantPass {
+				t.Errorf("Pass = %d, want %d", got.Pass, tt.wantPass)
+			}
+			if got.Fail != tt.wantFail {
+				t.Errorf("Fail = %d, want %d", got.Fail, tt.wantFail)
+			}
+		})
+	}
+}
+
 // TestGetLifetimePRTimeToMerge covers the pr_created->merged delta derivation,
 // exclusion of executions missing either stage, and dedupe via MIN(occurred_at)
 // when a stage is (unexpectedly) logged more than once for the same execution.
