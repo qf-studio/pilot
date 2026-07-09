@@ -120,7 +120,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.236.0 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.236.1 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (July 3–8 2026):** **29-hour autonomous shift on Pilot's own codebase — ~60 PRs / 25 releases (v2.201.2 → v2.213.x). Runtime self-verification (TASK-379, all 8 waves) + restart/epic defect burn-down (TASK-382) + dashboard grot redesign (TASK-390, v2.234.0→v2.235.8) SHIPPED; onboarding hardening (TASK-378) advanced.** (Earlier June detail below.)
 - **Dashboard grot redesign — [TASK-390 SHIPPED & RELEASED](tasks/archive/TASK-390-grot-dashboard-redesign.md), July 8, v2.234.0 → v2.235.8:** whole TUI on `github.com/qf-studio/grot` v0.1.0 (go 1.24.2→1.25.0). Grot stat cards + panel chrome, one-line banner with pulsing daemon liveness dot, adapter status → queue border legend, history 7-rung segment meters + structured `StageInfo` (GH-4023 reducer preserved), autopilot per-PR lifecycle-meter rows, emoji → glyph vocabulary, stacked stat-card series colors (cached/fresh, ✓/✗), flex-height logs panel, queue `SegmentMeter` rows (#4072, Pilot-built), truthful history status glyphs (#4071), `pr_title` persistence (#4080), Dockerfile go 1.25 (#4091 — Docker images had failed on every tag since v2.234.0). Loop milestone: #4067/#4072/#4074 were implemented by Pilot, merged by autopilot, and released without human action. Follow-ups in queue: [#4100](https://github.com/qf-studio/pilot/issues/4100) `--replace` graceful drain, [#4101](https://github.com/qf-studio/pilot/issues/4101) stale-recovery event trail.
