@@ -582,11 +582,12 @@ func (m *Model) hydrateFromStore() {
 		m.metricsCard.Skipped = taskCounts.Skipped
 	}
 
-	// Populate history panel from recent executions (most recent 5)
-	for i, exec := range executions {
-		if i >= 5 {
-			break
-		}
+	// Populate history panel from the 5 most recent DISTINCT tasks. A single task
+	// can have many execution rows (retries); capping on raw rows lets one retried
+	// task fill the whole window and hide the rest of the history — after
+	// groupedHistory dedups by task ID a 4×-retried task collapses the panel to a
+	// couple of entries. Cap on task_id instead so 5 real tasks always show.
+	for _, exec := range firstNDistinctByTask(executions, 5) {
 		status := displayStatus(exec.Status)
 		completedAt := exec.CreatedAt
 		if exec.CompletedAt != nil {
@@ -617,6 +618,30 @@ func (m *Model) hydrateFromStore() {
 
 	// Load sparkline history
 	m.loadMetricsHistory()
+}
+
+// firstNDistinctByTask returns up to n executions, at most one per task_id,
+// preserving input order. GetRecentExecutions is ordered created_at DESC, so the
+// first row for each task is its latest execution. This keeps a task that retried
+// several times (many rows) from consuming the whole history window — the panel
+// dedups by task ID at render, so a raw-row cap otherwise collapses to 1-2 entries.
+func firstNDistinctByTask(execs []*memory.Execution, n int) []*memory.Execution {
+	if n <= 0 {
+		return nil
+	}
+	seen := make(map[string]bool, n)
+	out := make([]*memory.Execution, 0, n)
+	for _, e := range execs {
+		if seen[e.TaskID] {
+			continue
+		}
+		seen[e.TaskID] = true
+		out = append(out, e)
+		if len(out) >= n {
+			break
+		}
+	}
+	return out
 }
 
 // persistTokenUsage saves token usage to the current session.
