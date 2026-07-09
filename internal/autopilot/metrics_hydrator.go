@@ -63,11 +63,16 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 	}
 	metrics.SetIssueLevelCounts(int64(issueLevel.Shipped), int64(issueLevel.Attempted))
 
-	// GH-4093: pilot_prs_merged_total / pilot_prs_failed_total from the durable
-	// execution_events ledger. Must land on this same designated-owner Metrics
-	// (see AggregateMetrics doc comment) exactly once — hydrating any other
-	// controller's Metrics here would double count in the fleet-wide aggregate.
-	prCounters, err := store.GetLifetimePRCounters()
+	// GH-4121: pilot_prs_merged_total / pilot_prs_failed_total from the
+	// executions table (all-time), not the execution_events ledger — the
+	// ledger only goes back to its TASK-379/GH-3844 introduction and
+	// undercounted these two counters ~20x against every other lifetime
+	// counter on this same Metrics (issues_shipped, cost, tokens), which all
+	// hydrate all-time from executions. Must land on this same
+	// designated-owner Metrics (see AggregateMetrics doc comment) exactly
+	// once — hydrating any other controller's Metrics here would double
+	// count in the fleet-wide aggregate.
+	prCounters, err := store.GetLifetimePRCountersFromExecutions("")
 	if err != nil {
 		return fmt.Errorf("hydrate metrics from store: lifetime PR counters: %w", err)
 	}

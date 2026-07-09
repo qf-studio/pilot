@@ -206,11 +206,13 @@ func TestHydrateFromStore_IssueLevelCounts(t *testing.T) {
 	}
 }
 
-// TestHydrateFromStore_PRFamilyCounters pins GH-4093: pilot_prs_merged_total
-// and pilot_prs_failed_total hydrate from the durable execution_events
-// ledger (not from executions/autopilot_pr_state, which is deleted on PR
-// completion), and a bare executor-level task failure with no PR ever
-// created must not inflate PRsFailed.
+// TestHydrateFromStore_PRFamilyCounters pins GH-4121: pilot_prs_merged_total
+// and pilot_prs_failed_total hydrate all-time from the executions table (not
+// the execution_events ledger, which only goes back to its TASK-379/GH-3844
+// introduction and undercounts against every other lifetime counter on this
+// Metrics). A bare executor-level task failure with no PR ever created must
+// not inflate PRsFailed, and pre-ledger executions (no execution_events rows
+// at all) must still contribute — the entire point of the fix.
 func TestHydrateFromStore_PRFamilyCounters(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := memory.NewStore(tmpDir)
@@ -219,27 +221,23 @@ func TestHydrateFromStore_PRFamilyCounters(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	type seed struct {
-		id     string
-		stages []memory.Stage
-	}
-	seeds := []seed{
-		{"pr-1", []memory.Stage{memory.StagePRCreated, memory.StageCIPassed, memory.StageMerged}},
-		{"pr-2", []memory.Stage{memory.StagePRCreated, memory.StageCIPassed, memory.StageMerged}},
-		{"pr-3", []memory.Stage{memory.StagePRCreated, memory.StageCIFailed, memory.StageFailed}},
+	execs := []*memory.Execution{
+		// Pre-ledger merges: completed with a PR URL, no execution_events rows
+		// at all — exactly the population the ledger-only hydration missed.
+		{ID: "pr-1", TaskID: "TASK-PR-1", ProjectPath: "/p", Status: "completed", PRUrl: "https://github.com/o/r/pull/1"},
+		{ID: "pr-2", TaskID: "TASK-PR-2", ProjectPath: "/p", Status: "completed", PRUrl: "https://github.com/o/r/pull/2"},
+		// Genuine PR-family failure: a PR was created but failed CI/merge.
+		{ID: "pr-3", TaskID: "TASK-PR-3", ProjectPath: "/p", Status: "failed", PRUrl: "https://github.com/o/r/pull/3"},
 		// Executor-level failure: no PR was ever created for this attempt.
-		{"pr-4", []memory.Stage{memory.StageQueued, memory.StageRunning, memory.StageFailed}},
+		{ID: "pr-4", TaskID: "TASK-PR-4", ProjectPath: "/p", Status: "failed"},
+		// Retried task: failed once with a PR, then shipped on retry — must
+		// count once as merged and NOT also inflate PRsFailed.
+		{ID: "pr-5a", TaskID: "TASK-PR-5", ProjectPath: "/p", Status: "failed", PRUrl: "https://github.com/o/r/pull/5a"},
+		{ID: "pr-5b", TaskID: "TASK-PR-5", ProjectPath: "/p", Status: "completed", PRUrl: "https://github.com/o/r/pull/5b"},
 	}
-	for _, s := range seeds {
-		if err := store.SaveExecution(&memory.Execution{
-			ID: s.id, TaskID: "TASK-" + s.id, ProjectPath: "/p", Status: "completed",
-		}); err != nil {
-			t.Fatalf("SaveExecution %s: %v", s.id, err)
-		}
-		for _, stage := range s.stages {
-			if err := store.InsertExecutionEvent(s.id, stage, ""); err != nil {
-				t.Fatalf("InsertExecutionEvent %s/%s: %v", s.id, stage, err)
-			}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.ID, err)
 		}
 	}
 
@@ -249,18 +247,21 @@ func TestHydrateFromStore_PRFamilyCounters(t *testing.T) {
 	}
 	snap := metrics.Snapshot()
 
-	if snap.PRsMerged != 2 {
-		t.Errorf("PRsMerged = %d, want 2", snap.PRsMerged)
+	if snap.PRsMerged != 3 {
+		t.Errorf("PRsMerged = %d, want 3 (pr-1, pr-2, pr-5 deduped to its completed attempt)", snap.PRsMerged)
 	}
 	if snap.PRsFailed != 1 {
-		t.Errorf("PRsFailed = %d, want 1 (executor-only failure with no PR must be excluded)", snap.PRsFailed)
+		t.Errorf("PRsFailed = %d, want 1 (pr-3 only; pr-4 has no PR, pr-5 shipped on retry)", snap.PRsFailed)
+	}
+	if snap.PRsMerged > snap.IssuesShipped {
+		t.Errorf("PRsMerged = %d must not exceed IssuesShipped = %d", snap.PRsMerged, snap.IssuesShipped)
 	}
 
 	// Acceptance: live merges on top of the hydrated baseline must not
 	// double count — a fresh live RecordPRMerged() call adds exactly 1.
 	metrics.RecordPRMerged()
-	if got := metrics.Snapshot().PRsMerged; got != 3 {
-		t.Errorf("PRsMerged after live merge = %d, want 3 (hydrated 2 + live 1)", got)
+	if got := metrics.Snapshot().PRsMerged; got != 4 {
+		t.Errorf("PRsMerged after live merge = %d, want 4 (hydrated 3 + live 1)", got)
 	}
 }
 
