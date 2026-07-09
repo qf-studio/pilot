@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -1638,18 +1639,23 @@ var childExecutionNonTerminalStatuses = map[string]bool{
 // queue). Only a terminal status on the child's tracked execution row is
 // proof.
 //
+// selfExecID is the UUID of the ledger row ExecuteSubIssuesTracked created
+// for THIS run (GH-4141) — it stays "running" for the whole call, so the
+// status lookups below must exclude it to find a genuinely separate,
+// concurrently-tracked row instead of always observing their own row.
+//
 // When no failure signal is present, or no log store is wired to check
 // against, the original (result, err) pass through unchanged. Otherwise this
-// polls GetExecutionStatusByTaskID for taskID (scoped to projectPath) until
-// it reports a terminal status, the context is cancelled, or
-// childOutcomeReconcileTimeout elapses — whichever comes first, so this can
-// never block the epic indefinitely. On terminal success ("completed" /
-// "no_op") it synthesizes a passing ExecutionResult from the tracked row so
-// the caller's normal success/no-op handling applies; on terminal failure it
-// enriches the returned error with the tracked row's real error message
-// instead of the uninformative "unknown: exit status 1" backend
-// classification.
-func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
+// polls GetExecutionStatusByTaskIDExcluding for taskID (scoped to
+// projectPath) until it reports a terminal status, the context is
+// cancelled, or childOutcomeReconcileTimeout elapses — whichever comes
+// first, so this can never block the epic indefinitely. On terminal success
+// ("completed" / "no_op") it synthesizes a passing ExecutionResult from the
+// tracked row so the caller's normal success/no-op handling applies; on
+// terminal failure it enriches the returned error with the tracked row's
+// real error message instead of the uninformative "unknown: exit status 1"
+// backend classification.
+func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath, selfExecID string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
 	hasFailureSignal := execErr != nil || (result != nil && !result.Success)
 	if !hasFailureSignal {
 		return result, execErr
@@ -1658,14 +1664,13 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath 
 		return result, execErr
 	}
 
-	// First lookup outside the poll loop: if the child has no tracked
-	// execution row at all (the common case for a genuine, non-racing
-	// failure — inline sub-issue execution doesn't itself write an
-	// executions row), there is nothing to wait for. Only enter the bounded
-	// poll when a row actually exists and is still in flight, so a plain
+	// First lookup outside the poll loop: if the child has no OTHER tracked
+	// execution row (the common case for a genuine, non-racing failure),
+	// there is nothing to wait for. Only enter the bounded poll when a
+	// separate row actually exists and is still in flight, so a plain
 	// single-run failure fails immediately instead of paying the full poll
 	// timeout on every epic error.
-	status, err := r.logStore.GetExecutionStatusByTaskID(taskID, projectPath)
+	status, err := r.logStore.GetExecutionStatusByTaskIDExcluding(taskID, projectPath, selfExecID)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			r.log.Warn("reconcileChildOutcome: execution status lookup failed",
@@ -1674,7 +1679,7 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath 
 		return result, execErr
 	}
 	if !childExecutionNonTerminalStatuses[status] {
-		return r.resolveChildTerminalOutcome(taskID, status, result, execErr)
+		return r.resolveChildTerminalOutcome(taskID, selfExecID, status, result, execErr)
 	}
 
 	pollInterval := r.childOutcomeReconcilePollInterval
@@ -1697,9 +1702,9 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath 
 		case <-ticker.C:
 		}
 
-		status, err := r.logStore.GetExecutionStatusByTaskID(taskID, projectPath)
+		status, err := r.logStore.GetExecutionStatusByTaskIDExcluding(taskID, projectPath, selfExecID)
 		if err == nil && !childExecutionNonTerminalStatuses[status] {
-			return r.resolveChildTerminalOutcome(taskID, status, result, execErr)
+			return r.resolveChildTerminalOutcome(taskID, selfExecID, status, result, execErr)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			r.log.Warn("reconcileChildOutcome: execution status lookup failed",
@@ -1720,8 +1725,8 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath 
 // continue) applies unchanged; any other terminal status is a genuine
 // failure, reported with the tracked row's real Error message when the
 // original signal lacked one.
-func (r *Runner) resolveChildTerminalOutcome(taskID, status string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
-	row, rowErr := r.logStore.GetLatestExecutionByTaskID(taskID)
+func (r *Runner) resolveChildTerminalOutcome(taskID, selfExecID, status string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
+	row, rowErr := r.logStore.GetLatestExecutionByTaskIDExcluding(taskID, selfExecID)
 	if rowErr != nil {
 		row = nil
 	}
@@ -1792,6 +1797,51 @@ func formatDecomposedChildrenSummary(issues []CreatedIssue) string {
 		}
 	}
 	return fmt.Sprintf("decomposed into %d children: %s", len(issues), strings.Join(refs, ", "))
+}
+
+// finalizeSubIssueExecution marks a sub-issue's ledger row (created just
+// before backend invocation, GH-4141) terminal and persists its token/cost
+// metrics, mirroring the dispatcher's ProjectWorker.processQueue finalization
+// (MarkExecutionCompleted for success, UpdateExecutionStatus otherwise) so a
+// sub-issue's row is indistinguishable from a direct-dispatch row to
+// GetDailyMetrics and HasCompletedExecution. WARN-and-continue on store
+// failures (mem-026) — a ledger write must never abort a sub-issue run.
+func (r *Runner) finalizeSubIssueExecution(execID, status string, result *ExecutionResult, startedAt time.Time) {
+	if r.logStore == nil || execID == "" {
+		return
+	}
+	durationMs := time.Since(startedAt).Milliseconds()
+	var errMsg, prURL, commitSHA string
+	if result != nil {
+		errMsg, prURL, commitSHA = result.Error, result.PRUrl, result.CommitSHA
+	}
+
+	if status == "completed" {
+		if err := r.logStore.MarkExecutionCompleted(execID, prURL, commitSHA, durationMs); err != nil {
+			r.log.Warn("Failed to mark sub-issue execution completed", "execution_id", execID, "error", err)
+		}
+	} else if err := r.logStore.UpdateExecutionStatus(execID, status, errMsg); err != nil {
+		r.log.Warn("Failed to update sub-issue execution status", "execution_id", execID, "status", status, "error", err)
+	}
+
+	if result == nil {
+		return
+	}
+	if err := r.logStore.SaveExecutionMetrics(&memory.ExecutionMetrics{
+		ExecutionID:      execID,
+		TokensInput:      result.TokensInput,
+		TokensOutput:     result.TokensOutput,
+		TokensTotal:      result.TokensTotal,
+		TokensCacheRead:  result.CacheReadInputTokens,
+		TokensCacheWrite: result.CacheCreationInputTokens,
+		EstimatedCostUSD: result.EstimatedCostUSD,
+		FilesChanged:     result.FilesChanged,
+		LinesAdded:       result.LinesAdded,
+		LinesRemoved:     result.LinesRemoved,
+		ModelName:        result.ModelName,
+	}); err != nil {
+		r.log.Warn("Failed to save sub-issue execution metrics", "execution_id", execID, "error", err)
+	}
 }
 
 // executeSubIssuesTracked is ExecuteSubIssues plus each child's terminal state
@@ -1921,6 +1971,40 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			CreatePR:    true,
 		}
 
+		// GH-4141: give this in-process sub-issue run its own executions ledger
+		// row before invoking the backend. Without one, Task.LogExecutionID()
+		// falls back to subTask.ID ("GH-N"), which has no matching executions
+		// row — every execution_events write for the sub-issue then trips a
+		// FOREIGN KEY constraint failed (787). The row also lets
+		// IsTaskQueued("GH-N") see the sub-issue as owned (poller retry-
+		// duplicate guard, TASK-394) and gives daily success metrics a
+		// completed row to count instead of starving on double-intake no_ops.
+		// project_path is the parent's absolute path (project memory pitfall:
+		// scoped dashboard queries filter on this being absolute, not a
+		// worktree path).
+		subExecStart := time.Now()
+		subExecID := uuid.New().String()
+		if r.logStore != nil {
+			if err := r.logStore.SaveExecution(&memory.Execution{
+				ID:          subExecID,
+				TaskID:      taskID,
+				ProjectPath: parent.ProjectPath,
+				Status:      "running",
+			}); err != nil {
+				// mem-026: epic path errors are warn-only — a ledger write must
+				// never abort a sub-issue run. The UUID is threaded through
+				// below regardless, so downstream event recording always has a
+				// real UUID rather than falling back to the task ID.
+				r.log.Warn("Failed to insert sub-issue execution row",
+					"parent_id", parent.ID,
+					"sub_issue", issueRef,
+					"execution_id", subExecID,
+					"error", err,
+				)
+			}
+		}
+		subTask.ExecutionID = subExecID
+
 		r.log.Info("Executing sub-issue",
 			"parent_id", parent.ID,
 			"sub_issue", issueRef,
@@ -1946,12 +2030,13 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// is actually done — it can race a separately-tracked run of the same
 		// sub-issue. Re-check the child's own execution row before trusting
 		// this signal as terminal.
-		result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, result, err)
+		result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, subExecID, result, err)
 
 		if err != nil {
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",
 				i+1, total, issue.Subtask.Title, err)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
+			r.finalizeSubIssueExecution(subExecID, "failed", result, subExecStart)
 			return childStates, metrics, fmt.Errorf("sub-issue %s failed: %w", issueRef, err)
 		}
 
@@ -1981,11 +2066,13 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 					"sub_issue", issueRef,
 					"error", result.Error,
 				)
+				r.finalizeSubIssueExecution(subExecID, "no_op", result, subExecStart)
 				continue
 			}
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - %s",
 				i+1, total, issue.Subtask.Title, result.Error)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
+			r.finalizeSubIssueExecution(subExecID, "failed", result, subExecStart)
 			return childStates, metrics, fmt.Errorf("sub-issue %s failed: %s", issueRef, result.Error)
 		}
 
@@ -2026,8 +2113,11 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 				"branch", subTask.Branch,
 				"recovery_ref", recoveryRef,
 			)
+			r.finalizeSubIssueExecution(subExecID, "failed", result, subExecStart)
 			return childStates, metrics, fmt.Errorf("sub-issue %s committed work (sha %s) but produced no PR — work would be lost, halting epic — recovery: %s", issueRef, shortSHA, recovery)
 		}
+
+		r.finalizeSubIssueExecution(subExecID, "completed", result, subExecStart)
 
 		// Register sub-issue PR with autopilot controller (GH-596)
 		// Note: PR callback uses int issueNumber for GitHub compatibility
