@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -2060,6 +2061,188 @@ func TestPoller_AllowsRetryCompletedTask(t *testing.T) {
 	// Should retry — task is not queued and grace period is 0
 	if got := atomic.LoadInt32(&callCount); got != 1 {
 		t.Errorf("callback called %d times, want 1 (should retry completed task)", got)
+	}
+}
+
+// newRetryGateIncidentServer serves the routes hit by the retry-gate checks
+// (hasMergedWork, hasOpenPRAwaitingMerge, and the parallel-path fresh-label
+// GetIssue refresh) with "nothing found" responses, and falls back to the
+// issue list for everything else (including the GetIssue refresh, whose
+// array-shaped response is tolerated as a soft failure — see
+// checkForNewIssues' fresh-label-check error handling).
+func newRetryGateIncidentServer(issue *Issue) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case "/repos/owner/repo/pulls":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			_ = json.NewEncoder(w).Encode([]*Issue{issue})
+		}
+	}))
+}
+
+// TestPoller_SequentialRetryBlock_TaskQueuedGate and
+// TestPoller_ParallelRetryBlock_TaskQueuedGate reproduce the GH-4128 → PR
+// #4133 incident timeline: an issue is marked processed at T with no
+// pilot-in-progress/status labels and no PR yet, and the poller
+// re-evaluates it at T+5m42s — past the 5m default retry grace period
+// (GH-2201) but with the dispatched task's execution row (inserted by
+// subtask 1, checked via IsTaskQueued) still running. Both the parallel
+// retry block (poller.go:1394-1447) and the sequential retry block
+// (poller.go:978-1028) must consult that running row before allowing a
+// second dispatch of the same issue.
+const retryGateIncidentIssueNumber = 4128
+
+func retryGateIncidentIssue() *Issue {
+	return &Issue{
+		Number:    retryGateIncidentIssueNumber,
+		State:     "open",
+		Title:     "Incident repro issue",
+		Labels:    []Label{{Name: "pilot"}},
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+	}
+}
+
+// markProcessedAtIncidentTimeline sets the processed timestamp so that
+// time.Since(processedAt) reads as exactly the incident's observed
+// mark-to-reevaluation gap: 5m42s, i.e. 42s past the 5m default grace period.
+func markProcessedAtIncidentTimeline(p *Poller, number int) {
+	p.mu.Lock()
+	p.processed[number] = time.Now().Add(-(5*time.Minute + 42*time.Second))
+	p.mu.Unlock()
+}
+
+func TestPoller_SequentialRetryBlock_TaskQueuedGate(t *testing.T) {
+	tests := []struct {
+		name        string
+		taskQueued  bool
+		wantSkipped bool
+	}{
+		{
+			name:        "scenario_a_running_row_present_skips_with_task_queued",
+			taskQueued:  true,
+			wantSkipped: true,
+		},
+		{
+			name:        "scenario_b_no_running_row_dispatches",
+			taskQueued:  false,
+			wantSkipped: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := retryGateIncidentIssue()
+			server := newRetryGateIncidentServer(issue)
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			taskID := fmt.Sprintf("GH-%d", retryGateIncidentIssueNumber)
+			checker := &mockTaskChecker{queued: map[string]bool{taskID: tt.taskQueued}}
+
+			var callCount int32
+			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+				WithTaskChecker(checker),
+				WithOnIssue(func(ctx context.Context, iss *Issue) error {
+					atomic.AddInt32(&callCount, 1)
+					return nil
+				}),
+			)
+
+			markProcessedAtIncidentTimeline(poller, retryGateIncidentIssueNumber)
+
+			got, err := poller.findOldestUnprocessedIssue(context.Background())
+			if err != nil {
+				t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+			}
+
+			// Mirror what startSequential does with a non-nil candidate: dispatch it.
+			if got != nil {
+				if _, err := poller.processIssueSequential(context.Background(), got); err != nil {
+					t.Fatalf("processIssueSequential() error = %v", err)
+				}
+			}
+
+			if tt.wantSkipped {
+				if got != nil {
+					t.Errorf("findOldestUnprocessedIssue() = issue #%d, want nil (running task row must gate re-dispatch)", got.Number)
+				}
+				if got := atomic.LoadInt32(&callCount); got != 0 {
+					t.Errorf("dispatch called %d times, want 0 (task still queued)", got)
+				}
+				if !poller.IsProcessed(retryGateIncidentIssueNumber) {
+					t.Error("issue should remain in processed map while task is queued")
+				}
+			} else {
+				if got == nil {
+					t.Fatal("findOldestUnprocessedIssue() = nil, want issue #4128 (no running row should allow dispatch)")
+				}
+				if got.Number != retryGateIncidentIssueNumber {
+					t.Errorf("findOldestUnprocessedIssue() = issue #%d, want #%d", got.Number, retryGateIncidentIssueNumber)
+				}
+				if got := atomic.LoadInt32(&callCount); got != 1 {
+					t.Errorf("dispatch called %d times, want 1 (no running row should allow re-dispatch)", got)
+				}
+			}
+		})
+	}
+}
+
+func TestPoller_ParallelRetryBlock_TaskQueuedGate(t *testing.T) {
+	tests := []struct {
+		name         string
+		taskQueued   bool
+		wantDispatch int32
+	}{
+		{
+			name:         "scenario_a_running_row_present_skips_with_task_queued",
+			taskQueued:   true,
+			wantDispatch: 0,
+		},
+		{
+			name:         "scenario_b_no_running_row_dispatches",
+			taskQueued:   false,
+			wantDispatch: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := retryGateIncidentIssue()
+			server := newRetryGateIncidentServer(issue)
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			taskID := fmt.Sprintf("GH-%d", retryGateIncidentIssueNumber)
+			checker := &mockTaskChecker{queued: map[string]bool{taskID: tt.taskQueued}}
+
+			var callCount int32
+			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+				WithTaskChecker(checker),
+				WithOnIssue(func(ctx context.Context, iss *Issue) error {
+					atomic.AddInt32(&callCount, 1)
+					return nil
+				}),
+			)
+
+			markProcessedAtIncidentTimeline(poller, retryGateIncidentIssueNumber)
+
+			poller.checkForNewIssues(context.Background())
+			poller.WaitForActive()
+
+			if got := atomic.LoadInt32(&callCount); got != tt.wantDispatch {
+				t.Errorf("checkForNewIssues dispatched %d times, want %d", got, tt.wantDispatch)
+			}
+
+			if tt.taskQueued {
+				if !poller.IsProcessed(retryGateIncidentIssueNumber) {
+					t.Error("issue should remain in processed map while task is queued")
+				}
+			}
+		})
 	}
 }
 
