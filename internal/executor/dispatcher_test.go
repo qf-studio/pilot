@@ -1877,11 +1877,13 @@ func waitForTerminalStatus(t *testing.T, store *memory.Store, execID string, tim
 // synthetic dispatch (queue → worker pickup → runner execution → completion)
 // through the real dispatcher and runner, and asserts the execution_events
 // timeline records the expected cross-file sequence: dispatcher's
-// queued→running transition and runner's spec-validated milestone. This task
-// has no PR (CreatePR: false), so the dispatcher's terminal-success write is
-// a no-op by design (see the recordExecutionEvent call site in processQueue)
-// — TestRunner_recordExecutionEvent_WritesEvent covers the pr_created write
-// directly. GH-3846.
+// queued→running transition, runner's spec-validated milestone, and (GH-4129)
+// the direct-path claude_started/implementation_started pair emitted right
+// before the backend invocation. This task has no PR (CreatePR: false), so
+// the dispatcher's terminal-success write is a no-op by design (see the
+// recordExecutionEvent call site in processQueue) — TestRunner_
+// recordExecutionEvent_WritesEvent covers the pr_created write directly.
+// GH-3846.
 func TestDispatcher_SyntheticDispatch_SuccessEventSequence(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -1919,7 +1921,12 @@ func TestDispatcher_SyntheticDispatch_SuccessEventSequence(t *testing.T) {
 		t.Fatalf("ListExecutionEvents failed: %v", err)
 	}
 
-	wantStages := []memory.Stage{memory.StageRunning, memory.StageSpecValidated}
+	wantStages := []memory.Stage{
+		memory.StageRunning,
+		memory.StageSpecValidated,
+		memory.StageClaudeStarted,
+		memory.StageImplementationStarted,
+	}
 	if len(events) != len(wantStages) {
 		var gotStages []memory.Stage
 		for _, e := range events {
