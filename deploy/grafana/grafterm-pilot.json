@@ -1,0 +1,122 @@
+{
+  "version": "v1",
+  "datasources": {
+    "prometheus": {
+      "prometheus": {
+        "address": "http://localhost:9093"
+      }
+    }
+  },
+  "dashboard": {
+    "grid": {
+      "maxWidth": 100
+    },
+    "widgets": [
+      {
+        "title": "Pipeline Breakdown (P50): queue wait -> execution -> time-to-PR -> CI wait -> approval wait -> merge",
+        "gridPos": { "w": 100 },
+        "graph": {
+          "visualization": {
+            "seriesOverride": [
+              { "regex": "^1\\. Queue Wait$", "color": "#5794F2" },
+              { "regex": "^2\\. Execution$", "color": "#73BF69" },
+              { "regex": "^3\\. Time to PR$", "color": "#FADE2A" },
+              { "regex": "^4\\. CI Wait$", "color": "#FF9830" },
+              { "regex": "^5\\. Approval Wait$", "color": "#F2495C" },
+              { "regex": "^6\\. Merge$", "color": "#B877D9" }
+            ],
+            "yAxis": {
+              "unit": "seconds"
+            }
+          },
+          "queries": [
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.50, sum(rate(pilot_queue_wait_seconds_bucket[15m])) by (le))",
+              "legend": "1. Queue Wait"
+            },
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.50, sum(rate(pilot_execution_duration_seconds_bucket[15m])) by (le))",
+              "legend": "2. Execution"
+            },
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.50, sum(rate(pilot_time_to_pr_seconds_bucket[15m])) by (le))",
+              "legend": "3. Time to PR"
+            },
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.50, sum(rate(pilot_ci_wait_duration_seconds_bucket[15m])) by (le))",
+              "legend": "4. CI Wait"
+            },
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.50, sum(rate(pilot_approval_wait_seconds_bucket[15m])) by (le))",
+              "legend": "5. Approval Wait"
+            },
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.50, sum(rate(pilot_pr_time_to_merge_seconds_bucket[15m])) by (le))",
+              "legend": "6. Merge"
+            }
+          ]
+        }
+      },
+      {
+        "title": "PR Time to Merge",
+        "gridPos": { "w": 100 },
+        "graph": {
+          "visualization": {
+            "seriesOverride": [
+              { "regex": "^p50$", "color": "#5794F2" },
+              { "regex": "^p95$", "color": "#F2495C" }
+            ],
+            "yAxis": {
+              "unit": "seconds"
+            }
+          },
+          "queries": [
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.50, sum(rate(pilot_pr_time_to_merge_seconds_bucket[15m])) by (le))",
+              "legend": "p50"
+            },
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.95, sum(rate(pilot_pr_time_to_merge_seconds_bucket[15m])) by (le))",
+              "legend": "p95"
+            }
+          ]
+        }
+      },
+      {
+        "title": "CI Wait Duration",
+        "gridPos": { "w": 100 },
+        "graph": {
+          "visualization": {
+            "seriesOverride": [
+              { "regex": "^p50$", "color": "#5794F2" },
+              { "regex": "^p95$", "color": "#F2495C" }
+            ],
+            "yAxis": {
+              "unit": "seconds"
+            }
+          },
+          "queries": [
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.50, sum(rate(pilot_ci_wait_duration_seconds_bucket[15m])) by (le))",
+              "legend": "p50"
+            },
+            {
+              "datasourceID": "prometheus",
+              "expr": "histogram_quantile(0.95, sum(rate(pilot_ci_wait_duration_seconds_bucket[15m])) by (le))",
+              "legend": "p95"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
