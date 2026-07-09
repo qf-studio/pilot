@@ -644,6 +644,31 @@ func firstNDistinctByTask(execs []*memory.Execution, n int) []*memory.Execution 
 	return out
 }
 
+// lastNDistinctByTask returns up to n tasks, at most one per task ID, keeping
+// each task's most recent entry. Unlike firstNDistinctByTask, tasks arrive in
+// chronological (oldest-first) append order here, so "most recent" is the
+// last occurrence, not the first — same GH-4100 crowding fix, opposite input
+// order. Output preserves chronological order (oldest first).
+func lastNDistinctByTask(tasks []CompletedTask, n int) []CompletedTask {
+	if n <= 0 {
+		return nil
+	}
+	seen := make(map[string]bool, n)
+	out := make([]CompletedTask, 0, n)
+	for i := len(tasks) - 1; i >= 0 && len(out) < n; i-- {
+		t := tasks[i]
+		if seen[t.ID] {
+			continue
+		}
+		seen[t.ID] = true
+		out = append(out, t)
+	}
+	for l, r := 0, len(out)-1; l < r; l, r = l+1, r-1 {
+		out[l], out[r] = out[r], out[l]
+	}
+	return out
+}
+
 // persistTokenUsage saves token usage to the current session.
 func (m *Model) persistTokenUsage(inputDelta, outputDelta int) {
 	if m.store == nil || m.sessionID == "" {
@@ -873,10 +898,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 			slog.Warn("store refresh: failed to load executions", slog.Any("error", err))
 			return msg
 		}
-		for i, exec := range executions {
-			if i >= 5 {
-				break
-			}
+		for _, exec := range firstNDistinctByTask(executions, 5) {
 			status := displayStatus(exec.Status)
 			completedAt := exec.CreatedAt
 			if exec.CompletedAt != nil {
@@ -1118,9 +1140,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case addCompletedTaskMsg:
 		prevLen := len(m.completedTasks)
 		m.completedTasks = append(m.completedTasks, CompletedTask(msg))
-		if len(m.completedTasks) > 5 {
-			m.completedTasks = m.completedTasks[len(m.completedTasks)-5:]
-		}
+		m.completedTasks = lastNDistinctByTask(m.completedTasks, 5)
 
 		// Update metrics card task counters
 		m.metricsCard.TotalTasks++
