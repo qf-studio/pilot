@@ -81,6 +81,11 @@ type Metrics struct {
 	CIWaitDurations    []time.Duration
 	ExecutionDurations []time.Duration
 
+	// Histograms added by GH-4128 (plumbing only — no Record* call sites yet).
+	TimeToPRDurations     []time.Duration // issue pickup to PR creation
+	QueueWaitDurations    []time.Duration // time spent queued before pickup
+	ApprovalWaitDurations []time.Duration // time spent awaiting human approval
+
 	// Timestamps for rate calculation
 	apiErrorTimes []time.Time
 
@@ -106,6 +111,9 @@ func NewMetrics() *Metrics {
 		PRTimeToMerge:              make([]time.Duration, 0, 100),
 		CIWaitDurations:            make([]time.Duration, 0, 100),
 		ExecutionDurations:         make([]time.Duration, 0, 100),
+		TimeToPRDurations:          make([]time.Duration, 0, 100),
+		QueueWaitDurations:         make([]time.Duration, 0, 100),
+		ApprovalWaitDurations:      make([]time.Duration, 0, 100),
 		apiErrorTimes:              make([]time.Time, 0, 100),
 		maxSamples:                 1000,
 	}
@@ -338,6 +346,39 @@ func (m *Metrics) RecordExecutionDuration(d time.Duration) {
 	}
 }
 
+// RecordTimeToPR records the duration from issue pickup to PR creation.
+// GH-4128: no call site yet — plumbing ahead of the observer.
+func (m *Metrics) RecordTimeToPR(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.TimeToPRDurations = append(m.TimeToPRDurations, d)
+	if len(m.TimeToPRDurations) > m.maxSamples {
+		m.TimeToPRDurations = m.TimeToPRDurations[len(m.TimeToPRDurations)-m.maxSamples:]
+	}
+}
+
+// RecordQueueWaitDuration records how long an issue waited in queue before pickup.
+// GH-4128: no call site yet — plumbing ahead of the observer.
+func (m *Metrics) RecordQueueWaitDuration(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.QueueWaitDurations = append(m.QueueWaitDurations, d)
+	if len(m.QueueWaitDurations) > m.maxSamples {
+		m.QueueWaitDurations = m.QueueWaitDurations[len(m.QueueWaitDurations)-m.maxSamples:]
+	}
+}
+
+// RecordApprovalWaitDuration records how long a PR waited for human approval.
+// GH-4128: no call site yet — plumbing ahead of the observer.
+func (m *Metrics) RecordApprovalWaitDuration(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ApprovalWaitDurations = append(m.ApprovalWaitDurations, d)
+	if len(m.ApprovalWaitDurations) > m.maxSamples {
+		m.ApprovalWaitDurations = m.ApprovalWaitDurations[len(m.ApprovalWaitDurations)-m.maxSamples:]
+	}
+}
+
 // --- Read accessors ---
 
 // Snapshot returns a point-in-time copy of all metrics.
@@ -475,6 +516,11 @@ type HistogramData struct {
 	PRTimeToMerge      []time.Duration
 	CIWaitDurations    []time.Duration
 	ExecutionDurations []time.Duration
+
+	// GH-4128: no Record* call site feeds these yet — plumbing ahead of the observer.
+	TimeToPRDurations     []time.Duration
+	QueueWaitDurations    []time.Duration
+	ApprovalWaitDurations []time.Duration
 }
 
 // HistogramSnapshot returns a copy of raw histogram samples.
@@ -483,9 +529,12 @@ func (m *Metrics) HistogramSnapshot() HistogramData {
 	defer m.mu.RUnlock()
 
 	return HistogramData{
-		PRTimeToMerge:      copyDurations(m.PRTimeToMerge),
-		CIWaitDurations:    copyDurations(m.CIWaitDurations),
-		ExecutionDurations: copyDurations(m.ExecutionDurations),
+		PRTimeToMerge:         copyDurations(m.PRTimeToMerge),
+		CIWaitDurations:       copyDurations(m.CIWaitDurations),
+		ExecutionDurations:    copyDurations(m.ExecutionDurations),
+		TimeToPRDurations:     copyDurations(m.TimeToPRDurations),
+		QueueWaitDurations:    copyDurations(m.QueueWaitDurations),
+		ApprovalWaitDurations: copyDurations(m.ApprovalWaitDurations),
 	}
 }
 
