@@ -182,6 +182,53 @@ func TestScheduleReleaseTick_DirectCommitOnlyTrain_NoRow(t *testing.T) {
 	}
 }
 
+// TestAutoMerger_SquashTitleSuffix_ResolvesAsTrainMember is a regex
+// round-trip: it builds a squash-merge commit title via AutoMerger.MergePR's
+// actual production title-construction path, then feeds a commit carrying
+// that title into resolveTrainMemberPRs and confirms it resolves as a member
+// PR — verifying the two call sites (auto_merger.go's title builder and
+// scope_schedule.go's trainPRSuffixRe) now agree on format (GH-4150).
+func TestAutoMerger_SquashTitleSuffix_ResolvesAsTrainMember(t *testing.T) {
+	var capturedTitle string
+	mergeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/pulls/555/merge" {
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			capturedTitle = body["commit_title"]
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mergeServer.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, mergeServer.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.MergeMethod = github.MergeMethodSquash
+
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
+	if err := merger.MergePR(context.Background(), &PRState{
+		PRNumber: 555,
+		PRTitle:  "feat(train): resolve member PRs",
+	}); err != nil {
+		t.Fatalf("MergePR() error = %v", err)
+	}
+	if capturedTitle == "" {
+		t.Fatal("commit_title was not captured by the fake merge server")
+	}
+
+	commit := makeCommit(capturedTitle)
+	scheduleServer := scheduleTickServer(t, "v1.0.0", nil, map[int]bool{555: true})
+	defer scheduleServer.Close()
+
+	c, _ := newScheduleController(t, scheduleServer.URL, "0 21 * * FRI")
+
+	members := c.resolveTrainMemberPRs(context.Background(), []*github.Commit{commit})
+	if want := []int{555}; !reflect.DeepEqual(members, want) {
+		t.Errorf("resolveTrainMemberPRs(%q) = %v, want %v", capturedTitle, members, want)
+	}
+}
+
 // TestRecoverMissedTrainTick covers the three missed-tick recovery gates:
 // a genuine miss within lookback fires the tick once; an already-enqueued
 // slot is a no-op; a miss older than the lookback is left for manual

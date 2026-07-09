@@ -92,6 +92,14 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 			prefix := fmt.Sprintf("GH-%d: ", prState.IssueNumber)
 			commitTitle = strings.TrimPrefix(commitTitle, prefix)
 		}
+		// GH-4150: append the "(#N)" suffix GitHub's own squash-merge UI uses,
+		// so scheduleReleaseTick's resolveTrainMemberPRs (trainPRSuffixRe) can
+		// resolve this commit back to its member PR. Skip if the title already
+		// carries the suffix for this PR.
+		suffix := fmt.Sprintf("(#%d)", prState.PRNumber)
+		if !strings.HasSuffix(commitTitle, suffix) {
+			commitTitle = fmt.Sprintf("%s %s", commitTitle, suffix)
+		}
 	}
 	if err := m.ghClient.MergePullRequest(ctx, m.owner, m.repo, prState.PRNumber, mergeMethod, commitTitle); err != nil {
 		return fmt.Errorf("merge failed: %w", err)
