@@ -374,6 +374,21 @@ var staleRunningMergedPRCheck = func(ctx context.Context, projectPath, branch st
 	return NewGitOperations(projectPath).FindMergedPRByBranch(ctx, branch)
 }
 
+// mergedPRPreflightCheck reports the URL of a merged PR for a queued task's
+// branch, or "" if none exists. GH-4141 Phase 3 defense-in-depth: a queued
+// duplicate (e.g. the sub-issue poller-retry duplicate that motivated
+// TASK-394's ledger row) must not burn a full backend invocation just to
+// rediscover "no new commit" as a no_op — the worker marks it completed with
+// the existing PR URL instead and skips the backend call entirely. Mirrors
+// staleRunningMergedPRCheck's test-mode short-circuit; tests override this
+// var directly.
+var mergedPRPreflightCheck = func(ctx context.Context, projectPath, branch string) (string, error) {
+	if testing.Testing() {
+		return "", nil
+	}
+	return NewGitOperations(projectPath).FindMergedPRByBranch(ctx, branch)
+}
+
 // recoverStaleQueuedTasks marks orphaned queued tasks as failed: either a
 // duplicate row for a task that already completed, or a queued task whose
 // project has no live worker even after Dispatcher.Start's adoption pass
@@ -893,6 +908,28 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// GH-2326: restore Labels so runner-side no-decompose / autopilot-fix
 		// gates see the same labels the dispatch-time Decompose() saw.
 		task := buildTaskFromExecution(exec)
+
+		// GH-4141 Phase 3: pre-execute merged-PR short-circuit. A queued task
+		// whose branch already has a merged PR (e.g. a poller-retry duplicate of
+		// a sub-issue the epic already shipped) must not re-invoke the backend
+		// just to rediscover "no new commit" as a no_op — mark it completed with
+		// the existing PR URL and skip execution entirely.
+		if task.Branch != "" {
+			if mergedURL, mergedErr := mergedPRPreflightCheck(ctx, exec.ProjectPath, task.Branch); mergedErr == nil && mergedURL != "" {
+				w.log.Info("Queued task's branch already merged; skipping backend invocation",
+					slog.String("execution_id", exec.ID),
+					slog.String("task_id", exec.TaskID),
+					slog.String("pr_url", mergedURL),
+				)
+				if err := w.store.MarkExecutionCompleted(exec.ID, mergedURL, "", 0); err != nil {
+					w.log.Error("Failed to mark pre-execute merged-PR short-circuit completed", slog.Any("error", err))
+				}
+				w.recordExecutionEvent(exec.ID, memory.StageCompleted, "pre-execute merged-PR short-circuit: "+mergedURL)
+				w.runner.EmitProgress(exec.TaskID, "Completed", 100, "work already merged: "+mergedURL)
+				w.currentTaskID.Store("")
+				continue
+			}
+		}
 
 		// Execute (blocking)
 		start := time.Now()

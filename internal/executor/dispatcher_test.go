@@ -904,6 +904,119 @@ func TestRecoverStaleRunningTasks_FateReconstructableFromEventsAlone(t *testing.
 	}
 }
 
+// TestProcessQueue_MergedPRPreflight_SkipsBackend is the GH-4141 Phase 3
+// regression test: a queued task whose branch already has a merged PR (e.g.
+// a poller-retry duplicate of a sub-issue the epic already shipped, TASK-394)
+// must complete from the pre-flight check alone — zero backend invocations —
+// instead of burning a full Claude run to rediscover "no new commit" as a
+// no_op.
+func TestProcessQueue_MergedPRPreflight_SkipsBackend(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const projectPath = "/project-merged-preflight"
+	const branch = "pilot/GH-8001"
+	const mergedPRURL = "https://github.com/qf-studio/pilot/pull/8001"
+
+	exec := &memory.Execution{
+		ID:           "exec-preflight-merged",
+		TaskID:       "GH-8001",
+		ProjectPath:  projectPath,
+		Status:       "queued",
+		TaskBranch:   branch,
+		TaskCreatePR: true,
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	origCheck := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, gotProjectPath, gotBranch string) (string, error) {
+		if gotProjectPath == projectPath && gotBranch == branch {
+			return mergedPRURL, nil
+		}
+		return "", nil
+	}
+	defer func() { mergedPRPreflightCheck = origCheck }()
+
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "should never run"}}
+	runner := NewRunnerWithBackend(backend)
+	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
+
+	worker.processQueue(context.Background())
+
+	backend.mu.Lock()
+	count := backend.execCount
+	backend.mu.Unlock()
+	if count != 0 {
+		t.Errorf("expected zero backend invocations (pre-flight short-circuit), got %d", count)
+	}
+
+	got, err := store.GetExecution(exec.ID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if got.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", got.Status)
+	}
+	if got.PRUrl != mergedPRURL {
+		t.Errorf("expected pr_url %q, got %q", mergedPRURL, got.PRUrl)
+	}
+}
+
+// TestProcessQueue_MergedPRPreflight_UnmergedBranchProceedsNormally is the
+// GH-4141 Phase 3 negative case: a queued task whose branch has no merged PR
+// (e.g. still open, or no PR at all) must proceed through the normal
+// execution path unchanged — the backend is still invoked.
+func TestProcessQueue_MergedPRPreflight_UnmergedBranchProceedsNormally(t *testing.T) {
+	const branch = "pilot/GH-8002"
+	dir := setupPRGuardRepo(t, branch, false) // no additional commits
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{
+		ID:           "exec-preflight-unmerged",
+		TaskID:       "GH-8002",
+		ProjectPath:  dir,
+		Status:       "queued",
+		TaskBranch:   branch,
+		TaskCreatePR: true,
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	origCheck := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { mergedPRPreflightCheck = origCheck }()
+
+	// Backend always succeeds but makes no git commits (mirrors
+	// TestRunner_PRCreate_EmptyBranch_TriggersRetry's no-commit guard setup).
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "analysis complete"}}
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	worker := NewProjectWorker(dir, store, runner, slog.Default())
+
+	worker.processQueue(context.Background())
+
+	backend.mu.Lock()
+	count := backend.execCount
+	backend.mu.Unlock()
+	if count == 0 {
+		t.Error("expected the backend to be invoked (no merged PR found) — pre-flight must not have short-circuited")
+	}
+
+	got, err := store.GetExecution(exec.ID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if got.PRUrl != "" {
+		t.Errorf("expected no pr_url recorded (no merged PR short-circuit should have fired), got %q", got.PRUrl)
+	}
+}
+
 func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

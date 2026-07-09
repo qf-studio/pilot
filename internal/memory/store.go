@@ -670,6 +670,23 @@ func (s *Store) GetLatestExecutionByTaskID(taskID string) (*Execution, error) {
 	return scanExecutionDetail(row)
 }
 
+// GetLatestExecutionByTaskIDExcluding mirrors GetLatestExecutionByTaskID but
+// ignores the row identified by excludeID. GH-4141: an epic sub-issue now
+// carries its own "running" executions row for the full run duration
+// (internal/executor/epic.go finalizeSubIssueExecution), so a caller
+// reconciling against a genuinely separate, concurrently-tracked row for the
+// same task (GH-3786) must look past its own row to find it.
+func (s *Store) GetLatestExecutionByTaskIDExcluding(taskID, excludeID string) (*Execution, error) {
+	row := s.db.QueryRow(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE (task_id = ? OR task_id LIKE ?) AND id != ?
+		ORDER BY (task_id = ?) DESC, created_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, "%"+taskID+"%", excludeID, taskID)
+	return scanExecutionDetail(row)
+}
+
 // ListExecutionsForTask returns every execution recorded for taskID (exact match),
 // newest first. Unlike GetLatestExecutionByTaskID (single row, exact-or-substring
 // match), this returns the full history so the CLI can render a per-execution
@@ -1453,6 +1470,20 @@ func (s *Store) GetExecutionStatusByTaskID(taskID, projectPath string) (string, 
 		ORDER BY created_at DESC, rowid DESC
 		LIMIT 1
 	`, taskID, projectPath, projectPath).Scan(&status)
+	return status, err
+}
+
+// GetExecutionStatusByTaskIDExcluding mirrors GetExecutionStatusByTaskID but
+// ignores the row identified by excludeID (GH-4141, see
+// GetLatestExecutionByTaskIDExcluding).
+func (s *Store) GetExecutionStatusByTaskIDExcluding(taskID, projectPath, excludeID string) (string, error) {
+	var status string
+	err := s.db.QueryRow(`
+		SELECT status FROM executions
+		WHERE task_id = ? AND (? = '' OR project_path = ?) AND id != ?
+		ORDER BY created_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, projectPath, projectPath, excludeID).Scan(&status)
 	return status, err
 }
 
