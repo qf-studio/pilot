@@ -158,6 +158,9 @@ func (a *AggregateMetrics) HistogramSnapshot() HistogramData {
 		out.PRTimeToMerge = append(out.PRTimeToMerge, h.PRTimeToMerge...)
 		out.CIWaitDurations = append(out.CIWaitDurations, h.CIWaitDurations...)
 		out.ExecutionDurations = append(out.ExecutionDurations, h.ExecutionDurations...)
+		out.TimeToPRDurations = append(out.TimeToPRDurations, h.TimeToPRDurations...)
+		out.QueueWaitDurations = append(out.QueueWaitDurations, h.QueueWaitDurations...)
+		out.ApprovalWaitDurations = append(out.ApprovalWaitDurations, h.ApprovalWaitDurations...)
 	}
 	return out
 }

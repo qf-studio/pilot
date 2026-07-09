@@ -86,6 +86,38 @@ func TestAggregateMetrics_HistogramMergesSamples(t *testing.T) {
 	}
 }
 
+// TestAggregateMetrics_NewHistogramsMergeAcrossControllers verifies the
+// GH-4128 histograms (TimeToPR/QueueWait/ApprovalWait) sum across
+// controllers just like the pre-existing histograms — guarding against the
+// TASK-390 idle-default-controller regression for these new metrics before
+// any Record* call site exists.
+func TestAggregateMetrics_NewHistogramsMergeAcrossControllers(t *testing.T) {
+	m1 := NewMetrics()
+	m2 := NewMetrics()
+
+	m1.RecordTimeToPR(5 * time.Minute)
+	m2.RecordTimeToPR(15 * time.Minute)
+
+	m1.RecordQueueWaitDuration(1 * time.Minute)
+	m2.RecordQueueWaitDuration(2 * time.Minute)
+	m2.RecordQueueWaitDuration(3 * time.Minute)
+
+	m2.RecordApprovalWaitDuration(1 * time.Hour)
+
+	agg := NewAggregateMetrics(m1, m2)
+	hist := agg.HistogramSnapshot()
+
+	if len(hist.TimeToPRDurations) != 2 {
+		t.Errorf("expected 2 merged TimeToPRDurations samples, got %d", len(hist.TimeToPRDurations))
+	}
+	if len(hist.QueueWaitDurations) != 3 {
+		t.Errorf("expected 3 merged QueueWaitDurations samples, got %d", len(hist.QueueWaitDurations))
+	}
+	if len(hist.ApprovalWaitDurations) != 1 {
+		t.Errorf("expected 1 merged ApprovalWaitDurations sample, got %d", len(hist.ApprovalWaitDurations))
+	}
+}
+
 // TestAggregateMetrics_SuccessRateRecomputedFromMergedCounters guards against
 // naively averaging each controller's SuccessRate, which would be wrong when
 // controllers have different attempt volumes.

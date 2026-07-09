@@ -718,16 +718,19 @@ const (
 	StageImplementationStarted Stage = "implementation_started"
 	StageCommit                Stage = "commit"
 	StagePRCreated             Stage = "pr_created"
-	StageCIPassed              Stage = "ci_passed"
-	StageCIFailed              Stage = "ci_failed"
-	StageAwaitingApproval      Stage = "awaiting_approval"
-	StageMerged                Stage = "merged"
-	StageReleased              Stage = "released"
-	StageCompleted             Stage = "completed"
-	StageFailed                Stage = "failed"
-	StageNoOp                  Stage = "no_op"
-	StageSkipped               Stage = "skipped"
-	StageStalled               Stage = "stalled"
+	// StageWaitingCI mirrors autopilot.StageWaitingCI (types.go) — the PR is
+	// waiting for CI checks to complete. GH-4128.
+	StageWaitingCI        Stage = "waiting_ci"
+	StageCIPassed         Stage = "ci_passed"
+	StageCIFailed         Stage = "ci_failed"
+	StageAwaitingApproval Stage = "awaiting_approval"
+	StageMerged           Stage = "merged"
+	StageReleased         Stage = "released"
+	StageCompleted        Stage = "completed"
+	StageFailed           Stage = "failed"
+	StageNoOp             Stage = "no_op"
+	StageSkipped          Stage = "skipped"
+	StageStalled          Stage = "stalled"
 )
 
 // Event represents a single stage-transition record for an execution.
