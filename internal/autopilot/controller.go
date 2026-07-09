@@ -2612,18 +2612,25 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 
 	rel := c.resolvedRelease()
 
-	// GH-3990: a scope-release carrier's HeadSHA is the post-merge-CI-validated
-	// main SHA captured on first entry to StagePostMergeCI, not the anchor
-	// member PR's own (unrelated) head commit. Set it explicitly before any of
-	// the logic below reads prState.HeadSHA.
+	// GH-4146: HeadSHA is the pre-merge branch head; once handlePostMergeCI
+	// (or the require_ci external-merge path) has validated the post-squash-
+	// merge main commit, PostMergeSHA is authoritative and must replace the
+	// stale branch head before any of the logic below (or the reachability
+	// guard) reads prState.HeadSHA. Guarded on non-empty because the
+	// SkipPostMergeCI fast path never sets PostMergeSHA, and there the
+	// branch-head HeadSHA is still the correct value to check. This used to
+	// be scope-carrier-only (GH-3990); a plain squash-merged PR's branch head
+	// is structurally never an ancestor of main, so without this the
+	// reachability guard always sees "diverged" and every release loops
+	// releasing -> failed forever.
 	isScope := prState.ScopeKey != ""
-	if isScope {
+	if prState.PostMergeSHA != "" {
 		prState.HeadSHA = prState.PostMergeSHA
-		if len(prState.ScopeMemberPRs) == 0 {
-			// Restart path: autopilot_pr_state persists ScopeKey but not the
-			// in-memory-only ScopeMemberPRs/ScopeTitle fields.
-			c.hydrateScopeMembers(prState)
-		}
+	}
+	if isScope && len(prState.ScopeMemberPRs) == 0 {
+		// Restart path: autopilot_pr_state persists ScopeKey but not the
+		// in-memory-only ScopeMemberPRs/ScopeTitle fields.
+		c.hydrateScopeMembers(prState)
 	}
 
 	// Resolve the actual repo owner/name from the PR URL.

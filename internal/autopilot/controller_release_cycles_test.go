@@ -62,6 +62,12 @@ func releaseCyclesServer(t *testing.T, issues map[int]scopeMembershipFakeIssue, 
 		case strings.Contains(r.URL.Path, "/compare/"):
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ahead"})
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{Name: "ci", Status: "completed", Conclusion: "success"}},
+			})
 		case strings.HasSuffix(r.URL.Path, "/git/refs"):
 			atomic.AddInt64(gitRefPosts, 1)
 			w.WriteHeader(http.StatusCreated)
@@ -461,9 +467,12 @@ func TestReleaseTrigger_OnMerge_BackwardCompatSnapshot(t *testing.T) {
 
 // externalMergeCIServer builds a fake GitHub server for the checkExternalMergeOrClose
 // require_ci tests below: GET the PR as merged, serve issue/label/comment bookkeeping
-// endpoints, and count check-runs polls against mainSHA (so tests can assert whether
-// CI was consulted before releasing).
-func externalMergeCIServer(t *testing.T, prNumber int, mergeSHA, mainSHA string, checkRunPolls *int64) *httptest.Server {
+// endpoints, count check-runs polls against mainSHA (so tests can assert whether CI
+// was consulted before releasing), and serve the tag/compare/git-refs endpoints
+// handleReleasing needs so tests can tick one step further and assert a tag is cut
+// against mergeSHA (GH-4146) instead of stopping at StageReleasing. gitRefPosts may
+// be nil for tests that never drive that far.
+func externalMergeCIServer(t *testing.T, prNumber int, mergeSHA, mainSHA string, checkRunPolls, gitRefPosts *int64) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -478,7 +487,7 @@ func externalMergeCIServer(t *testing.T, prNumber int, mergeSHA, mainSHA string,
 			})
 		case r.URL.Path == "/repos/owner/repo/branches/main":
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"commit": map[string]string{"sha": mainSHA}})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "main", "commit": map[string]string{"sha": mainSHA}})
 		case strings.HasSuffix(r.URL.Path, "/check-runs"):
 			if checkRunPolls != nil {
 				atomic.AddInt64(checkRunPolls, 1)
@@ -494,6 +503,20 @@ func externalMergeCIServer(t *testing.T, prNumber int, mergeSHA, mainSHA string,
 		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/"):
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(github.Issue{Number: 10, Title: "issue", State: "open"})
+		case strings.HasSuffix(r.URL.Path, "/tags"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat: add a thing")})
+		case strings.Contains(r.URL.Path, "/compare/"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ahead"})
+		case strings.HasSuffix(r.URL.Path, "/git/refs"):
+			if gitRefPosts != nil {
+				atomic.AddInt64(gitRefPosts, 1)
+			}
+			w.WriteHeader(http.StatusCreated)
 		default:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{}"))
@@ -508,7 +531,7 @@ func externalMergeCIServer(t *testing.T, prNumber int, mergeSHA, mainSHA string,
 // the exact GH-411 external-merge semantics that must survive the fix.
 func TestCheckExternalMergeOrClose_RequireCIFalse_DirectRelease(t *testing.T) {
 	var checkRunPolls int64
-	server := externalMergeCIServer(t, 42, "merge-sha-42", "mainsha", &checkRunPolls)
+	server := externalMergeCIServer(t, 42, "merge-sha-42", "mainsha", &checkRunPolls, nil)
 	defer server.Close()
 
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
@@ -551,10 +574,13 @@ func TestCheckExternalMergeOrClose_RequireCIFalse_DirectRelease(t *testing.T) {
 // instead of hijacking straight to StageReleasing. Then drives it forward via
 // handlePostMergeCI to confirm CI success reaches StageReleasing (same path as
 // the pre-existing handleMerged flow) — the fix reuses the existing gate,
-// it doesn't invent a new one.
+// it doesn't invent a new one. Finally ticks one step further into
+// handleReleasing (GH-4146) to confirm the tag is actually cut against the
+// merge SHA — the pre-fix bug left HeadSHA at its stale pre-merge value here,
+// which always compared "diverged" against main and escalated to StageFailed.
 func TestCheckExternalMergeOrClose_RequireCITrue_RoutesToPostMergeCI(t *testing.T) {
-	var checkRunPolls int64
-	server := externalMergeCIServer(t, 43, "merge-sha-43", "mainsha", &checkRunPolls)
+	var checkRunPolls, gitRefPosts int64
+	server := externalMergeCIServer(t, 43, "merge-sha-43", "mainsha", &checkRunPolls, &gitRefPosts)
 	defer server.Close()
 
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
@@ -617,6 +643,22 @@ func TestCheckExternalMergeOrClose_RequireCITrue_RoutesToPostMergeCI(t *testing.
 	}
 	if got := atomic.LoadInt64(&checkRunPolls); got != 1 {
 		t.Errorf("check-runs poll count = %d, want 1 (handlePostMergeCI must consult CI before releasing)", got)
+	}
+
+	// Drive it one step further: StageReleasing -> tag cut against the merge
+	// SHA (GH-4146). Pre-fix, HeadSHA was never resynced from PostMergeSHA for
+	// a plain (non-scope) PR, so this always escalated to StageFailed instead.
+	if err := c.handleReleasing(ctx, prState); err != nil {
+		t.Fatalf("handleReleasing() error = %v", err)
+	}
+	if prState.Stage == StageFailed {
+		t.Fatal("Stage = StageFailed after handleReleasing — HeadSHA was not resynced from PostMergeSHA")
+	}
+	if prState.HeadSHA != "merge-sha-43" {
+		t.Errorf("HeadSHA = %q, want resynced to PostMergeSHA merge-sha-43", prState.HeadSHA)
+	}
+	if got := atomic.LoadInt64(&gitRefPosts); got != 1 {
+		t.Errorf("git/refs POST count = %d, want 1 (tag must be created against the merge SHA)", got)
 	}
 }
 
@@ -684,6 +726,31 @@ func TestScanRecentlyMergedPRs_RequireCI_RoutesToPostMergeCI(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&gitRefPosts); got != 0 {
 		t.Errorf("git/refs POST count = %d, want 0 (must not tag before post-merge CI completes)", got)
+	}
+
+	// Drive it forward: CI succeeds -> StageReleasing -> tag cut against the
+	// merge SHA (GH-4146). The scan-recovery HeadSHA is the pre-merge branch
+	// head ("sha60"), which never converges with main after a squash merge;
+	// pre-fix, handleReleasing never resynced it from PostMergeSHA for a plain
+	// PR, so this always escalated to StageFailed instead of releasing.
+	ctx := context.Background()
+	if err := c.handlePostMergeCI(ctx, prState); err != nil {
+		t.Fatalf("handlePostMergeCI() error = %v", err)
+	}
+	if prState.Stage != StageReleasing {
+		t.Fatalf("Stage = %v after CI success, want StageReleasing", prState.Stage)
+	}
+	if err := c.handleReleasing(ctx, prState); err != nil {
+		t.Fatalf("handleReleasing() error = %v", err)
+	}
+	if prState.Stage == StageFailed {
+		t.Fatal("Stage = StageFailed after handleReleasing — HeadSHA was not resynced from PostMergeSHA")
+	}
+	if prState.HeadSHA != "merge-sha-60" {
+		t.Errorf("HeadSHA = %q, want resynced to PostMergeSHA merge-sha-60", prState.HeadSHA)
+	}
+	if got := atomic.LoadInt64(&gitRefPosts); got != 1 {
+		t.Errorf("git/refs POST count = %d, want 1 (tag must be created against the merge SHA)", got)
 	}
 }
 

@@ -782,3 +782,67 @@ func TestHandleReleasing_DivergedSHARefused(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleReleasing_ResyncsHeadSHAFromPostMergeSHA verifies GH-4146: a plain
+// (non-scope) PR whose branch-head HeadSHA is stale/diverged (as it always is
+// after a squash merge) still releases successfully once PostMergeSHA — the
+// post-merge-CI-validated main commit — is set. The copy-back used to be
+// gated on scope carriers only (GH-3990), so every plain PR's reachability
+// check compared the stale branch head against main, always saw "diverged",
+// and escalated to StageFailed forever.
+func TestHandleReleasing_ResyncsHeadSHAFromPostMergeSHA(t *testing.T) {
+	tagCreated := false
+	var comparedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"name":   "main",
+				"commit": map[string]string{"sha": "mainsha700"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat: add a thing")})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+			comparedPath = r.URL.Path
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ahead"})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+			tagCreated = true
+			w.WriteHeader(http.StatusCreated)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	c := newReleasingController(t, server.URL)
+	prState := &PRState{
+		PRNumber:     700,
+		HeadSHA:      "staledivergedsha",
+		PostMergeSHA: "mergedsha700",
+		Stage:        StageReleasing,
+	}
+	c.mu.Lock()
+	c.activePRs[700] = prState
+	c.mu.Unlock()
+
+	if err := c.handleReleasing(context.Background(), prState); err != nil {
+		t.Fatalf("handleReleasing returned error: %v", err)
+	}
+	if prState.Stage == StageFailed {
+		t.Error("Stage must not be StageFailed once HeadSHA is resynced from PostMergeSHA")
+	}
+	if !tagCreated {
+		t.Error("tag must be created once HeadSHA is resynced from PostMergeSHA")
+	}
+	if prState.HeadSHA != "mergedsha700" {
+		t.Errorf("HeadSHA = %s, want resynced to PostMergeSHA mergedsha700", prState.HeadSHA)
+	}
+	if !strings.Contains(comparedPath, "mergedsha700") || strings.Contains(comparedPath, "staledivergedsha") {
+		t.Errorf("reachability compare must use the resynced merge SHA, got path %s", comparedPath)
+	}
+}
