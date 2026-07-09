@@ -680,12 +680,16 @@ func (c *Controller) persistRemovePR(prNumber int) {
 }
 
 // executionEventStageFor maps a PRStage to the memory.Stage recorded in the
-// execution-events audit trail. Only the subset of PRStages that mark a
-// durable milestone (as opposed to an in-progress poll state like
-// StageWaitingCI) has an entry; ok is false for everything else, so callers
-// skip the write instead of logging noise for every poll cycle.
+// execution-events audit trail. ok is false for stages with no audit-trail
+// equivalent, so callers skip the write instead of logging noise for those
+// transitions.
 func executionEventStageFor(prStage PRStage) (memory.Stage, bool) {
 	switch prStage {
+	case StageWaitingCI:
+		// GH-4130: persist CI-wait entry so it survives restarts — previously
+		// only the in-memory PRState.CIWaitStartedAt (types.go:728) tracked this,
+		// which reset to zero on every daemon restart.
+		return memory.StageWaitingCI, true
 	case StageCIPassed:
 		return memory.StageCIPassed, true
 	case StageCIFailed:
@@ -856,6 +860,21 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 	}
 	c.activePRs[prNumber] = prState
 	c.mu.Unlock()
+
+	// GH-4130: observe pilot_time_to_pr_seconds / pilot_queue_wait_seconds now
+	// that the PR exists — this is the first point autopilot sees the issue's
+	// execution, so it's the natural place to read started_at/created_at off
+	// the execution row (taskID resolution mirrors recordExecutionEvent).
+	if c.memoryStore != nil {
+		taskID := fmt.Sprintf("GH-%d", issueNumber)
+		if issueNumber == 0 {
+			taskID = fmt.Sprintf("PR-%d", prNumber)
+		}
+		if exec, err := c.memoryStore.GetLatestExecutionByTaskID(taskID); err == nil && exec.StartedAt != nil {
+			c.metrics.RecordTimeToPR(time.Since(*exec.StartedAt))
+			c.metrics.RecordQueueWaitDuration(exec.StartedAt.Sub(exec.CreatedAt))
+		}
+	}
 
 	// Persist to SQLite (idempotent, safe outside lock).
 	// TASK-324: prState is now published in activePRs, so a concurrent ProcessPR or
@@ -1707,6 +1726,14 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 
 // applyApprovalDecision advances the state machine based on the recorded decision.
 func (c *Controller) applyApprovalDecision(prState *PRState) error {
+	// GH-4130: observe pilot_approval_wait_seconds from when the async approval
+	// request was submitted (functionally the awaiting_approval entry point) to
+	// this merge decision being applied — covers both the SetApprovalDecision
+	// webhook path and the wall-clock-expiry default-action path (Path 3 above).
+	if !prState.ApprovalRequestedAt.IsZero() {
+		c.metrics.RecordApprovalWaitDuration(time.Since(prState.ApprovalRequestedAt))
+	}
+
 	switch approval.Decision(prState.ApprovalDecision) {
 	case approval.DecisionApproved:
 		c.log.Info("approval granted — advancing to merging stage", "pr", prState.PRNumber)

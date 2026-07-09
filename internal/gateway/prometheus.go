@@ -255,23 +255,22 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		hist.CIWaitDurations,
 		[]float64{30, 60, 120, 300, 600, 900, 1200, 1800, 3600}) // 30s, 1m, 2m, 5m, 10m, 15m, 20m, 30m, 1h
 
-	// pilot_time_to_pr_seconds (GH-4128; plumbing only — hist.TimeToPRDurations
-	// has no Record* call site yet, so this always exports an empty series)
+	// pilot_time_to_pr_seconds (GH-4128 registered the histogram; GH-4130
+	// observes it in autopilot.Controller.OnPRCreated)
 	writeHistogram(w, "pilot_time_to_pr_seconds",
 		"Time from issue pickup to PR creation",
 		hist.TimeToPRDurations,
 		[]float64{60, 300, 600, 1200, 1800, 3600, 7200, 14400, 28800}) // 1m, 5m, 10m, 20m, 30m, 1h, 2h, 4h, 8h
 
-	// pilot_queue_wait_seconds (GH-4128; plumbing only — hist.QueueWaitDurations
-	// has no Record* call site yet, so this always exports an empty series)
+	// pilot_queue_wait_seconds (GH-4128 registered the histogram; GH-4130
+	// observes it in autopilot.Controller.OnPRCreated)
 	writeHistogram(w, "pilot_queue_wait_seconds",
 		"Time an issue spent queued before pickup",
 		hist.QueueWaitDurations,
 		[]float64{60, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400}) // 1m, 5m, 10m, 30m, 1h, 2h, 4h, 8h, 24h
 
-	// pilot_approval_wait_seconds (GH-4128; plumbing only —
-	// hist.ApprovalWaitDurations has no Record* call site yet, so this always
-	// exports an empty series)
+	// pilot_approval_wait_seconds (GH-4128 registered the histogram; GH-4130
+	// observes it in autopilot.Controller.applyApprovalDecision)
 	writeHistogram(w, "pilot_approval_wait_seconds",
 		"Time a PR spent awaiting human approval",
 		hist.ApprovalWaitDurations,
