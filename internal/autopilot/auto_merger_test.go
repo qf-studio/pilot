@@ -522,13 +522,19 @@ func TestAutoMerger_MergePR_SquashUsePRTitle(t *testing.T) {
 			name:      "squash with PR title uses PR title",
 			method:    github.MergeMethodSquash,
 			prTitle:   "feat(api): add rate limiting",
-			wantTitle: "feat(api): add rate limiting",
+			wantTitle: "feat(api): add rate limiting (#42)",
 		},
 		{
 			name:      "squash without PR title falls back to default",
 			method:    github.MergeMethodSquash,
 			prTitle:   "",
 			wantTitle: "Merge PR #42",
+		},
+		{
+			name:      "squash with PR title already suffixed does not double-append",
+			method:    github.MergeMethodSquash,
+			prTitle:   "feat(api): add rate limiting (#42)",
+			wantTitle: "feat(api): add rate limiting (#42)",
 		},
 		{
 			name:      "regular merge ignores PR title",
@@ -592,25 +598,25 @@ func TestAutoMerger_MergePR_SquashStripsIssuePrefix(t *testing.T) {
 			name:        "strips GH-XXXX: prefix from squash commit",
 			prTitle:     "GH-2312: fix(autopilot): strip issue prefix from squash title",
 			issueNumber: 2312,
-			wantTitle:   "fix(autopilot): strip issue prefix from squash title",
+			wantTitle:   "fix(autopilot): strip issue prefix from squash title (#42)",
 		},
 		{
 			name:        "no strip when issue number mismatches",
 			prTitle:     "GH-9999: feat(scope): something",
 			issueNumber: 2312,
-			wantTitle:   "GH-9999: feat(scope): something",
+			wantTitle:   "GH-9999: feat(scope): something (#42)",
 		},
 		{
 			name:        "no strip when no issue number",
 			prTitle:     "GH-2312: fix(autopilot): something",
 			issueNumber: 0,
-			wantTitle:   "GH-2312: fix(autopilot): something",
+			wantTitle:   "GH-2312: fix(autopilot): something (#42)",
 		},
 		{
 			name:        "plain conventional commit unchanged",
 			prTitle:     "feat(api): add endpoint",
 			issueNumber: 2312,
-			wantTitle:   "feat(api): add endpoint",
+			wantTitle:   "feat(api): add endpoint (#42)",
 		},
 	}
 
