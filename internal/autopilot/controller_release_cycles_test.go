@@ -686,3 +686,219 @@ func TestScanRecentlyMergedPRs_RequireCI_RoutesToPostMergeCI(t *testing.T) {
 		t.Errorf("git/refs POST count = %d, want 0 (must not tag before post-merge CI completes)", got)
 	}
 }
+
+// TestCheckExternalMergeOrClose_StageGuards is a table-driven pin of every
+// early-return guard in checkExternalMergeOrClose: a scope-release carrier,
+// a PostMergeCI-stage PR (GH-3994), and a Releasing-stage PR (GH-4124) must
+// all bounce off the hijack unresolved (return false) and stay tracked —
+// none of them may be handed to removePR before their owning handler
+// (handlePostMergeCI / handleReleasing) has run.
+func TestCheckExternalMergeOrClose_StageGuards(t *testing.T) {
+	tests := []struct {
+		name     string
+		stage    PRStage
+		scopeKey string
+	}{
+		{name: "scope carrier guard", scopeKey: "epic:1", stage: StageMerging},
+		{name: "post_merge_ci guard (GH-3994)", stage: StagePostMergeCI},
+		{name: "releasing guard (GH-4124)", stage: StageReleasing},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("{}"))
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			prNumber := 100 + i
+			prState := &PRState{PRNumber: prNumber, IssueNumber: 10, Stage: tt.stage, ScopeKey: tt.scopeKey}
+			c.mu.Lock()
+			c.activePRs[prNumber] = prState
+			c.mu.Unlock()
+
+			ghPR := &github.PullRequest{Number: prNumber, Merged: true, State: "closed"}
+
+			prState.mu.Lock()
+			resolved := c.checkExternalMergeOrClose(context.Background(), prState, ghPR)
+			prState.mu.Unlock()
+
+			if resolved {
+				t.Errorf("checkExternalMergeOrClose returned true, want false (must not drain a %s PR)", tt.name)
+			}
+			if _, ok := c.GetPRState(prNumber); !ok {
+				t.Errorf("PR should still be tracked after checkExternalMergeOrClose (removePR must not run for %s)", tt.name)
+			}
+		})
+	}
+}
+
+// TestCheckExternalMergeOrClose_StageReleasing_NotDrained is the GH-4124
+// regression pin: a merged, non-scope PR already at StageReleasing must be
+// left alone by the external-merge drain — it is owned by handleReleasing's
+// own tick. Without the StageReleasing guard, execution falls through to
+// removePR because the GH-411 release-trigger block above only fires when
+// Stage != StageReleasing, so the PR is silently drained and no tag is ever
+// cut. This test drives both halves: checkExternalMergeOrClose must return
+// false without removing the PR, and the subsequent ProcessPR dispatch to
+// handleReleasing must then cut exactly one tag.
+func TestCheckExternalMergeOrClose_StageReleasing_NotDrained(t *testing.T) {
+	var gitRefPosts, issueGets int64
+	server := releaseCyclesServer(t, map[int]scopeMembershipFakeIssue{
+		10: {title: "issue", state: "open"},
+	}, &gitRefPosts, &issueGets)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", TagPrefix: "v"}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 42, IssueNumber: 10, Stage: StageReleasing, HeadSHA: "merge-sha-42"}
+	c.mu.Lock()
+	c.activePRs[42] = prState
+	c.mu.Unlock()
+
+	ghPR := &github.PullRequest{
+		Number:         42,
+		State:          "closed",
+		Merged:         true,
+		HTMLURL:        "https://github.com/owner/repo/pull/42",
+		MergeCommitSHA: "merge-sha-42",
+	}
+
+	ctx := context.Background()
+
+	prState.mu.Lock()
+	resolved := c.checkExternalMergeOrClose(ctx, prState, ghPR)
+	prState.mu.Unlock()
+
+	if resolved {
+		t.Fatal("checkExternalMergeOrClose should return false (must not drain a StageReleasing PR), not remove it")
+	}
+	if _, ok := c.GetPRState(42); !ok {
+		t.Fatal("PR should still be tracked after checkExternalMergeOrClose — the StageReleasing guard must not call removePR")
+	}
+	if got := atomic.LoadInt64(&gitRefPosts); got != 0 {
+		t.Errorf("git/refs POST count after checkExternalMergeOrClose = %d, want 0 (no tag yet)", got)
+	}
+
+	// The main loop dispatches StageReleasing PRs to handleReleasing via
+	// ProcessPR. Confirm that path now runs and cuts a tag exactly once.
+	if err := c.ProcessPR(ctx, 42, ghPR); err != nil {
+		t.Fatalf("ProcessPR() error = %v", err)
+	}
+	if got := atomic.LoadInt64(&gitRefPosts); got != 1 {
+		t.Errorf("git/refs POST count after ProcessPR = %d, want 1 (handleReleasing must cut the tag)", got)
+	}
+	if _, ok := c.GetPRState(42); ok {
+		t.Error("PR should be drained from tracking after a successful release")
+	}
+}
+
+// TestCheckExternalMergeOrClose_RequireCITrue_FullLoop_CutsTagWithoutDraining
+// is the GH-4124 end-to-end regression: a require_ci merged PR routed
+// external-merge -> post_merge_ci -> (CI success) -> releasing must reach
+// handleReleasing and cut a tag on the very next tick, instead of being
+// drained by checkExternalMergeOrClose before handleReleasing ever runs
+// (the wedge that silently blocked every require_ci on_merge release since
+// GH-3994).
+func TestCheckExternalMergeOrClose_RequireCITrue_FullLoop_CutsTagWithoutDraining(t *testing.T) {
+	var gitRefPosts, issueGets int64
+	base := releaseCyclesServer(t, map[int]scopeMembershipFakeIssue{
+		10: {title: "issue", state: "open"},
+	}, &gitRefPosts, &issueGets)
+	defer base.Close()
+
+	var checkRunPolls int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/check-runs") {
+			atomic.AddInt64(&checkRunPolls, 1)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{Name: "ci", Status: "completed", Conclusion: "success"}},
+			})
+			return
+		}
+		base.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage // SkipPostMergeCI: false
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.CIWaitTimeout = 5 * time.Second
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", RequireCI: true, TagPrefix: "v"}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 44, IssueNumber: 10, Stage: StageWaitingCI}
+	c.mu.Lock()
+	c.activePRs[44] = prState
+	c.mu.Unlock()
+
+	ghPR := &github.PullRequest{
+		Number:         44,
+		State:          "closed",
+		Merged:         true,
+		HTMLURL:        "https://github.com/owner/repo/pull/44",
+		MergeCommitSHA: "merge-sha-44",
+	}
+	ctx := context.Background()
+
+	// Tick 1: external-merge hijack routes to StagePostMergeCI (RequireCI true).
+	prState.mu.Lock()
+	resolved := c.checkExternalMergeOrClose(ctx, prState, ghPR)
+	prState.mu.Unlock()
+	if resolved {
+		t.Fatal("checkExternalMergeOrClose should return false on tick 1 (routes to StagePostMergeCI)")
+	}
+	if prState.Stage != StagePostMergeCI {
+		t.Fatalf("Stage after tick 1 = %v, want StagePostMergeCI", prState.Stage)
+	}
+
+	// Tick 2: handlePostMergeCI observes CI success and advances to StageReleasing
+	// (mirrors the main loop dispatching StagePostMergeCI via ProcessPR).
+	if err := c.ProcessPR(ctx, 44, ghPR); err != nil {
+		t.Fatalf("ProcessPR() (post_merge_ci tick) error = %v", err)
+	}
+	if prState.Stage != StageReleasing {
+		t.Fatalf("Stage after tick 2 = %v, want StageReleasing", prState.Stage)
+	}
+	if got := atomic.LoadInt64(&gitRefPosts); got != 0 {
+		t.Errorf("git/refs POST count after tick 2 = %d, want 0 (not releasing yet)", got)
+	}
+
+	// Tick 3: this is the exact GH-4124 wedge point. Before the fix,
+	// checkExternalMergeOrClose ran again ahead of the stage dispatch on every
+	// poll and drained the PR here because it has no StageReleasing guard —
+	// handleReleasing never ran, and the PR looped post_merge_ci -> releasing
+	// -> drained until it aged out with no tag ever cut.
+	prState.mu.Lock()
+	resolvedTick3 := c.checkExternalMergeOrClose(ctx, prState, ghPR)
+	prState.mu.Unlock()
+	if resolvedTick3 {
+		t.Fatal("checkExternalMergeOrClose should return false on tick 3 (StageReleasing guard) — this is the GH-4124 wedge")
+	}
+	if _, ok := c.GetPRState(44); !ok {
+		t.Fatal("PR should still be tracked after tick 3 — must not be drained before handleReleasing runs")
+	}
+
+	// Tick 3 continued: the main loop's stage dispatch now reaches
+	// handleReleasing and cuts the tag within this same releasing tick.
+	if err := c.ProcessPR(ctx, 44, ghPR); err != nil {
+		t.Fatalf("ProcessPR() (releasing tick) error = %v", err)
+	}
+	if got := atomic.LoadInt64(&gitRefPosts); got != 1 {
+		t.Errorf("git/refs POST count after releasing tick = %d, want 1 (handleReleasing must cut the tag)", got)
+	}
+	if _, ok := c.GetPRState(44); ok {
+		t.Error("PR should be drained from tracking after a successful release")
+	}
+}

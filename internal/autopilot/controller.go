@@ -4324,6 +4324,17 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		return false
 	}
 
+	// GH-4124: a PR already in the release pipeline is owned by handleReleasing's
+	// own tick — the external-merge drain below must not remove it before the tag
+	// is cut (same reasoning as the StagePostMergeCI guard above; GH-3994). Without
+	// this guard, a require_ci merged PR routed post_merge_ci -> releasing gets
+	// drained here on the very next tick because the GH-411 block below only fires
+	// when Stage != StageReleasing, and execution falls through straight to
+	// removePR — so handleReleasing never runs and no tag is ever cut.
+	if prState.Stage == StageReleasing {
+		return false
+	}
+
 	// Check if PR was merged externally
 	if ghPR.Merged {
 		c.log.Info("PR merged externally", "pr", prState.PRNumber)
