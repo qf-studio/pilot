@@ -81,10 +81,11 @@ type Metrics struct {
 	CIWaitDurations    []time.Duration
 	ExecutionDurations []time.Duration
 
-	// Histograms added by GH-4128 (plumbing only — no Record* call sites yet).
-	TimeToPRDurations     []time.Duration // issue pickup to PR creation
-	QueueWaitDurations    []time.Duration // time spent queued before pickup
-	ApprovalWaitDurations []time.Duration // time spent awaiting human approval
+	// Histograms registered by GH-4128; observed at their transitions by
+	// GH-4130 (OnPRCreated, applyApprovalDecision).
+	TimeToPRDurations     []time.Duration // execution started_at to pr_created
+	QueueWaitDurations    []time.Duration // execution created_at to started_at
+	ApprovalWaitDurations []time.Duration // awaiting_approval request to merge decision
 
 	// Timestamps for rate calculation
 	apiErrorTimes []time.Time
@@ -517,7 +518,7 @@ type HistogramData struct {
 	CIWaitDurations    []time.Duration
 	ExecutionDurations []time.Duration
 
-	// GH-4128: no Record* call site feeds these yet — plumbing ahead of the observer.
+	// GH-4130 observes these; see Metrics.TimeToPRDurations et al.
 	TimeToPRDurations     []time.Duration
 	QueueWaitDurations    []time.Duration
 	ApprovalWaitDurations []time.Duration

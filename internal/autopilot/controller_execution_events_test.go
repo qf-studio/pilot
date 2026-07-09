@@ -33,6 +33,7 @@ func TestController_ExecutionEvents_PRLifecycle(t *testing.T) {
 			name:       "happy path: CI passes, merges, and releases",
 			buildSteps: buildHappyPathServer,
 			wantStages: []memory.Stage{
+				memory.StageWaitingCI,
 				memory.StageCIPassed,
 				memory.StageMerged,
 				memory.StageReleased,
@@ -42,6 +43,7 @@ func TestController_ExecutionEvents_PRLifecycle(t *testing.T) {
 			name:       "CI failure branch",
 			buildSteps: buildCIFailureServer,
 			wantStages: []memory.Stage{
+				memory.StageWaitingCI,
 				memory.StageCIFailed,
 				memory.StageFailed,
 			},
