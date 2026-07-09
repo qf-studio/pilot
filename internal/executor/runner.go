@@ -1304,6 +1304,42 @@ func (r *Runner) recordExecutionEvent(executionID string, stage memory.Stage, de
 	}
 }
 
+// recordResearchPhaseEvent persists the parallel-research phase's cost to the
+// execution_events ledger — previously only slog.Info, so per-execution
+// research spend wasn't queryable (GH-4129).
+func (r *Runner) recordResearchPhaseEvent(executionID string, research *ResearchResult) {
+	if research == nil {
+		return
+	}
+	detail, err := json.Marshal(struct {
+		DurationMS  int64 `json:"duration_ms"`
+		TotalTokens int64 `json:"total_tokens"`
+		Findings    int   `json:"findings"`
+	}{
+		DurationMS:  research.Duration.Milliseconds(),
+		TotalTokens: research.TotalTokens,
+		Findings:    len(research.Findings),
+	})
+	if err != nil {
+		return
+	}
+	r.recordExecutionEvent(executionID, memory.StageResearchPhase, string(detail))
+}
+
+// recordRetryAttemptEvent tags a retried backend invocation with the loop
+// that triggered it (smart_retry, quality_gate_retry, intent_judge_retry) so
+// retry wall-clock share is queryable from execution_events (GH-4129).
+func (r *Runner) recordRetryAttemptEvent(executionID, loop string, attempt int) {
+	detail, err := json.Marshal(struct {
+		Loop    string `json:"loop"`
+		Attempt int    `json:"attempt"`
+	}{Loop: loop, Attempt: attempt})
+	if err != nil {
+		return
+	}
+	r.recordExecutionEvent(executionID, memory.StageRetryAttempt, string(detail))
+}
+
 // Diagnostic truncation caps used by persistBackendDiagnostics. Exposed as
 // constants so tests can assert the ceiling and project-side tooling can
 // depend on a fixed upper bound. GH-2328.
@@ -2292,6 +2328,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				slog.Int64("tokens", researchResult.TotalTokens),
 			)
 		}
+		// GH-4129: persist research-phase cost to the execution_events ledger —
+		// previously only slog.Info, so per-execution research spend wasn't queryable.
+		r.recordResearchPhaseEvent(task.LogExecutionID(), researchResult)
 	}
 
 	// Load per-repo workflow override (.pilot/workflow.yaml) — TASK-304.
@@ -2464,6 +2503,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	if repoWorkflow != nil {
 		runWorkflowHook(ctx, "before_run", repoWorkflow.Hooks.BeforeRun, executionPath, hookEnv, log)
 	}
+
+	// GH-4129: mirror the epic path's :1919 pattern — record the milestone
+	// right before the real Claude invocation so the direct path's
+	// execution_events timeline no longer goes silent after spec_validated.
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StageClaudeStarted, "direct execution invoked claude")
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StageImplementationStarted, "direct path handing off to claude for implementation")
 
 	watchdogTimeout := 2 * timeout
 	allowedTools, mcpConfigPath := r.executionToolOptions()
@@ -2768,6 +2813,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						r.driftDetector.RecordCorrection("retry_triggered", fmt.Sprintf("Error: %s, Retry attempt: %d", err.Error(), state.smartRetryAttempt+1))
 					}
 					state.smartRetryAttempt++
+					r.recordRetryAttemptEvent(task.LogExecutionID(), "smart_retry", state.smartRetryAttempt)
 					log.Info("Smart retry triggered",
 						slog.String("task_id", task.ID),
 						slog.String("error_category", errorCategory),
@@ -3416,6 +3462,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// Check if we should retry with Claude Code
 				if outcome.ShouldRetry && retryAttempt < maxAutoRetries {
 					totalQualityRetries++ // Track total retries across all gates (GH-209)
+					r.recordRetryAttemptEvent(task.LogExecutionID(), "quality_gate_retry", totalQualityRetries)
 					r.reportProgress(task.ID, "Quality Retry", 92,
 						fmt.Sprintf("Fixing issues (attempt %d/%d)...", retryAttempt+1, maxAutoRetries))
 
@@ -3605,6 +3652,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// Populate quality gate results in ExecutionResult (GH-209)
 			if finalOutcome != nil {
 				result.QualityGates = r.buildQualityGatesResult(finalOutcome, totalQualityRetries)
+				r.recordQualityGateEvents(task.LogExecutionID(), finalOutcome)
 			}
 		}
 
@@ -3719,6 +3767,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 				if !state.intentRetried {
 					state.intentRetried = true
+					r.recordRetryAttemptEvent(task.LogExecutionID(), "intent_judge_retry", 1)
 					r.reportProgress(task.ID, "Intent Retry", 80, "Retrying with intent feedback...")
 
 					retryPrompt := fmt.Sprintf(
@@ -5404,6 +5453,45 @@ func (r *Runner) buildQualityGatesResult(outcome *QualityOutcome, totalRetries i
 	}
 
 	return qgResult
+}
+
+// recordQualityGateEvents persists quality.CheckResults timing (computed but
+// previously transient — GH-4129) as execution_events: one row per gate
+// carrying that gate's Duration, plus a trailing summary row carrying
+// TotalDuration, using the same detail-JSON convention as recordRetryAttemptEvent.
+func (r *Runner) recordQualityGateEvents(executionID string, outcome *QualityOutcome) {
+	if outcome == nil {
+		return
+	}
+	for _, gate := range outcome.GateDetails {
+		detail, err := json.Marshal(struct {
+			Gate       string `json:"gate"`
+			DurationMS int64  `json:"duration_ms"`
+			Passed     bool   `json:"passed"`
+			RetryCount int    `json:"retry_count"`
+		}{
+			Gate:       gate.Name,
+			DurationMS: gate.Duration.Milliseconds(),
+			Passed:     gate.Passed,
+			RetryCount: gate.RetryCount,
+		})
+		if err != nil {
+			continue
+		}
+		r.recordExecutionEvent(executionID, memory.StageQualityGate, string(detail))
+	}
+
+	summary, err := json.Marshal(struct {
+		TotalDurationMS int64 `json:"total_duration_ms"`
+		GateCount       int   `json:"gate_count"`
+	}{
+		TotalDurationMS: outcome.TotalDuration.Milliseconds(),
+		GateCount:       len(outcome.GateDetails),
+	})
+	if err != nil {
+		return
+	}
+	r.recordExecutionEvent(executionID, memory.StageQualityGate, string(summary))
 }
 
 // simpleQualityChecker is a minimal quality checker for auto-enabled build gates (GH-363).

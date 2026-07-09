@@ -711,10 +711,10 @@ const (
 	StageClaudeStarted Stage = "claude_started"
 	StageDecomposed    Stage = "decomposed"
 	// StageImplementationStarted marks a direct (non-epic) task handing off to
-	// Claude for real implementation work. GH-3938 wires claude_started/
-	// decomposed/completed on the epic-parent path only; this value is
-	// reserved for a future direct-path instrumentation pass so the enum
-	// matches the full lifecycle described in GH-3840 up front.
+	// Claude for real implementation work. GH-3938 wired claude_started/
+	// decomposed/completed on the epic-parent path only; GH-4129 wires this
+	// value on the direct path so the enum matches the full lifecycle
+	// described in GH-3840.
 	StageImplementationStarted Stage = "implementation_started"
 	StageCommit                Stage = "commit"
 	StagePRCreated             Stage = "pr_created"
@@ -731,6 +731,20 @@ const (
 	StageNoOp             Stage = "no_op"
 	StageSkipped          Stage = "skipped"
 	StageStalled          Stage = "stalled"
+	// StageResearchPhase records the parallel-research phase's duration and
+	// token spend once per direct-path execution (GH-4129). Detail is a JSON
+	// object: {"duration_ms","total_tokens","findings"}.
+	StageResearchPhase Stage = "research_phase"
+	// StageQualityGate records quality.CheckResults timing: one event per
+	// gate (detail: {"gate","duration_ms","passed","retry_count"}) plus a
+	// trailing summary event (detail: {"total_duration_ms","gate_count"})
+	// (GH-4129).
+	StageQualityGate Stage = "quality_gate"
+	// StageRetryAttempt tags a retried backend invocation with the loop that
+	// triggered it (smart_retry, quality_gate_retry, intent_judge_retry) so
+	// retry wall-clock share is queryable (GH-4129). Detail is a JSON object:
+	// {"loop","attempt"}.
+	StageRetryAttempt Stage = "retry_attempt"
 )
 
 // Event represents a single stage-transition record for an execution.
