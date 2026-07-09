@@ -1,7 +1,9 @@
 package dashboard
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -87,5 +89,72 @@ func TestFirstNDistinctByTask(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestStoreRefreshCmd_DedupsRetriesAcrossFiveDistinctTasks is the GH-4119
+// regression test: storeRefreshCmd (the periodic refresh path) must dedup by
+// task_id like hydrateFromStore does, not cap on raw rows — otherwise a
+// retried task re-collapses the history panel on the first timer tick after
+// #4117 fixed only the startup path.
+func TestStoreRefreshCmd_DedupsRetriesAcrossFiveDistinctTasks(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const projectPath = "/proj"
+
+	// 16 older executions, one per distinct task.
+	for i := 0; i < 16; i++ {
+		id := fmt.Sprintf("older-exec-%d", i)
+		taskID := fmt.Sprintf("GH-41%02d", i)
+		if err := store.SaveExecution(&memory.Execution{
+			ID: id, TaskID: taskID, ProjectPath: projectPath, Status: "completed",
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", id, err)
+		}
+	}
+
+	// created_at has 1-second resolution (SQLite CURRENT_TIMESTAMP default) —
+	// cross a second boundary so the newest task's retries reliably sort
+	// above the older batch in GetRecentExecutions' created_at DESC order.
+	time.Sleep(1100 * time.Millisecond)
+
+	// 4 retries for the newest task (mirrors the live GH-4100 scenario).
+	const newestTaskID = "GH-4100"
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("retry-exec-%d", i)
+		if err := store.SaveExecution(&memory.Execution{
+			ID: id, TaskID: newestTaskID, ProjectPath: projectPath, Status: "completed",
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", id, err)
+		}
+	}
+
+	msg, ok := storeRefreshCmd(store, projectPath)().(storeRefreshMsg)
+	if !ok {
+		t.Fatalf("storeRefreshCmd returned unexpected message type")
+	}
+
+	if len(msg.completedTasks) != 5 {
+		t.Fatalf("completedTasks = %d entries, want 5", len(msg.completedTasks))
+	}
+
+	seen := make(map[string]bool, len(msg.completedTasks))
+	foundNewest := false
+	for _, ct := range msg.completedTasks {
+		if seen[ct.ID] {
+			t.Errorf("duplicate task ID %q in completedTasks", ct.ID)
+		}
+		seen[ct.ID] = true
+		if ct.ID == newestTaskID {
+			foundNewest = true
+		}
+	}
+	if !foundNewest {
+		t.Errorf("completedTasks missing newest retried task %q — retries crowded it out (raw-row cap regression)", newestTaskID)
 	}
 }
