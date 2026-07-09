@@ -1376,6 +1376,110 @@ func TestGetIssueLevelCounts(t *testing.T) {
 	}
 }
 
+// TestGetLifetimePRCountersFromExecutions covers GH-4121: PR-outcome counters
+// hydrated all-time from the executions table (not the execution_events
+// ledger, which only goes back to its TASK-379/GH-3844 introduction). Pins:
+// pre-ledger executions (rows in executions, no execution_events rows at all)
+// still contribute; a retried task counts once regardless of how many
+// attempts it took; coding-stage failures with no PR are excluded from the
+// failed bucket.
+func TestGetLifetimePRCountersFromExecutions(t *testing.T) {
+	tests := []struct {
+		name        string
+		execs       []*Execution
+		projectPath string
+		wantMerged  int64
+		wantFailed  int64
+	}{
+		{
+			name:       "empty table",
+			execs:      nil,
+			wantMerged: 0,
+			wantFailed: 0,
+		},
+		{
+			name: "pre-ledger merged execution with no execution_events rows still counts",
+			execs: []*Execution{
+				{ID: "plc-1", TaskID: "TASK-A", ProjectPath: "/p", Status: "completed", PRUrl: "https://github.com/o/r/pull/1"},
+			},
+			wantMerged: 1,
+			wantFailed: 0,
+		},
+		{
+			name: "genuine PR-family failure counts once",
+			execs: []*Execution{
+				{ID: "plc-2", TaskID: "TASK-B", ProjectPath: "/p", Status: "failed", PRUrl: "https://github.com/o/r/pull/2"},
+			},
+			wantMerged: 0,
+			wantFailed: 1,
+		},
+		{
+			name: "coding-stage failure with no PR is excluded from failed",
+			execs: []*Execution{
+				{ID: "plc-3", TaskID: "TASK-C", ProjectPath: "/p", Status: "failed"},
+			},
+			wantMerged: 0,
+			wantFailed: 0,
+		},
+		{
+			name: "completed with no PR url is excluded from merged",
+			execs: []*Execution{
+				{ID: "plc-4", TaskID: "TASK-D", ProjectPath: "/p", Status: "completed"},
+			},
+			wantMerged: 0,
+			wantFailed: 0,
+		},
+		{
+			name: "retried task failed once with a PR then shipped: counts once as merged, not also failed",
+			execs: []*Execution{
+				{ID: "plc-5a", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "failed", PRUrl: "https://github.com/o/r/pull/5a"},
+				{ID: "plc-5b", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "completed", PRUrl: "https://github.com/o/r/pull/5b"},
+			},
+			wantMerged: 1,
+			wantFailed: 0,
+		},
+		{
+			name: "project filter scopes counts to matching path",
+			execs: []*Execution{
+				{ID: "plc-6", TaskID: "TASK-X", ProjectPath: "/alpha", Status: "completed", PRUrl: "https://github.com/o/r/pull/6"},
+				{ID: "plc-7", TaskID: "TASK-Y", ProjectPath: "/beta", Status: "completed", PRUrl: "https://github.com/o/r/pull/7"},
+				{ID: "plc-8", TaskID: "TASK-Z", ProjectPath: "/beta", Status: "failed", PRUrl: "https://github.com/o/r/pull/8"},
+			},
+			projectPath: "/beta",
+			wantMerged:  1,
+			wantFailed:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			for _, e := range tt.execs {
+				if err := store.SaveExecution(e); err != nil {
+					t.Fatalf("SaveExecution %s: %v", e.ID, err)
+				}
+			}
+
+			counters, err := store.GetLifetimePRCountersFromExecutions(tt.projectPath)
+			if err != nil {
+				t.Fatalf("GetLifetimePRCountersFromExecutions: %v", err)
+			}
+			if counters.Merged != tt.wantMerged {
+				t.Errorf("Merged = %d, want %d", counters.Merged, tt.wantMerged)
+			}
+			if counters.Failed != tt.wantFailed {
+				t.Errorf("Failed = %d, want %d", counters.Failed, tt.wantFailed)
+			}
+		})
+	}
+}
+
 func TestBriefHistory(t *testing.T) {
 	tests := []struct {
 		name          string

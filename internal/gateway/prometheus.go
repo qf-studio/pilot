@@ -91,12 +91,12 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	}
 
 	// pilot_prs_merged_total
-	writeHelp(w, "pilot_prs_merged_total", "Total PRs successfully merged")
+	writeHelp(w, "pilot_prs_merged_total", "Total PRs successfully merged, lifetime, one per shipped issue (task_id) regardless of retries")
 	writeType(w, "pilot_prs_merged_total", "counter")
 	writeCounter(w, "pilot_prs_merged_total", snap.PRsMerged)
 
 	// pilot_prs_failed_total
-	writeHelp(w, "pilot_prs_failed_total", "Total PRs that failed")
+	writeHelp(w, "pilot_prs_failed_total", "Total genuine PR-family failures, lifetime (a PR was created but failed CI/merge/release; excludes coding-stage failures with no PR and issues that later shipped)")
 	writeType(w, "pilot_prs_failed_total", "counter")
 	writeCounter(w, "pilot_prs_failed_total", snap.PRsFailed)
 

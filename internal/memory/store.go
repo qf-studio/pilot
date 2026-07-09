@@ -2316,6 +2316,14 @@ type LifetimePRCounters struct {
 // not COUNT(*)) so a stage logged more than once for the same execution is not
 // double counted.
 //
+// GH-4121: no longer the metrics_hydrator source for these two counters — the
+// ledger only goes back to its TASK-379/GH-3844 introduction and undercounts
+// against every other lifetime counter, which all hydrate all-time from the
+// executions table. See GetLifetimePRCountersFromExecutions, the current
+// hydration source. Kept here (still covered by TestGetLifetimePRCounters)
+// as the more precise event-level source, available if a future caller needs
+// per-execution rather than per-task granularity.
+//
 // "failed" is ambiguous in the raw ledger: the executor writes stage='failed'
 // for executions that never produced a PR (Claude Code failed before any PR
 // existed — internal/executor/runner.go, dispatcher.go), while the autopilot
@@ -2361,6 +2369,51 @@ func (s *Store) GetLifetimePRCounters() (*LifetimePRCounters, error) {
 		return nil, fmt.Errorf("failed to iterate lifetime PR counters: %w", err)
 	}
 
+	return counters, nil
+}
+
+// GetLifetimePRCountersFromExecutions computes lifetime pilot_prs_merged_total /
+// pilot_prs_failed_total baselines from the executions table instead of the
+// execution_events ledger (GH-4121, follow-up to GH-4093). The ledger only
+// goes back to its TASK-379/GH-3844 introduction, so it undercounts merged/
+// failed PRs by ~20x against every other lifetime counter — all of which
+// (pilot_issues_shipped_total, pilot_execution_cost_usd_total, token totals)
+// hydrate all-time from executions. This gives the PR-outcome counters the
+// same all-time population.
+//
+// Both counts dedupe by task_id (a task retried across several execution rows
+// contributes at most once), mirroring GetIssueLevelCounts.Shipped:
+//   - Merged: distinct task_id with a 'completed' row carrying a PR URL — the
+//     same "shipped-with-PR" population issues_shipped already treats as
+//     honest.
+//   - Failed: distinct task_id with a 'failed' row carrying a PR URL (a
+//     genuine PR-family failure — CI/merge/release failed after a PR
+//     existed), EXCLUDING any task_id that also has a merged row. Without
+//     that exclusion a task that failed once and then shipped on retry would
+//     count in both buckets, double counting the same task_id across the two
+//     metrics.
+//
+// If projectPath is non-empty, only executions for that project are counted
+// (matches GetIssueLevelCounts).
+func (s *Store) GetLifetimePRCountersFromExecutions(projectPath string) (*LifetimePRCounters, error) {
+	const cols = `
+		SELECT
+			COUNT(DISTINCT CASE WHEN status = 'completed' AND pr_url <> '' THEN task_id END),
+			COUNT(DISTINCT CASE
+				WHEN status = 'failed' AND pr_url <> '' AND task_id NOT IN (
+					SELECT task_id FROM executions
+					WHERE status = 'completed' AND pr_url <> '' AND (? = '' OR project_path = ?)
+				) THEN task_id
+			END)
+		FROM executions
+		WHERE (? = '' OR project_path = ?)`
+
+	row := s.db.QueryRow(cols, projectPath, projectPath, projectPath, projectPath)
+
+	counters := &LifetimePRCounters{}
+	if err := row.Scan(&counters.Merged, &counters.Failed); err != nil {
+		return nil, fmt.Errorf("failed to get lifetime PR counters from executions: %w", err)
+	}
 	return counters, nil
 }
 
