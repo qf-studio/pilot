@@ -106,7 +106,7 @@ func stageInfoForExecution(events []*memory.Event, status string) StageInfo {
 
 // buildStageInfo reduces an execution's execution_events timeline to a
 // StageInfo (GH-3849; revised to a fraction in TASK-383; revised to a
-// running-max reducer in GH-4023; revised to structured output for the grot
+// running-max reducer in GH-4023; revised to structured output for the grom
 // segment-meter rendering). Reached is the highest ladder position observed
 // across the whole stream — derived via stageLadderPosition, never from
 // len(events) — so retries never inflate the rung and a later regression

@@ -68,7 +68,7 @@ func TestRenderTask_TitleExpandsWithWidth(t *testing.T) {
 // TestRenderTask_NarrowRegressionPin pins the exact byte output at iw=65 (the
 // default, non-stacked panel content width) so the width-aware refactor does
 // not alter today's rendering for the common case. TASK-390/GH-4064 moved the
-// bar column from a bracketed block-char bar to the grot segment meter
+// bar column from a bracketed block-char bar to the grom segment meter
 // (■■■□□, no brackets) — same 16-cell column width, same alignment.
 func TestRenderTask_NarrowRegressionPin(t *testing.T) {
 	m := NewModel("test")
@@ -88,10 +88,10 @@ func TestRenderTask_NarrowRegressionPin(t *testing.T) {
 }
 
 // TestRenderTask_BarColumnsAligned checks all five states keep the same
-// 16-cell grot segment-meter bar column (no brackets) regardless of panel
+// 16-cell grom segment-meter bar column (no brackets) regardless of panel
 // width (bar-width scaling is explicitly out of scope for GH-3970). Fill
 // styling is stripped under go test (no TTY), so this asserts cell count and
-// glyph, not color — see grot_chrome_test.go for the width-invariant pattern.
+// glyph, not color — see grom_chrome_test.go for the width-invariant pattern.
 func TestRenderTask_BarColumnsAligned(t *testing.T) {
 	m := NewModel("test")
 	statuses := []string{"done", "running", "queued", "failed", "pending"}

@@ -15,7 +15,7 @@ import (
 )
 
 // GH-2459: applyDashboardBannerMeta wires env, model stack, and adapter list
-// from config into the dashboard. TASK-390 (grot redesign) split the surface:
+// from config into the dashboard. TASK-390 (grom redesign) split the surface:
 // env + model stack render in the banner identity line; adapter chips render
 // in the queue panel border legend (active adapters named, idle collapsed to
 // a count, no daemon chip — daemon liveness is the banner wordmark dot).
