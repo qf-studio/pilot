@@ -1980,9 +1980,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			capturedController := autopilotController
 			token, _ := resolveGitHubToken(cfg)
 			if token != "" {
-				ghClient := github.NewClient(token)
-				ghWH := github.NewWebhookHandler(ghClient, cfg.Adapters.GitHub.WebhookSecret, cfg.Adapters.GitHub.PilotLabel)
-				ghWH.OnPRReview(func(ctx context.Context, prNumber int, action, state, reviewer string, repo *github.Repository) error {
+				ghClient := githubSDK.NewClient(token)
+				ghWH := githubSDK.NewWebhookHandler(ghClient, cfg.Adapters.GitHub.WebhookSecret, cfg.Adapters.GitHub.PilotLabel)
+				ghWH.OnPRReview(func(ctx context.Context, prNumber int, action, state, reviewer string, repo *githubSDK.Repository) error {
 					if action == "submitted" {
 						capturedController.OnReviewRequested(prNumber, action, state, reviewer)
 					}
