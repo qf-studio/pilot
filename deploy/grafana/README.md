@@ -72,6 +72,32 @@ The `pilot-dashboard.json` (uid: `pilot`) contains 12 panels across 5 rows (y=0.
 | 11 | Cost/hour | timeseries | `rate(pilot_execution_cost_usd_total[5m]) * 3600` legend `{{model}}` |
 | 12 | Executions by Result | bargauge | `pilot_executions_total` legend `{{model}}/{{result}}` |
 
+## Terminal Dashboard (grafterm)
+
+`grafterm-pilot.json` renders the pipeline-breakdown view in the terminal via
+[grafterm](https://github.com/slok/grafterm) instead of Grafana's web UI. It
+points at the same Prometheus instance the compose stack exposes on 9093, so
+start the stack first:
+
+```bash
+go install github.com/slok/grafterm/cmd/grafterm@latest
+cd deploy/grafana
+grafterm -c grafterm-pilot.json
+```
+
+| # | Widget | PromQL |
+|---|--------|--------|
+| 1 | Pipeline Breakdown (P50): queue wait → execution → time-to-PR → CI wait → approval wait → merge | `histogram_quantile(0.50, sum(rate(pilot_queue_wait_seconds_bucket[15m])) by (le))`, `pilot_execution_duration_seconds`, `pilot_time_to_pr_seconds`, `pilot_ci_wait_duration_seconds`, `pilot_approval_wait_seconds`, `pilot_pr_time_to_merge_seconds` |
+| 2 | PR Time to Merge (P50/P95) | `histogram_quantile(0.50\|0.95, sum(rate(pilot_pr_time_to_merge_seconds_bucket[15m])) by (le))` |
+| 3 | CI Wait Duration (P50/P95) | `histogram_quantile(0.50\|0.95, sum(rate(pilot_ci_wait_duration_seconds_bucket[15m])) by (le))` |
+
+`pilot_queue_wait_seconds`, `pilot_time_to_pr_seconds`, and
+`pilot_approval_wait_seconds` are registered but not yet observed (GH-4128
+plumbing; observers land in GH-4130) — their series render as no-data until
+that lands. grafterm doesn't support native stacked/area rendering, so the
+breakdown widget overlays all six stage histograms as separate lines on one
+graph rather than a true stacked area chart.
+
 ## Troubleshooting
 
 **Prometheus shows Pilot target as `DOWN`:**
