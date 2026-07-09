@@ -1209,6 +1209,7 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	case CISuccess:
 		c.log.Info("CI passed", "pr", prState.PRNumber, "sha", ShortSHA(sha))
 		prState.Stage = StageCIPassed
+		c.metrics.RecordCIRun("pass")
 		if !prState.CIWaitStartedAt.IsZero() {
 			c.metrics.RecordCIWaitDuration(time.Since(prState.CIWaitStartedAt))
 		}
@@ -1359,6 +1360,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 			prState.Error = reason
 			prState.TerminalLabel = github.LabelFailed
 			c.metrics.RecordPRFailed()
+			c.metrics.RecordCIRun("fail")
 			c.metrics.RecordIssueProcessed("failed")
 			return nil
 		}
@@ -1395,6 +1397,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				prState.Error = fmt.Sprintf("CI fix size guard: PR has %d additions, over limit %d (likely cascade contamination — escalate to human)", netAdditions, c.config.MaxCIFixPRSize)
 				prState.TerminalLabel = github.LabelFailed
 				c.metrics.RecordPRFailed()
+				c.metrics.RecordCIRun("fail")
 				c.metrics.RecordIssueProcessed("failed")
 				return nil
 			}
@@ -1458,6 +1461,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	prState.Error = fmt.Sprintf("%s; fix issue #%d created to continue this work", reason, issueNum)
 	prState.TerminalLabel = github.LabelFailed
 	c.metrics.RecordPRFailed()
+	c.metrics.RecordCIRun("fail")
 	return nil
 }
 

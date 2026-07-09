@@ -50,6 +50,12 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 				`pilot_issues_processed_total{result="failed"} 0`,
 				"# HELP pilot_prs_merged_total",
 				"pilot_prs_merged_total 0",
+				// GH-4134: closed label set (pass/fail) emitted as zero even
+				// before any CI verdict has been recorded.
+				"# HELP pilot_ci_runs_total",
+				"# TYPE pilot_ci_runs_total counter",
+				`pilot_ci_runs_total{result="pass"} 0`,
+				`pilot_ci_runs_total{result="fail"} 0`,
 				"# HELP pilot_queue_depth",
 				"pilot_queue_depth 0",
 				"# HELP pilot_pr_time_to_merge_seconds",
@@ -86,6 +92,10 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 					PRsMerged:           35,
 					PRsFailed:           3,
 					PRsConflicting:      2,
+					CIRuns: map[string]int64{
+						"pass": 30,
+						"fail": 4,
+					},
 					CircuitBreakerTrips: 1,
 					APIErrors: map[string]int64{
 						"GetPR":   10,
@@ -104,6 +114,8 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 				"pilot_prs_merged_total 35",
 				"pilot_prs_failed_total 3",
 				"pilot_prs_conflicting_total 2",
+				`pilot_ci_runs_total{result="pass"} 30`,
+				`pilot_ci_runs_total{result="fail"} 4`,
 				"pilot_circuit_breaker_trips_total 1",
 				`pilot_api_errors_total{endpoint="GetPR"} 10`,
 				`pilot_api_errors_total{endpoint="MergePR"} 2`,
@@ -257,6 +269,35 @@ func TestPrometheusExporter_TokenCostExecutionMetrics(t *testing.T) {
 		"# TYPE pilot_executions_total counter",
 		`pilot_executions_total{model="claude-sonnet-4-5",result="success"} 1`,
 		`pilot_executions_total{model="claude-sonnet-4-5",result="failed"} 1`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("Output missing expected string: %q\nGot:\n%s", want, output)
+		}
+	}
+}
+
+// TestPrometheusExporter_CIRunsCounter verifies pilot_ci_runs_total{result}
+// reflects RecordCIRun calls on a real *autopilot.Metrics, and that the CI
+// pass rate is computable directly from the exported series without the
+// pilot_prs_failed_total proxy (GH-4134 acceptance criterion).
+func TestPrometheusExporter_CIRunsCounter(t *testing.T) {
+	m := autopilot.NewMetrics()
+	m.RecordCIRun("pass")
+	m.RecordCIRun("pass")
+	m.RecordCIRun("fail")
+
+	exporter := NewPrometheusExporter(m)
+	var buf bytes.Buffer
+	if err := exporter.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus() error = %v", err)
+	}
+	output := buf.String()
+
+	for _, want := range []string{
+		"# HELP pilot_ci_runs_total",
+		"# TYPE pilot_ci_runs_total counter",
+		`pilot_ci_runs_total{result="pass"} 2`,
+		`pilot_ci_runs_total{result="fail"} 1`,
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("Output missing expected string: %q\nGot:\n%s", want, output)

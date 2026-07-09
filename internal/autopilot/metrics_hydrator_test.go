@@ -265,6 +265,59 @@ func TestHydrateFromStore_PRFamilyCounters(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_CIRunCounters pins GH-4134: pilot_ci_runs_total{result}
+// hydrates from the execution_events ledger (the only available history — CI
+// verdicts have no pre-ledger equivalent in the executions table), and a
+// fresh live RecordCIRun() call on top of the hydrated baseline must not
+// double count.
+func TestHydrateFromStore_CIRunCounters(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{ID: "ci-1", TaskID: "GH-1", ProjectPath: "/p", Status: "completed"}); err != nil {
+		t.Fatalf("SaveExecution ci-1: %v", err)
+	}
+	if err := store.InsertExecutionEvent("ci-1", memory.StagePRCreated, ""); err != nil {
+		t.Fatalf("InsertExecutionEvent(pr_created): %v", err)
+	}
+	if err := store.InsertExecutionEvent("ci-1", memory.StageCIPassed, ""); err != nil {
+		t.Fatalf("InsertExecutionEvent(ci_passed): %v", err)
+	}
+
+	if err := store.SaveExecution(&memory.Execution{ID: "ci-2", TaskID: "GH-2", ProjectPath: "/p", Status: "failed"}); err != nil {
+		t.Fatalf("SaveExecution ci-2: %v", err)
+	}
+	if err := store.InsertExecutionEvent("ci-2", memory.StagePRCreated, ""); err != nil {
+		t.Fatalf("InsertExecutionEvent(pr_created): %v", err)
+	}
+	if err := store.InsertExecutionEvent("ci-2", memory.StageCIFailed, ""); err != nil {
+		t.Fatalf("InsertExecutionEvent(ci_failed): %v", err)
+	}
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	snap := metrics.Snapshot()
+
+	if got := snap.CIRuns["pass"]; got != 1 {
+		t.Errorf("CIRuns[pass] = %d, want 1", got)
+	}
+	if got := snap.CIRuns["fail"]; got != 1 {
+		t.Errorf("CIRuns[fail] = %d, want 1", got)
+	}
+
+	// Live recording on top of the hydrated baseline adds, does not replace.
+	metrics.RecordCIRun("pass")
+	if got := metrics.Snapshot().CIRuns["pass"]; got != 2 {
+		t.Errorf("CIRuns[pass] after live record = %d, want 2 (hydrated 1 + live 1)", got)
+	}
+}
+
 // TestHydrateFromStore_NilStoreIsNoop verifies hydration is a no-op (not an
 // error) when no store is configured, matching how other optional
 // store-backed features degrade in this codebase.

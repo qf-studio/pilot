@@ -100,6 +100,25 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeType(w, "pilot_prs_failed_total", "counter")
 	writeCounter(w, "pilot_prs_failed_total", snap.PRsFailed)
 
+	// pilot_ci_runs_total (GH-4134): true CI pass/fail counter, distinct from
+	// the pilot_prs_failed_total proxy — that counter also folds in approval
+	// rejections, merge escalations, and size-guard failures (see
+	// RecordPRFailed call sites), so it overcounts as a CI health signal.
+	// Lifetime baseline comes from the execution_events ledger (see
+	// GetLifetimeCIRunCounters); verdicts predating the ledger are not
+	// recoverable, unlike pilot_prs_merged_total/pilot_prs_failed_total which
+	// backfill from the executions table.
+	writeHelp(w, "pilot_ci_runs_total", "Total CI verdicts by result (pass, fail), one per distinct CI run — not per fix-iteration retry. CI pass rate = sum(result=\"pass\") / sum(all). Lifetime baseline hydrated from the execution_events ledger only (no pre-ledger source), so restarts before the ledger's introduction are not reflected")
+	writeType(w, "pilot_ci_runs_total", "counter")
+	for result, count := range snap.CIRuns {
+		writeCounter(w, "pilot_ci_runs_total", count, "result", result)
+	}
+	for _, result := range []string{"pass", "fail"} {
+		if _, exists := snap.CIRuns[result]; !exists {
+			writeCounter(w, "pilot_ci_runs_total", 0, "result", result)
+		}
+	}
+
 	// pilot_prs_conflicting_total
 	writeHelp(w, "pilot_prs_conflicting_total", "Total PRs with merge conflicts")
 	writeType(w, "pilot_prs_conflicting_total", "counter")

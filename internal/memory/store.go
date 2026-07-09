@@ -2434,6 +2434,59 @@ func (s *Store) GetLifetimePRCountersFromExecutions(projectPath string) (*Lifeti
 	return counters, nil
 }
 
+// LifetimeCIRunCounters holds lifetime pilot_ci_runs_total{result} baselines
+// derived from the durable execution_events ledger (GH-4134). Unlike
+// pilot_prs_merged_total/pilot_prs_failed_total, CI pass/fail verdicts have
+// no pre-ledger equivalent in the executions table — the executor never
+// persisted a per-verdict CI outcome before TASK-379/GH-3844 introduced this
+// ledger, so this is genuinely the only historical source (reset-on-restart
+// for any verdict older than the ledger, documented in FEATURE-MATRIX.md).
+type LifetimeCIRunCounters struct {
+	Pass int64
+	Fail int64
+}
+
+// GetLifetimeCIRunCounters queries execution_events for lifetime
+// pilot_ci_runs_total{result} baselines, deduped per execution_id (COUNT(
+// DISTINCT), not COUNT(*)) so a stage logged more than once for the same
+// execution is not double counted — mirrors GetLifetimePRCounters. Live
+// recording (controller.go handleWaitingCI/handleCIFailed) only ever
+// transitions a given execution to ci_passed or ci_failed once (both are
+// terminal for that stage), so this dedupe is defensive, not load-bearing.
+func (s *Store) GetLifetimeCIRunCounters() (*LifetimeCIRunCounters, error) {
+	counters := &LifetimeCIRunCounters{}
+
+	rows, err := s.db.Query(`
+		SELECT stage, COUNT(DISTINCT execution_id)
+		FROM execution_events
+		WHERE stage IN (?, ?)
+		GROUP BY stage
+	`, string(StageCIPassed), string(StageCIFailed))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get lifetime CI run counters: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var stage string
+		var count int64
+		if err := rows.Scan(&stage, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan lifetime CI run counter row: %w", err)
+		}
+		switch Stage(stage) {
+		case StageCIPassed:
+			counters.Pass = count
+		case StageCIFailed:
+			counters.Fail = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate lifetime CI run counters: %w", err)
+	}
+
+	return counters, nil
+}
+
 // earliestStageOccurrences returns, per execution_id, the earliest occurred_at
 // for the given stage. Selects the raw column directly (not through a
 // GROUP BY/MIN() aggregate) — the sqlite driver only recovers the DATETIME
