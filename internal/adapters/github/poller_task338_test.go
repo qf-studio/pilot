@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
+
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -19,15 +21,26 @@ import (
 // source_enabled + mode:parallel silently reverted to label polling.
 func TestPoller_Parallel_UsesBoardSource(t *testing.T) {
 	var graphqlHits, restIssuesHits atomic.Int32
+	// GH-4168: the board source now goes through studio-sdk's ProjectBoardSource,
+	// which resolves the project node ID via GraphQL before reading the board
+	// column (no unexported field to pre-seed from a sibling package), so the
+	// first /graphql hit must answer the org-project-ID lookup and the second
+	// the board-items query.
+	graphqlResponses := []string{
+		`{"data":{"organization":{"projectV2":{"id":"PVT_test"}}}}`,
+		`{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}`,
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/graphql":
-			graphqlHits.Add(1)
-			// Return an empty board column — enough to prove the board source was
-			// queried without dragging in downstream dispatch/API calls.
+			idx := int(graphqlHits.Add(1)) - 1
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}`))
+			if idx < len(graphqlResponses) {
+				_, _ = w.Write([]byte(graphqlResponses[idx]))
+			} else {
+				_, _ = w.Write([]byte(`{"data":{}}`))
+			}
 		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues"):
 			restIssuesHits.Add(1)
 			w.Header().Set("Content-Type", "application/json")
@@ -40,17 +53,16 @@ func TestPoller_Parallel_UsesBoardSource(t *testing.T) {
 	defer server.Close()
 
 	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	sdkClient := githubSDK.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 
-	src := NewProjectBoardSource(client, &ProjectBoardConfig{
+	src := githubSDK.NewProjectBoardSource(sdkClient, &githubSDK.ProjectBoardConfig{
 		ProjectNumber: 1,
 		StatusField:   "Status",
 		SourceStatus:  "Todo",
 		SourceEnabled: true,
 	}, "owner", "repo")
-	// Pre-seed the project node ID so ensureProjectID skips the resolver query.
-	src.projectID = "PVT_test"
 
-	poller, err := NewPoller(client, "owner/repo", "pilot", 30*time.Second, WithProjectBoardSource(src))
+	poller, err := NewPoller(client, "owner/repo", "pilot", 30*time.Second, WithProjectBoardSource(src, "Todo"))
 	if err != nil {
 		t.Fatalf("NewPoller() error = %v", err)
 	}
