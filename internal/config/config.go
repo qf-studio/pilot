@@ -876,6 +876,16 @@ func (c *Config) CheckDeprecations() []string {
 		}
 	}
 
+	// Check GitHub.UseSDKPoller (M7 4d.6, GH-4171): the in-tree GitHub poller
+	// fallback is gone (GH-4170) — the SDK poller now runs unconditionally
+	// whenever the GitHub adapter is enabled, so this flag is parsed for
+	// backward compatibility only and has no effect either way.
+	if c.Adapters != nil && c.Adapters.GitHub != nil && c.Adapters.GitHub.Enabled {
+		msg := "config: adapters.github.use_sdk_poller is deprecated and ignored — the GitHub adapter always uses the studio-sdk poller now; remove this field from your config"
+		log.Printf("DEPRECATED: %s", msg)
+		warnings = append(warnings, msg)
+	}
+
 	return warnings
 }
 
