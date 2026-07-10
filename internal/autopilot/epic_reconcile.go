@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/alerts"
@@ -50,9 +51,25 @@ type subIssueState struct {
 // so repeated poll-cycle sightings of the same stalled child produce the same
 // log line — the dedupe path downstream can key off (parent, child, reason)
 // to recognize "still the same stall" instead of re-triggering on every tick.
+//
+// Defer marks a "soft" veto (GH-4127): the child has an open/in-CI PR, i.e.
+// it is genuinely in flight, not stalled. A deferred veto still blocks the
+// close this pass, but the caller must NOT feed it into the escalation
+// breaker (recordEpicCloseVeto) — otherwise a normal close→merge race trips
+// the same "permanently blocked" escalation this fix exists to prevent.
 type childCloseVeto struct {
 	Child  int
 	Reason string
+	Defer  bool
+}
+
+// branchPR is one pull request found for a given head branch via the
+// strongly-consistent pullRequests(headRefName:) GraphQL lookup (GH-4127) —
+// as opposed to the eventually-consistent Search API.
+type branchPR struct {
+	Number int
+	Merged bool
+	Open   bool
 }
 
 // getAllSubIssueNumbers queries native GitHub sub-issues for parentNum and
@@ -110,6 +127,12 @@ func (c *Controller) getAllSubIssueNumbers(ctx context.Context, parentNum int) (
 
 	children := make([]subIssueState, 0, len(result.Node.SubIssues.Nodes))
 	for _, n := range result.Node.SubIssues.Nodes {
+		if n.Number == parentNum {
+			// GH-4127: native links should never point a parent at itself, but
+			// don't trust that invariant blindly — filter it the same way the
+			// text-search fallback must.
+			continue
+		}
 		children = append(children, subIssueState{Number: n.Number, Closed: n.State == "CLOSED"})
 	}
 	return children, true, nil
@@ -147,15 +170,65 @@ func (c *Controller) getSubIssuesByTextSearch(ctx context.Context, parentNum int
 		return nil, false, fmt.Errorf("text-search sub-issues for %s/%s#%d: %w", c.owner, c.repo, parentNum, err)
 	}
 
-	if len(result.Search.Nodes) == 0 {
-		return nil, false, nil
-	}
-
 	children := make([]subIssueState, 0, len(result.Search.Nodes))
 	for _, n := range result.Search.Nodes {
+		if n.Number == parentNum {
+			// GH-4127: the parent's own body/comments (e.g. an escalation
+			// comment naming "GH-{parentNum}") match this text search — without
+			// this filter the parent becomes its own child, and each
+			// escalation comment re-strengthens the false match.
+			continue
+		}
 		children = append(children, subIssueState{Number: n.Number, Closed: n.State == "CLOSED"})
 	}
+	if len(children) == 0 {
+		return nil, false, nil
+	}
 	return children, true, nil
+}
+
+// findPRsByBranch looks up every PR opened from headBranch via GitHub's
+// strongly-consistent pullRequests(headRefName:) GraphQL filter (GH-4127) —
+// unlike the Search API (SearchPRsForIssue), this reflects a just-merged PR
+// immediately, with no minutes-long indexing lag, and survives the head
+// branch being deleted after merge (the filter matches on the PR's recorded
+// head ref name, not a live ref).
+func (c *Controller) findPRsByBranch(ctx context.Context, headBranch string) ([]branchPR, error) {
+	const query = `query($owner: String!, $repo: String!, $branch: String!) {
+		repository(owner: $owner, name: $repo) {
+			pullRequests(headRefName: $branch, first: 10) {
+				nodes {
+					number
+					state
+					merged
+				}
+			}
+		}
+	}`
+
+	var result struct {
+		Repository struct {
+			PullRequests struct {
+				Nodes []struct {
+					Number int    `json:"number"`
+					State  string `json:"state"`
+					Merged bool   `json:"merged"`
+				} `json:"nodes"`
+			} `json:"pullRequests"`
+		} `json:"repository"`
+	}
+
+	if err := c.ghClient.ExecuteGraphQL(ctx, query, map[string]interface{}{
+		"owner": c.owner, "repo": c.repo, "branch": headBranch,
+	}, &result); err != nil {
+		return nil, fmt.Errorf("find PRs by branch %s: %w", headBranch, err)
+	}
+
+	prs := make([]branchPR, 0, len(result.Repository.PullRequests.Nodes))
+	for _, n := range result.Repository.PullRequests.Nodes {
+		prs = append(prs, branchPR{Number: n.Number, Merged: n.Merged, Open: n.State == "OPEN"})
+	}
+	return prs, nil
 }
 
 // verifyChildrenShippedForClose re-checks every CLOSED child in children has
@@ -164,9 +237,17 @@ func (c *Controller) getSubIssuesByTextSearch(ctx context.Context, parentNum int
 // A closed child with neither is a real guard veto — closing the parent would
 // silently drop that slice's work.
 //
+// GH-4127: evidence is gathered primarily via findPRsByBranch's direct,
+// strongly-consistent lookup on the conventional `pilot/GH-N` branch name;
+// SearchPRsForIssue (the eventually-consistent Search API) is only a
+// secondary source, consulted when the branch lookup finds no merged PR. A
+// child whose PR exists but hasn't merged yet (open / in CI) is genuinely
+// in-flight — it defers (Defer: true) rather than vetoing, so a normal
+// close→merge race never reaches the escalation breaker.
+//
 // Returns every merged PR number found (for the closing summary comment) and a
 // non-nil veto on the FIRST closed child that fails verification. Fails open
-// (skips, does not veto) on a PR-search error for an individual child, since a
+// (skips, does not veto) on a lookup error for an individual child, since a
 // transient API failure must not indefinitely block a legitimate close.
 func (c *Controller) verifyChildrenShippedForClose(ctx context.Context, parentNum int, children []subIssueState) (mergedPRs []int, veto *childCloseVeto) {
 	for _, child := range children {
@@ -177,23 +258,52 @@ func (c *Controller) verifyChildrenShippedForClose(ctx context.Context, parentNu
 			continue
 		}
 
-		prs, err := c.ghClient.SearchPRsForIssue(ctx, c.owner, c.repo, child.Number)
-		if err != nil {
-			c.log.Warn("verifyChildrenShippedForClose: PR search failed, fail-open on this child",
-				slog.Int("parent", parentNum), slog.Int("child", child.Number), slog.Any("error", err))
-			continue
-		}
-
 		merged := false
-		for _, pr := range prs {
+		openOrInCI := false
+
+		branch := fmt.Sprintf("pilot/GH-%d", child.Number)
+		branchPRs, err := c.findPRsByBranch(ctx, branch)
+		if err != nil {
+			c.log.Warn("verifyChildrenShippedForClose: branch lookup failed, falling back to search",
+				slog.Int("parent", parentNum), slog.Int("child", child.Number), slog.Any("error", err))
+			branchPRs = nil
+		}
+		for _, pr := range branchPRs {
 			if pr.Merged {
 				mergedPRs = append(mergedPRs, pr.Number)
 				merged = true
+			} else if pr.Open {
+				openOrInCI = true
 			}
 		}
+
 		if !merged {
-			return mergedPRs, &childCloseVeto{Child: child.Number, Reason: "issue is closed but has no merged PR"}
+			// Secondary source only — catches a PR the branch-name filter
+			// missed (e.g. a non-conventional branch name), never the primary
+			// evidence, since it's eventually consistent (defects 2/5).
+			prs, err := c.ghClient.SearchPRsForIssue(ctx, c.owner, c.repo, child.Number)
+			if err != nil {
+				c.log.Warn("verifyChildrenShippedForClose: PR search failed, fail-open on this child",
+					slog.Int("parent", parentNum), slog.Int("child", child.Number), slog.Any("error", err))
+				continue
+			}
+			for _, pr := range prs {
+				if pr.Merged {
+					mergedPRs = append(mergedPRs, pr.Number)
+					merged = true
+				} else if pr.State == "open" {
+					openOrInCI = true
+				}
+			}
 		}
+
+		if merged {
+			continue
+		}
+		if openOrInCI {
+			return mergedPRs, &childCloseVeto{Child: child.Number, Reason: "PR open or in CI, not yet merged", Defer: true}
+		}
+		return mergedPRs, &childCloseVeto{Child: child.Number, Reason: "issue is closed but has no merged PR"}
 	}
 	return mergedPRs, nil
 }
@@ -329,6 +439,27 @@ func (c *Controller) discoverBodyMarkerEpicParents(ctx context.Context) ([]int, 
 // parent. Split out from reconcileEpicParents so tests can drive one parent
 // directly, mirroring how maybeCloseParentIssue/recoverStaleParentIssues are tested.
 func (c *Controller) reconcileEpicParent(ctx context.Context, parentNum int) {
+	// GH-4127: a closed parent must never re-enter the veto/escalation path —
+	// discoverBodyMarkerEpicParents' candidates aren't filtered on parent
+	// state, so a parent that closed (via this sweep, maybeCloseParentIssue,
+	// or a human) keeps surfacing as a candidate on later ticks. Bail before
+	// any child-set or PR lookup, and clean up a stale needs-clarification
+	// label left by an earlier escalation whose veto is now moot.
+	issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, parentNum)
+	if err != nil {
+		c.log.Warn("reconcileEpicParents: failed to check parent state", slog.Int("parent", parentNum), slog.Any("error", err))
+		return
+	}
+	if strings.EqualFold(issue.State, "closed") {
+		c.log.Debug("reconcileEpicParents: parent already closed, skipping veto/escalation", slog.Int("parent", parentNum))
+		c.clearEpicCloseVeto(ctx, parentNum)
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, parentNum, github.LabelNeedsClarification); err != nil {
+			c.log.Warn("reconcileEpicParents: failed to remove stale needs-clarification label",
+				slog.Int("parent", parentNum), slog.Any("error", err))
+		}
+		return
+	}
+
 	children, hasLinks, err := c.getAllSubIssueNumbers(ctx, parentNum)
 	if err != nil {
 		c.log.Warn("reconcileEpicParents: failed to list children", slog.Int("parent", parentNum), slog.Any("error", err))
@@ -361,12 +492,22 @@ func (c *Controller) reconcileEpicParent(ctx context.Context, parentNum int) {
 		c.log.Debug("reconcileEpicParents: siblings still open", slog.Int("parent", parentNum), slog.Int("open", openBlocking))
 		// The epic re-entered a "still building" phase (a new/reopened sibling) —
 		// forget any prior close-veto streak so it doesn't carry over (GH-4006).
-		c.clearEpicCloseVeto(parentNum)
+		c.clearEpicCloseVeto(ctx, parentNum)
 		return
 	}
 
 	mergedPRs, veto := c.verifyChildrenShippedForClose(ctx, parentNum, children)
 	if veto != nil {
+		if veto.Defer {
+			// GH-4127: child PR exists but hasn't merged yet (open / in CI) —
+			// in flight, not stalled. Defer quietly and reset any prior streak,
+			// exactly like the openBlocking>0 case, so a normal close→merge
+			// race never counts toward the escalation breaker.
+			c.log.Debug("reconcileEpicParents: child PR not yet merged, deferring close",
+				slog.Int("parent", parentNum), slog.Int("child", veto.Child))
+			c.clearEpicCloseVeto(ctx, parentNum)
+			return
+		}
 		c.log.Warn("reconcileEpicParents: close vetoed",
 			slog.Int("parent", parentNum), slog.Int("child", veto.Child), slog.String("veto_reason", veto.Reason))
 		if c.recordEpicCloseVeto(parentNum, veto) {
@@ -374,7 +515,7 @@ func (c *Controller) reconcileEpicParent(ctx context.Context, parentNum int) {
 		}
 		return
 	}
-	c.clearEpicCloseVeto(parentNum)
+	c.clearEpicCloseVeto(ctx, parentNum)
 
 	closed, title := c.closeParentNow(ctx, parentNum, mergedPRs)
 	// GH-3990: an epic just completed — enqueue its scope release. Gated on
@@ -531,10 +672,24 @@ func (c *Controller) recordEpicCloseVeto(parentNum int, veto *childCloseVeto) bo
 // once its children verify shipped or it re-enters a "still building" phase —
 // so a resolved stall doesn't leave a stale escalated flag behind that would
 // suppress a genuinely new veto on this parent later.
-func (c *Controller) clearEpicCloseVeto(parentNum int) {
+//
+// GH-4127: if the cleared streak had already escalated (i.e. this reconciler
+// added LabelNeedsClarification), also remove that label — otherwise a
+// refuted veto leaves a dispatch-blocking label on the parent forever, since
+// escalateEpicCloseVeto's own AddLabels call has no corresponding removal on
+// the "veto resolved" path.
+func (c *Controller) clearEpicCloseVeto(ctx context.Context, parentNum int) {
 	c.mu.Lock()
+	st, ok := c.epicVeto[parentNum]
 	delete(c.epicVeto, parentNum)
 	c.mu.Unlock()
+
+	if ok && st.escalated {
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, parentNum, github.LabelNeedsClarification); err != nil {
+			c.log.Warn("clearEpicCloseVeto: failed to remove needs-clarification label",
+				slog.Int("parent", parentNum), slog.Any("error", err))
+		}
+	}
 }
 
 // escalateEpicCloseVeto breaks the parent re-dispatch loop once its close-veto

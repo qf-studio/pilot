@@ -725,3 +725,526 @@ func TestEpicCloseVetoBreaker(t *testing.T) {
 		}
 	})
 }
+
+// decodeGraphQL pulls the query string and variables out of a GraphQL POST
+// body, for tests that need to route mock responses by query shape.
+func decodeGraphQL(r *http.Request) (query string, vars map[string]interface{}) {
+	var body struct {
+		Query     string                 `json:"query"`
+		Variables map[string]interface{} `json:"variables"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	return body.Query, body.Variables
+}
+
+// TestGetAllSubIssueNumbers_ExcludesParent covers GH-4127 defect 1 for the
+// native sub-issue-link path: even if the native link query somehow returned
+// the parent's own number (it shouldn't, but the incident showed the text-
+// search fallback can), the parent must never appear in its own child set.
+func TestGetAllSubIssueNumbers_ExcludesParent(t *testing.T) {
+	const parentNum = 4127
+	const childNum = 4128
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"state":"open"}`, parentNum)
+
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"node": map[string]interface{}{
+						"subIssues": map[string]interface{}{
+							"totalCount": 2,
+							"nodes": []map[string]interface{}{
+								{"number": parentNum, "state": "CLOSED"},
+								{"number": childNum, "state": "CLOSED"},
+							},
+						},
+					},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	children, hasLinks, err := c.getAllSubIssueNumbers(context.Background(), parentNum)
+	if err != nil {
+		t.Fatalf("getAllSubIssueNumbers failed: %v", err)
+	}
+	if !hasLinks {
+		t.Fatal("expected hasLinks=true (one genuine child remains after filtering)")
+	}
+	if len(children) != 1 || children[0].Number != childNum {
+		t.Errorf("children = %v, want exactly [%d] (parent's own number filtered out)", children, childNum)
+	}
+}
+
+// TestGetSubIssuesByTextSearch_ExcludesParent covers GH-4127 defect 1 at its
+// root: the parent's own body/comments (an escalation comment literally
+// contains "GH-{parentNum}") match the "Parent: GH-N" text search, and
+// without filtering, the parent becomes its own child — self-amplifying,
+// since each escalation comment re-strengthens the match.
+func TestGetSubIssuesByTextSearch_ExcludesParent(t *testing.T) {
+	const parentNum = 4127
+	const childNum = 4128
+
+	t.Run("parent mixed with a genuine child - parent filtered, child kept", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
+				resp := map[string]interface{}{
+					"data": map[string]interface{}{
+						"search": map[string]interface{}{
+							"nodes": []map[string]interface{}{
+								{"number": parentNum, "state": "CLOSED"},
+								{"number": childNum, "state": "CLOSED"},
+							},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+		children, hasLinks, err := c.getSubIssuesByTextSearch(context.Background(), parentNum)
+		if err != nil {
+			t.Fatalf("getSubIssuesByTextSearch failed: %v", err)
+		}
+		if !hasLinks || len(children) != 1 || children[0].Number != childNum {
+			t.Errorf("children = %v, hasLinks = %v, want exactly [%d] with hasLinks=true", children, hasLinks, childNum)
+		}
+	})
+
+	t.Run("only the parent's own escalation comment matches - no genuine children found", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
+				resp := map[string]interface{}{
+					"data": map[string]interface{}{
+						"search": map[string]interface{}{
+							"nodes": []map[string]interface{}{
+								{"number": parentNum, "state": "CLOSED"},
+							},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+		children, hasLinks, err := c.getSubIssuesByTextSearch(context.Background(), parentNum)
+		if err != nil {
+			t.Fatalf("getSubIssuesByTextSearch failed: %v", err)
+		}
+		if hasLinks || len(children) != 0 {
+			t.Errorf("children = %v, hasLinks = %v, want ([], false) — a self-reference is not a genuine child", children, hasLinks)
+		}
+	})
+}
+
+// TestVerifyChildrenShippedForClose_BranchLookup covers GH-4127 defects 2/3:
+// the direct, strongly-consistent branch lookup (not the eventually-
+// consistent Search API) is the decisive evidence source, and a PR that
+// exists but hasn't merged yet (open / in CI) defers rather than hard-vetoing.
+func TestVerifyChildrenShippedForClose_BranchLookup(t *testing.T) {
+	const parentNum = 4127
+	const childNum = 4128
+
+	tests := []struct {
+		name          string
+		branchState   string // "" (no PR), "MERGED", "OPEN"
+		wantVeto      bool
+		wantDefer     bool
+		wantMergedPRs []int
+	}{
+		{
+			name:          "merged via branch lookup, search lags behind - no veto",
+			branchState:   "MERGED",
+			wantMergedPRs: []int{9001},
+		},
+		{
+			name:        "PR open/in CI via branch lookup - defers instead of hard veto",
+			branchState: "OPEN",
+			wantVeto:    true,
+			wantDefer:   true,
+		},
+		{
+			name:        "no PR anywhere - hard veto",
+			branchState: "",
+			wantVeto:    true,
+			wantDefer:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+					nodes := []map[string]interface{}{}
+					if tt.branchState != "" {
+						nodes = append(nodes, map[string]interface{}{
+							"number": 9001,
+							"state":  tt.branchState,
+							"merged": tt.branchState == "MERGED",
+						})
+					}
+					resp := map[string]interface{}{
+						"data": map[string]interface{}{
+							"repository": map[string]interface{}{
+								"pullRequests": map[string]interface{}{"nodes": nodes},
+							},
+						},
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
+
+				case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+					// Search API always empty — proves the branch lookup, not
+					// search, decides the outcome.
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": []interface{}{}})
+
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			children := []subIssueState{{Number: childNum, Closed: true}}
+			mergedPRs, veto := c.verifyChildrenShippedForClose(context.Background(), parentNum, children)
+
+			if tt.wantVeto != (veto != nil) {
+				t.Fatalf("veto = %v, wantVeto = %v", veto, tt.wantVeto)
+			}
+			if veto != nil && veto.Defer != tt.wantDefer {
+				t.Errorf("veto.Defer = %v, want %v", veto.Defer, tt.wantDefer)
+			}
+			if len(mergedPRs) != len(tt.wantMergedPRs) {
+				t.Fatalf("mergedPRs = %v, want %v", mergedPRs, tt.wantMergedPRs)
+			}
+			for i, want := range tt.wantMergedPRs {
+				if mergedPRs[i] != want {
+					t.Errorf("mergedPRs = %v, want %v", mergedPRs, tt.wantMergedPRs)
+				}
+			}
+		})
+	}
+}
+
+// TestReconcileEpicParent_ClosedParentRemovesStaleLabel covers GH-4127
+// defects 3/4: a candidate parent that is already closed must short-circuit
+// before any child-set discovery, PR lookup, or escalation — and if it
+// carries a stale pilot-needs-clarification label from an earlier escalation
+// whose veto is now moot, that label is removed.
+func TestReconcileEpicParent_ClosedParentRemovesStaleLabel(t *testing.T) {
+	const parentNum = 4127
+
+	var (
+		deletedLabelPaths []string
+		commentPosted     bool
+		closeCalled       bool
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"state":"closed"}`, parentNum)
+
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, fmt.Sprintf("/repos/owner/repo/issues/%d/labels/", parentNum)):
+			deletedLabelPaths = append(deletedLabelPaths, r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/comments", parentNum):
+			commentPosted = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+
+		case r.Method == http.MethodPatch && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			closeCalled = true
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			// No child-set/PR-lookup call should ever reach this server for an
+			// already-closed parent; a plain 200 keeps unexpected calls visible
+			// only through the assertions below rather than crashing the test.
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	// Simulate a prior pass (this process or an earlier one) that escalated
+	// and added pilot-needs-clarification, whose veto is now moot because the
+	// parent closed out-of-band.
+	c.epicVeto[parentNum] = &epicCloseVetoTracking{child: 1, reason: "issue is closed but has no merged PR", count: 3, escalated: true}
+
+	c.reconcileEpicParent(context.Background(), parentNum)
+
+	if closeCalled {
+		t.Error("closeParentNow should never run for an already-closed parent")
+	}
+	if commentPosted {
+		t.Error("no comment should be posted for an already-closed parent")
+	}
+	found := false
+	for _, p := range deletedLabelPaths {
+		if strings.HasSuffix(p, "/labels/"+github.LabelNeedsClarification) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the stale %s label to be removed, got DELETE calls: %v", github.LabelNeedsClarification, deletedLabelPaths)
+	}
+	if _, ok := c.epicVeto[parentNum]; ok {
+		t.Error("expected the in-memory veto streak to be cleared for the closed parent")
+	}
+}
+
+// TestReconcileEpicParent_RefutedVetoRemovesLabel covers GH-4127 defect 4 at
+// the openBlocking>0 refute path specifically (as opposed to the
+// closeParentNow path, which already had its own unconditional label
+// cleanup): once a parent's close-veto has escalated and added
+// pilot-needs-clarification, a later pass that finds the epic back in a
+// "still building" phase (clearEpicCloseVeto) must also remove that label.
+func TestReconcileEpicParent_RefutedVetoRemovesLabel(t *testing.T) {
+	const parentNum = 4127
+	const childNum = 4128
+
+	childClosed := true // stays closed-but-unshipped through the escalation, then reopens
+
+	var (
+		addLabelsCalls    []string
+		deletedLabelPaths []string
+		closeCalled       bool
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"state":"open"}`, parentNum)
+
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			state := "OPEN"
+			if childClosed {
+				state = "CLOSED"
+			}
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"node": map[string]interface{}{
+						"subIssues": map[string]interface{}{
+							"totalCount": 1,
+							"nodes":      []map[string]interface{}{{"number": childNum, "state": state}},
+						},
+					},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+			// The child never produces a merged PR under its own number in
+			// this test — the ghost-closed pattern from GH-4006.
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": []interface{}{}})
+
+		case r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/labels", parentNum):
+			var payload struct {
+				Labels []string `json:"labels"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			addLabelsCalls = append(addLabelsCalls, payload.Labels...)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, fmt.Sprintf("/repos/owner/repo/issues/%d/labels/", parentNum)):
+			deletedLabelPaths = append(deletedLabelPaths, r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/comments", parentNum):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+
+		case r.Method == http.MethodPatch && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			closeCalled = true
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	for i := 0; i < epicCloseVetoBreakerThreshold; i++ {
+		c.reconcileEpicParent(context.Background(), parentNum)
+	}
+
+	foundAdd := false
+	for _, l := range addLabelsCalls {
+		if l == github.LabelNeedsClarification {
+			foundAdd = true
+		}
+	}
+	if !foundAdd {
+		t.Fatalf("expected escalation to add %s after %d vetoed passes, got: %v",
+			github.LabelNeedsClarification, epicCloseVetoBreakerThreshold, addLabelsCalls)
+	}
+
+	// The sibling reopens — the epic re-enters "still building". This refutes
+	// the recorded veto via the openBlocking>0 path, NOT via closeParentNow.
+	childClosed = false
+	c.reconcileEpicParent(context.Background(), parentNum)
+
+	if closeCalled {
+		t.Error("parent must not close while a child is open")
+	}
+	foundRemove := false
+	for _, p := range deletedLabelPaths {
+		if strings.HasSuffix(p, "/labels/"+github.LabelNeedsClarification) {
+			foundRemove = true
+		}
+	}
+	if !foundRemove {
+		t.Errorf("expected the escalation's %s label to be removed once the veto was refuted, got DELETE calls: %v",
+			github.LabelNeedsClarification, deletedLabelPaths)
+	}
+}
+
+// TestReconcileEpicParent_SummaryListsAllMergedPRs covers GH-4127 defect 5:
+// the close-summary comment must enumerate every child's merged PR, sourced
+// from the strongly-consistent branch lookup rather than the Search API
+// (which, on the real GH-4127, only had 2 of 4 indexed at close time).
+func TestReconcileEpicParent_SummaryListsAllMergedPRs(t *testing.T) {
+	const parentNum = 4127
+	children := []int{4128, 4129, 4130, 4131}
+	prForChild := map[int]int{4128: 9001, 4129: 9002, 4130: 9003, 4131: 9004}
+
+	var commentBody string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"state":"open"}`, parentNum)
+
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			query, vars := decodeGraphQL(r)
+			switch {
+			case strings.Contains(query, "subIssues(first"):
+				nodes := make([]map[string]interface{}, len(children))
+				for i, ch := range children {
+					nodes[i] = map[string]interface{}{"number": ch, "state": "CLOSED"}
+				}
+				resp := map[string]interface{}{
+					"data": map[string]interface{}{
+						"node": map[string]interface{}{
+							"subIssues": map[string]interface{}{"totalCount": len(children), "nodes": nodes},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+
+			case strings.Contains(query, "pullRequests(headRefName"):
+				branch, _ := vars["branch"].(string)
+				nodes := []map[string]interface{}{}
+				for _, ch := range children {
+					if branch == fmt.Sprintf("pilot/GH-%d", ch) {
+						nodes = append(nodes, map[string]interface{}{"number": prForChild[ch], "state": "MERGED", "merged": true})
+					}
+				}
+				resp := map[string]interface{}{
+					"data": map[string]interface{}{
+						"repository": map[string]interface{}{
+							"pullRequests": map[string]interface{}{"nodes": nodes},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+
+		case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+			// Search never catches up within this pass — proves the summary
+			// still lists every child (GH-4127 defect 5: was 2 of 4 via search alone).
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"items": []interface{}{}})
+
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/labels/"):
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/comments", parentNum):
+			var payload struct {
+				Body string `json:"body"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			commentBody = payload.Body
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+
+		case r.Method == http.MethodPatch && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	c.reconcileEpicParent(context.Background(), parentNum)
+
+	for _, ch := range children {
+		want := fmt.Sprintf("#%d", prForChild[ch])
+		if !strings.Contains(commentBody, want) {
+			t.Errorf("close summary missing merged PR %s for child #%d, got: %q", want, ch, commentBody)
+		}
+	}
+}
