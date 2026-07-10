@@ -65,7 +65,6 @@ type Pilot struct {
 	slackHandler           *slack.Handler                   // Slack Socket Mode handler (GH-652)
 	slackRunner            *executor.Runner                 // Runner for Slack tasks (GH-652)
 	slackMemberResolver    slack.MemberResolver             // Team member resolver for Slack RBAC (GH-786)
-	githubPoller           *github.Poller                   // GitHub polling handler (GH-350)
 	alertEngine            *alerts.Engine
 	teamsService           *teams.Service // Teams RBAC service (GH-633)
 	store                  *memory.Store
@@ -144,14 +143,6 @@ func WithTelegramMemberResolver(resolver telegram.MemberResolver) Option {
 func WithTelegramApprovalHandler(h telegram.ApprovalCallbackHandler) Option {
 	return func(p *Pilot) {
 		p.telegramApprovalHdlr = h
-	}
-}
-
-// WithGitHubPoller enables GitHub polling in gateway mode (GH-350)
-// The poller is created externally with all necessary options and passed in.
-func WithGitHubPoller(poller *github.Poller) Option {
-	return func(p *Pilot) {
-		p.githubPoller = poller
 	}
 }
 
@@ -760,12 +751,6 @@ func (p *Pilot) Start() error {
 	if p.telegramHandler != nil {
 		p.telegramHandler.StartPolling(p.ctx)
 		logging.WithComponent("pilot").Info("Telegram polling started in gateway mode")
-	}
-
-	// Start GitHub polling if poller is initialized (GH-350)
-	if p.githubPoller != nil {
-		go p.githubPoller.Start(p.ctx)
-		logging.WithComponent("pilot").Info("GitHub polling started in gateway mode")
 	}
 
 	// Start Slack Socket Mode if handler is initialized (GH-652)

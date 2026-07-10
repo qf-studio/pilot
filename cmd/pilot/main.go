@@ -59,21 +59,33 @@ var (
 
 var quietMode bool
 
-// resolveExecutionMode maps the orchestrator.execution.mode config string to a
-// github.ExecutionMode. Empty and "auto" both resolve to ExecutionModeAuto
-// (parallel dispatch with scope-overlap guard), matching the poller's own
-// default (poller.go:374) and config.DefaultExecutionConfig(). Any other
-// unrecognized value falls back to ExecutionModeSequential.
-func resolveExecutionMode(mode string) github.ExecutionMode {
+// executionMode mirrors the execution-mode enum the (now-deleted, GH-4191)
+// in-tree github.Poller used to expose. Kept locally since it now only drives
+// the startup "sequential mode" display decision below — GitHub polling is
+// SDK-only and the SDK adapter runs ExecutionModeAuto unconditionally.
+type executionMode string
+
+const (
+	executionModeSequential executionMode = "sequential"
+	executionModeParallel   executionMode = "parallel"
+	executionModeAuto       executionMode = "auto"
+)
+
+// resolveExecutionMode maps the orchestrator.execution.mode config string to
+// an executionMode. Empty and "auto" both resolve to executionModeAuto
+// (parallel dispatch with scope-overlap guard), matching
+// config.DefaultExecutionConfig(). Any other unrecognized value falls back to
+// executionModeSequential.
+func resolveExecutionMode(mode string) executionMode {
 	switch mode {
 	case "sequential":
-		return github.ExecutionModeSequential
+		return executionModeSequential
 	case "parallel":
-		return github.ExecutionModeParallel
+		return executionModeParallel
 	case "auto", "":
-		return github.ExecutionModeAuto
+		return executionModeAuto
 	default:
-		return github.ExecutionModeSequential
+		return executionModeSequential
 	}
 }
 
@@ -2159,11 +2171,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	registerAdapterReadiness(gwServer, adapterVerifiers, verify.DefaultTimeout)
 
 	// GH-929: Start GitHub polling for multiple repos if enabled
-	var ghPollers []*github.Poller
-	// GH-4110: repo-keyed registry of every GitHub poller (in-tree ones added
-	// inline below, the SDK poller from its CreateAndStart). The sub-issue-skip /
-	// done-remark / stale-label callbacks route through this so they reach the SDK
-	// poller and stay scoped to the correct repo.
+	// GH-4110: repo-keyed registry of every GitHub poller (populated by the SDK
+	// poller's CreateAndStart). The sub-issue-skip / done-remark / stale-label
+	// callbacks route through this so they reach the SDK poller and stay scoped
+	// to the correct repo.
 	ghPollerRegistry := newGithubPollerRegistry()
 	polledRepos := make(map[string]bool) // Track repos already polled to avoid duplicates
 
@@ -2181,7 +2192,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 
 			// Determine execution mode from config
-			execMode := github.ExecutionModeSequential // Default to sequential
+			execMode := executionModeSequential // Default to sequential
 			waitForMerge := true
 			pollInterval := 30 * time.Second
 			prTimeout := 1 * time.Hour
@@ -2200,9 +2211,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 			// M7 4d.2b: when use_sdk_poller is on, the SDK registration fans out a
 			// poller for the default repo AND every projects[] github repo. This is
-			// the single source of truth for "is a github poller going to exist" so
-			// the autopilot-start gate below counts SDK pollers even when ghPollers
-			// (populated only by the SDK poller registering itself, GH-4110) is empty.
+			// the single source of truth for "is a github poller going to exist".
 			sdkGithubPollerEnabled := githubPollerRegistration().Enabled(cfg)
 
 			// SDK registration (poller_github.go) owns the default repo — the
@@ -2230,11 +2239,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 			}
 
-			// M7 4d.2b: SDK pollers are created later (StartAdapterPollers) and never
-			// land in ghPollers, so gate on "will any github poller exist" — otherwise
-			// a flag-on config with all repos SDK-owned would look like "no pollers"
-			// and silently skip autopilot startup.
-			hasGithubPollers := len(ghPollers) > 0 || sdkGithubPollerEnabled
+			// M7 4d.2b: SDK pollers are created later (StartAdapterPollers), so gate
+			// on "will any github poller exist" — otherwise a flag-on config with
+			// all repos SDK-owned would look like "no pollers" and silently skip
+			// autopilot startup.
+			hasGithubPollers := sdkGithubPollerEnabled
 
 			if !hasGithubPollers {
 				logging.WithComponent("github").Warn("GitHub polling enabled but no repos configured — set adapters.github.repo or add project-level github.owner/github.repo",
@@ -2250,7 +2259,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 
 			if hasGithubPollers {
-				if !dashboardMode && execMode == github.ExecutionModeSequential && waitForMerge {
+				if !dashboardMode && execMode == executionModeSequential && waitForMerge {
 					fmt.Printf("   ◌ sequential mode · waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
 				}
 
@@ -2372,7 +2381,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					// the default repo, so route the clear through the registry keyed by
 					// that repo — it reaches the SDK poller (which is the default repo's
 					// poller when use_sdk_poller is on) and is a no-op if no poller for
-					// that repo is registered, so no ghPollers length guard is needed.
+					// that repo is registered.
 					defaultRepo := cfg.Adapters.GitHub.Repo
 					cleanerOpts = append(cleanerOpts, github.WithOnFailedCleaned(func(issueNumber int) {
 						ghPollerRegistry.clearProcessed(defaultRepo, issueNumber)
@@ -2685,9 +2694,6 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 					// Drain pollers — stop accepting new issues before upgrade
 					program.Send(dashboard.AddLog("◌ draining pollers — no new issues will be accepted")())
-					for _, p := range ghPollers {
-						go p.Drain()
-					}
 
 					// Perform hot upgrade with monitor as TaskChecker
 					// Monitor tracks running/queued tasks; upgrade waits for them to finish
@@ -2879,9 +2885,6 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	if tgHandler != nil {
 		tgHandler.Stop()
-	}
-	if len(ghPollers) > 0 {
-		fmt.Printf("○ stopping github pollers (%d)...\n", len(ghPollers))
 	}
 	if dispatcher != nil {
 		fmt.Println("○ stopping task dispatcher...")
