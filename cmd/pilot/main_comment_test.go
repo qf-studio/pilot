@@ -75,36 +75,6 @@ func TestBuildExecutionComment_WithIntentWarning(t *testing.T) {
 	}
 }
 
-func TestBuildFailureComment(t *testing.T) {
-	result := &executor.ExecutionResult{
-		Error:            "build failed: undefined method foo",
-		Duration:         45 * time.Second,
-		ModelName:        "claude-haiku",
-		EstimatedCostUSD: 0.01,
-	}
-	comment := buildFailureComment(result)
-
-	if !strings.Contains(comment, "❌") {
-		t.Error("missing failure icon")
-	}
-	if !strings.Contains(comment, "<details>") {
-		t.Error("missing collapsible details")
-	}
-	if !strings.Contains(comment, "undefined method foo") {
-		t.Error("missing error message")
-	}
-}
-
-func TestBuildFailureComment_NilResult(t *testing.T) {
-	comment := buildFailureComment(nil)
-	if !strings.Contains(comment, "❌ Pilot execution failed") {
-		t.Error("missing failure header")
-	}
-	if strings.Contains(comment, "<details>") {
-		t.Error("should not have details for nil result")
-	}
-}
-
 func TestFormatTokenCountComment(t *testing.T) {
 	tests := []struct {
 		input int64

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -11,9 +12,7 @@ import (
 )
 
 // applySpecGuardSDK runs the two-strike spec validation gate for an issue on
-// the SDK poll path (M7 4d.3). SDK-typed sibling of applySpecGuard — the two
-// share semantics and the comment marker; the in-tree version retires with
-// the adapter package. Returns true when dispatch should be skipped.
+// the SDK poll path (M7 4d.3). Returns true when dispatch should be skipped.
 //
 // First call with a failing issue adds pilot-spec-incomplete and posts a
 // structured comment. Subsequent call (comment marker already present)
@@ -56,4 +55,24 @@ func applySpecGuardSDK(ctx context.Context, client *githubSDK.Client, owner, rep
 	}
 
 	return true
+}
+
+// buildSpecIncompleteComment renders the structured first-strike comment.
+func buildSpecIncompleteComment(reasons []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", ghissue.SpecCommentMarker)
+	fmt.Fprintf(&b, "⚠️ Pilot can't dispatch this issue: the spec body is too thin to execute against.\n\n")
+	fmt.Fprintf(&b, "**What failed:**\n")
+	for _, r := range reasons {
+		fmt.Fprintf(&b, "- %s\n", r)
+	}
+	fmt.Fprintf(&b, "\n**Suggested template:**\n\n")
+	fmt.Fprintf(&b, "```markdown\n")
+	fmt.Fprintf(&b, "## Context\n\n<!-- Describe what this changes and why -->\n\n")
+	fmt.Fprintf(&b, "## Acceptance\n\n- [ ] ...\n\n")
+	fmt.Fprintf(&b, "## Implementation\n\n<!-- Optional: describe the approach -->\n")
+	fmt.Fprintf(&b, "```\n\n")
+	fmt.Fprintf(&b, "To retry: edit the issue body, then remove the `%s` label.\n", githubSDK.LabelSpecIncomplete)
+	fmt.Fprintf(&b, "If `%s` was also added, remove that too.\n", githubSDK.LabelBlocked)
+	return b.String()
 }
