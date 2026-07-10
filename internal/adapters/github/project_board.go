@@ -205,7 +205,6 @@ func (p *ProjectBoardSync) ensureResolved(ctx context.Context) error {
 }
 
 // resolveProjectID queries for the project node ID, trying organization first then user fallback.
-// This is a shared package-level helper used by both ProjectBoardSync and ProjectBoardSource.
 func resolveProjectID(ctx context.Context, client *Client, owner string, projectNumber int) (string, error) {
 	vars := map[string]interface{}{
 		"owner":  owner,
