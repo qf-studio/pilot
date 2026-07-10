@@ -32,6 +32,26 @@ func (m *mockSlackClient) PostMessage(ctx context.Context, msg *slack.Message) (
 	}, nil
 }
 
+// Mock Telegram sender for testing
+type mockTelegramSender struct {
+	calls         []telegramSendCall
+	failParseMode string // parse mode for which the send fails with a parse-entities error
+}
+
+type telegramSendCall struct {
+	chatID    string
+	text      string
+	parseMode string
+}
+
+func (m *mockTelegramSender) SendBriefMessage(ctx context.Context, chatID, text, parseMode string) (*TelegramMessageResponse, error) {
+	m.calls = append(m.calls, telegramSendCall{chatID: chatID, text: text, parseMode: parseMode})
+	if parseMode == m.failParseMode {
+		return nil, errors.New("telegram API error: Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 1090 (code: 400)")
+	}
+	return &TelegramMessageResponse{MessageID: 42}, nil
+}
+
 // Mock email sender for testing
 type mockEmailSender struct {
 	shouldFail   bool
@@ -676,6 +696,158 @@ func TestWithTelegramSender(t *testing.T) {
 	if service == nil {
 		t.Fatal("expected service, got nil")
 	}
+}
+
+func TestEscapeTelegramMarkdown(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"use_sdk_poller", `use\_sdk\_poller`},
+		{"a*b", `a\*b`},
+		{"`code`", "\\`code\\`"},
+		{"[link]", `\[link]`},
+		{"plain text", "plain text"},
+	}
+
+	for _, tt := range tests {
+		got := escapeTelegramMarkdown(tt.in)
+		if got != tt.want {
+			t.Errorf("escapeTelegramMarkdown(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestDeliverTelegramEscapesDynamicContent verifies that snake_case identifiers,
+// asterisks, backticks, and brackets in task titles/branch names are escaped
+// before being sent with Markdown parse mode, and that the send succeeds.
+func TestDeliverTelegramEscapesDynamicContent(t *testing.T) {
+	config := &BriefConfig{
+		Channels: []ChannelConfig{
+			{Type: "telegram", Channel: "283716179"},
+		},
+	}
+
+	mockSender := &mockTelegramSender{}
+
+	service := &DeliveryService{
+		config:         config,
+		telegramSender: mockSender,
+		logger:         slog.Default(),
+		slackFmt:       NewSlackFormatter(),
+		emailFmt:       NewEmailFormatter(),
+		plainFmt:       NewPlainTextFormatter(),
+	}
+
+	brief := createTestBrief()
+	brief.Completed[0].Title = "Refactor use_sdk_poller [urgent] with `inline_code`* markers"
+
+	ctx := context.Background()
+	results := service.DeliverAll(ctx, brief)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Success {
+		t.Fatalf("expected success, got error: %v", results[0].Error)
+	}
+
+	if len(mockSender.calls) != 1 {
+		t.Fatalf("expected 1 send call, got %d", len(mockSender.calls))
+	}
+
+	sent := mockSender.calls[0].text
+	if containsString(sent, "use_sdk_poller [urgent] with `inline_code`* markers") {
+		t.Errorf("expected special chars to be escaped, got raw content in: %s", sent)
+	}
+	if !containsString(sent, `use\_sdk\_poller`) {
+		t.Errorf("expected escaped underscore in: %s", sent)
+	}
+}
+
+// TestDeliverTelegramFallsBackToPlainTextOnParseError verifies that a
+// "can't parse entities" 400 from the Markdown send triggers exactly one
+// plain-text retry, and that a WARN is logged for the fallback.
+func TestDeliverTelegramFallsBackToPlainTextOnParseError(t *testing.T) {
+	config := &BriefConfig{
+		Channels: []ChannelConfig{
+			{Type: "telegram", Channel: "283716179"},
+		},
+	}
+
+	mockSender := &mockTelegramSender{failParseMode: "Markdown"}
+
+	service := &DeliveryService{
+		config:         config,
+		telegramSender: mockSender,
+		logger:         slog.Default(),
+		slackFmt:       NewSlackFormatter(),
+		emailFmt:       NewEmailFormatter(),
+		plainFmt:       NewPlainTextFormatter(),
+	}
+
+	brief := createTestBrief()
+	ctx := context.Background()
+	results := service.DeliverAll(ctx, brief)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Success {
+		t.Fatalf("expected success after plain-text fallback, got error: %v", results[0].Error)
+	}
+
+	if len(mockSender.calls) != 2 {
+		t.Fatalf("expected 2 send calls (Markdown then plain-text retry), got %d", len(mockSender.calls))
+	}
+	if mockSender.calls[0].parseMode != "Markdown" {
+		t.Errorf("expected first call parse mode Markdown, got %q", mockSender.calls[0].parseMode)
+	}
+	if mockSender.calls[1].parseMode != "" {
+		t.Errorf("expected fallback call parse mode empty, got %q", mockSender.calls[1].parseMode)
+	}
+}
+
+// TestDeliverTelegramNoFallbackOnOtherErrors verifies that non-parse-entity
+// errors do not trigger the plain-text retry (only one send call is made).
+func TestDeliverTelegramNoFallbackOnOtherErrors(t *testing.T) {
+	config := &BriefConfig{
+		Channels: []ChannelConfig{
+			{Type: "telegram", Channel: "283716179"},
+		},
+	}
+
+	failingSender := &alwaysFailTelegramSender{}
+
+	service := &DeliveryService{
+		config:         config,
+		telegramSender: failingSender,
+		logger:         slog.Default(),
+		slackFmt:       NewSlackFormatter(),
+		emailFmt:       NewEmailFormatter(),
+		plainFmt:       NewPlainTextFormatter(),
+	}
+
+	brief := createTestBrief()
+	ctx := context.Background()
+	results := service.DeliverAll(ctx, brief)
+
+	if results[0].Success {
+		t.Fatalf("expected failure, got success")
+	}
+	if failingSender.calls != 1 {
+		t.Errorf("expected exactly 1 send call for a non-parse-entity error, got %d", failingSender.calls)
+	}
+}
+
+// alwaysFailTelegramSender always fails with a non-parse-entity error.
+type alwaysFailTelegramSender struct {
+	calls int
+}
+
+func (m *alwaysFailTelegramSender) SendBriefMessage(ctx context.Context, chatID, text, parseMode string) (*TelegramMessageResponse, error) {
+	m.calls++
+	return nil, errors.New("telegram API error: Bad Request: chat not found (code: 400)")
 }
 
 func TestDeliverUnsupportedChannelType(t *testing.T) {
