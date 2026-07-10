@@ -1011,6 +1011,14 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 
 		// If processed but no status labels, allow retry (pilot-failed was removed)
 		if processed {
+			// GH-4183: A closed issue is terminal — never re-arm regardless of
+			// label presence/absence. Reuses the issue payload already fetched
+			// this cycle; no extra API call (mem-048).
+			if issue.State == StateClosed {
+				p.logger.Debug("skipping closed issue", slog.Int("number", issue.Number))
+				continue
+			}
+
 			// GH-2201: Check grace period before allowing retry
 			if p.retryGracePeriod > 0 && time.Since(processedAt) < p.retryGracePeriod {
 				p.logger.Debug("Issue within retry grace period, skipping",
@@ -1427,6 +1435,15 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 
 		// If processed but no status labels, allow retry (pilot-failed was removed)
 		if processed {
+			// GH-4183: A closed issue is terminal — never re-arm regardless of
+			// label presence/absence. Reuses the issue payload already fetched
+			// this cycle; no extra API call (mem-048).
+			if issue.State == StateClosed {
+				p.logger.Debug("skipping closed issue", slog.Int("number", issue.Number))
+				p.recordSkip(skipreason.ReasonClosedIssue)
+				continue
+			}
+
 			// GH-2201: Check grace period before allowing retry
 			if p.retryGracePeriod > 0 && time.Since(processedAt) < p.retryGracePeriod {
 				p.logger.Debug("Issue within retry grace period, skipping",

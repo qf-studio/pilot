@@ -819,6 +819,84 @@ func TestPoller_FindOldestUnprocessedIssue_AllowsRetryWhenFailedLabelRemoved(t *
 	}
 }
 
+// TestPoller_FindOldestUnprocessedIssue_ClosedIssueGate covers GH-4183: a
+// closed issue is terminal and must never be re-armed for retry by the
+// "status labels removed" path, regardless of whether it still carries a
+// (non-blocking) label. Only an open, previously-processed issue should be
+// picked back up.
+func TestPoller_FindOldestUnprocessedIssue_ClosedIssueGate(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name         string
+		state        string
+		labels       []Label
+		wantDispatch bool
+	}{
+		{
+			name:         "closed issue with missing status label is skipped",
+			state:        StateClosed,
+			labels:       []Label{{Name: "pilot"}},
+			wantDispatch: false,
+		},
+		{
+			name:         "closed issue with present status label is skipped",
+			state:        StateClosed,
+			labels:       []Label{{Name: "pilot"}, {Name: "bug"}},
+			wantDispatch: false,
+		},
+		{
+			name:         "open issue with missing status label dispatches",
+			state:        StateOpen,
+			labels:       []Label{{Name: "pilot"}},
+			wantDispatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issues := []*Issue{
+				{Number: 1, Title: "Issue 1", State: tt.state, Labels: tt.labels, CreatedAt: now},
+			}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(issues)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+				WithRetryGracePeriod(0), // GH-2201: disable grace period for test
+			)
+
+			// Simulate: issue was processed by a prior poll cycle.
+			poller.markProcessed(1)
+
+			issue, err := poller.findOldestUnprocessedIssue(context.Background())
+			if err != nil {
+				t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+			}
+
+			if tt.wantDispatch {
+				if issue == nil {
+					t.Fatal("issue should not be nil - open issue should be re-armed for retry")
+				}
+				if poller.IsProcessed(1) {
+					t.Error("issue #1 should no longer be marked as processed after re-arm")
+				}
+			} else {
+				if issue != nil {
+					t.Fatalf("issue should be nil - closed issue is terminal, got #%d", issue.Number)
+				}
+				if !poller.IsProcessed(1) {
+					t.Error("issue #1 should remain marked as processed - closed issue must not be re-armed")
+				}
+			}
+		})
+	}
+}
+
 func TestPoller_FindOldestUnprocessedIssue_SkipsInProgress(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{

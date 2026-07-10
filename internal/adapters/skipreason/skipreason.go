@@ -22,6 +22,7 @@ const (
 	ReasonPreFlightReject    = "pre_flight_reject"
 	ReasonStatusLabel        = "status_label" // GitLab combined in_progress/done/failed
 	ReasonStatusTag          = "status_tag"   // Azure DevOps combined in_progress/done/failed
+	ReasonClosedIssue        = "closed_issue" // GH-4183: closed issue is terminal, never re-arm
 )
 
 // PollerMetricsRecorder records poller dispatch/skip counters.
