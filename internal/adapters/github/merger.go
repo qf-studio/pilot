@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
@@ -230,4 +231,26 @@ func (m *MergeWaiter) WaitWithCallback(ctx context.Context, prNumber int, onPoll
 			// Continue polling
 		}
 	}
+}
+
+// ExtractPRNumber parses the PR number out of a GitHub pull-request URL
+// (e.g. "https://github.com/owner/repo/pull/123").
+func ExtractPRNumber(prURL string) (int, error) {
+	if prURL == "" {
+		return 0, fmt.Errorf("empty PR URL")
+	}
+
+	// Match pattern: /pull/123 or /pulls/123
+	re := regexp.MustCompile(`/pulls?/(\d+)`)
+	matches := re.FindStringSubmatch(prURL)
+	if len(matches) < 2 {
+		return 0, fmt.Errorf("could not extract PR number from URL: %s", prURL)
+	}
+
+	var num int
+	if _, err := fmt.Sscanf(matches[1], "%d", &num); err != nil {
+		return 0, fmt.Errorf("invalid PR number in URL: %s", prURL)
+	}
+
+	return num, nil
 }

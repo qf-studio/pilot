@@ -1047,13 +1047,13 @@ func TestCountGitHubRepos(t *testing.T) {
 func TestResolveExecutionMode(t *testing.T) {
 	tests := []struct {
 		modeStr string
-		want    github.ExecutionMode
+		want    executionMode
 	}{
-		{"sequential", github.ExecutionModeSequential},
-		{"parallel", github.ExecutionModeParallel},
-		{"auto", github.ExecutionModeAuto},
-		{"", github.ExecutionModeAuto},
-		{"unrecognized", github.ExecutionModeSequential},
+		{"sequential", executionModeSequential},
+		{"parallel", executionModeParallel},
+		{"auto", executionModeAuto},
+		{"", executionModeAuto},
+		{"unrecognized", executionModeSequential},
 	}
 	for _, tt := range tests {
 		t.Run(tt.modeStr, func(t *testing.T) {
