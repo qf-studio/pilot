@@ -1725,6 +1725,18 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 // continue) applies unchanged; any other terminal status is a genuine
 // failure, reported with the tracked row's real Error message when the
 // original signal lacked one.
+//
+// GH-4185: the synchronous call this reconciles against already ran
+// executeWithOptions for taskID, which calls monitor.Start(taskID) (GH-3786
+// race) — so the dashboard Monitor entry is left in StatusRunning regardless
+// of which branch below fires. A normal (non-raced) completion retires that
+// entry via monitor.Complete/monitor.Fail once handleIssueGeneric's own
+// exec/result decision is known (cmd/pilot/handler_common.go step 7); since
+// this reconciled path returns its own decision straight to the epic loop
+// without ever going through that handler, it must retire the same Monitor
+// entry itself or the card is stuck showing "● running 100%" forever even
+// though the child is done. Mirrors handler_common.go's branch: nil error →
+// Complete, non-nil error → Fail.
 func (r *Runner) resolveChildTerminalOutcome(taskID, selfExecID, status string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
 	row, rowErr := r.logStore.GetLatestExecutionByTaskIDExcluding(taskID, selfExecID)
 	if rowErr != nil {
@@ -1740,6 +1752,9 @@ func (r *Runner) resolveChildTerminalOutcome(taskID, selfExecID, status string, 
 		}
 		r.log.Info("reconcileChildOutcome: child execution row reached terminal success after a synchronous failure signal; treating as succeeded",
 			"task_id", taskID, "status", status)
+		if r.monitor != nil {
+			r.monitor.Complete(taskID, synth.PRUrl)
+		}
 		return synth, nil
 	case "no_op":
 		synth := &ExecutionResult{TaskID: taskID, Success: false, Outcome: "no_op"}
@@ -1748,6 +1763,9 @@ func (r *Runner) resolveChildTerminalOutcome(taskID, selfExecID, status string, 
 		}
 		r.log.Info("reconcileChildOutcome: child execution row reached terminal no_op after a synchronous failure signal; treating as no-op",
 			"task_id", taskID, "status", status)
+		if r.monitor != nil {
+			r.monitor.Complete(taskID, "")
+		}
 		return synth, nil
 	default:
 		msg := ""
@@ -1766,6 +1784,9 @@ func (r *Runner) resolveChildTerminalOutcome(taskID, selfExecID, status string, 
 		}
 		result.Success = false
 		result.Error = msg
+		if r.monitor != nil {
+			r.monitor.Fail(taskID, msg)
+		}
 		return result, fmt.Errorf("child execution status=%s: %s", status, msg)
 	}
 }
