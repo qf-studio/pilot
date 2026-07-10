@@ -330,6 +330,17 @@ type Controller struct {
 	// (never skips) the eventual escalation.
 	epicVeto map[int]*epicCloseVetoTracking
 
+	// epicResolvedParents marks epic parent issue numbers reconcileEpicParent
+	// has already driven to a terminal state (closed, veto cleared, stale
+	// pilot-needs-clarification label confirmed removed or already absent),
+	// guarded by mu. reconcileEpicParents consults this to drop such parents
+	// from the candidate set on every later tick (GH-4179): without it, a
+	// closed parent whose label was already gone kept re-hitting RemoveLabel
+	// every poll tick forever, each call 404ing since there was nothing left
+	// to remove. In-memory only: a daemon restart re-derives it on the next
+	// pass at the cost of one redundant GetIssue+RemoveLabel per parent.
+	epicResolvedParents map[int]bool
+
 	// cachedBotLogin holds the authenticated GitHub login for the Pilot token.
 	// Populated lazily by getBotLogin; protected by mu. GH-3417.
 	cachedBotLogin string
@@ -361,6 +372,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		alertedPersistFailures: make(map[int]bool),
 		persistFailedPRs:       make(map[int]time.Time),
 		epicVeto:               make(map[int]*epicCloseVetoTracking),
+		epicResolvedParents:    make(map[int]bool),
 	}
 
 	// Options must apply before the releaser is constructed below: the

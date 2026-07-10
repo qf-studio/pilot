@@ -321,8 +321,31 @@ func (c *Controller) verifyChildrenShippedForClose(ctx context.Context, parentNu
 // the next restart.
 func (c *Controller) reconcileEpicParents(ctx context.Context) {
 	for _, parentNum := range c.epicParentCandidates(ctx) {
+		if c.isEpicParentResolved(parentNum) {
+			// GH-4179: already driven to a terminal state on a prior tick
+			// (closed, veto cleared, stale label confirmed gone) — nothing
+			// left to reconcile, so skip without even a GetIssue call.
+			continue
+		}
 		c.reconcileEpicParent(ctx, parentNum)
 	}
+}
+
+// isEpicParentResolved reports whether parentNum was already fully reconciled
+// to a terminal state on a prior tick (see epicResolvedParents).
+func (c *Controller) isEpicParentResolved(parentNum int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.epicResolvedParents[parentNum]
+}
+
+// markEpicParentResolved records that parentNum has nothing left to
+// reconcile, so reconcileEpicParents drops it from the candidate set on
+// every subsequent tick (see epicResolvedParents).
+func (c *Controller) markEpicParentResolved(parentNum int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.epicResolvedParents[parentNum] = true
 }
 
 // epicParentCandidates merges the two independent epic-parent discovery
@@ -454,9 +477,19 @@ func (c *Controller) reconcileEpicParent(ctx context.Context, parentNum int) {
 		c.log.Debug("reconcileEpicParents: parent already closed, skipping veto/escalation", slog.Int("parent", parentNum))
 		c.clearEpicCloseVeto(ctx, parentNum)
 		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, parentNum, github.LabelNeedsClarification); err != nil {
-			c.log.Warn("reconcileEpicParents: failed to remove stale needs-clarification label",
-				slog.Int("parent", parentNum), slog.Any("error", err))
+			if !isNotFoundError(err) {
+				c.log.Warn("reconcileEpicParents: failed to remove stale needs-clarification label",
+					slog.Int("parent", parentNum), slog.Any("error", err))
+				return
+			}
+			// GH-4179: 404 means the label is already gone — the desired
+			// end state already holds, not a failure. Fall through and mark
+			// this parent resolved instead of retrying the same removal
+			// every tick forever.
+			c.log.Debug("reconcileEpicParents: stale needs-clarification label already absent",
+				slog.Int("parent", parentNum))
 		}
+		c.markEpicParentResolved(parentNum)
 		return
 	}
 
