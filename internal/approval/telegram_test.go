@@ -766,6 +766,72 @@ func TestTelegramHandler_FormatResponseMessage(t *testing.T) {
 	}
 }
 
+// TestTelegramHandler_FormatResponseMessage_ReleasePlan is the GH-4164
+// table-driven test covering the three release-trigger ack-card variants
+// (on_merge, on_schedule, disabled/absent) plus the rejected and no-plan
+// control paths, which must fall back to the generic APPROVED/REJECTED card.
+func TestTelegramHandler_FormatResponseMessage_ReleasePlan(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	tests := []struct {
+		name         string
+		req          *Request
+		decision     Decision
+		wantContains []string
+		wantAbsent   []string
+	}{
+		{
+			name:         "on_merge trigger",
+			req:          &Request{TaskID: "GH-1", Title: "Merge approval for PR #1", ReleasePlan: "Will release immediately after merge."},
+			decision:     DecisionApproved,
+			wantContains: []string{"✅ Approved by tester", "merging", "Will release immediately after merge."},
+		},
+		{
+			name:         "on_schedule trigger renders next train time",
+			req:          &Request{TaskID: "GH-2", Title: "Merge approval for PR #2", ReleasePlan: "Rides the next release train: 2026-07-11 16:00 CET."},
+			decision:     DecisionApproved,
+			wantContains: []string{"✅ Approved by tester", "Rides the next release train: 2026-07-11 16:00 CET."},
+		},
+		{
+			name:         "releaser disabled or absent",
+			req:          &Request{TaskID: "GH-3", Title: "Merge approval for PR #3", ReleasePlan: "No releaser configured for this repo (merge only)."},
+			decision:     DecisionApproved,
+			wantContains: []string{"✅ Approved by tester", "No releaser configured for this repo (merge only)."},
+		},
+		{
+			name:         "rejected — release plan text never shown even if set",
+			req:          &Request{TaskID: "GH-4", Title: "Merge approval for PR #4", ReleasePlan: "Will release immediately after merge."},
+			decision:     DecisionRejected,
+			wantContains: []string{"❌", "REJECTED"},
+			wantAbsent:   []string{"Will release immediately after merge."},
+		},
+		{
+			name:         "approved with no release plan — legacy control path",
+			req:          &Request{TaskID: "GH-5", Title: "Pre-execution approval"},
+			decision:     DecisionApproved,
+			wantContains: []string{"✅", "APPROVED", "Decision: tester"},
+			wantAbsent:   []string{"merging"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text := handler.formatResponseMessage(tt.req, tt.decision, "tester")
+			for _, want := range tt.wantContains {
+				if !containsString(text, want) {
+					t.Errorf("expected message to contain %q, got: %s", want, text)
+				}
+			}
+			for _, absent := range tt.wantAbsent {
+				if containsString(text, absent) {
+					t.Errorf("expected message to NOT contain %q, got: %s", absent, text)
+				}
+			}
+		})
+	}
+}
+
 func TestTelegramHandler_CreateApprovalKeyboard(t *testing.T) {
 	client := &mockTelegramClient{}
 	handler := NewTelegramHandler(client, "chat123")
@@ -1756,5 +1822,155 @@ func TestTelegramHandler_PruneExpired_SweepsOrphanedStoreRows(t *testing.T) {
 	}
 	if store.get("orphan-1") != nil {
 		t.Error("expected orphaned expired row to be swept from the store")
+	}
+}
+
+// --- EditMessage fallback + NotifyMerged tests (GH-4164) ---
+
+// TestTelegramHandler_HandleCallback_EditFailure_FallsBackToNewMessage is the
+// GH-4164 regression test: when EditMessage fails on the ack card, the
+// handler must send a brand-new message with the same content so a recorded
+// decision is never left with zero user feedback.
+func TestTelegramHandler_HandleCallback_EditFailure_FallsBackToNewMessage(t *testing.T) {
+	client := &mockTelegramClient{editError: errors.New("edit failed")}
+	logger, buf := newCapturingLogger()
+	handler := NewTelegramHandler(client, "chat123")
+	handler.log = logger
+
+	req := &Request{ID: "req-fallback", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-fallback", "u1", "tester")
+	if !handled {
+		t.Fatal("expected callback to be handled")
+	}
+
+	// No successful edit — client returns an error for every EditMessage call.
+	if len(client.getEditedMessages()) != 0 {
+		t.Errorf("expected no successful edits, got %d", len(client.getEditedMessages()))
+	}
+
+	sent := client.getSentMessages()
+	if len(sent) != 2 { // 1 = original approval prompt, 2 = fallback response card
+		t.Fatalf("expected 2 sent messages (prompt + fallback), got %d", len(sent))
+	}
+	fallback := sent[len(sent)-1]
+	if fallback.ChatID != "chat123" {
+		t.Errorf("expected fallback chat_id 'chat123', got '%s'", fallback.ChatID)
+	}
+	if !containsString(fallback.Text, "APPROVED") {
+		t.Errorf("expected fallback message to carry the response card text, got: %s", fallback.Text)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "falling back to a new message") {
+		t.Errorf("expected fallback log line, got: %s", out)
+	}
+}
+
+// TestTelegramHandler_NotifyMerged_SendsFollowUpInSameChat verifies that once
+// a request has been approved via Telegram, NotifyMerged posts a short
+// merge-completion follow-up to the same chat the approval card was sent to.
+func TestTelegramHandler_NotifyMerged_SendsFollowUpInSameChat(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	req := &Request{
+		ID: "req-merged", TaskID: "GH-1", Stage: StagePreMerge, Title: "Test",
+		Approvers: []string{"99999"}, ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	handler.HandleCallback(context.Background(), "cb1", "approve:req-merged", "u1", "tester")
+
+	sentBefore := len(client.getSentMessages())
+
+	if err := handler.NotifyMerged(context.Background(), "req-merged", "abc1234"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sent := client.getSentMessages()
+	if len(sent) != sentBefore+1 {
+		t.Fatalf("expected 1 additional message, got %d total (was %d)", len(sent), sentBefore)
+	}
+	followUp := sent[len(sent)-1]
+	if followUp.ChatID != "99999" {
+		t.Errorf("expected follow-up chat_id '99999' (same as approval), got '%s'", followUp.ChatID)
+	}
+	if !containsString(followUp.Text, "Merged") || !containsString(followUp.Text, "abc1234") {
+		t.Errorf("expected follow-up to mention the merge and short SHA, got: %s", followUp.Text)
+	}
+}
+
+// TestTelegramHandler_NotifyMerged_UnknownRequestIsNoOp ensures a requestID
+// with no resolved (approved) decision — e.g. never approved via Telegram,
+// or already notified once — is a silent no-op.
+func TestTelegramHandler_NotifyMerged_UnknownRequestIsNoOp(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	if err := handler.NotifyMerged(context.Background(), "never-approved", "abc1234"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(client.getSentMessages()) != 0 {
+		t.Errorf("expected no messages sent for an unresolved request, got %d", len(client.getSentMessages()))
+	}
+}
+
+// TestTelegramHandler_NotifyMerged_FiresOnceThenNoOp ensures a second
+// NotifyMerged call for the same requestID (e.g. a duplicate merge-transition
+// tick) does not send a second follow-up.
+func TestTelegramHandler_NotifyMerged_FiresOnceThenNoOp(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	req := &Request{ID: "req-once", TaskID: "GH-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	handler.HandleCallback(context.Background(), "cb1", "approve:req-once", "u1", "tester")
+
+	if err := handler.NotifyMerged(context.Background(), "req-once", "abc1234"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	afterFirst := len(client.getSentMessages())
+
+	if err := handler.NotifyMerged(context.Background(), "req-once", "def5678"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(client.getSentMessages()) != afterFirst {
+		t.Errorf("expected no additional message on second NotifyMerged call, got %d (was %d)", len(client.getSentMessages()), afterFirst)
+	}
+}
+
+// TestTelegramHandler_PruneExpired_SweepsStaleResolvedDecisions ensures an
+// approved decision that never reaches NotifyMerged within resolvedRetention
+// is dropped from the resolved map so it cannot grow unbounded.
+func TestTelegramHandler_PruneExpired_SweepsStaleResolvedDecisions(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	req := &Request{ID: "req-stale", TaskID: "GH-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	handler.HandleCallback(context.Background(), "cb1", "approve:req-stale", "u1", "tester")
+
+	handler.mu.Lock()
+	handler.resolved["req-stale"].DecidedAt = time.Now().Add(-resolvedRetention - time.Minute)
+	handler.mu.Unlock()
+
+	if _, err := handler.PruneExpired(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handler.mu.RLock()
+	_, exists := handler.resolved["req-stale"]
+	handler.mu.RUnlock()
+	if exists {
+		t.Error("expected stale resolved decision to be swept")
 	}
 }

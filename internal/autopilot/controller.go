@@ -1686,10 +1686,11 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		taskID = fmt.Sprintf("PR-%d", prState.PRNumber)
 	}
 	req := &approval.Request{
-		ID:     fmt.Sprintf("pr-%d-%d", prState.PRNumber, time.Now().UnixNano()),
-		TaskID: taskID,
-		Stage:  approval.StagePreMerge,
-		Title:  fmt.Sprintf("Merge approval for PR #%d", prState.PRNumber),
+		ID:          fmt.Sprintf("pr-%d-%d", prState.PRNumber, time.Now().UnixNano()),
+		TaskID:      taskID,
+		Stage:       approval.StagePreMerge,
+		Title:       fmt.Sprintf("Merge approval for PR #%d", prState.PRNumber),
+		ReleasePlan: releasePlanMessage(c.resolvedRelease(), time.Now()),
 		Metadata: map[string]interface{}{
 			"pr_url":    prState.PRURL,
 			"pr_title":  prState.PRTitle,
@@ -1981,6 +1982,24 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	if c.notifier != nil {
 		if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
 			c.log.Warn("failed to send merge notification", "error", err)
+		}
+	}
+
+	// GH-4164: PRs gated by human approval (Telegram/Slack) get a short
+	// "🔀 Merged <sha>" follow-up in the same chat the approval decision was
+	// made in, distinct from the general notifier above and from the
+	// on-release notify_on_release payload (which fires later, from
+	// handleReleasing, and is skipped here entirely). MergeFollowupPosted
+	// guards against a duplicate follow-up if this handler is re-entered
+	// after a crash between the merge succeeding and the stage transition
+	// persisting.
+	if c.approvalMgr != nil && prState.ApprovalRequestID != "" && !prState.MergeFollowupPosted {
+		c.approvalMgr.NotifyMerged(ctx, prState.ApprovalRequestID, ShortSHA(prState.HeadSHA))
+		prState.MergeFollowupPosted = true
+		if c.stateStore != nil {
+			if serr := c.stateStore.SavePRState(c.repoKey(), prState); serr != nil {
+				c.log.Warn("failed to persist merge-followup-posted flag", "pr", prState.PRNumber, "error", serr)
+			}
 		}
 	}
 

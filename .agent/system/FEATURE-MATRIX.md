@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-10 (v2.151.0)
+**Last Updated:** 2026-07-09 (v2.151.0)
 
 ## Legend
 
@@ -363,6 +363,7 @@
 | Rule-based triggers | ✅ | approval | - | `approval.rules[]` | RuleEvaluator with 4 matchers wired into Manager (GH-636) |
 | Non-blocking async approval | ✅ | autopilot | - | `approval.async_dispatch` | handleAwaitApproval tick-handler; PR-A stall no longer blocks PR-B (GH-2685) |
 | Approval persistence in executions | ✅ | autopilot/memory | - | - | approval_request_id + decision written to executions table (GH-2712) |
+| Release-aware approval ack + merge follow-up | ✅ | approval/autopilot | - | - | Approved Telegram card shows the next-step text (immediate release / next cron train time / no releaser configured), injected as `approval.Request.ReleasePlan` by autopilot at request-creation time so the approval package never imports release config; `approval.Manager.NotifyMerged` posts a "🔀 Merged \<sha\>" follow-up in the same chat once `handleMerging` completes for an approval-gated PR (`PRState.MergeFollowupPosted` guards against a duplicate on re-entry); `EditMessage` failures on the ack card fall back to a new message so a recorded decision is never left with zero feedback (GH-4164, v2.236.8) |
 
 ## Autopilot (v0.19.1+)
 

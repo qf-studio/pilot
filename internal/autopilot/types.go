@@ -829,6 +829,13 @@ type PRState struct {
 	// the conflict via isMergeConflict and may re-record once, which is an
 	// acceptable trade-off for a low-cardinality observability counter.
 	ConflictRecorded bool
+	// MergeFollowupPosted is true once approval.Manager.NotifyMerged has been
+	// called for this PR's merge, so a state-machine re-entry (e.g. after a
+	// crash between the merge succeeding and the stage transition persisting)
+	// cannot post a duplicate "🔀 Merged" follow-up to the approver's chat.
+	// Mirrors the MergeNotificationPosted guard above for the same race
+	// (GH-4164).
+	MergeFollowupPosted bool
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -874,6 +881,7 @@ func (ps *PRState) snapshot() *PRState {
 		ScopeKey:                ps.ScopeKey,
 		ScopeTitle:              ps.ScopeTitle,
 		ConflictRecorded:        ps.ConflictRecorded,
+		MergeFollowupPosted:     ps.MergeFollowupPosted,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.

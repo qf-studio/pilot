@@ -49,7 +49,8 @@ type MessageResult struct {
 type TelegramHandler struct {
 	client   TelegramClient
 	chatID   string
-	pending  map[string]*telegramPending // requestID -> pending state
+	pending  map[string]*telegramPending  // requestID -> pending state
+	resolved map[string]*telegramResolved // requestID -> approved decision (for a later merge follow-up)
 	mu       sync.RWMutex
 	log      *slog.Logger
 	store    PendingApprovalStore // optional; enables restart persistence
@@ -64,13 +65,32 @@ type telegramPending struct {
 	ResponseCh chan *Response
 }
 
+// telegramResolved tracks an approved decision's chat/message so a later
+// NotifyMerged call can post the merge follow-up in the same chat. Only
+// approved decisions are tracked here — rejected/timeout requests never
+// reach a merge (GH-4164).
+type telegramResolved struct {
+	Request   *Request
+	ChatID    string
+	MessageID int64
+	DecidedAt time.Time
+}
+
+// resolvedRetention bounds how long an approved decision's chat/message is
+// kept in TelegramHandler.resolved awaiting a merge follow-up. A merge
+// normally follows approval within minutes; this is just a leak guard for
+// approved requests whose PR never actually merges (closed, cascade failure,
+// etc.) so the map doesn't grow unbounded (GH-4164).
+const resolvedRetention = 24 * time.Hour
+
 // NewTelegramHandler creates a new Telegram approval handler
 func NewTelegramHandler(client TelegramClient, chatID string) *TelegramHandler {
 	return &TelegramHandler{
-		client:  client,
-		chatID:  chatID,
-		pending: make(map[string]*telegramPending),
-		log:     logging.WithComponent("approval.telegram"),
+		client:   client,
+		chatID:   chatID,
+		pending:  make(map[string]*telegramPending),
+		resolved: make(map[string]*telegramResolved),
+		log:      logging.WithComponent("approval.telegram"),
 	}
 }
 
@@ -239,6 +259,16 @@ func (h *TelegramHandler) PruneExpired(ctx context.Context) (int, error) {
 	if len(expired) > 0 {
 		h.log.Info("pruned expired pending approvals", slog.Int("count", len(expired)))
 	}
+
+	// Sweep stale resolved decisions (approved requests whose PR never
+	// reached NotifyMerged within resolvedRetention) so the map stays bounded.
+	h.mu.Lock()
+	for id, r := range h.resolved {
+		if now.Sub(r.DecidedAt) > resolvedRetention {
+			delete(h.resolved, id)
+		}
+	}
+	h.mu.Unlock()
 
 	return len(expired), nil
 }
@@ -435,12 +465,24 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 			slog.String("request_id", requestID), slog.Any("error", err))
 	}
 
-	// Update message to show result
-	if pending.MessageID != 0 {
-		text := h.formatResponseMessage(pending.Request, decision, username)
-		if err := h.client.EditMessage(ctx, pending.ChatID, pending.MessageID, text, ""); err != nil {
-			h.log.Warn("Failed to edit response message", slog.Any("error", err))
+	// Update message to show result — falls back to a brand-new message if
+	// the edit fails (or there is no live message to edit), so a recorded
+	// decision is never left with zero user feedback (GH-4164).
+	text := h.formatResponseMessage(pending.Request, decision, username)
+	h.deliverResponseCard(ctx, pending.ChatID, pending.MessageID, text)
+
+	// Track the approved decision's chat/message so a later merge (autopilot
+	// calling NotifyMerged) can post a follow-up in the same chat. Only
+	// approved decisions ever reach a merge.
+	if decision == DecisionApproved {
+		h.mu.Lock()
+		h.resolved[requestID] = &telegramResolved{
+			Request:   pending.Request,
+			ChatID:    pending.ChatID,
+			MessageID: pending.MessageID,
+			DecidedAt: time.Now(),
 		}
+		h.mu.Unlock()
 	}
 
 	// Send response
@@ -463,6 +505,53 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 		slog.String("user", username))
 
 	return true
+}
+
+// deliverResponseCard edits the original approval message in place to show
+// the decision. If there is no live message to edit (messageID == 0) or the
+// edit fails, it falls back to sending a brand-new message with identical
+// content, so a recorded decision is never left with zero user feedback
+// (GH-4164). Best-effort: a failure on the fallback send is logged, not
+// returned — callers of HandleCallback must not fail on delivery issues.
+func (h *TelegramHandler) deliverResponseCard(ctx context.Context, chatID string, messageID int64, text string) {
+	if messageID != 0 {
+		err := h.client.EditMessage(ctx, chatID, messageID, text, "")
+		if err == nil {
+			return
+		}
+		h.log.Warn("failed to edit response message, falling back to a new message",
+			slog.String("chat_id", chatID), slog.Int64("message_id", messageID), slog.Any("error", err))
+	}
+	if _, err := h.client.SendMessageWithKeyboard(ctx, chatID, text, "", nil); err != nil {
+		h.log.Warn("failed to send fallback response message",
+			slog.String("chat_id", chatID), slog.Any("error", err))
+	}
+}
+
+// NotifyMerged posts a short merge-completion follow-up in the same chat as
+// the original approval decision, once the PR that decision gated has
+// actually merged. Called by autopilot's merge-transition handler
+// (stage -> merged) for PRs that went through human approval. A requestID
+// with no matching resolved decision (never approved via Telegram, already
+// notified, or past resolvedRetention) is a silent no-op — the caller
+// doesn't need to know which channel (if any) gated the merge (GH-4164).
+func (h *TelegramHandler) NotifyMerged(ctx context.Context, requestID, shortSHA string) error {
+	h.mu.Lock()
+	r, exists := h.resolved[requestID]
+	if exists {
+		delete(h.resolved, requestID)
+	}
+	h.mu.Unlock()
+
+	if !exists {
+		return nil
+	}
+
+	text := fmt.Sprintf("🔀 Merged %s", shortSHA)
+	if _, err := h.client.SendMessageWithKeyboard(ctx, r.ChatID, text, "", nil); err != nil {
+		return fmt.Errorf("notify merged: %w", err)
+	}
+	return nil
 }
 
 // formatApprovalMessage formats the approval request message
@@ -532,8 +621,19 @@ func (h *TelegramHandler) createApprovalKeyboard(req *Request) [][]InlineKeyboar
 	}
 }
 
-// formatResponseMessage formats the message after a response
+// formatResponseMessage formats the message after a response. An approved
+// decision carrying a ReleasePlan (set by autopilot at request-creation time
+// — see Request.ReleasePlan) renders a release-aware next-step line instead
+// of the generic "APPROVED" card, so the user sees what happens next without
+// having to check the pipeline separately (GH-4164). Rejected/timeout
+// decisions, and approvals with no release plan (e.g. non-merge-gating
+// stages), fall through to the original generic card.
 func (h *TelegramHandler) formatResponseMessage(req *Request, decision Decision, username string) string {
+	if decision == DecisionApproved && req.ReleasePlan != "" {
+		return fmt.Sprintf("✅ Approved by %s — merging. %s\n\nTask: %s\n%s",
+			username, req.ReleasePlan, req.TaskID, req.Title)
+	}
+
 	var icon, status string
 
 	switch decision {

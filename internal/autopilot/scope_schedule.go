@@ -47,6 +47,31 @@ func previousScheduledTime(schedule cron.Schedule, before time.Time) time.Time {
 	return prev
 }
 
+// nextScheduledRunString computes the human-readable, timezone-aware next
+// fire time for rel's cron Schedule relative to now. Used to render the
+// on_schedule branch of releasePlanMessage's approval ack-card text
+// (GH-4164). Mirrors startScheduleRelease's parser/timezone resolution so
+// the ack card and the actual scheduler always agree on the next slot.
+func nextScheduledRunString(rel *ReleaseConfig, now time.Time) (string, error) {
+	loc := time.Local
+	if rel.ScheduleTimezone != "" {
+		l, err := time.LoadLocation(rel.ScheduleTimezone)
+		if err != nil {
+			return "", fmt.Errorf("invalid schedule_timezone %q: %w", rel.ScheduleTimezone, err)
+		}
+		loc = l
+	}
+
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	schedule, err := parser.Parse(rel.Schedule)
+	if err != nil {
+		return "", fmt.Errorf("invalid schedule %q: %w", rel.Schedule, err)
+	}
+
+	next := schedule.Next(now.In(loc))
+	return next.Format("2006-01-02 15:04 MST"), nil
+}
+
 // trainScopeKey renders the "train:<RFC3339>" scope key for a scheduled
 // release-train tick at t. Normalized to UTC so the live-fire tick and a
 // restart-recovered tick for the same slot always agree on the same key

@@ -41,6 +41,16 @@ type Request struct {
 	ExpiresAt        time.Time              // When request expires (timeout)
 	Approvers        []string               // Required approvers (user IDs, handles)
 	PreferredChannel string                 `json:",omitempty"` // Preferred approval channel (e.g., "telegram", "slack"); falls back to first-available when unset or unregistered
+
+	// ReleasePlan is a human-readable, pre-rendered description of what happens
+	// after this request is approved (e.g. "Will release immediately after
+	// merge." or "Rides the next release train: 2026-07-11 16:00 CET."),
+	// injected verbatim by the caller (autopilot) at request-creation time.
+	// The approval package renders it into the approved ack card but never
+	// computes it — that would require importing release/config internals,
+	// which this package deliberately does not depend on (GH-4164). Empty for
+	// stages that don't gate a merge (pre_execution, post_failure).
+	ReleasePlan string
 }
 
 // Response represents an approval response

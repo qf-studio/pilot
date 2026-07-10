@@ -134,6 +134,10 @@ func (s *StateStore) migrate() error {
 		// release stages) never re-fetch the PR from GitHub, so without this
 		// their dashboard rows render with a blank title forever.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN pr_title TEXT NOT NULL DEFAULT ''`,
+		// GH-4164: mirrors merge_notification_posted's crash-recovery guard —
+		// tracks whether the approval-gated "🔀 Merged <sha>" Telegram follow-up
+		// has been sent, so re-entry into StageMerging cannot double-fire it.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN merge_followup_posted INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, m := range migrations {
@@ -388,6 +392,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			rebase_attempts INTEGER NOT NULL DEFAULT 0,
 			scope_key TEXT NOT NULL DEFAULT '',
 			pr_title TEXT NOT NULL DEFAULT '',
+			merge_followup_posted INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -401,7 +406,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title
+			pr_title, merge_followup_posted
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -410,7 +415,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title
+			pr_title, merge_followup_posted
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -554,8 +559,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			pr_title, merge_followup_posted
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -578,7 +583,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			post_merge_ci_started_at = excluded.post_merge_ci_started_at,
 			rebase_attempts = excluded.rebase_attempts,
 			scope_key = excluded.scope_key,
-			pr_title = excluded.pr_title
+			pr_title = excluded.pr_title,
+			merge_followup_posted = excluded.merge_followup_posted
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -587,7 +593,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.ReleaseVersion, string(pr.ReleaseBumpType), pr.MergeNotificationPosted,
 		pr.ApprovalRequestID, pr.ApprovalDecision, nullTime(pr.ApprovalRequestedAt),
 		pr.PostMergeSHA, nullTime(pr.PostMergeCIStartedAt), pr.RebaseAttempts, pr.ScopeKey,
-		pr.PRTitle,
+		pr.PRTitle, pr.MergeFollowupPosted,
 	)
 	return err
 }
@@ -602,7 +608,7 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title
+			pr_title, merge_followup_posted
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -626,7 +632,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title
+			pr_title, merge_followup_posted
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -647,7 +653,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
 			&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
 			&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
-			&pr.PRTitle,
+			&pr.PRTitle, &pr.MergeFollowupPosted,
 		); err != nil {
 			return nil, err
 		}
@@ -902,7 +908,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
 		&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
 		&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
-		&pr.PRTitle,
+		&pr.PRTitle, &pr.MergeFollowupPosted,
 	)
 	if err != nil {
 		return nil, err
