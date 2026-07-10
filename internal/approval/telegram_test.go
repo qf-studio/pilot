@@ -1,14 +1,25 @@
 package approval
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
+
+// newCapturingLogger returns a logger that writes text-formatted records into
+// the returned buffer, so tests can assert on both level and message content.
+func newCapturingLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+	return slog.New(h), &buf
+}
 
 // mockTelegramClient implements TelegramClient for testing
 type mockTelegramClient struct {
@@ -1335,6 +1346,209 @@ func findSubstring(s, substr string) bool {
 	return false
 }
 
+// --- Callback logging + rehydrate re-notification tests (GH-4159) ---
+
+// TestTelegramHandler_HandleCallback_UnknownRequest_LogsInfo is the GH-4159
+// regression test: a tap for a request not in h.pending (e.g. landing during
+// a restart window before Rehydrate runs) must produce a visible INFO log
+// with request_id and user — previously this path logged nothing at all.
+func TestTelegramHandler_HandleCallback_UnknownRequest_LogsInfo(t *testing.T) {
+	client := &mockTelegramClient{}
+	logger, buf := newCapturingLogger()
+	handler := NewTelegramHandler(client, "chat123")
+	handler.log = logger
+
+	handled := handler.HandleCallback(context.Background(), "cb-unknown", "approve:ghost-request", "u1", "tester")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=INFO") {
+		t.Errorf("expected INFO level log for unknown-request tap, got: %s", out)
+	}
+	if !strings.Contains(out, "request_id=ghost-request") {
+		t.Errorf("expected request_id in log, got: %s", out)
+	}
+	if !strings.Contains(out, "user=tester") {
+		t.Errorf("expected user in log, got: %s", out)
+	}
+}
+
+// TestTelegramHandler_HandleCallback_AnswerCallbackError_LogsWarn ensures an
+// AnswerCallback failure is surfaced at WARN rather than silently swallowed
+// (GH-4159) — this covers the success-path call site.
+func TestTelegramHandler_HandleCallback_AnswerCallbackError_LogsWarn(t *testing.T) {
+	client := &mockTelegramClient{answerError: errors.New("telegram api down")}
+	logger, buf := newCapturingLogger()
+	handler := NewTelegramHandler(client, "chat123")
+	handler.log = logger
+
+	req := &Request{ID: "req-answer-fail", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb-1", "approve:req-answer-fail", "u1", "tester")
+	if !handled {
+		t.Error("expected callback to be handled even when AnswerCallback fails")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") {
+		t.Errorf("expected WARN level log for AnswerCallback failure, got: %s", out)
+	}
+	if !strings.Contains(out, "failed to answer approval callback") {
+		t.Errorf("expected AnswerCallback failure message, got: %s", out)
+	}
+}
+
+// TestTelegramHandler_HandleCallback_UnknownRequest_AnswerCallbackError_LogsWarn
+// covers the unknown-request call site's AnswerCallback error path.
+func TestTelegramHandler_HandleCallback_UnknownRequest_AnswerCallbackError_LogsWarn(t *testing.T) {
+	client := &mockTelegramClient{answerError: errors.New("telegram api down")}
+	logger, buf := newCapturingLogger()
+	handler := NewTelegramHandler(client, "chat123")
+	handler.log = logger
+
+	handled := handler.HandleCallback(context.Background(), "cb-1", "approve:ghost", "u1", "tester")
+	if !handled {
+		t.Error("expected callback to be handled even when AnswerCallback fails")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "failed to answer unknown-request approval callback") {
+		t.Errorf("expected unknown-request AnswerCallback failure message, got: %s", out)
+	}
+}
+
+// TestTelegramHandler_HandleCallback_ExpiredButPending_AnswerCallbackError_LogsWarn
+// covers the expired-but-still-pending call site's AnswerCallback error path.
+func TestTelegramHandler_HandleCallback_ExpiredButPending_AnswerCallbackError_LogsWarn(t *testing.T) {
+	client := &mockTelegramClient{answerError: errors.New("telegram api down")}
+	logger, buf := newCapturingLogger()
+	handler := NewTelegramHandler(client, "chat123")
+	handler.log = logger
+
+	req := &Request{ID: "req-exp-answer-fail", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(-time.Minute)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb-1", "approve:req-exp-answer-fail", "u1", "tester")
+	if !handled {
+		t.Error("expected callback to be handled even when AnswerCallback fails")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "failed to answer expired approval callback") {
+		t.Errorf("expected expired-request AnswerCallback failure message, got: %s", out)
+	}
+}
+
+// TestTelegramHandler_Rehydrate_ResendsFreshPromptPerPendingRequest is the
+// GH-4159 regression test: after a restart, Rehydrate must send a fresh,
+// actionable prompt for each restored request (same request_id/buttons) so
+// the user has a live message to tap, since the pre-restart message's
+// callback query may have expired during downtime.
+func TestTelegramHandler_Rehydrate_ResendsFreshPromptPerPendingRequest(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-resend", TaskID: "T-R", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	sent := client.getSentMessages()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 resent prompt, got %d", len(sent))
+	}
+	if !containsString(sent[0].Text, "rehydrated after restart") {
+		t.Errorf("expected rehydrate notice in resent prompt, got: %s", sent[0].Text)
+	}
+	if len(sent[0].Keyboard) != 1 || len(sent[0].Keyboard[0]) != 2 {
+		t.Fatalf("expected approve/reject keyboard on resent prompt, got %v", sent[0].Keyboard)
+	}
+	if sent[0].Keyboard[0][0].CallbackData != "approve:rehy-resend" {
+		t.Errorf("expected same request_id in callback data, got %s", sent[0].Keyboard[0][0].CallbackData)
+	}
+
+	// The resent message's ID must be tracked so future edits target it.
+	handler.mu.RLock()
+	p := handler.pending["rehy-resend"]
+	handler.mu.RUnlock()
+	if p == nil || p.MessageID == 0 {
+		t.Fatal("expected rehydrated entry to carry the resent message's MessageID")
+	}
+}
+
+// TestTelegramHandler_Rehydrate_NoSpamOnRepeatedCalls ensures a request
+// already tracked in h.pending is not re-notified on a second Rehydrate call
+// — otherwise every startup retry (or duplicate Rehydrate invocation) would
+// spam the user with a fresh prompt for the same pending request.
+func TestTelegramHandler_Rehydrate_NoSpamOnRepeatedCalls(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-once", TaskID: "T-R", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("first rehydrate error: %v", err)
+	}
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("second rehydrate error: %v", err)
+	}
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("third rehydrate error: %v", err)
+	}
+
+	sent := client.getSentMessages()
+	if len(sent) != 1 {
+		t.Fatalf("expected exactly 1 resent prompt across repeated Rehydrate calls, got %d", len(sent))
+	}
+}
+
+// TestTelegramHandler_Rehydrate_ResendFailureIsNonFatal ensures a failure to
+// resend the fresh prompt does not fail Rehydrate itself — the request stays
+// tracked in h.pending so a tap against the (possibly still-live) original
+// message can still be processed.
+func TestTelegramHandler_Rehydrate_ResendFailureIsNonFatal(t *testing.T) {
+	client := &mockTelegramClient{sendError: errors.New("network error")}
+	store := newMockPendingStore()
+	logger, buf := newCapturingLogger()
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-fail", TaskID: "T-R", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler.log = logger
+
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("expected Rehydrate to succeed even if the resend fails, got: %v", err)
+	}
+
+	handler.mu.RLock()
+	_, exists := handler.pending["rehy-fail"]
+	handler.mu.RUnlock()
+	if !exists {
+		t.Error("expected request to remain tracked in h.pending despite resend failure")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "failed to resend rehydrated approval prompt") {
+		t.Errorf("expected resend-failure warning, got: %s", out)
+	}
+}
+
 // --- PruneExpired tests (GH-3825) ---
 
 func TestTelegramHandler_PruneExpired_EditsMessageAndRemoves(t *testing.T) {
@@ -1415,14 +1629,65 @@ func TestTelegramHandler_PruneExpired_LeavesNonExpired(t *testing.T) {
 	}
 }
 
-func TestTelegramHandler_PruneExpired_RehydratedWithoutMessageID(t *testing.T) {
+// TestTelegramHandler_PruneExpired_RehydratedGetsFreshMessageID covers the
+// GH-4159 rehydrate re-notification: Rehydrate resends a fresh prompt for
+// each newly-restored request, so unlike the pre-fix behavior the entry now
+// carries a live MessageID (from the resend) and PruneExpired can edit it.
+func TestTelegramHandler_PruneExpired_RehydratedGetsFreshMessageID(t *testing.T) {
 	client := &mockTelegramClient{}
 	store := newMockPendingStore()
 	// Insert with a short-lived future expiry so Rehydrate accepts it, then
-	// let it lapse before pruning — this simulates a request rehydrated after
-	// a restart, which has no known MessageID (never persisted).
+	// let it lapse before pruning.
 	_ = store.InsertPendingApproval(&memory.PendingApproval{
 		ID: "rehy-prune", TaskID: "T-R", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(20 * time.Millisecond),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	// Rehydrate should have resent a fresh prompt carrying a live MessageID.
+	sent := client.getSentMessages()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 resent rehydrate prompt, got %d", len(sent))
+	}
+
+	time.Sleep(30 * time.Millisecond)
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+
+	// The resent message now has a known MessageID, so PruneExpired should
+	// edit it to show expiry.
+	if len(client.getEditedMessages()) != 1 {
+		t.Errorf("expected 1 message edit for the resent rehydrate prompt, got %d", len(client.getEditedMessages()))
+	}
+	handler.mu.RLock()
+	_, stillPending := handler.pending["rehy-prune"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected rehydrated expired request to be removed from pending map")
+	}
+	if store.get("rehy-prune") != nil {
+		t.Error("expected persisted row to be deleted")
+	}
+}
+
+// TestTelegramHandler_PruneExpired_RehydratedResendFailure_NoMessageID covers
+// the case where Rehydrate's resend fails (e.g. network error) — the entry
+// keeps MessageID 0, so PruneExpired must not attempt an edit against it.
+func TestTelegramHandler_PruneExpired_RehydratedResendFailure_NoMessageID(t *testing.T) {
+	client := &mockTelegramClient{sendError: errors.New("network error")}
+	store := newMockPendingStore()
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-prune-fail", TaskID: "T-R", Stage: "pre_merge",
 		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(20 * time.Millisecond),
 	})
 
@@ -1441,18 +1706,10 @@ func TestTelegramHandler_PruneExpired_RehydratedWithoutMessageID(t *testing.T) {
 		t.Fatalf("expected 1 pruned, got %d", n)
 	}
 
-	// No MessageID was ever known for this rehydrated request, so no edit
-	// should have been attempted — but it must still be removed.
 	if len(client.getEditedMessages()) != 0 {
-		t.Errorf("expected no message edit for rehydrated request without a MessageID, got %d", len(client.getEditedMessages()))
+		t.Errorf("expected no message edit when resend failed and no MessageID is known, got %d", len(client.getEditedMessages()))
 	}
-	handler.mu.RLock()
-	_, stillPending := handler.pending["rehy-prune"]
-	handler.mu.RUnlock()
-	if stillPending {
-		t.Error("expected rehydrated expired request to be removed from pending map")
-	}
-	if store.get("rehy-prune") != nil {
+	if store.get("rehy-prune-fail") != nil {
 		t.Error("expected persisted row to be deleted")
 	}
 }

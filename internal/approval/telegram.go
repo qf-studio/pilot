@@ -100,7 +100,13 @@ func (h *TelegramHandler) WithDecisionRecorder(recorder DecisionRecorder) *Teleg
 // Rehydrate loads persisted pending approvals from the store and re-inserts them
 // into the in-memory map so that button taps that arrive after a restart are
 // processed rather than answered with "expired". Expired rows are pruned.
-// No-op when no store is attached.
+// For each newly-rehydrated request it also re-sends a fresh approval prompt
+// (same request_id/buttons) so the user has a live, tappable message —
+// restart churn routinely expires the callback query on the original message
+// before the user can tap it. Only requests inserted during THIS call are
+// re-notified, so calling Rehydrate again (e.g. a second startup pass) does
+// not re-send prompts for requests already tracked in h.pending. No-op when
+// no store is attached.
 func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
 	if h.store == nil {
 		return nil
@@ -110,7 +116,7 @@ func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
 		return fmt.Errorf("rehydrate: load pending approvals: %w", err)
 	}
 	now := time.Now()
-	rehydrated := 0
+	var newlyRehydrated []*telegramPending
 	for _, row := range rows {
 		if row.ExpiresAt.Before(now) {
 			_ = h.store.DeletePendingApproval(row.ID)
@@ -135,19 +141,47 @@ func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
 		responseCh := make(chan *Response, 1)
 		h.mu.Lock()
 		if _, exists := h.pending[req.ID]; !exists {
-			h.pending[req.ID] = &telegramPending{
+			p := &telegramPending{
 				Request:    req,
 				ChatID:     destChatID,
 				ResponseCh: responseCh,
 			}
-			rehydrated++
+			h.pending[req.ID] = p
+			newlyRehydrated = append(newlyRehydrated, p)
 		}
 		h.mu.Unlock()
 	}
-	if rehydrated > 0 {
-		h.log.Info("rehydrated pending approvals", slog.Int("count", rehydrated))
+	if len(newlyRehydrated) > 0 {
+		h.log.Info("rehydrated pending approvals", slog.Int("count", len(newlyRehydrated)))
+		for _, p := range newlyRehydrated {
+			h.resendRehydratedPrompt(ctx, p)
+		}
 	}
 	return nil
+}
+
+// resendRehydratedPrompt sends a fresh, tappable approval prompt for a
+// request restored by Rehydrate. The original message (sent by the
+// pre-restart process) may have gone stale — its callback query can have
+// expired during daemon-down time — so this sends a NEW message carrying the
+// same request_id/buttons rather than editing the old one, and records the
+// new message ID so later edits (HandleCallback, PruneExpired) target it.
+// Best-effort: a send failure is logged and does not fail Rehydrate.
+func (h *TelegramHandler) resendRehydratedPrompt(ctx context.Context, p *telegramPending) {
+	text := h.formatRehydratedMessage(p.Request)
+	keyboard := h.createApprovalKeyboard(p.Request)
+
+	resp, err := h.client.SendMessageWithKeyboard(ctx, p.ChatID, text, "", keyboard)
+	if err != nil {
+		h.log.Warn("failed to resend rehydrated approval prompt",
+			slog.String("request_id", p.Request.ID), slog.Any("error", err))
+		return
+	}
+	if resp != nil && resp.Result != nil {
+		h.mu.Lock()
+		p.MessageID = resp.Result.MessageID
+		h.mu.Unlock()
+	}
 }
 
 // PruneExpired scans the in-memory pending set for requests whose ExpiresAt
@@ -331,7 +365,17 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	h.mu.Unlock()
 
 	if !exists {
-		_ = h.client.AnswerCallback(ctx, callbackID, "Request expired or already processed")
+		// No log line existed here previously — a tap landing after a daemon
+		// restart but before Rehydrate repopulates h.pending (or against any
+		// other state mismatch) was completely invisible to operators (GH-4159).
+		h.log.Info("Approval callback for unknown or already-processed request",
+			slog.String("request_id", requestID),
+			slog.String("decision", string(decision)),
+			slog.String("user", username))
+		if err := h.client.AnswerCallback(ctx, callbackID, "Request expired or already processed"); err != nil {
+			h.log.Warn("failed to answer unknown-request approval callback",
+				slog.String("request_id", requestID), slog.Any("error", err))
+		}
 		return true
 	}
 
@@ -347,7 +391,14 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	// sees "Approved!"/"Rejected" for a request the system has already decided
 	// to time out (GH-3825).
 	if pending.Request.ExpiresAt.Before(time.Now()) {
-		_ = h.client.AnswerCallback(ctx, callbackID, "Request expired or already processed")
+		h.log.Info("Approval callback arrived after expiry",
+			slog.String("request_id", requestID),
+			slog.String("decision", string(decision)),
+			slog.String("user", username))
+		if err := h.client.AnswerCallback(ctx, callbackID, "Request expired or already processed"); err != nil {
+			h.log.Warn("failed to answer expired approval callback",
+				slog.String("request_id", requestID), slog.Any("error", err))
+		}
 		if pending.MessageID != 0 {
 			text := h.formatExpiredMessage(pending.Request)
 			if err := h.client.EditMessage(ctx, pending.ChatID, pending.MessageID, text, ""); err != nil {
@@ -359,7 +410,6 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 		default:
 		}
 		close(pending.ResponseCh)
-		h.log.Info("Approval callback arrived after expiry", slog.String("request_id", requestID))
 		return true
 	}
 
@@ -380,7 +430,10 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	} else {
 		answerText = "Rejected"
 	}
-	_ = h.client.AnswerCallback(ctx, callbackID, answerText)
+	if err := h.client.AnswerCallback(ctx, callbackID, answerText); err != nil {
+		h.log.Warn("failed to answer approval callback",
+			slog.String("request_id", requestID), slog.Any("error", err))
+	}
 
 	// Update message to show result
 	if pending.MessageID != 0 {
@@ -498,6 +551,12 @@ func (h *TelegramHandler) formatResponseMessage(req *Request, decision Decision,
 	text := fmt.Sprintf("%s %s\n\nTask: %s\n%s\n\nDecision: %s", icon, status, req.TaskID, req.Title, username)
 
 	return text
+}
+
+// formatRehydratedMessage formats the fresh prompt sent after Rehydrate
+// restores a pending request post-restart.
+func (h *TelegramHandler) formatRehydratedMessage(req *Request) string {
+	return fmt.Sprintf("⏳ Still pending (rehydrated after restart)\n\n%s", h.formatApprovalMessage(req))
 }
 
 // formatCancelledMessage formats the message when request is cancelled
