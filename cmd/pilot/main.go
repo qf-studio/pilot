@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -857,242 +856,9 @@ Examples:
 				)
 			}
 
-			// Enable GitHub polling in gateway mode only if --github flag was explicitly passed (GH-350, GH-351)
-			// GH-392: Now actually processes issues instead of no-op
-			// M7 4b: when use_sdk_poller is on, the SDK registration (poller_github.go)
-			// owns the default repo — skip the in-tree poller to avoid double-polling.
-			if githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
-				!cfg.Adapters.GitHub.UseSDKPoller &&
-				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
-
-				token, tokenSource := resolveGitHubToken(cfg)
-
-				if token != "" && cfg.Adapters.GitHub.Repo != "" {
-					client := github.NewClient(token)
-					validateGitHubToken(context.Background(), client, tokenSource, gwAlertsEngine)
-					label := cfg.Adapters.GitHub.Polling.Label
-					if label == "" {
-						label = cfg.Adapters.GitHub.PilotLabel
-					}
-					interval := cfg.Adapters.GitHub.Polling.Interval
-					if interval == 0 {
-						interval = 30 * time.Second
-					}
-
-					// Determine execution mode from config
-					execMode := github.ExecutionModeSequential
-					waitForMerge := true
-					pollInterval := 30 * time.Second
-					prTimeout := 1 * time.Hour
-
-					if cfg.Orchestrator != nil && cfg.Orchestrator.Execution != nil {
-						execCfg := cfg.Orchestrator.Execution
-						execMode = resolveExecutionMode(execCfg.Mode)
-						waitForMerge = execCfg.WaitForMerge
-						if execCfg.PollInterval > 0 {
-							pollInterval = execCfg.PollInterval
-						}
-						if execCfg.PRTimeout > 0 {
-							prTimeout = execCfg.PRTimeout
-						}
-					}
-
-					var pollerOpts []github.PollerOption
-					pollerOpts = append(pollerOpts, github.WithExecutionMode(execMode))
-					pollerOpts = append(pollerOpts, github.WithTokenSource(string(tokenSource)))
-					if gwAlertsEngine != nil {
-						pollerOpts = append(pollerOpts, github.WithAlertProcessor(alerts.NewEngineAdapter(gwAlertsEngine)))
-					}
-
-					// Wire autopilot OnPRCreated callback if controller initialized
-					if gwAutopilotController != nil {
-						pollerOpts = append(pollerOpts, github.WithOnPRCreated(gwAutopilotController.OnPRCreated))
-						// Wire sub-issue PR callback so epic sub-PRs are tracked by autopilot (GH-594)
-						gwRunner.SetOnSubIssuePRCreated(gwAutopilotController.OnPRCreated)
-					}
-
-					// Wire sub-issue merge-wait so epic sub-issues block until their PR merges (GH-2179)
-					if waitForMerge {
-						gwRepoParts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
-						if len(gwRepoParts) == 2 {
-							mergeWaiter := github.NewMergeWaiter(client, gwRepoParts[0], gwRepoParts[1], &github.MergeWaiterConfig{
-								PollInterval: pollInterval,
-								Timeout:      prTimeout,
-							})
-							gwRunner.SetSubIssueMergeWait(func(ctx context.Context, prNumber int) error {
-								_, err := mergeWaiter.WaitForMerge(ctx, prNumber)
-								return err
-							})
-						}
-					}
-
-					// GH-2211: Wire native sub-issue linker so epic children get proper parent→child links
-					gwRunner.SetSubIssueLinker(client)
-
-					// GH-726: Wire processed issue persistence for gateway poller
-					if gwAutopilotStateStore != nil {
-						pollerOpts = append(pollerOpts, github.WithProcessedStore(gwAutopilotStateStore))
-					}
-
-					// GH-2201: Wire task checker for retry grace period (gateway mode)
-					if gwStore != nil {
-						pollerOpts = append(pollerOpts, github.WithTaskChecker(storeTaskChecker{store: gwStore}))
-					}
-
-					// GH-2242: Wire execution checker to prevent re-dispatch of completed tasks (gateway mode)
-					if gwStore != nil {
-						pollerOpts = append(pollerOpts, github.WithExecutionChecker(gwStore, projectPath))
-					}
-
-					// Wire issue metrics recorder for rate-limit tracking.
-					if gwAutopilotController != nil {
-						pollerOpts = append(pollerOpts, github.WithIssueMetricsRecorder(gwAutopilotController.Metrics()))
-					}
-
-					// GH-2802: Wire pre-flight judge when enabled (GH-2817: uses CC subprocess, no API key)
-					if cfg.Executor != nil && cfg.Executor.PreFlightJudge != nil && cfg.Executor.PreFlightJudge.Enabled {
-						claudeCmd := ""
-						if cfg.Executor.ClaudeCode != nil {
-							claudeCmd = cfg.Executor.ClaudeCode.Command
-						}
-						if claudeCmd == "" {
-							claudeCmd = "claude"
-						}
-						if _, err := exec.LookPath(claudeCmd); err != nil {
-							slog.Warn("Pre-flight judge disabled: claude binary not found", slog.String("command", claudeCmd))
-						} else {
-							pfJudge := executor.NewIntentJudge(claudeCmd)
-							pollerOpts = append(pollerOpts, github.WithPreFlightJudge(preFlightJudgeShim{judge: pfJudge}))
-							if gwStore != nil {
-								pollerOpts = append(pollerOpts, github.WithExecutionSaver(storeExecutionSaver{store: gwStore}))
-							}
-						}
-					}
-
-					// Create rate limit retry scheduler
-					repoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
-					if len(repoParts) != 2 {
-						return fmt.Errorf("invalid repo format: %s", cfg.Adapters.GitHub.Repo)
-					}
-					repoOwner, repoName := repoParts[0], repoParts[1]
-					gwSourceRepo := cfg.Adapters.GitHub.Repo // GH-929: Capture for closure
-
-					rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
-					rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
-						var issueNum int
-						if _, err := fmt.Sscanf(pendingTask.Task.ID, "GH-%d", &issueNum); err != nil {
-							return fmt.Errorf("invalid task ID format: %s", pendingTask.Task.ID)
-						}
-
-						issue, err := client.GetIssue(retryCtx, repoOwner, repoName, issueNum)
-						if err != nil {
-							return fmt.Errorf("failed to fetch issue for retry: %w", err)
-						}
-
-						logging.WithComponent("scheduler").Info("Retrying rate-limited issue",
-							slog.Int("issue", issueNum),
-							slog.Int("attempt", pendingTask.Attempts),
-						)
-
-						var result *github.IssueResult
-						if execMode == github.ExecutionModeSequential {
-							result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwSourceRepo, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-						} else {
-							result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwSourceRepo, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-						}
-
-						// GH-797: Call OnPRCreated for retried issues so autopilot tracks their PRs
-						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
-							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName, issue.NodeID)
-						}
-
-						return err
-					})
-					rateLimitScheduler.SetExpiredCallback(func(expiredCtx context.Context, pendingTask *executor.PendingTask) {
-						logging.WithComponent("scheduler").Error("Task exceeded max retry attempts",
-							slog.String("task_id", pendingTask.Task.ID),
-							slog.Int("attempts", pendingTask.Attempts),
-						)
-					})
-					ctx := context.Background()
-					if schErr := rateLimitScheduler.Start(ctx); schErr != nil {
-						logging.WithComponent("start").Warn("Failed to start rate limit scheduler", slog.Any("error", schErr))
-					}
-
-					// GH-3228: Wire board source when source_enabled=true.
-					// GH-4168: read path swapped to the studio-sdk board reader (write
-					// path below is unaffected — still the in-tree ProjectBoardSync).
-					if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.SourceEnabled {
-						boardSrcClient := githubSDK.NewClient(token)
-						boardSrc := githubSDK.NewProjectBoardSource(boardSrcClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), repoOwner, repoName)
-						pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc, cfg.Adapters.GitHub.ProjectBoard.SourceStatus))
-						// TASK-319: complete the loop — move the card Todo→In Progress on
-						// confirmed pickup. WithBoardSync is a no-op when InProgress is "".
-						boardWB := github.NewProjectBoardSync(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner)
-						pollerOpts = append(pollerOpts, github.WithBoardSync(boardWB, cfg.Adapters.GitHub.ProjectBoard.GetStatuses().InProgress))
-					}
-
-					// GH-392: Configure with actual issue processing callbacks (same as polling mode)
-					if execMode == github.ExecutionModeSequential {
-						pollerOpts = append(pollerOpts,
-							github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
-							github.WithScheduler(rateLimitScheduler),
-							github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwSourceRepo, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-							}),
-						)
-					} else {
-						pollerOpts = append(pollerOpts,
-							github.WithScheduler(rateLimitScheduler),
-							github.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent),
-							github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwSourceRepo, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-							}),
-						)
-					}
-
-					ghPoller, err := github.NewPoller(client, cfg.Adapters.GitHub.Repo, label, interval, pollerOpts...)
-					if err != nil {
-						logging.WithComponent("start").Warn("GitHub polling disabled in gateway mode", slog.Any("error", err))
-					} else {
-						pilotOpts = append(pilotOpts, pilot.WithGitHubPoller(ghPoller))
-						logging.WithComponent("start").Info("GitHub polling enabled in gateway mode",
-							slog.String("repo", cfg.Adapters.GitHub.Repo),
-							slog.Duration("interval", interval),
-							slog.String("mode", string(execMode)),
-						)
-
-						// Start autopilot processing loop if controller initialized
-						if gwAutopilotController != nil {
-							ctx := context.Background()
-							// Scan for existing PRs created by Pilot
-							if scanErr := gwAutopilotController.ScanExistingPRs(ctx); scanErr != nil {
-								logging.WithComponent("autopilot").Warn("failed to scan existing PRs",
-									slog.Any("error", scanErr),
-								)
-							}
-
-							// Scan for recently merged PRs that may need release (GH-416)
-							if scanErr := gwAutopilotController.ScanRecentlyMergedPRs(ctx); scanErr != nil {
-								logging.WithComponent("autopilot").Warn("failed to scan merged PRs",
-									slog.Any("error", scanErr),
-								)
-							}
-
-							logging.WithComponent("start").Info("autopilot enabled in gateway mode",
-								slog.String("environment", string(cfg.Orchestrator.Autopilot.Environment)),
-							)
-							go func() {
-								if runErr := gwAutopilotController.Run(ctx); runErr != nil && runErr != context.Canceled {
-									logging.WithComponent("autopilot").Error("autopilot controller stopped",
-										slog.Any("error", runErr),
-									)
-								}
-							}()
-						}
-					}
-				}
-			}
+			// GitHub polling in gateway mode is SDK-only (M7 4b/4d.2b) — the
+			// in-tree fallback poller has been removed; StartAdapterPollers below
+			// (via githubPollerRegistration) owns default-repo GitHub polling.
 
 			// GH-1847: Start adapter pollers via registry pattern (gateway mode)
 			gwPollerDeps := &PollerDeps{
@@ -2409,10 +2175,6 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		if token != "" {
 			client := github.NewClient(token)
 			validateGitHubToken(context.Background(), client, tokenSource, alertsEngine)
-			label := cfg.Adapters.GitHub.Polling.Label
-			if label == "" {
-				label = cfg.Adapters.GitHub.PilotLabel
-			}
 			interval := cfg.Adapters.GitHub.Polling.Interval
 			if interval == 0 {
 				interval = 30 * time.Second
@@ -2436,193 +2198,23 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 			}
 
-			modeStr := string(execMode)
-
-			// Helper to create poller for a repo with its project path
-			createPollerForRepo := func(repoFullName, projPath string) (*github.Poller, error) {
-				repoParts := strings.Split(repoFullName, "/")
-				if len(repoParts) != 2 {
-					return nil, fmt.Errorf("invalid repo format: %s", repoFullName)
-				}
-				repoOwner, repoName := repoParts[0], repoParts[1]
-
-				// GH-386: Validate repo/project match at startup
-				if err := executor.ValidateRepoProjectMatch(repoFullName, projPath); err != nil {
-					logging.WithComponent("github").Warn("repo/project mismatch detected",
-						slog.String("repo", repoFullName),
-						slog.String("project_path", projPath),
-						slog.String("expected_project", executor.ExtractRepoName(repoFullName)),
-					)
-				}
-
-				var pollerOpts []github.PollerOption
-				pollerOpts = append(pollerOpts, github.WithTokenSource(string(tokenSource)))
-				if alertsEngine != nil {
-					pollerOpts = append(pollerOpts, github.WithAlertProcessor(alerts.NewEngineAdapter(alertsEngine)))
-				}
-
-				// Wire autopilot callback to the correct controller for this repo
-				controller := autopilotControllers[repoFullName]
-				if controller != nil {
-					pollerOpts = append(pollerOpts,
-						github.WithOnPRCreated(controller.OnPRCreated),
-					)
-				}
-
-				// GH-726: Wire processed issue persistence
-				if autopilotStateStore != nil {
-					pollerOpts = append(pollerOpts, github.WithProcessedStore(autopilotStateStore))
-				}
-
-				// GH-2201: Wire task checker for retry grace period
-				pollerOpts = append(pollerOpts, github.WithTaskChecker(storeTaskChecker{store: store}))
-
-				// GH-2242: Wire execution checker to prevent re-dispatch of completed tasks
-				if store != nil {
-					pollerOpts = append(pollerOpts, github.WithExecutionChecker(store, projPath))
-				}
-
-				// Wire issue metrics recorder for rate-limit tracking.
-				if controller != nil {
-					pollerOpts = append(pollerOpts, github.WithIssueMetricsRecorder(controller.Metrics()))
-				}
-
-				// GH-2802: Wire pre-flight judge when enabled (GH-2817: uses CC subprocess, no API key)
-				if cfg.Executor != nil && cfg.Executor.PreFlightJudge != nil && cfg.Executor.PreFlightJudge.Enabled {
-					claudeCmd := ""
-					if cfg.Executor.ClaudeCode != nil {
-						claudeCmd = cfg.Executor.ClaudeCode.Command
-					}
-					if claudeCmd == "" {
-						claudeCmd = "claude"
-					}
-					if _, err := exec.LookPath(claudeCmd); err != nil {
-						slog.Warn("Pre-flight judge disabled: claude binary not found", slog.String("command", claudeCmd))
-					} else {
-						pfJudge := executor.NewIntentJudge(claudeCmd)
-						pollerOpts = append(pollerOpts, github.WithPreFlightJudge(preFlightJudgeShim{judge: pfJudge}))
-						if store != nil {
-							pollerOpts = append(pollerOpts, github.WithExecutionSaver(storeExecutionSaver{store: store}))
-						}
-					}
-				}
-
-				// Capture variables for closures
-				sourceRepo := repoFullName
-				projPathCapture := projPath
-				controllerCapture := controller
-
-				// Create rate limit retry scheduler for this repo
-				rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
-				rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
-					var issueNum int
-					if _, err := fmt.Sscanf(pendingTask.Task.ID, "GH-%d", &issueNum); err != nil {
-						return fmt.Errorf("invalid task ID format: %s", pendingTask.Task.ID)
-					}
-
-					issue, err := client.GetIssue(retryCtx, repoOwner, repoName, issueNum)
-					if err != nil {
-						return fmt.Errorf("failed to fetch issue for retry: %w", err)
-					}
-
-					logging.WithComponent("scheduler").Info("Retrying rate-limited issue",
-						slog.String("repo", sourceRepo),
-						slog.Int("issue", issueNum),
-						slog.Int("attempt", pendingTask.Attempts),
-					)
-
-					result, err := handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projPathCapture, sourceRepo, dispatcher, runner, monitor, program, alertsEngine, enforcer)
-
-					if result != nil && result.PRNumber > 0 && controllerCapture != nil {
-						controllerCapture.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName, issue.NodeID)
-					}
-
-					return err
-				})
-				rateLimitScheduler.SetExpiredCallback(func(expiredCtx context.Context, pendingTask *executor.PendingTask) {
-					logging.WithComponent("scheduler").Error("Task exceeded max retry attempts",
-						slog.String("task_id", pendingTask.Task.ID),
-						slog.Int("attempts", pendingTask.Attempts),
-					)
-				})
-				if err := rateLimitScheduler.Start(ctx); err != nil {
-					logging.WithComponent("start").Warn("Failed to start rate limit scheduler",
-						slog.String("repo", repoFullName),
-						slog.Any("error", err))
-				}
-
-				// GH-3228: Wire board source for the adapter-level repo when source_enabled=true.
-				// GH-4168: read path swapped to the studio-sdk board reader (write path
-				// below is unaffected — still the in-tree ProjectBoardSync).
-				if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.SourceEnabled &&
-					repoFullName == cfg.Adapters.GitHub.Repo {
-					boardSrcClient := githubSDK.NewClient(token)
-					boardSrc := githubSDK.NewProjectBoardSource(boardSrcClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), repoOwner, repoName)
-					pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc, cfg.Adapters.GitHub.ProjectBoard.SourceStatus))
-					// TASK-319: complete the loop — move the card Todo→In Progress on
-					// confirmed pickup. WithBoardSync is a no-op when InProgress is "".
-					boardWB := github.NewProjectBoardSync(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner)
-					pollerOpts = append(pollerOpts, github.WithBoardSync(boardWB, cfg.Adapters.GitHub.ProjectBoard.GetStatuses().InProgress))
-				}
-
-				// Configure based on execution mode
-				if execMode == github.ExecutionModeSequential {
-					pollerOpts = append(pollerOpts,
-						github.WithExecutionMode(github.ExecutionModeSequential),
-						github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
-						github.WithScheduler(rateLimitScheduler),
-						github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-							return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projPathCapture, sourceRepo, dispatcher, runner, monitor, program, alertsEngine, enforcer)
-						}),
-					)
-				} else {
-					pollerOpts = append(pollerOpts,
-						github.WithExecutionMode(execMode),
-						github.WithScheduler(rateLimitScheduler),
-						github.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent),
-						github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-							return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projPathCapture, sourceRepo, dispatcher, runner, monitor, program, alertsEngine, enforcer)
-						}),
-					)
-				}
-
-				return github.NewPoller(client, repoFullName, label, interval, pollerOpts...)
-			}
-
 			// M7 4d.2b: when use_sdk_poller is on, the SDK registration fans out a
-			// poller for the default repo AND every projects[] github repo — the
-			// in-tree pollers below skip all of them. This is the single source of
-			// truth for "is a github poller going to exist" so the autopilot-start
-			// gate below counts SDK pollers even when ghPollers ends up empty.
+			// poller for the default repo AND every projects[] github repo. This is
+			// the single source of truth for "is a github poller going to exist" so
+			// the autopilot-start gate below counts SDK pollers even when ghPollers
+			// (populated only by the SDK poller registering itself, GH-4110) is empty.
 			sdkGithubPollerEnabled := githubPollerRegistration().Enabled(cfg)
 
-			// Create poller for default repo (adapters.github.repo).
-			// M7 4b: when use_sdk_poller is on, the SDK registration (poller_github.go)
-			// owns the default repo — mark it polled so the projects loop skips it,
-			// but do not start the in-tree poller for it. M7 4d.2b: projects[] repos
-			// are SDK-owned too when the flag is on.
-			if cfg.Adapters.GitHub.Repo != "" && cfg.Adapters.GitHub.UseSDKPoller {
+			// SDK registration (poller_github.go) owns the default repo — the
+			// in-tree fallback poller has been removed; GitHub polling is SDK-only.
+			if cfg.Adapters.GitHub.Repo != "" {
 				polledRepos[cfg.Adapters.GitHub.Repo] = true
 				if !dashboardMode {
 					fmt.Printf("● github polling (sdk, m7 4b) · %s (every %s)\n", cfg.Adapters.GitHub.Repo, interval)
 				}
-			} else if cfg.Adapters.GitHub.Repo != "" {
-				polledRepos[cfg.Adapters.GitHub.Repo] = true
-				poller, err := createPollerForRepo(cfg.Adapters.GitHub.Repo, projectPath)
-				if err != nil {
-					if !dashboardMode {
-						fmt.Printf("!  github polling disabled for %s: %v\n", cfg.Adapters.GitHub.Repo, err)
-					}
-				} else {
-					ghPollers = append(ghPollers, poller)
-					ghPollerRegistry.add(cfg.Adapters.GitHub.Repo, poller)
-					if !dashboardMode {
-						fmt.Printf("● github polling · %s (every %s, mode: %s)\n", cfg.Adapters.GitHub.Repo, interval, modeStr)
-					}
-				}
 			}
 
-			// GH-929: Create pollers for each project with GitHub config
+			// GH-929: mark projects with GitHub config as SDK-owned (M7 4d.2b fan-out).
 			for _, proj := range cfg.Projects {
 				if proj.GitHub == nil || proj.GitHub.Owner == "" || proj.GitHub.Repo == "" {
 					continue
@@ -2633,38 +2225,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 				polledRepos[repoFullName] = true
 
-				// M7 4d.2b: the SDK fan-out owns every projects[] github repo when the
-				// flag is on — skip the in-tree poller for it (mutual exclusion).
-				if sdkGithubPollerEnabled {
-					if !dashboardMode {
-						fmt.Printf("● github polling (sdk, m7 4d.2b) · %s (project: %s)\n", repoFullName, proj.Name)
-					}
-					continue
-				}
-
-				projPath := proj.Path
-				if projPath == "" {
-					projPath = projectPath // Fall back to default project path
-				}
-
-				poller, err := createPollerForRepo(repoFullName, projPath)
-				if err != nil {
-					logging.WithComponent("github").Warn("Failed to create poller for project",
-						slog.String("project", proj.Name),
-						slog.String("repo", repoFullName),
-						slog.Any("error", err))
-					continue
-				}
-				ghPollers = append(ghPollers, poller)
-				ghPollerRegistry.add(repoFullName, poller)
 				if !dashboardMode {
-					fmt.Printf("● github polling · %s (project: %s, every %s, mode: %s)\n", repoFullName, proj.Name, interval, modeStr)
+					fmt.Printf("● github polling (sdk, m7 4d.2b) · %s (project: %s)\n", repoFullName, proj.Name)
 				}
-			}
-
-			// Start all pollers
-			for _, poller := range ghPollers {
-				go poller.Start(ctx)
 			}
 
 			// M7 4d.2b: SDK pollers are created later (StartAdapterPollers) and never
@@ -3371,25 +2934,6 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 		return false // Don't block retry on DB errors
 	}
 	return queued
-}
-
-// preFlightJudgeShim adapts *executor.IntentJudge to the github.PreFlightJudger interface.
-// GH-2802: Keeps the poller package decoupled from the executor package.
-type preFlightJudgeShim struct {
-	judge *executor.IntentJudge
-}
-
-func (s preFlightJudgeShim) JudgeIssue(ctx context.Context, title, body, repoContext string) (github.Verdict, error) {
-	v, err := s.judge.JudgeIssue(ctx, title, body, repoContext)
-	if err != nil {
-		return github.Verdict{}, err
-	}
-	return github.Verdict{
-		Accepted:   !v.IsRejection(),
-		Decision:   string(v.Decision),
-		Reason:     v.Reason,
-		Confidence: v.Confidence,
-	}, nil
 }
 
 // storeExecutionSaver adapts *memory.Store to the github.ExecutionSaver interface.

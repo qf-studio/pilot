@@ -66,9 +66,8 @@ func verifySDKGithubToken(ctx context.Context, client *githubSDK.Client, tokenSo
 	return true
 }
 
-// sdkPreFlightJudge adapts *executor.IntentJudge to sdkcore.PreFlightJudger.
-// Sibling of preFlightJudgeShim (main.go), which returns the in-tree
-// github.Verdict; this one returns the SDK's core.Verdict.
+// sdkPreFlightJudge adapts *executor.IntentJudge to sdkcore.PreFlightJudger,
+// returning the SDK's core.Verdict.
 type sdkPreFlightJudge struct {
 	judge *executor.IntentJudge
 }
