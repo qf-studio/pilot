@@ -82,6 +82,80 @@ func TestExecuteSubIssues_ChildTransientFailureEventualSuccess(t *testing.T) {
 	}
 }
 
+// TestExecuteSubIssues_ReconciledSuccessRetiresMonitorCard is the GH-4185
+// regression test: executeWithOptions calls monitor.Start(taskID) for the
+// child's own synchronous attempt (GH-3786 race) before that attempt fails
+// and reconcileChildOutcome takes over. Because the reconciled-to-success
+// path (resolveChildTerminalOutcome's "completed" case) previously returned
+// straight to the epic loop without ever touching the Monitor, the child's
+// dashboard card was left stuck at StatusRunning forever — the phantom
+// "● running 100%" card — even though the child had actually finished. The
+// fix must retire that Monitor entry itself, the same way a normal
+// completion does (cmd/pilot/handler_common.go step 7: nil error → Complete).
+func TestExecuteSubIssues_ReconciledSuccessRetiresMonitorCard(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const taskID = "GH-101"
+	if err := store.SaveExecution(&memory.Execution{
+		ID:     "exec-101",
+		TaskID: taskID,
+		Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	issues := makeSubIssues(1, 101)
+	parent := &Task{ID: "GH-50", Title: "[epic] transient child failure"}
+
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		return &ExecutionResult{
+			TaskID:  task.ID,
+			Success: false,
+			Error:   "unknown: exit status 1",
+		}, nil
+	}
+
+	runner := newTestRunnerWithExecFunc(execFn)
+	runner.logStore = store
+	runner.childOutcomeReconcilePollInterval = 20 * time.Millisecond
+	runner.childOutcomeReconcileTimeout = 2 * time.Second
+
+	// Wire a real Monitor and simulate what executeWithOptions itself already
+	// does for the in-flight synchronous attempt: register + start the
+	// child's own card. This is the state left behind right before the
+	// synchronous call fails and reconcileChildOutcome kicks in.
+	monitor := NewMonitor()
+	monitor.Register(taskID, "Sub-issue 1", "https://github.com/owner/repo/issues/101")
+	monitor.Start(taskID)
+	runner.monitor = monitor
+
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		if mcErr := store.MarkExecutionCompleted("exec-101", "https://github.com/owner/repo/pull/9101", "sha-final", 1000); mcErr != nil {
+			t.Errorf("MarkExecutionCompleted: %v", mcErr)
+		}
+	}()
+
+	if err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, ""); err != nil {
+		t.Fatalf("ExecuteSubIssues returned error, want nil (child eventually succeeded): %v", err)
+	}
+
+	state, ok := monitor.Get(taskID)
+	if !ok {
+		t.Fatalf("monitor has no entry for %s after reconciled success", taskID)
+	}
+	if state.Status != StatusCompleted {
+		t.Errorf("monitor status for %s = %q, want %q (phantom running card never retired)", taskID, state.Status, StatusCompleted)
+	}
+	if state.PRUrl != "https://github.com/owner/repo/pull/9101" {
+		t.Errorf("monitor PRUrl for %s = %q, want the reconciled child's PR URL", taskID, state.PRUrl)
+	}
+}
+
 // TestExecuteSubIssues_ChildFailureMessageSurfacesRealError verifies that
 // when a child's execution row reaches a genuine terminal failure, the
 // error the epic reports includes the row's real error message instead of
