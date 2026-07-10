@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -587,5 +588,78 @@ func TestManager_ShouldRequireApproval_WithConfigRules(t *testing.T) {
 	})
 	if rule != nil {
 		t.Errorf("expected no match, got rule %s", rule.Name)
+	}
+}
+
+// --- NotifyMerged tests (GH-4164) ---
+
+// mockMergeNotifyingHandler is a test double for a Handler that also
+// implements MergeNotifier.
+type mockMergeNotifyingHandler struct {
+	mockHandler
+	mu    sync.Mutex
+	calls []struct{ requestID, shortSHA string }
+	err   error
+}
+
+func (m *mockMergeNotifyingHandler) NotifyMerged(_ context.Context, requestID, shortSHA string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, struct{ requestID, shortSHA string }{requestID, shortSHA})
+	return m.err
+}
+
+func (m *mockMergeNotifyingHandler) getCalls() []struct{ requestID, shortSHA string } {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]struct{ requestID, shortSHA string }, len(m.calls))
+	copy(out, m.calls)
+	return out
+}
+
+// TestManager_NotifyMerged_ForwardsToMergeNotifierHandlers verifies that
+// NotifyMerged forwards to every registered handler implementing
+// MergeNotifier, and skips handlers that don't (e.g. plain mockHandler).
+func TestManager_NotifyMerged_ForwardsToMergeNotifierHandlers(t *testing.T) {
+	m := NewManager(nil)
+	notifying := &mockMergeNotifyingHandler{mockHandler: mockHandler{name: "telegram"}}
+	plain := &mockHandler{name: "github"}
+	m.RegisterHandler(notifying)
+	m.RegisterHandler(plain)
+
+	m.NotifyMerged(context.Background(), "req-1", "abc1234")
+
+	calls := notifying.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call to the MergeNotifier handler, got %d", len(calls))
+	}
+	if calls[0].requestID != "req-1" || calls[0].shortSHA != "abc1234" {
+		t.Errorf("unexpected call args: %+v", calls[0])
+	}
+}
+
+// TestManager_NotifyMerged_NoRegisteredHandlers_NoPanic ensures NotifyMerged
+// is a safe no-op when no handlers are registered at all.
+func TestManager_NotifyMerged_NoRegisteredHandlers_NoPanic(t *testing.T) {
+	m := NewManager(nil)
+	m.NotifyMerged(context.Background(), "req-1", "abc1234")
+}
+
+// TestManager_NotifyMerged_HandlerErrorIsNonFatal ensures a MergeNotifier
+// handler error is logged, not propagated — a Telegram/Slack hiccup here
+// must never fail the caller's merge-transition handling.
+func TestManager_NotifyMerged_HandlerErrorIsNonFatal(t *testing.T) {
+	m := NewManager(nil)
+	notifying := &mockMergeNotifyingHandler{
+		mockHandler: mockHandler{name: "telegram"},
+		err:         errors.New("telegram api down"),
+	}
+	m.RegisterHandler(notifying)
+
+	// Must not panic; the failure is logged internally.
+	m.NotifyMerged(context.Background(), "req-1", "abc1234")
+
+	if len(notifying.getCalls()) != 1 {
+		t.Errorf("expected the handler to still be called once despite returning an error")
 	}
 }

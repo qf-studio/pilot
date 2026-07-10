@@ -21,6 +21,14 @@ type Manager struct {
 	log           *slog.Logger
 }
 
+// MergeNotifier is implemented by handlers that can post a merge-completion
+// follow-up in the same channel/thread as an earlier approval decision.
+// Currently only TelegramHandler implements it — Manager.NotifyMerged skips
+// registered handlers that don't (GH-4164).
+type MergeNotifier interface {
+	NotifyMerged(ctx context.Context, requestID, shortSHA string) error
+}
+
 // pendingRequest tracks an active approval request
 type pendingRequest struct {
 	Request    *Request
@@ -361,6 +369,32 @@ func (m *Manager) PreMergeDefaultAction() Decision {
 		return m.config.PreMerge.DefaultAction
 	}
 	return m.config.DefaultAction
+}
+
+// NotifyMerged forwards a merge-completion follow-up for requestID to every
+// registered handler that implements MergeNotifier. Best-effort: a handler
+// failure is logged, not returned, so a Telegram/Slack hiccup can never fail
+// the caller's merge-transition handling (GH-4164).
+func (m *Manager) NotifyMerged(ctx context.Context, requestID, shortSHA string) {
+	m.mu.RLock()
+	handlers := make([]Handler, 0, len(m.handlers))
+	for _, h := range m.handlers {
+		handlers = append(handlers, h)
+	}
+	m.mu.RUnlock()
+
+	for _, h := range handlers {
+		notifier, ok := h.(MergeNotifier)
+		if !ok {
+			continue
+		}
+		if err := notifier.NotifyMerged(ctx, requestID, shortSHA); err != nil {
+			m.log.Warn("merge follow-up notification failed",
+				slog.String("request_id", requestID),
+				slog.String("channel", h.Name()),
+				slog.Any("error", err))
+		}
+	}
 }
 
 // RecordDecision records the outcome of a pending approval request.

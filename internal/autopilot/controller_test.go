@@ -6768,6 +6768,190 @@ func TestController_handleMerging_CommentFlagPersists(t *testing.T) {
 	}
 }
 
+// --- GH-4164: approval-gated merge follow-up tests ---
+
+// mockApprovalMergeNotifier is a minimal approval.Handler that also
+// implements approval.MergeNotifier, so tests can assert Controller wires
+// handleMerging's success path to approval.Manager.NotifyMerged without
+// depending on the unexported test doubles in the approval package.
+type mockApprovalMergeNotifier struct {
+	calls []struct{ requestID, shortSHA string }
+}
+
+func (m *mockApprovalMergeNotifier) Name() string { return "telegram" }
+
+func (m *mockApprovalMergeNotifier) SendApprovalRequest(context.Context, *approval.Request) (<-chan *approval.Response, error) {
+	ch := make(chan *approval.Response, 1)
+	return ch, nil
+}
+
+func (m *mockApprovalMergeNotifier) CancelRequest(context.Context, string) error { return nil }
+
+func (m *mockApprovalMergeNotifier) NotifyMerged(_ context.Context, requestID, shortSHA string) error {
+	m.calls = append(m.calls, struct{ requestID, shortSHA string }{requestID, shortSHA})
+	return nil
+}
+
+// TestController_handleMerging_NotifiesApprovalGatedMerge is the GH-4164
+// regression test: a PR that went through human approval (ApprovalRequestID
+// set) fires approval.Manager.NotifyMerged exactly once on a successful
+// merge, and sets MergeFollowupPosted.
+func TestController_handleMerging_NotifiesApprovalGatedMerge(t *testing.T) {
+	commentCount := 0
+	server := mergeMockServer(t, 42, 10, &commentCount)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
+
+	notifier := &mockApprovalMergeNotifier{}
+	approvalMgr := approval.NewManager(nil)
+	approvalMgr.RegisterHandler(notifier)
+
+	c := NewController(cfg, ghClient, approvalMgr, "owner", "repo")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+	prState, _ := c.GetPRState(42)
+	prState.Stage = StageMerging
+	prState.ApprovalRequestID = "req-42"
+
+	if err := c.handleMerging(context.Background(), prState); err != nil {
+		t.Fatalf("handleMerging returned error: %v", err)
+	}
+
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 NotifyMerged call, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0].requestID != "req-42" {
+		t.Errorf("expected requestID 'req-42', got %q", notifier.calls[0].requestID)
+	}
+	if notifier.calls[0].shortSHA != ShortSHA(prState.HeadSHA) {
+		t.Errorf("expected shortSHA %q, got %q", ShortSHA(prState.HeadSHA), notifier.calls[0].shortSHA)
+	}
+	if !prState.MergeFollowupPosted {
+		t.Error("expected MergeFollowupPosted to be true after notifying")
+	}
+}
+
+// TestController_handleMerging_NoApprovalGate_SkipsMergeFollowup ensures a PR
+// that never went through approval (ApprovalRequestID empty — the common
+// case) never triggers NotifyMerged.
+func TestController_handleMerging_NoApprovalGate_SkipsMergeFollowup(t *testing.T) {
+	commentCount := 0
+	server := mergeMockServer(t, 42, 10, &commentCount)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
+
+	notifier := &mockApprovalMergeNotifier{}
+	approvalMgr := approval.NewManager(nil)
+	approvalMgr.RegisterHandler(notifier)
+
+	c := NewController(cfg, ghClient, approvalMgr, "owner", "repo")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+	prState, _ := c.GetPRState(42)
+	prState.Stage = StageMerging
+	// ApprovalRequestID left empty — this PR was never gated by approval.
+
+	if err := c.handleMerging(context.Background(), prState); err != nil {
+		t.Fatalf("handleMerging returned error: %v", err)
+	}
+
+	if len(notifier.calls) != 0 {
+		t.Errorf("expected no NotifyMerged calls for a non-approval-gated PR, got %d", len(notifier.calls))
+	}
+	if prState.MergeFollowupPosted {
+		t.Error("expected MergeFollowupPosted to stay false")
+	}
+}
+
+// TestController_handleMerging_MergeFollowupNotDoubleFired mirrors
+// TestController_handleMerging_IdempotentCompletionComment: re-entering
+// StageMerging for an already-merged, already-notified PR must not fire a
+// second NotifyMerged call.
+func TestController_handleMerging_MergeFollowupNotDoubleFired(t *testing.T) {
+	commentCount := 0
+	server := mergeMockServer(t, 42, 10, &commentCount)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
+
+	notifier := &mockApprovalMergeNotifier{}
+	approvalMgr := approval.NewManager(nil)
+	approvalMgr.RegisterHandler(notifier)
+
+	c := NewController(cfg, ghClient, approvalMgr, "owner", "repo")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+	prState, _ := c.GetPRState(42)
+	prState.Stage = StageMerging
+	prState.ApprovalRequestID = "req-42"
+
+	if err := c.handleMerging(context.Background(), prState); err != nil {
+		t.Fatalf("first handleMerging returned error: %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 NotifyMerged call after first merge, got %d", len(notifier.calls))
+	}
+
+	// Simulate re-entry (e.g. crash recovery replaying the same tick).
+	prState.Stage = StageMerging
+	if err := c.handleMerging(context.Background(), prState); err != nil {
+		t.Fatalf("re-entry handleMerging returned error: %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Errorf("expected still 1 NotifyMerged call after re-entry, got %d", len(notifier.calls))
+	}
+}
+
+// TestController_handleMerging_MergeFollowupFlagPersists verifies
+// MergeFollowupPosted round-trips through SavePRState/GetPRState, mirroring
+// TestController_handleMerging_CommentFlagPersists for the new flag.
+func TestController_handleMerging_MergeFollowupFlagPersists(t *testing.T) {
+	store := newTestStateStore(t)
+
+	pr := &PRState{
+		PRNumber:            42,
+		PRURL:               "https://github.com/owner/repo/pull/42",
+		IssueNumber:         10,
+		BranchName:          "pilot/GH-10",
+		HeadSHA:             "abc1234",
+		Stage:               StageMerging,
+		CIStatus:            CIPending,
+		CreatedAt:           time.Now().Add(-5 * time.Minute).Truncate(time.Second),
+		ApprovalRequestID:   "req-42",
+		MergeFollowupPosted: true,
+	}
+	if err := store.SavePRState("owner/repo", pr); err != nil {
+		t.Fatalf("SavePRState failed: %v", err)
+	}
+
+	loaded, err := store.GetPRState("owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRState failed: %v", err)
+	}
+	if loaded == nil || !loaded.MergeFollowupPosted {
+		t.Fatalf("MergeFollowupPosted did not persist: got %+v", loaded)
+	}
+
+	all, err := store.LoadAllPRStates("owner/repo")
+	if err != nil {
+		t.Fatalf("LoadAllPRStates failed: %v", err)
+	}
+	if len(all) != 1 || !all[0].MergeFollowupPosted {
+		t.Fatalf("LoadAllPRStates did not preserve MergeFollowupPosted: %+v", all)
+	}
+}
+
 // --- GH-2588: CI fix size guard tests ---
 
 // TestCIFixSizeGuard_OversizedPR_BlocksFixIssue is a cascade-2 reproduction:
@@ -6992,6 +7176,61 @@ func asyncApprovalManager() *approval.Manager {
 		},
 	}
 	return approval.NewManager(cfg)
+}
+
+// mockCapturingApprovalHandler is an approval.Handler that records every
+// request it's asked to send, so tests can inspect fields (e.g.
+// ReleasePlan) the controller populated before dispatch.
+type mockCapturingApprovalHandler struct {
+	sent []*approval.Request
+}
+
+func (m *mockCapturingApprovalHandler) Name() string { return "telegram" }
+
+func (m *mockCapturingApprovalHandler) SendApprovalRequest(_ context.Context, req *approval.Request) (<-chan *approval.Response, error) {
+	m.sent = append(m.sent, req)
+	return make(chan *approval.Response, 1), nil
+}
+
+func (m *mockCapturingApprovalHandler) CancelRequest(context.Context, string) error { return nil }
+
+// TestController_SubmitAsyncApprovalRequest_SetsReleasePlan is the GH-4164
+// regression test: submitAsyncApprovalRequest must inject a release-aware
+// ReleasePlan string onto the outbound approval.Request, computed from the
+// controller's resolved release config — the approval package itself never
+// sees a ReleaseConfig.
+func TestController_SubmitAsyncApprovalRequest_SetsReleasePlan(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvProd
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge"}
+
+	mgr := asyncApprovalManager()
+	handler := &mockCapturingApprovalHandler{}
+	mgr.RegisterHandler(handler)
+
+	c := NewController(cfg, ghClient, mgr, "owner", "repo")
+
+	c.mu.Lock()
+	c.activePRs[42] = &PRState{
+		PRNumber:    42,
+		PRURL:       "https://github.com/owner/repo/pull/42",
+		PRTitle:     "feat: something",
+		IssueNumber: 10,
+		Stage:       StageAwaitApproval,
+	}
+	c.mu.Unlock()
+
+	if err := c.ProcessPR(context.Background(), 42, nil); err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if len(handler.sent) != 1 {
+		t.Fatalf("expected 1 approval request sent, got %d", len(handler.sent))
+	}
+	if got, want := handler.sent[0].ReleasePlan, "Will release immediately after merge."; got != want {
+		t.Errorf("ReleasePlan = %q, want %q", got, want)
+	}
 }
 
 // TestController_AwaitApproval_StaysInStageUntilDecision verifies that the
