@@ -19,8 +19,9 @@ import (
 )
 
 // TestGithubPollerRegistration_Fields verifies the SDK-based registration has the correct
-// name and that its Enabled predicate gates on the use_sdk_poller flag (OFF by default —
-// the in-tree poller stays the live path unless a config opts in; M7 4b).
+// name and that its Enabled predicate no longer gates on the use_sdk_poller flag (M7 4d.6,
+// GH-4171): the in-tree fallback poller is gone, so the SDK poller is unconditional
+// whenever the GitHub adapter is enabled with a repo and polling turned on.
 func TestGithubPollerRegistration_Fields(t *testing.T) {
 	reg := githubPollerRegistration()
 
@@ -46,11 +47,11 @@ func TestGithubPollerRegistration_Fields(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "use_sdk_poller off (default) — in-tree poller stays the live path",
+			name: "use_sdk_poller off (default) — flag is ignored, SDK poller starts anyway (GH-4171)",
 			cfg: &config.Config{Adapters: &config.AdaptersConfig{
 				GitHub: &github.Config{Enabled: true, UseSDKPoller: false, Repo: "o/r", Polling: &github.PollingConfig{Enabled: true}},
 			}},
-			want: false,
+			want: true,
 		},
 		{
 			name: "polling disabled",
@@ -92,16 +93,16 @@ func TestGithubPollerRegistration_Fields(t *testing.T) {
 	}
 }
 
-// TestGithubPollerRegistered verifies the M7-4b invariant: the GitHub SDK registration IS
-// wired into adapterPollerRegistrations() (flag-gated via its Enabled predicate), so daemons
-// with use_sdk_poller=true start the SDK poller for the default repo.
+// TestGithubPollerRegistered verifies the GitHub SDK registration IS wired into
+// adapterPollerRegistrations(), so daemons with the GitHub adapter enabled start
+// the SDK poller for the default repo regardless of use_sdk_poller (GH-4171).
 func TestGithubPollerRegistered(t *testing.T) {
 	for _, reg := range adapterPollerRegistrations() {
 		if reg.Name == "github" {
 			return
 		}
 	}
-	t.Error("github must be in adapterPollerRegistrations() as of M7 4b (flag-gated by use_sdk_poller)")
+	t.Error("github must be in adapterPollerRegistrations()")
 }
 
 // TestGithubSDKClientDoesNotImplementPRCreator documents the github behavior delta: unlike the

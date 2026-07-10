@@ -1382,6 +1382,46 @@ func TestCheckDeprecations(t *testing.T) {
 			}(),
 			wantWarnings: 0,
 		},
+		{
+			name: "GitHubUseSDKPollerFalseButEnabled",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Adapters.GitHub.Enabled = true
+				c.Adapters.GitHub.UseSDKPoller = false
+				return c
+			}(),
+			wantWarnings: 1,
+			wantContains: "use_sdk_poller is deprecated and ignored",
+		},
+		{
+			name: "GitHubUseSDKPollerTrueAndEnabled",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Adapters.GitHub.Enabled = true
+				c.Adapters.GitHub.UseSDKPoller = true
+				return c
+			}(),
+			wantWarnings: 1,
+			wantContains: "use_sdk_poller is deprecated and ignored",
+		},
+		{
+			name: "GitHubAdapterDisabled",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Adapters.GitHub.Enabled = false
+				return c
+			}(),
+			wantWarnings: 0,
+		},
+		{
+			name: "NilGitHubConfig",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Adapters.GitHub = nil
+				return c
+			}(),
+			wantWarnings: 0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1437,6 +1477,46 @@ orchestrator:
 	warnings := config.CheckDeprecations()
 	if len(warnings) != 1 {
 		t.Errorf("Expected 1 deprecation warning, got %d", len(warnings))
+	}
+}
+
+// TestLoadWithDeprecatedUseSDKPoller covers GH-4171: adapters.github.use_sdk_poller
+// is still parsed (existing configs must keep loading without error) but now only
+// produces a startup deprecation warning — it no longer changes daemon behavior.
+func TestLoadWithDeprecatedUseSDKPoller(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	configContent := `
+version: "1.0"
+adapters:
+  github:
+    enabled: true
+    repo: "owner/repo"
+    use_sdk_poller: false
+    polling:
+      enabled: true
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	config, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// The field is still parsed off the YAML.
+	if config.Adapters.GitHub.UseSDKPoller != false {
+		t.Errorf("Adapters.GitHub.UseSDKPoller = %v, want false", config.Adapters.GitHub.UseSDKPoller)
+	}
+
+	warnings := config.CheckDeprecations()
+	if len(warnings) != 1 {
+		t.Fatalf("Expected 1 deprecation warning, got %d: %v", len(warnings), warnings)
+	}
+	if !contains(warnings[0], "use_sdk_poller is deprecated and ignored") {
+		t.Errorf("warning %q should mention use_sdk_poller is deprecated and ignored", warnings[0])
 	}
 }
 

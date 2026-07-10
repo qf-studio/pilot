@@ -112,22 +112,25 @@ func (s sdkRateLimitScheduler) QueueRetryIfRateLimited(taskID, title, body, errT
 // githubPollerRegistration returns the studio-sdk GitHub issue-poller registration.
 //
 // M7 Phase 4b (studio-sdk v0.27.0): LIVE behind adapters.github.use_sdk_poller.
-// M7 Phase 4d.2b (studio-sdk v0.30.0): when the flag is on, this registration fans
-// out one SDK poller per repo — the DEFAULT repo (adapters.github.repo) plus every
-// projects[] GitHub entry — each with full host-hook parity (rate-limit scheduler,
-// pre-flight judge, execution checkers, issue metrics, per-repo autopilot controller
-// and PR creator). The default repo additionally gets board source/sync wiring;
-// project repos do not (parity with the in-tree path). The in-tree poller skips every
-// SDK-owned repo (main.go standalone block).
+// M7 Phase 4d.2b (studio-sdk v0.30.0): fans out one SDK poller per repo — the
+// DEFAULT repo (adapters.github.repo) plus every projects[] GitHub entry — each
+// with full host-hook parity (rate-limit scheduler, pre-flight judge, execution
+// checkers, issue metrics, per-repo autopilot controller and PR creator). The
+// default repo additionally gets board source/sync wiring; project repos do not
+// (parity with the in-tree path).
+// M7 Phase 4d.6 (GH-4171): the in-tree fallback poller is gone (GH-4170), so this
+// registration is now unconditional for every GitHub repo — UseSDKPoller is still
+// parsed off adapters.github.use_sdk_poller for backward-compat config loading
+// but no longer gates anything here (see config.CheckDeprecations for the
+// startup warning).
 //
 // Known 4b limitation: the SDK adapter runs ExecutionModeAuto only —
-// execution.mode=sequential configs should keep the flag off.
+// execution.mode=sequential configs are not supported.
 func githubPollerRegistration() PollerRegistration {
 	return PollerRegistration{
 		Name: "github",
 		Enabled: func(cfg *config.Config) bool {
 			return cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
-				cfg.Adapters.GitHub.UseSDKPoller &&
 				cfg.Adapters.GitHub.Repo != "" &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
 		},
