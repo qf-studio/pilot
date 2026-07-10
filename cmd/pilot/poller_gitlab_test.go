@@ -126,8 +126,8 @@ func TestGitlabRepoResolutionGracefulError(t *testing.T) {
 }
 
 // TestGitlabSDKEventSequenceID verifies Invariant 4: the SDK adapter produces IssueEvents
-// with SequenceID already prefixed "GL-<IID>" — the handler routes through the SDK path
-// (ProcessGitlabIssueEvent convention) and must use ev.SequenceID directly, not re-prefix.
+// with SequenceID already prefixed "GL-<IID>" — downstream consumers must use ev.SequenceID
+// directly, not re-prefix.
 func TestGitlabSDKEventSequenceID(t *testing.T) {
 	// Simulate what the SDK adapter's toIssueEvent does.
 	issueIID := 42
