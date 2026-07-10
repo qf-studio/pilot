@@ -82,14 +82,15 @@ adapters:
     token: "${GITHUB_TOKEN}"
     repo: "owner/repo"                 # Repository to poll
     pilot_label: "pilot"               # Issues with this label are picked up
-    # use_sdk_poller: false            # M7 Phase 4b/4d.2 (studio-sdk v0.30.0): opt into the
-    #                                  # studio-sdk GitHub issue poller. Full host-hook parity:
-    #                                  # board source/sync (default repo only), rate-limit retry
-    #                                  # scheduling, pre-flight judge, execution checkers, issue
-    #                                  # metrics. Phase 4d.2: the flag now fans out to the DEFAULT
-    #                                  # repo above AND every `projects:` github repo — the in-tree
-    #                                  # poller skips all SDK-owned repos. Runs execution mode auto
-    #                                  # only — keep false with execution.mode: sequential.
+    # use_sdk_poller: false            # Opt into the studio-sdk GitHub issue poller. Full
+    #                                  # host-hook parity: board source/sync (default repo
+    #                                  # only), rate-limit retry scheduling, pre-flight judge,
+    #                                  # execution checkers, issue metrics. Covers the DEFAULT
+    #                                  # repo above AND every `projects:` github repo. Runs
+    #                                  # execution mode auto only — keep false with
+    #                                  # execution.mode: sequential. Deprecated: the in-tree
+    #                                  # GitHub poller is being retired (M7 4d.6) and this flag
+    #                                  # will be ignored once the SDK poller is unconditional.
     polling:
       enabled: true
       interval: 30s

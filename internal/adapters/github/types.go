@@ -14,12 +14,11 @@ type Config struct {
 	StaleLabelCleanup *StaleLabelCleanupConfig `yaml:"stale_label_cleanup"` // Auto-cleanup stale labels
 	ProjectBoard      *ProjectBoardConfig      `yaml:"project_board"`       // GitHub Projects V2 board sync
 	Approval          *ApprovalConfig          `yaml:"approval"`            // GitHub PR-review approval handler
-	// UseSDKPoller opts into the studio-sdk GitHub issue poller (M7 Phase 4). Default
-	// false. LIVE since Phase 4b (studio-sdk v0.27.0) with full host-hook parity — board
-	// sync, rate-limit scheduler, pre-flight judge, execution checkers, issue metrics.
-	// Phase 4d.2 (v0.30.0) fans the poller out per repo: the flag now covers the default
-	// repo AND every projects[] github repo (cmd/pilot/poller_github.go), and the in-tree
-	// poller skips all SDK-owned repos. Runs execution mode auto only.
+	// UseSDKPoller opts into the studio-sdk GitHub issue poller (default false),
+	// covering the default repo plus every projects[] github repo
+	// (cmd/pilot/poller_github.go). Runs execution mode auto only. Deprecated:
+	// the in-tree poller is being retired (M7 4d.6, GH-4155); this flag will be
+	// parsed-and-ignored once the SDK poller becomes unconditional (GH-4171).
 	UseSDKPoller bool `yaml:"use_sdk_poller"`
 }
 
