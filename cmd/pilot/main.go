@@ -1020,9 +1020,12 @@ Examples:
 					}
 
 					// GH-3228: Wire board source when source_enabled=true.
+					// GH-4168: read path swapped to the studio-sdk board reader (write
+					// path below is unaffected — still the in-tree ProjectBoardSync).
 					if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.SourceEnabled {
-						boardSrc := github.NewProjectBoardSource(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner, repoName)
-						pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc))
+						boardSrcClient := githubSDK.NewClient(token)
+						boardSrc := githubSDK.NewProjectBoardSource(boardSrcClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), repoOwner, repoName)
+						pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc, cfg.Adapters.GitHub.ProjectBoard.SourceStatus))
 						// TASK-319: complete the loop — move the card Todo→In Progress on
 						// confirmed pickup. WithBoardSync is a no-op when InProgress is "".
 						boardWB := github.NewProjectBoardSync(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner)
@@ -2549,10 +2552,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 
 				// GH-3228: Wire board source for the adapter-level repo when source_enabled=true.
+				// GH-4168: read path swapped to the studio-sdk board reader (write path
+				// below is unaffected — still the in-tree ProjectBoardSync).
 				if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.SourceEnabled &&
 					repoFullName == cfg.Adapters.GitHub.Repo {
-					boardSrc := github.NewProjectBoardSource(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner, repoName)
-					pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc))
+					boardSrcClient := githubSDK.NewClient(token)
+					boardSrc := githubSDK.NewProjectBoardSource(boardSrcClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), repoOwner, repoName)
+					pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc, cfg.Adapters.GitHub.ProjectBoard.SourceStatus))
 					// TASK-319: complete the loop — move the card Todo→In Progress on
 					// confirmed pickup. WithBoardSync is a no-op when InProgress is "".
 					boardWB := github.NewProjectBoardSync(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner)

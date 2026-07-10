@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
+
 	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
@@ -184,7 +186,10 @@ type Poller struct {
 
 	// projectBoardSource sources candidates from a Projects V2 board column (GH-3228).
 	// When non-nil, replaces label-based ListIssues in findOldestUnprocessedIssue.
-	projectBoardSource *ProjectBoardSource
+	// GH-4168: sourced via the studio-sdk board reader; boardSourceStatus carries the
+	// configured column explicitly since the SDK type's config field is unexported.
+	projectBoardSource *githubSDK.ProjectBoardSource
+	boardSourceStatus  string
 
 	// boardSync moves the issue card to inProgressStatus on confirmed dispatch (GH-3252).
 	// nil or empty inProgressStatus disables the write-back, keeping label-mode identical.
@@ -357,9 +362,11 @@ func WithPollerMetrics(rec skipreason.PollerMetricsRecorder) PollerOption {
 // WithProjectBoardSource configures the poller to source candidates from a Projects V2
 // board column instead of by label. When set, FindIssuesFromProject replaces ListIssues
 // as the candidate fetch in findOldestUnprocessedIssue; all downstream filters are unchanged.
-func WithProjectBoardSource(src *ProjectBoardSource) PollerOption {
+// sourceStatus is the board column to read from; empty defaults to "Todo" (GH-4168).
+func WithProjectBoardSource(src *githubSDK.ProjectBoardSource, sourceStatus string) PollerOption {
 	return func(p *Poller) {
 		p.projectBoardSource = src
+		p.boardSourceStatus = sourceStatus
 	}
 }
 
@@ -903,17 +910,45 @@ func (p *Poller) startSequential(ctx context.Context) {
 // reverted to label polling.
 func (p *Poller) fetchCandidates(ctx context.Context) ([]*Issue, error) {
 	if p.projectBoardSource != nil {
-		sourceStatus := p.projectBoardSource.config.SourceStatus
+		sourceStatus := p.boardSourceStatus
 		if sourceStatus == "" {
 			sourceStatus = "Todo"
 		}
-		return p.projectBoardSource.FindIssuesFromProject(ctx, sourceStatus)
+		sdkIssues, err := p.projectBoardSource.FindIssuesFromProject(ctx, sourceStatus)
+		if err != nil {
+			return nil, err
+		}
+		return convertSDKBoardIssues(sdkIssues), nil
 	}
 	return p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
 		Labels: []string{p.label},
 		State:  StateOpen,
 		Sort:   "created", // oldest first
 	})
+}
+
+// convertSDKBoardIssues maps studio-sdk board-source issues to the internal Issue
+// type so the existing downstream filters in findOldestUnprocessedIssue/
+// checkForNewIssues (label checks, PullRequest guard, etc.) work unchanged (GH-4168).
+// Mirrors exactly the fields FindIssuesFromProject populates on both sides.
+func convertSDKBoardIssues(items []*githubSDK.Issue) []*Issue {
+	issues := make([]*Issue, len(items))
+	for i, it := range items {
+		labels := make([]Label, len(it.Labels))
+		for j, l := range it.Labels {
+			labels[j] = Label{Name: l.Name}
+		}
+		issues[i] = &Issue{
+			NodeID:    it.NodeID,
+			Number:    it.Number,
+			Title:     it.Title,
+			Body:      it.Body,
+			State:     it.State,
+			Labels:    labels,
+			CreatedAt: it.CreatedAt,
+		}
+	}
+	return issues
 }
 
 // When projectBoardSource is set, candidates are fetched from the board column
