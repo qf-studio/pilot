@@ -182,6 +182,203 @@ func TestScheduleReleaseTick_DirectCommitOnlyTrain_NoRow(t *testing.T) {
 	}
 }
 
+// noTagScheduleTickServer builds a fake GitHub server for a repo with zero
+// releases and zero tags: /releases/latest 404s, /tags is empty, closedPRs
+// serves ListPullRequests(state=closed), and prCommits serves GetPRCommits
+// per member PR (keyed by PR number) for bump-type detection. Any
+// /compare/ hit fails the test outright — that's exactly the 404 loop
+// GH-4174 fixes, so the no-tags path must never reach it.
+func noTagScheduleTickServer(t *testing.T, closedPRs []*github.PullRequest, prCommits map[int][]*github.Commit) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		case strings.HasSuffix(r.URL.Path, "/tags"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "/compare/"):
+			t.Errorf("unexpected CompareCommits call for a no-tags repo: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		case strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
+			var num int
+			_, _ = fmtSscanIssueNum(strings.Replace(strings.TrimSuffix(r.URL.Path, "/commits"), "/pulls/", "/issues/", 1), &num)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(prCommits[num])
+		case strings.HasSuffix(r.URL.Path, "/pulls") && r.URL.Query().Get("state") == "closed":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(closedPRs)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+}
+
+// TestScheduleReleaseTick_NoTags covers the GH-4174 fix: a repo configured
+// for on_schedule that has never been tagged must not call CompareCommits
+// against the synthesized "v0.0.0" ref (which 404s every tick forever).
+// Table-driven over the no-tags and has-tags cases to also pin the
+// unchanged-behavior acceptance criterion.
+func TestScheduleReleaseTick_NoTags(t *testing.T) {
+	t.Run("zero tags, pending merged PRs: tick enqueues a first-release train instead of skipping", func(t *testing.T) {
+		closedPRs := []*github.PullRequest{
+			{Number: 10, Title: "feat: first thing", MergedAt: "2026-07-01T00:00:00Z"},
+			{Number: 11, Title: "closed without merging", MergedAt: ""},
+			{Number: 12, Title: "fix: second thing", MergedAt: "2026-07-02T00:00:00Z"},
+		}
+		server := noTagScheduleTickServer(t, closedPRs, nil)
+		defer server.Close()
+
+		c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
+
+		scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
+		c.scheduleReleaseTick(context.Background(), scheduledAt)
+
+		row, err := stateStore.GetScopeRelease("owner/repo", "train:2026-07-10T21:00:00Z")
+		if err != nil {
+			t.Fatalf("GetScopeRelease failed: %v", err)
+		}
+		if row == nil {
+			t.Fatal("expected a first-release train row to be enqueued instead of skipped")
+		}
+		if want := []int{10, 12}; !reflect.DeepEqual(row.MemberPRs, want) {
+			t.Errorf("members = %v, want %v (closed-without-merging PR #11 must be excluded)", row.MemberPRs, want)
+		}
+	})
+
+	t.Run("zero tags, no merged PRs yet: tick skips with no row", func(t *testing.T) {
+		server := noTagScheduleTickServer(t, nil, nil)
+		defer server.Close()
+
+		c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
+
+		scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
+		c.scheduleReleaseTick(context.Background(), scheduledAt)
+
+		rows, err := stateStore.ListScopeReleases("owner/repo", "pending", "releasing", "done", "failed")
+		if err != nil {
+			t.Fatalf("ListScopeReleases failed: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Errorf("expected no rows when there are no merged PRs yet, got %d", len(rows))
+		}
+	})
+
+	t.Run("existing tags: behavior unchanged, still compares against the real last tag", func(t *testing.T) {
+		c1 := makeCommit("feat: add thing (#401)")
+		c1.SHA = "sha1"
+		server := scheduleTickServer(t, "v2.3.0", []*github.Commit{c1}, map[int]bool{401: true})
+		defer server.Close()
+
+		c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
+
+		scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
+		c.scheduleReleaseTick(context.Background(), scheduledAt)
+
+		row, err := stateStore.GetScopeRelease("owner/repo", "train:2026-07-10T21:00:00Z")
+		if err != nil || row == nil {
+			t.Fatalf("expected a train row for a tagged repo, err=%v row=%v", err, row)
+		}
+		if want := []int{401}; !reflect.DeepEqual(row.MemberPRs, want) {
+			t.Errorf("members = %v, want %v", row.MemberPRs, want)
+		}
+	})
+}
+
+// TestHandleReleasing_TrainScope_NoTags_CutsFirstVersion covers the second
+// half of the GH-4174 fix: once scheduleReleaseTick enqueues a first-release
+// train, handleReleasing must actually be able to cut it — trainReleaseCommits
+// would otherwise hit the exact same CompareCommits(v0.0.0, head) 404 when
+// resolving commits for bump-type detection. Verifies the member-PR commit
+// union fallback lets a tag-less repo cut its very first release (v0.1.0 from
+// a "feat:" commit, since currentVersion is the zero SemVer).
+func TestHandleReleasing_TrainScope_NoTags_CutsFirstVersion(t *testing.T) {
+	commit55 := makeCommit("feat: add a thing")
+	commit55.SHA = "commit-55"
+	commit77 := makeCommit("fix: a bugfix")
+	commit77.SHA = "commit-77"
+
+	var gitRefPosts int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/branches/main":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "main", "commit": map[string]string{"sha": "mainsha"}})
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		case strings.HasSuffix(r.URL.Path, "/tags"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case strings.Contains(r.URL.Path, "/compare/"):
+			// The reachability guard's CompareStatus also hits /compare/; serve
+			// it "identical" so the guard passes without this being mistaken
+			// for the CompareCommits call trainReleaseCommits must now avoid.
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "identical"})
+		case r.URL.Path == "/repos/owner/repo/pulls/55/commits":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{commit55})
+		case r.URL.Path == "/repos/owner/repo/pulls/77/commits":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{commit77})
+		case strings.HasSuffix(r.URL.Path, "/git/refs"):
+			atomic.AddInt64(&gitRefPosts, 1)
+			w.WriteHeader(http.StatusCreated)
+		case strings.HasSuffix(r.URL.Path, "/releases/tags/v0.1.0"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.Release{TagName: "v0.1.0", HTMLURL: "https://github.com/owner/repo/releases/tag/v0.1.0"})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	stateStore := newTestStateStore(t)
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.Release = &ReleaseConfig{
+		Enabled:       true,
+		Trigger:       "on_schedule",
+		TagPrefix:     "v",
+		RequireCI:     true,
+		Schedule:      "0 21 * * FRI",
+		VerifyRelease: boolPtr(false),
+	}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.SetStateStore(stateStore)
+
+	prState := &PRState{
+		PRNumber:       999,
+		PRURL:          "https://github.com/owner/repo/pull/999",
+		ScopeKey:       "train:2026-07-10T21:00:00Z",
+		ScopeTitle:     "Release train 2026-07-10 21:00",
+		ScopeMemberPRs: []int{55, 77},
+		PostMergeSHA:   "commit-55",
+		Stage:          StageReleasing,
+	}
+
+	if err := c.handleReleasing(context.Background(), prState); err != nil {
+		t.Fatalf("handleReleasing failed: %v", err)
+	}
+
+	if got := atomic.LoadInt64(&gitRefPosts); got != 1 {
+		t.Errorf("git ref posts = %d, want 1 (first release must still cut a tag)", got)
+	}
+	if prState.Stage == StageFailed {
+		t.Errorf("prState unexpectedly failed: %s", prState.Error)
+	}
+	if prState.ReleaseVersion != "v0.1.0" {
+		t.Errorf("ReleaseVersion = %q, want v0.1.0 (zero SemVer bumped minor by the feat: commit)", prState.ReleaseVersion)
+	}
+}
+
 // TestAutoMerger_SquashTitleSuffix_ResolvesAsTrainMember is a regex
 // round-trip: it builds a squash-merge commit title via AutoMerger.MergePR's
 // actual production title-construction path, then feeds a commit carrying
