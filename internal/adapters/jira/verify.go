@@ -6,6 +6,9 @@ import (
 	"github.com/qf-studio/pilot/internal/health/verify"
 )
 
+// AdapterName is the registry key for the Jira adapter.
+const AdapterName = "jira"
+
 // Compile-time check: *Client implements verify.Verifiable.
 var _ verify.Verifiable = (*Client)(nil)
 
