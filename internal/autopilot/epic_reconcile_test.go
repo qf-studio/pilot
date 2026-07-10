@@ -37,12 +37,15 @@ func TestReconcileEpicParent(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		parentState   string
-		children      []child
-		execStatuses  map[string]string
-		wantClosed    bool
-		wantVetoChild int // 0 if no veto expected
+		name              string
+		parentState       string
+		children          []child
+		execStatuses      map[string]string
+		labelDeleteStatus int // 0 => 200 OK; set to simulate a non-2xx RemoveLabel response
+		wantClosed        bool
+		wantVetoChild     int  // 0 if no veto expected
+		wantResolved      bool // only meaningful for already-closed-parent cases
+		wantWarnLabelFail bool // expect the "failed to remove stale needs-clarification label" WARN
 	}{
 		{
 			name:        "a: all children merged - parent closes within one poll cycle",
@@ -79,7 +82,30 @@ func TestReconcileEpicParent(t *testing.T) {
 				{num: 1, closed: true, merged: true},
 				{num: 2, closed: true, merged: true},
 			},
-			wantClosed: false,
+			wantClosed:   false,
+			wantResolved: true,
+		},
+		{
+			name:        "e: parent already closed, stale label already gone (404) - no WARN, marked resolved",
+			parentState: "closed",
+			children: []child{
+				{num: 1, closed: true, merged: true},
+			},
+			labelDeleteStatus: http.StatusNotFound,
+			wantClosed:        false,
+			wantResolved:      true,
+			wantWarnLabelFail: false,
+		},
+		{
+			name:        "f: parent already closed, label removal fails for real - WARN, not resolved (retries next tick)",
+			parentState: "closed",
+			children: []child{
+				{num: 1, closed: true, merged: true},
+			},
+			labelDeleteStatus: http.StatusInternalServerError,
+			wantClosed:        false,
+			wantResolved:      false,
+			wantWarnLabelFail: true,
 		},
 		{
 			name:        "closed child with no_op ledger status counts as shipped",
@@ -167,7 +193,14 @@ func TestReconcileEpicParent(t *testing.T) {
 					_, _ = w.Write([]byte("[]"))
 
 				case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, fmt.Sprintf("/repos/owner/repo/issues/%d/labels/", parentNum)):
-					w.WriteHeader(http.StatusOK)
+					status := tt.labelDeleteStatus
+					if status == 0 {
+						status = http.StatusOK
+					}
+					w.WriteHeader(status)
+					if status == http.StatusNotFound {
+						_, _ = w.Write([]byte(`{"message":"Label does not exist","documentation_url":"https://docs.github.com/rest"}`))
+					}
 
 				case r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/comments", parentNum):
 					b, _ := json.Marshal(map[string]interface{}{"id": 1})
@@ -207,7 +240,17 @@ func TestReconcileEpicParent(t *testing.T) {
 				t.Errorf("pilot-done label added = %v, want %v", addLabelsCalled, tt.wantClosed)
 			}
 
+			if tt.parentState == "closed" {
+				if got := c.isEpicParentResolved(parentNum); got != tt.wantResolved {
+					t.Errorf("isEpicParentResolved = %v, want %v", got, tt.wantResolved)
+				}
+			}
+
 			logs := logBuf.String()
+			if strings.Contains(logs, "failed to remove stale needs-clarification label") != tt.wantWarnLabelFail {
+				t.Errorf("WARN for stale label removal present = %v, want %v; logs:\n%s",
+					strings.Contains(logs, "failed to remove stale needs-clarification label"), tt.wantWarnLabelFail, logs)
+			}
 			if tt.wantVetoChild != 0 {
 				if !strings.Contains(logs, "close vetoed") {
 					t.Errorf("expected a veto log line, got logs:\n%s", logs)
@@ -330,6 +373,79 @@ func TestReconcileEpicParents_Wrapper(t *testing.T) {
 
 	if !closeCalled {
 		t.Error("expected reconcileEpicParents to close the fully-shipped parent via the search-driven sweep")
+	}
+}
+
+// TestReconcileEpicParents_ClosedParentDroppedAfterResolution covers GH-4179:
+// a closed parent whose stale needs-clarification label 404s on removal must
+// not be re-processed on the next poll tick. The candidate-discovery source
+// keeps surfacing the same parent number every tick (body-marker discovery
+// isn't gated on parent state), so without the resolved-set short-circuit in
+// reconcileEpicParents, reconcileEpicParent would re-run GetIssue+RemoveLabel
+// (and re-log the WARN) forever.
+func TestReconcileEpicParents_ClosedParentDroppedAfterResolution(t *testing.T) {
+	const parentNum = 500
+	var getIssueCalls, removeLabelCalls int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			// Always surface parentNum as a candidate, on every tick — mirrors
+			// discoverBodyMarkerEpicParents not being gated on parent state.
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"repository": map[string]interface{}{
+						"issues": map[string]interface{}{
+							"nodes": []map[string]interface{}{
+								{
+									"number":           parentNum,
+									"subIssuesSummary": map[string]int{"total": 1, "completed": 1},
+								},
+							},
+						},
+					},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", parentNum):
+			atomic.AddInt64(&getIssueCalls, 1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"node_id":"I_parent","number":%d,"state":"closed"}`, parentNum)
+
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, fmt.Sprintf("/repos/owner/repo/issues/%d/labels/", parentNum)):
+			atomic.AddInt64(&removeLabelCalls, 1)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Label does not exist","documentation_url":"https://docs.github.com/rest"}`))
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	var logBuf bytes.Buffer
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	c.reconcileEpicParents(context.Background())
+	if getIssueCalls != 1 || removeLabelCalls != 1 {
+		t.Fatalf("first tick: getIssueCalls=%d removeLabelCalls=%d, want 1/1", getIssueCalls, removeLabelCalls)
+	}
+	if !c.isEpicParentResolved(parentNum) {
+		t.Fatal("expected parent to be marked resolved after first tick")
+	}
+
+	c.reconcileEpicParents(context.Background())
+	if getIssueCalls != 1 || removeLabelCalls != 1 {
+		t.Errorf("second tick made new API calls: getIssueCalls=%d removeLabelCalls=%d, want unchanged 1/1", getIssueCalls, removeLabelCalls)
+	}
+
+	if strings.Contains(logBuf.String(), "failed to remove stale needs-clarification label") {
+		t.Errorf("did not expect the stale-label WARN, got logs:\n%s", logBuf.String())
 	}
 }
 
