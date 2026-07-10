@@ -1,7 +1,7 @@
 package dashboard
 
-// Card chrome shared with grot (github.com/qf-studio/grot): the dashboard
-// renders with the same pkg/tui/render primitives and "pilot" theme grot
+// Card chrome shared with grom (github.com/qf-studio/grom): the dashboard
+// renders with the same pkg/tui/render primitives and "pilot" theme grom
 // ships, so both tools look identical in the terminal.
 //
 // Glyph vocabulary (no emoji — single-width semantic marks only):
@@ -14,38 +14,38 @@ package dashboard
 //	·  segment separator                →  transition (a → b)
 //
 // Log lines and panel content compose these marks with the muted theme
-// colors; system messages are lowercase to match the grot card titles.
+// colors; system messages are lowercase to match the grom card titles.
 
 import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/qf-studio/grot/pkg/tui/render"
-	"github.com/qf-studio/grot/pkg/tui/theme"
+	"github.com/qf-studio/grom/pkg/tui/render"
+	"github.com/qf-studio/grom/pkg/tui/theme"
 )
 
-// grotTheme is the shared design system ("pilot" theme).
-var grotTheme = theme.Pilot
+// gromTheme is the shared design system ("pilot" theme).
+var gromTheme = theme.Pilot
 
 // panelChrome is the default card chrome: slate border, bold label title.
 var panelChrome = render.PanelStyle{
-	Border: grotTheme.BorderStyle(),
-	Title:  grotTheme.TitleStyle(),
+	Border: gromTheme.BorderStyle(),
+	Title:  gromTheme.TitleStyle(),
 }
 
 // focusChrome highlights the focused card with an accent border.
 var focusChrome = render.PanelStyle{
-	Border: grotTheme.FocusBorderStyle(),
-	Title:  grotTheme.TitleStyle(),
+	Border: gromTheme.FocusBorderStyle(),
+	Title:  gromTheme.TitleStyle(),
 }
 
 // warnChrome is the amber chrome used by the update-notification card.
 var warnChrome = render.PanelStyle{
-	Border: grotTheme.WarningStyle(),
-	Title:  grotTheme.WarningStyle().Bold(true),
+	Border: gromTheme.WarningStyle(),
+	Title:  gromTheme.WarningStyle().Bold(true),
 }
 
-// renderPanel builds a grot-style card: lowercase title embedded in the top
+// renderPanel builds a grom-style card: lowercase title embedded in the top
 // border, one padding line above and below the content.
 func renderPanel(title, content string, tw int) string {
 	return renderPanelInfo(title, "", content, tw)
@@ -68,9 +68,9 @@ func renderPanelStyled(title, info, content string, tw int, ps render.PanelStyle
 // statCardHeight: border + value + detail + 2 braille rows + border.
 const statCardHeight = 6
 
-// buildStatCard renders a grot-style stat card: big bold centered value, a
+// buildStatCard renders a grom-style stat card: big bold centered value, a
 // centered detail line, and a subdued braille trend band at the bottom —
-// the row-1 card from the grot demo gallery.
+// the row-1 card from the grom demo gallery.
 func buildStatCard(title, value, detail string, history []float64, accentHex string, cw int) string {
 	iw, ih := render.InnerSize(cw, statCardHeight)
 	chartRows := ih - 2
@@ -124,25 +124,25 @@ func stretchSeries(values []float64, n int) []float64 {
 	return out
 }
 
-// boldLabelStyle renders stat-card values: bold, label color (grot Stat default).
-var boldLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(grotTheme.Label))
+// boldLabelStyle renders stat-card values: bold, label color (grom Stat default).
+var boldLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(gromTheme.Label))
 
 // Daemon liveness dot (banner wordmark): sage bright/dim pair pulsed on the
 // animation tick.
 var (
-	daemonDotBright = lipgloss.NewStyle().Foreground(lipgloss.Color(grotTheme.Success))
-	daemonDotDim    = lipgloss.NewStyle().Foreground(lipgloss.Color(render.Dim(grotTheme.Success, 0.55)))
+	daemonDotBright = lipgloss.NewStyle().Foreground(lipgloss.Color(gromTheme.Success))
+	daemonDotDim    = lipgloss.NewStyle().Foreground(lipgloss.Color(render.Dim(gromTheme.Success, 0.55)))
 )
 
 // meterTrack is the unfilled portion of segment meters (btop-style dark cells).
-var meterTrack = lipgloss.NewStyle().Foreground(lipgloss.Color(grotTheme.DimMore))
+var meterTrack = lipgloss.NewStyle().Foreground(lipgloss.Color(gromTheme.DimMore))
 
 // meterStops builds the dim→full gradient stops for a segment meter.
 func meterStops(hex string) []string {
 	return []string{render.Dim(hex, 0.6), hex}
 }
 
-// segmentMeter renders a done/total grot segment meter (■■■□□) in the accent.
+// segmentMeter renders a done/total grom segment meter (■■■□□) in the accent.
 func segmentMeter(done, total, width int, accentHex string) string {
 	frac := 0.0
 	if total > 0 {
@@ -151,7 +151,7 @@ func segmentMeter(done, total, width int, accentHex string) string {
 	return render.SegmentMeter(frac, width, meterStops(accentHex), meterTrack)
 }
 
-// stageMeter renders the 7-rung pipeline ladder as a grot segment meter.
+// stageMeter renders the 7-rung pipeline ladder as a grom segment meter.
 // Color carries the outcome: sage when the run climbed the whole ladder,
 // rose when it died on a rung, accent while still climbing; a run with no
 // stage evidence (StageInfo.Known == false) renders as an all-track meter.
@@ -159,14 +159,14 @@ func stageMeter(info StageInfo, width int) string {
 	if !info.Known {
 		return meterTrack.Render(strings.Repeat("■", width))
 	}
-	hex := grotTheme.Accent
+	hex := gromTheme.Accent
 	switch {
 	case info.Muted:
-		hex = grotTheme.Dim // terminal non-ladder outcome: not climbing, not failed
+		hex = gromTheme.Dim // terminal non-ladder outcome: not climbing, not failed
 	case info.Failed:
-		hex = grotTheme.Error
+		hex = gromTheme.Error
 	case info.Reached >= stageLadderTotal:
-		hex = grotTheme.Success
+		hex = gromTheme.Success
 	}
 	return segmentMeter(info.Reached, stageLadderTotal, width, hex)
 }

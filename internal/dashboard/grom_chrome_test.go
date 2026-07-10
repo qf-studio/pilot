@@ -11,7 +11,7 @@ import (
 
 // TestFullDashboardRender_WidthInvariants renders the whole dashboard with
 // representative data and asserts every bordered line is exactly
-// panelTotalWidth wide — the invariant the grot restyle must preserve.
+// panelTotalWidth wide — the invariant the grom restyle must preserve.
 // Run with -v to eyeball the full render (t.Log output).
 func TestFullDashboardRender_WidthInvariants(t *testing.T) {
 	m := NewModel("2.233.0")
@@ -62,7 +62,7 @@ func TestFullDashboardRender_WidthInvariants(t *testing.T) {
 		}
 	}
 
-	// Grot chrome landmarks: lowercase titles, legend in the queue border.
+	// Grom chrome landmarks: lowercase titles, legend in the queue border.
 	plain := stripANSI(out)
 	for _, want := range []string{
 		"╭─ tokens ", "╭─ cost ", "╭─ queue depth ",
@@ -72,7 +72,7 @@ func TestFullDashboardRender_WidthInvariants(t *testing.T) {
 		"┤ ● 2 prs ├", "● #4054", "⟲ #4050", "↳ ⟲ retry 1/3",
 	} {
 		if !strings.Contains(plain, want) {
-			t.Errorf("dashboard missing grot landmark %q", want)
+			t.Errorf("dashboard missing grom landmark %q", want)
 		}
 	}
 }

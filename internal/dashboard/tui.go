@@ -12,7 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/qf-studio/grot/pkg/tui/render"
+	"github.com/qf-studio/grom/pkg/tui/render"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -190,8 +190,8 @@ const autopilotStageLabelWidth = 7
 // renderAutopilotRow renders one active-PR line (+ optional ↳ detail line)
 // in the history-row grammar:
 //
-//	  ● #4054   fix(executor): skip decompos…  ■■□□□ merge      2m
-//	    ↳ ⟲ retry 2/3 · TestFoo failed · linux-amd64
+//	● #4054   fix(executor): skip decompos…  ■■□□□ merge      2m
+//	  ↳ ⟲ retry 2/3 · TestFoo failed · linux-amd64
 //
 // indent(2) + glyph(1) + sp(1) + id(6) + sp(2) + title(flex) + sp(2) +
 // meter(5) + sp(1) + stage(7) + sp(2) + age(6) = iw
@@ -204,12 +204,12 @@ func renderAutopilotRow(pr *autopilot.PRState, failures, maxFailures, iw int) []
 		label = "failed"
 	}
 
-	glyph, glyphStyle, hex := "●", statusRunningStyle, grotTheme.Accent
+	glyph, glyphStyle, hex := "●", statusRunningStyle, gromTheme.Accent
 	switch {
 	case pr.Stage == autopilot.StageFailed:
-		glyph, glyphStyle, hex = "✗", statusFailedStyle, grotTheme.Error
+		glyph, glyphStyle, hex = "✗", statusFailedStyle, gromTheme.Error
 	case pr.CIStatus == autopilot.CIFailure || failures > 0:
-		glyph, glyphStyle, hex = "⟲", warningStyle, grotTheme.Warning
+		glyph, glyphStyle, hex = "⟲", warningStyle, gromTheme.Warning
 	}
 
 	titleWidth := iw - 2 - 1 - 1 - 6 - 2 - 2 - len(autopilotNodes) - 1 - autopilotStageLabelWidth - 2 - 6
@@ -322,7 +322,7 @@ type CompletedTask struct {
 	// Zero when the sampler had no data (pre-3028 executions, non-Linux/darwin).
 	PeakRSSMB int
 	// Stage is the pipeline-progress summary built from the execution's
-	// execution_events timeline (GH-3849; structured for the grot segment
+	// execution_events timeline (GH-3849; structured for the grom segment
 	// meter). Zero-value (Known=false) when the task wasn't hydrated from
 	// the store (e.g. AddCompletedTask callers) — the ladder renders as an
 	// empty track in that case.
@@ -769,7 +769,7 @@ func (m Model) RenderBannerForTest() string { return m.renderBanner() }
 
 // AdapterLegendForTest exposes the queue-panel adapter legend for the same
 // cross-package wiring tests — adapter chips moved out of the banner into
-// the queue border legend in the grot redesign (TASK-390).
+// the queue border legend in the grom redesign (TASK-390).
 func (m Model) AdapterLegendForTest() string { return buildAdapterLegend(m.bannerAdapters) }
 
 // AdapterStatus describes a configured adapter for the banner status row.
@@ -1381,8 +1381,8 @@ func splashAdapterList(adapters []AdapterStatus) string {
 	return strings.Join(parts, dimStyle.Render(" · "))
 }
 
-// renderBanner returns the grot-style one-line header — the exact grammar of
-// the grot gallery header (bold accent wordmark, dim ·-separated segments),
+// renderBanner returns the grom-style one-line header — the exact grammar of
+// the grom gallery header (bold accent wordmark, dim ·-separated segments),
 // with live status right-aligned:
 //
 //	pilot ● · v2.233.0 · stage · opus/sonnet           up 4m · 16:36 utc
@@ -1418,7 +1418,7 @@ func (m Model) renderBanner() string {
 	// Identity segments append only while they fit next to the right cluster:
 	// narrow terminals drop env then model — never the wordmark/version.
 	budget := tw - lipgloss.Width(right) - 1
-	left := grotTheme.AccentStyle().Bold(true).Render(" pilot") + " " + dot + sep + labelStyle.Render(ver)
+	left := gromTheme.AccentStyle().Bold(true).Render(" pilot") + " " + dot + sep + labelStyle.Render(ver)
 	var extras []string
 	if m.envName != "" {
 		extras = append(extras, statusRunningStyle.Render(strings.ToLower(m.envName)))
@@ -1436,7 +1436,7 @@ func (m Model) renderBanner() string {
 	return padLeftRightLine(tw, left, right)
 }
 
-// buildAdapterLegend renders adapter status in the grot border-legend grammar
+// buildAdapterLegend renders adapter status in the grom border-legend grammar
 // (dot before label, two-space separated): ● gh  ● tg  ○ 6 idle.
 // Active adapters are named; idle ones (configured but not running) collapse
 // to a count — they are config facts, not live status. The daemon itself has
@@ -1647,7 +1647,7 @@ func formatCompact(n int) string {
 	return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 }
 
-// --- Stat card renderers (grot demo gallery row-1 style) ---
+// --- Stat card renderers (grom demo gallery row-1 style) ---
 
 // renderTokenCard renders the tokens stat card: grand total (input + output +
 // cache read/write), cached share detail, 7-day stacked braille trend —
@@ -1656,7 +1656,7 @@ func formatCompact(n int) string {
 func (m Model) renderTokenCard(cw int) string {
 	grandTotal := m.metricsCard.TotalTokens + m.metricsCard.CacheReadTokens + m.metricsCard.CacheWriteTokens
 	value := boldLabelStyle.Render(formatCompact(grandTotal))
-	cachedTone := render.Dim(grotTheme.Accent, 0.45)
+	cachedTone := render.Dim(gromTheme.Accent, 0.45)
 	cachedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(cachedTone))
 	detail := cachedStyle.Render(fmt.Sprintf("%s cached", formatCompact(m.metricsCard.CacheReadTokens)))
 
@@ -1669,14 +1669,14 @@ func (m Model) renderTokenCard(cw int) string {
 		fresh[i] = float64(v)
 	}
 	return buildStatCardStacked("tokens", value, detail,
-		[][]float64{cached, fresh}, []string{cachedTone, grotTheme.Accent}, cw)
+		[][]float64{cached, fresh}, []string{cachedTone, gromTheme.Accent}, cw)
 }
 
 // renderCostCard renders the cumulative-cost stat card with 7-day cost trend.
 func (m Model) renderCostCard(cw int) string {
 	value := costStyle.Render(fmt.Sprintf("$%.2f", m.metricsCard.TotalCostUSD))
 	detail := dimStyle.Render(fmt.Sprintf("~$%.2f/task", m.metricsCard.CostPerTask))
-	return buildStatCard("cost", value, detail, m.metricsCard.CostHistory, grotTheme.Success, cw)
+	return buildStatCard("cost", value, detail, m.metricsCard.CostHistory, gromTheme.Success, cw)
 }
 
 // nonFailureSuffix builds the muted " (N no-op · M infra · …)" breakdown suffix
@@ -1739,11 +1739,11 @@ func (m Model) renderTaskCard(cw int) string {
 		failed[i] = float64(v)
 	}
 	return buildStatCardStacked("queue depth", value, detail,
-		[][]float64{succeeded, failed}, []string{grotTheme.Success, grotTheme.Error}, cw)
+		[][]float64{succeeded, failed}, []string{gromTheme.Success, gromTheme.Error}, cw)
 }
 
 // renderMetricsCards renders the three stat cards side by side with no gaps,
-// like the grot demo gallery row 1. The last card absorbs the remainder.
+// like the grom demo gallery row 1. The last card absorbs the remainder.
 func (m Model) renderMetricsCards() string {
 	epw := m.effectivePanelTotalWidth()
 	cw := epw / 3
@@ -1806,7 +1806,7 @@ func (m Model) renderTasks() string {
 		}
 	}
 
-	// Legend in the top border (grot style): ┤ ● 2 running  ● gh  ● tg  ○ 6 idle ├
+	// Legend in the top border (grom style): ┤ ● 2 running  ● gh  ● tg  ○ 6 idle ├
 	// — running count first, then intake adapter status (buildAdapterLegend).
 	running := 0
 	for _, t := range m.tasks {
@@ -1886,18 +1886,18 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 		selector = dimStyle.Render("▸") + " "
 	}
 
-	// Progress bar: grot segment meter (■■■□□), 16 cells — same grammar as
+	// Progress bar: grom segment meter (■■■□□), 16 cells — same grammar as
 	// renderEpicProgressBar/stageMeter, replacing the old [████░░]/[▓▒░░]
 	// bracket bars.
 	const barWidth = 16
 	var progressBar string
 	switch task.Status {
 	case "done":
-		progressBar = segmentMeter(1, 1, barWidth, grotTheme.Success)
+		progressBar = segmentMeter(1, 1, barWidth, gromTheme.Success)
 	case "running":
-		progressBar = segmentMeter(task.Progress, 100, barWidth, grotTheme.Accent)
+		progressBar = segmentMeter(task.Progress, 100, barWidth, gromTheme.Accent)
 	case "failed":
-		progressBar = segmentMeter(task.Progress, 100, barWidth, grotTheme.Error)
+		progressBar = segmentMeter(task.Progress, 100, barWidth, gromTheme.Error)
 	default: // queued, pending — no known progress yet
 		progressBar = meterTrack.Render(strings.Repeat("■", barWidth))
 	}
@@ -1918,7 +1918,7 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 }
 
 // renderProgressBar renders a standard bracketed progress bar, used by the
-// upgrade-notification panel (the queue panel uses the grot segment meter).
+// upgrade-notification panel (the queue panel uses the grom segment meter).
 func (m Model) renderProgressBar(progress int, width int) string {
 	filled := progress * width / 100
 	empty := width - filled
@@ -1991,9 +1991,9 @@ func (m Model) groupedHistory() []historyGroup {
 }
 
 // renderEpicProgressBar renders a compact epic progress meter (■■□□) in the
-// grot segment-meter style, innerWidth cells wide.
+// grom segment-meter style, innerWidth cells wide.
 func renderEpicProgressBar(done, total, innerWidth int) string {
-	return segmentMeter(done, total, innerWidth, grotTheme.Accent)
+	return segmentMeter(done, total, innerWidth, gromTheme.Accent)
 }
 
 // renderEvalStats renders a compact eval stats panel showing latest pass@1 rate
@@ -2134,7 +2134,7 @@ const stageLabelWidth = 10
 // renderStandaloneLine renders a standalone (non-epic) task line with fixed
 // columns so rows align regardless of pipeline state:
 //
-//	  ✓ GH-4018  Aggregated scope notes…  ■■■■■■■ released    40m ago 2.0G
+//	✓ GH-4018  Aggregated scope notes…  ■■■■■■■ released    40m ago 2.0G
 //
 // indent(2) + glyph(1) + sp(1) + id(7) + sp(2) + title(flex) + sp(2) +
 // ladder(7) + sp(1) + stage(10) + sp(2) + time(8) + rss(5) = iw
@@ -2186,7 +2186,7 @@ func formatRSSMB(mb int) string {
 
 // renderActiveEpicLine renders the parent line for an active epic:
 //
-//	  ● GH-491  Enable decomposition by default  ■■□□ 2/4    3m
+//	● GH-491  Enable decomposition by default  ■■□□ 2/4    3m
 //
 // indent(2) + glyph(1) + sp(1) + id(7) + sp(2) + title(flex) + sp(1) +
 // meter(4) + sp(1) + counts(5) + sp(1) + time(5) = iw
@@ -2271,7 +2271,7 @@ func renderSubIssueLine(task CompletedTask, iw int) string {
 }
 
 // statusIconStyle returns the glyph and style for a task status (top-level
-// tasks) — the design-system vocabulary from the grot_chrome doc block.
+// tasks) — the design-system vocabulary from the grom_chrome doc block.
 func statusIconStyle(status string) (string, lipgloss.Style) {
 	switch status {
 	case "success":
@@ -2417,7 +2417,7 @@ func AddCompletedTask(id, title, status, duration string, parentID string, isEpi
 }
 
 // renderUpdateNotification renders the update notification panel (amber
-// chrome; the "u: upgrade" hint sits in the top-border legend, grot style).
+// chrome; the "u: upgrade" hint sits in the top-border legend, grom style).
 func (m Model) renderUpdateNotification() string {
 	var content strings.Builder
 	var title string

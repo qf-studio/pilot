@@ -593,7 +593,7 @@ func (m Model) renderGitGraph(opts ...int) string {
 	return m.renderGraphPanel(title, contentLines, graphWidth)
 }
 
-// renderGraphPanel builds a grot-style bordered panel at the given total
+// renderGraphPanel builds a grom-style bordered panel at the given total
 // width. Focused state uses the accent (steel blue) border; unfocused slate.
 func (m Model) renderGraphPanel(title string, contentLines []string, totalWidth int) string {
 	chrome := panelChrome

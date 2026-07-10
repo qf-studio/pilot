@@ -10,7 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/qf-studio/grot/pkg/tui/render"
+	"github.com/qf-studio/grom/pkg/tui/render"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -40,7 +40,7 @@ func TestFormatCompact(t *testing.T) {
 }
 
 func TestBuildStatCard(t *testing.T) {
-	card := buildStatCard("test", "42", "detail", []float64{1, 2, 3, 4, 5, 6, 7}, grotTheme.Accent, cardWidth)
+	card := buildStatCard("test", "42", "detail", []float64{1, 2, 3, 4, 5, 6, 7}, gromTheme.Accent, cardWidth)
 
 	lines := strings.Split(card, "\n")
 	if len(lines) != statCardHeight {
@@ -53,7 +53,7 @@ func TestBuildStatCard(t *testing.T) {
 		}
 	}
 
-	// Check grot card chrome: rounded borders + lowercase title in top border
+	// Check grom card chrome: rounded borders + lowercase title in top border
 	if !strings.Contains(card, "╭") {
 		t.Error("missing top-left border ╭")
 	}
@@ -116,7 +116,7 @@ func TestLogsPanelStackedStaysCompact(t *testing.T) {
 func TestBuildStatCardStacked(t *testing.T) {
 	card := buildStatCardStacked("test", "42", "detail",
 		[][]float64{{10, 20, 30, 40, 30, 20, 10}, {1, 2, 3, 4, 3, 2, 1}},
-		[]string{render.Dim(grotTheme.Accent, 0.45), grotTheme.Accent}, cardWidth)
+		[]string{render.Dim(gromTheme.Accent, 0.45), gromTheme.Accent}, cardWidth)
 
 	lines := strings.Split(card, "\n")
 	if len(lines) != statCardHeight {
@@ -683,7 +683,7 @@ func TestRenderHistory_StandaloneTask(t *testing.T) {
 }
 
 // TestRenderHistory_StageStrip verifies the 7-rung pipeline segment meter
-// (GH-3849; grot restyle) renders with its stage label in a fixed column for
+// (GH-3849; grom restyle) renders with its stage label in a fixed column for
 // happy path, in-progress, and failed-at-stage-N executions, and that the
 // fixed card width invariant holds regardless of stage state.
 func TestRenderHistory_StageStrip(t *testing.T) {
@@ -974,7 +974,7 @@ func TestRenderHistory_MixedStandaloneAndEpic(t *testing.T) {
 func TestRenderEpicProgressBar(t *testing.T) {
 	// The meter is styled (filled gradient vs track color), so plain text is
 	// innerWidth ■ cells in every state — assert the visual-width invariant.
-	// Fill-fraction styling itself is covered by grot's SegmentMeter tests
+	// Fill-fraction styling itself is covered by grom's SegmentMeter tests
 	// (and colors are stripped in the no-TTY test environment anyway).
 	tests := []struct {
 		name       string
@@ -1671,7 +1671,7 @@ func TestRenderBanner(t *testing.T) {
 
 	out := m.renderBanner()
 
-	// One grot-grammar line: wordmark + liveness dot, lowercased segments,
+	// One grom-grammar line: wordmark + liveness dot, lowercased segments,
 	// uptime + clock. Adapter chips moved to the queue border legend.
 	for _, want := range []string{" pilot ●", "v2.102.3", "prod", "opus/sonnet", "up ", "utc"} {
 		if !strings.Contains(out, want) {
