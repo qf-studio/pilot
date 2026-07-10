@@ -194,36 +194,112 @@ func (c *Controller) scheduleReleaseTick(ctx context.Context, scheduledAt time.T
 	rel := c.resolvedRelease()
 	branch := c.resolveMainBranchName()
 
-	currentVersion, err := c.releaser.GetCurrentVersionForRepo(ctx, c.owner, c.repo)
+	hasTag, err := c.repoHasAnyTag(ctx, c.owner, c.repo)
 	if err != nil {
-		c.log.Warn("scheduleReleaseTick: failed to get current version, defaulting to 0.0.0", "error", err)
-		currentVersion = SemVer{}
-	}
-	lastTag := currentVersion.String(rel.TagPrefix)
-
-	commits, err := c.ghClient.CompareCommits(ctx, c.owner, c.repo, lastTag, branch)
-	if err != nil {
-		c.log.Warn("scheduleReleaseTick: failed to compare commits, skipping this tick",
-			"last_tag", lastTag, "branch", branch, "error", err)
-		return
-	}
-	if len(commits) == 0 {
-		c.log.Debug("scheduleReleaseTick: empty train, skipping",
-			"last_tag", lastTag, "scheduled_at", scheduledAt.Format(time.RFC3339))
+		c.log.Warn("scheduleReleaseTick: failed to check for an existing tag, skipping this tick", "error", err)
 		return
 	}
 
-	memberPRs := c.resolveTrainMemberPRs(ctx, commits)
-	if len(memberPRs) == 0 {
-		c.log.Warn("scheduleReleaseTick: no resolvable member PRs (direct-commit-only train), skipping — "+
-			"v1 limitation, the scope-release carrier requires a real merged PR",
-			"last_tag", lastTag, "commits", len(commits), "scheduled_at", scheduledAt.Format(time.RFC3339))
-		return
+	var memberPRs []int
+	if !hasTag {
+		// First release: no tag exists yet, so CompareCommits against a
+		// synthesized "v0.0.0" ref 404s every tick forever — that ref was
+		// never created (GH-4174). The merged-PR list is already the
+		// definitive member set for this case, so source it directly instead
+		// of parsing "(#N)" squash-title suffixes off a CompareCommits range
+		// that doesn't exist yet.
+		memberPRs, err = c.firstReleaseTrainMembers(ctx, c.owner, c.repo)
+		if err != nil {
+			c.log.Warn("scheduleReleaseTick: failed to list merged PRs for first release, skipping this tick", "error", err)
+			return
+		}
+		if len(memberPRs) == 0 {
+			c.log.Debug("scheduleReleaseTick: no merged PRs yet, skipping first release",
+				"scheduled_at", scheduledAt.Format(time.RFC3339))
+			return
+		}
+		c.log.Info("scheduleReleaseTick: first release train — no prior tag, releasing entire merged history",
+			"repo", fmt.Sprintf("%s/%s", c.owner, c.repo),
+			"members", memberPRs,
+			"scheduled_at", scheduledAt.Format(time.RFC3339),
+		)
+	} else {
+		currentVersion, verErr := c.releaser.GetCurrentVersionForRepo(ctx, c.owner, c.repo)
+		if verErr != nil {
+			c.log.Warn("scheduleReleaseTick: failed to get current version, skipping this tick", "error", verErr)
+			return
+		}
+		lastTag := currentVersion.String(rel.TagPrefix)
+
+		commits, cmpErr := c.ghClient.CompareCommits(ctx, c.owner, c.repo, lastTag, branch)
+		if cmpErr != nil {
+			c.log.Warn("scheduleReleaseTick: failed to compare commits, skipping this tick",
+				"last_tag", lastTag, "branch", branch, "error", cmpErr)
+			return
+		}
+		if len(commits) == 0 {
+			c.log.Debug("scheduleReleaseTick: empty train, skipping",
+				"last_tag", lastTag, "scheduled_at", scheduledAt.Format(time.RFC3339))
+			return
+		}
+
+		memberPRs = c.resolveTrainMemberPRs(ctx, commits)
+		if len(memberPRs) == 0 {
+			c.log.Warn("scheduleReleaseTick: no resolvable member PRs (direct-commit-only train), skipping — "+
+				"v1 limitation, the scope-release carrier requires a real merged PR",
+				"last_tag", lastTag, "commits", len(commits), "scheduled_at", scheduledAt.Format(time.RFC3339))
+			return
+		}
 	}
 
 	scopeKey := trainScopeKey(scheduledAt)
 	title := fmt.Sprintf("Release train %s", scheduledAt.Format("2006-01-02 15:04"))
 	c.enqueueScopeRelease(ctx, scopeKey, title, memberPRs)
+}
+
+// repoHasAnyTag reports whether owner/repo has at least one published
+// release or git tag. A repo synthesizes lastTag = tagPrefix + "0.0.0" when
+// GetCurrentVersionForRepo finds nothing to parse, but that string was never
+// created as an actual ref — CompareCommits against it 404s. This checks ref
+// existence directly rather than inferring it from a zero SemVer, since a
+// lookup failure also collapses to the same zero value (GH-4174).
+func (c *Controller) repoHasAnyTag(ctx context.Context, owner, repo string) (bool, error) {
+	release, err := c.ghClient.GetLatestRelease(ctx, owner, repo)
+	if err != nil {
+		return false, err
+	}
+	if release != nil {
+		return true, nil
+	}
+	tags, err := c.ghClient.ListTags(ctx, owner, repo, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(tags) > 0, nil
+}
+
+// firstReleaseTrainMembers lists every merged PR in owner/repo as the member
+// set for a repo's first scheduled release train (GH-4174). Unlike
+// resolveTrainMemberPRs, this doesn't parse "(#N)" squash-title suffixes off
+// commit messages — those suffixes only ever land on the squashed commit
+// CompareCommits would return, and with no prior tag there is no
+// CompareCommits range to source that list from yet. The GitHub list-PRs
+// endpoint doesn't populate the `merged` boolean (only `merged_at`, unlike
+// the single-PR GET resolveTrainMemberPRs uses), so MergedAt is the signal
+// for "actually merged" vs. "closed without merging".
+func (c *Controller) firstReleaseTrainMembers(ctx context.Context, owner, repo string) ([]int, error) {
+	prs, err := c.ghClient.ListPullRequests(ctx, owner, repo, "closed")
+	if err != nil {
+		return nil, err
+	}
+	var members []int
+	for _, pr := range prs {
+		if pr == nil || pr.MergedAt == "" {
+			continue
+		}
+		members = append(members, pr.Number)
+	}
+	return dedupeSortInts(members), nil
 }
 
 // resolveTrainMemberPRs extracts "(#N)" squash-merge PR references from each
@@ -274,9 +350,21 @@ func (c *Controller) resolveTrainMemberPRs(ctx context.Context, commits []*githu
 // release: everything reachable from HeadSHA since the last tag. Unlike
 // scopeReleaseCommits (epic:/label: scopes, which union each member PR's own
 // commits), a release train is defined as "everything since the last tag" —
-// so it always reads directly off CompareCommits rather than the member
+// so it normally reads directly off CompareCommits rather than the member
 // list, which exists only for release-notes attribution (GH-3993).
+//
+// First release (no tag exists yet): lastTag has no corresponding ref to
+// compare against, so CompareCommits would 404 (GH-4174) — fall back to
+// scopeReleaseCommits' member-PR commit union instead, using the member list
+// scheduleReleaseTick already resolved via firstReleaseTrainMembers.
 func (c *Controller) trainReleaseCommits(ctx context.Context, owner, repo string, prState *PRState, currentVersion SemVer, rel *ReleaseConfig) ([]*github.Commit, error) {
+	hasTag, err := c.repoHasAnyTag(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	if !hasTag {
+		return c.scopeReleaseCommits(ctx, owner, repo, prState, currentVersion, rel)
+	}
 	lastTag := currentVersion.String(rel.TagPrefix)
 	return c.ghClient.CompareCommits(ctx, owner, repo, lastTag, prState.HeadSHA)
 }
