@@ -1017,6 +1017,84 @@ func TestProcessQueue_MergedPRPreflight_UnmergedBranchProceedsNormally(t *testin
 	}
 }
 
+// TestProcessQueue_TerminalSuccessLedger_SkipsBackend is the GH-4184
+// regression test for the 17:48->18:12 race: the poller's re-arm guard
+// decided "not yet completed" at poll time and let a retry queue; the
+// genuine completion landed in the TASK-394 execution ledger before the
+// dispatcher picked the duplicate row up, with no GitHub-side signal (no
+// status labels, no merged PR yet visible) to catch it. Seed the ledger
+// directly with a completed row and force the merged-PR preflight to report
+// nothing found — mimicking labels/state that were mutated away between poll
+// and pickup — so only the ledger guard itself can explain a skip.
+func TestProcessQueue_TerminalSuccessLedger_SkipsBackend(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const projectPath = "/project-terminal-ledger"
+	const taskID = "GH-9001"
+	const priorPRURL = "https://github.com/qf-studio/pilot/pull/9001"
+
+	// Seed the ledger: a prior execution row for this task already completed
+	// with a real deliverable (the TASK-394 "running"->"completed" row).
+	priorExec := &memory.Execution{
+		ID:          "exec-terminal-success-prior",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "running",
+	}
+	if err := store.SaveExecution(priorExec); err != nil {
+		t.Fatalf("failed to save prior execution: %v", err)
+	}
+	if err := store.MarkExecutionCompleted(priorExec.ID, priorPRURL, "deadbeef", 1000); err != nil {
+		t.Fatalf("failed to mark prior execution completed: %v", err)
+	}
+
+	// A second, freshly queued row for the SAME task — the duplicate that
+	// reached dispatcher pickup after the poller's poll-time check missed
+	// the completion above.
+	dupExec := &memory.Execution{
+		ID:          "exec-terminal-success-dup",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "queued",
+		TaskBranch:  "pilot/GH-9001",
+	}
+	if err := store.SaveExecution(dupExec); err != nil {
+		t.Fatalf("failed to save duplicate execution: %v", err)
+	}
+
+	// Force the pre-existing merged-PR preflight to report nothing — even
+	// with that signal absent (mutated labels/state), the ledger guard alone
+	// must refuse to dispatch.
+	origCheck := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { mergedPRPreflightCheck = origCheck }()
+
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "should never run"}}
+	runner := NewRunnerWithBackend(backend)
+	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
+
+	worker.processQueue(context.Background())
+
+	backend.mu.Lock()
+	count := backend.execCount
+	backend.mu.Unlock()
+	if count != 0 {
+		t.Errorf("expected zero backend invocations (terminal-success ledger guard), got %d", count)
+	}
+
+	got, err := store.GetExecution(dupExec.ID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if got.Status != "completed" {
+		t.Errorf("expected duplicate row status 'completed' (ledger-guarded), got %q", got.Status)
+	}
+	if got.PRUrl != priorPRURL {
+		t.Errorf("expected duplicate row to carry prior pr_url %q, got %q", priorPRURL, got.PRUrl)
+	}
+}
+
 func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

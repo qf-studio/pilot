@@ -886,6 +886,37 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		exec := tasks[0]
 		w.currentTaskID.Store(exec.TaskID)
 
+		// GH-4184: consult the TASK-394 execution ledger at pickup time, not
+		// just at poll time. The 17:48->18:12 incident: the poller's re-arm
+		// guard (ExecutionChecker.HasCompletedExecution) saw no completion and
+		// queued a retry; the genuine completion landed in the ledger before
+		// the dispatcher got to this row, with no GitHub-side signal (labels,
+		// merged PR) yet visible to catch it. Re-checking the same ledger here
+		// closes that window regardless of what the poller observed earlier.
+		if done, err := w.hasTerminalSuccessLedger(exec.TaskID); err != nil {
+			w.log.Warn("Failed to check terminal-success ledger before pickup",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.Any("error", err))
+		} else if done {
+			prURL := ""
+			if latest, gErr := w.store.GetLatestExecutionByTaskIDExcluding(exec.TaskID, exec.ID); gErr == nil && latest != nil {
+				prURL = latest.PRUrl
+			}
+			w.log.Info("Terminal-success ledger already has a completed row for task; refusing duplicate dispatch",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.String("pr_url", prURL),
+			)
+			if err := w.store.MarkExecutionCompleted(exec.ID, prURL, "", 0); err != nil {
+				w.log.Error("Failed to mark ledger-guarded duplicate completed", slog.Any("error", err))
+			}
+			w.recordExecutionEvent(exec.ID, memory.StageCompleted, "terminal-success ledger guard: task already completed")
+			w.runner.EmitProgress(exec.TaskID, "Completed", 100, "already completed per execution ledger")
+			w.currentTaskID.Store("")
+			continue
+		}
+
 		w.log.Info("Processing task",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
@@ -1058,6 +1089,18 @@ func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.St
 			slog.String("stage", string(stage)),
 			slog.Any("error", err))
 	}
+}
+
+// hasTerminalSuccessLedger reports whether the TASK-394 execution ledger
+// already holds a genuine completed row for taskID in this worker's project.
+// It is the single guard shared by both re-arm points: the poller's re-arm
+// path consults the identical ledger via ExecutionChecker.HasCompletedExecution
+// (internal/adapters/github/poller.go) at poll time, and processQueue calls
+// this method again immediately before pickup (GH-4184) — closing the window
+// where a completion lands between the poller's decision and the dispatcher
+// actually starting the backend.
+func (w *ProjectWorker) hasTerminalSuccessLedger(taskID string) (bool, error) {
+	return w.store.HasCompletedExecution(taskID, w.projectPath)
 }
 
 // dispatchSuccessStage reports the execution_events Stage (and whether to
