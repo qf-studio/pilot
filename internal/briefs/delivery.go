@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/slack"
@@ -245,6 +246,13 @@ func (d *DeliveryService) deliverTelegram(ctx context.Context, brief *Brief, cha
 	text := d.formatTelegramBrief(brief)
 
 	resp, err := d.telegramSender.SendBriefMessage(ctx, channel.Channel, text, "Markdown")
+	if err != nil && isTelegramParseEntityError(err) {
+		d.logger.Warn("telegram markdown parse failed, retrying as plain text",
+			"chat_id", channel.Channel,
+			"error", err,
+		)
+		resp, err = d.telegramSender.SendBriefMessage(ctx, channel.Channel, text, "")
+	}
 	if err != nil {
 		result.Success = false
 		result.Error = err
@@ -285,7 +293,7 @@ func (d *DeliveryService) formatTelegramBrief(brief *Brief) string {
 	if len(brief.Completed) > 0 {
 		text += "*Completed:*\n"
 		for _, task := range brief.Completed {
-			text += fmt.Sprintf("• %s: %s\n", task.ID, task.Title)
+			text += fmt.Sprintf("• %s: %s\n", escapeTelegramMarkdown(task.ID), escapeTelegramMarkdown(task.Title))
 		}
 		text += "\n"
 	}
@@ -294,7 +302,7 @@ func (d *DeliveryService) formatTelegramBrief(brief *Brief) string {
 	if len(brief.Blocked) > 0 {
 		text += "❌ *Failed:*\n"
 		for _, task := range brief.Blocked {
-			text += fmt.Sprintf("• %s: %s\n", task.ID, task.Title)
+			text += fmt.Sprintf("• %s: %s\n", escapeTelegramMarkdown(task.ID), escapeTelegramMarkdown(task.Title))
 		}
 		text += "\n"
 	}
@@ -304,7 +312,7 @@ func (d *DeliveryService) formatTelegramBrief(brief *Brief) string {
 		text += "📋 *Today's Queue*\n"
 		text += "━━━━━━━━━━━━━━━━━━━━━\n"
 		for _, task := range brief.Upcoming {
-			text += fmt.Sprintf("• %s: %s\n", task.ID, task.Title)
+			text += fmt.Sprintf("• %s: %s\n", escapeTelegramMarkdown(task.ID), escapeTelegramMarkdown(task.Title))
 		}
 		text += "\n"
 	}
@@ -312,6 +320,37 @@ func (d *DeliveryService) formatTelegramBrief(brief *Brief) string {
 	text += "Have a productive day! 🚀"
 
 	return text
+}
+
+// telegramMarkdownSpecialChars are the characters that legacy Telegram
+// "Markdown" parse mode treats as entity delimiters. Left unescaped in
+// dynamic content (task IDs/titles), an unpaired occurrence (e.g. a
+// snake_case identifier) makes the whole message fail with
+// "can't parse entities".
+const telegramMarkdownSpecialChars = "_*`["
+
+// escapeTelegramMarkdown escapes legacy Telegram Markdown entity delimiters
+// in dynamic text so they render literally instead of breaking entity parsing.
+func escapeTelegramMarkdown(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if strings.ContainsRune(telegramMarkdownSpecialChars, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// isTelegramParseEntityError reports whether err is a Telegram API 400
+// caused by malformed Markdown entities, so callers can fall back to a
+// plain-text retry instead of dropping the message.
+func isTelegramParseEntityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "can't parse entities")
 }
 
 // formatTelegramTokens formats token count for Telegram display
