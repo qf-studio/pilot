@@ -597,7 +597,7 @@ func (m Model) renderGitGraph(opts ...int) string {
 // width. Focused state uses the accent (steel blue) border; unfocused slate.
 func (m Model) renderGraphPanel(title string, contentLines []string, totalWidth int) string {
 	chrome := panelChrome
-	if m.gitGraphFocus {
+	if m.focus == panelGit {
 		chrome = focusChrome
 	}
 	return renderPanelStyled(title, "", strings.Join(contentLines, "\n"), totalWidth, chrome)
