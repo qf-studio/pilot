@@ -509,14 +509,14 @@ func TestRenderGitGraph_FocusedBorder(t *testing.T) {
 	m.gitGraphState = &GitGraphState{Lines: []GitGraphLine{{GraphChars: "● ", SHA: "abc1234", Message: "test"}}}
 
 	// Focused panel
-	m.gitGraphFocus = true
+	m.focus = panelGit
 	focused := m.renderGitGraph()
 	if focused == "" {
 		t.Error("focused panel should render non-empty")
 	}
 
 	// Unfocused panel
-	m.gitGraphFocus = false
+	m.focus = panelQueue
 	unfocused := m.renderGitGraph()
 	if unfocused == "" {
 		t.Error("unfocused panel should render non-empty")
@@ -554,45 +554,46 @@ func TestModelUpdate_GToggle(t *testing.T) {
 	}
 }
 
-// TestModelUpdate_TabFocus verifies Tab toggles focus when graph is visible.
+// TestModelUpdate_TabFocus verifies Tab cycles spatial focus across every
+// navigable panel in registry order (TASK-399: tab is the non-vim fallback
+// for hjkl focus movement, no longer a git-graph focus toggle).
 func TestModelUpdate_TabFocus(t *testing.T) {
-	m := NewModel("test")
-	m.gitGraphMode = GitGraphVisible
-	m.gitGraphFocus = false
+	m := NewModel("test") // git visible, logs shown by default — all 5 panels navigable
+	want := []panelID{panelAutopilot, panelHistory, panelLogs, panelGit, panelQueue}
 
-	updated, _ := m.Update(makeKey("tab"))
-	m = updated.(Model)
-	if !m.gitGraphFocus {
-		t.Error("Tab should set gitGraphFocus=true when graph is visible")
-	}
-
-	updated, _ = m.Update(makeKey("tab"))
-	m = updated.(Model)
-	if m.gitGraphFocus {
-		t.Error("second Tab should set gitGraphFocus=false")
+	for i, w := range want {
+		updated, _ := m.Update(makeKey("tab"))
+		m = updated.(Model)
+		if m.focus != w {
+			t.Errorf("tab #%d: focus = %v, want %v", i+1, m.focus, w)
+		}
 	}
 }
 
-// TestModelUpdate_TabNoFocusWhenHidden verifies Tab is a no-op when graph hidden.
+// TestModelUpdate_TabNoFocusWhenHidden verifies Tab skips the git panel when
+// the graph is hidden — it's excluded from navigablePanels().
 func TestModelUpdate_TabNoFocusWhenHidden(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphHidden
-	m.gitGraphFocus = false
+	m.focus = panelLogs // last navigable panel before git
 
 	updated, _ := m.Update(makeKey("tab"))
 	m = updated.(Model)
-	if m.gitGraphFocus {
-		t.Error("Tab should NOT toggle focus when graph is hidden")
+	if m.focus != panelQueue {
+		t.Errorf("tab from last panel with git hidden: focus = %v, want panelQueue (git skipped)", m.focus)
 	}
 }
 
-// TestModelUpdate_ScrollWhenFocused verifies j/k scroll the graph when focused.
+// TestModelUpdate_ScrollWhenFocused verifies j/k scroll the zoomed git graph
+// (TASK-399: grid-mode j/k now only moves spatial focus; git scrolling in
+// grid mode is ctrl+d/ctrl+u — see TestModelUpdate_HalfPageScroll below).
 func TestModelUpdate_ScrollWhenFocused(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.gitGraphFocus = true
-	m.gitGraphScroll = 5
-	m.height = 40 // viewport = 35
+	m.zoomed = true
+	m.focus = panelGit
+	m.zoomScroll = 5
+	m.height = 40
 	m.gitGraphState = &GitGraphState{
 		Lines: make([]GitGraphLine, 50),
 	}
@@ -600,25 +601,27 @@ func TestModelUpdate_ScrollWhenFocused(t *testing.T) {
 	// 'j' scrolls down
 	updated, _ := m.Update(makeKey("j"))
 	m = updated.(Model)
-	if m.gitGraphScroll != 6 {
-		t.Errorf("after j: scroll = %d, want 6", m.gitGraphScroll)
+	if m.zoomScroll != 6 {
+		t.Errorf("after j: scroll = %d, want 6", m.zoomScroll)
 	}
 
 	// 'k' scrolls up
 	updated, _ = m.Update(makeKey("k"))
 	m = updated.(Model)
-	if m.gitGraphScroll != 5 {
-		t.Errorf("after k: scroll = %d, want 5", m.gitGraphScroll)
+	if m.zoomScroll != 5 {
+		t.Errorf("after k: scroll = %d, want 5", m.zoomScroll)
 	}
 }
 
-// TestModelUpdate_ScrollBoundaries verifies scroll doesn't go out of bounds.
+// TestModelUpdate_ScrollBoundaries verifies zoomed git scroll doesn't go out
+// of bounds.
 func TestModelUpdate_ScrollBoundaries(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.gitGraphFocus = true
-	m.gitGraphScroll = 0
-	m.height = 8 // viewport = 3
+	m.zoomed = true
+	m.focus = panelGit
+	m.zoomScroll = 0
+	m.height = 8
 	m.gitGraphState = &GitGraphState{
 		Lines: make([]GitGraphLine, 5),
 	}
@@ -626,24 +629,30 @@ func TestModelUpdate_ScrollBoundaries(t *testing.T) {
 	// Can't scroll up past 0
 	updated, _ := m.Update(makeKey("k"))
 	m = updated.(Model)
-	if m.gitGraphScroll != 0 {
-		t.Errorf("scroll should stay at 0, got %d", m.gitGraphScroll)
+	if m.zoomScroll != 0 {
+		t.Errorf("scroll should stay at 0, got %d", m.zoomScroll)
 	}
 
-	// maxScroll = 5 - 3 = 2; can't scroll past that
-	m.gitGraphScroll = 2
+	// Can't scroll past the max offset
+	maxScroll := len(m.gitGraphState.Lines) - m.zoomListViewportH()
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	m.zoomScroll = maxScroll
 	updated, _ = m.Update(makeKey("j"))
 	m = updated.(Model)
-	if m.gitGraphScroll != 2 {
-		t.Errorf("scroll should stay at 2 (max), got %d", m.gitGraphScroll)
+	if m.zoomScroll != maxScroll {
+		t.Errorf("scroll should stay at %d (max), got %d", maxScroll, m.zoomScroll)
 	}
 }
 
-// TestModelUpdate_DashboardScrollWhenNotFocused verifies j/k select tasks when not focused.
+// TestModelUpdate_DashboardScrollWhenNotFocused verifies grid-mode j/k moves
+// spatial focus only — it no longer double-duties as task-list selection
+// (TASK-399 removed that coupling; task selection now happens via the
+// zoomed queue panel, see TestNav_ZoomedQueueOpensURL).
 func TestModelUpdate_DashboardScrollWhenNotFocused(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.gitGraphFocus = false
 	m.tasks = []TaskDisplay{
 		{ID: "1", Title: "Task A", Status: "running"},
 		{ID: "2", Title: "Task B", Status: "queued"},
@@ -652,19 +661,20 @@ func TestModelUpdate_DashboardScrollWhenNotFocused(t *testing.T) {
 
 	updated, _ := m.Update(makeKey("j"))
 	m = updated.(Model)
-	if m.selectedTask != 1 {
-		t.Errorf("j should move selectedTask to 1, got %d", m.selectedTask)
+	if m.selectedTask != 0 {
+		t.Errorf("grid-mode j should not change selectedTask, got %d", m.selectedTask)
 	}
 	if m.gitGraphScroll != 0 {
 		t.Errorf("gitGraphScroll should stay at 0, got %d", m.gitGraphScroll)
 	}
 }
 
-// TestModelUpdate_HalfPageScroll verifies Ctrl+D/Ctrl+U half-page scrolling.
+// TestModelUpdate_HalfPageScroll verifies Ctrl+D/Ctrl+U half-page scrolling
+// of the git graph in grid mode, gated on m.focus == panelGit.
 func TestModelUpdate_HalfPageScroll(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.gitGraphFocus = true
+	m.focus = panelGit
 	m.gitGraphScroll = 0
 	m.height = 40 // viewport = 35, half-page = 17
 	m.gitGraphState = &GitGraphState{
@@ -850,6 +860,11 @@ func TestSyncGitGraph_SwitchesProjectOnTaskChange(t *testing.T) {
 		{ID: "2", Title: "Task B", Status: "queued", ProjectPath: "/home/user/aso-generator", ProjectName: "aso-generator"},
 	}
 	m.selectedTask = 0
+	// TASK-399: task selection now happens via the zoomed queue panel, not
+	// grid-mode j/k (that only moves spatial focus).
+	m.zoomed = true
+	m.focus = panelQueue
+	m.zoomSel = 0
 
 	// Navigate down to task B (different project)
 	updated, cmd := m.Update(makeKey("j"))
@@ -883,6 +898,9 @@ func TestSyncGitGraph_NoRefreshWhenSameProject(t *testing.T) {
 		{ID: "2", Title: "Task B", Status: "queued", ProjectPath: "/home/user/pilot", ProjectName: "pilot"},
 	}
 	m.selectedTask = 0
+	m.zoomed = true
+	m.focus = panelQueue
+	m.zoomSel = 0
 
 	updated, cmd := m.Update(makeKey("j"))
 	m = updated.(Model)
@@ -952,6 +970,9 @@ func TestSyncGitGraph_UpNavigation(t *testing.T) {
 	m.selectedTask = 1
 	m.projectPath = "/home/user/aso-generator"
 	m.gitProjectName = "aso-generator"
+	m.zoomed = true
+	m.focus = panelQueue
+	m.zoomSel = 1
 
 	updated, cmd := m.Update(makeKey("k"))
 	m = updated.(Model)

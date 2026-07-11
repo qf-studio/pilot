@@ -103,7 +103,8 @@ type autopilotController interface {
 // AutopilotPanel displays autopilot status in the dashboard.
 type AutopilotPanel struct {
 	controller autopilotController
-	panelWidth int // dynamic panel width, set before View()
+	panelWidth int  // dynamic panel width, set before View()
+	focused    bool // TASK-399: true when this panel holds spatial focus, set before View()
 }
 
 // NewAutopilotPanel creates an autopilot panel.
@@ -128,14 +129,18 @@ func (p *AutopilotPanel) View() string {
 		tw = panelTotalWidth
 	}
 	iw := tw - 4
+	chrome := panelChrome
+	if p.focused {
+		chrome = focusChrome
+	}
 
 	if p.controller == nil {
-		return renderPanel("autopilot", "  Disabled", tw)
+		return renderPanelStyled("autopilot", "", "  Disabled", tw, chrome)
 	}
 
 	prs := p.controller.GetActivePRs()
 	if len(prs) == 0 {
-		return renderPanel("autopilot", "  "+dimStyle.Render("idle · no active PR"), tw)
+		return renderPanelStyled("autopilot", "", "  "+dimStyle.Render("idle · no active PR"), tw, chrome)
 	}
 
 	cfg := p.controller.Config()
@@ -158,7 +163,21 @@ func (p *AutopilotPanel) View() string {
 		count = "1 pr"
 	}
 	legend := statusRunningStyle.Render("●") + " " + dimStyle.Render(count)
-	return renderPanelInfo("autopilot", legend, strings.Join(lines, "\n"), tw)
+	return renderPanelStyled("autopilot", legend, strings.Join(lines, "\n"), tw, chrome)
+}
+
+// sortedActivePRs returns the controller's active PRs sorted by PR number.
+// Used by the zoomed autopilot view: GetActivePRs iterates a map internally,
+// so raw order is nondeterministic across calls — sorting gives a stable
+// render order and lets selection be keyed by PR number instead of index
+// (TASK-399: "survives live-pull reorder").
+func (p *AutopilotPanel) sortedActivePRs() []*autopilot.PRState {
+	if p == nil || p.controller == nil {
+		return nil
+	}
+	prs := p.controller.GetActivePRs()
+	sort.Slice(prs, func(i, j int) bool { return prs[i].PRNumber < prs[j].PRNumber })
+	return prs
 }
 
 // pipelineStagePosition maps a PRStage to its 0-based position in the 5-node rail.
@@ -327,6 +346,10 @@ type CompletedTask struct {
 	// the store (e.g. AddCompletedTask callers) — the ladder renders as an
 	// empty track in that case.
 	Stage StageInfo
+	// PRUrl is the pull request URL for this execution (from Execution.PRUrl),
+	// used by the zoomed history panel's enter/o open-URL action. Empty when
+	// the task shipped without a PR or wasn't hydrated from the store.
+	PRUrl string
 }
 
 // UpdateInfo contains information about an available update
@@ -399,12 +422,31 @@ type Model struct {
 	gitGraphMode       GitGraphMode
 	gitGraphState      *GitGraphState
 	gitGraphScroll     int
-	gitGraphFocus      bool
 	dbSyncTick         int    // Counter for periodic DB re-sync (GH-2248)
 	projectPath        string // Working directory for git commands
 	defaultProjectPath string // Fallback project path from config (GH-2167)
 	metricsScopePath   string // Project path used to filter store/metrics queries (GH-3531)
 	gitProjectName     string // Current project name shown in git panel title (GH-2167)
+
+	// Spatial grid navigation (TASK-399): focus tracks the spatially-selected
+	// panel; zoomed opens it full-screen. See grid.go/panels.go/zoomlist.go.
+	focus       panelID
+	zoomed      bool
+	zoomSel     int
+	zoomScroll  int
+	zoomHistory []CompletedTask
+	// zoomAutopilotPR is the selected PR number in the zoomed autopilot list.
+	// Keyed by PR number rather than raw index because GetActivePRs iterates
+	// a map — a live-pull reorder between frames must not move the selection.
+	zoomAutopilotPR int
+	// zoomLogsFollow tracks tail-follow state for the zoomed logs panel:
+	// true (default) keeps the viewport pinned to the newest line as more
+	// arrive; scrolling up breaks follow, 'G' resumes it.
+	zoomLogsFollow bool
+
+	// browserOpener opens a URL in the default browser; defaults to
+	// openBrowser but is injectable so tests can capture opened URLs.
+	browserOpener func(string) error
 }
 
 // isStackedMode returns true when the git graph is visible and the terminal is
@@ -473,6 +515,9 @@ func NewModel(version string) Model {
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(nil), // Disabled by default
 		version:        version,
+		focus:          panelQueue,
+		gitGraphMode:   GitGraphVisible,
+		browserOpener:  openBrowser,
 	}
 }
 
@@ -489,6 +534,9 @@ func NewModelWithStore(version string, store *memory.Store) Model {
 		autopilotPanel: NewAutopilotPanel(nil),
 		version:        version,
 		store:          store,
+		focus:          panelQueue,
+		gitGraphMode:   GitGraphVisible,
+		browserOpener:  openBrowser,
 	}
 	m.hydrateFromStore()
 	return m
@@ -505,6 +553,9 @@ func NewModelWithAutopilot(version string, controller *autopilot.Controller) Mod
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(controller),
 		version:        version,
+		focus:          panelQueue,
+		gitGraphMode:   GitGraphVisible,
+		browserOpener:  openBrowser,
 	}
 }
 
@@ -520,6 +571,9 @@ func NewModelWithStoreAndAutopilot(version string, store *memory.Store, controll
 		autopilotPanel: NewAutopilotPanel(controller),
 		version:        version,
 		store:          store,
+		focus:          panelQueue,
+		gitGraphMode:   GitGraphVisible,
+		browserOpener:  openBrowser,
 	}
 	m.hydrateFromStore()
 	return m
@@ -608,6 +662,7 @@ func (m *Model) hydrateFromStore() {
 			CompletedAt: completedAt,
 			PeakRSSMB:   exec.PeakRSSMB,
 			Stage:       stageInfoForExecution(events, status),
+			PRUrl:       exec.PRUrl,
 		})
 	}
 
@@ -737,6 +792,9 @@ func NewModelWithOptions(version string, store *memory.Store, controller *autopi
 		version:        version,
 		store:          store,
 		upgradeCh:      upgradeCh,
+		focus:          panelQueue,
+		gitGraphMode:   GitGraphVisible,
+		browserOpener:  openBrowser,
 	}
 	m.hydrateFromStore()
 	return m
@@ -863,6 +921,11 @@ func (m Model) Init() tea.Cmd {
 	if m.splashActive {
 		cmds = append(cmds, splashTickCmd())
 	}
+	if m.gitGraphMode != GitGraphHidden {
+		// TASK-399: git graph is visible by default — paint it on the first
+		// frame instead of waiting for a manual 'g' toggle.
+		cmds = append(cmds, refreshGitGraphCmd(m.projectPath), gitRefreshTickCmd())
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -918,6 +981,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 				CompletedAt: completedAt,
 				PeakRSSMB:   exec.PeakRSSMB,
 				Stage:       stageInfoForExecution(events, status),
+				PRUrl:       exec.PRUrl,
 			})
 		}
 
@@ -960,106 +1024,10 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			m.quitting = true
-			return m, tea.Quit
-		case "b":
-			m.showBanner = !m.showBanner
-			return m, tea.ClearScreen
-		case "l":
-			m.showLogs = !m.showLogs
-			return m, tea.ClearScreen // GH-1249: Logs toggle changes height
-		case "g":
-			// Toggle git graph: Hidden ↔ Visible (auto-sizes)
-			if m.gitGraphMode == GitGraphHidden {
-				m.gitGraphMode = GitGraphVisible
-			} else {
-				m.gitGraphMode = GitGraphHidden
-			}
-			m.gitGraphFocus = false
-			if m.gitGraphMode != GitGraphHidden {
-				// Start refresh and 15s tick when becoming visible
-				return m, tea.Batch(
-					refreshGitGraphCmd(m.projectPath),
-					gitRefreshTickCmd(),
-					tea.ClearScreen,
-				)
-			}
-			return m, tea.ClearScreen
-		case "tab":
-			if m.gitGraphMode != GitGraphHidden {
-				m.gitGraphFocus = !m.gitGraphFocus
-			}
-		case "up", "k":
-			if m.gitGraphFocus {
-				if m.gitGraphScroll > 0 {
-					m.gitGraphScroll--
-				}
-			} else if m.selectedTask > 0 {
-				m.selectedTask--
-				if cmd := m.syncGitGraphToSelectedTask(); cmd != nil {
-					return m, cmd
-				}
-			}
-		case "down", "j":
-			if m.gitGraphFocus {
-				if m.gitGraphState != nil {
-					viewportH := m.gitGraphViewportHeight()
-					maxScroll := len(m.gitGraphState.Lines) - viewportH
-					if maxScroll < 0 {
-						maxScroll = 0
-					}
-					if m.gitGraphScroll < maxScroll {
-						m.gitGraphScroll++
-					}
-				}
-			} else if m.selectedTask < len(m.tasks)-1 {
-				m.selectedTask++
-				if cmd := m.syncGitGraphToSelectedTask(); cmd != nil {
-					return m, cmd
-				}
-			}
-		case "ctrl+d":
-			if m.gitGraphFocus && m.gitGraphState != nil {
-				viewportH := m.gitGraphViewportHeight()
-				m.gitGraphScroll += viewportH / 2
-				maxScroll := len(m.gitGraphState.Lines) - viewportH
-				if maxScroll < 0 {
-					maxScroll = 0
-				}
-				if m.gitGraphScroll > maxScroll {
-					m.gitGraphScroll = maxScroll
-				}
-			}
-		case "ctrl+u":
-			if m.gitGraphFocus {
-				viewportH := m.gitGraphViewportHeight()
-				m.gitGraphScroll -= viewportH / 2
-				if m.gitGraphScroll < 0 {
-					m.gitGraphScroll = 0
-				}
-			}
-		case "enter":
-			if m.selectedTask >= 0 && m.selectedTask < len(m.tasks) {
-				task := m.tasks[m.selectedTask]
-				if task.IssueURL != "" {
-					_ = openBrowser(task.IssueURL)
-				}
-			}
-		case "u":
-			// Trigger upgrade if update is available and not already upgrading
-			if m.updateInfo != nil && m.upgradeState == UpgradeStateAvailable && m.upgradeCh != nil {
-				m.upgradeState = UpgradeStateInProgress
-				m.upgradeProgress = 0
-				m.upgradeMessage = "Starting upgrade..."
-				// Non-blocking send to upgrade channel
-				select {
-				case m.upgradeCh <- struct{}{}:
-				default:
-				}
-			}
+		if m.zoomed {
+			return m.handleZoomedKey(msg)
 		}
+		return m.handleGridKey(msg)
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -1109,8 +1077,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case addLogMsg:
 		m.logs = append(m.logs, string(msg))
-		if len(m.logs) > 100 {
+		// TASK-399: zoomed logs shows up to 1000 lines (grid mode still tails
+		// a short window via renderLogs' capacity, independent of this cap).
+		if len(m.logs) > 1000 {
 			m.logs = m.logs[1:]
+		}
+		if m.zoomed && m.focus == panelLogs && m.zoomLogsFollow {
+			m.zoomScroll = m.logsMaxScroll()
 		}
 
 	case updateTokensMsg:
@@ -1167,9 +1140,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.completedTasks = msg.completedTasks
 		m.metricsCard = msg.metricsCard
 		m.loadMetricsHistory()
-		if len(m.completedTasks) != prevLen {
-			return m, tea.ClearScreen
+		// TASK-399: keep the zoomed history list in sync with the periodic
+		// DB re-sync while it's open, same as the grid-mode panel.
+		var zoomCmd tea.Cmd
+		if m.zoomed && m.focus == panelHistory {
+			zoomCmd = historyZoomCmd(m.store, m.metricsScopePath)
 		}
+		if len(m.completedTasks) != prevLen {
+			return m, tea.Batch(zoomCmd, tea.ClearScreen)
+		}
+		if zoomCmd != nil {
+			return m, zoomCmd
+		}
+
+	case historyZoomMsg:
+		m.zoomHistory = msg.tasks
 
 	case updateAvailableMsg:
 		m.updateInfo = &UpdateInfo{
@@ -1221,31 +1206,11 @@ func (m Model) View() string {
 		return m.renderSplash()
 	}
 
-	dashboard := m.renderDashboard()
-
 	var result string
-	if m.gitGraphMode == GitGraphHidden {
-		result = dashboard
-	} else if m.width > 0 && m.width < panelTotalWidth+1+20 {
-		// Terminal too narrow for side-by-side — stack graph below at full terminal width.
-		dashLines := strings.Count(dashboard, "\n") + 1
-		graphHeight := m.height - dashLines - 1 // -1 for help footer
-		if graphHeight < 8 {
-			graphHeight = 8 // minimum useful graph height
-		}
-		graphPanel := m.renderGitGraph(m.width, graphHeight)
-		if graphPanel == "" {
-			result = dashboard
-		} else {
-			result = dashboard + "\n" + graphPanel
-		}
+	if m.zoomed {
+		result = m.renderZoomed()
 	} else {
-		graphPanel := m.renderGitGraph()
-		if graphPanel == "" {
-			result = dashboard
-		} else {
-			result = lipgloss.JoinHorizontal(lipgloss.Top, dashboard, " ", graphPanel)
-		}
+		result = m.renderGrid()
 	}
 
 	// Help footer — appended after height truncation so it's never cut off.
@@ -1482,14 +1447,13 @@ func padTo(s string, w int) string {
 	return s + strings.Repeat(" ", w-visual)
 }
 
-// renderDashboard builds the left-side dashboard column (all existing panels).
-func (m Model) renderDashboard() string {
+// renderChromeHeader renders the non-navigable header chrome: banner, update
+// notice, metrics cards, and eval stats. This sits above the spatial grid
+// (TASK-399) and is never a focus target — computeLayout knows nothing
+// about it, so its height must be subtracted before computing panel rects
+// (see gridAvailHeight).
+func (m Model) renderChromeHeader() string {
 	var b strings.Builder
-
-	// Set effective panel width on autopilot panel for stacked mode
-	if m.autopilotPanel != nil {
-		m.autopilotPanel.panelWidth = m.effectivePanelTotalWidth()
-	}
 
 	// Header: bordered banner frame (GH-2455 / GH-2459).
 	// The ASCII logo is shown only during the splash; steady-state dashboard
@@ -1509,57 +1473,207 @@ func (m Model) renderDashboard() string {
 	b.WriteString(m.renderMetricsCards())
 	b.WriteString("\n")
 
-	// Tasks
-	b.WriteString(m.renderTasks())
-	b.WriteString("\n")
-
-	// Autopilot panel
-	b.WriteString(m.autopilotPanel.View())
-	b.WriteString("\n")
-
 	// Eval stats
 	if evalPanel := m.renderEvalStats(); evalPanel != "" {
 		b.WriteString(evalPanel)
 		b.WriteString("\n")
 	}
 
-	// History
-	b.WriteString(m.renderHistory())
-	b.WriteString("\n")
-
-	// Logs (if enabled) — the flex panel: stretches to the bottom of the
-	// terminal in full-width and side-by-side layouts. In stacked mode
-	// (narrow terminal, git graph below) it stays content-sized so the
-	// graph keeps its height; history/autopilot stay dynamic either way.
-	if m.showLogs {
-		flex := 0
-		if m.height > 1 && !m.isStackedMode() {
-			used := strings.Count(b.String(), "\n")
-			flex = m.height - 1 - used // reserve the help footer line
-		}
-		b.WriteString(m.renderLogs(flex))
-		b.WriteString("\n")
-	}
-
-	// Help footer rendered separately in View() to survive height truncation
-
 	return b.String()
 }
 
-// renderHelp returns a context-aware help footer that fits within panelTotalWidth (69 chars).
-// Keys shown depend on gitGraphMode and gitGraphFocus state.
+// gridAvailHeight returns the terminal height remaining for the spatial grid
+// (queue/autopilot/history/logs/git) after the chrome header and the help
+// footer's reserved line.
+func (m Model) gridAvailHeight() int {
+	if m.height <= 0 {
+		return 0
+	}
+	h := m.height - lineCount(m.renderChromeHeader())
+	if h < 0 {
+		h = 0
+	}
+	return h
+}
+
+// lineCount returns the number of lines s renders as (1 for "", N+1 for N
+// embedded newlines) — used to measure panel/header heights for layout.
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
+// buildGridPanels renders each navigable left-column panel's content and
+// measures its height, for feeding into computeLayout. Logs gets the same
+// flex-vs-content-sized treatment as the pre-wiring renderDashboard: it
+// stretches to fill remaining vertical space unless the layout is stacked
+// (narrow terminal, git graph below), where it stays content-sized so the
+// graph keeps its room.
+func (m Model) buildGridPanels() (layoutHeights, map[panelID]string) {
+	if m.autopilotPanel != nil {
+		m.autopilotPanel.panelWidth = m.effectivePanelTotalWidth()
+		m.autopilotPanel.focused = m.focus == panelAutopilot
+	}
+
+	contents := map[panelID]string{
+		panelQueue:     m.renderTasks(),
+		panelAutopilot: m.autopilotPanel.View(),
+		panelHistory:   m.renderHistory(),
+	}
+	var h layoutHeights
+	h.Queue = lineCount(contents[panelQueue])
+	h.Autopilot = lineCount(contents[panelAutopilot])
+	h.History = lineCount(contents[panelHistory])
+
+	if m.showLogs {
+		flex := 0
+		if !m.isStackedMode() {
+			availH := m.gridAvailHeight()
+			used := h.Queue + h.Autopilot + h.History
+			if remaining := availH - used; remaining >= logsFlexMinHeight {
+				flex = remaining
+			}
+		}
+		contents[panelLogs] = m.renderLogs(flex)
+		h.Logs = lineCount(contents[panelLogs])
+	}
+
+	return h, contents
+}
+
+// computeRects returns the current frame's panel rects (queue/autopilot/
+// history/logs/git), indexed identically to panelRegistry — feed directly
+// to focusMove.
+func (m Model) computeRects() []Rect {
+	heights, _ := m.buildGridPanels()
+	return computeLayout(m.width, m.gridAvailHeight(), heights, m.gitGraphMode != GitGraphHidden)
+}
+
+// navigablePanels returns the panelIDs currently eligible for spatial focus
+// — panelGit is excluded when hidden, panelLogs when toggled off.
+func (m Model) navigablePanels() []panelID {
+	ids := make([]panelID, 0, len(panelRegistry))
+	for _, p := range panelRegistry {
+		if p.ID == panelGit && m.gitGraphMode == GitGraphHidden {
+			continue
+		}
+		if p.ID == panelLogs && !m.showLogs {
+			continue
+		}
+		ids = append(ids, p.ID)
+	}
+	return ids
+}
+
+// moveFocus updates m.focus to the panel spatially nearest in direction dir
+// ('h'/'j'/'k'/'l'), restricted to currently-navigable panels.
+func (m *Model) moveFocus(dir byte) {
+	ids := m.navigablePanels()
+	if len(ids) == 0 {
+		return
+	}
+	all := m.computeRects()
+	rects := make([]Rect, len(ids))
+	cur := 0
+	for i, id := range ids {
+		rects[i] = all[panelIndex(id)]
+		if id == m.focus {
+			cur = i
+		}
+	}
+	next := focusMove(rects, cur, dir)
+	if next >= 0 && next < len(ids) {
+		m.focus = ids[next]
+	}
+}
+
+// renderDashboard builds the left-side dashboard column (all existing
+// panels, no git graph) — kept as the pure left-column renderer for
+// tests/callers that only want that piece.
+func (m Model) renderDashboard() string {
+	_, contents := m.buildGridPanels()
+
+	var b strings.Builder
+	b.WriteString(m.renderChromeHeader())
+	b.WriteString(contents[panelQueue])
+	b.WriteString("\n")
+	b.WriteString(contents[panelAutopilot])
+	b.WriteString("\n")
+	b.WriteString(contents[panelHistory])
+	b.WriteString("\n")
+	if m.showLogs {
+		b.WriteString(contents[panelLogs])
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// renderGrid composes the full non-zoomed frame: chrome header, the left
+// column (queue/autopilot/history/logs) placed via computeLayout, and the
+// git graph panel beside or beneath it. Replaces the three ad-hoc View()
+// layout branches (git hidden / stacked / side-by-side) with one geometry
+// pass (TASK-399).
+func (m Model) renderGrid() string {
+	header := m.renderChromeHeader()
+	heights, contents := m.buildGridPanels()
+	gitVisible := m.gitGraphMode != GitGraphHidden
+	rects := computeLayout(m.width, m.gridAvailHeight(), heights, gitVisible)
+
+	var left []string
+	for _, id := range []panelID{panelQueue, panelAutopilot, panelHistory} {
+		idx := panelIndex(id)
+		left = append(left, safeRender(panelRegistry[idx], rects[idx], contents[id]))
+	}
+	if m.showLogs {
+		idx := panelIndex(panelLogs)
+		left = append(left, safeRender(panelRegistry[idx], rects[idx], contents[panelLogs]))
+	}
+	// dashboardColumn includes the chrome header so side-by-side joining
+	// (below) matches every row — including the banner/metrics rows —
+	// against a git-panel row, keeping every composed line exactly m.width.
+	dashboardColumn := header + strings.Join(left, "\n")
+
+	if !gitVisible {
+		return dashboardColumn
+	}
+
+	gi := panelIndex(panelGit)
+	gr := rects[gi]
+	sideBySide := gr.X > 0
+	gitHeight := gr.H
+	if sideBySide {
+		// computeLayout's git height (gr.H) only spans the left-column panel
+		// stack, not the chrome header above it — stretch to the full
+		// dashboard column height so the join below covers every row.
+		gitHeight = lineCount(dashboardColumn)
+	}
+	gitPanel := m.renderGitGraph(gr.W, gitHeight)
+	if gitPanel == "" {
+		return dashboardColumn
+	}
+	if sideBySide {
+		return lipgloss.JoinHorizontal(lipgloss.Top, dashboardColumn, " ", gitPanel)
+	}
+	// Stacked below.
+	return dashboardColumn + "\n" + gitPanel
+}
+
+// renderHelp returns a context-aware help footer that fits within
+// effectivePanelTotalWidth. Grid mode shows spatial-navigation keys; zoomed
+// mode shows the list/scroll keys for the zoomed panel.
 func (m Model) renderHelp() string {
 	var parts []string
-	switch {
-	case m.gitGraphMode == GitGraphHidden:
-		// Graph hidden: show navigation and graph-open key
-		parts = []string{"q: quit", "l: logs", "b: banner", "g: graph", "j/k: select"}
-	case m.gitGraphFocus:
-		// Graph visible, graph panel focused
-		parts = []string{"q: quit", "b: banner", "g: close", "tab: dashboard"}
-	default:
-		// Graph visible, dashboard focused
-		parts = []string{"q: quit", "b: banner", "g: close", "tab: graph"}
+	if m.zoomed {
+		switch m.focus {
+		case panelQueue, panelAutopilot, panelHistory:
+			parts = []string{"q: quit", "esc: back", "j/k: move", "enter/o: open"}
+		default:
+			parts = []string{"q: quit", "esc: back", "j/k: scroll", "g/G: top/bottom"}
+		}
+	} else {
+		parts = []string{"q: quit", "hjkl: focus", "enter: zoom", "g: graph", "L: logs", "b: banner"}
 	}
 	help := strings.Join(parts, "  ")
 	tw := m.effectivePanelTotalWidth()
@@ -1781,16 +1895,7 @@ func (m Model) renderTasks() string {
 	if len(m.tasks) == 0 {
 		content.WriteString("  No tasks in queue")
 	} else {
-		// Sort by state priority, then by ID within same state
-		sorted := make([]TaskDisplay, len(m.tasks))
-		copy(sorted, m.tasks)
-		sort.SliceStable(sorted, func(i, j int) bool {
-			pi, pj := taskStatePriority(sorted[i].Status), taskStatePriority(sorted[j].Status)
-			if pi != pj {
-				return pi < pj
-			}
-			return sorted[i].ID < sorted[j].ID
-		})
+		sorted := m.sortedTasks()
 
 		queueIdx := 0 // position counter for queued items' "#N" label
 		for i, task := range sorted {
@@ -1823,7 +1928,27 @@ func (m Model) renderTasks() string {
 	}
 	info := strings.Join(segs, "  ")
 
-	return renderPanelInfo("queue", info, content.String(), m.effectivePanelTotalWidth())
+	chrome := panelChrome
+	if m.focus == panelQueue {
+		chrome = focusChrome
+	}
+	return renderPanelStyled("queue", info, content.String(), m.effectivePanelTotalWidth(), chrome)
+}
+
+// sortedTasks returns m.tasks sorted the same way renderTasks displays them
+// (state priority, then ID) — shared with the zoomed queue view so selection
+// indices refer to the same order the user sees.
+func (m Model) sortedTasks() []TaskDisplay {
+	sorted := make([]TaskDisplay, len(m.tasks))
+	copy(sorted, m.tasks)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		pi, pj := taskStatePriority(sorted[i].Status), taskStatePriority(sorted[j].Status)
+		if pi != pj {
+			return pi < pj
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	return sorted
 }
 
 // renderTask renders a single task row with state-aware icons, bars, and meta.
@@ -2083,10 +2208,14 @@ func (m Model) renderHistory() string {
 	var content strings.Builder
 	tw := m.effectivePanelTotalWidth()
 	iw := tw - 4
+	chrome := panelChrome
+	if m.focus == panelHistory {
+		chrome = focusChrome
+	}
 
 	if len(m.completedTasks) == 0 {
 		content.WriteString("  No completed tasks yet")
-		return renderPanel("HISTORY", content.String(), tw)
+		return renderPanelStyled("HISTORY", "", content.String(), tw, chrome)
 	}
 
 	groups := m.groupedHistory()
@@ -2124,7 +2253,7 @@ func (m Model) renderHistory() string {
 		}
 	}
 
-	return renderPanel("HISTORY", content.String(), tw)
+	return renderPanelStyled("HISTORY", "", content.String(), tw, chrome)
 }
 
 // stageLabelWidth is the fixed column for the stage name after the ladder
@@ -2351,14 +2480,18 @@ func (m Model) renderLogs(flexHeight int) string {
 			lines = append(lines, "  "+truncateVisual(log, w))
 		}
 	}
+	chrome := panelChrome
+	if m.focus == panelLogs {
+		chrome = focusChrome
+	}
 	if flex {
 		for len(lines) < capacity {
 			lines = append(lines, "")
 		}
 		padded := "\n" + strings.Join(lines, "\n") + "\n"
-		return render.Panel("logs", padded, tw, flexHeight, panelChrome)
+		return render.Panel("logs", padded, tw, flexHeight, chrome)
 	}
-	return renderPanel("LOGS", strings.Join(lines, "\n"), tw)
+	return renderPanelStyled("LOGS", "", strings.Join(lines, "\n"), tw, chrome)
 }
 
 // updateMetricsCardMsg updates the metrics card data

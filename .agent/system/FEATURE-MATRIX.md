@@ -250,6 +250,7 @@
 | GoReleaser desktop artifact | ✅ | ci | - | - | Separate GH Actions workflow, macOS universal binary on release (v1.54.0, GH-1614) |
 | Dashboard git graph sizes | ✅ | dashboard | `g` key | - | Small/medium/large/hidden modes, auto-size by terminal width (v2.35.0, PR #1900) |
 | Dashboard responsive layout | ✅ | dashboard | - | - | Stacked layout on narrow terminals, full-width panels (v2.38.0, PR #1913) |
+| Dashboard spatial nav + zoom | ✅ | dashboard | `hjkl`/`tab`/`enter`/`esc` | - | grom-style spatial panel focus (`focusMove` over `computeLayout` rects) across queue/autopilot/history/logs/git; `enter` zooms the focused panel full-screen (uncapped lists, `j/k` + `g/G`, `enter`/`o` opens the selected item's URL); git graph visible by default on first frame; logs rebound to `L` (v2.237.0, TASK-399/GH-4203) |
 | History dedup | ✅ | desktop | - | - | Deduplicates execution records per issue, success takes priority (v1.62.0, GH-1663) |
 | WebSocket log streaming | ✅ | gateway | - | - | Real-time execution logs via WebSocket to web dashboard (v1.56.0, GH-1613) |
 | Epic-aware HISTORY panel | ✅ | dashboard | - | - | HISTORY panel shows epic decomposition info + sub-issue counts (v0.22.1) |
