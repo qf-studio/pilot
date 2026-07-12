@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-12 (v2.151.0)
+**Last Updated:** 2026-07-09 (v2.151.0)
 
 ## Legend
 
@@ -423,6 +423,9 @@
 | Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
+| Single-subtask epic consolidation | ✅ | executor | - | - | `isSinglePackageScope` short-circuits `len(plan.Subtasks) <= 1` to direct execution — never spawns a lone child issue (GH-4216 fix 1 / #4221) |
+| Epic finalize title normalization | ✅ | executor | - | - | `finalizeEpicBranchPR` routes the parent PR title through `normalizeTitle` before `CreatePR`, so raw issue titles auto-prefix instead of failing `validatePRTitle` deterministically (GH-4216 fix 2 / #4221) |
+| Cross-task-id dispatch guard | ✅ | executor + memory | - | - | `ProjectWorker.processQueue` pickup-time check: `Store.GetDecomposedChildTaskIDs` + `allDecomposedChildrenShipped` refuse to re-dispatch a task_id as fresh top-level work once every child from its `decomposed` ledger event has a genuine completed execution — fail-loud `slog.Warn`, defense-in-depth alongside `hasTerminalSuccessLedger` (GH-4216 fix 3, TASK-401) |
 
 ## Test Coverage
 
@@ -597,4 +600,3 @@ quality:
 | Decomposed-child base-branch pinning | v2.184.x | executor | Resolve `BaseBranch` from main-repo git context before worktree creation; decomposed children never PR against a sibling branch (GH-3540) |
 | GitHub-poller auth-failure escalation | v2.207.x | adapters/github + health | Consecutive 401/non-ratelimit-403 fetch errors escalate to ERROR log + alert at threshold (`WithAlertProcessor`/`WithTokenSource`); `pilot doctor` disabled-subsystems panel; `pilot config show` secret redaction + `--reveal` (TASK-379 V4 / GH-3839) |
 | Executor prompt memory injection | v2.219.x | executor | `BuildPrompt` appends a "Known pitfalls from project memory" block ranked via `graphrecall.RecallRelevant`, gated on `MemoryInjection.Enabled`/non-LocalMode/Navigator/recall hits, capped at `min(MaxMemories,5)` entries and ~1500 chars (TASK-387 / GH-3909) |
-| Dashboard status-truthfulness reconciliation | v2.238.x | memory + autopilot | Orphan-running sweep (`FindOrphanedRunningExecutions`/`ResolveOrphanedRunningExecution`, Monitor + execution_events heartbeat guard) heals stale `status='running'` rows; `selfHealForPR` widened with a startup wide-lookback catch-up scan, PR-body `Closes #N`/`Parent: GH-N` issueNum resolution, and a `pr_url`-keyed fallback heal; `ScanRecentlyMergedPRs`'s external-merge branch now also calls `monitor.Complete` (TASK-399 / GH-4209) |

@@ -445,6 +445,118 @@ func TestHasCompletedExecution(t *testing.T) {
 	}
 }
 
+// TestGetDecomposedChildTaskIDs covers the GH-4216 (Defect A, fix 3)
+// cross-task-id dispatch guard's read helper: no decomposed event, a
+// decomposed event with children, duplicate refs collapsed, and project-path
+// scoping.
+func TestGetDecomposedChildTaskIDs(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// No execution at all for this task_id yet.
+	childIDs, found, err := store.GetDecomposedChildTaskIDs("GH-4211", "/project")
+	if err != nil {
+		t.Fatalf("GetDecomposedChildTaskIDs failed: %v", err)
+	}
+	if found {
+		t.Error("expected found=false for task with no execution rows")
+	}
+	if len(childIDs) != 0 {
+		t.Errorf("expected no child IDs, got %v", childIDs)
+	}
+
+	// Execution exists but never decomposed (plain direct task).
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-direct",
+		TaskID:      "GH-4300",
+		ProjectPath: "/project",
+		Status:      "completed",
+		CommitSHA:   "abc123",
+	})
+	childIDs, found, err = store.GetDecomposedChildTaskIDs("GH-4300", "/project")
+	if err != nil {
+		t.Fatalf("GetDecomposedChildTaskIDs failed: %v", err)
+	}
+	if found {
+		t.Error("expected found=false for a task that never decomposed")
+	}
+	if len(childIDs) != 0 {
+		t.Errorf("expected no child IDs, got %v", childIDs)
+	}
+
+	// Epic parent that decomposed into two children (GH-4211 repro shape).
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-4211",
+		TaskID:      "GH-4211",
+		ProjectPath: "/project",
+		Status:      "failed",
+		Error:       "epic PR creation failed: title is not a conventional commit",
+	})
+	if err := store.InsertExecutionEvent("exec-4211", StageDecomposed, "decomposed into 2 children: #4212, #4213"); err != nil {
+		t.Fatalf("InsertExecutionEvent failed: %v", err)
+	}
+
+	childIDs, found, err = store.GetDecomposedChildTaskIDs("GH-4211", "/project")
+	if err != nil {
+		t.Fatalf("GetDecomposedChildTaskIDs failed: %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true for a decomposed task")
+	}
+	wantChildren := []string{"GH-4212", "GH-4213"}
+	if !equalStringSlices(childIDs, wantChildren) {
+		t.Errorf("childIDs = %v, want %v", childIDs, wantChildren)
+	}
+
+	// Different project path — must not see the other project's decomposed event.
+	_, found, err = store.GetDecomposedChildTaskIDs("GH-4211", "/other-project")
+	if err != nil {
+		t.Fatalf("GetDecomposedChildTaskIDs failed: %v", err)
+	}
+	if found {
+		t.Error("expected found=false for a different project path")
+	}
+
+	// Duplicate refs across repeated decomposed events collapse to one entry each.
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-dup",
+		TaskID:      "GH-4400",
+		ProjectPath: "/project",
+		Status:      "failed",
+	})
+	if err := store.InsertExecutionEvent("exec-dup", StageDecomposed, "decomposed into 1 children: #4401"); err != nil {
+		t.Fatalf("InsertExecutionEvent failed: %v", err)
+	}
+	if err := store.InsertExecutionEvent("exec-dup", StageDecomposed, "decomposed into 1 children: #4401"); err != nil {
+		t.Fatalf("InsertExecutionEvent failed: %v", err)
+	}
+	childIDs, found, err = store.GetDecomposedChildTaskIDs("GH-4400", "/project")
+	if err != nil {
+		t.Fatalf("GetDecomposedChildTaskIDs failed: %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true")
+	}
+	if !equalStringSlices(childIDs, []string{"GH-4401"}) {
+		t.Errorf("childIDs = %v, want [GH-4401]", childIDs)
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestHasCompletedExecution_OrphanRecovery verifies that a completed execution
 // with a non-empty error field (e.g., from orphan recovery) does NOT count as
 // completed. This prevents orphan-recovered executions from blocking re-dispatch.

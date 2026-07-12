@@ -915,6 +915,38 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			w.runner.EmitProgress(exec.TaskID, "Completed", 100, "already completed per execution ledger")
 			w.currentTaskID.Store("")
 			continue
+		} else if allShipped, childIDs, cErr := w.allDecomposedChildrenShipped(exec.TaskID); cErr != nil {
+			w.log.Warn("Failed to check cross-task-id dispatch guard before pickup",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.Any("error", cErr))
+		} else if allShipped {
+			// GH-4216 (Defect A, fix 3): the ledger shows this task_id decomposed
+			// into children that ALL already shipped completed executions — the
+			// GH-4211 repro re-dispatched the parent as a fresh top-level task and
+			// re-implemented the same fix its child (#4212) had already landed in
+			// PR #4213. hasTerminalSuccessLedger above never catches this because
+			// an epic parent's own row typically carries no deliverable
+			// (TASK-296); this check follows the decomposed-children trail
+			// instead. Fail-loud: this is a defense-in-depth skip, not a normal
+			// completion, so it always logs at Warn with the full child list.
+			prURL := ""
+			if latest, gErr := w.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); gErr == nil && latest != nil {
+				prURL = latest.PRUrl
+			}
+			w.log.Warn("Cross-task-id dispatch guard: all decomposed children already completed; refusing to re-implement as fresh top-level task",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.Any("children", childIDs),
+				slog.String("evidence_pr_url", prURL),
+			)
+			if err := w.store.MarkExecutionCompleted(exec.ID, prURL, "", 0); err != nil {
+				w.log.Error("Failed to mark cross-task-id-guarded duplicate completed", slog.Any("error", err))
+			}
+			w.recordExecutionEvent(exec.ID, memory.StageCompleted, fmt.Sprintf("cross-task-id dispatch guard: children already completed (%s)", strings.Join(childIDs, ", ")))
+			w.runner.EmitProgress(exec.TaskID, "Completed", 100, "already completed via decomposed children (cross-task-id guard)")
+			w.currentTaskID.Store("")
+			continue
 		}
 
 		w.log.Info("Processing task",
@@ -1101,6 +1133,41 @@ func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.St
 // actually starting the backend.
 func (w *ProjectWorker) hasTerminalSuccessLedger(taskID string) (bool, error) {
 	return w.store.HasCompletedExecution(taskID, w.projectPath)
+}
+
+// allDecomposedChildrenShipped reports whether taskID has a recorded
+// StageDecomposed ledger event AND every child task_id parsed from it has a
+// genuine completed execution (Store.HasCompletedExecution). It returns the
+// child task IDs found (possibly empty) regardless of outcome, for logging.
+//
+// GH-4216 (Defect A, fix 3): cross-task-id dispatch guard, defense-in-depth
+// alongside hasTerminalSuccessLedger. hasTerminalSuccessLedger only ever
+// checks taskID's own rows, which never catches an epic parent whose
+// finalize keeps failing (or whose task_id got re-queued for any other
+// reason) once every child it decomposed into already shipped — an epic
+// parent's own row typically carries no deliverable (TASK-296), so
+// HasCompletedExecution(taskID, ...) stays false forever even though the
+// real work is done. Returns false with no children if taskID never
+// decomposed, or if any child is still incomplete (existing epic-resume
+// behavior is left unchanged in that case).
+func (w *ProjectWorker) allDecomposedChildrenShipped(taskID string) (bool, []string, error) {
+	childIDs, found, err := w.store.GetDecomposedChildTaskIDs(taskID, w.projectPath)
+	if err != nil {
+		return false, nil, err
+	}
+	if !found || len(childIDs) == 0 {
+		return false, childIDs, nil
+	}
+	for _, childID := range childIDs {
+		completed, err := w.store.HasCompletedExecution(childID, w.projectPath)
+		if err != nil {
+			return false, childIDs, err
+		}
+		if !completed {
+			return false, childIDs, nil
+		}
+	}
+	return true, childIDs, nil
 }
 
 // dispatchSuccessStage reports the execution_events Stage (and whether to

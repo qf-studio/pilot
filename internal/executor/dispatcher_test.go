@@ -1095,6 +1095,128 @@ func TestProcessQueue_TerminalSuccessLedger_SkipsBackend(t *testing.T) {
 	}
 }
 
+// TestProcessQueue_CrossTaskIDGuard is the GH-4216 (Defect A, fix 3) table
+// test for the cross-task-id dispatch guard: an epic parent task_id that
+// recorded a StageDecomposed ledger event must not be re-dispatched as a
+// fresh top-level task (re-implementing already-shipped work, the GH-4211
+// repro) once every child it decomposed into has a genuine completed
+// execution — but must still run normally when any child is incomplete
+// (existing epic-resume behavior).
+func TestProcessQueue_CrossTaskIDGuard(t *testing.T) {
+	tests := []struct {
+		name             string
+		childStatuses    []string // one completed execution row per child, "" = no row at all
+		wantBackendCalls int
+		wantStatus       string
+	}{
+		{
+			name:             "all children completed skips re-implementation",
+			childStatuses:    []string{"completed", "completed"},
+			wantBackendCalls: 0,
+			wantStatus:       "completed",
+		},
+		{
+			name:             "one child incomplete falls through to normal dispatch",
+			childStatuses:    []string{"completed", "running"},
+			wantBackendCalls: 1,
+			wantStatus:       "completed", // mockFixedBackend succeeds; runner marks it completed
+		},
+		{
+			name:             "no completed rows for either child falls through to normal dispatch",
+			childStatuses:    []string{"", ""},
+			wantBackendCalls: 1,
+			wantStatus:       "completed",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			const parentTaskID = "GH-4211"
+			projectPath := setupPRGuardRepo(t, "pilot/GH-4211", false)
+
+			parentExec := &memory.Execution{
+				ID:          "exec-4211-failed",
+				TaskID:      parentTaskID,
+				ProjectPath: projectPath,
+				Status:      "failed",
+				TaskBranch:  "pilot/GH-4211",
+			}
+			if err := store.SaveExecution(parentExec); err != nil {
+				t.Fatalf("failed to save parent execution: %v", err)
+			}
+			if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed,
+				"decomposed into 2 children: #4212, #4213"); err != nil {
+				t.Fatalf("failed to insert decomposed event: %v", err)
+			}
+
+			children := []string{"GH-4212", "GH-4213"}
+			for i, status := range tc.childStatuses {
+				if status == "" {
+					continue
+				}
+				childExec := &memory.Execution{
+					ID:          fmt.Sprintf("exec-%s", children[i]),
+					TaskID:      children[i],
+					ProjectPath: projectPath,
+					Status:      status,
+				}
+				if status == "completed" {
+					childExec.PRUrl = fmt.Sprintf("https://github.com/qf-studio/pilot/pull/%s", strings.TrimPrefix(children[i], "GH-"))
+				}
+				if err := store.SaveExecution(childExec); err != nil {
+					t.Fatalf("failed to save child execution: %v", err)
+				}
+			}
+
+			// A freshly re-queued row for the parent task_id — the GH-4211 repro's
+			// re-poll re-dispatch.
+			requeued := &memory.Execution{
+				ID:          "exec-4211-requeued",
+				TaskID:      parentTaskID,
+				ProjectPath: projectPath,
+				Status:      "queued",
+				TaskBranch:  "pilot/GH-4211",
+			}
+			if err := store.SaveExecution(requeued); err != nil {
+				t.Fatalf("failed to save requeued execution: %v", err)
+			}
+
+			origCheck := mergedPRPreflightCheck
+			mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+			defer func() { mergedPRPreflightCheck = origCheck }()
+
+			backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "ok"}}
+			runner := NewRunnerWithBackend(backend)
+			runner.skipPreflightChecks = true
+			runner.config = &BackendConfig{SkipSelfReview: true}
+			worker := NewProjectWorker(projectPath, store, runner, slog.Default())
+
+			worker.processQueue(context.Background())
+
+			backend.mu.Lock()
+			count := backend.execCount
+			backend.mu.Unlock()
+			if count != tc.wantBackendCalls {
+				t.Errorf("backend invocations = %d, want %d", count, tc.wantBackendCalls)
+			}
+
+			got, err := store.GetExecution(requeued.ID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Errorf("requeued row status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if tc.wantBackendCalls == 0 && got.PRUrl == "" {
+				t.Error("expected the cross-task-id guard to carry a child pr_url as completion evidence")
+			}
+		})
+	}
+}
+
 func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

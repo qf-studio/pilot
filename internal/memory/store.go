@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -842,6 +844,55 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// decomposedChildRefRegex extracts "#123"-style issue references from a
+// StageDecomposed execution_events detail string, e.g. "decomposed into 2
+// children: #4212, #4213" (see executor.formatDecomposedChildrenSummary).
+var decomposedChildRefRegex = regexp.MustCompile(`#(\d+)`)
+
+// GetDecomposedChildTaskIDs returns the child task IDs (formatted "GH-<n>",
+// matching the task_id convention sub-issue dispatch uses) parsed from the
+// most recent StageDecomposed execution_events entry recorded for
+// taskID/projectPath, and whether any decomposed event was found at all.
+//
+// GH-4216 (Defect A, fix 3): backs the cross-task-id dispatch guard, which
+// tells a genuinely-fresh task apart from an epic parent whose children
+// already shipped. HasCompletedExecution(taskID, ...) alone can never see
+// this — an epic parent that produced no direct deliverable of its own
+// (TASK-296, epic-parent no-deliverable rows excluded there) never satisfies
+// it, no matter how done its children are.
+func (s *Store) GetDecomposedChildTaskIDs(taskID, projectPath string) ([]string, bool, error) {
+	var detail string
+	err := s.db.QueryRow(`
+		SELECT COALESCE(e.detail, '')
+		FROM execution_events e
+		JOIN executions x ON x.id = e.execution_id
+		WHERE x.task_id = ? AND x.project_path = ? AND e.stage = ?
+		ORDER BY e.occurred_at DESC, e.id DESC
+		LIMIT 1
+	`, taskID, projectPath, string(StageDecomposed)).Scan(&detail)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+
+	matches := decomposedChildRefRegex.FindAllStringSubmatch(detail, -1)
+	if len(matches) == 0 {
+		return nil, true, nil
+	}
+	seen := make(map[string]bool, len(matches))
+	childIDs := make([]string, 0, len(matches))
+	for _, m := range matches {
+		id := "GH-" + m[1]
+		if !seen[id] {
+			seen[id] = true
+			childIDs = append(childIDs, id)
+		}
+	}
+	return childIDs, true, nil
 }
 
 // InvalidateCompletion deletes genuine completed execution records for the given task and
