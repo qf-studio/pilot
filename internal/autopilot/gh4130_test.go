@@ -1,8 +1,11 @@
 package autopilot
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +102,61 @@ func TestOnPRCreated_NoExecutionRow_SkipsObservation(t *testing.T) {
 	hist := c.metrics.HistogramSnapshot()
 	if len(hist.TimeToPRDurations) != 0 || len(hist.QueueWaitDurations) != 0 {
 		t.Errorf("expected no histogram samples on lookup miss, got TimeToPR=%v QueueWait=%v",
+			hist.TimeToPRDurations, hist.QueueWaitDurations)
+	}
+}
+
+// TestOnPRCreated_NoExecutionRow_LogsWarnOnSkip verifies the GH-4212 fail-loud
+// fix: a lookup miss on GetLatestExecutionByTaskID no longer skips the
+// time-to-PR/queue-wait observation silently — it must warn-log with the
+// task_id and underlying error so a wiring/scoping regression is visible.
+func TestOnPRCreated_NoExecutionRow_LogsWarnOnSkip(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.memoryStore = &gh4130ExecPersister{execByTask: map[string]*memory.Execution{}}
+
+	var buf bytes.Buffer
+	c.log = slog.New(slog.NewTextHandler(&buf, nil))
+
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 77, "abc1234", "pilot/GH-77", "")
+
+	out := buf.String()
+	if !strings.Contains(out, "skipping time-to-PR/queue-wait sample") {
+		t.Fatalf("expected fail-loud warn log on observation skip, got log output: %q", out)
+	}
+	if !strings.Contains(out, "task_id=GH-77") {
+		t.Errorf("expected warn log to carry task_id=GH-77, got: %q", out)
+	}
+}
+
+// TestOnPRCreated_NoStartedAt_LogsWarnOnSkip verifies the same fail-loud
+// treatment applies when the execution row exists but started_at is nil
+// (the second silent-skip branch the old `err == nil && exec.StartedAt != nil`
+// guard collapsed into one).
+func TestOnPRCreated_NoStartedAt_LogsWarnOnSkip(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.memoryStore = &gh4130ExecPersister{
+		execByTask: map[string]*memory.Execution{
+			"GH-77": {ID: "exec-77", TaskID: "GH-77", CreatedAt: time.Now(), StartedAt: nil},
+		},
+	}
+
+	var buf bytes.Buffer
+	c.log = slog.New(slog.NewTextHandler(&buf, nil))
+
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 77, "abc1234", "pilot/GH-77", "")
+
+	out := buf.String()
+	if !strings.Contains(out, "execution row has no started_at") {
+		t.Fatalf("expected fail-loud warn log for nil started_at, got log output: %q", out)
+	}
+
+	hist := c.metrics.HistogramSnapshot()
+	if len(hist.TimeToPRDurations) != 0 || len(hist.QueueWaitDurations) != 0 {
+		t.Errorf("expected no histogram samples when started_at is nil, got TimeToPR=%v QueueWait=%v",
 			hist.TimeToPRDurations, hist.QueueWaitDurations)
 	}
 }

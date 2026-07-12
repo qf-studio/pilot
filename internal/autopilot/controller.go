@@ -877,12 +877,24 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 	// that the PR exists — this is the first point autopilot sees the issue's
 	// execution, so it's the natural place to read started_at/created_at off
 	// the execution row (taskID resolution mirrors recordExecutionEvent).
+	//
+	// GH-4212: the lookup previously failed silently (err == nil guard ate both
+	// a lookup miss and a nil started_at), which is exactly how the GH-4130
+	// observation shipped false-green — every skip must be fail-loud (TASK-379)
+	// so a wiring or scoping regression shows up in logs instead of a flat
+	// count on :9091.
 	if c.memoryStore != nil {
 		taskID := fmt.Sprintf("GH-%d", issueNumber)
 		if issueNumber == 0 {
 			taskID = fmt.Sprintf("PR-%d", prNumber)
 		}
-		if exec, err := c.memoryStore.GetLatestExecutionByTaskID(taskID); err == nil && exec.StartedAt != nil {
+		if exec, err := c.memoryStore.GetLatestExecutionByTaskID(taskID); err != nil {
+			c.log.Warn("throughput observation: no execution row for task, skipping time-to-PR/queue-wait sample",
+				"pr", prNumber, "task_id", taskID, "error", err)
+		} else if exec.StartedAt == nil {
+			c.log.Warn("throughput observation: execution row has no started_at, skipping time-to-PR/queue-wait sample",
+				"pr", prNumber, "task_id", taskID, "execution_id", exec.ID)
+		} else {
 			c.metrics.RecordTimeToPR(time.Since(*exec.StartedAt))
 			c.metrics.RecordQueueWaitDuration(exec.StartedAt.Sub(exec.CreatedAt))
 		}
@@ -1747,8 +1759,21 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 	// request was submitted (functionally the awaiting_approval entry point) to
 	// this merge decision being applied — covers both the SetApprovalDecision
 	// webhook path and the wall-clock-expiry default-action path (Path 3 above).
+	//
+	// GH-4212: unlike the OnPRCreated observation above, this one does NOT share
+	// the false-green wiring risk — ApprovalRequestedAt is set in-process at
+	// line ~1719 by the same controller that later calls applyApprovalDecision,
+	// and it round-trips through stateStore.SavePRState/RestoreState
+	// (state_store.go), so it survives a daemon restart without depending on a
+	// separate memoryStore taskID lookup. The only skip case is a PR that never
+	// reached submitAsyncApprovalRequest (e.g. auto-merge without a pre-merge
+	// approval gate), which is expected behavior, not a defect — still logged
+	// for fail-loud visibility (TASK-379).
 	if !prState.ApprovalRequestedAt.IsZero() {
 		c.metrics.RecordApprovalWaitDuration(time.Since(prState.ApprovalRequestedAt))
+	} else {
+		c.log.Debug("throughput observation: no approval request was ever submitted, skipping approval-wait sample",
+			"pr", prState.PRNumber)
 	}
 
 	switch approval.Decision(prState.ApprovalDecision) {
