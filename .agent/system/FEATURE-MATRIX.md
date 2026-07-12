@@ -425,7 +425,7 @@
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
 | Single-subtask epic consolidation | ✅ | executor | - | - | `isSinglePackageScope` short-circuits `len(plan.Subtasks) <= 1` to direct execution — never spawns a lone child issue (GH-4216 fix 1 / #4221) |
 | Epic finalize title normalization | ✅ | executor | - | - | `finalizeEpicBranchPR` routes the parent PR title through `normalizeTitle` before `CreatePR`, so raw issue titles auto-prefix instead of failing `validatePRTitle` deterministically (GH-4216 fix 2 / #4221) |
-| Cross-task-id dispatch guard | ✅ | executor + memory | - | - | `ProjectWorker.processQueue` pickup-time check: `Store.GetDecomposedChildTaskIDs` + `allDecomposedChildrenShipped` refuse to re-dispatch a task_id as fresh top-level work once every child from its `decomposed` ledger event has a genuine completed execution — fail-loud `slog.Warn`, defense-in-depth alongside `hasTerminalSuccessLedger` (GH-4216 fix 3, TASK-401) |
+| Decomposed-parent guard (all 4 sites) | ✅ | executor | - | - | `decomposedChildrenAllComplete` (ledger-only: `Store.GetDecomposedChildTaskIDs` + per-child `HasCompletedExecution`/no_op/merged-PR evidence) runs before every `HasCompletedExecution(taskID)` check in dispatcher.go — processQueue pickup, stale-running/queued reap, and WaitForExecution's row-vanished resolution — so a decomposed epic parent whose children all shipped is never re-implemented, reaped as failed, or surfaced as a false waiter error (GH-4216 fix 3, extended from processQueue-only to all 4 call sites; GH-4227) |
 
 ## Test Coverage
 
