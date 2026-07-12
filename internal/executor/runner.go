@@ -1593,7 +1593,28 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	// Create the parent PR with a GitHub auto-close keyword.
 	epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
 	prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
-	epicPRTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
+
+	// GH-4220 (b): route the epic parent's title through the same
+	// autoPrefixTitle/inferConventionalPrefix machinery as the direct path
+	// (executeWithOptions ~runner.go:4001) before CreatePR. Raw issue titles
+	// (e.g. "GH-4211: Throughput histograms record zero…") are never
+	// conventional commits, so without this the epic finalize path failed
+	// validatePRTitle deterministically — see runner.go:177 validation and
+	// TASK-401 repro (PR #4213 vs #4214, same fix implemented twice).
+	epicDiffStats, _ := git.GetDiffStats(ctx, baseBranch)
+	normalizedEpicTitle, titleErr := normalizeTitle(task.Title, task.Labels, epicDiffStats)
+	if titleErr != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("epic PR creation failed: %v", titleErr)
+		r.log.Warn("Epic PR creation refused: non-conventional title",
+			slog.String("task_id", task.ID),
+			slog.String("title", task.Title),
+			slog.Any("labels", task.Labels),
+		)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+	epicPRTitle := fmt.Sprintf("%s: %s", task.ID, normalizedEpicTitle)
 	prURL, prErr := git.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
 	if prErr != nil {
 		result.Success = false
