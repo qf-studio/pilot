@@ -15,7 +15,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
@@ -890,42 +889,24 @@ Examples:
 // invocation before the runner executes, and stamps task.ExecutionID so
 // runner-side execution_events/log writes (which key off Task.LogExecutionID())
 // reference a real executions.id instead of falling back to the
-// human-readable task ID, which has no matching row (GH-4205).
+// human-readable task ID, which has no matching row (GH-4205). GH-4243: folds
+// this ad-hoc wiring into the shared ExecutionLifecycle chokepoint instead of
+// hand-rolling a memory.Execution{} literal here.
 func recordCLITaskStart(store *memory.Store, task *executor.Task) (execID string, err error) {
-	execID = uuid.New().String()
-	execRow := &memory.Execution{
-		ID:              execID,
-		TaskID:          task.ID,
-		ProjectPath:     task.ProjectPath,
-		Status:          "running",
-		TaskTitle:       task.Title,
-		TaskDescription: task.Description,
-		TaskBranch:      task.Branch,
-		TaskBaseBranch:  task.BaseBranch,
-		TaskCreatePR:    task.CreatePR,
-		TaskVerbose:     task.Verbose,
-	}
-	if err := store.SaveExecution(execRow); err != nil {
-		return "", err
-	}
-	task.ExecutionID = execID
-	return execID, nil
+	return executor.NewExecutionLifecycle(store).Begin(task, executor.ExecStatusRunning)
 }
 
 // recordCLITaskFinish marks the executions row created by recordCLITaskStart
 // as terminal once the runner returns. Mirrors the dispatcher's post-execute
-// handling (internal/executor/dispatcher.go:1093-1141): an execution error
-// marks the row failed, a non-success result classifies via
-// executor.TerminalStatus, and success marks it completed with the PR/commit
-// details in a single atomic write.
+// handling (internal/executor/dispatcher.go) via the same ExecutionLifecycle
+// chokepoint (GH-4243): an execution error marks the row failed, a
+// non-success result classifies via executor.TerminalStatus, and success
+// marks it completed with the PR/commit details in a single atomic write —
+// plus, as of this chokepoint, execution metrics are now persisted for the
+// CLI path too (previously only the dispatcher/epic paths did).
 func recordCLITaskFinish(store *memory.Store, execID string, execErr error, result *executor.ExecutionResult, duration time.Duration) error {
-	if execErr != nil {
-		return store.UpdateExecutionStatus(execID, "failed", execErr.Error())
-	}
-	if !result.Success {
-		return store.UpdateExecutionStatus(execID, executor.TerminalStatus(result), result.Error)
-	}
-	return store.MarkExecutionCompleted(execID, result.PRUrl, result.CommitSHA, duration.Milliseconds())
+	_, err := executor.NewExecutionLifecycle(store).Finish(execID, result, execErr, duration)
+	return err
 }
 
 // killExistingTelegramBot finds and kills any running pilot process with Telegram enabled

@@ -118,8 +118,10 @@ type TaskMonitor interface {
 // EvalStore persists eval tasks extracted from merged PRs.
 type EvalStore interface {
 	SaveEvalTask(task *memory.EvalTask) error
-	// UpdateExecutionStatusByTaskID updates execution status by task ID and project path.
-	// Used to mark failed executions as completed when the PR is merged.
+	// UpdateExecutionStatusByTaskID is superseded by SelfHealExecutionAfterMerge
+	// below (GH-2402) and has zero production callers as of the GH-4243
+	// dead-API audit. Kept for interface/mock compatibility only — see
+	// memory.Store.UpdateExecutionStatusByTaskID's doc comment.
 	UpdateExecutionStatusByTaskID(taskID, projectPath, status string) error
 	// SelfHealExecutionAfterMerge promotes failed rows to completed and
 	// stamps the PR URL after a successful merge. projectPath scopes the update
