@@ -1390,8 +1390,16 @@ func TestCheckDeprecations(t *testing.T) {
 				c.Adapters.GitHub.UseSDKPoller = false
 				return c
 			}(),
-			wantWarnings: 1,
-			wantContains: "use_sdk_poller is deprecated and ignored",
+			wantWarnings: 0,
+		},
+		{
+			name: "GitHubUseSDKPollerAbsentButEnabled",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Adapters.GitHub.Enabled = true
+				return c
+			}(),
+			wantWarnings: 0,
 		},
 		{
 			name: "GitHubUseSDKPollerTrueAndEnabled",
@@ -1480,9 +1488,10 @@ orchestrator:
 	}
 }
 
-// TestLoadWithDeprecatedUseSDKPoller covers GH-4171: adapters.github.use_sdk_poller
+// TestLoadWithDeprecatedUseSDKPoller covers GH-4171/GH-4206: adapters.github.use_sdk_poller
 // is still parsed (existing configs must keep loading without error) but now only
-// produces a startup deprecation warning — it no longer changes daemon behavior.
+// produces a startup deprecation warning when explicitly set to true — it no longer
+// changes daemon behavior either way.
 func TestLoadWithDeprecatedUseSDKPoller(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
@@ -1493,7 +1502,7 @@ adapters:
   github:
     enabled: true
     repo: "owner/repo"
-    use_sdk_poller: false
+    use_sdk_poller: true
     polling:
       enabled: true
 `
@@ -1507,8 +1516,8 @@ adapters:
 	}
 
 	// The field is still parsed off the YAML.
-	if config.Adapters.GitHub.UseSDKPoller != false {
-		t.Errorf("Adapters.GitHub.UseSDKPoller = %v, want false", config.Adapters.GitHub.UseSDKPoller)
+	if config.Adapters.GitHub.UseSDKPoller != true {
+		t.Errorf("Adapters.GitHub.UseSDKPoller = %v, want true", config.Adapters.GitHub.UseSDKPoller)
 	}
 
 	warnings := config.CheckDeprecations()
@@ -1517,6 +1526,42 @@ adapters:
 	}
 	if !contains(warnings[0], "use_sdk_poller is deprecated and ignored") {
 		t.Errorf("warning %q should mention use_sdk_poller is deprecated and ignored", warnings[0])
+	}
+}
+
+// TestLoadWithAbsentUseSDKPoller covers GH-4206: a config that never set
+// use_sdk_poller (the common case for every deployment created after GH-4171)
+// must not trigger the deprecation warning just because the GitHub adapter
+// is enabled.
+func TestLoadWithAbsentUseSDKPoller(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	configContent := `
+version: "1.0"
+adapters:
+  github:
+    enabled: true
+    repo: "owner/repo"
+    polling:
+      enabled: true
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	config, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if config.Adapters.GitHub.UseSDKPoller != false {
+		t.Errorf("Adapters.GitHub.UseSDKPoller = %v, want false (unset)", config.Adapters.GitHub.UseSDKPoller)
+	}
+
+	warnings := config.CheckDeprecations()
+	if len(warnings) != 0 {
+		t.Fatalf("Expected 0 deprecation warnings for absent use_sdk_poller, got %d: %v", len(warnings), warnings)
 	}
 }
 
