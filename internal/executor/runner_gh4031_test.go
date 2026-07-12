@@ -3,20 +3,26 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // fakePRCreatorGH4031 is a minimal PRCreator stub for exercising the
 // registry/non-GitHub CreatePR branch of finalizeDecomposedParentPR without
-// depending on gh CLI or network access.
+// depending on gh CLI or network access. capturedTitle records the title
+// argument CreatePR was invoked with, so tests can assert on it.
 type fakePRCreatorGH4031 struct {
 	url string
 	err error
+
+	capturedTitle string
 }
 
-func (f *fakePRCreatorGH4031) CreatePR(_ context.Context, _, _, _, _ string) (string, error) {
+func (f *fakePRCreatorGH4031) CreatePR(_ context.Context, _, _, title, _ string) (string, error) {
+	f.capturedTitle = title
 	return f.url, f.err
 }
 
@@ -120,5 +126,90 @@ func TestFinalizeDecomposedParentPR_PRCreateFailIsFailure(t *testing.T) {
 	git := NewGitOperations(repoDir)
 	if !git.RemoteBranchExists(context.Background(), "pilot/GH-9002") {
 		t.Error("expected branch to have been pushed to origin before PR-create failed")
+	}
+}
+
+// TestFinalizeDecomposedParentPR_AutoPrefixesNonConventionalTitle is the
+// GH-4220 parity regression guard for the decomposed-parent path:
+// finalizeDecomposedParentPR must route task.Title through the same
+// normalizeTitle machinery as finalizeEpicBranchPR (runner.go,
+// TestFinalizeEpicBranchPR_AutoPrefixesNonConventionalTitle) instead of
+// passing "<task.ID>: <task.Title>" straight through to CreatePR — a raw
+// issue title is never a conventional commit and fails validatePRTitle
+// downstream deterministically.
+func TestFinalizeDecomposedParentPR_AutoPrefixesNonConventionalTitle(t *testing.T) {
+	setUpFakeGhPATH(t, []byte(`[]`), []byte(`[]`)) // no pre-existing merged/open PR
+
+	repoDir := setupDecomposedParentRepoGH4031(t, "pilot/GH-9003")
+
+	r := newSilentRunnerTask359()
+	creator := &fakePRCreatorGH4031{url: "https://gitlab.example.com/o/r/-/merge_requests/8"}
+	r.prCreator = creator
+	task := &Task{
+		ID:            "GH-9003",
+		Title:         "Executor crashes on nil epic plan",
+		Labels:        []string{"bug"},
+		Description:   "d",
+		Branch:        "pilot/GH-9003",
+		BaseBranch:    "main",
+		CreatePR:      true,
+		SourceAdapter: "gitlab",
+	}
+	result := &ExecutionResult{TaskID: task.ID, Success: true, CommitSHA: "placeholder"}
+
+	r.finalizeDecomposedParentPR(context.Background(), task, NewGitOperations(repoDir), result)
+
+	if !result.Success {
+		t.Fatalf("expected Success=true, got false (error=%q)", result.Error)
+	}
+
+	if creator.capturedTitle == fmt.Sprintf("%s: %s", task.ID, task.Title) {
+		t.Errorf("title was passed through unmodified (%q) — expected auto-prefixing", creator.capturedTitle)
+	}
+	if err := validatePRTitle(creator.capturedTitle); err != nil {
+		t.Errorf("captured title %q failed validatePRTitle: %v", creator.capturedTitle, err)
+	}
+	if !strings.HasPrefix(creator.capturedTitle, task.ID+": ") {
+		t.Errorf("captured title %q should still carry the %q auto-close prefix", creator.capturedTitle, task.ID+": ")
+	}
+	if !strings.Contains(creator.capturedTitle, "fix:") {
+		t.Errorf("captured title %q, want it to contain conventional type %q (from bug label)", creator.capturedTitle, "fix")
+	}
+}
+
+// TestFinalizeDecomposedParentPR_TitleNormalizeFailureIsRecoverable mirrors
+// TestFinalizeEpicBranchPR_TitleNormalizeFailureIsRecoverable for the
+// decomposed-parent path: when normalizeTitle cannot produce a valid
+// conventional title (empty title), finalizeDecomposedParentPR must fail
+// loud with Success=false and never call CreatePR.
+func TestFinalizeDecomposedParentPR_TitleNormalizeFailureIsRecoverable(t *testing.T) {
+	setUpFakeGhPATH(t, []byte(`[]`), []byte(`[]`))
+
+	repoDir := setupDecomposedParentRepoGH4031(t, "pilot/GH-9004")
+
+	r := newSilentRunnerTask359()
+	creator := &fakePRCreatorGH4031{url: "https://gitlab.example.com/o/r/-/merge_requests/9"}
+	r.prCreator = creator
+	task := &Task{
+		ID:            "GH-9004",
+		Title:         "   ",
+		Description:   "d",
+		Branch:        "pilot/GH-9004",
+		BaseBranch:    "main",
+		CreatePR:      true,
+		SourceAdapter: "gitlab",
+	}
+	result := &ExecutionResult{TaskID: task.ID, Success: true, CommitSHA: "placeholder"}
+
+	r.finalizeDecomposedParentPR(context.Background(), task, NewGitOperations(repoDir), result)
+
+	if result.Success {
+		t.Error("expected Success=false when the decomposed-parent title cannot be normalized")
+	}
+	if result.PRUrl != "" {
+		t.Errorf("expected no PR URL, got %q", result.PRUrl)
+	}
+	if creator.capturedTitle != "" {
+		t.Error("CreatePR must not be invoked when title normalization fails")
 	}
 }

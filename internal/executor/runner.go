@@ -1599,7 +1599,7 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	// (executeWithOptions ~runner.go:4001) before CreatePR. Raw issue titles
 	// (e.g. "GH-4211: Throughput histograms record zero…") are never
 	// conventional commits, so without this the epic finalize path failed
-	// validatePRTitle deterministically — see runner.go:177 validation and
+	// validatePRTitle deterministically (called from git.go:178) — see
 	// TASK-401 repro (PR #4213 vs #4214, same fix implemented twice).
 	epicDiffStats, _ := git.GetDiffStats(ctx, baseBranch)
 	normalizedEpicTitle, titleErr := normalizeTitle(task.Title, task.Labels, epicDiffStats)
