@@ -103,6 +103,40 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 		metrics.RecordPRTimeToMerge(d)
 	}
 
+	// GH-4212: pilot_time_to_pr_seconds / pilot_queue_wait_seconds /
+	// pilot_approval_wait_seconds — the three histograms GH-4130/#4093
+	// registered but only ever observed on live transitions (OnPRCreated,
+	// applyApprovalDecision), so every restart previously reset them to an
+	// empty sample set even though the ledger + executions table carry
+	// enough history to reconstruct most of it. Each Get* method already
+	// returns samples in ascending occurrence-time order, so replaying them
+	// through the same Record* calls the live path uses lets each method's
+	// own maxSamples trim (keep-the-tail) preserve the most-recent-N samples
+	// rather than an arbitrary subset.
+	queueWait, err := store.GetLifetimeQueueWaitDurations()
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: lifetime queue wait durations: %w", err)
+	}
+	for _, d := range queueWait {
+		metrics.RecordQueueWaitDuration(d)
+	}
+
+	timeToPR, err := store.GetLifetimeTimeToPRDurations()
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: lifetime time-to-PR durations: %w", err)
+	}
+	for _, d := range timeToPR {
+		metrics.RecordTimeToPR(d)
+	}
+
+	approvalWait, err := store.GetLifetimeApprovalWaitDurations()
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: lifetime approval wait durations: %w", err)
+	}
+	for _, d := range approvalWait {
+		metrics.RecordApprovalWaitDuration(d)
+	}
+
 	// The remaining counters are intentionally NOT hydrated here — they have no
 	// durable per-event source to hydrate from (unlike execution_events, which
 	// is an append-only ledger keyed off executions.id) and reset to zero on

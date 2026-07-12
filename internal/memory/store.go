@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -647,6 +648,18 @@ func scanExecutionDetail(row rowScanner) (*Execution, error) {
 	}
 
 	return &exec, nil
+}
+
+// SetExecutionTimesForTest directly overwrites an execution row's created_at
+// and started_at columns, bypassing SaveExecution/UpdateExecutionStatus's
+// reliance on SQLite's CURRENT_TIMESTAMP (second resolution — too coarse for
+// tests that need distinguishable, controllable deltas across package
+// boundaries, e.g. internal/autopilot's metrics-hydration tests). Test-only;
+// mirrors the ForTest exposure pattern used elsewhere (e.g.
+// dashboard.Model.RenderBannerForTest).
+func (s *Store) SetExecutionTimesForTest(id string, createdAt, startedAt time.Time) error {
+	_, err := s.db.Exec(`UPDATE executions SET created_at = ?, started_at = ? WHERE id = ?`, createdAt, startedAt, id)
+	return err
 }
 
 // GetExecution retrieves an execution by its unique ID.
@@ -2580,6 +2593,146 @@ func (s *Store) GetLifetimePRTimeToMerge() ([]time.Duration, error) {
 		}
 	}
 	return samples, nil
+}
+
+// GetLifetimeQueueWaitDurations derives pilot_queue_wait_seconds histogram
+// samples directly from the executions table: for every row with a non-null
+// started_at, the sample is started_at minus created_at — the same formula
+// Controller.OnPRCreated observes live (GH-4130, GH-4212). Unlike
+// GetLifetimeTimeToPRDurations/GetLifetimeApprovalWaitDurations below, this
+// needs no execution_events join: created_at and started_at both live on
+// executions itself. Samples with a non-positive duration are dropped
+// defensively (should not occur — started_at is only ever stamped after
+// created_at — but a negative bucket observation would corrupt the
+// histogram). Ordered by started_at ASC so HydrateFromStore can respect
+// maxSamples by replaying in chronological order — Metrics.RecordQueueWaitDuration's
+// own trim then keeps the most-recent-N tail.
+func (s *Store) GetLifetimeQueueWaitDurations() ([]time.Duration, error) {
+	rows, err := s.db.Query(`
+		SELECT created_at, started_at
+		FROM executions
+		WHERE started_at IS NOT NULL
+		ORDER BY started_at ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query lifetime queue wait durations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var samples []time.Duration
+	for rows.Next() {
+		var createdAt, startedAt time.Time
+		if err := rows.Scan(&createdAt, &startedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan queue wait row: %w", err)
+		}
+		if d := startedAt.Sub(createdAt); d > 0 {
+			samples = append(samples, d)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate lifetime queue wait durations: %w", err)
+	}
+	return samples, nil
+}
+
+// GetLifetimeTimeToPRDurations derives pilot_time_to_pr_seconds histogram
+// samples from executions.started_at (the "running" transition, GH-4033) to
+// the earliest 'pr_created' execution_events occurred_at for the same
+// execution_id (GH-4212, precedent GetLifetimePRTimeToMerge/#4093).
+// executions.started_at is used instead of a StageRunning ledger lookup
+// because it is stamped by the exact same UpdateExecutionStatus(..., "running")
+// write that the executor's StageRunning event is logged from
+// (internal/executor/dispatcher.go), so it carries the same instant with one
+// less join. Samples with a non-positive duration are dropped defensively.
+// Returned in ascending pr_created-time order so HydrateFromStore can respect
+// maxSamples's most-recent-N semantics when replaying into
+// Metrics.RecordTimeToPR.
+func (s *Store) GetLifetimeTimeToPRDurations() ([]time.Duration, error) {
+	prCreated, err := s.earliestStageOccurrences(StagePRCreated)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(`SELECT id, started_at FROM executions WHERE started_at IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query executions for time-to-PR: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type timedSample struct {
+		at time.Time
+		d  time.Duration
+	}
+	var samples []timedSample
+	for rows.Next() {
+		var execID string
+		var startedAt time.Time
+		if err := rows.Scan(&execID, &startedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan execution row for time-to-PR: %w", err)
+		}
+		prAt, ok := prCreated[execID]
+		if !ok {
+			continue
+		}
+		if d := prAt.Sub(startedAt); d > 0 {
+			samples = append(samples, timedSample{at: prAt, d: d})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate executions for time-to-PR: %w", err)
+	}
+
+	sort.Slice(samples, func(i, j int) bool { return samples[i].at.Before(samples[j].at) })
+	out := make([]time.Duration, len(samples))
+	for i, sm := range samples {
+		out[i] = sm.d
+	}
+	return out, nil
+}
+
+// GetLifetimeApprovalWaitDurations derives pilot_approval_wait_seconds
+// histogram samples from execution_events timestamps: for every execution_id
+// with both an 'awaiting_approval' and a 'merged' row, the sample is the
+// earliest 'merged' occurred_at minus the earliest 'awaiting_approval'
+// occurred_at (GH-4212, precedent GetLifetimePRTimeToMerge/#4093). There is no
+// separate 'approved' ledger stage — executionEventStageFor only ever records
+// awaiting_approval and merged/failed for this transition — so 'merged' is
+// the terminal event, matching what the live applyApprovalDecision
+// observation measures for the approved path. Samples with a non-positive
+// duration are dropped defensively. Returned in ascending merged-time order
+// so HydrateFromStore can respect maxSamples's most-recent-N semantics when
+// replaying into Metrics.RecordApprovalWaitDuration.
+func (s *Store) GetLifetimeApprovalWaitDurations() ([]time.Duration, error) {
+	awaiting, err := s.earliestStageOccurrences(StageAwaitingApproval)
+	if err != nil {
+		return nil, err
+	}
+	merged, err := s.earliestStageOccurrences(StageMerged)
+	if err != nil {
+		return nil, err
+	}
+
+	type timedSample struct {
+		at time.Time
+		d  time.Duration
+	}
+	var samples []timedSample
+	for execID, mergedAt := range merged {
+		awaitingAt, ok := awaiting[execID]
+		if !ok {
+			continue
+		}
+		if d := mergedAt.Sub(awaitingAt); d > 0 {
+			samples = append(samples, timedSample{at: mergedAt, d: d})
+		}
+	}
+
+	sort.Slice(samples, func(i, j int) bool { return samples[i].at.Before(samples[j].at) })
+	out := make([]time.Duration, len(samples))
+	for i, sm := range samples {
+		out[i] = sm.d
+	}
+	return out, nil
 }
 
 // EndSession marks a session as ended.

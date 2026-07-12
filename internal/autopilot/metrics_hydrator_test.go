@@ -3,6 +3,7 @@ package autopilot
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -315,6 +316,83 @@ func TestHydrateFromStore_CIRunCounters(t *testing.T) {
 	metrics.RecordCIRun("pass")
 	if got := metrics.Snapshot().CIRuns["pass"]; got != 2 {
 		t.Errorf("CIRuns[pass] after live record = %d, want 2 (hydrated 1 + live 1)", got)
+	}
+}
+
+// TestHydrateFromStore_ThroughputHistograms pins GH-4212: pilot_time_to_pr_seconds,
+// pilot_queue_wait_seconds, and pilot_approval_wait_seconds must be
+// reconstructed from the executions table / execution_events ledger on
+// startup, not left at an empty sample set until the next live PR-created or
+// approval-decision transition (the same restart-reset gap GH-4041 already
+// closed for the counter-family metrics above).
+func TestHydrateFromStore_ThroughputHistograms(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// exec-1: queue wait (created_at -> started_at) + time-to-PR (started_at ->
+	// pr_created), seeded via direct timestamp writes since executions.created_at/
+	// started_at come from SQLite's second-resolution CURRENT_TIMESTAMP.
+	if err := store.SaveExecution(&memory.Execution{ID: "th-1", TaskID: "GH-401", ProjectPath: "/p", Status: "completed"}); err != nil {
+		t.Fatalf("SaveExecution th-1: %v", err)
+	}
+	now := time.Now()
+	createdAt := now.Add(-10 * time.Minute)
+	startedAt := now.Add(-4 * time.Minute)
+	if err := store.SetExecutionTimesForTest("th-1", createdAt, startedAt); err != nil {
+		t.Fatalf("SetExecutionTimesForTest: %v", err)
+	}
+	if err := store.InsertExecutionEvent("th-1", memory.StagePRCreated, ""); err != nil {
+		t.Fatalf("InsertExecutionEvent(pr_created): %v", err)
+	}
+
+	// exec-2: approval wait (awaiting_approval -> merged).
+	if err := store.SaveExecution(&memory.Execution{ID: "th-2", TaskID: "GH-402", ProjectPath: "/p", Status: "completed"}); err != nil {
+		t.Fatalf("SaveExecution th-2: %v", err)
+	}
+	if err := store.InsertExecutionEvent("th-2", memory.StagePRCreated, ""); err != nil {
+		t.Fatalf("InsertExecutionEvent(pr_created): %v", err)
+	}
+	if err := store.InsertExecutionEvent("th-2", memory.StageAwaitingApproval, ""); err != nil {
+		t.Fatalf("InsertExecutionEvent(awaiting_approval): %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := store.InsertExecutionEvent("th-2", memory.StageMerged, ""); err != nil {
+		t.Fatalf("InsertExecutionEvent(merged): %v", err)
+	}
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+
+	hist := metrics.HistogramSnapshot()
+	if len(hist.QueueWaitDurations) != 1 {
+		t.Fatalf("QueueWaitDurations = %v, want 1 sample", hist.QueueWaitDurations)
+	}
+	if got := hist.QueueWaitDurations[0]; got < 5*time.Minute || got > 7*time.Minute {
+		t.Errorf("QueueWaitDurations[0] = %v, want ~6m", got)
+	}
+	if len(hist.TimeToPRDurations) != 1 {
+		t.Fatalf("TimeToPRDurations = %v, want 1 sample", hist.TimeToPRDurations)
+	}
+	if hist.TimeToPRDurations[0] <= 0 {
+		t.Errorf("TimeToPRDurations[0] = %v, want > 0", hist.TimeToPRDurations[0])
+	}
+	if len(hist.ApprovalWaitDurations) != 1 {
+		t.Fatalf("ApprovalWaitDurations = %v, want 1 sample", hist.ApprovalWaitDurations)
+	}
+	if hist.ApprovalWaitDurations[0] <= 0 {
+		t.Errorf("ApprovalWaitDurations[0] = %v, want > 0", hist.ApprovalWaitDurations[0])
+	}
+
+	// Live recording on top of the hydrated baseline adds, does not replace.
+	metrics.RecordQueueWaitDuration(90 * time.Second)
+	if got := len(metrics.HistogramSnapshot().QueueWaitDurations); got != 2 {
+		t.Errorf("QueueWaitDurations after live record = %d samples, want 2 (hydrated 1 + live 1)", got)
 	}
 }
 
