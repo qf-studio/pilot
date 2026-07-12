@@ -1899,6 +1899,10 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 	var childStates []string
 
 	total := len(issues)
+	// GH-4234: sibling set for scoping the dependency detector's explicit-ref
+	// check — an explicit "Depends on: #N" only counts when N is one of this
+	// epic's own children.
+	siblingNumbers := siblingIssueNumbers(issues)
 	// Use executionPath for gh CLI commands (respects worktree isolation)
 	projectPath := executionPath
 	if projectPath == "" && parent != nil {
@@ -2161,37 +2165,71 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			}
 		}
 
-		// GH-2178: Wait for the sub-issue PR to merge before starting the next one.
-		// Skip for the last sub-issue (no next issue to sequence).
-		// Nil check degrades gracefully — if not wired, execution proceeds without waiting.
-		if r.subIssueMergeWait != nil && result.PRUrl != "" && i < total-1 {
+		// GH-2178/GH-4234: Decide whether to wait for this sub-issue's PR to merge
+		// before starting the next one. Skip for the last sub-issue (no next issue
+		// to sequence). wait_for_merge:false remains the global default (TASK-402) —
+		// a wait is applied only when the NEXT sibling's own title/description
+		// shows it actually depends on this one (explicit "Depends on: #N" /
+		// "Blocked by: #N" ref, or verification-shape language). Nil merge-wait fn
+		// degrades gracefully — if not wired, execution proceeds without waiting.
+		if result.PRUrl != "" && i < total-1 {
 			prNum := parsePRNumberFromURL(result.PRUrl)
 			if prNum > 0 {
-				waitMsg := fmt.Sprintf("⏳ Waiting for PR #%d to merge before starting next sub-issue (%d/%d)...",
-					prNum, i+1, total)
-				_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, waitMsg)
+				nextIssue := issues[i+1]
+				nextRef := subIssueDisplayRef(nextIssue)
+				depends, reason := detectChildDependency(nextIssue.Subtask.Title, nextIssue.Subtask.Description, siblingNumbers)
 
-				r.log.Info("Waiting for sub-issue PR to merge",
-					"parent_id", parent.ID,
-					"sub_issue", issueRef,
-					"pr_number", prNum,
-					"order", i+1,
-					"total", total,
-				)
+				switch {
+				case depends && r.subIssueMergeWait != nil:
+					waitMsg := fmt.Sprintf("⏳ Waiting for PR #%d to merge before starting next sub-issue (%d/%d) — %s depends on it (%s)",
+						prNum, i+1, total, nextRef, reason)
+					_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, waitMsg)
 
-				if err := r.subIssueMergeWait(ctx, prNum); err != nil {
-					failMsg := fmt.Sprintf("❌ Merge wait failed for %s (PR #%d): %v", issueRef, prNum, err)
-					_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
-					return childStates, metrics, fmt.Errorf("merge wait failed for sub-issue %s (PR #%d): %w", issueRef, prNum, err)
-				}
-
-				// Sync local main branch so the next sub-issue branches from the merged state.
-				if syncErr := r.syncMainBranch(ctx, subTaskRepoPath); syncErr != nil {
-					r.log.Warn("Failed to sync main branch after sub-issue merge",
-						"sub_issue", issueRef,
-						"error", syncErr,
+					// Fail-loud decision log (GH-4234): every wait decision names the
+					// dependent child, why it's judged dependent, and the PR it waits on.
+					r.log.Info("merge-wait decision: waiting for prior sub-issue PR to merge",
+						"parent_id", parent.ID,
+						"prior_sub_issue", issueRef,
+						"next_sub_issue", nextRef,
+						"dependency_reason", string(reason),
+						"target_pr", prNum,
+						"order", i+1,
+						"total", total,
 					)
-					// Non-fatal: next sub-issue will fetch from origin anyway.
+
+					if err := r.subIssueMergeWait(ctx, prNum); err != nil {
+						failMsg := fmt.Sprintf("❌ Merge wait failed for %s (PR #%d): %v", issueRef, prNum, err)
+						_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
+						return childStates, metrics, fmt.Errorf("merge wait failed for sub-issue %s (PR #%d): %w", issueRef, prNum, err)
+					}
+
+					// Sync local main branch so the next sub-issue branches from the merged state.
+					if syncErr := r.syncMainBranch(ctx, subTaskRepoPath); syncErr != nil {
+						r.log.Warn("Failed to sync main branch after sub-issue merge",
+							"sub_issue", issueRef,
+							"error", syncErr,
+						)
+						// Non-fatal: next sub-issue will fetch from origin anyway.
+					}
+
+				default:
+					skipReason := string(reason)
+					if depends && r.subIssueMergeWait == nil {
+						skipReason = string(reason) + " (merge-wait not wired)"
+					}
+
+					// Fail-loud decision log (GH-4234): a no-wait decision is logged just
+					// as loudly as a wait — this is what makes "wait_for_merge:false stays
+					// the default for independent siblings" verifiable in production logs.
+					r.log.Info("merge-wait decision: not waiting before next sub-issue",
+						"parent_id", parent.ID,
+						"prior_sub_issue", issueRef,
+						"next_sub_issue", nextRef,
+						"dependency_reason", skipReason,
+						"target_pr", prNum,
+						"order", i+1,
+						"total", total,
+					)
 				}
 			}
 		}
