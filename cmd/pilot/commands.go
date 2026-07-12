@@ -15,6 +15,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
@@ -644,6 +645,13 @@ Examples:
 				fmt.Println("   Team:      ✓ project access scoping enabled")
 			}
 
+			// GH-4205: execution store + ID for the executions table row this CLI
+			// invocation owns. Populated below only when a memory store is
+			// available; the post-execution status update guards on execStore
+			// being non-nil.
+			var execStore *memory.Store
+			var execID string
+
 			// GH-2146: Initialize learning system for task command
 			// Mirrors main.go polling/gateway mode learning init
 			if cfg.Memory != nil && cfg.Memory.Path != "" {
@@ -655,6 +663,19 @@ Examples:
 
 					// Wire log store for execution milestone entries (GH-1599)
 					runner.SetLogStore(learningStore)
+
+					// GH-4205: pilot task CLI never persisted a parent executions row,
+					// so pilot status/logs/metrics always showed zero activity for
+					// CLI-run tasks and execution_events inserts hit FOREIGN KEY
+					// constraint failed (787) since LogExecutionID() fell back to the
+					// human-readable task ID with no matching executions.id. Mirrors
+					// the dispatcher's queueSingleTask (internal/executor/dispatcher.go:547).
+					if id, saveErr := recordCLITaskStart(learningStore, task); saveErr != nil {
+						logging.WithComponent("execute").Warn("Failed to save execution row for CLI task, status/logs/metrics will not reflect this run", slog.Any("error", saveErr))
+					} else {
+						execID = id
+						execStore = learningStore
+					}
 
 					// Wire knowledge store for experiential memories (GH-1027)
 					knowledgeStore := memory.NewKnowledgeStore(learningStore.DB())
@@ -761,7 +782,18 @@ Examples:
 			progress.StartWithNavigatorCheck(projectPath)
 
 			// Execute the task
+			execStart := time.Now()
 			result, err := runner.Execute(ctx, task)
+
+			// GH-4205: mark the executions row terminal so pilot status/logs/metrics
+			// reflect this CLI-run task. Mirrors the dispatcher's post-execute
+			// handling (internal/executor/dispatcher.go:1099-1141).
+			if execStore != nil {
+				if finErr := recordCLITaskFinish(execStore, execID, err, result, time.Since(execStart)); finErr != nil {
+					logging.WithComponent("execute").Warn("Failed to update CLI execution row status", slog.Any("error", finErr))
+				}
+			}
+
 			if err != nil {
 				return fmt.Errorf("execution failed: %w", err)
 			}
@@ -852,6 +884,48 @@ Examples:
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
 
 	return cmd
+}
+
+// recordCLITaskStart saves the parent executions row for a `pilot task` CLI
+// invocation before the runner executes, and stamps task.ExecutionID so
+// runner-side execution_events/log writes (which key off Task.LogExecutionID())
+// reference a real executions.id instead of falling back to the
+// human-readable task ID, which has no matching row (GH-4205).
+func recordCLITaskStart(store *memory.Store, task *executor.Task) (execID string, err error) {
+	execID = uuid.New().String()
+	execRow := &memory.Execution{
+		ID:              execID,
+		TaskID:          task.ID,
+		ProjectPath:     task.ProjectPath,
+		Status:          "running",
+		TaskTitle:       task.Title,
+		TaskDescription: task.Description,
+		TaskBranch:      task.Branch,
+		TaskBaseBranch:  task.BaseBranch,
+		TaskCreatePR:    task.CreatePR,
+		TaskVerbose:     task.Verbose,
+	}
+	if err := store.SaveExecution(execRow); err != nil {
+		return "", err
+	}
+	task.ExecutionID = execID
+	return execID, nil
+}
+
+// recordCLITaskFinish marks the executions row created by recordCLITaskStart
+// as terminal once the runner returns. Mirrors the dispatcher's post-execute
+// handling (internal/executor/dispatcher.go:1093-1141): an execution error
+// marks the row failed, a non-success result classifies via
+// executor.TerminalStatus, and success marks it completed with the PR/commit
+// details in a single atomic write.
+func recordCLITaskFinish(store *memory.Store, execID string, execErr error, result *executor.ExecutionResult, duration time.Duration) error {
+	if execErr != nil {
+		return store.UpdateExecutionStatus(execID, "failed", execErr.Error())
+	}
+	if !result.Success {
+		return store.UpdateExecutionStatus(execID, executor.TerminalStatus(result), result.Error)
+	}
+	return store.MarkExecutionCompleted(execID, result.PRUrl, result.CommitSHA, duration.Milliseconds())
 }
 
 // killExistingTelegramBot finds and kills any running pilot process with Telegram enabled
