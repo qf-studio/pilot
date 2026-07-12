@@ -940,6 +940,17 @@ Examples:
 				// GH-2855: wire token/cost/execution counters into executor
 				if gwRunner != nil {
 					gwRunner.SetMetricsRecorder(gwAutopilotController.Metrics())
+					// GH-4212: gateway/webhook mode never wired the sub-issue
+					// PR-created callback — runPollingMode wires its own runner
+					// via runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)
+					// (GH-594), but this webhook-mode gwRunner had no equivalent,
+					// so epic sub-issue PRs created here never reached
+					// gwAutopilotController.OnPRCreated: no auto-merge tracking
+					// and no pilot_time_to_pr_seconds/pilot_queue_wait_seconds
+					// observation (GH-4130) for this mode. Webhook mode has no
+					// per-project registry like the SDK poller path (GH-4212-1),
+					// so the legacy singular slot is the complete fix here.
+					gwRunner.SetOnSubIssuePRCreated(gwAutopilotController.OnPRCreated)
 				}
 				// GH-4041: restore Prometheus counter baselines from the store's
 				// lifetime execution history before p.Start() below brings up the
