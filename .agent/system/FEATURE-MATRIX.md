@@ -585,6 +585,7 @@ quality:
 
 | Feature | Version | Package | Notes |
 |---------|---------|---------|-------|
+| Dependency-aware selective sub-issue merge-wait | v2.238.x+ | executor | `detectChildDependency` (new `dependency_detector.go`) gates `executeSubIssuesTracked`'s merge-wait per child on an explicit `Depends on: #N`/`Blocked by: #N` ref (scoped to sibling issue numbers) or verification-shape language ("verify…"/"confirm…"/"run the acceptance…"/"regression-test…", overridden by "add…"/"fix…"/"implement…"); `wait_for_merge:false` stays the global default for independent siblings. Merge-wait callback now wired unconditionally in `main.go` (no-op when unused); every decision fail-loud logged (TASK-402 / GH-4234) |
 | Issue-level success rate + rate_limited exclusion | v2.235.0+ | autopilot + memory + gateway | `pilot_issue_level_success_rate` / `pilot_issues_shipped_total` / `pilot_issues_attempted_total` dedupe by `task_id` across retries; `pilot_success_rate` now excludes `rate_limited` from the denominator; hydrator no longer folds declined/no_op/stalled/infra/skipped into `failed` (TASK-392 / GH-4070) |
 | Poller skip-by-reason counters | v2.150.0 | adapters/github | `pilot_poller_skipped/dispatched/deferred` Prometheus counters (TASK-293 / GH-3064) |
 | `WithRetry` centralized in `doRequest` | v2.150.0 | adapters/github | All GitHub client methods now get retry; `RecordAPIError` wired (TASK-294 / GH-3065) |

@@ -660,8 +660,14 @@ func TestSequentialEpicFlow_ContextDeadline(t *testing.T) {
 
 // TestSubIssueMergeWait_BlocksBetweenSubIssues verifies that the merge-wait function
 // is called once per sub-issue except the last, and each call receives the correct PR number.
+// GH-4234: merge-wait is now gated by the dependency detector, so each non-first
+// sub-issue here explicitly declares "Depends on: #<prevSiblingNumber>" to make
+// the wait fire — an independent sibling would not trigger it (see
+// TestExecuteSubIssuesTracked_IndependentSiblings_NoMergeWait).
 func TestSubIssueMergeWait_BlocksBetweenSubIssues(t *testing.T) {
 	subIssues := makeSubIssues(3, 1000)
+	subIssues[1].Subtask.Description += "\n\nDepends on: #1000"
+	subIssues[2].Subtask.Description += "\n\nDepends on: #1001"
 
 	prURLs := []string{
 		"https://github.com/owner/repo/pull/2000",
@@ -709,8 +715,11 @@ func TestSubIssueMergeWait_BlocksBetweenSubIssues(t *testing.T) {
 
 // TestSubIssueMergeWait_FailureAbortsEpic verifies that when the merge-wait function
 // returns an error, ExecuteSubIssues aborts immediately and surfaces that error.
+// GH-4234: the second sub-issue declares an explicit dependency on the first so
+// the detector actually triggers the merge-wait call this test exercises.
 func TestSubIssueMergeWait_FailureAbortsEpic(t *testing.T) {
 	subIssues := makeSubIssues(3, 1100)
+	subIssues[1].Subtask.Description += "\n\nDepends on: #1100"
 
 	execCallCount := 0
 	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {

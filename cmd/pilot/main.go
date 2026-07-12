@@ -2360,8 +2360,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					}
 				}
 
-				// Wire sub-issue merge-wait so epic sub-issues block until their PR merges (GH-2179)
-				if waitForMerge && cfg.Adapters.GitHub.Repo != "" {
+				// Wire sub-issue merge-wait so epic sub-issues block until their PR merges
+				// (GH-2179). GH-4234: wired unconditionally regardless of waitForMerge —
+				// it's cheap when unused, and the per-child decision now lives in the
+				// executor's dependency detector (executeSubIssuesTracked), not this flag.
+				// wait_for_merge:false stays the effective global default for independent
+				// siblings; this callback only fires when a child is actually detected as
+				// dependent on a prior sibling (TASK-402).
+				if cfg.Adapters.GitHub.Repo != "" {
 					parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 					if len(parts) == 2 {
 						mergeWaiter := github.NewMergeWaiter(client, parts[0], parts[1], &github.MergeWaiterConfig{
