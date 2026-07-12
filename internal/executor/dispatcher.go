@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -578,27 +577,10 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 // queueDecomposedTask handles queuing a decomposed task and its subtasks.
 // The parent task is marked as "decomposed" and subtasks are queued in order.
 func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, result *DecomposeResult) (string, error) {
-	// Generate parent execution ID
-	parentExecID := uuid.New().String()
-
-	// Save parent as "decomposed" status
-	parentExec := &memory.Execution{
-		ID:                parentExecID,
-		TaskID:            parent.ID,
-		ProjectPath:       parent.ProjectPath,
-		Status:            "decomposed",
-		TaskTitle:         parent.Title,
-		TaskDescription:   parent.Description,
-		TaskBranch:        parent.Branch,
-		TaskBaseBranch:    parent.BaseBranch,
-		TaskCreatePR:      parent.CreatePR,
-		TaskVerbose:       parent.Verbose,
-		TaskSourceAdapter: parent.SourceAdapter,
-		TaskSourceIssueID: parent.SourceIssueID,
-		TaskLabels:        parent.Labels, // GH-2326: persist labels for no-decompose/autopilot-fix gates
-	}
-
-	if err := d.store.SaveExecution(parentExec); err != nil {
+	// GH-4243: single chokepoint for the row create + ExecutionID threading
+	// that used to be hand-rolled here.
+	parentExecID, err := NewExecutionLifecycle(d.store).Begin(parent, ExecStatusDecomposed)
+	if err != nil {
 		return "", fmt.Errorf("failed to save decomposed parent: %w", err)
 	}
 
@@ -636,27 +618,10 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 
 // queueSingleTask queues a single task (no decomposition).
 func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, error) {
-	// Generate execution ID
-	execID := uuid.New().String()
-
-	// Save to SQLite with status='queued' and full task details
-	exec := &memory.Execution{
-		ID:                execID,
-		TaskID:            task.ID,
-		ProjectPath:       task.ProjectPath,
-		Status:            "queued",
-		TaskTitle:         task.Title,
-		TaskDescription:   task.Description,
-		TaskBranch:        task.Branch,
-		TaskBaseBranch:    task.BaseBranch,
-		TaskCreatePR:      task.CreatePR,
-		TaskVerbose:       task.Verbose,
-		TaskSourceAdapter: task.SourceAdapter,
-		TaskSourceIssueID: task.SourceIssueID,
-		TaskLabels:        task.Labels, // GH-2326: persist labels for no-decompose/autopilot-fix gates
-	}
-
-	if err := d.store.SaveExecution(exec); err != nil {
+	// GH-4243: single chokepoint for the row create + ExecutionID threading
+	// that used to be hand-rolled here.
+	execID, err := NewExecutionLifecycle(d.store).Begin(task, ExecStatusQueued)
+	if err != nil {
 		return "", fmt.Errorf("failed to save execution: %w", err)
 	}
 
@@ -860,6 +825,7 @@ type WorkerStatus struct {
 type ProjectWorker struct {
 	projectPath   string
 	store         *memory.Store
+	lifecycle     *ExecutionLifecycle
 	runner        *Runner
 	log           *slog.Logger
 	signal        chan struct{}
@@ -874,6 +840,7 @@ func NewProjectWorker(projectPath string, store *memory.Store, runner *Runner, l
 	return &ProjectWorker{
 		projectPath: projectPath,
 		store:       store,
+		lifecycle:   NewExecutionLifecycle(store),
 		runner:      runner,
 		log:         log.With(slog.String("project", projectPath)),
 		signal:      make(chan struct{}, 1), // Buffered to avoid blocking
@@ -1046,7 +1013,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		)
 
 		// Update status to running
-		if err := w.store.UpdateExecutionStatus(exec.ID, "running"); err != nil {
+		if err := w.lifecycle.Transition(exec.ID, ExecStatusRunning); err != nil {
 			w.log.Error("Failed to update status to running", slog.Any("error", err))
 			continue
 		}
@@ -1089,56 +1056,51 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		result, execErr := w.runner.Execute(ctx, task)
 		duration := time.Since(start)
 
-		// Update execution record with result
-		if execErr != nil {
+		// GH-4243: single chokepoint classifies the outcome (TerminalStatus),
+		// persists the terminal status, and saves metrics. The branches below
+		// drive event-recording/progress side effects off the same
+		// classification instead of re-deriving it.
+		outcome, finErr := w.lifecycle.Finish(exec.ID, result, execErr, duration)
+		if finErr != nil {
+			w.log.Error("Failed to persist execution outcome", slog.String("execution_id", exec.ID), slog.Any("error", finErr))
+		}
+
+		switch {
+		case execErr != nil:
 			w.log.Error("Task execution failed",
 				slog.String("task_id", exec.TaskID),
 				slog.Any("error", execErr),
 				slog.Duration("duration", duration),
 			)
-			if err := w.store.UpdateExecutionStatus(exec.ID, "failed", execErr.Error()); err != nil {
-				w.log.Error("Failed to update status to failed", slog.Any("error", err))
-			}
 			// GH-3846: record terminal-failure transition to the execution-events audit trail.
 			w.recordExecutionEvent(exec.ID, memory.StageFailed, truncateForLog(execErr.Error(), 200))
 			// Emit progress callback for task failed
 			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Execution error: %s", truncateForLog(execErr.Error(), 60)))
-		} else if !result.Success {
+		case outcome.Status != ExecStatusCompleted:
 			// TASK-358: classify the terminal outcome instead of collapsing every
 			// non-success into "failed". declined / no-op / stalled get their own
 			// status so the dashboard's "failed" count reflects genuine failures.
-			status := TerminalStatus(result)
 			w.log.Warn("Task ended without success",
 				slog.String("task_id", exec.TaskID),
-				slog.String("status", status),
-				slog.String("error", result.Error),
+				slog.String("status", string(outcome.Status)),
+				slog.String("error", outcome.Error),
 				slog.Duration("duration", duration),
 			)
-			if err := w.store.UpdateExecutionStatus(exec.ID, status, result.Error); err != nil {
-				w.log.Error("Failed to update execution status",
-					slog.String("status", status), slog.Any("error", err))
-			}
 			// GH-3846: record no_op/skipped transitions to the execution-events audit
 			// trail. Stalled is instrumented at its detection site in runner.go instead;
 			// declined/rate_limited/infra have no execution_events Stage equivalent yet.
-			if stage, ok := dispatchTerminalStage(status); ok {
-				w.recordExecutionEvent(exec.ID, stage, fmt.Sprintf("%s: %s", status, truncateForLog(result.Error, 200)))
+			if stage, ok := dispatchTerminalStage(string(outcome.Status)); ok {
+				w.recordExecutionEvent(exec.ID, stage, fmt.Sprintf("%s: %s", outcome.Status, truncateForLog(outcome.Error, 200)))
 			}
 			// Emit progress callback with a phase that matches the classified outcome.
-			w.runner.EmitProgress(exec.TaskID, terminalPhaseLabel(status), 100,
-				fmt.Sprintf("%s: %s", status, truncateForLog(result.Error, 60)))
-		} else {
+			w.runner.EmitProgress(exec.TaskID, terminalPhaseLabel(string(outcome.Status)), 100,
+				fmt.Sprintf("%s: %s", outcome.Status, truncateForLog(outcome.Error, 60)))
+		default:
 			w.log.Info("Task completed successfully",
 				slog.String("task_id", exec.TaskID),
 				slog.Duration("duration", duration),
 				slog.String("pr_url", result.PRUrl),
 			)
-			// TASK-359 Layer 1: one atomic write (status + result fields) instead of
-			// UpdateExecutionStatus("completed") then UpdateExecutionResult — the gap
-			// between those two could leave a 'completed' row with an empty pr_url.
-			if err := w.store.MarkExecutionCompleted(exec.ID, result.PRUrl, result.CommitSHA, duration.Milliseconds()); err != nil {
-				w.log.Error("Failed to mark execution completed", slog.Any("error", err))
-			}
 			// GH-3846: record terminal-success transition to the execution-events audit trail.
 			if stage, ok := dispatchSuccessStage(result.PRUrl); ok {
 				w.recordExecutionEvent(exec.ID, stage, fmt.Sprintf("completed with PR: %s", result.PRUrl))
@@ -1151,31 +1113,15 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			w.runner.EmitProgress(exec.TaskID, "Completed", 100, msg)
 		}
 
-		// Persist execution metrics (tokens, cost, code changes) so they survive restarts.
-		// This is needed for GetLifetimeTokens() to return real data (GH-533).
+		// Effort tier and usage-event telemetry stay dispatcher-owned: they're
+		// observability writes, not part of the row-lifecycle contract Finish
+		// covers (status + metrics). Needed for GetLifetimeTokens() (GH-533).
 		if result != nil {
 			// GH-2807: persist effort/complexity tier for cost-by-tier observability.
 			if result.EffortLevel != "" || result.ComplexityLevel != "" {
 				if err := w.store.UpdateExecutionEffort(exec.ID, result.EffortLevel, result.ComplexityLevel); err != nil {
 					w.log.Error("Failed to update execution effort", slog.Any("error", err))
 				}
-			}
-			if err := w.store.SaveExecutionMetrics(&memory.ExecutionMetrics{
-				ExecutionID:      exec.ID,
-				TokensInput:      result.TokensInput,
-				TokensOutput:     result.TokensOutput,
-				TokensTotal:      result.TokensTotal,
-				TokensCacheRead:  result.CacheReadInputTokens,
-				TokensCacheWrite: result.CacheCreationInputTokens,
-				EstimatedCostUSD: result.EstimatedCostUSD,
-				FilesChanged:     result.FilesChanged,
-				LinesAdded:       result.LinesAdded,
-				LinesRemoved:     result.LinesRemoved,
-				ModelName:        result.ModelName,
-				PeakRSSMB:        result.PeakRSSMB,
-				FinalRSSMB:       result.FinalRSSMB,
-			}); err != nil {
-				w.log.Error("Failed to save execution metrics", slog.Any("error", err))
 			}
 
 			// GH-2429: emit per-execution usage events (task + token + compute) so the

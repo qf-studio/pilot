@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-12 (v2.151.0)
+**Last Updated:** 2026-07-09 (v2.151.0)
 
 ## Legend
 
@@ -26,6 +26,7 @@
 | Dry run mode | ✅ | executor | `--dry-run` | - | Show prompt only |
 | Verbose output | ✅ | executor | `--verbose` | - | Stream raw JSON |
 | Task dispatcher | ✅ | executor | - | - | Per-project queue (GH-46) |
+| Execution lifecycle chokepoint | ✅ | executor | - | - | `ExecutionLifecycle.Begin/Transition/Finish` replaces hand-rolled `SaveExecution`/status-update call sites in dispatcher/epic/CLI paths (GH-4243, v2.238.2) |
 | Sequential execution | ✅ | executor | `--sequential` | `orchestrator.execution.mode` | Wait for PR merge before next issue |
 | Self-review | ✅ | executor | - | - | Auto code review before PR push (v0.13.0) |
 | Auto build gate | ✅ | executor | - | - | Minimal build gate when none configured (v0.13.0) |
@@ -423,9 +424,6 @@
 | Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
-| Single-subtask epic consolidation | ✅ | executor | - | - | `isSinglePackageScope` short-circuits `len(plan.Subtasks) <= 1` to direct execution — never spawns a lone child issue (GH-4216 fix 1 / #4221) |
-| Epic finalize title normalization | ✅ | executor | - | - | `finalizeEpicBranchPR` routes the parent PR title through `normalizeTitle` before `CreatePR`, so raw issue titles auto-prefix instead of failing `validatePRTitle` deterministically (GH-4216 fix 2 / #4221) |
-| Decomposed-parent guard (all 4 sites) | ✅ | executor | - | - | `decomposedChildrenAllComplete` (ledger-only: `Store.GetDecomposedChildTaskIDs` + per-child `HasCompletedExecution`/no_op/merged-PR evidence) runs before every `HasCompletedExecution(taskID)` check in dispatcher.go — processQueue pickup, stale-running/queued reap, and WaitForExecution's row-vanished resolution — so a decomposed epic parent whose children all shipped is never re-implemented, reaped as failed, or surfaced as a false waiter error (GH-4216 fix 3, extended from processQueue-only to all 4 call sites; GH-4227) |
 
 ## Test Coverage
 
@@ -585,7 +583,6 @@ quality:
 
 | Feature | Version | Package | Notes |
 |---------|---------|---------|-------|
-| Dependency-aware selective sub-issue merge-wait | v2.238.x+ | executor | `detectChildDependency` (new `dependency_detector.go`) gates `executeSubIssuesTracked`'s merge-wait per child on an explicit `Depends on: #N`/`Blocked by: #N` ref (scoped to sibling issue numbers) or verification-shape language ("verify…"/"confirm…"/"run the acceptance…"/"regression-test…", overridden by "add…"/"fix…"/"implement…"); `wait_for_merge:false` stays the global default for independent siblings. Merge-wait callback now wired unconditionally in `main.go` (no-op when unused); every decision fail-loud logged (TASK-402 / GH-4234) |
 | Issue-level success rate + rate_limited exclusion | v2.235.0+ | autopilot + memory + gateway | `pilot_issue_level_success_rate` / `pilot_issues_shipped_total` / `pilot_issues_attempted_total` dedupe by `task_id` across retries; `pilot_success_rate` now excludes `rate_limited` from the denominator; hydrator no longer folds declined/no_op/stalled/infra/skipped into `failed` (TASK-392 / GH-4070) |
 | Poller skip-by-reason counters | v2.150.0 | adapters/github | `pilot_poller_skipped/dispatched/deferred` Prometheus counters (TASK-293 / GH-3064) |
 | `WithRetry` centralized in `doRequest` | v2.150.0 | adapters/github | All GitHub client methods now get retry; `RecordAPIError` wired (TASK-294 / GH-3065) |

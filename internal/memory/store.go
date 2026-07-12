@@ -1567,7 +1567,17 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 		errStr = &errorMsg[0]
 	}
 
-	// Set completed_at for terminal states
+	// Set completed_at for terminal states.
+	//
+	// GH-4243 dead-API audit: "cancelled" is confirmed dead as a write value —
+	// no production call site ever passes it to UpdateExecutionStatus,
+	// MarkExecutionCompleted, or Begin/Transition/Finish (executor.Status has
+	// no ExecStatusCancelled constant). It's kept in this terminal-state list
+	// only defensively — matching monitor.go's separate in-memory TaskStatus
+	// enum, which does have a StatusCancelled, and matching dispatcher.go's
+	// WaitForExecution terminal-status switch, which reads "cancelled" as a
+	// possible historical/manually-written value. Not removed since dropping
+	// it would silently stop setting completed_at on that historical value.
 	if status == "completed" || status == "failed" || status == "cancelled" || status == "declined" || status == "stalled" || status == "no_op" || status == "rate_limited" || status == "infra" || status == "skipped" {
 		return s.withRetry("UpdateExecutionStatus", func() error {
 			_, err := s.db.Exec(`
@@ -1605,10 +1615,15 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 }
 
 // UpdateExecutionStatusByTaskID updates the status of the most recent execution
-// for a given task ID and project path. Used by autopilot to mark failed
-// executions as completed when the PR is merged externally.
-// The projectPath scope prevents cross-project clobbering when the same task ID
-// appears in multiple repos.
+// for a given task ID and project path.
+//
+// GH-4243 dead-API audit: confirmed zero production call sites. It predates
+// SelfHealExecutionAfterMerge, which replaced it as autopilot's merge-heal
+// path (see internal/autopilot/controller.go's TestSelfHeal* suite, which
+// asserts zero calls through the EvalStore.UpdateExecutionStatusByTaskID mock
+// on the modern path). Kept — not removed — only because it's still part of
+// the EvalStore interface contract; if that interface method is ever dropped,
+// this can go with it.
 //
 // TASK-358: the source scope is the non-success set ('failed', 'no_op', 'stalled')
 // rather than 'failed' alone, so an execution the dispatcher now classifies as a

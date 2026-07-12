@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -1839,46 +1838,19 @@ func formatDecomposedChildrenSummary(issues []CreatedIssue) string {
 
 // finalizeSubIssueExecution marks a sub-issue's ledger row (created just
 // before backend invocation, GH-4141) terminal and persists its token/cost
-// metrics, mirroring the dispatcher's ProjectWorker.processQueue finalization
-// (MarkExecutionCompleted for success, UpdateExecutionStatus otherwise) so a
-// sub-issue's row is indistinguishable from a direct-dispatch row to
-// GetDailyMetrics and HasCompletedExecution. WARN-and-continue on store
-// failures (mem-026) — a ledger write must never abort a sub-issue run.
+// metrics via the GH-4243 ExecutionLifecycle chokepoint, so a sub-issue's row
+// is indistinguishable from a direct-dispatch row to GetDailyMetrics and
+// HasCompletedExecution. status is caller-decided rather than re-derived from
+// result — the work-loss guard in executeSubIssuesTracked forces "failed" for
+// a sub-issue that reports Success with commits but no PR, which Finish's
+// default classifier would otherwise call "completed". WARN-and-continue on
+// store failures (mem-026) — a ledger write must never abort a sub-issue run.
 func (r *Runner) finalizeSubIssueExecution(execID, status string, result *ExecutionResult, startedAt time.Time) {
 	if r.logStore == nil || execID == "" {
 		return
 	}
-	durationMs := time.Since(startedAt).Milliseconds()
-	var errMsg, prURL, commitSHA string
-	if result != nil {
-		errMsg, prURL, commitSHA = result.Error, result.PRUrl, result.CommitSHA
-	}
-
-	if status == "completed" {
-		if err := r.logStore.MarkExecutionCompleted(execID, prURL, commitSHA, durationMs); err != nil {
-			r.log.Warn("Failed to mark sub-issue execution completed", "execution_id", execID, "error", err)
-		}
-	} else if err := r.logStore.UpdateExecutionStatus(execID, status, errMsg); err != nil {
-		r.log.Warn("Failed to update sub-issue execution status", "execution_id", execID, "status", status, "error", err)
-	}
-
-	if result == nil {
-		return
-	}
-	if err := r.logStore.SaveExecutionMetrics(&memory.ExecutionMetrics{
-		ExecutionID:      execID,
-		TokensInput:      result.TokensInput,
-		TokensOutput:     result.TokensOutput,
-		TokensTotal:      result.TokensTotal,
-		TokensCacheRead:  result.CacheReadInputTokens,
-		TokensCacheWrite: result.CacheCreationInputTokens,
-		EstimatedCostUSD: result.EstimatedCostUSD,
-		FilesChanged:     result.FilesChanged,
-		LinesAdded:       result.LinesAdded,
-		LinesRemoved:     result.LinesRemoved,
-		ModelName:        result.ModelName,
-	}); err != nil {
-		r.log.Warn("Failed to save sub-issue execution metrics", "execution_id", execID, "error", err)
+	if _, err := NewExecutionLifecycle(r.logStore).Finish(execID, result, nil, time.Since(startedAt), Status(status)); err != nil {
+		r.log.Warn("Failed to persist sub-issue execution outcome", "execution_id", execID, "status", status, "error", err)
 	}
 }
 
@@ -2025,27 +1997,20 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// scoped dashboard queries filter on this being absolute, not a
 		// worktree path).
 		subExecStart := time.Now()
-		subExecID := uuid.New().String()
-		if r.logStore != nil {
-			if err := r.logStore.SaveExecution(&memory.Execution{
-				ID:          subExecID,
-				TaskID:      taskID,
-				ProjectPath: parent.ProjectPath,
-				Status:      "running",
-			}); err != nil {
-				// mem-026: epic path errors are warn-only — a ledger write must
-				// never abort a sub-issue run. The UUID is threaded through
-				// below regardless, so downstream event recording always has a
-				// real UUID rather than falling back to the task ID.
-				r.log.Warn("Failed to insert sub-issue execution row",
-					"parent_id", parent.ID,
-					"sub_issue", issueRef,
-					"execution_id", subExecID,
-					"error", err,
-				)
-			}
+		// GH-4243: Begin creates the row AND threads subTask.ExecutionID in one
+		// call. mem-026: a ledger-write failure is warn-only here — Begin always
+		// stamps the generated UUID regardless of the save outcome, so downstream
+		// event recording still has a real UUID rather than falling back to the
+		// task ID.
+		subExecID, err := NewExecutionLifecycle(r.logStore).Begin(subTask, ExecStatusRunning)
+		if err != nil {
+			r.log.Warn("Failed to insert sub-issue execution row",
+				"parent_id", parent.ID,
+				"sub_issue", issueRef,
+				"execution_id", subExecID,
+				"error", err,
+			)
 		}
-		subTask.ExecutionID = subExecID
 
 		r.log.Info("Executing sub-issue",
 			"parent_id", parent.ID,
@@ -2056,7 +2021,6 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 
 		// Execute the sub-task (use override if set, for testing)
 		var result *ExecutionResult
-		var err error
 		if r.executeFunc != nil {
 			// Use test override function if set
 			result, err = r.executeFunc(ctx, subTask)
