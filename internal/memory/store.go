@@ -1871,6 +1871,59 @@ func (s *Store) GetQueuedProjectPaths() ([]string, error) {
 	return paths, rows.Err()
 }
 
+// HydrationTask is a minimal projection of a non-terminal executions row,
+// just enough to reconstruct executor.Monitor state after a daemon restart
+// (GH-4246). See GetTasksForMonitorHydration.
+type HydrationTask struct {
+	TaskID    string
+	Status    string // "queued" | "pending" | "running"
+	Title     string
+	IssueURL  string
+	StartedAt *time.Time
+}
+
+// GetTasksForMonitorHydration returns queued/pending/running executions
+// across all projects, ordered oldest-first. The executor.Monitor is
+// otherwise populated only at dispatch-intake time (the sole Register
+// caller is cmd/pilot/handler_common.go), so a daemon restart wipes it even
+// though these rows are still active in the DB — this backs the startup
+// hydration that rebuilds the monitor from persisted state (GH-4246).
+func (s *Store) GetTasksForMonitorHydration() ([]*HydrationTask, error) {
+	rows, err := s.db.Query(`
+		SELECT task_id, status, COALESCE(task_title, ''), COALESCE(task_source_issue_id, ''), started_at
+		FROM executions
+		WHERE status IN ('queued', 'pending', 'running')
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tasks []*HydrationTask
+	for rows.Next() {
+		var t HydrationTask
+		var startedAt sql.NullTime
+		if err := rows.Scan(&t.TaskID, &t.Status, &t.Title, &t.IssueURL, &startedAt); err != nil {
+			return nil, err
+		}
+		if startedAt.Valid {
+			t.StartedAt = &startedAt.Time
+		}
+		tasks = append(tasks, &t)
+	}
+	return tasks, rows.Err()
+}
+
+// CountQueuedTasks returns the number of queued/pending execution rows — the
+// DB-backed source for the pilot_queue_depth gauge (GH-4246). A cheap COUNT
+// query, safe to call from a frequent (e.g. 2s) dashboard refresh loop.
+func (s *Store) CountQueuedTasks() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM executions WHERE status = 'queued' OR status = 'pending'`).Scan(&n)
+	return n, err
+}
+
 // DeleteExecution removes an execution row by ID. Used to clean up orphan rows
 // when the same task already has a completed execution.
 func (s *Store) DeleteExecution(id string) error {

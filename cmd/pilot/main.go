@@ -1808,6 +1808,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		for _, ctrl := range autopilotControllers {
 			ctrl.SetMonitor(monitor)
 		}
+		// GH-4246: rebuild the monitor from queued/running DB rows before the
+		// dashboard's first refresh tick — otherwise a restart with active
+		// work in the DB leaves the queue panel blind until each task's own
+		// lifecycle happens to re-touch the monitor (queued tasks never do).
+		if store != nil {
+			if hydrateErr := monitor.HydrateFromStore(store); hydrateErr != nil {
+				logging.WithComponent("start").Warn("failed to hydrate monitor from store", slog.Any("error", hydrateErr))
+			}
+		}
 		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		model.SetProjectPath(projectPath)
@@ -2753,6 +2762,18 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					if monitor != nil {
 						tasks := convertTaskStatesToDisplay(monitor.GetAll())
 						program.Send(dashboard.UpdateTasks(tasks)())
+					}
+					// GH-4246: pilot_queue_depth had zero production callers and
+					// always read 0. Refresh it here from the DB queued/pending
+					// count on the same cadence as the task-list refresh.
+					// pilot_failed_queue_depth is intentionally left unwired —
+					// its documented semantics ("issues with pilot-failed label")
+					// are GitHub-issue-label state, not an executions-row status;
+					// the DB has no equivalent count to source it from correctly.
+					if store != nil && autopilotController != nil {
+						if depthErr := autopilot.RefreshQueueDepth(store, autopilotController.Metrics()); depthErr != nil {
+							logging.WithComponent("dashboard").Warn("failed to refresh queue depth gauge", slog.Any("error", depthErr))
+						}
 					}
 				}
 			}

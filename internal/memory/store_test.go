@@ -985,6 +985,117 @@ func TestGetQueuedTasks(t *testing.T) {
 	}
 }
 
+// TestGetTasksForMonitorHydration verifies the executor.Monitor restart-hydration
+// source (GH-4246): queued/pending/running rows come back with title/issue-id
+// metadata, running rows carry StartedAt, and terminal rows are excluded.
+func TestGetTasksForMonitorHydration(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	executions := []*Execution{
+		{ID: "1", TaskID: "GH-1", ProjectPath: "/p", Status: "queued", TaskTitle: "Queued task", TaskSourceIssueID: "1"},
+		{ID: "2", TaskID: "GH-2", ProjectPath: "/p", Status: "pending", TaskTitle: "Pending task", TaskSourceIssueID: "2"},
+		{ID: "3", TaskID: "GH-3", ProjectPath: "/p", Status: "running", TaskTitle: "Running task", TaskSourceIssueID: "3"},
+		{ID: "4", TaskID: "GH-4", ProjectPath: "/p", Status: "completed", TaskTitle: "Done task"},
+	}
+	for _, e := range executions {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", e.ID, err)
+		}
+	}
+	// Stamp started_at on the running row, mirroring the live UpdateExecutionStatus path.
+	if err := store.UpdateExecutionStatus("3", "running"); err != nil {
+		t.Fatalf("UpdateExecutionStatus: %v", err)
+	}
+
+	tasks, err := store.GetTasksForMonitorHydration()
+	if err != nil {
+		t.Fatalf("GetTasksForMonitorHydration failed: %v", err)
+	}
+	if len(tasks) != 3 {
+		t.Fatalf("Expected 3 non-terminal tasks, got %d", len(tasks))
+	}
+
+	byID := make(map[string]*HydrationTask)
+	for _, task := range tasks {
+		byID[task.TaskID] = task
+	}
+	if byID["GH-4"] != nil {
+		t.Error("Completed task should not be included in hydration set")
+	}
+	running, ok := byID["GH-3"]
+	if !ok {
+		t.Fatal("Running task GH-3 missing from hydration set")
+	}
+	if running.Title != "Running task" || running.IssueURL != "3" {
+		t.Errorf("Unexpected metadata for GH-3: title=%q issueURL=%q", running.Title, running.IssueURL)
+	}
+	if running.StartedAt == nil {
+		t.Error("Running task should carry a non-nil StartedAt")
+	}
+	queued, ok := byID["GH-1"]
+	if !ok {
+		t.Fatal("Queued task GH-1 missing from hydration set")
+	}
+	if queued.Status != "queued" {
+		t.Errorf("Expected status 'queued', got %q", queued.Status)
+	}
+}
+
+func TestCountQueuedTasks(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	n, err := store.CountQueuedTasks()
+	if err != nil {
+		t.Fatalf("CountQueuedTasks failed: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Expected 0 with empty store, got %d", n)
+	}
+
+	executions := []*Execution{
+		{ID: "1", TaskID: "T1", ProjectPath: "/p", Status: "queued"},
+		{ID: "2", TaskID: "T2", ProjectPath: "/p", Status: "pending"},
+		{ID: "3", TaskID: "T3", ProjectPath: "/p", Status: "running"},
+		{ID: "4", TaskID: "T4", ProjectPath: "/p", Status: "completed"},
+	}
+	for _, e := range executions {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", e.ID, err)
+		}
+	}
+
+	n, err = store.CountQueuedTasks()
+	if err != nil {
+		t.Fatalf("CountQueuedTasks failed: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("Expected 2 queued/pending, got %d", n)
+	}
+
+	// Drain the queue and confirm the count returns to 0.
+	if err := store.UpdateExecutionStatus("1", "completed"); err != nil {
+		t.Fatalf("UpdateExecutionStatus: %v", err)
+	}
+	if err := store.UpdateExecutionStatus("2", "completed"); err != nil {
+		t.Fatalf("UpdateExecutionStatus: %v", err)
+	}
+	n, err = store.CountQueuedTasks()
+	if err != nil {
+		t.Fatalf("CountQueuedTasks failed: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("Expected 0 after draining queue, got %d", n)
+	}
+}
+
 // TestTaskLabelsRoundTrip verifies that Task.Labels survive the queue round-trip
 // (SaveExecution → GetExecution and GetQueuedTasksForProject). Without this, labels
 // like "no-decompose" are silently dropped and runner-side gates bypassed (GH-2326).
