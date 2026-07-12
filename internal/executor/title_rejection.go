@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"sync"
@@ -60,6 +61,48 @@ func (t *titleRejectionTracker) clear(taskID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.seen, taskID)
+}
+
+// recordTitleRejection wraps the record → escalate → report-progress sequence
+// shared by every PR-title finalize path (direct, epic-parent,
+// decomposed-parent). GH-4220 (e): only the direct path (runner.go
+// executeWithOptions) wired the GH-2363 escalation — finalizeEpicBranchPR and
+// finalizeDecomposedParentPR returned on titleErr without ever recording or
+// escalating, so a non-conventional epic/decomposed title that survives
+// normalizeTitle's auto-correct machinery (rare given the "chore" fallback,
+// but possible when diff stats are unavailable) would retry forever instead
+// of tripping the stop-retry guidance comment. Call this from every path that
+// fails on titleErr; it is a no-op if the tracker was never configured.
+func (r *Runner) recordTitleRejection(ctx context.Context, task *Task, result *ExecutionResult) {
+	if r.titleRejections == nil {
+		return
+	}
+	count := r.titleRejections.record(task.ID, task.Title)
+	if count < titleRejectionMaxCount {
+		return
+	}
+	if err := r.postTitleRejectionEscalation(ctx, task); err != nil {
+		r.log.Warn("title-rejection escalation failed",
+			slog.String("task_id", task.ID),
+			slog.Any("error", err),
+		)
+		return
+	}
+	result.TitleRejected = true
+	r.log.Info("title-rejection escalated — posted guidance comment, stopping retries",
+		slog.String("task_id", task.ID),
+		slog.Int("count", count),
+	)
+}
+
+// clearTitleRejectionState drops any tracked rejection bookkeeping for task
+// once its title has been accepted, so a future title change starts counting
+// from a clean slate. Call this from every path that successfully normalizes
+// a title, mirroring recordTitleRejection's coverage.
+func (r *Runner) clearTitleRejectionState(task *Task) {
+	if r.titleRejections != nil {
+		r.titleRejections.clear(task.ID)
+	}
 }
 
 func hashTitle(title string) string {

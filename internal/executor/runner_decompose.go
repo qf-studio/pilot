@@ -438,7 +438,32 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 	r.reportProgress(task.ID, "Creating PR", 98, "Creating pull request...")
 
 	issueNum := strings.TrimPrefix(task.ID, "GH-")
-	prTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
+
+	// GH-4220 parity: finalizeDecomposedParentPR built its title the same way
+	// finalizeEpicBranchPR (runner.go) did before that fix — raw
+	// "<task.ID>: <task.Title>" with no conventional-commit normalization.
+	// A decomposed parent's own task.Title is a raw issue title just like the
+	// epic parent's, so it hits the same validatePRTitle rejection (git.go:178)
+	// deterministically. Route it through the same normalizeTitle machinery.
+	decomposedDiffStats, _ := git.GetDiffStats(ctx, baseBranch)
+	normalizedDecomposedTitle, titleErr := normalizeTitle(task.Title, task.Labels, decomposedDiffStats)
+	if titleErr != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("decomposed-parent PR creation failed: %v", titleErr)
+		log.Warn("Decomposed-parent PR creation refused: non-conventional title",
+			slog.String("task_id", task.ID),
+			slog.String("title", task.Title),
+			slog.Any("labels", task.Labels),
+		)
+		// GH-4220 (e): parity with the direct path's GH-2363 escalation — see
+		// recordTitleRejection (title_rejection.go) for why epic/decomposed
+		// paths need the same stop-retry guard the direct path already has.
+		r.recordTitleRejection(ctx, task, result)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+	r.clearTitleRejectionState(task)
+	prTitle := fmt.Sprintf("%s: %s", task.ID, normalizedDecomposedTitle)
 
 	// Route PR/MR creation through the adapter-specific creator when
 	// available, mirroring the direct path's registry → non-GitHub

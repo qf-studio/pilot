@@ -362,12 +362,22 @@ func TestIsSinglePackageScope(t *testing.T) {
 			expected:    false,
 		},
 		{
-			name: "single subtask always false (no conflict possible)",
+			// GH-4219/GH-4220: single-subtask plans short-circuit to true so the
+			// epic decision branch in runner.go consolidates into direct execution
+			// (zero children created) instead of creating one sub-issue and then
+			// having the parent re-implement that same slice itself.
+			name: "single subtask short-circuits to true (consolidate, no sibling to conflict with)",
 			subtasks: []PlannedSubtask{
 				{Title: "Do everything", Description: "Single task"},
 			},
 			description: "Simple task",
-			expected:    false, // detectSameComponentFromTitles requires >=2
+			expected:    true,
+		},
+		{
+			name:        "zero subtasks short-circuits to true",
+			subtasks:    []PlannedSubtask{},
+			description: "Simple task",
+			expected:    true,
 		},
 		{
 			name: "files in description only, same directory",
