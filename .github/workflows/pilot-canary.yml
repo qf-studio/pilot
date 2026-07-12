@@ -5,6 +5,20 @@ name: Pilot Synthetic Pipeline Canary
 # sandbox repo and watching it travel through the real pipeline. Runs
 # from outside the daemon (GitHub Actions) so it survives daemon death.
 #
+# TASK-403 A2: the poll/assert loop lives in scripts/canary-poll.sh,
+# parameterized by --assert MODE. Each `strategy.matrix.include` entry is
+# a self-contained scenario (name, issue title, terminal condition);
+# adding a scenario means adding a matrix row -- the poll script and this
+# workflow's guard/label/alert logic never change, because both are keyed
+# off `matrix.scenario`:
+#   - idempotency guard + canary issue labels: `pilot` + `canary-scenario-<name>`
+#   - stall alert title: `[canary:<name>] pipeline stall`
+# This keeps concurrent scenarios from colliding on the guard check or on
+# alert dedup. A second scenario (epic-lifecycle coverage, asserting N
+# children each get exactly one merged PR) is tracked as TASK-403 A3 and
+# will land as another matrix row using the reserved `n-children-merged`
+# --assert mode; see the commented example below.
+#
 # Modeled on the existing production precedent:
 # .github/workflows/brew-tap-token-canary.yml (schedule -> check ->
 # idempotent `gh issue create` on failure).
@@ -31,26 +45,48 @@ permissions:
 jobs:
   canary:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # version-bump: TASK-379 V8's original scenario. One-line patch
+          # version bump -> PR -> merge. Terminal condition: `merged`.
+          - scenario: version-bump
+            title_prefix: "chore(version): bump patch for canary run"
+            assert_mode: merged
+          # Example of how TASK-403 A3 (epic-lifecycle scenario) adds a
+          # second scenario without touching scripts/canary-poll.sh or any
+          # step below -- only a matrix row plus the (not yet
+          # implemented) `n-children-merged` --assert mode:
+          #
+          # - scenario: epic-lifecycle
+          #   title_prefix: "chore(canary): epic-lifecycle scenario"
+          #   assert_mode: n-children-merged
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Idempotency guard
         id: guard
         env:
           GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
+          SCENARIO_LABEL: canary-scenario-${{ matrix.scenario }}
         run: |
           set -euo pipefail
 
           OPEN_COUNT=$(gh issue list \
             --repo "$SANDBOX_REPO" \
             --label pilot \
+            --label "$SCENARIO_LABEL" \
             --state open \
             --json number \
             --jq 'length')
 
           if [ "$OPEN_COUNT" -gt 0 ]; then
-            echo "A pilot-labeled canary issue is already open on $SANDBOX_REPO — a prior run is still in flight. Skipping."
+            echo "A pilot-labeled canary issue for scenario '${{ matrix.scenario }}' is already open on $SANDBOX_REPO — a prior run is still in flight. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No open canary issue found — proceeding."
+            echo "No open canary issue found for scenario '${{ matrix.scenario }}' — proceeding."
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -59,15 +95,17 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
+          SCENARIO_LABEL: canary-scenario-${{ matrix.scenario }}
         run: |
           set -euo pipefail
 
           TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-          TITLE="chore(version): bump patch for canary run $TIMESTAMP"
+          TITLE="${{ matrix.title_prefix }} $TIMESTAMP"
           BODY=$(cat <<EOF
           ## Context
 
-          Synthetic canary run (TASK-379 V8). This issue exists to prove the
+          Synthetic canary run (TASK-379 V8 / TASK-403 A2, scenario
+          \`${{ matrix.scenario }}\`). This issue exists to prove the
           deployed Pilot daemon still ships code end-to-end (poll -> spec ->
           execute -> PR -> merge).
 
@@ -91,10 +129,11 @@ jobs:
             --repo "$SANDBOX_REPO" \
             --title "$TITLE" \
             --label pilot \
+            --label "$SCENARIO_LABEL" \
             --body "$BODY")
 
           ISSUE_NUMBER=$(basename "$ISSUE_URL")
-          echo "Filed canary issue $SANDBOX_REPO#$ISSUE_NUMBER"
+          echo "Filed canary issue $SANDBOX_REPO#$ISSUE_NUMBER (scenario: ${{ matrix.scenario }})"
           echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Poll for pipeline progression
@@ -102,62 +141,14 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
-          ISSUE_NUMBER: ${{ steps.file_issue.outputs.issue_number }}
         run: |
-          set -uo pipefail
-
-          DEADLINE=$(( $(date -u +%s) + CANARY_TIMEOUT_MINUTES * 60 ))
-          STAGE="issue-filed"
-          PR_NUMBER=""
-          RESULT="failure"
-
-          while [ "$(date -u +%s)" -lt "$DEADLINE" ]; do
-            if [ -z "$PR_NUMBER" ]; then
-              # Pilot branches follow `pilot/GH-<issue-number>` (project
-              # convention); fall back to a body reference in case the
-              # branch-naming convention drifts.
-              PR_NUMBER=$(gh pr list \
-                --repo "$SANDBOX_REPO" \
-                --state all \
-                --json number,headRefName,body \
-                | jq -r --arg n "$ISSUE_NUMBER" \
-                  '[.[] | select(.headRefName == ("pilot/GH-" + $n) or ((.body // "") | test("#" + $n)))][0].number // empty')
-
-              if [ -n "$PR_NUMBER" ]; then
-                STAGE="PR-opened"
-                echo "Found PR #$PR_NUMBER referencing canary issue #$ISSUE_NUMBER."
-              fi
-            else
-              PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$SANDBOX_REPO" --json state,mergedAt)
-              PR_STATE=$(echo "$PR_JSON" | jq -r '.state')
-              MERGED_AT=$(echo "$PR_JSON" | jq -r '.mergedAt')
-
-              if [ "$PR_STATE" = "MERGED" ] && [ "$MERGED_AT" != "null" ]; then
-                STAGE="merged"
-                RESULT="success"
-                break
-              elif [ "$PR_STATE" = "CLOSED" ]; then
-                STAGE="merge-stalled"
-                echo "PR #$PR_NUMBER was closed without merging."
-                break
-              fi
-            fi
-
-            sleep "$POLL_INTERVAL_SECONDS"
-          done
-
-          if [ "$RESULT" != "success" ] && [ "$STAGE" != "merge-stalled" ] && [ -n "$PR_NUMBER" ]; then
-            STAGE="merge-stalled"
-          fi
-
-          echo "Final stage: $STAGE (result: $RESULT)"
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
-
-          if [ "$RESULT" != "success" ]; then
-            exit 1
-          fi
+          scripts/canary-poll.sh \
+            --repo "$SANDBOX_REPO" \
+            --issue "${{ steps.file_issue.outputs.issue_number }}" \
+            --timeout-minutes "$CANARY_TIMEOUT_MINUTES" \
+            --poll-interval-seconds "$POLL_INTERVAL_SECONDS" \
+            --assert "${{ matrix.assert_mode }}" \
+            >> "$GITHUB_OUTPUT"
 
       - name: Close canary issue on success
         if: steps.guard.outputs.skip != 'true' && steps.poll.outputs.result == 'success'
@@ -184,7 +175,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          TITLE="[canary] pipeline stall"
+          TITLE="[canary:${{ matrix.scenario }}] pipeline stall"
           STAGE="${{ steps.poll.outputs.stage || 'issue-filed' }}"
           ISSUE_NUMBER="${{ steps.file_issue.outputs.issue_number }}"
 
@@ -206,5 +197,5 @@ jobs:
               --repo "$ALERT_REPO" \
               --title "$TITLE" \
               --label bug \
-              --body "Synthetic end-to-end pipeline canary stalled at stage \`$STAGE\`. Canary issue: $SANDBOX_REPO#$ISSUE_NUMBER. Investigate daemon health (poll -> spec -> execute -> PR -> merge). See TASK-379 V8."
+              --body "Synthetic end-to-end pipeline canary stalled at stage \`$STAGE\`. Scenario: \`${{ matrix.scenario }}\`. Canary issue: $SANDBOX_REPO#$ISSUE_NUMBER. Investigate daemon health (poll -> spec -> execute -> PR -> merge). See TASK-379 V8 / TASK-403 A2."
           fi
