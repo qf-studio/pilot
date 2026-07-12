@@ -763,11 +763,6 @@ func TestController_HandleMerging_SelfHealsExecution(t *testing.T) {
 	if got.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Errorf("self-heal PR URL = %q, want PR URL", got.PRURL)
 	}
-	// Old UpdateExecutionStatusByTaskID path must NOT also be invoked — self-heal
-	// supersedes it so we don't write stale rows without the PR URL.
-	if len(evalMock.updateStatus) != 0 {
-		t.Errorf("expected 0 UpdateExecutionStatusByTaskID calls (self-heal replaces it), got %d", len(evalMock.updateStatus))
-	}
 }
 
 // TASK-352: An externally-merged Pilot PR (gh pr merge / GitHub UI) never passes
@@ -4704,7 +4699,6 @@ func TestSetLearningLoop_ForwardsToFeedbackLoop(t *testing.T) {
 type mockEvalStore struct {
 	saved        []*memory.EvalTask
 	selfHealed   []selfHealCall
-	updateStatus []updateStatusCall
 	reclassified []reclassifyCall
 	// execStatusByTaskID configures GetExecutionStatusByTaskID responses keyed by
 	// task ID (e.g. "GH-11"). Missing keys return sql.ErrNoRows, matching a real
@@ -4731,12 +4725,6 @@ type selfHealCall struct {
 	PRURL       string
 }
 
-type updateStatusCall struct {
-	TaskID      string
-	ProjectPath string
-	Status      string
-}
-
 // reclassifyCall records one ReclassifyCompletionAsFailed invocation. GH-3818.
 type reclassifyCall struct {
 	TaskID      string
@@ -4746,11 +4734,6 @@ type reclassifyCall struct {
 
 func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
 	m.saved = append(m.saved, task)
-	return nil
-}
-
-func (m *mockEvalStore) UpdateExecutionStatusByTaskID(taskID, projectPath, status string) error {
-	m.updateStatus = append(m.updateStatus, updateStatusCall{TaskID: taskID, ProjectPath: projectPath, Status: status})
 	return nil
 }
 

@@ -1561,6 +1561,14 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 
 // UpdateExecutionStatus updates the status of an execution record.
 // Optionally sets the error message if provided. Also sets completed_at for terminal states.
+//
+// GH-4243: "cancelled" is kept in this terminal set for backward read
+// compatibility only — confirmed (repo-wide grep, 2026-07) to have zero
+// production write sites; nothing in the executor/dispatcher/CLI/autopilot
+// paths ever sets an execution's status to "cancelled". Left in the
+// classifier rather than removed since dropping it would silently change
+// terminal-state semantics for any pre-existing row or manual DB edit that
+// does carry it — out of scope for this behavior-preserving refactor.
 func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) error {
 	var errStr *string
 	if len(errorMsg) > 0 && errorMsg[0] != "" {
@@ -1600,26 +1608,6 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 			SET status = ?, error = COALESCE(?, error)
 			WHERE id = ?
 		`, status, errStr, id)
-		return err
-	})
-}
-
-// UpdateExecutionStatusByTaskID updates the status of the most recent execution
-// for a given task ID and project path. Used by autopilot to mark failed
-// executions as completed when the PR is merged externally.
-// The projectPath scope prevents cross-project clobbering when the same task ID
-// appears in multiple repos.
-//
-// TASK-358: the source scope is the non-success set ('failed', 'no_op', 'stalled')
-// rather than 'failed' alone, so an execution the dispatcher now classifies as a
-// no-op/stalled outcome still heals to the merged status when its PR lands.
-func (s *Store) UpdateExecutionStatusByTaskID(taskID, projectPath, status string) error {
-	return s.withRetry("UpdateExecutionStatusByTaskID", func() error {
-		_, err := s.db.Exec(`
-			UPDATE executions
-			SET status = ?, completed_at = CURRENT_TIMESTAMP
-			WHERE task_id = ? AND project_path = ? AND status IN ('failed', 'no_op', 'stalled', 'rate_limited', 'infra', 'skipped')
-		`, status, taskID, projectPath)
 		return err
 	})
 }

@@ -1839,46 +1839,20 @@ func formatDecomposedChildrenSummary(issues []CreatedIssue) string {
 
 // finalizeSubIssueExecution marks a sub-issue's ledger row (created just
 // before backend invocation, GH-4141) terminal and persists its token/cost
-// metrics, mirroring the dispatcher's ProjectWorker.processQueue finalization
-// (MarkExecutionCompleted for success, UpdateExecutionStatus otherwise) so a
-// sub-issue's row is indistinguishable from a direct-dispatch row to
-// GetDailyMetrics and HasCompletedExecution. WARN-and-continue on store
-// failures (mem-026) — a ledger write must never abort a sub-issue run.
-func (r *Runner) finalizeSubIssueExecution(execID, status string, result *ExecutionResult, startedAt time.Time) {
+// metrics via ExecutionLifecycle.Finish, so a sub-issue's row is
+// indistinguishable from a direct-dispatch row to GetDailyMetrics and
+// HasCompletedExecution. WARN-and-continue on store failures (mem-026) — a
+// ledger write must never abort a sub-issue run.
+func (r *Runner) finalizeSubIssueExecution(execID string, status Status, result *ExecutionResult, startedAt time.Time) {
 	if r.logStore == nil || execID == "" {
 		return
 	}
-	durationMs := time.Since(startedAt).Milliseconds()
-	var errMsg, prURL, commitSHA string
+	errMsg := ""
 	if result != nil {
-		errMsg, prURL, commitSHA = result.Error, result.PRUrl, result.CommitSHA
+		errMsg = result.Error
 	}
-
-	if status == "completed" {
-		if err := r.logStore.MarkExecutionCompleted(execID, prURL, commitSHA, durationMs); err != nil {
-			r.log.Warn("Failed to mark sub-issue execution completed", "execution_id", execID, "error", err)
-		}
-	} else if err := r.logStore.UpdateExecutionStatus(execID, status, errMsg); err != nil {
-		r.log.Warn("Failed to update sub-issue execution status", "execution_id", execID, "status", status, "error", err)
-	}
-
-	if result == nil {
-		return
-	}
-	if err := r.logStore.SaveExecutionMetrics(&memory.ExecutionMetrics{
-		ExecutionID:      execID,
-		TokensInput:      result.TokensInput,
-		TokensOutput:     result.TokensOutput,
-		TokensTotal:      result.TokensTotal,
-		TokensCacheRead:  result.CacheReadInputTokens,
-		TokensCacheWrite: result.CacheCreationInputTokens,
-		EstimatedCostUSD: result.EstimatedCostUSD,
-		FilesChanged:     result.FilesChanged,
-		LinesAdded:       result.LinesAdded,
-		LinesRemoved:     result.LinesRemoved,
-		ModelName:        result.ModelName,
-	}); err != nil {
-		r.log.Warn("Failed to save sub-issue execution metrics", "execution_id", execID, "error", err)
+	if err := NewExecutionLifecycle(r.logStore).Finish(execID, status, errMsg, result, time.Since(startedAt)); err != nil {
+		r.log.Warn("Failed to finalize sub-issue execution", "execution_id", execID, "status", status, "error", err)
 	}
 }
 
@@ -2025,18 +1999,20 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// scoped dashboard queries filter on this being absolute, not a
 		// worktree path).
 		subExecStart := time.Now()
-		subExecID := uuid.New().String()
+		var subExecID string
 		if r.logStore != nil {
-			if err := r.logStore.SaveExecution(&memory.Execution{
-				ID:          subExecID,
-				TaskID:      taskID,
+			// GH-4243: Begin threads its generated ID even on save failure
+			// (mem-026), so subExecID below is always a real UUID regardless
+			// of the store outcome. Pass a stand-in Task (not subTask) so the
+			// row's project_path is the parent's absolute path rather than
+			// subTask.ProjectPath (subTaskRepoPath, potentially a worktree
+			// path) — scoped dashboard queries filter on it being absolute.
+			var err error
+			subExecID, err = NewExecutionLifecycle(r.logStore).Begin(&Task{
+				ID:          taskID,
 				ProjectPath: parent.ProjectPath,
-				Status:      "running",
-			}); err != nil {
-				// mem-026: epic path errors are warn-only — a ledger write must
-				// never abort a sub-issue run. The UUID is threaded through
-				// below regardless, so downstream event recording always has a
-				// real UUID rather than falling back to the task ID.
+			}, ExecStatusRunning)
+			if err != nil {
 				r.log.Warn("Failed to insert sub-issue execution row",
 					"parent_id", parent.ID,
 					"sub_issue", issueRef,
@@ -2044,6 +2020,8 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 					"error", err,
 				)
 			}
+		} else {
+			subExecID = uuid.New().String()
 		}
 		subTask.ExecutionID = subExecID
 
@@ -2078,7 +2056,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",
 				i+1, total, issue.Subtask.Title, err)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
-			r.finalizeSubIssueExecution(subExecID, "failed", result, subExecStart)
+			r.finalizeSubIssueExecution(subExecID, ExecStatusFailed, result, subExecStart)
 			return childStates, metrics, fmt.Errorf("sub-issue %s failed: %w", issueRef, err)
 		}
 
@@ -2108,13 +2086,13 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 					"sub_issue", issueRef,
 					"error", result.Error,
 				)
-				r.finalizeSubIssueExecution(subExecID, "no_op", result, subExecStart)
+				r.finalizeSubIssueExecution(subExecID, ExecStatusNoOp, result, subExecStart)
 				continue
 			}
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - %s",
 				i+1, total, issue.Subtask.Title, result.Error)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
-			r.finalizeSubIssueExecution(subExecID, "failed", result, subExecStart)
+			r.finalizeSubIssueExecution(subExecID, ExecStatusFailed, result, subExecStart)
 			return childStates, metrics, fmt.Errorf("sub-issue %s failed: %s", issueRef, result.Error)
 		}
 
@@ -2155,11 +2133,11 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 				"branch", subTask.Branch,
 				"recovery_ref", recoveryRef,
 			)
-			r.finalizeSubIssueExecution(subExecID, "failed", result, subExecStart)
+			r.finalizeSubIssueExecution(subExecID, ExecStatusFailed, result, subExecStart)
 			return childStates, metrics, fmt.Errorf("sub-issue %s committed work (sha %s) but produced no PR — work would be lost, halting epic — recovery: %s", issueRef, shortSHA, recovery)
 		}
 
-		r.finalizeSubIssueExecution(subExecID, "completed", result, subExecStart)
+		r.finalizeSubIssueExecution(subExecID, ExecStatusCompleted, result, subExecStart)
 
 		// Register sub-issue PR with autopilot controller (GH-596)
 		// Note: PR callback uses int issueNumber for GitHub compatibility
