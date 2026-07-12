@@ -400,6 +400,12 @@ func consolidateEpicPlan(originalDesc string, subtasks []PlannedSubtask) string 
 // would cause merge conflicts because each sub-issue branches from main independently.
 //
 // Detection strategy:
+//  0. A plan with 0 or 1 subtasks can never conflict with a sibling — short-circuit
+//     to true before the directory/title heuristics below even run (GH-4219/GH-4220:
+//     a single-subtask plan fell through to detectSameComponentFromTitles, which
+//     requires >=2 titles and always returned false, so the epic parent created one
+//     sub-issue for a single-item plan and then re-implemented that same slice
+//     itself instead of deferring to the child).
 //  1. Extract file paths from subtask titles and descriptions — they define the
 //     actual work scope. Paths cited only in the parent description are context
 //     (e.g. code being defended against) and must not flip the verdict (GH-3597:
@@ -412,6 +418,10 @@ func consolidateEpicPlan(originalDesc string, subtasks []PlannedSubtask) string 
 // GH-1265: This prevents the "serial conflict cascade" bug where N sub-issues
 // all touching cmd/pilot/ create N branches from main, each redeclaring shared types.
 func isSinglePackageScope(subtasks []PlannedSubtask, taskDescription string) bool {
+	if len(subtasks) <= 1 {
+		return true
+	}
+
 	var subtaskText strings.Builder
 	for _, st := range subtasks {
 		subtaskText.WriteString(st.Title)
