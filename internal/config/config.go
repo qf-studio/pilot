@@ -880,7 +880,11 @@ func (c *Config) CheckDeprecations() []string {
 	// fallback is gone (GH-4170) — the SDK poller now runs unconditionally
 	// whenever the GitHub adapter is enabled, so this flag is parsed for
 	// backward compatibility only and has no effect either way.
-	if c.Adapters != nil && c.Adapters.GitHub != nil && c.Adapters.GitHub.Enabled {
+	// Decision (GH-4206): only warn when the field is explicitly set to true —
+	// the YAML type is a plain bool so false is indistinguishable from absent,
+	// and warning unconditionally on Enabled nagged every GitHub deployment
+	// forever, even configs that never set the field.
+	if c.Adapters != nil && c.Adapters.GitHub != nil && c.Adapters.GitHub.Enabled && c.Adapters.GitHub.UseSDKPoller {
 		msg := "config: adapters.github.use_sdk_poller is deprecated and ignored — the GitHub adapter always uses the studio-sdk poller now; remove this field from your config"
 		log.Printf("DEPRECATED: %s", msg)
 		warnings = append(warnings, msg)
