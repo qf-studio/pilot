@@ -15,10 +15,24 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 )
+
+// githubOnPRCreatedHandler builds the callback wired into pollerDeps.OnPRCreated:
+// it forwards the SDK's PRCreatedEvent into Controller.OnPRCreated, the sole live
+// entry point for the GH-4130 throughput-histogram observation. Extracted to its
+// own function (GH-4211) so a regression test can drive the real handler that
+// production wires up, instead of calling ctrl.OnPRCreated directly — the gap
+// that let GH-4130's observation ship false-green in the first place.
+func githubOnPRCreatedHandler(ctrl *autopilot.Controller) func(sdkcore.PRCreatedEvent) {
+	return func(prEv sdkcore.PRCreatedEvent) {
+		issueNumber, _ := strconv.Atoi(prEv.IssueID)
+		ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, issueNumber, prEv.HeadSHA, prEv.BranchName, prEv.IssueNodeID)
+	}
+}
 
 // sdkPollerVerifyTimeout bounds the one-off authenticated call made before
 // the SDK poller starts (GH-3917), matching preflightVerifyTimeout's budget
@@ -302,12 +316,9 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	}
 	if controller != nil {
 		ctrl := controller
-		pollerDeps.OnPRCreated = func(prEv sdkcore.PRCreatedEvent) {
-			// GitHub's IssueID is the numeric issue number; forward it (and the node ID)
-			// so the autopilot controller's post-merge gates and board-sync-to-Review work.
-			issueNumber, _ := strconv.Atoi(prEv.IssueID)
-			ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, issueNumber, prEv.HeadSHA, prEv.BranchName, prEv.IssueNodeID)
-		}
+		// GitHub's IssueID is the numeric issue number; forwarded (with the node ID)
+		// so the autopilot controller's post-merge gates and board-sync-to-Review work.
+		pollerDeps.OnPRCreated = githubOnPRCreatedHandler(ctrl)
 		pollerDeps.IssueMetricsRecorder = ctrl.Metrics()
 	} else if len(deps.AutopilotControllers) > 0 {
 		repoLog.Error("GitHub SDK poller: no autopilot controller for repo — PRs from this repo will not be auto-merged; check projects[] vs autopilot config")
