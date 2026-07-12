@@ -1118,6 +1118,13 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan, executionP
 	if len(valid) == 0 {
 		return nil, fmt.Errorf("decomposition produced %d subtasks but none had a description — refusing to create empty sub-issues", len(plan.Subtasks))
 	}
+
+	// GH-4235/GH-4233: fold any subtask that is pure verification of its
+	// immediate predecessor's work (verification-shape heuristic + no new
+	// file/symbol surface) into that predecessor, dropping the verify-only
+	// entry so it never becomes its own empty-work sub-issue.
+	valid = foldVerifyOnlySubtasks(valid)
+
 	if len(valid) < len(plan.Subtasks) {
 		plan = &EpicPlan{ParentTask: plan.ParentTask, Subtasks: valid, TotalEffort: plan.TotalEffort, PlanOutput: plan.PlanOutput}
 	}
