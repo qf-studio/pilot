@@ -111,6 +111,128 @@ func TestHydrateFromStore_PerLabelValues(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_ExcludesCanary pins GH-4240 end-to-end through the
+// actual hydrator entry point (not just the underlying store queries): a
+// canary-flagged execution row must not move ANY hydrated counter — token,
+// cost, execution-by-result, issues-processed, issue-level, PR, CI-run, or
+// throughput-histogram — while the non-canary baseline stays byte-identical
+// to TestHydrateFromStore_PerLabelValues's pre-GH-4240 behavior.
+func TestHydrateFromStore_ExcludesCanary(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Identical fixture to TestHydrateFromStore_PerLabelValues.
+	execs := []*memory.Execution{
+		{
+			ID: "h-1", TaskID: "TASK-1", ProjectPath: "/p", Status: "completed",
+			ModelName:   "claude-sonnet-4-5",
+			TokensInput: 1000, TokensOutput: 500, TokensTotal: 1500,
+			EstimatedCostUSD: 0.05,
+		},
+		{
+			ID: "h-2", TaskID: "TASK-2", ProjectPath: "/p", Status: "completed",
+			ModelName:   "claude-sonnet-4-5",
+			TokensInput: 2000, TokensOutput: 1000, TokensTotal: 3000,
+			EstimatedCostUSD: 0.10,
+		},
+		{
+			ID: "h-3", TaskID: "TASK-3", ProjectPath: "/p", Status: "failed",
+			ModelName:   "claude-opus-4-6",
+			TokensInput: 500, TokensOutput: 250, TokensTotal: 750,
+			EstimatedCostUSD: 0.02,
+		},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.ID, err)
+		}
+	}
+
+	baselineMetrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, baselineMetrics); err != nil {
+		t.Fatalf("HydrateFromStore (baseline): %v", err)
+	}
+	baseline := baselineMetrics.Snapshot()
+
+	// A lavish canary row that, if not excluded, would obviously move every
+	// counter (huge tokens/cost, a distinct model, a completed status).
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "canary-1", TaskID: "CANARY-1", ProjectPath: "/canary", Status: "completed",
+		ModelName:   "claude-sonnet-4-5",
+		TokensInput: 999999, TokensOutput: 999999, TokensTotal: 1999998,
+		EstimatedCostUSD: 999.99,
+		IsCanary:         true,
+	}); err != nil {
+		t.Fatalf("SaveExecution canary-1: %v", err)
+	}
+
+	afterMetrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, afterMetrics); err != nil {
+		t.Fatalf("HydrateFromStore (with canary row): %v", err)
+	}
+	after := afterMetrics.Snapshot()
+
+	if after.SuccessRate != baseline.SuccessRate {
+		t.Errorf("SuccessRate changed after adding canary row: got %v, want unchanged %v", after.SuccessRate, baseline.SuccessRate)
+	}
+	if after.IssueLevelSuccessRate != baseline.IssueLevelSuccessRate {
+		t.Errorf("IssueLevelSuccessRate changed after adding canary row: got %v, want unchanged %v", after.IssueLevelSuccessRate, baseline.IssueLevelSuccessRate)
+	}
+	if after.IssuesShipped != baseline.IssuesShipped {
+		t.Errorf("IssuesShipped changed after adding canary row: got %d, want unchanged %d", after.IssuesShipped, baseline.IssuesShipped)
+	}
+	if after.IssuesAttempted != baseline.IssuesAttempted {
+		t.Errorf("IssuesAttempted changed after adding canary row: got %d, want unchanged %d", after.IssuesAttempted, baseline.IssuesAttempted)
+	}
+	for k, want := range baseline.TokensConsumed {
+		if got := after.TokensConsumed[k]; got != want {
+			t.Errorf("TokensConsumed[%+v] changed after adding canary row: got %d, want unchanged %d", k, got, want)
+		}
+	}
+	for k, want := range baseline.ExecutionsByResult {
+		if got := after.ExecutionsByResult[k]; got != want {
+			t.Errorf("ExecutionsByResult[%+v] changed after adding canary row: got %d, want unchanged %d", k, got, want)
+		}
+	}
+	const epsilon = 0.0001
+	for model, want := range baseline.ExecutionCostUSD {
+		got := after.ExecutionCostUSD[model]
+		if got < want-epsilon || got > want+epsilon {
+			t.Errorf("ExecutionCostUSD[%s] changed after adding canary row: got %.4f, want unchanged %.4f", model, got, want)
+		}
+	}
+	if after.PRsMerged != baseline.PRsMerged || after.PRsFailed != baseline.PRsFailed {
+		t.Errorf("PR counters changed after adding canary row: got merged=%d failed=%d, want unchanged merged=%d failed=%d",
+			after.PRsMerged, after.PRsFailed, baseline.PRsMerged, baseline.PRsFailed)
+	}
+	if after.CIRuns["pass"] != baseline.CIRuns["pass"] || after.CIRuns["fail"] != baseline.CIRuns["fail"] {
+		t.Errorf("CIRuns changed after adding canary row: got %+v, want unchanged %+v", after.CIRuns, baseline.CIRuns)
+	}
+
+	afterHist := afterMetrics.HistogramSnapshot()
+	baselineHist := baselineMetrics.HistogramSnapshot()
+	if len(afterHist.PRTimeToMerge) != len(baselineHist.PRTimeToMerge) {
+		t.Errorf("PRTimeToMerge sample count changed after adding canary row: got %d, want unchanged %d",
+			len(afterHist.PRTimeToMerge), len(baselineHist.PRTimeToMerge))
+	}
+	if len(afterHist.TimeToPRDurations) != len(baselineHist.TimeToPRDurations) {
+		t.Errorf("TimeToPRDurations sample count changed after adding canary row: got %d, want unchanged %d",
+			len(afterHist.TimeToPRDurations), len(baselineHist.TimeToPRDurations))
+	}
+	if len(afterHist.QueueWaitDurations) != len(baselineHist.QueueWaitDurations) {
+		t.Errorf("QueueWaitDurations sample count changed after adding canary row: got %d, want unchanged %d",
+			len(afterHist.QueueWaitDurations), len(baselineHist.QueueWaitDurations))
+	}
+	if len(afterHist.ApprovalWaitDurations) != len(baselineHist.ApprovalWaitDurations) {
+		t.Errorf("ApprovalWaitDurations sample count changed after adding canary row: got %d, want unchanged %d",
+			len(afterHist.ApprovalWaitDurations), len(baselineHist.ApprovalWaitDurations))
+	}
+}
+
 // TestHydrateFromStore_NonFailuresExcludedFromFailed pins TASK-392: declined/
 // no_op/stalled/rate_limited/infra/skipped outcomes must not be folded into
 // the hydrated "failed" bucket, mirroring the dispatcher's live taxonomy
