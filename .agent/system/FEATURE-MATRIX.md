@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-12 (v2.151.0)
+**Last Updated:** 2026-07-09 (v2.151.0)
 
 ## Legend
 
@@ -315,6 +315,7 @@
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus metrics | ✅ | gateway | - | - | `/metrics` endpoint in Prometheus text format (v0.37.0) |
 | Prometheus counter baselines on restart | ✅ | autopilot/memory | - | - | `HydrateFromStore` restores lifetime per-(model,direction/result) token/cost/execution counters from `executions` table before `/metrics` starts serving, so `pilot_tokens_consumed_total`/`pilot_execution_cost_usd_total`/`pilot_executions_total`/`pilot_success_rate` survive daemon restarts instead of resetting to zero (GH-4041) |
+| Canary project flag | ✅ | config/memory/executor/autopilot | - | `projects[].canary` | `ProjectConfig.Canary` marks a project (e.g. `pilot-canary-sandbox`, TASK-379 V8) as a synthetic sandbox; executions.is_canary persists the marker; success-rate/issue-level/throughput metrics, hydrators, `GetDailyMetrics`, and dashboard history exclude canary rows while the ledger (executions/execution_events/execution_logs) still records them in full (GH-4240) |
 | External-merge metrics | ✅ | autopilot | - | - | Record PRsMerged/IssuesProcessed/PRTimeToMerge for externally-merged PRs via scanner (v2.147.0, GH-2981) |
 | JSON structured logging | ✅ | - | - | `logging.format` | Optional JSON log output mode (v0.38.0) |
 | Qwen Code backend | ✅ | executor | `--backend qwen` | `executor.backend` | Alibaba Qwen Code CLI with stream-json (v1.9.0, GH-1314) |
@@ -423,9 +424,6 @@
 | Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
-| Single-subtask epic consolidation | ✅ | executor | - | - | `isSinglePackageScope` short-circuits `len(plan.Subtasks) <= 1` to direct execution — never spawns a lone child issue (GH-4216 fix 1 / #4221) |
-| Epic finalize title normalization | ✅ | executor | - | - | `finalizeEpicBranchPR` routes the parent PR title through `normalizeTitle` before `CreatePR`, so raw issue titles auto-prefix instead of failing `validatePRTitle` deterministically (GH-4216 fix 2 / #4221) |
-| Decomposed-parent guard (all 4 sites) | ✅ | executor | - | - | `decomposedChildrenAllComplete` (ledger-only: `Store.GetDecomposedChildTaskIDs` + per-child `HasCompletedExecution`/no_op/merged-PR evidence) runs before every `HasCompletedExecution(taskID)` check in dispatcher.go — processQueue pickup, stale-running/queued reap, and WaitForExecution's row-vanished resolution — so a decomposed epic parent whose children all shipped is never re-implemented, reaped as failed, or surfaced as a false waiter error (GH-4216 fix 3, extended from processQueue-only to all 4 call sites; GH-4227) |
 
 ## Test Coverage
 
@@ -585,7 +583,6 @@ quality:
 
 | Feature | Version | Package | Notes |
 |---------|---------|---------|-------|
-| Dependency-aware selective sub-issue merge-wait | v2.238.x+ | executor | `detectChildDependency` (new `dependency_detector.go`) gates `executeSubIssuesTracked`'s merge-wait per child on an explicit `Depends on: #N`/`Blocked by: #N` ref (scoped to sibling issue numbers) or verification-shape language ("verify…"/"confirm…"/"run the acceptance…"/"regression-test…", overridden by "add…"/"fix…"/"implement…"); `wait_for_merge:false` stays the global default for independent siblings. Merge-wait callback now wired unconditionally in `main.go` (no-op when unused); every decision fail-loud logged (TASK-402 / GH-4234) |
 | Issue-level success rate + rate_limited exclusion | v2.235.0+ | autopilot + memory + gateway | `pilot_issue_level_success_rate` / `pilot_issues_shipped_total` / `pilot_issues_attempted_total` dedupe by `task_id` across retries; `pilot_success_rate` now excludes `rate_limited` from the denominator; hydrator no longer folds declined/no_op/stalled/infra/skipped into `failed` (TASK-392 / GH-4070) |
 | Poller skip-by-reason counters | v2.150.0 | adapters/github | `pilot_poller_skipped/dispatched/deferred` Prometheus counters (TASK-293 / GH-3064) |
 | `WithRetry` centralized in `doRequest` | v2.150.0 | adapters/github | All GitHub client methods now get retry; `RecordAPIError` wired (TASK-294 / GH-3065) |

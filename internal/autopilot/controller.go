@@ -220,6 +220,20 @@ func WithReleaseNotOptedIn() ControllerOption {
 	}
 }
 
+// WithCanary marks this controller's project as a synthetic canary sandbox
+// (config ProjectConfig.Canary, GH-4240). It gates every
+// RecordIssueProcessed call site so this controller's own *Metrics never
+// accumulates live issue-processed counts — those feed pilot_success_rate
+// directly (Metrics.Snapshot) and would otherwise pollute the fleet-wide
+// AggregateMetrics this controller's Metrics is merged into. Store-derived
+// counters (issues_shipped/attempted, throughput histograms, hydration) are
+// excluded separately at the SQL layer via executions.is_canary.
+func WithCanary(canary bool) ControllerOption {
+	return func(c *Controller) {
+		c.canary = canary
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -284,6 +298,11 @@ type Controller struct {
 	// executions.project_path. Used to scope self-heal to this project's rows.
 	// Empty = match by task_id only (single-repo / tests). TASK-352.
 	projectPath string
+
+	// canary marks this controller's project as a synthetic canary sandbox
+	// (WithCanary, GH-4240). Gates live RecordIssueProcessed calls so this
+	// controller's Metrics never feeds pilot_success_rate.
+	canary bool
 
 	// projectRelease is the per-project release config overlay (GH-3930),
 	// wired via WithReleaseOverride. Nil = no project-level override. Applied
@@ -1530,7 +1549,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 			prState.TerminalLabel = github.LabelFailed
 			c.metrics.RecordPRFailed()
 			c.metrics.RecordCIRun("fail")
-			c.metrics.RecordIssueProcessed("failed")
+			c.recordIssueProcessed("failed")
 			return nil
 		}
 	}
@@ -1567,7 +1586,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				prState.TerminalLabel = github.LabelFailed
 				c.metrics.RecordPRFailed()
 				c.metrics.RecordCIRun("fail")
-				c.metrics.RecordIssueProcessed("failed")
+				c.recordIssueProcessed("failed")
 				return nil
 			}
 		}
@@ -1680,7 +1699,7 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 			prState.Error = fmt.Sprintf("review feedback iteration limit reached (%d/%d)", iteration, c.config.ReviewFeedback.MaxIterations)
 			prState.TerminalLabel = github.LabelFailed
 			c.metrics.RecordPRFailed()
-			c.metrics.RecordIssueProcessed("failed")
+			c.recordIssueProcessed("failed")
 			return nil
 		}
 	}
@@ -1846,7 +1865,7 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		)
 		c.autoMerger.postMisconfigComment(ctx, prState)
 		c.metrics.RecordPRFailed()
-		c.metrics.RecordIssueProcessed("failed")
+		c.recordIssueProcessed("failed")
 		return nil
 	}
 
@@ -1926,14 +1945,14 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("merge rejected: approval %s", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
-		c.metrics.RecordIssueProcessed("failed")
+		c.recordIssueProcessed("failed")
 	default:
 		c.log.Warn("unknown approval decision — failing PR",
 			"pr", prState.PRNumber, "decision", prState.ApprovalDecision)
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("unknown approval decision: %q", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
-		c.metrics.RecordIssueProcessed("failed")
+		c.recordIssueProcessed("failed")
 	}
 	return nil
 }
@@ -2070,7 +2089,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			prState.Stage = StageFailed
 			prState.Error = errMsg
 			c.metrics.RecordPRFailed()
-			c.metrics.RecordIssueProcessed("failed")
+			c.recordIssueProcessed("failed")
 			return nil
 		}
 
@@ -3187,7 +3206,7 @@ func (c *Controller) escalateReleasingFailed(ctx context.Context, prState *PRSta
 	prState.Stage = StageFailed
 	prState.Error = reason
 	c.metrics.RecordPRFailed()
-	c.metrics.RecordIssueProcessed("failed")
+	c.recordIssueProcessed("failed")
 
 	// GH-3990: a scope-release carrier must not stay wedged at StageFailed —
 	// flip the scope back to pending (or terminal-failed past the retry cap)
@@ -3475,7 +3494,7 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 			prState.Stage = StageFailed
 			prState.Error = errMsg
 			c.metrics.RecordPRFailed()
-			c.metrics.RecordIssueProcessed("failed")
+			c.recordIssueProcessed("failed")
 			return nil
 		}
 
@@ -3768,6 +3787,17 @@ func (c *Controller) Metrics() *Metrics {
 	return c.metrics
 }
 
+// recordIssueProcessed records a per-attempt issue outcome, unless this
+// controller's project is canary (WithCanary, GH-4240) — canary executions
+// must not contribute to pilot_success_rate. All call sites that used to call
+// c.metrics.RecordIssueProcessed directly route through here instead.
+func (c *Controller) recordIssueProcessed(result string) {
+	if c.canary {
+		return
+	}
+	c.metrics.RecordIssueProcessed(result)
+}
+
 // recordMergeSuccess fires the three merge-success metrics counters exactly
 // once per PR number per daemon lifetime. Safe to call from any path that
 // observes a Pilot PR transitioning to merged (handleMerging for
@@ -3783,7 +3813,7 @@ func (c *Controller) recordMergeSuccess(prState *PRState) {
 	c.mu.Unlock()
 
 	c.metrics.RecordPRMerged()
-	c.metrics.RecordIssueProcessed("success")
+	c.recordIssueProcessed("success")
 	if !prState.CreatedAt.IsZero() {
 		c.metrics.RecordPRTimeToMerge(time.Since(prState.CreatedAt))
 	}

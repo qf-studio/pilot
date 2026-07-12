@@ -253,6 +253,13 @@ type ProjectConfig struct {
 	// Config.Orchestrator.Autopilot's global and per-environment release
 	// blocks.
 	Release *autopilot.ProjectReleaseConfig `yaml:"release,omitempty"`
+	// Canary marks this project as a synthetic sandbox (e.g.
+	// pilot-canary-sandbox, TASK-379 V8) rather than real work (GH-4240).
+	// Executions dispatched for a canary project are still fully persisted
+	// and event-logged, but are excluded from success-rate/issue-level/
+	// throughput metrics, hydrators, and dashboard history so re-enabling
+	// the canary cron cannot contaminate production telemetry.
+	Canary bool `yaml:"canary,omitempty"`
 }
 
 // ResolveBaseBranch returns the branch that Pilot should branch from and

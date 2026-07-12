@@ -545,6 +545,7 @@ Examples:
 				// Create dispatcher if store available
 				if gwStore != nil {
 					gwDispatcher = executor.NewDispatcher(gwStore, gwRunner, nil)
+					gwDispatcher.SetCanaryResolver(newCanaryProjectResolver(cfg))
 					if dispErr := gwDispatcher.Start(context.Background()); dispErr != nil {
 						logging.WithComponent("start").Warn("Failed to start dispatcher for gateway polling", slog.Any("error", dispErr))
 						gwDispatcher = nil
@@ -654,8 +655,15 @@ Examples:
 							// executions.project_path) so merged work flips failed→completed.
 							gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectPath(projectPath))
 							// GH-3931: apply the per-project release overlay (GH-3930) when configured.
-							if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil && proj.Release != nil {
-								gwBoardOpts = append(gwBoardOpts, autopilot.WithReleaseOverride(proj.Release))
+							if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil {
+								if proj.Release != nil {
+									gwBoardOpts = append(gwBoardOpts, autopilot.WithReleaseOverride(proj.Release))
+								}
+								// GH-4240: keep a canary default repo's live pilot_success_rate
+								// counter out of the fleet-wide AggregateMetrics.
+								if proj.Canary {
+									gwBoardOpts = append(gwBoardOpts, autopilot.WithCanary(true))
+								}
 							}
 							gwAutopilotController = autopilot.NewController(
 								cfg.Orchestrator.Autopilot,
@@ -1486,8 +1494,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					// the per-project loop below does not alias this controller's option.
 					ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(projectPath))
 					// GH-3931: apply the per-project release overlay (GH-3930) when configured.
-					if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil && proj.Release != nil {
-						ctrlOpts = append(ctrlOpts, autopilot.WithReleaseOverride(proj.Release))
+					if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil {
+						if proj.Release != nil {
+							ctrlOpts = append(ctrlOpts, autopilot.WithReleaseOverride(proj.Release))
+						}
+						// GH-4240: keep a canary default repo's live pilot_success_rate
+						// counter out of the fleet-wide AggregateMetrics.
+						if proj.Canary {
+							ctrlOpts = append(ctrlOpts, autopilot.WithCanary(true))
+						}
 					}
 					controller := autopilot.NewController(
 						cfg.Orchestrator.Autopilot,
@@ -1520,6 +1535,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				// TASK-352: scope self-heal to this project's fs path (matches
 				// executions.project_path). Fresh slice to avoid aliasing the shared opts.
 				ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(proj.Path))
+				// GH-4240: keep the synthetic canary sandbox's own live
+				// pilot_success_rate counter out of the fleet-wide AggregateMetrics.
+				if proj.Canary {
+					ctrlOpts = append(ctrlOpts, autopilot.WithCanary(true))
+				}
 				// GH-4001: a project's own `release:` block keeps today's overlay
 				// semantics (GH-3931/GH-3930); no block means this repo never
 				// opted into release automation and must not inherit the
@@ -2090,6 +2110,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	var dispatcher *executor.Dispatcher
 	if store != nil {
 		dispatcher = executor.NewDispatcher(store, runner, nil)
+		dispatcher.SetCanaryResolver(newCanaryProjectResolver(cfg))
 		if err := dispatcher.Start(ctx); err != nil {
 			logging.WithComponent("start").Warn("Failed to start dispatcher", slog.Any("error", err))
 			dispatcher = nil

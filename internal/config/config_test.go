@@ -1800,6 +1800,61 @@ projects:
 	}
 }
 
+// TestProjectConfigCanaryYAML pins GH-4240: `canary: true` on a project
+// yaml entry parses onto ProjectConfig.Canary, and a project with no
+// `canary:` key defaults to false — table-driven, same shape, flag on/off.
+func TestProjectConfigCanaryYAML(t *testing.T) {
+	tests := []struct {
+		name        string
+		yamlSnippet string
+		wantCanary  bool
+	}{
+		{
+			name: "canary: true parses onto ProjectConfig.Canary",
+			yamlSnippet: `
+    canary: true
+`,
+			wantCanary: true,
+		},
+		{
+			name:        "no canary key defaults to false",
+			yamlSnippet: "",
+			wantCanary:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "config.yaml")
+
+			configContent := `
+version: "1.0"
+projects:
+  - name: "my-app"
+    path: "/tmp/my-app"` + tt.yamlSnippet + `
+    github:
+      owner: "my-org"
+      repo: "my-app"
+`
+			if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+				t.Fatalf("Failed to write test config: %v", err)
+			}
+
+			cfg, err := Load(configPath)
+			if err != nil {
+				t.Fatalf("Load failed: %v", err)
+			}
+			if len(cfg.Projects) != 1 {
+				t.Fatalf("Projects count = %d, want 1", len(cfg.Projects))
+			}
+			if got := cfg.Projects[0].Canary; got != tt.wantCanary {
+				t.Errorf("Canary = %v, want %v", got, tt.wantCanary)
+			}
+		})
+	}
+}
+
 // TestSave_PermissionsAre0600 asserts that Save() writes the config file
 // with 0600 permissions and its parent directory with 0700 — required
 // because the file stores GitHub PAT, Linear API key, Slack bot token,

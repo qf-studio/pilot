@@ -7755,6 +7755,76 @@ func TestController_IssuesProcessed_TerminalFailure(t *testing.T) {
 	}
 }
 
+// TestController_WithCanary_ExcludesFromIssuesProcessed pins GH-4240: a
+// canary-flagged controller must never contribute to pilot_success_rate
+// (Metrics.IssuesProcessed, live-recorded via recordIssueProcessed), while a
+// non-canary controller processing the identical merge fixture records
+// exactly as it did before GH-4240 (table-driven, same fixture, flag on/off).
+func TestController_WithCanary_ExcludesFromIssuesProcessed(t *testing.T) {
+	tests := []struct {
+		name          string
+		canary        bool
+		wantProcessed int64
+	}{
+		{name: "non-canary controller records the merge", canary: false, wantProcessed: 1},
+		{name: "canary controller excludes the merge", canary: true, wantProcessed: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/repos/owner/repo/commits/mergesha1/check-runs":
+					_, _ = w.Write(mustJSON(t, github.CheckRunsResponse{
+						TotalCount: 1,
+						CheckRuns:  []github.CheckRun{{Name: "build", Status: "completed", Conclusion: "success"}},
+					}))
+				case r.URL.Path == "/repos/owner/repo/pulls/42/merge" && r.Method == http.MethodPut:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(mustJSON(t, map[string]interface{}{
+						"sha": "merged1", "merged": true, "message": "Pull Request successfully merged",
+					}))
+				case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == http.MethodGet:
+					_, _ = w.Write(mustJSON(t, github.PullRequest{
+						Number: 42, State: "open",
+						Head: github.PRRef{Ref: "pilot/GH-10", SHA: "mergesha1"},
+					}))
+				default:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("{}"))
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.Environment = EnvDev
+			cfg.AutoReview = false
+			cfg.RequiredChecks = []string{"build"}
+			c := NewController(cfg, ghClient, nil, "owner", "repo", WithCanary(tt.canary))
+			c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "mergesha1", "pilot/GH-10", "")
+			pr, _ := c.GetPRState(42)
+			pr.Stage = StageMerging
+
+			if err := c.ProcessPR(context.Background(), 42, nil); err != nil {
+				t.Fatalf("ProcessPR returned error: %v", err)
+			}
+
+			snap := c.metrics.Snapshot()
+			if snap.IssuesProcessed["success"] != tt.wantProcessed {
+				t.Errorf("IssuesProcessed[success] = %d, want %d", snap.IssuesProcessed["success"], tt.wantProcessed)
+			}
+			// PR-family counters (RecordPRMerged) are unrelated to
+			// recordIssueProcessed's gate — they still fire regardless of
+			// canary status, since GH-4240 only scopes the four metrics named
+			// in the issue (pilot_success_rate and friends), not every counter.
+			if snap.PRsMerged != 1 {
+				t.Errorf("PRsMerged = %d, want 1 regardless of canary status", snap.PRsMerged)
+			}
+		})
+	}
+}
+
 // TestController_ScanRecentlyMergedPRs_RecordsMetrics verifies that
 // ScanRecentlyMergedPRs fires merge metrics on first discovery (GH-2981)
 // and is idempotent on subsequent scans.

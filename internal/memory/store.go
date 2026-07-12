@@ -363,6 +363,12 @@ func (s *Store) migrate() error {
 		// worker picks it up — the stuck-monitor must time it from started_at, not
 		// created_at, or a legitimately-running subtask gets evicted as stale.
 		`ALTER TABLE executions ADD COLUMN started_at DATETIME`,
+		// GH-4240: marks executions dispatched for a synthetic canary project
+		// (config ProjectConfig.Canary) so success-rate/issue-level/throughput
+		// metrics, hydrators, and dashboard history can exclude them while the
+		// ledger (this table, execution_events, execution_logs) still records
+		// them in full.
+		`ALTER TABLE executions ADD COLUMN is_canary BOOLEAN DEFAULT FALSE`,
 	}
 
 	for _, migration := range migrations {
@@ -546,6 +552,10 @@ type Execution struct {
 	// GH-3028: RSS telemetry
 	PeakRSSMB  int
 	FinalRSSMB int
+	// IsCanary marks this execution as dispatched for a synthetic canary
+	// project (config ProjectConfig.Canary, GH-4240). Ledger writes are
+	// unaffected — only metrics/hydrator/dashboard queries filter on it.
+	IsCanary bool
 }
 
 // SaveExecution saves an execution record to the database.
@@ -562,14 +572,14 @@ func (s *Store) SaveExecution(exec *Execution) error {
 				estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
 				task_source_adapter, task_source_issue_id, task_labels,
-				approval_request_id, effort_level, complexity_level)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				approval_request_id, effort_level, complexity_level, is_canary)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.TokensCacheRead, exec.TokensCacheWrite,
 			exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
 			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON,
-			exec.ApprovalRequestID, exec.EffortLevel, exec.ComplexityLevel)
+			exec.ApprovalRequestID, exec.EffortLevel, exec.ComplexityLevel, exec.IsCanary)
 		return err
 	})
 }
@@ -616,7 +626,7 @@ const executionDetailColumns = `
 	COALESCE(approval_request_id, ''), COALESCE(approval_decision, ''),
 	approval_decision_at,
 	COALESCE(approval_decision_by, ''),
-	COALESCE(effort_level, ''), COALESCE(complexity_level, '')`
+	COALESCE(effort_level, ''), COALESCE(complexity_level, ''), COALESCE(is_canary, 0)`
 
 // rowScanner abstracts *sql.Row and *sql.Rows so scanExecutionDetail serves both
 // a single QueryRow result and a Query loop (used by ListExecutionsForTask).
@@ -637,7 +647,7 @@ func scanExecutionDetail(row rowScanner) (*Execution, error) {
 		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
 		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON,
 		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy,
-		&exec.EffortLevel, &exec.ComplexityLevel)
+		&exec.EffortLevel, &exec.ComplexityLevel, &exec.IsCanary)
 	if err != nil {
 		return nil, err
 	}
@@ -1077,11 +1087,12 @@ func (s *Store) GetRecentExecutions(limit int, projectPath string) ([]*Execution
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
 			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
 			COALESCE(peak_rss_mb, 0), COALESCE(final_rss_mb, 0)
-		FROM executions`
+		FROM executions
+		WHERE is_canary = 0`
 	var rows *sql.Rows
 	var err error
 	if projectPath != "" {
-		rows, err = s.db.Query(base+` WHERE project_path = ? ORDER BY created_at DESC LIMIT ?`, projectPath, limit)
+		rows, err = s.db.Query(base+` AND project_path = ? ORDER BY created_at DESC LIMIT ?`, projectPath, limit)
 	} else {
 		rows, err = s.db.Query(base+` ORDER BY created_at DESC LIMIT ?`, limit)
 	}
@@ -2341,7 +2352,7 @@ func (s *Store) GetLifetimeTokens(projectPath string) (*LifetimeTokens, error) {
 			COALESCE(SUM(tokens_cache_write), 0),
 			COALESCE(SUM(estimated_cost_usd), 0)
 		FROM executions
-		WHERE tokens_total > 0`
+		WHERE tokens_total > 0 AND is_canary = 0`
 	var row *sql.Row
 	if projectPath != "" {
 		row = s.db.QueryRow(q+` AND project_path = ?`, projectPath)
@@ -2394,10 +2405,11 @@ func (s *Store) GetLifetimeTaskCounts(projectPath string) (*LifetimeTaskCounts, 
 			COALESCE(SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'infra' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0)
-		FROM executions`
+		FROM executions
+		WHERE is_canary = 0`
 	var row *sql.Row
 	if projectPath != "" {
-		row = s.db.QueryRow(cols+` WHERE project_path = ?`, projectPath)
+		row = s.db.QueryRow(cols+` AND project_path = ?`, projectPath)
 	} else {
 		row = s.db.QueryRow(cols)
 	}
@@ -2429,10 +2441,11 @@ func (s *Store) GetIssueLevelCounts(projectPath string) (*IssueLevelCounts, erro
 		SELECT
 			COUNT(DISTINCT task_id),
 			COUNT(DISTINCT CASE WHEN status = 'completed' THEN task_id END)
-		FROM executions`
+		FROM executions
+		WHERE is_canary = 0`
 	var row *sql.Row
 	if projectPath != "" {
-		row = s.db.QueryRow(cols+` WHERE project_path = ?`, projectPath)
+		row = s.db.QueryRow(cols+` AND project_path = ?`, projectPath)
 	} else {
 		row = s.db.QueryRow(cols)
 	}
@@ -2499,7 +2512,7 @@ func (s *Store) GetLifetimeCounterBaselines() (*LifetimeCounterBaselines, error)
 			COALESCE(SUM(tokens_cache_read), 0),
 			COALESCE(SUM(estimated_cost_usd), 0)
 		FROM executions
-		WHERE tokens_total > 0
+		WHERE tokens_total > 0 AND is_canary = 0
 		GROUP BY model_name
 	`)
 	if err != nil {
@@ -2544,7 +2557,7 @@ func (s *Store) GetLifetimeCounterBaselines() (*LifetimeCounterBaselines, error)
 			END AS result,
 			COUNT(*)
 		FROM executions
-		WHERE status NOT IN ('queued', 'pending', 'running')
+		WHERE status NOT IN ('queued', 'pending', 'running') AND is_canary = 0
 		GROUP BY model_name, result
 	`)
 	if err != nil {
@@ -2671,11 +2684,11 @@ func (s *Store) GetLifetimePRCountersFromExecutions(projectPath string) (*Lifeti
 			COUNT(DISTINCT CASE
 				WHEN status = 'failed' AND pr_url <> '' AND task_id NOT IN (
 					SELECT task_id FROM executions
-					WHERE status = 'completed' AND pr_url <> '' AND (? = '' OR project_path = ?)
+					WHERE status = 'completed' AND pr_url <> '' AND is_canary = 0 AND (? = '' OR project_path = ?)
 				) THEN task_id
 			END)
 		FROM executions
-		WHERE (? = '' OR project_path = ?)`
+		WHERE is_canary = 0 AND (? = '' OR project_path = ?)`
 
 	row := s.db.QueryRow(cols, projectPath, projectPath, projectPath, projectPath)
 
@@ -2709,10 +2722,11 @@ func (s *Store) GetLifetimeCIRunCounters() (*LifetimeCIRunCounters, error) {
 	counters := &LifetimeCIRunCounters{}
 
 	rows, err := s.db.Query(`
-		SELECT stage, COUNT(DISTINCT execution_id)
-		FROM execution_events
-		WHERE stage IN (?, ?)
-		GROUP BY stage
+		SELECT ee.stage, COUNT(DISTINCT ee.execution_id)
+		FROM execution_events ee
+		JOIN executions e ON e.id = ee.execution_id
+		WHERE ee.stage IN (?, ?) AND e.is_canary = 0
+		GROUP BY ee.stage
 	`, string(StageCIPassed), string(StageCIFailed))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lifetime CI run counters: %w", err)
@@ -2744,12 +2758,15 @@ func (s *Store) GetLifetimeCIRunCounters() (*LifetimeCIRunCounters, error) {
 // GROUP BY/MIN() aggregate) — the sqlite driver only recovers the DATETIME
 // declared-type for direct column reads; scanning an aggregate result into
 // time.Time fails, so ORDER BY + first-write-wins in Go stands in for MIN().
+// Joins against executions to exclude canary rows (GH-4240) from every
+// histogram derived off this helper (time-to-merge, time-to-PR, approval wait).
 func (s *Store) earliestStageOccurrences(stage Stage) (map[string]time.Time, error) {
 	rows, err := s.db.Query(`
-		SELECT execution_id, occurred_at
-		FROM execution_events
-		WHERE stage = ?
-		ORDER BY occurred_at ASC, id ASC
+		SELECT ee.execution_id, ee.occurred_at
+		FROM execution_events ee
+		JOIN executions e ON e.id = ee.execution_id
+		WHERE ee.stage = ? AND e.is_canary = 0
+		ORDER BY ee.occurred_at ASC, ee.id ASC
 	`, string(stage))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query %s stage occurrences: %w", stage, err)
@@ -2860,7 +2877,7 @@ func (s *Store) GetLifetimeQueueWait() ([]time.Duration, error) {
 	rows, err := s.db.Query(`
 		SELECT created_at, started_at
 		FROM executions
-		WHERE started_at IS NOT NULL
+		WHERE started_at IS NOT NULL AND is_canary = 0
 		ORDER BY started_at ASC
 	`)
 	if err != nil {

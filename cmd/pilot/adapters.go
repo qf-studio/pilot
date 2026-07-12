@@ -259,6 +259,19 @@ func newProjectQualityCheckerFactory(cfg *config.Config) func(taskID, taskProjec
 	}
 }
 
+// newCanaryProjectResolver builds the callback wired into
+// executor.Dispatcher.SetCanaryResolver (GH-4240): given an
+// executor.Task's ProjectPath, it reports whether that project is
+// configured with `canary: true`, so the dispatcher can mark the
+// project's execution rows as synthetic without every Task-construction
+// call site needing to know about canary status.
+func newCanaryProjectResolver(cfg *config.Config) func(taskProjectPath string) bool {
+	return func(taskProjectPath string) bool {
+		proj := cfg.FindProjectByPath(taskProjectPath)
+		return proj != nil && proj.Canary
+	}
+}
+
 // Check implements executor.QualityChecker by delegating to quality.Executor
 // and converting the result type
 func (w *qualityCheckerWrapper) Check(ctx context.Context) (*executor.QualityOutcome, error) {

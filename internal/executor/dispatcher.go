@@ -81,6 +81,13 @@ type Dispatcher struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
+	// canaryResolver reports whether a project path belongs to a synthetic
+	// canary project (config ProjectConfig.Canary, GH-4240). nil means no
+	// project is canary — matches pre-GH-4240 behavior. Set via
+	// SetCanaryResolver; queried once per exec-row creation so callers don't
+	// need to thread a canary flag through every executor.Task construction
+	// site.
+	canaryResolver func(projectPath string) bool
 }
 
 // NewDispatcher creates a new task dispatcher.
@@ -534,6 +541,29 @@ func (d *Dispatcher) hasLiveWorker(projectPath string) bool {
 	return ok
 }
 
+// SetCanaryResolver installs the callback the dispatcher uses to mark
+// executions as canary (GH-4240). resolver is called with an
+// executor.Task's ProjectPath and should report whether that project is
+// configured with `canary: true`. Passing nil disables canary marking.
+func (d *Dispatcher) SetCanaryResolver(resolver func(projectPath string) bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.canaryResolver = resolver
+}
+
+// isCanaryProject reports whether projectPath belongs to a canary project,
+// via the resolver installed by SetCanaryResolver. Fails closed (false) when
+// no resolver is set, matching pre-GH-4240 behavior.
+func (d *Dispatcher) isCanaryProject(projectPath string) bool {
+	d.mu.RLock()
+	resolver := d.canaryResolver
+	d.mu.RUnlock()
+	if resolver == nil {
+		return false
+	}
+	return resolver(projectPath)
+}
+
 // IsActive reports whether taskID is already queued or running, using the
 // same source of truth QueueTask's duplicate-task check uses. Callers that
 // dispatch on a poll loop can pre-check this before announcing/attempting a
@@ -596,6 +626,7 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 		TaskSourceAdapter: parent.SourceAdapter,
 		TaskSourceIssueID: parent.SourceIssueID,
 		TaskLabels:        parent.Labels, // GH-2326: persist labels for no-decompose/autopilot-fix gates
+		IsCanary:          d.isCanaryProject(parent.ProjectPath),
 	}
 
 	if err := d.store.SaveExecution(parentExec); err != nil {
@@ -654,6 +685,7 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 		TaskSourceAdapter: task.SourceAdapter,
 		TaskSourceIssueID: task.SourceIssueID,
 		TaskLabels:        task.Labels, // GH-2326: persist labels for no-decompose/autopilot-fix gates
+		IsCanary:          d.isCanaryProject(task.ProjectPath),
 	}
 
 	if err := d.store.SaveExecution(exec); err != nil {

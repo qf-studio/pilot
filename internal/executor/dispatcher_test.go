@@ -103,6 +103,125 @@ func TestDispatcher_QueueTask(t *testing.T) {
 	}
 }
 
+// TestDispatcher_SetCanaryResolver_MarksSingleTaskExecution pins GH-4240: a
+// single (non-decomposed) task queued for a project the resolver reports as
+// canary must persist IsCanary=true, and the same fixture with the flag off
+// (nil resolver, or resolver returning false) must persist IsCanary=false —
+// non-canary behavior must be byte-identical to pre-GH-4240.
+func TestDispatcher_SetCanaryResolver_MarksSingleTaskExecution(t *testing.T) {
+	tests := []struct {
+		name         string
+		resolver     func(string) bool
+		projectPath  string
+		wantIsCanary bool
+	}{
+		{
+			name:         "no resolver installed defaults to non-canary",
+			resolver:     nil,
+			projectPath:  "/tmp/real-project",
+			wantIsCanary: false,
+		},
+		{
+			name:         "resolver reports non-canary project",
+			resolver:     func(p string) bool { return p == "/tmp/canary-project" },
+			projectPath:  "/tmp/real-project",
+			wantIsCanary: false,
+		},
+		{
+			name:         "resolver reports canary project",
+			resolver:     func(p string) bool { return p == "/tmp/canary-project" },
+			projectPath:  "/tmp/canary-project",
+			wantIsCanary: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			runner := NewRunner()
+			dispatcher := NewDispatcher(store, runner, nil)
+			if tt.resolver != nil {
+				dispatcher.SetCanaryResolver(tt.resolver)
+			}
+
+			if err := dispatcher.Start(context.Background()); err != nil {
+				t.Fatalf("failed to start dispatcher: %v", err)
+			}
+			defer dispatcher.Stop()
+
+			task := &Task{
+				ID:          "TEST-CANARY-" + tt.name,
+				Title:       "Test Task",
+				ProjectPath: tt.projectPath,
+			}
+
+			execID, err := dispatcher.QueueTask(context.Background(), task)
+			if err != nil {
+				t.Fatalf("failed to queue task: %v", err)
+			}
+
+			exec, err := store.GetExecution(execID)
+			if err != nil {
+				t.Fatalf("failed to get execution: %v", err)
+			}
+			if exec.IsCanary != tt.wantIsCanary {
+				t.Errorf("IsCanary = %v, want %v", exec.IsCanary, tt.wantIsCanary)
+			}
+		})
+	}
+}
+
+// TestDispatcher_SetCanaryResolver_MarksDecomposedParentExecution pins
+// GH-4240 for the decomposed-parent exec row (dispatcher.go queueDecomposedTask),
+// which writes independently of queueSingleTask.
+func TestDispatcher_SetCanaryResolver_MarksDecomposedParentExecution(t *testing.T) {
+	tests := []struct {
+		name         string
+		canary       bool
+		wantIsCanary bool
+	}{
+		{name: "canary project marks decomposed parent", canary: true, wantIsCanary: true},
+		{name: "non-canary project leaves decomposed parent unmarked", canary: false, wantIsCanary: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			runner := NewRunner()
+			dispatcher := NewDispatcher(store, runner, nil)
+			dispatcher.SetCanaryResolver(func(string) bool { return tt.canary })
+
+			parent := &Task{
+				ID:          "TEST-DECOMPOSED-PARENT-" + tt.name,
+				Title:       "Parent Task",
+				ProjectPath: "/tmp/some-project",
+			}
+			result := &DecomposeResult{
+				Decomposed: true,
+				Subtasks:   nil,
+				Reason:     "test",
+			}
+
+			parentExecID, err := dispatcher.queueDecomposedTask(context.Background(), parent, result)
+			if err != nil {
+				t.Fatalf("queueDecomposedTask: %v", err)
+			}
+
+			exec, err := store.GetExecution(parentExecID)
+			if err != nil {
+				t.Fatalf("failed to get parent execution: %v", err)
+			}
+			if exec.IsCanary != tt.wantIsCanary {
+				t.Errorf("IsCanary = %v, want %v", exec.IsCanary, tt.wantIsCanary)
+			}
+		})
+	}
+}
+
 func TestDispatcher_DuplicateTask(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
