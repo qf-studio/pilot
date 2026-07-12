@@ -895,6 +895,72 @@ func (s *Store) GetDecomposedChildTaskIDs(taskID, projectPath string) ([]string,
 	return childIDs, true, nil
 }
 
+// decomposedDetailRegex matches the well-formed "decomposed into N children:
+// #a, #b, #c" detail string emitted by executor.formatDecomposedChildrenSummary
+// (internal/executor/epic.go). Group 1 captures the raw child-ref list.
+var decomposedDetailRegex = regexp.MustCompile(`^decomposed into \d+ children:\s*(.*)$`)
+
+// childIssueNumberRegex matches a single "#123" child reference within the
+// list captured by decomposedDetailRegex.
+var childIssueNumberRegex = regexp.MustCompile(`^#(\d+)$`)
+
+// GetDecomposedChildren returns the child issue numbers parsed from the most
+// recent StageDecomposed execution_events entry recorded for taskID (across
+// all projects — unlike GetDecomposedChildTaskIDs, this is not project-path
+// scoped), and whether a well-formed decomposed event was found.
+//
+// Returns (childIssueNumbers, true) when the latest StageDecomposed detail
+// matches the "decomposed into N children: #a, #b, #c" format. Returns
+// (nil, false) when no StageDecomposed event exists for taskID, and
+// (nil, false) with a warning log when a StageDecomposed event exists but
+// its detail string is malformed (missing colon, non-numeric child ref, or
+// an empty child list) — a shape the trusted emitter should never produce,
+// but one that must not be silently treated as "absent".
+func (s *Store) GetDecomposedChildren(taskID string) ([]string, bool) {
+	var detail string
+	err := s.db.QueryRow(`
+		SELECT COALESCE(e.detail, '')
+		FROM execution_events e
+		JOIN executions x ON x.id = e.execution_id
+		WHERE x.task_id = ? AND e.stage = ?
+		ORDER BY e.occurred_at DESC, e.id DESC
+		LIMIT 1
+	`, taskID, string(StageDecomposed)).Scan(&detail)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false
+	}
+	if err != nil {
+		slog.Warn("GetDecomposedChildren: query failed", "task_id", taskID, "error", err)
+		return nil, false
+	}
+
+	m := decomposedDetailRegex.FindStringSubmatch(detail)
+	if m == nil {
+		slog.Warn("GetDecomposedChildren: malformed decomposed detail string", "task_id", taskID, "detail", detail)
+		return nil, false
+	}
+
+	childList := strings.TrimSpace(m[1])
+	if childList == "" {
+		slog.Warn("GetDecomposedChildren: decomposed detail has empty child list", "task_id", taskID, "detail", detail)
+		return nil, false
+	}
+
+	tokens := strings.Split(childList, ",")
+	children := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		tok = strings.TrimSpace(tok)
+		cm := childIssueNumberRegex.FindStringSubmatch(tok)
+		if cm == nil {
+			slog.Warn("GetDecomposedChildren: malformed child reference in decomposed detail", "task_id", taskID, "detail", detail, "token", tok)
+			return nil, false
+		}
+		children = append(children, cm[1])
+	}
+
+	return children, true
+}
+
 // InvalidateCompletion deletes genuine completed execution records for the given task and
 // project, allowing re-dispatch. Targets only rows that HasCompletedExecution would count
 // (status='completed', no error, at least one deliverable), leaving orphan-recovered rows
