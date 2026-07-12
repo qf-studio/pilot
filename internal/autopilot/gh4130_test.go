@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
+	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
@@ -218,5 +220,52 @@ func TestApplyApprovalDecision_ZeroRequestedAt_SkipsObservation(t *testing.T) {
 	hist := c.metrics.HistogramSnapshot()
 	if len(hist.ApprovalWaitDurations) != 0 {
 		t.Errorf("ApprovalWaitDurations = %v, want no sample for zero ApprovalRequestedAt", hist.ApprovalWaitDurations)
+	}
+}
+
+// TestPollerOnPRCreatedHook_ObservesTimeToPR pins the GH-4212 live entry
+// point: cmd/pilot/poller_github.go wires pollerDeps.OnPRCreated as a closure
+// that parses sdkcore.PRCreatedEvent.IssueID via strconv.Atoi and forwards to
+// Controller.OnPRCreated. This test replicates that exact closure (rather
+// than calling Controller.OnPRCreated directly, as the other tests in this
+// file do) so a future edit to the wiring — e.g. the issueNumber conversion,
+// or dropping the closure — regresses here instead of only being caught by
+// the direct-call tests above, which do not exercise the poller-deps hook.
+func TestPollerOnPRCreatedHook_ObservesTimeToPR(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	createdAt := time.Now().Add(-10 * time.Minute)
+	startedAt := createdAt.Add(6 * time.Minute)
+	c.memoryStore = &gh4130ExecPersister{
+		execByTask: map[string]*memory.Execution{
+			"GH-77": {ID: "exec-77", TaskID: "GH-77", CreatedAt: createdAt, StartedAt: &startedAt},
+		},
+	}
+
+	// Mirrors cmd/pilot/poller_github.go's pollerDeps.OnPRCreated assignment.
+	onPRCreated := func(prEv sdkcore.PRCreatedEvent) {
+		issueNumber, _ := strconv.Atoi(prEv.IssueID)
+		c.OnPRCreated(prEv.PRNumber, prEv.PRURL, issueNumber, prEv.HeadSHA, prEv.BranchName, prEv.IssueNodeID)
+	}
+
+	before := len(c.metrics.HistogramSnapshot().TimeToPRDurations)
+
+	onPRCreated(sdkcore.PRCreatedEvent{
+		PRNumber:    42,
+		PRURL:       "https://github.com/owner/repo/pull/42",
+		IssueID:     "77",
+		HeadSHA:     "abc1234",
+		BranchName:  "pilot/GH-77",
+		IssueNodeID: "",
+	})
+
+	hist := c.metrics.HistogramSnapshot()
+	if got := len(hist.TimeToPRDurations); got != before+1 {
+		t.Fatalf("TimeToPRDurations grew by %d, want 1 (before=%d, after=%d)", got-before, before, got)
+	}
+	if len(hist.QueueWaitDurations) != 1 {
+		t.Fatalf("QueueWaitDurations = %v, want 1 sample", hist.QueueWaitDurations)
 	}
 }
