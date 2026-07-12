@@ -1611,9 +1611,14 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 			slog.String("title", task.Title),
 			slog.Any("labels", task.Labels),
 		)
+		// GH-4220 (e): parity with the direct path's GH-2363 escalation — without
+		// this, an epic parent whose title keeps failing normalization retries
+		// forever instead of tripping the stop-retry guidance comment.
+		r.recordTitleRejection(ctx, task, result)
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 		return
 	}
+	r.clearTitleRejectionState(task)
 	epicPRTitle := fmt.Sprintf("%s: %s", task.ID, normalizedEpicTitle)
 	prURL, prErr := git.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
 	if prErr != nil {
@@ -4031,32 +4036,16 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 				// GH-2363: On the 2nd consecutive rejection for this exact title,
 				// escalate with a structured comment + stop-retry labels so we
-				// don't spam the same failure every retry cycle.
-				if r.titleRejections != nil {
-					count := r.titleRejections.record(task.ID, task.Title)
-					if count >= titleRejectionMaxCount {
-						if err := r.postTitleRejectionEscalation(ctx, task); err != nil {
-							log.Warn("title-rejection escalation failed",
-								slog.String("task_id", task.ID),
-								slog.Any("error", err),
-							)
-						} else {
-							result.TitleRejected = true
-							log.Info("title-rejection escalated — posted guidance comment, stopping retries",
-								slog.String("task_id", task.ID),
-								slog.Int("count", count),
-							)
-						}
-					}
-				}
+				// don't spam the same failure every retry cycle. GH-4220 (e):
+				// shared with the epic/decomposed-parent finalize paths — see
+				// recordTitleRejection (title_rejection.go).
+				r.recordTitleRejection(ctx, task, result)
 
 				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 				return result, nil
 			}
 			// Title accepted — clear any prior rejection bookkeeping for this task.
-			if r.titleRejections != nil {
-				r.titleRejections.clear(task.ID)
-			}
+			r.clearTitleRejectionState(task)
 			prTitle := fmt.Sprintf("%s: %s", task.ID, normalizedTitle)
 
 			// Route PR/MR creation through adapter-specific creator when available

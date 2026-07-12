@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -112,5 +114,74 @@ func TestHashTitle_StableAndTrimmed(t *testing.T) {
 	}
 	if hashTitle("hello") == hashTitle("Hello") {
 		t.Error("hashTitle should be case-sensitive")
+	}
+}
+
+// TestRecordTitleRejection_EscalatesOnSecondFailure is the GH-4220 (e)
+// regression guard for the shared helper: the first titleErr for a given
+// task/title records but does not escalate, and the second (matching)
+// titleErr escalates and sets result.TitleRejected. This is the exact
+// record→escalate contract the direct path already had (GH-2363) — the
+// point of extracting it into title_rejection.go was so finalizeEpicBranchPR
+// and finalizeDecomposedParentPR could share it instead of retrying forever.
+func TestRecordTitleRejection_EscalatesOnSecondFailure(t *testing.T) {
+	fakeBin := t.TempDir()
+	if err := os.WriteFile(fakeBin+"/gh", []byte("#!/bin/sh\necho '[]'\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	r := newSilentRunnerTask359()
+	r.titleRejections = newTitleRejectionTracker()
+	task := &Task{ID: "GH-4220", Title: "bad title", SourceAdapter: "github"}
+
+	result := &ExecutionResult{TaskID: task.ID}
+	r.recordTitleRejection(context.Background(), task, result)
+	if result.TitleRejected {
+		t.Error("first rejection must not escalate yet")
+	}
+
+	result2 := &ExecutionResult{TaskID: task.ID}
+	r.recordTitleRejection(context.Background(), task, result2)
+	if !result2.TitleRejected {
+		t.Error("second consecutive rejection of the same title must escalate")
+	}
+}
+
+// TestRecordTitleRejection_NilTrackerIsNoOp guards the nil-tracker short
+// circuit: Runners built without a titleRejections tracker (e.g. most unit
+// test fixtures) must not panic when a finalize path hits titleErr.
+func TestRecordTitleRejection_NilTrackerIsNoOp(t *testing.T) {
+	r := newSilentRunnerTask359() // titleRejections left nil
+	task := &Task{ID: "GH-1", Title: "bad title"}
+	result := &ExecutionResult{TaskID: task.ID}
+
+	r.recordTitleRejection(context.Background(), task, result)
+
+	if result.TitleRejected {
+		t.Error("nil tracker must never escalate")
+	}
+}
+
+// TestClearTitleRejectionState_NilTrackerIsNoOp mirrors the nil-tracker guard
+// for the success-path clear helper.
+func TestClearTitleRejectionState_NilTrackerIsNoOp(t *testing.T) {
+	r := newSilentRunnerTask359() // titleRejections left nil
+	r.clearTitleRejectionState(&Task{ID: "GH-1"}) // must not panic
+}
+
+// TestClearTitleRejectionState_DropsTrackedCount verifies the success-path
+// helper actually resets the counter (mirrors TestTitleRejectionTracker_Clear
+// but through the Runner-level wrapper finalize paths call).
+func TestClearTitleRejectionState_DropsTrackedCount(t *testing.T) {
+	r := newSilentRunnerTask359()
+	r.titleRejections = newTitleRejectionTracker()
+	task := &Task{ID: "GH-1", Title: "bad title"}
+
+	r.titleRejections.record(task.ID, task.Title)
+	r.clearTitleRejectionState(task)
+
+	if got := r.titleRejections.record(task.ID, task.Title); got != 1 {
+		t.Errorf("after clearTitleRejectionState, record = %d, want 1 (reset)", got)
 	}
 }

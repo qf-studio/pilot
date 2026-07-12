@@ -455,9 +455,14 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 			slog.String("title", task.Title),
 			slog.Any("labels", task.Labels),
 		)
+		// GH-4220 (e): parity with the direct path's GH-2363 escalation — see
+		// recordTitleRejection (title_rejection.go) for why epic/decomposed
+		// paths need the same stop-retry guard the direct path already has.
+		r.recordTitleRejection(ctx, task, result)
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 		return
 	}
+	r.clearTitleRejectionState(task)
 	prTitle := fmt.Sprintf("%s: %s", task.ID, normalizedDecomposedTitle)
 
 	// Route PR/MR creation through the adapter-specific creator when

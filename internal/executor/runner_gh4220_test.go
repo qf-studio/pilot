@@ -188,3 +188,46 @@ func TestFinalizeEpicBranchPR_TitleNormalizeFailureIsRecoverable(t *testing.T) {
 		t.Error("gh pr create must not be invoked when title normalization fails")
 	}
 }
+
+// TestFinalizeEpicBranchPR_TitleRejectionEscalatesOnSecondFailure is GH-4220
+// (e): finalizeEpicBranchPR must feed titleErr into the same GH-2363
+// record→escalate tracker the direct path uses (recordTitleRejection,
+// title_rejection.go), not just fail loud once. Before this fix, an epic
+// parent stuck on a title normalizeTitle can't fix would fail Success=false
+// every poll forever with no escalation — never tripping the stop-retry
+// guidance comment/labels the direct path relies on to stop the loop.
+func TestFinalizeEpicBranchPR_TitleRejectionEscalatesOnSecondFailure(t *testing.T) {
+	setUpFakeGhPRCreatePATH(t)
+
+	branch := "pilot/GH-4220-escalate"
+	dir := initRepoWithRemoteAndFeatureBranch(t, branch)
+
+	r := newSilentRunnerTask359()
+	r.titleRejections = newTitleRejectionTracker()
+	task := &Task{
+		ID:          "GH-4220",
+		Title:       "   ", // never normalizes — see normalizeTitle empty-title guard
+		Description: "d",
+		Branch:      branch,
+		BaseBranch:  "main",
+		CreatePR:    true,
+	}
+
+	result1 := &ExecutionResult{TaskID: task.ID, Success: true, IsEpic: true}
+	r.finalizeEpicBranchPR(context.Background(), task, NewGitOperations(dir), result1, nil)
+	if result1.Success {
+		t.Fatal("expected Success=false on first title-normalize failure")
+	}
+	if result1.TitleRejected {
+		t.Error("first rejection must not escalate yet")
+	}
+
+	result2 := &ExecutionResult{TaskID: task.ID, Success: true, IsEpic: true}
+	r.finalizeEpicBranchPR(context.Background(), task, NewGitOperations(dir), result2, nil)
+	if result2.Success {
+		t.Fatal("expected Success=false on second title-normalize failure")
+	}
+	if !result2.TitleRejected {
+		t.Error("second consecutive title-normalize failure must escalate (TitleRejected=true)")
+	}
+}

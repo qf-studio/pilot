@@ -213,3 +213,47 @@ func TestFinalizeDecomposedParentPR_TitleNormalizeFailureIsRecoverable(t *testin
 		t.Error("CreatePR must not be invoked when title normalization fails")
 	}
 }
+
+// TestFinalizeDecomposedParentPR_TitleRejectionEscalatesOnSecondFailure
+// mirrors TestFinalizeEpicBranchPR_TitleRejectionEscalatesOnSecondFailure
+// (GH-4220 (e)): the decomposed-parent path must feed titleErr into the same
+// GH-2363 record→escalate tracker (recordTitleRejection, title_rejection.go)
+// the direct path uses, instead of failing loud with no escalation on every
+// poll indefinitely.
+func TestFinalizeDecomposedParentPR_TitleRejectionEscalatesOnSecondFailure(t *testing.T) {
+	setUpFakeGhPATH(t, []byte(`[]`), []byte(`[]`))
+
+	repoDir := setupDecomposedParentRepoGH4031(t, "pilot/GH-9005")
+
+	r := newSilentRunnerTask359()
+	r.titleRejections = newTitleRejectionTracker()
+	creator := &fakePRCreatorGH4031{url: "https://gitlab.example.com/o/r/-/merge_requests/10"}
+	r.prCreator = creator
+	task := &Task{
+		ID:            "GH-9005",
+		Title:         "   ",
+		Description:   "d",
+		Branch:        "pilot/GH-9005",
+		BaseBranch:    "main",
+		CreatePR:      true,
+		SourceAdapter: "gitlab",
+	}
+
+	result1 := &ExecutionResult{TaskID: task.ID, Success: true, CommitSHA: "placeholder"}
+	r.finalizeDecomposedParentPR(context.Background(), task, NewGitOperations(repoDir), result1)
+	if result1.Success {
+		t.Fatal("expected Success=false on first title-normalize failure")
+	}
+	if result1.TitleRejected {
+		t.Error("first rejection must not escalate yet")
+	}
+
+	result2 := &ExecutionResult{TaskID: task.ID, Success: true, CommitSHA: "placeholder"}
+	r.finalizeDecomposedParentPR(context.Background(), task, NewGitOperations(repoDir), result2)
+	if result2.Success {
+		t.Fatal("expected Success=false on second title-normalize failure")
+	}
+	if !result2.TitleRejected {
+		t.Error("second consecutive title-normalize failure must escalate (TitleRejected=true)")
+	}
+}
