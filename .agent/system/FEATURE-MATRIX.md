@@ -26,7 +26,6 @@
 | Dry run mode | ✅ | executor | `--dry-run` | - | Show prompt only |
 | Verbose output | ✅ | executor | `--verbose` | - | Stream raw JSON |
 | Task dispatcher | ✅ | executor | - | - | Per-project queue (GH-46) |
-| Execution lifecycle chokepoint | ✅ | executor | - | - | `ExecutionLifecycle.Begin/Transition/Finish` replaces hand-rolled `SaveExecution`/status-update call sites in dispatcher/epic/CLI paths (GH-4243, v2.238.2) |
 | Sequential execution | ✅ | executor | `--sequential` | `orchestrator.execution.mode` | Wait for PR merge before next issue |
 | Self-review | ✅ | executor | - | - | Auto code review before PR push (v0.13.0) |
 | Auto build gate | ✅ | executor | - | - | Minimal build gate when none configured (v0.13.0) |
@@ -424,6 +423,7 @@
 | Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
+| Epic-lifecycle synthetic canary | ✅ | .github/workflows, scripts | `workflow_dispatch` (scenario `epic-lifecycle`) | - | GH Actions scenario files a deliberately decomposable epic on the sandbox and asserts 5 invariants (≥2 children, no duplicate merged PR per child, parent auto-close, no stale `pilot-needs-clarification`, no cascade beyond direct children) via `canary-poll.sh --assert n-children-merged` (TASK-403 A3, GH-4242) |
 
 ## Test Coverage
 

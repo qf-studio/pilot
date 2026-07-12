@@ -124,10 +124,17 @@ jobs:
           ISSUE_NUMBER="${{ steps.file_issue.outputs.issue_number }}"
           STATE=$(gh issue view "$ISSUE_NUMBER" --repo "${{ inputs.sandbox_repo }}" --json state --jq '.state')
 
+          PR_NUMBER="${{ steps.poll.outputs.pr_number }}"
+          if [ -n "$PR_NUMBER" ]; then
+            COMMENT="Canary PR #$PR_NUMBER merged — pipeline verified end-to-end (scenario: ${{ inputs.scenario_name }})."
+          else
+            COMMENT="Canary verified end-to-end — all terminal assertions passed (scenario: ${{ inputs.scenario_name }})."
+          fi
+
           if [ "$STATE" = "OPEN" ]; then
             gh issue close "$ISSUE_NUMBER" \
               --repo "${{ inputs.sandbox_repo }}" \
-              --comment "Canary PR #${{ steps.poll.outputs.pr_number }} merged — pipeline verified end-to-end (scenario: ${{ inputs.scenario_name }})."
+              --comment "$COMMENT"
           else
             echo "Canary issue already closed (auto-closed by merge)."
           fi
@@ -142,6 +149,13 @@ jobs:
           TITLE="[canary:${{ inputs.scenario_name }}] pipeline stall"
           STAGE="${{ steps.poll.outputs.stage || 'issue-filed' }}"
           ISSUE_NUMBER="${{ steps.file_issue.outputs.issue_number }}"
+          FAILED_ASSERTIONS="${{ steps.poll.outputs.failed_assertions }}"
+
+          if [ -n "$FAILED_ASSERTIONS" ]; then
+            DETAIL="stalled at stage \`$STAGE\` -- failed assertion(s): \`$FAILED_ASSERTIONS\`"
+          else
+            DETAIL="stalled at stage \`$STAGE\`"
+          fi
 
           EXISTING=$(gh issue list \
             --repo "${{ inputs.alert_repo }}" \
@@ -154,12 +168,12 @@ jobs:
             echo "Alert issue #$EXISTING already open — adding status comment."
             gh issue comment "$EXISTING" \
               --repo "${{ inputs.alert_repo }}" \
-              --body "Canary re-triggered $(date -u '+%Y-%m-%d %H:%M UTC'): stalled at stage \`$STAGE\` (canary issue ${{ inputs.sandbox_repo }}#$ISSUE_NUMBER, scenario \`${{ inputs.scenario_name }}\`)."
+              --body "Canary re-triggered $(date -u '+%Y-%m-%d %H:%M UTC'): $DETAIL (canary issue ${{ inputs.sandbox_repo }}#$ISSUE_NUMBER, scenario \`${{ inputs.scenario_name }}\`)."
           else
             echo "Creating new alert issue."
             gh issue create \
               --repo "${{ inputs.alert_repo }}" \
               --title "$TITLE" \
               --label bug \
-              --body "Synthetic end-to-end pipeline canary stalled at stage \`$STAGE\` (scenario \`${{ inputs.scenario_name }}\`). Canary issue: ${{ inputs.sandbox_repo }}#$ISSUE_NUMBER. Investigate daemon health (poll -> spec -> execute -> PR -> merge). See TASK-403."
+              --body "Synthetic end-to-end pipeline canary $DETAIL (scenario \`${{ inputs.scenario_name }}\`). Canary issue: ${{ inputs.sandbox_repo }}#$ISSUE_NUMBER. Investigate daemon health (poll -> spec -> execute -> PR -> merge). See TASK-403."
           fi
