@@ -2273,8 +2273,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 						)
 					}
 
-					// Scan for recently merged PRs (GH-416)
-					if err := controller.ScanRecentlyMergedPRs(ctx); err != nil {
+					// Scan for recently merged PRs (GH-416). TASK-399/GH-4209: startup
+					// uses the wide-lookback catch-up sweep — not the periodic loop's
+					// 30-min scanWindow — so a merge that landed while the daemon was
+					// down still self-heals its execution row (and any orphaned
+					// 'running' rows resolve) instead of staying red in HISTORY forever.
+					if err := controller.ScanRecentlyMergedPRsWithWindow(ctx, autopilot.StartupMergedPRLookback); err != nil {
 						logging.WithComponent("autopilot").Warn("failed to scan merged PRs",
 							slog.String("repo", repoName),
 							slog.Any("error", err),

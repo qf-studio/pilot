@@ -3286,3 +3286,248 @@ func TestGetLifetimeTaskCounts_ProjectFilter(t *testing.T) {
 		t.Errorf("unfiltered Total = %d, want 5", tcAll.Total)
 	}
 }
+
+// TestFindOrphanedRunningExecutions_ExcludesInFlightTaskIDs verifies the
+// task_id NOT IN(...) exclusion — a status='running' row whose task_id is in
+// the caller-supplied live set (e.g. executor.Monitor's running/queued IDs)
+// must never be returned as an orphan-sweep candidate. TASK-399/GH-4209.
+func TestFindOrphanedRunningExecutions_ExcludesInFlightTaskIDs(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "run-live", TaskID: "GH-4206", ProjectPath: "/proj", Status: "running"})
+	_ = store.SaveExecution(&Execution{ID: "run-orphan", TaskID: "GH-4189", ProjectPath: "/proj", Status: "running"})
+	_ = store.SaveExecution(&Execution{ID: "run-done", TaskID: "GH-1", ProjectPath: "/proj", Status: "completed"})
+
+	results, err := store.FindOrphanedRunningExecutions([]string{"GH-4206"})
+	if err != nil {
+		t.Fatalf("FindOrphanedRunningExecutions: %v", err)
+	}
+
+	gotIDs := make(map[string]bool, len(results))
+	for _, r := range results {
+		gotIDs[r.ID] = true
+	}
+	if gotIDs["run-live"] {
+		t.Error("run-live: excluded task_id must not be returned as a candidate")
+	}
+	if !gotIDs["run-orphan"] {
+		t.Error("run-orphan: non-excluded running row must be returned as a candidate")
+	}
+	if gotIDs["run-done"] {
+		t.Error("run-done: non-running row must never be returned")
+	}
+}
+
+// TestFindOrphanedRunningExecutions_NoExclusions verifies an empty exclude set
+// returns every status='running' row (e.g. a cold-start sweep where the live
+// Monitor is empty). TASK-399/GH-4209.
+func TestFindOrphanedRunningExecutions_NoExclusions(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "run-1", TaskID: "GH-1", ProjectPath: "/proj", Status: "running"})
+	_ = store.SaveExecution(&Execution{ID: "run-2", TaskID: "GH-2", ProjectPath: "/proj", Status: "running"})
+
+	results, err := store.FindOrphanedRunningExecutions(nil)
+	if err != nil {
+		t.Fatalf("FindOrphanedRunningExecutions: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(results))
+	}
+}
+
+// TestResolveOrphanedRunningExecution_MergedHealsToCompleted verifies that
+// passing a non-empty prURL (merge evidence found) flips the row to
+// 'completed' and stamps the URL. TASK-399/GH-4209.
+func TestResolveOrphanedRunningExecution_MergedHealsToCompleted(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "orphan-merged", TaskID: "GH-4189", ProjectPath: "/proj", Status: "running"})
+
+	if err := store.ResolveOrphanedRunningExecution("orphan-merged", "https://github.com/org/repo/pull/42"); err != nil {
+		t.Fatalf("ResolveOrphanedRunningExecution: %v", err)
+	}
+
+	exec, err := store.GetExecution("orphan-merged")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", exec.Status)
+	}
+	if exec.PRUrl != "https://github.com/org/repo/pull/42" {
+		t.Errorf("expected pr_url stamped, got %q", exec.PRUrl)
+	}
+	if exec.CompletedAt == nil {
+		t.Error("expected completed_at to be set")
+	}
+}
+
+// TestResolveOrphanedRunningExecution_NoEvidenceHealsToFailed verifies that an
+// empty prURL (no merge evidence) flips the row to 'failed' — which keeps it
+// eligible for the ordinary SelfHealExecutionAfterMerge path (already
+// includes 'failed' in its IN(...) set) if a merge surfaces later.
+// TASK-399/GH-4209.
+func TestResolveOrphanedRunningExecution_NoEvidenceHealsToFailed(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "orphan-no-evidence", TaskID: "GH-99", ProjectPath: "/proj", Status: "running"})
+
+	if err := store.ResolveOrphanedRunningExecution("orphan-no-evidence", ""); err != nil {
+		t.Fatalf("ResolveOrphanedRunningExecution: %v", err)
+	}
+
+	exec, err := store.GetExecution("orphan-no-evidence")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", exec.Status)
+	}
+	if exec.Error == "" {
+		t.Error("expected a descriptive error message to be stamped")
+	}
+}
+
+// TestResolveOrphanedRunningExecution_IdempotentOnAlreadyTerminalRow verifies
+// the `AND status = 'running'` guard: re-running the resolve against a row
+// that has since transitioned through the normal completion path must be a
+// no-op, not a clobber. TASK-399/GH-4209.
+func TestResolveOrphanedRunningExecution_IdempotentOnAlreadyTerminalRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "already-done", TaskID: "GH-7", ProjectPath: "/proj", Status: "completed", PRUrl: "https://github.com/org/repo/pull/7"})
+
+	// Simulate a second sweep tick racing against the row's own normal
+	// completion — must not overwrite the real outcome.
+	if err := store.ResolveOrphanedRunningExecution("already-done", ""); err != nil {
+		t.Fatalf("ResolveOrphanedRunningExecution: %v", err)
+	}
+
+	exec, err := store.GetExecution("already-done")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "completed" {
+		t.Errorf("expected status to remain 'completed', got %q", exec.Status)
+	}
+	if exec.PRUrl != "https://github.com/org/repo/pull/7" {
+		t.Errorf("expected pr_url to remain stamped, got %q", exec.PRUrl)
+	}
+}
+
+// TestSelfHealExecutionByPRURL_HealsMatchingRow verifies the pr_url-keyed
+// fallback heal used when a merged PR's issue number can't be resolved at
+// all. TASK-399/GH-4209.
+func TestSelfHealExecutionByPRURL_HealsMatchingRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	prURL := "https://github.com/org/repo/pull/55"
+	_ = store.SaveExecution(&Execution{ID: "pr-url-heal", TaskID: "GH-55", ProjectPath: "/proj", Status: "failed", Error: "boom", PRUrl: prURL})
+	_ = store.SaveExecution(&Execution{ID: "unrelated", TaskID: "GH-56", ProjectPath: "/proj", Status: "failed", PRUrl: "https://github.com/org/repo/pull/56"})
+
+	if err := store.SelfHealExecutionByPRURL(prURL); err != nil {
+		t.Fatalf("SelfHealExecutionByPRURL: %v", err)
+	}
+
+	healed, err := store.GetExecution("pr-url-heal")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if healed.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", healed.Status)
+	}
+	if healed.Error != "" {
+		t.Errorf("expected error cleared, got %q", healed.Error)
+	}
+
+	unrelated, err := store.GetExecution("unrelated")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if unrelated.Status != "failed" {
+		t.Errorf("unrelated row must be unaffected, got %q", unrelated.Status)
+	}
+}
+
+// TestSelfHealExecutionByPRURL_EmptyURLNoOp verifies an empty prURL never
+// touches any row (avoids matching rows with an empty pr_url column).
+// TASK-399/GH-4209.
+func TestSelfHealExecutionByPRURL_EmptyURLNoOp(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "no-pr-url", TaskID: "GH-1", ProjectPath: "/proj", Status: "failed"})
+
+	if err := store.SelfHealExecutionByPRURL(""); err != nil {
+		t.Fatalf("SelfHealExecutionByPRURL: %v", err)
+	}
+
+	exec, err := store.GetExecution("no-pr-url")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected status to remain 'failed', got %q", exec.Status)
+	}
+}
+
+// TestSelfHealExecutionAfterMerge_ExcludesRunningQueuedPending is the
+// GH-4209 regression test for the store.go:1446 IN(...) exclusion this task
+// must preserve unmodified: running/queued/pending rows are never healed by
+// SelfHealExecutionAfterMerge, only the non-success terminal set.
+func TestSelfHealExecutionAfterMerge_ExcludesRunningQueuedPending(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	statuses := []string{"running", "queued", "pending"}
+	for i, status := range statuses {
+		id := fmt.Sprintf("in-flight-%d", i)
+		_ = store.SaveExecution(&Execution{ID: id, TaskID: "GH-8", ProjectPath: "/proj", Status: status})
+	}
+
+	if err := store.SelfHealExecutionAfterMerge("GH-8", "/proj", "https://github.com/org/repo/pull/8"); err != nil {
+		t.Fatalf("SelfHealExecutionAfterMerge: %v", err)
+	}
+
+	for i, status := range statuses {
+		id := fmt.Sprintf("in-flight-%d", i)
+		exec, err := store.GetExecution(id)
+		if err != nil {
+			t.Fatalf("GetExecution(%s): %v", id, err)
+		}
+		if exec.Status != status {
+			t.Errorf("%s: expected status to remain %q, got %q", id, status, exec.Status)
+		}
+	}
+}

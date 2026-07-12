@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-11 (v2.151.0)
+**Last Updated:** 2026-07-09 (v2.151.0)
 
 ## Legend
 
@@ -250,7 +250,6 @@
 | GoReleaser desktop artifact | ✅ | ci | - | - | Separate GH Actions workflow, macOS universal binary on release (v1.54.0, GH-1614) |
 | Dashboard git graph sizes | ✅ | dashboard | `g` key | - | Small/medium/large/hidden modes, auto-size by terminal width (v2.35.0, PR #1900) |
 | Dashboard responsive layout | ✅ | dashboard | - | - | Stacked layout on narrow terminals, full-width panels (v2.38.0, PR #1913) |
-| Dashboard spatial nav + zoom | ✅ | dashboard | `hjkl`/`tab`/`enter`/`esc` | - | grom-style spatial panel focus (`focusMove` over `computeLayout` rects) across queue/autopilot/history/logs/git; `enter` zooms the focused panel full-screen (uncapped lists, `j/k` + `g/G`, `enter`/`o` opens the selected item's URL); git graph visible by default on first frame; logs rebound to `L` (v2.237.0, TASK-399/GH-4203) |
 | History dedup | ✅ | desktop | - | - | Deduplicates execution records per issue, success takes priority (v1.62.0, GH-1663) |
 | WebSocket log streaming | ✅ | gateway | - | - | Real-time execution logs via WebSocket to web dashboard (v1.56.0, GH-1613) |
 | Epic-aware HISTORY panel | ✅ | dashboard | - | - | HISTORY panel shows epic decomposition info + sub-issue counts (v0.22.1) |
@@ -364,7 +363,6 @@
 | Rule-based triggers | ✅ | approval | - | `approval.rules[]` | RuleEvaluator with 4 matchers wired into Manager (GH-636) |
 | Non-blocking async approval | ✅ | autopilot | - | `approval.async_dispatch` | handleAwaitApproval tick-handler; PR-A stall no longer blocks PR-B (GH-2685) |
 | Approval persistence in executions | ✅ | autopilot/memory | - | - | approval_request_id + decision written to executions table (GH-2712) |
-| Release-aware approval ack + merge follow-up | ✅ | approval/autopilot | - | - | Approved Telegram card shows the next-step text (immediate release / next cron train time / no releaser configured), injected as `approval.Request.ReleasePlan` by autopilot at request-creation time so the approval package never imports release config; `approval.Manager.NotifyMerged` posts a "🔀 Merged \<sha\>" follow-up in the same chat once `handleMerging` completes for an approval-gated PR (`PRState.MergeFollowupPosted` guards against a duplicate on re-entry); `EditMessage` failures on the ack card fall back to a new message so a recorded decision is never left with zero feedback (GH-4164, v2.236.8) |
 
 ## Autopilot (v0.19.1+)
 
@@ -599,3 +597,4 @@ quality:
 | Decomposed-child base-branch pinning | v2.184.x | executor | Resolve `BaseBranch` from main-repo git context before worktree creation; decomposed children never PR against a sibling branch (GH-3540) |
 | GitHub-poller auth-failure escalation | v2.207.x | adapters/github + health | Consecutive 401/non-ratelimit-403 fetch errors escalate to ERROR log + alert at threshold (`WithAlertProcessor`/`WithTokenSource`); `pilot doctor` disabled-subsystems panel; `pilot config show` secret redaction + `--reveal` (TASK-379 V4 / GH-3839) |
 | Executor prompt memory injection | v2.219.x | executor | `BuildPrompt` appends a "Known pitfalls from project memory" block ranked via `graphrecall.RecallRelevant`, gated on `MemoryInjection.Enabled`/non-LocalMode/Navigator/recall hits, capped at `min(MaxMemories,5)` entries and ~1500 chars (TASK-387 / GH-3909) |
+| Dashboard status-truthfulness reconciliation | v2.238.x | memory + autopilot | Orphan-running sweep (`FindOrphanedRunningExecutions`/`ResolveOrphanedRunningExecution`, Monitor + execution_events heartbeat guard) heals stale `status='running'` rows; `selfHealForPR` widened with a startup wide-lookback catch-up scan, PR-body `Closes #N`/`Parent: GH-N` issueNum resolution, and a `pr_url`-keyed fallback heal; `ScanRecentlyMergedPRs`'s external-merge branch now also calls `monitor.Complete` (TASK-399 / GH-4209) |
