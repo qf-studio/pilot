@@ -1236,6 +1236,84 @@ func (s *Store) GetActiveExecutions() ([]*Execution, error) {
 	return executions, rows.Err()
 }
 
+// FindOrphanedRunningExecutions returns status='running' rows whose task_id is
+// NOT in excludeTaskIDs — candidates for the autopilot orphan-running sweep
+// (TASK-399/GH-4209). excludeTaskIDs is the caller's in-flight set (e.g. the
+// live executor.Monitor's running/queued task IDs), so a genuinely executing
+// task is never returned as a candidate for reconciliation.
+func (s *Store) FindOrphanedRunningExecutions(excludeTaskIDs []string) ([]*Execution, error) {
+	query := `
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at, COALESCE(task_branch, '')
+		FROM executions
+		WHERE status = 'running'`
+	args := make([]interface{}, 0, len(excludeTaskIDs))
+	if len(excludeTaskIDs) > 0 {
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(excludeTaskIDs)), ",")
+		query += fmt.Sprintf(" AND task_id NOT IN (%s)", placeholders)
+		for _, id := range excludeTaskIDs {
+			args = append(args, id)
+		}
+	}
+	query += " ORDER BY created_at ASC"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt, &exec.TaskBranch); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, rows.Err()
+}
+
+// orphanedRunningNoEvidenceError is the error stamped on an orphaned running
+// row that resolves to 'failed' (no merged PR found). TASK-399/GH-4209.
+const orphanedRunningNoEvidenceError = "orphaned running execution: no live process and no merged PR found on pr_url/branch"
+
+// ResolveOrphanedRunningExecution flips one orphan-running candidate (a row
+// the caller has already confirmed is not in flight — see
+// FindOrphanedRunningExecutions) to a terminal status. prURL non-empty means
+// the caller found a merged PR on this row's pr_url or branch, so the row
+// heals to 'completed' and prURL is stamped; empty means no merge evidence
+// exists, so the row is marked 'failed' — which keeps it eligible for the
+// ordinary SelfHealExecutionAfterMerge path if a merge surfaces later, since
+// 'failed' is already in that method's non-success IN(...) set.
+//
+// Guarded by `AND status = 'running'`: a no-op (and therefore idempotent) once
+// the row has transitioned through the normal completion path, and safe to
+// call repeatedly across sweep ticks. TASK-399/GH-4209.
+func (s *Store) ResolveOrphanedRunningExecution(id, prURL string) error {
+	return s.withRetry("ResolveOrphanedRunningExecution", func() error {
+		var err error
+		if prURL != "" {
+			_, err = s.db.Exec(`
+				UPDATE executions
+				SET status = 'completed', error = '', completed_at = CURRENT_TIMESTAMP, pr_url = ?
+				WHERE id = ? AND status = 'running'
+			`, prURL, id)
+		} else {
+			_, err = s.db.Exec(`
+				UPDATE executions
+				SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
+				WHERE id = ? AND status = 'running'
+			`, orphanedRunningNoEvidenceError, id)
+		}
+		return err
+	})
+}
+
 // GetBriefMetrics calculates aggregate metrics for a time period including
 // task counts, success rates, average duration, and PR creation statistics.
 func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
@@ -1458,6 +1536,27 @@ func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) e
 				pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
 			WHERE task_id = ? AND status IN ('failed', 'no_op', 'stalled', 'rate_limited', 'infra', 'skipped') AND (? = '' OR project_path = ?)
 		`, prURL, prURL, taskID, projectPath, projectPath)
+		return err
+	})
+}
+
+// SelfHealExecutionByPRURL is the pr_url-keyed fallback for selfHealForPR
+// (TASK-399/GH-4209): used when a merged PR's issue number can't be resolved
+// from its branch name or body markers ('Closes #N' / 'Parent: GH-N'). It
+// promotes any non-success row (same set as SelfHealExecutionAfterMerge)
+// whose own already-stamped pr_url column equals prURL — covering a PR on a
+// non-standard branch whose execution row still carries the PR URL from
+// UpdateExecutionResult at creation time. No-op when prURL is empty.
+func (s *Store) SelfHealExecutionByPRURL(prURL string) error {
+	if prURL == "" {
+		return nil
+	}
+	return s.withRetry("SelfHealExecutionByPRURL", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'completed', error = '', completed_at = CURRENT_TIMESTAMP
+			WHERE pr_url = ? AND status IN ('failed', 'no_op', 'stalled', 'rate_limited', 'infra', 'skipped')
+		`, prURL)
 		return err
 	})
 }

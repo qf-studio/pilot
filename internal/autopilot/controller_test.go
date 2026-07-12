@@ -3241,6 +3241,7 @@ func TestController_ConsecutiveAPIFailures_Reset(t *testing.T) {
 // mockTaskMonitor implements TaskMonitor for testing.
 type mockTaskMonitor struct {
 	completedTasks map[string]string // taskID -> prURL
+	runningTaskIDs []string          // TASK-399/GH-4209: live Monitor running/queued set
 }
 
 func newMockTaskMonitor() *mockTaskMonitor {
@@ -3251,6 +3252,11 @@ func newMockTaskMonitor() *mockTaskMonitor {
 
 func (m *mockTaskMonitor) Complete(taskID, prURL string) {
 	m.completedTasks[taskID] = prURL
+}
+
+// GetRunningTaskIDs implements TaskMonitor. TASK-399/GH-4209.
+func (m *mockTaskMonitor) GetRunningTaskIDs() []string {
+	return m.runningTaskIDs
 }
 
 // TestController_MonitorCompletedOnMerge verifies that when autopilot successfully
@@ -4704,6 +4710,19 @@ type mockEvalStore struct {
 	// task ID (e.g. "GH-11"). Missing keys return sql.ErrNoRows, matching a real
 	// store's behavior when no execution row exists for that task.
 	execStatusByTaskID map[string]string
+
+	// TASK-399/GH-4209: orphan-running sweep + pr_url fallback test hooks.
+	prURLHealed        []string                   // SelfHealExecutionByPRURL calls
+	orphanedRunning    []*memory.Execution         // FindOrphanedRunningExecutions candidate pool
+	lastExcludeTaskIDs []string                    // last exclude set FindOrphanedRunningExecutions was called with
+	resolvedOrphans    []resolveOrphanCall         // ResolveOrphanedRunningExecution calls
+	executionEvents    map[string][]*memory.Event  // ListExecutionEvents responses keyed by execution ID
+}
+
+// resolveOrphanCall records one ResolveOrphanedRunningExecution invocation. TASK-399/GH-4209.
+type resolveOrphanCall struct {
+	ID    string
+	PRURL string
 }
 
 type selfHealCall struct {
@@ -4752,6 +4771,42 @@ func (m *mockEvalStore) SelfHealExecutionAfterMerge(taskID, projectPath, prURL s
 func (m *mockEvalStore) ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error {
 	m.reclassified = append(m.reclassified, reclassifyCall{TaskID: taskID, ProjectPath: projectPath, Reason: reason})
 	return nil
+}
+
+// SelfHealExecutionByPRURL records the call for assertions. TASK-399/GH-4209.
+func (m *mockEvalStore) SelfHealExecutionByPRURL(prURL string) error {
+	m.prURLHealed = append(m.prURLHealed, prURL)
+	return nil
+}
+
+// FindOrphanedRunningExecutions filters the configured orphanedRunning pool by
+// excludeTaskIDs, mirroring the real store's task_id NOT IN(...) exclusion.
+// TASK-399/GH-4209.
+func (m *mockEvalStore) FindOrphanedRunningExecutions(excludeTaskIDs []string) ([]*memory.Execution, error) {
+	m.lastExcludeTaskIDs = excludeTaskIDs
+	excluded := make(map[string]bool, len(excludeTaskIDs))
+	for _, id := range excludeTaskIDs {
+		excluded[id] = true
+	}
+	var result []*memory.Execution
+	for _, exec := range m.orphanedRunning {
+		if !excluded[exec.TaskID] {
+			result = append(result, exec)
+		}
+	}
+	return result, nil
+}
+
+// ResolveOrphanedRunningExecution records the call for assertions. TASK-399/GH-4209.
+func (m *mockEvalStore) ResolveOrphanedRunningExecution(id, prURL string) error {
+	m.resolvedOrphans = append(m.resolvedOrphans, resolveOrphanCall{ID: id, PRURL: prURL})
+	return nil
+}
+
+// ListExecutionEvents returns the configured heartbeat events for executionID,
+// or nil (no heartbeat) for an unconfigured ID. TASK-399/GH-4209.
+func (m *mockEvalStore) ListExecutionEvents(executionID string) ([]*memory.Event, error) {
+	return m.executionEvents[executionID], nil
 }
 
 // TestHandleMerged_ExtractsEvalTask verifies that handleMerged extracts and saves

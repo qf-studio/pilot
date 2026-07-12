@@ -107,6 +107,12 @@ type ReleaseNotifier interface {
 // GH-1336: Sync monitor state when autopilot merges PR so dashboard shows correct status.
 type TaskMonitor interface {
 	Complete(taskID, prURL string)
+	// GetRunningTaskIDs returns the IDs of tasks the in-process Monitor currently
+	// considers running or queued. TASK-399/GH-4209: the orphan-running sweep
+	// excludes these before flipping any persisted 'running' row, so a
+	// genuinely in-flight execution (the GH-4206 regression gate) is never
+	// healed out from under itself.
+	GetRunningTaskIDs() []string
 }
 
 // EvalStore persists eval tasks extracted from merged PRs.
@@ -128,6 +134,25 @@ type EvalStore interface {
 	// "failed" with reason, so a PR closed without merging can never leave a
 	// "completed" row behind that HasCompletedExecution keeps trusting. GH-3818.
 	ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error
+	// SelfHealExecutionByPRURL is the pr_url-keyed fallback self-heal used when
+	// a merged PR's issue number can't be resolved from branch or body markers
+	// at all. TASK-399/GH-4209.
+	SelfHealExecutionByPRURL(prURL string) error
+	// FindOrphanedRunningExecutions returns status='running' rows whose task_id
+	// is NOT in excludeTaskIDs (the live Monitor's running/queued set) —
+	// candidates for the orphan-running sweep. TASK-399/GH-4209.
+	FindOrphanedRunningExecutions(excludeTaskIDs []string) ([]*memory.Execution, error)
+	// ResolveOrphanedRunningExecution flips one orphan-running candidate to a
+	// terminal status: 'completed' when prURL is non-empty (a merged PR was
+	// found for this row), else 'failed'. Internally guarded by
+	// status='running', so it is a no-op once the row has already
+	// transitioned. TASK-399/GH-4209.
+	ResolveOrphanedRunningExecution(id, prURL string) error
+	// ListExecutionEvents returns executionID's execution_events timeline in
+	// chronological order — used as the recent-heartbeat guard for the
+	// orphan-running sweep (a fresh event means the execution is still
+	// actively progressing even if the Monitor set missed it). TASK-399/GH-4209.
+	ListExecutionEvents(executionID string) ([]*memory.Event, error)
 }
 
 // ControllerOption is a functional option for Controller configuration.
@@ -444,6 +469,36 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 // into sub-issues. TASK-352.
 var parentIssueRe = regexp.MustCompile(`(?i)Parent:\s*GH-(\d+)`)
 
+// closesIssueRe extracts an issue number from a PR body's standard GitHub
+// auto-close marker ("Closes #123", "closes #123", etc.). TASK-399/GH-4209:
+// widens issueNum resolution beyond the literal "pilot/GH-%d" branch prefix
+// for PRs merged on a non-standard branch name.
+var closesIssueRe = regexp.MustCompile(`(?i)\bCloses\s+#(\d+)\b`)
+
+// resolveIssueNumFromPR resolves the GitHub issue number a merged PR ships,
+// trying (in order): the "pilot/GH-N" branch-name convention, the PR body's
+// "Closes #N" auto-close marker, and the PR body's "Parent: GH-N" epic marker.
+// Returns 0 if none match. TASK-399/GH-4209: the branch-prefix-only check
+// missed PRs merged on non-standard branches, leaving their execution rows
+// permanently un-healed.
+func resolveIssueNumFromPR(pr *github.PullRequest) int {
+	var issueNum int
+	if strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
+		_, _ = fmt.Sscanf(pr.Head.Ref, "pilot/GH-%d", &issueNum)
+	}
+	if issueNum == 0 {
+		if m := closesIssueRe.FindStringSubmatch(pr.Body); len(m) == 2 {
+			issueNum, _ = strconv.Atoi(m[1])
+		}
+	}
+	if issueNum == 0 {
+		if m := parentIssueRe.FindStringSubmatch(pr.Body); len(m) == 2 {
+			issueNum, _ = strconv.Atoi(m[1])
+		}
+	}
+	return issueNum
+}
+
 // selfHealForPR promotes any prior "failed" execution rows for the merged PR's
 // issue — and its parent epic, if it is a sub-issue — to "completed", stamping the
 // PR URL so the dashboard reflects the merged outcome. Safe to call from any merge
@@ -483,6 +538,90 @@ func (c *Controller) selfHealTask(taskID, prURL string) {
 	if err := c.evalStore.SelfHealExecutionAfterMerge(taskID, c.projectPath, prURL); err != nil {
 		c.log.Warn("failed to self-heal execution on merge", "task_id", taskID, "error", err)
 	}
+}
+
+// orphanRunningHeartbeatWindow bounds how recently an execution_events row
+// must have landed for a status='running' row with no live Monitor entry to
+// still be treated as in-flight. Guards a narrow race: a worker can register
+// with Monitor slightly after its row flips to 'running' in the DB, or (after
+// a hot-upgrade handoff) the new process's Monitor hasn't been repopulated yet
+// even though the execution itself is still progressing. This is the hard
+// regression gate for a genuinely running task (the GH-4206 case) — it must
+// never be flipped mid-execution. TASK-399/GH-4209.
+const orphanRunningHeartbeatWindow = 10 * time.Minute
+
+// sweepOrphanedRunningExecutions resolves status='running' execution rows
+// that are not actually in flight: absent from the live Monitor's
+// running/queued set, and with no execution_events heartbeat inside
+// orphanRunningHeartbeatWindow. Each surviving candidate resolves to
+// 'completed' when its pr_url or branch matches a PR in mergedPRs, else
+// 'failed'. mergedPRs is the same already-fetched PR list
+// ScanRecentlyMergedPRsWithWindow built for this tick — this sweep makes no
+// GitHub calls of its own (mem-048). TASK-399/GH-4209.
+func (c *Controller) sweepOrphanedRunningExecutions(mergedPRs []*github.PullRequest) {
+	if c.evalStore == nil {
+		return
+	}
+
+	var liveTaskIDs []string
+	if c.monitor != nil {
+		liveTaskIDs = c.monitor.GetRunningTaskIDs()
+	}
+
+	orphans, err := c.evalStore.FindOrphanedRunningExecutions(liveTaskIDs)
+	if err != nil {
+		c.log.Warn("orphan-running sweep: failed to query candidates", "error", err)
+		return
+	}
+
+	for _, exec := range orphans {
+		events, evErr := c.evalStore.ListExecutionEvents(exec.ID)
+		if evErr != nil {
+			c.log.Warn("orphan-running sweep: failed to check heartbeat, skipping row",
+				"execution_id", exec.ID, "task_id", exec.TaskID, "error", evErr)
+			continue
+		}
+		if len(events) > 0 {
+			last := events[len(events)-1].OccurredAt
+			if time.Since(last) < orphanRunningHeartbeatWindow {
+				c.log.Debug("orphan-running sweep: recent heartbeat, treating as in-flight",
+					"execution_id", exec.ID, "task_id", exec.TaskID, "last_event", last)
+				continue
+			}
+		}
+
+		prURL := matchMergedPR(exec, mergedPRs)
+		if err := c.evalStore.ResolveOrphanedRunningExecution(exec.ID, prURL); err != nil {
+			c.log.Warn("orphan-running sweep: failed to resolve row",
+				"execution_id", exec.ID, "task_id", exec.TaskID, "error", err)
+			continue
+		}
+		if prURL != "" {
+			c.log.Info("orphan-running sweep: healed to completed (merged PR found)",
+				"execution_id", exec.ID, "task_id", exec.TaskID, "pr_url", prURL)
+		} else {
+			c.log.Warn("orphan-running sweep: no merge evidence found, marked failed",
+				"execution_id", exec.ID, "task_id", exec.TaskID)
+		}
+	}
+}
+
+// matchMergedPR reports the merged PR URL matching exec's own pr_url column or
+// its task branch, or "" if no PR in mergedPRs matches either. TASK-399/GH-4209.
+func matchMergedPR(exec *memory.Execution, mergedPRs []*github.PullRequest) string {
+	branch := exec.TaskBranch
+	if branch == "" {
+		branch = fmt.Sprintf("pilot/%s", exec.TaskID)
+	}
+	for _, pr := range mergedPRs {
+		if exec.PRUrl != "" && pr.HTMLURL == exec.PRUrl {
+			return pr.HTMLURL
+		}
+		if pr.Head.Ref == branch {
+			return pr.HTMLURL
+		}
+	}
+	return ""
 }
 
 // resolveParentIssue returns the parent issue number for a sub-issue by parsing
@@ -3850,11 +3989,34 @@ func (c *Controller) backstopCheckReleaseMissing(ctx context.Context, rel *Relea
 	c.fireReleaseMissingAlert(c.owner, c.repo, tag, prNumber, issueNumber, timeout)
 }
 
-// ScanRecentlyMergedPRs scans for Pilot PRs that were merged externally.
-// This catches PRs that need release triggering but were merged outside of
-// autopilot (e.g. via `gh pr merge` or the GitHub UI).
-// Called on startup and periodically from the Run loop.
+// StartupMergedPRLookback is the lookback window ScanRecentlyMergedPRsWithWindow
+// uses for the one-time startup catch-up sweep (TASK-399/GH-4209), instead of
+// the periodic loop's config.MergedPRScanWindow (default 30m). ListPullRequests
+// already fetches the full closed-PR list regardless of window (up to 5 000 PRs
+// across pages) — widening this only changes the in-memory cutoff filter below,
+// not the GitHub call volume (mem-048).
+const StartupMergedPRLookback = 30 * 24 * time.Hour
+
+// ScanRecentlyMergedPRs scans for Pilot PRs that were merged externally, using
+// the configured MergedPRScanWindow. This catches PRs that need release
+// triggering but were merged outside of autopilot (e.g. via `gh pr merge` or
+// the GitHub UI). Called periodically from the Run loop; see
+// ScanRecentlyMergedPRsWithWindow for the startup catch-up sweep.
 func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
+	scanWindow := c.config.MergedPRScanWindow
+	if scanWindow == 0 {
+		scanWindow = 30 * time.Minute // Default fallback
+	}
+	return c.ScanRecentlyMergedPRsWithWindow(ctx, scanWindow)
+}
+
+// ScanRecentlyMergedPRsWithWindow is ScanRecentlyMergedPRs with an explicit
+// lookback window. TASK-399/GH-4209: startup wiring calls this directly with
+// StartupMergedPRLookback (a wide catch-up sweep, not the periodic 30-min
+// scanWindow) so a merge that happened while the daemon was down — or before
+// the last restart — still self-heals its execution row instead of leaving it
+// permanently red in HISTORY.
+func (c *Controller) ScanRecentlyMergedPRsWithWindow(ctx context.Context, scanWindow time.Duration) error {
 	// Run the scan unconditionally — it covers self-heal + merge metrics even when
 	// neither auto-release nor board sync is enabled (e.g. a plain GH-issue-source
 	// deployment). Internal gates below handle release-trigger and board-writeback
@@ -3866,7 +4028,6 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 	boardEnabled := c.boardSync != nil && c.doneStatus != ""
 	rel := c.resolvedRelease()
 
-	scanWindow := c.config.MergedPRScanWindow
 	if scanWindow == 0 {
 		scanWindow = 30 * time.Minute // Default fallback
 	}
@@ -3884,6 +4045,13 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 	}
 
 	c.log.Debug("found closed PRs", "total", len(prs))
+
+	// TASK-399/GH-4209: orphan-running reconcile piggybacks on this scan's
+	// already-fetched PR list — no extra GitHub call (mem-048). Considers the
+	// full unfiltered list (not scanWindow-cut) since an orphaned running row
+	// can predate this scan's window; runs every tick regardless of
+	// releaseEnabled/boardEnabled since it only touches self-heal bookkeeping.
+	c.sweepOrphanedRunningExecutions(prs)
 
 	cutoff := time.Now().Add(-scanWindow)
 	triggered := 0
@@ -3925,11 +4093,10 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			continue
 		}
 
-		// Extract issue number from branch name (optional)
-		var issueNum int
-		if strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
-			_, _ = fmt.Sscanf(pr.Head.Ref, "pilot/GH-%d", &issueNum)
-		}
+		// Extract issue number from the branch name, falling back to the PR
+		// body's "Closes #N" / "Parent: GH-N" markers (TASK-399/GH-4209) when
+		// the PR wasn't opened on a literal "pilot/GH-N" branch.
+		issueNum := resolveIssueNumFromPR(pr)
 
 		// Record merge metrics BEFORE the activePRs/release-exists skip gates
 		// below — those gates exist to avoid duplicate release triggering, but
@@ -3954,6 +4121,24 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			// recordMergeSuccess above, this fires before the release-tag/activePRs skip
 			// gates because the heal must happen on every discovered merged Pilot PR.
 			c.selfHealForPR(ctx, issueNum, pr.HTMLURL)
+
+			// TASK-399/GH-4209: last-resort heal when issueNum couldn't be
+			// resolved at all (no branch-prefix match, no "Closes #N"/"Parent:
+			// GH-N" body marker) — match directly on the row's own
+			// already-stamped pr_url instead of going through task_id.
+			if issueNum == 0 && c.evalStore != nil {
+				if err := c.evalStore.SelfHealExecutionByPRURL(pr.HTMLURL); err != nil {
+					c.log.Warn("selfHealForPR: pr_url fallback heal failed", "pr", pr.Number, "error", err)
+				}
+			}
+
+			// TASK-399/GH-4209: mirror handleMerging's monitor sync
+			// (controller.go:1962, GH-1336) so an externally-merged PR also
+			// retires its QUEUE card instead of leaving a stale in-memory
+			// Monitor entry behind.
+			if c.monitor != nil && issueNum > 0 {
+				c.monitor.Complete(fmt.Sprintf("GH-%d", issueNum), pr.HTMLURL)
+			}
 
 			// TASK-356 #2: board write-back for externally-merged PRs. Large PRs that
 			// hit the stage approval-misconfig (require_approval=true + approval disabled)
