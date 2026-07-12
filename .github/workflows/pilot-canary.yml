@@ -66,27 +66,69 @@ jobs:
 
         Edit the `const Version` line in `version.go`. Nothing else.
 
-  # Stub scenario (commented out, not a live job) proving the abstraction
-  # scales to a second, independently scoped scenario -- epic-lifecycle
-  # coverage, TASK-403 A3. It demonstrates a second scenario is added as a
-  # plain job, with its own labels (canary-scenario-epic-lifecycle) and
-  # alert title ([canary:epic-lifecycle] pipeline stall), without touching
-  # the version-bump job, the reusable workflow, or
-  # scripts/canary-poll.sh. TASK-403 A3 will flesh out the real issue
-  # template and implement the `n-children-merged` assert mode in
-  # scripts/canary-poll.sh, then uncomment (and un-stub) a job like this.
-  #
-  # epic-lifecycle-stub:
-  #   uses: ./.github/workflows/pilot-canary-scenario.yml
-  #   secrets:
-  #     canary_gh_token: ${{ secrets.CANARY_GH_TOKEN }}
-  #   with:
-  #     scenario_name: epic-lifecycle
-  #     sandbox_repo: qf-studio/pilot-canary-sandbox
-  #     alert_repo: qf-studio/pilot
-  #     assert_mode: n-children-merged
-  #     timeout_minutes: 35
-  #     poll_interval_seconds: 60
-  #     issue_title: "chore(epic): canary epic-lifecycle scenario (TASK-403 A3)"
-  #     issue_body: |
-  #       Epic-lifecycle scenario body -- see TASK-403 A3.
+  # Epic-lifecycle scenario (TASK-403 A3): proves the deployed daemon
+  # decomposes an epic into independent children, ships each child through
+  # its own merged PR, and closes the parent clean -- the defect classes
+  # that escaped to production in July (TASK-394/395/401/402). Scoped
+  # independently of version-bump via its own label
+  # (canary-scenario-epic-lifecycle) and alert title
+  # ([canary:epic-lifecycle] pipeline stall); does not touch the
+  # version-bump job, the reusable workflow, or scripts/canary-poll.sh's
+  # `merged` mode.
+  epic-lifecycle:
+    uses: ./.github/workflows/pilot-canary-scenario.yml
+    secrets:
+      canary_gh_token: ${{ secrets.CANARY_GH_TOKEN }}
+    with:
+      scenario_name: epic-lifecycle
+      sandbox_repo: qf-studio/pilot-canary-sandbox
+      alert_repo: qf-studio/pilot
+      assert_mode: n-children-merged
+      # Epic runs (decompose -> N children -> N PRs -> merge -> parent
+      # close) take longer than a direct version-bump run, so this timeout
+      # is independent of (and larger than) the version-bump job's 35m.
+      timeout_minutes: 90
+      poll_interval_seconds: 60
+      issue_title: "chore(canary): [epic] epic-lifecycle scenario probe"
+      issue_body: |
+        ## Context
+
+        Synthetic canary run (TASK-403 A3, scenario `epic-lifecycle`). This
+        issue exists to prove the deployed Pilot daemon correctly
+        decomposes an epic into independent child issues, ships each child
+        through its own PR, and closes the parent cleanly -- the
+        epic-lifecycle defect classes that escaped to production in July
+        (TASK-394 FK-787 ledger failures, TASK-395 stale
+        pilot-needs-clarification, TASK-401 single-child collapse, TASK-402
+        sibling duplicate PRs).
+
+        This epic has exactly two independent work items against two
+        different files. Decompose it into two separate child issues, one
+        per item below -- do not fold them into a single child, and do not
+        further decompose either child once created.
+
+        ## Acceptance
+
+        - [ ] Subtask 1 (version bump): read the current PATCH component of
+              the `Version` constant in `version.go` and increment it by
+              exactly one (current+1). Do not assume a starting value --
+              derive the target from what is in the file. Change only that
+              single line so `version_test.go` (semver guard) stays green.
+              Touches `version.go` only.
+        - [ ] Subtask 2 (changelog entry): append one dated line to
+              `CHANGELOG-CANARY.md` recording today's date and this canary
+              run (create the file with a single `# Canary Changelog`
+              heading first if it does not exist yet). Touches
+              `CHANGELOG-CANARY.md` only. Depends on: Subtask 1 -- this
+              subtask's own child issue must carry an explicit
+              `Depends on:` back-reference to Subtask 1's child issue, and
+              should not start until Subtask 1's PR has landed.
+
+        ## Implementation
+
+        Two subtasks, two files, no shared code path:
+
+        1. `version.go` -- bump the PATCH component only.
+        2. `CHANGELOG-CANARY.md` -- append a dated line after Subtask 1
+           lands; state the `Depends on: #<subtask-1-issue>` reference in
+           this subtask's own child issue body.
