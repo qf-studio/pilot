@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1214,6 +1215,407 @@ func TestProcessQueue_CrossTaskIDGuard(t *testing.T) {
 				t.Error("expected the cross-task-id guard to carry a child pr_url as completion evidence")
 			}
 		})
+	}
+}
+
+// TestDecomposedChildrenAllComplete is the GH-4227 table test for the shared
+// decomposed-parent guard helper backing every dispatcher.go call site that
+// consults HasCompletedExecution(taskID) for a task_id that might itself be a
+// decomposed epic parent: processQueue's pickup guard, stale-running/queued
+// recovery, and WaitForExecution's row-vanished resolution.
+func TestDecomposedChildrenAllComplete(t *testing.T) {
+	const projectPath = "/project-decomposed-guard"
+
+	t.Run("all children complete short-circuits", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		parentExec := &memory.Execution{ID: "exec-parent-a", TaskID: "GH-5001", ProjectPath: projectPath, Status: "failed"}
+		if err := store.SaveExecution(parentExec); err != nil {
+			t.Fatalf("SaveExecution(parent): %v", err)
+		}
+		if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 2 children: #5002, #5003"); err != nil {
+			t.Fatalf("InsertExecutionEvent: %v", err)
+		}
+		for _, child := range []string{"GH-5002", "GH-5003"} {
+			childExec := &memory.Execution{
+				ID: "exec-" + child, TaskID: child, ProjectPath: projectPath,
+				Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/" + strings.TrimPrefix(child, "GH-"),
+			}
+			if err := store.SaveExecution(childExec); err != nil {
+				t.Fatalf("SaveExecution(child): %v", err)
+			}
+		}
+
+		allComplete, childIDs, evidence, err := decomposedChildrenAllComplete(store, "GH-5001", projectPath, slog.Default())
+		if err != nil {
+			t.Fatalf("decomposedChildrenAllComplete: %v", err)
+		}
+		if !allComplete {
+			t.Error("expected allComplete=true when every decomposed child has a genuine completed row")
+		}
+		if !reflect.DeepEqual(childIDs, []string{"GH-5002", "GH-5003"}) {
+			t.Errorf("childIDs = %v, want [GH-5002 GH-5003]", childIDs)
+		}
+		if len(evidence) != 2 {
+			t.Errorf("expected per-child evidence for both children, got %v", evidence)
+		}
+	})
+
+	t.Run("one child incomplete falls through", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		parentExec := &memory.Execution{ID: "exec-parent-b", TaskID: "GH-5011", ProjectPath: projectPath, Status: "failed"}
+		if err := store.SaveExecution(parentExec); err != nil {
+			t.Fatalf("SaveExecution(parent): %v", err)
+		}
+		if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 2 children: #5012, #5013"); err != nil {
+			t.Fatalf("InsertExecutionEvent: %v", err)
+		}
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-GH-5012", TaskID: "GH-5012", ProjectPath: projectPath,
+			Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/5012",
+		}); err != nil {
+			t.Fatalf("SaveExecution(child1): %v", err)
+		}
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-GH-5013", TaskID: "GH-5013", ProjectPath: projectPath, Status: "running",
+		}); err != nil {
+			t.Fatalf("SaveExecution(child2): %v", err)
+		}
+
+		allComplete, _, _, err := decomposedChildrenAllComplete(store, "GH-5011", projectPath, slog.Default())
+		if err != nil {
+			t.Fatalf("decomposedChildrenAllComplete: %v", err)
+		}
+		if allComplete {
+			t.Error("expected allComplete=false when a decomposed child is still incomplete (normal epic-resume path)")
+		}
+	})
+
+	t.Run("no decomposed event uses normal path", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-direct", TaskID: "GH-5021", ProjectPath: projectPath, Status: "running",
+		}); err != nil {
+			t.Fatalf("SaveExecution: %v", err)
+		}
+
+		allComplete, childIDs, _, err := decomposedChildrenAllComplete(store, "GH-5021", projectPath, slog.Default())
+		if err != nil {
+			t.Fatalf("decomposedChildrenAllComplete: %v", err)
+		}
+		if allComplete {
+			t.Error("expected allComplete=false for a task that never decomposed")
+		}
+		if len(childIDs) != 0 {
+			t.Errorf("expected no child IDs, got %v", childIDs)
+		}
+	})
+
+	t.Run("malformed detail string falls through safely with a warning log", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		parentExec := &memory.Execution{ID: "exec-parent-malformed", TaskID: "GH-5031", ProjectPath: projectPath, Status: "failed"}
+		if err := store.SaveExecution(parentExec); err != nil {
+			t.Fatalf("SaveExecution(parent): %v", err)
+		}
+		// No "#NNN" issue refs in the detail string — a malformed/legacy format
+		// that decomposedChildRefRegex cannot parse into child task IDs.
+		if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into subtasks"); err != nil {
+			t.Fatalf("InsertExecutionEvent: %v", err)
+		}
+
+		var logBuf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+		allComplete, childIDs, evidence, err := decomposedChildrenAllComplete(store, "GH-5031", projectPath, log)
+		if err != nil {
+			t.Fatalf("decomposedChildrenAllComplete: %v", err)
+		}
+		if allComplete {
+			t.Error("expected allComplete=false for a malformed decomposed detail string")
+		}
+		if len(childIDs) != 0 || len(evidence) != 0 {
+			t.Errorf("expected no child IDs or evidence for a malformed detail string, got childIDs=%v evidence=%v", childIDs, evidence)
+		}
+		if !strings.Contains(logBuf.String(), "no child refs parsed") {
+			t.Errorf("expected a warning log about the unparseable decomposed detail, got: %s", logBuf.String())
+		}
+	})
+}
+
+// TestProcessQueue_CrossTaskIDGuard_MalformedDetailFallsThrough covers the
+// GH-4227 case (iv) at the processQueue call site specifically: a
+// StageDecomposed event whose detail string has no parseable child refs must
+// not block dispatch — the task falls through to the normal epic-resume path
+// (backend invoked) rather than the guard silently skipping execution.
+func TestProcessQueue_CrossTaskIDGuard_MalformedDetailFallsThrough(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const parentTaskID = "GH-5041"
+	projectPath := setupPRGuardRepo(t, "pilot/GH-5041", false)
+
+	parentExec := &memory.Execution{
+		ID: "exec-5041-failed", TaskID: parentTaskID, ProjectPath: projectPath,
+		Status: "failed", TaskBranch: "pilot/GH-5041",
+	}
+	if err := store.SaveExecution(parentExec); err != nil {
+		t.Fatalf("failed to save parent execution: %v", err)
+	}
+	if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into subtasks"); err != nil {
+		t.Fatalf("failed to insert decomposed event: %v", err)
+	}
+
+	requeued := &memory.Execution{
+		ID: "exec-5041-requeued", TaskID: parentTaskID, ProjectPath: projectPath,
+		Status: "queued", TaskBranch: "pilot/GH-5041",
+	}
+	if err := store.SaveExecution(requeued); err != nil {
+		t.Fatalf("failed to save requeued execution: %v", err)
+	}
+
+	origCheck := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { mergedPRPreflightCheck = origCheck }()
+
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "ok"}}
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
+
+	worker.processQueue(context.Background())
+
+	backend.mu.Lock()
+	count := backend.execCount
+	backend.mu.Unlock()
+	if count != 1 {
+		t.Errorf("backend invocations = %d, want 1 (malformed decomposed detail must fall through, not block dispatch)", count)
+	}
+}
+
+// TestRecoverStaleRunningTasks_DecomposedParentGuard is the GH-4227 table
+// test for the decomposed-parent guard at the stale-running reap site: a
+// decomposed epic parent stuck in "running" must be deleted (not marked
+// failed) once every child it decomposed into has shipped, since its own row
+// carries no deliverable (TASK-296) and would otherwise never satisfy
+// HasCompletedExecution.
+func TestRecoverStaleRunningTasks_DecomposedParentGuard(t *testing.T) {
+	tests := []struct {
+		name          string
+		childStatuses []string // "" = no row at all
+		wantDeleted   bool
+		wantStatus    string // checked only when !wantDeleted
+	}{
+		{name: "all children completed guard fires", childStatuses: []string{"completed", "completed"}, wantDeleted: true},
+		{name: "one child incomplete falls through to failed", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "failed"},
+		{name: "no completed rows falls through to failed", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "failed"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			const parentTaskID = "GH-5051"
+			const projectPath = "/project-decomposed-running"
+
+			parentExec := &memory.Execution{ID: "exec-5051-running", TaskID: parentTaskID, ProjectPath: projectPath, Status: "running"}
+			if err := store.SaveExecution(parentExec); err != nil {
+				t.Fatalf("failed to save parent execution: %v", err)
+			}
+			if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 2 children: #5052, #5053"); err != nil {
+				t.Fatalf("failed to insert decomposed event: %v", err)
+			}
+
+			children := []string{"GH-5052", "GH-5053"}
+			for i, status := range tc.childStatuses {
+				if status == "" {
+					continue
+				}
+				childExec := &memory.Execution{ID: "exec-" + children[i], TaskID: children[i], ProjectPath: projectPath, Status: status}
+				if status == "completed" {
+					childExec.PRUrl = "https://github.com/qf-studio/pilot/pull/" + strings.TrimPrefix(children[i], "GH-")
+				}
+				if err := store.SaveExecution(childExec); err != nil {
+					t.Fatalf("failed to save child execution: %v", err)
+				}
+			}
+
+			origCheck := staleRunningMergedPRCheck
+			staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+			defer func() { staleRunningMergedPRCheck = origCheck }()
+
+			config := &DispatcherConfig{StaleRunningThreshold: 0, StaleQueuedThreshold: 0, StaleRecoveryInterval: time.Hour}
+			dispatcher := NewDispatcher(store, NewRunner(), config)
+
+			dispatcher.recoverStaleRunningTasks()
+
+			got, err := store.GetExecution(parentExec.ID)
+			if tc.wantDeleted {
+				if err == nil {
+					t.Errorf("expected the decomposed-parent-guarded row to be deleted, but it still exists with status %q", got.Status)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestRecoverStaleQueuedTasks_DecomposedParentGuard mirrors
+// TestRecoverStaleRunningTasks_DecomposedParentGuard for the stale-queued
+// reap site (GH-4227).
+func TestRecoverStaleQueuedTasks_DecomposedParentGuard(t *testing.T) {
+	tests := []struct {
+		name          string
+		childStatuses []string
+		wantDeleted   bool
+		wantStatus    string
+	}{
+		{name: "all children completed guard fires", childStatuses: []string{"completed", "completed"}, wantDeleted: true},
+		{name: "one child incomplete falls through to failed", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "failed"},
+		{name: "no completed rows falls through to failed", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "failed"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			const parentTaskID = "GH-5061"
+			const projectPath = "/project-decomposed-queued"
+
+			parentExec := &memory.Execution{ID: "exec-5061-queued", TaskID: parentTaskID, ProjectPath: projectPath, Status: "queued"}
+			if err := store.SaveExecution(parentExec); err != nil {
+				t.Fatalf("failed to save parent execution: %v", err)
+			}
+			if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 2 children: #5062, #5063"); err != nil {
+				t.Fatalf("failed to insert decomposed event: %v", err)
+			}
+
+			children := []string{"GH-5062", "GH-5063"}
+			for i, status := range tc.childStatuses {
+				if status == "" {
+					continue
+				}
+				childExec := &memory.Execution{ID: "exec-" + children[i], TaskID: children[i], ProjectPath: projectPath, Status: status}
+				if status == "completed" {
+					childExec.PRUrl = "https://github.com/qf-studio/pilot/pull/" + strings.TrimPrefix(children[i], "GH-")
+				}
+				if err := store.SaveExecution(childExec); err != nil {
+					t.Fatalf("failed to save child execution: %v", err)
+				}
+			}
+
+			config := &DispatcherConfig{StaleQueuedThreshold: 0}
+			dispatcher := NewDispatcher(store, NewRunner(), config)
+
+			dispatcher.recoverStaleQueuedTasks()
+
+			got, err := store.GetExecution(parentExec.ID)
+			if tc.wantDeleted {
+				if err == nil {
+					t.Errorf("expected the decomposed-parent-guarded row to be deleted, but it still exists with status %q", got.Status)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", got.Status, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// TestWaitForExecution_DecomposedParentGuard_ResolvesAsSuccess covers GH-4227
+// at the WaitForExecution row-vanished site: when the waited-on row
+// disappears (e.g. deleted by the stale-running reap's decomposed-parent
+// guard branch) and its task_id is a decomposed parent whose children all
+// shipped, the wait must resolve as success instead of surfacing a
+// "failed to get execution" error.
+func TestWaitForExecution_DecomposedParentGuard_ResolvesAsSuccess(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+
+	const parentTaskID = "GH-5071"
+	const projectPath = "/project-decomposed-wait"
+	const orphanID = "exec-5071-running"
+
+	// The original decomposed-parent row (never deleted) carries the
+	// StageDecomposed ledger event, mirroring the real shape: a duplicate
+	// "orphan" row for the same task_id (below) is the one actually being
+	// waited on and reaped, while the decompose-time row it originated from
+	// stays put — GetDecomposedChildTaskIDs's INNER JOIN needs a live
+	// executions row to hang the event off of.
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-5071-decompose-origin", TaskID: parentTaskID, ProjectPath: projectPath, Status: "failed",
+	}); err != nil {
+		t.Fatalf("SaveExecution(decompose origin): %v", err)
+	}
+	if err := store.InsertExecutionEvent("exec-5071-decompose-origin", memory.StageDecomposed, "decomposed into 1 children: #5072"); err != nil {
+		t.Fatalf("InsertExecutionEvent: %v", err)
+	}
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: orphanID, TaskID: parentTaskID, ProjectPath: projectPath, Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution(orphan): %v", err)
+	}
+	const childPRURL = "https://github.com/qf-studio/pilot/pull/5072"
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-GH-5072", TaskID: "GH-5072", ProjectPath: projectPath, Status: "completed", PRUrl: childPRURL,
+	}); err != nil {
+		t.Fatalf("SaveExecution(child): %v", err)
+	}
+
+	type result struct {
+		exec *memory.Execution
+		err  error
+	}
+	resultCh := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go func() {
+		exec, err := dispatcher.WaitForExecution(ctx, orphanID, 10*time.Millisecond)
+		resultCh <- result{exec, err}
+	}()
+
+	// Let the waiter observe the "running" row at least once before it's
+	// deleted out from under it, mirroring the real race (recoverStaleRunningTasks'
+	// decomposed-parent guard branch deletes the row once children are seen complete).
+	time.Sleep(30 * time.Millisecond)
+	if err := store.DeleteExecution(orphanID); err != nil {
+		t.Fatalf("DeleteExecution: %v", err)
+	}
+
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			t.Fatalf("WaitForExecution returned error, want success: %v", res.err)
+		}
+		if res.exec.Status != "completed" {
+			t.Errorf("Status = %q, want %q", res.exec.Status, "completed")
+		}
+		if res.exec.PRUrl != childPRURL {
+			t.Errorf("PRUrl = %q, want %q (evidence from the last decomposed child)", res.exec.PRUrl, childPRURL)
+		}
+	case <-ctx.Done():
+		t.Fatal("WaitForExecution did not return before timeout")
 	}
 }
 

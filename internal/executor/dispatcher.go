@@ -281,6 +281,29 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 		d.log.Warn("Failed to fetch stale running executions", slog.Any("error", err))
 	}
 	for _, exec := range staleRunning {
+		// GH-4227: decomposed-parent guard runs BEFORE the own-row
+		// HasCompletedExecution check below — an epic parent whose task_id
+		// decomposed into children that ALL already shipped never gets its own
+		// completed row (TASK-296, epic parents carry no direct deliverable),
+		// so the check below would otherwise mark it stale_running->failed
+		// even though the real work is done. Ledger-only, defense-in-depth
+		// alongside the pickup-time guard in processQueue (GH-4216 fix 3).
+		if allComplete, childIDs, evidence, gErr := decomposedChildrenAllComplete(d.store, exec.TaskID, exec.ProjectPath, d.log); gErr != nil {
+			d.log.Warn("Failed to check decomposed-parent guard during stale-running reap",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.Any("error", gErr))
+		} else if allComplete {
+			d.log.Warn("decomposed-parent guard fired",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.Any("children", childIDs),
+				slog.Any("evidence", evidence),
+			)
+			d.deleteOrphanRunningRow(exec)
+			continue
+		}
+
 		// If this task already completed successfully, delete the orphan row
 		// instead of marking it failed (avoids dashboard showing false failures).
 		completed, hceErr := d.store.HasCompletedExecution(exec.TaskID, exec.ProjectPath)
@@ -295,18 +318,7 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 				slog.String("execution_id", exec.ID),
 				slog.String("task_id", exec.TaskID),
 			)
-			if err := d.store.DeleteExecution(exec.ID); err != nil {
-				d.log.Error("Failed to delete orphan running row", slog.String("id", exec.ID), slog.Any("error", err))
-			}
-			// GH-4021: the orphaned run's worktree outlives the DB row it was
-			// tracked under — prune it now instead of leaving it for the next
-			// restart's full CleanupOrphanedWorktrees sweep.
-			if pruned, pruneErr := PruneOrphanedWorktreeForTask(d.ctx, exec.ProjectPath, exec.TaskID); pruneErr != nil {
-				d.log.Warn("Failed to prune orphaned task worktree",
-					slog.String("task_id", exec.TaskID), slog.Any("error", pruneErr))
-			} else if pruned > 0 {
-				d.log.Info("Pruned orphaned task worktree", slog.String("task_id", exec.TaskID), slog.Int("count", pruned))
-			}
+			d.deleteOrphanRunningRow(exec)
 			continue
 		}
 		if d.hasLiveWorker(exec.ProjectPath) {
@@ -360,6 +372,25 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 	return resetCount
 }
 
+// deleteOrphanRunningRow deletes a stale "running" row and prunes its
+// worktree, once the reap loop has established the real work already
+// shipped — either via HasCompletedExecution on the row's own task_id or via
+// the decomposed-parent guard finding every decomposed child complete.
+func (d *Dispatcher) deleteOrphanRunningRow(exec *memory.Execution) {
+	if err := d.store.DeleteExecution(exec.ID); err != nil {
+		d.log.Error("Failed to delete orphan running row", slog.String("id", exec.ID), slog.Any("error", err))
+	}
+	// GH-4021: the orphaned run's worktree outlives the DB row it was
+	// tracked under — prune it now instead of leaving it for the next
+	// restart's full CleanupOrphanedWorktrees sweep.
+	if pruned, pruneErr := PruneOrphanedWorktreeForTask(d.ctx, exec.ProjectPath, exec.TaskID); pruneErr != nil {
+		d.log.Warn("Failed to prune orphaned task worktree",
+			slog.String("task_id", exec.TaskID), slog.Any("error", pruneErr))
+	} else if pruned > 0 {
+		d.log.Info("Pruned orphaned task worktree", slog.String("task_id", exec.TaskID), slog.Int("count", pruned))
+	}
+}
+
 // staleRunningMergedPRCheck reports the URL of a merged PR for branch in
 // projectPath, or "" if none exists. Used by recoverStaleRunningTasks to
 // distinguish a genuinely orphaned worker from one whose work already shipped
@@ -404,6 +435,29 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 		d.log.Warn("Failed to fetch stale queued executions", slog.Any("error", err))
 	}
 	for _, exec := range staleQueued {
+		// GH-4227: decomposed-parent guard runs BEFORE the own-row
+		// HasCompletedExecution check below, mirroring recoverStaleRunningTasks
+		// — a re-queued decomposed epic parent whose children all shipped must
+		// not be reaped as an orphan just because its own row carries no
+		// deliverable (TASK-296).
+		if allComplete, childIDs, evidence, gErr := decomposedChildrenAllComplete(d.store, exec.TaskID, exec.ProjectPath, d.log); gErr != nil {
+			d.log.Warn("Failed to check decomposed-parent guard during stale-queued reap",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.Any("error", gErr))
+		} else if allComplete {
+			d.log.Warn("decomposed-parent guard fired",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.Any("children", childIDs),
+				slog.Any("evidence", evidence),
+			)
+			if err := d.store.DeleteExecution(exec.ID); err != nil {
+				d.log.Error("Failed to delete decomposed-parent-guarded orphan queued row", slog.String("id", exec.ID), slog.Any("error", err))
+			}
+			continue
+		}
+
 		completed, hceErr := d.store.HasCompletedExecution(exec.TaskID, exec.ProjectPath)
 		if hceErr != nil {
 			d.log.Warn("HasCompletedExecution error during stale-queued reap; treating as not completed",
@@ -728,6 +782,40 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 				// "sql: no rows", which the caller reports as a false
 				// task_failed alert for work that actually shipped.
 				if errors.Is(err, sql.ErrNoRows) && lastTaskID != "" {
+					// GH-4227: decomposed-parent guard runs BEFORE the
+					// HasCompletedExecution check below — a decomposed epic
+					// parent whose children all shipped never gets its own
+					// completed row (TASK-296), so a row-vanished orphan
+					// cleanup (e.g. the decomposed-parent guard branch in
+					// recoverStaleRunningTasks above) would otherwise surface
+					// here as a false "failed to get execution" waiter error.
+					if allComplete, childIDs, evidence, gErr := decomposedChildrenAllComplete(d.store, lastTaskID, lastProjectPath, d.log); gErr != nil {
+						d.log.Warn("Failed to check decomposed-parent guard while resolving vanished execution row",
+							slog.String("execution_id", execID),
+							slog.String("task_id", lastTaskID),
+							slog.Any("error", gErr))
+					} else if allComplete {
+						prURL := ""
+						if len(childIDs) > 0 {
+							if latest, lErr := d.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); lErr == nil && latest != nil {
+								prURL = latest.PRUrl
+							}
+						}
+						d.log.Warn("decomposed-parent guard fired",
+							slog.String("execution_id", execID),
+							slog.String("task_id", lastTaskID),
+							slog.Any("children", childIDs),
+							slog.Any("evidence", evidence),
+						)
+						return &memory.Execution{
+							ID:          execID,
+							TaskID:      lastTaskID,
+							ProjectPath: lastProjectPath,
+							Status:      "completed",
+							PRUrl:       prURL,
+						}, nil
+					}
+
 					if completed, hcErr := d.store.HasCompletedExecution(lastTaskID, lastProjectPath); hcErr == nil && completed {
 						if completedExec, gErr := d.store.GetLatestExecutionByTaskID(lastTaskID); gErr == nil {
 							d.log.Info("Execution row vanished after orphan recovery — task already completed, resolving wait as success",
@@ -915,29 +1003,31 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			w.runner.EmitProgress(exec.TaskID, "Completed", 100, "already completed per execution ledger")
 			w.currentTaskID.Store("")
 			continue
-		} else if allShipped, childIDs, cErr := w.allDecomposedChildrenShipped(exec.TaskID); cErr != nil {
+		} else if allShipped, childIDs, evidence, cErr := decomposedChildrenAllComplete(w.store, exec.TaskID, w.projectPath, w.log); cErr != nil {
 			w.log.Warn("Failed to check cross-task-id dispatch guard before pickup",
 				slog.String("execution_id", exec.ID),
 				slog.String("task_id", exec.TaskID),
 				slog.Any("error", cErr))
 		} else if allShipped {
-			// GH-4216 (Defect A, fix 3): the ledger shows this task_id decomposed
-			// into children that ALL already shipped completed executions — the
-			// GH-4211 repro re-dispatched the parent as a fresh top-level task and
-			// re-implemented the same fix its child (#4212) had already landed in
-			// PR #4213. hasTerminalSuccessLedger above never catches this because
-			// an epic parent's own row typically carries no deliverable
-			// (TASK-296); this check follows the decomposed-children trail
-			// instead. Fail-loud: this is a defense-in-depth skip, not a normal
-			// completion, so it always logs at Warn with the full child list.
+			// GH-4216 (Defect A, fix 3) / GH-4227: the ledger shows this task_id
+			// decomposed into children that ALL already shipped completed
+			// executions — the GH-4211 repro re-dispatched the parent as a fresh
+			// top-level task and re-implemented the same fix its child (#4212)
+			// had already landed in PR #4213. hasTerminalSuccessLedger above
+			// never catches this because an epic parent's own row typically
+			// carries no deliverable (TASK-296); this check follows the
+			// decomposed-children trail instead. Fail-loud: this is a
+			// defense-in-depth skip, not a normal completion, so it always logs
+			// at Warn with the full child list and per-child evidence.
 			prURL := ""
 			if latest, gErr := w.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); gErr == nil && latest != nil {
 				prURL = latest.PRUrl
 			}
-			w.log.Warn("Cross-task-id dispatch guard: all decomposed children already completed; refusing to re-implement as fresh top-level task",
+			w.log.Warn("decomposed-parent guard fired",
 				slog.String("execution_id", exec.ID),
 				slog.String("task_id", exec.TaskID),
 				slog.Any("children", childIDs),
+				slog.Any("evidence", evidence),
 				slog.String("evidence_pr_url", prURL),
 			)
 			if err := w.store.MarkExecutionCompleted(exec.ID, prURL, "", 0); err != nil {
@@ -1135,39 +1225,96 @@ func (w *ProjectWorker) hasTerminalSuccessLedger(taskID string) (bool, error) {
 	return w.store.HasCompletedExecution(taskID, w.projectPath)
 }
 
-// allDecomposedChildrenShipped reports whether taskID has a recorded
-// StageDecomposed ledger event AND every child task_id parsed from it has a
-// genuine completed execution (Store.HasCompletedExecution). It returns the
-// child task IDs found (possibly empty) regardless of outcome, for logging.
+// decomposedChildrenAllComplete reports whether taskID has a recorded
+// StageDecomposed ledger event AND every child task_id parsed from it has
+// ledger evidence of completion (see childCompletionEvidence). It returns the
+// child task IDs found (possibly empty) and a matching per-child evidence tag
+// ("<childID>:<reason>"), regardless of outcome, for logging.
 //
-// GH-4216 (Defect A, fix 3): cross-task-id dispatch guard, defense-in-depth
-// alongside hasTerminalSuccessLedger. hasTerminalSuccessLedger only ever
-// checks taskID's own rows, which never catches an epic parent whose
-// finalize keeps failing (or whose task_id got re-queued for any other
-// reason) once every child it decomposed into already shipped — an epic
-// parent's own row typically carries no deliverable (TASK-296), so
-// HasCompletedExecution(taskID, ...) stays false forever even though the
-// real work is done. Returns false with no children if taskID never
-// decomposed, or if any child is still incomplete (existing epic-resume
-// behavior is left unchanged in that case).
-func (w *ProjectWorker) allDecomposedChildrenShipped(taskID string) (bool, []string, error) {
-	childIDs, found, err := w.store.GetDecomposedChildTaskIDs(taskID, w.projectPath)
+// GH-4216 (Defect A, fix 3) / GH-4227: the decomposed-parent / cross-task-id
+// dispatch guard, defense-in-depth alongside hasTerminalSuccessLedger.
+// hasTerminalSuccessLedger only ever checks taskID's own rows, which never
+// catches an epic parent whose finalize keeps failing (or whose task_id got
+// re-queued, orphan-reaped, or polled for status for any other reason) once
+// every child it decomposed into already shipped — an epic parent's own row
+// typically carries no deliverable (TASK-296), so
+// HasCompletedExecution(taskID, ...) stays false forever even though the real
+// work is done. Shared by every dispatcher.go call site that consults
+// HasCompletedExecution(taskID) for a task_id that might itself be a
+// decomposed epic parent: processQueue's pickup guard, stale-running/queued
+// recovery, and WaitForExecution's row-vanished resolution.
+//
+// Returns false with no children if taskID never decomposed, or if any child
+// is still incomplete (existing epic-resume behavior is left unchanged in
+// that case). A StageDecomposed event whose detail string didn't parse into
+// any child refs (malformed/legacy format) is logged at Warn and treated the
+// same as "never decomposed" — fail safe, falling through rather than
+// guessing.
+func decomposedChildrenAllComplete(store *memory.Store, taskID, projectPath string, log *slog.Logger) (allComplete bool, childIDs []string, evidence []string, err error) {
+	childIDs, found, err := store.GetDecomposedChildTaskIDs(taskID, projectPath)
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
-	if !found || len(childIDs) == 0 {
-		return false, childIDs, nil
+	if !found {
+		return false, nil, nil, nil
 	}
+	if len(childIDs) == 0 {
+		log.Warn("decomposed-parent guard: StageDecomposed event found but no child refs parsed from detail; treating as not decomposed",
+			slog.String("task_id", taskID))
+		return false, nil, nil, nil
+	}
+
+	evidence = make([]string, 0, len(childIDs))
 	for _, childID := range childIDs {
-		completed, err := w.store.HasCompletedExecution(childID, w.projectPath)
-		if err != nil {
-			return false, childIDs, err
+		reason, complete, cErr := childCompletionEvidence(store, childID, projectPath)
+		if cErr != nil {
+			return false, childIDs, evidence, cErr
 		}
-		if !completed {
-			return false, childIDs, nil
+		if !complete {
+			return false, childIDs, evidence, nil
 		}
+		evidence = append(evidence, childID+":"+reason)
 	}
-	return true, childIDs, nil
+	return true, childIDs, evidence, nil
+}
+
+// childCompletionEvidence reports whether childID has ledger evidence of
+// completion in projectPath, and a short tag describing which signal
+// matched: "completed" (Store.HasCompletedExecution — a genuine completed
+// row with a deliverable), "no_op" (latest row terminated no_op with no
+// error — nothing to change is itself a legitimate completion), or
+// "merged_pr" (latest row carries a non-empty pr_url even though its own
+// status/error fields wouldn't satisfy HasCompletedExecution, e.g. a row
+// healed after the fact). Ledger-only: reads local store data alone, no live
+// GitHub calls — matching the "ledger-only guard" framing of every other
+// dispatch guard in this file (contrast staleRunningMergedPRCheck /
+// mergedPRPreflightCheck, which do shell out).
+func childCompletionEvidence(store *memory.Store, childID, projectPath string) (reason string, complete bool, err error) {
+	completed, err := store.HasCompletedExecution(childID, projectPath)
+	if err != nil {
+		return "", false, err
+	}
+	if completed {
+		return "completed", true, nil
+	}
+
+	latest, err := store.GetLatestExecutionByTaskID(childID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if latest == nil || latest.ProjectPath != projectPath {
+		return "", false, nil
+	}
+	if latest.Status == "no_op" && latest.Error == "" {
+		return "no_op", true, nil
+	}
+	if latest.PRUrl != "" {
+		return "merged_pr", true, nil
+	}
+	return "", false, nil
 }
 
 // dispatchSuccessStage reports the execution_events Stage (and whether to
