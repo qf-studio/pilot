@@ -2,7 +2,10 @@ package autopilot
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -400,5 +403,127 @@ func TestHydrateFromStore_RestartContinuity(t *testing.T) {
 	// nothing reads postMetrics between NewMetrics() and HydrateFromStore().
 	if postTokens == 0 {
 		t.Error("post-restart tokens baseline is zero, hydration did not run")
+	}
+}
+
+// seedGH4211ExecutionTimes sets explicit created_at/started_at on an
+// executions row via a direct SQL connection — store.SaveExecution never
+// writes started_at (GH-4033's column is only stamped by
+// UpdateExecutionStatus's CURRENT_TIMESTAMP), and this test needs
+// deterministic, well-separated timestamps rather than relying on
+// whole-second wall-clock resolution.
+func seedGH4211ExecutionTimes(t *testing.T, dbPath string, executionID string, createdAt, startedAt time.Time) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := db.Exec(
+		`UPDATE executions SET created_at = ?, started_at = ? WHERE id = ?`,
+		createdAt, startedAt, executionID,
+	); err != nil {
+		t.Fatalf("seed execution times failed: %v", err)
+	}
+}
+
+// seedGH4211EventAt inserts an execution_events row with an explicit
+// occurred_at, bypassing store.InsertExecutionEvent (which always stamps
+// time.Now().UTC()) so the derived duration samples below are deterministic.
+func seedGH4211EventAt(t *testing.T, dbPath string, executionID string, stage memory.Stage, occurredAt time.Time) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := db.Exec(
+		`INSERT INTO execution_events (execution_id, stage, occurred_at, detail) VALUES (?, ?, ?, ?)`,
+		executionID, string(stage), occurredAt, "",
+	); err != nil {
+		t.Fatalf("seed event failed: %v", err)
+	}
+}
+
+// TestHydrateFromStore_ThroughputHistogramsSurviveRestart pins GH-4211 D2: the
+// TASK-393/GH-4128 throughput histograms (pilot_time_to_pr_seconds,
+// pilot_queue_wait_seconds, pilot_approval_wait_seconds) must be reconstructed
+// from the ledger/executions table at hydration time, same as
+// pilot_pr_time_to_merge_seconds already is (GH-4093) — otherwise the daily
+// self-upgrade restart wipes the throughput view every day even after D1's
+// live-path fix.
+func TestHydrateFromStore_ThroughputHistogramsSurviveRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	execID := "gh4211-1"
+	if err := store.SaveExecution(&memory.Execution{
+		ID: execID, TaskID: "GH-4211", ProjectPath: "/p", Status: "completed",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	now := time.Now()
+	createdAt := now.Add(-20 * time.Minute)
+	startedAt := now.Add(-14 * time.Minute)  // queue wait ~= 6m
+	prCreatedAt := now.Add(-9 * time.Minute) // time-to-PR ~= 5m from startedAt
+	awaitingAt := now.Add(-8 * time.Minute)
+	mergedAt := now.Add(-3 * time.Minute) // approval wait ~= 5m from awaitingAt
+
+	dbPath := filepath.Join(tmpDir, "pilot.db")
+	seedGH4211ExecutionTimes(t, dbPath, execID, createdAt, startedAt)
+	seedGH4211EventAt(t, dbPath, execID, memory.StageRunning, startedAt)
+	seedGH4211EventAt(t, dbPath, execID, memory.StagePRCreated, prCreatedAt)
+	seedGH4211EventAt(t, dbPath, execID, memory.StageAwaitingApproval, awaitingAt)
+	seedGH4211EventAt(t, dbPath, execID, memory.StageMerged, mergedAt)
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	hist := metrics.HistogramSnapshot()
+
+	if len(hist.TimeToPRDurations) != 1 {
+		t.Fatalf("TimeToPRDurations = %v, want 1 hydrated sample", hist.TimeToPRDurations)
+	}
+	if got := hist.TimeToPRDurations[0]; got < 4*time.Minute || got > 6*time.Minute {
+		t.Errorf("TimeToPRDurations[0] = %v, want ~5m", got)
+	}
+
+	if len(hist.QueueWaitDurations) != 1 {
+		t.Fatalf("QueueWaitDurations = %v, want 1 hydrated sample", hist.QueueWaitDurations)
+	}
+	if got := hist.QueueWaitDurations[0]; got < 5*time.Minute || got > 7*time.Minute {
+		t.Errorf("QueueWaitDurations[0] = %v, want ~6m", got)
+	}
+
+	if len(hist.ApprovalWaitDurations) != 1 {
+		t.Fatalf("ApprovalWaitDurations = %v, want 1 hydrated sample", hist.ApprovalWaitDurations)
+	}
+	if got := hist.ApprovalWaitDurations[0]; got < 4*time.Minute || got > 6*time.Minute {
+		t.Errorf("ApprovalWaitDurations[0] = %v, want ~5m", got)
+	}
+
+	// Restart simulation: a fresh (all-zero) Metrics hydrated from the same
+	// store must not observe zero for any of the three histograms.
+	restarted := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, restarted); err != nil {
+		t.Fatalf("HydrateFromStore (post-restart): %v", err)
+	}
+	restartedHist := restarted.HistogramSnapshot()
+	if len(restartedHist.TimeToPRDurations) == 0 {
+		t.Error("TimeToPRDurations reset to zero on simulated restart")
+	}
+	if len(restartedHist.QueueWaitDurations) == 0 {
+		t.Error("QueueWaitDurations reset to zero on simulated restart")
+	}
+	if len(restartedHist.ApprovalWaitDurations) == 0 {
+		t.Error("ApprovalWaitDurations reset to zero on simulated restart")
 	}
 }

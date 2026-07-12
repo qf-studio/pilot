@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -601,7 +602,7 @@ func unmarshalLabels(s string) []string {
 // executionDetailColumns is the full column set for a single Execution row,
 // shared by GetExecution and GetLatestExecutionByTaskID.
 const executionDetailColumns = `
-	id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
+	id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, started_at, completed_at,
 	COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_total, 0),
 	COALESCE(tokens_cache_read, 0), COALESCE(tokens_cache_write, 0),
 	COALESCE(estimated_cost_usd, 0), COALESCE(files_changed, 0), COALESCE(lines_added, 0),
@@ -624,10 +625,11 @@ type rowScanner interface {
 // scanExecutionDetail scans a row selected via executionDetailColumns into an Execution.
 func scanExecutionDetail(row rowScanner) (*Execution, error) {
 	var exec Execution
+	var startedAt sql.NullTime
 	var completedAt sql.NullTime
 	var approvalDecisionAt sql.NullTime
 	var labelsJSON string
-	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
+	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &startedAt, &completedAt,
 		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.TokensCacheRead, &exec.TokensCacheWrite,
 		&exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
 		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
@@ -638,6 +640,9 @@ func scanExecutionDetail(row rowScanner) (*Execution, error) {
 		return nil, err
 	}
 	exec.TaskLabels = unmarshalLabels(labelsJSON)
+	if startedAt.Valid {
+		exec.StartedAt = &startedAt.Time
+	}
 	if approvalDecisionAt.Valid {
 		exec.ApprovalDecisionAt = &approvalDecisionAt.Time
 	}
@@ -2580,6 +2585,121 @@ func (s *Store) GetLifetimePRTimeToMerge() ([]time.Duration, error) {
 		}
 	}
 	return samples, nil
+}
+
+// timedSample pairs a histogram observation with the wall-clock time it
+// occurred, so callers can sort chronologically before applying a
+// most-recent-N cap (Metrics.maxSamples) — execution_events queries return
+// results keyed by a Go map, which has no stable iteration order.
+type timedSample struct {
+	at time.Time
+	d  time.Duration
+}
+
+func sortedDurations(samples []timedSample) []time.Duration {
+	sort.Slice(samples, func(i, j int) bool { return samples[i].at.Before(samples[j].at) })
+	out := make([]time.Duration, len(samples))
+	for i, sm := range samples {
+		out[i] = sm.d
+	}
+	return out
+}
+
+// GetLifetimeTimeToPR derives pilot_time_to_pr_seconds histogram samples from
+// execution_events timestamps: for every execution_id that has both a
+// 'running' and a 'pr_created' row, the sample is the earliest 'pr_created'
+// occurred_at minus the earliest 'running' occurred_at (GH-4211, mirrors
+// GetLifetimePRTimeToMerge). Samples are returned oldest-first so a caller
+// capping to the most recent N keeps the right tail.
+func (s *Store) GetLifetimeTimeToPR() ([]time.Duration, error) {
+	running, err := s.earliestStageOccurrences(StageRunning)
+	if err != nil {
+		return nil, err
+	}
+	created, err := s.earliestStageOccurrences(StagePRCreated)
+	if err != nil {
+		return nil, err
+	}
+
+	var samples []timedSample
+	for execID, createdAt := range created {
+		startedAt, ok := running[execID]
+		if !ok {
+			continue
+		}
+		if d := createdAt.Sub(startedAt); d > 0 {
+			samples = append(samples, timedSample{at: createdAt, d: d})
+		}
+	}
+	return sortedDurations(samples), nil
+}
+
+// GetLifetimeQueueWait derives pilot_queue_wait_seconds histogram samples
+// directly from the executions table: for every row with a non-null
+// started_at, the sample is started_at minus created_at (GH-4211). Unlike
+// GetLifetimeTimeToPR/GetLifetimePRTimeToMerge this reads executions, not
+// execution_events — queue wait is a property of the execution row itself,
+// not a ledger transition. Samples are returned oldest-first.
+func (s *Store) GetLifetimeQueueWait() ([]time.Duration, error) {
+	rows, err := s.db.Query(`
+		SELECT created_at, started_at
+		FROM executions
+		WHERE started_at IS NOT NULL
+		ORDER BY started_at ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query queue wait samples: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var samples []time.Duration
+	for rows.Next() {
+		var createdAt, startedAt time.Time
+		if err := rows.Scan(&createdAt, &startedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan queue wait row: %w", err)
+		}
+		if d := startedAt.Sub(createdAt); d > 0 {
+			samples = append(samples, d)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate queue wait rows: %w", err)
+	}
+	return samples, nil
+}
+
+// GetLifetimeApprovalWait derives pilot_approval_wait_seconds histogram
+// samples from execution_events timestamps: for every execution_id that has
+// both an 'awaiting_approval' and a 'merged' row, the sample is the earliest
+// 'merged' occurred_at minus the earliest 'awaiting_approval' occurred_at
+// (GH-4211). The live path (Controller.applyApprovalDecision) also observes
+// a sample when approval is rejected/times out, but that decision itself is
+// never durably persisted as a distinct ledger stage — only the terminal
+// 'merged' transition is — so a rejected/timed-out approval has no
+// ledger-derivable pair and is not represented here (reset-on-restart for
+// that subset, same as the operational counters documented below). Samples
+// are returned oldest-first.
+func (s *Store) GetLifetimeApprovalWait() ([]time.Duration, error) {
+	awaiting, err := s.earliestStageOccurrences(StageAwaitingApproval)
+	if err != nil {
+		return nil, err
+	}
+	merged, err := s.earliestStageOccurrences(StageMerged)
+	if err != nil {
+		return nil, err
+	}
+
+	var samples []timedSample
+	for execID, mergedAt := range merged {
+		awaitingAt, ok := awaiting[execID]
+		if !ok {
+			continue
+		}
+		if d := mergedAt.Sub(awaitingAt); d > 0 {
+			samples = append(samples, timedSample{at: mergedAt, d: d})
+		}
+	}
+	return sortedDurations(samples), nil
 }
 
 // EndSession marks a session as ended.

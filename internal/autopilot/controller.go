@@ -873,16 +873,34 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 	c.activePRs[prNumber] = prState
 	c.mu.Unlock()
 
-	// GH-4130: observe pilot_time_to_pr_seconds / pilot_queue_wait_seconds now
-	// that the PR exists — this is the first point autopilot sees the issue's
+	// GH-4130/GH-4211: observe pilot_time_to_pr_seconds / pilot_queue_wait_seconds
+	// now that the PR exists — this is the first point autopilot sees the issue's
 	// execution, so it's the natural place to read started_at/created_at off
-	// the execution row (taskID resolution mirrors recordExecutionEvent).
+	// the execution row (taskID resolution mirrors recordExecutionEvent). Every
+	// skip path logs a warning (fail-loud, TASK-379) instead of silently eating
+	// the sample — this guard previously swallowed every observation because
+	// GetLatestExecutionByTaskID never populated exec.StartedAt (GH-4211 D1).
 	if c.memoryStore != nil {
 		taskID := fmt.Sprintf("GH-%d", issueNumber)
 		if issueNumber == 0 {
 			taskID = fmt.Sprintf("PR-%d", prNumber)
+			c.log.Warn("GH-4211: PR-created event carried no issue number — time-to-PR/queue-wait taskID falls back to PR-N, which will not match any GH-N execution row",
+				"pr", prNumber, "task_id", taskID)
 		}
-		if exec, err := c.memoryStore.GetLatestExecutionByTaskID(taskID); err == nil && exec.StartedAt != nil {
+		exec, err := c.memoryStore.GetLatestExecutionByTaskID(taskID)
+		switch {
+		case err != nil:
+			if !errors.Is(err, sql.ErrNoRows) {
+				c.log.Warn("GH-4211: time-to-PR/queue-wait observation skipped — execution lookup failed",
+					"pr", prNumber, "task_id", taskID, "error", err)
+			} else {
+				c.log.Warn("GH-4211: time-to-PR/queue-wait observation skipped — no execution row for task",
+					"pr", prNumber, "task_id", taskID)
+			}
+		case exec.StartedAt == nil:
+			c.log.Warn("GH-4211: time-to-PR/queue-wait observation skipped — execution row has no started_at",
+				"pr", prNumber, "task_id", taskID, "execution_id", exec.ID)
+		default:
 			c.metrics.RecordTimeToPR(time.Since(*exec.StartedAt))
 			c.metrics.RecordQueueWaitDuration(exec.StartedAt.Sub(exec.CreatedAt))
 		}
@@ -1747,6 +1765,14 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 	// request was submitted (functionally the awaiting_approval entry point) to
 	// this merge decision being applied — covers both the SetApprovalDecision
 	// webhook path and the wall-clock-expiry default-action path (Path 3 above).
+	//
+	// GH-4211: unlike time-to-PR/queue-wait (OnPRCreated above), this trigger
+	// does NOT go through GetLatestExecutionByTaskID/exec.StartedAt at all — it
+	// reads prState.ApprovalRequestedAt, an in-memory field set directly by
+	// submitAsyncApprovalRequest/the timeout branch — so it was never subject to
+	// D1's missing-column bug and needs no live-path fix. It IS still subject to
+	// D2 (reset to zero on restart, since activePRs is in-memory and not
+	// reloaded), which GetLifetimeApprovalWait/HydrateFromStore now covers.
 	if !prState.ApprovalRequestedAt.IsZero() {
 		c.metrics.RecordApprovalWaitDuration(time.Since(prState.ApprovalRequestedAt))
 	}

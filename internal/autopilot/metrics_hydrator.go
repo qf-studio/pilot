@@ -103,6 +103,37 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 		metrics.RecordPRTimeToMerge(d)
 	}
 
+	// GH-4211: the TASK-393/GH-4128 throughput histograms (pilot_time_to_pr_seconds,
+	// pilot_queue_wait_seconds, pilot_approval_wait_seconds) reset to zero on every
+	// restart same as pilot_pr_time_to_merge_seconds above — reconstruct them from
+	// the ledger/executions table so a daily self-upgrade restart doesn't wipe the
+	// throughput view. Each Record* call self-caps at Metrics.maxSamples, and the
+	// three Get* queries return samples oldest-first, so the cap keeps the most
+	// recent N regardless of how many lifetime rows exist.
+	timeToPR, err := store.GetLifetimeTimeToPR()
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: lifetime time-to-PR: %w", err)
+	}
+	for _, d := range timeToPR {
+		metrics.RecordTimeToPR(d)
+	}
+
+	queueWait, err := store.GetLifetimeQueueWait()
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: lifetime queue wait: %w", err)
+	}
+	for _, d := range queueWait {
+		metrics.RecordQueueWaitDuration(d)
+	}
+
+	approvalWait, err := store.GetLifetimeApprovalWait()
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: lifetime approval wait: %w", err)
+	}
+	for _, d := range approvalWait {
+		metrics.RecordApprovalWaitDuration(d)
+	}
+
 	// The remaining counters are intentionally NOT hydrated here — they have no
 	// durable per-event source to hydrate from (unlike execution_events, which
 	// is an append-only ledger keyed off executions.id) and reset to zero on
