@@ -1,9 +1,19 @@
 name: Pilot Synthetic Pipeline Canary
 
-# TASK-379 V8: proves the deployed daemon still ships code end-to-end
-# (poll -> spec -> execute -> PR -> merge) by filing a real issue on a
-# sandbox repo and watching it travel through the real pipeline. Runs
-# from outside the daemon (GitHub Actions) so it survives daemon death.
+# TASK-379 V8 (scenario abstraction added by TASK-403 A2): proves the
+# deployed daemon still ships code end-to-end (poll -> spec -> execute ->
+# PR -> merge) by filing a real issue on a sandbox repo and watching it
+# travel through the real pipeline. Runs from outside the daemon (GitHub
+# Actions) so it survives daemon death.
+#
+# Each job below is one scenario, calling the shared
+# `pilot-canary-scenario.yml` reusable workflow with its own issue
+# title/body and terminal-condition assertion. Guards, sandbox labels, and
+# alert titles are scoped per scenario (`canary-scenario-<name>`) so
+# scenarios never collide on idempotency or alert dedup. Add a new
+# scenario by adding a new job here -- no changes to the reusable workflow
+# or scripts/canary-poll.sh are required unless the scenario needs a
+# terminal condition the poll script doesn't support yet.
 #
 # Modeled on the existing production precedent:
 # .github/workflows/brew-tap-token-canary.yml (schedule -> check ->
@@ -14,197 +24,69 @@ on:
     - cron: '0 */6 * * *'  # every 6 hours
   workflow_dispatch: {}
 
-env:
-  SANDBOX_REPO: qf-studio/pilot-canary-sandbox
-  ALERT_REPO: qf-studio/pilot
-  # Must exceed the poller's in-memory retry grace period (GH-2201,
-  # internal/adapters/github/poller.go:428, default 5m) so a
-  # slow-but-working run does not false-alarm.
-  CANARY_TIMEOUT_MINUTES: 35
-  POLL_INTERVAL_SECONDS: 60
-
 permissions:
   contents: read
   issues: write
   pull-requests: read
 
 jobs:
-  canary:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Idempotency guard
-        id: guard
-        env:
-          GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
-        run: |
-          set -euo pipefail
+  version-bump:
+    uses: ./.github/workflows/pilot-canary-scenario.yml
+    secrets:
+      canary_gh_token: ${{ secrets.CANARY_GH_TOKEN }}
+    with:
+      scenario_name: version-bump
+      sandbox_repo: qf-studio/pilot-canary-sandbox
+      alert_repo: qf-studio/pilot
+      assert_mode: merged
+      # Must exceed the poller's in-memory retry grace period (GH-2201,
+      # internal/adapters/github/poller.go:428, default 5m) so a
+      # slow-but-working run does not false-alarm.
+      timeout_minutes: 35
+      poll_interval_seconds: 60
+      issue_title: "chore(version): bump patch for canary run"
+      issue_body: |
+        ## Context
 
-          OPEN_COUNT=$(gh issue list \
-            --repo "$SANDBOX_REPO" \
-            --label pilot \
-            --state open \
-            --json number \
-            --jq 'length')
+        Synthetic canary run (TASK-379 V8, scenario `version-bump`). This
+        issue exists to prove the deployed Pilot daemon still ships code
+        end-to-end (poll -> spec -> execute -> PR -> merge).
 
-          if [ "$OPEN_COUNT" -gt 0 ]; then
-            echo "A pilot-labeled canary issue is already open on $SANDBOX_REPO — a prior run is still in flight. Skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No open canary issue found — proceeding."
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+        ## Acceptance
 
-      - name: File synthetic canary issue
-        id: file_issue
-        if: steps.guard.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
-        run: |
-          set -euo pipefail
+        - [ ] Read the current PATCH component of the `Version` constant in
+              `version.go` and increment it by exactly one (current+1). Do
+              not assume a starting value -- derive the target from what is
+              in the file.
+        - [ ] Change only that single line so `version_test.go` (semver
+              guard) stays green.
+        - [ ] Do not touch any other file.
 
-          TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-          TITLE="chore(version): bump patch for canary run $TIMESTAMP"
-          BODY=$(cat <<EOF
-          ## Context
+        ## Implementation
 
-          Synthetic canary run (TASK-379 V8). This issue exists to prove the
-          deployed Pilot daemon still ships code end-to-end (poll -> spec ->
-          execute -> PR -> merge).
+        Edit the `const Version` line in `version.go`. Nothing else.
 
-          ## Acceptance
-
-          - [ ] Read the current PATCH component of the \`Version\` constant in
-                \`version.go\` and increment it by exactly one (current+1). Do
-                not assume a starting value -- derive the target from what is
-                in the file.
-          - [ ] Change only that single line so \`version_test.go\` (semver
-                guard) stays green.
-          - [ ] Do not touch any other file.
-
-          ## Implementation
-
-          Edit the \`const Version\` line in \`version.go\`. Nothing else.
-          EOF
-          )
-
-          ISSUE_URL=$(gh issue create \
-            --repo "$SANDBOX_REPO" \
-            --title "$TITLE" \
-            --label pilot \
-            --body "$BODY")
-
-          ISSUE_NUMBER=$(basename "$ISSUE_URL")
-          echo "Filed canary issue $SANDBOX_REPO#$ISSUE_NUMBER"
-          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
-
-      - name: Poll for pipeline progression
-        id: poll
-        if: steps.guard.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
-          ISSUE_NUMBER: ${{ steps.file_issue.outputs.issue_number }}
-        run: |
-          set -uo pipefail
-
-          DEADLINE=$(( $(date -u +%s) + CANARY_TIMEOUT_MINUTES * 60 ))
-          STAGE="issue-filed"
-          PR_NUMBER=""
-          RESULT="failure"
-
-          while [ "$(date -u +%s)" -lt "$DEADLINE" ]; do
-            if [ -z "$PR_NUMBER" ]; then
-              # Pilot branches follow `pilot/GH-<issue-number>` (project
-              # convention); fall back to a body reference in case the
-              # branch-naming convention drifts.
-              PR_NUMBER=$(gh pr list \
-                --repo "$SANDBOX_REPO" \
-                --state all \
-                --json number,headRefName,body \
-                | jq -r --arg n "$ISSUE_NUMBER" \
-                  '[.[] | select(.headRefName == ("pilot/GH-" + $n) or ((.body // "") | test("#" + $n)))][0].number // empty')
-
-              if [ -n "$PR_NUMBER" ]; then
-                STAGE="PR-opened"
-                echo "Found PR #$PR_NUMBER referencing canary issue #$ISSUE_NUMBER."
-              fi
-            else
-              PR_JSON=$(gh pr view "$PR_NUMBER" --repo "$SANDBOX_REPO" --json state,mergedAt)
-              PR_STATE=$(echo "$PR_JSON" | jq -r '.state')
-              MERGED_AT=$(echo "$PR_JSON" | jq -r '.mergedAt')
-
-              if [ "$PR_STATE" = "MERGED" ] && [ "$MERGED_AT" != "null" ]; then
-                STAGE="merged"
-                RESULT="success"
-                break
-              elif [ "$PR_STATE" = "CLOSED" ]; then
-                STAGE="merge-stalled"
-                echo "PR #$PR_NUMBER was closed without merging."
-                break
-              fi
-            fi
-
-            sleep "$POLL_INTERVAL_SECONDS"
-          done
-
-          if [ "$RESULT" != "success" ] && [ "$STAGE" != "merge-stalled" ] && [ -n "$PR_NUMBER" ]; then
-            STAGE="merge-stalled"
-          fi
-
-          echo "Final stage: $STAGE (result: $RESULT)"
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
-
-          if [ "$RESULT" != "success" ]; then
-            exit 1
-          fi
-
-      - name: Close canary issue on success
-        if: steps.guard.outputs.skip != 'true' && steps.poll.outputs.result == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          ISSUE_NUMBER="${{ steps.file_issue.outputs.issue_number }}"
-          STATE=$(gh issue view "$ISSUE_NUMBER" --repo "$SANDBOX_REPO" --json state --jq '.state')
-
-          if [ "$STATE" = "OPEN" ]; then
-            gh issue close "$ISSUE_NUMBER" \
-              --repo "$SANDBOX_REPO" \
-              --comment "Canary PR #${{ steps.poll.outputs.pr_number }} merged — pipeline verified end-to-end."
-          else
-            echo "Canary issue already closed (auto-closed by merge)."
-          fi
-
-      - name: File deduped pipeline-stall alert
-        if: failure() && steps.guard.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          TITLE="[canary] pipeline stall"
-          STAGE="${{ steps.poll.outputs.stage || 'issue-filed' }}"
-          ISSUE_NUMBER="${{ steps.file_issue.outputs.issue_number }}"
-
-          EXISTING=$(gh issue list \
-            --repo "$ALERT_REPO" \
-            --state open \
-            --search "$TITLE in:title" \
-            --json number,title \
-            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
-
-          if [ -n "$EXISTING" ]; then
-            echo "Alert issue #$EXISTING already open — adding status comment."
-            gh issue comment "$EXISTING" \
-              --repo "$ALERT_REPO" \
-              --body "Canary re-triggered $(date -u '+%Y-%m-%d %H:%M UTC'): stalled at stage \`$STAGE\` (canary issue $SANDBOX_REPO#$ISSUE_NUMBER)."
-          else
-            echo "Creating new alert issue."
-            gh issue create \
-              --repo "$ALERT_REPO" \
-              --title "$TITLE" \
-              --label bug \
-              --body "Synthetic end-to-end pipeline canary stalled at stage \`$STAGE\`. Canary issue: $SANDBOX_REPO#$ISSUE_NUMBER. Investigate daemon health (poll -> spec -> execute -> PR -> merge). See TASK-379 V8."
-          fi
+  # Stub scenario (commented out, not a live job) proving the abstraction
+  # scales to a second, independently scoped scenario -- epic-lifecycle
+  # coverage, TASK-403 A3. It demonstrates a second scenario is added as a
+  # plain job, with its own labels (canary-scenario-epic-lifecycle) and
+  # alert title ([canary:epic-lifecycle] pipeline stall), without touching
+  # the version-bump job, the reusable workflow, or
+  # scripts/canary-poll.sh. TASK-403 A3 will flesh out the real issue
+  # template and implement the `n-children-merged` assert mode in
+  # scripts/canary-poll.sh, then uncomment (and un-stub) a job like this.
+  #
+  # epic-lifecycle-stub:
+  #   uses: ./.github/workflows/pilot-canary-scenario.yml
+  #   secrets:
+  #     canary_gh_token: ${{ secrets.CANARY_GH_TOKEN }}
+  #   with:
+  #     scenario_name: epic-lifecycle
+  #     sandbox_repo: qf-studio/pilot-canary-sandbox
+  #     alert_repo: qf-studio/pilot
+  #     assert_mode: n-children-merged
+  #     timeout_minutes: 35
+  #     poll_interval_seconds: 60
+  #     issue_title: "chore(epic): canary epic-lifecycle scenario (TASK-403 A3)"
+  #     issue_body: |
+  #       Epic-lifecycle scenario body -- see TASK-403 A3.
