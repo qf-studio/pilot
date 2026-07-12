@@ -348,6 +348,112 @@ func TestExecuteSubIssues_CallbackNotFiredOnExecError(t *testing.T) {
 	}
 }
 
+// GH-4212: RegisterOnSubIssuePRCreated lets a per-repo callback take priority
+// over the legacy singular SetOnSubIssuePRCreated slot, and ExecuteSubIssues
+// resolves it via the parent task's SourceAdapter/SourceRepo — the same
+// keying scheme RegisterPRCreator already uses for PR creation.
+func TestExecuteSubIssues_PerRepoCallbackTakesPriorityOverLegacy(t *testing.T) {
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		return &ExecutionResult{
+			TaskID:    task.ID,
+			Success:   true,
+			PRUrl:     "https://github.com/acme/widgets/pull/500",
+			CommitSHA: "feed1234",
+		}, nil
+	}
+
+	runner := newTestRunnerWithExecFunc(execFn)
+
+	legacyFired := false
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName, issueNodeID string) {
+		legacyFired = true
+	})
+
+	var perRepoCall subIssuePRCall
+	perRepoFired := false
+	runner.RegisterOnSubIssuePRCreated("github:acme/widgets", func(prNumber int, prURL string, issueNumber int, commitSHA, branchName, issueNodeID string) {
+		perRepoFired = true
+		perRepoCall = subIssuePRCall{
+			PRNumber:    prNumber,
+			PRURL:       prURL,
+			IssueNumber: issueNumber,
+			CommitSHA:   commitSHA,
+			BranchName:  branchName,
+		}
+	})
+
+	parent := &Task{
+		ID:            "GH-95",
+		Title:         "[epic] Multi-repo callback",
+		SourceAdapter: "github",
+		SourceRepo:    "acme/widgets",
+	}
+	issues := []CreatedIssue{
+		{Number: 95, Subtask: PlannedSubtask{Title: "Task", Description: "desc", Order: 1}},
+	}
+
+	if err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, ""); err != nil {
+		t.Fatalf("ExecuteSubIssues returned error: %v", err)
+	}
+
+	if !perRepoFired {
+		t.Fatal("expected the per-repo registered callback to fire")
+	}
+	if legacyFired {
+		t.Error("legacy singular callback should not fire once a per-repo callback is registered for the same repo")
+	}
+	if perRepoCall.PRNumber != 500 {
+		t.Errorf("per-repo callback PRNumber = %d, want 500", perRepoCall.PRNumber)
+	}
+	if perRepoCall.IssueNumber != 95 {
+		t.Errorf("per-repo callback IssueNumber = %d, want 95", perRepoCall.IssueNumber)
+	}
+}
+
+// GH-4212: a repo with no per-repo registration (e.g. the legacy default
+// repo, or before any RegisterOnSubIssuePRCreated call) still falls back to
+// the singular SetOnSubIssuePRCreated slot — no functional regression for
+// the existing single-repo deployment shape.
+func TestExecuteSubIssues_FallsBackToLegacyWhenNoPerRepoMatch(t *testing.T) {
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		return &ExecutionResult{
+			TaskID:    task.ID,
+			Success:   true,
+			PRUrl:     "https://github.com/acme/other/pull/600",
+			CommitSHA: "deadfeed",
+		}, nil
+	}
+
+	runner := newTestRunnerWithExecFunc(execFn)
+
+	legacyFired := false
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName, issueNodeID string) {
+		legacyFired = true
+	})
+	// Registered for a different repo — must not be consulted for "acme/other".
+	runner.RegisterOnSubIssuePRCreated("github:acme/widgets", func(prNumber int, prURL string, issueNumber int, commitSHA, branchName, issueNodeID string) {
+		t.Error("callback registered for a different repo must not fire")
+	})
+
+	parent := &Task{
+		ID:            "GH-96",
+		Title:         "[epic] Fallback to legacy",
+		SourceAdapter: "github",
+		SourceRepo:    "acme/other",
+	}
+	issues := []CreatedIssue{
+		{Number: 96, Subtask: PlannedSubtask{Title: "Task", Description: "desc", Order: 1}},
+	}
+
+	if err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, ""); err != nil {
+		t.Fatalf("ExecuteSubIssues returned error: %v", err)
+	}
+
+	if !legacyFired {
+		t.Fatal("expected fallback to the legacy singular callback when no per-repo match exists")
+	}
+}
+
 func TestParsePRNumberFromURL(t *testing.T) {
 	tests := []struct {
 		name     string

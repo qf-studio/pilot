@@ -631,7 +631,7 @@ type Runner struct {
 	subtaskParser          *SubtaskParser                                                  // Haiku-based subtask parser; nil falls back to regex (GH-501)
 	suppressProgressLogs   bool                                                            // Suppress slog output for progress (use when visual display is active)
 	tokenLimitCheck        TokenLimitCallback                                              // Optional per-task token/duration limit check (GH-539)
-	onSubIssuePRCreated    SubIssuePRCallback                                              // Optional callback when a sub-issue PR is created (GH-596)
+	onSubIssuePRCreated    SubIssuePRCallback                                              // Optional legacy single-slot callback when a sub-issue PR is created (GH-596)
 	subIssueMergeWait      SubIssueMergeWaitFn                                             // Optional fn to block between sub-issues until PR is merged (GH-2178)
 	subIssuePollerSkip     SubIssuePollerSkipFn                                            // GH-3240: marks sub-issues in poller so they aren't re-dispatched
 	intentJudge            *IntentJudge                                                    // Optional intent judge for diff-vs-ticket alignment (GH-624)
@@ -660,6 +660,11 @@ type Runner struct {
 	// which legacy handlers still mutate per-event.
 	prCreators   map[string]PRCreator
 	prCreatorsMu sync.RWMutex
+	// onSubIssuePRCreatedByRepo holds startup-registered per-repo sub-issue
+	// PR-created callbacks keyed "adapter:owner/repo" (GH-4212), mirroring
+	// prCreators. Falls back to the legacy singular onSubIssuePRCreated slot.
+	onSubIssuePRCreatedByRepo map[string]SubIssuePRCallback
+	onSubIssuePRCreatedMu     sync.RWMutex
 	// GH-2211: SubIssueLinker for native GitHub sub-issue API linking
 	subIssueLinker SubIssueLinker // Optional linker for native GitHub parent→child wiring
 	// GH-1599: Execution log store for milestone entries
@@ -1080,8 +1085,46 @@ func (r *Runner) SetTokenLimitCheck(cb TokenLimitCallback) {
 // SetOnSubIssuePRCreated sets the callback invoked when a sub-issue PR is created
 // during epic execution (GH-588). This allows the autopilot controller to track
 // each sub-issue PR individually for CI monitoring and auto-merge.
+//
+// This is a single, process-wide slot — main.go binds it to one legacy
+// "default repo" controller. RegisterOnSubIssuePRCreated below is the
+// per-repo counterpart and takes priority when a match is registered.
 func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
 	r.onSubIssuePRCreated = fn
+}
+
+// RegisterOnSubIssuePRCreated registers a per-repo callback invoked when a
+// sub-issue PR is created during epic execution, keyed "adapter:owner/repo"
+// (same scheme as RegisterPRCreator). GH-4212: epic sub-issue PRs are created
+// deep inside Runner.Execute and never flow back through a poller-awaited
+// execution, so the only way autopilot learns about them is this callback —
+// but the legacy SetOnSubIssuePRCreated slot is bound to a single controller
+// at startup, so any repo other than that one legacy default silently gets
+// no sub-issue PR notification (and therefore no pilot_time_to_pr_seconds
+// observation) in multi-repo (projects[]) deployments. onSubIssuePRCreatedFor
+// falls back to the legacy singular slot when no per-repo registration exists.
+func (r *Runner) RegisterOnSubIssuePRCreated(key string, fn SubIssuePRCallback) {
+	r.onSubIssuePRCreatedMu.Lock()
+	defer r.onSubIssuePRCreatedMu.Unlock()
+	if r.onSubIssuePRCreatedByRepo == nil {
+		r.onSubIssuePRCreatedByRepo = make(map[string]SubIssuePRCallback)
+	}
+	r.onSubIssuePRCreatedByRepo[key] = fn
+}
+
+// onSubIssuePRCreatedFor returns the callback registered for "adapter:repo",
+// or the legacy singular fallback (r.onSubIssuePRCreated) when adapter/repo
+// are empty or no per-repo registration matches.
+func (r *Runner) onSubIssuePRCreatedFor(adapter, repo string) SubIssuePRCallback {
+	if adapter != "" && repo != "" {
+		r.onSubIssuePRCreatedMu.RLock()
+		fn := r.onSubIssuePRCreatedByRepo[adapter+":"+repo]
+		r.onSubIssuePRCreatedMu.RUnlock()
+		if fn != nil {
+			return fn
+		}
+	}
+	return r.onSubIssuePRCreated
 }
 
 // SetSubIssueMergeWait sets the function that blocks between sequential sub-issues until

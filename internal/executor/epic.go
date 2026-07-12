@@ -2140,14 +2140,19 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 
 		r.finalizeSubIssueExecution(subExecID, "completed", result, subExecStart)
 
-		// Register sub-issue PR with autopilot controller (GH-596)
-		// Note: PR callback uses int issueNumber for GitHub compatibility
-		if result.PRUrl != "" && r.onSubIssuePRCreated != nil {
-			if prNum := parsePRNumberFromURL(result.PRUrl); prNum > 0 {
-				r.onSubIssuePRCreated(prNum, result.PRUrl, issue.Number, result.CommitSHA, subTask.Branch, "")
-			} else {
-				r.log.Warn("Failed to extract PR number from sub-issue PR URL",
-					"pr_url", result.PRUrl)
+		// Register sub-issue PR with autopilot controller (GH-596).
+		// GH-4212: resolve per-repo first (falls back to the legacy singular
+		// slot) so multi-repo deployments notify the controller that actually
+		// owns parent.SourceRepo instead of whichever repo main.go's single
+		// legacy default happened to bind at startup.
+		if result.PRUrl != "" {
+			if fn := r.onSubIssuePRCreatedFor(parent.SourceAdapter, parent.SourceRepo); fn != nil {
+				if prNum := parsePRNumberFromURL(result.PRUrl); prNum > 0 {
+					fn(prNum, result.PRUrl, issue.Number, result.CommitSHA, subTask.Branch, "")
+				} else {
+					r.log.Warn("Failed to extract PR number from sub-issue PR URL",
+						"pr_url", result.PRUrl)
+				}
 			}
 		}
 

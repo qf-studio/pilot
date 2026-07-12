@@ -309,6 +309,17 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 			ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, issueNumber, prEv.HeadSHA, prEv.BranchName, prEv.IssueNodeID)
 		}
 		pollerDeps.IssueMetricsRecorder = ctrl.Metrics()
+
+		// GH-4212: epic sub-issue PRs are created deep inside Runner.Execute and
+		// never flow back through this poller's own event loop, so they need
+		// their own per-repo notification path — mirrors RegisterPRCreator
+		// below. Without this, main.go's single legacy SetOnSubIssuePRCreated
+		// slot silently drops sub-issue PR notifications (and the
+		// pilot_time_to_pr_seconds/pilot_queue_wait_seconds observation that
+		// depends on them) for every repo but the one legacy default.
+		if deps.Runner != nil {
+			deps.Runner.RegisterOnSubIssuePRCreated("github:"+target.repoFullName, ctrl.OnPRCreated)
+		}
 	} else if len(deps.AutopilotControllers) > 0 {
 		repoLog.Error("GitHub SDK poller: no autopilot controller for repo — PRs from this repo will not be auto-merged; check projects[] vs autopilot config")
 	}
