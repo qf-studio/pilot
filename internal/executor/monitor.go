@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // TaskStatus represents the status of a task
@@ -66,6 +68,58 @@ func (m *Monitor) Register(taskID, title, issueURL string) {
 	}
 }
 
+// Hydrate seeds a task's state directly from persisted data, bypassing the
+// normal Register→Queue/Start transition sequence. Used at startup to
+// reconstruct monitor state from DB rows after a restart (GH-4246) — plain
+// Register would leave every hydrated task stuck at "pending" and drop
+// StartedAt for already-running tasks.
+func (m *Monitor) Hydrate(taskID, title, issueURL string, status TaskStatus, startedAt *time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state := &TaskState{
+		ID:       taskID,
+		Title:    title,
+		IssueURL: issueURL,
+		Status:   status,
+	}
+	switch status {
+	case StatusRunning:
+		state.Phase = "Running"
+		state.StartedAt = startedAt
+	default:
+		state.Phase = "Queued"
+	}
+	m.tasks[taskID] = state
+}
+
+// HydrateFromStore seeds the monitor from the store's non-terminal execution
+// rows (see Hydrate and memory.Store.GetTasksForMonitorHydration). Call once
+// at startup, after both the monitor and store are constructed and before
+// the dashboard's first refresh tick, so a restart with queued or running
+// work in the DB doesn't leave the queue/progress view blind (GH-4246).
+func (m *Monitor) HydrateFromStore(store *memory.Store) error {
+	if store == nil {
+		return nil
+	}
+	tasks, err := store.GetTasksForMonitorHydration()
+	if err != nil {
+		return fmt.Errorf("hydrate monitor from store: %w", err)
+	}
+	for _, t := range tasks {
+		status := TaskStatus(t.Status)
+		if status == StatusPending {
+			status = StatusQueued
+		}
+		title := t.Title
+		if title == "" {
+			title = t.TaskID
+		}
+		m.Hydrate(t.TaskID, title, t.IssueURL, status, t.StartedAt)
+	}
+	return nil
+}
+
 // SetProjectInfo sets the project path and name for a task (GH-2167).
 func (m *Monitor) SetProjectInfo(taskID, projectPath, projectName string) {
 	m.mu.Lock()
@@ -104,19 +158,27 @@ func (m *Monitor) Start(taskID string) {
 
 // UpdateProgress updates task progress.
 // Progress is monotonic — never decreases (except reset to 0 on task start).
+// An unknown taskID creates a minimal running entry instead of dropping the
+// event (GH-4246): a progress event is proof the task is executing, and
+// silently discarding it is what made post-restart running tasks invisible
+// even though they were live — visible only in logs, never in the monitor.
 func (m *Monitor) UpdateProgress(taskID, phase string, progress int, message string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if state, ok := m.tasks[taskID]; ok {
-		state.Phase = phase
-		// Enforce monotonic progress (never go backwards)
-		if progress >= state.Progress {
-			state.Progress = progress
-		}
-		if message != "" {
-			state.Message = message
-		}
+	state, ok := m.tasks[taskID]
+	if !ok {
+		state = &TaskState{ID: taskID, Title: taskID, Status: StatusRunning}
+		m.tasks[taskID] = state
+	}
+
+	state.Phase = phase
+	// Enforce monotonic progress (never go backwards)
+	if progress >= state.Progress {
+		state.Progress = progress
+	}
+	if message != "" {
+		state.Message = message
 	}
 }
 

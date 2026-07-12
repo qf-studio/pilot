@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 func TestNewMonitor(t *testing.T) {
@@ -232,9 +234,9 @@ func TestMonitorGetNonexistent(t *testing.T) {
 func TestMonitorOperationsOnNonexistent(t *testing.T) {
 	monitor := NewMonitor()
 
-	// These should not panic on nonexistent tasks
+	// These should not panic on nonexistent tasks, and stay no-ops (unlike
+	// UpdateProgress, see TestMonitorUpdateProgressCreatesUnknownTask).
 	monitor.Start("nonexistent")
-	monitor.UpdateProgress("nonexistent", "Phase", 50, "Message")
 	monitor.Complete("nonexistent", "url")
 	monitor.Fail("nonexistent", "error")
 	monitor.Cancel("nonexistent")
@@ -243,6 +245,36 @@ func TestMonitorOperationsOnNonexistent(t *testing.T) {
 	// Count should still be 0
 	if monitor.Count() != 0 {
 		t.Errorf("Count should be 0, got %d", monitor.Count())
+	}
+}
+
+// GH-4246: a progress event for a taskID the monitor has never seen (e.g. a
+// hydration race, or a task whose Register call was lost across a restart)
+// must create the entry rather than silently drop the event — this was the
+// live-view half of the "queue panel blind after restart" defect.
+func TestMonitorUpdateProgressCreatesUnknownTask(t *testing.T) {
+	monitor := NewMonitor()
+
+	monitor.UpdateProgress("unknown-task", "IMPL", 42, "Working...")
+
+	state, ok := monitor.Get("unknown-task")
+	if !ok {
+		t.Fatal("UpdateProgress should create an entry for an unknown taskID")
+	}
+	if state.Status != StatusRunning {
+		t.Errorf("Expected status running for auto-created entry, got %s", state.Status)
+	}
+	if state.Phase != "IMPL" {
+		t.Errorf("Expected phase 'IMPL', got '%s'", state.Phase)
+	}
+	if state.Progress != 42 {
+		t.Errorf("Expected progress 42, got %d", state.Progress)
+	}
+	if state.Message != "Working..." {
+		t.Errorf("Expected message 'Working...', got '%s'", state.Message)
+	}
+	if monitor.Count() != 1 {
+		t.Errorf("Expected count 1 after auto-create, got %d", monitor.Count())
 	}
 }
 
@@ -456,4 +488,103 @@ func TestMonitorSetProjectInfo_NonExistent(t *testing.T) {
 	m := NewMonitor()
 	// Should not panic on non-existent task
 	m.SetProjectInfo("GH-999", "/tmp/foo", "foo")
+}
+
+// GH-4246: Hydrate reconstructs a task's state directly (bypassing
+// Register→Queue/Start), preserving StartedAt for running tasks so
+// duration display survives a restart.
+func TestMonitorHydrate(t *testing.T) {
+	startedAt := time.Now().Add(-5 * time.Minute)
+
+	m := NewMonitor()
+	m.Hydrate("GH-1", "Queued task", "1", StatusQueued, nil)
+	m.Hydrate("GH-2", "Running task", "2", StatusRunning, &startedAt)
+
+	queued, ok := m.Get("GH-1")
+	if !ok {
+		t.Fatal("GH-1 not found after hydrate")
+	}
+	if queued.Status != StatusQueued {
+		t.Errorf("Expected status queued, got %s", queued.Status)
+	}
+	if queued.Phase != "Queued" {
+		t.Errorf("Expected phase 'Queued', got '%s'", queued.Phase)
+	}
+
+	running, ok := m.Get("GH-2")
+	if !ok {
+		t.Fatal("GH-2 not found after hydrate")
+	}
+	if running.Status != StatusRunning {
+		t.Errorf("Expected status running, got %s", running.Status)
+	}
+	if running.StartedAt == nil || !running.StartedAt.Equal(startedAt) {
+		t.Errorf("Expected StartedAt %v, got %v", startedAt, running.StartedAt)
+	}
+}
+
+// GH-4246: HydrateFromStore seeds the monitor from queued/pending/running DB
+// rows in one call — a daemon restart with active work in the DB must
+// produce a monitor whose GetAll() reflects it within one refresh tick,
+// without waiting for each task's own lifecycle to re-touch the monitor.
+func TestMonitorHydrateFromStore(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	execs := []*memory.Execution{
+		{ID: "e1", TaskID: "GH-10", ProjectPath: "/p", Status: "queued", TaskTitle: "Queued task", TaskSourceIssueID: "10"},
+		{ID: "e2", TaskID: "GH-11", ProjectPath: "/p", Status: "running", TaskTitle: "Running task", TaskSourceIssueID: "11"},
+		{ID: "e3", TaskID: "GH-12", ProjectPath: "/p", Status: "completed", TaskTitle: "Done task"},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", e.ID, err)
+		}
+	}
+	if err := store.UpdateExecutionStatus("e2", "running"); err != nil {
+		t.Fatalf("UpdateExecutionStatus: %v", err)
+	}
+
+	m := NewMonitor()
+	if err := m.HydrateFromStore(store); err != nil {
+		t.Fatalf("HydrateFromStore failed: %v", err)
+	}
+
+	all := m.GetAll()
+	if len(all) != 2 {
+		t.Fatalf("Expected 2 hydrated tasks (queued+running), got %d", len(all))
+	}
+
+	queued, ok := m.Get("GH-10")
+	if !ok {
+		t.Fatal("GH-10 not hydrated")
+	}
+	if queued.Status != StatusQueued || queued.Title != "Queued task" {
+		t.Errorf("Unexpected GH-10 state: %+v", queued)
+	}
+
+	running, ok := m.Get("GH-11")
+	if !ok {
+		t.Fatal("GH-11 not hydrated")
+	}
+	if running.Status != StatusRunning {
+		t.Errorf("Expected GH-11 status running, got %s", running.Status)
+	}
+	if running.StartedAt == nil {
+		t.Error("Expected GH-11 StartedAt to be set")
+	}
+
+	if _, ok := m.Get("GH-12"); ok {
+		t.Error("Completed task GH-12 should not be hydrated")
+	}
+}
+
+func TestMonitorHydrateFromStoreNilStore(t *testing.T) {
+	m := NewMonitor()
+	if err := m.HydrateFromStore(nil); err != nil {
+		t.Errorf("HydrateFromStore(nil) should be a no-op, got error: %v", err)
+	}
+	if m.Count() != 0 {
+		t.Errorf("Expected count 0, got %d", m.Count())
+	}
 }
