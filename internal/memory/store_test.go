@@ -545,6 +545,107 @@ func TestGetDecomposedChildTaskIDs(t *testing.T) {
 	}
 }
 
+// TestGetDecomposedChildren covers GH-4226: the taskID-only (not
+// project-path-scoped) decomposed-children reader used by callers that only
+// have a task_id in hand. Table-driven over well-formed, absent, malformed
+// (missing colon / non-numeric child / empty list), and latest-of-multiple.
+func TestGetDecomposedChildren(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	tests := []struct {
+		name      string
+		taskID    string
+		execID    string
+		details   []string // inserted in order; empty slice means no event at all
+		wantChild []string
+		wantFound bool
+		skipSetup bool // task ID has no execution row at all
+	}{
+		{
+			name:      "well-formed detail",
+			taskID:    "GH-5001",
+			execID:    "exec-5001",
+			details:   []string{"decomposed into 3 children: #5002, #5003, #5004"},
+			wantChild: []string{"5002", "5003", "5004"},
+			wantFound: true,
+		},
+		{
+			name:      "missing event",
+			taskID:    "GH-5100",
+			skipSetup: true,
+			wantChild: nil,
+			wantFound: false,
+		},
+		{
+			name:      "malformed - missing colon",
+			taskID:    "GH-5200",
+			execID:    "exec-5200",
+			details:   []string{"decomposed into 2 children #5201, #5202"},
+			wantChild: nil,
+			wantFound: false,
+		},
+		{
+			name:      "malformed - non-numeric child",
+			taskID:    "GH-5300",
+			execID:    "exec-5300",
+			details:   []string{"decomposed into 2 children: #abc, #5302"},
+			wantChild: nil,
+			wantFound: false,
+		},
+		{
+			name:      "malformed - empty list",
+			taskID:    "GH-5400",
+			execID:    "exec-5400",
+			details:   []string{"decomposed into 0 children: "},
+			wantChild: nil,
+			wantFound: false,
+		},
+		{
+			name:   "multiple decomposed events - use latest",
+			taskID: "GH-5500",
+			execID: "exec-5500",
+			details: []string{
+				"decomposed into 1 children: #5501",
+				"decomposed into 2 children: #5502, #5503",
+			},
+			wantChild: []string{"5502", "5503"},
+			wantFound: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.skipSetup {
+				if err := store.SaveExecution(&Execution{
+					ID:          tt.execID,
+					TaskID:      tt.taskID,
+					ProjectPath: "/project",
+					Status:      "failed",
+				}); err != nil {
+					t.Fatalf("SaveExecution failed: %v", err)
+				}
+				for _, d := range tt.details {
+					if err := store.InsertExecutionEvent(tt.execID, StageDecomposed, d); err != nil {
+						t.Fatalf("InsertExecutionEvent failed: %v", err)
+					}
+				}
+			}
+
+			gotChild, gotFound := store.GetDecomposedChildren(tt.taskID)
+			if gotFound != tt.wantFound {
+				t.Errorf("found = %v, want %v", gotFound, tt.wantFound)
+			}
+			if !equalStringSlices(gotChild, tt.wantChild) {
+				t.Errorf("children = %v, want %v", gotChild, tt.wantChild)
+			}
+		})
+	}
+}
+
 func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
