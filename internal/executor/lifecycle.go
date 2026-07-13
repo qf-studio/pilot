@@ -113,16 +113,14 @@ type FinishOutcome struct {
 	Error  string
 }
 
-// Finish terminates execID: classifies result via TerminalStatus, persists
-// the terminal status (MarkExecutionCompleted on success so pr_url/
-// commit_sha/duration land atomically, UpdateExecutionStatus otherwise), and
-// saves execution metrics whenever result is non-nil — generalizing
-// finalizeSubIssueExecution (the TASK-394 sub-issue chokepoint) to every
-// caller. execErr, when non-nil, short-circuits classification straight to
+// Classify computes Finish's terminal outcome without persisting anything
+// (GH-4259). Split out so a caller that needs to record execution_events
+// rows for the terminal stage can do so before the status write Persist
+// performs — see Persist's doc comment for why the ordering matters.
+//
+// execErr, when non-nil, short-circuits classification straight to
 // StatusFailed, mirroring every existing call site's "err != nil" branch
-// running before TerminalStatus is even consulted; metrics are still saved
-// in that case if result is non-nil (the execution ran and produced partial
-// results before erroring), matching the dispatcher's existing behavior.
+// running before TerminalStatus is even consulted.
 //
 // override, when given, replaces the classified status outright — for a
 // caller that has evidence the classifier can't see. epic.go's work-loss
@@ -131,14 +129,8 @@ type FinishOutcome struct {
 // "completed" but the epic must record as "failed" so the issue stays open
 // for recovery. errMsg is still sourced from execErr/result as usual; only
 // the status itself is overridden.
-func (l *ExecutionLifecycle) Finish(execID string, result *ExecutionResult, execErr error, duration time.Duration, override ...Status) (FinishOutcome, error) {
-	if l.store == nil || execID == "" {
-		return FinishOutcome{}, nil
-	}
-
+func (l *ExecutionLifecycle) Classify(result *ExecutionResult, execErr error, override ...Status) FinishOutcome {
 	var outcome FinishOutcome
-	var statusErr error
-
 	if execErr != nil {
 		outcome = FinishOutcome{Status: ExecStatusFailed, Error: execErr.Error()}
 	} else {
@@ -150,7 +142,30 @@ func (l *ExecutionLifecycle) Finish(execID string, result *ExecutionResult, exec
 	if len(override) > 0 {
 		outcome.Status = override[0]
 	}
+	return outcome
+}
 
+// Persist writes a pre-classified outcome for execID: MarkExecutionCompleted
+// on success so pr_url/commit_sha/duration land atomically,
+// UpdateExecutionStatus otherwise, then saves execution metrics whenever
+// result is non-nil — generalizing finalizeSubIssueExecution (the TASK-394
+// sub-issue chokepoint) to every caller.
+//
+// GH-4259: this is the write that makes execID's terminal status visible to
+// anything polling GetExecution. Callers that also record an
+// execution_events row for the same terminal transition (e.g. the
+// dispatcher's StageFailed/StageCompleted writes) MUST call recordExecutionEvent
+// before Persist, not after — otherwise a poller can observe the terminal
+// status and read the event ledger before the matching event row exists,
+// intermittently losing the race (the synthetic dispatch event-sequence
+// tests caught this once RecordExecutionEvent's validate-first GetExecution
+// round trip, GH-4244, made the event write slow enough to lose more often).
+func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, result *ExecutionResult, duration time.Duration) error {
+	if l.store == nil || execID == "" {
+		return nil
+	}
+
+	var statusErr error
 	if outcome.Status == ExecStatusCompleted {
 		var prURL, commitSHA string
 		if result != nil {
@@ -182,5 +197,19 @@ func (l *ExecutionLifecycle) Finish(execID string, result *ExecutionResult, exec
 		}
 	}
 
-	return outcome, statusErr
+	return statusErr
+}
+
+// Finish terminates execID in one call: Classify followed by Persist.
+// Callers that need to record execution_events rows for the terminal stage
+// without racing a status poller should call Classify and Persist directly
+// instead, recording events between the two (GH-4259) — see Persist's doc
+// comment.
+func (l *ExecutionLifecycle) Finish(execID string, result *ExecutionResult, execErr error, duration time.Duration, override ...Status) (FinishOutcome, error) {
+	if l.store == nil || execID == "" {
+		return FinishOutcome{}, nil
+	}
+	outcome := l.Classify(result, execErr, override...)
+	err := l.Persist(execID, outcome, result, duration)
+	return outcome, err
 }

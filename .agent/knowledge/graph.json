@@ -2710,6 +2710,7 @@
       "mem-152": {
         "type": "learning",
         "summary": "Status reports to user must be scannable grouped lists (done / failed+reset / needs-attention / watch), one line per item \u2014 never narrative prose. Direct user feedback 2026-07-13.",
+        "path": "memories/learnings/mem-152.md",
         "concepts": [
           "user-preference",
           "communication",

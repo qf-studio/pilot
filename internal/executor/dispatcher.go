@@ -1058,14 +1058,17 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		result, execErr := w.runner.Execute(ctx, task)
 		duration := time.Since(start)
 
-		// GH-4243: single chokepoint classifies the outcome (TerminalStatus),
-		// persists the terminal status, and saves metrics. The branches below
-		// drive event-recording/progress side effects off the same
-		// classification instead of re-deriving it.
-		outcome, finErr := w.lifecycle.Finish(exec.ID, result, execErr, duration)
-		if finErr != nil {
-			w.log.Error("Failed to persist execution outcome", slog.String("execution_id", exec.ID), slog.Any("error", finErr))
-		}
+		// GH-4243: single chokepoint classifies the outcome (TerminalStatus).
+		// The branches below drive event-recording/progress side effects off
+		// the classification, then GH-4259 requires persisting the terminal
+		// status (below, after the switch) only once those events are
+		// written — otherwise a poller can observe the terminal status via
+		// GetExecution and read the execution_events ledger before the
+		// matching event row exists, intermittently losing the race (this is
+		// exactly what made the synthetic dispatch event-sequence tests flake
+		// once RecordExecutionEvent's GH-4244 validate-first GetExecution
+		// round trip made the event write slow enough to lose more often).
+		outcome := w.lifecycle.Classify(result, execErr)
 
 		switch {
 		case execErr != nil:
@@ -1113,6 +1116,12 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				msg = fmt.Sprintf("Completed with PR: %s", result.PRUrl)
 			}
 			w.runner.EmitProgress(exec.TaskID, "Completed", 100, msg)
+		}
+
+		// GH-4259: persist the terminal status/metrics after the events above
+		// are written, not before — see the Classify comment.
+		if finErr := w.lifecycle.Persist(exec.ID, outcome, result, duration); finErr != nil {
+			w.log.Error("Failed to persist execution outcome", slog.String("execution_id", exec.ID), slog.Any("error", finErr))
 		}
 
 		// Effort tier and usage-event telemetry stay dispatcher-owned: they're
