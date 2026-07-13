@@ -1553,13 +1553,16 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				"pr", prState.PRNumber, "error", err)
 			// Fall through — belt-and-suspenders: merge-time SizeFloor gate in handleCIPassed catches it.
 		} else {
-			netAdditions := 0
-			for _, f := range files {
-				netAdditions += f.Additions
-			}
-			if netAdditions > c.config.MaxCIFixPRSize {
+			// GH-4284: exclude test (`_test.go`) and bookkeeping (`.agent/**`)
+			// additions the same way SizeFloorReason does, via the shared
+			// productionAdditions helper — a well-tested PR (#4279: ~90
+			// production / ~290 test / 28 bookkeeping of 421 total) must not
+			// be mistaken for cascade contamination just because it has tests.
+			production, bookkeeping, test := productionAdditions(files)
+			if production > c.config.MaxCIFixPRSize {
 				c.log.Warn("CI fix size guard fired — failing PR exceeds size floor, refusing to spawn fix issue",
-					"pr", prState.PRNumber, "additions", netAdditions, "limit", c.config.MaxCIFixPRSize)
+					"pr", prState.PRNumber, "production_additions", production, "test_additions", test,
+					"bookkeeping_additions", bookkeeping, "limit", c.config.MaxCIFixPRSize)
 				if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
 					c.log.Warn("CI fix size guard: failed to close oversized failed PR",
 						"pr", prState.PRNumber, "error", err)
@@ -1572,7 +1575,8 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				}
 				// GH-3806: see the matching comment on the iteration-limit branch above.
 				prState.Stage = StageFailed
-				prState.Error = fmt.Sprintf("CI fix size guard: PR has %d additions, over limit %d (likely cascade contamination — escalate to human)", netAdditions, c.config.MaxCIFixPRSize)
+				prState.Error = fmt.Sprintf("CI fix size guard: PR has %d production additions, over limit %d%s (likely cascade contamination — escalate to human)",
+					production, c.config.MaxCIFixPRSize, excludedAdditionsSuffix(bookkeeping, test))
 				prState.TerminalLabel = github.LabelFailed
 				c.metrics.RecordPRFailed()
 				c.metrics.RecordCIRun("fail")

@@ -7217,6 +7217,167 @@ func TestCIFixSizeGuard_APIError_FailOpen(t *testing.T) {
 	}
 }
 
+// TestCIFixSizeGuard_WellTestedPR_AllowsFixIssue is a GH-4284 regression test
+// reproducing the #4279 shape: 421 total additions (90 production / 290 test
+// / 28 bookkeeping) — over the raw 200-line limit, but under it once test and
+// `.agent/**` additions are excluded. The guard must NOT fire (a well-tested
+// PR was previously auto-closed as "cascade contamination" for this exact shape).
+func TestCIFixSizeGuard_WellTestedPR_AllowsFixIssue(t *testing.T) {
+	issueCreated := false
+	prClosed := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/def4279/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "drift-gate", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues/4276" && r.Method == http.MethodGet:
+			resp := github.Issue{Number: 4276, Body: "<!-- autopilot-meta branch:pilot/GH-4276 pr:4279 iteration:1 -->"}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/4279/files" && r.Method == http.MethodGet:
+			// #4279 shape: 90 production, 290 test, 28 bookkeeping = 408 total (>200 raw, <200 production).
+			files := []*github.PRFile{
+				{Filename: "internal/autopilot/dispatcher.go", Status: "modified", Additions: 90},
+				{Filename: "internal/autopilot/dispatcher_gh4276_test.go", Status: "added", Additions: 114},
+				{Filename: "internal/memory/store_test.go", Status: "modified", Additions: 103},
+				{Filename: "internal/autopilot/dispatcher_test.go", Status: "modified", Additions: 65},
+				{Filename: ".agent/knowledge/memories/pitfalls/gh4276-cross-project-task-id.md", Status: "added", Additions: 28},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, files))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 500}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/4279" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.MaxCIFixPRSize = 200
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:    4279,
+		IssueNumber: 4276,
+		HeadSHA:     "def4279",
+		Stage:       StageCIFailed,
+	}
+
+	err := c.handleCIFailed(context.Background(), prState)
+	if err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if !issueCreated {
+		t.Error("fix issue MUST be created — 90 production additions is under the 200 limit once tests/bookkeeping are excluded")
+	}
+	if !prClosed {
+		t.Error("failed PR should still be closed (normal flow: fix issue created, poller unblocked)")
+	}
+	if strings.Contains(prState.Error, "cascade contamination") {
+		t.Errorf("error must not claim cascade contamination for a well-tested PR, got: %s", prState.Error)
+	}
+}
+
+// TestCIFixSizeGuard_GenuineCascade_StillBlocksFixIssue verifies that a PR
+// with >200 PRODUCTION lines across unrelated files (no tests, no
+// bookkeeping) still trips the guard — the GH-4284 exclusion fix must not
+// weaken genuine cascade-contamination detection.
+func TestCIFixSizeGuard_GenuineCascade_StillBlocksFixIssue(t *testing.T) {
+	issueCreated := false
+	prClosed := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/cascade1/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues/11" && r.Method == http.MethodGet:
+			resp := github.Issue{Number: 11, Body: "<!-- autopilot-meta branch:pilot/GH-11 pr:77 iteration:1 -->"}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/77/files" && r.Method == http.MethodGet:
+			// 300 production additions across unrelated files, no tests/bookkeeping.
+			files := []*github.PRFile{
+				{Filename: "internal/gateway/server.go", Status: "modified", Additions: 150},
+				{Filename: "internal/adapters/slack/notifier.go", Status: "modified", Additions: 150},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, files))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 600}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/77" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.MaxCIFixPRSize = 200
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:    77,
+		IssueNumber: 11,
+		HeadSHA:     "cascade1",
+		Stage:       StageCIFailed,
+	}
+
+	err := c.handleCIFailed(context.Background(), prState)
+	if err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if issueCreated {
+		t.Error("fix issue must NOT be created — 300 production additions is genuine cascade contamination")
+	}
+	if !prClosed {
+		t.Error("genuinely oversized failing PR must still be closed by the size guard")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	if !strings.Contains(prState.Error, "CI fix size guard") {
+		t.Errorf("error should mention size guard, got: %s", prState.Error)
+	}
+}
+
 // asyncApprovalManager returns an approval.Manager configured for async pre-merge approval.
 func asyncApprovalManager() *approval.Manager {
 	cfg := &approval.Config{

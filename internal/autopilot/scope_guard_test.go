@@ -159,10 +159,24 @@ func TestSizeFloorReason(t *testing.T) {
 			},
 		},
 		{
-			name: "cascade-2 contaminating PR (~512 LoC)",
+			// GH-4284: with test additions now excluded (see productionAdditions),
+			// this fixture's 272 production lines no longer cross the 500
+			// threshold on its own — cascade-2 was actually caught by
+			// ScopeDriftReason (title type/scope mismatch, see file header),
+			// which remains the primary gate for this incident class.
+			name: "cascade-2 contaminating PR (~512 LoC incl. 240 test LoC) — no floor once tests excluded",
 			files: []*github.PRFile{
 				{Filename: "internal/gateway/oauth.go", Status: "added", Additions: 244},
 				{Filename: "internal/gateway/oauth_test.go", Status: "added", Additions: 240},
+				{Filename: "internal/gateway/server.go", Status: "modified", Additions: 24},
+				{Filename: "cmd/pilot/main.go", Status: "modified", Additions: 3},
+				{Filename: "internal/config/config.go", Status: "modified", Additions: 1},
+			},
+		},
+		{
+			name: "cascade-2 shape with genuinely large production code (~512 LoC, no tests) — floor fires",
+			files: []*github.PRFile{
+				{Filename: "internal/gateway/oauth.go", Status: "added", Additions: 484},
 				{Filename: "internal/gateway/server.go", Status: "modified", Additions: 24},
 				{Filename: "cmd/pilot/main.go", Status: "modified", Additions: 3},
 				{Filename: "internal/config/config.go", Status: "modified", Additions: 1},
@@ -269,5 +283,94 @@ func TestSizeFloorReason_BookkeepingExclusion(t *testing.T) {
 				t.Errorf("expected no size-floor fire, got %q", got)
 			}
 		})
+	}
+}
+
+// TestSizeFloorReason_TestExclusion covers GH-4284: `_test.go` additions must
+// be excluded from the size-floor gate the same way `.agent/**` bookkeeping
+// already is (GH-4055) — a well-tested PR should not escalate on test bulk alone.
+func TestSizeFloorReason_TestExclusion(t *testing.T) {
+	cases := []struct {
+		name  string
+		files []*github.PRFile
+		want  bool // true if a reason is expected
+	}{
+		{
+			// #4279 shape: 90 production, 290 test, 28 bookkeeping — well
+			// under the 500-line SizeFloorThreshold on production alone.
+			name: "GH-4279 shape: 90 production + 290 test + 28 bookkeeping — no escalation",
+			files: []*github.PRFile{
+				{Filename: "internal/autopilot/dispatcher.go", Status: "modified", Additions: 90},
+				{Filename: "internal/autopilot/dispatcher_gh4276_test.go", Status: "added", Additions: 114},
+				{Filename: "internal/memory/store_test.go", Status: "modified", Additions: 103},
+				{Filename: "internal/autopilot/dispatcher_test.go", Status: "modified", Additions: 73},
+				{Filename: ".agent/knowledge/memories/pitfalls/gh4276.md", Status: "added", Additions: 28},
+			},
+		},
+		{
+			name: "501 production + 1000 test — escalates on production alone",
+			files: []*github.PRFile{
+				{Filename: "internal/autopilot/controller.go", Status: "modified", Additions: 501},
+				{Filename: "internal/autopilot/controller_test.go", Status: "modified", Additions: 1000},
+			},
+			want: true,
+		},
+		{
+			name: "0 production + 900 test — no escalation",
+			files: []*github.PRFile{
+				{Filename: "internal/autopilot/controller_test.go", Status: "added", Additions: 900},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SizeFloorReason(tc.files)
+			if tc.want && got == "" {
+				t.Errorf("expected size-floor to fire, got empty reason")
+			}
+			if !tc.want && got != "" {
+				t.Errorf("expected no size-floor fire, got %q", got)
+			}
+		})
+	}
+}
+
+// TestIsTestPath covers GH-4284 test-file classification.
+func TestIsTestPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"internal/autopilot/controller.go", false},
+		{"internal/autopilot/controller_test.go", true},
+		{".agent/tasks/foo.md", false},
+		{"internal/foo/bar_test.go", true},
+		{"internal/foo/testdata/fixture.go", false},
+	}
+	for _, tc := range cases {
+		if got := isTestPath(tc.path); got != tc.want {
+			t.Errorf("isTestPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestProductionAdditions covers GH-4284: the shared helper used by both
+// SizeFloorReason and the CI-fix size guard must classify each file into
+// exactly one bucket (production, bookkeeping, or test).
+func TestProductionAdditions(t *testing.T) {
+	files := []*github.PRFile{
+		{Filename: "internal/autopilot/dispatcher.go", Additions: 90},
+		{Filename: "internal/autopilot/dispatcher_test.go", Additions: 65},
+		{Filename: ".agent/tasks/foo.md", Additions: 28},
+	}
+	production, bookkeeping, test := productionAdditions(files)
+	if production != 90 {
+		t.Errorf("production = %d, want 90", production)
+	}
+	if bookkeeping != 28 {
+		t.Errorf("bookkeeping = %d, want 28", bookkeeping)
+	}
+	if test != 65 {
+		t.Errorf("test = %d, want 65", test)
 	}
 }
