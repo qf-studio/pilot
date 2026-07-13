@@ -1821,6 +1821,24 @@ func (s *Store) UpdateExecutionEffort(id, effortLevel, complexityLevel string) e
 	})
 }
 
+// UpdateExecutionTitle backfills task_title for an execution row (GH-4280,
+// mirroring the pr_title persistence pattern from GH-4080). No-op when title
+// is empty so a caller that hasn't resolved a title yet can't clobber one
+// already persisted by an earlier write.
+func (s *Store) UpdateExecutionTitle(executionID, title string) error {
+	if title == "" {
+		return nil
+	}
+	return s.withRetry("UpdateExecutionTitle", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET task_title = ?
+			WHERE id = ?
+		`, title, executionID)
+		return err
+	})
+}
+
 // GetStaleRunningExecutions returns executions that have been in "running" status
 // for longer than the specified duration. Used to detect crashed workers on restart.
 //

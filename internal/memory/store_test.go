@@ -3970,3 +3970,65 @@ func TestSelfHealExecutionAfterMerge_ExcludesRunningQueuedPending(t *testing.T) 
 		}
 	}
 }
+
+// TestUpdateExecutionTitle covers the GH-4280 backfill/no-op/overwrite matrix.
+func TestUpdateExecutionTitle(t *testing.T) {
+	tests := []struct {
+		name          string
+		initialTitle  string
+		updateTitle   string
+		expectedTitle string
+	}{
+		{
+			name:          "empty to resolved backfill",
+			initialTitle:  "",
+			updateTitle:   "Fix the flaky test",
+			expectedTitle: "Fix the flaky test",
+		},
+		{
+			name:          "empty to empty no-op",
+			initialTitle:  "",
+			updateTitle:   "",
+			expectedTitle: "",
+		},
+		{
+			name:          "resolved to resolved overwrite",
+			initialTitle:  "Old title",
+			updateTitle:   "New title",
+			expectedTitle: "New title",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			id := "exec-title-1"
+			if err := store.SaveExecution(&Execution{
+				ID:          id,
+				TaskID:      "GH-4280",
+				ProjectPath: "/proj",
+				Status:      "running",
+				TaskTitle:   tt.initialTitle,
+			}); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			if err := store.UpdateExecutionTitle(id, tt.updateTitle); err != nil {
+				t.Fatalf("UpdateExecutionTitle: %v", err)
+			}
+
+			exec, err := store.GetExecution(id)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if exec.TaskTitle != tt.expectedTitle {
+				t.Errorf("expected task_title %q, got %q", tt.expectedTitle, exec.TaskTitle)
+			}
+		})
+	}
+}
