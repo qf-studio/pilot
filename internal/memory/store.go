@@ -815,13 +815,34 @@ var ErrExecutionNotFound = errors.New("execution not found")
 // that guards the executions/execution_events FK; every recordExecutionEvent
 // wrapper across the executor and autopilot packages delegates here.
 func (s *Store) RecordExecutionEvent(executionID string, stage Stage, detail string) error {
-	if _, err := s.GetExecution(executionID); err != nil {
+	return recordExecutionEventOn(s.db, executionID, stage, detail)
+}
+
+// dbExecer is satisfied by both *sql.DB and *sql.Tx. recordExecutionEventOn is
+// generalized over it so the GH-4292 heal paths can run the same validate-first
+// check and insert inside their own transaction, atomically with the status
+// UPDATE they commit alongside it, instead of hand-rolling a second INSERT.
+type dbExecer interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+	QueryRow(query string, args ...interface{}) *sql.Row
+}
+
+// recordExecutionEventOn is RecordExecutionEvent's validate-first logic,
+// generalized to run against any dbExecer rather than always the Store's own
+// s.db connection — see dbExecer's doc comment.
+func recordExecutionEventOn(db dbExecer, executionID string, stage Stage, detail string) error {
+	row := db.QueryRow(`SELECT `+executionDetailColumns+` FROM executions WHERE id = ?`, executionID)
+	if _, err := scanExecutionDetail(row); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: execution_id=%s", ErrExecutionNotFound, executionID)
 		}
 		return fmt.Errorf("failed to verify execution %s exists: %w", executionID, err)
 	}
-	return s.InsertExecutionEvent(executionID, stage, detail)
+	_, err := db.Exec(`
+		INSERT INTO execution_events (execution_id, stage, occurred_at, detail)
+		VALUES (?, ?, ?, ?)
+	`, executionID, string(stage), time.Now().UTC(), detail)
+	return err
 }
 
 // InsertExecutionEvent records a stage transition for executionID. occurred_at is
@@ -1462,23 +1483,56 @@ const orphanedRunningNoEvidenceError = "orphaned running execution: no live proc
 // Guarded by `AND status = 'running'`: a no-op (and therefore idempotent) once
 // the row has transitioned through the normal completion path, and safe to
 // call repeatedly across sweep ticks. TASK-399/GH-4209.
+//
+// GH-4292: the status UPDATE and its terminal execution_events row (StageMerged
+// when prURL is known, else StageFailed) commit in one transaction — either
+// both land or neither does — via recordExecutionEventOn, never a hand-rolled
+// INSERT. The UPDATE's `AND status = 'running'` guard makes RowsAffected == 0
+// on a second call against an already-healed row, so the event write is skipped
+// on repeat calls (idempotent, matching the doc comment above).
 func (s *Store) ResolveOrphanedRunningExecution(id, prURL string) error {
 	return s.withRetry("ResolveOrphanedRunningExecution", func() error {
-		var err error
+		tx, err := s.db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		var result sql.Result
 		if prURL != "" {
-			_, err = s.db.Exec(`
+			result, err = tx.Exec(`
 				UPDATE executions
 				SET status = 'completed', error = '', completed_at = CURRENT_TIMESTAMP, pr_url = ?
 				WHERE id = ? AND status = 'running'
 			`, prURL, id)
 		} else {
-			_, err = s.db.Exec(`
+			result, err = tx.Exec(`
 				UPDATE executions
 				SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
 				WHERE id = ? AND status = 'running'
 			`, orphanedRunningNoEvidenceError, id)
 		}
-		return err
+		if err != nil {
+			return err
+		}
+
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return tx.Commit()
+		}
+
+		stage, detail := StageFailed, orphanedRunningNoEvidenceError
+		if prURL != "" {
+			stage, detail = StageMerged, "orphaned running execution resolved: merged "+prURL
+		}
+		if err := recordExecutionEventOn(tx, id, stage, detail); err != nil {
+			return err
+		}
+
+		return tx.Commit()
 	})
 }
 
@@ -1709,17 +1763,30 @@ func (s *Store) UpdateExecutionStatusByTaskID(taskID, projectPath, status string
 // "failed" (which always carries a non-empty error — every writer of that
 // status passes a message) stayed invisible to HasCompletedExecution, which
 // excludes rows with a non-empty error even once status flips back to "completed".
+//
+// GH-4292: the status UPDATE and a terminal execution_events row per healed
+// row (StageMerged when prURL is known, else StageFailed) commit in one
+// transaction — candidates are selected first, then each is updated and
+// logged via recordExecutionEventOn (never a hand-rolled INSERT) before the
+// commit. The WHERE clause's status IN(...) set already excludes rows this
+// method previously healed, so a repeat call against an already-healed row
+// selects zero candidates and writes zero events (idempotent).
+//
+// GH-4292/GH-4277 backfill: also picks up rows already sitting at "completed"
+// (healed by the pre-GH-4292 code, which flipped status but never wrote an
+// event) whose execution_events ledger has no terminal entry — these render
+// with a frozen HISTORY label (e.g. "running", "ci_passed") because the
+// dashboard derives that text from the ledger, not executions.status. Such a
+// row gets only the terminal event appended (its status/pr_url/completed_at
+// are already correct and are left untouched); the "already terminal-status
+// AND already has a terminal event" case remains excluded, so this is still
+// idempotent across the periodic/startup catch-up sweeps that call this
+// method unconditionally for every recently-merged PR.
 func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error {
 	return s.withRetry("SelfHealExecutionAfterMerge", func() error {
-		_, err := s.db.Exec(`
-			UPDATE executions
-			SET status = 'completed',
-				error = '',
-				completed_at = CURRENT_TIMESTAMP,
-				pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
-			WHERE task_id = ? AND status IN ('failed', 'no_op', 'stalled', 'rate_limited', 'infra', 'skipped') AND (? = '' OR project_path = ?)
-		`, prURL, prURL, taskID, projectPath, projectPath)
-		return err
+		return healAndBackfillRows(s.db, `task_id = ? AND (? = '' OR project_path = ?) AND `+healOrBackfillCandidateClause,
+			[]interface{}{taskID, projectPath, projectPath}, prURL,
+			"self-heal after merge: "+orDefault(prURL, "no PR URL known"))
 	})
 }
 
@@ -1730,18 +1797,126 @@ func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) e
 // whose own already-stamped pr_url column equals prURL — covering a PR on a
 // non-standard branch whose execution row still carries the PR URL from
 // UpdateExecutionResult at creation time. No-op when prURL is empty.
+//
+// GH-4292: see SelfHealExecutionAfterMerge's doc comment — same transactional
+// status UPDATE + terminal execution_events write, same completed-row ledger
+// backfill, same idempotency argument.
 func (s *Store) SelfHealExecutionByPRURL(prURL string) error {
 	if prURL == "" {
 		return nil
 	}
 	return s.withRetry("SelfHealExecutionByPRURL", func() error {
-		_, err := s.db.Exec(`
-			UPDATE executions
-			SET status = 'completed', error = '', completed_at = CURRENT_TIMESTAMP
-			WHERE pr_url = ? AND status IN ('failed', 'no_op', 'stalled', 'rate_limited', 'infra', 'skipped')
-		`, prURL)
-		return err
+		return healAndBackfillRows(s.db, `pr_url = ? AND `+healOrBackfillCandidateClause,
+			[]interface{}{prURL}, prURL, "self-heal by PR URL: "+prURL)
 	})
+}
+
+// orDefault returns s unless it's empty, in which case it returns def — used
+// to build a human-readable execution_events detail string for the no-PR-URL
+// branch without a multi-line if/else at each call site.
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+// terminalEventStages is the set of execution_events stages that count as a
+// "terminal" ledger entry for GH-4292's completed-row backfill check below —
+// any of these already tells the dashboard the row reached an end state, so
+// no backfill event is needed on top of it.
+const terminalEventStages = `'merged', 'completed', 'failed', 'no_op', 'skipped', 'stalled'`
+
+// healOrBackfillCandidateClause is shared by SelfHealExecutionAfterMerge and
+// SelfHealExecutionByPRURL's WHERE clauses (GH-4292). It selects two disjoint
+// groups, both scoped by the caller's own task_id/pr_url predicate:
+//
+//   - the original non-success set ("failed", "no_op", "stalled",
+//     "rate_limited", "infra", "skipped") — genuine heal candidates, handled
+//     unconditionally (unchanged from the pre-GH-4292 behavior).
+//   - status = 'completed' rows with no terminal execution_events row yet —
+//     the GH-4277 backfill-only case: status/pr_url are already correct, only
+//     the ledger is missing its terminal entry.
+//
+// Deliberately excludes 'running'/'queued'/'pending' (in-flight — must never
+// be force-completed here; see TestSelfHealExecutionAfterMerge_ExcludesRunningQueuedPending)
+// and 'declined'/'cancelled' (an intentional non-outcome, not something a
+// coincidental later merge should silently resolve).
+const healOrBackfillCandidateClause = `(
+	status IN ('failed', 'no_op', 'stalled', 'rate_limited', 'infra', 'skipped')
+	OR (
+		status = 'completed'
+		AND NOT EXISTS (
+			SELECT 1 FROM execution_events ee
+			WHERE ee.execution_id = executions.id AND ee.stage IN (` + terminalEventStages + `)
+		)
+	)
+)`
+
+// healAndBackfillRows is the shared transaction body for SelfHealExecutionAfterMerge
+// and SelfHealExecutionByPRURL (GH-4292/GH-4277): it selects every candidate execution
+// row matching whereClause/args (healOrBackfillCandidateClause above), promotes each
+// non-success row to "completed" (stamping pr_url when prURL is non-empty, matching
+// the pre-GH-4292 UPDATE) — leaving already-'completed' rows' status/pr_url/completed_at
+// untouched — and, in the same transaction, records one terminal execution_events row
+// per row via recordExecutionEventOn: StageMerged when prURL is known, else StageFailed.
+// Selecting candidates first (rather than a single bulk UPDATE) is what makes a per-row
+// event possible.
+func healAndBackfillRows(db *sql.DB, whereClause string, whereArgs []interface{}, prURL, detail string) error {
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.Query(`SELECT id, status FROM executions WHERE `+whereClause, whereArgs...)
+	if err != nil {
+		return err
+	}
+	type candidate struct {
+		id     string
+		status string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.status); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	stage := StageFailed
+	if prURL != "" {
+		stage = StageMerged
+	}
+
+	for _, c := range candidates {
+		if c.status != "completed" {
+			if _, err := tx.Exec(`
+				UPDATE executions
+				SET status = 'completed',
+					error = '',
+					completed_at = CURRENT_TIMESTAMP,
+					pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
+				WHERE id = ?
+			`, prURL, prURL, c.id); err != nil {
+				return err
+			}
+		}
+		if err := recordExecutionEventOn(tx, c.id, stage, detail); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 // GetExecutionStatusByTaskID returns the status of the most recent execution row
