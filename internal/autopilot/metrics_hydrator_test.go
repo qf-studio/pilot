@@ -406,6 +406,96 @@ func TestHydrateFromStore_RestartContinuity(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_ExcludesCanaryRows covers GH-4240: a canary sandbox
+// execution — same shape as a real one (tokens, cost, model, PR url, CI
+// verdict) — must not move any lifetime baseline the hydrator restores:
+// token/cost/execution counters, issue-level shipped/attempted, PR merged/
+// failed, and CI pass/fail. Table-driven with the flag on vs. off against an
+// otherwise identical fixture.
+func TestHydrateFromStore_ExcludesCanaryRows(t *testing.T) {
+	build := func(t *testing.T, canary bool) *Metrics {
+		t.Helper()
+		tmpDir := t.TempDir()
+		store, err := memory.NewStore(tmpDir)
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "canary-real", TaskID: "TASK-REAL", ProjectPath: "/p", Status: "completed",
+			ModelName: "claude-sonnet-4-5", TokensInput: 1000, TokensOutput: 500, TokensTotal: 1500,
+			EstimatedCostUSD: 0.05, PRUrl: "https://github.com/o/r/pull/1",
+		}); err != nil {
+			t.Fatalf("SaveExecution real: %v", err)
+		}
+		if err := store.InsertExecutionEvent("canary-real", memory.StageCIPassed, ""); err != nil {
+			t.Fatalf("InsertExecutionEvent real: %v", err)
+		}
+
+		sandboxExec := &memory.Execution{
+			ID: "canary-sandbox", TaskID: "TASK-SANDBOX", ProjectPath: "/canary-sandbox", Status: "completed",
+			ModelName: "claude-sonnet-4-5", TokensInput: 9000, TokensOutput: 4000, TokensTotal: 13000,
+			EstimatedCostUSD: 5.00, PRUrl: "https://github.com/o/r/pull/2",
+			IsCanary: canary,
+		}
+		if err := store.SaveExecution(sandboxExec); err != nil {
+			t.Fatalf("SaveExecution sandbox: %v", err)
+		}
+		if err := store.InsertExecutionEvent("canary-sandbox", memory.StageCIPassed, ""); err != nil {
+			t.Fatalf("InsertExecutionEvent sandbox: %v", err)
+		}
+
+		metrics := NewMetrics()
+		if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+			t.Fatalf("HydrateFromStore: %v", err)
+		}
+		return metrics
+	}
+
+	t.Run("canary=false includes sandbox row in every baseline", func(t *testing.T) {
+		snap := build(t, false).Snapshot()
+		if snap.IssuesShipped != 2 {
+			t.Errorf("IssuesShipped = %d, want 2", snap.IssuesShipped)
+		}
+		if snap.PRsMerged != 2 {
+			t.Errorf("PRsMerged = %d, want 2", snap.PRsMerged)
+		}
+		if snap.CIRuns["pass"] != 2 {
+			t.Errorf("CIRuns[pass] = %d, want 2", snap.CIRuns["pass"])
+		}
+	})
+
+	t.Run("canary=true excludes sandbox row from every baseline", func(t *testing.T) {
+		snap := build(t, true).Snapshot()
+		if snap.IssuesShipped != 1 {
+			t.Errorf("IssuesShipped = %d, want 1 (sandbox row excluded)", snap.IssuesShipped)
+		}
+		if snap.IssuesAttempted != 1 {
+			t.Errorf("IssuesAttempted = %d, want 1 (sandbox row excluded)", snap.IssuesAttempted)
+		}
+		if snap.PRsMerged != 1 {
+			t.Errorf("PRsMerged = %d, want 1 (sandbox row excluded)", snap.PRsMerged)
+		}
+		if snap.CIRuns["pass"] != 1 {
+			t.Errorf("CIRuns[pass] = %d, want 1 (sandbox row excluded)", snap.CIRuns["pass"])
+		}
+		wantTokens := map[tokenKey]int64{
+			{Model: "claude-sonnet-4-5", Direction: "input"}:  1000,
+			{Model: "claude-sonnet-4-5", Direction: "output"}: 500,
+		}
+		for k, want := range wantTokens {
+			if got := snap.TokensConsumed[k]; got != want {
+				t.Errorf("TokensConsumed[%+v] = %d, want %d (sandbox tokens must not leak in)", k, got, want)
+			}
+		}
+		const epsilon = 0.0001
+		if got, want := snap.ExecutionCostUSD["claude-sonnet-4-5"], 0.05; got < want-epsilon || got > want+epsilon {
+			t.Errorf("ExecutionCostUSD[claude-sonnet-4-5] = %.4f, want %.4f (sandbox cost must not leak in)", got, want)
+		}
+	})
+}
+
 // seedGH4211ExecutionTimes sets explicit created_at/started_at on an
 // executions row via a direct SQL connection — store.SaveExecution never
 // writes started_at (GH-4033's column is only stamped by
@@ -525,5 +615,62 @@ func TestHydrateFromStore_ThroughputHistogramsSurviveRestart(t *testing.T) {
 	}
 	if len(restartedHist.ApprovalWaitDurations) == 0 {
 		t.Error("ApprovalWaitDurations reset to zero on simulated restart")
+	}
+}
+
+// TestHydrateFromStore_ThroughputHistogramsExcludeCanary covers GH-4240: a
+// canary sandbox execution with a full running->pr_created->awaiting_approval
+// ->merged event chain (same shape TestHydrateFromStore_ThroughputHistogramsSurviveRestart
+// exercises for a real one) must not contribute a sample to any of the three
+// throughput histograms, even though execution_events carries no project or
+// canary information of its own — the hydrator must join back to executions.
+func TestHydrateFromStore_ThroughputHistogramsExcludeCanary(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	execID := "gh4240-canary"
+	if err := store.SaveExecution(&memory.Execution{
+		ID: execID, TaskID: "GH-4240-CANARY", ProjectPath: "/canary-sandbox", Status: "completed",
+		IsCanary: true,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	now := time.Now()
+	createdAt := now.Add(-20 * time.Minute)
+	startedAt := now.Add(-14 * time.Minute)
+	prCreatedAt := now.Add(-9 * time.Minute)
+	awaitingAt := now.Add(-8 * time.Minute)
+	mergedAt := now.Add(-3 * time.Minute)
+
+	dbPath := filepath.Join(tmpDir, "pilot.db")
+	seedGH4211ExecutionTimes(t, dbPath, execID, createdAt, startedAt)
+	seedGH4211EventAt(t, dbPath, execID, memory.StageRunning, startedAt)
+	seedGH4211EventAt(t, dbPath, execID, memory.StagePRCreated, prCreatedAt)
+	seedGH4211EventAt(t, dbPath, execID, memory.StageAwaitingApproval, awaitingAt)
+	seedGH4211EventAt(t, dbPath, execID, memory.StageMerged, mergedAt)
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	hist := metrics.HistogramSnapshot()
+
+	if len(hist.TimeToPRDurations) != 0 {
+		t.Errorf("TimeToPRDurations = %v, want 0 (canary row must be excluded)", hist.TimeToPRDurations)
+	}
+	if len(hist.QueueWaitDurations) != 0 {
+		t.Errorf("QueueWaitDurations = %v, want 0 (canary row must be excluded)", hist.QueueWaitDurations)
+	}
+	if len(hist.ApprovalWaitDurations) != 0 {
+		t.Errorf("ApprovalWaitDurations = %v, want 0 (canary row must be excluded)", hist.ApprovalWaitDurations)
+	}
+
+	if len(hist.PRTimeToMerge) != 0 {
+		t.Errorf("PRTimeToMerge = %v, want 0 (canary row must be excluded)", hist.PRTimeToMerge)
 	}
 }

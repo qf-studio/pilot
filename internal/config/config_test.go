@@ -1250,6 +1250,38 @@ projects:
 	}
 }
 
+// TestProjectConfigCanaryYAML verifies the canary flag deserializes and
+// defaults to false when unset (GH-4240).
+func TestProjectConfigCanaryYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+version: "1.0"
+projects:
+  - name: "sandbox"
+    path: "/p1"
+    canary: true
+  - name: "real"
+    path: "/p2"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Projects) != 2 {
+		t.Fatalf("Projects length = %d, want 2", len(cfg.Projects))
+	}
+	if !cfg.Projects[0].Canary {
+		t.Error("sandbox project Canary = false, want true")
+	}
+	if cfg.Projects[1].Canary {
+		t.Error("real project Canary = true, want false (default)")
+	}
+}
+
 func TestProjectConfigQualityYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")

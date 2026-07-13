@@ -4220,6 +4220,73 @@ func TestMetricsRecorder_CalledOncePerExecution(t *testing.T) {
 	}
 }
 
+// TestMetricsRecorder_SkipsCanaryTask covers GH-4240: a task carrying the
+// canary marker (from a synthetic sandbox project) must produce zero calls
+// to every MetricsRecorder method — it's still fully executed/logged, just
+// excluded from the live Prometheus counters/histograms.
+func TestMetricsRecorder_SkipsCanaryTask(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	const branch = "pilot/GH-test-canary-metrics"
+	dir := setupPRGuardRepo(t, branch, true)
+
+	backend := &mockFixedBackend{
+		result: &BackendResult{
+			Success:      true,
+			Output:       "done",
+			TokensInput:  500,
+			TokensOutput: 150,
+			Model:        "claude-sonnet-test",
+		},
+	}
+
+	rec := &fakeMetricsRecorder{}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.SetMetricsRecorder(rec)
+
+	task := &Task{
+		ID:          "GH-test-canary-metrics",
+		Title:       "test canary metrics exclusion",
+		Description: "verify recorder is never called for a canary task",
+		ProjectPath: dir,
+		Branch:      branch,
+		CreatePR:    false,
+		IsCanary:    true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("Execute() not successful: %s", result.Error)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	if len(rec.execCalls) != 0 {
+		t.Errorf("RecordExecution called %d times for canary task, want 0", len(rec.execCalls))
+	}
+	if len(rec.costCalls) != 0 {
+		t.Errorf("RecordCost called %d times for canary task, want 0", len(rec.costCalls))
+	}
+	if len(rec.tokenCalls) != 0 {
+		t.Errorf("RecordTokens called %d times for canary task, want 0", len(rec.tokenCalls))
+	}
+	if len(rec.durationCalls) != 0 {
+		t.Errorf("RecordExecutionDuration called %d times for canary task, want 0", len(rec.durationCalls))
+	}
+}
+
 // TestGhostSHAGuard verifies applyGhostSHAGuard (GH-3126 + GH-3642).
 func TestGhostSHAGuard(t *testing.T) {
 	log := slog.Default()

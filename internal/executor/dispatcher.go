@@ -1319,6 +1319,7 @@ func buildTaskFromExecution(exec *memory.Execution) *Task {
 		SourceAdapter: exec.TaskSourceAdapter,
 		SourceIssueID: exec.TaskSourceIssueID,
 		Labels:        exec.TaskLabels,
+		IsCanary:      exec.IsCanary,
 	}
 }
 

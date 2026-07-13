@@ -318,7 +318,8 @@ func (s *Store) GetMetricsSummary(query MetricsQuery) (*MetricsSummary, error) {
 // GetDailyMetrics returns metrics aggregated by day
 func (s *Store) GetDailyMetrics(query MetricsQuery) ([]*DailyMetrics, error) {
 	var args []interface{}
-	whereClause := "WHERE created_at >= ? AND created_at < ? AND tokens_total > 0"
+	// GH-4240: canary sandbox executions never count toward daily metrics.
+	whereClause := "WHERE created_at >= ? AND created_at < ? AND tokens_total > 0 AND COALESCE(is_canary, 0) = 0"
 	args = append(args, query.Start, query.End)
 
 	if len(query.Projects) > 0 {

@@ -424,6 +424,12 @@ type Task struct {
 	// "GH-4021-2"), which has no matching executions row and trips the
 	// execution_events FOREIGN KEY constraint on every stage write (GH-4032).
 	ParentExecutionID string
+	// IsCanary marks this task as belonging to a synthetic sandbox project
+	// (ProjectConfig.Canary, GH-4240). Set once at intake from the project
+	// config and threaded through the executions row so metrics/hydrators/
+	// dashboards can exclude it — the ledger (executions/execution_events/
+	// execution_logs) is written exactly the same regardless of this flag.
+	IsCanary bool
 }
 
 // LogExecutionID returns the ID that runner-side writes (execution_logs.execution_id,
@@ -1755,7 +1761,9 @@ func (r *Runner) recordEpicTerminalEvent(executionID string, result *ExecutionRe
 func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (*ExecutionResult, error) {
 	start := time.Now()
 	defer func() {
-		if r.metricsRecorder != nil {
+		// GH-4240: canary executions are still fully logged, just excluded
+		// from the live Prometheus metrics they'd otherwise pollute.
+		if r.metricsRecorder != nil && !task.IsCanary {
 			r.metricsRecorder.RecordExecutionDuration(time.Since(start))
 		}
 	}()
@@ -2703,7 +2711,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				},
 				Timestamp: time.Now(),
 			})
-			if r.metricsRecorder != nil {
+			if r.metricsRecorder != nil && !task.IsCanary {
 				r.metricsRecorder.RecordExecution(result.ModelName, "stalled")
 			}
 			if recorder != nil {
@@ -3072,8 +3080,10 @@ retrySucceeded:
 	// Estimate cost based on token usage (including research tokens) with cache-aware pricing (GH-2164)
 	result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)
 
-	// Emit Prometheus counters for token usage, cost, and execution outcome (GH-2855).
-	if r.metricsRecorder != nil {
+	// Emit Prometheus counters for token usage, cost, and execution outcome
+	// (GH-2855). Skipped for canary executions (GH-4240) — they're still
+	// fully persisted/event-logged, just excluded from live metrics.
+	if r.metricsRecorder != nil && !task.IsCanary {
 		model := result.ModelName
 		r.metricsRecorder.RecordTokens(model, "input", result.TokensInput+result.ResearchTokens)
 		r.metricsRecorder.RecordTokens(model, "output", result.TokensOutput)
