@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -842,6 +843,129 @@ func TestCommitScopedStaging(t *testing.T) {
 		out, _ := cmd.Output()
 		if len(out) == 0 {
 			t.Error("node_modules/some-pkg/bin.js should remain untracked after commit")
+		}
+	})
+}
+
+// TestStripUnindexedMemoryDocs covers GH-4286: a task whose session commits a
+// memory doc under .agent/knowledge/memories without indexing it in
+// graph.json must have that doc stripped from the branch before push, so the
+// PR never trips the Knowledge Graph Drift Gate (scripts/check-graph.py).
+func TestStripUnindexedMemoryDocs(t *testing.T) {
+	dir, _ := initTestRepo(t)
+	ctx := context.Background()
+	git := NewGitOperations(dir)
+
+	base, err := git.GetCurrentBranch(ctx)
+	if err != nil {
+		t.Fatalf("GetCurrentBranch failed: %v", err)
+	}
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	// A graph.json must exist on the base branch for any of these scenarios to
+	// be meaningful: without one there is no drift gate to protect, and the
+	// guard intentionally no-ops (see the "no graph.json" case covered by
+	// indexedMemoryPaths' fail-open behavior).
+	write(".agent/knowledge/graph.json", `{"nodes":{"memories":{}}}`)
+	run("add", ".agent/knowledge/graph.json")
+	run("commit", "-m", "chore: seed empty graph.json")
+
+	t.Run("strips an unindexed memory doc, keeps code commits", func(t *testing.T) {
+		run("checkout", "-b", "pilot/GH-unindexed")
+
+		write("internal/foo.go", "package foo")
+		run("add", "internal/foo.go")
+		run("commit", "-m", "feat: add foo")
+
+		docRel := ".agent/knowledge/memories/learnings/mem_task_unindexed.md"
+		write(docRel, "# a learning the session captured but never indexed")
+		run("add", docRel)
+		run("commit", "-m", "docs: capture learning")
+
+		stripped, err := git.StripUnindexedMemoryDocs(ctx, base)
+		if err != nil {
+			t.Fatalf("StripUnindexedMemoryDocs failed: %v", err)
+		}
+		if len(stripped) != 1 || stripped[0] != docRel {
+			t.Fatalf("stripped = %v, want [%s]", stripped, docRel)
+		}
+
+		if _, statErr := os.Stat(filepath.Join(dir, docRel)); !os.IsNotExist(statErr) {
+			t.Errorf("expected %s removed from working tree, stat err = %v", docRel, statErr)
+		}
+
+		// The code commit must survive untouched.
+		diffCmd := exec.Command("git", "diff", "--name-only", base+"...HEAD")
+		diffCmd.Dir = dir
+		out, err := diffCmd.Output()
+		if err != nil {
+			t.Fatalf("git diff failed: %v", err)
+		}
+		if !strings.Contains(string(out), "internal/foo.go") {
+			t.Errorf("expected internal/foo.go still in branch diff, got: %s", out)
+		}
+		if strings.Contains(string(out), docRel) {
+			t.Errorf("expected %s removed from branch diff, got: %s", docRel, out)
+		}
+	})
+
+	t.Run("leaves an indexed memory doc alone", func(t *testing.T) {
+		run("checkout", base)
+		run("checkout", "-b", "pilot/GH-indexed")
+
+		docRel := ".agent/knowledge/memories/learnings/mem_task_indexed.md"
+		write(docRel, "# a learning the session captured and indexed")
+
+		graph := fmt.Sprintf(`{"nodes":{"memories":{"mem-test":{"file":%q}}}}`, docRel)
+		write(".agent/knowledge/graph.json", graph)
+
+		run("add", docRel, ".agent/knowledge/graph.json")
+		run("commit", "-m", "docs: capture and index learning")
+
+		stripped, err := git.StripUnindexedMemoryDocs(ctx, base)
+		if err != nil {
+			t.Fatalf("StripUnindexedMemoryDocs failed: %v", err)
+		}
+		if len(stripped) != 0 {
+			t.Fatalf("stripped = %v, want none (doc is indexed)", stripped)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, docRel)); statErr != nil {
+			t.Errorf("expected %s to remain, stat err = %v", docRel, statErr)
+		}
+	})
+
+	t.Run("no-op when no memory docs were added", func(t *testing.T) {
+		run("checkout", base)
+		run("checkout", "-b", "pilot/GH-plain")
+
+		write("internal/bar.go", "package bar")
+		run("add", "internal/bar.go")
+		run("commit", "-m", "feat: add bar")
+
+		stripped, err := git.StripUnindexedMemoryDocs(ctx, base)
+		if err != nil {
+			t.Fatalf("StripUnindexedMemoryDocs failed: %v", err)
+		}
+		if len(stripped) != 0 {
+			t.Fatalf("stripped = %v, want none", stripped)
 		}
 	})
 }

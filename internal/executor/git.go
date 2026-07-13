@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -155,6 +156,155 @@ func (g *GitOperations) Commit(ctx context.Context, message string) (string, err
 	}
 
 	return strings.TrimSpace(string(output)), nil
+}
+
+// memoryDocsRelDir and graphJSONRelPath are the Navigator knowledge-graph
+// paths that scripts/check-graph.py's Knowledge Graph Drift Gate validates
+// (GH-4286).
+const (
+	memoryDocsRelDir = ".agent/knowledge/memories"
+	graphJSONRelPath = ".agent/knowledge/graph.json"
+)
+
+// graphJSONPathFields are the node fields check-graph.py accepts as a memory
+// file reference, in the same priority order.
+var graphJSONPathFields = []string{"file", "path", "memory_file"}
+
+// addedMemoryDocs returns memory doc paths (relative to the repo root) added
+// between baseBranch and HEAD. Mirrors the file selection in
+// scripts/check-graph.py's find_unindexed_memory_files: only *.md files,
+// skipping the "resolved" archive subtree and README*.
+func (g *GitOperations) addedMemoryDocs(ctx context.Context, baseBranch string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=A",
+		baseBranch+"...HEAD", "--", memoryDocsRelDir)
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to diff added memory docs: %w", err)
+	}
+
+	var docs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == "" || !strings.HasSuffix(line, ".md") {
+			continue
+		}
+		rel := strings.TrimPrefix(line, memoryDocsRelDir+"/")
+		if parts := strings.SplitN(rel, "/", 2); parts[0] == "resolved" {
+			continue
+		}
+		if strings.HasPrefix(filepath.Base(line), "README") {
+			continue
+		}
+		docs = append(docs, line)
+	}
+	return docs, nil
+}
+
+// indexedMemoryPaths reads .agent/knowledge/graph.json and returns the set of
+// repo-relative memory doc paths referenced by a node's file/path/memory_file
+// field, resolved the same way scripts/check-graph.py's resolve_path does:
+// tried both as root-relative and as relative to .agent/knowledge/, keeping
+// whichever candidate exists on disk. Returns (nil, nil) when graph.json is
+// absent — a project without the file has no drift gate to protect.
+func (g *GitOperations) indexedMemoryPaths() (map[string]bool, error) {
+	raw, err := os.ReadFile(filepath.Join(g.projectPath, graphJSONRelPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read graph.json: %w", err)
+	}
+
+	var graph struct {
+		Nodes struct {
+			Memories map[string]map[string]any `json:"memories"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &graph); err != nil {
+		return nil, fmt.Errorf("failed to parse graph.json: %w", err)
+	}
+
+	indexed := make(map[string]bool)
+	for _, node := range graph.Nodes.Memories {
+		for _, field := range graphJSONPathFields {
+			rawPath, ok := node[field].(string)
+			if !ok {
+				continue
+			}
+			for _, candidate := range []string{
+				filepath.Join(g.projectPath, rawPath),
+				filepath.Join(g.projectPath, ".agent", "knowledge", rawPath),
+			} {
+				if _, statErr := os.Stat(candidate); statErr != nil {
+					continue
+				}
+				if rel, relErr := filepath.Rel(g.projectPath, candidate); relErr == nil {
+					indexed[filepath.ToSlash(rel)] = true
+				}
+				break
+			}
+			break
+		}
+	}
+	return indexed, nil
+}
+
+// StripUnindexedMemoryDocs removes newly-added .agent/knowledge/memories/**.md
+// files (relative to baseBranch) that have no corresponding node in
+// .agent/knowledge/graph.json, committing the removal as a follow-up commit.
+// Returns the list of stripped paths (nil if none).
+//
+// GH-4286: a Pilot execution that commits a memory doc without indexing it in
+// graph.json trips the Knowledge Graph Drift Gate CI check
+// (scripts/check-graph.py), which the autopilot CI-fix path then treats as a
+// real build failure — up to closing the PR via the size guard (PR #4279 was
+// lost this way). Memory-doc authoring is Navigator's lane, not an
+// execution's (project CLAUDE.md "Memory: Navigator only"), so an execution
+// that added one unindexed is out of its lane; stripping it here keeps the
+// rest of the diff intact instead of failing the whole task.
+func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch string) ([]string, error) {
+	added, err := g.addedMemoryDocs(ctx, baseBranch)
+	if err != nil || len(added) == 0 {
+		return nil, err
+	}
+
+	indexed, err := g.indexedMemoryPaths()
+	if err != nil {
+		return nil, err
+	}
+	if indexed == nil {
+		// No graph.json in this project - nothing to reconcile against.
+		return nil, nil
+	}
+
+	var unindexed []string
+	for _, doc := range added {
+		if !indexed[doc] {
+			unindexed = append(unindexed, doc)
+		}
+	}
+	if len(unindexed) == 0 {
+		return nil, nil
+	}
+
+	rmArgs := append([]string{"rm", "--"}, unindexed...)
+	rmCmd := exec.CommandContext(ctx, "git", rmArgs...)
+	rmCmd.Dir = g.projectPath
+	if output, err := rmCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to remove unindexed memory doc(s): %w: %s", err, output)
+	}
+
+	message := "chore(memory): strip unindexed memory doc(s) added during execution\n\n" +
+		"GH-4286: memory docs must be indexed in .agent/knowledge/graph.json in the\n" +
+		"same commit or they trip the Knowledge Graph Drift Gate. Removed:\n" +
+		strings.Join(unindexed, "\n")
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
+	commitCmd.Dir = g.projectPath
+	if output, err := commitCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to commit removal of unindexed memory doc(s): %w: %s", err, output)
+	}
+
+	return unindexed, nil
 }
 
 // Push pushes the current branch to remote
