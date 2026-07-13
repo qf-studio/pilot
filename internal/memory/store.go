@@ -793,6 +793,49 @@ func (s *Store) InsertExecutionEvent(executionID string, stage Stage, detail str
 	})
 }
 
+// EventRecorder is the minimal interface RecordExecutionEvent needs: confirm
+// the parent executions row exists, then write the event. *Store satisfies it
+// directly; a narrower mocked interface (e.g. autopilot's approvalPersister)
+// can too, as long as it implements both methods.
+type EventRecorder interface {
+	GetExecution(id string) (*Execution, error)
+	InsertExecutionEvent(executionID string, stage Stage, detail string) error
+}
+
+// RecordExecutionEvent is the single validate-first execution_events writer
+// (GH-4244), replacing four independent wrappers (Runner, Dispatcher,
+// ProjectWorker, autopilot.Controller) that each hand-rolled their own
+// nil-store guard and, except for Controller, inserted blind. Before
+// ExecutionLifecycle (#4243) existed, a caller could reach here with an
+// executionID that had no matching executions row — most commonly
+// task.LogExecutionID()'s bare-task.ID fallback for a task the dispatcher
+// never assigned a row to — and InsertExecutionEvent would trip the
+// execution_events FOREIGN KEY constraint (FK-787). Now that every legitimate
+// execution has a row, a missing row at write time is always a bug: this
+// warns loudly via log and skips the insert rather than failing on the FK.
+//
+// Callers are still responsible for their own nil-store check before calling
+// (an EventRecorder holding a typed-nil *Store panics on first use, same as
+// today) and for skipping an empty executionID if that's meaningful to them.
+func RecordExecutionEvent(store EventRecorder, log *slog.Logger, executionID string, stage Stage, detail string) {
+	if executionID == "" {
+		return
+	}
+	if _, err := store.GetExecution(executionID); err != nil {
+		log.Warn("execution audit trail: no execution row for id, skipping event",
+			slog.String("execution_id", executionID),
+			slog.String("stage", string(stage)),
+			slog.Any("error", err))
+		return
+	}
+	if err := store.InsertExecutionEvent(executionID, stage, detail); err != nil {
+		log.Warn("Failed to record execution event",
+			slog.String("execution_id", executionID),
+			slog.String("stage", string(stage)),
+			slog.Any("error", err))
+	}
+}
+
 // ListExecutionEvents returns the stage timeline for executionID in chronological
 // (occurred_at ASC) order. Returns an empty slice, not an error, for an unknown
 // execution ID.

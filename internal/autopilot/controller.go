@@ -36,6 +36,7 @@ type approvalPersister interface {
 	SetApprovalRequestID(ctx context.Context, taskID, requestID string) error
 	SetApprovalDecision(ctx context.Context, requestID, decision, by string) error
 	GetLatestExecutionByTaskID(taskID string) (*memory.Execution, error)
+	GetExecution(id string) (*memory.Execution, error)
 	InsertExecutionEvent(executionID string, stage memory.Stage, detail string) error
 }
 
@@ -863,7 +864,11 @@ func executionEventStageFor(prStage PRStage) (memory.Stage, bool) {
 // execution row via the same "GH-<issue>" task ID used for approval
 // persistence, so it survives autopilot's own PR-state-row cleanup — the
 // event is keyed off executions.id, not the PR state row that gets deleted
-// after a successful merge.
+// after a successful merge. The insert itself delegates to the shared
+// memory.RecordExecutionEvent (GH-4244) — the same validate-first writer
+// Runner/Dispatcher/ProjectWorker use — so a row that disappears between this
+// lookup and the insert is still caught rather than tripping the
+// execution_events FOREIGN KEY constraint.
 //
 // Failures (no memory store wired, no matching execution row, insert error)
 // are logged and swallowed: the audit trail is a diagnostic aid, not load-
@@ -886,10 +891,7 @@ func (c *Controller) recordExecutionEvent(prState *PRState, stage memory.Stage, 
 		return
 	}
 
-	if err := c.memoryStore.InsertExecutionEvent(exec.ID, stage, detail); err != nil {
-		c.log.Warn("execution audit trail: failed to insert execution event",
-			"pr", prState.PRNumber, "execution_id", exec.ID, "stage", stage, "error", err)
-	}
+	memory.RecordExecutionEvent(c.memoryStore, c.log, exec.ID, stage, detail)
 }
 
 // persistPRFailures saves per-PR failure state to the store if available.

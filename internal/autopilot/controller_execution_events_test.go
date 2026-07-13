@@ -1,8 +1,10 @@
 package autopilot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -105,6 +107,31 @@ func TestController_ExecutionEvents_PRLifecycle(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestController_recordExecutionEvent_UnknownExecution verifies the shared
+// validate-first writer (GH-4244) keeps FK-787 unrepresentable through the
+// Controller wrapper: a PR whose issue number resolves to no execution row
+// (task-ID lookup miss) must log a Warn and record no event, never attempt an
+// insert that would trip the execution_events FOREIGN KEY constraint.
+func TestController_recordExecutionEvent_UnknownExecution(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	var logBuf bytes.Buffer
+	c.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	mock := &mockApprovalPersister{} // execByTask left empty: every task ID lookup misses
+	c.memoryStore = mock
+
+	c.recordExecutionEvent(&PRState{PRNumber: 7, IssueNumber: 999}, memory.StageMerged, "merged")
+
+	if len(mock.executionEvents) != 0 {
+		t.Errorf("expected 0 execution events for an unresolvable task id, got %d", len(mock.executionEvents))
+	}
+	if !strings.Contains(logBuf.String(), "no execution row for task") {
+		t.Errorf("expected a Warn log about the missing execution row, got: %s", logBuf.String())
 	}
 }
 

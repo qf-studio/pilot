@@ -2557,6 +2557,57 @@ func TestProjectWorker_recordExecutionEvent_NilStore(t *testing.T) {
 	w.recordExecutionEvent("exec-1", memory.StageRunning, "test detail")
 }
 
+// TestProjectWorker_recordExecutionEvent_UnknownExecution verifies the shared
+// validate-first writer (GH-4244) keeps FK-787 unrepresentable through the
+// ProjectWorker wrapper: an execution_events insert against an ID with no
+// matching executions row must log a Warn and leave no dangling event,
+// instead of tripping the FOREIGN KEY constraint.
+func TestProjectWorker_recordExecutionEvent_UnknownExecution(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	var logBuf bytes.Buffer
+	w := &ProjectWorker{store: store, log: slog.New(slog.NewTextHandler(&logBuf, nil))}
+
+	w.recordExecutionEvent("exec-ghost", memory.StageCommit, "commit created: abc1234")
+
+	events, err := store.ListExecutionEvents("exec-ghost")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events for an execution row that was never saved, got %d", len(events))
+	}
+	if !strings.Contains(logBuf.String(), "no execution row for id") {
+		t.Errorf("expected a Warn log about the missing execution row, got: %s", logBuf.String())
+	}
+}
+
+// TestDispatcher_recordExecutionEvent_UnknownExecution mirrors the
+// ProjectWorker case above for the Dispatcher wrapper (GH-4101 stale-recovery
+// call site), proving the shared validate-first writer applies uniformly
+// (GH-4244).
+func TestDispatcher_recordExecutionEvent_UnknownExecution(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	var logBuf bytes.Buffer
+	d := &Dispatcher{store: store, log: slog.New(slog.NewTextHandler(&logBuf, nil))}
+
+	d.recordExecutionEvent("exec-ghost", memory.StageFailed, "stale_queued recovered after restart")
+
+	events, err := store.ListExecutionEvents("exec-ghost")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events for an execution row that was never saved, got %d", len(events))
+	}
+	if !strings.Contains(logBuf.String(), "no execution row for id") {
+		t.Errorf("expected a Warn log about the missing execution row, got: %s", logBuf.String())
+	}
+}
+
 // syntheticDispatchBackend is a minimal Backend that always succeeds, used to
 // drive a full dispatcher→worker→runner pass without real git/Claude Code
 // tooling (GH-3846).

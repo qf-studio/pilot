@@ -7502,6 +7502,18 @@ func (m *mockApprovalPersister) GetLatestExecutionByTaskID(taskID string) (*memo
 	return &memory.Execution{ID: id, TaskID: taskID}, nil
 }
 
+// GetExecution backs the shared memory.RecordExecutionEvent's validate-first
+// check (GH-4244): any ID seeded into execByTask's values is treated as an
+// existing row, anything else as unknown (sql.ErrNoRows).
+func (m *mockApprovalPersister) GetExecution(id string) (*memory.Execution, error) {
+	for taskID, execID := range m.execByTask {
+		if execID == id {
+			return &memory.Execution{ID: execID, TaskID: taskID}, nil
+		}
+	}
+	return nil, sql.ErrNoRows
+}
+
 func (m *mockApprovalPersister) InsertExecutionEvent(executionID string, stage memory.Stage, detail string) error {
 	m.executionEvents = append(m.executionEvents, recordedExecutionEvent{executionID, stage, detail})
 	return nil
@@ -7566,6 +7578,10 @@ func (m *errApprovalPersister) SetApprovalDecision(_ context.Context, _, _, _ st
 }
 
 func (m *errApprovalPersister) GetLatestExecutionByTaskID(_ string) (*memory.Execution, error) {
+	return nil, sql.ErrNoRows
+}
+
+func (m *errApprovalPersister) GetExecution(_ string) (*memory.Execution, error) {
 	return nil, sql.ErrNoRows
 }
 

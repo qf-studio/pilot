@@ -35,6 +35,18 @@ func (m *gh4130ExecPersister) GetLatestExecutionByTaskID(taskID string) (*memory
 	return exec, nil
 }
 
+// GetExecution backs the shared memory.RecordExecutionEvent's validate-first
+// check (GH-4244): any ID present among execByTask's values is treated as an
+// existing row, anything else as unknown (sql.ErrNoRows).
+func (m *gh4130ExecPersister) GetExecution(id string) (*memory.Execution, error) {
+	for _, exec := range m.execByTask {
+		if exec.ID == id {
+			return exec, nil
+		}
+	}
+	return nil, sql.ErrNoRows
+}
+
 // TestExecutionEventStageFor_WaitingCI verifies GH-4130's core change: the
 // waiting_ci in-progress skip is removed, so entering StageWaitingCI now
 // produces a durable execution_events row instead of being dropped.

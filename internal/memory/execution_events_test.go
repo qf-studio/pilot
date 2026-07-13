@@ -1,7 +1,10 @@
 package memory
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -156,6 +159,74 @@ func TestInsertExecutionEventUsesExplicitUTC(t *testing.T) {
 	if got.Before(before) || got.After(after) {
 		t.Errorf("OccurredAt = %v, want between %v and %v", got, before, after)
 	}
+}
+
+// TestRecordExecutionEvent_ValidateFirst covers the shared validate-first
+// writer (GH-4244): a missing executions row must never reach InsertExecutionEvent
+// (which would trip the execution_events FOREIGN KEY constraint, FK-787) — it
+// should log a Warn and skip instead. An existing row still inserts normally.
+func TestRecordExecutionEvent_ValidateFirst(t *testing.T) {
+	t.Run("unknown execution id logs a warning and skips the insert", func(t *testing.T) {
+		store := newExecutionEventsTestStore(t)
+
+		var logBuf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+		RecordExecutionEvent(store, log, "exec-ghost", StageCommit, "commit created: abc1234")
+
+		events, err := store.ListExecutionEvents("exec-ghost")
+		if err != nil {
+			t.Fatalf("ListExecutionEvents failed: %v", err)
+		}
+		if len(events) != 0 {
+			t.Fatalf("expected 0 events for an execution row that was never saved, got %d", len(events))
+		}
+		if !strings.Contains(logBuf.String(), "no execution row for id") {
+			t.Errorf("expected a Warn log about the missing execution row, got: %s", logBuf.String())
+		}
+	})
+
+	t.Run("empty execution id is a silent no-op", func(t *testing.T) {
+		store := newExecutionEventsTestStore(t)
+		log := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+		RecordExecutionEvent(store, log, "", StageCommit, "should not be written")
+
+		events, err := store.ListExecutionEvents("")
+		if err != nil {
+			t.Fatalf("ListExecutionEvents failed: %v", err)
+		}
+		if len(events) != 0 {
+			t.Fatalf("expected 0 events for an empty execution id, got %d", len(events))
+		}
+	})
+
+	t.Run("existing execution row inserts normally", func(t *testing.T) {
+		store := newExecutionEventsTestStore(t)
+		log := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+
+		if err := store.SaveExecution(&Execution{
+			ID:          "exec-real",
+			TaskID:      "GH-99",
+			ProjectPath: "/project",
+			Status:      "running",
+		}); err != nil {
+			t.Fatalf("SaveExecution failed: %v", err)
+		}
+
+		RecordExecutionEvent(store, log, "exec-real", StageCommit, "commit created: abc1234")
+
+		events, err := store.ListExecutionEvents("exec-real")
+		if err != nil {
+			t.Fatalf("ListExecutionEvents failed: %v", err)
+		}
+		if len(events) != 1 {
+			t.Fatalf("got %d events, want 1", len(events))
+		}
+		if events[0].Stage != StageCommit || events[0].Detail != "commit created: abc1234" {
+			t.Errorf("unexpected event: %+v", events[0])
+		}
+	})
 }
 
 // TestListExecutionsForTask covers newest-first ordering and an unknown task id.

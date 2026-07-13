@@ -508,19 +508,15 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 
 // recordExecutionEvent writes a best-effort stage-transition record to the
 // execution_events audit trail for dispatcher-driven status changes (stale
-// recovery, GH-4101). Mirrors ProjectWorker.recordExecutionEvent: a nil store
-// or insert failure is logged and swallowed, never blocks recovery — the
-// audit trail is a diagnostic aid, not load-bearing.
+// recovery, GH-4101). Delegates to the shared memory.RecordExecutionEvent
+// (GH-4244): a nil store, missing execution row, or insert failure is logged
+// and swallowed, never blocks recovery — the audit trail is a diagnostic aid,
+// not load-bearing.
 func (d *Dispatcher) recordExecutionEvent(executionID string, stage memory.Stage, detail string) {
 	if d.store == nil {
 		return
 	}
-	if err := d.store.InsertExecutionEvent(executionID, stage, detail); err != nil {
-		d.log.Warn("Failed to record execution event",
-			slog.String("execution_id", executionID),
-			slog.String("stage", string(stage)),
-			slog.Any("error", err))
-	}
+	memory.RecordExecutionEvent(d.store, d.log, executionID, stage, detail)
 }
 
 // hasLiveWorker reports whether a worker goroutine exists for the given
@@ -1144,19 +1140,15 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 }
 
 // recordExecutionEvent writes a best-effort stage-transition record to the
-// execution_events audit trail (GH-3846). Mirrors the worker's other store
-// writes here: a nil store or insert failure is logged and swallowed, never
-// fails the worker loop — the audit trail is a diagnostic aid, not load-bearing.
+// execution_events audit trail (GH-3846). Delegates to the shared
+// memory.RecordExecutionEvent (GH-4244): a nil store, missing execution row,
+// or insert failure is logged and swallowed, never fails the worker loop —
+// the audit trail is a diagnostic aid, not load-bearing.
 func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.Stage, detail string) {
 	if w.store == nil {
 		return
 	}
-	if err := w.store.InsertExecutionEvent(executionID, stage, detail); err != nil {
-		w.log.Warn("Failed to record execution event",
-			slog.String("execution_id", executionID),
-			slog.String("stage", string(stage)),
-			slog.Any("error", err))
-	}
+	memory.RecordExecutionEvent(w.store, w.log, executionID, stage, detail)
 }
 
 // hasTerminalSuccessLedger reports whether the TASK-394 execution ledger

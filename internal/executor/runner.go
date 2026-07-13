@@ -1288,20 +1288,15 @@ func (r *Runner) saveLogEntry(executionID, level, message string) {
 }
 
 // recordExecutionEvent writes a best-effort stage-transition record to the
-// execution_events audit trail (GH-3846). Mirrors saveLogEntry's fire-and-
-// forget semantics: a missing store or insert failure is logged and
-// swallowed, never fails the execution.
+// execution_events audit trail (GH-3846). Delegates to the shared
+// memory.RecordExecutionEvent (GH-4244), which validates executionID's row
+// exists before inserting — swallowing both a nil store and a missing row,
+// never failing the execution.
 func (r *Runner) recordExecutionEvent(executionID string, stage memory.Stage, detail string) {
 	if r.logStore == nil {
 		return
 	}
-	if err := r.logStore.InsertExecutionEvent(executionID, stage, detail); err != nil {
-		r.log.Warn("Failed to record execution event",
-			slog.String("execution_id", executionID),
-			slog.String("stage", string(stage)),
-			slog.Any("error", err),
-		)
-	}
+	memory.RecordExecutionEvent(r.logStore, r.log, executionID, stage, detail)
 }
 
 // recordResearchPhaseEvent persists the parallel-research phase's cost to the
