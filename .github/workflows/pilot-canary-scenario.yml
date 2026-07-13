@@ -62,11 +62,13 @@ jobs:
         id: guard
         env:
           GH_TOKEN: ${{ secrets.canary_gh_token }}
+          SANDBOX_REPO: ${{ inputs.sandbox_repo }}
+          SCENARIO_NAME: ${{ inputs.scenario_name }}
         run: |
           set -euo pipefail
 
           OPEN_COUNT=$(gh issue list \
-            --repo "${{ inputs.sandbox_repo }}" \
+            --repo "$SANDBOX_REPO" \
             --label pilot \
             --label "$SCENARIO_LABEL" \
             --state open \
@@ -74,30 +76,48 @@ jobs:
             --jq 'length')
 
           if [ "$OPEN_COUNT" -gt 0 ]; then
-            echo "A pilot-labeled canary issue for scenario '${{ inputs.scenario_name }}' is already open on ${{ inputs.sandbox_repo }} — a prior run is still in flight. Skipping."
+            echo "A pilot-labeled canary issue for scenario '$SCENARIO_NAME' is already open on $SANDBOX_REPO — a prior run is still in flight. Skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No open canary issue for scenario '${{ inputs.scenario_name }}' found — proceeding."
+            echo "No open canary issue for scenario '$SCENARIO_NAME' found — proceeding."
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Ensure scenario label exists
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.canary_gh_token }}
+          SANDBOX_REPO: ${{ inputs.sandbox_repo }}
+        run: |
+          set -euo pipefail
+
+          gh label create "$SCENARIO_LABEL" \
+            --repo "$SANDBOX_REPO" \
+            --color 6f42c1 \
+            --description "Canary scenario marker (TASK-403)" \
+            --force
 
       - name: File synthetic canary issue
         id: file_issue
         if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.canary_gh_token }}
+          SANDBOX_REPO: ${{ inputs.sandbox_repo }}
+          ISSUE_TITLE: ${{ inputs.issue_title }}
+          ISSUE_BODY: ${{ inputs.issue_body }}
+          SCENARIO_NAME: ${{ inputs.scenario_name }}
         run: |
           set -euo pipefail
 
           ISSUE_URL=$(gh issue create \
-            --repo "${{ inputs.sandbox_repo }}" \
-            --title "${{ inputs.issue_title }}" \
+            --repo "$SANDBOX_REPO" \
+            --title "$ISSUE_TITLE" \
             --label pilot \
             --label "$SCENARIO_LABEL" \
-            --body "${{ inputs.issue_body }}")
+            --body "$ISSUE_BODY")
 
           ISSUE_NUMBER=$(basename "$ISSUE_URL")
-          echo "Filed canary issue ${{ inputs.sandbox_repo }}#$ISSUE_NUMBER (scenario: ${{ inputs.scenario_name }})"
+          echo "Filed canary issue $SANDBOX_REPO#$ISSUE_NUMBER (scenario: $SCENARIO_NAME)"
           echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Poll for pipeline progression
@@ -105,35 +125,39 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.canary_gh_token }}
+          SANDBOX_REPO: ${{ inputs.sandbox_repo }}
+          ASSERT_MODE: ${{ inputs.assert_mode }}
         run: |
           set -euo pipefail
           bash scripts/canary-poll.sh \
-            --repo "${{ inputs.sandbox_repo }}" \
+            --repo "$SANDBOX_REPO" \
             --issue "${{ steps.file_issue.outputs.issue_number }}" \
             --timeout-minutes "${{ inputs.timeout_minutes }}" \
             --poll-interval-seconds "${{ inputs.poll_interval_seconds }}" \
-            --assert "${{ inputs.assert_mode }}"
+            --assert "$ASSERT_MODE"
 
       - name: Close canary issue on success
         if: steps.guard.outputs.skip != 'true' && steps.poll.outputs.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.canary_gh_token }}
+          SANDBOX_REPO: ${{ inputs.sandbox_repo }}
+          SCENARIO_NAME: ${{ inputs.scenario_name }}
         run: |
           set -euo pipefail
 
           ISSUE_NUMBER="${{ steps.file_issue.outputs.issue_number }}"
-          STATE=$(gh issue view "$ISSUE_NUMBER" --repo "${{ inputs.sandbox_repo }}" --json state --jq '.state')
+          STATE=$(gh issue view "$ISSUE_NUMBER" --repo "$SANDBOX_REPO" --json state --jq '.state')
 
           PR_NUMBER="${{ steps.poll.outputs.pr_number }}"
           if [ -n "$PR_NUMBER" ]; then
-            COMMENT="Canary PR #$PR_NUMBER merged — pipeline verified end-to-end (scenario: ${{ inputs.scenario_name }})."
+            COMMENT="Canary PR #$PR_NUMBER merged — pipeline verified end-to-end (scenario: $SCENARIO_NAME)."
           else
-            COMMENT="Canary verified end-to-end — all terminal assertions passed (scenario: ${{ inputs.scenario_name }})."
+            COMMENT="Canary verified end-to-end — all terminal assertions passed (scenario: $SCENARIO_NAME)."
           fi
 
           if [ "$STATE" = "OPEN" ]; then
             gh issue close "$ISSUE_NUMBER" \
-              --repo "${{ inputs.sandbox_repo }}" \
+              --repo "$SANDBOX_REPO" \
               --comment "$COMMENT"
           else
             echo "Canary issue already closed (auto-closed by merge)."
@@ -143,10 +167,13 @@ jobs:
         if: failure() && steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          ALERT_REPO: ${{ inputs.alert_repo }}
+          SANDBOX_REPO: ${{ inputs.sandbox_repo }}
+          SCENARIO_NAME: ${{ inputs.scenario_name }}
         run: |
           set -euo pipefail
 
-          TITLE="[canary:${{ inputs.scenario_name }}] pipeline stall"
+          TITLE="[canary:$SCENARIO_NAME] pipeline stall"
           STAGE="${{ steps.poll.outputs.stage || 'issue-filed' }}"
           ISSUE_NUMBER="${{ steps.file_issue.outputs.issue_number }}"
           FAILED_ASSERTIONS="${{ steps.poll.outputs.failed_assertions }}"
@@ -158,7 +185,7 @@ jobs:
           fi
 
           EXISTING=$(gh issue list \
-            --repo "${{ inputs.alert_repo }}" \
+            --repo "$ALERT_REPO" \
             --state open \
             --search "$TITLE in:title" \
             --json number,title \
@@ -167,13 +194,13 @@ jobs:
           if [ -n "$EXISTING" ]; then
             echo "Alert issue #$EXISTING already open — adding status comment."
             gh issue comment "$EXISTING" \
-              --repo "${{ inputs.alert_repo }}" \
-              --body "Canary re-triggered $(date -u '+%Y-%m-%d %H:%M UTC'): $DETAIL (canary issue ${{ inputs.sandbox_repo }}#$ISSUE_NUMBER, scenario \`${{ inputs.scenario_name }}\`)."
+              --repo "$ALERT_REPO" \
+              --body "Canary re-triggered $(date -u '+%Y-%m-%d %H:%M UTC'): $DETAIL (canary issue $SANDBOX_REPO#$ISSUE_NUMBER, scenario \`$SCENARIO_NAME\`)."
           else
             echo "Creating new alert issue."
             gh issue create \
-              --repo "${{ inputs.alert_repo }}" \
+              --repo "$ALERT_REPO" \
               --title "$TITLE" \
               --label bug \
-              --body "Synthetic end-to-end pipeline canary $DETAIL (scenario \`${{ inputs.scenario_name }}\`). Canary issue: ${{ inputs.sandbox_repo }}#$ISSUE_NUMBER. Investigate daemon health (poll -> spec -> execute -> PR -> merge). See TASK-403."
+              --body "Synthetic end-to-end pipeline canary $DETAIL (scenario \`$SCENARIO_NAME\`). Canary issue: $SANDBOX_REPO#$ISSUE_NUMBER. Investigate daemon health (poll -> spec -> execute -> PR -> merge). See TASK-403."
           fi
