@@ -2,12 +2,10 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
@@ -319,12 +317,7 @@ Example:
 			cfg.Executor.Type = backendType
 
 			// Write config back
-			data, err := yaml.Marshal(cfg)
-			if err != nil {
-				return fmt.Errorf("failed to marshal config: %w", err)
-			}
-
-			if err := os.WriteFile(configPath, data, 0600); err != nil {
+			if err := config.Save(cfg, configPath); err != nil {
 				return fmt.Errorf("failed to write config: %w", err)
 			}
 

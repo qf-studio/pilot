@@ -352,6 +352,7 @@
 | Docs board sync page | ✅ | docs | - | - | GitHub Projects V2 Board Sync documentation (v2.38.0) |
 | Docs CLI/homepage update | ✅ | docs | - | - | Update CLI commands and homepage for v2.25 (v2.38.0) |
 | Docs architecture update | ✅ | docs | - | - | Update architecture page with new adapters (v2.38.0) |
+| Hosted mode config guard | ✅ | config | - | `PILOT_HOSTED` env | `PILOT_HOSTED=1` makes `config.Save()` a logged WARN no-op (control-plane-rendered config.yaml must never be overwritten with resolved secrets) and enforces boot-time invariants — `upgrade.auto_hot_upgrade` must be false and `tunnel.enabled` must be false — failing loud in `Load()` otherwise (SaaS S0.7, GH-4274) |
 
 ## Approval Workflows
 

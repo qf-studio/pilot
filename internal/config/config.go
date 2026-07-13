@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -589,6 +590,13 @@ func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// PILOT_HOSTED=1: even the defaults must satisfy hosted
+			// invariants — DefaultConfig() enables auto_hot_upgrade, which a
+			// hosted instance running without an explicit config would
+			// otherwise silently violate.
+			if err := config.AssertHostedInvariants(); err != nil {
+				return nil, err
+			}
 			return config, nil // Return defaults if no config file
 		}
 		return nil, fmt.Errorf("failed to read config: %w", err)
@@ -627,11 +635,58 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// PILOT_HOSTED=1: hard invariants of the hosted profile (GH-4274).
+	if err := config.AssertHostedInvariants(); err != nil {
+		return nil, err
+	}
+
 	return config, nil
+}
+
+// hostedEnvVar gates hosted mode (SaaS S0.7, GH-4274): a control-plane-
+// managed instance where config.yaml is rendered externally (secrets are
+// ${VAR} references resolved from a tmpfs env file) and must never be
+// overwritten by this binary. See .agent/system/saas-fleet-design.md §4.
+const hostedEnvVar = "PILOT_HOSTED"
+
+// IsHosted reports whether Pilot is running in hosted mode (PILOT_HOSTED=1).
+// Re-read from the environment on every call rather than cached at process
+// init, so tests can toggle it with t.Setenv; in production the env var is
+// fixed for the life of the process, so this is effectively "read once at
+// startup" in practice.
+func IsHosted() bool {
+	return os.Getenv(hostedEnvVar) == "1"
+}
+
+// AssertHostedInvariants enforces the hard invariants of the hosted profile
+// (PILOT_HOSTED=1, SaaS S0.7). Hosted instances are redeployed and exposed
+// by the control plane, so a config that enables self-upgrade or a local
+// tunnel is a misconfiguration, not a valid deployment — both fail loud at
+// boot rather than letting the instance run against a config the hosted
+// profile forbids. No-op when hosted mode is off.
+func (c *Config) AssertHostedInvariants() error {
+	if !IsHosted() {
+		return nil
+	}
+	if c.Upgrade != nil && c.Upgrade.AutoHotUpgrade {
+		return fmt.Errorf("config: PILOT_HOSTED=1 requires upgrade.auto_hot_upgrade=false (hosted instances are redeployed by the control plane, not self-upgraded)")
+	}
+	if c.Tunnel != nil && c.Tunnel.Enabled {
+		return fmt.Errorf("config: PILOT_HOSTED=1 requires tunnel.enabled=false (hosted ingress is terminated by the platform, not a tunnel running inside the instance)")
+	}
+	return nil
 }
 
 // Save writes the configuration to a YAML file at the given path.
 // It creates the parent directory if it does not exist.
+//
+// PILOT_HOSTED=1 (SaaS S0.7): hosted instances run against a config.yaml
+// rendered by a control plane, where secrets are ${VAR} references resolved
+// from a tmpfs env file at Load time. Round-tripping the expanded in-memory
+// Config back to config.yaml would write live secrets onto the mounted
+// volume — see .agent/system/saas-fleet-design.md §4. In hosted mode Save
+// becomes a no-op, logged at WARN with the calling file:line so any flow
+// that still attempts a write is visible.
 //
 // TASK-290: file mode is 0600 and parent dir is 0700 because the config
 // contains GitHub PAT, Linear API key, Slack bot token, and (optionally)
@@ -639,6 +694,15 @@ func Load(path string) (*Config, error) {
 // If a config already exists on disk with looser perms, this Save call will
 // tighten them on the next write (existing 0644 files are rewritten 0600).
 func Save(config *Config, path string) error {
+	if IsHosted() {
+		caller := "unknown"
+		if _, file, line, ok := runtime.Caller(1); ok {
+			caller = fmt.Sprintf("%s:%d", file, line)
+		}
+		log.Printf("WARN: config: PILOT_HOSTED=1 — Save(%s) suppressed, called from %s", path, caller)
+		return nil
+	}
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
