@@ -12,10 +12,10 @@ func evt(stage memory.Stage) *memory.Event {
 }
 
 func TestBuildStageInfo_NoEvents(t *testing.T) {
-	if got := buildStageInfo(nil, false); got.Known {
+	if got := buildStageInfo(nil, false, ""); got.Known {
 		t.Errorf("no events, not failed: got %+v, want Known=false", got)
 	}
-	if got := buildStageInfo(nil, true); got.Known {
+	if got := buildStageInfo(nil, true, ""); got.Known {
 		t.Errorf("no events, failed: got %+v, want Known=false", got)
 	}
 }
@@ -29,7 +29,7 @@ func TestBuildStageInfo_HappyPath(t *testing.T) {
 		evt(memory.StagePRCreated),
 		evt(memory.StageMerged),
 	}
-	got := buildStageInfo(events, false)
+	got := buildStageInfo(events, false, "")
 	want := StageInfo{Reached: 6, Label: "merged", Failed: false, Known: true}
 	if got != want {
 		t.Errorf("happy path: got %+v, want %+v", got, want)
@@ -47,7 +47,7 @@ func TestBuildStageInfo_Released(t *testing.T) {
 		evt(memory.StageMerged),
 		evt(memory.StageReleased),
 	}
-	got := buildStageInfo(events, false)
+	got := buildStageInfo(events, false, "")
 	want := StageInfo{Reached: 7, Label: "released", Failed: false, Known: true}
 	if got != want {
 		t.Errorf("released: got %+v, want %+v", got, want)
@@ -56,7 +56,7 @@ func TestBuildStageInfo_Released(t *testing.T) {
 
 func TestBuildStageInfo_SpecValidatedOnly(t *testing.T) {
 	events := []*memory.Event{evt(memory.StageSpecValidated)}
-	got := buildStageInfo(events, false)
+	got := buildStageInfo(events, false, "")
 	want := StageInfo{Reached: 1, Label: "spec_validated", Failed: false, Known: true}
 	if got != want {
 		t.Errorf("spec_validated only: got %+v, want %+v", got, want)
@@ -69,7 +69,7 @@ func TestBuildStageInfo_InProgress(t *testing.T) {
 		evt(memory.StageSpecValidated),
 		evt(memory.StageRunning),
 	}
-	got := buildStageInfo(events, false)
+	got := buildStageInfo(events, false, "")
 	want := StageInfo{Reached: 2, Label: "running", Failed: false, Known: true}
 	if got != want {
 		t.Errorf("in-progress: got %+v, want %+v", got, want)
@@ -83,7 +83,7 @@ func TestBuildStageInfo_FailedAtStageN(t *testing.T) {
 		evt(memory.StageRunning),
 		evt(memory.StageFailed),
 	}
-	got := buildStageInfo(events, true)
+	got := buildStageInfo(events, true, "")
 	want := StageInfo{Reached: 2, Label: "running", Failed: true, Known: true}
 	if got != want {
 		t.Errorf("failed-at-stage-N: got %+v, want %+v", got, want)
@@ -95,7 +95,7 @@ func TestBuildStageInfo_FailedAtStageN(t *testing.T) {
 // to, so Reached reports 0 and Label names the failure stage itself.
 func TestBuildStageInfo_FailedAsFirstEvent(t *testing.T) {
 	events := []*memory.Event{evt(memory.StageFailed)}
-	got := buildStageInfo(events, true)
+	got := buildStageInfo(events, true, "")
 	want := StageInfo{Reached: 0, Label: "failed", Failed: true, Known: true}
 	if got != want {
 		t.Errorf("failed as first event: got %+v, want %+v", got, want)
@@ -106,7 +106,7 @@ func TestBuildStageInfo_FailedAsFirstEvent(t *testing.T) {
 // directly to its own ladder rung (pr_created, reached=4) rather than
 // walking back — it names a real position, unlike a generic failure.
 func TestBuildStageInfo_CIFailed(t *testing.T) {
-	got := buildStageInfo([]*memory.Event{evt(memory.StageCIFailed)}, true)
+	got := buildStageInfo([]*memory.Event{evt(memory.StageCIFailed)}, true, "")
 	want := StageInfo{Reached: 4, Label: "ci_failed", Failed: true, Known: true}
 	if got != want {
 		t.Errorf("ci_failed: got %+v, want %+v", got, want)
@@ -114,7 +114,7 @@ func TestBuildStageInfo_CIFailed(t *testing.T) {
 }
 
 func TestBuildStageInfo_Stalled(t *testing.T) {
-	got := buildStageInfo([]*memory.Event{evt(memory.StageStalled)}, true)
+	got := buildStageInfo([]*memory.Event{evt(memory.StageStalled)}, true, "")
 	want := StageInfo{Reached: 0, Label: "stalled", Failed: true, Known: true}
 	if got != want {
 		t.Errorf("stalled with no prior stage: got %+v, want %+v", got, want)
@@ -122,7 +122,7 @@ func TestBuildStageInfo_Stalled(t *testing.T) {
 }
 
 func TestBuildStageInfo_AwaitingApproval(t *testing.T) {
-	got := buildStageInfo([]*memory.Event{evt(memory.StageAwaitingApproval)}, false)
+	got := buildStageInfo([]*memory.Event{evt(memory.StageAwaitingApproval)}, false, "")
 	want := StageInfo{Reached: 5, Label: "awaiting_approval", Failed: false, Known: true}
 	if got != want {
 		t.Errorf("awaiting_approval: got %+v, want %+v", got, want)
@@ -140,7 +140,7 @@ func TestBuildStageInfo_RetriesDoNotInflate(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		events = append(events, evt(memory.StageRunning))
 	}
-	got := buildStageInfo(events, false)
+	got := buildStageInfo(events, false, "")
 	want := StageInfo{Reached: 2, Label: "running", Failed: false, Known: true}
 	if got != want {
 		t.Errorf("retries should not inflate the rung: got %+v, want %+v", got, want)
@@ -151,7 +151,7 @@ func TestBuildStageInfo_RetriesDoNotInflate(t *testing.T) {
 // against an oversized stage/detail value.
 func TestBuildStageInfo_TruncatesLongLabel(t *testing.T) {
 	events := []*memory.Event{evt(memory.Stage(strings.Repeat("x", 40)))}
-	got := buildStageInfo(events, false)
+	got := buildStageInfo(events, false, "")
 	if len(got.Label) > maxStageStripLabelWidth {
 		t.Errorf("label length = %d, want <= %d: %q", len(got.Label), maxStageStripLabelWidth, got.Label)
 	}
@@ -170,7 +170,7 @@ func TestBuildStageInfo_MaxRungNoRegression(t *testing.T) {
 		evt(memory.StagePRCreated),
 		evt(memory.StageFailed),
 	}
-	got := buildStageInfo(events, false)
+	got := buildStageInfo(events, false, "")
 	want := StageInfo{Reached: 7, Label: "released", Failed: false, Known: true}
 	if got != want {
 		t.Errorf("max-rung no regression: got %+v, want %+v", got, want)
@@ -190,7 +190,7 @@ func TestBuildStageInfo_MaxRungHealthyPath(t *testing.T) {
 		evt(memory.StageMerged),
 		evt(memory.StageReleased),
 	}
-	got := buildStageInfo(events, false)
+	got := buildStageInfo(events, false, "")
 	want := StageInfo{Reached: 7, Label: "released", Failed: false, Known: true}
 	if got != want {
 		t.Errorf("max-rung healthy path: got %+v, want %+v", got, want)
@@ -236,7 +236,7 @@ func TestStageInfoForExecution_SkippedRun(t *testing.T) {
 		evt(memory.StageFailed),
 		evt(memory.StageSkipped),
 	}
-	got := stageInfoForExecution(events, "skipped")
+	got := stageInfoForExecution(events, "skipped", "")
 	want := StageInfo{Reached: 2, Label: "skipped", Failed: false, Known: true, Muted: true}
 	if got != want {
 		t.Errorf("skipped run: got %+v, want %+v", got, want)
@@ -250,7 +250,7 @@ func TestStageInfoForExecution_RunningPassthrough(t *testing.T) {
 		evt(memory.StageRunning),
 		evt(memory.StageSpecValidated),
 	}
-	got := stageInfoForExecution(events, "running")
+	got := stageInfoForExecution(events, "running", "")
 	want := StageInfo{Reached: 2, Label: "running", Failed: false, Known: true, Muted: false}
 	if got != want {
 		t.Errorf("running run: got %+v, want %+v", got, want)
@@ -265,10 +265,90 @@ func TestStageInfoForExecution_StalledKeepsRung(t *testing.T) {
 		evt(memory.StageRunning),
 		evt(memory.StageCommit),
 	}
-	got := stageInfoForExecution(events, "stalled")
+	got := stageInfoForExecution(events, "stalled", "")
 	want := StageInfo{Reached: 3, Label: "commit", Failed: true, Known: true, Muted: false}
 	if got != want {
 		t.Errorf("stalled run: got %+v, want %+v", got, want)
+	}
+}
+
+// TestBuildStageInfo_CompletedPromotion covers GH-4293: a decompose-only
+// epic parent (GH-4190, GH-4182) never emits its own pr_created — its
+// children own the PR — so its event stream tops out below the ladder's PR
+// rung even after a terminal completed event lands, and the row froze at
+// "running". When the highest resolved rung is below pr_created, a
+// completed event is present, and no PR URL was ever recorded, that
+// completed event is promoted to top-of-ladder. The table also guards the
+// three cases that must NOT be affected: an in-flight row with no completed
+// event, a failed-at-a-rung row (GH-4212 ✗ + stage-of-death labeling), and
+// a PR-bearing completed row (already resolves to top-of-ladder via the
+// existing lastGoodStage fallback).
+func TestBuildStageInfo_CompletedPromotion(t *testing.T) {
+	cases := []struct {
+		name            string
+		events          []*memory.Event
+		executionFailed bool
+		prURL           string
+		want            StageInfo
+	}{
+		{
+			name: "pr-less completed epic parent promotes to terminal label",
+			events: []*memory.Event{
+				evt(memory.StageSpecValidated),
+				evt(memory.StageDecomposed),
+				evt(memory.StageCompleted),
+			},
+			executionFailed: false,
+			prURL:           "",
+			want:            StageInfo{Reached: stageLadderTotal, Label: "completed", Failed: false, Known: true},
+		},
+		{
+			name: "in-flight running row with no completed event stays running",
+			events: []*memory.Event{
+				evt(memory.StageSpecValidated),
+				evt(memory.StageRunning),
+			},
+			executionFailed: false,
+			prURL:           "",
+			want:            StageInfo{Reached: 2, Label: "running", Failed: false, Known: true},
+		},
+		{
+			name: "failed-at-rung row keeps the rung label and failure flag",
+			events: []*memory.Event{
+				evt(memory.StageSpecValidated),
+				evt(memory.StageRunning),
+				evt(memory.StageCommit),
+				evt(memory.StageFailed),
+			},
+			executionFailed: true,
+			prURL:           "",
+			want:            StageInfo{Reached: 3, Label: "commit", Failed: true, Known: true},
+		},
+		{
+			name: "pr-bearing completed row keeps its top-of-ladder resolution",
+			events: []*memory.Event{
+				evt(memory.StageSpecValidated),
+				evt(memory.StageRunning),
+				evt(memory.StageCommit),
+				evt(memory.StagePRCreated),
+				evt(memory.StageCIPassed),
+				evt(memory.StageMerged),
+				evt(memory.StageReleased),
+				evt(memory.StageCompleted),
+			},
+			executionFailed: false,
+			prURL:           "https://github.com/qf-studio/pilot/pull/1",
+			want:            StageInfo{Reached: stageLadderTotal, Label: "released", Failed: false, Known: true},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := buildStageInfo(c.events, c.executionFailed, c.prURL)
+			if got != c.want {
+				t.Errorf("%s: got %+v, want %+v", c.name, got, c.want)
+			}
+		})
 	}
 }
 

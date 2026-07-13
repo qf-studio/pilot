@@ -661,7 +661,7 @@ func (m *Model) hydrateFromStore() {
 			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 			CompletedAt: completedAt,
 			PeakRSSMB:   exec.PeakRSSMB,
-			Stage:       stageInfoForExecution(events, status),
+			Stage:       stageInfoForExecution(events, status, exec.PRUrl),
 			PRUrl:       exec.PRUrl,
 		})
 	}
@@ -994,7 +994,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 				CompletedAt: completedAt,
 				PeakRSSMB:   exec.PeakRSSMB,
-				Stage:       stageInfoForExecution(events, status),
+				Stage:       stageInfoForExecution(events, status, exec.PRUrl),
 				PRUrl:       exec.PRUrl,
 			})
 		}

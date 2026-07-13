@@ -94,9 +94,11 @@ var mutedOutcomes = map[string]bool{
 // stageInfoForExecution derives the history-row StageInfo from the event
 // timeline plus the authoritative executions.status. The label override is
 // status-driven, never event-driven, so GH-4023's stray-late-event guard in
-// buildStageInfo is untouched.
-func stageInfoForExecution(events []*memory.Event, status string) StageInfo {
-	info := buildStageInfo(events, status == "failed" || status == "stalled")
+// buildStageInfo is untouched. prURL is executions.pr_url, passed through to
+// buildStageInfo so it can distinguish a decompose-only epic parent (never
+// gets its own PR — children carry it) from an in-flight or PR-bearing run.
+func stageInfoForExecution(events []*memory.Event, status string, prURL string) StageInfo {
+	info := buildStageInfo(events, status == "failed" || status == "stalled", prURL)
 	if mutedOutcomes[status] && info.Known {
 		info.Label = truncateString(status, maxStageStripLabelWidth)
 		info.Muted = true
@@ -113,7 +115,21 @@ func stageInfoForExecution(events []*memory.Event, status string) StageInfo {
 // (e.g. a stray pr_created/failed event recorded after released, GH-4023)
 // never pulls the displayed rung backward. The Failed flag is attached to
 // whichever event defined that max rung, not to the last event in the stream.
-func buildStageInfo(events []*memory.Event, executionFailed bool) StageInfo {
+//
+// prURL is executions.pr_url. A decompose-only epic parent (GH-4190,
+// GH-4182) never reaches pr_created itself — its children own the PR — so
+// its event stream tops out below the ladder's PR rung and the strip froze
+// at "running" even after the epic's own completed event landed. When the
+// highest resolved rung is still below pr_created, a completed event is
+// present, and no PR URL was ever recorded for this execution, that
+// completed event is promoted to top-of-ladder so the row reads its
+// terminal label instead of the stale in-flight one (GH-4293). This only
+// fires on a clean completion: an executionFailed run, or one that died at
+// a rung (a failure-stage event in the stream), keeps its GH-4212 ✗ +
+// stage-of-death labeling untouched. A PR-bearing run is unaffected — it
+// either already reached pr_created (rank >= 4) or, once it has a PR, isn't
+// the decompose-only-parent case this promotion targets.
+func buildStageInfo(events []*memory.Event, executionFailed bool, prURL string) StageInfo {
 	if len(events) == 0 {
 		return StageInfo{}
 	}
@@ -124,9 +140,14 @@ func buildStageInfo(events []*memory.Event, executionFailed bool) StageInfo {
 		failed        bool
 		lastGoodPos   int
 		lastGoodStage memory.Stage
+		sawCompleted  bool
 	)
 
 	for _, e := range events {
+		if e.Stage == memory.StageCompleted {
+			sawCompleted = true
+		}
+
 		// Resolve this event's own ladder position, walking back to the
 		// last stage that named a real rung when this one doesn't (a
 		// generic failure/stall/retry carries no rung of its own).
@@ -148,6 +169,11 @@ func buildStageInfo(events []*memory.Event, executionFailed bool) StageInfo {
 			label = resolvedLabel
 			failed = stageStripFailureStages[e.Stage]
 		}
+	}
+
+	if !failed && !executionFailed && prURL == "" && sawCompleted && reached < stageLadderPosition(memory.StagePRCreated) {
+		reached = stageLadderTotal
+		label = memory.StageCompleted
 	}
 
 	return StageInfo{

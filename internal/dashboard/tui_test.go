@@ -702,7 +702,7 @@ func TestRenderHistory_StageStrip(t *testing.T) {
 				evt(memory.StageCommit),
 				evt(memory.StagePRCreated),
 				evt(memory.StageMerged),
-			}, false),
+			}, false, ""),
 		},
 		{
 			ID:          "GH-201",
@@ -714,7 +714,7 @@ func TestRenderHistory_StageStrip(t *testing.T) {
 				evt(memory.StageQueued),
 				evt(memory.StageSpecValidated),
 				evt(memory.StageRunning),
-			}, false),
+			}, false, ""),
 		},
 		{
 			ID:          "GH-202",
@@ -727,7 +727,7 @@ func TestRenderHistory_StageStrip(t *testing.T) {
 				evt(memory.StageSpecValidated),
 				evt(memory.StageRunning),
 				evt(memory.StageFailed),
-			}, true),
+			}, true, ""),
 		},
 		// No stage evidence (pre-events execution): dim track + "–" label.
 		{
