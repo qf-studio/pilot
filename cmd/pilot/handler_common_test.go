@@ -131,16 +131,19 @@ func TestHandleIssueGeneric_MonitorRegistration(t *testing.T) {
 func TestHandleIssueGeneric_AlreadyActive_SkipsDispatch(t *testing.T) {
 	dispatcher := newHandlerTestDispatcher(t)
 
+	const projectPath = "/tmp/pilot-gh-4008-does-not-exist"
 	taskID := "GH-4008-ACTIVE"
-	seedTask := &executor.Task{ID: taskID, Title: "seed", ProjectPath: "/tmp/pilot-gh-4008-does-not-exist"}
+	seedTask := &executor.Task{ID: taskID, Title: "seed", ProjectPath: projectPath}
 	if _, err := dispatcher.QueueTask(context.Background(), seedTask); err != nil {
 		t.Fatalf("failed to seed queued task: %v", err)
 	}
 
 	monitor := executor.NewMonitor()
-	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
+	// GH-4276: IsActive is scoped by project_path — deps.ProjectPath must match
+	// the seeded task's project for the dedup pre-check to fire.
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor, ProjectPath: projectPath}
 	info := IssueInfo{TaskID: taskID, Title: "seed", Adapter: "github", LogMark: "▸"}
-	task := &executor.Task{ID: taskID, Title: "seed", Branch: "pilot/" + taskID}
+	task := &executor.Task{ID: taskID, Title: "seed", ProjectPath: projectPath, Branch: "pilot/" + taskID}
 
 	hr, err := handleIssueGeneric(context.Background(), deps, info, task)
 	if err != nil {
@@ -165,16 +168,19 @@ func TestHandleIssueGeneric_AlreadyActive_SkipsDispatch(t *testing.T) {
 func TestHandleIssueGeneric_QueueTaskRace_DowngradesToDebug(t *testing.T) {
 	dispatcher := newHandlerTestDispatcher(t)
 
+	const projectPath = "/tmp/pilot-gh-4008-does-not-exist"
 	activeTaskID := "GH-4008-RACE-ACTUAL"
-	seedTask := &executor.Task{ID: activeTaskID, Title: "seed", ProjectPath: "/tmp/pilot-gh-4008-does-not-exist"}
+	seedTask := &executor.Task{ID: activeTaskID, Title: "seed", ProjectPath: projectPath}
 	if _, err := dispatcher.QueueTask(context.Background(), seedTask); err != nil {
 		t.Fatalf("failed to seed queued task: %v", err)
 	}
 
 	monitor := executor.NewMonitor()
-	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor, ProjectPath: projectPath}
 	info := IssueInfo{TaskID: "GH-4008-RACE-PRECHECK", Title: "race", Adapter: "github", LogMark: "▸"}
-	task := &executor.Task{ID: activeTaskID, Title: "race", Branch: "pilot/" + activeTaskID}
+	// GH-4276: task.ProjectPath must match seedTask's for QueueTask's
+	// project-scoped dedup check to hit the seeded active task.
+	task := &executor.Task{ID: activeTaskID, Title: "race", ProjectPath: projectPath, Branch: "pilot/" + activeTaskID}
 
 	hr, err := handleIssueGeneric(context.Background(), deps, info, task)
 	if err != nil {

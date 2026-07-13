@@ -2958,12 +2958,17 @@ func cleanStartupHooks(cfg *config.Config, projectPath string) {
 // storeTaskChecker adapts memory.Store to the github.TaskChecker interface.
 // GH-2201: Used by the poller to check if a task is still queued/in-progress
 // before allowing retry after the grace period expires.
+//
+// GH-4276: projectPath scopes the lookup — task_id is not unique across
+// projects, so an unscoped check would see a same-numbered task
+// queued/running in a different project and wrongly withhold retry here.
 type storeTaskChecker struct {
-	store *memory.Store
+	store       *memory.Store
+	projectPath string
 }
 
 func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
-	queued, err := s.store.IsTaskQueued(taskID)
+	queued, err := s.store.IsTaskQueued(taskID, s.projectPath)
 	if err != nil {
 		return false // Don't block retry on DB errors
 	}

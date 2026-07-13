@@ -535,15 +535,20 @@ func (d *Dispatcher) hasLiveWorker(projectPath string) bool {
 	return ok
 }
 
-// IsActive reports whether taskID is already queued or running, using the
-// same source of truth QueueTask's duplicate-task check uses. Callers that
-// dispatch on a poll loop can pre-check this before announcing/attempting a
-// dispatch, so a task legitimately waiting behind other work doesn't
-// generate a repeated dispatch-attempt + rejection on every tick (GH-4008).
+// IsActive reports whether taskID is already queued or running in
+// projectPath, using the same source of truth QueueTask's duplicate-task
+// check uses. Callers that dispatch on a poll loop can pre-check this before
+// announcing/attempting a dispatch, so a task legitimately waiting behind
+// other work doesn't generate a repeated dispatch-attempt + rejection on
+// every tick (GH-4008).
 // A store error fails open (returns false) — QueueTask's own check remains
 // the authoritative guard.
-func (d *Dispatcher) IsActive(taskID string) bool {
-	active, err := d.store.IsTaskQueued(taskID)
+//
+// GH-4276: scoped by projectPath — task_id is not unique across projects, and
+// an unscoped check would see a same-numbered task active in a different
+// project and falsely report this project's task as active.
+func (d *Dispatcher) IsActive(taskID, projectPath string) bool {
+	active, err := d.store.IsTaskQueued(taskID, projectPath)
 	if err != nil {
 		d.log.Warn("Failed to check task active state", slog.String("task_id", taskID), slog.Any("error", err))
 		return false
@@ -556,8 +561,12 @@ func (d *Dispatcher) IsActive(taskID string) bool {
 // If a decomposer is configured and the task is complex, it will be split
 // into subtasks that are queued instead of the parent task.
 func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) {
-	// Check for duplicate tasks
-	exists, err := d.store.IsTaskQueued(task.ID)
+	// Check for duplicate tasks. GH-4276: scoped by task.ProjectPath — task_id
+	// is not unique across projects, so this must not see a same-numbered
+	// task queued/running elsewhere and short-circuit dispatch (and
+	// decomposition, which runs immediately below this check) for a task that
+	// is genuinely fresh in this project.
+	exists, err := d.store.IsTaskQueued(task.ID, task.ProjectPath)
 	if err != nil {
 		d.log.Warn("Failed to check for duplicate task", slog.Any("error", err))
 	} else if exists {
@@ -783,7 +792,11 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 					} else if allComplete {
 						prURL := ""
 						if len(childIDs) > 0 {
-							if latest, lErr := d.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); lErr == nil && latest != nil {
+							// GH-4276: task_id is not unique across projects — only trust
+							// this PR URL if the latest row for the child task_id actually
+							// belongs to lastProjectPath, else a same-numbered child in a
+							// different project could stamp a foreign PR URL here.
+							if latest, lErr := d.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); lErr == nil && latest != nil && latest.ProjectPath == lastProjectPath {
 								prURL = latest.PRUrl
 							}
 						}
@@ -803,7 +816,12 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 					}
 
 					if completed, hcErr := d.store.HasCompletedExecution(lastTaskID, lastProjectPath); hcErr == nil && completed {
-						if completedExec, gErr := d.store.GetLatestExecutionByTaskID(lastTaskID); gErr == nil {
+						// GH-4276: HasCompletedExecution confirmed a completed row exists
+						// for (lastTaskID, lastProjectPath), but GetLatestExecutionByTaskID
+						// is unscoped — a more recent same-numbered row in a different
+						// project would otherwise be returned in its place. Verify the
+						// project matches before trusting it as this task's result.
+						if completedExec, gErr := d.store.GetLatestExecutionByTaskID(lastTaskID); gErr == nil && completedExec.ProjectPath == lastProjectPath {
 							d.log.Info("Execution row vanished after orphan recovery — task already completed, resolving wait as success",
 								slog.String("execution_id", execID),
 								slog.String("task_id", lastTaskID),
@@ -976,7 +994,10 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				slog.Any("error", err))
 		} else if done {
 			prURL := ""
-			if latest, gErr := w.store.GetLatestExecutionByTaskIDExcluding(exec.TaskID, exec.ID); gErr == nil && latest != nil {
+			// GH-4276: task_id is not unique across projects — only trust this PR
+			// URL if it belongs to this worker's project, else a same-numbered
+			// row in a different project could stamp a foreign PR URL here.
+			if latest, gErr := w.store.GetLatestExecutionByTaskIDExcluding(exec.TaskID, exec.ID); gErr == nil && latest != nil && latest.ProjectPath == w.projectPath {
 				prURL = latest.PRUrl
 			}
 			w.log.Info("Terminal-success ledger already has a completed row for task; refusing duplicate dispatch",
@@ -1008,7 +1029,9 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			// defense-in-depth skip, not a normal completion, so it always logs
 			// at Warn with the full child list and per-child evidence.
 			prURL := ""
-			if latest, gErr := w.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); gErr == nil && latest != nil {
+			// GH-4276: task_id is not unique across projects — only trust this PR
+			// URL if it belongs to this worker's project.
+			if latest, gErr := w.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); gErr == nil && latest != nil && latest.ProjectPath == w.projectPath {
 				prURL = latest.PRUrl
 			}
 			w.log.Warn("decomposed-parent guard fired",

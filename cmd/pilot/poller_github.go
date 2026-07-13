@@ -326,7 +326,7 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 
 	// GH-2201/GH-2242: task-queued gate + completed-execution guard.
 	if deps.Store != nil {
-		pollerDeps.TaskChecker = storeTaskChecker{store: deps.Store}
+		pollerDeps.TaskChecker = storeTaskChecker{store: deps.Store, projectPath: target.projectPath}
 		pollerDeps.ExecutionChecker = deps.Store
 	}
 

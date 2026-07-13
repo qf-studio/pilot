@@ -158,7 +158,7 @@ func TestDispatcher_IsActive(t *testing.T) {
 
 	ctx := context.Background()
 
-	if dispatcher.IsActive("TEST-ACTIVE") {
+	if dispatcher.IsActive("TEST-ACTIVE", "/tmp/test-project") {
 		t.Error("expected IsActive=false before task is queued")
 	}
 
@@ -172,8 +172,14 @@ func TestDispatcher_IsActive(t *testing.T) {
 		t.Fatalf("failed to queue task: %v", err)
 	}
 
-	if !dispatcher.IsActive("TEST-ACTIVE") {
+	if !dispatcher.IsActive("TEST-ACTIVE", "/tmp/test-project") {
 		t.Error("expected IsActive=true once task is queued")
+	}
+
+	// GH-4276: a same-numbered task_id queued under a different project must
+	// not be reported active for this project.
+	if dispatcher.IsActive("TEST-ACTIVE", "/tmp/other-project") {
+		t.Error("expected IsActive=false for a different project with the same task_id")
 	}
 }
 
@@ -405,7 +411,7 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check queued task
-	queued, err := store.IsTaskQueued("TASK-QUEUED")
+	queued, err := store.IsTaskQueued("TASK-QUEUED", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
@@ -414,7 +420,7 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check running task
-	queued, err = store.IsTaskQueued("TASK-RUNNING")
+	queued, err = store.IsTaskQueued("TASK-RUNNING", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
@@ -423,7 +429,7 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check completed task
-	queued, err = store.IsTaskQueued("TASK-DONE")
+	queued, err = store.IsTaskQueued("TASK-DONE", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
@@ -432,12 +438,22 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check non-existent task
-	queued, err = store.IsTaskQueued("TASK-NONEXISTENT")
+	queued, err = store.IsTaskQueued("TASK-NONEXISTENT", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
 	if queued {
 		t.Error("expected TASK-NONEXISTENT to NOT be queued")
+	}
+
+	// GH-4276: a same-numbered task_id queued under a different project must
+	// not be reported queued for /project.
+	queued, err = store.IsTaskQueued("TASK-QUEUED", "/other-project")
+	if err != nil {
+		t.Fatalf("failed to check: %v", err)
+	}
+	if queued {
+		t.Error("expected TASK-QUEUED to NOT be queued under /other-project (cross-project task_id collision)")
 	}
 }
 
