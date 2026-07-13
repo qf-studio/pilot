@@ -680,21 +680,35 @@ func (m *Model) hydrateFromStore() {
 // first row for each task is its latest execution. This keeps a task that retried
 // several times (many rows) from consuming the whole history window — the panel
 // dedups by task ID at render, so a raw-row cap otherwise collapses to 1-2 entries.
+//
+// Within a task's rows, the latest-with-non-empty-title row wins, falling back
+// to the latest row if none carry a title. GH-4218 pattern: a task can retry
+// several times with only one non-latest row carrying task_title (backfilled
+// or set on an earlier attempt), so picking the bare-latest row can surface a
+// blank title even though a resolved one exists among its retries.
 func firstNDistinctByTask(execs []*memory.Execution, n int) []*memory.Execution {
 	if n <= 0 {
 		return nil
 	}
-	seen := make(map[string]bool, n)
-	out := make([]*memory.Execution, 0, n)
+	order := make([]string, 0, n)
+	best := make(map[string]*memory.Execution, n)
 	for _, e := range execs {
-		if seen[e.TaskID] {
+		cur, ok := best[e.TaskID]
+		if !ok {
+			if len(order) >= n {
+				continue
+			}
+			order = append(order, e.TaskID)
+			best[e.TaskID] = e
 			continue
 		}
-		seen[e.TaskID] = true
-		out = append(out, e)
-		if len(out) >= n {
-			break
+		if cur.TaskTitle == "" && e.TaskTitle != "" {
+			best[e.TaskID] = e
 		}
+	}
+	out := make([]*memory.Execution, 0, len(order))
+	for _, id := range order {
+		out = append(out, best[id])
 	}
 	return out
 }

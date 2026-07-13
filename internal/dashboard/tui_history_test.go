@@ -92,6 +92,61 @@ func TestFirstNDistinctByTask(t *testing.T) {
 	}
 }
 
+// TestFirstNDistinctByTask_PrefersNonEmptyTitle is the GH-4218/GH-4282
+// regression test: a task can retry several times where only one non-latest
+// row carries task_title (e.g. backfilled or set on an earlier attempt). The
+// kept row for that task must surface the resolved title rather than the
+// blank title on the bare-latest row.
+func TestFirstNDistinctByTask_PrefersNonEmptyTitle(t *testing.T) {
+	exWithTitle := func(id, title string) *memory.Execution {
+		return &memory.Execution{TaskID: id, TaskTitle: title}
+	}
+
+	// created_at DESC: newest first. GH-4218 retried 4x — only the 3rd-newest
+	// row carries the resolved title, the rest (including the latest) are blank.
+	in := []*memory.Execution{
+		exWithTitle("GH-4218", ""),
+		exWithTitle("GH-4218", ""),
+		exWithTitle("GH-4218", "fix(dashboard): resolved title"),
+		exWithTitle("GH-4218", ""),
+		exWithTitle("GH-4105", "some other task"),
+	}
+
+	got := firstNDistinctByTask(in, 5)
+
+	if len(got) != 2 {
+		t.Fatalf("got %d executions, want 2", len(got))
+	}
+	if got[0].TaskID != "GH-4218" {
+		t.Fatalf("got[0].TaskID = %q, want %q", got[0].TaskID, "GH-4218")
+	}
+	if got[0].TaskTitle != "fix(dashboard): resolved title" {
+		t.Errorf("got[0].TaskTitle = %q, want resolved title to surface despite blank latest row", got[0].TaskTitle)
+	}
+}
+
+// TestFirstNDistinctByTask_FallsBackToLatestWhenNoTitle verifies that when
+// none of a task's rows carry a title, dedup falls back to the plain latest
+// row (preserving pre-GH-4282 behavior in the no-title case).
+func TestFirstNDistinctByTask_FallsBackToLatestWhenNoTitle(t *testing.T) {
+	ex := func(id, status string) *memory.Execution {
+		return &memory.Execution{TaskID: id, Status: status}
+	}
+
+	in := []*memory.Execution{
+		ex("A", "skipped"), ex("A", "completed"), ex("A", "completed"),
+	}
+
+	got := firstNDistinctByTask(in, 5)
+
+	if len(got) != 1 {
+		t.Fatalf("got %d executions, want 1", len(got))
+	}
+	if got[0].Status != "skipped" {
+		t.Errorf("got[0].Status = %q, want %q (latest row, no title anywhere to prefer)", got[0].Status, "skipped")
+	}
+}
+
 // TestStoreRefreshCmd_DedupsRetriesAcrossFiveDistinctTasks is the GH-4119
 // regression test: storeRefreshCmd (the periodic refresh path) must dedup by
 // task_id like hydrateFromStore does, not cap on raw rows — otherwise a
