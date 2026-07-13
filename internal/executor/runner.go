@@ -1553,6 +1553,21 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 		return
 	}
 
+	// GH-4286: strip any memory doc the epic session committed without indexing
+	// in graph.json — left in place it trips the Knowledge Graph Drift Gate and
+	// can cost this PR to the autopilot CI-fix/size-guard path (see PR #4279).
+	if stripped, stripErr := git.StripUnindexedMemoryDocs(ctx, baseBranch); stripErr != nil {
+		r.log.Warn("Failed to strip unindexed memory doc(s) from epic branch",
+			slog.String("task_id", task.ID),
+			slog.Any("error", stripErr),
+		)
+	} else if len(stripped) > 0 {
+		r.log.Info("Stripped unindexed memory doc(s) from epic branch to avoid drift-gate failure",
+			slog.String("task_id", task.ID),
+			slog.Any("files", stripped),
+		)
+	}
+
 	r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
 
 	// Push the parent branch. TASK-359: a real deliverable that fails to push is a
@@ -3949,6 +3964,22 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				}
 				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 				return result, nil
+			}
+
+			// GH-4286: strip any memory doc the session committed without
+			// indexing in graph.json — left in place it trips the Knowledge
+			// Graph Drift Gate and can cost this PR to the autopilot
+			// CI-fix/size-guard path (see PR #4279).
+			if stripped, stripErr := git.StripUnindexedMemoryDocs(ctx, baseBranch); stripErr != nil {
+				log.Warn("Failed to strip unindexed memory doc(s) from branch",
+					slog.String("task_id", task.ID),
+					slog.Any("error", stripErr),
+				)
+			} else if len(stripped) > 0 {
+				log.Info("Stripped unindexed memory doc(s) from branch to avoid drift-gate failure",
+					slog.String("task_id", task.ID),
+					slog.Any("files", stripped),
+				)
 			}
 
 			// Pre-push lint gate (GH-1376)
