@@ -75,7 +75,90 @@ jobs:
   # ([canary:epic-lifecycle] pipeline stall); does not touch the
   # version-bump job, the reusable workflow, or scripts/canary-poll.sh's
   # `merged` mode.
+  #
+  # GH-4270: the issue body must clear the operator config gate
+  # (decompose.min_complexity: complex + decompose.min_description_words:
+  # 300) or the daemon classifies the issue `epic` but skips decomposition
+  # entirely, direct-shipping one PR -- the scenario then never exercises
+  # the epic machinery it exists to test (confirmed root cause of canary
+  # run 29266790390). epic-lifecycle-guard fails the job loudly if a
+  # future edit drops the body back under the gate; its `ISSUE_BODY` env
+  # value is the single source of truth, aliased into `epic-lifecycle`'s
+  # `issue_body` input below so the two can never drift apart.
+  epic-lifecycle-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce epic body clears decomposition gate
+        env:
+          ISSUE_BODY: &epic_issue_body |
+            ## Context
+
+            Synthetic canary run (TASK-403 A3, scenario `epic-lifecycle`). This
+            issue exists to prove the deployed Pilot daemon correctly decomposes
+            an epic into independent child issues, ships each child through its
+            own pull request, and closes the parent cleanly. It guards the
+            epic-lifecycle defect classes that escaped to production in July:
+            TASK-394 FK-787 ledger failures on sub-issue execution rows, TASK-395
+            stale `pilot-needs-clarification` labels from reconciler false
+            positives, TASK-401 single-child decomposition collapse where a
+            parent re-implemented already-shipped child work, and TASK-402
+            sibling duplicate pull requests racing each other to modify the same
+            file. Each of those defects was invisible until it corrupted a real
+            production epic, which is why this synthetic probe must exercise the
+            full decomposition path on every scheduled run rather than the
+            direct-execution path a short issue body would silently fall back to.
+
+            This epic has exactly two independent work items against two
+            different files in this sandbox repository. Decompose it into two
+            separate child issues, one per work item below. Do not fold them into
+            a single child, do not further decompose either child once created,
+            and do not implement either work item directly on this parent issue.
+            The parent must remain a coordination shell whose only outputs are
+            the two child issues and a final close-out once both children have
+            merged. Each child must produce its own branch, its own pull request,
+            and its own merge; the two pull requests must not touch each other's
+            target file.
+
+            ## Acceptance
+
+            - [ ] Subtask 1 (version bump): read the current PATCH component of
+                  the `Version` constant in `version.go` and increment it by
+                  exactly one (current+1). Do not assume a starting value --
+                  derive the target from what is in the file. Change only that
+                  single line so `version_test.go` (semver guard) stays green.
+                  Touches `version.go` only. Ship it as its own child issue with
+                  its own pull request.
+            - [ ] Subtask 2 (changelog entry): append one dated line to
+                  `CHANGELOG-CANARY.md` recording today's date and this canary
+                  run (create the file with a single `# Canary Changelog` heading
+                  first if it does not exist yet). Touches `CHANGELOG-CANARY.md`
+                  only. Depends on: Subtask 1 -- this subtask's own child issue
+                  must carry an explicit `Depends on:` back-reference to Subtask
+                  1's child issue, and should not start until Subtask 1's PR has
+                  landed. Ship it as its own child issue with its own pull
+                  request.
+            - [ ] Parent closes only after both child pull requests are merged,
+                  with no duplicate sibling pull requests and no FK/ledger
+                  warnings in the daemon log for either child execution.
+
+            ## Implementation
+
+            Two subtasks, two files, no shared code path:
+
+            1. `version.go` -- bump the PATCH component only.
+            2. `CHANGELOG-CANARY.md` -- append a dated line after Subtask 1
+               lands; state the `Depends on: #<subtask-1-issue>` reference in
+               this subtask's own child issue body.
+
+            ## Refs
+
+            TASK-403 canary program; invariants under test: TASK-394 / TASK-395 /
+            TASK-401 / TASK-402.
+        run: |
+          test "$(printf '%s' "$ISSUE_BODY" | wc -w)" -ge 350 || { echo "epic body under 350 words -- will not clear decomposition gate"; exit 1; }
+
   epic-lifecycle:
+    needs: epic-lifecycle-guard
     uses: ./.github/workflows/pilot-canary-scenario.yml
     secrets:
       canary_gh_token: ${{ secrets.CANARY_GH_TOKEN }}
@@ -90,45 +173,4 @@ jobs:
       timeout_minutes: 90
       poll_interval_seconds: 60
       issue_title: "chore(canary): [epic] epic-lifecycle scenario probe"
-      issue_body: |
-        ## Context
-
-        Synthetic canary run (TASK-403 A3, scenario `epic-lifecycle`). This
-        issue exists to prove the deployed Pilot daemon correctly
-        decomposes an epic into independent child issues, ships each child
-        through its own PR, and closes the parent cleanly -- the
-        epic-lifecycle defect classes that escaped to production in July
-        (TASK-394 FK-787 ledger failures, TASK-395 stale
-        pilot-needs-clarification, TASK-401 single-child collapse, TASK-402
-        sibling duplicate PRs).
-
-        This epic has exactly two independent work items against two
-        different files. Decompose it into two separate child issues, one
-        per item below -- do not fold them into a single child, and do not
-        further decompose either child once created.
-
-        ## Acceptance
-
-        - [ ] Subtask 1 (version bump): read the current PATCH component of
-              the `Version` constant in `version.go` and increment it by
-              exactly one (current+1). Do not assume a starting value --
-              derive the target from what is in the file. Change only that
-              single line so `version_test.go` (semver guard) stays green.
-              Touches `version.go` only.
-        - [ ] Subtask 2 (changelog entry): append one dated line to
-              `CHANGELOG-CANARY.md` recording today's date and this canary
-              run (create the file with a single `# Canary Changelog`
-              heading first if it does not exist yet). Touches
-              `CHANGELOG-CANARY.md` only. Depends on: Subtask 1 -- this
-              subtask's own child issue must carry an explicit
-              `Depends on:` back-reference to Subtask 1's child issue, and
-              should not start until Subtask 1's PR has landed.
-
-        ## Implementation
-
-        Two subtasks, two files, no shared code path:
-
-        1. `version.go` -- bump the PATCH component only.
-        2. `CHANGELOG-CANARY.md` -- append a dated line after Subtask 1
-           lands; state the `Depends on: #<subtask-1-issue>` reference in
-           this subtask's own child issue body.
+      issue_body: *epic_issue_body
