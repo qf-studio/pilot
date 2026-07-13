@@ -2010,6 +2010,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 					slog.String("task_id", task.ID),
 					slog.Int("planned_subtasks", len(plan.Subtasks)),
 				)
+				// GH-4271: this path already logged (TASK-401/GH-1265) but never
+				// wrote an execution_events row, so `pilot trace` on an
+				// epic-classified task that collapsed to single-package scope
+				// showed no evidence decomposition was even considered. Unify
+				// with the regex-decomposer skip site below via the same stage.
+				r.recordExecutionEvent(task.LogExecutionID(), memory.StageDecompositionSkipped,
+					fmt.Sprintf("decomposition skipped: reason=single_package_scope complexity=epic planned_subtasks=%d", len(plan.Subtasks)))
 				r.reportProgress(task.ID, "Planning", 35, "Single-package scope detected, running as single task...")
 
 				// Enrich the task description with the planned steps so the executor
@@ -2208,6 +2215,21 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				slog.String("reason", result.Reason),
 			)
 			return r.executeDecomposedTask(ctx, task, result.Subtasks, executionPath)
+		}
+		// GH-4271: an epic-classified (or otherwise at/above min_complexity)
+		// task that does NOT enter decomposition previously left zero trace —
+		// a canary run gated on min_description_words was indistinguishable
+		// from the TASK-401 defect class without hand-querying
+		// execution_events. Surface it as both a structured log line and an
+		// execution event so `pilot trace` shows why.
+		if r.decomposer.ReportableSkip(result) {
+			detail := r.decomposer.SkipLogDetail(result)
+			r.log.Info(detail,
+				slog.String("task_id", task.ID),
+				slog.String("skip_reason", string(result.SkipReason)),
+				slog.String("complexity", result.Complexity.String()),
+			)
+			r.recordExecutionEvent(task.LogExecutionID(), memory.StageDecompositionSkipped, detail)
 		}
 	}
 

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -46,7 +47,54 @@ type DecomposeResult struct {
 
 	// Reason explains why decomposition did or did not occur.
 	Reason string
+
+	// SkipReason is a machine-readable code for why decomposition did not
+	// occur (GH-4271). Empty (SkipReasonNone) when Decomposed is true.
+	SkipReason SkipReason
+
+	// Complexity is the task's classified complexity at the point this
+	// result was produced (GH-4271). Populated on every branch — including
+	// early-exit gates (disabled/label/phrase) via the cheap word-count
+	// heuristic, never the optional LLM classifier — so callers can judge
+	// whether a skip is worth surfacing without re-classifying or triggering
+	// an LLM call as a side effect of logging.
+	Complexity Complexity
+
+	// DescriptionWords is the word count evaluated against
+	// MinDescriptionWords. Only populated when SkipReason is
+	// SkipReasonDescriptionTooShort (GH-4271).
+	DescriptionWords int
 }
+
+// SkipReason is a machine-readable code for why TaskDecomposer did not split
+// a task, independent of the human-readable DecomposeResult.Reason string
+// (GH-4271). Callers use it to build structured log fields/event details
+// without parsing prose.
+type SkipReason string
+
+const (
+	// SkipReasonNone means decomposition succeeded — there is nothing to report.
+	SkipReasonNone SkipReason = ""
+	// SkipReasonNilTask means Decompose was called with a nil task.
+	SkipReasonNilTask SkipReason = "nil_task"
+	// SkipReasonDisabled means decompose.enabled is false.
+	SkipReasonDisabled SkipReason = "disabled"
+	// SkipReasonNoDecomposeLabel means the task carries the no-decompose label (GH-664).
+	SkipReasonNoDecomposeLabel SkipReason = "no_decompose_label"
+	// SkipReasonNoDecomposePhrase means the task's title/description contains
+	// prose that opts out of decomposition (GH-2783/GH-3597).
+	SkipReasonNoDecomposePhrase SkipReason = "no_decompose_phrase"
+	// SkipReasonBelowMinComplexity means the classified complexity does not
+	// meet decompose.min_complexity.
+	SkipReasonBelowMinComplexity SkipReason = "below_min_complexity"
+	// SkipReasonDescriptionTooShort means the description word count is below
+	// decompose.min_description_words (heuristic mode only, GH-1728).
+	SkipReasonDescriptionTooShort SkipReason = "description_too_short"
+	// SkipReasonNoSplitPoints means no structural decomposition points
+	// (numbered steps/bullets/criteria/file groups) were found, or all
+	// extracted parts collapsed to <=1 non-empty subtask (TASK-401 class).
+	SkipReasonNoSplitPoints SkipReason = "no_split_points"
+)
 
 // NoDecomposeLabel is the GitHub label that bypasses decomposition entirely (GH-664).
 const NoDecomposeLabel = "no-decompose"
@@ -119,8 +167,16 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 			Decomposed: false,
 			Subtasks:   nil,
 			Reason:     "nil task",
+			SkipReason: SkipReasonNilTask,
 		}
 	}
+
+	// GH-4271: cheap word-count heuristic classification up front, purely so
+	// early-exit gates below (disabled/label/phrase) can still report whether
+	// the task looked epic/complex-tier. Never the optional LLM classifier —
+	// that must not fire as a side effect of a branch that never reaches the
+	// "real" classification a few lines down.
+	precheckComplexity := DetectComplexity(task)
 
 	// Check if decomposition is enabled
 	if !d.config.Enabled {
@@ -128,6 +184,8 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 			Decomposed: false,
 			Subtasks:   []*Task{task},
 			Reason:     "decomposition disabled",
+			SkipReason: SkipReasonDisabled,
+			Complexity: precheckComplexity,
 		}
 	}
 
@@ -137,6 +195,8 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 			Decomposed: false,
 			Subtasks:   []*Task{task},
 			Reason:     "skipped: no-decompose label",
+			SkipReason: SkipReasonNoDecomposeLabel,
+			Complexity: precheckComplexity,
 		}
 	}
 
@@ -146,6 +206,8 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 			Decomposed: false,
 			Subtasks:   []*Task{task},
 			Reason:     "skipped: no-decompose phrase in title/description",
+			SkipReason: SkipReasonNoDecomposePhrase,
+			Complexity: precheckComplexity,
 		}
 	}
 
@@ -154,7 +216,7 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 	if d.classifier != nil {
 		complexity = d.classifier.Classify(ctx, task)
 	} else {
-		complexity = DetectComplexity(task)
+		complexity = precheckComplexity
 	}
 
 	if !d.shouldDecompose(complexity) {
@@ -162,6 +224,8 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 			Decomposed: false,
 			Subtasks:   []*Task{task},
 			Reason:     "complexity below threshold: " + complexity.String(),
+			SkipReason: SkipReasonBelowMinComplexity,
+			Complexity: complexity,
 		}
 	}
 
@@ -171,9 +235,12 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 	usedLLMClassifier := d.classifier != nil
 	if !usedLLMClassifier && wordCount < d.config.MinDescriptionWords {
 		return &DecomposeResult{
-			Decomposed: false,
-			Subtasks:   []*Task{task},
-			Reason:     "description too short for decomposition (heuristic mode)",
+			Decomposed:       false,
+			Subtasks:         []*Task{task},
+			Reason:           "description too short for decomposition (heuristic mode)",
+			SkipReason:       SkipReasonDescriptionTooShort,
+			Complexity:       complexity,
+			DescriptionWords: wordCount,
 		}
 	}
 
@@ -184,6 +251,8 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 			Decomposed: false,
 			Subtasks:   []*Task{task},
 			Reason:     "no decomposition points found",
+			SkipReason: SkipReasonNoSplitPoints,
+			Complexity: complexity,
 		}
 	}
 
@@ -191,6 +260,7 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 		Decomposed: true,
 		Subtasks:   subtasks,
 		Reason:     "decomposed into subtasks",
+		Complexity: complexity,
 	}
 }
 
@@ -250,6 +320,47 @@ func (d *TaskDecomposer) shouldDecompose(complexity Complexity) bool {
 		return complexity == ComplexityComplex || complexity == ComplexityMedium
 	default:
 		return complexity == ComplexityComplex
+	}
+}
+
+// ReportableSkip reports whether result represents a non-decomposition
+// outcome worth surfacing as a skip log line + execution event (GH-4271).
+//
+// The canary defect this closes: a task classified epic (or at/above
+// decompose.min_complexity) bypassed decomposition — e.g. gated by
+// min_description_words — with zero trace, indistinguishable from the
+// TASK-401 defect class. shouldDecompose(result.Complexity) is exactly
+// "would this task's complexity tier alone have triggered decomposition",
+// so reusing it here means every OTHER gate (disabled/label/phrase/
+// description-too-short/no-split-points) is reported whenever it fires on a
+// task that met the complexity bar. SkipReasonBelowMinComplexity is
+// intentionally excluded: shouldDecompose(result.Complexity) is false by
+// construction on that branch, since the whole point of that gate is that
+// complexity was too low to warrant decomposition in the first place — not
+// a silent-epic scenario.
+func (d *TaskDecomposer) ReportableSkip(result *DecomposeResult) bool {
+	if result == nil || result.Decomposed || result.SkipReason == SkipReasonNone {
+		return false
+	}
+	return d.shouldDecompose(result.Complexity)
+}
+
+// SkipLogDetail renders a machine-readable, single-line message for
+// result's skip reason, e.g. "decomposition skipped: description_words=275 <
+// min_description_words=300" (GH-4271). Concrete threshold/observed values
+// are included where the gate has them; other gates carry just the reason
+// code since there's nothing numeric to report.
+func (d *TaskDecomposer) SkipLogDetail(result *DecomposeResult) string {
+	prefix := "decomposition skipped: reason=" + string(result.SkipReason) +
+		" complexity=" + result.Complexity.String()
+	switch result.SkipReason {
+	case SkipReasonDescriptionTooShort:
+		return prefix + fmt.Sprintf(" description_words=%d < min_description_words=%d",
+			result.DescriptionWords, d.config.MinDescriptionWords)
+	case SkipReasonBelowMinComplexity:
+		return prefix + " min_complexity=" + d.config.MinComplexity
+	default:
+		return prefix
 	}
 }
 
