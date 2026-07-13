@@ -108,29 +108,68 @@ func isBookkeepingPath(path string) bool {
 	return path == ".agent" || strings.HasPrefix(path, ".agent/")
 }
 
-// SizeFloorReason returns a non-empty reason if the PR's code additions
-// (excluding Navigator bookkeeping paths, see isBookkeepingPath) exceed
-// SizeFloorThreshold. Pilot's median PR is well under 100 additions —
-// anything over the floor is large enough that auto-merge is too aggressive
-// even on a passing CI signal. GH-4055: PR #4047 (586 total additions, 281 of
-// them `.agent/**`, 305 code) wrongly escalated under the old net-additions
-// count — bookkeeping additions are now tracked separately and excluded from
-// the gate, while still surfaced in the reason string for visibility.
-func SizeFloorReason(files []*github.PRFile) string {
-	var codeAdditions, bookkeepingAdditions int
+// isTestPath reports whether path is a Go test file. Test additions inflate
+// PR size without adding production surface area — the same rationale
+// isBookkeepingPath already applies to `.agent/**`.
+func isTestPath(path string) bool {
+	return strings.HasSuffix(path, "_test.go")
+}
+
+// productionAdditions splits a PR's file list into production additions
+// (shipped code) versus bookkeeping (isBookkeepingPath, e.g. `.agent/**`) and
+// test (isTestPath, `_test.go`) additions. Both the CI-fix size guard
+// (controller.go) and SizeFloorReason use this so they can never drift apart
+// on what counts as "real" size again — GH-4284: the CI-fix guard summed raw
+// additions with no exclusions at all, auto-closing a well-tested PR (#4279)
+// whose 421 additions were ~290 test + 28 bookkeeping and only ~90 production.
+func productionAdditions(files []*github.PRFile) (production, bookkeeping, test int) {
 	for _, f := range files {
-		if isBookkeepingPath(f.Filename) {
-			bookkeepingAdditions += f.Additions
-		} else {
-			codeAdditions += f.Additions
+		switch {
+		case isBookkeepingPath(f.Filename):
+			bookkeeping += f.Additions
+		case isTestPath(f.Filename):
+			test += f.Additions
+		default:
+			production += f.Additions
 		}
 	}
-	if codeAdditions > SizeFloorThreshold {
-		if bookkeepingAdditions > 0 {
-			return fmt.Sprintf("PR adds %d code additions (> %d threshold; %d bookkeeping additions excluded)",
-				codeAdditions, SizeFloorThreshold, bookkeepingAdditions)
+	return production, bookkeeping, test
+}
+
+// excludedAdditionsSuffix renders the "excluded" parenthetical shared by
+// SizeFloorReason and the CI-fix size guard, e.g. "; 28 bookkeeping
+// additions excluded, 290 test additions excluded". Returns "" if nothing
+// was excluded, so callers can fall back to a plain "no exclusions" message.
+func excludedAdditionsSuffix(bookkeeping, test int) string {
+	switch {
+	case bookkeeping > 0 && test > 0:
+		return fmt.Sprintf("; %d bookkeeping additions excluded, %d test additions excluded", bookkeeping, test)
+	case bookkeeping > 0:
+		return fmt.Sprintf("; %d bookkeeping additions excluded", bookkeeping)
+	case test > 0:
+		return fmt.Sprintf("; %d test additions excluded", test)
+	default:
+		return ""
+	}
+}
+
+// SizeFloorReason returns a non-empty reason if the PR's production
+// additions (excluding Navigator bookkeeping paths and Go test files, see
+// productionAdditions) exceed SizeFloorThreshold. Pilot's median PR is well
+// under 100 additions — anything over the floor is large enough that
+// auto-merge is too aggressive even on a passing CI signal. GH-4055: PR
+// #4047 (586 total additions, 281 of them `.agent/**`, 305 code) wrongly
+// escalated under the old net-additions count — bookkeeping additions are
+// tracked separately and excluded from the gate, while still surfaced in the
+// reason string for visibility. GH-4284: test additions are now excluded
+// the same way.
+func SizeFloorReason(files []*github.PRFile) string {
+	production, bookkeeping, test := productionAdditions(files)
+	if production > SizeFloorThreshold {
+		if suffix := excludedAdditionsSuffix(bookkeeping, test); suffix != "" {
+			return fmt.Sprintf("PR adds %d code additions (> %d threshold%s)", production, SizeFloorThreshold, suffix)
 		}
-		return fmt.Sprintf("PR adds %d net lines (> %d threshold)", codeAdditions, SizeFloorThreshold)
+		return fmt.Sprintf("PR adds %d net lines (> %d threshold)", production, SizeFloorThreshold)
 	}
 	return ""
 }
