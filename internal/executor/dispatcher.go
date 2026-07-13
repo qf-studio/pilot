@@ -570,6 +570,25 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 		if result.Decomposed && len(result.Subtasks) > 1 {
 			return d.queueDecomposedTask(ctx, task, result)
 		}
+		// GH-4271: an epic-classified (or otherwise at/above min_complexity)
+		// task that does NOT enter decomposition previously left zero trace
+		// at this queue-time decision point — see the matching runner.go
+		// Execute() site for the direct-execution-time equivalent. execID
+		// only exists once queueSingleTask creates the executions row below,
+		// so the event write follows it rather than preceding it.
+		if d.decomposer.ReportableSkip(result) {
+			detail := d.decomposer.SkipLogDetail(result)
+			d.log.Info(detail,
+				slog.String("task_id", task.ID),
+				slog.String("skip_reason", string(result.SkipReason)),
+				slog.String("complexity", result.Complexity.String()),
+			)
+			execID, err := d.queueSingleTask(ctx, task)
+			if err == nil {
+				d.recordExecutionEvent(execID, memory.StageDecompositionSkipped, detail)
+			}
+			return execID, err
+		}
 	}
 
 	// Queue single task

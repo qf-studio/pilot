@@ -780,6 +780,16 @@ const (
 	// retry wall-clock share is queryable (GH-4129). Detail is a JSON object:
 	// {"loop","attempt"}.
 	StageRetryAttempt Stage = "retry_attempt"
+	// StageDecompositionSkipped records that a task classified epic (or at/
+	// above decompose.min_complexity) did NOT enter decomposition — the gate
+	// and concrete threshold/observed values are carried in Detail as a
+	// single-line machine-readable message (GH-4271). Distinct from
+	// StageSkipped/StageNoOp, which classify the whole execution's terminal
+	// outcome: this stage fires mid-execution while the task still proceeds
+	// to direct execution, closing the silent-epic-bypass gap that made a
+	// canary run (sandbox#6, 275 words vs min 300) indistinguishable from the
+	// TASK-401 defect class without hand-querying execution_events.
+	StageDecompositionSkipped Stage = "decomposition_skipped"
 )
 
 // Event represents a single stage-transition record for an execution.
