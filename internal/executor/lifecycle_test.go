@@ -215,6 +215,47 @@ func TestExecutionLifecycle_Finish_Override(t *testing.T) {
 	}
 }
 
+// TestExecutionLifecycle_Begin_EmptyTitle_BackfillsViaUpdateExecutionTitle is
+// the GH-4281 integration test for the Begin+UpdateExecutionTitle round trip:
+// a caller that starts an execution before a title is resolvable (Begin with
+// task.Title == "") can backfill task_title once it resolves, without
+// re-creating the row or losing the original execution ID.
+func TestExecutionLifecycle_Begin_EmptyTitle_BackfillsViaUpdateExecutionTitle(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-7", ProjectPath: "/tmp/project"} // Title intentionally blank
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("failed to load execution: %v", err)
+	}
+	if exec.TaskTitle != "" {
+		t.Fatalf("expected blank task_title before backfill, got %q", exec.TaskTitle)
+	}
+
+	if err := store.UpdateExecutionTitle(execID, "resolved"); err != nil {
+		t.Fatalf("UpdateExecutionTitle failed: %v", err)
+	}
+
+	exec, err = store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("failed to reload execution: %v", err)
+	}
+	if exec.TaskTitle != "resolved" {
+		t.Errorf("expected task_title %q after backfill, got %q", "resolved", exec.TaskTitle)
+	}
+	// execID must be stable across the backfill — UpdateExecutionTitle updates
+	// the existing row rather than creating a new one.
+	if exec.ID != execID {
+		t.Errorf("expected execution ID to remain %q, got %q", execID, exec.ID)
+	}
+}
+
 // TestExecutionLifecycle_NilStore_MethodsAreNoOps verifies every method
 // degrades gracefully with a nil store, mirroring the "logStore == nil"
 // guards this type consolidates.
