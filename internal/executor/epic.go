@@ -1983,6 +1983,9 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			ProjectPath: subTaskRepoPath,
 			Branch:      fmt.Sprintf("pilot/%s", taskID),
 			CreatePR:    true,
+			// GH-4240: inherit the canary marker from the epic parent so a
+			// sub-issue of a synthetic sandbox run doesn't leak into metrics.
+			IsCanary: parent.IsCanary,
 		}
 
 		// GH-4141: give this in-process sub-issue run its own executions ledger

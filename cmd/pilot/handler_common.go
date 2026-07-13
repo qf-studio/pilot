@@ -73,6 +73,17 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	title := info.Title
 	projectPath := deps.ProjectPath
 
+	// GH-4240: stamp the canary marker from the registered project config
+	// before dispatch, so it survives the queue round-trip into the
+	// executions row (ExecutionLifecycle.Begin) and the runner's live
+	// metrics guard. deps.Cfg.GetProject returns nil for an unregistered
+	// path (e.g. ad-hoc CLI runs), which correctly resolves to non-canary.
+	if deps.Cfg != nil {
+		if proj := deps.Cfg.GetProject(projectPath); proj != nil {
+			task.IsCanary = proj.Canary
+		}
+	}
+
 	// GH-4008: pre-check whether this task is already queued or running,
 	// before any monitor/alert side effects fire. Prevents the noisy
 	// "Dispatching..." + ERROR "already queued or running" pair that

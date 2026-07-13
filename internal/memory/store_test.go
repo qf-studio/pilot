@@ -103,6 +103,41 @@ func TestGetRecentExecutions(t *testing.T) {
 	}
 }
 
+// TestGetRecentExecutions_ExcludesCanary covers GH-4240: canary sandbox
+// executions must not appear in dashboard queue/history results, whether or
+// not a project filter is applied — the ledger row itself is untouched.
+func TestGetRecentExecutions_ExcludesCanary(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&Execution{ID: "re-real", TaskID: "TASK-REAL", ProjectPath: "/path", Status: "completed"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.SaveExecution(&Execution{ID: "re-canary", TaskID: "TASK-CANARY", ProjectPath: "/canary-sandbox", Status: "completed", IsCanary: true}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	recent, err := store.GetRecentExecutions(10, "")
+	if err != nil {
+		t.Fatalf("GetRecentExecutions failed: %v", err)
+	}
+	if len(recent) != 1 || recent[0].ID != "re-real" {
+		t.Errorf("GetRecentExecutions() = %v, want only [re-real]", recent)
+	}
+
+	// The canary row itself is untouched — GetExecution still returns it.
+	got, err := store.GetExecution("re-canary")
+	if err != nil {
+		t.Fatalf("GetExecution(re-canary): %v", err)
+	}
+	if !got.IsCanary {
+		t.Error("GetExecution(re-canary).IsCanary = false, want true")
+	}
+}
+
 func TestGetLatestExecutionByTaskID(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()
@@ -1594,6 +1629,18 @@ func TestGetLifetimeTaskCounts(t *testing.T) {
 		}
 	}
 
+	// GH-4240: a canary sandbox execution must not move any of these
+	// lifetime counters, project-scoped or not.
+	if err := store.SaveExecution(&Execution{
+		ID:          "exec-tc-canary",
+		TaskID:      "TASK-CANARY",
+		ProjectPath: "/canary-sandbox",
+		Status:      "completed",
+		IsCanary:    true,
+	}); err != nil {
+		t.Fatalf("SaveExecution canary: %v", err)
+	}
+
 	tc, err = store.GetLifetimeTaskCounts("")
 	if err != nil {
 		t.Fatalf("GetLifetimeTaskCounts: %v", err)
@@ -1666,6 +1713,18 @@ func TestGetIssueLevelCounts(t *testing.T) {
 				{ID: "ilc-12", TaskID: "TASK-Y", ProjectPath: "/beta", Status: "failed"},
 			},
 			projectPath:   "/beta",
+			wantAttempted: 1,
+			wantShipped:   1,
+		},
+		{
+			// GH-4240: a canary sandbox execution must not count toward
+			// issue-level attempted/shipped, even though it's a normal
+			// 'completed' row with no project filter applied.
+			name: "canary execution excluded regardless of status",
+			execs: []*Execution{
+				{ID: "ilc-13", TaskID: "TASK-REAL", ProjectPath: "/p", Status: "completed"},
+				{ID: "ilc-14", TaskID: "TASK-CANARY", ProjectPath: "/canary-sandbox", Status: "completed", IsCanary: true},
+			},
 			wantAttempted: 1,
 			wantShipped:   1,
 		},
@@ -1772,6 +1831,19 @@ func TestGetLifetimePRCountersFromExecutions(t *testing.T) {
 			projectPath: "/beta",
 			wantMerged:  1,
 			wantFailed:  1,
+		},
+		{
+			// GH-4240: canary merged/failed PR rows must not leak into either
+			// bucket, including via the failed-bucket's "already merged
+			// elsewhere" exclusion subquery.
+			name: "canary merged and failed rows both excluded",
+			execs: []*Execution{
+				{ID: "plc-9", TaskID: "TASK-REAL", ProjectPath: "/p", Status: "completed", PRUrl: "https://github.com/o/r/pull/9"},
+				{ID: "plc-10", TaskID: "TASK-CANARY-M", ProjectPath: "/canary-sandbox", Status: "completed", PRUrl: "https://github.com/o/r/pull/10", IsCanary: true},
+				{ID: "plc-11", TaskID: "TASK-CANARY-F", ProjectPath: "/canary-sandbox", Status: "failed", PRUrl: "https://github.com/o/r/pull/11", IsCanary: true},
+			},
+			wantMerged: 1,
+			wantFailed: 0,
 		},
 	}
 
@@ -3113,6 +3185,49 @@ func TestGetDailyMetrics_ExcludesZeroTokenRows(t *testing.T) {
 	}
 	if days[0].CacheWriteTokens != 5000 {
 		t.Errorf("CacheWriteTokens = %d, want 5000", days[0].CacheWriteTokens)
+	}
+}
+
+// TestGetDailyMetrics_ExcludesCanaryRows covers GH-4240: a canary sandbox
+// execution with real token/cost data must still not appear in daily metrics.
+func TestGetDailyMetrics_ExcludesCanaryRows(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	yesterday := now.Add(-24 * time.Hour)
+
+	if err := store.SaveExecution(&Execution{ID: "dm-real2", TaskID: "T-3", ProjectPath: "/p", Status: "completed", CreatedAt: yesterday}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&ExecutionMetrics{ExecutionID: "dm-real2", TokensTotal: 4000, EstimatedCostUSD: 0.30}); err != nil {
+		t.Fatalf("SaveExecutionMetrics: %v", err)
+	}
+
+	if err := store.SaveExecution(&Execution{ID: "dm-canary", TaskID: "T-4", ProjectPath: "/canary-sandbox", Status: "completed", CreatedAt: yesterday, IsCanary: true}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&ExecutionMetrics{ExecutionID: "dm-canary", TokensTotal: 9000, EstimatedCostUSD: 5.00}); err != nil {
+		t.Fatalf("SaveExecutionMetrics: %v", err)
+	}
+
+	q := MetricsQuery{Start: yesterday.Add(-time.Hour), End: now.Add(time.Hour)}
+	days, err := store.GetDailyMetrics(q)
+	if err != nil {
+		t.Fatalf("GetDailyMetrics: %v", err)
+	}
+	if len(days) == 0 {
+		t.Fatal("GetDailyMetrics: want at least 1 day row")
+	}
+	if days[0].ExecutionCount != 1 {
+		t.Errorf("ExecutionCount = %d, want 1 (canary row must be excluded)", days[0].ExecutionCount)
+	}
+	if days[0].TotalTokens != 4000 {
+		t.Errorf("TotalTokens = %d, want 4000 (canary tokens must be excluded)", days[0].TotalTokens)
 	}
 }
 

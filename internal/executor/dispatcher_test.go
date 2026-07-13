@@ -284,6 +284,10 @@ func TestStore_GetQueuedTasksForProject(t *testing.T) {
 		{ID: "exec-3", TaskID: "TASK-3", ProjectPath: "/project-b", Status: "queued"},
 		{ID: "exec-4", TaskID: "TASK-4", ProjectPath: "/project-a", Status: "completed"}, // Not queued
 		{ID: "exec-5", TaskID: "TASK-5", ProjectPath: "/project-a", Status: "running"},   // Not queued
+		// GH-4240: a canary sandbox row must still be dequeued for execution
+		// (metrics/dashboard exclusion, never ledger/dispatch exclusion), and
+		// the flag must round-trip through the queued-task read path.
+		{ID: "exec-6", TaskID: "TASK-6", ProjectPath: "/project-a", Status: "queued", IsCanary: true},
 	}
 
 	for _, exec := range executions {
@@ -298,8 +302,20 @@ func TestStore_GetQueuedTasksForProject(t *testing.T) {
 		t.Fatalf("failed to get queued tasks: %v", err)
 	}
 
-	if len(tasks) != 2 {
-		t.Errorf("expected 2 queued tasks for project-a, got %d", len(tasks))
+	if len(tasks) != 3 {
+		t.Errorf("expected 3 queued tasks for project-a, got %d", len(tasks))
+	}
+	var sawCanary bool
+	for _, task := range tasks {
+		if task.ID == "exec-6" {
+			sawCanary = true
+			if !task.IsCanary {
+				t.Error("exec-6 IsCanary = false, want true")
+			}
+		}
+	}
+	if !sawCanary {
+		t.Error("expected canary row exec-6 to be included in queued tasks")
 	}
 
 	// Query project-b queued tasks
@@ -2339,6 +2355,7 @@ func TestBuildTaskFromExecution_ThreadsExecutionUUID(t *testing.T) {
 		TaskSourceAdapter: "github",
 		TaskSourceIssueID: "3764",
 		TaskLabels:        []string{"pilot"},
+		IsCanary:          true,
 	}
 
 	task := buildTaskFromExecution(exec)
@@ -2366,6 +2383,11 @@ func TestBuildTaskFromExecution_ThreadsExecutionUUID(t *testing.T) {
 	}
 	if len(task.Labels) != 1 || task.Labels[0] != "pilot" {
 		t.Errorf("expected labels [pilot], got %v", task.Labels)
+	}
+	// GH-4240: the canary marker must survive the queue round-trip too, or
+	// it silently disappears between "task queued" and "task executed".
+	if !task.IsCanary {
+		t.Error("expected IsCanary to be carried over from execution")
 	}
 }
 

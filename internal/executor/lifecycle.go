@@ -88,6 +88,7 @@ func (l *ExecutionLifecycle) Begin(task *Task, initial Status) (string, error) {
 		TaskSourceAdapter: task.SourceAdapter,
 		TaskSourceIssueID: task.SourceIssueID,
 		TaskLabels:        task.Labels,
+		IsCanary:          task.IsCanary,
 	}
 	if err := l.store.SaveExecution(exec); err != nil {
 		return execID, fmt.Errorf("failed to save execution: %w", err)
