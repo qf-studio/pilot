@@ -791,9 +791,35 @@ type Event struct {
 	Detail      string
 }
 
+// ErrExecutionNotFound is returned by RecordExecutionEvent when executionID
+// has no matching executions row. Callers treat it as a warn-and-skip signal,
+// never as a reason to fail the caller's own operation (GH-4244).
+var ErrExecutionNotFound = errors.New("execution not found")
+
+// RecordExecutionEvent is the validate-first entry point for writing to the
+// execution_events audit trail (GH-4244). It replaces the pattern of calling
+// InsertExecutionEvent directly and letting a missing parent row surface as a
+// SQLite foreign-key constraint error (FK-787) — instead it confirms the
+// executions row exists first and returns ErrExecutionNotFound so the caller
+// can log a clean warning and skip the write. This is now the single place
+// that guards the executions/execution_events FK; every recordExecutionEvent
+// wrapper across the executor and autopilot packages delegates here.
+func (s *Store) RecordExecutionEvent(executionID string, stage Stage, detail string) error {
+	if _, err := s.GetExecution(executionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: execution_id=%s", ErrExecutionNotFound, executionID)
+		}
+		return fmt.Errorf("failed to verify execution %s exists: %w", executionID, err)
+	}
+	return s.InsertExecutionEvent(executionID, stage, detail)
+}
+
 // InsertExecutionEvent records a stage transition for executionID. occurred_at is
 // always the write-time UTC clock, not a caller-supplied value, so the ledger
-// can't be back-dated or skewed by local timezone (TASK-379 C2/C3).
+// can't be back-dated or skewed by local timezone (TASK-379 C2/C3). Most
+// callers should use RecordExecutionEvent instead, which validates the parent
+// row exists first; this method is exposed for call sites (e.g. tests,
+// RecordExecutionEvent itself) that already hold a known-good execution ID.
 func (s *Store) InsertExecutionEvent(executionID string, stage Stage, detail string) error {
 	return s.withRetry("InsertExecutionEvent", func() error {
 		_, err := s.db.Exec(`

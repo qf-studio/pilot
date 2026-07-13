@@ -7502,7 +7502,7 @@ func (m *mockApprovalPersister) GetLatestExecutionByTaskID(taskID string) (*memo
 	return &memory.Execution{ID: id, TaskID: taskID}, nil
 }
 
-func (m *mockApprovalPersister) InsertExecutionEvent(executionID string, stage memory.Stage, detail string) error {
+func (m *mockApprovalPersister) RecordExecutionEvent(executionID string, stage memory.Stage, detail string) error {
 	m.executionEvents = append(m.executionEvents, recordedExecutionEvent{executionID, stage, detail})
 	return nil
 }
@@ -7569,7 +7569,7 @@ func (m *errApprovalPersister) GetLatestExecutionByTaskID(_ string) (*memory.Exe
 	return nil, sql.ErrNoRows
 }
 
-func (m *errApprovalPersister) InsertExecutionEvent(_ string, _ memory.Stage, _ string) error {
+func (m *errApprovalPersister) RecordExecutionEvent(_ string, _ memory.Stage, _ string) error {
 	return nil
 }
 

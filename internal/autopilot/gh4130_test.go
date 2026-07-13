@@ -24,7 +24,7 @@ func (m *gh4130ExecPersister) SetApprovalRequestID(_ context.Context, _, _ strin
 func (m *gh4130ExecPersister) SetApprovalDecision(_ context.Context, _, _, _ string) error {
 	return nil
 }
-func (m *gh4130ExecPersister) InsertExecutionEvent(_ string, _ memory.Stage, _ string) error {
+func (m *gh4130ExecPersister) RecordExecutionEvent(_ string, _ memory.Stage, _ string) error {
 	return nil
 }
 func (m *gh4130ExecPersister) GetLatestExecutionByTaskID(taskID string) (*memory.Execution, error) {
