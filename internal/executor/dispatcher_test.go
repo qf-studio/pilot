@@ -2579,6 +2579,45 @@ func TestProjectWorker_recordExecutionEvent_NilStore(t *testing.T) {
 	w.recordExecutionEvent("exec-1", memory.StageRunning, "test detail")
 }
 
+// TestProjectWorker_recordExecutionEvent_UnknownExecution verifies the
+// GH-4244 validate-first guard: writing an event against an execution ID that
+// was never saved logs a warning and writes nothing, instead of surfacing a
+// SQLite foreign-key error (FK-787).
+func TestProjectWorker_recordExecutionEvent_UnknownExecution(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	w := &ProjectWorker{store: store, log: slog.New(slog.NewTextHandler(os.Stdout, nil))}
+	w.recordExecutionEvent("exec-ghost", memory.StageCommit, "commit created: abc1234")
+
+	events, err := store.ListExecutionEvents("exec-ghost")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events for an execution row that was never saved, got %d", len(events))
+	}
+}
+
+// TestDispatcher_recordExecutionEvent_UnknownExecution mirrors the
+// ProjectWorker/Runner regression test for the Dispatcher-owned wrapper
+// (GH-4244): a stale/unknown execution ID must warn-and-skip, never FK-fail.
+func TestDispatcher_recordExecutionEvent_UnknownExecution(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	d := &Dispatcher{store: store, log: slog.New(slog.NewTextHandler(os.Stdout, nil))}
+	d.recordExecutionEvent("exec-ghost", memory.StageFailed, "stale_queued recovered after restart")
+
+	events, err := store.ListExecutionEvents("exec-ghost")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events for an execution row that was never saved, got %d", len(events))
+	}
+}
+
 // syntheticDispatchBackend is a minimal Backend that always succeeds, used to
 // drive a full dispatcher→worker→runner pass without real git/Claude Code
 // tooling (GH-3846).

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -156,6 +157,52 @@ func TestInsertExecutionEventUsesExplicitUTC(t *testing.T) {
 	if got.Before(before) || got.After(after) {
 		t.Errorf("OccurredAt = %v, want between %v and %v", got, before, after)
 	}
+}
+
+// TestRecordExecutionEvent_ValidatesFirst covers the GH-4244 validate-first
+// chokepoint: RecordExecutionEvent must insert normally against a known
+// execution row, and must return ErrExecutionNotFound — never a bare SQLite
+// foreign-key error — against an unknown one (FK-787), leaving no event
+// behind either way.
+func TestRecordExecutionEvent_ValidatesFirst(t *testing.T) {
+	store := newExecutionEventsTestStore(t)
+
+	if err := store.SaveExecution(&Execution{
+		ID:          "exec-1",
+		TaskID:      "GH-1",
+		ProjectPath: "/project",
+		Status:      "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution failed: %v", err)
+	}
+
+	t.Run("known execution row inserts normally", func(t *testing.T) {
+		if err := store.RecordExecutionEvent("exec-1", StageQueued, "picked up"); err != nil {
+			t.Fatalf("RecordExecutionEvent failed: %v", err)
+		}
+		events, err := store.ListExecutionEvents("exec-1")
+		if err != nil {
+			t.Fatalf("ListExecutionEvents failed: %v", err)
+		}
+		if len(events) != 1 || events[0].Stage != StageQueued {
+			t.Fatalf("got events %+v, want a single %q event", events, StageQueued)
+		}
+	})
+
+	t.Run("unknown execution row returns ErrExecutionNotFound and writes nothing", func(t *testing.T) {
+		err := store.RecordExecutionEvent("exec-ghost", StageCommit, "commit created: abc1234")
+		if !errors.Is(err, ErrExecutionNotFound) {
+			t.Fatalf("RecordExecutionEvent error = %v, want ErrExecutionNotFound", err)
+		}
+
+		events, err := store.ListExecutionEvents("exec-ghost")
+		if err != nil {
+			t.Fatalf("ListExecutionEvents failed: %v", err)
+		}
+		if len(events) != 0 {
+			t.Errorf("expected 0 events for an execution row that was never saved, got %d", len(events))
+		}
+	})
 }
 
 // TestListExecutionsForTask covers newest-first ordering and an unknown task id.

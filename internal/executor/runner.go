@@ -1295,13 +1295,14 @@ func (r *Runner) saveLogEntry(executionID, level, message string) {
 
 // recordExecutionEvent writes a best-effort stage-transition record to the
 // execution_events audit trail (GH-3846). Mirrors saveLogEntry's fire-and-
-// forget semantics: a missing store or insert failure is logged and
-// swallowed, never fails the execution.
+// forget semantics: a missing store, missing parent execution row (GH-4244
+// validate-first via memory.Store.RecordExecutionEvent), or insert failure is
+// logged and swallowed, never fails the execution.
 func (r *Runner) recordExecutionEvent(executionID string, stage memory.Stage, detail string) {
 	if r.logStore == nil {
 		return
 	}
-	if err := r.logStore.InsertExecutionEvent(executionID, stage, detail); err != nil {
+	if err := r.logStore.RecordExecutionEvent(executionID, stage, detail); err != nil {
 		r.log.Warn("Failed to record execution event",
 			slog.String("execution_id", executionID),
 			slog.String("stage", string(stage)),
