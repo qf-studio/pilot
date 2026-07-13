@@ -387,6 +387,22 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 		return
 	}
 
+	// GH-4286: strip any memory doc a subtask session committed without
+	// indexing in graph.json — left in place it trips the Knowledge Graph
+	// Drift Gate and can cost this PR to the autopilot CI-fix/size-guard path
+	// (see PR #4279).
+	if stripped, stripErr := git.StripUnindexedMemoryDocs(ctx, baseBranch); stripErr != nil {
+		log.Warn("Failed to strip unindexed memory doc(s) from decomposed-parent branch",
+			slog.String("task_id", task.ID),
+			slog.Any("error", stripErr),
+		)
+	} else if len(stripped) > 0 {
+		log.Info("Stripped unindexed memory doc(s) from decomposed-parent branch to avoid drift-gate failure",
+			slog.String("task_id", task.ID),
+			slog.Any("files", stripped),
+		)
+	}
+
 	r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")
 
 	var pushErr error
