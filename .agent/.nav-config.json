@@ -1,5 +1,5 @@
 {
-  "version": "6.16.0",
+  "version": "6.18.1",
   "project_management": "none",
   "task_prefix": "TASK",
   "team_chat": "none",
@@ -53,5 +53,39 @@
     "confidence_decay_rate": 0.01,
     "staleness_threshold_days": 90,
     "git_tracked": true
+  },
+  "dispatcher": {
+    "enabled": true
+  },
+  "tier1": {
+    "enabled": true,
+    "rules": {
+      "nav_stats": true,
+      "show_features": true,
+      "list_markers": true,
+      "graph_health": true,
+      "nav_version": true
+    }
+  },
+  "stop_completion": {
+    "enabled": true,
+    "continue_enabled": true,
+    "max_continues": 2
+  },
+  "jit_memory": {
+    "enabled": true
+  },
+  "subagent_context": {
+    "enabled": true,
+    "budget_chars": 2000
+  },
+  "failure_diagnosis": {
+    "enabled": true
+  },
+  "config_guard": {
+    "enabled": true
+  },
+  "setup_hook": {
+    "enabled": true
   }
 }

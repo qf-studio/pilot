@@ -29,6 +29,19 @@ Pilot is a Go-based autonomous development pipeline. This page covers the system
                      └─────────────────────┘
 ```
 
+<Callout type="info">
+**Two runtime paths.** The diagram above shows the *legacy* coordination hub. In
+the production deployment (`pilot start` with polling — Telegram and/or GitHub),
+ingestion runs through **path A**: per-adapter [studio-sdk](https://github.com/qf-studio/studio-sdk)
+pollers → `Dispatcher` → `Executor`/`Autopilot`, and `internal/pilot` is *not*
+constructed. **Path B** (`internal/pilot` + `internal/orchestrator`) is the
+gateway **webhook-only** engine, reached only when both Telegram and GitHub
+polling are disabled; it still serves webhook-driven deployments (Linear, Jira,
+GitLab, Azure DevOps, Asana, Plane, and GitHub webhook mode). As of the M7
+studio-sdk cutover, all ten adapters' poll/chat paths consume the SDK; path B is
+retained deliberately as accepted residual.
+</Callout>
+
 **37 packages** across four layers:
 
 | Layer | Packages | Role |

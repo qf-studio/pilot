@@ -123,6 +123,15 @@ Issues with open dependencies are skipped until their dependencies are closed.
 
 ## Webhook Mode
 
+<Callout type="info">
+**Polling is the primary, recommended mode** for GitHub. It is the path exercised
+by the production daemon (`pilot start --github`), runs on the studio-sdk poller,
+and supports the full lifecycle (spec-guard, epic decomposition, SDK PR-create,
+autopilot). Webhook mode is the legacy gateway path (`internal/pilot`); it
+delivers lower-latency issue detection but does **not** run the SDK dispatch
+pipeline. Prefer polling unless you specifically need webhook-driven latency.
+</Callout>
+
 For real-time issue detection, configure GitHub webhooks:
 
 ### 1. Set Up the Webhook

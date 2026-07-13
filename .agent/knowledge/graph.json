@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-06",
+  "updated": "2026-07-13T08:53:43.998815+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -73,7 +73,7 @@
       },
       "git-operations": {
         "label": "Git Operations",
-        "description": "Git command wrappers in executor — clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
+        "description": "Git command wrappers in executor \u2014 clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
         "related": [
           "executor"
         ],
@@ -133,7 +133,7 @@
       },
       "anthropic-api": {
         "label": "Anthropic API",
-        "description": "Direct Anthropic Messages API calls (x-api-key, max_tokens required) used by the bot module's llm.Client — distinct from the Claude Code subprocess the executor uses",
+        "description": "Direct Anthropic Messages API calls (x-api-key, max_tokens required) used by the bot module's llm.Client \u2014 distinct from the Claude Code subprocess the executor uses",
         "related": [
           "llm-integration",
           "claude-code-integration"
@@ -167,7 +167,7 @@
       },
       "doctor": {
         "label": "doctor",
-        "description": "pilot doctor health checks (internal/health) — presence-only today, target: live auth probes via Verifiable interface"
+        "description": "pilot doctor health checks (internal/health) \u2014 presence-only today, target: live auth probes via Verifiable interface"
       },
       "canary": {
         "label": "canary",
@@ -226,6 +226,151 @@
       "alerts": {
         "label": "Alerts",
         "description": "Alert engine + multi-channel dispatch (internal/alerts)"
+      },
+      "epic": {
+        "name": "Epic",
+        "aliases": [],
+        "domain": "general"
+      },
+      "shipped-check": {
+        "name": "Shipped-Check",
+        "aliases": [],
+        "domain": "general"
+      },
+      "reconciler": {
+        "name": "Reconciler",
+        "aliases": [],
+        "domain": "general"
+      },
+      "labels": {
+        "name": "Labels",
+        "aliases": [],
+        "domain": "general"
+      },
+      "dispatcher": {
+        "name": "Dispatcher",
+        "aliases": [],
+        "domain": "general"
+      },
+      "concurrency": {
+        "name": "Concurrency",
+        "aliases": [],
+        "domain": "general"
+      },
+      "scheduler": {
+        "name": "Scheduler",
+        "aliases": [],
+        "domain": "general"
+      },
+      "auto-merge": {
+        "name": "Auto-Merge",
+        "aliases": [],
+        "domain": "general"
+      },
+      "scope-guard": {
+        "name": "Scope-Guard",
+        "aliases": [],
+        "domain": "general"
+      },
+      "security": {
+        "name": "Security",
+        "aliases": [],
+        "domain": "general"
+      },
+      "supply-chain": {
+        "name": "Supply-Chain",
+        "aliases": [],
+        "domain": "general"
+      },
+      "social-engineering": {
+        "name": "Social-Engineering",
+        "aliases": [],
+        "domain": "general"
+      },
+      "pilot": {
+        "name": "Pilot",
+        "aliases": [],
+        "domain": "general"
+      },
+      "cross-repo": {
+        "name": "Cross-Repo",
+        "aliases": [],
+        "domain": "general"
+      },
+      "dispatch": {
+        "name": "Dispatch",
+        "aliases": [],
+        "domain": "general"
+      },
+      "workflow": {
+        "name": "Workflow",
+        "aliases": [],
+        "domain": "general"
+      },
+      "ledger": {
+        "name": "Ledger",
+        "aliases": [],
+        "domain": "general"
+      },
+      "retry": {
+        "name": "Retry",
+        "aliases": [],
+        "domain": "general"
+      },
+      "sdk-poller": {
+        "name": "Sdk-Poller",
+        "aliases": [],
+        "domain": "general"
+      },
+      "m7": {
+        "name": "M7",
+        "aliases": [],
+        "domain": "general"
+      },
+      "github": {
+        "name": "Github",
+        "aliases": [],
+        "domain": "general"
+      },
+      "dedup": {
+        "name": "Dedup",
+        "aliases": [],
+        "domain": "general"
+      },
+      "sub-issue": {
+        "name": "Sub-Issue",
+        "aliases": [],
+        "domain": "general"
+      },
+      "flag-cutover": {
+        "name": "Flag-Cutover",
+        "aliases": [],
+        "domain": "general"
+      },
+      "tui": {
+        "name": "Tui",
+        "aliases": [],
+        "domain": "general"
+      },
+      "architecture": {
+        "name": "Architecture",
+        "aliases": [],
+        "domain": "general"
+      },
+      "dependencies": {
+        "name": "Dependencies",
+        "aliases": [],
+        "domain": "general"
+      },
+      "decomposition": {
+        "name": "Decomposition",
+        "aliases": [],
+        "domain": "general"
+      },
+      "ci": {
+        "name": "Ci",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -288,7 +433,7 @@
         "released": "v2.166.10-11"
       },
       "TASK-359": {
-        "title": "Daemon finalization hardening — Shapes A/B/C closure",
+        "title": "Daemon finalization hardening \u2014 Shapes A/B/C closure",
         "status": "planned",
         "priority": "P1",
         "file": ".agent/tasks/TASK-359-daemon-finalization-hardening.md",
@@ -333,7 +478,7 @@
         ],
         "created": "2026-07-05",
         "file": ".agent/tasks/archive/TASK-385-studio-sdk-v0260-github-surface.md",
-        "label": "studio-sdk v0.26.0 github poll/board/PR surface (studio-sdk#71) — unblocks M7 4b-4d",
+        "label": "studio-sdk v0.26.0 github poll/board/PR surface (studio-sdk#71) \u2014 unblocks M7 4b-4d",
         "priority": "P1",
         "status": "completed"
       },
@@ -377,25 +522,25 @@
         ]
       },
       "TASK-368": {
-        "path": "/private/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-worktree-GH-3917-1783339382148946000/.agent/tasks/TASK-368-m7-github-cutover-phase4.md",
-        "title": "M7 Phase 4 — GitHub adapter → studio-sdk cutover (MANUAL)",
+        "path": ".agent/tasks/TASK-368-m7-github-cutover-phase4.md",
+        "title": "M7 Phase 4 \u2014 GitHub adapter \u2192 studio-sdk cutover (MANUAL)",
         "status": "unknown",
         "concepts": [
-          "knowledge",
           "frontend",
-          "context",
-          "deployment",
-          "database",
-          "api",
           "markers",
           "authentication",
+          "database",
+          "api",
+          "context",
           "testing",
-          "workflow"
+          "workflow",
+          "knowledge",
+          "deployment"
         ]
       },
       "TASK-390": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/grot-dashboard-redesign/.agent/tasks/TASK-390-grot-dashboard-redesign.md",
-        "title": "Dashboard TUI redesign — grot design system",
+        "title": "Dashboard TUI redesign \u2014 grot design system",
         "status": "unknown",
         "concepts": [
           "testing",
@@ -403,6 +548,166 @@
           "deployment",
           "api",
           "knowledge"
+        ]
+      },
+      "TASK-393": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-393-throughput-acceleration.md",
+        "title": "Pilot Throughput Acceleration",
+        "status": "completed",
+        "concepts": [
+          "testing",
+          "deployment",
+          "knowledge",
+          "authentication",
+          "database",
+          "frontend",
+          "workflow",
+          "context"
+        ]
+      },
+      "TASK-394": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-394-epic-subissue-execution-ledger.md",
+        "title": "Epic Sub-Issue Execution Ledger \u2014 kill double-intake, FK failures, starved success metrics",
+        "status": "completed",
+        "concepts": [
+          "testing",
+          "database",
+          "knowledge",
+          "context",
+          "api",
+          "workflow",
+          "deployment",
+          "theory of mind"
+        ]
+      },
+      "TASK-395": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-395-epic-reconcile-false-positives.md",
+        "title": "Epic reconcile shipped-check false positives \u2014 parent in own child set, post-close escalation, stale needs-clarification",
+        "status": "in-progress",
+        "concepts": [
+          "markers",
+          "api",
+          "deployment",
+          "knowledge",
+          "frontend",
+          "context",
+          "testing"
+        ]
+      },
+      "TASK-396": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-396-release-sha-propagation.md",
+        "title": "Release SHA propagation \u2014 unconditional HeadSHA\u2190PostMergeSHA copy-back in handleReleasing",
+        "status": "completed",
+        "concepts": [
+          "workflow",
+          "api",
+          "authentication",
+          "context",
+          "theory of mind",
+          "testing",
+          "deployment"
+        ]
+      },
+      "TASK-397": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-397-m7-close-out.md",
+        "title": "M7 close-out \u2014 final dead-code deletion + #3423 milestone closure",
+        "status": "unknown",
+        "concepts": [
+          "database",
+          "testing",
+          "frontend",
+          "workflow",
+          "knowledge",
+          "deployment"
+        ]
+      },
+      "TASK-398": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-398-dashboard-grom-panel-navigation.md",
+        "title": "Dashboard grom-style panel navigation \u2014 spatial focus, zoom, fluid layout",
+        "status": "completed",
+        "concepts": [
+          "api",
+          "theory of mind",
+          "deployment",
+          "testing",
+          "context",
+          "knowledge"
+        ]
+      },
+      "TASK-399": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-399-dashboard-status-truthfulness.md",
+        "title": "Dashboard history shows shipped issues as running/failed \u2014 reconcile persisted execution status against terminal truth",
+        "status": "dispatched",
+        "concepts": [
+          "deployment",
+          "theory of mind",
+          "api",
+          "knowledge",
+          "markers",
+          "testing",
+          "workflow"
+        ]
+      },
+      "TASK-400": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-400-throughput-histograms-dead-on-live-path.md",
+        "title": "Task 400 Throughput Histograms Dead On Live Path",
+        "status": "dispatched",
+        "concepts": [
+          "api",
+          "workflow",
+          "deployment",
+          "knowledge",
+          "testing"
+        ]
+      },
+      "TASK-401": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-401-epic-parent-duplicate-reimplementation.md",
+        "title": "Task 401 Epic Parent Duplicate Reimplementation",
+        "status": "completed",
+        "concepts": [
+          "workflow",
+          "frontend",
+          "deployment",
+          "testing",
+          "knowledge",
+          "api"
+        ]
+      },
+      "TASK-402": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-402-sibling-merge-wait-dependency.md",
+        "title": "Task 402 Sibling Merge Wait Dependency",
+        "status": "completed",
+        "concepts": [
+          "deployment",
+          "testing",
+          "markers"
+        ]
+      },
+      "TASK-403": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-403-canary-lifecycle-scenarios.md",
+        "title": "Canary lifecycle scenarios \u2014 scenario abstraction, epic-flow canary, canary metrics isolation",
+        "status": "completed",
+        "concepts": [
+          "deployment",
+          "context",
+          "testing",
+          "workflow",
+          "knowledge",
+          "api",
+          "markers"
+        ]
+      },
+      "TASK-404": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-404-execution-lifecycle-chokepoint.md",
+        "title": "Execution lifecycle chokepoint \u2014 one API for create/transition, kill the FK-787 class permanently",
+        "status": "completed",
+        "concepts": [
+          "context",
+          "deployment",
+          "testing",
+          "database",
+          "knowledge",
+          "api"
         ]
       }
     },
@@ -462,7 +767,7 @@
       },
       "mem-006": {
         "type": "pattern",
-        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH→PLAN→IMPL→VERIFY→COMPLETE), and EXIT_SIGNAL for completion.",
+        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH\u2192PLAN\u2192IMPL\u2192VERIFY\u2192COMPLETE), and EXIT_SIGNAL for completion.",
         "concepts": [
           "executor",
           "navigator-integration"
@@ -514,7 +819,7 @@
       },
       "mem-011": {
         "type": "pitfall",
-        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure — reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
+        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure \u2014 reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
         "concepts": [
           "executor",
           "git-operations"
@@ -600,7 +905,7 @@
       },
       "mem-018": {
         "type": "learning",
-        "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output — recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
+        "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output \u2014 recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
         "concepts": [
           "claude-code-integration",
           "workflow-discipline"
@@ -623,7 +928,7 @@
       },
       "mem-020": {
         "type": "learning",
-        "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser → Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) — update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
+        "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser \u2192 Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) \u2014 update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
         "concepts": [
           "release",
           "autopilot"
@@ -634,7 +939,7 @@
       },
       "mem-021": {
         "type": "learning",
-        "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request — they loop to maxPages (N×pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
+        "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request \u2014 they loop to maxPages (N\u00d7pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
         "concepts": [
           "github-adapter",
           "testing"
@@ -645,7 +950,7 @@
       },
       "mem-022": {
         "type": "decision",
-        "summary": "Release pipeline is tag-only — goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
+        "summary": "Release pipeline is tag-only \u2014 goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
         "concepts": [
           "release"
         ],
@@ -692,7 +997,7 @@
       },
       "mem-026": {
         "type": "learning",
-        "summary": "The Pilot daemon's *finalization* path (push -> PR-create -> label) is the active reliability bottleneck — the *execution* path (Claude Code subprocess) is reliable. Studio-sdk extraction (PRs #28-#56, 2026-06-02/-03): 9/10 connectors shipped, but ~7/12 finalization runs needed manual recovery (Shape A stall-before-push), 2 hit a retry-race vs human recovery PRs (Shape B), 1 late-duplicate-PR (Shape C). The harness + review gates carried the outcome, not daemon finalization reliability. `no-decompose` label routes through the direct path (fatal error handling) instead of the epic path (warn-only) and was empirically reliable. Canonical fix: TASK-359 (3-layer plan: unified finalizeExecution MANUAL + 4 no-decompose Pilot issues for boundary fixes). RESOLUTION (2026-06-04): Shape A + C CLOSED & live-verified via TASK-359 Layer 1 (v2.166.16, studio-sdk #63/PR#64); Shape B (Layer 2b) + negative token-revoke shipped/unit-covered but not yet live-verified.",
+        "summary": "The Pilot daemon's *finalization* path (push -> PR-create -> label) is the active reliability bottleneck \u2014 the *execution* path (Claude Code subprocess) is reliable. Studio-sdk extraction (PRs #28-#56, 2026-06-02/-03): 9/10 connectors shipped, but ~7/12 finalization runs needed manual recovery (Shape A stall-before-push), 2 hit a retry-race vs human recovery PRs (Shape B), 1 late-duplicate-PR (Shape C). The harness + review gates carried the outcome, not daemon finalization reliability. `no-decompose` label routes through the direct path (fatal error handling) instead of the epic path (warn-only) and was empirically reliable. Canonical fix: TASK-359 (3-layer plan: unified finalizeExecution MANUAL + 4 no-decompose Pilot issues for boundary fixes). RESOLUTION (2026-06-04): Shape A + C CLOSED & live-verified via TASK-359 Layer 1 (v2.166.16, studio-sdk #63/PR#64); Shape B (Layer 2b) + negative token-revoke shipped/unit-covered but not yet live-verified.",
         "concepts": [
           "executor",
           "autopilot",
@@ -717,7 +1022,7 @@
       },
       "mem-028": {
         "type": "learning",
-        "summary": "When grep for an alleged write API in internal/ returns zero, the root cause is external (config/another bot/GitHub workflow) — don't draft a Pilot fix",
+        "summary": "When grep for an alleged write API in internal/ returns zero, the root cause is external (config/another bot/GitHub workflow) \u2014 don't draft a Pilot fix",
         "concepts": [
           "workflow-discipline",
           "github-adapter"
@@ -729,7 +1034,7 @@
       },
       "mem-029": {
         "type": "learning",
-        "summary": "For ad-hoc gh CLI writes to qf-studio (project board edits, etc.) use Pilot's PAT from ~/.pilot/config.yaml via GH_TOKEN env — OAuth refresh is silently blocked by SAML SSO",
+        "summary": "For ad-hoc gh CLI writes to qf-studio (project board edits, etc.) use Pilot's PAT from ~/.pilot/config.yaml via GH_TOKEN env \u2014 OAuth refresh is silently blocked by SAML SSO",
         "concepts": [
           "github-adapter",
           "doctor",
@@ -742,7 +1047,7 @@
       },
       "mem-030": {
         "type": "pitfall",
-        "summary": "maybeCloseParentIssue trusted native sub-issue open-count alone; partial LinkSubIssue coverage makes count hit 0 while unlinked siblings are open — parent closes pilot-done with no PR-merge verification (GH-3513). Fixed PR #3527: native 0 must be confirmed by text search.",
+        "summary": "maybeCloseParentIssue trusted native sub-issue open-count alone; partial LinkSubIssue coverage makes count hit 0 while unlinked siblings are open \u2014 parent closes pilot-done with no PR-merge verification (GH-3513). Fixed PR #3527: native 0 must be confirmed by text search.",
         "concepts": [
           "autopilot",
           "epic-decomposition"
@@ -754,7 +1059,7 @@
       },
       "mem-031": {
         "type": "pitfall",
-        "summary": "skipSupersededByParent superseded live children off parent.State==closed && pilot-done label — no merge verification; orphaned complete green PRs in GH-3513. Fixed PR #3527: open pilot/GH-N PR vetoes supersession.",
+        "summary": "skipSupersededByParent superseded live children off parent.State==closed && pilot-done label \u2014 no merge verification; orphaned complete green PRs in GH-3513. Fixed PR #3527: open pilot/GH-N PR vetoes supersession.",
         "concepts": [
           "autopilot",
           "poller",
@@ -768,7 +1073,7 @@
       },
       "mem-032": {
         "type": "pitfall",
-        "summary": "inherited-spec:true children fetch the parent issue as their spec and re-implement the FULL feature — N redundant colliding PRs per epic (GH-3513). Fixed PR #3527 with a scope fence in subIssueBody(); sibling-branch PR base routing still unfixed.",
+        "summary": "inherited-spec:true children fetch the parent issue as their spec and re-implement the FULL feature \u2014 N redundant colliding PRs per epic (GH-3513). Fixed PR #3527 with a scope fence in subIssueBody(); sibling-branch PR base routing still unfixed.",
         "concepts": [
           "epic-decomposition",
           "executor"
@@ -794,7 +1099,7 @@
       },
       "mem-034": {
         "type": "pitfall",
-        "summary": "Subprocess without cmd.Dir: getPostExecutionSummary ran git in the daemon's CWD and reported the wrong repo's HEAD as the commit SHA — ghost guard then killed real worker commits (TASK-320 false no-ops) or recorded wrong-repo completed SHAs (TASK-355). One bug, both incident families. Fix v2.186.2: worktree git harvest first, summary pinned to executionPath. Lesson: every executor exec.Command must set cmd.Dir; never ask an LLM for what git answers deterministically.",
+        "summary": "Subprocess without cmd.Dir: getPostExecutionSummary ran git in the daemon's CWD and reported the wrong repo's HEAD as the commit SHA \u2014 ghost guard then killed real worker commits (TASK-320 false no-ops) or recorded wrong-repo completed SHAs (TASK-355). One bug, both incident families. Fix v2.186.2: worktree git harvest first, summary pinned to executionPath. Lesson: every executor exec.Command must set cmd.Dir; never ask an LLM for what git answers deterministically.",
         "concepts": [
           "executor",
           "git-operations"
@@ -806,7 +1111,7 @@
       },
       "mem-035": {
         "type": "learning",
-        "summary": "GH-201 'OAuth loop' ghost issues (#3562-64, #3576) were created by the TEST SUITE: TestCreateSubIssues_ProceedsWhenNoChildren drives CreateSubIssues past the dedup guard with fixture parent GH-201 and executionPath='' — createSubIssuesViaGitHub has no dryRun guard, so authed gh creates real issues; sibling tests spawn the real claude binary. Teammate/shared-PAT attribution was wrong: tests stamp the same autopilot-meta markers and bypass the DB (zero rows proves test path, not remote actor). Lessons: stub the exec boundary in tests; dryRun must guard every side-effecting path; verify the spawner not the signature. Fix: #3579.",
+        "summary": "GH-201 'OAuth loop' ghost issues (#3562-64, #3576) were created by the TEST SUITE: TestCreateSubIssues_ProceedsWhenNoChildren drives CreateSubIssues past the dedup guard with fixture parent GH-201 and executionPath='' \u2014 createSubIssuesViaGitHub has no dryRun guard, so authed gh creates real issues; sibling tests spawn the real claude binary. Teammate/shared-PAT attribution was wrong: tests stamp the same autopilot-meta markers and bypass the DB (zero rows proves test path, not remote actor). Lessons: stub the exec boundary in tests; dryRun must guard every side-effecting path; verify the spawner not the signature. Fix: #3579.",
         "concepts": [
           "executor",
           "testing",
@@ -836,7 +1141,7 @@
       },
       "mem-037": {
         "type": "pitfall",
-        "summary": "Autopilot orphans the LAST epic child PRs: the epic's execution run owns child-PR merging, so children whose PRs are created late are left created-but-unmerged when the run ends. The standalone auto-merge loop won't reclaim them because their tracking issues are already CLOSED (it thinks the work is done) — so green/CLEAN child PRs sit with ZERO autopilot review/comment even under stage's require_approval:false + auto_merge:true + green test/lint. Epic stays OPEN+pilot-in-progress; any 'Blocked by: #<epic>' dependent is gated forever via poller hasPendingDependencies. Recover: merge the orphans in order yourself, then close the epic to release dependents. Late siblings often CONFLICT once one merges (same wiring) — close the conflicted PR and re-dispatch only its UNIQUE remainder vs updated main, don't hand-resolve in root. Observed 2026-06-26 epic #3665 (bot module): merged #3670/#3674 mid-run, orphaned #3678/#3679. TASK-359 finalization shape.",
+        "summary": "Autopilot orphans the LAST epic child PRs: the epic's execution run owns child-PR merging, so children whose PRs are created late are left created-but-unmerged when the run ends. The standalone auto-merge loop won't reclaim them because their tracking issues are already CLOSED (it thinks the work is done) \u2014 so green/CLEAN child PRs sit with ZERO autopilot review/comment even under stage's require_approval:false + auto_merge:true + green test/lint. Epic stays OPEN+pilot-in-progress; any 'Blocked by: #<epic>' dependent is gated forever via poller hasPendingDependencies. Recover: merge the orphans in order yourself, then close the epic to release dependents. Late siblings often CONFLICT once one merges (same wiring) \u2014 close the conflicted PR and re-dispatch only its UNIQUE remainder vs updated main, don't hand-resolve in root. Observed 2026-06-26 epic #3665 (bot module): merged #3670/#3674 mid-run, orphaned #3678/#3679. TASK-359 finalization shape.",
         "concepts": [
           "autopilot",
           "epic-decomposition",
@@ -851,7 +1156,7 @@
       },
       "mem-038": {
         "type": "pattern",
-        "summary": "Bot module dual-path: fast conversational path (~1-2s, direct LLM via Responder) vs executor path (~15-30s, Claude Code worktree). Intents: greeting/chat/question/issue-intake → Responder; task/research/planning → executor. Fallback guarantee: Responder nil (bot disabled) → identical-to-before executor path. Rate limit via AllowMessage() before all dispatch. Voice seam: VoiceText merged into text when Text empty. Test-at-the-seam lesson: tests must cross adapter→comms boundary (ref mem-036).",
+        "summary": "Bot module dual-path: fast conversational path (~1-2s, direct LLM via Responder) vs executor path (~15-30s, Claude Code worktree). Intents: greeting/chat/question/issue-intake \u2192 Responder; task/research/planning \u2192 executor. Fallback guarantee: Responder nil (bot disabled) \u2192 identical-to-before executor path. Rate limit via AllowMessage() before all dispatch. Voice seam: VoiceText merged into text when Text empty. Test-at-the-seam lesson: tests must cross adapter\u2192comms boundary (ref mem-036).",
         "concepts": [
           "intent-routing",
           "executor",
@@ -864,7 +1169,7 @@
       },
       "mem-039": {
         "type": "pitfall",
-        "summary": "Bot's direct LLM client (internal/llm/client.go) omitted required max_tokens and sent non-standard output_config{effort:low}, so every Anthropic Messages call 400'd ('max_tokens: Field required') and the bot replied 'Sorry, I couldn't process that.' Shipped GREEN because TestAnswer_RequestShape asserted output_config present and never checked max_tokens — the test encoded the bug. Diagnose request-shape bugs with curl (real key): code's request → 400, +max_tokens/-output_config → 200, in 2 calls. Fixed v2.200.1 (#3700): add max_tokens(2048), drop output_config, tests assert both. Lesson (again, see mem-036): assert the REQUIRED fields, not the optional ones.",
+        "summary": "Bot's direct LLM client (internal/llm/client.go) omitted required max_tokens and sent non-standard output_config{effort:low}, so every Anthropic Messages call 400'd ('max_tokens: Field required') and the bot replied 'Sorry, I couldn't process that.' Shipped GREEN because TestAnswer_RequestShape asserted output_config present and never checked max_tokens \u2014 the test encoded the bug. Diagnose request-shape bugs with curl (real key): code's request \u2192 400, +max_tokens/-output_config \u2192 200, in 2 calls. Fixed v2.200.1 (#3700): add max_tokens(2048), drop output_config, tests assert both. Lesson (again, see mem-036): assert the REQUIRED fields, not the optional ones.",
         "concepts": [
           "anthropic-api",
           "testing",
@@ -879,7 +1184,7 @@
       },
       "mem-040": {
         "type": "pitfall",
-        "summary": "Daemon hot-upgrades to the latest GitHub RELEASE and re-execs (pid preserved → ps lstart looks unchanged while the on-disk binary swaps). A dev binary cp'd to ~/.local/bin/pilot reverts within ~20min to the last release. A fix merged to main is NOT in the running daemon until a release containing it is cut (autopilot shouldTriggerRelease gap). Observed 2026-06-26: 29MB dev fix at 12:32 reverted to 20.6MB v2.200.0 release by 12:52, bot kept failing. Durable fix: tag-driven release (mem-022) with the fix → pilot upgrade (prompts y/N) → restart. v2.200.1 held because it's the latest release. Confirm running binary via lsof txt + stat size + pilot version, not lstart alone.",
+        "summary": "Daemon hot-upgrades to the latest GitHub RELEASE and re-execs (pid preserved \u2192 ps lstart looks unchanged while the on-disk binary swaps). A dev binary cp'd to ~/.local/bin/pilot reverts within ~20min to the last release. A fix merged to main is NOT in the running daemon until a release containing it is cut (autopilot shouldTriggerRelease gap). Observed 2026-06-26: 29MB dev fix at 12:32 reverted to 20.6MB v2.200.0 release by 12:52, bot kept failing. Durable fix: tag-driven release (mem-022) with the fix \u2192 pilot upgrade (prompts y/N) \u2192 restart. v2.200.1 held because it's the latest release. Confirm running binary via lsof txt + stat size + pilot version, not lstart alone.",
         "concepts": [
           "hot-upgrade",
           "release",
@@ -889,13 +1194,13 @@
         "confidence": 0.9,
         "severity": "medium",
         "created": "2026-06-26",
-        "incident": "2026-06-26: shipping the bot max_tokens fix — dev binary installs (12:32) auto-reverted to pre-fix v2.200.0 release (12:52); only cutting v2.200.1 and pilot-upgrading made the fix stick in the live daemon.",
+        "incident": "2026-06-26: shipping the bot max_tokens fix \u2014 dev binary installs (12:32) auto-reverted to pre-fix v2.200.0 release (12:52); only cutting v2.200.1 and pilot-upgrading made the fix stick in the live daemon.",
         "file": ".agent/knowledge/memories/pitfalls/bug_daemon_autoupgrade_reverts_dev_binary.md",
         "origin_task": "TASK-374"
       },
       "mem-041": {
         "type": "pitfall",
-        "summary": "LLM intent classifier was doubly broken so the bot misrouted open-ended input. (1) classifier.go sent output_config{effort} → Haiku 400 'does not support the effort parameter' → every Classify failed → silent regex fallback (same class as mem-039; a test asserted output_config present). (2) Prompt routed 'draw/outline/show' as code TASK → heavy executor + dangling tasks. Fixed v2.200.2 (#3703): drop output_config; add DELIVERABLE TEST (answer/diagram→question/chat, change-code→task, file-ticket→issue_intake). Haiku now primary NL router, regex only guards /-commands. Validate classifier prompts via curl (TUI logs ungreppable). 8/8 live.",
+        "summary": "LLM intent classifier was doubly broken so the bot misrouted open-ended input. (1) classifier.go sent output_config{effort} \u2192 Haiku 400 'does not support the effort parameter' \u2192 every Classify failed \u2192 silent regex fallback (same class as mem-039; a test asserted output_config present). (2) Prompt routed 'draw/outline/show' as code TASK \u2192 heavy executor + dangling tasks. Fixed v2.200.2 (#3703): drop output_config; add DELIVERABLE TEST (answer/diagram\u2192question/chat, change-code\u2192task, file-ticket\u2192issue_intake). Haiku now primary NL router, regex only guards /-commands. Validate classifier prompts via curl (TUI logs ungreppable). 8/8 live.",
         "concepts": [
           "intent-routing",
           "anthropic-api",
@@ -910,7 +1215,7 @@
       },
       "mem-042": {
         "type": "pitfall",
-        "summary": "Bot answers/issues hit the WRONG repo via two traps. (1) Intake (comms.IssueCreator) resolves owner/repo from a SINGLE hardwired NewIssueCreator entry = cfg.Adapters.GitHub.Repo; resolveRepo falls to repos[0] for unmatched paths, so intake ALWAYS targets adapters.github.repo and /switch doesn't change it. (2) The per-context active project is in-memory and RESETS to default_project on every daemon restart, so Q&A answers about the wrong repo until re-/switch'd. Demo fix: point default_project AND adapters.github.repo at the same repo (+ project_board.enabled:false for label polling). Proper fix: NewIssueCreator entry per cfg.Projects + persist active project across restarts. Board-source repos also need intake→board or label polling.",
+        "summary": "Bot answers/issues hit the WRONG repo via two traps. (1) Intake (comms.IssueCreator) resolves owner/repo from a SINGLE hardwired NewIssueCreator entry = cfg.Adapters.GitHub.Repo; resolveRepo falls to repos[0] for unmatched paths, so intake ALWAYS targets adapters.github.repo and /switch doesn't change it. (2) The per-context active project is in-memory and RESETS to default_project on every daemon restart, so Q&A answers about the wrong repo until re-/switch'd. Demo fix: point default_project AND adapters.github.repo at the same repo (+ project_board.enabled:false for label polling). Proper fix: NewIssueCreator entry per cfg.Projects + persist active project across restarts. Board-source repos also need intake\u2192board or label polling.",
         "concepts": [
           "conversational-bot",
           "intent-routing",
@@ -950,7 +1255,7 @@
         "confidence": 0.95,
         "severity": "high",
         "created": "2026-07-04",
-        "incident": "2026-07-03: daemon hot-upgraded to v2.201.2 at 12:50:23+02:00, then sat 7+ hours through v2.202.0-v2.207.0 with zero upgrade attempts (not failures — total silence) until a manual restart at 20:01.",
+        "incident": "2026-07-03: daemon hot-upgraded to v2.201.2 at 12:50:23+02:00, then sat 7+ hours through v2.202.0-v2.207.0 with zero upgrade attempts (not failures \u2014 total silence) until a manual restart at 20:01.",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_self_upgrade_requires_manual_keypress.md",
         "origin_task": "GH-3790-1"
       },
@@ -970,7 +1275,7 @@
       },
       "mem-046": {
         "type": "pitfall",
-        "summary": "Autopilot's direct PR-close call sites (handleCIFailed iteration-limit/size-guard/main, handleReviewRequested iteration-limit/main) never posted a PR/issue comment or corrected issue labels — the only convergence point that could have was notifyExternalClose, whose pilot-done skip-guard (GH-2340) returned with zero comments when the issue already had pilot-done from an earlier, unrelated PR. Result: PR #3802 (fix for #3789) closed CI-red with zero explanation and #3789 kept pilot-done, making discarded work look shipped (TASK-382 D9). Fix (GH-3806): notifyExternalClose now always posts a PR comment (AddPRComment hits /issues/{prNumber}/comments, not /pulls/.../comments) + issue comment from prState.Error on every branch including both skip guards; close sites set prState.Error (specific reason) and new in-memory PRState.TerminalLabel (forces pilot-failed instead of pilot-retry-ready when terminal or superseded by a follow-up issue) instead of commenting inline.",
+        "summary": "Autopilot's direct PR-close call sites (handleCIFailed iteration-limit/size-guard/main, handleReviewRequested iteration-limit/main) never posted a PR/issue comment or corrected issue labels \u2014 the only convergence point that could have was notifyExternalClose, whose pilot-done skip-guard (GH-2340) returned with zero comments when the issue already had pilot-done from an earlier, unrelated PR. Result: PR #3802 (fix for #3789) closed CI-red with zero explanation and #3789 kept pilot-done, making discarded work look shipped (TASK-382 D9). Fix (GH-3806): notifyExternalClose now always posts a PR comment (AddPRComment hits /issues/{prNumber}/comments, not /pulls/.../comments) + issue comment from prState.Error on every branch including both skip guards; close sites set prState.Error (specific reason) and new in-memory PRState.TerminalLabel (forces pilot-failed instead of pilot-retry-ready when terminal or superseded by a follow-up issue) instead of commenting inline.",
         "concepts": [
           "autopilot"
         ],
@@ -1021,7 +1326,7 @@
       },
       "mem-050": {
         "type": "pattern",
-        "summary": "autopilot_pr_state rows are deleted on success; absence is not a wiring bug — executions table is the history",
+        "summary": "autopilot_pr_state rows are deleted on success; absence is not a wiring bug \u2014 executions table is the history",
         "file": ".agent/knowledge/memories/patterns/pattern_autopilot_pr_state_ephemeral.md",
         "concepts": [
           "autopilot"
@@ -1235,7 +1540,7 @@
       },
       "mem-066": {
         "type": "pitfall",
-        "summary": "Approval button taps silently dropped — send path worked, inbound dispatch never wired; partial-wiring class recurs",
+        "summary": "Approval button taps silently dropped \u2014 send path worked, inbound dispatch never wired; partial-wiring class recurs",
         "file": ".agent/knowledge/memories/pitfalls/bug_telegram_approval_callback_unwired.md",
         "concepts": [
           "autopilot",
@@ -1274,7 +1579,7 @@
       },
       "mem-069": {
         "type": "learning",
-        "summary": "Verify remote file state via gh api before authoring Pilot issues — stale local clone causes redundant issues",
+        "summary": "Verify remote file state via gh api before authoring Pilot issues \u2014 stale local clone causes redundant issues",
         "file": ".agent/knowledge/memories/learnings/feedback_check_remote_state.md",
         "concepts": [
           "workflow-discipline",
@@ -1312,7 +1617,7 @@
       },
       "mem-072": {
         "type": "learning",
-        "summary": "Org-level setting blocks Actions PR creation; GITHUB_TOKEN pushes do not chain workflows — diagnosis recipe",
+        "summary": "Org-level setting blocks Actions PR creation; GITHUB_TOKEN pushes do not chain workflows \u2014 diagnosis recipe",
         "file": ".agent/knowledge/memories/learnings/feedback_gh_actions_pr_create_perm.md",
         "concepts": [
           "release",
@@ -1363,7 +1668,7 @@
       },
       "mem-076": {
         "type": "learning",
-        "summary": "Stop hook requires StructuredOutput call with branch, commit, files, summary — binds every pilot-executor session",
+        "summary": "Stop hook requires StructuredOutput call with branch, commit, files, summary \u2014 binds every pilot-executor session",
         "file": ".agent/knowledge/memories/learnings/feedback_structured_output_hook.md",
         "concepts": [
           "executor",
@@ -1418,7 +1723,7 @@
       },
       "mem-080": {
         "type": "decision",
-        "summary": "Pilot is a Claude Code orchestration layer, not a replacement — infrastructure play for the Anthropic ecosystem",
+        "summary": "Pilot is a Claude Code orchestration layer, not a replacement \u2014 infrastructure play for the Anthropic ecosystem",
         "file": ".agent/knowledge/memories/decisions/strategy_pilot_positioning.md",
         "concepts": [
           "product-positioning",
@@ -1446,7 +1751,7 @@
       },
       "mem-082": {
         "type": "pitfall",
-        "summary": "Autopilot can be silently disabled at startup when a gate check fails without a log line — operators unaware execution is off",
+        "summary": "Autopilot can be silently disabled at startup when a gate check fails without a log line \u2014 operators unaware execution is off",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_silent_autopilot_gate_disable.md",
         "concepts": [
           "autopilot",
@@ -1474,7 +1779,7 @@
       },
       "mem-084": {
         "type": "pitfall",
-        "summary": "allChildrenDone() returned true for empty child set — vacuous truth tripped epic-complete exit with zero work done; require >=1 child",
+        "summary": "allChildrenDone() returned true for empty child set \u2014 vacuous truth tripped epic-complete exit with zero work done; require >=1 child",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_allchildrendone_vacuous_truth.md",
         "concepts": [
           "epic-decomposition",
@@ -1508,13 +1813,13 @@
         "confidence": 0.9,
         "created": "2026-07-06",
         "severity": "high",
-        "summary": "Extraction-era SDK ports go stale vs evolving in-tree code: SDK GetTagForSHA shipped bounded (20 tags) while in-tree moved to exhaustive pagination — would have stalled release draining. Caught by running the consumer test suite against the SDK client (TestHandleReleasing_ExhaustiveTagDrain). Before cutover: diff SDK methods against CURRENT in-tree source; typed-error/pagination/retry drift compiles fine and fails only behaviorally.",
+        "summary": "Extraction-era SDK ports go stale vs evolving in-tree code: SDK GetTagForSHA shipped bounded (20 tags) while in-tree moved to exhaustive pagination \u2014 would have stalled release draining. Caught by running the consumer test suite against the SDK client (TestHandleReleasing_ExhaustiveTagDrain). Before cutover: diff SDK methods against CURRENT in-tree source; typed-error/pagination/retry drift compiles fine and fails only behaviorally.",
         "type": "pitfall",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_sdk_ports_go_stale_vs_intree.md"
       },
       "mem-089": {
         "type": "pitfall",
-        "summary": "Epic parent's stuck-monitor entry freezes once sub-issue execution starts — false eviction on long sequential epics. executeSubIssuesTracked posted per-child progress to GitHub via UpdateIssueProgress, which never reaches the alerts engine, so the parent's taskLastProgress entry was touched once before the loop then frozen for the whole run. GH-4021: evicted with stuck_for=41m0s while sub-issue 2 was actively running. Fixed by calling r.reportProgress(parent.ID, ...) inside the loop per child (GH-4033, merged via 51fd3348).",
+        "summary": "Epic parent's stuck-monitor entry freezes once sub-issue execution starts \u2014 false eviction on long sequential epics. executeSubIssuesTracked posted per-child progress to GitHub via UpdateIssueProgress, which never reaches the alerts engine, so the parent's taskLastProgress entry was touched once before the loop then frozen for the whole run. GH-4021: evicted with stuck_for=41m0s while sub-issue 2 was actively running. Fixed by calling r.reportProgress(parent.ID, ...) inside the loop per child (GH-4033, merged via 51fd3348).",
         "path": "memories/pitfalls/mem-089.md",
         "confidence": 0.9,
         "concepts": [
@@ -1527,7 +1832,7 @@
       },
       "mem-090": {
         "type": "decision",
-        "summary": "Dashboard chrome delegates to grot pkg/tui (github.com/qf-studio/grot render + theme.Pilot) — one shared design system, imported not vendored (public v0.1.0, MIT, lipgloss-only). Glyph vocabulary replaces emoji on the TUI/daemon surface only; chat adapters + CLI subcommands untouched. Requires go >= 1.25. TASK-390.",
+        "summary": "Dashboard chrome delegates to grot pkg/tui (github.com/qf-studio/grot render + theme.Pilot) \u2014 one shared design system, imported not vendored (public v0.1.0, MIT, lipgloss-only). Glyph vocabulary replaces emoji on the TUI/daemon surface only; chat adapters + CLI subcommands untouched. Requires go >= 1.25. TASK-390.",
         "path": "memories/decisions/decision_grot_design_system.md",
         "confidence": 0.95,
         "concepts": [
@@ -1538,7 +1843,7 @@
       },
       "mem-091": {
         "type": "pattern",
-        "summary": "Duplicate 'completed' execution rows sharing one pr_url are SelfHealExecutionAfterMerge by design: on PR merge it flips EVERY non-success row (failed/no_op/stalled/rate_limited/infra/skipped) for the task_id to completed. Distinguish benign CI-retry (full events ending in failure, retry ~90s later) from restart-orphan (events just stop, hours-long lifespan). Dedup guard IsTaskQueued is innocent — first row was already terminal.",
+        "summary": "Duplicate 'completed' execution rows sharing one pr_url are SelfHealExecutionAfterMerge by design: on PR merge it flips EVERY non-success row (failed/no_op/stalled/rate_limited/infra/skipped) for the task_id to completed. Distinguish benign CI-retry (full events ending in failure, retry ~90s later) from restart-orphan (events just stop, hours-long lifespan). Dedup guard IsTaskQueued is innocent \u2014 first row was already terminal.",
         "path": "memories/patterns/pattern_selfheal_duplicate_completed_rows.md",
         "confidence": 0.9,
         "concepts": [
@@ -1559,6 +1864,860 @@
           "workflow-discipline"
         ],
         "created": "2026-07-08"
+      },
+      "mem-093": {
+        "type": "pitfall",
+        "summary": "on_merge auto-release wedges in 'releasing': checkExternalMergeOrClose (controller.go:4306) lacked a StageReleasing guard (GH-3994 regression) and drained the merged PR at L4401 before handleReleasing cuts the tag; only require_ci path bites (separate-tick transition); NOT restart-related; fixed #4125; manual bootstrap tags v2.236.2/.3.",
+        "path": "memories/pitfalls/mem-093.md",
+        "concepts": [
+          "autopilot",
+          "release",
+          "on-merge",
+          "releasing-stage",
+          "state-machine",
+          "incident",
+          "ci-gate",
+          "github"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-09"
+      },
+      "mem-095": {
+        "type": "decision",
+        "summary": "Where parallelism lives: ProjectWorker pool - Research: it is the sole serialization point; poller knobs are neutralized; CI already decoupled",
+        "path": "memories/decisions/mem-095.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow",
+          "context",
+          "deployment",
+          "database",
+          "knowledge",
+          "testing",
+          "authentication",
+          "frontend"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-096": {
+        "type": "decision",
+        "summary": "Lanes mechanism: extend `Complexity` \u2192 `Lane` - Tier routing already threaded end-to-end; lanes = bundling scattered knobs",
+        "path": "memories/decisions/mem-096.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow",
+          "context",
+          "deployment",
+          "database",
+          "knowledge",
+          "testing",
+          "authentication",
+          "frontend"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-097": {
+        "type": "decision",
+        "summary": "Risk score placement: extend `scope_guard.go` - Escalate-only pattern exists at the single chokepoint `handleCIPassed`",
+        "path": "memories/decisions/mem-097.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow",
+          "context",
+          "deployment",
+          "database",
+          "knowledge",
+          "testing",
+          "authentication",
+          "frontend"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-098": {
+        "type": "decision",
+        "summary": "Phase ordering: measure first (Phase 1) - No time-to-PR/queue/approval metrics exist today; later phases unverifiable without baseline",
+        "path": "memories/decisions/mem-098.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow",
+          "context",
+          "deployment",
+          "database",
+          "knowledge",
+          "testing",
+          "authentication",
+          "frontend"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-099": {
+        "type": "decision",
+        "summary": "Concurrency default: opt-in (`default 1`) - Fail-safe rollout; pilot repo canaries first",
+        "path": "memories/decisions/mem-099.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow",
+          "context",
+          "deployment",
+          "database",
+          "knowledge",
+          "testing",
+          "authentication",
+          "frontend"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-100": {
+        "type": "pitfall",
+        "summary": "Epic shipped-check reconciler false positives on GH-4127: self-referencing child set, post-close re-runs, only 2/4 merged PRs listed, stale pilot-needs-clarification on a closed issue. Fix: TASK-395; ledger starvation aggravator: TASK-394/#4140.",
+        "path": "memories/pitfalls/mem-100.md",
+        "confidence": 0.9,
+        "concepts": [
+          "autopilot",
+          "epic",
+          "shipped-check",
+          "reconciler",
+          "labels"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-101": {
+        "type": "pitfall",
+        "summary": "ProjectWorker (dispatcher.go:843-899) is the sole per-repo serialization point; orchestrator.max_concurrent is neutralized (poller goroutines park in WaitForExecution). CI already decoupled \u2014 fixing ProjectWorker delivers concurrency + pipeline overlap. TASK-393 P3.",
+        "path": "memories/pitfalls/mem-101.md",
+        "confidence": 0.9,
+        "concepts": [
+          "executor",
+          "dispatcher",
+          "concurrency",
+          "scheduler"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-102": {
+        "type": "pitfall",
+        "summary": "CreateWorktreeWithBranch (worktree.go:768-775) builds a fresh WorktreeManager (unshared createMu) per call \u2014 concurrent same-repo execution silently reintroduces the GH-1312 git worktree race. Shared-manager routing is TASK-393 P3.1 prerequisite.",
+        "path": "memories/pitfalls/mem-102.md",
+        "confidence": 0.85,
+        "concepts": [
+          "worktree",
+          "concurrency",
+          "executor"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-103": {
+        "type": "learning",
+        "summary": "Merge gate = handleCIPassed (controller.go:1212) + escalate-only scope_guard.go reasons (SizeFloor, ScopeDrift). require_ci (ReleaseConfig.RequireCI) gates the post-merge release train only \u2014 NOT the merge decision. Risk-score (TASK-393 P5) must extend scope_guard escalate-only.",
+        "path": "memories/learnings/mem-103.md",
+        "confidence": 0.85,
+        "concepts": [
+          "autopilot",
+          "release",
+          "auto-merge",
+          "scope-guard"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-104": {
+        "type": "decision",
+        "summary": "Cycle workflow (2026-07-09): merges accumulate unreleased until the 16:00 CET daily train; merged-but-unreleased is NORMAL, not a wedge (contrast mem-093). Ad-hoc release ONLY for incidents. Cycle scope must land before the train. Pending: pilot repo config still on_merge.",
+        "path": "memories/decisions/mem-104.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow",
+          "release",
+          "cycles",
+          "release-train",
+          "incident"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-105": {
+        "type": "decision",
+        "summary": "Where parallelism lives: ProjectWorker pool - Research: it is the sole serialization point; poller knobs are neutralized; CI already decoupled",
+        "path": "memories/decisions/mem-105.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "testing",
+          "authentication",
+          "frontend",
+          "deployment",
+          "workflow",
+          "knowledge",
+          "database"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-106": {
+        "type": "decision",
+        "summary": "Lanes mechanism: extend `Complexity` \u2192 `Lane` - Tier routing already threaded end-to-end; lanes = bundling scattered knobs",
+        "path": "memories/decisions/mem-106.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "testing",
+          "authentication",
+          "frontend",
+          "deployment",
+          "workflow",
+          "knowledge",
+          "database"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-107": {
+        "type": "decision",
+        "summary": "Risk score placement: extend `scope_guard.go` - Escalate-only pattern exists at the single chokepoint `handleCIPassed`",
+        "path": "memories/decisions/mem-107.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "testing",
+          "authentication",
+          "frontend",
+          "deployment",
+          "workflow",
+          "knowledge",
+          "database"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-108": {
+        "type": "decision",
+        "summary": "Phase ordering: measure first (Phase 1) - No time-to-PR/queue/approval metrics exist today; later phases unverifiable without baseline",
+        "path": "memories/decisions/mem-108.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "testing",
+          "authentication",
+          "frontend",
+          "deployment",
+          "workflow",
+          "knowledge",
+          "database"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-109": {
+        "type": "decision",
+        "summary": "Concurrency default: opt-in (`default 1`) - Fail-safe rollout; pilot repo canaries first",
+        "path": "memories/decisions/mem-109.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "testing",
+          "authentication",
+          "frontend",
+          "deployment",
+          "workflow",
+          "knowledge",
+          "database"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-111": {
+        "type": "decision",
+        "summary": "Where parallelism lives: ProjectWorker pool - Research: it is the sole serialization point; poller knobs are neutralized; CI already decoupled",
+        "path": "memories/decisions/mem-111.md",
+        "confidence": 0.95,
+        "concepts": [
+          "authentication",
+          "deployment",
+          "database",
+          "frontend",
+          "knowledge",
+          "workflow",
+          "testing",
+          "context"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-112": {
+        "type": "decision",
+        "summary": "Lanes mechanism: extend `Complexity` \u2192 `Lane` - Tier routing already threaded end-to-end; lanes = bundling scattered knobs",
+        "path": "memories/decisions/mem-112.md",
+        "confidence": 0.95,
+        "concepts": [
+          "authentication",
+          "deployment",
+          "database",
+          "frontend",
+          "knowledge",
+          "workflow",
+          "testing",
+          "context"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-113": {
+        "type": "decision",
+        "summary": "Risk score placement: extend `scope_guard.go` - Escalate-only pattern exists at the single chokepoint `handleCIPassed`",
+        "path": "memories/decisions/mem-113.md",
+        "confidence": 0.95,
+        "concepts": [
+          "authentication",
+          "deployment",
+          "database",
+          "frontend",
+          "knowledge",
+          "workflow",
+          "testing",
+          "context"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-114": {
+        "type": "decision",
+        "summary": "Phase ordering: measure first (Phase 1) - No time-to-PR/queue/approval metrics exist today; later phases unverifiable without baseline",
+        "path": "memories/decisions/mem-114.md",
+        "confidence": 0.95,
+        "concepts": [
+          "authentication",
+          "deployment",
+          "database",
+          "frontend",
+          "knowledge",
+          "workflow",
+          "testing",
+          "context"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-115": {
+        "type": "decision",
+        "summary": "Concurrency default: opt-in (`default 1`) - Fail-safe rollout; pilot repo canaries first",
+        "path": "memories/decisions/mem-115.md",
+        "confidence": 0.95,
+        "concepts": [
+          "authentication",
+          "deployment",
+          "database",
+          "frontend",
+          "knowledge",
+          "workflow",
+          "testing",
+          "context"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-116": {
+        "type": "decision",
+        "summary": "----------: -------- - -----------",
+        "path": "memories/decisions/mem-116.md",
+        "confidence": 0.95,
+        "concepts": [
+          "testing",
+          "database",
+          "knowledge",
+          "context",
+          "api",
+          "workflow",
+          "deployment",
+          "theory of mind"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-117": {
+        "type": "decision",
+        "summary": "Ownership signal for in-process sub-issue runs: (a) executions row - Works for every poller mode via existing guard (poller.go:1408); simultaneously fixes event FK failures and metrics starvation; ...",
+        "path": "memories/decisions/mem-117.md",
+        "confidence": 0.95,
+        "concepts": [
+          "testing",
+          "database",
+          "knowledge",
+          "context",
+          "api",
+          "workflow",
+          "deployment",
+          "theory of mind"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-118": {
+        "type": "decision",
+        "summary": "Duplicate handling at queue drain: (a) - Re-runs burn a full Claude invocation to discover nothing to do, and `no_op` overwrites truthful history. Merged PR on the exact branch is unambiguous evide...",
+        "path": "memories/decisions/mem-118.md",
+        "confidence": 0.95,
+        "concepts": [
+          "testing",
+          "database",
+          "knowledge",
+          "context",
+          "api",
+          "workflow",
+          "deployment",
+          "theory of mind"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-119": {
+        "type": "decision",
+        "summary": "Ledger write failure during epic run: (b) - Epic path error contract is warn-only (mem-026); a ledger write must never block shipping code.",
+        "path": "memories/decisions/mem-119.md",
+        "confidence": 0.95,
+        "concepts": [
+          "testing",
+          "database",
+          "knowledge",
+          "context",
+          "api",
+          "workflow",
+          "deployment",
+          "theory of mind"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-120": {
+        "type": "decision",
+        "summary": "----------: -------- - -----------",
+        "path": "memories/decisions/mem-120.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow",
+          "api",
+          "authentication",
+          "context",
+          "theory of mind",
+          "testing",
+          "deployment"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-121": {
+        "type": "decision",
+        "summary": "Where to fix SHA propagation: (a) - Smallest diff at the single choke point every release path funnels through (internal, external-require_ci, scan-recovery); (b) misses external merges; (c) touche...",
+        "path": "memories/decisions/mem-121.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow",
+          "api",
+          "authentication",
+          "context",
+          "theory of mind",
+          "testing",
+          "deployment"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-122": {
+        "type": "decision",
+        "summary": "Copy-back condition: (b) - `SkipPostMergeCI` fast path never sets `PostMergeSHA`; unconditional would blank `HeadSHA` there.",
+        "path": "memories/decisions/mem-122.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow",
+          "api",
+          "authentication",
+          "context",
+          "theory of mind",
+          "testing",
+          "deployment"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-123": {
+        "type": "pitfall",
+        "summary": "Release train (on_schedule) member resolution requires (#N) squash-title suffix \u2014 autopilot's auto-merger omits it, so trains over autopilot-merged commits skip forever ('no resolvable member PRs'). Cutover order: ship GH-4150 (#N suffix fix) FIRST, then flip trigger on_merge \u2192 on_schedule (schedule '0 16 * * 1-5', schedule_timezone Europe/Berlin); flipping first silently halts releases (merges held, train skips daily). Evidence: 8/9 commits in v2.236.4 lack (#N); v2.236.4 cut on-merge at 22:14 because config never followed the mem-104 train decision. Refs: internal/autopilot/scope_schedule.go resolveTrainMemberPRs, auto_merger.go commitTitle.",
+        "path": "memories/pitfalls/mem-123.md",
+        "confidence": 0.9,
+        "concepts": [
+          "autopilot",
+          "release",
+          "scheduler"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09"
+      },
+      "mem-124": {
+        "type": "decision",
+        "summary": "decision dashboard scope always on",
+        "path": "memories/decisions/resolved/decision_dashboard_scope_always_on.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-125": {
+        "type": "learning",
+        "summary": "Social-engineering campaign: fake 'patch .zip' comments on freshly-filed Pilot bugs \u2014 Pilot immune (executor never reads comments)",
+        "path": "memories/learnings/mem-090.md",
+        "confidence": 0.95,
+        "concepts": [
+          "security",
+          "supply-chain",
+          "social-engineering",
+          "poller",
+          "executor"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "source": "reconcile"
+      },
+      "mem-126": {
+        "type": "learning",
+        "summary": "feedback aws only no modal",
+        "path": "memories/learnings/resolved/feedback_aws_only_no_modal.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-127": {
+        "type": "learning",
+        "summary": "feedback bench env vars",
+        "path": "memories/learnings/resolved/feedback_bench_env_vars.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-128": {
+        "type": "learning",
+        "summary": "feedback check all prompts for leaks",
+        "path": "memories/learnings/resolved/feedback_check_all_prompts_for_leaks.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-129": {
+        "type": "learning",
+        "summary": "feedback conventional title required",
+        "path": "memories/learnings/resolved/feedback_conventional_title_required.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-130": {
+        "type": "learning",
+        "summary": "feedback harbor compliance",
+        "path": "memories/learnings/resolved/feedback_harbor_compliance.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-131": {
+        "type": "learning",
+        "summary": "feedback harbor env leaks secrets",
+        "path": "memories/learnings/resolved/feedback_harbor_env_leaks_secrets.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-132": {
+        "type": "learning",
+        "summary": "feedback never execute directly",
+        "path": "memories/learnings/resolved/feedback_never_execute_directly.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-133": {
+        "type": "learning",
+        "summary": "feedback pilot issue section headers",
+        "path": "memories/learnings/resolved/feedback_pilot_issue_section_headers.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-134": {
+        "type": "learning",
+        "summary": "feedback show card with sop",
+        "path": "memories/learnings/resolved/feedback_show_card_with_sop.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-135": {
+        "type": "learning",
+        "summary": "feedback use nav task for issues",
+        "path": "memories/learnings/resolved/feedback_use_nav_task_for_issues.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-136": {
+        "type": "learning",
+        "summary": "feedback use worktree for reconciliation",
+        "path": "memories/learnings/resolved/feedback_use_worktree_for_reconciliation.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-137": {
+        "type": "learning",
+        "summary": "feedback verify pr state not labels",
+        "path": "memories/learnings/resolved/feedback_verify_pr_state_not_labels.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-138": {
+        "type": "learning",
+        "summary": "incident oauth cascade series",
+        "path": "memories/learnings/resolved/incident_oauth_cascade_series.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-139": {
+        "type": "pattern",
+        "summary": "Pilot as cross-repo hub: every wired project (config projects:) takes work as pi",
+        "path": "memories/patterns/mem-087.md",
+        "confidence": 0.9,
+        "concepts": [
+          "pilot",
+          "cross-repo",
+          "dispatch",
+          "release",
+          "autopilot",
+          "workflow"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "source": "reconcile"
+      },
+      "mem-140": {
+        "type": "pattern",
+        "summary": "pattern burst auto release starvation",
+        "path": "memories/patterns/resolved/pattern_burst_auto_release_starvation.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-141": {
+        "type": "pattern",
+        "summary": "pattern decomposer thin subissue oom",
+        "path": "memories/patterns/resolved/pattern_decomposer_thin_subissue_oom.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-142": {
+        "type": "pitfall",
+        "summary": "Dashboard/ledger stage strip can mark SHIPPED work as failed (\u2717 pr_created) \u2014 verify execution_events + GitHub before trusting it",
+        "path": "memories/pitfalls/mem-088.md",
+        "confidence": 0.95,
+        "concepts": [
+          "dashboard",
+          "ledger",
+          "autopilot",
+          "retry",
+          "alerts",
+          "executor"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "source": "reconcile"
+      },
+      "mem-143": {
+        "type": "pitfall",
+        "summary": "Flag-gated path swaps orphan sideband wiring loops (SDK poller unreachable by MarkProcessed/ClearProcessed loops)",
+        "path": "memories/pitfalls/mem-091.md",
+        "confidence": 0.95,
+        "concepts": [
+          "sdk-poller",
+          "m7",
+          "github",
+          "dedup",
+          "sub-issue",
+          "flag-cutover"
+        ],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "source": "reconcile"
+      },
+      "mem-144": {
+        "type": "pitfall",
+        "summary": "bug default model clobbers routing",
+        "path": "memories/pitfalls/resolved/bug_default_model_clobbers_routing.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-145": {
+        "type": "pitfall",
+        "summary": "bug poller silent stop",
+        "path": "memories/pitfalls/resolved/bug_poller_silent_stop.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-146": {
+        "type": "pitfall",
+        "summary": "bug task stuck alert spam",
+        "path": "memories/pitfalls/resolved/bug_task_stuck_alert_spam.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-147": {
+        "type": "pitfall",
+        "summary": "pitfall dashboard global aggregates",
+        "path": "memories/pitfalls/resolved/pitfall_dashboard_global_aggregates.md",
+        "confidence": 0.5,
+        "concepts": [],
+        "created": "2026-07-09",
+        "last_validated": "2026-07-09",
+        "resolved": true,
+        "source": "reconcile"
+      },
+      "mem-148": {
+        "type": "decision",
+        "summary": "Dashboard nav rework (TASK-398/#4199): port grom focusMove/Rect/zoom (~200 lines) into internal/dashboard/grid.go with attribution \u2014 don't promote to grot pkg (Widget iface is Prometheus-shaped; promote only at >=3 consumers). Ported source embedded in the issue spec because executor worktrees can't reach ../startups/grot.",
+        "path": "memories/decisions/mem-148.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dashboard",
+          "tui",
+          "architecture",
+          "dependencies"
+        ],
+        "created": "2026-07-11",
+        "last_validated": "2026-07-11"
+      },
+      "mem-149": {
+        "type": "decision",
+        "summary": "M7 (#3423) closed 2026-07-11: retire internal/adapters/* to accepted residual; keep path B (internal/pilot + internal/orchestrator) as the gateway webhook-only engine deliberately (sole path for Linear/Jira/GitLab/AzDO/Asana/Plane webhooks + GitHub webhook mode; no SDK webhook->IssueEvent bridge). 4 live-caller github files + config TYPES/HELPER converters also kept.",
+        "path": "memories/decisions/mem-149.md",
+        "confidence": 0.95,
+        "concepts": [
+          "m7",
+          "studio-sdk",
+          "path-b",
+          "accepted-residual",
+          "orchestrator",
+          "adapter-cutover"
+        ],
+        "created": "2026-07-11",
+        "last_validated": "2026-07-11"
+      },
+      "mem-150": {
+        "type": "pitfall",
+        "summary": "Dead-code audit: verify caller LIVENESS not just existence. SOP GH-4169 kept internal/adapters/github/poller.go as 'live' because callers existed \u2014 but all were test files; project_board.go had zero callers. Classify each caller production vs test-only before deciding a file is live.",
+        "path": "memories/pitfalls/mem-150.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dead-code",
+          "audit",
+          "test-only-callers",
+          "poller",
+          "m7",
+          "cleanup"
+        ],
+        "created": "2026-07-11",
+        "last_validated": "2026-07-11"
+      },
+      "mem-151": {
+        "type": "pitfall",
+        "summary": "Epic collapse to one sub-issue \u2192 scaffold-only under-delivery that passes CI green (TASK-398/#4199). Multi-phase epic auto-decomposed to a SINGLE inherited-spec sub-issue; executor built 3 helper files + tests (PR #4201 merged green) but never wired them into tui.go \u2014 helpers uncalled, zero reqs shipped, parent auto-closed (false completion). Detect via +N/-0 diff that never edits the target file; guard with Update/View integration-test ACs (fixed by TASK-399/#4203 \u2192 PR #4204).",
+        "path": "memories/pitfalls/mem-151.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dashboard",
+          "tui",
+          "testing",
+          "decomposition",
+          "ci"
+        ],
+        "created": "2026-07-12",
+        "last_validated": "2026-07-12"
+      },
+      "mem-152": {
+        "type": "learning",
+        "summary": "Status reports to user must be scannable grouped lists (done / failed+reset / needs-attention / watch), one line per item \u2014 never narrative prose. Direct user feedback 2026-07-13.",
+        "concepts": [
+          "user-preference",
+          "communication",
+          "status-report",
+          "workflow-discipline"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-13"
       }
     }
   },
@@ -1862,11 +3021,6 @@
       "from": "mem-045",
       "to": "mem-044",
       "type": "resolves"
-    },
-    {
-      "from": "mem-045",
-      "to": "hot-upgrade",
-      "type": "about"
     },
     {
       "from": "mem-045",
@@ -2427,6 +3581,226 @@
       "from": "mem-091",
       "to": "mem-092",
       "type": "related"
+    },
+    {
+      "from": "TASK-393",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "mem-095",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-096",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-097",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-098",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-099",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "TASK-394",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-395",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "mem-104",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-105",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-106",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-107",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-108",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-109",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-111",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-112",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-113",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-114",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-115",
+      "to": "TASK-393",
+      "type": "learned-from"
+    },
+    {
+      "from": "TASK-396",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "mem-116",
+      "to": "TASK-394",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-117",
+      "to": "TASK-394",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-118",
+      "to": "TASK-394",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-119",
+      "to": "TASK-394",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-120",
+      "to": "TASK-396",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-121",
+      "to": "TASK-396",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-122",
+      "to": "TASK-396",
+      "type": "learned-from"
+    },
+    {
+      "from": "TASK-368",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-397",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-397",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-398",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "mem-148",
+      "to": "TASK-398",
+      "type": "learned-from"
+    },
+    {
+      "from": "TASK-399",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "mem-151",
+      "to": "TASK-398",
+      "type": "learned-from"
+    },
+    {
+      "from": "TASK-399",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-400",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-400",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-401",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-402",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-401",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-403",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-403",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-404",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-393",
+      "to": "workflow",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -2438,10 +3812,15 @@
       "TASK-386"
     ],
     "workflow-discipline": [
-      "TASK-386"
+      "TASK-386",
+      "mem-152"
     ],
     "executor": [
-      "TASK-387"
+      "TASK-387",
+      "mem-101",
+      "mem-102",
+      "mem-125",
+      "mem-142"
     ],
     "claude-code-integration": [
       "TASK-387"
@@ -2457,59 +3836,482 @@
       "TASK-386",
       "TASK-387",
       "TASK-368",
-      "TASK-390"
+      "TASK-390",
+      "TASK-393",
+      "mem-095",
+      "mem-096",
+      "mem-097",
+      "mem-098",
+      "mem-099",
+      "TASK-394",
+      "TASK-395",
+      "mem-104",
+      "mem-105",
+      "mem-106",
+      "mem-107",
+      "mem-108",
+      "mem-109",
+      "mem-111",
+      "mem-112",
+      "mem-113",
+      "mem-114",
+      "mem-115",
+      "mem-116",
+      "mem-117",
+      "mem-118",
+      "mem-119",
+      "TASK-397",
+      "TASK-398",
+      "TASK-399",
+      "TASK-400",
+      "TASK-401",
+      "TASK-403",
+      "TASK-404"
     ],
     "deployment": [
       "TASK-386",
       "TASK-387",
       "TASK-368",
-      "TASK-390"
+      "TASK-390",
+      "TASK-393",
+      "mem-095",
+      "mem-096",
+      "mem-097",
+      "mem-098",
+      "mem-099",
+      "TASK-394",
+      "TASK-395",
+      "mem-104",
+      "mem-105",
+      "mem-106",
+      "mem-107",
+      "mem-108",
+      "mem-109",
+      "mem-111",
+      "mem-112",
+      "mem-113",
+      "mem-114",
+      "mem-115",
+      "TASK-396",
+      "mem-116",
+      "mem-117",
+      "mem-118",
+      "mem-119",
+      "mem-120",
+      "mem-121",
+      "mem-122",
+      "TASK-397",
+      "TASK-398",
+      "TASK-399",
+      "TASK-400",
+      "TASK-401",
+      "TASK-402",
+      "TASK-403",
+      "TASK-404"
     ],
     "authentication": [
       "TASK-386",
-      "TASK-368"
+      "TASK-368",
+      "TASK-393",
+      "mem-095",
+      "mem-096",
+      "mem-097",
+      "mem-098",
+      "mem-099",
+      "mem-104",
+      "mem-105",
+      "mem-106",
+      "mem-107",
+      "mem-108",
+      "mem-109",
+      "mem-111",
+      "mem-112",
+      "mem-113",
+      "mem-114",
+      "mem-115",
+      "TASK-395",
+      "TASK-396",
+      "mem-120",
+      "mem-121",
+      "mem-122"
     ],
     "testing": [
       "TASK-386",
       "TASK-387",
       "TASK-368",
-      "TASK-390"
+      "TASK-390",
+      "TASK-393",
+      "mem-095",
+      "mem-096",
+      "mem-097",
+      "mem-098",
+      "mem-099",
+      "TASK-394",
+      "TASK-395",
+      "mem-104",
+      "mem-105",
+      "mem-106",
+      "mem-107",
+      "mem-108",
+      "mem-109",
+      "mem-111",
+      "mem-112",
+      "mem-113",
+      "mem-114",
+      "mem-115",
+      "TASK-396",
+      "mem-116",
+      "mem-117",
+      "mem-118",
+      "mem-119",
+      "mem-120",
+      "mem-121",
+      "mem-122",
+      "TASK-397",
+      "TASK-398",
+      "TASK-399",
+      "mem-151",
+      "TASK-400",
+      "TASK-401",
+      "TASK-402",
+      "TASK-403",
+      "TASK-404"
     ],
     "api": [
       "TASK-386",
       "TASK-387",
       "TASK-368",
-      "TASK-390"
+      "TASK-390",
+      "TASK-394",
+      "TASK-395",
+      "TASK-396",
+      "mem-116",
+      "mem-117",
+      "mem-118",
+      "mem-119",
+      "mem-120",
+      "mem-121",
+      "mem-122",
+      "TASK-398",
+      "TASK-399",
+      "TASK-400",
+      "TASK-401",
+      "TASK-403",
+      "TASK-404"
     ],
     "context": [
       "TASK-386",
       "TASK-387",
       "TASK-368",
-      "TASK-390"
+      "TASK-390",
+      "TASK-393",
+      "mem-095",
+      "mem-096",
+      "mem-097",
+      "mem-098",
+      "mem-099",
+      "TASK-394",
+      "TASK-395",
+      "mem-104",
+      "mem-105",
+      "mem-106",
+      "mem-107",
+      "mem-108",
+      "mem-109",
+      "mem-111",
+      "mem-112",
+      "mem-113",
+      "mem-114",
+      "mem-115",
+      "TASK-396",
+      "mem-116",
+      "mem-117",
+      "mem-118",
+      "mem-119",
+      "mem-120",
+      "mem-121",
+      "mem-122",
+      "TASK-398",
+      "TASK-403",
+      "TASK-404"
     ],
     "markers": [
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-395",
+      "TASK-399",
+      "TASK-402",
+      "TASK-403"
     ],
     "database": [
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-393",
+      "mem-095",
+      "mem-096",
+      "mem-097",
+      "mem-098",
+      "mem-099",
+      "TASK-394",
+      "mem-104",
+      "mem-105",
+      "mem-106",
+      "mem-107",
+      "mem-108",
+      "mem-109",
+      "mem-111",
+      "mem-112",
+      "mem-113",
+      "mem-114",
+      "mem-115",
+      "mem-116",
+      "mem-117",
+      "mem-118",
+      "mem-119",
+      "TASK-397",
+      "TASK-404"
     ],
     "workflow": [
       "TASK-387",
-      "TASK-368"
+      "TASK-368",
+      "TASK-393",
+      "mem-095",
+      "mem-096",
+      "mem-097",
+      "mem-098",
+      "mem-099",
+      "TASK-394",
+      "mem-104",
+      "mem-105",
+      "mem-106",
+      "mem-107",
+      "mem-108",
+      "mem-109",
+      "mem-111",
+      "mem-112",
+      "mem-113",
+      "mem-114",
+      "mem-115",
+      "TASK-395",
+      "TASK-396",
+      "mem-116",
+      "mem-117",
+      "mem-118",
+      "mem-119",
+      "mem-120",
+      "mem-121",
+      "mem-122",
+      "mem-139",
+      "TASK-397",
+      "TASK-399",
+      "TASK-400",
+      "TASK-401",
+      "TASK-403"
     ],
     "simplification": [
       "TASK-387"
     ],
     "frontend": [
-      "TASK-368"
+      "TASK-368",
+      "TASK-393",
+      "mem-095",
+      "mem-096",
+      "mem-097",
+      "mem-098",
+      "mem-099",
+      "TASK-395",
+      "mem-104",
+      "mem-105",
+      "mem-106",
+      "mem-107",
+      "mem-108",
+      "mem-109",
+      "mem-111",
+      "mem-112",
+      "mem-113",
+      "mem-114",
+      "mem-115",
+      "TASK-397",
+      "TASK-401"
+    ],
+    "theory of mind": [
+      "TASK-394",
+      "TASK-395",
+      "TASK-396",
+      "mem-116",
+      "mem-117",
+      "mem-118",
+      "mem-119",
+      "mem-120",
+      "mem-121",
+      "mem-122",
+      "TASK-398",
+      "TASK-399"
+    ],
+    "autopilot": [
+      "mem-100",
+      "mem-103",
+      "mem-123",
+      "mem-139",
+      "mem-142"
+    ],
+    "epic": [
+      "mem-100"
+    ],
+    "shipped-check": [
+      "mem-100"
+    ],
+    "reconciler": [
+      "mem-100"
+    ],
+    "labels": [
+      "mem-100"
+    ],
+    "dispatcher": [
+      "mem-101"
+    ],
+    "concurrency": [
+      "mem-101",
+      "mem-102"
+    ],
+    "scheduler": [
+      "mem-101",
+      "mem-123"
+    ],
+    "worktree": [
+      "mem-102"
+    ],
+    "release": [
+      "mem-103",
+      "mem-104",
+      "mem-123",
+      "mem-139"
+    ],
+    "auto-merge": [
+      "mem-103"
+    ],
+    "scope-guard": [
+      "mem-103"
+    ],
+    "cycles": [
+      "mem-104"
+    ],
+    "release-train": [
+      "mem-104"
+    ],
+    "security": [
+      "mem-125"
+    ],
+    "supply-chain": [
+      "mem-125"
+    ],
+    "social-engineering": [
+      "mem-125"
+    ],
+    "poller": [
+      "mem-125",
+      "mem-150"
+    ],
+    "pilot": [
+      "mem-139"
+    ],
+    "cross-repo": [
+      "mem-139"
+    ],
+    "dispatch": [
+      "mem-139"
+    ],
+    "dashboard": [
+      "mem-142",
+      "mem-148",
+      "mem-151"
+    ],
+    "ledger": [
+      "mem-142"
+    ],
+    "retry": [
+      "mem-142"
+    ],
+    "alerts": [
+      "mem-142"
+    ],
+    "sdk-poller": [
+      "mem-143"
+    ],
+    "m7": [
+      "mem-143",
+      "mem-149",
+      "mem-150"
+    ],
+    "github": [
+      "mem-143"
+    ],
+    "dedup": [
+      "mem-143"
+    ],
+    "sub-issue": [
+      "mem-143"
+    ],
+    "flag-cutover": [
+      "mem-143"
+    ],
+    "tui": [
+      "mem-148",
+      "mem-151"
+    ],
+    "architecture": [
+      "mem-148"
+    ],
+    "dependencies": [
+      "mem-148"
+    ],
+    "studio-sdk": [
+      "mem-149"
+    ],
+    "path-b": [
+      "mem-149"
+    ],
+    "accepted-residual": [
+      "mem-149"
+    ],
+    "orchestrator": [
+      "mem-149"
+    ],
+    "adapter-cutover": [
+      "mem-149"
+    ],
+    "dead-code": [
+      "mem-150"
+    ],
+    "audit": [
+      "mem-150"
+    ],
+    "test-only-callers": [
+      "mem-150"
+    ],
+    "cleanup": [
+      "mem-150"
+    ],
+    "decomposition": [
+      "mem-151"
+    ],
+    "ci": [
+      "mem-151"
+    ],
+    "user-preference": [
+      "mem-152"
+    ],
+    "communication": [
+      "mem-152"
+    ],
+    "status-report": [
+      "mem-152"
     ]
   },
-  "last_updated": "2026-07-08T19:48:50.400760+00:00",
+  "last_updated": "2026-07-13T09:40:34.396466+00:00",
   "stats": {
-    "total_nodes": 140,
-    "total_edges": 173,
-    "memory_count": 90
+    "total_nodes": 239,
+    "total_edges": 216,
+    "memory_count": 148
   }
 }

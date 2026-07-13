@@ -1,7 +1,7 @@
 # TASK-380: `pilot logs <task-id>` returns empty for dispatched tasks (execution_id UUID mismatch)
 
 **Created:** 2026-07-03
-**Status:** Open — found during GH-3764-4, out of that subtask's scope fence
+**Status:** 🚀 Dispatched to Pilot → [#4083](https://github.com/qf-studio/pilot/issues/4083) (2026-07-08)
 
 ## Problem
 

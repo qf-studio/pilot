@@ -1,6 +1,6 @@
 # TASK-375: Bot Module Phase 3 — grounded Q&A retrieval
 
-**Status**: 🚧 Dispatched, gated → [#3671](https://github.com/qf-studio/pilot/issues/3671) (`Blocked by: #3665`)
+**Status**: ✅ SHIPPED 2026-06-26 — #3671 closed `pilot-done` (PR #3684)
 **Created**: 2026-06-26
 **Assignee**: Pilot (queued)
 **Parent plan**: `/Users/aleks.petrov/.claude/plans/there-is-a-problem-inherited-fiddle.md`

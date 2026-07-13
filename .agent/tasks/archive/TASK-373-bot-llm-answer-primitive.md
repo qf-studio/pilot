@@ -1,6 +1,6 @@
 # TASK-373: Bot Module Phase 1 — `internal/llm` direct-Anthropic Answer primitive
 
-**Status**: 🚧 Dispatched to Pilot (with TASK-374) → [#3665](https://github.com/qf-studio/pilot/issues/3665)
+**Status**: ✅ SHIPPED 2026-06-26 — #3665 (P1+P2 combined) closed `pilot-done`
 **Created**: 2026-06-26
 **Assignee**: Pilot
 **Parent plan**: `/Users/aleks.petrov/.claude/plans/there-is-a-problem-inherited-fiddle.md`

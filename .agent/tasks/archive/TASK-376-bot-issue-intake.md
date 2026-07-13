@@ -1,6 +1,6 @@
 # TASK-376: Bot Module Phase 4 — conversational issue intake
 
-**Status**: 🚧 Dispatched, gated → [#3672](https://github.com/qf-studio/pilot/issues/3672) (`Blocked by: #3665`)
+**Status**: ✅ SHIPPED 2026-06-26 — #3672 closed `pilot-done` (PR #3689)
 **Created**: 2026-06-26
 **Assignee**: Pilot (queued)
 **Parent plan**: `/Users/aleks.petrov/.claude/plans/there-is-a-problem-inherited-fiddle.md`

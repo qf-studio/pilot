@@ -1,6 +1,6 @@
 # TASK-382: Post-Restart & Epic-Lifecycle Defect Burn-Down
 
-**Status**: 🚀 Dispatched to Pilot (D1–D6)
+**Status**: ✅ 15/15 SHIPPED 2026-07-05 — final defect D6 #3789 closed via TASK-384 → #3882 → PR #3883 (v2.214.1)
 **Created**: 2026-07-03
 **Assignee**: Pilot
 

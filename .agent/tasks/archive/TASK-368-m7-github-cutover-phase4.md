@@ -1,5 +1,5 @@
 ---
-status: phase-4d2-shipped
+status: shipped
 priority: P3
 created: 2026-06-22
 sdk_version: v0.30.0
@@ -9,6 +9,11 @@ labels: [m7, sdk, github, adapter, human-led]
 ---
 
 # TASK-368: M7 Phase 4 — GitHub adapter → studio-sdk cutover (MANUAL)
+
+**✅ COMPLETE 2026-07-11 — #3423 CLOSED.** Phase 4 shipped end-to-end (4b/4d.1–4d.6);
+final dead-code sweep + milestone close in [TASK-397](TASK-397-m7-close-out.md).
+Accepted residual (path B, 4 live-caller github files, config TYPES/HELPER) documented
+there + in graph mem-149/mem-150. History below retained for reference.
 
 **Status**: 🚀 Phases **4b + 4d.1 + 4d.2 + 4d.3 + 4d.4 SHIPPED**, studio-sdk pinned **v0.30.0**. **4d.2 (per-repo SDK poller fan-out) SHIPPED 2026-07-09**: 4d.2a cross-poller reachability (#4110 → PR #4114, GH-4110 registry) + 4d.2b/c/d fan-out (PR #4115, `githubSDKPollerTargets` + explicit repo-identity handler + main.go mutual-exclusion/gate) → **released v2.236.0**. `use_sdk_poller` now drives the default repo AND every `projects[]` github repo. **Endgame planned 2026-07-09 (§ "Phase 4d.5 + 4d.6" below): 4d.2e live rollout (human-owned), 4d.5 webhook repoint (Pilot), 4d.6 cleanup (Pilot, gated on 4d.2e + 4d.5). Delete-vs-residual DECIDED: GitLab precedent — delete dead machinery, keep live remnants.**
 

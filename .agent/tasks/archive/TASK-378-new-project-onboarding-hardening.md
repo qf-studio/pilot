@@ -1,6 +1,6 @@
 # TASK-378: New-Project Onboarding Hardening
 
-**Status**: 🚧 In Progress (Lever A shipped; Lever B dispatched to Pilot)
+**Status**: ✅ SHIPPED — Lever A + Lever B (#3713–#3718 all closed `pilot-done`)
 **Created**: 2026-07-03
 
 ---

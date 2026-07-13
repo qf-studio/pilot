@@ -1,6 +1,7 @@
 # TASK-381: GH-3764 parts (c)/(d) never landed in internal/memory/store.go
 
 **Created:** 2026-07-03
+**Status:** 🚀 Dispatched to Pilot → [#4084](https://github.com/qf-studio/pilot/issues/4084) (2026-07-08)
 
 ## Problem
 

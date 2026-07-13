@@ -110,3 +110,10 @@ pilot-bench/bin/
 
 # Bench job outputs
 pilot-bench/jobs/
+
+# Navigator runtime state (session-local, not knowledge)
+.agent/.features-shown-*
+.agent/.nav-runtime-state.json
+.agent/.nav-runtime-state.lock
+.agent/.nav-v6-state.bak/
+deploy/grafana/*.bak

@@ -1,6 +1,6 @@
 # TASK-377: Bot Module Phase 5 — persona, voice scaffold, docs
 
-**Status**: 🚧 Dispatched, gated → [#3673](https://github.com/qf-studio/pilot/issues/3673) (`Depends on: #3671, #3672`)
+**Status**: ✅ SHIPPED 2026-06-26 — #3673 closed `pilot-done`
 **Created**: 2026-06-26
 **Assignee**: Pilot (queued)
 **Parent plan**: `/Users/aleks.petrov/.claude/plans/there-is-a-problem-inherited-fiddle.md`
