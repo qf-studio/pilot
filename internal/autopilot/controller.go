@@ -35,7 +35,10 @@ type alertSink interface {
 type approvalPersister interface {
 	SetApprovalRequestID(ctx context.Context, taskID, requestID string) error
 	SetApprovalDecision(ctx context.Context, requestID, decision, by string) error
-	GetLatestExecutionByTaskID(taskID string) (*memory.Execution, error)
+	// GetLatestExecutionByTaskIDForProject is scoped by projectPath (GH-4276):
+	// task_id alone is not unique across projects/repos, so an unscoped lookup
+	// could attach an audit event or metrics sample to another project's row.
+	GetLatestExecutionByTaskIDForProject(taskID, projectPath string) (*memory.Execution, error)
 	// RecordExecutionEvent is the GH-4244 validate-first chokepoint
 	// (memory.Store.RecordExecutionEvent): it confirms the executions row
 	// exists before inserting, so a stale/unknown execution ID can never
@@ -886,7 +889,7 @@ func (c *Controller) recordExecutionEvent(prState *PRState, stage memory.Stage, 
 		taskID = fmt.Sprintf("PR-%d", prState.PRNumber)
 	}
 
-	exec, err := c.memoryStore.GetLatestExecutionByTaskID(taskID)
+	exec, err := c.memoryStore.GetLatestExecutionByTaskIDForProject(taskID, c.projectPath)
 	if err != nil {
 		c.log.Warn("execution audit trail: no execution row for task, skipping event",
 			"pr", prState.PRNumber, "task_id", taskID, "stage", stage, "error", err)
@@ -1035,7 +1038,7 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 			c.log.Warn("GH-4211: PR-created event carried no issue number — time-to-PR/queue-wait taskID falls back to PR-N, which will not match any GH-N execution row",
 				"pr", prNumber, "task_id", taskID)
 		}
-		exec, err := c.memoryStore.GetLatestExecutionByTaskID(taskID)
+		exec, err := c.memoryStore.GetLatestExecutionByTaskIDForProject(taskID, c.projectPath)
 		switch {
 		case err != nil:
 			if !errors.Is(err, sql.ErrNoRows) {

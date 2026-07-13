@@ -13,8 +13,8 @@ import (
 )
 
 // gh4130ExecPersister is a minimal approvalPersister that returns a
-// caller-configured *memory.Execution from GetLatestExecutionByTaskID, so
-// tests can control StartedAt/CreatedAt independent of the shared
+// caller-configured *memory.Execution from GetLatestExecutionByTaskIDForProject,
+// so tests can control StartedAt/CreatedAt independent of the shared
 // mockApprovalPersister (which always returns a bare {ID, TaskID} row).
 type gh4130ExecPersister struct {
 	execByTask map[string]*memory.Execution
@@ -27,7 +27,7 @@ func (m *gh4130ExecPersister) SetApprovalDecision(_ context.Context, _, _, _ str
 func (m *gh4130ExecPersister) RecordExecutionEvent(_ string, _ memory.Stage, _ string) error {
 	return nil
 }
-func (m *gh4130ExecPersister) GetLatestExecutionByTaskID(taskID string) (*memory.Execution, error) {
+func (m *gh4130ExecPersister) GetLatestExecutionByTaskIDForProject(taskID, _ string) (*memory.Execution, error) {
 	exec, ok := m.execByTask[taskID]
 	if !ok {
 		return nil, sql.ErrNoRows

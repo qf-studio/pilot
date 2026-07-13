@@ -132,13 +132,16 @@ func TestHandleIssueGeneric_AlreadyActive_SkipsDispatch(t *testing.T) {
 	dispatcher := newHandlerTestDispatcher(t)
 
 	taskID := "GH-4008-ACTIVE"
-	seedTask := &executor.Task{ID: taskID, Title: "seed", ProjectPath: "/tmp/pilot-gh-4008-does-not-exist"}
+	projectPath := "/tmp/pilot-gh-4008-does-not-exist"
+	seedTask := &executor.Task{ID: taskID, Title: "seed", ProjectPath: projectPath}
 	if _, err := dispatcher.QueueTask(context.Background(), seedTask); err != nil {
 		t.Fatalf("failed to seed queued task: %v", err)
 	}
 
 	monitor := executor.NewMonitor()
-	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
+	// GH-4276: IsActive is now project-scoped — deps.ProjectPath must match the
+	// seeded task's ProjectPath for the pre-check to see it as active.
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor, ProjectPath: projectPath}
 	info := IssueInfo{TaskID: taskID, Title: "seed", Adapter: "github", LogMark: "▸"}
 	task := &executor.Task{ID: taskID, Title: "seed", Branch: "pilot/" + taskID}
 
@@ -166,15 +169,18 @@ func TestHandleIssueGeneric_QueueTaskRace_DowngradesToDebug(t *testing.T) {
 	dispatcher := newHandlerTestDispatcher(t)
 
 	activeTaskID := "GH-4008-RACE-ACTUAL"
-	seedTask := &executor.Task{ID: activeTaskID, Title: "seed", ProjectPath: "/tmp/pilot-gh-4008-does-not-exist"}
+	projectPath := "/tmp/pilot-gh-4008-does-not-exist"
+	seedTask := &executor.Task{ID: activeTaskID, Title: "seed", ProjectPath: projectPath}
 	if _, err := dispatcher.QueueTask(context.Background(), seedTask); err != nil {
 		t.Fatalf("failed to seed queued task: %v", err)
 	}
 
 	monitor := executor.NewMonitor()
-	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor}
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor, ProjectPath: projectPath}
 	info := IssueInfo{TaskID: "GH-4008-RACE-PRECHECK", Title: "race", Adapter: "github", LogMark: "▸"}
-	task := &executor.Task{ID: activeTaskID, Title: "race", Branch: "pilot/" + activeTaskID}
+	// GH-4276: task.ProjectPath must match the seeded row's project so
+	// QueueTask's duplicate check (now project-scoped) still hits the race.
+	task := &executor.Task{ID: activeTaskID, Title: "race", Branch: "pilot/" + activeTaskID, ProjectPath: projectPath}
 
 	hr, err := handleIssueGeneric(context.Background(), deps, info, task)
 	if err != nil {

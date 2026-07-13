@@ -158,7 +158,7 @@ func TestDispatcher_IsActive(t *testing.T) {
 
 	ctx := context.Background()
 
-	if dispatcher.IsActive("TEST-ACTIVE") {
+	if dispatcher.IsActive("TEST-ACTIVE", "/tmp/test-project") {
 		t.Error("expected IsActive=false before task is queued")
 	}
 
@@ -172,8 +172,14 @@ func TestDispatcher_IsActive(t *testing.T) {
 		t.Fatalf("failed to queue task: %v", err)
 	}
 
-	if !dispatcher.IsActive("TEST-ACTIVE") {
+	if !dispatcher.IsActive("TEST-ACTIVE", "/tmp/test-project") {
 		t.Error("expected IsActive=true once task is queued")
+	}
+
+	// GH-4276: a different project's identically-numbered task must not be
+	// seen as active — task_id alone is not a valid dispatch-guard key.
+	if dispatcher.IsActive("TEST-ACTIVE", "/tmp/other-project") {
+		t.Error("expected IsActive=false for a different project with the same task_id")
 	}
 }
 
@@ -405,7 +411,7 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check queued task
-	queued, err := store.IsTaskQueued("TASK-QUEUED")
+	queued, err := store.IsTaskQueued("TASK-QUEUED", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
@@ -414,7 +420,7 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check running task
-	queued, err = store.IsTaskQueued("TASK-RUNNING")
+	queued, err = store.IsTaskQueued("TASK-RUNNING", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
@@ -423,7 +429,7 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check completed task
-	queued, err = store.IsTaskQueued("TASK-DONE")
+	queued, err = store.IsTaskQueued("TASK-DONE", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
@@ -432,12 +438,21 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check non-existent task
-	queued, err = store.IsTaskQueued("TASK-NONEXISTENT")
+	queued, err = store.IsTaskQueued("TASK-NONEXISTENT", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
 	if queued {
 		t.Error("expected TASK-NONEXISTENT to NOT be queued")
+	}
+
+	// GH-4276: same task_id, different project — must not report queued.
+	queued, err = store.IsTaskQueued("TASK-QUEUED", "/other-project")
+	if err != nil {
+		t.Fatalf("failed to check: %v", err)
+	}
+	if queued {
+		t.Error("expected TASK-QUEUED under /other-project to NOT be queued (cross-project collision)")
 	}
 }
 
@@ -1361,6 +1376,50 @@ func TestDecomposedChildrenAllComplete(t *testing.T) {
 		}
 		if !strings.Contains(logBuf.String(), "no child refs parsed") {
 			t.Errorf("expected a warning log about the unparseable decomposed detail, got: %s", logBuf.String())
+		}
+	})
+
+	// GH-4276: a child task_id shared with an unrelated project must not mask
+	// this project's own completion evidence for that child. Before the fix,
+	// childCompletionEvidence's unscoped GetLatestExecutionByTaskID lookup
+	// could return the OTHER project's (more recently created) row, see the
+	// ProjectPath mismatch, and report "incomplete" even though this
+	// project's own child row had already shipped.
+	t.Run("cross-project child task_id collision does not mask own completion evidence", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		const otherProject = "/unrelated-project"
+		childID := "GH-6002"
+
+		parentExec := &memory.Execution{ID: "exec-parent-collision", TaskID: "GH-6001", ProjectPath: projectPath, Status: "failed"}
+		if err := store.SaveExecution(parentExec); err != nil {
+			t.Fatalf("SaveExecution(parent): %v", err)
+		}
+		if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 1 children: #6002"); err != nil {
+			t.Fatalf("InsertExecutionEvent: %v", err)
+		}
+
+		// This project's own child shipped (no_op — nothing to change).
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-own-child", TaskID: childID, ProjectPath: projectPath, Status: "no_op",
+		}); err != nil {
+			t.Fatalf("SaveExecution(own child): %v", err)
+		}
+		// An unrelated project's identically-numbered task, created later so
+		// it would win an unscoped "most recent" ordering.
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-other-child", TaskID: childID, ProjectPath: otherProject, Status: "running",
+		}); err != nil {
+			t.Fatalf("SaveExecution(other project's child): %v", err)
+		}
+
+		allComplete, childIDs, evidence, err := decomposedChildrenAllComplete(store, "GH-6001", projectPath, slog.Default())
+		if err != nil {
+			t.Fatalf("decomposedChildrenAllComplete: %v", err)
+		}
+		if !allComplete {
+			t.Errorf("expected allComplete=true — this project's own no_op child is genuine completion evidence, got childIDs=%v evidence=%v", childIDs, evidence)
 		}
 	})
 }

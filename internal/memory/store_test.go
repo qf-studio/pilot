@@ -3970,3 +3970,106 @@ func TestSelfHealExecutionAfterMerge_ExcludesRunningQueuedPending(t *testing.T) 
 		}
 	}
 }
+
+// TestIsTaskQueued_ScopedByProject is the GH-4276 regression test: task_id is
+// only unique within a repo/project (e.g. two fresh SaaS-tenant repos both
+// numbering their first issue "GH-10"), so IsTaskQueued must not see a task
+// queued/running in one project as active in a different project sharing the
+// same task_id.
+func TestIsTaskQueued_ScopedByProject(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&Execution{ID: "proj-a-run", TaskID: "GH-10", ProjectPath: "/proj-a", Status: "running"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	queuedA, err := store.IsTaskQueued("GH-10", "/proj-a")
+	if err != nil {
+		t.Fatalf("IsTaskQueued(/proj-a): %v", err)
+	}
+	if !queuedA {
+		t.Error("expected GH-10 to be queued/running in /proj-a")
+	}
+
+	queuedB, err := store.IsTaskQueued("GH-10", "/proj-b")
+	if err != nil {
+		t.Fatalf("IsTaskQueued(/proj-b): %v", err)
+	}
+	if queuedB {
+		t.Error("expected GH-10 to NOT be queued in /proj-b — cross-project task_id collision must not short-circuit an unrelated project's dispatch")
+	}
+}
+
+// TestGetLatestExecutionByTaskIDForProject_CrossProjectCollision is the
+// GH-4276 regression test for the epic/dispatch-guard evidence lookups: a
+// completed row for task_id "GH-10" in one project must never surface as
+// evidence for a different project's identically-numbered, still-fresh task.
+func TestGetLatestExecutionByTaskIDForProject_CrossProjectCollision(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// An older, unrelated project has a genuinely completed GH-10.
+	if err := store.SaveExecution(&Execution{
+		ID: "other-project-done", TaskID: "GH-10", ProjectPath: "/other-project",
+		Status: "completed", PRUrl: "https://github.com/org/other/pull/1",
+	}); err != nil {
+		t.Fatalf("SaveExecution(other-project): %v", err)
+	}
+
+	// The sandbox project's fresh GH-10 has never run.
+	if _, err := store.GetLatestExecutionByTaskIDForProject("GH-10", "/sandbox-project"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows for a project with no execution row, got %v (row leaked cross-project)", err)
+	}
+
+	// The sandbox project's own row (created later, so it would otherwise
+	// legitimately win an unscoped "most recent" ordering too) is the only
+	// one GetLatestExecutionByTaskIDForProject may ever return for it.
+	if err := store.SaveExecution(&Execution{
+		ID: "sandbox-running", TaskID: "GH-10", ProjectPath: "/sandbox-project", Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution(sandbox): %v", err)
+	}
+	got, err := store.GetLatestExecutionByTaskIDForProject("GH-10", "/sandbox-project")
+	if err != nil {
+		t.Fatalf("GetLatestExecutionByTaskIDForProject(/sandbox-project): %v", err)
+	}
+	if got.ID != "sandbox-running" {
+		t.Errorf("expected sandbox project's own row, got %q (%s) — cross-project task_id collision leaked", got.ID, got.ProjectPath)
+	}
+}
+
+// TestGetLatestExecutionByTaskIDExcluding_ScopedByProject verifies the
+// GH-4276 fix: excluding the caller's own row must stay scoped to projectPath,
+// so a different project's row sharing the excluded task_id never surfaces as
+// the "other" row (e.g. the epic reconciliation path picking up a stranger's
+// PR URL as evidence for this project's child).
+func TestGetLatestExecutionByTaskIDExcluding_ScopedByProject(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&Execution{
+		ID: "self-row", TaskID: "GH-10", ProjectPath: "/proj-a", Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution(self): %v", err)
+	}
+	if err := store.SaveExecution(&Execution{
+		ID: "other-project-row", TaskID: "GH-10", ProjectPath: "/proj-b",
+		Status: "completed", PRUrl: "https://github.com/org/proj-b/pull/9",
+	}); err != nil {
+		t.Fatalf("SaveExecution(other project): %v", err)
+	}
+
+	if _, err := store.GetLatestExecutionByTaskIDExcluding("GH-10", "self-row", "/proj-a"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows excluding the only row in /proj-a, got %v (leaked /proj-b's row)", err)
+	}
+}

@@ -73,7 +73,9 @@ func TestGithubOnPRCreatedHandler_ObservesThroughputHistograms(t *testing.T) {
 
 	cfg := autopilot.DefaultConfig()
 	ghClient := githubSDK.NewClient(testutil.FakeGitHubToken)
-	ctrl := autopilot.NewController(cfg, ghClient, nil, "owner", "repo", autopilot.WithMemoryStore(store))
+	// GH-4276: GetLatestExecutionByTaskIDForProject scopes by the controller's
+	// projectPath, which must match the seeded execution row's ProjectPath ("/p").
+	ctrl := autopilot.NewController(cfg, ghClient, nil, "owner", "repo", autopilot.WithMemoryStore(store), autopilot.WithProjectPath("/p"))
 
 	// This is the exact function production wires into pollerDeps.OnPRCreated
 	// (poller_github.go), not a re-implementation of it.

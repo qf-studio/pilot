@@ -535,15 +535,19 @@ func (d *Dispatcher) hasLiveWorker(projectPath string) bool {
 	return ok
 }
 
-// IsActive reports whether taskID is already queued or running, using the
-// same source of truth QueueTask's duplicate-task check uses. Callers that
-// dispatch on a poll loop can pre-check this before announcing/attempting a
-// dispatch, so a task legitimately waiting behind other work doesn't
-// generate a repeated dispatch-attempt + rejection on every tick (GH-4008).
-// A store error fails open (returns false) — QueueTask's own check remains
-// the authoritative guard.
-func (d *Dispatcher) IsActive(taskID string) bool {
-	active, err := d.store.IsTaskQueued(taskID)
+// IsActive reports whether taskID is already queued or running in projectPath,
+// using the same source of truth QueueTask's duplicate-task check uses.
+// Callers that dispatch on a poll loop can pre-check this before
+// announcing/attempting a dispatch, so a task legitimately waiting behind
+// other work doesn't generate a repeated dispatch-attempt + rejection on
+// every tick (GH-4008). A store error fails open (returns false) —
+// QueueTask's own check remains the authoritative guard.
+//
+// GH-4276: projectPath is required — task_id alone is not unique across
+// projects, so an unscoped check could see an unrelated project's identically
+// numbered task as "active" and block this project's dispatch.
+func (d *Dispatcher) IsActive(taskID, projectPath string) bool {
+	active, err := d.store.IsTaskQueued(taskID, projectPath)
 	if err != nil {
 		d.log.Warn("Failed to check task active state", slog.String("task_id", taskID), slog.Any("error", err))
 		return false
@@ -556,8 +560,10 @@ func (d *Dispatcher) IsActive(taskID string) bool {
 // If a decomposer is configured and the task is complex, it will be split
 // into subtasks that are queued instead of the parent task.
 func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) {
-	// Check for duplicate tasks
-	exists, err := d.store.IsTaskQueued(task.ID)
+	// Check for duplicate tasks. GH-4276: scoped by task.ProjectPath — task_id
+	// is only unique within a repo, so an unscoped check could false-positive
+	// on an unrelated project's identically numbered task and reject dispatch.
+	exists, err := d.store.IsTaskQueued(task.ID, task.ProjectPath)
 	if err != nil {
 		d.log.Warn("Failed to check for duplicate task", slog.Any("error", err))
 	} else if exists {
@@ -783,7 +789,7 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 					} else if allComplete {
 						prURL := ""
 						if len(childIDs) > 0 {
-							if latest, lErr := d.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); lErr == nil && latest != nil {
+							if latest, lErr := d.store.GetLatestExecutionByTaskIDForProject(childIDs[len(childIDs)-1], lastProjectPath); lErr == nil && latest != nil {
 								prURL = latest.PRUrl
 							}
 						}
@@ -803,7 +809,7 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 					}
 
 					if completed, hcErr := d.store.HasCompletedExecution(lastTaskID, lastProjectPath); hcErr == nil && completed {
-						if completedExec, gErr := d.store.GetLatestExecutionByTaskID(lastTaskID); gErr == nil {
+						if completedExec, gErr := d.store.GetLatestExecutionByTaskIDForProject(lastTaskID, lastProjectPath); gErr == nil {
 							d.log.Info("Execution row vanished after orphan recovery — task already completed, resolving wait as success",
 								slog.String("execution_id", execID),
 								slog.String("task_id", lastTaskID),
@@ -976,7 +982,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				slog.Any("error", err))
 		} else if done {
 			prURL := ""
-			if latest, gErr := w.store.GetLatestExecutionByTaskIDExcluding(exec.TaskID, exec.ID); gErr == nil && latest != nil {
+			if latest, gErr := w.store.GetLatestExecutionByTaskIDExcluding(exec.TaskID, exec.ID, w.projectPath); gErr == nil && latest != nil {
 				prURL = latest.PRUrl
 			}
 			w.log.Info("Terminal-success ledger already has a completed row for task; refusing duplicate dispatch",
@@ -1008,7 +1014,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			// defense-in-depth skip, not a normal completion, so it always logs
 			// at Warn with the full child list and per-child evidence.
 			prURL := ""
-			if latest, gErr := w.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); gErr == nil && latest != nil {
+			if latest, gErr := w.store.GetLatestExecutionByTaskIDForProject(childIDs[len(childIDs)-1], w.projectPath); gErr == nil && latest != nil {
 				prURL = latest.PRUrl
 			}
 			w.log.Warn("decomposed-parent guard fired",
@@ -1276,14 +1282,19 @@ func childCompletionEvidence(store *memory.Store, childID, projectPath string) (
 		return "completed", true, nil
 	}
 
-	latest, err := store.GetLatestExecutionByTaskID(childID)
+	// GH-4276: project-scoped lookup — the unscoped GetLatestExecutionByTaskID
+	// previously ordered across all projects, so a same-numbered child row in
+	// an unrelated project (more recently updated) could shadow this child's
+	// own no_op/merged_pr evidence in this project, producing a false
+	// "incomplete" verdict for a genuinely-shipped child.
+	latest, err := store.GetLatestExecutionByTaskIDForProject(childID, projectPath)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", false, nil
 		}
 		return "", false, err
 	}
-	if latest == nil || latest.ProjectPath != projectPath {
+	if latest == nil {
 		return "", false, nil
 	}
 	if latest.Status == "no_op" && latest.Error == "" {

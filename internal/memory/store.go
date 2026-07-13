@@ -677,6 +677,14 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 // GetLatestExecutionByTaskID returns the most recent execution for a task, matched by
 // exact task_id first and falling back to a substring match (e.g. "GH-15" matching
 // "GH-15"). Returns sql.ErrNoRows if no execution matches.
+//
+// NOT project-scoped: task_id is only unique within a repo/project, so this can
+// return a different project's row for the same task_id (e.g. two repos both
+// reporting "GH-10"). That is intentional here — this backs human-facing CLI
+// diagnostics (`pilot logs <task-id>`) where the caller often doesn't know
+// which project a task belongs to. Dispatch/epic-guard call sites that need a
+// definitive answer MUST use GetLatestExecutionByTaskIDForProject instead
+// (GH-4276) — see decomposedChildrenAllComplete / hasTerminalSuccessLedger.
 func (s *Store) GetLatestExecutionByTaskID(taskID string) (*Execution, error) {
 	row := s.db.QueryRow(`
 		SELECT `+executionDetailColumns+`
@@ -688,20 +696,40 @@ func (s *Store) GetLatestExecutionByTaskID(taskID string) (*Execution, error) {
 	return scanExecutionDetail(row)
 }
 
-// GetLatestExecutionByTaskIDExcluding mirrors GetLatestExecutionByTaskID but
-// ignores the row identified by excludeID. GH-4141: an epic sub-issue now
+// GetLatestExecutionByTaskIDForProject is the project-scoped counterpart to
+// GetLatestExecutionByTaskID (GH-4276). Exact task_id match only (no substring
+// fallback) AND project_path = projectPath, so a cross-project task_id
+// collision can never surface another repo's row as evidence for this one.
+// Returns sql.ErrNoRows if no execution matches.
+func (s *Store) GetLatestExecutionByTaskIDForProject(taskID, projectPath string) (*Execution, error) {
+	row := s.db.QueryRow(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE task_id = ? AND project_path = ?
+		ORDER BY created_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, projectPath)
+	return scanExecutionDetail(row)
+}
+
+// GetLatestExecutionByTaskIDExcluding mirrors GetLatestExecutionByTaskIDForProject
+// but ignores the row identified by excludeID. GH-4141: an epic sub-issue now
 // carries its own "running" executions row for the full run duration
 // (internal/executor/epic.go finalizeSubIssueExecution), so a caller
 // reconciling against a genuinely separate, concurrently-tracked row for the
 // same task (GH-3786) must look past its own row to find it.
-func (s *Store) GetLatestExecutionByTaskIDExcluding(taskID, excludeID string) (*Execution, error) {
+//
+// GH-4276: scoped by projectPath — task_id alone is not unique across
+// projects, so an unscoped lookup could return another repo's row sharing the
+// same task_id.
+func (s *Store) GetLatestExecutionByTaskIDExcluding(taskID, excludeID, projectPath string) (*Execution, error) {
 	row := s.db.QueryRow(`
 		SELECT `+executionDetailColumns+`
 		FROM executions
-		WHERE (task_id = ? OR task_id LIKE ?) AND id != ?
-		ORDER BY (task_id = ?) DESC, created_at DESC, rowid DESC
+		WHERE task_id = ? AND project_path = ? AND id != ?
+		ORDER BY created_at DESC, rowid DESC
 		LIMIT 1
-	`, taskID, "%"+taskID+"%", excludeID, taskID)
+	`, taskID, projectPath, excludeID)
 	return scanExecutionDetail(row)
 }
 
@@ -1982,14 +2010,19 @@ func (s *Store) DeleteExecution(id string) error {
 	return err
 }
 
-// IsTaskQueued checks if a task with the given ID is already queued or running.
-// Used to prevent duplicate task submissions.
-func (s *Store) IsTaskQueued(taskID string) (bool, error) {
+// IsTaskQueued checks if a task with the given ID is already queued or running
+// in projectPath. Used to prevent duplicate task submissions.
+//
+// GH-4276: task_id is only unique within a single repo/project (e.g. a fresh
+// SaaS-tenant repo's "GH-10" collides with an unrelated existing project's
+// "GH-10") — scoping by project_path stops one project's in-flight task from
+// blocking dispatch of another project's identically-numbered task.
+func (s *Store) IsTaskQueued(taskID, projectPath string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM executions
-		WHERE task_id = ? AND status IN ('queued', 'pending', 'running')
-	`, taskID).Scan(&count)
+		WHERE task_id = ? AND project_path = ? AND status IN ('queued', 'pending', 'running')
+	`, taskID, projectPath).Scan(&count)
 	if err != nil {
 		return false, err
 	}
