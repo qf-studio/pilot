@@ -919,6 +919,98 @@ func TestCIMonitor_AutoDiscovery_WithExclusions(t *testing.T) {
 	}
 }
 
+// TestCIMonitor_GH4310_ScheduledCanaryExcludedFromFailedChecks is the GH-4310
+// regression guard for the Exclude-only production path (no `required_checks`
+// configured — the actual pilot config only sets `ci_checks.exclude`). It
+// mirrors the real incident: a scheduled-canary check run
+// ("epic-lifecycle / run", GH-4265's `pilot-canary.yml`, schedule +
+// workflow_dispatch, no push trigger) attaches a permanently-failing check
+// run to a merged PR's merge SHA. Table-driven per gh-4310.md Step 3:
+//
+//	(a) canary failure + passing test/lint -> no CIFailure, canary absent from GetFailedChecks
+//	(b) canary failure alongside a REAL (non-excluded) failing check -> CIFailure, only the real check reported
+//
+// This closes a coverage gap left by GH-4307/PR#4320: TestCIMonitor_AutoDiscovery_WithExclusions
+// only asserted CheckCI()/GetDiscoveredChecks(), never GetFailedChecks() scoping
+// under Exclude, and TestCIMonitor_GetFailedChecks only ever runs with DefaultConfig()
+// (no Exclude), so isScopedCheck's exclude branch was never exercised for GetFailedChecks.
+func TestCIMonitor_GH4310_ScheduledCanaryExcludedFromFailedChecks(t *testing.T) {
+	tests := []struct {
+		name       string
+		checkRuns  []github.CheckRun
+		wantStatus CIStatus
+		wantFailed []string
+	}{
+		{
+			name: "scheduled canary fails alone -- excluded, no CIFailure",
+			checkRuns: []github.CheckRun{
+				{Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "lint", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "epic-lifecycle / run", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+			},
+			wantStatus: CISuccess,
+			wantFailed: nil,
+		},
+		{
+			name: "scheduled canary fails alongside a real push-triggered failure -- real failure still fires",
+			checkRuns: []github.CheckRun{
+				{Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "lint", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+				{Name: "epic-lifecycle / run", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+			},
+			wantStatus: CIFailure,
+			wantFailed: []string{"lint"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				resp := github.CheckRunsResponse{
+					TotalCount: len(tt.checkRuns),
+					CheckRuns:  tt.checkRuns,
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.CIPollInterval = 10 * time.Millisecond
+			cfg.CIWaitTimeout = 1 * time.Second
+			cfg.CIChecks = &CIChecksConfig{
+				Mode:                 "auto",
+				Exclude:              []string{"epic-lifecycle / run", "version-bump / run"},
+				DiscoveryGracePeriod: 10 * time.Millisecond,
+			}
+
+			monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+			status, err := monitor.CheckCI(context.Background(), "abc1234")
+			if err != nil {
+				t.Fatalf("CheckCI() error = %v", err)
+			}
+			if status != tt.wantStatus {
+				t.Errorf("CheckCI() status = %s, want %s", status, tt.wantStatus)
+			}
+
+			failed, err := monitor.GetFailedChecks(context.Background(), "abc1234")
+			if err != nil {
+				t.Fatalf("GetFailedChecks() error = %v", err)
+			}
+			if len(failed) != len(tt.wantFailed) {
+				t.Errorf("GetFailedChecks() = %v, want %v", failed, tt.wantFailed)
+			}
+			for i, name := range failed {
+				if i < len(tt.wantFailed) && name != tt.wantFailed[i] {
+					t.Errorf("GetFailedChecks()[%d] = %s, want %s", i, name, tt.wantFailed[i])
+				}
+			}
+		})
+	}
+}
+
 // TestCIMonitor_AutoMode_RequiredChecksOverrideDiscovery is the GH-4307
 // regression guard: a scheduled canary check (e.g. "epic-lifecycle / run")
 // can attach a failing check run to the same merge SHA a post-merge monitor
