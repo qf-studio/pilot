@@ -41,6 +41,7 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
+	"github.com/qf-studio/pilot/internal/singleton"
 	"github.com/qf-studio/pilot/internal/teams"
 	"github.com/qf-studio/pilot/internal/tunnel"
 	"github.com/qf-studio/pilot/internal/upgrade"
@@ -195,6 +196,7 @@ func main() {
 	rootCmd.AddCommand(
 		newStartCmd(),
 		newStopCmd(),
+		newRestartCmd(),
 		newStatusCmd(),
 		newInitCmd(),
 		newVersionCmd(),
@@ -1333,6 +1335,79 @@ func startApprovalExpirySweep(ctx context.Context, handler *approval.TelegramHan
 	})
 }
 
+// daemonLockDir resolves the directory that holds the single-instance lock
+// file, falling back to the same default memory.Path uses when config
+// somehow leaves Memory unset.
+func daemonLockDir(cfg *config.Config) string {
+	if cfg.Memory != nil && cfg.Memory.Path != "" {
+		return cfg.Memory.Path
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".pilot", "data")
+}
+
+// acquireDaemonLock takes the adapter-agnostic single-instance guard
+// (GH-4311): an OS-level flock on <Memory.Path>/pilot.lock, held for the
+// process lifetime and released automatically on exit or crash (flock
+// semantics — no cleanup code required for the crash case).
+//
+// With --replace, an existing holder is SIGTERM'd and we wait (bounded) for
+// it to release the lock before acquiring it ourselves. This is now the
+// primary --replace mechanism — it supersedes the old behavior where
+// --replace only fired on a Telegram 409 and pkilled every "pilot start"
+// match with no confirmation the target actually exited.
+func acquireDaemonLock(cfg *config.Config, replace bool) (*singleton.Lock, error) {
+	dir := daemonLockDir(cfg)
+
+	lock, err := singleton.Acquire(dir)
+	if err == nil {
+		return lock, nil
+	}
+
+	var held *singleton.ErrHeld
+	if !errors.As(err, &held) {
+		return nil, fmt.Errorf("failed to acquire single-instance lock: %w", err)
+	}
+
+	if !replace {
+		fmt.Println()
+		fmt.Printf("✗ Another pilot daemon is already running (pid %d)\n", held.PID)
+		fmt.Println()
+		fmt.Println("   Options:")
+		fmt.Println("   • Stop it:            pilot stop")
+		fmt.Println("   • Auto-replace:       pilot start --replace")
+		fmt.Println()
+		return nil, fmt.Errorf("conflict: pilot daemon already running (pid %d)", held.PID)
+	}
+
+	fmt.Printf("⟲ stopping existing pilot daemon (pid %d)...\n", held.PID)
+	if held.PID > 0 {
+		if proc, ferr := os.FindProcess(held.PID); ferr == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+		}
+	}
+
+	fmt.Print("   Waiting for existing daemon to release its lock")
+	const maxRetries = 20
+	for i := 0; i < maxRetries; i++ {
+		time.Sleep(time.Duration(500+i*250) * time.Millisecond)
+		fmt.Print(".")
+		lock, err = singleton.Acquire(dir)
+		if err == nil {
+			fmt.Println(" ✓")
+			fmt.Println("   ✓ existing daemon stopped, lock acquired")
+			fmt.Println()
+			return lock, nil
+		}
+		if !errors.As(err, &held) {
+			fmt.Println(" ✗")
+			return nil, fmt.Errorf("failed to acquire single-instance lock: %w", err)
+		}
+	}
+	fmt.Println(" ✗")
+	return nil, fmt.Errorf("timeout waiting for existing pilot daemon (pid %d) to release lock", held.PID)
+}
+
 // runPollingMode runs lightweight polling-only mode.
 // When noGateway is false, the HTTP gateway starts in the background so the
 // desktop app (and any other client hitting /health) can reach the daemon.
@@ -1341,6 +1416,18 @@ func startApprovalExpirySweep(ctx context.Context, handler *approval.TelegramHan
 func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool, bootReconcile *upgrade.BootReconcileResult) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// GH-4311: adapter-agnostic single-instance guard. Must run before any
+	// adapter wiring below — two daemons concurrently wiring the same
+	// adapters (e.g. two autopilot controllers polling the same repo) is
+	// exactly the duplicate-work failure mode this closes. This supersedes
+	// the Telegram-only 409 check further down, which is blind to
+	// github-only/headless runs.
+	daemonLock, err := acquireDaemonLock(cfg, replace)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = daemonLock.Release() }()
 
 	// Check Telegram config if enabled
 	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
