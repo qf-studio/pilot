@@ -4611,6 +4611,201 @@ func TestHandlePostMergeCI_Timeout(t *testing.T) {
 	}
 }
 
+// TestHandlePostMergeCI_CIFailure_MarksStageFailedNotRemoved verifies GH-4312:
+// a post-merge CI failure (no scope release in play) marks the PR StageFailed
+// and leaves it in activePRs — mirroring the timeout branch above — instead of
+// calling removePR. removePR issues a DELETE against the state store; since no
+// release tag exists for this merge commit (CI never passed), evicting the row
+// would let the merged-PR release scan re-register the PR at StagePostMergeCI
+// on its very next tick, re-entering this branch and respawning a fix issue
+// forever.
+func TestHandlePostMergeCI_CIFailure_MarksStageFailedNotRemoved(t *testing.T) {
+	issueCreated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/failsha1/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "ci", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 500}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:             123,
+		Stage:                StagePostMergeCI,
+		PostMergeSHA:         "failsha1",
+		PostMergeCIStartedAt: time.Now(),
+	}
+	c.mu.Lock()
+	c.activePRs[123] = prState
+	c.mu.Unlock()
+
+	if err := c.handlePostMergeCI(context.Background(), prState); err != nil {
+		t.Fatalf("handlePostMergeCI returned unexpected error: %v", err)
+	}
+
+	if !issueCreated {
+		t.Error("expected post-merge fix issue to be created")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	if prState.Error == "" {
+		t.Error("expected Error to be set on post-merge CI failure")
+	}
+
+	c.mu.RLock()
+	_, stillTracked := c.activePRs[123]
+	c.mu.RUnlock()
+	if !stillTracked {
+		t.Error("PR should remain tracked at StageFailed (terminal, no-op in main loop) — removePR would delete the persisted row and let the release scan re-discover it")
+	}
+}
+
+// TestHandlePostMergeCI_CIFailure_MaxCIFixIterationsGuard verifies GH-4312:
+// the pre-merge iteration-depth guard (controller.go handleCIFailed, ~:1502)
+// is ported to the post-merge path — when the merged PR's issue is itself a
+// spawned fix issue whose autopilot-meta iteration counter has already
+// reached MaxCIFixIterations, handlePostMergeCI must not spawn another fix
+// issue.
+func TestHandlePostMergeCI_CIFailure_MaxCIFixIterationsGuard(t *testing.T) {
+	issueCreated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/failsha2/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "ci", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues/77" && r.Method == http.MethodGet:
+			resp := github.Issue{Number: 77, Body: "<!-- autopilot-meta branch:pilot/GH-77 pr:200 iteration:2 -->"}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 999}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.MaxCIFixIterations = 2
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:             200,
+		IssueNumber:          77,
+		Stage:                StagePostMergeCI,
+		PostMergeSHA:         "failsha2",
+		PostMergeCIStartedAt: time.Now(),
+	}
+	c.mu.Lock()
+	c.activePRs[200] = prState
+	c.mu.Unlock()
+
+	if err := c.handlePostMergeCI(context.Background(), prState); err != nil {
+		t.Fatalf("handlePostMergeCI returned unexpected error: %v", err)
+	}
+
+	if issueCreated {
+		t.Error("fix issue must NOT be created when post-merge iteration limit is reached")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("stage = %s, want %s", prState.Stage, StageFailed)
+	}
+}
+
+// TestHandlePostMergeCI_CIFailure_MaxCIFixPRSizeGuard verifies GH-4312: the
+// pre-merge cascade size guard (controller.go handleCIFailed, ~:1555) is
+// ported to the post-merge path — a merged PR that already exceeds
+// MaxCIFixPRSize must not spawn another fix issue on post-merge CI failure.
+func TestHandlePostMergeCI_CIFailure_MaxCIFixPRSizeGuard(t *testing.T) {
+	issueCreated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/failsha3/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "ci", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/300/files" && r.Method == http.MethodGet:
+			files := []*github.PRFile{
+				{Filename: "internal/foo.go", Status: "added", Additions: 500},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, files))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 998}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.MaxCIFixPRSize = 200
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:             300,
+		Stage:                StagePostMergeCI,
+		PostMergeSHA:         "failsha3",
+		PostMergeCIStartedAt: time.Now(),
+	}
+	c.mu.Lock()
+	c.activePRs[300] = prState
+	c.mu.Unlock()
+
+	if err := c.handlePostMergeCI(context.Background(), prState); err != nil {
+		t.Fatalf("handlePostMergeCI returned unexpected error: %v", err)
+	}
+
+	if issueCreated {
+		t.Error("fix issue must NOT be created when merged PR exceeds size floor")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("stage = %s, want %s", prState.Stage, StageFailed)
+	}
+}
+
 // TestHandleCIFailed_EmptyLogs_SkipsLearning verifies that handleCIFailed skips
 // LearnFromCIFailure when CI logs are empty or whitespace-only (GH-1979).
 // TestHandleCIFailed_EmptyLogs_SkipsLearning verifies that handleCIFailed skips
