@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-13 (v2.151.0)
+**Last Updated:** 2026-07-09 (v2.151.0)
 
 ## Legend
 
@@ -352,7 +352,6 @@
 | Docs board sync page | ✅ | docs | - | - | GitHub Projects V2 Board Sync documentation (v2.38.0) |
 | Docs CLI/homepage update | ✅ | docs | - | - | Update CLI commands and homepage for v2.25 (v2.38.0) |
 | Docs architecture update | ✅ | docs | - | - | Update architecture page with new adapters (v2.38.0) |
-| Hosted mode config guard | ✅ | config | - | `PILOT_HOSTED` env | `PILOT_HOSTED=1` makes `config.Save()` a logged WARN no-op (control-plane-rendered config.yaml must never be overwritten with resolved secrets) and enforces boot-time invariants — `upgrade.auto_hot_upgrade` must be false and `tunnel.enabled` must be false — failing loud in `Load()` otherwise (SaaS S0.7, GH-4274) |
 
 ## Approval Workflows
 
@@ -410,6 +409,7 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
+| Fix-issue creation idempotency guard | ✅ | autopilot | - | - | `autopilot_spawned_fixes` SQLite table (PK `repo, dedup_key`, `INSERT OR IGNORE` claim) checked before both pre-merge and post-merge `CreateFailureIssue` call sites; dedup key includes sorted failed-check signature so a new failure still spawns. Belt-and-suspenders: GitHub search for an open issue with the exact title + pilot labels catches a lost DB row (fresh clone/restored backup) that the SQLite claim can't see (GH-4307, GH-4309) |
 
 ## Epic Management
 
@@ -599,4 +599,3 @@ quality:
 | Decomposed-child base-branch pinning | v2.184.x | executor | Resolve `BaseBranch` from main-repo git context before worktree creation; decomposed children never PR against a sibling branch (GH-3540) |
 | GitHub-poller auth-failure escalation | v2.207.x | adapters/github + health | Consecutive 401/non-ratelimit-403 fetch errors escalate to ERROR log + alert at threshold (`WithAlertProcessor`/`WithTokenSource`); `pilot doctor` disabled-subsystems panel; `pilot config show` secret redaction + `--reveal` (TASK-379 V4 / GH-3839) |
 | Executor prompt memory injection | v2.219.x | executor | `BuildPrompt` appends a "Known pitfalls from project memory" block ranked via `graphrecall.RecallRelevant`, gated on `MemoryInjection.Enabled`/non-LocalMode/Navigator/recall hits, capped at `min(MaxMemories,5)` entries and ~1500 chars (TASK-387 / GH-3909) |
-| `IsTaskQueued` project-scoped | v2.239.x | memory + executor + cmd/pilot | `Store.IsTaskQueued(taskID, projectPath)` now scopes by `(task_id, project_path)` — closes the last unscoped dedup lookup on the dispatch path (`Dispatcher.IsActive`/`QueueTask`, SDK `storeTaskChecker`), so a same-numbered task_id queued/running in one project can no longer suppress dispatch in another (fresh multi-project onboarding hits this from issue #1 up) (GH-4276) |

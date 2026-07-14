@@ -248,6 +248,110 @@ func TestFeedbackLoop_CreateFailureIssue_NoStateStoreCreatesEveryTime(t *testing
 	}
 }
 
+// TestFeedbackLoop_CreateFailureIssue_GitHubSearchCatchesLostDBRow verifies
+// the GH-4309 belt-and-suspenders guard: if the SQLite dedup row is lost
+// (fresh clone, restored backup, wiped store) but an open fix issue with the
+// exact title already exists on GitHub, CreateFailureIssue must not mint a
+// second one.
+func TestFeedbackLoop_CreateFailureIssue_GitHubSearchCatchesLostDBRow(t *testing.T) {
+	createCalls := 0
+	title := "fix(ci): resolve post-merge CI failure from PR #42"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == "GET":
+			existing := []*github.Issue{
+				{
+					Number: 999,
+					Title:  title,
+					State:  github.StateOpen,
+					Labels: []github.Label{{Name: "pilot"}, {Name: "autopilot-fix"}},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(existing)
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST":
+			createCalls++
+			resp := github.Issue{Number: 100 + createCalls}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+	// A fresh store: no prior claim row exists, mirroring a lost DB row.
+	fl.SetStateStore(newTestStateStore(t))
+
+	prState := &PRState{PRNumber: 42, HeadSHA: "abc1234"}
+
+	issueNum, err := fl.CreateFailureIssue(context.Background(), prState, FailureCIPostMerge, nil, "", 1)
+	if err != nil {
+		t.Fatalf("CreateFailureIssue() error = %v", err)
+	}
+	if issueNum != 999 {
+		t.Errorf("CreateFailureIssue() = %d, want 999 (the existing GitHub issue found via search)", issueNum)
+	}
+	if createCalls != 0 {
+		t.Errorf("createCalls = %d, want 0 — GitHub search should have suppressed creation", createCalls)
+	}
+}
+
+// TestFeedbackLoop_CreateFailureIssue_GitHubSearchAllowsCreationWhenNoMatch
+// verifies the search only suppresses on an exact title match — a
+// differently-titled open pilot issue must not block creation.
+func TestFeedbackLoop_CreateFailureIssue_GitHubSearchAllowsCreationWhenNoMatch(t *testing.T) {
+	createCalls := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == "GET":
+			existing := []*github.Issue{
+				{
+					Number: 999,
+					Title:  "fix(ci): resolve post-merge CI failure from PR #7",
+					State:  github.StateOpen,
+					Labels: []github.Label{{Name: "pilot"}, {Name: "autopilot-fix"}},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(existing)
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST":
+			createCalls++
+			resp := github.Issue{Number: 100 + createCalls}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+	fl.SetStateStore(newTestStateStore(t))
+
+	prState := &PRState{PRNumber: 42, HeadSHA: "abc1234"}
+
+	issueNum, err := fl.CreateFailureIssue(context.Background(), prState, FailureCIPostMerge, nil, "", 1)
+	if err != nil {
+		t.Fatalf("CreateFailureIssue() error = %v", err)
+	}
+	if issueNum != 101 {
+		t.Errorf("CreateFailureIssue() = %d, want 101 (newly created issue)", issueNum)
+	}
+	if createCalls != 1 {
+		t.Errorf("createCalls = %d, want 1 — no exact title match should not block creation", createCalls)
+	}
+}
+
 func TestController_SetStateStore_ForwardsToFeedbackLoop(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()
