@@ -197,6 +197,76 @@ func TestBuildStageInfo_MaxRungHealthyPath(t *testing.T) {
 	}
 }
 
+// TestBuildStageInfo_DecomposeOnlyEpicParentTerminal covers GH-4298: a
+// decompose-only epic parent ships no PR of its own — its stream ends
+// running -> spec_validated -> decomposed -> completed, never touching
+// pr_created/ci_passed/merged. Before the fix, the running-max reducer froze
+// the label at "running" (pos 2, the highest *named* rung) forever; the run
+// must instead render a terminal label at the top of the ladder.
+func TestBuildStageInfo_DecomposeOnlyEpicParentTerminal(t *testing.T) {
+	events := []*memory.Event{
+		evt(memory.StageRunning),
+		evt(memory.StageSpecValidated),
+		evt(memory.StageDecomposed),
+		evt(memory.StageCompleted),
+	}
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: stageLadderTotal, Label: "completed", Failed: false, Known: true}
+	if got != want {
+		t.Errorf("decompose-only epic parent: got %+v, want %+v", got, want)
+	}
+}
+
+// TestBuildStageInfo_CleanTerminalDoesNotOverrideFailure is the GH-4298
+// regression guard for GH-4212-style failure labeling: a run that died at a
+// rung must keep showing ✗ at its stage of death, never get promoted to a
+// terminal label just because the stream happens to end elsewhere.
+func TestBuildStageInfo_CleanTerminalDoesNotOverrideFailure(t *testing.T) {
+	events := []*memory.Event{
+		evt(memory.StageSpecValidated),
+		evt(memory.StageRunning),
+		evt(memory.StageFailed),
+	}
+	got := buildStageInfo(events, true)
+	want := StageInfo{Reached: 2, Label: "running", Failed: true, Known: true}
+	if got != want {
+		t.Errorf("failed-at-a-rung must not be promoted: got %+v, want %+v", got, want)
+	}
+}
+
+// TestBuildStageInfo_GenuinelyRunningStaysRunning guards the in-flight case:
+// no terminal event has been recorded yet, so the label must still read
+// "running" rather than being promoted to a terminal stage.
+func TestBuildStageInfo_GenuinelyRunningStaysRunning(t *testing.T) {
+	events := []*memory.Event{
+		evt(memory.StageQueued),
+		evt(memory.StageSpecValidated),
+		evt(memory.StageRunning),
+	}
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: 2, Label: "running", Failed: false, Known: true}
+	if got != want {
+		t.Errorf("in-flight run must not be promoted: got %+v, want %+v", got, want)
+	}
+}
+
+// TestBuildStageInfo_HealedRowStillTerminal guards against a regression on
+// rows healed by the #4294 SelfHealExecutionAfterMerge/SelfHealExecutionByPRURL
+// backfill: those append a StageMerged event, which already names its own
+// ladder rung (pos 6) — the GH-4298 clean-terminal promotion must not be
+// needed (and must not interfere) for that path to keep rendering terminal.
+func TestBuildStageInfo_HealedRowStillTerminal(t *testing.T) {
+	events := []*memory.Event{
+		evt(memory.StageImplementationStarted),
+		evt(memory.StageMerged), // backfilled by the #4294 heal path
+	}
+	got := buildStageInfo(events, false)
+	want := StageInfo{Reached: 6, Label: "merged", Failed: false, Known: true}
+	if got != want {
+		t.Errorf("healed row: got %+v, want %+v", got, want)
+	}
+}
+
 func TestStageLadderPosition_AllStages(t *testing.T) {
 	cases := []struct {
 		stage memory.Stage
