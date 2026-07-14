@@ -662,6 +662,12 @@ func (c *Controller) SetMonitor(m TaskMonitor) {
 // If set, all state transitions are persisted to SQLite.
 func (c *Controller) SetStateStore(store *StateStore) {
 	c.stateStore = store
+	// GH-4307: forward to feedback loop so fix-issue creation can dedup
+	// against a re-tick, a release-scan re-discovery, or a second daemon
+	// racing the same failure signal.
+	if c.feedbackLoop != nil {
+		c.feedbackLoop.SetStateStore(store)
+	}
 }
 
 // repoKey returns this controller's "owner/repo" identity, used to scope
