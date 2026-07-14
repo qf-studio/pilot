@@ -325,8 +325,10 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	}
 
 	// GH-2201/GH-2242: task-queued gate + completed-execution guard.
+	// GH-4276: storeTaskChecker is scoped to this poller's own project so a
+	// same-numbered task_id active in a different project never counts here.
 	if deps.Store != nil {
-		pollerDeps.TaskChecker = storeTaskChecker{store: deps.Store}
+		pollerDeps.TaskChecker = storeTaskChecker{store: deps.Store, projectPath: target.projectPath}
 		pollerDeps.ExecutionChecker = deps.Store
 	}
 

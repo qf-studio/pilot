@@ -480,6 +480,57 @@ func TestHasCompletedExecution(t *testing.T) {
 	}
 }
 
+// TestIsTaskQueued_ProjectScoping is the GH-4276 regression: task_id is not
+// unique across projects (every freshly onboarded repo starts issue
+// numbering at #1), so IsTaskQueued must not treat a task_id queued/running
+// in one project as active in a different project sharing the same id.
+func TestIsTaskQueued_ProjectScoping(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// project-a has GH-10 running; project-b has never seen GH-10 before.
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-running-a",
+		TaskID:      "GH-10",
+		ProjectPath: "/project-a",
+		Status:      "running",
+	})
+
+	queued, err := store.IsTaskQueued("GH-10", "/project-a")
+	if err != nil {
+		t.Fatalf("IsTaskQueued failed: %v", err)
+	}
+	if !queued {
+		t.Error("expected GH-10 to be queued in /project-a")
+	}
+
+	queued, err = store.IsTaskQueued("GH-10", "/project-b")
+	if err != nil {
+		t.Fatalf("IsTaskQueued failed: %v", err)
+	}
+	if queued {
+		t.Error("expected GH-10 to NOT be queued in /project-b (cross-project collision)")
+	}
+
+	// project-b later gets its own GH-10 queued — must be visible only there.
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-queued-b",
+		TaskID:      "GH-10",
+		ProjectPath: "/project-b",
+		Status:      "queued",
+	})
+	queued, err = store.IsTaskQueued("GH-10", "/project-b")
+	if err != nil {
+		t.Fatalf("IsTaskQueued failed: %v", err)
+	}
+	if !queued {
+		t.Error("expected GH-10 to be queued in /project-b once its own row exists")
+	}
+}
+
 // TestGetDecomposedChildTaskIDs covers the GH-4216 (Defect A, fix 3)
 // cross-task-id dispatch guard's read helper: no decomposed event, a
 // decomposed event with children, duplicate refs collapsed, and project-path
