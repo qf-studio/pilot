@@ -421,6 +421,23 @@ func TestIsSinglePackageScope(t *testing.T) {
 			description: "Per the spec, persistence work lives in internal/memory/store.go.",
 			expected:    false,
 		},
+		{
+			// GH-4302: canary epic-lifecycle scenario. Two subtasks each touch a
+			// distinct bare top-level file (no directory prefix) — version.go and
+			// CHANGELOG-CANARY.md. Before the fix, bare filenames were invisible
+			// to extractUniqueDirectories, dirs stayed empty, and the fallback
+			// title-word heuristic false-positived on shared words like "canary",
+			// collapsing a genuine 2-file epic into single-package direct
+			// execution (child issues created off-pipeline with no Parent: stamp,
+			// blinding both the canary poll script and epic_reconcile.go).
+			name: "distinct bare top-level files are not single package (GH-4302)",
+			subtasks: []PlannedSubtask{
+				{Title: "Subtask 1 (version bump)", Description: "Bump the PATCH component in version.go by exactly one."},
+				{Title: "Subtask 2 (changelog entry)", Description: "Append a dated line to CHANGELOG-CANARY.md."},
+			},
+			description: "Two independent work items against two different files in this sandbox repository.",
+			expected:    false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -455,9 +472,13 @@ func TestExtractUniqueDirectories(t *testing.T) {
 			expected: 0,
 		},
 		{
+			// GH-4302: bare top-level filenames have no directory separator,
+			// but two distinct bare files must still count as 2 scope keys —
+			// otherwise they're indistinguishable from truly path-free text
+			// and fall through to the unreliable title-word heuristic.
 			name:     "files without directory prefix",
-			text:     "Update main.go and utils.go", // no slash → no directory extracted
-			expected: 0,
+			text:     "Update main.go and utils.go",
+			expected: 2,
 		},
 		{
 			name:     "deeply nested same parent",
