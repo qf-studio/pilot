@@ -321,6 +321,7 @@
 | Docker support | ✅ | - | - | - | Dockerfile + deployment guide (v1.46.0) |
 | Helm chart | ✅ | - | - | - | Kubernetes Helm chart for production deployment (v1.46.0) |
 | PowerShell installer | ✅ | install | - | - | Windows PowerShell install script (`install.ps1`) |
+| Adapter goroutine panic recovery | ✅ | adapterhealth | - | - | Every adapter poller goroutine runs via `SafeAdapterGo`: panics are recovered, logged, restarted with backoff up to 5 attempts, then the adapter is marked disabled — one adapter's panic can't crash the daemon. Surfaced on `/api/v1/status` `adapters` + a `service_unhealthy` WARN alert (GH-4314) |
 | Gateway in polling mode | ✅ | gateway | - | - | HTTP server starts in background during polling for desktop/web (v1.62.0, GH-1662) |
 | Gateway budget nil fix | ✅ | gateway | - | - | Fix nil dereference when budget disabled in gateway mode (v2.43.0, GH-1935) |
 | Gateway learning loop | ✅ | gateway | - | - | Learning system init in gateway mode, mirrors polling mode (v2.43.0, GH-1935) |

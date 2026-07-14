@@ -85,13 +85,13 @@ func gitlabPollerRegistration() PollerRegistration {
 				slog.String("label", pilotLabel),
 				slog.Duration("interval", interval),
 			)
-			go func() {
+			deps.SafeAdapterGo(ctx, "gitlab", func() {
 				if err := gitlabPoller.Start(ctx); err != nil {
 					logging.WithComponent("gitlab").Error("GitLab poller failed",
 						slog.Any("error", err),
 					)
 				}
-			}()
+			})
 		},
 	}
 }

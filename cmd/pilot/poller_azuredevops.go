@@ -72,13 +72,13 @@ func azuredevopsPollerRegistration() PollerRegistration {
 				slog.String("project", deps.Cfg.Adapters.AzureDevOps.Project),
 				slog.Duration("interval", interval),
 			)
-			go func() {
+			deps.SafeAdapterGo(ctx, "azuredevops", func() {
 				if err := adoPoller.Start(ctx); err != nil {
 					logging.WithComponent("azuredevops").Error("Azure DevOps poller failed",
 						slog.Any("error", err),
 					)
 				}
-			}()
+			})
 		},
 	}
 }

@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/qf-studio/pilot/internal/adapterhealth"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/budget"
@@ -37,6 +39,12 @@ type PollerDeps struct {
 	// handle otherwise never leaves githubPollerRegistration() (GH-4110). Nil when
 	// GitHub polling is off.
 	GitHubPollers *githubPollerRegistry
+
+	// AdapterHealth tracks panic/restart/disabled state for every adapter
+	// goroutine started via SafeAdapterGo (GH-4314). Nil is tolerated —
+	// SafeAdapterGo falls back to plain logging.SafeGo with no restart/health
+	// tracking so callers that don't wire it (e.g. tests) still work.
+	AdapterHealth *adapterhealth.Registry
 }
 
 // PollerRegistration describes a single adapter poller that can be conditionally started.
@@ -73,4 +81,35 @@ func StartAdapterPollers(ctx context.Context, deps *PollerDeps, registrations []
 			reg.CreateAndStart(ctx, deps)
 		}
 	}
+}
+
+// SafeAdapterGo is the single entry point every adapter poller goroutine
+// must use to launch its listen loop (GH-4314): a panic in one adapter
+// (e.g. the studio-sdk Discord gateway's nil-conn deref that took down the
+// whole daemon) is recovered, logged with the adapter name, and the
+// goroutine is restarted with backoff instead of crashing the process. Core
+// executor/dispatcher goroutines must NOT go through this path — their
+// panics indicate real corruption and should keep crashing loudly.
+func (d *PollerDeps) SafeAdapterGo(ctx context.Context, name string, fn func()) {
+	if d.AdapterHealth == nil {
+		logging.SafeGo(name, fn)
+		return
+	}
+	d.AdapterHealth.Go(ctx, name, d.alertAdapterPanic, fn)
+}
+
+// alertAdapterPanic raises a WARN-level service_unhealthy alert when an
+// adapter goroutine panics — an adapter going down is an ops signal, not a
+// silent degrade. Mirrors the config_error alerting pattern already used
+// for adapter credential failures in adapter_preflight.go.
+func (d *PollerDeps) alertAdapterPanic(name, message string) {
+	if d.AlertsEngine == nil {
+		return
+	}
+	d.AlertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeConfigError,
+		Error:     message,
+		Metadata:  map[string]string{"adapter": name},
+		Timestamp: time.Now(),
+	})
 }

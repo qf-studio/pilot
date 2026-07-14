@@ -58,6 +58,23 @@ type AutopilotProvider interface {
 	IsAutoReleaseEnabled() bool
 }
 
+// AdapterHealthStatus is a point-in-time health snapshot for one adapter
+// goroutine, surfaced on /api/v1/status (GH-4314). Defined in gateway
+// (rather than importing internal/adapterhealth) to decouple this package
+// from the adapter wiring layer, mirroring AutopilotPRState above.
+type AdapterHealthStatus struct {
+	Name         string `json:"name"`
+	Healthy      bool   `json:"healthy"`
+	Disabled     bool   `json:"disabled"`
+	LastError    string `json:"last_error,omitempty"`
+	RestartCount int    `json:"restart_count"`
+}
+
+// AdapterHealthSource exposes adapter goroutine health to the gateway API.
+type AdapterHealthSource interface {
+	AdapterHealthSnapshot() []AdapterHealthStatus
+}
+
 // Server is the main gateway server handling WebSocket and HTTP connections.
 // It provides a control plane for managing Pilot via WebSocket, receives webhooks
 // from external services (Linear, GitHub, Jira, Asana), and exposes REST APIs for status
@@ -80,6 +97,7 @@ type Server struct {
 	prometheusExporter     *PrometheusExporter
 	alertsSource           AlertMetricsSource
 	autopilotProvider      AutopilotProvider
+	adapterHealthSource    AdapterHealthSource
 	dashboardStore         DashboardStore
 	dashboardProjectPath   string          // Project path filter for dashboard metrics/queue/history APIs ("" = all projects)
 	logStreamStore         LogStreamStore
@@ -308,6 +326,15 @@ func (s *Server) SetAutopilotProvider(p AutopilotProvider) {
 	s.autopilotProvider = p
 }
 
+// SetAdapterHealthSource wires adapter goroutine health into the
+// /api/v1/status endpoint (GH-4314), so an adapter panic/restart/disable is
+// an observable ops signal rather than a silent degrade.
+func (s *Server) SetAdapterHealthSource(source AdapterHealthSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adapterHealthSource = source
+}
+
 // SetGitGraphPath sets the project path used by the /api/v1/gitgraph endpoint.
 // Defaults to "." if not set.
 func (s *Server) SetGitGraphPath(path string) {
@@ -497,11 +524,21 @@ func (s *Server) Heartbeat() {
 // handleStatus returns current Pilot status
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+
+	resp := map[string]interface{}{
 		"version":  "0.1.0",
 		"running":  s.running,
 		"sessions": s.sessions.Count(),
-	})
+	}
+
+	s.mu.RLock()
+	ahSource := s.adapterHealthSource
+	s.mu.RUnlock()
+	if ahSource != nil {
+		resp["adapters"] = ahSource.AdapterHealthSnapshot()
+	}
+
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // handleTasks returns current tasks
