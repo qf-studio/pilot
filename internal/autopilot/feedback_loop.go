@@ -201,6 +201,27 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 
 	title := f.generateTitle(prState, failureType)
 
+	// GH-4309: belt-and-suspenders — the SQLite claim above cannot see a
+	// dedup row lost to a fresh clone, a restored backup, or a wiped store.
+	// Before minting a new issue, search GitHub directly for an open issue
+	// with this exact title and the pilot label(s); if one already exists,
+	// suppress creation and backfill the store claim so future ticks don't
+	// repeat this search.
+	if existingNum, found, searchErr := f.findExistingFixIssue(ctx, title); searchErr != nil {
+		f.log.Warn("existing fix-issue search failed, proceeding with creation",
+			"pr", prState.PRNumber, "failure", failureType, "error", searchErr)
+	} else if found {
+		f.log.Info("existing fix issue found via GitHub search, suppressing duplicate creation",
+			"issue", existingNum, "pr", prState.PRNumber, "failure", failureType)
+		if dedupKey != "" {
+			if recErr := f.stateStore.RecordSpawnedFixIssue(dedupRepo, dedupKey, existingNum); recErr != nil {
+				f.log.Warn("failed to backfill spawned fix issue number from GitHub search",
+					"issue", existingNum, "error", recErr)
+			}
+		}
+		return existingNum, nil
+	}
+
 	// GH-1979: Surface known patterns to annotate the fix issue body.
 	var knownPatterns []*memory.CrossPattern
 	if f.learningLoop != nil {
@@ -236,6 +257,27 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 	)
 
 	return issue.Number, nil
+}
+
+// findExistingFixIssue searches open issues carrying every configured pilot
+// label for an exact title match. It's the GitHub-side complement to the
+// SQLite dedup claim in CreateFailureIssue: a store row can be lost (fresh
+// clone, restored backup, wiped DB) while the issue it was tracking is still
+// open on GitHub.
+func (f *FeedbackLoop) findExistingFixIssue(ctx context.Context, title string) (int, bool, error) {
+	issues, err := f.ghClient.ListIssues(ctx, f.owner, f.repo, &github.ListIssuesOptions{
+		Labels: f.issueLabels,
+		State:  github.StateOpen,
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	for _, issue := range issues {
+		if issue.Title == title {
+			return issue.Number, true, nil
+		}
+	}
+	return 0, false, nil
 }
 
 // generateTitle creates an issue title based on the failure type.
