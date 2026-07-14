@@ -676,7 +676,11 @@ autopilot:
     exclude:                      # Check names to ignore in auto mode
       - "codecov/*"              # Glob patterns supported
       - "*-optional"
-    # required: []                # Only used in manual mode
+    # required: []                # Allowlist; when non-empty, scopes status/failure
+    #                              # attribution to exactly these checks even in auto
+    #                              # mode (GH-4307) — use this to shield against
+    #                              # unrelated scheduled/canary checks landing on the
+    #                              # same SHA instead of enumerating them in `exclude`.
     discovery_grace_period: 60s   # Wait for CI to start
 
 # Dashboard settings

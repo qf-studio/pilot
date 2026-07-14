@@ -919,6 +919,58 @@ func TestCIMonitor_AutoDiscovery_WithExclusions(t *testing.T) {
 	}
 }
 
+// TestCIMonitor_AutoMode_RequiredChecksOverrideDiscovery is the GH-4307
+// regression guard: a scheduled canary check (e.g. "epic-lifecycle / run")
+// can attach a failing check run to the same merge SHA a post-merge monitor
+// is watching. Before this fix, an explicit Required allowlist was only
+// honored in manual mode, so auto-discovery aggregated every check —
+// including the unrelated canary — and a single always-red scheduled check
+// flipped status to CIFailure. With Required set, auto mode must scope
+// status to exactly those checks and ignore the rest.
+func TestCIMonitor_AutoMode_RequiredChecksOverrideDiscovery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := github.CheckRunsResponse{
+			TotalCount: 3,
+			CheckRuns: []github.CheckRun{
+				{Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "lint", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "epic-lifecycle / run", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure}, // unrelated scheduled canary
+			},
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.CIWaitTimeout = 1 * time.Second
+	cfg.CIChecks = &CIChecksConfig{
+		Mode:                 "auto",
+		Required:             []string{"test", "lint"},
+		DiscoveryGracePeriod: 10 * time.Millisecond,
+	}
+
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	status, err := monitor.CheckCI(context.Background(), "abc1234")
+	if err != nil {
+		t.Fatalf("CheckCI() error = %v", err)
+	}
+	if status != CISuccess {
+		t.Errorf("CheckCI() status = %s, want %s (unrelated canary check should be ignored)", status, CISuccess)
+	}
+
+	failed, err := monitor.GetFailedChecks(context.Background(), "abc1234")
+	if err != nil {
+		t.Fatalf("GetFailedChecks() error = %v", err)
+	}
+	if len(failed) != 0 {
+		t.Errorf("GetFailedChecks() = %v, want none (canary is out of the required-checks scope)", failed)
+	}
+}
+
 func TestCIMonitor_matchesExclude_GlobPatterns(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()

@@ -49,8 +49,13 @@ func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIM
 
 	if cfg.CIChecks != nil {
 		ciChecks = cfg.CIChecks
-		// If manual mode, use the Required list
-		if ciChecks.Mode == "manual" && len(ciChecks.Required) > 0 {
+		// GH-4307: honor a non-empty Required allowlist regardless of Mode.
+		// Previously this was gated on Mode == "manual", so an operator running
+		// auto-discovery with an explicit Required list (e.g. to shield against
+		// unrelated scheduled/canary checks landing on the same SHA) had that
+		// list silently ignored — checkStatus fell through to
+		// checkAutoDiscoveredRuns, which aggregates every non-excluded check.
+		if len(ciChecks.Required) > 0 {
 			requiredChecks = ciChecks.Required
 		}
 	} else if len(cfg.RequiredChecks) > 0 {
@@ -155,31 +160,41 @@ func (m *CIMonitor) checkStatus(ctx context.Context, sha string, skipGrace bool)
 		}
 	}
 
+	// GH-4307: a non-empty required-checks allowlist always wins, even in auto
+	// mode. Auto-discovery aggregates every check run on the SHA (minus
+	// Exclude patterns), so an always-on scheduled workflow (e.g. a canary)
+	// that happens to attach a check run to the same merge SHA can flip status
+	// to CIFailure despite being unrelated to the PR. An explicit Required
+	// list scopes status to exactly those checks, sidestepping that class of
+	// false positive without requiring every such workflow to be Exclude-d.
+	if len(m.requiredChecks) > 0 {
+		return m.checkRequiredChecks(checkRuns), nil
+	}
+
 	// Auto mode: use discovered checks with exclusions and grace period
 	if m.ciChecks != nil && m.ciChecks.Mode == "auto" {
 		return m.checkAutoDiscoveredRuns(ctx, sha, checkRuns, skipGrace)
 	}
 
-	// Manual mode: If no required checks configured, check all runs
-	if len(m.requiredChecks) == 0 {
-		return m.checkAllRuns(checkRuns), nil
-	}
+	// Manual mode with no required checks configured: check all runs
+	return m.checkAllRuns(checkRuns), nil
+}
 
-	// Track required checks
+// checkRequiredChecks aggregates status from only the checks named in
+// m.requiredChecks, ignoring every other check run on the SHA.
+func (m *CIMonitor) checkRequiredChecks(checkRuns *github.CheckRunsResponse) CIStatus {
 	requiredStatus := make(map[string]CIStatus)
 	for _, name := range m.requiredChecks {
 		requiredStatus[name] = CIPending
 	}
 
-	// Map check runs to status
 	for _, run := range checkRuns.CheckRuns {
 		if _, ok := requiredStatus[run.Name]; ok {
 			requiredStatus[run.Name] = m.mapCheckStatus(run.Status, run.Conclusion)
 		}
 	}
 
-	// Determine overall status
-	return m.aggregateStatus(requiredStatus), nil
+	return m.aggregateStatus(requiredStatus)
 }
 
 // checkAllRuns returns aggregate status when no required checks are configured.
@@ -435,7 +450,11 @@ func (m *CIMonitor) GetCIStatus(ctx context.Context, sha string) (CIStatus, erro
 	return m.checkStatus(ctx, sha, true)
 }
 
-// GetFailedChecks returns names of failed checks for a SHA.
+// GetFailedChecks returns names of failed checks for a SHA. It applies the
+// same scoping as checkStatus (GH-4307): with a required-checks allowlist,
+// only failures among those names are reported; otherwise, in auto mode,
+// Exclude-matched checks (e.g. an always-on scheduled canary) are dropped so
+// fix-issue bodies don't attribute an unrelated failure to this SHA's CI.
 func (m *CIMonitor) GetFailedChecks(ctx context.Context, sha string) ([]string, error) {
 	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
 	if err != nil {
@@ -444,11 +463,33 @@ func (m *CIMonitor) GetFailedChecks(ctx context.Context, sha string) ([]string, 
 
 	var failed []string
 	for _, run := range checkRuns.CheckRuns {
-		if run.Conclusion == github.ConclusionFailure {
-			failed = append(failed, run.Name)
+		if run.Conclusion != github.ConclusionFailure {
+			continue
 		}
+		if !m.isScopedCheck(run.Name) {
+			continue
+		}
+		failed = append(failed, run.Name)
 	}
 	return failed, nil
+}
+
+// isScopedCheck reports whether a check name is in scope for CI status/failure
+// attribution: within the required-checks allowlist when one is configured,
+// otherwise not matching an auto-mode Exclude pattern.
+func (m *CIMonitor) isScopedCheck(name string) bool {
+	if len(m.requiredChecks) > 0 {
+		for _, required := range m.requiredChecks {
+			if required == name {
+				return true
+			}
+		}
+		return false
+	}
+	if m.ciChecks != nil && m.ciChecks.Mode == "auto" && m.matchesExclude(name) {
+		return false
+	}
+	return true
 }
 
 // GetFailedCheckLogs fetches logs for all failed check runs and returns them
@@ -465,6 +506,9 @@ func (m *CIMonitor) GetFailedCheckLogs(ctx context.Context, sha string, maxLen i
 	var combined strings.Builder
 	for _, run := range checkRuns.CheckRuns {
 		if run.Conclusion != github.ConclusionFailure {
+			continue
+		}
+		if !m.isScopedCheck(run.Name) {
 			continue
 		}
 
