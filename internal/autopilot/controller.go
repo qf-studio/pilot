@@ -2627,27 +2627,83 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		failedChecks, _ := c.ciMonitor.GetFailedChecks(ctx, mainSHA)
 		// GH-1567: Fetch CI error logs for post-merge failures too.
 		ciLogs := c.ciMonitor.GetFailedCheckLogs(ctx, mainSHA, 2000)
-		// Post-merge failures start a new lineage (iteration 1), not part of pre-merge cascade.
-		issueNum, issueErr := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPostMerge, failedChecks, ciLogs, 1)
-		if issueErr != nil {
-			c.log.Error("failed to create post-merge fix issue", "error", issueErr)
-		} else {
-			c.log.Info("created fix issue for post-merge CI failure", "pr", prState.PRNumber, "issue", issueNum)
-		}
-		// GH-1964/GH-1979: Learn from post-merge CI failure patterns (self-improvement).
-		// Guard: skip learning when CI logs are empty/whitespace (nothing to extract).
-		if c.learningLoop != nil && strings.TrimSpace(ciLogs) != "" {
-			projectPath := c.repoKey()
-			if learnErr := c.learningLoop.LearnFromCIFailure(ctx, projectPath, ciLogs, failedChecks); learnErr != nil {
-				c.log.Warn("Failed to learn from post-merge CI failure", slog.Any("error", learnErr))
+
+		// GH-4312: port the pre-merge cascade/size guards (~:1502-1593) to the
+		// post-merge path. Post-merge failures normally start a new lineage
+		// (iteration 1), but when prState.IssueNumber is itself a spawned fix
+		// issue carrying a higher counter in its body, the depth cap must still
+		// apply; an oversized merged PR must not spawn yet another fix either way.
+		iteration := 0
+		skipSpawn := false
+		if prState.IssueNumber > 0 && c.config.MaxCIFixIterations > 0 {
+			issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+			if err != nil {
+				c.log.Warn("failed to fetch issue for post-merge iteration check", "issue", prState.IssueNumber, "error", err)
+				// Continue with iteration=0 (safe: won't block on transient error)
+			} else {
+				iteration = parseAutopilotIteration(issue.Body)
+			}
+			if iteration >= c.config.MaxCIFixIterations {
+				c.log.Warn("CI fix iteration limit reached, stopping post-merge cascade",
+					"pr", prState.PRNumber,
+					"issue", prState.IssueNumber,
+					"iteration", iteration,
+					"max", c.config.MaxCIFixIterations,
+				)
+				skipSpawn = true
 			}
 		}
-		// GH-3990: the fix-issue flow above is unchanged — additionally re-queue
-		// the scope release for a fresh carrier attempt.
-		if prState.ScopeKey != "" {
-			c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI failed at %s", ShortSHA(mainSHA)))
+		if !skipSpawn && c.config.MaxCIFixPRSize > 0 {
+			files, err := c.ghClient.ListPullRequestFiles(ctx, c.owner, c.repo, prState.PRNumber)
+			if err != nil {
+				c.log.Warn("post-merge CI fix size guard: ListPullRequestFiles failed, skipping guard (fail-open)",
+					"pr", prState.PRNumber, "error", err)
+			} else {
+				production, bookkeeping, test := productionAdditions(files)
+				if production > c.config.MaxCIFixPRSize {
+					c.log.Warn("post-merge CI fix size guard fired — refusing to spawn fix issue",
+						"pr", prState.PRNumber, "production_additions", production, "test_additions", test,
+						"bookkeeping_additions", bookkeeping, "limit", c.config.MaxCIFixPRSize)
+					skipSpawn = true
+				}
+			}
 		}
-		c.removePR(prState.PRNumber)
+
+		if !skipSpawn {
+			issueNum, issueErr := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPostMerge, failedChecks, ciLogs, iteration+1)
+			if issueErr != nil {
+				c.log.Error("failed to create post-merge fix issue", "error", issueErr)
+			} else {
+				c.log.Info("created fix issue for post-merge CI failure", "pr", prState.PRNumber, "issue", issueNum)
+			}
+			// GH-1964/GH-1979: Learn from post-merge CI failure patterns (self-improvement).
+			// Guard: skip learning when CI logs are empty/whitespace (nothing to extract).
+			if c.learningLoop != nil && strings.TrimSpace(ciLogs) != "" {
+				projectPath := c.repoKey()
+				if learnErr := c.learningLoop.LearnFromCIFailure(ctx, projectPath, ciLogs, failedChecks); learnErr != nil {
+					c.log.Warn("Failed to learn from post-merge CI failure", slog.Any("error", learnErr))
+				}
+			}
+		}
+
+		if prState.ScopeKey != "" {
+			// GH-3990: re-queue the scope for a fresh carrier attempt instead of
+			// leaving this one wedged at StageFailed forever — drain it now so the
+			// anchor PR slot frees for the retry. Re-discovery of the drained PR is
+			// guarded separately by ScopeMemberPending (controller.go ScanRecentlyMergedPRs).
+			c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI failed at %s", ShortSHA(mainSHA)))
+			c.removePR(prState.PRNumber)
+			return nil
+		}
+		// GH-4312: mark StageFailed (mirrors the timeout branch above at :2587)
+		// instead of removePR. removePR issues a DELETE against the state store,
+		// so this merged-but-CI-failed PR — which has no release tag, since CI
+		// never passed — would otherwise vanish from persisted state entirely and
+		// get re-registered at StagePostMergeCI by the merged-PR release scan on
+		// its very next tick, re-entering this branch and respawning a fix issue
+		// forever.
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("post-merge CI failed at %s", ShortSHA(mainSHA))
 
 	default:
 		// CIPending or CIRunning — stay in StagePostMergeCI and wait for next tick.
@@ -4206,6 +4262,26 @@ func (c *Controller) ScanRecentlyMergedPRsWithWindow(ctx context.Context, scanWi
 		c.mu.RUnlock()
 		if alreadyTracked {
 			continue
+		}
+
+		// GH-4312: skip a PR whose persisted row is already terminal 'failed' —
+		// e.g. a post-merge CI failure (handlePostMergeCI's CIFailure branch
+		// marks StageFailed before draining). RestoreState intentionally does
+		// NOT reload 'failed' rows into activePRs, so the in-memory gate above
+		// cannot catch this after a daemon restart. Without this check the scan
+		// would re-register the PR at StagePostMergeCI (no release tag exists —
+		// CI never passed) and re-enter CIFailure on the very next tick,
+		// respawning a fix issue forever.
+		if c.stateStore != nil {
+			if persisted, err := c.stateStore.GetPRState(c.repoKey(), pr.Number); err != nil {
+				c.log.Warn("failed to check persisted PR state for terminal-failed guard, will track to be safe",
+					"pr", pr.Number,
+					"error", err,
+				)
+			} else if persisted != nil && persisted.Stage == StageFailed {
+				c.log.Debug("skipping PR: persisted state is terminal failed", "pr", pr.Number)
+				continue
+			}
 		}
 
 		// B3 (TASK-309): activePRs is in-memory only. After a daemon restart a PR

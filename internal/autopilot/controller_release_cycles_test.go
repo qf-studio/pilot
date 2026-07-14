@@ -754,6 +754,83 @@ func TestScanRecentlyMergedPRs_RequireCI_RoutesToPostMergeCI(t *testing.T) {
 	}
 }
 
+// TestScanRecentlyMergedPRs_SkipsPersistedFailed verifies GH-4312: a merged PR
+// persisted at StageFailed (e.g. a prior post-merge CI failure) must not be
+// re-registered by the scan. RestoreState intentionally excludes StageFailed
+// rows from activePRs (controller.go:945), so after a simulated daemon
+// restart (row persisted, activePRs empty) the scan's in-memory
+// "already tracked" gate alone cannot catch it — only the state-store lookup
+// added alongside this test can.
+func TestScanRecentlyMergedPRs_SkipsPersistedFailed(t *testing.T) {
+	recentMergedAt := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+
+	var gitRefPosts, issueGets int64
+	base := releaseCyclesServer(t, map[int]scopeMembershipFakeIssue{}, &gitRefPosts, &issueGets)
+	defer base.Close()
+
+	prs := []github.PullRequest{
+		{
+			Number:         70,
+			Head:           github.PRRef{Ref: "pilot/GH-500", SHA: "sha70"},
+			Base:           github.PRRef{Ref: "main"},
+			HTMLURL:        "https://github.com/owner/repo/pull/70",
+			Title:          "fix: previously failed post-merge CI",
+			Merged:         true,
+			MergedAt:       recentMergedAt,
+			MergeCommitSHA: "merge-sha-70",
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls") && !strings.Contains(r.URL.Path, "/commits") {
+			out := make([]*github.PullRequest, len(prs))
+			for i := range prs {
+				out[i] = &prs[i]
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(out)
+			return
+		}
+		base.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", RequireCI: true, TagPrefix: "v"}
+	cfg.MergedPRScanWindow = 30 * time.Minute
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+
+	// Simulate a daemon restart: the PR was previously driven to StageFailed by
+	// handlePostMergeCI's CIFailure branch and persisted, but RestoreState does
+	// not reload 'failed' rows into activePRs.
+	if err := store.SavePRState("owner/repo", &PRState{
+		PRNumber: 70,
+		PRURL:    "https://github.com/owner/repo/pull/70",
+		Stage:    StageFailed,
+		Error:    "post-merge CI failed at merge-sh",
+	}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+
+	if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+		t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+	}
+
+	if _, ok := c.GetPRState(70); ok {
+		t.Error("PR 70 is persisted at StageFailed and must not be re-registered by the scan")
+	}
+	if got := atomic.LoadInt64(&gitRefPosts); got != 0 {
+		t.Errorf("git/refs POST count = %d, want 0 (a failed PR must never be tagged)", got)
+	}
+}
+
 // TestCheckExternalMergeOrClose_StageGuards is a table-driven pin of every
 // early-return guard in checkExternalMergeOrClose: a scope-release carrier,
 // a PostMergeCI-stage PR (GH-3994), and a Releasing-stage PR (GH-4124) must
