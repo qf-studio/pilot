@@ -109,51 +109,59 @@ jobs:
             direct-execution path a short issue body would silently fall back to.
 
             This epic has exactly two independent work items against two
-            different files in this sandbox repository. Decompose it into two
-            separate child issues, one per work item below. Do not fold them into
-            a single child, do not further decompose either child once created,
-            and do not implement either work item directly on this parent issue.
-            The parent must remain a coordination shell whose only outputs are
-            the two child issues and a final close-out once both children have
-            merged. Each child must produce its own branch, its own pull request,
-            and its own merge; the two pull requests must not touch each other's
-            target file.
+            different Go packages in this sandbox repository -- `greeter/` and
+            `counter/` -- so the two subtasks cannot be folded into a single
+            package scope. Decompose it into two separate child issues, one per
+            work item below. Do not fold them into a single child, do not
+            further decompose either child once created, and do not implement
+            either work item directly on this parent issue. The parent must
+            remain a coordination shell whose only outputs are the two child
+            issues and a final close-out once both children have merged. Each
+            child must produce its own branch, its own pull request, and its
+            own merge; the two pull requests must not touch each other's
+            target package.
 
             ## Acceptance
 
-            - [ ] Subtask 1 (version bump): read the current PATCH component of
-                  the `Version` constant in `version.go` and increment it by
-                  exactly one (current+1). Do not assume a starting value --
-                  derive the target from what is in the file. Change only that
-                  single line so `version_test.go` (semver guard) stays green.
-                  Touches `version.go` only. Ship it as its own child issue with
-                  its own pull request.
-            - [ ] Subtask 2 (changelog entry): append one dated line to
-                  `CHANGELOG-CANARY.md` recording today's date and this canary
-                  run (create the file with a single `# Canary Changelog` heading
-                  first if it does not exist yet). Touches `CHANGELOG-CANARY.md`
-                  only. Depends on: Subtask 1 -- this subtask's own child issue
-                  must carry an explicit `Depends on:` back-reference to Subtask
-                  1's child issue, and should not start until Subtask 1's PR has
-                  landed. Ship it as its own child issue with its own pull
-                  request.
+            - [ ] Subtask 1 (greeter package): add a new exported helper
+                  function to `greeter/greeter.go` (for example, a function
+                  that returns a farewell string alongside the existing
+                  greeting, or an additional exported `Greeting` variant).
+                  Update `greeter/greeter_test.go` to cover the new behavior
+                  and keep it green. Touches `greeter/` only. Ship it as its
+                  own child issue with its own pull request.
+            - [ ] Subtask 2 (counter package): add a new exported helper
+                  function to `counter/counter.go` (for example, a `Reset` or
+                  `Decrement` method alongside the existing counter behavior).
+                  Update `counter/counter_test.go` to cover the new behavior
+                  and keep it green. Touches `counter/` only. Depends on:
+                  Subtask 1 -- this subtask's own child issue must carry an
+                  explicit `Depends on:` back-reference to Subtask 1's child
+                  issue, and should not start until Subtask 1's PR has landed.
+                  Ship it as its own child issue with its own pull request.
             - [ ] Parent closes only after both child pull requests are merged,
                   with no duplicate sibling pull requests and no FK/ledger
                   warnings in the daemon log for either child execution.
 
             ## Implementation
 
-            Two subtasks, two files, no shared code path:
+            Two subtasks, two packages, no shared code path:
 
-            1. `version.go` -- bump the PATCH component only.
-            2. `CHANGELOG-CANARY.md` -- append a dated line after Subtask 1
-               lands; state the `Depends on: #<subtask-1-issue>` reference in
-               this subtask's own child issue body.
+            1. `greeter/greeter.go` -- add one new exported function or
+               method; update `greeter/greeter_test.go` accordingly.
+            2. `counter/counter.go` -- add one new exported function or method
+               after Subtask 1 lands; update `counter/counter_test.go`
+               accordingly; state the `Depends on: #<subtask-1-issue>`
+               reference in this subtask's own child issue body.
 
             ## Refs
 
             TASK-403 canary program; invariants under test: TASK-394 / TASK-395 /
-            TASK-401 / TASK-402.
+            TASK-401 / TASK-402. GH-4315: subtasks retargeted from root-level
+            files (`version.go` / `CHANGELOG-CANARY.md`) to distinct packages
+            (`greeter/` / `counter/`) so `isSinglePackageScope`
+            (internal/executor/epic.go:419) no longer folds decomposition to a
+            single child.
         run: |
           test "$(printf '%s' "$ISSUE_BODY" | wc -w)" -ge 350 || { echo "epic body under 350 words -- will not clear decomposition gate"; exit 1; }
 
