@@ -141,6 +141,46 @@ func TestDispatcher_DuplicateTask(t *testing.T) {
 	}
 }
 
+// TestDispatcher_DuplicateTask_CrossProjectCollision is the GH-4276
+// regression: task_id is not unique across projects (every freshly onboarded
+// repo starts issue numbering at #1), so the same task_id already queued in
+// one project must not block dispatch of the identical task_id in a
+// different project.
+func TestDispatcher_DuplicateTask_CrossProjectCollision(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	ctx := context.Background()
+
+	taskA := &Task{
+		ID:          "GH-10",
+		Title:       "Project A task",
+		Description: "Test description",
+		ProjectPath: "/tmp/project-a",
+	}
+	if _, err := dispatcher.QueueTask(ctx, taskA); err != nil {
+		t.Fatalf("failed to queue task in project A: %v", err)
+	}
+
+	taskB := &Task{
+		ID:          "GH-10",
+		Title:       "Project B task",
+		Description: "Test description",
+		ProjectPath: "/tmp/project-b",
+	}
+	if _, err := dispatcher.QueueTask(ctx, taskB); err != nil {
+		t.Fatalf("expected same task_id in a different project to dispatch cleanly, got error: %v", err)
+	}
+}
+
 // TestDispatcher_IsActive verifies IsActive uses the same source of truth as
 // QueueTask's duplicate check (GH-4008), so pollers can pre-check before
 // announcing a dispatch attempt.
@@ -158,7 +198,7 @@ func TestDispatcher_IsActive(t *testing.T) {
 
 	ctx := context.Background()
 
-	if dispatcher.IsActive("TEST-ACTIVE") {
+	if dispatcher.IsActive("TEST-ACTIVE", "/tmp/test-project") {
 		t.Error("expected IsActive=false before task is queued")
 	}
 
@@ -172,8 +212,14 @@ func TestDispatcher_IsActive(t *testing.T) {
 		t.Fatalf("failed to queue task: %v", err)
 	}
 
-	if !dispatcher.IsActive("TEST-ACTIVE") {
+	if !dispatcher.IsActive("TEST-ACTIVE", "/tmp/test-project") {
 		t.Error("expected IsActive=true once task is queued")
+	}
+
+	// GH-4276: the same task_id active in a DIFFERENT project must not
+	// report as active here.
+	if dispatcher.IsActive("TEST-ACTIVE", "/tmp/other-project") {
+		t.Error("expected IsActive=false for a different project with the same task_id (cross-project collision)")
 	}
 }
 
@@ -405,7 +451,7 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check queued task
-	queued, err := store.IsTaskQueued("TASK-QUEUED")
+	queued, err := store.IsTaskQueued("TASK-QUEUED", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
@@ -414,7 +460,7 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check running task
-	queued, err = store.IsTaskQueued("TASK-RUNNING")
+	queued, err = store.IsTaskQueued("TASK-RUNNING", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
@@ -423,7 +469,7 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check completed task
-	queued, err = store.IsTaskQueued("TASK-DONE")
+	queued, err = store.IsTaskQueued("TASK-DONE", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
@@ -432,12 +478,23 @@ func TestStore_IsTaskQueued(t *testing.T) {
 	}
 
 	// Check non-existent task
-	queued, err = store.IsTaskQueued("TASK-NONEXISTENT")
+	queued, err = store.IsTaskQueued("TASK-NONEXISTENT", "/project")
 	if err != nil {
 		t.Fatalf("failed to check: %v", err)
 	}
 	if queued {
 		t.Error("expected TASK-NONEXISTENT to NOT be queued")
+	}
+
+	// GH-4276: same task_id queued in a DIFFERENT project must not report
+	// as queued here — task_id is not unique across projects (fresh repos
+	// all start numbering at #1).
+	queued, err = store.IsTaskQueued("TASK-QUEUED", "/other-project")
+	if err != nil {
+		t.Fatalf("failed to check: %v", err)
+	}
+	if queued {
+		t.Error("expected TASK-QUEUED in /other-project to NOT be queued (cross-project collision)")
 	}
 }
 

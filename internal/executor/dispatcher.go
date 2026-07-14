@@ -535,15 +535,21 @@ func (d *Dispatcher) hasLiveWorker(projectPath string) bool {
 	return ok
 }
 
-// IsActive reports whether taskID is already queued or running, using the
-// same source of truth QueueTask's duplicate-task check uses. Callers that
-// dispatch on a poll loop can pre-check this before announcing/attempting a
-// dispatch, so a task legitimately waiting behind other work doesn't
-// generate a repeated dispatch-attempt + rejection on every tick (GH-4008).
+// IsActive reports whether taskID is already queued or running in
+// projectPath, using the same source of truth QueueTask's duplicate-task
+// check uses. Callers that dispatch on a poll loop can pre-check this
+// before announcing/attempting a dispatch, so a task legitimately waiting
+// behind other work doesn't generate a repeated dispatch-attempt +
+// rejection on every tick (GH-4008).
 // A store error fails open (returns false) — QueueTask's own check remains
 // the authoritative guard.
-func (d *Dispatcher) IsActive(taskID string) bool {
-	active, err := d.store.IsTaskQueued(taskID)
+//
+// GH-4276: scoped by projectPath — task_id alone is not unique across
+// projects (fresh repos start numbering at #1), so an unscoped check could
+// see a same-numbered task active in a different project and wrongly skip
+// dispatch here.
+func (d *Dispatcher) IsActive(taskID, projectPath string) bool {
+	active, err := d.store.IsTaskQueued(taskID, projectPath)
 	if err != nil {
 		d.log.Warn("Failed to check task active state", slog.String("task_id", taskID), slog.Any("error", err))
 		return false
@@ -556,8 +562,8 @@ func (d *Dispatcher) IsActive(taskID string) bool {
 // If a decomposer is configured and the task is complex, it will be split
 // into subtasks that are queued instead of the parent task.
 func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) {
-	// Check for duplicate tasks
-	exists, err := d.store.IsTaskQueued(task.ID)
+	// Check for duplicate tasks (GH-4276: scoped to this task's project)
+	exists, err := d.store.IsTaskQueued(task.ID, task.ProjectPath)
 	if err != nil {
 		d.log.Warn("Failed to check for duplicate task", slog.Any("error", err))
 	} else if exists {

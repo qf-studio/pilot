@@ -2175,14 +2175,20 @@ func (s *Store) DeleteExecution(id string) error {
 	return err
 }
 
-// IsTaskQueued checks if a task with the given ID is already queued or running.
-// Used to prevent duplicate task submissions.
-func (s *Store) IsTaskQueued(taskID string) (bool, error) {
+// IsTaskQueued checks if a task with the given ID is already queued or running
+// in projectPath. Used to prevent duplicate task submissions.
+//
+// GH-4276: scoped by project_path — task_id is not unique across projects
+// (e.g. every freshly onboarded repo starts issue numbering at #1), so an
+// unscoped lookup could see a same-numbered task actively queued/running in
+// a different project and wrongly treat this project's dispatch as a
+// duplicate.
+func (s *Store) IsTaskQueued(taskID, projectPath string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM executions
-		WHERE task_id = ? AND status IN ('queued', 'pending', 'running')
-	`, taskID).Scan(&count)
+		WHERE task_id = ? AND project_path = ? AND status IN ('queued', 'pending', 'running')
+	`, taskID, projectPath).Scan(&count)
 	if err != nil {
 		return false, err
 	}

@@ -91,7 +91,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// other work — the dispatcher's own duplicate check (QueueTask) remains
 	// the authoritative guard; this is a cheap pre-check to skip the attempt
 	// entirely in the common case.
-	if deps.Dispatcher != nil && deps.Dispatcher.IsActive(taskID) {
+	if deps.Dispatcher != nil && deps.Dispatcher.IsActive(taskID, projectPath) {
 		logging.WithComponent("dispatch").Debug("Task already queued or running, skipping dispatch",
 			slog.String("task_id", taskID))
 		return &HandlerResult{Success: false, BranchName: task.Branch}, nil
