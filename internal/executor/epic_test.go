@@ -530,6 +530,28 @@ func TestDetectSameComponentFromTitles(t *testing.T) {
 			subtasks: []PlannedSubtask{},
 			expected: false,
 		},
+		{
+			// GH-4304: with n=2, int(2*0.8)==1 truncated the threshold to 1,
+			// so any word present in just ONE title (count=1) satisfied
+			// count>=1 and every two-subtask epic was misclassified as
+			// single-package scope. This is the exact shape of the
+			// epic-lifecycle canary's two children (version bump,
+			// changelog entry) — neither title shares a significant word.
+			name: "two unrelated subtasks (GH-4304 regression)",
+			subtasks: []PlannedSubtask{
+				{Title: "Version bump: increment PATCH in version.go"},
+				{Title: "Changelog entry: append canary changelog line"},
+			},
+			expected: false,
+		},
+		{
+			name: "two subtasks sharing a component word",
+			subtasks: []PlannedSubtask{
+				{Title: "dashboard layout component"},
+				{Title: "dashboard state management"},
+			},
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {

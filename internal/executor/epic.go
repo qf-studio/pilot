@@ -491,8 +491,14 @@ func detectSameComponentFromTitles(subtasks []PlannedSubtask) bool {
 		}
 	}
 
-	// Check if any significant word appears in >80% of titles
-	threshold := int(float64(len(subtasks)) * 0.8)
+	// Check if any significant word appears in at least 80% of titles.
+	// GH-4304: truncating int(n*0.8) collapses to 1 for n=2 (int(1.6)==1),
+	// so any word appearing in just ONE of two titles satisfied count>=1 —
+	// every 2-subtask epic was misclassified as single-package scope
+	// (observed on the epic-lifecycle canary, which always plans exactly 2
+	// children). Round the threshold up so ">=80%" is enforced correctly
+	// at every subtask count: ceil(n*0.8) via integer math (n*4+4)/5.
+	threshold := (len(subtasks)*4 + 4) / 5
 	for _, count := range wordCounts {
 		if count >= threshold {
 			return true
