@@ -790,6 +790,16 @@ const (
 	// canary run (sandbox#6, 275 words vs min 300) indistinguishable from the
 	// TASK-401 defect class without hand-querying execution_events.
 	StageDecompositionSkipped Stage = "decomposition_skipped"
+	// StageSubIssuesIncomplete records a sub-issue creation coverage gap
+	// (GH-4300): fewer sub-issues exist for a decomposed epic than its plan
+	// called for, even after retrying transient creation failures. Detail
+	// carries "planned=N created=M missing=<titles>". A gap fires this stage
+	// instead of StageFailed because the epic parent is deliberately left
+	// open (labeled pilot-needs-clarification) rather than terminated —
+	// incident 2026-07-14 (pilot-console#1) closed a parent with 1 of 2
+	// planned subtasks never dispatched after a transient sub-issue-creation
+	// failure went unnoticed.
+	StageSubIssuesIncomplete Stage = "sub_issues_incomplete"
 )
 
 // Event represents a single stage-transition record for an execution.

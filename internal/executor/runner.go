@@ -704,6 +704,11 @@ type Runner struct {
 	// defaultChildOutcomeReconcileTimeout); tests shrink these for fast runs.
 	childOutcomeReconcilePollInterval time.Duration
 	childOutcomeReconcileTimeout      time.Duration
+	// GH-4300: bounds the retry loop around each per-subtask `gh issue create`
+	// call. Zero uses the package defaults (defaultSubIssueCreateRetryAttempts /
+	// defaultSubIssueCreateRetryDelay); tests shrink the delay for fast runs.
+	subIssueCreateRetryAttempts int
+	subIssueCreateRetryDelay    time.Duration
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
@@ -2092,6 +2097,35 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							recover = recoverExistingSubIssues
 						}
 						recovered, _ := recover(ctx, executionPath, plan.ParentTask.ID)
+
+						// GH-4300: a recovered set smaller than this run's plan means at
+						// least one planned subtask never got an issue created at all (the
+						// 2026-07-14 pilot-console#1 incident — a transient failure on
+						// subtask 2's `gh issue create` left only subtask 1's issue behind;
+						// a later recovery pass found that one issue already closed,
+						// treated it as "the epic," and closed the parent with subtask 2
+						// never dispatched). Gate BEFORE allChildrenDone: even when every
+						// recovered issue is done, or when the open subset would execute
+						// cleanly, finishing that partial set must never close the parent
+						// as if the plan were fully covered.
+						plannedNow := creatableSubtasks(plan.Subtasks, plan.ParentTask.ID, nil)
+						if len(recovered) < len(plannedNow) {
+							gapPlan := &EpicPlan{ParentTask: plan.ParentTask, Subtasks: plannedNow, TotalEffort: plan.TotalEffort, PlanOutput: plan.PlanOutput}
+							gapErr := r.handleSubIssueCoverageGap(ctx, gapPlan, recovered, executionPath, err)
+							r.reportProgress(task.ID, "Needs Clarification", 100, gapErr.Error())
+							return &ExecutionResult{
+								TaskID:         task.ID,
+								Success:        false,
+								Declined:       true,
+								DeclinedReason: gapErr.Error(),
+								Outcome:        "declined",
+								Error:          gapErr.Error(),
+								Duration:       time.Since(start),
+								IsEpic:         true,
+								EpicPlan:       plan,
+							}, nil
+						}
+
 						if allChildrenDone(recovered) {
 							r.log.Info("All recovered sub-issues are done, treating epic as complete",
 								slog.String("task_id", task.ID),
@@ -2124,6 +2158,27 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						)
 						issues = open
 					} else {
+						// GH-4300: CreateSubIssues has already labeled the parent
+						// pilot-needs-clarification, posted a comment naming the
+						// uncreated subtasks, and recorded the planned/created ledger
+						// event before returning this sentinel — surface it as
+						// "declined" (parent stays open) instead of stamping a
+						// generic pilot-failed StageFailed event on top.
+						var gapErr *SubIssueCoverageGapError
+						if errors.As(err, &gapErr) {
+							r.reportProgress(task.ID, "Needs Clarification", 100, gapErr.Error())
+							return &ExecutionResult{
+								TaskID:         task.ID,
+								Success:        false,
+								Declined:       true,
+								DeclinedReason: gapErr.Error(),
+								Outcome:        "declined",
+								Error:          gapErr.Error(),
+								Duration:       time.Since(start),
+								IsEpic:         true,
+								EpicPlan:       plan,
+							}, nil
+						}
 						createErr := fmt.Sprintf("failed to create sub-issues: %v", err)
 						r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(createErr, 200))
 						return &ExecutionResult{
