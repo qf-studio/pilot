@@ -138,6 +138,19 @@ func (s *StateStore) migrate() error {
 		// tracks whether the approval-gated "🔀 Merged <sha>" Telegram follow-up
 		// has been sent, so re-entry into StageMerging cannot double-fire it.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN merge_followup_posted INTEGER NOT NULL DEFAULT 0`,
+		// GH-4307: durable dedup claim for autopilot-generated fix issues, keyed
+		// on (repo, dedup_key). Without this, a re-tick, a release-scan
+		// re-discovery, or a second daemon observing the same failure signal
+		// each mint a fresh "fix(ci): resolve post-merge CI failure..." issue —
+		// this table is checked (via ClaimSpawnedFix) before every
+		// CreateFailureIssue call so only the first observation creates one.
+		`CREATE TABLE IF NOT EXISTS autopilot_spawned_fixes (
+			repo TEXT NOT NULL,
+			dedup_key TEXT NOT NULL,
+			issue_number INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (repo, dedup_key)
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -1030,6 +1043,53 @@ func (s *StateStore) ClaimScopeRelease(repo, scopeKey string) (bool, error) {
 		return false, err
 	}
 	return n == 1, nil
+}
+
+// ClaimSpawnedFix atomically records that a fix issue is about to be created
+// for (repo, dedupKey). Returns claimed=true only when THIS call performed
+// the insert (single-winner discipline, mirrors ClaimScopeRelease above) — a
+// re-tick, a release-scan re-discovery, or a second daemon observing the same
+// failure signal all lose the claim and must skip creating a duplicate fix
+// issue (GH-4307).
+func (s *StateStore) ClaimSpawnedFix(repo, dedupKey string) (bool, error) {
+	result, err := s.db.Exec(`
+		INSERT OR IGNORE INTO autopilot_spawned_fixes (repo, dedup_key)
+		VALUES (?, ?)
+	`, repo, dedupKey)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// RecordSpawnedFixIssue backfills the created issue number onto an
+// already-claimed dedup row once CreatePilotIssue succeeds.
+func (s *StateStore) RecordSpawnedFixIssue(repo, dedupKey string, issueNumber int) error {
+	_, err := s.db.Exec(`
+		UPDATE autopilot_spawned_fixes SET issue_number = ? WHERE repo = ? AND dedup_key = ?
+	`, issueNumber, repo, dedupKey)
+	return err
+}
+
+// GetSpawnedFixIssue returns the issue number recorded for (repo, dedupKey),
+// or 0 if the claim row exists but RecordSpawnedFixIssue hasn't landed yet
+// (a create is still in flight) or the row doesn't exist.
+func (s *StateStore) GetSpawnedFixIssue(repo, dedupKey string) (int, error) {
+	var issueNumber int
+	err := s.db.QueryRow(`
+		SELECT issue_number FROM autopilot_spawned_fixes WHERE repo = ? AND dedup_key = ?
+	`, repo, dedupKey).Scan(&issueNumber)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return issueNumber, nil
 }
 
 // GetScopeRelease returns one scope-release row by repo+scopeKey, or nil, nil

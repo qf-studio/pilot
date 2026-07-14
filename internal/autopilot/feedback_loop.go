@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/qf-studio/pilot/internal/ghissue"
@@ -94,6 +95,7 @@ type FeedbackLoop struct {
 	repo         string
 	issueLabels  []string
 	learningLoop *memory.LearningLoop // GH-1979: optional, annotates issues with known patterns
+	stateStore   *StateStore          // GH-4307: optional, dedups fix-issue creation across retries/daemons
 	log          *slog.Logger
 }
 
@@ -111,6 +113,23 @@ func NewFeedbackLoop(ghClient *github.Client, owner, repo string, cfg *Config) *
 // SetLearningLoop injects a learning loop for pattern annotation in fix issues.
 func (f *FeedbackLoop) SetLearningLoop(ll *memory.LearningLoop) {
 	f.learningLoop = ll
+}
+
+// SetStateStore injects the persistent state store used to dedup fix-issue
+// creation. Optional: without it, CreateFailureIssue never checks for an
+// existing claim and always creates a new issue (pre-GH-4307 behavior).
+func (f *FeedbackLoop) SetStateStore(store *StateStore) {
+	f.stateStore = store
+}
+
+// spawnedFixDedupKey identifies one failure signal for idempotent fix-issue
+// creation: same PR, same failure type, same set of failed checks. Checks
+// are sorted before joining so check-order jitter across API calls can't
+// split one real failure into two dedup keys (GH-4307).
+func spawnedFixDedupKey(prNumber int, failureType FailureType, failedChecks []string) string {
+	sorted := append([]string(nil), failedChecks...)
+	sort.Strings(sorted)
+	return fmt.Sprintf("fix:pr%d:%s:%s", prNumber, failureType, strings.Join(sorted, ","))
 }
 
 // FailureType categorizes the type of failure that occurred.
@@ -155,6 +174,31 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 		)
 	}
 
+	// GH-4307: dedup guard — a re-tick, a release-scan re-discovery, or a
+	// second daemon observing the same failure signal must not mint a second
+	// fix issue for it. The claim lives in the shared SQLite store so it
+	// holds even across process boundaries.
+	var dedupRepo, dedupKey string
+	if f.stateStore != nil {
+		dedupRepo = f.owner + "/" + f.repo
+		dedupKey = spawnedFixDedupKey(prState.PRNumber, failureType, failedChecks)
+		claimed, claimErr := f.stateStore.ClaimSpawnedFix(dedupRepo, dedupKey)
+		if claimErr != nil {
+			f.log.Warn("spawned-fix dedup check failed, proceeding without guard",
+				"pr", prState.PRNumber, "error", claimErr)
+		} else if !claimed {
+			existing, lookupErr := f.stateStore.GetSpawnedFixIssue(dedupRepo, dedupKey)
+			if lookupErr != nil {
+				f.log.Warn("duplicate fix-issue creation suppressed but issue lookup failed",
+					"pr", prState.PRNumber, "failure", failureType, "error", lookupErr)
+			} else {
+				f.log.Info("duplicate fix-issue creation suppressed",
+					"pr", prState.PRNumber, "failure", failureType, "existing_issue", existing)
+			}
+			return existing, nil
+		}
+	}
+
 	title := f.generateTitle(prState, failureType)
 
 	// GH-1979: Surface known patterns to annotate the fix issue body.
@@ -177,6 +221,12 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, body, f.issueLabels)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create issue: %w", err)
+	}
+
+	if dedupKey != "" {
+		if recErr := f.stateStore.RecordSpawnedFixIssue(dedupRepo, dedupKey, issue.Number); recErr != nil {
+			f.log.Warn("failed to record spawned fix issue number", "issue", issue.Number, "error", recErr)
+		}
 	}
 
 	f.log.Info("created fix issue",
