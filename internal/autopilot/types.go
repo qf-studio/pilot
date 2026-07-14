@@ -196,7 +196,11 @@ type CIChecksConfig struct {
 	// Exclude lists check names to ignore in auto mode (supports glob patterns).
 	Exclude []string `yaml:"exclude"`
 
-	// Required lists check names for manual mode.
+	// Required lists check names for manual mode. When non-empty, this
+	// allowlist takes precedence over Mode: status/failure attribution scopes
+	// to exactly these checks even in auto mode, so an always-on scheduled
+	// workflow (e.g. a canary) landing a check run on the same SHA cannot
+	// flip CI status or contaminate a fix-issue's failure logs (GH-4307).
 	Required []string `yaml:"required"`
 
 	// DiscoveryGracePeriod: how long to wait for checks to appear (default 60s).
