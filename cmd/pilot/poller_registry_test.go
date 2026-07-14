@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/qf-studio/pilot/internal/adapterhealth"
 	"github.com/qf-studio/pilot/internal/config"
 )
 
@@ -59,6 +62,114 @@ func TestAdapterPollerRegistrations_ReturnsAllFive(t *testing.T) {
 		if regs[i].Name != name {
 			t.Errorf("registration[%d]: expected name %q, got %q", i, name, regs[i].Name)
 		}
+	}
+}
+
+// TestSafeAdapterGo_PanicIsRecoveredAndOthersKeepRunning is the GH-4314
+// acceptance test: a panicking fake adapter must not crash the daemon, and
+// every other adapter goroutine started via SafeAdapterGo must keep running
+// unaffected — mirroring the 2026-07-14 incident where a nil-conn deref in
+// the Discord gateway's listen loop took down github + telegram execution
+// mid-flight.
+func TestSafeAdapterGo_PanicIsRecoveredAndOthersKeepRunning(t *testing.T) {
+	deps := &PollerDeps{
+		Cfg:           &config.Config{},
+		AdapterHealth: adapterhealth.NewRegistry(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var healthyTicks atomic.Int32
+	deps.SafeAdapterGo(ctx, "healthy-adapter", func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				healthyTicks.Add(1)
+				time.Sleep(time.Millisecond)
+			}
+		}
+	})
+
+	deps.SafeAdapterGo(ctx, "panicking-adapter", func() {
+		panic("simulated nil-conn deref")
+	})
+
+	// If the panic weren't recovered, the whole test process would crash
+	// here rather than reaching this assertion.
+	deadline := time.After(2 * time.Second)
+	for {
+		snap := deps.AdapterHealth.Snapshot()
+		var panickingSeen bool
+		for _, st := range snap {
+			if st.Name == "panicking-adapter" && st.LastError != "" {
+				panickingSeen = true
+			}
+		}
+		if panickingSeen {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("expected panicking-adapter's panic to be recorded")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	if healthyTicks.Load() == 0 {
+		t.Fatal("expected healthy-adapter to keep running after the other adapter panicked")
+	}
+}
+
+// TestSafeAdapterGo_FiresAlertOnPanic confirms a recovered adapter panic
+// raises a WARN service_unhealthy alert (GH-4314) — an adapter going down
+// is an ops signal, not a silent degrade.
+func TestSafeAdapterGo_FiresAlertOnPanic(t *testing.T) {
+	engine, ch := newTestAlertsEngine(t)
+	deps := &PollerDeps{
+		Cfg:           &config.Config{},
+		AlertsEngine:  engine,
+		AdapterHealth: adapterhealth.NewRegistry(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	deps.SafeAdapterGo(ctx, "flaky", func() {
+		panic("boom")
+	})
+
+	deadline := time.After(2 * time.Second)
+	for ch.count() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected an alert to be fired when an adapter panics")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// TestSafeAdapterGo_NilRegistryFallsBackSafely confirms SafeAdapterGo still
+// recovers panics (via logging.SafeGo) when AdapterHealth is nil, so callers
+// that don't wire it up (e.g. older tests) don't crash the process either.
+func TestSafeAdapterGo_NilRegistryFallsBackSafely(t *testing.T) {
+	deps := &PollerDeps{Cfg: &config.Config{}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	deps.SafeAdapterGo(ctx, "no-registry", func() {
+		defer close(done)
+		panic("boom")
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected fn to run (and its panic to be recovered) without crashing the test")
 	}
 }
 

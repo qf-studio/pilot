@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/qf-studio/pilot/internal/adapterhealth"
 	"github.com/qf-studio/pilot/internal/adapters/discord"
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
@@ -875,6 +876,10 @@ Examples:
 			// (via githubPollerRegistration) owns default-repo GitHub polling.
 
 			// GH-1847: Start adapter pollers via registry pattern (gateway mode)
+			// GH-4314: adapterHealthRegistry tracks per-adapter panic/restart/disable
+			// state so one adapter's panic can't crash the daemon; wired into the
+			// gateway status endpoint once p.Gateway() exists below.
+			adapterHealthRegistry := adapterhealth.NewRegistry()
 			gwPollerDeps := &PollerDeps{
 				Cfg:                 cfg,
 				ProjectPath:         projectPath,
@@ -886,6 +891,7 @@ Examples:
 				Enforcer:            gwEnforcer,
 				AutopilotController: gwAutopilotController,
 				AutopilotStateStore: gwAutopilotStateStore,
+				AdapterHealth:       adapterHealthRegistry,
 			}
 			StartAdapterPollers(context.Background(), gwPollerDeps, adapterPollerRegistrations())
 
@@ -934,6 +940,9 @@ Examples:
 			// config, then auto-detection.
 			p.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
 			logging.WithComponent("start").Info("quality gates enabled for webhook mode")
+
+			// GH-4314: surface adapter goroutine health on /api/v1/status.
+			p.Gateway().SetAdapterHealthSource(&adapterHealthProviderAdapter{registry: adapterHealthRegistry})
 
 			// GH-1585: Wire autopilot provider to gateway so /api/v1/autopilot returns live PR data
 			if gwAutopilotController != nil {
@@ -1804,6 +1813,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 	}
 
+	// GH-4314: adapterHealthRegistry tracks per-adapter panic/restart/disable
+	// state so one adapter's panic can't crash the daemon; wired into
+	// pollingDeps below and, when the gateway runs, into /api/v1/status.
+	adapterHealthRegistry := adapterhealth.NewRegistry()
+
 	// GH-1662: Start gateway in background so desktop app can reach /health
 	var gwServer *gateway.Server // hoisted so TASK-332 alert-metrics wiring can run after alerts engine is created
 	// GH-4068: aggregate every controller's Metrics (default + one per
@@ -1820,6 +1834,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	autopilotMetricsAggregate := autopilot.NewAggregateMetrics(fleetMetrics...)
 	if !noGateway && cfg.Gateway != nil {
 		gwServer = gateway.NewServer(cfg.Gateway)
+		gwServer.SetAdapterHealthSource(&adapterHealthProviderAdapter{registry: adapterHealthRegistry})
 
 		if autopilotController != nil {
 			gwServer.SetAutopilotProvider(&autopilotProviderAdapter{controller: autopilotController})
@@ -2552,6 +2567,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		AutopilotStateStore:  autopilotStateStore,
 		AutopilotControllers: autopilotControllers,
 		GitHubPollers:        ghPollerRegistry, // GH-4110: SDK poller registers itself here
+		AdapterHealth:        adapterHealthRegistry,
 	}
 	StartAdapterPollers(ctx, pollingDeps, adapterPollerRegistrations())
 

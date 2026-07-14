@@ -74,13 +74,13 @@ func jiraPollerRegistration() PollerRegistration {
 				slog.String("label", pilotLabel),
 				slog.Duration("interval", interval),
 			)
-			go func() {
+			deps.SafeAdapterGo(ctx, "jira", func() {
 				if err := jiraPoller.Start(ctx); err != nil {
 					logging.WithComponent("jira").Error("Jira poller failed",
 						slog.Any("error", err),
 					)
 				}
-			}()
+			})
 		},
 	}
 }

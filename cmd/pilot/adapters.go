@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/qf-studio/pilot/internal/adapterhealth"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/alerts"
@@ -325,6 +326,28 @@ func (a *autopilotProviderAdapter) GetFailureCount() int {
 func (a *autopilotProviderAdapter) IsAutoReleaseEnabled() bool {
 	cfg := a.controller.Config()
 	return cfg.Release != nil && cfg.Release.Enabled
+}
+
+// adapterHealthProviderAdapter wraps adapterhealth.Registry to satisfy
+// gateway.AdapterHealthSource (GH-4314), so /api/v1/status can surface which
+// adapters have panicked/restarted/been disabled.
+type adapterHealthProviderAdapter struct {
+	registry *adapterhealth.Registry
+}
+
+func (a *adapterHealthProviderAdapter) AdapterHealthSnapshot() []gateway.AdapterHealthStatus {
+	statuses := a.registry.Snapshot()
+	result := make([]gateway.AdapterHealthStatus, len(statuses))
+	for i, st := range statuses {
+		result[i] = gateway.AdapterHealthStatus{
+			Name:         st.Name,
+			Healthy:      st.Healthy,
+			Disabled:     st.Disabled,
+			LastError:    st.LastError,
+			RestartCount: st.RestartCount,
+		}
+	}
+	return result
 }
 
 // resolveOwnerRepo determines the GitHub owner and repo from config or git remote.

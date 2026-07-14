@@ -84,13 +84,13 @@ func linearPollerRegistration() PollerRegistration {
 				slog.String("workspaces", fmt.Sprintf("%d workspace(s)", len(internalWss))),
 				slog.Duration("interval", interval),
 			)
-			go func() {
+			deps.SafeAdapterGo(ctx, "linear", func() {
 				if err := linearPoller.Start(ctx); err != nil {
 					logging.WithComponent("linear").Error("Linear poller failed",
 						slog.Any("error", err),
 					)
 				}
-			}()
+			})
 		},
 	}
 }

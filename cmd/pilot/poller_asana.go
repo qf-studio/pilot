@@ -68,13 +68,13 @@ func asanaPollerRegistration() PollerRegistration {
 				slog.String("tag", pilotTag),
 				slog.Duration("interval", interval),
 			)
-			go func() {
+			deps.SafeAdapterGo(ctx, "asana", func() {
 				if err := asanaPoller.Start(ctx); err != nil {
 					logging.WithComponent("asana").Error("Asana poller failed",
 						slog.Any("error", err),
 					)
 				}
-			}()
+			})
 		},
 	}
 }

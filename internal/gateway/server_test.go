@@ -414,6 +414,54 @@ func TestStatusEndpoint(t *testing.T) {
 	if response["version"] != "0.1.0" {
 		t.Errorf("Expected version '0.1.0', got '%v'", response["version"])
 	}
+	if _, ok := response["adapters"]; ok {
+		t.Error("Expected no 'adapters' key when no AdapterHealthSource is wired")
+	}
+}
+
+// mockAdapterHealthSource implements AdapterHealthSource for tests.
+type mockAdapterHealthSource struct {
+	statuses []AdapterHealthStatus
+}
+
+func (m *mockAdapterHealthSource) AdapterHealthSnapshot() []AdapterHealthStatus {
+	return m.statuses
+}
+
+func TestStatusEndpoint_IncludesAdapterHealth(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 9090}
+	server := NewServer(config)
+	server.SetAdapterHealthSource(&mockAdapterHealthSource{
+		statuses: []AdapterHealthStatus{
+			{Name: "discord", Healthy: false, Disabled: true, LastError: "nil-conn deref", RestartCount: 5},
+			{Name: "github", Healthy: true},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	w := httptest.NewRecorder()
+	server.handleStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", w.Code)
+	}
+
+	var response struct {
+		Adapters []AdapterHealthStatus `json:"adapters"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(response.Adapters) != 2 {
+		t.Fatalf("Expected 2 adapter statuses, got %d", len(response.Adapters))
+	}
+	if response.Adapters[0].Name != "discord" || !response.Adapters[0].Disabled || response.Adapters[0].LastError != "nil-conn deref" {
+		t.Errorf("Unexpected discord status: %+v", response.Adapters[0])
+	}
+	if response.Adapters[1].Name != "github" || !response.Adapters[1].Healthy {
+		t.Errorf("Unexpected github status: %+v", response.Adapters[1])
+	}
 }
 
 func TestLinearWebhook(t *testing.T) {

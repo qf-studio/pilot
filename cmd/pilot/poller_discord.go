@@ -76,13 +76,13 @@ func discordPollerRegistration() PollerRegistration {
 			})
 			discordChatHandler.SetCommsHandler(discordCommsHandler)
 
-			go func() {
+			deps.SafeAdapterGo(ctx, "discord", func() {
 				if err := discordBridge.Start(ctx); err != nil {
 					logging.WithComponent("discord").Error("Discord listener error",
 						slog.Any("error", err),
 					)
 				}
-			}()
+			})
 			fmt.Println("● discord bot started")
 			logging.WithComponent("start").Info("Discord bot started")
 		},

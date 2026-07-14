@@ -438,12 +438,12 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 		slog.Bool("default_repo", target.isDefault),
 		slog.Bool("board_wired", sdkCfg.ProjectBoard != nil),
 	)
-	go func() {
+	deps.SafeAdapterGo(ctx, "github:"+target.repoFullName, func() {
 		if err := githubPoller.Start(ctx); err != nil {
 			repoLog.Error("GitHub SDK poller failed",
 				slog.Any("error", err),
 			)
 		}
-	}()
+	})
 	return true
 }
