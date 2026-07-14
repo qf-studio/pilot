@@ -321,7 +321,6 @@
 | Docker support | ✅ | - | - | - | Dockerfile + deployment guide (v1.46.0) |
 | Helm chart | ✅ | - | - | - | Kubernetes Helm chart for production deployment (v1.46.0) |
 | PowerShell installer | ✅ | install | - | - | Windows PowerShell install script (`install.ps1`) |
-| Adapter goroutine panic recovery | ✅ | adapterhealth | - | - | Every adapter poller goroutine runs via `SafeAdapterGo`: panics are recovered, logged, restarted with backoff up to 5 attempts, then the adapter is marked disabled — one adapter's panic can't crash the daemon. Surfaced on `/api/v1/status` `adapters` + a `service_unhealthy` WARN alert (GH-4314) |
 | Gateway in polling mode | ✅ | gateway | - | - | HTTP server starts in background during polling for desktop/web (v1.62.0, GH-1662) |
 | Gateway budget nil fix | ✅ | gateway | - | - | Fix nil dereference when budget disabled in gateway mode (v2.43.0, GH-1935) |
 | Gateway learning loop | ✅ | gateway | - | - | Learning system init in gateway mode, mirrors polling mode (v2.43.0, GH-1935) |
@@ -410,7 +409,6 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
-| Fix-issue creation idempotency guard | ✅ | autopilot | - | - | `autopilot_spawned_fixes` SQLite table (PK `repo, dedup_key`, `INSERT OR IGNORE` claim) checked before both pre-merge and post-merge `CreateFailureIssue` call sites; dedup key includes sorted failed-check signature so a new failure still spawns. Belt-and-suspenders: GitHub search for an open issue with the exact title + pilot labels catches a lost DB row (fresh clone/restored backup) that the SQLite claim can't see (GH-4307, GH-4309) |
 
 ## Epic Management
 
@@ -426,6 +424,7 @@
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
 | Epic-lifecycle synthetic canary | ✅ | .github/workflows, scripts | `workflow_dispatch` (scenario `epic-lifecycle`) | - | GH Actions scenario files a deliberately decomposable epic on the sandbox and asserts 5 invariants (≥2 children, no duplicate merged PR per child, parent auto-close, no stale `pilot-needs-clarification`, no cascade beyond direct children) via `canary-poll.sh --assert n-children-merged` (TASK-403 A3, GH-4242) |
+| Sub-issue creation retry + coverage gate | ✅ | executor | - | - | Bounded retry (TLS timeout/5xx/rate-limit) around each `gh issue create`; if fewer sub-issues exist than planned (creation or recovery path), parent stays open + labeled `pilot-needs-clarification` + ledger event instead of closing (v2.239.0, GH-4300) |
 
 ## Test Coverage
 

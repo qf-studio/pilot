@@ -630,6 +630,139 @@ func IsParentDoneSkip(errStr string) bool {
 	return strings.Contains(errStr, ErrParentDone.Error())
 }
 
+// SubIssueCoverageGapError is returned when fewer sub-issues exist for a
+// decomposed epic than its plan called for, even after retrying transient
+// creation failures (GH-4300).
+//
+// Incident 2026-07-14 (pilot-console#1): a transient TLS handshake timeout
+// on the second of two planned subtasks' `gh issue create` call aborted
+// creation after only the first subtask's issue existed. A later run's
+// recovery pass (ErrSubIssuesAlreadyExist branch, runner.go) then found that
+// one issue, saw it was already closed, and treated the partial set as "the
+// epic" — closing the parent with the second subtask (db+log) never
+// dispatched. Any caller that receives this error must NOT execute-and-
+// finalize the partial set as if it were the whole plan. Both call sites
+// that can detect a gap (CreateSubIssues' own creation loop and the
+// recovery path in runner.go) route through handleSubIssueCoverageGap,
+// which — before returning this error — leaves the parent issue open, labels
+// it pilot-needs-clarification, posts a comment naming the missing
+// subtasks, and records a planned/created ledger event.
+type SubIssueCoverageGapError struct {
+	Planned int
+	Created int
+	Missing []string
+	Cause   error
+}
+
+func (e *SubIssueCoverageGapError) Error() string {
+	msg := fmt.Sprintf("sub-issue creation incomplete: planned=%d created=%d missing=%s",
+		e.Planned, e.Created, strings.Join(e.Missing, "; "))
+	if e.Cause != nil {
+		msg += fmt.Sprintf(" (cause: %v)", e.Cause)
+	}
+	return msg
+}
+
+func (e *SubIssueCoverageGapError) Unwrap() error { return e.Cause }
+
+// missingSubtaskTitles returns the titles of planned subtasks with no
+// corresponding entry in created, matched by Order — Title may have been
+// rewritten by validateSubtaskTitle's conventional-commit fallback before
+// the issue was actually created, so Order is the stable join key.
+func missingSubtaskTitles(planned []PlannedSubtask, created []CreatedIssue) []string {
+	haveOrder := make(map[int]bool, len(created))
+	for _, c := range created {
+		haveOrder[c.Subtask.Order] = true
+	}
+	var missing []string
+	for _, st := range planned {
+		if !haveOrder[st.Order] {
+			missing = append(missing, st.Title)
+		}
+	}
+	return missing
+}
+
+// bulletList renders items as a markdown bullet list for the coverage-gap
+// comment; "(none identifiable)" covers the degenerate case where every
+// planned subtask's Order collides with a created one despite the count
+// mismatch (should not happen in practice, but the comment must never come
+// back empty).
+func bulletList(items []string) string {
+	if len(items) == 0 {
+		return "_(none identifiable)_"
+	}
+	var b strings.Builder
+	for _, it := range items {
+		b.WriteString("- ")
+		b.WriteString(it)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// handleSubIssueCoverageGap records and surfaces a sub-issue coverage gap
+// (GH-4300): len(created) < len(plan.Subtasks) for plan.ParentTask, either
+// because creation failed partway through (even after retries) or because a
+// recovery pass found fewer previously-created issues than this run
+// planned. Side effects (ledger event, label, comment) are best-effort and
+// logged on failure — the returned error is authoritative for the caller's
+// control flow regardless of whether they landed.
+func (r *Runner) handleSubIssueCoverageGap(ctx context.Context, plan *EpicPlan, created []CreatedIssue, executionPath string, cause error) *SubIssueCoverageGapError {
+	missing := missingSubtaskTitles(plan.Subtasks, created)
+	gap := &SubIssueCoverageGapError{
+		Planned: len(plan.Subtasks),
+		Created: len(created),
+		Missing: missing,
+		Cause:   cause,
+	}
+
+	parentID := ""
+	if plan.ParentTask != nil {
+		parentID = plan.ParentTask.ID
+	}
+	r.log.Error("sub-issue creation incomplete — refusing to finalize epic parent",
+		"parent_id", parentID,
+		"planned", gap.Planned,
+		"created", gap.Created,
+		"missing", missing,
+		"cause", cause,
+	)
+
+	if plan.ParentTask == nil {
+		return gap
+	}
+
+	detail := fmt.Sprintf("planned=%d created=%d missing=%s", gap.Planned, gap.Created, strings.Join(missing, "; "))
+	r.recordExecutionEvent(plan.ParentTask.LogExecutionID(), memory.StageSubIssuesIncomplete, truncateForLog(detail, 500))
+
+	// Label/comment use the gh CLI, so they only apply to GitHub-sourced
+	// parents — mirrors the useAdapterCreator condition in CreateSubIssues.
+	// Non-GitHub adapters (Linear, Jira, ...) still get the ledger event and
+	// log above; their own tracker's label/comment surface is out of scope
+	// here (no gh CLI equivalent for those trackers).
+	isGitHubParent := plan.ParentTask.SourceAdapter == "" || plan.ParentTask.SourceAdapter == "github"
+	if r.dryRun || !isGitHubParent {
+		return gap
+	}
+
+	if err := ghAddLabels(ctx, executionPath, parentID, []string{"pilot-needs-clarification"}); err != nil {
+		r.log.Warn("failed to label parent with pilot-needs-clarification after coverage gap",
+			"parent_id", parentID, "error", err)
+	}
+	comment := fmt.Sprintf(
+		"⚠️ **Epic decomposition incomplete: %d/%d planned sub-issues created**\n\n"+
+			"The following planned subtasks have no issue and were never dispatched:\n\n%s\n\n"+
+			"This issue stays open. Resolve the underlying failure and remove `pilot-needs-clarification` to retry decomposition.",
+		gap.Created, gap.Planned, bulletList(missing))
+	if err := ghIssueComment(ctx, executionPath, parentID, comment); err != nil {
+		r.log.Warn("failed to post coverage-gap comment on parent",
+			"parent_id", parentID, "error", err)
+	}
+
+	return gap
+}
+
 // isParentDone reports whether a task should be treated as done based on its
 // labels (pilot-done, pilot-skip) or its state (closed, merged).
 //
@@ -1093,46 +1226,79 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan, executionP
 		}
 	}
 
-	// GH-3513 wave 2 (#3538/#3553): drop subtasks whose Description is empty —
-	// they produce junk sub-issues whose body is just the autopilot-meta marker
-	// and a scope fence wrapping nothing. Title validation already exists
-	// (validateSubtaskTitle); this is its Description counterpart, applied once
-	// here so both creator paths (adapter + gh CLI) are covered. Runs AFTER the
-	// dedup guard so recovery of already-created children is never blocked by
-	// plan quality. The plan is rebuilt rather than mutated so the caller's
-	// copy stays intact.
-	valid := make([]PlannedSubtask, 0, len(plan.Subtasks))
-	for _, st := range plan.Subtasks {
-		if strings.TrimSpace(st.Description) == "" {
-			parentID := ""
-			if plan.ParentTask != nil {
-				parentID = plan.ParentTask.ID
-			}
-			r.log.Warn("Skipping subtask with empty description",
-				"title", st.Title, "order", st.Order, "parent", parentID)
-			continue
-		}
-		valid = append(valid, st)
+	// GH-3513 wave 2 (#3538/#3553) / GH-4235/GH-4233: filter to the subtasks
+	// CreateSubIssues will actually attempt to create issues for — see
+	// creatableSubtasks. Runs AFTER the dedup guard so recovery of
+	// already-created children is never blocked by plan quality. The plan is
+	// rebuilt rather than mutated so the caller's copy stays intact.
+	parentID := ""
+	if plan.ParentTask != nil {
+		parentID = plan.ParentTask.ID
 	}
+	valid := creatableSubtasks(plan.Subtasks, parentID, r.log)
 	if len(valid) == 0 {
 		return nil, fmt.Errorf("decomposition produced %d subtasks but none had a description — refusing to create empty sub-issues", len(plan.Subtasks))
 	}
-
-	// GH-4235/GH-4233: fold any subtask that is pure verification of its
-	// immediate predecessor's work (verification-shape heuristic + no new
-	// file/symbol surface) into that predecessor, dropping the verify-only
-	// entry so it never becomes its own empty-work sub-issue.
-	valid = foldVerifyOnlySubtasks(valid)
-
 	if len(valid) < len(plan.Subtasks) {
 		plan = &EpicPlan{ParentTask: plan.ParentTask, Subtasks: valid, TotalEffort: plan.TotalEffort, PlanOutput: plan.PlanOutput}
 	}
 
+	var created []CreatedIssue
+	var createErr error
 	if useAdapterCreator {
-		return r.createSubIssuesViaAdapter(ctx, plan)
+		created, createErr = r.createSubIssuesViaAdapter(ctx, plan)
+	} else {
+		created, createErr = r.createSubIssuesViaGitHub(ctx, plan, executionPath)
+		if r.dryRun {
+			// dry-run intentionally creates nothing (createSubIssuesViaGitHub
+			// short-circuits above) — there is no coverage gap to gate on.
+			return created, createErr
+		}
 	}
 
-	return r.createSubIssuesViaGitHub(ctx, plan, executionPath)
+	// GH-4300: never let a caller (runner.go) treat a partial creation batch
+	// as a clean, fully-decomposed plan — whether that partial batch came
+	// from an outright creation error (transient retries exhausted, or a
+	// non-transient failure) or, in principle, a creator that silently
+	// under-delivered. handleSubIssueCoverageGap leaves the parent open,
+	// labels it, comments the gap, and records the ledger event before
+	// returning the sentinel error below.
+	if len(created) < len(plan.Subtasks) {
+		return created, r.handleSubIssueCoverageGap(ctx, plan, created, executionPath, createErr)
+	}
+
+	return created, createErr
+}
+
+// creatableSubtasks filters subtasks down to the set CreateSubIssues will
+// actually attempt to create issues for:
+//
+//   - GH-3513 wave 2 (#3538/#3553): drops subtasks whose Description is
+//     empty — they produce junk sub-issues whose body is just the
+//     autopilot-meta marker and a scope fence wrapping nothing.
+//   - GH-4235/GH-4233: folds any subtask that is pure verification of its
+//     immediate predecessor's work into that predecessor, dropping the
+//     verify-only entry so it never becomes its own empty-work sub-issue.
+//
+// log, when non-nil, records a warning for each dropped empty-description
+// subtask; pass nil to compute the filtered set without duplicate logging —
+// GH-4300's sub-issue recovery path (runner.go) needs the exact same
+// "planned" definition CreateSubIssues uses to detect a coverage gap, but
+// must not re-log what CreateSubIssues will already log on its own next
+// attempt.
+func creatableSubtasks(subtasks []PlannedSubtask, parentID string, log *slog.Logger) []PlannedSubtask {
+	valid := make([]PlannedSubtask, 0, len(subtasks))
+	for _, st := range subtasks {
+		if strings.TrimSpace(st.Description) == "" {
+			if log != nil {
+				log.Warn("Skipping subtask with empty description",
+					"title", st.Title, "order", st.Order, "parent", parentID)
+			}
+			continue
+		}
+		valid = append(valid, st)
+	}
+	return foldVerifyOnlySubtasks(valid)
 }
 
 // createSubIssuesViaAdapter creates sub-issues using the SubIssueCreator interface.
@@ -1305,6 +1471,123 @@ func sanitizeSubtaskDescription(description string) string {
 	return strings.TrimSpace(description)
 }
 
+// defaultSubIssueCreateRetryAttempts / defaultSubIssueCreateRetryDelay bound
+// the retry loop around each per-subtask `gh issue create` call (GH-4300).
+// Runner.subIssueCreateRetryAttempts/Delay override these per-instance (zero
+// uses the default); tests shrink the delay for fast runs. Exponential
+// backoff (delay * 2^(attempt-1)) mirrors the shape of the existing
+// gitPushRetryAttempts/prCreateRetryAttempts sibling retry loops in
+// runner.go.
+const (
+	defaultSubIssueCreateRetryAttempts = 3
+	defaultSubIssueCreateRetryDelay    = 500 * time.Millisecond
+)
+
+// subIssueCreateRetryConfig resolves the effective attempts/delay for the
+// sub-issue creation retry loop, falling back to the package defaults when
+// the Runner fields are unset (zero value).
+func (r *Runner) subIssueCreateRetryConfig() (attempts int, delay time.Duration) {
+	attempts = r.subIssueCreateRetryAttempts
+	if attempts <= 0 {
+		attempts = defaultSubIssueCreateRetryAttempts
+	}
+	delay = r.subIssueCreateRetryDelay
+	if delay <= 0 {
+		delay = defaultSubIssueCreateRetryDelay
+	}
+	return attempts, delay
+}
+
+// transientSubIssueCreateErrorSignatures are substrings (case-insensitive)
+// that identify a `gh issue create` failure as transient — worth retrying
+// rather than aborting the whole decomposition on the first blip. Covers
+// the raw incident signature ("net/http: TLS handshake timeout", GH-4300)
+// plus the network/5xx/rate-limit classes studio-sdk's github retry helper
+// (sdk/integrations/github/retry.go) already treats as retryable. That
+// helper isn't reusable as-is here: its classifier is unexported with no
+// injectable predicate, and — critically — it does not cover TLS handshake
+// timeouts, the exact signature from this incident. The equivalent list is
+// kept locally so it can include that pattern.
+var transientSubIssueCreateErrorSignatures = []string{
+	"tls handshake timeout",
+	"handshake timeout",
+	"connection reset",
+	"connection refused",
+	"i/o timeout",
+	"context deadline exceeded",
+	"dial tcp",
+	"no such host",
+	"network is unreachable",
+	"http 500", "http 502", "http 503", "http 504",
+	"status 500", "status 502", "status 503", "status 504",
+	"secondary rate limit",
+	"api rate limit exceeded",
+	"you have exceeded a secondary rate limit",
+}
+
+// isTransientSubIssueCreateError reports whether errText (a `gh issue
+// create` error combined with its stderr) matches a known-transient
+// failure signature. Non-transient errors (4xx auth/validation, malformed
+// input) return false so the caller fails fast instead of burning retry
+// attempts on a failure retrying can't fix.
+func isTransientSubIssueCreateError(errText string) bool {
+	lower := strings.ToLower(errText)
+	for _, sig := range transientSubIssueCreateErrorSignatures {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// runGHIssueCreateWithRetry runs `gh issue create` (args must already
+// include the full argument list) with bounded exponential-backoff retry
+// for transient failures (GH-4300). Returns the trimmed stdout (the created
+// issue's URL) on success. A non-transient error, or exhausting all
+// attempts, returns the last error unchanged — same shape callers already
+// handled before this helper existed.
+func (r *Runner) runGHIssueCreateWithRetry(ctx context.Context, args []string, executionPath string, subtaskOrder int) (string, error) {
+	attempts, delay := r.subIssueCreateRetryConfig()
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		cmd := exec.CommandContext(ctx, "gh", args...)
+		if executionPath != "" {
+			cmd.Dir = executionPath
+		}
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		runErr := cmd.Run()
+		if runErr == nil {
+			return strings.TrimSpace(stdout.String()), nil
+		}
+
+		lastErr = fmt.Errorf("failed to create issue for subtask %d: %w (stderr: %s)",
+			subtaskOrder, runErr, stderr.String())
+
+		if !isTransientSubIssueCreateError(lastErr.Error()) || attempt == attempts {
+			return "", lastErr
+		}
+
+		backoff := delay * time.Duration(uint(1)<<uint(attempt-1))
+		r.log.Warn("gh issue create failed with transient error, retrying",
+			"subtask_order", subtaskOrder,
+			"attempt", attempt,
+			"max_attempts", attempts,
+			"backoff", backoff,
+			"error", runErr,
+		)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
+	return "", lastErr
+}
+
 // createSubIssuesViaGitHub creates sub-issues using the gh CLI.
 // This is the original implementation and fallback path.
 //
@@ -1403,36 +1686,27 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 			)[0].Title
 		}
 
-		// Create issue using gh CLI
+		// Create issue using gh CLI — GH-4300: retries transient failures
+		// (TLS handshake timeout, network errors, 5xx, rate-limit) with
+		// bounded exponential backoff instead of aborting the whole
+		// decomposition on the first blip. Non-transient errors (4xx auth/
+		// validation) fail fast, same as before.
 		subLabels := append([]string{"pilot"}, filterPropagatableLabels(plan.ParentTask.Labels)...)
 		args := []string{"issue", "create", "--title", title, "--body", body}
 		for _, l := range subLabels {
 			args = append(args, "--label", l)
 		}
 
-		cmd := exec.CommandContext(ctx, "gh", args...)
-
-		// Set working directory - use executionPath which respects worktree isolation
-		if executionPath != "" {
-			cmd.Dir = executionPath
-		}
-
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
 		r.log.Debug("Creating GitHub issue",
 			"subtask_order", subtask.Order,
 			"title", subtask.Title,
 		)
 
-		if err := cmd.Run(); err != nil {
-			return created, fmt.Errorf("failed to create issue for subtask %d: %w (stderr: %s)",
-				subtask.Order, err, stderr.String())
+		issueURL, err := r.runGHIssueCreateWithRetry(ctx, args, executionPath, subtask.Order)
+		if err != nil {
+			return created, err
 		}
 
-		// gh issue create outputs the issue URL on success
-		issueURL := strings.TrimSpace(stdout.String())
 		issueNumber := parseIssueNumber(issueURL)
 
 		created = append(created, CreatedIssue{
