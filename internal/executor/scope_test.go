@@ -75,6 +75,35 @@ func TestExtractDirectoriesFromText(t *testing.T) {
 			text: "Add a Makefile with build and test targets",
 			want: map[string]bool{RootScopeKey: true},
 		},
+		{
+			// GH-4302: bare top-level source files (not in the config/scaffold
+			// list) are not folded together — each distinct filename is its
+			// own scope key, since touching version.go doesn't conflict with
+			// touching CHANGELOG.md.
+			name: "distinct bare top-level source files are separate scope keys",
+			text: "Bump the PATCH component in version.go, and append a dated line to CHANGELOG.md",
+			want: map[string]bool{"version.go": true, "CHANGELOG.md": true},
+		},
+		{
+			name: "same bare top-level file mentioned twice collapses to one key",
+			text: "Update version.go now; update version.go again later",
+			want: map[string]bool{"version.go": true},
+		},
+		{
+			name: "bare filename tail of a longer path is not double-counted",
+			text: "Modify internal/executor/runner.go only",
+			want: map[string]bool{"internal/executor": true},
+		},
+		{
+			// GH-4052 regression guard: a bare mention of a file elsewhere
+			// already covered by a full path (e.g. a title saying "update
+			// epic.go" alongside a description citing
+			// "internal/executor/epic.go") must not add a second scope key
+			// for the same file.
+			name: "bare mention of a file already covered by a full path elsewhere is not double-counted",
+			text: "fix(executor): update epic.go\nEdit internal/executor/epic.go",
+			want: map[string]bool{"internal/executor": true},
+		},
 	}
 
 	for _, tt := range tests {
