@@ -4,11 +4,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,22 +34,155 @@ import (
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
 	"github.com/qf-studio/pilot/internal/replay"
+	"github.com/qf-studio/pilot/internal/singleton"
 	"github.com/qf-studio/pilot/internal/upgrade"
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
+// stopDaemonTimeout bounds how long `pilot stop`/`pilot restart` wait for
+// the running daemon to release its single-instance lock (GH-4311) after
+// SIGTERM before giving up.
+const stopDaemonTimeout = 30 * time.Second
+
 func newStopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
-		Short: "Stop the Pilot daemon",
+		Short: "Stop the running Pilot daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Daemon process management is out of scope - users should use
-			// standard OS signals (Ctrl+C) or process managers (systemd, launchd)
-			fmt.Println("▸ Stopping Pilot daemon...")
-			fmt.Println("   Use Ctrl+C or send SIGTERM to stop the daemon")
-			return nil
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+			return stopDaemon(cfg, stopDaemonTimeout)
 		},
 	}
+}
+
+// stopDaemonLockDir mirrors main.go's daemonLockDir fallback so `pilot
+// stop`/`pilot restart` (a separate process from the daemon) resolve the
+// same lock file the daemon acquired in acquireDaemonLock.
+func stopDaemonLockDir(cfg *config.Config) string {
+	if cfg.Memory != nil && cfg.Memory.Path != "" {
+		return cfg.Memory.Path
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".pilot", "data")
+}
+
+// stopDaemon reads the pid recorded in the GH-4311 single-instance lock
+// file, SIGTERMs it, and polls (bounded by timeout) until the lock is
+// released — confirmed by successfully re-acquiring and immediately
+// releasing it, rather than just assuming SIGTERM landed.
+func stopDaemon(cfg *config.Config, timeout time.Duration) error {
+	dir := stopDaemonLockDir(cfg)
+
+	pid, err := singleton.ReadPID(dir)
+	if err != nil {
+		return fmt.Errorf("failed to read pilot daemon lock: %w", err)
+	}
+	if pid == 0 {
+		fmt.Println("○ Pilot daemon is not running (no lock held)")
+		return nil
+	}
+
+	fmt.Printf("▸ stopping Pilot daemon (pid %d)...\n", pid)
+	if proc, err := os.FindProcess(pid); err == nil {
+		if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			fmt.Printf("   ⚠ failed to signal pid %d: %v (continuing to wait for lock release)\n", pid, err)
+		}
+	}
+
+	fmt.Print("   Waiting for daemon to exit")
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(300 * time.Millisecond)
+		fmt.Print(".")
+		lock, err := singleton.Acquire(dir)
+		if err == nil {
+			_ = lock.Release()
+			fmt.Println(" ✓")
+			fmt.Println("   ✓ daemon stopped, lock released")
+			return nil
+		}
+	}
+	fmt.Println(" ✗")
+	return fmt.Errorf("timed out after %s waiting for pilot daemon (pid %d) to release its lock", timeout, pid)
+}
+
+func newRestartCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "restart [-- start-flags...]",
+		Short: "Restart the Pilot daemon (stop the running instance, then start)",
+		Long: `Restart stops the running Pilot daemon (same as "pilot stop") and, once its
+single-instance lock is confirmed released, execs into "pilot start" in this
+process — taking over the current terminal exactly as a fresh "pilot start"
+would (see .agent/sops/operations/safe-daemon-restart.md: the daemon needs a
+real TTY, so restart must run in the operator's own terminal, not a
+background/assistant shell).
+
+Flags after "restart" (or after "--") are forwarded verbatim to "pilot start",
+e.g.:
+
+  pilot restart --dashboard --github --telegram --replace`,
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			startArgs := make([]string, 0, len(args))
+			for _, a := range args {
+				if a == "--" {
+					continue
+				}
+				startArgs = append(startArgs, a)
+			}
+
+			configPath := extractConfigFlag(startArgs)
+			if configPath == "" {
+				configPath = cfgFile
+			}
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			if err := stopDaemon(cfg, stopDaemonTimeout); err != nil {
+				return err
+			}
+
+			binPath, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("failed to resolve pilot executable: %w", err)
+			}
+
+			fmt.Println("▸ starting Pilot...")
+			_ = os.Stdout.Sync()
+			_ = os.Stderr.Sync()
+
+			execArgs := append([]string{binPath, "start"}, startArgs...)
+			return syscall.Exec(binPath, execArgs, os.Environ())
+		},
+	}
+	return cmd
+}
+
+// extractConfigFlag scans forwarded "start" args for an explicit --config
+// value, so `pilot restart --config foo.yaml ...` resolves the same config
+// file for both the stop phase (reading the lock) and the exec'd start.
+func extractConfigFlag(args []string) string {
+	for i, a := range args {
+		if a == "--config" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(a, "--config=") {
+			return strings.TrimPrefix(a, "--config=")
+		}
+	}
+	return ""
 }
 
 func newStatusCmd() *cobra.Command {
