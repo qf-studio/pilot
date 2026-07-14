@@ -91,6 +91,18 @@ var mutedOutcomes = map[string]bool{
 	"infra":        true,
 }
 
+// stageStripCleanTerminalEvents are execution_events that close out a run
+// successfully without ever naming a PR-side ladder rung of their own
+// (pr_created/ci_passed/merged). A decompose-only epic parent ships no PR
+// for its own row — its stream ends running -> spec_validated -> decomposed
+// -> completed — so the running-max reducer in buildStageInfo freezes the
+// label at the last *named* rung it saw, which is "running" (GH-4298).
+var stageStripCleanTerminalEvents = map[memory.Stage]bool{
+	memory.StageCompleted:  true,
+	memory.StageNoOp:       true,
+	memory.StageDecomposed: true,
+}
+
 // stageInfoForExecution derives the history-row StageInfo from the event
 // timeline plus the authoritative executions.status. The label override is
 // status-driven, never event-driven, so GH-4023's stray-late-event guard in
@@ -148,6 +160,19 @@ func buildStageInfo(events []*memory.Event, executionFailed bool) StageInfo {
 			label = resolvedLabel
 			failed = stageStripFailureStages[e.Stage]
 		}
+	}
+
+	// GH-4298: the stream's own terminal event, not just its ladder rung,
+	// decides whether the run is done. A clean terminal (completed/no_op/
+	// decomposed) as the LAST event means the run finished without ever
+	// emitting a PR-side event of its own — promote it to the top of the
+	// ladder instead of leaving it frozen at whatever rung it last named.
+	// Failed executions are excluded so the "died at a rung" ✗ labeling
+	// (GH-4212) is untouched, and a run that already reached pr_created or
+	// higher keeps that (more specific) label.
+	if !executionFailed && !failed && stageStripCleanTerminalEvents[events[len(events)-1].Stage] && reached < stageLadderPosition(memory.StagePRCreated) {
+		reached = stageLadderTotal
+		label = memory.StageCompleted
 	}
 
 	return StageInfo{
