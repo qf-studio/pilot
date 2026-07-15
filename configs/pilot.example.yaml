@@ -681,6 +681,11 @@ autopilot:
     #                              # mode (GH-4307) — use this to shield against
     #                              # unrelated scheduled/canary checks landing on the
     #                              # same SHA instead of enumerating them in `exclude`.
+    #                              # Precedence (GH-4333): a non-empty `required` here
+    #                              # always wins. If empty, the deprecated top-level
+    #                              # `required_checks` is used as a fallback (with a
+    #                              # startup WARN). If both are empty, no allowlist is
+    #                              # active and ALL non-excluded checks gate CI status.
     discovery_grace_period: 60s   # Wait for CI to start
 
   # Test-evidence gate (GH-4329): escalate-only, same pattern as the

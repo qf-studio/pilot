@@ -1,10 +1,13 @@
 package autopilot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1309,6 +1312,105 @@ func TestCIMonitor_NewConfigUsesManualMode(t *testing.T) {
 	}
 	if len(monitor.requiredChecks) != 2 {
 		t.Errorf("requiredChecks = %v, want [ci, deploy]", monitor.requiredChecks)
+	}
+}
+
+// TestNewCIMonitor_RequiredChecksPrecedence is the GH-4333 regression test:
+// RCA of #4331 found that with ci_checks.required empty, the legacy
+// required_checks allowlist was silently dropped whenever cfg.CIChecks was
+// non-nil (which DefaultConfig always sets) — the operator's believed
+// shield was inert with zero warning. Verifies the corrected precedence:
+// new key wins when non-empty, legacy is a warned fallback, and both-empty
+// logs a startup warning.
+func TestNewCIMonitor_RequiredChecksPrecedence(t *testing.T) {
+	tests := []struct {
+		name           string
+		ciChecks       *CIChecksConfig
+		requiredChecks []string
+		wantRequired   []string
+		wantMode       string
+		wantLogSubstr  string
+	}{
+		{
+			name:           "new key set, legacy unset",
+			ciChecks:       &CIChecksConfig{Mode: "manual", Required: []string{"ci"}},
+			requiredChecks: nil,
+			wantRequired:   []string{"ci"},
+			wantMode:       "manual",
+		},
+		{
+			name:           "legacy only, ci_checks.required empty but ci_checks non-nil",
+			ciChecks:       &CIChecksConfig{Mode: "auto", Required: []string{}},
+			requiredChecks: []string{"test", "lint"},
+			wantRequired:   []string{"test", "lint"},
+			wantMode:       "manual",
+			wantLogSubstr:  "deprecated required_checks allowlist",
+		},
+		{
+			name:           "legacy only, ci_checks nil",
+			ciChecks:       nil,
+			requiredChecks: []string{"test", "lint"},
+			wantRequired:   []string{"test", "lint"},
+			wantMode:       "manual",
+			wantLogSubstr:  "deprecated required_checks allowlist",
+		},
+		{
+			name:           "both set, new key wins",
+			ciChecks:       &CIChecksConfig{Mode: "manual", Required: []string{"ci"}},
+			requiredChecks: []string{"test", "lint"},
+			wantRequired:   []string{"ci"},
+			wantMode:       "manual",
+		},
+		{
+			name:           "both empty, warns that no allowlist is active",
+			ciChecks:       &CIChecksConfig{Mode: "auto", Required: []string{}},
+			requiredChecks: nil,
+			wantRequired:   nil,
+			wantMode:       "auto",
+			wantLogSubstr:  "no CI required-checks allowlist configured",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghClient := github.NewClient(testutil.FakeGitHubToken)
+			cfg := DefaultConfig()
+			cfg.CIChecks = tt.ciChecks
+			cfg.RequiredChecks = tt.requiredChecks
+
+			var buf bytes.Buffer
+			h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
+			prev := slog.Default()
+			slog.SetDefault(slog.New(h))
+			defer slog.SetDefault(prev)
+
+			monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+			if len(monitor.requiredChecks) != len(tt.wantRequired) {
+				t.Errorf("requiredChecks = %v, want %v", monitor.requiredChecks, tt.wantRequired)
+			}
+			for i, want := range tt.wantRequired {
+				if monitor.requiredChecks[i] != want {
+					t.Errorf("requiredChecks = %v, want %v", monitor.requiredChecks, tt.wantRequired)
+					break
+				}
+			}
+			if monitor.ciChecks.Mode != tt.wantMode {
+				t.Errorf("ciChecks.Mode = %s, want %s", monitor.ciChecks.Mode, tt.wantMode)
+			}
+
+			out := buf.String()
+			if tt.wantLogSubstr != "" {
+				if !strings.Contains(out, "level=WARN") {
+					t.Errorf("expected WARN level log, got: %s", out)
+				}
+				if !strings.Contains(out, tt.wantLogSubstr) {
+					t.Errorf("expected log to contain %q, got: %s", tt.wantLogSubstr, out)
+				}
+			} else if strings.Contains(out, "level=WARN") {
+				t.Errorf("expected no WARN log, got: %s", out)
+			}
+		})
 	}
 }
 
