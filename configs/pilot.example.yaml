@@ -683,6 +683,19 @@ autopilot:
     #                              # same SHA instead of enumerating them in `exclude`.
     discovery_grace_period: 60s   # Wait for CI to start
 
+  # Test-evidence gate (GH-4329): escalate-only, same pattern as the
+  # scope-drift/size-floor gates above. Green CI proves a check concluded
+  # "success" — it does NOT prove tests actually ran. When enabled, autopilot
+  # fetches the completed test job's log for the merge SHA and holds
+  # auto-merge (requiring human approval + posts a PR comment) if it looks
+  # like CI verified nothing: zero tests ran, or the skip ratio exceeds
+  # max_skip_ratio, on a PR that touches production source.
+  # Default off — enable per-project once canaried (pilot repo + pilot-console first).
+  test_evidence:
+    enabled: false
+    min_tests: 1        # escalate if fewer than this many tests ran
+    max_skip_ratio: 0.5  # escalate if skipped/(run+skipped) exceeds this
+
 # Dashboard settings
 dashboard:
   refresh_interval: 1000     # ms

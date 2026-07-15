@@ -540,6 +540,55 @@ func (m *CIMonitor) GetFailedCheckLogs(ctx context.Context, sha string, maxLen i
 	return result
 }
 
+// GetCheckLogs fetches logs for all completed, in-scope check runs for sha and
+// returns them combined, each prefixed with the check name. Unlike
+// GetFailedCheckLogs, this includes successful/skipped runs too — the
+// test-evidence gate (GH-4329) needs to see the test job's own passing output
+// to tell a rigorous run from one that silently skipped everything.
+func (m *CIMonitor) GetCheckLogs(ctx context.Context, sha string, maxLen int) string {
+	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	if err != nil {
+		m.log.Warn("failed to list check runs for log fetch", "sha", ShortSHA(sha), "error", err)
+		return ""
+	}
+
+	var combined strings.Builder
+	for _, run := range checkRuns.CheckRuns {
+		if run.Status != github.CheckRunCompleted {
+			continue
+		}
+		if !m.isScopedCheck(run.Name) {
+			continue
+		}
+
+		logs, err := m.ghClient.GetJobLogs(ctx, m.owner, m.repo, run.ID)
+		if err != nil {
+			m.log.Warn("failed to fetch logs for check run",
+				"check", run.Name,
+				"id", run.ID,
+				"error", err,
+			)
+			continue
+		}
+
+		if combined.Len() > 0 {
+			combined.WriteString("\n\n")
+		}
+		combined.WriteString(fmt.Sprintf("=== %s ===\n", run.Name))
+		combined.WriteString(logs)
+
+		if combined.Len() >= maxLen {
+			break
+		}
+	}
+
+	result := combined.String()
+	if len(result) > maxLen {
+		result = result[:maxLen]
+	}
+	return result
+}
+
 // GetCheckStatus returns the current status of a specific check by name.
 func (m *CIMonitor) GetCheckStatus(ctx context.Context, sha, checkName string) (CIStatus, error) {
 	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
