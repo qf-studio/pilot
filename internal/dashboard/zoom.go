@@ -408,6 +408,7 @@ func (m Model) renderZoomed() string {
 // state-priority sort order as the grid QUEUE panel.
 func (m Model) renderZoomedQueue(w, h int) string {
 	sorted := m.sortedTasks()
+	idW := queueIDColumnWidth(sorted)
 	offsets := make([]int, len(sorted))
 	qi := 0
 	for i, t := range sorted {
@@ -428,7 +429,7 @@ func (m Model) renderZoomedQueue(w, h int) string {
 	} else {
 		end := minInt(scroll+visible, total)
 		for i := scroll; i < end; i++ {
-			lines = append(lines, m.renderTask(sorted[i], i == sel, offsets[i], iw))
+			lines = append(lines, m.renderTask(sorted[i], i == sel, offsets[i], iw, idW))
 		}
 	}
 	indicator := dimStyle.Render(zoomListIndicator(scroll, minInt(scroll+visible, total), total))

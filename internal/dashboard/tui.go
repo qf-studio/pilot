@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1910,6 +1911,7 @@ func (m Model) renderTasks() string {
 		content.WriteString("  No tasks in queue")
 	} else {
 		sorted := m.sortedTasks()
+		idW := queueIDColumnWidth(sorted)
 
 		queueIdx := 0 // position counter for queued items' "#N" label
 		for i, task := range sorted {
@@ -1921,7 +1923,7 @@ func (m Model) renderTasks() string {
 				offset = queueIdx
 				queueIdx++
 			}
-			content.WriteString(m.renderTask(task, i == m.selectedTask, offset, iw))
+			content.WriteString(m.renderTask(task, i == m.selectedTask, offset, iw, idW))
 		}
 	}
 
@@ -1965,19 +1967,97 @@ func (m Model) sortedTasks() []TaskDisplay {
 	return sorted
 }
 
+// queueIDColumnWidth computes the shared ID column width for a queue render
+// pass: wide enough for the longest visible ID, capped so a pathological ID
+// (e.g. a deep sub-issue chain like "GH-4328-12") can't blow out row
+// alignment. GH-4338.
+func queueIDColumnWidth(tasks []TaskDisplay) int {
+	longest := 0
+	for _, t := range tasks {
+		if w := lipgloss.Width(t.ID); w > longest {
+			longest = w
+		}
+	}
+	idW := longest
+	if idW < 7 {
+		idW = 7
+	}
+	if idW > 12 {
+		idW = 12
+	}
+	return idW
+}
+
+// resolveParentTitle resolves the parent title and i/n position for a
+// sub-issue ID like "GH-4328-1" (parent "GH-4328", position 1) from the
+// currently known tasks/completed tasks. Used by the queue row title
+// fallback (GH-4338) so sub-issue rows with an unhydrated title show parent
+// context instead of duplicating the bare ID into the title column.
+func (m Model) resolveParentTitle(id string) (title string, pos, total int, ok bool) {
+	idx := strings.LastIndex(id, "-")
+	if idx <= 0 || idx == len(id)-1 {
+		return "", 0, 0, false
+	}
+	p, err := strconv.Atoi(id[idx+1:])
+	if err != nil || p <= 0 {
+		return "", 0, 0, false
+	}
+	parentID := id[:idx]
+
+	for _, t := range m.tasks {
+		if t.ID == parentID && t.Title != "" && t.Title != t.ID {
+			title = t.Title
+			break
+		}
+	}
+	if title == "" {
+		for _, t := range m.completedTasks {
+			if t.ID == parentID && t.Title != "" && t.Title != t.ID {
+				title = t.Title
+				break
+			}
+		}
+	}
+	if title == "" {
+		return "", 0, 0, false
+	}
+
+	total = p
+	for _, t := range m.tasks {
+		if strings.HasPrefix(t.ID, parentID+"-") {
+			if n, err := strconv.Atoi(t.ID[len(parentID)+1:]); err == nil && n > total {
+				total = n
+			}
+		}
+	}
+	return title, p, total, true
+}
+
 // renderTask renders a single task row with state-aware icons, bars, and meta.
 //
 // Layout (width-aware, minimum 65 inner chars):
 //
-//	sel(2) + icon+state(9) + space(1) + id(7) + space(1) + title(flex, min 20) + gap(2) + bar(16) + gap(1) + meta(5)
+//	sel(2) + icon+state(9) + space(1) + id(flex, 7-12) + space(1) + title(flex, min 20) + gap(2) + bar(16) + gap(1) + meta(5)
 //
-// Everything but the title is fixed; the title expands to fill iw (GH-3970),
+// Everything but the title and id is fixed; the title expands to fill iw
+// (GH-3970) and the id column widens to fit the widest visible ID (GH-4338),
 // mirroring how renderStandaloneLine flexes titles in HISTORY.
-func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw int) string {
-	const fixedCols = 45 // non-title columns (44) + 1 reserve so the row never exceeds iw
+func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw int, idW int) string {
+	const nonFlexCols = 37             // fixed columns excluding id and title (see layout above)
+	fixedCols := nonFlexCols + idW + 1 // +1 reserve so the row never exceeds iw at the min title width
 	titleW := iw - fixedCols
 	if titleW < 20 {
 		titleW = 20
+	}
+	// Hard ceiling: a wide id column can make the 20-char title floor push
+	// the row past iw (mem-024 — width math must never let a row overflow
+	// its panel). When that happens, shrink the title below the floor
+	// rather than overflow.
+	if maxTitleW := iw - nonFlexCols - idW; titleW > maxTitleW {
+		titleW = maxTitleW
+	}
+	if titleW < 1 {
+		titleW = 1
 	}
 	var icon, stateLabel, meta string
 	var iconStyle lipgloss.Style
@@ -2044,13 +2124,25 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 	// Render meta with state-appropriate color
 	renderedMeta := iconStyle.Render(fmt.Sprintf("%5s", meta))
 
+	// Title fallback (GH-4338): sub-issue rows can hydrate with an empty
+	// title or one that just echoes the ID; render parent context instead of
+	// duplicating the bare ID into the title column.
+	displayTitle := task.Title
+	if displayTitle == "" || displayTitle == task.ID {
+		if parentTitle, pos, total, ok := m.resolveParentTitle(task.ID); ok {
+			displayTitle = fmt.Sprintf("%s · %d/%d", parentTitle, pos, total)
+		} else {
+			displayTitle = dimStyle.Render(task.ID)
+		}
+	}
+
 	// Left side: selector + icon+state + id + title
 	// Right side: bar + meta (right-aligned)
-	return fmt.Sprintf("%s%s %-7s %s  %s %s",
+	return fmt.Sprintf("%s%s %s %s  %s %s",
 		selector,
 		iconState,
-		task.ID,
-		padOrTruncate(truncateVisual(task.Title, titleW), titleW),
+		padOrTruncate(task.ID, idW),
+		padOrTruncate(truncateVisual(displayTitle, titleW), titleW),
 		progressBar,
 		renderedMeta,
 	)
