@@ -110,11 +110,30 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		// GH-1235: Execute subtasks in the worktree when worktree mode is active
 		subtask.ProjectPath = executionPath
 
+		// GH-4339: register this subtask's planned title with the monitor
+		// before it starts executing. subtask.ID (e.g. "GH-4328-1") has no
+		// monitor entry yet at this point — without a Register call here, the
+		// first progress callback for that ID (from executeWithOptions below)
+		// hits Monitor.UpdateProgress's unknown-taskID fallback, which creates
+		// the entry with Title == ID. The dashboard then renders the bare
+		// sub-issue ID as its own title instead of the planned subtask
+		// summary.
+		if r.monitor != nil {
+			r.monitor.Register(subtask.ID, subtask.Title, "")
+		}
+
 		// Temporarily disable decomposer to prevent recursive decomposition
 		savedDecomposer := r.decomposer
 		r.decomposer = nil
 
-		subtaskResult, err := r.executeWithOptions(ctx, subtask, false)
+		var subtaskResult *ExecutionResult
+		var err error
+		if r.executeFunc != nil {
+			// Internal override for testing (mirrors epic.go's sub-issue loop).
+			subtaskResult, err = r.executeFunc(ctx, subtask)
+		} else {
+			subtaskResult, err = r.executeWithOptions(ctx, subtask, false)
+		}
 
 		// Restore decomposer
 		r.decomposer = savedDecomposer
