@@ -2722,13 +2722,26 @@
       },
       "mem-153": {
         "type": "pitfall",
-        "summary": "modernc.org/sqlite writes bound time.Time params using Go's time.Time.String() format by default, which SQLite's date()/datetime() can't parse (returns NULL) and sorts inconsistently against DEFAULT CURRENT_TIMESTAMP columns; fix by opening the DB with ?_time_format=sqlite. Also: SaveExecution's INSERT omitted created_at, letting the DB default silently override caller-supplied timestamps — root cause of internal/briefs's flaky TestGeneratorGenerate.",
+        "summary": "modernc.org/sqlite writes bound time.Time params using Go's time.Time.String() format by default, which SQLite's date()/datetime() can't parse (returns NULL) and sorts inconsistently against DEFAULT CURRENT_TIMESTAMP columns; fix by opening the DB with ?_time_format=sqlite. Also: SaveExecution's INSERT omitted created_at, letting the DB default silently override caller-supplied timestamps \u2014 root cause of internal/briefs's flaky TestGeneratorGenerate.",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_sqlite_time_bind_default_format.md",
         "concepts": [
           "sqlite",
           "database",
           "testing",
           "flaky-test"
+        ],
+        "confidence": 0.9,
+        "created": "2026-07-15"
+      },
+      "mem-154": {
+        "type": "pitfall",
+        "summary": "no_op is a legitimate terminal outcome (common for epic sub-issues) but was invisible to every 'is this task done' dispatch guard \u2014 Store.HasCompletedExecution requires status='completed' plus a deliverable, so the SDK poller's ExecutionChecker and dispatcher.go's hasTerminalSuccessLedger both re-treated no_op'd issues as fresh candidates forever (GH-4347: GH-82 dispatched 6x in one cycle). Fix: Store.HasTerminalCompletion ANY-row check ORing deliverable-completion with no_op-with-no-error; new admission gates must use executor.HasTerminalCompletion, not HasCompletedExecution directly.",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_noop_terminal_state_invisible_to_dispatch_guards.md",
+        "concepts": [
+          "dispatcher",
+          "sdk-poller",
+          "ledger",
+          "canary"
         ],
         "confidence": 0.9,
         "created": "2026-07-15"
@@ -4324,8 +4337,8 @@
   },
   "last_updated": "2026-07-13T09:40:34.396466+00:00",
   "stats": {
-    "total_nodes": 239,
+    "total_nodes": 240,
     "total_edges": 216,
-    "memory_count": 148
+    "memory_count": 149
   }
 }
