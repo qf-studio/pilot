@@ -3559,11 +3559,106 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 		prState.HeadSHA = ""           // force refresh on next tick
 		return nil
 	}
-	c.log.Warn("auto-rebase failed, closing PR for retry", "pr", prState.PRNumber, "error", err)
+	c.log.Warn("auto-rebase failed, attempting mechanical go.mod/go.sum resolution", "pr", prState.PRNumber, "error", err)
 
-	// Add comment explaining the closure
+	if c.attemptMechanicalConflictResolution(ctx, prState) {
+		return nil
+	}
+
 	comment := "Merge conflict detected. Auto-rebase failed — closing PR so the issue can be re-executed from updated main."
-	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+	return c.closeAndReexecute(ctx, prState, comment, "merge conflict with base branch")
+}
+
+// attemptMechanicalConflictResolution is the middle rung of handleMergeConflict
+// (GH-4328), tried after GitHub's server-side auto-rebase fails and before
+// falling through to closeAndReexecute. It replays the merge in a scratch
+// worktree to see which files actually conflict — UpdatePullRequestBranch's
+// error carries no detail — and, only when the conflict is confined to
+// go.mod/go.sum, resolves it mechanically and pushes the fix to the PR
+// branch.
+//
+// Returns true when the conflict was resolved and prState was advanced (either
+// to StageWaitingCI, or to StageFailed if this pushed RebaseAttempts past the
+// same oscillation cap the auto-rebase rung uses, GH-3715). Returns false for
+// every other outcome — local merge replay error, a conflict surface beyond
+// go.mod/go.sum, or resolveGoModSumConflict failing (unresolvable hunk, `go
+// mod tidy` failure, or post-tidy build failure) — leaving current behavior
+// (fall through to closeAndReexecute) unchanged.
+func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, prState *PRState) bool {
+	if c.projectPath == "" || prState.BranchName == "" {
+		return false
+	}
+
+	baseBranch := c.resolveMainBranchName()
+	result, cleanup, err := attemptLocalMerge(ctx, c.projectPath, prState.BranchName, baseBranch)
+	defer cleanup()
+	if err != nil {
+		c.log.Warn("mechanical conflict resolution: local merge replay failed", "pr", prState.PRNumber, "error", err)
+		return false
+	}
+	if !result.Conflicted() {
+		// UpdatePullRequestBranch failed for a reason other than a textual
+		// conflict (e.g. permissions) — don't guess at a fix, fall through.
+		c.log.Warn("mechanical conflict resolution: local merge replay succeeded cleanly despite GitHub API failure", "pr", prState.PRNumber)
+		return false
+	}
+	if !isGoModSumOnlyConflict(result.ConflictedFiles) {
+		c.log.Info("mechanical conflict resolution: conflict surface is not go.mod/go.sum-only, falling through",
+			"pr", prState.PRNumber, "files", result.ConflictedFiles)
+		return false
+	}
+
+	if err := resolveGoModSumConflict(ctx, result.WorktreePath, prState.BranchName, result.ConflictedFiles); err != nil {
+		c.log.Warn("mechanical conflict resolution: resolution failed, falling through to close-and-reexecute",
+			"pr", prState.PRNumber, "error", err)
+		return false
+	}
+
+	// GH-3715: a mechanical resolution returns the PR to StageWaitingCI without
+	// consuming MergeAttempts, same as a successful auto-rebase — share its
+	// oscillation counter and cap so the two rungs can't combine to cycle
+	// conflict -> resolved -> CI -> conflict indefinitely.
+	prState.RebaseAttempts++
+	if prState.RebaseAttempts >= c.config.MaxRebaseAttempts {
+		errMsg := fmt.Sprintf("conflict-resolution oscillation: %d successful conflict resolutions without a clean merge — manual intervention required",
+			prState.RebaseAttempts)
+		c.log.Error("mechanical conflict resolution: rebase attempt cap reached — escalating to StageFailed",
+			"pr", prState.PRNumber,
+			"attempts", prState.RebaseAttempts,
+			"max", c.config.MaxRebaseAttempts,
+		)
+		if prState.IssueNumber > 0 {
+			comment := fmt.Sprintf(
+				"⚠️ **Rebase escalation**: PR #%d has been auto-rebased or mechanically conflict-resolved %d times but keeps hitting merge conflicts.\n\nManual intervention is required — no further automatic resolution will be attempted.",
+				prState.PRNumber, prState.RebaseAttempts)
+			if _, cerr := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); cerr != nil {
+				c.log.Warn("failed to post rebase escalation comment", "pr", prState.PRNumber, "error", cerr)
+			}
+		}
+		prState.Stage = StageFailed
+		prState.Error = errMsg
+		c.metrics.RecordPRFailed()
+		c.metrics.RecordIssueProcessed("failed")
+		return true
+	}
+
+	c.log.Info("mechanically resolved go.mod/go.sum conflict", "pr", prState.PRNumber, "attempt", prState.RebaseAttempts, "max", c.config.MaxRebaseAttempts)
+	prState.Stage = StageWaitingCI // mechanical resolution triggers new CI
+	prState.HeadSHA = ""           // force refresh on next tick
+	return true
+}
+
+// closeAndReexecute is the fallback rung of handleMergeConflict: comment on
+// the PR, close it, and restore the issue to dispatch-ready so the poller
+// re-executes it from updated main.
+//
+// GH-4328: this is the dead end every earlier rung (auto-rebase, and the
+// forthcoming local mechanical go.mod/go.sum resolution) falls through to
+// once it decides the conflict isn't something it can resolve — kept as a
+// single reusable path so both rungs land on identical fallback behavior.
+func (c *Controller) closeAndReexecute(ctx context.Context, prState *PRState, closeComment, failureReason string) error {
+	// Add comment explaining the closure
+	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, closeComment); err != nil {
 		c.log.Warn("failed to comment on conflicting PR", "pr", prState.PRNumber, "error", err)
 	}
 
@@ -3590,7 +3685,7 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 	}
 
 	prState.Stage = StageFailed
-	prState.Error = "merge conflict with base branch"
+	prState.Error = failureReason
 	return nil
 }
 

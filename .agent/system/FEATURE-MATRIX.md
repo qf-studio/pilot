@@ -397,6 +397,7 @@
 | CLI `--env` flag | ✅ | main | `--env=stage` | - | Renamed from `--autopilot`, updated onboarding + config (v1.60.1, GH-1642) |
 | Prod auto-approve safety | ✅ | autopilot | - | - | Block auto-merge when pre_merge approval disabled in prod (v1.61.0) |
 | Auto-rebase on conflict | ✅ | autopilot | - | - | GitHub UpdatePullRequestBranch API before close-and-retry (v2.25.0) |
+| Mechanical go.mod/go.sum conflict resolution | ✅ | autopilot | - | - | Middle rung between auto-rebase failure and close-and-reexecute: replays the merge in a scratch worktree, and — only when the conflict is confined to go.mod/go.sum — unions pure `require` additions, regenerates go.sum via `go mod tidy`, verifies `go build ./...` still passes, then commits and pushes. Shares the auto-rebase oscillation cap (`MaxRebaseAttempts`, GH-3715). Any other conflicted file, an unresolvable go.mod hunk, a tidy failure, or a build-gate failure falls through to close-and-reexecute unchanged (v2.239.0, GH-4328) |
 | CI fix dependencies | ✅ | autopilot | - | - | `Depends on: #N` annotations in generated fix issues (v2.25.0) |
 | Board sync on merge | ✅ | autopilot | - | - | Move issue to Done column on PR merge (v2.30.0, PR #1864) |
 | Label cleanup on retry | ✅ | adapters/github | - | - | Remove `pilot-failed` on successful retry — accurate metrics (v1.8.1, GH-1302) |
