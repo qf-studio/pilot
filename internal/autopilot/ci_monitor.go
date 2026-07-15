@@ -46,31 +46,57 @@ func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIM
 	// Determine CI checks configuration
 	var ciChecks *CIChecksConfig
 	var requiredChecks []string
+	startupLog := slog.Default().With("component", "ci-monitor")
 
-	if cfg.CIChecks != nil {
-		ciChecks = cfg.CIChecks
+	switch {
+	case cfg.CIChecks != nil && len(cfg.CIChecks.Required) > 0:
 		// GH-4307: honor a non-empty Required allowlist regardless of Mode.
 		// Previously this was gated on Mode == "manual", so an operator running
 		// auto-discovery with an explicit Required list (e.g. to shield against
 		// unrelated scheduled/canary checks landing on the same SHA) had that
 		// list silently ignored — checkStatus fell through to
 		// checkAutoDiscoveredRuns, which aggregates every non-excluded check.
-		if len(ciChecks.Required) > 0 {
-			requiredChecks = ciChecks.Required
+		ciChecks = cfg.CIChecks
+		requiredChecks = ciChecks.Required
+	case len(cfg.RequiredChecks) > 0:
+		// GH-4333: ci_checks.required is empty (or ci_checks is unset) but the
+		// legacy required_checks allowlist is populated. Before this fix, any
+		// non-nil cfg.CIChecks (which DefaultConfig always sets) silently
+		// dropped the legacy list here with zero warning, leaving operators
+		// who believed required_checks was shielding them with no allowlist
+		// active at all (RCA of #4331).
+		mode := "manual"
+		var exclude []string
+		var grace time.Duration
+		if cfg.CIChecks != nil {
+			exclude = cfg.CIChecks.Exclude
+			grace = cfg.CIChecks.DiscoveryGracePeriod
 		}
-	} else if len(cfg.RequiredChecks) > 0 {
-		// Legacy: if RequiredChecks is set, use manual mode
 		ciChecks = &CIChecksConfig{
-			Mode:     "manual",
-			Required: cfg.RequiredChecks,
+			Mode:                 mode,
+			Exclude:              exclude,
+			Required:             cfg.RequiredChecks,
+			DiscoveryGracePeriod: grace,
 		}
 		requiredChecks = cfg.RequiredChecks
-	} else {
-		// Default: auto mode
-		ciChecks = &CIChecksConfig{
-			Mode:                 "auto",
-			DiscoveryGracePeriod: 60 * time.Second,
+		startupLog.Warn("falling back to deprecated required_checks allowlist because ci_checks.required is empty; migrate to ci_checks.required",
+			"required_checks", cfg.RequiredChecks)
+	default:
+		// Both ci_checks.required and the legacy required_checks are empty:
+		// no allowlist is active, so every non-excluded check on the SHA
+		// participates in the CI gate. This is valid (e.g. intentional
+		// auto-discovery), but it's also exactly the trap an operator hits
+		// when they believe an allowlist is shielding them and it silently
+		// isn't (RCA of #4331) — so make it visible at startup.
+		if cfg.CIChecks != nil {
+			ciChecks = cfg.CIChecks
+		} else {
+			ciChecks = &CIChecksConfig{
+				Mode:                 "auto",
+				DiscoveryGracePeriod: 60 * time.Second,
+			}
 		}
+		startupLog.Warn("no CI required-checks allowlist configured (ci_checks.required and required_checks are both empty); all non-excluded checks on the SHA will gate CI status")
 	}
 
 	// Ensure grace period has a default
@@ -88,7 +114,7 @@ func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIM
 		ciChecks:         ciChecks,
 		discoveredChecks: make(map[string][]string),
 		discoveryStart:   make(map[string]time.Time),
-		log:              slog.Default().With("component", "ci-monitor"),
+		log:              startupLog,
 	}
 }
 
