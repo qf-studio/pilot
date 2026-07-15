@@ -39,7 +39,15 @@ func NewStore(dataPath string) (*Store, error) {
 	}
 
 	dbPath := filepath.Join(dataPath, "pilot.db")
-	db, err := sql.Open("sqlite", dbPath)
+	// _time_format=sqlite makes modernc.org/sqlite write bound time.Time
+	// parameters using a format SQLite's own date()/datetime()/strftime()
+	// recognize (one of https://www.sqlite.org/lang_datefunc.html's formats).
+	// Without it the driver falls back to Go's time.Time.String() ("2006-01-02
+	// 15:04:05.999999999 -0700 MST"), which those functions can't parse (they
+	// silently return NULL) and which also sorts inconsistently against
+	// CURRENT_TIMESTAMP-populated columns in plain string comparisons
+	// (GH-4332).
+	db, err := sql.Open("sqlite", dbPath+"?_time_format=sqlite")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -565,16 +573,27 @@ func (s *Store) SaveExecution(exec *Execution) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal task labels: %w", err)
 	}
+	// createdAt is stamped in Go (rather than left to the column's
+	// DEFAULT CURRENT_TIMESTAMP) so callers that pre-set exec.CreatedAt
+	// (tests seeding a fixed time window) get exactly that value persisted,
+	// instead of the real insertion wall-clock time silently overriding it.
+	// The period queries (GetExecutionsInPeriod, GetBriefMetrics) filter on
+	// this column against Go time.Time bounds — letting SQLite pick the
+	// timestamp raced the caller's bounds under load (GH-4332).
+	createdAt := exec.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
 	return s.withRetry("SaveExecution", func() error {
 		_, err := s.db.Exec(`
-			INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
+			INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
 				tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_write,
 				estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
 				task_source_adapter, task_source_issue_id, task_labels,
 				approval_request_id, effort_level, complexity_level, is_canary)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, createdAt, exec.CompletedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.TokensCacheRead, exec.TokensCacheWrite,
 			exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,

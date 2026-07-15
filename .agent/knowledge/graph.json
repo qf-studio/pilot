@@ -2719,6 +2719,19 @@
         ],
         "confidence": 0.95,
         "created": "2026-07-13"
+      },
+      "mem-153": {
+        "type": "pitfall",
+        "summary": "modernc.org/sqlite writes bound time.Time params using Go's time.Time.String() format by default, which SQLite's date()/datetime() can't parse (returns NULL) and sorts inconsistently against DEFAULT CURRENT_TIMESTAMP columns; fix by opening the DB with ?_time_format=sqlite. Also: SaveExecution's INSERT omitted created_at, letting the DB default silently override caller-supplied timestamps — root cause of internal/briefs's flaky TestGeneratorGenerate.",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_sqlite_time_bind_default_format.md",
+        "concepts": [
+          "sqlite",
+          "database",
+          "testing",
+          "flaky-test"
+        ],
+        "confidence": 0.9,
+        "created": "2026-07-15"
       }
     }
   },
