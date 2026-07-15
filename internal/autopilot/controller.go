@@ -945,6 +945,23 @@ func (c *Controller) RestoreState() (int, error) {
 		if pr.Stage == StageFailed {
 			continue
 		}
+		// GH-4331: a scope carrier whose scope-release row already resolved
+		// terminal (failed/done) between its last persist and this restart
+		// must not be rehydrated — re-ticking it would re-run
+		// handleScopeReleaseFailure against a row MarkScopeReleasePending's
+		// terminal guard now refuses to touch, bouncing forever without ever
+		// re-registering through startPendingScopeReleases (the zombie-carrier
+		// class identified in GH-4331's RCA).
+		if pr.ScopeKey != "" && c.stateStore != nil {
+			if row, err := c.stateStore.GetScopeRelease(c.repoKey(), pr.ScopeKey); err != nil {
+				c.log.Warn("RestoreState: failed to check scope release state, rehydrating carrier anyway",
+					"pr", pr.PRNumber, "scope", pr.ScopeKey, "error", err)
+			} else if row != nil && (row.State == "failed" || row.State == "done") {
+				c.log.Info("RestoreState: skipping rehydration of carrier for terminal scope release",
+					"pr", pr.PRNumber, "scope", pr.ScopeKey, "scope_state", row.State)
+				continue
+			}
+		}
 		c.activePRs[pr.PRNumber] = pr
 	}
 	c.mu.Unlock()

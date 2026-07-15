@@ -130,7 +130,7 @@ func TestStateStore_MarkScopeReleasePending_AttemptsIncrement(t *testing.T) {
 	}
 
 	// incrementAttempts=false: crash-recovery re-drive, attempts unchanged.
-	if err := store.MarkScopeReleasePending("owner/repo", "epic:1", false); err != nil {
+	if err := store.MarkScopeReleasePending("owner/repo", "epic:1", false, ""); err != nil {
 		t.Fatalf("MarkScopeReleasePending(false) failed: %v", err)
 	}
 	row, err := store.GetScopeRelease("owner/repo", "epic:1")
@@ -141,8 +141,9 @@ func TestStateStore_MarkScopeReleasePending_AttemptsIncrement(t *testing.T) {
 		t.Errorf("state/attempts = %q/%d, want pending/0", row.State, row.Attempts)
 	}
 
-	// incrementAttempts=true: genuine carrier failure, attempts bumps.
-	if err := store.MarkScopeReleasePending("owner/repo", "epic:1", true); err != nil {
+	// incrementAttempts=true: genuine carrier failure, attempts bumps and
+	// last_failed_sha is recorded.
+	if err := store.MarkScopeReleasePending("owner/repo", "epic:1", true, "redsha1"); err != nil {
 		t.Fatalf("MarkScopeReleasePending(true) failed: %v", err)
 	}
 	row, err = store.GetScopeRelease("owner/repo", "epic:1")
@@ -151,6 +152,9 @@ func TestStateStore_MarkScopeReleasePending_AttemptsIncrement(t *testing.T) {
 	}
 	if row.Attempts != 1 {
 		t.Errorf("Attempts = %d, want 1", row.Attempts)
+	}
+	if row.LastFailedSHA != "redsha1" {
+		t.Errorf("LastFailedSHA = %q, want redsha1", row.LastFailedSHA)
 	}
 }
 
