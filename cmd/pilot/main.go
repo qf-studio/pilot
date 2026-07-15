@@ -3081,6 +3081,37 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 	return queued
 }
 
+// terminalCompletionChecker adapts *memory.Store to the SDK's
+// sdkcore.ExecutionChecker interface (HasCompletedExecution(taskID,
+// projectPath) (bool, error)) via executor.HasTerminalCompletion instead of
+// Store.HasCompletedExecution directly.
+//
+// GH-4347: Store.HasCompletedExecution only recognizes a "completed" row with
+// a commit/PR deliverable — a no_op outcome ("nothing to change", a common
+// legitimate epic sub-issue result) never satisfies it, so the poller's
+// pre-dispatch admission check kept treating an already-no_op'd issue as a
+// fresh candidate on every poll tick, re-dispatching it indefinitely
+// (confirmed via ledger: GH-82 on pilot-canary-sandbox, six no_op rows).
+// executor.HasTerminalCompletion is the same broadened "done" definition
+// dispatcher.go's own pickup guard (hasTerminalSuccessLedger) uses, so both
+// re-arm points agree.
+type terminalCompletionChecker struct {
+	store *memory.Store
+}
+
+func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath string) (bool, error) {
+	return executor.HasTerminalCompletion(c.store, taskID, projectPath)
+}
+
+// InvalidateCompletion delegates to the store unchanged — GH-4347 only
+// broadens what counts as "done" for the pre-dispatch check above; deleting a
+// stale completed record for an explicit retry keeps its existing, stricter
+// "genuine completed row" semantics (a no_op row is legitimately terminal and
+// disappearing labels/relisting the issue should not delete it).
+func (c terminalCompletionChecker) InvalidateCompletion(taskID, projectPath string) error {
+	return c.store.InvalidateCompletion(taskID, projectPath)
+}
+
 // storeExecutionSaver adapts *memory.Store to the github.ExecutionSaver interface.
 // GH-2802: Persists pre-flight rejection records for observability.
 type storeExecutionSaver struct {

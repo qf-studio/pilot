@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/teams"
 )
 
@@ -1062,5 +1064,62 @@ func TestResolveExecutionMode(t *testing.T) {
 				t.Errorf("resolveExecutionMode(%q) = %q, want %q", tt.modeStr, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestTerminalCompletionChecker_RecognizesNoOp is the GH-4347 regression at
+// the SDK poller wiring layer: the ExecutionChecker passed to the SDK poller
+// (poller_github.go) used to be *memory.Store directly, whose
+// HasCompletedExecution only recognizes a "completed" row with a
+// commit/PR deliverable — never a no_op outcome. That left the poller's own
+// pre-dispatch admission check blind to a task that legitimately resolved
+// to "nothing to change", so it kept treating the issue as a fresh
+// candidate on every poll tick (six live executions for GH-82 on
+// pilot-canary-sandbox in one canary cycle). terminalCompletionChecker wraps
+// the store so the poller sees the same broadened "done" definition
+// dispatcher.go's own pickup guard uses.
+func TestTerminalCompletionChecker_RecognizesNoOp(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-terminal-checker-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	const projectPath = "/Users/pilot-op/Projects/startups/pilot-canary-sandbox"
+	const taskID = "GH-82"
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-terminal-checker-noop",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "no_op",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	checker := terminalCompletionChecker{store: store}
+
+	got, err := checker.HasCompletedExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasCompletedExecution: %v", err)
+	}
+	if !got {
+		t.Error("expected terminalCompletionChecker to recognize a no_op row as a completed execution, got false")
+	}
+
+	// A raw *memory.Store, by contrast, must NOT — this pins the exact gap
+	// terminalCompletionChecker closes.
+	rawCompleted, err := store.HasCompletedExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("store.HasCompletedExecution: %v", err)
+	}
+	if rawCompleted {
+		t.Error("expected raw Store.HasCompletedExecution to stay strict (no_op has no deliverable) — if this now passes, the invariant this test pins has changed")
 	}
 }

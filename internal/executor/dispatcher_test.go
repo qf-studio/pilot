@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1420,6 +1421,234 @@ func TestDecomposedChildrenAllComplete(t *testing.T) {
 			t.Errorf("expected a warning log about the unparseable decomposed detail, got: %s", logBuf.String())
 		}
 	})
+}
+
+// TestHasTerminalCompletion is the GH-4347 table test for the exported
+// "is this task done" definition shared by the SDK poller's
+// ExecutionChecker (cmd/pilot/main.go's terminalCompletionChecker) and
+// dispatcher.go's own pickup guard (hasTerminalSuccessLedger). A no_op
+// outcome with no error must count as terminal (matching
+// childCompletionEvidence's existing "nothing to change is itself a
+// legitimate completion" definition) even though it never satisfies the
+// stricter Store.HasCompletedExecution.
+func TestHasTerminalCompletion(t *testing.T) {
+	const projectPath = "/project-terminal-completion"
+
+	tests := []struct {
+		name string
+		exec *memory.Execution
+		want bool
+	}{
+		{
+			name: "genuine completed row with deliverable",
+			exec: &memory.Execution{ID: "exec-htc-completed", TaskID: "GH-100", ProjectPath: projectPath, Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/100"},
+			want: true,
+		},
+		{
+			name: "no_op with no error is terminal",
+			exec: &memory.Execution{ID: "exec-htc-noop", TaskID: "GH-101", ProjectPath: projectPath, Status: "no_op"},
+			want: true,
+		},
+		{
+			name: "no_op with an error is NOT terminal",
+			exec: &memory.Execution{ID: "exec-htc-noop-err", TaskID: "GH-102", ProjectPath: projectPath, Status: "no_op", Error: "claude subprocess crashed"},
+			want: false,
+		},
+		{
+			name: "still running is not terminal",
+			exec: &memory.Execution{ID: "exec-htc-running", TaskID: "GH-103", ProjectPath: projectPath, Status: "running"},
+			want: false,
+		},
+		{
+			name: "infra failure is not terminal (should still retry)",
+			exec: &memory.Execution{ID: "exec-htc-infra", TaskID: "GH-104", ProjectPath: projectPath, Status: "infra"},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			if err := store.SaveExecution(tc.exec); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			got, err := HasTerminalCompletion(store, tc.exec.TaskID, projectPath)
+			if err != nil {
+				t.Fatalf("HasTerminalCompletion: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("HasTerminalCompletion(%q, %q) = %v, want %v", tc.exec.TaskID, projectPath, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProcessQueue_NoOpTerminalLedger_SkipsBackend is the GH-4347 regression
+// for the pilot-canary-sandbox incident: GH-82 (a decomposed epic sub-issue)
+// legitimately resolved to no_op ("nothing to change") and was re-dispatched
+// on every subsequent poll tick — six live executions in one canary cycle —
+// because neither the dispatcher's pickup guard nor the SDK poller's
+// pre-dispatch check recognized a no_op row as terminal. Table-driven across
+// a pilot-repo-style path and a canary-sandbox-style path (the task's
+// acceptance criterion (a)) since the defect was reported as sandbox-only.
+func TestProcessQueue_NoOpTerminalLedger_SkipsBackend(t *testing.T) {
+	tests := []struct {
+		name        string
+		projectPath string
+	}{
+		{"pilot-repo-style path", "/Users/pilot-op/Projects/startups/pilot"},
+		{"canary-sandbox-style path", "/Users/pilot-op/Projects/startups/pilot-canary-sandbox"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			const taskID = "GH-82"
+
+			// Seed the ledger with the prior no_op outcome — GH-82's actual
+			// terminal state on the canary sandbox ("greeter farewell; no
+			// surviving PR").
+			priorExec := &memory.Execution{
+				ID:          "exec-noop-prior",
+				TaskID:      taskID,
+				ProjectPath: tc.projectPath,
+				Status:      "no_op",
+			}
+			if err := store.SaveExecution(priorExec); err != nil {
+				t.Fatalf("failed to save prior no_op execution: %v", err)
+			}
+
+			// A second, freshly queued row for the SAME task — the
+			// re-dispatch that must be refused now that no_op is recognized
+			// as terminal.
+			dupExec := &memory.Execution{
+				ID:          "exec-noop-dup",
+				TaskID:      taskID,
+				ProjectPath: tc.projectPath,
+				Status:      "queued",
+				TaskBranch:  "pilot/GH-82",
+			}
+			if err := store.SaveExecution(dupExec); err != nil {
+				t.Fatalf("failed to save duplicate execution: %v", err)
+			}
+
+			origCheck := mergedPRPreflightCheck
+			mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+			defer func() { mergedPRPreflightCheck = origCheck }()
+
+			backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "should never run"}}
+			runner := NewRunnerWithBackend(backend)
+			worker := NewProjectWorker(tc.projectPath, store, runner, slog.Default())
+
+			worker.processQueue(context.Background())
+
+			backend.mu.Lock()
+			count := backend.execCount
+			backend.mu.Unlock()
+			if count != 0 {
+				t.Errorf("expected zero backend invocations (no_op terminal-ledger guard), got %d", count)
+			}
+
+			got, err := store.GetExecution(dupExec.ID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != "completed" {
+				t.Errorf("expected duplicate row status 'completed' (ledger-guarded), got %q", got.Status)
+			}
+		})
+	}
+}
+
+// TestQueueTask_ConcurrentDuplicate_DispatchesOnce is the GH-4347 race test
+// for the dispatchMu fix: QueueTask's duplicate check (IsTaskQueued) and its
+// executions-row insert used to be two unlocked store calls, so concurrent
+// callers racing the same task_id/project_path — e.g. the SDK poller's
+// per-issue goroutines, or a poll tick landing while an epic is still
+// creating sub-issues — could both observe "not queued" before either row
+// landed. Table-driven across a pilot-repo-style and a sandbox-style project
+// path reusing the SAME small issue number (acceptance criteria (b) and (c):
+// concurrent poll ticks still dispatch once, and small-issue-number reuse
+// across projects/cycles never cross-collides).
+func TestQueueTask_ConcurrentDuplicate_DispatchesOnce(t *testing.T) {
+	const concurrency = 8
+
+	tests := []struct {
+		name        string
+		projectPath string
+	}{
+		{"pilot-repo-style path", "/Users/pilot-op/Projects/startups/pilot"},
+		{"canary-sandbox-style path", "/Users/pilot-op/Projects/startups/pilot-canary-sandbox"},
+	}
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const taskID = "GH-60"
+
+			var wg sync.WaitGroup
+			var mu sync.Mutex
+			var successes int
+			var alreadyActive int
+			var otherErrs []error
+
+			for i := 0; i < concurrency; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					task := &Task{
+						ID:          taskID,
+						Title:       "Concurrent dispatch race",
+						Description: "GH-4347 regression",
+						ProjectPath: tc.projectPath,
+					}
+					_, err := dispatcher.QueueTask(context.Background(), task)
+					mu.Lock()
+					defer mu.Unlock()
+					switch {
+					case err == nil:
+						successes++
+					case errors.Is(err, ErrTaskAlreadyActive):
+						alreadyActive++
+					default:
+						otherErrs = append(otherErrs, err)
+					}
+				}()
+			}
+			wg.Wait()
+
+			if len(otherErrs) != 0 {
+				t.Fatalf("unexpected QueueTask errors: %v", otherErrs)
+			}
+			if successes != 1 {
+				t.Errorf("expected exactly 1 successful dispatch out of %d concurrent QueueTask calls, got %d (already-active: %d)", concurrency, successes, alreadyActive)
+			}
+			if alreadyActive != concurrency-1 {
+				t.Errorf("expected %d ErrTaskAlreadyActive rejections, got %d", concurrency-1, alreadyActive)
+			}
+
+			queued, err := store.IsTaskQueued(taskID, tc.projectPath)
+			if err != nil {
+				t.Fatalf("IsTaskQueued: %v", err)
+			}
+			if !queued {
+				t.Error("expected the single successful dispatch to leave the task queued")
+			}
+		})
+	}
 }
 
 // TestProcessQueue_CrossTaskIDGuard_MalformedDetailFallsThrough covers the

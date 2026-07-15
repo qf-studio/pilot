@@ -80,6 +80,19 @@ type Dispatcher struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
+
+	// dispatchMu serializes QueueTask's duplicate-task check + executions-row
+	// insert (GH-4347). The two steps were separate, unlocked store calls
+	// (IsTaskQueued SELECT, then queueSingleTask/queueDecomposedTask's INSERT
+	// via ExecutionLifecycle.Begin) — two goroutines racing QueueTask for the
+	// same task_id/project_path (e.g. the SDK poller's concurrent per-issue
+	// goroutines, or a poll tick overlapping epic sub-issue creation) could
+	// both observe "not queued" before either row landed, producing two
+	// executions rows and two live dispatches for one task. Held for the
+	// whole check-then-act region below; cheap (a couple of SQLite queries),
+	// so serializing it dispatcher-wide does not bottleneck actual task
+	// execution, which is unaffected by this lock.
+	dispatchMu sync.Mutex
 }
 
 // NewDispatcher creates a new task dispatcher.
@@ -562,6 +575,12 @@ func (d *Dispatcher) IsActive(taskID, projectPath string) bool {
 // If a decomposer is configured and the task is complex, it will be split
 // into subtasks that are queued instead of the parent task.
 func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) {
+	// GH-4347: serialize the duplicate check below with its own insert so two
+	// concurrent QueueTask calls for the same task_id/project_path can't both
+	// pass IsTaskQueued before either row lands. See dispatchMu's doc comment.
+	d.dispatchMu.Lock()
+	defer d.dispatchMu.Unlock()
+
 	// Check for duplicate tasks (GH-4276: scoped to this task's project)
 	exists, err := d.store.IsTaskQueued(task.ID, task.ProjectPath)
 	if err != nil {
@@ -1198,15 +1217,58 @@ func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.St
 }
 
 // hasTerminalSuccessLedger reports whether the TASK-394 execution ledger
-// already holds a genuine completed row for taskID in this worker's project.
-// It is the single guard shared by both re-arm points: the poller's re-arm
-// path consults the identical ledger via ExecutionChecker.HasCompletedExecution
-// (internal/adapters/github/poller.go) at poll time, and processQueue calls
-// this method again immediately before pickup (GH-4184) — closing the window
+// already holds terminal-completion evidence for taskID in this worker's
+// project. It is the single guard shared by both re-arm points: the poller's
+// re-arm path consults the identical ledger via ExecutionChecker (M7 4d.6:
+// the SDK poller's ExecutionChecker.HasCompletedExecution, wired in
+// cmd/pilot/poller_github.go) at poll time, and processQueue calls this
+// method again immediately before pickup (GH-4184) — closing the window
 // where a completion lands between the poller's decision and the dispatcher
 // actually starting the backend.
+//
+// GH-4347: delegates to HasTerminalCompletion rather than the stricter
+// Store.HasCompletedExecution directly — a no_op outcome ("nothing to
+// change") never satisfies HasCompletedExecution (no commit/PR), so a task
+// whose correct terminal state is no_op was invisible to both re-arm points
+// forever, and got re-dispatched on every poll tick.
 func (w *ProjectWorker) hasTerminalSuccessLedger(taskID string) (bool, error) {
-	return w.store.HasCompletedExecution(taskID, w.projectPath)
+	return HasTerminalCompletion(w.store, taskID, w.projectPath)
+}
+
+// HasTerminalCompletion reports whether taskID has ledger evidence in
+// projectPath that no further dispatch is warranted: either a genuine
+// Store.HasCompletedExecution row (completed with a commit/PR deliverable),
+// or ANY row that terminated no_op with no error (Store.HasTerminalCompletion's
+// "nothing to change is itself a legitimate completion" definition, matching
+// childCompletionEvidence's no_op reason).
+//
+// GH-4347: exported so every re-arm/admission gate shares one definition of
+// "done" instead of drifting. Before this, Store.HasCompletedExecution's
+// stricter deliverable-only definition was consulted directly in two places
+// that both needed the broader one — the SDK poller's pre-dispatch
+// ExecutionChecker check (poll time) and this package's processQueue pickup
+// guard (hasTerminalSuccessLedger) — so a no_op task_id (a legitimate,
+// common epic sub-issue outcome: "already covered by a sibling", "nothing
+// to change") was re-dispatched on every poll tick indefinitely. Confirmed
+// via ledger (GH-82 on pilot-canary-sandbox: six no_op rows, ~minutes
+// apart, matching the poll interval plus per-run subprocess time — not a
+// tight race).
+//
+// Delegates to Store.HasTerminalCompletion rather than childCompletionEvidence:
+// the latter's no_op fallback only inspects GetLatestExecutionByTaskID's most
+// recent row, which is correct for its own call site (a decomposed child's
+// one prior attempt) but wrong here, where the caller is re-checking
+// admission for a task_id that may already have a fresh "queued" duplicate
+// row racing alongside the earlier no_op row — the fresh row would sort as
+// "latest" and hide the terminal no_op. Store.HasTerminalCompletion scans
+// every row for the task_id instead.
+//
+// Store.HasCompletedExecution itself is intentionally left untouched: TASK-359
+// established its strict "has a deliverable" contract is load-bearing
+// elsewhere (TestTaskCompletionInvariant); this wraps it rather than
+// broadening it.
+func HasTerminalCompletion(store *memory.Store, taskID, projectPath string) (bool, error) {
+	return store.HasTerminalCompletion(taskID, projectPath)
 }
 
 // decomposedChildrenAllComplete reports whether taskID has a recorded
