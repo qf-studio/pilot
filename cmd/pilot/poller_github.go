@@ -327,9 +327,12 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	// GH-2201/GH-2242: task-queued gate + completed-execution guard.
 	// GH-4276: storeTaskChecker is scoped to this poller's own project so a
 	// same-numbered task_id active in a different project never counts here.
+	// GH-4347: terminalCompletionChecker wraps deps.Store rather than passing
+	// it directly — see its doc comment for why the raw Store.HasCompletedExecution
+	// method under-recognizes a no_op outcome as "done".
 	if deps.Store != nil {
 		pollerDeps.TaskChecker = storeTaskChecker{store: deps.Store, projectPath: target.projectPath}
-		pollerDeps.ExecutionChecker = deps.Store
+		pollerDeps.ExecutionChecker = terminalCompletionChecker{store: deps.Store}
 	}
 
 	// GH-2802: pre-flight judge (CC subprocess, no API key) — mirrors the

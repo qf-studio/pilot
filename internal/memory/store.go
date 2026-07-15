@@ -943,6 +943,42 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 	return count > 0, nil
 }
 
+// HasTerminalCompletion reports whether taskID has ANY row in projectPath
+// that is terminal in the sense that no further dispatch is warranted:
+// either a genuine HasCompletedExecution row (completed with a commit/PR
+// deliverable), or a no_op row with no error ("nothing to change" is itself
+// a legitimate completion — the same definition childCompletionEvidence
+// uses in internal/executor/dispatcher.go for decomposed-child evidence).
+//
+// GH-4347: deliberately an ANY-row check, unlike childCompletionEvidence's
+// no_op fallback (which inspects only GetLatestExecutionByTaskID's most
+// recent row — correct for that call site, where "latest" is the child's
+// only prior attempt). Here the caller is specifically re-checking
+// admission for a task_id that may already have a fresh "queued" duplicate
+// row alongside an earlier no_op row — the fresh row would be "latest" and
+// would wrongly hide the terminal no_op if this used the same latest-only
+// definition. Scanning every row for the task avoids that ordering trap.
+func (s *Store) HasTerminalCompletion(taskID, projectPath string) (bool, error) {
+	completed, err := s.HasCompletedExecution(taskID, projectPath)
+	if err != nil {
+		return false, err
+	}
+	if completed {
+		return true, nil
+	}
+
+	var count int
+	err = s.db.QueryRow(`
+		SELECT COUNT(*) FROM executions
+		WHERE task_id = ? AND project_path = ? AND status = 'no_op'
+			AND (error IS NULL OR error = '')
+	`, taskID, projectPath).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // decomposedChildRefRegex extracts "#123"-style issue references from a
 // StageDecomposed execution_events detail string, e.g. "decomposed into 2
 // children: #4212, #4213" (see executor.formatDecomposedChildrenSummary).
