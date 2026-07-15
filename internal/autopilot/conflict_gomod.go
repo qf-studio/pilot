@@ -42,7 +42,10 @@ func isGoModSumOnlyConflict(conflictedFiles []string) bool {
 // conflicted file is go.mod and/or go.sum, and only trusts go.mod hunks that
 // are pure `require` additions on both sides (taking their union) — a hunk
 // containing anything else (version bumps, removals, non-require lines) is
-// left unresolved and the caller falls through to closeAndReexecute.
+// left unresolved. A post-tidy `go build ./...` gate catches the rarer case
+// where the union still doesn't compile. Any failure along this path —
+// unresolvable hunk, tidy failure, or build failure — returns an error and
+// leaves the caller to fall through to closeAndReexecute.
 func resolveGoModSumConflict(ctx context.Context, worktreePath, branchName string, conflictedFiles []string) error {
 	if !isGoModSumOnlyConflict(conflictedFiles) {
 		return fmt.Errorf("conflict is not confined to go.mod/go.sum: %v", conflictedFiles)
@@ -73,6 +76,15 @@ func resolveGoModSumConflict(ctx context.Context, worktreePath, branchName strin
 		return fmt.Errorf("go mod tidy: %w", err)
 	}
 
+	// Test-gate: a require-union that's individually valid on each side can
+	// still fail to build once combined (e.g. two deps pulling incompatible
+	// transitive versions that `go mod tidy` resolves without erroring). Catch
+	// that here, before committing, rather than pushing a broken build for CI
+	// to discover minutes later.
+	if err := runGoBuild(ctx, worktreePath); err != nil {
+		return fmt.Errorf("go build after mechanical resolution: %w", err)
+	}
+
 	if err := runGitCmd(ctx, worktreePath, "add", "go.mod", "go.sum"); err != nil {
 		return fmt.Errorf("git add go.mod go.sum: %w", err)
 	}
@@ -90,6 +102,16 @@ func resolveGoModSumConflict(ctx context.Context, worktreePath, branchName strin
 
 func runGoModTidy(ctx context.Context, dir string) error {
 	cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func runGoBuild(ctx context.Context, dir string) error {
+	cmd := exec.CommandContext(ctx, "go", "build", "./...")
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

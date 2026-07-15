@@ -199,6 +199,72 @@ func TestResolveGoModSumConflict_PureRequireUnion(t *testing.T) {
 	}
 }
 
+// TestResolveGoModSumConflict_BuildGateCatchesBrokenUnion reproduces the
+// rarer failure this rung's post-tidy `go build ./...` gate exists for: two
+// branches each add a require that individually resolves and passes `go mod
+// tidy`, but the resulting source doesn't actually compile once combined
+// (here, a type mismatch introduced by the depb side). resolveGoModSumConflict
+// must fail without committing or pushing anything, leaving the caller to
+// fall through to closeAndReexecute.
+func TestResolveGoModSumConflict_BuildGateCatchesBrokenUnion(t *testing.T) {
+	local := newFixtureRepo(t)
+	ctx := context.Background()
+
+	newLocalReplaceModule(t, local, "depa", "depa")
+	newLocalReplaceModule(t, local, "depb", "depb")
+
+	writeFixtureFile(t, local, "go.mod", strings.Join([]string{
+		"module fixture",
+		"",
+		"go 1.25",
+		"",
+		"replace example.com/depa => ./localdeps/depa",
+		"",
+		"replace example.com/depb => ./localdeps/depb",
+		"",
+	}, "\n"))
+	runFixtureGit(t, local, "add", ".")
+	runFixtureGit(t, local, "commit", "-m", "scaffold local replace modules")
+	runFixtureGit(t, local, "push", "origin", "main")
+
+	runFixtureGit(t, local, "checkout", "-b", "feature/dep-a")
+	appendFixtureFile(t, local, "go.mod", "require example.com/depa v0.0.0-00010101000000-000000000000\n")
+	writeFixtureFile(t, local, "usea.go", "package fixture\n\nimport \"example.com/depa\"\n\nvar UseDepA = depa.Hello()\n")
+	runFixtureGit(t, local, "add", ".")
+	runFixtureGit(t, local, "commit", "-m", "add depa")
+	runFixtureGit(t, local, "push", "origin", "feature/dep-a")
+
+	runFixtureGit(t, local, "checkout", "main")
+	appendFixtureFile(t, local, "go.mod", "require example.com/depb v0.0.0-00010101000000-000000000000\n")
+	// Type mismatch (string + int): loads and resolves fine for `go mod tidy`'s
+	// import-graph purposes, but fails `go build`.
+	writeFixtureFile(t, local, "useb.go", "package fixture\n\nimport \"example.com/depb\"\n\nvar UseDepB = depb.Hello() + 1\n")
+	runFixtureGit(t, local, "add", ".")
+	runFixtureGit(t, local, "commit", "-m", "add depb")
+	runFixtureGit(t, local, "push", "origin", "main")
+
+	result, cleanup, err := attemptLocalMerge(ctx, local, "feature/dep-a", "main")
+	defer cleanup()
+	if err != nil {
+		t.Fatalf("attemptLocalMerge: %v", err)
+	}
+	if !isGoModSumOnlyConflict(result.ConflictedFiles) {
+		t.Fatalf("expected conflict confined to go.mod/go.sum, got: %v", result.ConflictedFiles)
+	}
+
+	if err := resolveGoModSumConflict(ctx, result.WorktreePath, "feature/dep-a", result.ConflictedFiles); err == nil {
+		t.Fatal("expected resolveGoModSumConflict to fail the build gate")
+	} else if !strings.Contains(err.Error(), "go build") {
+		t.Fatalf("expected build-gate error, got: %v", err)
+	}
+
+	// Nothing should have been pushed — origin/feature/dep-a is unchanged.
+	logOut := runFixtureGit(t, local, "log", "-1", "--format=%s", "origin/feature/dep-a")
+	if strings.TrimSpace(logOut) == mechanicalResolutionCommitMessage {
+		t.Fatalf("origin/feature/dep-a should not have received the mechanical-resolution commit")
+	}
+}
+
 func appendFixtureFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	f, err := os.OpenFile(filepath.Join(dir, name), os.O_APPEND|os.O_WRONLY, 0o644)
