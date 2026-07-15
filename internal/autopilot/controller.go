@@ -3561,9 +3561,21 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 	}
 	c.log.Warn("auto-rebase failed, closing PR for retry", "pr", prState.PRNumber, "error", err)
 
-	// Add comment explaining the closure
 	comment := "Merge conflict detected. Auto-rebase failed — closing PR so the issue can be re-executed from updated main."
-	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+	return c.closeAndReexecute(ctx, prState, comment, "merge conflict with base branch")
+}
+
+// closeAndReexecute is the fallback rung of handleMergeConflict: comment on
+// the PR, close it, and restore the issue to dispatch-ready so the poller
+// re-executes it from updated main.
+//
+// GH-4328: this is the dead end every earlier rung (auto-rebase, and the
+// forthcoming local mechanical go.mod/go.sum resolution) falls through to
+// once it decides the conflict isn't something it can resolve — kept as a
+// single reusable path so both rungs land on identical fallback behavior.
+func (c *Controller) closeAndReexecute(ctx context.Context, prState *PRState, closeComment, failureReason string) error {
+	// Add comment explaining the closure
+	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, closeComment); err != nil {
 		c.log.Warn("failed to comment on conflicting PR", "pr", prState.PRNumber, "error", err)
 	}
 
@@ -3590,7 +3602,7 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 	}
 
 	prState.Stage = StageFailed
-	prState.Error = "merge conflict with base branch"
+	prState.Error = failureReason
 	return nil
 }
 
