@@ -300,7 +300,7 @@ func TestScopeCarrier_AttemptsCapEscalatesToFailedAlert(t *testing.T) {
 	}
 	// Pre-load the row to attempts=maxScopeReleaseAttempts so the next failure crosses the cap.
 	for i := 0; i < maxScopeReleaseAttempts; i++ {
-		if err := stateStore.MarkScopeReleasePending("owner/repo", "epic:1", true); err != nil {
+		if err := stateStore.MarkScopeReleasePending("owner/repo", "epic:1", true, "redsha"); err != nil {
 			t.Fatalf("MarkScopeReleasePending failed: %v", err)
 		}
 	}
@@ -666,5 +666,179 @@ func TestScopeCarrierAPIMode_ReleaseBodyContainsAllElements(t *testing.T) {
 		if !strings.Contains(createdBody, want) {
 			t.Errorf("release body missing %q\n--- got ---\n%s", want, createdBody)
 		}
+	}
+}
+
+// TestHandleScopeReleaseFailure_TerminalFailedRowIsNotResurrected is the
+// GH-4331 regression guard for the zombie-carrier bounce identified in the
+// RCA: a scope-release row that already reached terminal 'failed' (attempts
+// exhausted, human alerted) must never be flipped back to 'pending' by a
+// restart-rehydrated carrier still ticking against it. Before the fix,
+// MarkScopeReleasePending had no state guard, so each failure bounced the row
+// failed->pending->failed and kept inflating attempts forever (observed in
+// production: train:07-13 attempts=19, train:07-14 attempts=11).
+func TestHandleScopeReleaseFailure_TerminalFailedRowIsNotResurrected(t *testing.T) {
+	stateStore := newTestStateStore(t)
+	if err := stateStore.EnqueueScopeRelease("owner/repo", "epic:1", "epic", []int{9}); err != nil {
+		t.Fatalf("EnqueueScopeRelease failed: %v", err)
+	}
+	// Seed the row directly as already terminal-failed with attempts past the
+	// cap — simulates state left behind by a prior daemon run.
+	if _, err := stateStore.db.Exec(
+		`UPDATE autopilot_scope_release SET state = 'failed', attempts = 6, last_failed_sha = 'redsha' WHERE repo = ? AND scope_key = ?`,
+		"owner/repo", "epic:1",
+	); err != nil {
+		t.Fatalf("failed to seed terminal row: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_scope_close"}
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, "http://127.0.0.1:0")
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.SetStateStore(stateStore)
+	c.SetAlertsEngine(&fakeAlertSink{})
+
+	// Restart-rehydrated zombie carrier: still tracked at StagePostMergeCI
+	// even though its scope already resolved terminal.
+	prState := &PRState{PRNumber: 9, ScopeKey: "epic:1", IssueNumber: 1, Stage: StagePostMergeCI, PostMergeSHA: "redsha"}
+
+	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed")
+	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed")
+
+	row, err := stateStore.GetScopeRelease("owner/repo", "epic:1")
+	if err != nil || row == nil {
+		t.Fatalf("GetScopeRelease failed: %v", err)
+	}
+	if row.State != "failed" {
+		t.Errorf("state = %q, want failed (terminal row must not be resurrected)", row.State)
+	}
+	if row.Attempts != 6 {
+		t.Errorf("attempts = %d, want 6 (unchanged)", row.Attempts)
+	}
+}
+
+// TestMarkScopeReleaseDone_EmptyTagDoesNotBlankRecordedTag is the GH-4331
+// regression guard: a restart replay that re-observes an already-'done' scope
+// as a no-op release (empty tag, e.g. CompareCommits finds nothing new past
+// the tag) must not blank the tag a prior pass already recorded.
+func TestMarkScopeReleaseDone_EmptyTagDoesNotBlankRecordedTag(t *testing.T) {
+	store := newTestStateStore(t)
+	if err := store.EnqueueScopeRelease("owner/repo", "epic:1", "epic", []int{1}); err != nil {
+		t.Fatalf("EnqueueScopeRelease failed: %v", err)
+	}
+	if _, err := store.ClaimScopeRelease("owner/repo", "epic:1"); err != nil {
+		t.Fatalf("ClaimScopeRelease failed: %v", err)
+	}
+	if err := store.MarkScopeReleaseDone("owner/repo", "epic:1", "v2.238.0", "sha1"); err != nil {
+		t.Fatalf("MarkScopeReleaseDone failed: %v", err)
+	}
+
+	// Restart replay re-observes the same scope as a no-op release.
+	if err := store.MarkScopeReleaseDone("owner/repo", "epic:1", "", "sha2"); err != nil {
+		t.Fatalf("MarkScopeReleaseDone (no-op replay) failed: %v", err)
+	}
+
+	row, err := store.GetScopeRelease("owner/repo", "epic:1")
+	if err != nil || row == nil {
+		t.Fatalf("GetScopeRelease failed: %v", err)
+	}
+	if row.Tag != "v2.238.0" {
+		t.Errorf("Tag = %q, want v2.238.0 (must not be blanked by no-op replay)", row.Tag)
+	}
+	if row.FinalSHA != "sha2" {
+		t.Errorf("FinalSHA = %q, want sha2 (final_sha always updates)", row.FinalSHA)
+	}
+}
+
+// TestStartPendingScopeReleases_DoesNotClaimFailedRows is a characterization
+// pin (GH-4331): startPendingScopeReleases only ever lists 'releasing' and
+// 'pending' rows for claiming, so a terminal 'failed' row (with no
+// LastFailedSHA to compare against, i.e. nothing for recoverFailedScopeReleases
+// to act on) is left untouched by the sweep. Passes both before and after the
+// GH-4331 fix — guards against a naive "retry failed rows unconditionally"
+// implementation.
+func TestStartPendingScopeReleases_DoesNotClaimFailedRows(t *testing.T) {
+	stateStore := newTestStateStore(t)
+	if err := stateStore.EnqueueScopeRelease("owner/repo", "epic:1", "epic", []int{9}); err != nil {
+		t.Fatalf("EnqueueScopeRelease failed: %v", err)
+	}
+	if _, err := stateStore.db.Exec(
+		`UPDATE autopilot_scope_release SET state = 'failed', attempts = 6 WHERE repo = ? AND scope_key = ?`,
+		"owner/repo", "epic:1",
+	); err != nil {
+		t.Fatalf("failed to seed terminal row: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_scope_close"}
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, "http://127.0.0.1:0")
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.SetStateStore(stateStore)
+
+	c.startPendingScopeReleases(context.Background())
+
+	if _, ok := c.GetPRState(9); ok {
+		t.Error("expected no carrier registered for a terminal failed row")
+	}
+	row, err := stateStore.GetScopeRelease("owner/repo", "epic:1")
+	if err != nil || row == nil {
+		t.Fatalf("GetScopeRelease failed: %v", err)
+	}
+	if row.State != "failed" {
+		t.Errorf("state = %q, want failed (unclaimed, unchanged)", row.State)
+	}
+}
+
+// TestRecoverFailedScopeReleases_ResetsAttemptsWhenMainAdvances verifies the
+// GH-4331 self-healing recovery path from the acceptance criteria: once main
+// moves past the SHA a terminal 'failed' scope last failed against, the next
+// startPendingScopeReleases sweep resurrects it as 'pending' with attempts
+// reset to 0, and the same sweep's tryStartScopeRelease claim registers a
+// fresh carrier — turning a same-day fix into a same-day release instead of
+// leaving the train dead until tomorrow's scope rolls it forward.
+func TestRecoverFailedScopeReleases_ResetsAttemptsWhenMainAdvances(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/branches/main":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "main", "commit": map[string]string{"sha": "greensha"}})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	stateStore := newTestStateStore(t)
+	if err := stateStore.EnqueueScopeRelease("owner/repo", "epic:1", "epic", []int{9}); err != nil {
+		t.Fatalf("EnqueueScopeRelease failed: %v", err)
+	}
+	if _, err := stateStore.db.Exec(
+		`UPDATE autopilot_scope_release SET state = 'failed', attempts = 6, last_failed_sha = 'redsha' WHERE repo = ? AND scope_key = ?`,
+		"owner/repo", "epic:1",
+	); err != nil {
+		t.Fatalf("failed to seed terminal row: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_scope_close"}
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.SetStateStore(stateStore)
+
+	c.startPendingScopeReleases(context.Background())
+
+	if _, ok := c.GetPRState(9); !ok {
+		t.Fatal("expected a fresh carrier registered after self-recovery against the new main HEAD")
+	}
+	row, err := stateStore.GetScopeRelease("owner/repo", "epic:1")
+	if err != nil || row == nil {
+		t.Fatalf("GetScopeRelease failed: %v", err)
+	}
+	if row.State != "releasing" {
+		t.Errorf("state = %q, want releasing (claimed by tryStartScopeRelease)", row.State)
+	}
+	if row.Attempts != 0 {
+		t.Errorf("attempts = %d, want 0 (reset on recovery)", row.Attempts)
 	}
 }

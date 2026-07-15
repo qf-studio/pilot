@@ -144,6 +144,11 @@ func (s *StateStore) migrate() error {
 		// each mint a fresh "fix(ci): resolve post-merge CI failure..." issue —
 		// this table is checked (via ClaimSpawnedFix) before every
 		// CreateFailureIssue call so only the first observation creates one.
+		// GH-4331: track the main-HEAD SHA a scope-release carrier last failed
+		// against, so a recovery sweep can distinguish "still the same red
+		// commit" (leave terminal) from "main moved, worth retrying" without
+		// re-running CI itself.
+		`ALTER TABLE autopilot_scope_release ADD COLUMN last_failed_sha TEXT NOT NULL DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS autopilot_spawned_fixes (
 			repo TEXT NOT NULL,
 			dedup_key TEXT NOT NULL,
@@ -970,8 +975,11 @@ type ScopeRelease struct {
 	FinalSHA   string
 	Tag        string
 	Attempts   int
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// LastFailedSHA is the main-HEAD SHA this scope last failed a carrier
+	// against (GH-4331). Empty until the first genuine carrier failure.
+	LastFailedSHA string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // encodeIntCSV renders a sorted []int as a comma-separated string for storage
@@ -1096,7 +1104,7 @@ func (s *StateStore) GetSpawnedFixIssue(repo, dedupKey string) (int, error) {
 // if not found.
 func (s *StateStore) GetScopeRelease(repo, scopeKey string) (*ScopeRelease, error) {
 	row := s.db.QueryRow(`
-		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, created_at, updated_at
+		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, last_failed_sha, created_at, updated_at
 		FROM autopilot_scope_release WHERE repo = ? AND scope_key = ?
 	`, repo, scopeKey)
 	sr, err := scanScopeRelease(row.Scan)
@@ -1123,7 +1131,7 @@ func (s *StateStore) ListScopeReleases(repo string, states ...string) ([]*ScopeR
 		args = append(args, st)
 	}
 	query := fmt.Sprintf(`
-		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, created_at, updated_at
+		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, last_failed_sha, created_at, updated_at
 		FROM autopilot_scope_release WHERE repo = ? AND state IN (%s)
 	`, strings.Join(placeholders, ", "))
 	rows, err := s.db.Query(query, args...)
@@ -1145,28 +1153,42 @@ func (s *StateStore) ListScopeReleases(repo string, states ...string) ([]*ScopeR
 
 // MarkScopeReleaseDone marks a scope-release row terminal-success. tag is ""
 // for a no-op release (BumpNone — the scope's commits carry no releasable
-// change), recorded so a no-op scope never retries.
+// change), recorded so a no-op scope never retries. GH-4331: an empty tag
+// here never blanks an already-recorded tag — a restart replay re-observing
+// the same completed scope as a no-op (e.g. after CompareCommits sees
+// nothing new post-tag) must not erase the tag a prior pass already wrote.
 func (s *StateStore) MarkScopeReleaseDone(repo, scopeKey, tag, finalSHA string) error {
 	_, err := s.db.Exec(`
 		UPDATE autopilot_scope_release
-		SET state = 'done', tag = ?, final_sha = ?, updated_at = CURRENT_TIMESTAMP
+		SET state = 'done', tag = CASE WHEN ? = '' THEN tag ELSE ? END, final_sha = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE repo = ? AND scope_key = ?
-	`, tag, finalSHA, repo, scopeKey)
+	`, tag, tag, finalSHA, repo, scopeKey)
 	return err
 }
 
 // MarkScopeReleasePending re-queues a scope-release row as 'pending' so the
 // next startPendingScopeReleases sweep claims a fresh carrier for it.
 // incrementAttempts distinguishes a genuine carrier failure (true — bumps the
-// retry-cap counter handleScopeReleaseFailure checks) from crash recovery
-// (false — a 'releasing' row left with no live carrier after a restart, which
-// is not itself a failure of the release).
-func (s *StateStore) MarkScopeReleasePending(repo, scopeKey string, incrementAttempts bool) error {
-	q := `UPDATE autopilot_scope_release SET state = 'pending', updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ?`
+// retry-cap counter handleScopeReleaseFailure checks, and records failedSHA as
+// the main-HEAD SHA that failed) from crash recovery (false — a 'releasing'
+// row left with no live carrier after a restart, which is not itself a
+// failure of the release; failedSHA is ignored in that case).
+//
+// GH-4331: rows already terminal ('failed' or 'done') are never matched —
+// without this guard, a zombie carrier rehydrated from a persisted PRState
+// whose scope already resolved terminal would bounce the row
+// failed->pending->failed forever every tick, inflating attempts far past
+// maxScopeReleaseAttempts. Recovery for a genuinely stuck 'failed' row is
+// ResetScopeReleaseForRetry, called only once main has moved past
+// LastFailedSHA.
+func (s *StateStore) MarkScopeReleasePending(repo, scopeKey string, incrementAttempts bool, failedSHA string) error {
+	q := `UPDATE autopilot_scope_release SET state = 'pending', updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ? AND state NOT IN ('failed', 'done')`
+	args := []interface{}{repo, scopeKey}
 	if incrementAttempts {
-		q = `UPDATE autopilot_scope_release SET state = 'pending', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ?`
+		q = `UPDATE autopilot_scope_release SET state = 'pending', attempts = attempts + 1, last_failed_sha = CASE WHEN ? = '' THEN last_failed_sha ELSE ? END, updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ? AND state NOT IN ('failed', 'done')`
+		args = []interface{}{failedSHA, failedSHA, repo, scopeKey}
 	}
-	_, err := s.db.Exec(q, repo, scopeKey)
+	_, err := s.db.Exec(q, args...)
 	return err
 }
 
@@ -1176,6 +1198,21 @@ func (s *StateStore) MarkScopeReleaseFailed(repo, scopeKey string) error {
 	_, err := s.db.Exec(`
 		UPDATE autopilot_scope_release SET state = 'failed', updated_at = CURRENT_TIMESTAMP
 		WHERE repo = ? AND scope_key = ?
+	`, repo, scopeKey)
+	return err
+}
+
+// ResetScopeReleaseForRetry resurrects a terminal 'failed' scope-release row
+// for a fresh attempt, resetting attempts to 0 so the new carrier gets the
+// full retry budget. Callers (recoverFailedScopeReleases) must only invoke
+// this once main has moved past the SHA the row last failed against — this
+// method itself does not compare SHAs, it just performs the resurrection
+// (GH-4331).
+func (s *StateStore) ResetScopeReleaseForRetry(repo, scopeKey string) error {
+	_, err := s.db.Exec(`
+		UPDATE autopilot_scope_release
+		SET state = 'pending', attempts = 0, updated_at = CURRENT_TIMESTAMP
+		WHERE repo = ? AND scope_key = ? AND state = 'failed'
 	`, repo, scopeKey)
 	return err
 }
@@ -1219,7 +1256,7 @@ func scanScopeRelease(scan func(dest ...interface{}) error) (*ScopeRelease, erro
 	var createdAt, updatedAt sql.NullTime
 	err := scan(
 		&sr.Repo, &sr.ScopeKey, &sr.ScopeTitle, &memberCSV, &sr.AnchorPR,
-		&sr.State, &sr.FinalSHA, &sr.Tag, &sr.Attempts, &createdAt, &updatedAt,
+		&sr.State, &sr.FinalSHA, &sr.Tag, &sr.Attempts, &sr.LastFailedSHA, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err

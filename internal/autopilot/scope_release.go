@@ -89,11 +89,13 @@ func (c *Controller) startPendingScopeReleases(ctx context.Context) {
 			continue
 		}
 		c.log.Info("re-driving scope release with no live carrier", "scope", row.ScopeKey)
-		if err := c.stateStore.MarkScopeReleasePending(repo, row.ScopeKey, false); err != nil {
+		if err := c.stateStore.MarkScopeReleasePending(repo, row.ScopeKey, false, ""); err != nil {
 			c.log.Warn("startPendingScopeReleases: failed to re-queue stale releasing row",
 				"scope", row.ScopeKey, "error", err)
 		}
 	}
+
+	c.recoverFailedScopeReleases(ctx)
 
 	pending, err := c.stateStore.ListScopeReleases(repo, "pending")
 	if err != nil {
@@ -102,6 +104,42 @@ func (c *Controller) startPendingScopeReleases(ctx context.Context) {
 	}
 	for _, row := range pending {
 		c.tryStartScopeRelease(row)
+	}
+}
+
+// recoverFailedScopeReleases resurrects terminal 'failed' scope-release rows
+// once main has moved past the SHA they last failed against — turning a
+// same-day fix into a same-day release instead of leaving the train dead
+// until tomorrow's scope rolls it forward. Attempts reset to 0 so the fresh
+// carrier retries against the new commit with the full budget (GH-4331).
+// Rows with no recorded LastFailedSHA (pre-migration data) are left alone —
+// there is nothing to compare against, so leave the human-alerted terminal
+// state as-is rather than guess.
+func (c *Controller) recoverFailedScopeReleases(ctx context.Context) {
+	repo := c.repoKey()
+	failed, err := c.stateStore.ListScopeReleases(repo, "failed")
+	if err != nil {
+		c.log.Warn("recoverFailedScopeReleases: failed to list failed scope rows", "error", err)
+		return
+	}
+	if len(failed) == 0 {
+		return
+	}
+	mainSHA, err := c.getMainBranchSHA(ctx)
+	if err != nil {
+		c.log.Warn("recoverFailedScopeReleases: failed to get main branch SHA", "error", err)
+		return
+	}
+	for _, row := range failed {
+		if row.LastFailedSHA == "" || row.LastFailedSHA == mainSHA {
+			continue
+		}
+		if err := c.stateStore.ResetScopeReleaseForRetry(repo, row.ScopeKey); err != nil {
+			c.log.Warn("recoverFailedScopeReleases: failed to reset scope release", "scope", row.ScopeKey, "error", err)
+			continue
+		}
+		c.log.Info("recovered terminal scope release for retry against new main HEAD",
+			"scope", row.ScopeKey, "old_sha", ShortSHA(row.LastFailedSHA), "new_sha", ShortSHA(mainSHA))
 	}
 }
 
@@ -117,7 +155,7 @@ func (c *Controller) tryStartScopeRelease(row *ScopeRelease) {
 		return
 	}
 	if c.memberPRsStillActive(row.MemberPRs) {
-		c.log.Debug("deferring scope release: a member PR is still mid-pipeline", "scope", row.ScopeKey)
+		c.log.Info("deferring scope release: a member PR is still mid-pipeline", "scope", row.ScopeKey)
 		return
 	}
 
@@ -128,7 +166,7 @@ func (c *Controller) tryStartScopeRelease(row *ScopeRelease) {
 	_, tracked := c.activePRs[anchorPR]
 	c.mu.RUnlock()
 	if tracked {
-		c.log.Debug("deferring scope release: anchor PR already tracked", "scope", row.ScopeKey, "anchor_pr", anchorPR)
+		c.log.Info("deferring scope release: anchor PR already tracked", "scope", row.ScopeKey, "anchor_pr", anchorPR)
 		return
 	}
 	if age, found, err := c.stateStore.PersistedReleasingAge(repo, anchorPR); err != nil {
@@ -136,7 +174,7 @@ func (c *Controller) tryStartScopeRelease(row *ScopeRelease) {
 			"scope", row.ScopeKey, "anchor_pr", anchorPR, "error", err)
 		return
 	} else if found && age < releasingStaleThreshold {
-		c.log.Debug("deferring scope release: anchor PR has a fresh persisted releasing row",
+		c.log.Info("deferring scope release: anchor PR has a fresh persisted releasing row",
 			"scope", row.ScopeKey, "anchor_pr", anchorPR)
 		return
 	}
@@ -329,7 +367,7 @@ func (c *Controller) handleScopeReleaseFailure(ctx context.Context, prState *PRS
 		return
 	}
 	repo := c.repoKey()
-	if err := c.stateStore.MarkScopeReleasePending(repo, prState.ScopeKey, true); err != nil {
+	if err := c.stateStore.MarkScopeReleasePending(repo, prState.ScopeKey, true, prState.PostMergeSHA); err != nil {
 		c.log.Warn("handleScopeReleaseFailure: failed to re-queue scope release", "scope", prState.ScopeKey, "error", err)
 		return
 	}
