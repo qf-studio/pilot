@@ -1446,6 +1446,49 @@ func TestCIMonitor_GetFailedCheckLogs(t *testing.T) {
 	})
 }
 
+// TestCIMonitor_GetCheckLogs verifies GetCheckLogs (GH-4329) fetches logs for
+// completed check runs regardless of conclusion — unlike GetFailedCheckLogs,
+// a successful (or skipped) run's output must be included so the test-evidence
+// gate can inspect what a *passing* test job actually did.
+func TestCIMonitor_GetCheckLogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc123/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 2,
+				CheckRuns: []github.CheckRun{
+					{ID: 100, Name: "test", Status: "completed", Conclusion: "success"},
+					{ID: 101, Name: "build", Status: "in_progress"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/actions/jobs/100/logs":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok  \tgithub.com/qf-studio/pilot/internal/fleet\t0.010s"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	logs := monitor.GetCheckLogs(context.Background(), "abc123", 2000)
+
+	if !contains(logs, "=== test ===") {
+		t.Errorf("logs should contain the successful check's header, got %q", logs)
+	}
+	if !contains(logs, "ok") {
+		t.Errorf("logs should contain the successful check's output, got %q", logs)
+	}
+	if contains(logs, "=== build ===") {
+		t.Errorf("logs should not include the still-running check, got %q", logs)
+	}
+}
+
 // TestCIMonitor_CommitStatusFallback tests the fallback to the GitHub commit-status
 // API when check-runs returns empty. Providers like CircleCI, Jenkins, and Travis
 // use the statuses API exclusively, so empty check-runs must not auto-approve.

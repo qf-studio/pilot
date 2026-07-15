@@ -1443,6 +1443,19 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		}
 	}
 
+	// GH-4329: test-evidence gate. Default off (c.config.TestEvidence == nil or
+	// Enabled == false) — enable per-project once canaried. Fetches the CI job
+	// logs for the head SHA and escalates when they show CI passed without
+	// meaningfully exercising tests (see TestEvidenceReason).
+	testEvidenceHeld := false
+	if escalateReason == "" && c.config.TestEvidence != nil && c.config.TestEvidence.Enabled {
+		logs := c.ciMonitor.GetCheckLogs(ctx, prState.HeadSHA, testEvidenceLogMaxLen)
+		if reason := TestEvidenceReason(c.log, c.config.TestEvidence, files, logs); reason != "" {
+			escalateReason = reason
+			testEvidenceHeld = true
+		}
+	}
+
 	if escalateReason != "" {
 		c.log.Warn("merge gate escalated: requiring human approval",
 			"pr", prState.PRNumber, "reason", escalateReason)
@@ -1455,6 +1468,11 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 			if err := c.notifier.NotifyApprovalRequired(ctx, prState); err != nil {
 				c.log.Warn("failed to send approval notification", "error", err)
 			}
+		}
+		if testEvidenceHeld {
+			c.postTestEvidenceHoldComment(ctx, prState, escalateReason)
+			c.recordExecutionEvent(prState, memory.StageAwaitingApproval,
+				fmt.Sprintf("test_evidence_hold: %s", escalateReason))
 		}
 		return nil
 	}
@@ -1478,6 +1496,26 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		prState.Stage = StageMerging
 	}
 	return nil
+}
+
+// testEvidenceLogMaxLen bounds how much combined CI job log text the
+// test-evidence gate (GH-4329) reads per PR — generous enough to see a full
+// `go test`/vitest summary without risking unbounded memory on a pathological
+// log.
+const testEvidenceLogMaxLen = 50_000
+
+// postTestEvidenceHoldComment posts a PR comment explaining why the
+// test-evidence gate (GH-4329) held auto-merge. Best-effort: a comment failure
+// is logged and swallowed, matching the fail-open posture of the gate itself —
+// the PR is already safely parked in StageAwaitApproval regardless.
+func (c *Controller) postTestEvidenceHoldComment(ctx context.Context, prState *PRState, reason string) {
+	body := fmt.Sprintf("🛑 **Auto-merge held: test-evidence gate**\n\n%s\n\n"+
+		"CI reported success, but the test-evidence heuristic (GH-4329) could not "+
+		"confirm this PR was actually exercised by tests. Merge requires human "+
+		"approval via the usual approve/reject flow.", reason)
+	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.PRNumber, body); err != nil {
+		c.log.Warn("test-evidence gate: failed to post PR comment", "pr", prState.PRNumber, "error", err)
+	}
 }
 
 // handleCIFailed creates fix issue via feedback loop.

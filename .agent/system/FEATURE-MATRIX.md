@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-15 (v2.151.0)
+**Last Updated:** 2026-07-09 (v2.151.0)
 
 ## Legend
 
@@ -410,6 +410,7 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
+| Test-evidence gate | ✅ | autopilot | - | `autopilot.test_evidence` | Escalate-only guard at `handleCIPassed` (same pattern as scope_guard.go): holds auto-merge, comments on the PR, and journals a `test_evidence_hold` execution event when the CI job log shows zero/skipped tests on a PR touching production source. Default off, per-project opt-in (GH-4329) |
 
 ## Epic Management
 
@@ -425,7 +426,6 @@
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
 | Epic-lifecycle synthetic canary | ✅ | .github/workflows, scripts | `workflow_dispatch` (scenario `epic-lifecycle`) | - | GH Actions scenario files a deliberately decomposable epic on the sandbox and asserts 5 invariants (≥2 children, no duplicate merged PR per child, parent auto-close, no stale `pilot-needs-clarification`, no cascade beyond direct children) via `canary-poll.sh --assert n-children-merged` (TASK-403 A3, GH-4242) |
-| Sub-issue creation retry + coverage gate | ✅ | executor | - | - | Bounded retry (TLS timeout/5xx/rate-limit) around each `gh issue create`; if fewer sub-issues exist than planned (creation or recovery path), parent stays open + labeled `pilot-needs-clarification` + ledger event instead of closing (v2.239.0, GH-4300) |
 
 ## Test Coverage
 

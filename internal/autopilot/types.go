@@ -177,6 +177,33 @@ type Config struct {
 	// Name is a user-friendly label for this environment (e.g. "staging", "production").
 	// When empty, defaults to the Environment value.
 	Name string `yaml:"name"`
+
+	// TestEvidence configures the post-CI test-evidence gate (GH-4329): escalate
+	// to human approval when green CI ran zero/skipped tests on a PR that
+	// touches production source. nil (the DefaultConfig default) means the gate
+	// is off — enable per-project once canaried.
+	TestEvidence *TestEvidenceConfig `yaml:"test_evidence"`
+}
+
+// TestEvidenceConfig configures the test-evidence escalate-only gate at the
+// handleCIPassed chokepoint (GH-4329), same defense-in-depth pattern as
+// ScopeDriftReason/SizeFloorReason in scope_guard.go: it only forces human
+// approval, it never merges silently and never relaxes an already-required
+// approval.
+//
+// Born from qf-studio/pilot-console PR #13 (2026-07-15): autopilot auto-merged
+// on green CI while the `test` job silently skipped an entire suite (gated on
+// a DATABASE_URL the workflow never provided). "CI concluded success" and
+// "code was tested" are not the same statement.
+type TestEvidenceConfig struct {
+	// Enabled controls whether the gate is active. Default off.
+	Enabled bool `yaml:"enabled"`
+	// MinTests is the minimum number of tests that must have run for CI's
+	// signal to count as rigorous. Zero/unset falls back to 1.
+	MinTests int `yaml:"min_tests"`
+	// MaxSkipRatio is the skipped/(run+skipped) fraction above which the gate
+	// escalates even though some tests ran. Zero/unset falls back to 0.5.
+	MaxSkipRatio float64 `yaml:"max_skip_ratio"`
 }
 
 // ReviewFeedbackConfig holds configuration for handling PR review change requests.
