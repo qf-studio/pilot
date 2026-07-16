@@ -1485,6 +1485,45 @@ func TestHasTerminalCompletion(t *testing.T) {
 	}
 }
 
+// TestDispatcher_HasTerminalCompletion is the GH-4376 regression test for the
+// exported Dispatcher method: it must delegate to the same
+// package-level HasTerminalCompletion definition of "done" the poller's
+// ExecutionChecker and this package's own hasTerminalSuccessLedger use, so
+// admission gates outside this package (cmd/pilot/handler_common.go) agree
+// with everything inside it.
+func TestDispatcher_HasTerminalCompletion(t *testing.T) {
+	const projectPath = "/project-dispatcher-terminal-completion"
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	d := NewDispatcher(store, NewRunner(), nil)
+
+	completedExec := &memory.Execution{
+		ID: "exec-d-htc-completed", TaskID: "GH-91", ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/91",
+	}
+	if err := store.SaveExecution(completedExec); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	done, err := d.HasTerminalCompletion("GH-91", projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion: %v", err)
+	}
+	if !done {
+		t.Error("expected HasTerminalCompletion=true for a task with a genuine completed row")
+	}
+
+	done, err = d.HasTerminalCompletion("GH-92-never-dispatched", projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion: %v", err)
+	}
+	if done {
+		t.Error("expected HasTerminalCompletion=false for a task with no ledger evidence")
+	}
+}
+
 // TestProcessQueue_NoOpTerminalLedger_SkipsBackend is the GH-4347 regression
 // for the pilot-canary-sandbox incident: GH-82 (a decomposed epic sub-issue)
 // legitimately resolved to no_op ("nothing to change") and was re-dispatched

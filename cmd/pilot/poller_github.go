@@ -243,6 +243,21 @@ func githubSDKPollerTargets(cfg *config.Config, defaultProjectPath string) []git
 	return targets
 }
 
+// resolveRepoMetrics returns the autopilot.Metrics for repoFullName's
+// per-repo controller, falling back to the default-repo controller, or nil if
+// neither is configured. GH-4376: lets the shared handler chokepoint
+// (handleIssueGeneric) record repick-storm skips onto the same
+// pilot_poller_skipped_total series the SDK poller's own skip reasons use.
+func resolveRepoMetrics(deps *PollerDeps, repoFullName string) *autopilot.Metrics {
+	if ctrl := deps.AutopilotControllers[repoFullName]; ctrl != nil {
+		return ctrl.Metrics()
+	}
+	if deps.AutopilotController != nil {
+		return deps.AutopilotController.Metrics()
+	}
+	return nil
+}
+
 // startGithubSDKPollerForRepo constructs and starts one SDK poller for target.
 // The shared token is already resolved and verified by the caller. Returns false
 // (and logs) without starting when the repo cannot be driven safely (invalid repo
@@ -309,7 +324,7 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 		Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
 			// M7 4d.2c: pass the poller's own repo explicitly so the handler does not
 			// have to resolve it from the event by name (ambiguous across same-named repos).
-			return handleGithubIssueEventSDK(issueCtx, deps.Cfg, ev, target.projectPath, target.repoFullName, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+			return handleGithubIssueEventSDK(issueCtx, deps.Cfg, ev, target.projectPath, target.repoFullName, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer, resolveRepoMetrics(deps, target.repoFullName))
 		}),
 		ProjectPath: target.projectPath,
 		// GH-3921: tag every poller-originated log line with the component +
@@ -418,7 +433,7 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 			ProjectID:  repoName,
 		}
 
-		result, err := handleGithubIssueEventSDK(retryCtx, deps.Cfg, ev, target.projectPath, target.repoFullName, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+		result, err := handleGithubIssueEventSDK(retryCtx, deps.Cfg, ev, target.projectPath, target.repoFullName, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer, resolveRepoMetrics(deps, target.repoFullName))
 
 		// GH-797: surface retried-issue PRs to autopilot so their merge gates run.
 		if result != nil && result.PRNumber > 0 && controller != nil {

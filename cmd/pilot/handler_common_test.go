@@ -308,6 +308,129 @@ func TestHandleIssueGeneric_DroppedTerminalPickup_NoPhantomWaitError(t *testing.
 	}
 }
 
+// TestHandleIssueGeneric_TerminalCompletion_SkipsDispatch is the GH-4376
+// regression test for the storm evidenced on GH-91: a completed-but-open
+// issue with terminal ledger evidence must be skipped at the shared handler
+// chokepoint — no QueueTask attempt — independent of whatever the poller's
+// own admission check decided.
+func TestHandleIssueGeneric_TerminalCompletion_SkipsDispatch(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-handler-terminal-completion-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+
+	taskID := "GH-4376-COMPLETED"
+	projectPath := "/tmp/pilot-gh-4376-completed-does-not-exist"
+
+	// Seed a genuine completed execution row (commit/PR deliverable) — the
+	// same "done" signal GH-91 had (COMPLETED terminal execution, issue still
+	// open, no status labels) when it was re-dispatched every ~30s poll cycle.
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-gh-4376-completed",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "completed",
+		PRUrl:       "https://github.com/qf-studio/pilot-canary-sandbox/pull/91",
+	}); err != nil {
+		t.Fatalf("failed to seed completed execution: %v", err)
+	}
+
+	monitor := executor.NewMonitor()
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor, ProjectPath: projectPath}
+	info := IssueInfo{TaskID: taskID, Title: "already completed", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "already completed", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	hr, hErr := handleIssueGeneric(context.Background(), deps, info, task)
+	if hErr != nil {
+		t.Fatalf("expected nil error for a completed-but-open issue, got: %v", hErr)
+	}
+	if hr.Success {
+		t.Error("expected Success=false — dispatch must be skipped for a task with terminal completion")
+	}
+	if _, ok := monitor.Get(taskID); ok {
+		t.Error("expected monitor registration to be skipped — the terminal-completion gate runs before any side effects")
+	}
+}
+
+// TestHandleIssueGeneric_RepickBackoff_ThrottlesRepeatedDrops is the GH-4376
+// regression test for the storm's throughput symptom: repeatedly calling
+// handleIssueGeneric for the same completed-but-open task_id/project_path —
+// simulating the poller re-offering it on every ~30s tick — must dispatch at
+// most once (the seeded completed row is caught every time), and the second
+// call must be short-circuited by the backoff window rather than repeating
+// the full HasTerminalCompletion check and its side effects.
+func TestHandleIssueGeneric_RepickBackoff_ThrottlesRepeatedDrops(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-handler-repick-backoff-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+
+	taskID := "GH-4376-STORM"
+	projectPath := "/tmp/pilot-gh-4376-storm-does-not-exist"
+	backoffKey := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(backoffKey) })
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-gh-4376-storm", TaskID: taskID, ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/qf-studio/pilot-canary-sandbox/pull/92",
+	}); err != nil {
+		t.Fatalf("failed to seed completed execution: %v", err)
+	}
+
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: executor.NewMonitor(), ProjectPath: projectPath}
+	info := IssueInfo{TaskID: taskID, Title: "storm", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "storm", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	// First call: caught by the HasTerminalCompletion gate, which arms the backoff.
+	if _, err := handleIssueGeneric(context.Background(), deps, info, task); err != nil {
+		t.Fatalf("first call: expected nil error, got: %v", err)
+	}
+	if repickBackoff.allow(backoffKey) {
+		t.Fatal("expected the backoff window to be armed after the first drop")
+	}
+
+	// Second call (simulating the next ~30s poll tick): must be thrown out by
+	// the backoff pre-check before it even re-evaluates HasTerminalCompletion.
+	monitor2 := executor.NewMonitor()
+	deps.Monitor = monitor2
+	hr, hErr := handleIssueGeneric(context.Background(), deps, info, task)
+	if hErr != nil {
+		t.Fatalf("second call: expected nil error, got: %v", hErr)
+	}
+	if hr.Success {
+		t.Error("second call: expected Success=false")
+	}
+	if _, ok := monitor2.Get(taskID); ok {
+		t.Error("second call: expected monitor registration to be skipped by the backoff pre-check")
+	}
+}
+
 // TestAdapterSpecificPRNumberExtraction verifies that PR/MR number extraction
 // uses the correct adapter-specific regex for each forge (GH-2293).
 func TestAdapterSpecificPRNumberExtraction(t *testing.T) {

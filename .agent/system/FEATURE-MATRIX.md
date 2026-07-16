@@ -337,6 +337,7 @@
 | Config validation preflight | ✅ | executor | - | - | Validate config fields on startup before accepting issues (v0.48.0) |
 | GitLab docs sync CI | ✅ | ci | - | - | GitHub Action syncs docs/ to GitLab repo on merge to main (v0.23.2) |
 | Poller registration refactor | ✅ | main | - | - | Extract poller registration pattern from main.go (v2.30.0, PR #1857) |
+| Repick-storm backoff | ✅ | main (handler_common.go) | - | - | Per-issue exponential backoff (capped at 30s×32) + independent `HasTerminalCompletion` re-check at the shared dispatch chokepoint — throttles the poller's label-removed retry heuristic re-admitting a completed-but-open issue every poll tick; storm rate on `pilot_poller_skipped_total{reason="repick_storm_backoff"}` (GH-4376) |
 | Secrets check | ✅ | - | `make check-secrets` | - | Scan test files for realistic secret patterns before push |
 | Windows hot upgrade | ✅ | upgrade | - | - | Allow dashboard hot upgrade on Windows without restart (v1.46.0) |
 | Windows forward slashes | ✅ | navigator | - | - | Use forward slashes for embed.FS on Windows (v1.46.0) |

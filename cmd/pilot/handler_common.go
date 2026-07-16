@@ -13,7 +13,9 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/gitlab"
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/dashboard"
@@ -55,6 +57,12 @@ type HandlerDeps struct {
 	AlertsEngine *alerts.Engine
 	Enforcer     *budget.Enforcer
 	ProjectPath  string
+
+	// Metrics records the GH-4376 repick-storm skip counter (and any other
+	// poller skip/dispatch counters this chokepoint later grows) onto
+	// pilot_poller_skipped_total. Nil is tolerated — the admission gate and
+	// backoff still apply, just without the Prometheus counter bump.
+	Metrics *autopilot.Metrics
 }
 
 // handleIssueGeneric executes the common ~120-line flow shared by all adapter handlers:
@@ -95,6 +103,41 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 		logging.WithComponent("dispatch").Debug("Task already queued or running, skipping dispatch",
 			slog.String("task_id", taskID))
 		return &HandlerResult{Success: false, BranchName: task.Branch}, nil
+	}
+
+	// GH-4376: per-issue backoff — a task that was recently dropped (claim
+	// lost, or already terminal per the HasTerminalCompletion re-check right
+	// below) gets a growing cooldown instead of repeating the full
+	// monitor/alert/dashboard side-effect sequence on every ~30s poll tick.
+	backoffKey := repickBackoffKey(projectPath, taskID)
+	if deps.Dispatcher != nil && !repickBackoff.allow(backoffKey) {
+		logging.WithComponent("dispatch").Debug("task in repick backoff window, skipping dispatch",
+			slog.String("task_id", taskID))
+		return &HandlerResult{Success: false, BranchName: task.Branch}, nil
+	}
+
+	// GH-4376/GH-4350: independent terminal-completion re-check at the shared
+	// dispatch chokepoint — defense in depth against the poller's own
+	// label-removed retry heuristic (external studio-sdk dependency)
+	// re-admitting an issue whose task already has terminal ledger evidence.
+	// The poller's own ExecutionChecker gate is supposed to catch this first;
+	// this is the backstop for whatever lets it slip through (GH-91 evidence:
+	// COMPLETED terminal execution, open issue, no status labels, re-dispatched
+	// every ~30s poll cycle regardless).
+	if deps.Dispatcher != nil {
+		if done, hcErr := deps.Dispatcher.HasTerminalCompletion(taskID, projectPath); hcErr == nil && done {
+			consecutive := repickBackoff.recordDrop(backoffKey)
+			logFields := []any{slog.String("task_id", taskID), slog.Int("consecutive_drops", consecutive)}
+			if consecutive >= repickBackoffWarnThreshold {
+				logging.WithComponent("dispatch").Warn("repick storm: completed-but-open issue re-admitted repeatedly", logFields...)
+			} else {
+				logging.WithComponent("dispatch").Debug("skipping dispatch — task already has terminal completion", logFields...)
+			}
+			if deps.Metrics != nil {
+				deps.Metrics.RecordPollerSkipped(repickMetricsRepo(task), skipreason.ReasonRepickStormBackoff)
+			}
+			return &HandlerResult{Success: false, BranchName: task.Branch}, nil
+		}
 	}
 
 	// 1. Register with monitor
@@ -191,9 +234,18 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			// never matches a row) and surfaced as "failed to get execution:
 			// sql: no rows in result set" — an ERROR the SDK poller logged on
 			// every tick for a task that was never actually a failure.
-			logging.WithComponent("dispatch").Debug("dispatch dropped duplicate/terminal pickup, nothing to wait for",
-				slog.String("task_id", taskID))
+			consecutive := repickBackoff.recordDrop(backoffKey)
+			logFields := []any{slog.String("task_id", taskID), slog.Int("consecutive_drops", consecutive)}
+			if consecutive >= repickBackoffWarnThreshold {
+				logging.WithComponent("dispatch").Warn("repick storm: claim-lost/terminal drop recurring", logFields...)
+			} else {
+				logging.WithComponent("dispatch").Debug("dispatch dropped duplicate/terminal pickup, nothing to wait for", logFields...)
+			}
+			if deps.Metrics != nil {
+				deps.Metrics.RecordPollerSkipped(repickMetricsRepo(task), skipreason.ReasonRepickStormBackoff)
+			}
 		} else {
+			repickBackoff.recordSuccess(backoffKey)
 			if deps.Monitor != nil {
 				deps.Monitor.Queue(taskID)
 			}
@@ -318,6 +370,17 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	}
 
 	return hr, execErr
+}
+
+// repickMetricsRepo returns the repo label to record repick-storm skips
+// under: task.SourceRepo when the adapter set it (github/gitlab/azuredevops),
+// falling back to the project path for adapters that don't carry a repo
+// identity (linear/jira/asana/plane).
+func repickMetricsRepo(task *executor.Task) string {
+	if task.SourceRepo != "" {
+		return task.SourceRepo
+	}
+	return task.ProjectPath
 }
 
 // execFailureMsg returns the error detail for a failed dispatcher execution.
