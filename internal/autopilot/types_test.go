@@ -351,6 +351,48 @@ func TestResolvedEnv_NewOverridesLegacy(t *testing.T) {
 	}
 }
 
+// TestEffectiveApprovalSource_EnvOverridesTopLevel verifies that a per-env
+// approval_source (e.g. environments.stage.approval_source: slack) actually
+// takes effect. Before GH-4380, nothing ever read this field — a config with
+// approval_source: slack at the environment level silently had zero routing
+// effect, and every request fell through to Manager's arbitrary-handler
+// fallback regardless of what the operator configured.
+func TestEffectiveApprovalSource_EnvOverridesTopLevel(t *testing.T) {
+	cfg := &Config{
+		ApprovalSource: ApprovalSourceTelegram,
+		Environments: map[string]*EnvironmentConfig{
+			"stage": {ApprovalSource: ApprovalSourceSlack},
+		},
+	}
+	if err := cfg.SetActiveEnvironment("stage"); err != nil {
+		t.Fatalf("SetActiveEnvironment: %v", err)
+	}
+
+	if got := cfg.EffectiveApprovalSource(); got != ApprovalSourceSlack {
+		t.Errorf("EffectiveApprovalSource() = %q, want %q", got, ApprovalSourceSlack)
+	}
+}
+
+// TestEffectiveApprovalSource_FallsBackToTopLevel verifies that when the
+// active environment does not set its own ApprovalSource, the top-level
+// Config.ApprovalSource is used instead — the pre-existing behavior for
+// configs without a per-env override must be preserved.
+func TestEffectiveApprovalSource_FallsBackToTopLevel(t *testing.T) {
+	cfg := &Config{
+		ApprovalSource: ApprovalSourceGitHubReview,
+		Environments: map[string]*EnvironmentConfig{
+			"stage": {}, // no ApprovalSource set
+		},
+	}
+	if err := cfg.SetActiveEnvironment("stage"); err != nil {
+		t.Fatalf("SetActiveEnvironment: %v", err)
+	}
+
+	if got := cfg.EffectiveApprovalSource(); got != ApprovalSourceGitHubReview {
+		t.Errorf("EffectiveApprovalSource() = %q, want %q", got, ApprovalSourceGitHubReview)
+	}
+}
+
 func TestPRState_RepoOwnerAndName(t *testing.T) {
 	tests := []struct {
 		name      string

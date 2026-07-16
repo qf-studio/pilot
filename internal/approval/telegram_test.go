@@ -1033,6 +1033,66 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 		}
 	})
 
+	t.Run("uses @channel approver as-is", func(t *testing.T) {
+		client := &mockTelegramClient{}
+		handler := NewTelegramHandler(client, "constructor-chat")
+
+		req := &Request{
+			ID:        "req-approver-channel",
+			TaskID:    "TASK-01",
+			Stage:     StagePreMerge,
+			Title:     "Test",
+			Approvers: []string{"@mychannel"},
+			ExpiresAt: time.Now().Add(1 * time.Hour),
+		}
+
+		_, err := handler.SendApprovalRequest(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		msgs := client.getSentMessages()
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message sent, got %d", len(msgs))
+		}
+		if msgs[0].ChatID != "@mychannel" {
+			t.Errorf("expected chat_id '@mychannel', got '%s'", msgs[0].ChatID)
+		}
+	})
+
+	// GH-4380: a request routed here (e.g. by the manager's PreferredChannel
+	// fallback, or a config where Approvers was populated with an identity
+	// meant for a different channel) must not blindly dial an
+	// Approvers[0] that isn't a plausible Telegram destination — that
+	// produced a "chat not found" 400 on every retry against the live
+	// incident's PRs #4373/#4374.
+	t.Run("falls back to constructor chat_id when approver is not a valid telegram destination", func(t *testing.T) {
+		client := &mockTelegramClient{}
+		handler := NewTelegramHandler(client, "constructor-chat")
+
+		req := &Request{
+			ID:        "req-invalid-approver",
+			TaskID:    "TASK-01",
+			Stage:     StagePreMerge,
+			Title:     "Test",
+			Approvers: []string{"#pointer"}, // Slack channel name, not a Telegram chat id
+			ExpiresAt: time.Now().Add(1 * time.Hour),
+		}
+
+		_, err := handler.SendApprovalRequest(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		msgs := client.getSentMessages()
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message sent, got %d", len(msgs))
+		}
+		if msgs[0].ChatID != "constructor-chat" {
+			t.Errorf("expected fallback to constructor chat_id 'constructor-chat', got '%s'", msgs[0].ChatID)
+		}
+	})
+
 	t.Run("edit after callback uses same chat_id as original send", func(t *testing.T) {
 		client := &mockTelegramClient{}
 		handler := NewTelegramHandler(client, "constructor-chat")
@@ -1061,6 +1121,60 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 			t.Errorf("expected edit chat_id '99999', got '%s'", edited[0].ChatID)
 		}
 	})
+}
+
+func TestIsValidTelegramChatID(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"empty string", "", false},
+		{"positive numeric chat id", "283716179", true},
+		{"negative numeric group chat id", "-1001234567890", true},
+		{"public channel handle", "@mychannel", true},
+		{"bare @", "@", false},
+		{"slack channel name", "#pointer", false},
+		{"slack user id", "U012ABCDEF", false},
+		{"non-numeric garbage", "not-a-chat-id", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isValidTelegramChatID(tt.in); got != tt.want {
+				t.Errorf("isValidTelegramChatID(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTelegramHandler_InvalidApprover_WarnsOnce verifies that a persistently
+// invalid Approvers[0] value logs a warning only once (deduped by value)
+// rather than once per SendApprovalRequest call, so a misconfigured
+// approvers list doesn't spam the log every controller tick (GH-4380).
+func TestTelegramHandler_InvalidApprover_WarnsOnce(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "constructor-chat")
+	logger, buf := newCapturingLogger()
+	handler.log = logger
+
+	for i := 0; i < 3; i++ {
+		req := &Request{
+			ID:        "req-warn-once",
+			TaskID:    "TASK-01",
+			Stage:     StagePreMerge,
+			Title:     "Test",
+			Approvers: []string{"#pointer"},
+			ExpiresAt: time.Now().Add(1 * time.Hour),
+		}
+		if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	warnCount := strings.Count(buf.String(), "not a valid Telegram destination")
+	if warnCount != 1 {
+		t.Errorf("expected exactly 1 warning log for the repeated invalid approver, got %d\nlog:\n%s", warnCount, buf.String())
+	}
 }
 
 // --- store tests ---

@@ -165,6 +165,11 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		}
 	}
 
+	// pilot_approval_submit_failures_total (GH-4380)
+	writeHelp(w, "pilot_approval_submit_failures_total", "Total SubmitApprovalRequest errors (unregistered/misrouted approval channel)")
+	writeType(w, "pilot_approval_submit_failures_total", "counter")
+	writeCounter(w, "pilot_approval_submit_failures_total", snap.ApprovalSubmitFailures)
+
 	// pilot_tokens_consumed_total
 	writeHelp(w, "pilot_tokens_consumed_total", "Total tokens consumed by model and direction")
 	writeType(w, "pilot_tokens_consumed_total", "counter")

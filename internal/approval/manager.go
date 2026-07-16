@@ -246,16 +246,12 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 
 	m.mu.RLock()
 	var handler Handler
+	preferredMissing := false
 	if req.PreferredChannel != "" {
 		if h, ok := m.handlers[req.PreferredChannel]; ok {
 			handler = h
 		} else {
-			m.log.Warn("preferred approval channel not registered, falling back",
-				slog.String("preferred_channel", req.PreferredChannel))
-			for _, h := range m.handlers {
-				handler = h
-				break
-			}
+			preferredMissing = true
 		}
 	} else {
 		for _, h := range m.handlers {
@@ -264,6 +260,18 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 		}
 	}
 	m.mu.RUnlock()
+
+	// GH-4380: a request with an explicit PreferredChannel must go through
+	// that channel or fail loudly — never a silent, nondeterministic fallback
+	// to whatever handler wins Go's map iteration order. The old "WARN + pick
+	// any registered handler" behavior is how a request configured for Slack
+	// (approval_source: slack) silently landed on Telegram with a Slack-shaped
+	// destination in req.Approvers, producing a per-tick "chat not found" 400
+	// instead of a single actionable error.
+	if preferredMissing {
+		return "", fmt.Errorf("approval channel %q is not registered (check adapters.%s.enabled + credentials, and adapters.%s.approval.enabled)",
+			req.PreferredChannel, req.PreferredChannel, req.PreferredChannel)
+	}
 
 	if handler == nil {
 		m.log.Warn("no approval handlers registered for async dispatch",

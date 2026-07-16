@@ -355,6 +355,14 @@ type Controller struct {
 	// adopt-fail-evict cycle forever (GH-4053).
 	persistFailedPRs map[int]time.Time
 
+	// alertedApprovalFailures deduplicates approval-submit-failure alerts and
+	// PR-comment fallbacks per PR number, guarded by mu — same rationale as
+	// alertedPersistFailures: handleAwaitApproval retries submitAsyncApprovalRequest
+	// every tick while a PR sits in StageAwaitApproval, and without this map a
+	// misrouted/unreachable approval channel would either alert every tick or,
+	// once the per-PR circuit breaker opens, never alert at all (GH-4380).
+	alertedApprovalFailures map[int]bool
+
 	// epicVeto tracks, per epic parent issue number, how many consecutive
 	// reconcile passes have failed the SAME close-veto (same blocking child +
 	// same reason), guarded by mu. Lets reconcileEpicParent tell "still
@@ -391,23 +399,24 @@ type Controller struct {
 // NewController creates an autopilot controller with all required components.
 func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.Manager, owner, repo string, opts ...ControllerOption) *Controller {
 	c := &Controller{
-		config:                 cfg,
-		ghClient:               ghClient,
-		approvalMgr:            approvalMgr,
-		owner:                  owner,
-		repo:                   repo,
-		activePRs:              make(map[int]*PRState),
-		recordedMerges:         make(map[int]bool),
-		prFailures:             make(map[int]*prFailureState),
-		lastProgressAt:         time.Now(), // Initialize to now to avoid false alarm on startup
-		metrics:                NewMetrics(),
-		log:                    slog.Default().With("component", "autopilot"),
-		alertedMissingReleases: make(map[string]bool),
-		alertedStaleScopes:     make(map[string]bool),
-		alertedPersistFailures: make(map[int]bool),
-		persistFailedPRs:       make(map[int]time.Time),
-		epicVeto:               make(map[int]*epicCloseVetoTracking),
-		epicResolvedParents:    make(map[int]bool),
+		config:                  cfg,
+		ghClient:                ghClient,
+		approvalMgr:             approvalMgr,
+		owner:                   owner,
+		repo:                    repo,
+		activePRs:               make(map[int]*PRState),
+		recordedMerges:          make(map[int]bool),
+		prFailures:              make(map[int]*prFailureState),
+		lastProgressAt:          time.Now(), // Initialize to now to avoid false alarm on startup
+		metrics:                 NewMetrics(),
+		log:                     slog.Default().With("component", "autopilot"),
+		alertedMissingReleases:  make(map[string]bool),
+		alertedStaleScopes:      make(map[string]bool),
+		alertedPersistFailures:  make(map[int]bool),
+		persistFailedPRs:        make(map[int]time.Time),
+		alertedApprovalFailures: make(map[int]bool),
+		epicVeto:                make(map[int]*epicCloseVetoTracking),
+		epicResolvedParents:     make(map[int]bool),
 	}
 
 	// Options must apply before the releaser is constructed below: the
@@ -790,6 +799,71 @@ func (c *Controller) alertPersistFailureOnce(prNumber int, persistErr error) {
 			"pr":   strconv.Itoa(prNumber),
 		},
 	})
+}
+
+// approvalFailedCommentMarker is embedded in the PR comment so
+// alertApprovalSubmitFailureOnce's fallback comment is only ever posted once
+// per PR, mirroring misconfigCommentMarker's idempotency check.
+const approvalFailedCommentMarker = "<!-- pilot-approval-submit-failed -->"
+
+// alertApprovalSubmitFailureOnce fires the first time submitAsyncApprovalRequest
+// fails for a PR, deduplicated per PR number via alertedApprovalFailures — the
+// controller retries the submit every tick while StageAwaitApproval holds, and
+// once enough consecutive failures trip the per-PR circuit breaker (isPRCircuitOpen)
+// ProcessPR stops calling this handler at all, so without a one-time alert here the
+// PR goes fully silent: no more log lines, no notification, parked until a human
+// happens to notice (GH-4380 — PRs #4373/#4374 sat undeliverable for hours behind
+// nothing but a repeating WARN in daemon.log).
+//
+// Does three things, all best-effort: increments the ApprovalSubmitFailures
+// counter, routes the failure through the same alerts.EventTypeTaskFailed
+// dispatch used for execution failures (so configured Slack/Telegram/PagerDuty
+// channels still receive it even though the approval channel itself is the
+// thing that's broken), and posts a PR comment mentioning the repo owner as a
+// last-resort channel that doesn't depend on any approval adapter at all.
+func (c *Controller) alertApprovalSubmitFailureOnce(ctx context.Context, prState *PRState, submitErr error) {
+	c.metrics.RecordApprovalSubmitFailure()
+
+	c.mu.Lock()
+	if c.alertedApprovalFailures == nil {
+		c.alertedApprovalFailures = make(map[int]bool)
+	}
+	if c.alertedApprovalFailures[prState.PRNumber] {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedApprovalFailures[prState.PRNumber] = true
+	c.mu.Unlock()
+
+	msg := fmt.Sprintf(
+		"PR #%d (%s) approval request could not be delivered via the configured channel (%s): %s — it will not merge until a human intervenes",
+		prState.PRNumber, c.repoKey(), c.config.EffectiveApprovalSource(), submitErr,
+	)
+	c.log.Error("approval submit failed", "pr", prState.PRNumber, "error", submitErr)
+
+	if c.alertsEngine == nil {
+		c.log.Error("approval_submit_failed alert not delivered: SetAlertsEngine was never called", "pr", prState.PRNumber, "error", submitErr)
+	} else {
+		c.alertsEngine.ProcessEvent(alerts.Event{
+			Type:      alerts.EventTypeTaskFailed,
+			TaskID:    fmt.Sprintf("pr-%d-approval", prState.PRNumber),
+			TaskTitle: fmt.Sprintf("Approval request undeliverable for PR #%d", prState.PRNumber),
+			Project:   c.repoKey(),
+			Error:     msg,
+			Timestamp: time.Now(),
+			Metadata: map[string]string{
+				"repo":            c.repoKey(),
+				"pr":              strconv.Itoa(prState.PRNumber),
+				"approval_source": string(c.config.EffectiveApprovalSource()),
+			},
+		})
+	}
+
+	comment := fmt.Sprintf("%s\n🚨 **Approval request undeliverable**\n\n@%s %s\n\nCheck the approval channel config (`approval_source: %s`) — the adapter/handler for it may not be registered or reachable. This PR is stuck in `awaiting_approval` until it's fixed.",
+		approvalFailedCommentMarker, c.owner, msg, c.config.EffectiveApprovalSource())
+	if _, cerr := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); cerr != nil {
+		c.log.Warn("failed to post approval-submit-failed PR comment", "pr", prState.PRNumber, "error", cerr)
+	}
 }
 
 // evictPersistFailedPR drops a PR that has failed to persist
@@ -1943,10 +2017,16 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 			"pr_title":  prState.PRTitle,
 			"pr_number": prState.PRNumber,
 		},
+		// GH-4380: route to the channel the operator actually configured.
+		// Before this, PreferredChannel was never set on this path, so
+		// Manager.SubmitApprovalRequest always fell through to whichever
+		// handler happened to win Go's map iteration order.
+		PreferredChannel: string(c.config.EffectiveApprovalSource()),
 	}
 
 	requestID, err := c.approvalMgr.SubmitApprovalRequest(ctx, req)
 	if err != nil {
+		c.alertApprovalSubmitFailureOnce(ctx, prState, err)
 		return fmt.Errorf("submit approval request for PR %d: %w", prState.PRNumber, err)
 	}
 
