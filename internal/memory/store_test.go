@@ -3837,6 +3837,59 @@ func TestGetRecentExecutions_ProjectFilter(t *testing.T) {
 	}
 }
 
+// TestListProjectsForTask covers GH-4378: task_id is not unique across
+// projects, so `pilot trace` needs to know which distinct projects recorded
+// executions for a given task_id (and each project's most recent execution)
+// in order to disambiguate instead of merging.
+func TestListProjectsForTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	t.Run("unknown task id returns empty result", func(t *testing.T) {
+		got, err := store.ListProjectsForTask("GH-does-not-exist")
+		if err != nil {
+			t.Fatalf("ListProjectsForTask: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("got %d projects, want 0", len(got))
+		}
+	})
+
+	t.Run("collision across projects returns each distinct project, newest first", func(t *testing.T) {
+		older := time.Now().Add(-time.Hour)
+		newer := time.Now()
+
+		if err := store.SaveExecution(&Execution{
+			ID: "exec-navigator", TaskID: "GH-1", ProjectPath: "/repos/navigator", Status: "completed", CreatedAt: older,
+		}); err != nil {
+			t.Fatalf("SaveExecution(exec-navigator): %v", err)
+		}
+		if err := store.SaveExecution(&Execution{
+			ID: "exec-pointer", TaskID: "GH-1", ProjectPath: "/repos/pointer", Status: "completed", CreatedAt: newer,
+		}); err != nil {
+			t.Fatalf("SaveExecution(exec-pointer): %v", err)
+		}
+
+		got, err := store.ListProjectsForTask("GH-1")
+		if err != nil {
+			t.Fatalf("ListProjectsForTask: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("got %d projects, want 2: %+v", len(got), got)
+		}
+		if got[0].ProjectPath != "/repos/pointer" {
+			t.Errorf("got[0].ProjectPath = %q, want /repos/pointer (most recent)", got[0].ProjectPath)
+		}
+		if got[1].ProjectPath != "/repos/navigator" {
+			t.Errorf("got[1].ProjectPath = %q, want /repos/navigator", got[1].ProjectPath)
+		}
+	})
+}
+
 func TestGetLifetimeTokens_ProjectFilter(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)

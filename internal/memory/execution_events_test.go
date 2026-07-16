@@ -205,12 +205,14 @@ func TestRecordExecutionEvent_ValidatesFirst(t *testing.T) {
 	})
 }
 
-// TestListExecutionsForTask covers newest-first ordering and an unknown task id.
+// TestListExecutionsForTask covers newest-first ordering, an unknown task id,
+// and project_path scoping (GH-4378: task_id collides across projects).
 func TestListExecutionsForTask(t *testing.T) {
 	tests := []struct {
 		name      string
 		seedIDs   []string // in insertion order
 		queryTask string
+		queryProj string
 		wantIDs   []string // expected order returned
 	}{
 		{
@@ -221,6 +223,13 @@ func TestListExecutionsForTask(t *testing.T) {
 			name:      "multiple executions returned newest first",
 			seedIDs:   []string{"exec-1", "exec-2", "exec-3"},
 			queryTask: "GH-1",
+			wantIDs:   []string{"exec-3", "exec-2", "exec-1"},
+		},
+		{
+			name:      "empty projectPath does not filter",
+			seedIDs:   []string{"exec-1", "exec-2", "exec-3"},
+			queryTask: "GH-1",
+			queryProj: "",
 			wantIDs:   []string{"exec-3", "exec-2", "exec-1"},
 		},
 	}
@@ -243,7 +252,7 @@ func TestListExecutionsForTask(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 
-			got, err := store.ListExecutionsForTask(tt.queryTask)
+			got, err := store.ListExecutionsForTask(tt.queryTask, tt.queryProj)
 			if err != nil {
 				t.Fatalf("ListExecutionsForTask failed: %v", err)
 			}
@@ -257,4 +266,27 @@ func TestListExecutionsForTask(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("scoped to project_path excludes other projects' executions", func(t *testing.T) {
+		store := newExecutionEventsTestStore(t)
+
+		if err := store.SaveExecution(&Execution{
+			ID: "exec-pointer", TaskID: "GH-1", ProjectPath: "/repos/pointer", Status: "completed",
+		}); err != nil {
+			t.Fatalf("SaveExecution(exec-pointer) failed: %v", err)
+		}
+		if err := store.SaveExecution(&Execution{
+			ID: "exec-navigator", TaskID: "GH-1", ProjectPath: "/repos/navigator", Status: "completed",
+		}); err != nil {
+			t.Fatalf("SaveExecution(exec-navigator) failed: %v", err)
+		}
+
+		got, err := store.ListExecutionsForTask("GH-1", "/repos/pointer")
+		if err != nil {
+			t.Fatalf("ListExecutionsForTask failed: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "exec-pointer" {
+			t.Fatalf("ListExecutionsForTask(GH-1, /repos/pointer) = %v, want only exec-pointer", got)
+		}
+	})
 }
