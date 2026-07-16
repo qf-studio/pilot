@@ -619,6 +619,43 @@ func TestIsTaskQueued_ProjectScoping(t *testing.T) {
 	}
 }
 
+// TestIsTaskQueued_CanonicalizesProjectPath is the mem-019/GH-4297
+// discriminator-mismatch regression for the read side: IsTaskQueued must
+// reuse canonicalizeProjectPath (as ClaimExecution already does at write
+// time) so a caller querying with a trailing separator or "./.." segments
+// still finds a row saved under the equivalent clean path, instead of
+// silently missing it and dispatching a duplicate.
+func TestIsTaskQueued_CanonicalizesProjectPath(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-canonical",
+		TaskID:      "GH-11",
+		ProjectPath: "/tmp/project-x",
+		Status:      "running",
+	})
+
+	queued, err := store.IsTaskQueued("GH-11", "/tmp/project-x/")
+	if err != nil {
+		t.Fatalf("IsTaskQueued failed: %v", err)
+	}
+	if !queued {
+		t.Error("expected trailing-slash query to match the row saved under the clean path")
+	}
+
+	queued, err = store.IsTaskQueued("GH-11", "/tmp/./project-x")
+	if err != nil {
+		t.Fatalf("IsTaskQueued failed: %v", err)
+	}
+	if !queued {
+		t.Error("expected a query with a '.' segment to match the row saved under the clean path")
+	}
+}
+
 // TestClaimExecution_SecondCallerLoses is the TASK-407/GH-4349 atomic-claim
 // idiom test (the INSERT OR IGNORE + RowsAffected()==1 pattern from
 // ClaimSpawnedFix, internal/autopilot/state_store.go:1062): a second

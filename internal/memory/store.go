@@ -2283,23 +2283,33 @@ func (s *Store) IsTaskQueued(taskID, projectPath string) (bool, error) {
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM executions
 		WHERE task_id = ? AND project_path = ? AND status IN ('queued', 'pending', 'running')
-	`, taskID, projectPath).Scan(&count)
+	`, taskID, canonicalizeProjectPath(projectPath)).Scan(&count)
 	if err != nil {
 		return false, err
 	}
 	return count > 0, nil
 }
 
-// canonicalizeProjectPath normalizes projectPath for use as part of an
-// execution_claims key, trimming a trailing separator and collapsing "."/
-// ".." segments (filepath.Clean) so two textually-different-but-equivalent
-// paths for the same project (mem-019/GH-4297's discriminator-mismatch
-// class) claim the same row instead of silently splitting the key.
+// canonicalizeProjectPath normalizes projectPath for use as a discriminator
+// key (execution_claims, IsTaskQueued's active-task lookup), resolving
+// symlinks and collapsing a trailing separator / "."/".." segments so two
+// textually-different-but-equivalent paths for the same project
+// (mem-019/GH-4297's discriminator-mismatch class) resolve to the same key
+// instead of silently splitting it. filepath.Clean runs first so
+// EvalSymlinks sees a normalized input; if EvalSymlinks fails (path doesn't
+// exist yet, e.g. a project directory not yet checked out), it falls back to
+// the cleaned form rather than erroring, mirroring worktree.go's
+// resolvedRepoPath tolerance for the same OS-level symlink quirk (macOS
+// /var vs /private/var).
 func canonicalizeProjectPath(projectPath string) string {
 	if projectPath == "" {
 		return projectPath
 	}
-	return filepath.Clean(projectPath)
+	cleaned := filepath.Clean(projectPath)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return resolved
+	}
+	return cleaned
 }
 
 // ClaimExecution atomically claims (task_id, project_path, generation) for
