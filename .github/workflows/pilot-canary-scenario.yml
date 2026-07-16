@@ -163,44 +163,31 @@ jobs:
             echo "Canary issue already closed (auto-closed by merge)."
           fi
 
-      - name: File deduped pipeline-stall alert
-        if: failure() && steps.guard.outputs.skip != 'true'
+      - name: Report scenario result to tracker issue
+        # Runs on both success and failure (unlike the old failure()-only
+        # alert step) so scripts/canary-report.py can track the green
+        # streak needed to auto-close the tracker (GH-4348). It maintains
+        # ONE mutating `<!-- canary-status -->` comment per tracker issue
+        # instead of appending a new comment on every failed run (evidence:
+        # #4265 accumulated 10 duplicate comments in 3 days).
+        if: always() && steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           ALERT_REPO: ${{ inputs.alert_repo }}
           SANDBOX_REPO: ${{ inputs.sandbox_repo }}
           SCENARIO_NAME: ${{ inputs.scenario_name }}
+          RESULT: ${{ steps.poll.outputs.result || 'failure' }}
+          FAILED_ASSERTIONS: ${{ steps.poll.outputs.failed_assertions }}
+          ISSUE_NUMBER: ${{ steps.file_issue.outputs.issue_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-
-          TITLE="[canary:$SCENARIO_NAME] pipeline stall"
-          STAGE="${{ steps.poll.outputs.stage || 'issue-filed' }}"
-          ISSUE_NUMBER="${{ steps.file_issue.outputs.issue_number }}"
-          FAILED_ASSERTIONS="${{ steps.poll.outputs.failed_assertions }}"
-
-          if [ -n "$FAILED_ASSERTIONS" ]; then
-            DETAIL="stalled at stage \`$STAGE\` -- failed assertion(s): \`$FAILED_ASSERTIONS\`"
-          else
-            DETAIL="stalled at stage \`$STAGE\`"
-          fi
-
-          EXISTING=$(gh issue list \
-            --repo "$ALERT_REPO" \
-            --state open \
-            --search "$TITLE in:title" \
-            --json number,title \
-            --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
-
-          if [ -n "$EXISTING" ]; then
-            echo "Alert issue #$EXISTING already open — adding status comment."
-            gh issue comment "$EXISTING" \
-              --repo "$ALERT_REPO" \
-              --body "Canary re-triggered $(date -u '+%Y-%m-%d %H:%M UTC'): $DETAIL (canary issue $SANDBOX_REPO#$ISSUE_NUMBER, scenario \`$SCENARIO_NAME\`)."
-          else
-            echo "Creating new alert issue."
-            gh issue create \
-              --repo "$ALERT_REPO" \
-              --title "$TITLE" \
-              --label bug \
-              --body "Synthetic end-to-end pipeline canary $DETAIL (scenario \`$SCENARIO_NAME\`). Canary issue: $SANDBOX_REPO#$ISSUE_NUMBER. Investigate daemon health (poll -> spec -> execute -> PR -> merge). See TASK-403."
-          fi
+          python3 scripts/canary-report.py \
+            --alert-repo "$ALERT_REPO" \
+            --sandbox-repo "$SANDBOX_REPO" \
+            --scenario-name "$SCENARIO_NAME" \
+            --result "$RESULT" \
+            --failed-assertions "$FAILED_ASSERTIONS" \
+            --canary-issue "$ISSUE_NUMBER" \
+            --run-url "$RUN_URL" \
+            --timestamp "$(date -u '+%Y-%m-%d %H:%M UTC')"
