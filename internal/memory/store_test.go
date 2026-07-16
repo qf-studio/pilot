@@ -157,7 +157,7 @@ func TestGetLatestExecutionByTaskID(t *testing.T) {
 		t.Fatalf("SaveExecution(newer) failed: %v", err)
 	}
 
-	got, err := store.GetLatestExecutionByTaskID("GH-3714")
+	got, err := store.GetLatestExecutionByTaskID("GH-3714", "")
 	if err != nil {
 		t.Fatalf("GetLatestExecutionByTaskID failed: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestGetLatestExecutionByTaskID(t *testing.T) {
 	}
 
 	// Partial match, mirroring the previous recordings-based lookup behavior.
-	gotPartial, err := store.GetLatestExecutionByTaskID("3714")
+	gotPartial, err := store.GetLatestExecutionByTaskID("3714", "")
 	if err != nil {
 		t.Fatalf("GetLatestExecutionByTaskID (partial) failed: %v", err)
 	}
@@ -174,8 +174,96 @@ func TestGetLatestExecutionByTaskID(t *testing.T) {
 		t.Errorf("Expected partial match to resolve to 'exec-new', got '%s'", gotPartial.ID)
 	}
 
-	if _, err := store.GetLatestExecutionByTaskID("GH-9999"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.GetLatestExecutionByTaskID("GH-9999", ""); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("Expected sql.ErrNoRows for unknown task, got %v", err)
+	}
+
+	// GH-4352: project-scoped lookup must not cross projects on a task_id collision.
+	if _, err := store.GetLatestExecutionByTaskID("GH-3714", "/other-project"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("Expected sql.ErrNoRows for wrong project, got %v", err)
+	}
+	gotScoped, err := store.GetLatestExecutionByTaskID("GH-3714", "/path")
+	if err != nil {
+		t.Fatalf("GetLatestExecutionByTaskID (scoped) failed: %v", err)
+	}
+	if gotScoped.ID != "exec-new" {
+		t.Errorf("Expected scoped latest execution 'exec-new', got '%s'", gotScoped.ID)
+	}
+}
+
+// TestGetLatestExecutionByTaskIDExcluding_ScopedToProject is the GH-4352
+// regression test: a task_id collision across two projects (e.g. a sandbox
+// canary reusing a low GH-N that's also live in another repo) must not let
+// reconcileChildOutcome adopt the wrong project's PR/commit as its child's
+// terminal-outcome evidence. Each project's exclude-lookup must resolve only
+// its own latest row.
+func TestGetLatestExecutionByTaskIDExcluding_ScopedToProject(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const taskID = "GH-4352"
+
+	// Project A: self-row (excluded) + a genuinely separate, concurrently
+	// tracked row that is the real reconciliation evidence.
+	if err := store.SaveExecution(&Execution{
+		ID: "a-self", TaskID: taskID, ProjectPath: "/proj/a", Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution(a-self): %v", err)
+	}
+	if err := store.SaveExecution(&Execution{
+		ID: "a-other", TaskID: taskID, ProjectPath: "/proj/a", Status: "completed",
+		PRUrl: "https://github.com/org/proj-a/pull/1", CommitSHA: "aaa111",
+	}); err != nil {
+		t.Fatalf("SaveExecution(a-other): %v", err)
+	}
+
+	// Project B: same task_id, self-row (excluded) + its own, different
+	// terminal evidence row.
+	if err := store.SaveExecution(&Execution{
+		ID: "b-self", TaskID: taskID, ProjectPath: "/proj/b", Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution(b-self): %v", err)
+	}
+	if err := store.SaveExecution(&Execution{
+		ID: "b-other", TaskID: taskID, ProjectPath: "/proj/b", Status: "completed",
+		PRUrl: "https://github.com/org/proj-b/pull/2", CommitSHA: "bbb222",
+	}); err != nil {
+		t.Fatalf("SaveExecution(b-other): %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		projectPath string
+		excludeID   string
+		wantID      string
+		wantPRUrl   string
+	}{
+		{"project A resolves only its own row", "/proj/a", "a-self", "a-other", "https://github.com/org/proj-a/pull/1"},
+		{"project B resolves only its own row", "/proj/b", "b-self", "b-other", "https://github.com/org/proj-b/pull/2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.GetLatestExecutionByTaskIDExcluding(taskID, tt.projectPath, tt.excludeID)
+			if err != nil {
+				t.Fatalf("GetLatestExecutionByTaskIDExcluding: %v", err)
+			}
+			if got.ID != tt.wantID {
+				t.Errorf("ID = %q, want %q (adopted wrong project's row)", got.ID, tt.wantID)
+			}
+			if got.PRUrl != tt.wantPRUrl {
+				t.Errorf("PRUrl = %q, want %q (adopted wrong project's evidence)", got.PRUrl, tt.wantPRUrl)
+			}
+		})
+	}
+
+	// Empty projectPath preserves pre-GH-4352 behavior: unscoped, falls back
+	// to created_at ordering across both projects' rows.
+	if _, err := store.GetLatestExecutionByTaskIDExcluding(taskID, "", "a-self"); err != nil {
+		t.Fatalf("GetLatestExecutionByTaskIDExcluding (empty projectPath): %v", err)
 	}
 }
 

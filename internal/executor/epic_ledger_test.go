@@ -58,7 +58,7 @@ func TestExecuteSubIssues_LedgerRowPerChild(t *testing.T) {
 
 	for _, issue := range issues {
 		taskID := fmt.Sprintf("GH-%d", issue.Number)
-		row, err := store.GetLatestExecutionByTaskID(taskID)
+		row, err := store.GetLatestExecutionByTaskID(taskID, parent.ProjectPath)
 		if err != nil {
 			t.Fatalf("GetLatestExecutionByTaskID(%s): %v", taskID, err)
 		}

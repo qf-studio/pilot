@@ -695,15 +695,17 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 
 // GetLatestExecutionByTaskID returns the most recent execution for a task, matched by
 // exact task_id first and falling back to a substring match (e.g. "GH-15" matching
-// "GH-15"). Returns sql.ErrNoRows if no execution matches.
-func (s *Store) GetLatestExecutionByTaskID(taskID string) (*Execution, error) {
+// "GH-15"), scoped to projectPath the same way GetExecutionStatusByTaskID is (empty
+// projectPath skips the filter, preserving pre-GH-4352 behavior for callers with no
+// project context, e.g. the CLI). Returns sql.ErrNoRows if no execution matches.
+func (s *Store) GetLatestExecutionByTaskID(taskID, projectPath string) (*Execution, error) {
 	row := s.db.QueryRow(`
 		SELECT `+executionDetailColumns+`
 		FROM executions
-		WHERE task_id = ? OR task_id LIKE ?
+		WHERE (task_id = ? OR task_id LIKE ?) AND (? = '' OR project_path = ?)
 		ORDER BY (task_id = ?) DESC, created_at DESC, rowid DESC
 		LIMIT 1
-	`, taskID, "%"+taskID+"%", taskID)
+	`, taskID, "%"+taskID+"%", projectPath, projectPath, taskID)
 	return scanExecutionDetail(row)
 }
 
@@ -713,14 +715,19 @@ func (s *Store) GetLatestExecutionByTaskID(taskID string) (*Execution, error) {
 // (internal/executor/epic.go finalizeSubIssueExecution), so a caller
 // reconciling against a genuinely separate, concurrently-tracked row for the
 // same task (GH-3786) must look past its own row to find it.
-func (s *Store) GetLatestExecutionByTaskIDExcluding(taskID, excludeID string) (*Execution, error) {
+//
+// GH-4352: projectPath scopes the same way GetExecutionStatusByTaskIDExcluding
+// does — without it, a task_id collision across projects (e.g. sandbox canary
+// reusing a low GH-N also live in another repo) let this adopt the wrong
+// project's PR/commit as reconciliation evidence.
+func (s *Store) GetLatestExecutionByTaskIDExcluding(taskID, projectPath, excludeID string) (*Execution, error) {
 	row := s.db.QueryRow(`
 		SELECT `+executionDetailColumns+`
 		FROM executions
-		WHERE (task_id = ? OR task_id LIKE ?) AND id != ?
+		WHERE (task_id = ? OR task_id LIKE ?) AND (? = '' OR project_path = ?) AND id != ?
 		ORDER BY (task_id = ?) DESC, created_at DESC, rowid DESC
 		LIMIT 1
-	`, taskID, "%"+taskID+"%", excludeID, taskID)
+	`, taskID, "%"+taskID+"%", projectPath, projectPath, excludeID, taskID)
 	return scanExecutionDetail(row)
 }
 

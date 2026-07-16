@@ -808,7 +808,7 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 					} else if allComplete {
 						prURL := ""
 						if len(childIDs) > 0 {
-							if latest, lErr := d.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); lErr == nil && latest != nil {
+							if latest, lErr := d.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1], lastProjectPath); lErr == nil && latest != nil {
 								prURL = latest.PRUrl
 							}
 						}
@@ -828,7 +828,7 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 					}
 
 					if completed, hcErr := d.store.HasCompletedExecution(lastTaskID, lastProjectPath); hcErr == nil && completed {
-						if completedExec, gErr := d.store.GetLatestExecutionByTaskID(lastTaskID); gErr == nil {
+						if completedExec, gErr := d.store.GetLatestExecutionByTaskID(lastTaskID, lastProjectPath); gErr == nil {
 							d.log.Info("Execution row vanished after orphan recovery — task already completed, resolving wait as success",
 								slog.String("execution_id", execID),
 								slog.String("task_id", lastTaskID),
@@ -1001,7 +1001,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				slog.Any("error", err))
 		} else if done {
 			prURL := ""
-			if latest, gErr := w.store.GetLatestExecutionByTaskIDExcluding(exec.TaskID, exec.ID); gErr == nil && latest != nil {
+			if latest, gErr := w.store.GetLatestExecutionByTaskIDExcluding(exec.TaskID, w.projectPath, exec.ID); gErr == nil && latest != nil {
 				prURL = latest.PRUrl
 			}
 			w.log.Info("Terminal-success ledger already has a completed row for task; refusing duplicate dispatch",
@@ -1033,7 +1033,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			// defense-in-depth skip, not a normal completion, so it always logs
 			// at Warn with the full child list and per-child evidence.
 			prURL := ""
-			if latest, gErr := w.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1]); gErr == nil && latest != nil {
+			if latest, gErr := w.store.GetLatestExecutionByTaskID(childIDs[len(childIDs)-1], w.projectPath); gErr == nil && latest != nil {
 				prURL = latest.PRUrl
 			}
 			w.log.Warn("decomposed-parent guard fired",
@@ -1344,7 +1344,7 @@ func childCompletionEvidence(store *memory.Store, childID, projectPath string) (
 		return "completed", true, nil
 	}
 
-	latest, err := store.GetLatestExecutionByTaskID(childID)
+	latest, err := store.GetLatestExecutionByTaskID(childID, projectPath)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", false, nil

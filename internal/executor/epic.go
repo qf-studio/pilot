@@ -1969,7 +1969,7 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 		return result, execErr
 	}
 	if !childExecutionNonTerminalStatuses[status] {
-		return r.resolveChildTerminalOutcome(taskID, selfExecID, status, result, execErr)
+		return r.resolveChildTerminalOutcome(taskID, projectPath, selfExecID, status, result, execErr)
 	}
 
 	pollInterval := r.childOutcomeReconcilePollInterval
@@ -1994,7 +1994,7 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 
 		status, err := r.logStore.GetExecutionStatusByTaskIDExcluding(taskID, projectPath, selfExecID)
 		if err == nil && !childExecutionNonTerminalStatuses[status] {
-			return r.resolveChildTerminalOutcome(taskID, selfExecID, status, result, execErr)
+			return r.resolveChildTerminalOutcome(taskID, projectPath, selfExecID, status, result, execErr)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			r.log.Warn("reconcileChildOutcome: execution status lookup failed",
@@ -2027,8 +2027,8 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 // entry itself or the card is stuck showing "● running 100%" forever even
 // though the child is done. Mirrors handler_common.go's branch: nil error →
 // Complete, non-nil error → Fail.
-func (r *Runner) resolveChildTerminalOutcome(taskID, selfExecID, status string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
-	row, rowErr := r.logStore.GetLatestExecutionByTaskIDExcluding(taskID, selfExecID)
+func (r *Runner) resolveChildTerminalOutcome(taskID, projectPath, selfExecID, status string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
+	row, rowErr := r.logStore.GetLatestExecutionByTaskIDExcluding(taskID, projectPath, selfExecID)
 	if rowErr != nil {
 		row = nil
 	}
