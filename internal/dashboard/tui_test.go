@@ -353,6 +353,50 @@ func TestHydrateFromStore_LifetimeTokens(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_HealsFrozenLadderRow is the GH-4368 regression: a row
+// that predates the H4 heal fixes (GH-4277/GH-4298) sits at status='completed'
+// with its execution_events ladder frozen at a non-terminal rung (e.g.
+// "running") because the event stream died mid-incident before the terminal
+// event was ever recorded. hydrateFromStore's one-shot archaeology heal must
+// backfill the missing terminal event before the HISTORY panel reads the
+// event timeline, so the row's label reflects reality instead of staying
+// frozen forever.
+func TestHydrateFromStore_HealsFrozenLadderRow(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-heal-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-frozen", TaskID: "GH-4278", ProjectPath: "/test",
+		Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/4278",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	// Ladder frozen mid-flight — the daemon died before the terminal event
+	// was ever written, matching the GH-4278 evidence in the issue.
+	if err := store.InsertExecutionEvent("exec-frozen", memory.StageRunning, "seed"); err != nil {
+		t.Fatalf("seed InsertExecutionEvent: %v", err)
+	}
+
+	m := NewModelWithStore("test", store)
+
+	if len(m.completedTasks) != 1 {
+		t.Fatalf("expected 1 completed task, got %d", len(m.completedTasks))
+	}
+	got := m.completedTasks[0].Stage
+	if !got.Known || got.Label != "merged" {
+		t.Errorf("frozen row after hydration heal: got %+v, want Known=true Label=%q", got, "merged")
+	}
+}
+
 // TestHydrateFromStore_OldRowsCacheZero verifies that executions saved without
 // cache token fields (simulating pre-GH-3615 rows) result in zero cache token
 // counts in the metricsCard — i.e., the migration DEFAULT 0 is honoured.
