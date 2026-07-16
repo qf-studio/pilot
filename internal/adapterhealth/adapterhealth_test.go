@@ -110,9 +110,14 @@ func TestRegistry_Go_DisablesAfterMaxRestarts(t *testing.T) {
 		panic("always boom")
 	})
 
+	// Registry.Go sets st.Disabled=true and then invokes onPanic (adapterhealth.go
+	// runWithRestart) — the two aren't atomic w.r.t. a concurrent Snapshot(), so
+	// waiting on Disabled alone can observe it before the final onPanic call lands.
+	// Wait on all three so the exact-count assertions below are deterministic.
 	waitFor(t, 2*time.Second, func() bool {
 		snap := r.Snapshot()
-		return len(snap) == 1 && snap[0].Disabled
+		return len(snap) == 1 && snap[0].Disabled &&
+			calls.Load() == MaxRestarts && panicCount.Load() == MaxRestarts
 	})
 
 	if got := calls.Load(); got != MaxRestarts {
