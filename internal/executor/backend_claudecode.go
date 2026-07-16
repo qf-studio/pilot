@@ -798,10 +798,25 @@ func (b *ClaudeCodeBackend) parseStreamEvent(line string) BackendEvent {
 	// Map stream event type to backend event type
 	switch streamEvent.Type {
 	case "system":
-		if streamEvent.Subtype == "init" {
+		switch streamEvent.Subtype {
+		case "init":
 			event.Type = EventTypeInit
 			event.SessionID = streamEvent.SessionID // Capture session ID for resume (GH-1265)
 			event.Message = "Claude Code initialized"
+		case "task_started":
+			// GH-4357: a backgrounded task (e.g. long-running Bash command or
+			// sub-agent) started. Plain shell backgrounds (task_type=local_bash)
+			// emit no further events until completion, so the runner must track
+			// this as in-flight activity to keep the stall watchdog from
+			// killing an otherwise healthy session.
+			event.Type = EventTypeTaskStarted
+			event.BackgroundTaskID = streamEvent.TaskID
+			event.Message = "Background task started"
+		case "task_notification":
+			event.Type = EventTypeTaskNotification
+			event.BackgroundTaskID = streamEvent.TaskID
+			event.BackgroundTaskStatus = streamEvent.Status
+			event.Message = "Background task finished"
 		}
 
 	case "assistant":

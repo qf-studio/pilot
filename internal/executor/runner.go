@@ -276,6 +276,12 @@ type StreamEvent struct {
 	Model string     `json:"model,omitempty"`
 	// Session ID for resume support (GH-1265)
 	SessionID string `json:"session_id,omitempty"`
+	// TaskID identifies a background task on task_started/task_notification
+	// system events (GH-4357).
+	TaskID string `json:"task_id,omitempty"`
+	// Status carries the terminal status ("completed"/"failed"/"stopped") on
+	// task_notification system events (GH-4357).
+	Status string `json:"status,omitempty"`
 }
 
 // UsageInfo represents token usage in stream events
@@ -2606,10 +2612,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	r.saveLogEntry(task.LogExecutionID(), "info", "Implementing changes...")
 
 	// TASK-308: Stall detection — track last event time and spawn a watchdog.
+	// GH-4357: also track in-flight background tasks (e.g. a backgrounded
+	// Bash command) so the watchdog doesn't kill a session that's legitimately
+	// silent while waiting on one.
 	var (
-		lastEventAt       atomic.Int64
-		stallDetectedFlag atomic.Bool
-		stallDone         = make(chan struct{})
+		lastEventAt             atomic.Int64
+		stallDetectedFlag       atomic.Bool
+		inFlightBackgroundTasks atomic.Int64
+		stallDone               = make(chan struct{})
 	)
 	lastEventAt.Store(time.Now().UnixNano())
 	stallTimeout := r.effectiveStallTimeout()
@@ -2617,7 +2627,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	var stallCancel context.CancelFunc
 	if stallTimeout > 0 {
 		stallExecutionCtx, stallCancel = context.WithCancel(ctx)
-		go r.runStallWatchdog(task.ID, &lastEventAt, &stallDetectedFlag, stallTimeout, stallDone, stallCancel)
+		go r.runStallWatchdog(task.ID, &lastEventAt, &stallDetectedFlag, &inFlightBackgroundTasks, stallTimeout, stallDone, stallCancel)
 	} else {
 		stallExecutionCtx = ctx
 		stallCancel = func() {}
@@ -2678,6 +2688,17 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		EventHandler: func(event BackendEvent) {
 			// TASK-308: touch the last-event timestamp so the stall watchdog resets.
 			lastEventAt.Store(time.Now().UnixNano())
+
+			// GH-4357: track in-flight background tasks so the stall watchdog
+			// suspends its idle clock while one is running.
+			switch event.Type {
+			case EventTypeTaskStarted:
+				inFlightBackgroundTasks.Add(1)
+			case EventTypeTaskNotification:
+				if inFlightBackgroundTasks.Load() > 0 {
+					inFlightBackgroundTasks.Add(-1)
+				}
+			}
 
 			// Record the event
 			if recorder != nil {

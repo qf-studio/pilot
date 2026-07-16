@@ -131,6 +131,43 @@ func TestClaudeCodeBackendParseStreamEvent(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeBackendParseBackgroundTaskEvents verifies that Claude Code's
+// task_started/task_notification system events (emitted when a Bash command
+// or sub-agent runs in the background, e.g. task_type=local_bash) map to
+// EventTypeTaskStarted/EventTypeTaskNotification with the task ID and
+// terminal status preserved, so the runner can track in-flight background
+// tasks for the stall watchdog (GH-4357).
+func TestClaudeCodeBackendParseBackgroundTaskEvents(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+
+	t.Run("task_started", func(t *testing.T) {
+		line := `{"type":"system","subtype":"task_started","task_id":"bscl9ri3t","tool_use_id":"toolu_1","description":"Run tests","task_type":"local_bash","session_id":"sess-1"}`
+		event := backend.parseStreamEvent(line)
+
+		if event.Type != EventTypeTaskStarted {
+			t.Errorf("Type = %q, want %q", event.Type, EventTypeTaskStarted)
+		}
+		if event.BackgroundTaskID != "bscl9ri3t" {
+			t.Errorf("BackgroundTaskID = %q, want %q", event.BackgroundTaskID, "bscl9ri3t")
+		}
+	})
+
+	t.Run("task_notification completed", func(t *testing.T) {
+		line := `{"type":"system","subtype":"task_notification","task_id":"bscl9ri3t","tool_use_id":"toolu_1","status":"completed","summary":"tests passed"}`
+		event := backend.parseStreamEvent(line)
+
+		if event.Type != EventTypeTaskNotification {
+			t.Errorf("Type = %q, want %q", event.Type, EventTypeTaskNotification)
+		}
+		if event.BackgroundTaskID != "bscl9ri3t" {
+			t.Errorf("BackgroundTaskID = %q, want %q", event.BackgroundTaskID, "bscl9ri3t")
+		}
+		if event.BackgroundTaskStatus != "completed" {
+			t.Errorf("BackgroundTaskStatus = %q, want %q", event.BackgroundTaskStatus, "completed")
+		}
+	})
+}
+
 func TestClaudeCodeBackendParseUsageInfo(t *testing.T) {
 	backend := NewClaudeCodeBackend(nil)
 
