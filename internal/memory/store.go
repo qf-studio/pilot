@@ -376,6 +376,22 @@ func (s *Store) migrate() error {
 		// throughput metrics, the metrics hydrator, and dashboard history
 		// without touching the ledger itself.
 		`ALTER TABLE executions ADD COLUMN is_canary BOOLEAN DEFAULT FALSE`,
+		// TASK-407/GH-4349: the atomic dispatch-admission claim. A row here
+		// means one caller has already won the right to begin execution for
+		// (task_id, project_path, generation); every other Begin caller for
+		// the same key loses (ClaimExecution's INSERT OR IGNORE +
+		// RowsAffected()==1, mirroring the ClaimSpawnedFix idiom at
+		// internal/autopilot/state_store.go:1062). Rows are permanent per
+		// generation — a legitimate retry claims generation+1 rather than
+		// deleting/reusing this row, so the claim survives crash windows.
+		`CREATE TABLE IF NOT EXISTS execution_claims (
+			task_id TEXT NOT NULL,
+			project_path TEXT NOT NULL,
+			generation INTEGER NOT NULL,
+			execution_id TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (task_id, project_path, generation)
+		)`,
 	}
 
 	for _, migration := range migrations {
@@ -826,6 +842,13 @@ const (
 	// planned subtasks never dispatched after a transient sub-issue-creation
 	// failure went unnoticed.
 	StageSubIssuesIncomplete Stage = "sub_issues_incomplete"
+	// StageDispatchClaimLost records that a Begin call site (epic sub-issue
+	// loop, dispatcher queue path, CLI) lost the execution_claims race for
+	// (task_id, project_path, generation) to another dispatch channel —
+	// evidence that the atomic claim (TASK-407/GH-4349) did its job instead
+	// of a second execution starting silently. Detail carries a short
+	// human-readable note naming which sub-issue/task lost the claim.
+	StageDispatchClaimLost Stage = "dispatch_claim_lost"
 )
 
 // Event represents a single stage-transition record for an execution.
@@ -2265,6 +2288,41 @@ func (s *Store) IsTaskQueued(taskID, projectPath string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// canonicalizeProjectPath normalizes projectPath for use as part of an
+// execution_claims key, trimming a trailing separator and collapsing "."/
+// ".." segments (filepath.Clean) so two textually-different-but-equivalent
+// paths for the same project (mem-019/GH-4297's discriminator-mismatch
+// class) claim the same row instead of silently splitting the key.
+func canonicalizeProjectPath(projectPath string) string {
+	if projectPath == "" {
+		return projectPath
+	}
+	return filepath.Clean(projectPath)
+}
+
+// ClaimExecution atomically claims (task_id, project_path, generation) for
+// executionID via INSERT OR IGNORE + RowsAffected()==1 — the ClaimSpawnedFix
+// idiom (internal/autopilot/state_store.go:1062) generalized to dispatch
+// admission (TASK-407/GH-4349). Returns claimed=true only when THIS call
+// performed the insert; a second caller racing the same key (any goroutine,
+// any process — SQLite serializes it) loses and must not begin its own
+// execution. Rows are permanent per generation: a legitimate retry claims
+// generation+1 rather than reusing this one.
+func (s *Store) ClaimExecution(taskID, projectPath string, generation int, executionID string) (bool, error) {
+	result, err := s.db.Exec(`
+		INSERT OR IGNORE INTO execution_claims (task_id, project_path, generation, execution_id)
+		VALUES (?, ?, ?, ?)
+	`, taskID, canonicalizeProjectPath(projectPath), generation, executionID)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // CrossPattern represents a pattern that applies across multiple projects.

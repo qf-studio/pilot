@@ -619,6 +619,83 @@ func TestIsTaskQueued_ProjectScoping(t *testing.T) {
 	}
 }
 
+// TestClaimExecution_SecondCallerLoses is the TASK-407/GH-4349 atomic-claim
+// idiom test (the INSERT OR IGNORE + RowsAffected()==1 pattern from
+// ClaimSpawnedFix, internal/autopilot/state_store.go:1062): a second
+// ClaimExecution for the same (task_id, project_path, generation) must not
+// win, regardless of which execution_id it names.
+func TestClaimExecution_SecondCallerLoses(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	claimed, err := store.ClaimExecution("GH-20", "/project", 0, "exec-a")
+	if err != nil {
+		t.Fatalf("ClaimExecution failed: %v", err)
+	}
+	if !claimed {
+		t.Fatal("expected first ClaimExecution to win")
+	}
+
+	claimed, err = store.ClaimExecution("GH-20", "/project", 0, "exec-b")
+	if err != nil {
+		t.Fatalf("ClaimExecution failed: %v", err)
+	}
+	if claimed {
+		t.Error("expected second ClaimExecution for the same key to lose")
+	}
+}
+
+// TestClaimExecution_DifferentGenerationClaimsAfresh verifies generation is
+// part of the claim key: a retry claiming generation+1 wins its own row
+// instead of losing to the prior generation's claim.
+func TestClaimExecution_DifferentGenerationClaimsAfresh(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	claimed, err := store.ClaimExecution("GH-21", "/project", 0, "exec-gen0")
+	if err != nil || !claimed {
+		t.Fatalf("expected generation 0 claim to win, claimed=%v err=%v", claimed, err)
+	}
+
+	claimed, err = store.ClaimExecution("GH-21", "/project", 1, "exec-gen1")
+	if err != nil {
+		t.Fatalf("ClaimExecution failed: %v", err)
+	}
+	if !claimed {
+		t.Error("expected generation 1 claim to win despite generation 0 already claimed")
+	}
+}
+
+// TestClaimExecution_ProjectScoping mirrors TestIsTaskQueued_ProjectScoping:
+// the same task_id in two different projects must claim independently
+// (mem-019/GH-4297's discriminator-mismatch class, applied to the claim key).
+func TestClaimExecution_ProjectScoping(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	claimed, err := store.ClaimExecution("GH-22", "/project-a", 0, "exec-a")
+	if err != nil || !claimed {
+		t.Fatalf("expected /project-a claim to win, claimed=%v err=%v", claimed, err)
+	}
+
+	claimed, err = store.ClaimExecution("GH-22", "/project-b", 0, "exec-b")
+	if err != nil {
+		t.Fatalf("ClaimExecution failed: %v", err)
+	}
+	if !claimed {
+		t.Error("expected /project-b to claim its own row independent of /project-a")
+	}
+}
+
 // TestGetDecomposedChildTaskIDs covers the GH-4216 (Defect A, fix 3)
 // cross-task-id dispatch guard's read helper: no decomposed event, a
 // decomposed event with children, duplicate refs collapsed, and project-path

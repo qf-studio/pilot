@@ -205,6 +205,91 @@ func TestExecuteSubIssues_ChildFailureMessageSurfacesRealError(t *testing.T) {
 	}
 }
 
+// TestExecuteSubIssues_ClaimLost_PollsExternallyOwnedChildToSuccess is the
+// TASK-407/GH-4349 regression for the epic sub-issue loop, historically the
+// unguarded dispatch channel (it never called IsTaskQueued/QueueTask). When
+// another channel already won the execution claim for a sub-issue, this run
+// must NOT invoke the backend a second time — it must poll the
+// externally-owned execution row to its terminal state and use that outcome
+// (PR registration etc.) exactly as if it had run the child itself.
+func TestExecuteSubIssues_ClaimLost_PollsExternallyOwnedChildToSuccess(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const taskID = "GH-201"
+	const projectPath = "" // matches subTaskRepoPath's fallback to parent.ProjectPath ("") below
+
+	// Simulate another dispatch channel (e.g. the poller) already winning
+	// this sub-issue's execution claim before the epic loop reaches it.
+	claimed, err := store.ClaimExecution(taskID, projectPath, 0, "exec-owner")
+	if err != nil {
+		t.Fatalf("ClaimExecution: %v", err)
+	}
+	if !claimed {
+		t.Fatal("test setup: expected the seeded claim to win")
+	}
+
+	issues := makeSubIssues(1, 201)
+	parent := &Task{ID: "GH-90", Title: "[epic] claim lost"}
+
+	execCalled := false
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		execCalled = true
+		return &ExecutionResult{TaskID: task.ID, Success: true}, nil
+	}
+
+	runner := newTestRunnerWithExecFunc(execFn)
+	runner.logStore = store
+	runner.childOutcomeReconcilePollInterval = 20 * time.Millisecond
+	runner.childOutcomeReconcileTimeout = 2 * time.Second
+
+	var prCalls []subIssuePRCall
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName, issueNodeID string) {
+		prCalls = append(prCalls, subIssuePRCall{
+			PRNumber: prNumber, PRURL: prURL, IssueNumber: issueNumber, CommitSHA: commitSHA, BranchName: branchName,
+		})
+	})
+
+	// The claim-winning channel's own executions row appears and completes
+	// shortly after — ExecutionLifecycle.Begin claims execution_claims before
+	// it writes the executions row, so this reproduces that real window.
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		if saveErr := store.SaveExecution(&memory.Execution{
+			ID:          "exec-owner",
+			TaskID:      taskID,
+			ProjectPath: projectPath,
+			Status:      "running",
+		}); saveErr != nil {
+			t.Errorf("SaveExecution: %v", saveErr)
+		}
+		time.Sleep(30 * time.Millisecond)
+		if mcErr := store.MarkExecutionCompleted("exec-owner", "https://github.com/owner/repo/pull/9201", "sha-owner", 500); mcErr != nil {
+			t.Errorf("MarkExecutionCompleted: %v", mcErr)
+		}
+	}()
+
+	if err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, ""); err != nil {
+		t.Fatalf("ExecuteSubIssues returned error, want nil (externally-owned child eventually succeeded): %v", err)
+	}
+
+	if execCalled {
+		t.Error("expected the backend NOT to be invoked when the execution claim was already lost")
+	}
+	if len(prCalls) != 1 {
+		t.Fatalf("PR callback count = %d, want 1", len(prCalls))
+	}
+	if prCalls[0].PRNumber != 9201 {
+		t.Errorf("PR callback PRNumber = %d, want 9201", prCalls[0].PRNumber)
+	}
+	if prCalls[0].CommitSHA != "sha-owner" {
+		t.Errorf("PR callback CommitSHA = %q, want %q", prCalls[0].CommitSHA, "sha-owner")
+	}
+}
+
 // TestExecuteSubIssues_NoLogStoreFailsImmediately verifies that without a
 // log store wired, a synchronous child failure fails the epic immediately
 // (unchanged pre-GH-3786 behavior) rather than blocking on a poll it has no

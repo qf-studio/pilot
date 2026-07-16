@@ -609,7 +609,10 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 				slog.String("complexity", result.Complexity.String()),
 			)
 			execID, err := d.queueSingleTask(ctx, task)
-			if err == nil {
+			if err == nil && execID != "" {
+				// execID == "" with a nil error means queueSingleTask dropped
+				// an ErrClaimLost pickup silently — no executions row exists
+				// here to attach this stage event to (GH-4359).
 				d.recordExecutionEvent(execID, memory.StageDecompositionSkipped, detail)
 			}
 			return execID, err
@@ -626,6 +629,23 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 	// GH-4243: single chokepoint for the row create + ExecutionID threading
 	// that used to be hand-rolled here.
 	parentExecID, err := NewExecutionLifecycle(d.store).Begin(parent, ExecStatusDecomposed)
+	if errors.Is(err, ErrClaimLost) {
+		// TASK-407/GH-4359: another dispatch channel (e.g. the epic sub-issue
+		// loop or a racing poller pass) already claimed
+		// (parent.ID, parent.ProjectPath, generation 0) before this
+		// dispatchMu-serialized call reached Begin. Unlike epic.go's
+		// sub-issue loop, this call site has no wrapping execution row of
+		// its own to poll or attach a ledger event to — the parent task IS
+		// the top-level dispatch. Drop the duplicate pickup silently: the
+		// execution is already owned elsewhere, so re-queuing here would
+		// either FK-787 (no executions row to reference) or start a
+		// genuine duplicate run.
+		d.log.Info("dispatch claim lost — decomposed parent already owned by another dispatch channel, dropping duplicate pickup",
+			slog.String("task_id", parent.ID),
+			slog.String("project", parent.ProjectPath),
+		)
+		return "", nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to save decomposed parent: %w", err)
 	}
@@ -667,6 +687,24 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 	// GH-4243: single chokepoint for the row create + ExecutionID threading
 	// that used to be hand-rolled here.
 	execID, err := NewExecutionLifecycle(d.store).Begin(task, ExecStatusQueued)
+	if errors.Is(err, ErrClaimLost) {
+		// TASK-407/GH-4359: another dispatch channel already claimed
+		// (task.ID, task.ProjectPath, generation 0) — most likely a
+		// concurrently-racing epic sub-issue loop or CLI stub picking up the
+		// same task_id outside this dispatcher's dispatchMu-serialized path.
+		// Drop this pickup silently (idempotent pickup): the execution is
+		// already owned elsewhere, and proceeding here would either FK-787
+		// (no executions row for this call to reference) or start a genuine
+		// duplicate run. Returning a nil error — rather than wrapping
+		// ErrClaimLost like ErrTaskAlreadyActive — means callers (including
+		// the decomposed-subtask loop below) treat this exactly like an
+		// already-handled task, not a failure to log or retry.
+		d.log.Info("dispatch claim lost — task already owned by another dispatch channel, dropping duplicate pickup",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+		)
+		return "", nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("failed to save execution: %w", err)
 	}
