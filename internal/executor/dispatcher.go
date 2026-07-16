@@ -585,6 +585,19 @@ func (d *Dispatcher) IsActive(taskID, projectPath string) bool {
 	return active
 }
 
+// HasTerminalCompletion reports whether taskID already has terminal ledger
+// evidence in projectPath (delegates to the package-level HasTerminalCompletion
+// helper this package's own processQueue pickup guard uses).
+//
+// GH-4376: exported so admission gates outside this package — e.g. the shared
+// dispatch chokepoint in cmd/pilot/handler_common.go — can consult the same
+// "done" definition the SDK poller's ExecutionChecker uses, as a second,
+// in-tree check independent of the poller's own per-tick admission logic
+// (external studio-sdk dependency, not something this repo can patch).
+func (d *Dispatcher) HasTerminalCompletion(taskID, projectPath string) (bool, error) {
+	return HasTerminalCompletion(d.store, taskID, projectPath)
+}
+
 // QueueTask adds a task to the execution queue and returns the execution ID.
 // The task will be executed by the project's worker in FIFO order.
 // If a decomposer is configured and the task is complex, it will be split

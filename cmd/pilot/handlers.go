@@ -18,6 +18,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
@@ -689,7 +690,7 @@ func handleAzureDevOpsIssueWithResult(ctx context.Context, cfg *config.Config, e
 // avoid the GH-GH-42 double-prefix the legacy handler's fmt.Sprintf("GH-%d", ...) would create.
 // Board sync is handled at the SDK-poller level (config-driven); the spec-guard gate runs below
 // (M7 4d.3). Sub-issue handling remains exclusive to the legacy in-tree handler until later phases.
-func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, repoFullName string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
+func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, repoFullName string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer, metrics *autopilot.Metrics) (*sdkcore.IssueResult, error) {
 	taskID := ev.SequenceID // "GH-42"; already prefixed by the SDK adapter — do NOT re-prefix
 	title := ev.Title
 
@@ -805,6 +806,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		AlertsEngine: alertsEngine,
 		Enforcer:     enforcer,
 		ProjectPath:  projectPath,
+		Metrics:      metrics,
 	}
 	info := IssueInfo{
 		TaskID:  taskID,

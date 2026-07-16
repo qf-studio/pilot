@@ -23,6 +23,12 @@ const (
 	ReasonStatusLabel        = "status_label" // GitLab combined in_progress/done/failed
 	ReasonStatusTag          = "status_tag"   // Azure DevOps combined in_progress/done/failed
 	ReasonClosedIssue        = "closed_issue" // GH-4183: closed issue is terminal, never re-arm
+	// ReasonRepickStormBackoff (GH-4376) is recorded by the shared dispatch
+	// chokepoint (cmd/pilot/handler_common.go), not by a poller directly —
+	// a claim-lost or completed-but-open re-pick that's currently within its
+	// per-issue backoff window, or that the chokepoint's own
+	// HasTerminalCompletion re-check caught independently of the poller.
+	ReasonRepickStormBackoff = "repick_storm_backoff"
 )
 
 // PollerMetricsRecorder records poller dispatch/skip counters.
