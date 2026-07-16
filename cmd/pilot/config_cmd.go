@@ -419,7 +419,10 @@ const (
 // execution_logs tables) rather than replay recordings, so it also covers tasks that are
 // still running or finished recently but haven't produced a finalized recording (GH-3724).
 func runTaskLogs(w io.Writer, store *memory.Store, taskID string, verbose, jsonOut bool) error {
-	exec, err := store.GetLatestExecutionByTaskID(taskID)
+	// GH-4352: no project context here — this is a human-invoked CLI lookup
+	// by task ID alone (`pilot logs <task-id>`), so pass "" to preserve the
+	// prior cross-project lookup behavior rather than force a project flag.
+	exec, err := store.GetLatestExecutionByTaskID(taskID, "")
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("no logs found for task: %s", taskID)

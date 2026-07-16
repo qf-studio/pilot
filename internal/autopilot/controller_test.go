@@ -7850,7 +7850,7 @@ func (m *mockApprovalPersister) SetApprovalDecision(_ context.Context, requestID
 	return nil
 }
 
-func (m *mockApprovalPersister) GetLatestExecutionByTaskID(taskID string) (*memory.Execution, error) {
+func (m *mockApprovalPersister) GetLatestExecutionByTaskID(taskID, _ string) (*memory.Execution, error) {
 	id, ok := m.execByTask[taskID]
 	if !ok {
 		return nil, sql.ErrNoRows
@@ -7921,7 +7921,7 @@ func (m *errApprovalPersister) SetApprovalDecision(_ context.Context, _, _, _ st
 	return m.decisionErr
 }
 
-func (m *errApprovalPersister) GetLatestExecutionByTaskID(_ string) (*memory.Execution, error) {
+func (m *errApprovalPersister) GetLatestExecutionByTaskID(_, _ string) (*memory.Execution, error) {
 	return nil, sql.ErrNoRows
 }
 
