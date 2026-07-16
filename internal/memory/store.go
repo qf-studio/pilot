@@ -2014,6 +2014,82 @@ func healAndBackfillRows(db *sql.DB, whereClause string, whereArgs []interface{}
 	return tx.Commit()
 }
 
+// HealFrozenHistoryLadders is GH-4368's one-shot dashboard-hydration heal. It
+// scans the whole executions table once for every row already sitting at
+// status='completed' whose execution_events ledger has no terminal entry —
+// the same target as GH-4277's per-task backfill inside
+// SelfHealExecutionAfterMerge/SelfHealExecutionByPRURL, except those two are
+// keyed to one task_id or pr_url at a time and only ever get called for PRs
+// still inside autopilot's bounded merged_pr_scan_window catch-up sweep. A row
+// whose event stream died mid-incident (daemon killed before the terminal
+// event was recorded) long before that window opened is otherwise
+// permanently unreachable, so its HISTORY row stays frozen forever.
+//
+// Each candidate is stamped using its OWN already-known pr_url column
+// (StageMerged) or, when none is set, StageCompleted — deliberately never
+// StageFailed. Every candidate here is already a genuine 'completed' success;
+// healAndBackfillRows' StageFailed-when-no-prURL branch exists for a
+// different case (a non-success row with no merge evidence), and reusing it
+// here would mislabel a real success red in buildStageInfo's reducer even
+// though the row's icon (driven independently by executions.status via
+// displayStatus) would still show ✓.
+//
+// completed_at/status/pr_url are left untouched, matching GH-4277. Idempotent:
+// once a row has a terminal execution_events entry it drops out of the
+// NOT EXISTS clause, so a second call selects zero candidates.
+func (s *Store) HealFrozenHistoryLadders() (int, error) {
+	var healed int
+	err := s.withRetry("HealFrozenHistoryLadders", func() error {
+		healed = 0
+		tx, err := s.db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		rows, err := tx.Query(`
+			SELECT id, pr_url FROM executions
+			WHERE status = 'completed' AND NOT EXISTS (
+				SELECT 1 FROM execution_events ee
+				WHERE ee.execution_id = executions.id AND ee.stage IN (` + terminalEventStages + `)
+			)
+		`)
+		if err != nil {
+			return err
+		}
+		type candidate struct{ id, prURL string }
+		var candidates []candidate
+		for rows.Next() {
+			var c candidate
+			if err := rows.Scan(&c.id, &c.prURL); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			candidates = append(candidates, c)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+
+		for _, c := range candidates {
+			stage, detail := StageCompleted, "historical archaeology heal (GH-4368): no PR URL on record"
+			if c.prURL != "" {
+				stage, detail = StageMerged, "historical archaeology heal (GH-4368): merged "+c.prURL
+			}
+			if err := recordExecutionEventOn(tx, c.id, stage, detail); err != nil {
+				return err
+			}
+			healed++
+		}
+
+		return tx.Commit()
+	})
+	return healed, err
+}
+
 // GetExecutionStatusByTaskID returns the status of the most recent execution row
 // exactly matching taskID (scoped to projectPath, mirroring SelfHealExecutionAfterMerge:
 // empty projectPath drops the scope for legacy single-repo callers) — no substring

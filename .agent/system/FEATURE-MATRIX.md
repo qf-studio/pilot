@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-15 (v2.151.0)
+**Last Updated:** 2026-07-09 (v2.151.0)
 
 ## Legend
 
@@ -240,6 +240,7 @@
 | Autopilot panel | ✅ | dashboard | - | - | One row per active PR: glyph + 5-cell lifecycle meter (ci→rebase→merge→tag→release) + stage label + age; `↳ ⟲ retry N/M · error` detail only when failures exist; `┤ ● N prs ├` border legend; `pr_title` persisted so rows survive restarts (branch-name fallback) (TASK-390, v2.235.8) |
 | Task history | ✅ | dashboard | - | - | Recent 5 executions with truthful status glyphs — `executions.status` passes through (`·` skipped, `○` no_op, `●` running, …); terminal non-ladder outcomes own the row label + muted meter (TASK-390, v2.235.1) |
 | Execution stage strip | ✅ | dashboard | - | - | Pipeline progress on HISTORY rows as a 7-rung segment meter (`■■■■□□□` + dim stage label; sage/rose/accent by outcome, dim track when no events), fed from `execution_events` via `buildStageInfo` — fixed ladder position, not raw event count, so retries don't inflate it; cached at hydrate/refresh time not per render (GH-3849, v2.208.0; fraction TASK-383; meter TASK-390) |
+| HISTORY archaeology heal | ✅ | dashboard, memory | - | - | One-shot heal at `hydrateFromStore`: `Store.HealFrozenHistoryLadders` backfills the terminal `execution_events` row on any pre-H4 `status='completed'` row whose ladder is frozen at a non-terminal rung — unlike `SelfHealExecutionAfterMerge`/`SelfHealExecutionByPRURL`, not bounded by `merged_pr_scan_window`. `declined-preflight` (zero-event decline) added to `mutedOutcomes`, and `stageInfoForExecution` now labels/mutes a muted outcome even with zero events instead of rendering blank (GH-4368, v2.240.1) |
 | Hot upgrade key | ✅ | dashboard | `u` key | - | In-place upgrade from dashboard |
 | SQLite persistence | ✅ | dashboard | - | - | Metrics survive restarts (v0.21.2) |
 | Queue state panel | ✅ | dashboard | - | - | 5-state: done/running/queued/pending/failed with shimmer (v0.63.0) |
@@ -397,7 +398,6 @@
 | CLI `--env` flag | ✅ | main | `--env=stage` | - | Renamed from `--autopilot`, updated onboarding + config (v1.60.1, GH-1642) |
 | Prod auto-approve safety | ✅ | autopilot | - | - | Block auto-merge when pre_merge approval disabled in prod (v1.61.0) |
 | Auto-rebase on conflict | ✅ | autopilot | - | - | GitHub UpdatePullRequestBranch API before close-and-retry (v2.25.0) |
-| Mechanical go.mod/go.sum conflict resolution | ✅ | autopilot | - | - | Middle rung between auto-rebase failure and close-and-reexecute: replays the merge in a scratch worktree, and — only when the conflict is confined to go.mod/go.sum — unions pure `require` additions, regenerates go.sum via `go mod tidy`, verifies `go build ./...` still passes, then commits and pushes. Shares the auto-rebase oscillation cap (`MaxRebaseAttempts`, GH-3715). Any other conflicted file, an unresolvable go.mod hunk, a tidy failure, or a build-gate failure falls through to close-and-reexecute unchanged (v2.239.0, GH-4328) |
 | CI fix dependencies | ✅ | autopilot | - | - | `Depends on: #N` annotations in generated fix issues (v2.25.0) |
 | Board sync on merge | ✅ | autopilot | - | - | Move issue to Done column on PR merge (v2.30.0, PR #1864) |
 | Label cleanup on retry | ✅ | adapters/github | - | - | Remove `pilot-failed` on successful retry — accurate metrics (v1.8.1, GH-1302) |
@@ -410,7 +410,6 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
-| Test-evidence gate | ✅ | autopilot | - | `autopilot.test_evidence` | Escalate-only guard at `handleCIPassed` (same pattern as scope_guard.go): holds auto-merge, comments on the PR, and journals a `test_evidence_hold` execution event when the CI job log shows zero/skipped tests on a PR touching production source. Default off, per-project opt-in (GH-4329) |
 
 ## Epic Management
 

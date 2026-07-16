@@ -83,12 +83,18 @@ func displayStatus(execStatus string) string {
 // label shows the outcome itself (a skipped run must not read "running") and
 // the meter renders muted. stalled is excluded — it keeps the rung label to
 // show where the run died, like failed.
+//
+// declined-preflight (GH-4368): the intent judge declines a task before any
+// work starts, so the row has zero execution_events — with no override it
+// rendered an unknown-glyph meter and a blank "–" label (indistinguishable
+// from a truly unaccounted-for row) instead of a muted, labeled one.
 var mutedOutcomes = map[string]bool{
-	"skipped":      true,
-	"no_op":        true,
-	"declined":     true,
-	"rate_limited": true,
-	"infra":        true,
+	"skipped":            true,
+	"no_op":              true,
+	"declined":           true,
+	"rate_limited":       true,
+	"infra":              true,
+	"declined-preflight": true,
 }
 
 // stageStripCleanTerminalEvents are execution_events that close out a run
@@ -107,11 +113,18 @@ var stageStripCleanTerminalEvents = map[memory.Stage]bool{
 // timeline plus the authoritative executions.status. The label override is
 // status-driven, never event-driven, so GH-4023's stray-late-event guard in
 // buildStageInfo is untouched.
+//
+// A muted outcome forces Known=true even when the row has zero events (e.g.
+// declined-preflight, GH-4368): unlike a genuinely unaccounted-for row (no
+// stage evidence at all — predates the events table, or the run never got
+// far enough to log one), a muted outcome's status IS the evidence, so it
+// gets a labeled, dim meter instead of the blank "unknown" one.
 func stageInfoForExecution(events []*memory.Event, status string) StageInfo {
 	info := buildStageInfo(events, status == "failed" || status == "stalled")
-	if mutedOutcomes[status] && info.Known {
+	if mutedOutcomes[status] {
 		info.Label = truncateString(status, maxStageStripLabelWidth)
 		info.Muted = true
+		info.Known = true
 	}
 	return info
 }

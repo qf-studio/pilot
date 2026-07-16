@@ -342,6 +342,70 @@ func TestStageInfoForExecution_StalledKeepsRung(t *testing.T) {
 	}
 }
 
+// TestStageInfoForExecution_DeclinedPreflightMutedWithZeroEvents is the
+// GH-4368 regression: the intent judge declines a task before any work
+// starts, so the row has zero execution_events. Before the fix, a muted
+// status only got its label/Muted override when info.Known was already true
+// (i.e. events existed) — a zero-event muted row fell through to the
+// all-blank StageInfo{}, rendering an unknown-glyph meter and a blank "–"
+// label instead of a dim, labeled one.
+func TestStageInfoForExecution_DeclinedPreflightMutedWithZeroEvents(t *testing.T) {
+	got := stageInfoForExecution(nil, "declined-preflight")
+	want := StageInfo{Reached: 0, Label: "declined-preflight", Failed: false, Known: true, Muted: true}
+	if got != want {
+		t.Errorf("declined-preflight with zero events: got %+v, want %+v", got, want)
+	}
+}
+
+// TestStageInfoForExecution_MutedOutcomesTable is table-driven coverage of
+// every mutedOutcomes status, including the zero-events case for each.
+func TestStageInfoForExecution_MutedOutcomesTable(t *testing.T) {
+	tests := []struct {
+		status string
+		events []*memory.Event
+		want   StageInfo
+	}{
+		{
+			status: "declined-preflight",
+			events: nil,
+			want:   StageInfo{Reached: 0, Label: "declined-preflight", Failed: false, Known: true, Muted: true},
+		},
+		{
+			status: "skipped",
+			events: nil,
+			want:   StageInfo{Reached: 0, Label: "skipped", Failed: false, Known: true, Muted: true},
+		},
+		{
+			status: "no_op",
+			events: []*memory.Event{evt(memory.StageRunning)},
+			want:   StageInfo{Reached: 2, Label: "no_op", Failed: false, Known: true, Muted: true},
+		},
+		{
+			status: "declined",
+			events: nil,
+			want:   StageInfo{Reached: 0, Label: "declined", Failed: false, Known: true, Muted: true},
+		},
+		{
+			status: "rate_limited",
+			events: nil,
+			want:   StageInfo{Reached: 0, Label: "rate_limited", Failed: false, Known: true, Muted: true},
+		},
+		{
+			status: "infra",
+			events: nil,
+			want:   StageInfo{Reached: 0, Label: "infra", Failed: false, Known: true, Muted: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			got := stageInfoForExecution(tt.events, tt.status)
+			if got != tt.want {
+				t.Errorf("stageInfoForExecution(%v, %q) = %+v, want %+v", tt.events, tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDisplayStatus(t *testing.T) {
 	cases := map[string]string{
 		"completed":    "success",

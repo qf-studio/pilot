@@ -586,6 +586,14 @@ func (m *Model) hydrateFromStore() {
 		return
 	}
 
+	// GH-4368: one-shot archaeology heal, before anything below reads
+	// execution_events — backfills the terminal ladder event on any row
+	// stuck at status='completed' with a frozen/pre-H4 event stream so
+	// HISTORY doesn't render it as still in-flight (e.g. "running").
+	if _, err := m.store.HealFrozenHistoryLadders(); err != nil {
+		slog.Warn("failed to heal frozen history ladders", slog.Any("error", err))
+	}
+
 	// Get or create today's session
 	session, err := m.store.GetOrCreateDailySession()
 	if err != nil {
