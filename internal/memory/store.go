@@ -747,6 +747,40 @@ func (s *Store) GetLatestExecutionByTaskIDExcluding(taskID, projectPath, exclude
 	return scanExecutionDetail(row)
 }
 
+// ListExecutionsByTaskIDExcluding returns every execution row for taskID
+// (exact match, scoped to projectPath), excluding excludeID, newest first —
+// the full history, unlike GetLatestExecutionByTaskIDExcluding's single
+// "latest by created_at" row.
+//
+// GH-4381: a caller reconciling a child's outcome must scan every row for a
+// terminal one, not just the most recent — a fresh "queued" duplicate row
+// can be written after an older terminal "no_op" row and would sort first,
+// hiding it from any check that only looks at the latest row (the same
+// latest-row-ordering trap HasTerminalCompletion was built to avoid for
+// admission gates, GH-4347).
+func (s *Store) ListExecutionsByTaskIDExcluding(taskID, projectPath, excludeID string) ([]*Execution, error) {
+	rows, err := s.db.Query(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE task_id = ? AND (? = '' OR project_path = ?) AND id != ?
+		ORDER BY created_at DESC, rowid DESC
+	`, taskID, projectPath, projectPath, excludeID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		exec, err := scanExecutionDetail(rows)
+		if err != nil {
+			return nil, err
+		}
+		executions = append(executions, exec)
+	}
+	return executions, rows.Err()
+}
+
 // ListExecutionsForTask returns every execution recorded for taskID (exact match),
 // newest first. Unlike GetLatestExecutionByTaskID (single row, exact-or-substring
 // match), this returns the full history so the CLI can render a per-execution

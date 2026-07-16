@@ -1910,14 +1910,6 @@ const (
 	defaultChildOutcomeReconcileTimeout      = 5 * time.Minute
 )
 
-// childExecutionNonTerminalStatuses are executions.status values that mean a
-// child's own tracked run has not finished yet.
-var childExecutionNonTerminalStatuses = map[string]bool{
-	"queued":  true,
-	"pending": true,
-	"running": true,
-}
-
 // reconcileChildOutcome re-checks a sub-issue's own execution row before
 // letting a synchronous exec signal (err or result.Success=false) fail the
 // epic. GH-3786 (TASK-382 D3): GH-3760 failed on "sub-issue 3769 failed:
@@ -1945,15 +1937,15 @@ var childExecutionNonTerminalStatuses = map[string]bool{
 //
 // When no failure signal is present and the child is not externally owned,
 // or no log store is wired to check against, the original (result, err) pass
-// through unchanged. Otherwise this polls GetExecutionStatusByTaskIDExcluding
-// for taskID (scoped to projectPath) until it reports a terminal status, the
-// context is cancelled, or childOutcomeReconcileTimeout elapses — whichever
-// comes first, so this can never block the epic indefinitely. On terminal
-// success ("completed" / "no_op") it synthesizes a passing ExecutionResult
-// from the tracked row so the caller's normal success/no-op handling
-// applies; on terminal failure it enriches the returned error with the
-// tracked row's real error message instead of the uninformative "unknown:
-// exit status 1" backend classification.
+// through unchanged. Otherwise this polls findTerminalChildExecution for
+// taskID (scoped to projectPath) until it finds a terminal row, the context
+// is cancelled, or childOutcomeReconcileTimeout elapses — whichever comes
+// first, so this can never block the epic indefinitely. On terminal success
+// ("completed" / "no_op") it synthesizes a passing ExecutionResult from the
+// tracked row so the caller's normal success/no-op handling applies; on
+// terminal failure it enriches the returned error with the tracked row's
+// real error message instead of the uninformative "unknown: exit status 1"
+// backend classification.
 func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath, selfExecID string, result *ExecutionResult, execErr error, externallyOwned bool) (*ExecutionResult, error) {
 	hasFailureSignal := execErr != nil || (result != nil && !result.Success)
 	if !hasFailureSignal && !externallyOwned {
@@ -1977,7 +1969,7 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 		// means "not visible yet," not "no one owns this" — always enter the
 		// bounded poll loop below instead, which already tolerates ErrNoRows
 		// on every tick.
-		status, err := r.logStore.GetExecutionStatusByTaskIDExcluding(taskID, projectPath, selfExecID)
+		row, err := r.findTerminalChildExecution(taskID, projectPath, selfExecID)
 		if err != nil {
 			if !errors.Is(err, sql.ErrNoRows) {
 				r.log.Warn("reconcileChildOutcome: execution status lookup failed",
@@ -1985,8 +1977,8 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 			}
 			return result, execErr
 		}
-		if !childExecutionNonTerminalStatuses[status] {
-			return r.resolveChildTerminalOutcome(taskID, projectPath, selfExecID, status, result, execErr)
+		if row != nil {
+			return r.resolveChildTerminalOutcome(row, result, execErr)
 		}
 	}
 
@@ -2017,9 +2009,9 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 		case <-ticker.C:
 		}
 
-		status, err := r.logStore.GetExecutionStatusByTaskIDExcluding(taskID, projectPath, selfExecID)
-		if err == nil && !childExecutionNonTerminalStatuses[status] {
-			return r.resolveChildTerminalOutcome(taskID, projectPath, selfExecID, status, result, execErr)
+		row, err := r.findTerminalChildExecution(taskID, projectPath, selfExecID)
+		if err == nil && row != nil {
+			return r.resolveChildTerminalOutcome(row, result, execErr)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			r.log.Warn("reconcileChildOutcome: execution status lookup failed",
@@ -2036,8 +2028,43 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 	}
 }
 
-// resolveChildTerminalOutcome turns a terminal execution-row status for
-// taskID into the (result, error) pair reconcileChildOutcome should return.
+// findTerminalChildExecution scans every execution row tracked for taskID
+// (scoped to projectPath), excluding selfExecID, and returns the most recent
+// one whose status is terminal per isTerminalExecutionStatus — the same
+// definition dispatcher.go's WaitForExecution and GH-4372 retry decider
+// consult, so this wait can't grow a third, driftable copy of "what counts
+// as done" (mem-154 pitfall class; prior instances: #4350, #4373).
+//
+// This is deliberately NOT "the latest row's status": GH-4381 observed a
+// child whose real, older row had already reached the terminal "no_op"
+// outcome while a newer "queued" duplicate row existed alongside it — a
+// latest-row-only lookup (ORDER BY created_at DESC LIMIT 1) returns the
+// duplicate's non-terminal status and hides the terminal one forever,
+// timing out the parent epic. Scanning every row for a terminal one avoids
+// that ordering trap the same way Store.HasTerminalCompletion does for
+// admission gates (GH-4347).
+//
+// Returns (nil, nil) when rows exist for the task but none is terminal yet
+// (still worth polling), and (nil, sql.ErrNoRows) when no other row exists
+// at all (nothing to wait for).
+func (r *Runner) findTerminalChildExecution(taskID, projectPath, selfExecID string) (*memory.Execution, error) {
+	rows, err := r.logStore.ListExecutionsByTaskIDExcluding(taskID, projectPath, selfExecID)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	for _, row := range rows {
+		if isTerminalExecutionStatus(row.Status) {
+			return row, nil
+		}
+	}
+	return nil, nil
+}
+
+// resolveChildTerminalOutcome turns a terminal execution row into the
+// (result, error) pair reconcileChildOutcome should return.
 // "completed" / "no_op" become a synthetic success/no-op ExecutionResult so
 // the normal caller-side handling (PR registration, merge wait, no-op
 // continue) applies unchanged; any other terminal status is a genuine
@@ -2055,19 +2082,13 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 // entry itself or the card is stuck showing "● running 100%" forever even
 // though the child is done. Mirrors handler_common.go's branch: nil error →
 // Complete, non-nil error → Fail.
-func (r *Runner) resolveChildTerminalOutcome(taskID, projectPath, selfExecID, status string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
-	row, rowErr := r.logStore.GetLatestExecutionByTaskIDExcluding(taskID, projectPath, selfExecID)
-	if rowErr != nil {
-		row = nil
-	}
+func (r *Runner) resolveChildTerminalOutcome(row *memory.Execution, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
+	taskID := row.TaskID
+	status := row.Status
 
 	switch status {
 	case "completed":
-		synth := &ExecutionResult{TaskID: taskID, Success: true}
-		if row != nil {
-			synth.PRUrl = row.PRUrl
-			synth.CommitSHA = row.CommitSHA
-		}
+		synth := &ExecutionResult{TaskID: taskID, Success: true, PRUrl: row.PRUrl, CommitSHA: row.CommitSHA}
 		r.log.Info("reconcileChildOutcome: child execution row reached terminal success after a synchronous failure signal; treating as succeeded",
 			"task_id", taskID, "status", status)
 		if r.monitor != nil {
@@ -2076,7 +2097,7 @@ func (r *Runner) resolveChildTerminalOutcome(taskID, projectPath, selfExecID, st
 		return synth, nil
 	case "no_op":
 		synth := &ExecutionResult{TaskID: taskID, Success: false, Outcome: "no_op"}
-		if row != nil && row.Error != "" {
+		if row.Error != "" {
 			synth.Error = row.Error
 		}
 		r.log.Info("reconcileChildOutcome: child execution row reached terminal no_op after a synchronous failure signal; treating as no-op",
@@ -2087,7 +2108,7 @@ func (r *Runner) resolveChildTerminalOutcome(taskID, projectPath, selfExecID, st
 		return synth, nil
 	default:
 		msg := ""
-		if row != nil && strings.TrimSpace(row.Error) != "" {
+		if strings.TrimSpace(row.Error) != "" {
 			msg = row.Error
 		} else if execErr != nil {
 			msg = execErr.Error()
