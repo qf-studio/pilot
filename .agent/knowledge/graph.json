@@ -771,6 +771,17 @@
           "database",
           "deployment"
         ]
+      },
+      "TASK-410": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-410-executor-memory-file-deletion-guard.md",
+        "title": "Task 410 Executor Memory File Deletion Guard",
+        "status": "unknown",
+        "concepts": [
+          "deployment",
+          "api",
+          "knowledge",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -4001,6 +4012,11 @@
       "from": "TASK-409",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-410",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -4068,7 +4084,8 @@
       "TASK-403",
       "TASK-404",
       "TASK-405",
-      "TASK-407"
+      "TASK-407",
+      "TASK-410"
     ],
     "deployment": [
       "TASK-386",
@@ -4113,7 +4130,8 @@
       "TASK-408",
       "TASK-405",
       "TASK-407",
-      "TASK-409"
+      "TASK-409",
+      "TASK-410"
     ],
     "authentication": [
       "TASK-386",
@@ -4188,7 +4206,8 @@
       "TASK-408",
       "TASK-405",
       "TASK-407",
-      "TASK-409"
+      "TASK-409",
+      "TASK-410"
     ],
     "api": [
       "TASK-386",
@@ -4214,7 +4233,8 @@
       "TASK-408",
       "TASK-405",
       "TASK-407",
-      "TASK-409"
+      "TASK-409",
+      "TASK-410"
     ],
     "context": [
       "TASK-386",
@@ -4542,10 +4562,10 @@
       "mem-152"
     ]
   },
-  "last_updated": "2026-07-16T21:11:38.239138+00:00",
+  "last_updated": "2026-07-16T21:29:20.667116+00:00",
   "stats": {
-    "total_nodes": 249,
-    "total_edges": 223,
-    "memory_count": 154
+    "total_nodes": 252,
+    "total_edges": 224,
+    "memory_count": 156
   }
 }
