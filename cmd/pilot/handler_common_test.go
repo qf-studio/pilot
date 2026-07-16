@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
 	"github.com/qf-studio/pilot/internal/adapters/github"
@@ -233,6 +234,77 @@ func TestHandleIssueGeneric_GenuineQueueFailure_StillErrors(t *testing.T) {
 	}
 	if errors.Is(err, executor.ErrTaskAlreadyActive) {
 		t.Errorf("expected a genuine failure, not the already-active dedup rejection: %v", err)
+	}
+}
+
+// TestHandleIssueGeneric_DroppedTerminalPickup_NoPhantomWaitError is the
+// GH-4372 regression test for the poller-visible half of the bug: before the
+// fix, QueueTask's silent-drop contract (nil error, empty execID) fell
+// through to the WaitForExecution(ctx, "", ...) branch, which hit
+// sql.ErrNoRows on its very first poll (an empty execID never matches a
+// row) and surfaced as "failed to get execution: sql: no rows in result
+// set" — an ERROR the SDK poller logged on every tick ("Failed to process
+// issue ...") for a task that was never actually a failure.
+//
+// A no_op'd task at generation 0 reproduces the drop deterministically
+// without needing a live owner (which the IsActive pre-check would catch
+// before QueueTask is even reached) or a real backend execution (which a
+// generation+1 retry would need to run to completion).
+func TestHandleIssueGeneric_DroppedTerminalPickup_NoPhantomWaitError(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-handler-noop-drop-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+
+	taskID := "GH-4372-NOOP-DROP"
+	projectPath := "/tmp/pilot-gh-4372-noop-does-not-exist"
+
+	seed := &executor.Task{ID: taskID, ProjectPath: projectPath}
+	seedExecID, err := executor.NewExecutionLifecycle(store).Begin(seed, executor.ExecStatusRunning, 0)
+	if err != nil {
+		t.Fatalf("setup: generation 0 Begin failed: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(seedExecID, "no_op"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as no_op: %v", err)
+	}
+
+	monitor := executor.NewMonitor()
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor, ProjectPath: projectPath}
+	info := IssueInfo{TaskID: taskID, Title: "already no_op'd", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "already no_op'd", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	done := make(chan struct{})
+	var hr *HandlerResult
+	var hErr error
+	go func() {
+		hr, hErr = handleIssueGeneric(context.Background(), deps, info, task)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleIssueGeneric hung — likely stuck polling a phantom empty execID (GH-4372)")
+	}
+
+	if hErr != nil {
+		t.Fatalf("expected nil error for a dropped duplicate/terminal pickup, got: %v (this reproduces GH-4372's poller ERROR log)", hErr)
+	}
+	if hr.Success {
+		t.Error("expected Success=false for a dropped duplicate/terminal pickup")
 	}
 }
 
