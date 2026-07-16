@@ -2,6 +2,7 @@ package executor
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -253,6 +254,121 @@ func TestExecutionLifecycle_Begin_EmptyTitle_BackfillsViaUpdateExecutionTitle(t 
 	// the existing row rather than creating a new one.
 	if exec.ID != execID {
 		t.Errorf("expected execution ID to remain %q, got %q", execID, exec.ID)
+	}
+}
+
+// TestExecutionLifecycle_Begin_SecondClaimLoses is the TASK-407/GH-4349 core
+// invariant: two Begin calls for the same (task_id, project_path, generation
+// 0, the default) must not both create an execution row — the second loses
+// the claim and gets ErrClaimLost, not a second row.
+func TestExecutionLifecycle_Begin_SecondClaimLoses(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task1 := &Task{ID: "GH-8", ProjectPath: "/tmp/project"}
+	execID1, err := NewExecutionLifecycle(store).Begin(task1, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("first Begin failed: %v", err)
+	}
+	if task1.ExecutionID != execID1 {
+		t.Fatalf("expected task1.ExecutionID %q, got %q", execID1, task1.ExecutionID)
+	}
+
+	task2 := &Task{ID: "GH-8", ProjectPath: "/tmp/project"}
+	execID2, err := NewExecutionLifecycle(store).Begin(task2, ExecStatusRunning)
+	if !errors.Is(err, ErrClaimLost) {
+		t.Fatalf("expected second Begin to return ErrClaimLost, got execID=%q err=%v", execID2, err)
+	}
+	if execID2 != "" {
+		t.Errorf("expected empty execID on claim loss, got %q", execID2)
+	}
+	if task2.ExecutionID != "" {
+		t.Errorf("expected task2.ExecutionID to remain unstamped on claim loss, got %q", task2.ExecutionID)
+	}
+
+	exec, err := store.GetExecution(execID1)
+	if err != nil {
+		t.Fatalf("failed to load first execution: %v", err)
+	}
+	if exec.ID != execID1 {
+		t.Errorf("expected the winning execution row to be the first Begin's, got %q", exec.ID)
+	}
+}
+
+// TestExecutionLifecycle_Begin_GenerationPlusOneClaimsAfresh verifies a
+// retry that claims generation+1 does not deadlock on its own prior claim —
+// generation is part of the claim key, so a new generation is a fresh row.
+func TestExecutionLifecycle_Begin_GenerationPlusOneClaimsAfresh(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-9", ProjectPath: "/tmp/project"}
+	execID0, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning, 0)
+	if err != nil {
+		t.Fatalf("generation 0 Begin failed: %v", err)
+	}
+
+	// A second attempt at the SAME generation must still lose.
+	if _, err := NewExecutionLifecycle(store).Begin(&Task{ID: "GH-9", ProjectPath: "/tmp/project"}, ExecStatusRunning, 0); !errors.Is(err, ErrClaimLost) {
+		t.Fatalf("expected concurrent same-generation Begin to lose, got: %v", err)
+	}
+
+	// The retry decider's generation+1 claims a fresh row instead of losing.
+	retryTask := &Task{ID: "GH-9", ProjectPath: "/tmp/project"}
+	execID1, err := NewExecutionLifecycle(store).Begin(retryTask, ExecStatusRunning, 1)
+	if err != nil {
+		t.Fatalf("generation 1 Begin failed: %v", err)
+	}
+	if execID1 == execID0 {
+		t.Errorf("expected generation 1 to claim a distinct execution ID from generation 0")
+	}
+	if retryTask.ExecutionID != execID1 {
+		t.Errorf("expected retryTask.ExecutionID %q, got %q", execID1, retryTask.ExecutionID)
+	}
+}
+
+// TestExecutionLifecycle_Begin_ConcurrentClaims_ExactlyOneWinner is the
+// entry-point-inventory-adjacent concurrency proof: N goroutines racing
+// Begin for the same (task_id, project_path, generation) must produce
+// exactly one winner and N-1 ErrClaimLost, never two execution rows. Run
+// with -race.
+func TestExecutionLifecycle_Begin_ConcurrentClaims_ExactlyOneWinner(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const n = 8
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var wins, losses int
+	barrier := make(chan struct{})
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-barrier
+			task := &Task{ID: "GH-10", ProjectPath: "/tmp/project"}
+			_, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				wins++
+			case errors.Is(err, ErrClaimLost):
+				losses++
+			default:
+				t.Errorf("unexpected Begin error: %v", err)
+			}
+		}()
+	}
+	close(barrier)
+	wg.Wait()
+
+	if wins != 1 {
+		t.Errorf("expected exactly 1 winner, got %d", wins)
+	}
+	if losses != n-1 {
+		t.Errorf("expected %d losses, got %d", n-1, losses)
 	}
 }
 

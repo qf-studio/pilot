@@ -1,12 +1,22 @@
 package executor
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/qf-studio/pilot/internal/memory"
 )
+
+// ErrClaimLost is returned by Begin when another caller already won the
+// execution_claims race for (task.ID, task.ProjectPath, generation)
+// (TASK-407/GH-4349). It is not an error state: it means a different
+// dispatch channel (poller, epic sub-issue loop, CLI, ...) already owns this
+// execution. Callers must abort BEFORE invoking the backend and must not
+// treat this as a failure to log or retry — see each call site's own
+// handling for how it accounts for the externally-owned execution.
+var ErrClaimLost = errors.New("execution claim lost to another dispatch channel")
 
 // Status is the typed vocabulary for the executions-table status column
 // (GH-4243). Values are unchanged from the free-text strings every call site
@@ -56,23 +66,52 @@ func NewExecutionLifecycle(store *memory.Store) *ExecutionLifecycle {
 	return &ExecutionLifecycle{store: store}
 }
 
-// Begin creates the executions row for task at the given initial status and
-// unconditionally stamps the generated ID into task.ExecutionID — including
-// when the save itself fails. This generalizes the epic sub-issue path's
-// existing behavior (mem-026: "the UUID is threaded through below
-// regardless, so downstream event recording always has a real UUID rather
-// than falling back to the task ID") to every caller, so runner-side
+// Begin claims (task.ID, task.ProjectPath, generation) and, on winning,
+// creates the executions row at the given initial status — unconditionally
+// stamping the generated ID into task.ExecutionID once the claim is won,
+// including when the subsequent save itself fails. This generalizes the epic
+// sub-issue path's existing behavior (mem-026: "the UUID is threaded through
+// below regardless, so downstream event recording always has a real UUID
+// rather than falling back to the task ID") to every caller, so runner-side
 // execution_events/log writes (keyed on Task.LogExecutionID()) reference a
-// stable identifier even on a ledger-write failure. Callers that must abort
-// when the row isn't durably persisted (e.g. a queued task with no execution
-// row would be lost) inspect the returned error.
-func (l *ExecutionLifecycle) Begin(task *Task, initial Status) (string, error) {
+// stable identifier even on a ledger-write failure.
+//
+// generation defaults to 0 when omitted, so every pre-existing call site
+// (dispatcher.go, cmd/pilot/commands.go) keeps compiling and claiming
+// generation 0 — the initial attempt at a task. A caller deciding a
+// legitimate retry (retry-after-terminal-failure, conflict
+// close-and-reexecute, shouldRetryFailedIssue) passes generation+1 so the
+// retry claims a fresh row instead of deadlocking on its own prior claim.
+//
+// On losing the claim, Begin returns ("", ErrClaimLost) and does NOT stamp
+// task.ExecutionID — unlike the save-failure case, the caller owns no
+// execution row at all here (another channel does), so stamping a fresh UUID
+// would produce a dangling ID with no matching executions row, reintroducing
+// the FK-787 class this chokepoint exists to prevent. Callers must check
+// errors.Is(err, ErrClaimLost) and treat it as "already claimed — abort
+// before backend invocation, log, no error state" (TASK-407/GH-4349).
+func (l *ExecutionLifecycle) Begin(task *Task, initial Status, generation ...int) (string, error) {
+	gen := 0
+	if len(generation) > 0 {
+		gen = generation[0]
+	}
+
 	execID := uuid.New().String()
-	task.ExecutionID = execID
 
 	if l.store == nil {
+		task.ExecutionID = execID
 		return execID, nil
 	}
+
+	claimed, err := l.store.ClaimExecution(task.ID, task.ProjectPath, gen, execID)
+	if err != nil {
+		return "", fmt.Errorf("failed to claim execution: %w", err)
+	}
+	if !claimed {
+		return "", ErrClaimLost
+	}
+
+	task.ExecutionID = execID
 
 	exec := &memory.Execution{
 		ID:                execID,

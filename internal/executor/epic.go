@@ -1932,44 +1932,62 @@ var childExecutionNonTerminalStatuses = map[string]bool{
 // selfExecID is the UUID of the ledger row ExecuteSubIssuesTracked created
 // for THIS run (GH-4141) — it stays "running" for the whole call, so the
 // status lookups below must exclude it to find a genuinely separate,
-// concurrently-tracked row instead of always observing their own row.
+// concurrently-tracked row instead of always observing their own row. When
+// this run holds no row of its own (externallyOwned, below), selfExecID is
+// "" and excludes nothing.
 //
-// When no failure signal is present, or no log store is wired to check
-// against, the original (result, err) pass through unchanged. Otherwise this
-// polls GetExecutionStatusByTaskIDExcluding for taskID (scoped to
-// projectPath) until it reports a terminal status, the context is
-// cancelled, or childOutcomeReconcileTimeout elapses — whichever comes
-// first, so this can never block the epic indefinitely. On terminal success
-// ("completed" / "no_op") it synthesizes a passing ExecutionResult from the
-// tracked row so the caller's normal success/no-op handling applies; on
-// terminal failure it enriches the returned error with the tracked row's
-// real error message instead of the uninformative "unknown: exit status 1"
-// backend classification.
-func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath, selfExecID string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
+// externallyOwned marks a sub-issue whose Begin call lost the execution
+// claim (TASK-407/GH-4349): this run never invoked the backend at all, so
+// there is no synchronous err/result to reconcile against — the caller
+// passes (nil, nil) and externallyOwned=true to force entry into the poll
+// loop below on the success path too, not just the hasFailureSignal
+// short-circuit a synchronous exec signal would normally require.
+//
+// When no failure signal is present and the child is not externally owned,
+// or no log store is wired to check against, the original (result, err) pass
+// through unchanged. Otherwise this polls GetExecutionStatusByTaskIDExcluding
+// for taskID (scoped to projectPath) until it reports a terminal status, the
+// context is cancelled, or childOutcomeReconcileTimeout elapses — whichever
+// comes first, so this can never block the epic indefinitely. On terminal
+// success ("completed" / "no_op") it synthesizes a passing ExecutionResult
+// from the tracked row so the caller's normal success/no-op handling
+// applies; on terminal failure it enriches the returned error with the
+// tracked row's real error message instead of the uninformative "unknown:
+// exit status 1" backend classification.
+func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath, selfExecID string, result *ExecutionResult, execErr error, externallyOwned bool) (*ExecutionResult, error) {
 	hasFailureSignal := execErr != nil || (result != nil && !result.Success)
-	if !hasFailureSignal {
+	if !hasFailureSignal && !externallyOwned {
 		return result, execErr
 	}
 	if r.logStore == nil {
 		return result, execErr
 	}
 
-	// First lookup outside the poll loop: if the child has no OTHER tracked
-	// execution row (the common case for a genuine, non-racing failure),
-	// there is nothing to wait for. Only enter the bounded poll when a
-	// separate row actually exists and is still in flight, so a plain
-	// single-run failure fails immediately instead of paying the full poll
-	// timeout on every epic error.
-	status, err := r.logStore.GetExecutionStatusByTaskIDExcluding(taskID, projectPath, selfExecID)
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			r.log.Warn("reconcileChildOutcome: execution status lookup failed",
-				"task_id", taskID, "project_path", projectPath, "error", err)
+	if !externallyOwned {
+		// First lookup outside the poll loop: if the child has no OTHER tracked
+		// execution row (the common case for a genuine, non-racing failure),
+		// there is nothing to wait for. Only enter the bounded poll when a
+		// separate row actually exists and is still in flight, so a plain
+		// single-run failure fails immediately instead of paying the full poll
+		// timeout on every epic error.
+		//
+		// externallyOwned children skip this optimization: the winning claim
+		// holder claims execution_claims before it writes its own executions
+		// row (ExecutionLifecycle.Begin), so an immediate sql.ErrNoRows here
+		// means "not visible yet," not "no one owns this" — always enter the
+		// bounded poll loop below instead, which already tolerates ErrNoRows
+		// on every tick.
+		status, err := r.logStore.GetExecutionStatusByTaskIDExcluding(taskID, projectPath, selfExecID)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				r.log.Warn("reconcileChildOutcome: execution status lookup failed",
+					"task_id", taskID, "project_path", projectPath, "error", err)
+			}
+			return result, execErr
 		}
-		return result, execErr
-	}
-	if !childExecutionNonTerminalStatuses[status] {
-		return r.resolveChildTerminalOutcome(taskID, projectPath, selfExecID, status, result, execErr)
+		if !childExecutionNonTerminalStatuses[status] {
+			return r.resolveChildTerminalOutcome(taskID, projectPath, selfExecID, status, result, execErr)
+		}
 	}
 
 	pollInterval := r.childOutcomeReconcilePollInterval
@@ -1988,6 +2006,13 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 	for {
 		select {
 		case <-ctx.Done():
+			// externallyOwned started with (nil, nil) — passing that through
+			// unresolved would leave the caller dereferencing a nil *result
+			// (e.g. "!result.Success"). Report the wait itself as the failure
+			// instead of fabricating a false success.
+			if externallyOwned {
+				return &ExecutionResult{TaskID: taskID}, fmt.Errorf("reconcileChildOutcome: context cancelled waiting for externally-owned child execution: %w", ctx.Err())
+			}
 			return result, execErr
 		case <-ticker.C:
 		}
@@ -2003,6 +2028,9 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 		if time.Now().After(deadline) {
 			r.log.Warn("reconcileChildOutcome: gave up waiting for terminal child execution state",
 				"task_id", taskID, "project_path", projectPath, "timeout", timeout)
+			if externallyOwned {
+				return &ExecutionResult{TaskID: taskID}, fmt.Errorf("reconcileChildOutcome: timed out waiting for externally-owned child execution to reach a terminal state")
+			}
 			return result, execErr
 		}
 	}
@@ -2279,41 +2307,65 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// stamps the generated UUID regardless of the save outcome, so downstream
 		// event recording still has a real UUID rather than falling back to the
 		// task ID.
+		//
+		// TASK-407/GH-4349: this loop was the unguarded dispatch channel — it
+		// never called IsTaskQueued/QueueTask, so a sibling channel (poller
+		// retry, restart reap) racing the same sub-issue could both start real
+		// executions. Begin now claims (taskID, subTaskRepoPath, generation 0)
+		// atomically before invoking the backend; losing the claim means
+		// another channel already owns this sub-issue.
 		subExecID, err := NewExecutionLifecycle(r.logStore).Begin(subTask, ExecStatusRunning)
-		if err != nil {
-			r.log.Warn("Failed to insert sub-issue execution row",
+
+		var result *ExecutionResult
+		if errors.Is(err, ErrClaimLost) {
+			// Another dispatch channel already won this sub-issue's execution
+			// claim. Do not invoke the backend a second time — poll the
+			// externally-owned execution row to its terminal state instead of
+			// treating the loss as a failure (GH-4359).
+			r.log.Info("sub-issue dispatch claim lost — another channel already owns this execution; polling for its outcome",
 				"parent_id", parent.ID,
 				"sub_issue", issueRef,
-				"execution_id", subExecID,
-				"error", err,
+				"task_id", taskID,
 			)
-		}
+			r.recordExecutionEvent(parent.LogExecutionID(), memory.StageDispatchClaimLost,
+				fmt.Sprintf("sub-issue %s claim lost to another dispatch channel", issueRef))
 
-		r.log.Info("Executing sub-issue",
-			"parent_id", parent.ID,
-			"sub_issue", issueRef,
-			"order", i+1,
-			"total", total,
-		)
-
-		// Execute the sub-task (use override if set, for testing)
-		var result *ExecutionResult
-		if r.executeFunc != nil {
-			// Use test override function if set
-			result, err = r.executeFunc(ctx, subTask)
+			result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, "", nil, nil, true)
 		} else {
-			// GH-2178: Enable worktree isolation for sub-issues. Each sub-issue creates
-			// its own worktree from the real repo (safe after GH-2177 set ProjectPath = repoPath).
-			// Previously false (GH-948) to prevent nested worktrees, but GH-2177 ensured
-			// subTask.ProjectPath points to the real repo, not the parent's worktree.
-			result, err = r.executeWithOptions(ctx, subTask, true)
-		}
+			if err != nil {
+				r.log.Warn("Failed to insert sub-issue execution row",
+					"parent_id", parent.ID,
+					"sub_issue", issueRef,
+					"execution_id", subExecID,
+					"error", err,
+				)
+			}
 
-		// GH-3786: a synchronous err/Success=false here is not proof the child
-		// is actually done — it can race a separately-tracked run of the same
-		// sub-issue. Re-check the child's own execution row before trusting
-		// this signal as terminal.
-		result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, subExecID, result, err)
+			r.log.Info("Executing sub-issue",
+				"parent_id", parent.ID,
+				"sub_issue", issueRef,
+				"order", i+1,
+				"total", total,
+			)
+
+			// Execute the sub-task (use override if set, for testing)
+			if r.executeFunc != nil {
+				// Use test override function if set
+				result, err = r.executeFunc(ctx, subTask)
+			} else {
+				// GH-2178: Enable worktree isolation for sub-issues. Each sub-issue creates
+				// its own worktree from the real repo (safe after GH-2177 set ProjectPath = repoPath).
+				// Previously false (GH-948) to prevent nested worktrees, but GH-2177 ensured
+				// subTask.ProjectPath points to the real repo, not the parent's worktree.
+				result, err = r.executeWithOptions(ctx, subTask, true)
+			}
+
+			// GH-3786: a synchronous err/Success=false here is not proof the child
+			// is actually done — it can race a separately-tracked run of the same
+			// sub-issue. Re-check the child's own execution row before trusting
+			// this signal as terminal.
+			result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, subExecID, result, err, false)
+		}
 
 		if err != nil {
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",
