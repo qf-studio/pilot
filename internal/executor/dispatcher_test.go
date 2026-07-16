@@ -3129,3 +3129,105 @@ func TestDispatcher_SyntheticDispatch_InfraEventSequence(t *testing.T) {
 		t.Fatalf("expected a terminal StageFailed event mentioning 'infra', got events %v", gotStages)
 	}
 }
+
+// TestDispatcher_QueueSingleTask_ClaimLostDropsSilently is the dispatcher
+// half of GH-4359 (TASK-407 follow-up): when another dispatch channel has
+// already claimed (task.ID, task.ProjectPath, generation 0) — e.g. the epic
+// sub-issue loop racing the normal dispatch queue for the same task_id —
+// queueSingleTask must not surface ErrClaimLost as a queueing failure. It
+// drops the duplicate pickup silently: nil error, empty execID, no
+// executions row created here (the winning channel already owns one).
+func TestDispatcher_QueueSingleTask_ClaimLostDropsSilently(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-CLAIM-1", ProjectPath: "/project-claim-lost"}
+
+	// Simulate another dispatch channel already winning the claim before
+	// this dispatcher's queueSingleTask reaches Begin.
+	winnerExecID, err := NewExecutionLifecycle(store).Begin(&Task{ID: task.ID, ProjectPath: task.ProjectPath}, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup: winning Begin failed: %v", err)
+	}
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	var buf bytes.Buffer
+	dispatcher.log = slog.New(slog.NewTextHandler(&buf, nil))
+
+	execID, err := dispatcher.queueSingleTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("expected queueSingleTask to drop ErrClaimLost silently (nil error), got: %v", err)
+	}
+	if execID != "" {
+		t.Errorf("expected empty execID on dropped claim, got %q", execID)
+	}
+	if task.ExecutionID != "" {
+		t.Errorf("expected task.ExecutionID to remain unstamped on dropped claim, got %q", task.ExecutionID)
+	}
+	if !strings.Contains(buf.String(), "dispatch claim lost") {
+		t.Errorf("expected an info log noting the dropped claim, got: %s", buf.String())
+	}
+
+	// The winning channel's row must remain the sole executions row for this
+	// task — queueSingleTask must not have created a second one.
+	exec, err := store.GetExecution(winnerExecID)
+	if err != nil {
+		t.Fatalf("failed to load winning execution: %v", err)
+	}
+	if exec.TaskID != task.ID {
+		t.Errorf("expected winning execution to belong to %q, got %q", task.ID, exec.TaskID)
+	}
+}
+
+// TestDispatcher_QueueDecomposedTask_ClaimLostDropsSilently mirrors
+// TestDispatcher_QueueSingleTask_ClaimLostDropsSilently for the decomposed
+// parent's own Begin call (GH-4359): losing the claim on the parent task
+// must not surface as a queueing error, and must not proceed to queue any
+// subtasks.
+func TestDispatcher_QueueDecomposedTask_ClaimLostDropsSilently(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	parent := &Task{ID: "GH-CLAIM-PARENT", ProjectPath: "/project-claim-lost-parent"}
+
+	winnerExecID, err := NewExecutionLifecycle(store).Begin(&Task{ID: parent.ID, ProjectPath: parent.ProjectPath}, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup: winning Begin failed: %v", err)
+	}
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	var buf bytes.Buffer
+	dispatcher.log = slog.New(slog.NewTextHandler(&buf, nil))
+
+	subtask := &Task{ID: "GH-CLAIM-PARENT-1", ProjectPath: parent.ProjectPath}
+	result := &DecomposeResult{Decomposed: true, Subtasks: []*Task{subtask}, Reason: "test"}
+
+	execID, err := dispatcher.queueDecomposedTask(context.Background(), parent, result)
+	if err != nil {
+		t.Fatalf("expected queueDecomposedTask to drop ErrClaimLost silently (nil error), got: %v", err)
+	}
+	if execID != "" {
+		t.Errorf("expected empty execID on dropped parent claim, got %q", execID)
+	}
+	if !strings.Contains(buf.String(), "dispatch claim lost") {
+		t.Errorf("expected an info log noting the dropped parent claim, got: %s", buf.String())
+	}
+
+	// The subtask must not have been queued — its own execution row must
+	// not exist.
+	if _, err := store.GetExecutionStatusByTaskIDExcluding(subtask.ID, subtask.ProjectPath, ""); err == nil {
+		t.Errorf("expected no execution row for subtask %q after parent claim loss, but one exists", subtask.ID)
+	}
+
+	exec, err := store.GetExecution(winnerExecID)
+	if err != nil {
+		t.Fatalf("failed to load winning execution: %v", err)
+	}
+	if exec.TaskID != parent.ID {
+		t.Errorf("expected winning execution to belong to %q, got %q", parent.ID, exec.TaskID)
+	}
+}
