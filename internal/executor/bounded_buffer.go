@@ -32,6 +32,14 @@ func (b *boundedBuffer) WriteString(s string) {
 	b.write([]byte(s))
 }
 
+// Write implements io.Writer so a boundedBuffer can be wired directly as a
+// subprocess's Stdout/Stderr target (e.g. cmd.Stderr) instead of buffering
+// unbounded output first.
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.write(p)
+	return len(p), nil
+}
+
 func (b *boundedBuffer) write(p []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -44,6 +44,11 @@ type Metrics struct {
 	APIErrors             map[string]int64 // endpoint → count
 	LabelCleanups         map[string]int64 // label → count
 	ApprovalPersistMisses map[string]int64 // kind → count (request_id, decision)
+	// IntentJudgeFailures counts pre-flight intent-judge subprocess failures
+	// by cause (context_deadline, external_sigkill, other) — GH-4377: the SDK
+	// poller's pre-flight gate previously failed open on every judge crash
+	// with no visible signal that the judge was effectively dead.
+	IntentJudgeFailures map[string]int64
 	// TokensConsumed, ExecutionCostUSD, and ExecutionsByResult are persisted per
 	// snapshot to SQLite (GH-2856) so historical data survives across runs.
 	// However, on daemon restart the in-memory counters reset to zero and
@@ -109,6 +114,7 @@ func NewMetrics() *Metrics {
 		APIErrors:                  make(map[string]int64),
 		LabelCleanups:              make(map[string]int64),
 		ApprovalPersistMisses:      make(map[string]int64),
+		IntentJudgeFailures:        make(map[string]int64),
 		TokensConsumed:             make(map[tokenKey]int64),
 		ExecutionCostUSD:           make(map[string]float64),
 		ExecutionsByResult:         make(map[execKey]int64),
@@ -246,6 +252,15 @@ func (m *Metrics) RecordApprovalPersistMiss(kind string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ApprovalPersistMisses[kind]++
+}
+
+// RecordIntentJudgeFailure increments the pre-flight intent-judge subprocess
+// failure counter for a given cause (context_deadline, external_sigkill,
+// other — see executor.JudgeSubprocessError). GH-4377.
+func (m *Metrics) RecordIntentJudgeFailure(cause string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.IntentJudgeFailures[cause]++
 }
 
 // RecordTokens adds n tokens to the {model, direction} bucket.
@@ -424,6 +439,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		APIErrors:                     copyStringIntMap(m.APIErrors),
 		LabelCleanups:                 copyStringIntMap(m.LabelCleanups),
 		ApprovalPersistMisses:         copyStringIntMap(m.ApprovalPersistMisses),
+		IntentJudgeFailures:           copyStringIntMap(m.IntentJudgeFailures),
 		TokensConsumed:                copyTokenKeyMap(m.TokensConsumed),
 		ExecutionCostUSD:              copyStringFloatMap(m.ExecutionCostUSD),
 		ExecutionsByResult:            copyExecKeyMap(m.ExecutionsByResult),
@@ -498,6 +514,7 @@ type MetricsSnapshot struct {
 	APIErrors             map[string]int64
 	LabelCleanups         map[string]int64
 	ApprovalPersistMisses map[string]int64
+	IntentJudgeFailures   map[string]int64 // GH-4377: cause → count
 	TokensConsumed        map[tokenKey]int64
 	ExecutionCostUSD      map[string]float64
 	ExecutionsByResult    map[execKey]int64

@@ -74,6 +74,26 @@ func TestCounters(t *testing.T) {
 	}
 }
 
+// TestRecordIntentJudgeFailure verifies the GH-4377 judge-failure counter
+// buckets by cause and is visible in the snapshot (the Prometheus exporter
+// reads snap.IntentJudgeFailures directly).
+func TestRecordIntentJudgeFailure(t *testing.T) {
+	m := NewMetrics()
+
+	m.RecordIntentJudgeFailure("context_deadline")
+	m.RecordIntentJudgeFailure("context_deadline")
+	m.RecordIntentJudgeFailure("external_sigkill")
+
+	snap := m.Snapshot()
+
+	if snap.IntentJudgeFailures["context_deadline"] != 2 {
+		t.Errorf("expected 2 context_deadline failures, got %d", snap.IntentJudgeFailures["context_deadline"])
+	}
+	if snap.IntentJudgeFailures["external_sigkill"] != 1 {
+		t.Errorf("expected 1 external_sigkill failure, got %d", snap.IntentJudgeFailures["external_sigkill"])
+	}
+}
+
 func TestGauges(t *testing.T) {
 	m := NewMetrics()
 

@@ -84,11 +84,17 @@ func verifySDKGithubToken(ctx context.Context, client *githubSDK.Client, tokenSo
 // returning the SDK's core.Verdict.
 type sdkPreFlightJudge struct {
 	judge *executor.IntentJudge
+	// metrics records judge subprocess failures by cause (GH-4377); nil-safe
+	// (a repo with no autopilot controller just skips the metric).
+	metrics *autopilot.Metrics
 }
 
 func (s sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoContext string) (sdkcore.Verdict, error) {
 	v, err := s.judge.JudgeIssue(ctx, title, body, repoContext)
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.RecordIntentJudgeFailure(judgeFailureCause(err))
+		}
 		return sdkcore.Verdict{}, err
 	}
 	return sdkcore.Verdict{
@@ -97,6 +103,18 @@ func (s sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoCont
 		Reason:     v.Reason,
 		Confidence: v.Confidence,
 	}, nil
+}
+
+// judgeFailureCause extracts the GH-4377 diagnostic cause (context_deadline,
+// external_sigkill) from a judge subprocess error, defaulting to "other" for
+// errors with no structured cause (e.g. a malformed-response parse failure,
+// which isn't a subprocess kill at all).
+func judgeFailureCause(err error) string {
+	var jerr *executor.JudgeSubprocessError
+	if errors.As(err, &jerr) {
+		return jerr.Cause
+	}
+	return "other"
 }
 
 // sdkRateLimitScheduler adapts *executor.Scheduler to sdkcore.RateLimitScheduler.
@@ -349,7 +367,14 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 			repoLog.Warn("Pre-flight judge disabled: claude binary not found",
 				slog.String("command", claudeCmd))
 		} else {
-			pollerDeps.PreFlightJudge = sdkPreFlightJudge{judge: executor.NewIntentJudge(claudeCmd)}
+			// GH-4377: wire this repo's autopilot metrics (if any) so judge
+			// subprocess failures are visible as pilot_intent_judge_failures_total
+			// instead of only a WARN log line the SDK poller emits on fail-open.
+			var judgeMetrics *autopilot.Metrics
+			if controller != nil {
+				judgeMetrics = controller.Metrics()
+			}
+			pollerDeps.PreFlightJudge = sdkPreFlightJudge{judge: executor.NewIntentJudge(claudeCmd), metrics: judgeMetrics}
 			if deps.Store != nil {
 				pollerDeps.ExecutionSaver = storeExecutionSaver{store: deps.Store}
 			}

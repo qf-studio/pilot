@@ -1,13 +1,16 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -51,10 +54,102 @@ func NewIntentJudge(claudeCmd string) *IntentJudge {
 	return j
 }
 
-// defaultCmdRunner executes the claude command.
+// judgeRSSSampleInterval controls how often the judge subprocess's RSS is
+// polled. Short relative to judgeTimeout/preflightTimeout (20-30s) so a kill
+// has a usable peak-RSS reading even on a fast failure. GH-4377.
+const judgeRSSSampleInterval = 2 * time.Second
+
+// maxJudgeStderrCaptureBytes caps the stderr buffered per judge subprocess
+// invocation — a runaway `claude` process should not be able to inflate the
+// daemon's own memory while we're trying to diagnose why it died. GH-4377.
+const maxJudgeStderrCaptureBytes = 2000
+
+// GH-4377 fail-open RCA: the judge subprocess died "signal: killed" 423
+// times since 2026-06-18 with no way to tell whether our own judgeTimeout/
+// preflightTimeout context deadline killed it or something external (OS OOM
+// killer, manual kill) did. judgeFailureCause* classifies which.
+const (
+	judgeFailureCauseContextDeadline = "context_deadline"
+	judgeFailureCauseExternalSIGKILL = "external_sigkill"
+	judgeFailureCauseOther           = "other"
+)
+
+// JudgeSubprocessError wraps a failed judge subprocess invocation with the
+// diagnostic context needed to tell a daemon-issued timeout kill apart from
+// an externally caused one, plus the subprocess's peak RSS and stderr tail —
+// previously only "signal: killed" survived to the log. GH-4377.
+type JudgeSubprocessError struct {
+	Err        error
+	Cause      string // one of the judgeFailureCause* constants
+	PeakRSSMB  int
+	StderrTail string
+}
+
+func (e *JudgeSubprocessError) Error() string {
+	msg := fmt.Sprintf("%v (cause=%s peak_rss_mb=%d", e.Err, e.Cause, e.PeakRSSMB)
+	if e.StderrTail != "" {
+		msg += fmt.Sprintf(" stderr_tail=%q", e.StderrTail)
+	}
+	return msg + ")"
+}
+
+func (e *JudgeSubprocessError) Unwrap() error { return e.Err }
+
+// newJudgeSubprocessError classifies a judge subprocess failure. If ctx's
+// own deadline had already fired by the time the process exited, our own
+// timeout is the kill source (context_deadline) — exec.CommandContext's
+// default Cancel sends SIGKILL immediately, so this looks identical to an
+// external kill in the raw error text alone. Otherwise, a SIGKILL-signaled
+// exit with ctx still live points at something outside our control
+// (external_sigkill — most likely the OS OOM killer).
+func newJudgeSubprocessError(ctx context.Context, err error, stderr string, peakRSSMB int) *JudgeSubprocessError {
+	cause := judgeFailureCauseOther
+	if ctx.Err() != nil {
+		cause = judgeFailureCauseContextDeadline
+	} else {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL {
+				cause = judgeFailureCauseExternalSIGKILL
+			}
+		}
+	}
+	return &JudgeSubprocessError{
+		Err:        err,
+		Cause:      cause,
+		PeakRSSMB:  peakRSSMB,
+		StderrTail: strings.TrimSpace(stderr),
+	}
+}
+
+// defaultCmdRunner executes the claude command, sampling RSS and capturing a
+// bounded stderr tail so a kill can be diagnosed instead of surfacing as a
+// bare "signal: killed". GH-4377.
 func (j *IntentJudge) defaultCmdRunner(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, j.claudeCmd, args...)
-	return cmd.Output()
+	var stdout bytes.Buffer
+	stderr := newBoundedBuffer(maxJudgeStderrCaptureBytes)
+	cmd.Stdout = &stdout
+	cmd.Stderr = stderr
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	rssCtx, cancelRSS := context.WithCancel(context.Background())
+	rssCh := StartRSSSampler(rssCtx, cmd.Process.Pid, judgeRSSSampleInterval)
+
+	waitErr := cmd.Wait()
+	cancelRSS()
+	var rss RSSSample
+	if sample, ok := <-rssCh; ok {
+		rss = sample
+	}
+
+	if waitErr != nil {
+		return nil, newJudgeSubprocessError(ctx, waitErr, stderr.String(), rss.PeakMB)
+	}
+	return stdout.Bytes(), nil
 }
 
 // newIntentJudgeWithRunner creates an IntentJudge with a custom command runner for testing.
