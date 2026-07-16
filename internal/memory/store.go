@@ -751,13 +751,20 @@ func (s *Store) GetLatestExecutionByTaskIDExcluding(taskID, projectPath, exclude
 // newest first. Unlike GetLatestExecutionByTaskID (single row, exact-or-substring
 // match), this returns the full history so the CLI can render a per-execution
 // stage timeline across retries (TASK-379 C4).
-func (s *Store) ListExecutionsForTask(taskID string) ([]*Execution, error) {
+//
+// GH-4378: task_id is not unique across projects (every freshly onboarded
+// repo starts issue numbering at #1 — same collision class as GH-4276), so
+// an unscoped lookup interleaves unrelated repos' executions into one
+// timeline. projectPath scopes the same way GetLatestExecutionByTaskID does:
+// empty projectPath skips the filter (cross-project, for callers that have
+// already resolved ambiguity another way, e.g. via ListProjectsForTask).
+func (s *Store) ListExecutionsForTask(taskID, projectPath string) ([]*Execution, error) {
 	rows, err := s.db.Query(`
 		SELECT `+executionDetailColumns+`
 		FROM executions
-		WHERE task_id = ?
+		WHERE task_id = ? AND (? = '' OR project_path = ?)
 		ORDER BY created_at DESC, rowid DESC
-	`, taskID)
+	`, taskID, projectPath, projectPath)
 	if err != nil {
 		return nil, err
 	}
@@ -772,6 +779,51 @@ func (s *Store) ListExecutionsForTask(taskID string) ([]*Execution, error) {
 		executions = append(executions, exec)
 	}
 	return executions, rows.Err()
+}
+
+// TaskProjectSummary identifies one project's most recent execution for a
+// given task_id. Used by `pilot trace` to detect when a task_id collides
+// across multiple projects (GH-4378) so it can list candidates instead of
+// silently merging their executions into one timeline.
+type TaskProjectSummary struct {
+	ProjectPath string
+	LatestAt    time.Time
+}
+
+// ListProjectsForTask returns, for every distinct project_path with a
+// recorded execution for taskID, that project's most recent execution
+// timestamp — newest first. Scans every row rather than GROUP BY
+// MAX(created_at) because the sqlite driver can't map an aggregate
+// expression back to time.Time (only declared-typed columns get that
+// treatment) — reading created_at directly newest-first and keeping the
+// first occurrence per project_path sidesteps that.
+func (s *Store) ListProjectsForTask(taskID string) ([]TaskProjectSummary, error) {
+	rows, err := s.db.Query(`
+		SELECT project_path, created_at
+		FROM executions
+		WHERE task_id = ?
+		ORDER BY created_at DESC, rowid DESC
+	`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	seen := make(map[string]bool)
+	var summaries []TaskProjectSummary
+	for rows.Next() {
+		var projectPath string
+		var createdAt time.Time
+		if err := rows.Scan(&projectPath, &createdAt); err != nil {
+			return nil, err
+		}
+		if seen[projectPath] {
+			continue
+		}
+		seen[projectPath] = true
+		summaries = append(summaries, TaskProjectSummary{ProjectPath: projectPath, LatestAt: createdAt})
+	}
+	return summaries, rows.Err()
 }
 
 // Stage identifies a discrete milestone in an execution's lifecycle. Stage events

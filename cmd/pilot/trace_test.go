@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func TestRunTrace_UnknownTaskID(t *testing.T) {
 	store, _ := newTraceTestStore(t)
 
 	var buf bytes.Buffer
-	err := runTrace(&buf, store, "GH-does-not-exist")
+	err := runTrace(&buf, store, "GH-does-not-exist", "")
 	if err == nil {
 		t.Fatal("expected error for unknown task id, got nil")
 	}
@@ -66,6 +67,49 @@ func TestRunTrace_UnknownTaskID(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Errorf("expected no output on error, got %q", buf.String())
+	}
+}
+
+// TestRunTrace_ProjectCollision covers GH-4378: the same task_id ran in two
+// unrelated projects. Without --project and with a cwd that matches neither
+// project, trace must list both as candidates and exit non-zero instead of
+// interleaving their executions into one timeline.
+func TestRunTrace_ProjectCollision(t *testing.T) {
+	store, _ := newTraceTestStore(t)
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-pointer", TaskID: "GH-1", ProjectPath: "/repos/pointer", Status: "completed",
+	}); err != nil {
+		t.Fatalf("SaveExecution(exec-pointer) failed: %v", err)
+	}
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-navigator", TaskID: "GH-1", ProjectPath: "/repos/navigator", Status: "completed",
+	}); err != nil {
+		t.Fatalf("SaveExecution(exec-navigator) failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := runTrace(&buf, store, "GH-1", "")
+	if err == nil {
+		t.Fatal("expected ambiguous-project error, got nil")
+	}
+	if !strings.Contains(err.Error(), "/repos/pointer") || !strings.Contains(err.Error(), "/repos/navigator") {
+		t.Errorf("error = %q, want it to list both candidate projects", err.Error())
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output on ambiguous error, got %q", buf.String())
+	}
+
+	// --project resolves the collision directly.
+	buf.Reset()
+	if err := runTrace(&buf, store, "GH-1", "/repos/pointer"); err != nil {
+		t.Fatalf("runTrace with --project failed: %v", err)
+	}
+	if !strings.Contains(buf.String(), "exec-pointer") {
+		t.Errorf("output = %q, want it to include exec-pointer", buf.String())
+	}
+	if strings.Contains(buf.String(), "exec-navigator") {
+		t.Errorf("output = %q, want it to exclude exec-navigator", buf.String())
 	}
 }
 
@@ -106,7 +150,7 @@ func TestRunTrace_Golden(t *testing.T) {
 	seedEventAt(t, dbPath, "exec-2", memory.StageMerged, "", retryBase.Add(5*time.Minute))
 
 	var buf bytes.Buffer
-	if err := runTrace(&buf, store, "GH-42"); err != nil {
+	if err := runTrace(&buf, store, "GH-42", ""); err != nil {
 		t.Fatalf("runTrace failed: %v", err)
 	}
 
@@ -118,5 +162,37 @@ func TestRunTrace_Golden(t *testing.T) {
 
 	if buf.String() != string(want) {
 		t.Errorf("output mismatch\n--- got ---\n%s\n--- want ---\n%s", buf.String(), string(want))
+	}
+}
+
+func TestResolveTraceProject(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd failed: %v", err)
+	}
+
+	single := []memory.TaskProjectSummary{{ProjectPath: "/repos/only"}}
+	collision := []memory.TaskProjectSummary{{ProjectPath: "/repos/newer"}, {ProjectPath: "/repos/older"}}
+	collisionWithCwd := []memory.TaskProjectSummary{{ProjectPath: cwd}, {ProjectPath: "/repos/other"}}
+
+	tests := []struct {
+		name        string
+		projectFlag string
+		projects    []memory.TaskProjectSummary
+		want        string
+	}{
+		{"explicit --project always wins", "/repos/explicit", collision, "/repos/explicit"},
+		{"single project auto-resolves regardless of cwd", "", single, "/repos/only"},
+		{"collision resolved by cwd match", "", collisionWithCwd, cwd},
+		{"collision with no cwd match is ambiguous", "", collision, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveTraceProject(tt.projectFlag, tt.projects)
+			if got != tt.want {
+				t.Errorf("resolveTraceProject(%q, %v) = %q, want %q", tt.projectFlag, tt.projects, got, tt.want)
+			}
+		})
 	}
 }
