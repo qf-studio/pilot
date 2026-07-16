@@ -49,6 +49,10 @@ type Metrics struct {
 	// poller's pre-flight gate previously failed open on every judge crash
 	// with no visible signal that the judge was effectively dead.
 	IntentJudgeFailures map[string]int64
+	// ApprovalSubmitFailures counts Manager.SubmitApprovalRequest errors — an
+	// unregistered/misrouted approval channel, distinct from a normal timeout
+	// or rejection decision (GH-4380).
+	ApprovalSubmitFailures int64
 	// TokensConsumed, ExecutionCostUSD, and ExecutionsByResult are persisted per
 	// snapshot to SQLite (GH-2856) so historical data survives across runs.
 	// However, on daemon restart the in-memory counters reset to zero and
@@ -263,6 +267,14 @@ func (m *Metrics) RecordIntentJudgeFailure(cause string) {
 	m.IntentJudgeFailures[cause]++
 }
 
+// RecordApprovalSubmitFailure increments the counter for SubmitApprovalRequest
+// errors (GH-4380).
+func (m *Metrics) RecordApprovalSubmitFailure() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ApprovalSubmitFailures++
+}
+
 // RecordTokens adds n tokens to the {model, direction} bucket.
 func (m *Metrics) RecordTokens(model, direction string, n int64) {
 	m.mu.Lock()
@@ -440,6 +452,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		LabelCleanups:                 copyStringIntMap(m.LabelCleanups),
 		ApprovalPersistMisses:         copyStringIntMap(m.ApprovalPersistMisses),
 		IntentJudgeFailures:           copyStringIntMap(m.IntentJudgeFailures),
+		ApprovalSubmitFailures:        m.ApprovalSubmitFailures,
 		TokensConsumed:                copyTokenKeyMap(m.TokensConsumed),
 		ExecutionCostUSD:              copyStringFloatMap(m.ExecutionCostUSD),
 		ExecutionsByResult:            copyExecKeyMap(m.ExecutionsByResult),
@@ -505,19 +518,20 @@ func (m *Metrics) apiErrorRate() float64 {
 // MetricsSnapshot is a read-only copy of metrics at a point in time.
 type MetricsSnapshot struct {
 	// Counters
-	IssuesProcessed       map[string]int64
-	PRsMerged             int64
-	PRsFailed             int64
-	PRsConflicting        int64
-	CIRuns                map[string]int64 // GH-4134: result → count (pass, fail)
-	CircuitBreakerTrips   int64
-	APIErrors             map[string]int64
-	LabelCleanups         map[string]int64
-	ApprovalPersistMisses map[string]int64
-	IntentJudgeFailures   map[string]int64 // GH-4377: cause → count
-	TokensConsumed        map[tokenKey]int64
-	ExecutionCostUSD      map[string]float64
-	ExecutionsByResult    map[execKey]int64
+	IssuesProcessed        map[string]int64
+	PRsMerged              int64
+	PRsFailed              int64
+	PRsConflicting         int64
+	CIRuns                 map[string]int64 // GH-4134: result → count (pass, fail)
+	CircuitBreakerTrips    int64
+	APIErrors              map[string]int64
+	LabelCleanups          map[string]int64
+	ApprovalPersistMisses  map[string]int64
+	ApprovalSubmitFailures int64
+	IntentJudgeFailures    map[string]int64 // GH-4377: cause → count
+	TokensConsumed         map[tokenKey]int64
+	ExecutionCostUSD       map[string]float64
+	ExecutionsByResult     map[execKey]int64
 
 	// Poller dispatch/skip counters (TASK-293)
 	PollerSkipped              map[pollerSkipKey]int64

@@ -4908,10 +4908,10 @@ type mockEvalStore struct {
 
 	// TASK-399/GH-4209: orphan-running sweep + pr_url fallback test hooks.
 	prURLHealed        []string                   // SelfHealExecutionByPRURL calls
-	orphanedRunning    []*memory.Execution         // FindOrphanedRunningExecutions candidate pool
-	lastExcludeTaskIDs []string                    // last exclude set FindOrphanedRunningExecutions was called with
-	resolvedOrphans    []resolveOrphanCall         // ResolveOrphanedRunningExecution calls
-	executionEvents    map[string][]*memory.Event  // ListExecutionEvents responses keyed by execution ID
+	orphanedRunning    []*memory.Execution        // FindOrphanedRunningExecutions candidate pool
+	lastExcludeTaskIDs []string                   // last exclude set FindOrphanedRunningExecutions was called with
+	resolvedOrphans    []resolveOrphanCall        // ResolveOrphanedRunningExecution calls
+	executionEvents    map[string][]*memory.Event // ListExecutionEvents responses keyed by execution ID
 }
 
 // resolveOrphanCall records one ResolveOrphanedRunningExecution invocation. TASK-399/GH-4209.
@@ -7653,6 +7653,11 @@ func TestController_AwaitApproval_StaysInStageUntilDecision(t *testing.T) {
 	cfg.Environment = EnvProd
 
 	mgr := asyncApprovalManager()
+	// GH-4380: the controller always sets PreferredChannel from the resolved
+	// approval source (telegram by default), so a handler named "telegram"
+	// must be registered or SubmitApprovalRequest fails fast instead of the
+	// old silent no-handler no-op.
+	mgr.RegisterHandler(&mockCapturingApprovalHandler{})
 	c := NewController(cfg, ghClient, mgr, "owner", "repo")
 
 	// Plant a PR directly in StageAwaitApproval.

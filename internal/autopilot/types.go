@@ -292,6 +292,19 @@ func (c *Config) ResolvedEnv() *EnvironmentConfig {
 	return defaults["stage"]
 }
 
+// EffectiveApprovalSource returns the approval channel that actually governs
+// requests submitted under the active environment: the active environment's
+// ApprovalSource when set, otherwise the top-level Config.ApprovalSource
+// (GH-4380). Before this existed, nothing read EnvironmentConfig.ApprovalSource
+// at all — a per-env `approval_source: slack` override in the environments
+// map silently had zero effect on which handler a request was routed to.
+func (c *Config) EffectiveApprovalSource() ApprovalSource {
+	if env := c.ResolvedEnv(); env != nil && env.ApprovalSource != "" {
+		return env.ApprovalSource
+	}
+	return c.ApprovalSource
+}
+
 // EnvironmentName returns the human-readable active environment name.
 // Checks Name field first (user-friendly label), then activeEnvName,
 // then falls back to the Environment enum value.

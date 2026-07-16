@@ -195,6 +195,11 @@ func TestController_OnPRCreated_DuplicateDoesNotDuplicateApprovalRequest(t *test
 			Enabled: true,
 		},
 	})
+	// GH-4380: the controller always sets PreferredChannel from the resolved
+	// approval source (telegram by default), so a handler named "telegram"
+	// must be registered or SubmitApprovalRequest fails fast instead of the
+	// old silent no-handler no-op.
+	mgr.RegisterHandler(&mockCapturingApprovalHandler{})
 
 	c := NewController(cfg, ghClient, mgr, "owner", "repo")
 	c.OnPRCreated(3820, "https://github.com/owner/repo/pull/3820", 200, "sha", "pilot/GH-200", "")

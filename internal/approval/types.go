@@ -40,7 +40,7 @@ type Request struct {
 	CreatedAt        time.Time              // When request was created
 	ExpiresAt        time.Time              // When request expires (timeout)
 	Approvers        []string               // Required approvers (user IDs, handles)
-	PreferredChannel string                 `json:",omitempty"` // Preferred approval channel (e.g., "telegram", "slack"); falls back to first-available when unset or unregistered
+	PreferredChannel string                 `json:",omitempty"` // Preferred approval channel (e.g., "telegram", "slack"); falls back to first-available only when unset. When set but not registered, SubmitApprovalRequest fails with a named error instead of silently picking another handler (GH-4380).
 
 	// ReleasePlan is a human-readable, pre-rendered description of what happens
 	// after this request is approved (e.g. "Will release immediately after

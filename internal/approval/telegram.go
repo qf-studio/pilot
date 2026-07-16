@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +56,11 @@ type TelegramHandler struct {
 	log      *slog.Logger
 	store    PendingApprovalStore // optional; enables restart persistence
 	recorder DecisionRecorder     // optional; persists decisions directly (restart-safe)
+
+	// warnedInvalidDest dedupes the "Approvers[0] is not a valid Telegram
+	// destination" warning per bad value (GH-4380), so a persistently
+	// misconfigured Approvers entry logs once instead of once per tick.
+	warnedInvalidDest map[string]bool
 }
 
 // telegramPending tracks a pending Telegram approval request
@@ -86,12 +92,66 @@ const resolvedRetention = 24 * time.Hour
 // NewTelegramHandler creates a new Telegram approval handler
 func NewTelegramHandler(client TelegramClient, chatID string) *TelegramHandler {
 	return &TelegramHandler{
-		client:   client,
-		chatID:   chatID,
-		pending:  make(map[string]*telegramPending),
-		resolved: make(map[string]*telegramResolved),
-		log:      logging.WithComponent("approval.telegram"),
+		client:            client,
+		chatID:            chatID,
+		pending:           make(map[string]*telegramPending),
+		resolved:          make(map[string]*telegramResolved),
+		log:               logging.WithComponent("approval.telegram"),
+		warnedInvalidDest: make(map[string]bool),
 	}
+}
+
+// isValidTelegramChatID reports whether s looks like a destination the
+// Telegram Bot API will accept: a numeric chat id (negative for groups/
+// channels) or an "@username" public channel/group handle. Approvers is a
+// channel-agnostic config list ("user IDs/handles who can approve") shared
+// across whichever handler ends up serving a request — when the operator
+// intends a different channel's approver identity (e.g. a Slack channel name)
+// and it lands here anyway (see resolveDestChatID), sending to it verbatim
+// produces a Telegram "chat not found" 400 on every retry instead of a single
+// diagnosable warning (GH-4380).
+func isValidTelegramChatID(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "@") {
+		return len(s) > 1
+	}
+	_, err := strconv.ParseInt(s, 10, 64)
+	return err == nil
+}
+
+// resolveDestChatID picks the Telegram destination for req: the first
+// approver when it's a plausible Telegram chat id, otherwise the handler's
+// own configured chatID. An invalid override is logged once (deduped by
+// value) rather than retried against the Telegram API every tick (GH-4380).
+func (h *TelegramHandler) resolveDestChatID(req *Request) string {
+	if len(req.Approvers) == 0 {
+		return h.chatID
+	}
+	if isValidTelegramChatID(req.Approvers[0]) {
+		return req.Approvers[0]
+	}
+	h.warnInvalidDestOnce(req.ID, req.Approvers[0])
+	return h.chatID
+}
+
+// warnInvalidDestOnce logs the first time a given invalid Approvers[0] value
+// is seen, then suppresses repeats of the same value (GH-4380).
+func (h *TelegramHandler) warnInvalidDestOnce(requestID, badDest string) {
+	h.mu.Lock()
+	if h.warnedInvalidDest == nil {
+		h.warnedInvalidDest = make(map[string]bool)
+	}
+	if h.warnedInvalidDest[badDest] {
+		h.mu.Unlock()
+		return
+	}
+	h.warnedInvalidDest[badDest] = true
+	h.mu.Unlock()
+
+	h.log.Warn("approval request Approvers[0] is not a valid Telegram destination, falling back to configured chat_id",
+		slog.String("request_id", requestID), slog.String("invalid_approver", badDest))
 }
 
 // Name returns the handler name
@@ -154,10 +214,7 @@ func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
 			CreatedAt:        row.CreatedAt,
 			ExpiresAt:        row.ExpiresAt,
 		}
-		destChatID := h.chatID
-		if len(req.Approvers) > 0 {
-			destChatID = req.Approvers[0]
-		}
+		destChatID := h.resolveDestChatID(req)
 		responseCh := make(chan *Response, 1)
 		h.mu.Lock()
 		if _, exists := h.pending[req.ID]; !exists {
@@ -283,11 +340,10 @@ func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request)
 	// Create inline keyboard with approve/reject buttons
 	keyboard := h.createApprovalKeyboard(req)
 
-	// Resolve destination: use first approver's chat_id when available
-	destChatID := h.chatID
-	if len(req.Approvers) > 0 {
-		destChatID = req.Approvers[0]
-	}
+	// Resolve destination: use first approver's chat_id when it's a valid
+	// Telegram destination, otherwise fall back to the configured chat_id
+	// (GH-4380).
+	destChatID := h.resolveDestChatID(req)
 
 	// Send message
 	resp, err := h.client.SendMessageWithKeyboard(ctx, destChatID, text, "", keyboard)

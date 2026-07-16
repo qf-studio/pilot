@@ -3,6 +3,7 @@ package approval
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -292,6 +293,113 @@ func TestManager_SubmitApprovalRequest_NonBlocking(t *testing.T) {
 	}
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("SubmitApprovalRequest should return immediately, took %v", elapsed)
+	}
+	if len(handler.sentReqs) != 1 {
+		t.Errorf("expected 1 request sent to handler, got %d", len(handler.sentReqs))
+	}
+}
+
+// TestManager_SubmitApprovalRequest_PreferredChannelRouting verifies that a
+// request with PreferredChannel set is routed to that handler even when
+// multiple handlers are registered — never to whichever handler happens to
+// win map iteration order (GH-4380).
+func TestManager_SubmitApprovalRequest_PreferredChannelRouting(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+
+	telegram := &mockHandler{name: "telegram"}
+	slack := &mockHandler{name: "slack"}
+	m.RegisterHandler(telegram)
+	m.RegisterHandler(slack)
+
+	req := &Request{
+		ID:               "async-preferred-1",
+		TaskID:           "TASK-01",
+		Stage:            StagePreExecution,
+		Title:            "Test task",
+		CreatedAt:        time.Now(),
+		PreferredChannel: "slack",
+	}
+
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(slack.sentReqs) != 1 {
+		t.Errorf("expected 1 request sent to slack handler, got %d", len(slack.sentReqs))
+	}
+	if len(telegram.sentReqs) != 0 {
+		t.Errorf("expected 0 requests sent to telegram handler, got %d", len(telegram.sentReqs))
+	}
+}
+
+// TestManager_SubmitApprovalRequest_PreferredChannelMissing_FailsExplicitly
+// verifies that when PreferredChannel names a handler that isn't registered,
+// SubmitApprovalRequest returns a named error instead of silently falling
+// back to an arbitrary registered handler. Before GH-4380, this fell through
+// to whichever handler won Go's map iteration order — the root cause of an
+// approval_source: slack request silently landing on Telegram with a
+// Slack-shaped Approvers[0] as the chat destination.
+func TestManager_SubmitApprovalRequest_PreferredChannelMissing_FailsExplicitly(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+
+	telegram := &mockHandler{name: "telegram"}
+	m.RegisterHandler(telegram)
+
+	req := &Request{
+		ID:               "async-preferred-missing-1",
+		TaskID:           "TASK-01",
+		Stage:            StagePreExecution,
+		Title:            "Test task",
+		CreatedAt:        time.Now(),
+		PreferredChannel: "slack",
+	}
+
+	_, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected an error when the preferred channel is not registered, got nil")
+	}
+	if !strings.Contains(err.Error(), "slack") {
+		t.Errorf("expected error to name the missing channel %q, got: %v", "slack", err)
+	}
+	if len(telegram.sentReqs) != 0 {
+		t.Errorf("expected no silent fallback to telegram handler, got %d requests", len(telegram.sentReqs))
+	}
+}
+
+// TestManager_SubmitApprovalRequest_NoPreferredChannel_FallsBackToFirstAvailable
+// preserves the pre-existing behavior for requests that don't specify a
+// PreferredChannel at all (e.g. legacy callers) — the fail-fast behavior only
+// applies when PreferredChannel is explicitly set but unregistered.
+func TestManager_SubmitApprovalRequest_NoPreferredChannel_FallsBackToFirstAvailable(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+	handler := &mockHandler{name: "test"}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:        "async-no-preferred-1",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		CreatedAt: time.Now(),
+	}
+
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(handler.sentReqs) != 1 {
 		t.Errorf("expected 1 request sent to handler, got %d", len(handler.sentReqs))
