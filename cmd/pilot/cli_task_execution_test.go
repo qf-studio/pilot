@@ -148,6 +148,52 @@ func TestRecordCLITaskFinish_ExecutionError(t *testing.T) {
 	}
 }
 
+// TestClaimLostCLIError_ErrClaimLost covers GH-4360: recordCLITaskStart
+// racing another dispatch channel for the same (task, project, generation 0)
+// claim must fail with executor.ErrClaimLost (proven directly here, mirroring
+// dispatch_claim_test.go's TestDispatchClaim_EntryPointInventory), and
+// claimLostCLIError must turn that into the clean "task already active"
+// message the `pilot task` CLI surfaces instead of falling through to
+// runner.Execute() and starting a duplicate run.
+func TestClaimLostCLIError_ErrClaimLost(t *testing.T) {
+	store := newCLITaskTestStore(t)
+
+	taskID, projectPath := "TASK-claim-race", "/tmp/project-claim-race"
+
+	winner := &executor.Task{ID: taskID, ProjectPath: projectPath}
+	if _, err := recordCLITaskStart(store, winner); err != nil {
+		t.Fatalf("first recordCLITaskStart should win the claim, got: %v", err)
+	}
+
+	loser := &executor.Task{ID: taskID, ProjectPath: projectPath}
+	_, saveErr := recordCLITaskStart(store, loser)
+	if !errors.Is(saveErr, executor.ErrClaimLost) {
+		t.Fatalf("expected second recordCLITaskStart for the same claim to return ErrClaimLost, got: %v", saveErr)
+	}
+
+	claimErr := claimLostCLIError(loser.ID, saveErr)
+	if claimErr == nil {
+		t.Fatal("expected claimLostCLIError to return a non-nil error for ErrClaimLost")
+	}
+	want := "task already active: TASK-claim-race is already being executed by another Pilot process"
+	if claimErr.Error() != want {
+		t.Errorf("expected message %q, got %q", want, claimErr.Error())
+	}
+}
+
+// TestClaimLostCLIError_OtherErrorsPassThrough ensures claimLostCLIError only
+// special-cases ErrClaimLost — any other recordCLITaskStart failure (e.g. a
+// store write error) must return nil so the caller keeps its existing
+// Warn-and-continue behavior rather than aborting the task.
+func TestClaimLostCLIError_OtherErrorsPassThrough(t *testing.T) {
+	if got := claimLostCLIError("TASK-x", errors.New("disk full")); got != nil {
+		t.Errorf("expected nil for a non-ErrClaimLost error, got: %v", got)
+	}
+	if got := claimLostCLIError("TASK-x", nil); got != nil {
+		t.Errorf("expected nil for a nil error, got: %v", got)
+	}
+}
+
 func TestRecordCLITaskFinish_UnsuccessfulResult(t *testing.T) {
 	store := newCLITaskTestStore(t)
 
