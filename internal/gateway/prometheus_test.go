@@ -104,6 +104,10 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 					LabelCleanups: map[string]int64{
 						"pilot-in-progress": 8,
 					},
+					IntentJudgeFailures: map[string]int64{
+						"context_deadline": 6,
+						"external_sigkill": 1,
+					},
 					ActivePRsByStage: make(map[autopilot.PRStage]int),
 				},
 				histogramSnapshot: autopilot.HistogramData{},
@@ -120,6 +124,11 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 				`pilot_api_errors_total{endpoint="GetPR"} 10`,
 				`pilot_api_errors_total{endpoint="MergePR"} 2`,
 				`pilot_label_cleanups_total{label="pilot-in-progress"} 8`,
+				// GH-4377: judge failures broken out by cause.
+				"# HELP pilot_intent_judge_failures_total",
+				"# TYPE pilot_intent_judge_failures_total counter",
+				`pilot_intent_judge_failures_total{cause="context_deadline"} 6`,
+				`pilot_intent_judge_failures_total{cause="external_sigkill"} 1`,
 			},
 		},
 		{

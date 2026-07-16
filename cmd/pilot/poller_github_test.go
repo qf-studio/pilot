@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 )
@@ -284,5 +287,62 @@ func TestGithubPollerCreateAndStart_NoTokenDisablesPoller(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("CreateAndStart should return immediately when no token resolves (poller disabled)")
+	}
+}
+
+// --- GH-4377: judge failure metric wiring ---
+
+// TestJudgeFailureCause_StructuredError verifies the cause is pulled out of a
+// wrapped *executor.JudgeSubprocessError via errors.As.
+func TestJudgeFailureCause_StructuredError(t *testing.T) {
+	structured := &executor.JudgeSubprocessError{Err: errors.New("signal: killed"), Cause: "external_sigkill", PeakRSSMB: 128}
+	wrapped := fmt.Errorf("intent judge subprocess: %w", structured)
+
+	if got := judgeFailureCause(wrapped); got != "external_sigkill" {
+		t.Errorf("expected external_sigkill, got %q", got)
+	}
+}
+
+// TestJudgeFailureCause_PlainErrorDefaultsToOther verifies non-subprocess
+// errors (e.g. a malformed-response parse failure) fall back to "other"
+// rather than panicking or misreporting a kill cause.
+func TestJudgeFailureCause_PlainErrorDefaultsToOther(t *testing.T) {
+	if got := judgeFailureCause(errors.New("no VERDICT signal found in response")); got != "other" {
+		t.Errorf("expected other, got %q", got)
+	}
+}
+
+// TestSdkPreFlightJudge_JudgeIssue_RecordsFailureMetric drives JudgeIssue
+// with a claude binary that can't even start (exec.Start fails), confirming
+// the failure is both returned to the caller and recorded against the
+// wired *autopilot.Metrics — the GH-4377 "Judge failure rate is visible as
+// a metric" acceptance criterion.
+func TestSdkPreFlightJudge_JudgeIssue_RecordsFailureMetric(t *testing.T) {
+	metrics := autopilot.NewMetrics()
+	sp := sdkPreFlightJudge{
+		judge:   executor.NewIntentJudge("/nonexistent/gh-4377-claude-binary"),
+		metrics: metrics,
+	}
+
+	if _, err := sp.JudgeIssue(context.Background(), "title", "body", ""); err == nil {
+		t.Fatal("expected error for a nonexistent claude binary")
+	}
+
+	snap := metrics.Snapshot()
+	if snap.IntentJudgeFailures["other"] != 1 {
+		t.Errorf("expected 1 'other' judge failure recorded, got: %+v", snap.IntentJudgeFailures)
+	}
+}
+
+// TestSdkPreFlightJudge_JudgeIssue_NilMetricsSafe verifies a repo with no
+// autopilot controller (nil metrics) doesn't panic on judge failure.
+func TestSdkPreFlightJudge_JudgeIssue_NilMetricsSafe(t *testing.T) {
+	sp := sdkPreFlightJudge{
+		judge:   executor.NewIntentJudge("/nonexistent/gh-4377-claude-binary"),
+		metrics: nil,
+	}
+
+	if _, err := sp.JudgeIssue(context.Background(), "title", "body", ""); err == nil {
+		t.Fatal("expected error for a nonexistent claude binary")
 	}
 }

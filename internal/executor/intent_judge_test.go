@@ -3,8 +3,10 @@ package executor
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockJudgeRunner creates a test runner that returns canned text output.
@@ -329,5 +331,124 @@ func TestJudgeIssue_ConfidenceParsed(t *testing.T) {
 	}
 	if v.Confidence != 0.85 {
 		t.Errorf("expected confidence 0.85, got %f", v.Confidence)
+	}
+}
+
+// --- GH-4377: judge subprocess kill-cause RCA ---
+
+// TestNewJudgeSubprocessError_ExternalSIGKILL verifies that a SIGKILL-signaled
+// exit with a still-live (non-expired) context is classified as an external
+// kill (e.g. OS OOM killer) rather than our own timeout.
+func TestNewJudgeSubprocessError_ExternalSIGKILL(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "kill -9 $$")
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected the subprocess to report a kill error")
+	}
+
+	jerr := newJudgeSubprocessError(context.Background(), err, "some stderr", 42)
+	if jerr.Cause != judgeFailureCauseExternalSIGKILL {
+		t.Errorf("expected cause %q, got %q", judgeFailureCauseExternalSIGKILL, jerr.Cause)
+	}
+	if jerr.PeakRSSMB != 42 {
+		t.Errorf("expected peak_rss_mb 42, got %d", jerr.PeakRSSMB)
+	}
+	if jerr.StderrTail != "some stderr" {
+		t.Errorf("expected stderr tail %q, got %q", "some stderr", jerr.StderrTail)
+	}
+	if !strings.Contains(jerr.Error(), "cause=external_sigkill") {
+		t.Errorf("expected Error() to mention cause=external_sigkill, got: %v", jerr.Error())
+	}
+	if !strings.Contains(jerr.Error(), "peak_rss_mb=42") {
+		t.Errorf("expected Error() to mention peak_rss_mb=42, got: %v", jerr.Error())
+	}
+	if !strings.Contains(jerr.Error(), `stderr_tail="some stderr"`) {
+		t.Errorf("expected Error() to mention the stderr tail, got: %v", jerr.Error())
+	}
+	if !errors.Is(jerr, jerr.Err) {
+		t.Error("expected JudgeSubprocessError to unwrap to the original error")
+	}
+}
+
+// TestNewJudgeSubprocessError_ContextDeadline verifies that a kill observed
+// after ctx's own deadline has already fired is classified as our own
+// timeout, not an external kill — even though the raw error text
+// ("signal: killed") is identical either way.
+func TestNewJudgeSubprocessError_ContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+	time.Sleep(5 * time.Millisecond) // guarantee ctx.Err() == DeadlineExceeded
+
+	cmd := exec.Command("sh", "-c", "kill -9 $$")
+	err := cmd.Run()
+
+	jerr := newJudgeSubprocessError(ctx, err, "", 10)
+	if jerr.Cause != judgeFailureCauseContextDeadline {
+		t.Errorf("expected cause %q, got %q", judgeFailureCauseContextDeadline, jerr.Cause)
+	}
+}
+
+// TestNewJudgeSubprocessError_Other verifies a plain non-signal exit
+// (e.g. a genuine nonzero exit code) is classified as "other", not a kill.
+func TestNewJudgeSubprocessError_Other(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 3")
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected exit 3 to produce an error")
+	}
+
+	jerr := newJudgeSubprocessError(context.Background(), err, "", 0)
+	if jerr.Cause != judgeFailureCauseOther {
+		t.Errorf("expected cause %q, got %q", judgeFailureCauseOther, jerr.Cause)
+	}
+}
+
+// TestDefaultCmdRunner_ContextDeadlineKill drives the real defaultCmdRunner
+// (not a mock) end to end: a subprocess that outlives its context gets
+// killed, and the resulting error carries the context_deadline cause plus a
+// *JudgeSubprocessError the caller can type-assert on.
+func TestDefaultCmdRunner_ContextDeadlineKill(t *testing.T) {
+	if _, err := exec.LookPath("sleep"); err != nil {
+		t.Skip("sleep not available on this system")
+	}
+
+	judge := NewIntentJudge("sleep")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := judge.defaultCmdRunner(ctx, "5")
+	if err == nil {
+		t.Fatal("expected error from a subprocess killed by context deadline")
+	}
+
+	var jerr *JudgeSubprocessError
+	if !errors.As(err, &jerr) {
+		t.Fatalf("expected *JudgeSubprocessError, got %T: %v", err, err)
+	}
+	if jerr.Cause != judgeFailureCauseContextDeadline {
+		t.Errorf("expected cause %q, got %q", judgeFailureCauseContextDeadline, jerr.Cause)
+	}
+}
+
+// TestDefaultCmdRunner_StderrCaptured verifies stderr from a failing
+// subprocess survives into the wrapped error (previously only
+// "signal: killed" — the exit reason — made it through).
+func TestDefaultCmdRunner_StderrCaptured(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available on this system")
+	}
+
+	judge := NewIntentJudge("sh")
+	_, err := judge.defaultCmdRunner(context.Background(), "-c", "echo boom-from-stderr >&2; exit 1")
+	if err == nil {
+		t.Fatal("expected error from nonzero exit")
+	}
+
+	var jerr *JudgeSubprocessError
+	if !errors.As(err, &jerr) {
+		t.Fatalf("expected *JudgeSubprocessError, got %T: %v", err, err)
+	}
+	if !strings.Contains(jerr.StderrTail, "boom-from-stderr") {
+		t.Errorf("expected stderr tail to contain subprocess stderr, got: %q", jerr.StderrTail)
 	}
 }

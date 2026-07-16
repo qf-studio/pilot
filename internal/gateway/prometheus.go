@@ -136,6 +136,16 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		writeCounter(w, "pilot_api_errors_total", count, "endpoint", endpoint)
 	}
 
+	// pilot_intent_judge_failures_total (GH-4377): pre-flight intent-judge
+	// subprocess failures by cause — makes a fully-dead judge visible instead
+	// of silently failing open on every issue (previously only a WARN log
+	// line with no counter).
+	writeHelp(w, "pilot_intent_judge_failures_total", "Total pre-flight intent-judge subprocess failures by cause (context_deadline, external_sigkill, other)")
+	writeType(w, "pilot_intent_judge_failures_total", "counter")
+	for cause, count := range snap.IntentJudgeFailures {
+		writeCounter(w, "pilot_intent_judge_failures_total", count, "cause", cause)
+	}
+
 	// pilot_label_cleanups_total
 	writeHelp(w, "pilot_label_cleanups_total", "Total label cleanup operations")
 	writeType(w, "pilot_label_cleanups_total", "counter")
