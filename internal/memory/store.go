@@ -2411,6 +2411,32 @@ func (s *Store) ClaimExecution(taskID, projectPath string, generation int, execu
 	return n == 1, nil
 }
 
+// LatestClaimGeneration returns the highest generation currently claimed for
+// (taskID, projectPath) in execution_claims, and the execution_id that
+// generation claimed. found is false when no claim row exists at all — the
+// normal state for a task that has never been dispatched.
+//
+// GH-4372: the poller's re-pick path uses this to distinguish a claim held by
+// a still-live execution (queued/running — the ErrClaimLost duplicate-pickup
+// case, must keep dropping silently) from one held by a dead, terminal
+// execution (failed/stalled/etc. — a legitimate retry candidate that should
+// claim generation+1) instead of retrying generation 0 forever.
+func (s *Store) LatestClaimGeneration(taskID, projectPath string) (generation int, executionID string, found bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT generation, execution_id FROM execution_claims
+		WHERE task_id = ? AND project_path = ?
+		ORDER BY generation DESC
+		LIMIT 1
+	`, taskID, canonicalizeProjectPath(projectPath)).Scan(&generation, &executionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, "", false, nil
+		}
+		return 0, "", false, err
+	}
+	return generation, executionID, true, nil
+}
+
 // CrossPattern represents a pattern that applies across multiple projects.
 // It enables knowledge sharing between projects within an organization,
 // tracking confidence based on usage outcomes.

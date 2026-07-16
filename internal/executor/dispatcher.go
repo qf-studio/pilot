@@ -23,6 +23,21 @@ import (
 // error text (GH-4008).
 var ErrTaskAlreadyActive = errors.New("task already queued or running")
 
+// terminalExecutionStatuses is every execution status WaitForExecution and
+// the GH-4372 retry decider both treat as "finished" — the execution is no
+// longer in flight, regardless of whether it succeeded. Kept as the single
+// definition both consult so they can't drift apart.
+var terminalExecutionStatuses = map[string]bool{
+	"completed": true, "failed": true, "cancelled": true, "declined": true,
+	"no_op": true, "rate_limited": true, "skipped": true, "stalled": true, "infra": true,
+}
+
+// isTerminalExecutionStatus reports whether status is one of
+// terminalExecutionStatuses.
+func isTerminalExecutionStatus(status string) bool {
+	return terminalExecutionStatuses[status]
+}
+
 // DispatcherConfig configures the task dispatcher behavior.
 type DispatcherConfig struct {
 	// StaleTaskDuration is a backwards-compat alias for StaleRunningThreshold.
@@ -623,31 +638,131 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 	return d.queueSingleTask(ctx, task)
 }
 
+// nextRetryGeneration inspects the highest execution_claims generation
+// currently held for (taskID, projectPath) and reports whether a fresh
+// Begin(..., generation+1) is warranted (GH-4372). Three outcomes:
+//   - no claim row at all, or the claimed execution is still LIVE
+//     (queued/running): retry=false — this is the ordinary duplicate-pickup
+//     race ErrClaimLost exists to catch; the caller must keep dropping it
+//     silently.
+//   - the claimed execution is terminal (dead — the owning run finished) AND
+//     the task is already "done" per HasTerminalCompletion (a genuine
+//     deliverable, or a no_op with no error): retry=false — preserves
+//     GH-4350's invariant that a no_op'd task must never be re-armed.
+//   - the claimed execution is terminal but the task is NOT yet done (e.g.
+//     failed, stalled): retry=true, generation = claimed generation + 1.
+func (d *Dispatcher) nextRetryGeneration(taskID, projectPath string) (generation int, retry bool, err error) {
+	gen, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return 0, false, err
+	}
+
+	claimedExec, err := d.store.GetExecution(execID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Claim row landed but its executions row never did (Begin's
+			// save-failure case) — treat conservatively as still owned
+			// rather than guessing a retry is safe.
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	if !isTerminalExecutionStatus(claimedExec.Status) {
+		return 0, false, nil // live owner — today's ErrClaimLost drop path
+	}
+
+	done, err := HasTerminalCompletion(d.store, taskID, projectPath)
+	if err != nil {
+		return 0, false, err
+	}
+	if done {
+		return 0, false, nil // GH-4350: already "done" — must not re-arm
+	}
+
+	return gen + 1, true, nil
+}
+
+// beginWithGenerationRetry wraps ExecutionLifecycle.Begin(task, initial) so a
+// claim loss caused by a DEAD prior claim (the owning execution finished, but
+// the task isn't done yet — e.g. it failed) automatically retries at
+// generation+1 instead of retrying generation 0 forever. GH-4372: a task
+// that failed once was permanently unable to re-pick, since its claim on
+// generation 0 was already permanently occupied by the terminal failure and
+// every re-pick attempt kept retrying that same occupied generation.
+//
+// Returns ("", nil) for the two "drop this pickup silently" outcomes callers
+// already handle identically: a live owner (today's ErrClaimLost duplicate-
+// pickup case) or a dead owner whose task is already done and must not be
+// re-armed (GH-4350's no_op invariant). A genuine store error still
+// surfaces.
+func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (string, error) {
+	lifecycle := NewExecutionLifecycle(d.store)
+	execID, err := lifecycle.Begin(task, initial)
+	if err == nil {
+		return execID, nil
+	}
+	if !errors.Is(err, ErrClaimLost) {
+		return "", err
+	}
+
+	gen, retry, decErr := d.nextRetryGeneration(task.ID, task.ProjectPath)
+	if decErr != nil {
+		d.log.Warn("failed to evaluate retry generation after claim loss — dropping pickup",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Any("error", decErr))
+		return "", nil
+	}
+	if !retry {
+		return "", nil
+	}
+
+	retryExecID, retryErr := lifecycle.Begin(task, initial, gen)
+	if retryErr == nil {
+		d.log.Info("dispatch re-pick: prior claim was terminal but task is not done — claiming next generation for retry",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Int("generation", gen),
+		)
+		return retryExecID, nil
+	}
+	if errors.Is(retryErr, ErrClaimLost) {
+		// Race: another channel claimed generation gen between our decision
+		// and this Begin call — drop it, same as any other duplicate pickup.
+		return "", nil
+	}
+	return "", fmt.Errorf("failed to save retry execution: %w", retryErr)
+}
+
 // queueDecomposedTask handles queuing a decomposed task and its subtasks.
 // The parent task is marked as "decomposed" and subtasks are queued in order.
 func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, result *DecomposeResult) (string, error) {
 	// GH-4243: single chokepoint for the row create + ExecutionID threading
-	// that used to be hand-rolled here.
-	parentExecID, err := NewExecutionLifecycle(d.store).Begin(parent, ExecStatusDecomposed)
-	if errors.Is(err, ErrClaimLost) {
-		// TASK-407/GH-4359: another dispatch channel (e.g. the epic sub-issue
-		// loop or a racing poller pass) already claimed
-		// (parent.ID, parent.ProjectPath, generation 0) before this
-		// dispatchMu-serialized call reached Begin. Unlike epic.go's
+	// that used to be hand-rolled here. GH-4372: beginWithGenerationRetry
+	// additionally claims generation+1 when the prior claim belongs to a
+	// dead (terminal, not-yet-done) execution instead of retrying generation
+	// 0 forever.
+	parentExecID, err := d.beginWithGenerationRetry(parent, ExecStatusDecomposed)
+	if err != nil {
+		return "", fmt.Errorf("failed to save decomposed parent: %w", err)
+	}
+	if parentExecID == "" {
+		// TASK-407/GH-4359, GH-4372: dropped duplicate pickup — either
+		// another dispatch channel (e.g. the epic sub-issue loop or a
+		// racing poller pass) already owns a LIVE execution for
+		// (parent.ID, parent.ProjectPath), or the parent task is already
+		// terminal-done (GH-4350: must not re-arm a no_op). Unlike epic.go's
 		// sub-issue loop, this call site has no wrapping execution row of
 		// its own to poll or attach a ledger event to — the parent task IS
 		// the top-level dispatch. Drop the duplicate pickup silently: the
 		// execution is already owned elsewhere, so re-queuing here would
 		// either FK-787 (no executions row to reference) or start a
 		// genuine duplicate run.
-		d.log.Info("dispatch claim lost — decomposed parent already owned by another dispatch channel, dropping duplicate pickup",
+		d.log.Info("dispatch claim lost — decomposed parent already owned by another dispatch channel or already terminal, dropping duplicate pickup",
 			slog.String("task_id", parent.ID),
 			slog.String("project", parent.ProjectPath),
 		)
 		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("failed to save decomposed parent: %w", err)
 	}
 
 	d.log.Info("Task decomposed",
@@ -685,28 +800,34 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 // queueSingleTask queues a single task (no decomposition).
 func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, error) {
 	// GH-4243: single chokepoint for the row create + ExecutionID threading
-	// that used to be hand-rolled here.
-	execID, err := NewExecutionLifecycle(d.store).Begin(task, ExecStatusQueued)
-	if errors.Is(err, ErrClaimLost) {
-		// TASK-407/GH-4359: another dispatch channel already claimed
-		// (task.ID, task.ProjectPath, generation 0) — most likely a
-		// concurrently-racing epic sub-issue loop or CLI stub picking up the
-		// same task_id outside this dispatcher's dispatchMu-serialized path.
-		// Drop this pickup silently (idempotent pickup): the execution is
-		// already owned elsewhere, and proceeding here would either FK-787
-		// (no executions row for this call to reference) or start a genuine
-		// duplicate run. Returning a nil error — rather than wrapping
-		// ErrClaimLost like ErrTaskAlreadyActive — means callers (including
-		// the decomposed-subtask loop below) treat this exactly like an
-		// already-handled task, not a failure to log or retry.
-		d.log.Info("dispatch claim lost — task already owned by another dispatch channel, dropping duplicate pickup",
+	// that used to be hand-rolled here. GH-4372: beginWithGenerationRetry
+	// additionally claims generation+1 when the prior claim belongs to a
+	// dead (terminal, not-yet-done) execution instead of retrying generation
+	// 0 forever — this is the poller's primary re-pick path.
+	execID, err := d.beginWithGenerationRetry(task, ExecStatusQueued)
+	if err != nil {
+		return "", fmt.Errorf("failed to save execution: %w", err)
+	}
+	if execID == "" {
+		// TASK-407/GH-4359, GH-4372: dropped duplicate pickup — either
+		// another dispatch channel already claimed a LIVE execution for
+		// (task.ID, task.ProjectPath) — most likely a concurrently-racing
+		// epic sub-issue loop or CLI stub picking up the same task_id
+		// outside this dispatcher's dispatchMu-serialized path — or the
+		// task is already terminal-done (GH-4350: must not re-arm a
+		// no_op). Drop this pickup silently (idempotent pickup): the
+		// execution is already owned elsewhere, and proceeding here would
+		// either FK-787 (no executions row for this call to reference) or
+		// start a genuine duplicate run. Returning a nil error — rather
+		// than wrapping ErrClaimLost like ErrTaskAlreadyActive — means
+		// callers (including the decomposed-subtask loop below) treat this
+		// exactly like an already-handled task, not a failure to log or
+		// retry.
+		d.log.Info("dispatch claim lost — task already owned by another dispatch channel or already terminal, dropping duplicate pickup",
 			slog.String("task_id", task.ID),
 			slog.String("project", task.ProjectPath),
 		)
 		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("failed to save execution: %w", err)
 	}
 
 	// GH-3732: surface per-project serialization instead of leaving a queued
@@ -887,9 +1008,7 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 			// else mutated the row — in the GH-3513/GH-3530 incidents a child PR
 			// merge self-healed the PARENT's row to completed with the child's PR
 			// URL, and the woken handler reported a false "✅ Pilot completed!".
-			switch exec.Status {
-			case "completed", "failed", "cancelled",
-				"declined", "no_op", "rate_limited", "skipped", "stalled", "infra":
+			if isTerminalExecutionStatus(exec.Status) {
 				return exec, nil
 			}
 		}

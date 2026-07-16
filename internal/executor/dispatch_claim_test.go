@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"errors"
 	"os"
 	"sync"
@@ -171,6 +172,80 @@ func TestDispatchClaim_RetryGenerationPlusOne(t *testing.T) {
 	}
 	if losses != n-1 {
 		t.Errorf("expected %d losses among concurrent generation 2 retries, got %d", n-1, losses)
+	}
+}
+
+// TestDispatchClaim_PollerRetryPath is the GH-4372 extension of the #4363
+// entry-point inventory: the poller's re-pick path (queueSingleTask) must
+// itself be the caller that decides and claims generation+1 after a prior
+// generation's execution went terminal — not merely capable of accepting a
+// pre-computed generation, as TestDispatchClaim_RetryGenerationPlusOne
+// proves for the Begin primitive alone. Races N goroutines calling
+// queueSingleTask concurrently against a task whose generation 0 already
+// failed: exactly one must win a generation-1 claim, the rest must observe
+// the duplicate-pickup drop (empty execID, nil error) rather than a second
+// generation-1 row.
+func TestDispatchClaim_PollerRetryPath(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	taskID, projectPath := "GH-entry-poller-retry", "/tmp/project-poller-retry"
+
+	failedExecID, err := NewExecutionLifecycle(store).Begin(&Task{ID: taskID, ProjectPath: projectPath}, ExecStatusRunning, 0)
+	if err != nil {
+		t.Fatalf("setup: generation 0 Begin failed: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(failedExecID, "failed", "boom"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	const n = 8
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var wins, drops int
+	barrier := make(chan struct{})
+
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-barrier
+			execID, err := dispatcher.queueSingleTask(context.Background(), &Task{ID: taskID, ProjectPath: projectPath})
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				t.Errorf("queueSingleTask: unexpected error: %v", err)
+				return
+			}
+			if execID == "" {
+				drops++
+			} else {
+				wins++
+			}
+		}()
+	}
+	close(barrier)
+	wg.Wait()
+
+	if wins != 1 {
+		t.Errorf("expected exactly 1 winner claiming generation 1, got %d", wins)
+	}
+	if drops != n-1 {
+		t.Errorf("expected %d dropped duplicate pickups, got %d", n-1, drops)
+	}
+
+	gen, _, found, err := store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestClaimGeneration failed: %v", err)
+	}
+	if !found || gen != 1 {
+		t.Errorf("expected exactly one generation-1 claim to have landed, got generation=%d found=%v", gen, found)
 	}
 }
 

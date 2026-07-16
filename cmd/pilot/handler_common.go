@@ -180,6 +180,19 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			} else {
 				execErr = fmt.Errorf("failed to queue task: %w", qErr)
 			}
+		} else if execID == "" {
+			// GH-4372: QueueTask returns a nil error AND an empty execID when
+			// it drops a duplicate/terminal pickup silently (ErrClaimLost to a
+			// live owner, or a dead owner whose task is already
+			// HasTerminalCompletion-done and must not be re-armed, GH-4350) —
+			// no executions row exists here to wait on. Previously this fell
+			// into the branch below and called WaitForExecution(ctx, "", ...),
+			// which hit sql.ErrNoRows on its very first poll (an empty execID
+			// never matches a row) and surfaced as "failed to get execution:
+			// sql: no rows in result set" — an ERROR the SDK poller logged on
+			// every tick for a task that was never actually a failure.
+			logging.WithComponent("dispatch").Debug("dispatch dropped duplicate/terminal pickup, nothing to wait for",
+				slog.String("task_id", taskID))
 		} else {
 			if deps.Monitor != nil {
 				deps.Monitor.Queue(taskID)
