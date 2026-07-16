@@ -33,10 +33,17 @@ func watchdogTickInterval(stallTimeout time.Duration) time.Duration {
 // stallCancel if no backend event has been seen for longer than stallTimeout.
 // Sets stallDetected before canceling so callers can distinguish a stall from
 // other cancellations. Returns when done is closed (i.e., the execution has ended).
+//
+// inFlightBackgroundTasks counts backend task_started events without a
+// matching task_notification (e.g. a backgrounded Bash command still
+// running). While it is > 0, the idle clock is suspended entirely: a session
+// waiting on a legitimate long-running background task emits zero events by
+// design and must not be mistaken for a dead one (GH-4357).
 func (r *Runner) runStallWatchdog(
 	taskID string,
 	lastEventAt *atomic.Int64,
 	stallDetected *atomic.Bool,
+	inFlightBackgroundTasks *atomic.Int64,
 	stallTimeout time.Duration,
 	done <-chan struct{},
 	stallCancel context.CancelFunc,
@@ -48,6 +55,9 @@ func (r *Runner) runStallWatchdog(
 		case <-done:
 			return
 		case <-ticker.C:
+			if inFlightBackgroundTasks != nil && inFlightBackgroundTasks.Load() > 0 {
+				continue
+			}
 			lastAt := time.Unix(0, lastEventAt.Load())
 			idle := time.Since(lastAt)
 			if idle > stallTimeout {

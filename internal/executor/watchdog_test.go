@@ -49,7 +49,8 @@ func TestStallWatchdog_FiresOnIdle(t *testing.T) {
 	// Use a very short stall timeout so the test doesn't wait 3 minutes.
 	stallTimeout := 5 * time.Second
 
-	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, stallTimeout, done, cancel)
+	var inFlight atomic.Int64
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
 
 	// The watchdog ticks every 30s by default — too slow for a unit test.
 	// Instead, simulate a stale lastEventAt (already set above) and wait for
@@ -99,7 +100,8 @@ func TestStallWatchdog_SurvivesLiveSession(t *testing.T) {
 
 	stallTimeout := 200 * time.Millisecond
 
-	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, stallTimeout, done, cancel)
+	var inFlight atomic.Int64
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
 
 	// Simulate periodic events keeping the watchdog alive.
 	// The watchdog interval is 30s in production; in the test we close done
@@ -122,6 +124,101 @@ func TestStallWatchdog_SurvivesLiveSession(t *testing.T) {
 	if stallDetected.Load() {
 		t.Fatal("stallDetected should be false for a live session")
 	}
+}
+
+// TestStallWatchdog_SuspendsWhileBackgroundTaskInFlight verifies the watchdog
+// does NOT terminate a session that is silent past stallTimeout while a
+// background task (e.g. a long-running backgrounded Bash command) is still
+// running. GH-4357: a session that starts such a task and awaits its result
+// legitimately emits zero events until it completes; the previous idle-only
+// check misclassified this as a dead session and killed a healthy execution
+// (observed: a `go test -race -count=5` run silently exceeding the 3m stall
+// timeout while otherwise healthy).
+func TestStallWatchdog_SuspendsWhileBackgroundTaskInFlight(t *testing.T) {
+	r := &Runner{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	var (
+		lastEventAt   atomic.Int64
+		stallDetected atomic.Bool
+		inFlight      atomic.Int64
+		done          = make(chan struct{})
+	)
+	// Simulate a task_started event long enough ago that, without the fix,
+	// the idle clock alone would exceed stallTimeout well before the ticker
+	// below stops.
+	lastEventAt.Store(time.Now().Add(-1 * time.Second).UnixNano())
+	inFlight.Store(1) // one background task in flight, no completion event yet
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stallTimeout := 50 * time.Millisecond
+
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
+
+	// Let several ticks elapse — well past stallTimeout — while the
+	// background task remains in flight.
+	time.Sleep(10 * stallTimeout)
+	close(done)
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("stall watchdog terminated session while a background task was in flight")
+	default:
+		// expected: context still alive
+	}
+	if stallDetected.Load() {
+		t.Fatal("stallDetected should be false while a background task is in flight")
+	}
+}
+
+// TestStallWatchdog_FiresAfterBackgroundTaskCompletes verifies the watchdog
+// resumes normal idle detection once the in-flight background task count
+// drops back to zero (GH-4357).
+func TestStallWatchdog_FiresAfterBackgroundTaskCompletes(t *testing.T) {
+	r := &Runner{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	var (
+		lastEventAt   atomic.Int64
+		stallDetected atomic.Bool
+		inFlight      atomic.Int64
+		done          = make(chan struct{})
+	)
+	lastEventAt.Store(time.Now().Add(-1 * time.Second).UnixNano())
+	inFlight.Store(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stallTimeout := 50 * time.Millisecond
+
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
+
+	// Task is still running: watchdog must not fire yet.
+	time.Sleep(3 * stallTimeout)
+	select {
+	case <-ctx.Done():
+		t.Fatal("stall watchdog fired while background task was still in flight")
+	default:
+	}
+
+	// Background task completes (task_notification received) without any
+	// other event refreshing lastEventAt — idle clock resumes from a stale
+	// timestamp, so the very next tick should now detect a stall.
+	inFlight.Store(0)
+
+	select {
+	case <-ctx.Done():
+		// expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("stall watchdog did not resume idle detection after background task completed")
+	}
+
+	if !stallDetected.Load() {
+		t.Fatal("stallDetected should be true once idle detection resumes past stallTimeout")
+	}
+
+	close(done)
 }
 
 // TestEffectiveStallTimeout verifies default and custom values.

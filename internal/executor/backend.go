@@ -132,6 +132,14 @@ type BackendEvent struct {
 
 	// SessionID is the Claude Code session ID for resume support (GH-1265)
 	SessionID string
+
+	// BackgroundTaskID correlates task_started with its terminating
+	// task_notification for the same background task (GH-4357).
+	BackgroundTaskID string
+
+	// BackgroundTaskStatus carries the terminal status ("completed", "failed",
+	// or "stopped") on EventTypeTaskNotification events (GH-4357).
+	BackgroundTaskStatus string
 }
 
 // BackendError is implemented by all backend-specific error types (ClaudeCodeError,
@@ -170,6 +178,18 @@ const (
 
 	// EventTypeProgress indicates a progress update
 	EventTypeProgress BackendEventType = "progress"
+
+	// EventTypeTaskStarted indicates a background task (e.g. a long-running
+	// Bash command or sub-agent) started executing asynchronously. The agent
+	// legitimately emits zero further events until the task resolves, so the
+	// stall watchdog must treat an in-flight task as activity rather than
+	// silence (GH-4357).
+	EventTypeTaskStarted BackendEventType = "task_started"
+
+	// EventTypeTaskNotification indicates a previously started background
+	// task finished (BackgroundTaskStatus carries "completed"/"failed"/
+	// "stopped"). GH-4357.
+	EventTypeTaskNotification BackendEventType = "task_notification"
 )
 
 // BackendResult contains the outcome of a backend execution.
