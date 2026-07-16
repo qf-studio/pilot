@@ -27,6 +27,9 @@ func (m *gh4130ExecPersister) SetApprovalDecision(_ context.Context, _, _, _ str
 func (m *gh4130ExecPersister) RecordExecutionEvent(_ string, _ memory.Stage, _ string) error {
 	return nil
 }
+func (m *gh4130ExecPersister) HasExecutionEventStage(_ string, _ memory.Stage) (bool, error) {
+	return false, nil
+}
 func (m *gh4130ExecPersister) GetLatestExecutionByTaskID(taskID, _ string) (*memory.Execution, error) {
 	exec, ok := m.execByTask[taskID]
 	if !ok {

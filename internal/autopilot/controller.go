@@ -41,6 +41,10 @@ type approvalPersister interface {
 	// exists before inserting, so a stale/unknown execution ID can never
 	// surface as an execution_events foreign-key error.
 	RecordExecutionEvent(executionID string, stage memory.Stage, detail string) error
+	// HasExecutionEventStage backs the GH-4370 release-backfill sweep's
+	// idempotency check: whether executionID already carries a given stage
+	// (e.g. StageReleased), so a repeat pass never double-stamps the ladder.
+	HasExecutionEventStage(executionID string, stage memory.Stage) (bool, error)
 }
 
 // projectBoardSyncer abstracts GitHub Projects V2 board status updates.
@@ -4616,6 +4620,10 @@ func (c *Controller) Run(ctx context.Context) error {
 			// GH-3990: claim any scope releases now unblocked, and re-drive
 			// stale 'releasing' rows with no live carrier.
 			c.startPendingScopeReleases(ctx)
+			// GH-4370: heal autopilot_pr_state residue (failed/releasing rows
+			// orphaned by a manual tag push that bypassed the release train)
+			// whose PR is, in fact, already merged and tagged.
+			c.reconcileReleaseBackfill(ctx)
 		case <-ticker.C:
 			c.processAllPRs(ctx)
 
