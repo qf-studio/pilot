@@ -47,7 +47,7 @@ func TestDispatchClaim_EntryPointInventory(t *testing.T) {
 			projectPath: "/tmp/project-epic",
 		},
 		{
-			name:        "CLI recordCLITaskStart (cmd/pilot/commands.go:1031)",
+			name:        "CLI recordCLITaskStart (cmd/pilot/commands.go:1039)",
 			taskID:      "GH-entry-cli",
 			projectPath: "/tmp/project-cli",
 		},

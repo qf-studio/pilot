@@ -805,6 +805,14 @@ Examples:
 					// human-readable task ID with no matching executions.id. Mirrors
 					// the dispatcher's queueSingleTask (internal/executor/dispatcher.go:547).
 					if id, saveErr := recordCLITaskStart(learningStore, task); saveErr != nil {
+						// GH-4360: Begin's contract requires aborting BEFORE
+						// invoking the backend on ErrClaimLost (lifecycle.go:
+						// 86-92), so this must stop the command here rather
+						// than fall through to runner.Execute() and start a
+						// duplicate run.
+						if claimErr := claimLostCLIError(task.ID, saveErr); claimErr != nil {
+							return claimErr
+						}
 						logging.WithComponent("execute").Warn("Failed to save execution row for CLI task, status/logs/metrics will not reflect this run", slog.Any("error", saveErr))
 					} else {
 						execID = id
@@ -1029,6 +1037,26 @@ Examples:
 // hand-rolling a memory.Execution{} literal here.
 func recordCLITaskStart(store *memory.Store, task *executor.Task) (execID string, err error) {
 	return executor.NewExecutionLifecycle(store).Begin(task, executor.ExecStatusRunning)
+}
+
+// claimLostCLIError converts a recordCLITaskStart failure into a clean,
+// user-visible "task already active" error when the failure is
+// errors.Is(err, executor.ErrClaimLost) — i.e. another dispatch channel
+// (poller, epic sub-issue loop, a racing `pilot task` invocation) already
+// won the claim for this task (GH-4360). Returns nil for every other error,
+// leaving those to the existing Warn-and-continue handling (a failed
+// executions-row write shouldn't block the CLI from running the task).
+//
+// The returned error is deliberately a plain fmt.Errorf with no %w wrapping
+// of saveErr: newTaskCmd's RunE returns it as-is, and main.go's top-level
+// handler does `fmt.Fprintln(os.Stderr, err); os.Exit(1)` — a bare message
+// here means that prints as one clean stderr line, not a wrapped chain or a
+// stack trace.
+func claimLostCLIError(taskID string, saveErr error) error {
+	if !errors.Is(saveErr, executor.ErrClaimLost) {
+		return nil
+	}
+	return fmt.Errorf("task already active: %s is already being executed by another Pilot process", taskID)
 }
 
 // recordCLITaskFinish marks the executions row created by recordCLITaskStart
