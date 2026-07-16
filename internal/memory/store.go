@@ -877,6 +877,19 @@ func (s *Store) RecordExecutionEvent(executionID string, stage Stage, detail str
 	return recordExecutionEventOn(s.db, executionID, stage, detail)
 }
 
+// HasExecutionEventStage reports whether executionID's execution_events
+// ledger already carries an entry for stage. Used by heal/backfill passes
+// (e.g. GH-4370's release-tag-ancestry reconciliation) so a repeat sweep — or
+// a crash between writing the event and draining the row it healed — never
+// double-stamps the ladder.
+func (s *Store) HasExecutionEventStage(executionID string, stage Stage) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM execution_events WHERE execution_id = ? AND stage = ?)
+	`, executionID, string(stage)).Scan(&exists)
+	return exists, err
+}
+
 // dbExecer is satisfied by both *sql.DB and *sql.Tx. recordExecutionEventOn is
 // generalized over it so the GH-4292 heal paths can run the same validate-first
 // check and insert inside their own transaction, atomically with the status

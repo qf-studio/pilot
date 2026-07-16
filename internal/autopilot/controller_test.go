@@ -7863,6 +7863,15 @@ func (m *mockApprovalPersister) RecordExecutionEvent(executionID string, stage m
 	return nil
 }
 
+func (m *mockApprovalPersister) HasExecutionEventStage(executionID string, stage memory.Stage) (bool, error) {
+	for _, ev := range m.executionEvents {
+		if ev.executionID == executionID && ev.stage == stage {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // TestController_SetApprovalDecision_PersistsToMemoryStore verifies that
 // Controller.SetApprovalDecision updates in-memory PRState AND calls the
 // injected approvalPersister (executions table write path).
@@ -7927,6 +7936,10 @@ func (m *errApprovalPersister) GetLatestExecutionByTaskID(_, _ string) (*memory.
 
 func (m *errApprovalPersister) RecordExecutionEvent(_ string, _ memory.Stage, _ string) error {
 	return nil
+}
+
+func (m *errApprovalPersister) HasExecutionEventStage(_ string, _ memory.Stage) (bool, error) {
+	return false, nil
 }
 
 // TestController_ApprovalPersistMiss_RequestID verifies that a sql.ErrNoRows from
