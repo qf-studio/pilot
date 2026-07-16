@@ -150,7 +150,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.241.0 — **first AUTOMATED release** (train `2026-07-16T14:00Z`, state=done, attempts=0). Daemon on local build `v2.240.1-12-gccd2af92` (claim + watchdog + heals live; #4372 fix pending next restart) | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.241.1 — **first AUTOMATED release** (train `2026-07-16T14:00Z`, state=done, attempts=0). Daemon on local build `v2.240.1-12-gccd2af92` (claim + watchdog + heals live; #4372 fix pending next restart) | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (July 13–16 2026):**
 - **Pilot Cloud program (TASK-405) ACTIVE:** S0 ✅ · S1 ✅ (pilot-console / pilot-console-ui / CDK scaffolds) · S3 UI mock track ✅ (login→onboarding→connections→provision→status on mock adapter) · **S2 in flight** — B5 instances+events store, A4 SSM SecureString writer, **B6 provisioner SHIPPED** (console#22→PR#23, single PR; spec survived an 18-finding adversarial workflow review pre-dispatch — pattern worth repeating). Next: fleet reconciler + B8 config push. Plan of record: `system/saas-roadmap.md` v6.
