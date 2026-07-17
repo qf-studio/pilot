@@ -14,6 +14,54 @@ import (
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
+// mockDispatcherLiveness implements DispatcherLiveness for testing the
+// GH-4412 always-on live-worker signal (independent of the dashboard-only
+// TaskMonitor).
+type mockDispatcherLiveness struct {
+	runningTaskIDs []string
+}
+
+func (m *mockDispatcherLiveness) GetRunningTaskIDs() []string {
+	return m.runningTaskIDs
+}
+
+// TestSweepOrphanedRunningExecutions_LiveDispatcherEntryNotFlipped is the
+// GH-4412 regression gate: a status='running' row whose task_id is in the
+// Dispatcher's live-worker set must never be resolved by the orphan sweep,
+// even with NO Monitor wired at all (the common headless --telegram/--github
+// deployment, where TaskMonitor is only set up in --dashboard mode). Before
+// this fix, an unwired c.monitor meant the sweep's exclusion set was silently
+// empty, so a genuinely running task with no execution_events heartbeat in
+// the last orphanRunningHeartbeatWindow (e.g. one long tool call) would be
+// wrongly marked failed out from under its still-running worker.
+func TestSweepOrphanedRunningExecutions_LiveDispatcherEntryNotFlipped(t *testing.T) {
+	cfg := DefaultConfig()
+	c := NewController(cfg, nil, nil, "owner", "repo")
+
+	evalMock := &mockEvalStore{
+		orphanedRunning: []*memory.Execution{
+			{ID: "exec-live", TaskID: "GH-4412", ProjectPath: "/proj"},
+		},
+		executionEvents: map[string][]*memory.Event{
+			"exec-live": {
+				{ExecutionID: "exec-live", Stage: memory.StageRunning, OccurredAt: time.Now().Add(-14 * time.Minute)},
+			},
+		},
+	}
+	c.SetEvalStore(evalMock)
+	// No monitor wired (headless mode) — only the Dispatcher liveness signal.
+	c.SetDispatcherLiveness(&mockDispatcherLiveness{runningTaskIDs: []string{"GH-4412"}})
+
+	c.sweepOrphanedRunningExecutions(nil)
+
+	if len(evalMock.resolvedOrphans) != 0 {
+		t.Fatalf("expected GH-4412 (live per Dispatcher, no Monitor wired) to never be resolved, got %d resolve calls: %+v", len(evalMock.resolvedOrphans), evalMock.resolvedOrphans)
+	}
+	if len(evalMock.lastExcludeTaskIDs) != 1 || evalMock.lastExcludeTaskIDs[0] != "GH-4412" {
+		t.Errorf("expected FindOrphanedRunningExecutions to be called with the Dispatcher's live set, got %v", evalMock.lastExcludeTaskIDs)
+	}
+}
+
 // TestSweepOrphanedRunningExecutions_LiveMonitorEntryNotFlipped is the GH-4206
 // regression gate: a status='running' row whose task_id is in the live
 // Monitor's running/queued set must never be resolved by the orphan sweep,

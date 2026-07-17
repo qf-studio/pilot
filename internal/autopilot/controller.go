@@ -123,6 +123,21 @@ type TaskMonitor interface {
 	GetRunningTaskIDs() []string
 }
 
+// DispatcherLiveness reports which task IDs a live executor.Dispatcher's
+// project workers are currently processing. GH-4412: TaskMonitor above is
+// only wired when the daemon runs with --dashboard (see cmd/pilot/main.go's
+// SetMonitor call sites), so in the common headless deployment
+// (`pilot start --telegram --github`) the orphan-running sweep's monitor-based
+// exclusion set was silently empty, leaving only the 10-minute
+// execution_events heartbeat window to protect a genuinely running task — not
+// reliably enough for a single long-running tool call/build. The Dispatcher
+// (and its workers) is always constructed regardless of dashboard mode, so
+// this interface gives the sweep an always-available "is a worker actually
+// holding this task right now" signal to union with the monitor's set.
+type DispatcherLiveness interface {
+	GetRunningTaskIDs() []string
+}
+
 // EvalStore persists eval tasks extracted from merged PRs.
 type EvalStore interface {
 	SaveEvalTask(task *memory.EvalTask) error
@@ -242,7 +257,8 @@ type Controller struct {
 	releaser         *Releaser
 	deployer         *Deployer
 	notifier         Notifier
-	monitor          TaskMonitor // GH-1336: sync dashboard state on merge
+	monitor          TaskMonitor        // GH-1336: sync dashboard state on merge
+	dispatcherLive   DispatcherLiveness // GH-4412: always-on live-worker signal (unlike monitor, dashboard-only)
 	boardSync        projectBoardSyncer
 	doneStatus       string
 	failStatus       string
@@ -570,9 +586,10 @@ func (c *Controller) selfHealTask(taskID, prURL string) {
 const orphanRunningHeartbeatWindow = 10 * time.Minute
 
 // sweepOrphanedRunningExecutions resolves status='running' execution rows
-// that are not actually in flight: absent from the live Monitor's
-// running/queued set, and with no execution_events heartbeat inside
-// orphanRunningHeartbeatWindow. Each surviving candidate resolves to
+// that are not actually in flight: absent from both the live Monitor's
+// running/queued set (dashboard mode only) and the Dispatcher's live-worker
+// set (GH-4412, always available), and with no execution_events heartbeat
+// inside orphanRunningHeartbeatWindow. Each surviving candidate resolves to
 // 'completed' when its pr_url or branch matches a PR in mergedPRs, else
 // 'failed'. mergedPRs is the same already-fetched PR list
 // ScanRecentlyMergedPRsWithWindow built for this tick — this sweep makes no
@@ -582,9 +599,19 @@ func (c *Controller) sweepOrphanedRunningExecutions(mergedPRs []*github.PullRequ
 		return
 	}
 
+	// GH-4412: union the optional dashboard Monitor's set with the always-on
+	// Dispatcher liveness signal. Relying on c.monitor alone left this
+	// exclusion set silently empty in headless (--dashboard not passed)
+	// deployments, so a live 14+ minute execution with no execution_events
+	// heartbeat in the last orphanRunningHeartbeatWindow (e.g. one long tool
+	// call/build) had no other guard against being swept out from under its
+	// still-running worker.
 	var liveTaskIDs []string
 	if c.monitor != nil {
-		liveTaskIDs = c.monitor.GetRunningTaskIDs()
+		liveTaskIDs = append(liveTaskIDs, c.monitor.GetRunningTaskIDs()...)
+	}
+	if c.dispatcherLive != nil {
+		liveTaskIDs = append(liveTaskIDs, c.dispatcherLive.GetRunningTaskIDs()...)
 	}
 
 	orphans, err := c.evalStore.FindOrphanedRunningExecutions(liveTaskIDs)
@@ -669,6 +696,14 @@ func (c *Controller) SetNotifier(n Notifier) {
 // shows correct "done" status instead of stale "failed" from earlier execution attempts.
 func (c *Controller) SetMonitor(m TaskMonitor) {
 	c.monitor = m
+}
+
+// SetDispatcherLiveness wires the always-on live-worker signal the
+// orphan-running sweep needs regardless of --dashboard mode. GH-4412: unlike
+// SetMonitor (dashboard-only), callers should wire this unconditionally
+// whenever an executor.Dispatcher exists.
+func (c *Controller) SetDispatcherLiveness(d DispatcherLiveness) {
+	c.dispatcherLive = d
 }
 
 // SetStateStore sets the persistent state store for crash recovery.
