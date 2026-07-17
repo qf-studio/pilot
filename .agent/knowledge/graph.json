@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T19:10:00+00:00",
+  "updated": "2026-07-17T20:55:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -785,6 +785,20 @@
       }
     },
     "memories": {
+      "founder-priority-pointer-first-saas-parked": {
+        "type": "learning",
+        "summary": "Founder directive 2026-07-17: deliver pointer first, then pilot reliability fixes; SaaS/platform work (TASK-405, auth-service) parked — do not push in reports/queue recommendations",
+        "file": ".agent/knowledge/memories/learnings/founder-priority-pointer-first-saas-parked.md",
+        "concepts": [
+          "priorities",
+          "pointer",
+          "TASK-405",
+          "founder-feedback",
+          "queue-management"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-17"
+      },
       "nextretrygeneration-blind-to-dead-owner-nonterminal-claims": {
         "type": "pitfall",
         "summary": "nextRetryGeneration reads a dead-owner claim on a non-terminal (queued/running) row as a live owner forever — root cause of the TASK-409 cutover's \"dispatch claim lost\" wedge; fixed by boot-time reconciliation of claimed non-terminal rows to stalled (GH-4392, 2026-07-17).",
@@ -4681,8 +4695,8 @@
   },
   "last_updated": "2026-07-17T19:10:00+00:00",
   "stats": {
-    "total_nodes": 258,
+    "total_nodes": 259,
     "total_edges": 226,
-    "memory_count": 162
+    "memory_count": 163
   }
 }
