@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -100,8 +101,9 @@ func TestIntentJudge_DiffTruncation(t *testing.T) {
 		return []byte("VERDICT: PASS\nLooks good.\nCONFIDENCE: 0.9"), nil
 	}
 
-	// Create a diff larger than maxDiffCharsDefault (8000)
-	largeDiff := strings.Repeat("x", 10000)
+	// Create a diff larger than maxDiffCharsDefault (32000), with no
+	// "diff --git" boundaries - exercises the plain-cutoff fallback path.
+	largeDiff := strings.Repeat("x", 40000)
 
 	judge := newIntentJudgeWithRunner(runner)
 	verdict, err := judge.Judge(context.Background(), "title", "body", largeDiff)
@@ -113,6 +115,93 @@ func TestIntentJudge_DiffTruncation(t *testing.T) {
 	}
 	if !strings.Contains(receivedPrompt, "...[truncated]") {
 		t.Error("expected diff to be truncated in prompt")
+	}
+}
+
+// TestIntentJudge_UnderCapNotTruncated verifies diffs within the (raised)
+// cap are sent through unmodified - GH-15 (23923 chars) previously exceeded
+// the old 8000-char cap and got a mid-file cutoff; it must now fit whole.
+func TestIntentJudge_UnderCapNotTruncated(t *testing.T) {
+	var receivedPrompt string
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		for i, arg := range args {
+			if arg == "-p" && i+1 < len(args) {
+				receivedPrompt = args[i+1]
+				break
+			}
+		}
+		return []byte("VERDICT: PASS\nLooks good.\nCONFIDENCE: 0.9"), nil
+	}
+
+	diff := "diff --git a/foo.go b/foo.go\n" + strings.Repeat("+line of code\n", 1000) // ~24923 chars incl header, mirrors GH-15's 23923
+
+	judge := newIntentJudgeWithRunner(runner)
+	verdict, err := judge.Judge(context.Background(), "title", "body", diff)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !verdict.Passed {
+		t.Error("expected PASS verdict")
+	}
+	if strings.Contains(receivedPrompt, "...[truncated]") {
+		t.Error("diff under maxDiffCharsDefault must not be truncated")
+	}
+	if !strings.Contains(receivedPrompt, diff) {
+		t.Error("expected full, unmodified diff to be present in prompt")
+	}
+}
+
+// TestIntentJudge_PerFileTruncationPreservesManifest is the direct
+// regression test for GH-4407: a diff that spans many files and exceeds the
+// cap must (1) list every touched file in a never-truncated manifest and
+// (2) never zero out any single file's visible content, so the judge can't
+// mistake a truncation marker for "this file wasn't touched".
+func TestIntentJudge_PerFileTruncationPreservesManifest(t *testing.T) {
+	var receivedPrompt string
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		for i, arg := range args {
+			if arg == "-p" && i+1 < len(args) {
+				receivedPrompt = args[i+1]
+				break
+			}
+		}
+		return []byte("VERDICT: PASS\nLooks good.\nCONFIDENCE: 0.9"), nil
+	}
+
+	// Simulate GH-12: many files, total diff far over the cap.
+	var sb strings.Builder
+	var paths []string
+	for i := 0; i < 25; i++ {
+		path := fmt.Sprintf("internal/pkg/file%d.go", i)
+		paths = append(paths, path)
+		sb.WriteString(fmt.Sprintf("diff --git a/%s b/%s\n", path, path))
+		sb.WriteString("--- a/" + path + "\n+++ b/" + path + "\n")
+		sb.WriteString(strings.Repeat(fmt.Sprintf("+func Impl%d() {}\n", i), 200))
+	}
+	diff := sb.String()
+	if len(diff) <= maxDiffCharsDefault {
+		t.Fatalf("test fixture diff (%d chars) must exceed maxDiffCharsDefault (%d) to exercise truncation", len(diff), maxDiffCharsDefault)
+	}
+
+	judge := newIntentJudgeWithRunner(runner)
+	verdict, err := judge.Judge(context.Background(), "title", "body", diff)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !verdict.Passed {
+		t.Error("expected PASS verdict")
+	}
+
+	if !strings.Contains(receivedPrompt, "## Changed Files (25 total") {
+		t.Error("expected a complete Changed Files manifest header")
+	}
+	for _, path := range paths {
+		if !strings.Contains(receivedPrompt, path) {
+			t.Errorf("expected manifest to list every file, missing %q", path)
+		}
+	}
+	if !strings.Contains(receivedPrompt, "...[truncated:") {
+		t.Error("expected per-file truncation markers for a diff this large")
 	}
 }
 

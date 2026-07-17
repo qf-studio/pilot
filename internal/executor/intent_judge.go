@@ -33,8 +33,12 @@ type IntentJudge struct {
 	model            string
 	judgeTimeout     time.Duration
 	preflightTimeout time.Duration
-	log              *slog.Logger
-	cmdRunner        func(ctx context.Context, args ...string) ([]byte, error)
+	// maxDiffChars caps the diff payload sent to the judge. GH-4407: kept
+	// per-instance (not just a package constant) so it can be overridden
+	// from IntentJudgeConfig.MaxDiffChars.
+	maxDiffChars int
+	log          *slog.Logger
+	cmdRunner    func(ctx context.Context, args ...string) ([]byte, error)
 }
 
 // NewIntentJudge creates a new IntentJudge that calls Claude Code subprocess.
@@ -48,6 +52,7 @@ func NewIntentJudge(claudeCmd string) *IntentJudge {
 		model:            "claude-haiku-4-5-20251001",
 		judgeTimeout:     30 * time.Second,
 		preflightTimeout: 20 * time.Second,
+		maxDiffChars:     maxDiffCharsDefault,
 		log:              slog.Default(),
 	}
 	j.cmdRunner = j.defaultCmdRunner
@@ -184,10 +189,28 @@ func (v *PreFlightVerdict) IsRejection() bool {
 }
 
 var (
-	verdictPassRegex    = regexp.MustCompile(`VERDICT:\s*PASS`)
-	verdictFailRegex    = regexp.MustCompile(`VERDICT:\s*FAIL`)
-	confidenceRegex     = regexp.MustCompile(`CONFIDENCE:\s*([0-9]*\.?[0-9]+)`)
-	maxDiffCharsDefault = 8000
+	verdictPassRegex = regexp.MustCompile(`VERDICT:\s*PASS`)
+	verdictFailRegex = regexp.MustCompile(`VERDICT:\s*FAIL`)
+	confidenceRegex  = regexp.MustCompile(`CONFIDENCE:\s*([0-9]*\.?[0-9]+)`)
+
+	// maxDiffCharsDefault caps the total diff payload sent to the judge model.
+	// GH-4407: raised from 8000 — that cap sliced mid-file on any diff over
+	// ~150 changed lines (e.g. GH-15 at 23923 chars, GH-12 at 54240 chars),
+	// and the judge then cited its own injected "...[truncated]" marker as
+	// proof the implementation was missing, vetoing legitimate large PRs at
+	// 0.85-0.95 confidence. Diffs still over this larger cap fall back to
+	// per-file truncation (buildJudgeDiffPayload) instead of a raw cutoff.
+	maxDiffCharsDefault = 32000
+
+	// minPerFileDiffChars is the floor every file gets when a diff must be
+	// truncated to fit maxDiffCharsDefault, so per-file truncation never
+	// drops a file's visible content to (near) zero — which is exactly what
+	// the judge misread as "this file was not touched" in GH-12.
+	minPerFileDiffChars = 500
+
+	// diffGitHeaderRegex matches the "diff --git a/X b/Y" line that begins
+	// each file's section in a unified git diff.
+	diffGitHeaderRegex = regexp.MustCompile(`^diff --git a/(?:.+) b/(.+)$`)
 
 	preflightDecisionRegex   = regexp.MustCompile(`DECISION:\s*(\S+)`)
 	preflightReasonRegex     = regexp.MustCompile(`REASON:\s*(.+)`)
@@ -218,6 +241,8 @@ Check for:
 3) Unrelated changes (refactoring or cleanup not mentioned in issue)
 4) Incomplete multi-file changes (if the issue implies changes to multiple backends, adapters, or sibling files, verify ALL were updated — not just one)
 
+IMPORTANT — truncation handling: Large diffs are prefixed with a "## Changed Files" manifest listing every file the diff touches, with add/remove line counts. That manifest is always complete and NEVER truncated, even when the diff body below it is shortened for length. A "...[truncated: N more bytes ... omitted]" marker inside a file's diff body means ONLY that content was cut to fit — it is NOT evidence that the file, a function, or a feature is missing or unimplemented. Judge scope and completeness using the Changed Files manifest, not the presence of a truncation marker. Never cite a truncation marker itself as a reason for VERDICT:FAIL.
+
 Output exactly one of: VERDICT:PASS or VERDICT:FAIL followed by a brief reason on the next line.
 Then output CONFIDENCE:X.X (0.0-1.0).`
 
@@ -227,11 +252,13 @@ func (j *IntentJudge) Judge(ctx context.Context, issueTitle, issueBody, diff str
 		return nil, fmt.Errorf("empty diff")
 	}
 
-	// Truncate diff to prevent token overflow
-	maxChars := maxDiffCharsDefault
-	if len(diff) > maxChars {
-		diff = diff[:maxChars] + "\n...[truncated]"
+	// Truncate diff to prevent token overflow, distributing the cut across
+	// files (with a full file manifest) rather than a single blind cutoff.
+	maxChars := j.maxDiffChars
+	if maxChars <= 0 {
+		maxChars = maxDiffCharsDefault
 	}
+	diff = buildJudgeDiffPayload(diff, maxChars)
 
 	prompt := fmt.Sprintf("%s\n\n## Issue Title\n%s\n\n## Issue Description\n%s\n\n## Git Diff\n```diff\n%s\n```",
 		intentJudgeSystemPrompt, issueTitle, issueBody, diff)
@@ -245,6 +272,106 @@ func (j *IntentJudge) Judge(ctx context.Context, issueTitle, issueBody, diff str
 	}
 
 	return parseJudgeResponse(string(output))
+}
+
+// diffFileSection is one file's slice of a unified diff, delimited by
+// "diff --git a/X b/Y" header lines.
+type diffFileSection struct {
+	path    string
+	body    string
+	added   int
+	removed int
+}
+
+// splitDiffByFile breaks a unified diff into per-file sections so truncation
+// can be distributed fairly across files instead of a single char cutoff
+// that can consume the whole budget on the first file(s) and leave later
+// files with zero visible content. GH-4407.
+func splitDiffByFile(diff string) []diffFileSection {
+	lines := strings.Split(diff, "\n")
+	var sections []diffFileSection
+	var cur *diffFileSection
+
+	flush := func() {
+		if cur != nil {
+			cur.body = strings.TrimSuffix(cur.body, "\n")
+			sections = append(sections, *cur)
+		}
+	}
+
+	for _, line := range lines {
+		if m := diffGitHeaderRegex.FindStringSubmatch(line); m != nil {
+			flush()
+			cur = &diffFileSection{path: m[1]}
+		} else if cur == nil {
+			// Content before any "diff --git" header (malformed/partial
+			// diff) - don't drop it, buffer under a synthetic path.
+			cur = &diffFileSection{path: "(diff)"}
+		}
+		cur.body += line + "\n"
+		switch {
+		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+			// File marker lines, not content changes.
+		case strings.HasPrefix(line, "+"):
+			cur.added++
+		case strings.HasPrefix(line, "-"):
+			cur.removed++
+		}
+	}
+	flush()
+	return sections
+}
+
+// buildJudgeDiffPayload prepares the diff text sent to the judge model.
+// Diffs within maxChars are returned unmodified. Diffs over the cap are
+// truncated per-file — never dropping a whole file's content to zero — and
+// prefixed with a complete file manifest, so the judge always has full
+// visibility into diff *scope* even when it can't see every changed line.
+//
+// GH-4407: the previous global char-cutoff sliced mid-file on large diffs,
+// and the judge then cited its own injected "...[truncated]" marker as
+// proof the implementation was missing.
+func buildJudgeDiffPayload(diff string, maxChars int) string {
+	if len(diff) <= maxChars {
+		return diff
+	}
+
+	sections := splitDiffByFile(diff)
+	if len(sections) <= 1 {
+		// No parseable per-file boundaries (single-file or malformed diff) -
+		// fall back to a plain tail cutoff.
+		return diff[:maxChars] + "\n...[truncated]"
+	}
+
+	var manifest strings.Builder
+	manifest.WriteString(fmt.Sprintf("## Changed Files (%d total, full list — not truncated)\n", len(sections)))
+	for _, s := range sections {
+		manifest.WriteString(fmt.Sprintf("- %s (+%d/-%d)\n", s.path, s.added, s.removed))
+	}
+	manifest.WriteString("\n## Diff Content (per-file, may be truncated for length — see manifest above for the full file list)\n")
+
+	budget := maxChars - manifest.Len()
+	if budget < 0 {
+		budget = 0
+	}
+	perFile := budget / len(sections)
+	if perFile < minPerFileDiffChars {
+		perFile = minPerFileDiffChars
+	}
+
+	var body strings.Builder
+	for _, s := range sections {
+		if len(s.body) <= perFile {
+			body.WriteString(s.body)
+			body.WriteString("\n")
+			continue
+		}
+		omitted := len(s.body) - perFile
+		body.WriteString(s.body[:perFile])
+		body.WriteString(fmt.Sprintf("\n...[truncated: %d more bytes of %s omitted for length, see manifest above for full file list]\n", omitted, s.path))
+	}
+
+	return manifest.String() + body.String()
 }
 
 // JudgeIssue evaluates whether a GitHub issue is actionable before dispatching to a worker.
