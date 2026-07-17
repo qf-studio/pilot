@@ -1838,21 +1838,29 @@ func TestRenderAutopilotRow(t *testing.T) {
 	// stage label + age; ↳ detail line only for retries/failures.
 	now := time.Now()
 	tests := []struct {
-		name      string
-		stage     autopilot.PRStage
-		ciStatus  autopilot.CIStatus
-		failures  int
-		err       string
-		wantGlyph string
-		wantLabel string
-		wantLines int
+		name           string
+		stage          autopilot.PRStage
+		ciStatus       autopilot.CIStatus
+		failures       int
+		err            string
+		rebaseAttempts int
+		wantGlyph      string
+		wantLabel      string
+		wantLines      int
 	}{
-		{"waiting ci", autopilot.StageWaitingCI, autopilot.CIPending, 0, "", "●", "ci", 1},
-		{"merging", autopilot.StageMerging, autopilot.CISuccess, 0, "", "●", "merge", 1},
-		{"post-merge ci", autopilot.StagePostMergeCI, autopilot.CISuccess, 0, "", "●", "tag", 1},
-		{"releasing", autopilot.StageReleasing, autopilot.CISuccess, 0, "", "●", "release", 1},
-		{"ci failed, retrying", autopilot.StageCIFailed, autopilot.CIFailure, 1, "", "⟲", "ci", 2},
-		{"pipeline failed", autopilot.StageFailed, autopilot.CIPending, 0, "boom", "✗", "failed", 2},
+		{"waiting ci", autopilot.StageWaitingCI, autopilot.CIPending, 0, "", 0, "●", "ci", 1},
+		{"merging", autopilot.StageMerging, autopilot.CISuccess, 0, "", 0, "●", "merge", 1},
+		{"post-merge ci", autopilot.StagePostMergeCI, autopilot.CISuccess, 0, "", 0, "●", "tag", 1},
+		{"releasing", autopilot.StageReleasing, autopilot.CISuccess, 0, "", 0, "●", "release", 1},
+		{"ci failed, retrying", autopilot.StageCIFailed, autopilot.CIFailure, 1, "", 0, "⟲", "ci", 2},
+		{"pipeline failed", autopilot.StageFailed, autopilot.CIPending, 0, "boom", 0, "✗", "failed", 2},
+		// GH-4383: awaiting_approval must render its own "approval" label,
+		// never "rebase" — regardless of the generic per-PR failure counter.
+		{"awaiting approval", autopilot.StageAwaitApproval, autopilot.CISuccess, 0, "", 0, "●", "approval", 1},
+		// "rebase" is only truthful once a real auto-rebase has happened —
+		// StageMerging alone (no RebaseAttempts) stays "merge" (see the
+		// "merging" case above); StageMerging + RebaseAttempts>0 is "rebase".
+		{"merging after auto-rebase", autopilot.StageMerging, autopilot.CIPending, 0, "", 1, "●", "rebase", 1},
 	}
 
 	for _, tt := range tests {
@@ -1860,7 +1868,8 @@ func TestRenderAutopilotRow(t *testing.T) {
 			pr := &autopilot.PRState{
 				PRNumber: 4054, PRTitle: "fix(executor): skip decomposer",
 				Stage: tt.stage, CIStatus: tt.ciStatus, Error: tt.err,
-				CreatedAt: now.Add(-2 * time.Minute),
+				RebaseAttempts: tt.rebaseAttempts,
+				CreatedAt:      now.Add(-2 * time.Minute),
 			}
 			lines := renderAutopilotRow(pr, tt.failures, 3, panelInnerWidth)
 			if len(lines) != tt.wantLines {
@@ -1903,6 +1912,51 @@ func TestRenderAutopilotRow_DetailLine(t *testing.T) {
 	}
 	if strings.Contains(stripANSI(lines[0]), "0/3") {
 		t.Errorf("clean run should carry no retry fraction: %q", stripANSI(lines[0]))
+	}
+}
+
+// TestRenderAutopilotRow_AwaitingApprovalNotRebase is the GH-4383 regression:
+// a PR parked in awaiting_approval with an approval-submit send failure (the
+// GH-4380 outage) must render "approval" + the error hint — never "rebase",
+// and never the bare "retry N/M" wording that reads as a rebase failure once
+// paired with the (formerly wrong) "rebase" stage label.
+func TestRenderAutopilotRow_AwaitingApprovalNotRebase(t *testing.T) {
+	approvalRequestedAt := time.Now().Add(-90 * time.Minute)
+	pr := &autopilot.PRState{
+		PRNumber: 4379, PRTitle: "fix(gateway): add webhook retry",
+		Stage:    autopilot.StageAwaitApproval,
+		CIStatus: autopilot.CISuccess,
+		Error:    "approval-submit send failed: context deadline exceeded",
+		// RebaseAttempts is 0 — no rebase was ever attempted (ledger truth
+		// from the GH-4383 incident evidence).
+		RebaseAttempts:      0,
+		CreatedAt:           approvalRequestedAt,
+		ApprovalRequestedAt: approvalRequestedAt,
+	}
+	lines := renderAutopilotRow(pr, 3, 3, panelInnerWidth)
+	if len(lines) != 2 {
+		t.Fatalf("line count = %d, want 2 (row + detail)", len(lines))
+	}
+
+	row := stripANSI(lines[0])
+	if !strings.Contains(row, "■■■■■ approval") {
+		t.Errorf("row should render the approval stage label: %q", row)
+	}
+	if strings.Contains(row, "rebase") {
+		t.Errorf("row must never render 'rebase' for awaiting_approval: %q", row)
+	}
+	if !strings.Contains(row, "1h30m") {
+		t.Errorf("row should show wait time since ApprovalRequestedAt (1h30m): %q", row)
+	}
+
+	detail := stripANSI(lines[1])
+	for _, want := range []string{"⟲ send retry 3/3", "approval-submit send failed"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail line missing %q: %q", want, detail)
+		}
+	}
+	if strings.Contains(detail, "rebase") {
+		t.Errorf("detail line must never mention 'rebase' for an approval-submit failure: %q", detail)
 	}
 }
 
@@ -1978,7 +2032,10 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 			wantAbsent:  "STATE",
 		},
 		{
-			name: "rebase in progress",
+			// GH-4383: awaiting_approval must render "approval", never
+			// "rebase" — this case used to assert the bug (wantContain:
+			// "rebase") until the panel's stage-label mapping was fixed.
+			name: "awaiting approval",
 			ctl: newFakeCtl([]*autopilot.PRState{{
 				PRNumber:  2565,
 				PRTitle:   "fix(upgrade): atomic binary replacement",
@@ -1987,8 +2044,8 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				CreatedAt: now.Add(-3 * time.Minute),
 			}}, 3, nil),
 			wantLines:   5, // border + empty + row + empty + border
-			wantContain: "rebase",
-			wantAbsent:  "[░",
+			wantContain: "approval",
+			wantAbsent:  "rebase",
 		},
 		{
 			name: "released",

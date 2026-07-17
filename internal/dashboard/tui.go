@@ -202,10 +202,13 @@ func pipelineStagePosition(stage autopilot.PRStage) int {
 }
 
 // autopilotNodes are the 5 lifecycle stages the meter and label measure.
-var autopilotNodes = [...]string{"ci", "rebase", "merge", "tag", "release"}
+// pos 1 is the approval gate (StageAwaitApproval / StageReviewRequested) —
+// it must read "approval", never "rebase": GH-4383, an approval-delivery
+// outage rendered awaiting_approval PRs as failed rebases in the live panel.
+var autopilotNodes = [...]string{"ci", "approval", "merge", "tag", "release"}
 
-// autopilotStageLabelWidth fits the longest node name ("release").
-const autopilotStageLabelWidth = 7
+// autopilotStageLabelWidth fits the longest node name ("approval").
+const autopilotStageLabelWidth = 8
 
 // renderAutopilotRow renders one active-PR line (+ optional ↳ detail line)
 // in the history-row grammar:
@@ -214,15 +217,12 @@ const autopilotStageLabelWidth = 7
 //	  ↳ ⟲ retry 2/3 · TestFoo failed · linux-amd64
 //
 // indent(2) + glyph(1) + sp(1) + id(6) + sp(2) + title(flex) + sp(2) +
-// meter(5) + sp(1) + stage(7) + sp(2) + age(6) = iw
+// meter(5) + sp(1) + stage(8) + sp(2) + age(6) = iw
 // Glyphs: ✗ pipeline failed, ⟲ retrying (CI failure or prior failures),
 // ● climbing. Meter color follows: rose / amber / accent.
 func renderAutopilotRow(pr *autopilot.PRState, failures, maxFailures, iw int) []string {
 	pos := pipelineStagePosition(pr.Stage)
-	label := autopilotNodes[pos]
-	if pr.Stage == autopilot.StageFailed {
-		label = "failed"
-	}
+	label := autopilotStageLabel(pr, pos)
 
 	glyph, glyphStyle, hex := "●", statusRunningStyle, gromTheme.Accent
 	switch {
@@ -245,26 +245,41 @@ func renderAutopilotRow(pr *autopilot.PRState, failures, maxFailures, iw int) []
 		title = pr.BranchName
 	}
 
+	// GH-4383: the age column reads wait-time-in-approval, not time-since-PR-
+	// opened, once a PR is parked on the approval gate — the panel's whole
+	// point is telling the operator how long the outstanding ask has been
+	// waiting, not how old the PR is.
+	ageSince := pr.CreatedAt
+	if pr.Stage == autopilot.StageAwaitApproval && !pr.ApprovalRequestedAt.IsZero() {
+		ageSince = pr.ApprovalRequestedAt
+	}
+
 	row := fmt.Sprintf("  %s %-6s  %s  %s %s  %s",
 		glyphStyle.Render(glyph),
 		fmt.Sprintf("#%d", pr.PRNumber),
 		padOrTruncate(title, titleWidth),
 		segmentMeter(pos, len(autopilotNodes), len(autopilotNodes), hex),
 		dimStyle.Render(padOrTruncate(label, autopilotStageLabelWidth)),
-		dimStyle.Render(fmt.Sprintf("%6s", formatDurationShort(time.Since(pr.CreatedAt)))),
+		dimStyle.Render(fmt.Sprintf("%6s", formatDurationShort(time.Since(ageSince)))),
 	)
 	lines := []string{row}
 
 	// Detail line: retry progress (amber, only once failures exist — clean
-	// runs carry no retry chrome) and/or the failure reason.
+	// runs carry no retry chrome) and/or the failure reason. The failure
+	// reason is shown whenever PRState.Error is set, not just for the
+	// terminal StageFailed row — a stage handler can fail (and set Error)
+	// while the PR stays parked on a non-terminal stage, e.g. an
+	// approval-submit send failure while Stage stays awaiting_approval
+	// (GH-4383/GH-4380) — hiding that error is how the panel went silent
+	// about the real root cause during the outage.
 	detail := ""
 	budget := iw - 6 // indent(4) + "↳ "
 	if failures > 0 {
-		retry := fmt.Sprintf("⟲ retry %d/%d", failures, maxFailures)
+		retry := fmt.Sprintf("⟲ %s %d/%d", retryLabelFor(pr.Stage), failures, maxFailures)
 		detail = warningStyle.Render(retry)
 		budget -= lipgloss.Width(retry)
 	}
-	if pr.Stage == autopilot.StageFailed && pr.Error != "" {
+	if pr.Error != "" {
 		if detail != "" {
 			detail += dimStyle.Render(" · ")
 			budget -= 3
@@ -278,6 +293,37 @@ func renderAutopilotRow(pr *autopilot.PRState, failures, maxFailures, iw int) []
 		lines = append(lines, "    "+dimStyle.Render("↳ ")+detail)
 	}
 	return lines
+}
+
+// autopilotStageLabel resolves the truthful node-name label for a PR row.
+// pos 1 (StageAwaitApproval / StageReviewRequested) always reads "approval"
+// via autopilotNodes — never "rebase" (GH-4383). "rebase" only appears while
+// StageMerging is actively re-attempting after a real auto-rebase
+// (RebaseAttempts > 0); a merging PR that hasn't hit a conflict yet, or a PR
+// parked on any other stage, is never mislabeled as rebasing.
+func autopilotStageLabel(pr *autopilot.PRState, pos int) string {
+	if pr.Stage == autopilot.StageFailed {
+		return "failed"
+	}
+	if pr.Stage == autopilot.StageMerging && pr.RebaseAttempts > 0 {
+		return "rebase"
+	}
+	return autopilotNodes[pos]
+}
+
+// retryLabelFor names what the failure-count chrome is actually retrying.
+// GetPRFailures is a generic per-PR circuit breaker incremented on ANY
+// stage-handler error (recordPRFailure, controller.go) — not a rebase
+// counter — so pairing it with the approval-gate stage must say what's
+// really being retried: the async approval-request submit call (GH-4383's
+// approval-delivery outage was misread as failing rebases because the old
+// "rebase" stage label made a generic "retry N/M" look rebase-specific).
+// Every other stage keeps the generic wording.
+func retryLabelFor(stage autopilot.PRStage) string {
+	if stage == autopilot.StageAwaitApproval {
+		return "send retry"
+	}
+	return "retry"
 }
 
 // formatDurationShort formats a duration compactly (e.g., "2m", "1h30m").
