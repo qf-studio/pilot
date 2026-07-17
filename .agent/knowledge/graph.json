@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T20:55:00+00:00",
+  "updated": "2026-07-17T22:40:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3015,6 +3015,34 @@
         ],
         "confidence": 0.95,
         "created": "2026-07-17"
+      },
+      "slack-approval-socket-mode-unroutable": {
+        "type": "pitfall",
+        "summary": "Slack approval buttons unroutable on Socket Mode deployments — HandleInteraction wired only to HTTP interactivity webhook; 'No pending task to confirm' = misrouted click, not missing state (#4411/#4431)",
+        "file": ".agent/knowledge/memories/pitfalls/slack-approval-socket-mode-unroutable.md",
+        "concepts": [
+          "slack",
+          "approval",
+          "socket-mode",
+          "routing",
+          "adapters"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-17"
+      },
+      "drift-gate-red-means-worktree-deleted-memories": {
+        "type": "pitfall",
+        "summary": "Drift gate red on every PR = executor worktrees deleting memory files merged after branch cut; diagnose with check-graph.py + git log --diff-filter=A/D, restore from adding commits (TASK-410 class, 5 strikes 2026-07-17)",
+        "file": ".agent/knowledge/memories/pitfalls/drift-gate-red-means-worktree-deleted-memories.md",
+        "concepts": [
+          "knowledge-graph",
+          "ci",
+          "worktree",
+          "memory-hygiene",
+          "TASK-410"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-17"
       }
     }
   },
@@ -4695,8 +4723,8 @@
   },
   "last_updated": "2026-07-17T19:10:00+00:00",
   "stats": {
-    "total_nodes": 259,
+    "total_nodes": 261,
     "total_edges": 226,
-    "memory_count": 163
+    "memory_count": 165
   }
 }
