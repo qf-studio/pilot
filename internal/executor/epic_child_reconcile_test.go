@@ -290,6 +290,156 @@ func TestExecuteSubIssues_ClaimLost_PollsExternallyOwnedChildToSuccess(t *testin
 	}
 }
 
+// TestExecuteSubIssues_ClaimLost_NoOpChildIsTerminalNotTimeout is the
+// GH-4381 regression: an externally-owned child whose real execution ends
+// "no_op" (a legitimate terminal outcome — GH-92's "no new commit produced,
+// worktree HEAD matches base branch parent") must be reconciled as terminal
+// immediately once observed, not treated as still in flight until
+// childOutcomeReconcileTimeout fires "reconcileChildOutcome: timed out
+// waiting for externally-owned child execution to reach a terminal state"
+// and fails the parent epic (mem-154 pitfall class, 3rd instance; prior:
+// #4350's HasTerminalCompletion, #4373's terminalExecutionStatuses).
+func TestExecuteSubIssues_ClaimLost_NoOpChildIsTerminalNotTimeout(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const taskID = "GH-92"
+	const projectPath = ""
+
+	claimed, err := store.ClaimExecution(taskID, projectPath, 0, "exec-owner")
+	if err != nil {
+		t.Fatalf("ClaimExecution: %v", err)
+	}
+	if !claimed {
+		t.Fatal("test setup: expected the seeded claim to win")
+	}
+
+	issues := makeSubIssues(1, 92)
+	parent := &Task{ID: "GH-91", Title: "[epic] no-op child"}
+
+	execCalled := false
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		execCalled = true
+		return &ExecutionResult{TaskID: task.ID, Success: true}, nil
+	}
+
+	runner := newTestRunnerWithExecFunc(execFn)
+	runner.logStore = store
+	runner.childOutcomeReconcilePollInterval = 20 * time.Millisecond
+	runner.childOutcomeReconcileTimeout = 2 * time.Second
+
+	// The claim-winning channel's own execution appears and resolves to a
+	// legitimate no-op — "no new commit produced" — shortly after.
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		if saveErr := store.SaveExecution(&memory.Execution{
+			ID:          "exec-owner",
+			TaskID:      taskID,
+			ProjectPath: projectPath,
+			Status:      "running",
+		}); saveErr != nil {
+			t.Errorf("SaveExecution: %v", saveErr)
+		}
+		time.Sleep(30 * time.Millisecond)
+		if uErr := store.UpdateExecutionStatus("exec-owner", "no_op"); uErr != nil {
+			t.Errorf("UpdateExecutionStatus: %v", uErr)
+		}
+	}()
+
+	start := time.Now()
+	err = runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, "")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ExecuteSubIssues returned error, want nil (no_op is a legitimate terminal outcome): %v", err)
+	}
+	if execCalled {
+		t.Error("expected the backend NOT to be invoked when the execution claim was already lost")
+	}
+	if elapsed >= runner.childOutcomeReconcileTimeout {
+		t.Errorf("ExecuteSubIssues took %s (>= the %s reconcile timeout) — no_op child was not recognized as terminal", elapsed, runner.childOutcomeReconcileTimeout)
+	}
+}
+
+// TestExecuteSubIssues_ClaimLost_NoOpBehindFreshQueuedDuplicateIsTerminal is
+// the GH-4381 regression for the "mixed row" trap the pitfall calls out: a
+// terminal no_op row plus a newer "queued" duplicate row (e.g. a re-pick by
+// another dispatch channel) must still resolve as terminal — a check that
+// only inspects the latest row by created_at would see the fresh queued row
+// and conclude the child is still running, hiding the older no_op verdict
+// forever.
+func TestExecuteSubIssues_ClaimLost_NoOpBehindFreshQueuedDuplicateIsTerminal(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const taskID = "GH-92"
+	const projectPath = ""
+
+	claimed, err := store.ClaimExecution(taskID, projectPath, 0, "exec-owner")
+	if err != nil {
+		t.Fatalf("ClaimExecution: %v", err)
+	}
+	if !claimed {
+		t.Fatal("test setup: expected the seeded claim to win")
+	}
+
+	// The child's real execution already reached a terminal no_op outcome...
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-owner",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "no_op",
+	}); err != nil {
+		t.Fatalf("SaveExecution (terminal no_op row): %v", err)
+	}
+
+	// ...but a fresh duplicate "queued" row was written afterward (e.g. a
+	// re-pick from another channel), which would sort as "latest" by
+	// created_at ahead of the terminal row above.
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-duplicate",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "queued",
+	}); err != nil {
+		t.Fatalf("SaveExecution (fresh queued duplicate): %v", err)
+	}
+
+	issues := makeSubIssues(1, 92)
+	parent := &Task{ID: "GH-91", Title: "[epic] no-op behind queued duplicate"}
+
+	execCalled := false
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		execCalled = true
+		return &ExecutionResult{TaskID: task.ID, Success: true}, nil
+	}
+
+	runner := newTestRunnerWithExecFunc(execFn)
+	runner.logStore = store
+	runner.childOutcomeReconcilePollInterval = 20 * time.Millisecond
+	runner.childOutcomeReconcileTimeout = 2 * time.Second
+
+	start := time.Now()
+	err = runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, "")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ExecuteSubIssues returned error, want nil (older no_op row is terminal despite the newer queued duplicate): %v", err)
+	}
+	if execCalled {
+		t.Error("expected the backend NOT to be invoked when the execution claim was already lost")
+	}
+	if elapsed >= runner.childOutcomeReconcileTimeout {
+		t.Errorf("ExecuteSubIssues took %s (>= the %s reconcile timeout) — the terminal no_op row was hidden by the fresh queued duplicate", elapsed, runner.childOutcomeReconcileTimeout)
+	}
+}
+
 // TestExecuteSubIssues_NoLogStoreFailsImmediately verifies that without a
 // log store wired, a synchronous child failure fails the epic immediately
 // (unchanged pre-GH-3786 behavior) rather than blocking on a poll it has no
