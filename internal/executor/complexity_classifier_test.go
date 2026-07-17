@@ -444,15 +444,17 @@ func TestDecomposer_LLMClassifierFallback(t *testing.T) {
 	classifier := newComplexityClassifierWithRunner(mockClaudeRunnerError(errors.New("subprocess failed")))
 	decomposer.SetClassifier(classifier)
 
-	// This task has "refactor" keyword → heuristic says COMPLEX → should decompose
+	// This task has "refactor" keyword → heuristic says COMPLEX → should decompose.
+	// Uses a checklist (not a plain numbered list) since GH-4395 restricted
+	// analyzeAndSplit to explicit work-item structure.
 	task := &Task{
 		ID:    "GH-701",
 		Title: "Refactor authentication system",
 		Description: `Refactor the entire auth system:
-1. Update user model with new fields
-2. Rewrite login endpoint for MFA
-3. Add session validation middleware
-4. Update frontend auth components`,
+- [ ] Update user model with new fields
+- [ ] Rewrite login endpoint for MFA
+- [ ] Add session validation middleware
+- [ ] Update frontend auth components`,
 	}
 
 	result := decomposer.DecomposeWithContext(context.Background(), task)

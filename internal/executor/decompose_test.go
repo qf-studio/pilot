@@ -93,7 +93,16 @@ func TestTaskDecomposer_SimpleTasks(t *testing.T) {
 	}
 }
 
-func TestTaskDecomposer_NumberedSteps(t *testing.T) {
+// TestTaskDecomposer_PlainNumberedListFallsBackToNoDecompose is a GH-4395
+// regression test: a plain numbered list (no checklist, no "## Task N"
+// headers) must NOT be treated as a decomposition boundary anymore. #4390's
+// issue body contained a timestamped incident timeline written as narrative
+// prose; the old generic numbered-step/bullet-point strategies happily
+// exploded that prose into "subtasks" that were really just timeline
+// entries. Only explicit work-item structure (checklists, "## Task N"
+// headers) is allowed to trigger a split now — everything else falls back
+// to no-decompose.
+func TestTaskDecomposer_PlainNumberedListFallsBackToNoDecompose(t *testing.T) {
 	config := &DecomposeConfig{
 		Enabled:             true,
 		MinComplexity:       "complex",
@@ -114,6 +123,57 @@ func TestTaskDecomposer_NumberedSteps(t *testing.T) {
 5. Add comprehensive tests for all changes
 
 This is a complex architectural change that spans multiple files.`,
+		ProjectPath: "/test/project",
+		Branch:      "feature/auth-refactor",
+		CreatePR:    true,
+	}
+
+	result := decomposer.Decompose(task)
+
+	if result.Decomposed {
+		t.Errorf("Expected plain numbered list to NOT decompose (GH-4395), got %d subtasks", len(result.Subtasks))
+	}
+	if result.SkipReason != SkipReasonNoSplitPoints {
+		t.Errorf("Expected SkipReasonNoSplitPoints, got %q (reason: %s)", result.SkipReason, result.Reason)
+	}
+}
+
+// TestTaskDecomposer_TaskHeaders verifies that explicit "## Task N" markdown
+// headers (GH-4395's allowed structural boundary alongside checklists) split
+// a task into one subtask per section.
+func TestTaskDecomposer_TaskHeaders(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "complex",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 10,
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	task := &Task{
+		ID:    "TEST-1",
+		Title: "Refactor authentication system",
+		Description: `This task requires refactoring the entire authentication system with multiple changes.
+
+## Task 1: Update the user model
+
+Add new fields for MFA.
+
+## Task 2: Refactor the login endpoint
+
+Support the MFA flow.
+
+## Task 3: Add middleware
+
+Add new middleware for session validation.
+
+## Task 4: Update the frontend
+
+Update the frontend components for MFA input.
+
+## Task 5: Add tests
+
+Add comprehensive tests for all changes.`,
 		ProjectPath: "/test/project",
 		Branch:      "feature/auth-refactor",
 		CreatePR:    true,
@@ -157,7 +217,12 @@ This is a complex architectural change that spans multiple files.`,
 	}
 }
 
-func TestTaskDecomposer_BulletPoints(t *testing.T) {
+// TestTaskDecomposer_PlainBulletsFallBackToNoDecompose is a GH-4395
+// regression test: plain "- " bullets (no checkbox) are narrative structure,
+// not explicit work-item structure — #4390's incident timeline was written
+// exactly this way. Only checklist items ("- [ ] ...") and "## Task N"
+// headers are treated as decomposition boundaries now.
+func TestTaskDecomposer_PlainBulletsFallBackToNoDecompose(t *testing.T) {
 	config := &DecomposeConfig{
 		Enabled:             true,
 		MinComplexity:       "complex",
@@ -182,13 +247,11 @@ This migration is critical for the multi-tenant feature.`,
 
 	result := decomposer.Decompose(task)
 
-	if !result.Decomposed {
-		t.Errorf("Expected task to be decomposed, reason: %s", result.Reason)
-		return
+	if result.Decomposed {
+		t.Errorf("Expected plain bullets to NOT decompose (GH-4395), got %d subtasks", len(result.Subtasks))
 	}
-
-	if len(result.Subtasks) != 4 {
-		t.Errorf("Expected 4 subtasks, got %d", len(result.Subtasks))
+	if result.SkipReason != SkipReasonNoSplitPoints {
+		t.Errorf("Expected SkipReasonNoSplitPoints, got %q (reason: %s)", result.SkipReason, result.Reason)
 	}
 }
 
@@ -242,12 +305,12 @@ func TestTaskDecomposer_MaxSubtasks(t *testing.T) {
 		Title: "Restructure the entire codebase",
 		Description: `Major restructuring with many steps:
 
-1. Step one of the restructure
-2. Step two of the restructure
-3. Step three of the restructure
-4. Step four of the restructure
-5. Step five of the restructure
-6. Step six of the restructure
+- [ ] Step one of the restructure
+- [ ] Step two of the restructure
+- [ ] Step three of the restructure
+- [ ] Step four of the restructure
+- [ ] Step five of the restructure
+- [ ] Step six of the restructure
 
 This is extensive work requiring many changes.`,
 		ProjectPath: "/test/project",
@@ -452,6 +515,135 @@ func TestExtractAcceptanceCriteria(t *testing.T) {
 	}
 }
 
+// TestExtractTaskHeaders covers the "## Task N" structural-boundary
+// extractor added for GH-4395.
+func TestExtractTaskHeaders(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		expected int
+	}{
+		{
+			name: "two task headers with bodies",
+			text: `## Task 1: Update the parser
+
+Do the parser changes.
+
+## Task 2: Update the tests
+
+Add regression tests.`,
+			expected: 2,
+		},
+		{
+			name: "h3 task headers without titles",
+			text: `### Task 1
+
+First body.
+
+### Task 2
+
+Second body.
+
+### Task 3
+
+Third body.`,
+			expected: 3,
+		},
+		{
+			name:     "single task header",
+			text:     "## Task 1: Only one",
+			expected: 0, // Need at least 2
+		},
+		{
+			name: "numbered narrative header is not a task header",
+			text: `### 1. pilot_prs_merged_total did not increment
+
+- some narrative bullet
+
+### 2. increase() over store-hydrated counters is reset-inflated
+
+- another narrative bullet`,
+			expected: 0,
+		},
+		{
+			name:     "no task headers",
+			text:     "Just plain text with no headers at all.",
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractTaskHeaders(tt.text)
+			if len(result) != tt.expected {
+				t.Errorf("extractTaskHeaders() returned %d items, want %d (%v)", len(result), tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestTaskDecomposer_GH4390IncidentTimelineDoesNotExplode reproduces the
+// GH-4395 incident directly: #4390's issue body carried a timestamped
+// narrative timeline (two "###" numbered sections full of plain "- " bullets)
+// followed by a real "## Acceptance criteria" checklist. Before the fix, the
+// generic bullet-point strategy matched the narrative bullets first and
+// exploded the timeline into junk subtasks (subtask 1's title was a raw
+// timestamp line). After the fix, only the checklist is a valid split
+// boundary, so decomposition yields one subtask per acceptance criterion.
+func TestTaskDecomposer_GH4390IncidentTimelineDoesNotExplode(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "complex",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 10,
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	task := &Task{
+		ID:    "GH-4390",
+		Title: "Metrics truthfulness: pilot_prs_merged_total misses autopilot merges",
+		Description: `## Symptoms (ground truth pulled 2026-07-16, per mem-159 RCA rule)
+
+### 1. pilot_prs_merged_total did not increment for autopilot merges
+
+- 2026-07-16 21:29:06-21:29:26Z: PRs #4379, #4382, #4385, #4386 merged.
+- sum(pilot_prs_merged_total) was flat at 1143 from 20:52Z through 21:52Z.
+- Consequence: every increase() throughput panel reads 0 during active shipping.
+- Daemon was on local build v2.240.1-12-gccd2af92.
+
+### 2. increase() over store-hydrated counters is reset-inflated
+
+- pilot_circuit_breaker_trips_total lifetime value: 190.
+- A monotonic counter cannot increase by more than its lifetime total.
+- This is the same monotonicity class flagged in #4134's follow-up notes.
+
+## Acceptance criteria
+
+- [ ] RCA comment identifying the non-incrementing merge path
+- [ ] pilot_prs_merged_total increments for every merge path
+- [ ] Hydrated counters never re-base lower across restart
+- [ ] Regression test per fixed path`,
+		ProjectPath: "/test/project",
+	}
+
+	result := decomposer.Decompose(task)
+
+	if !result.Decomposed {
+		t.Fatalf("expected checklist to decompose, reason: %s", result.Reason)
+	}
+	if len(result.Subtasks) != 4 {
+		t.Fatalf("expected 4 subtasks (one per acceptance criterion), got %d", len(result.Subtasks))
+	}
+	for i, subtask := range result.Subtasks {
+		if strings.Contains(subtask.Title, "2026-07-16") || strings.Contains(subtask.Title, "1143") {
+			t.Errorf("subtask %d: title %q looks like a narrative timeline line, not a work item", i, subtask.Title)
+		}
+	}
+	if !strings.Contains(result.Subtasks[0].Title, "RCA comment") {
+		t.Errorf("subtask 0: expected title to reference the first acceptance criterion, got %q", result.Subtasks[0].Title)
+	}
+}
+
 func TestExtractFileGroups(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -593,8 +785,10 @@ func TestShouldDecompose(t *testing.T) {
 
 func TestDecomposeForRetry_BypassesAllGates(t *testing.T) {
 	// DecomposeForRetry should bypass word count and complexity gates entirely.
-	// A short task with numbered steps should decompose because execution failure
-	// already proved the task is too large — gate bypass is the point of this path.
+	// A short task with an explicit checklist should decompose because execution
+	// failure already proved the task is too large — gate bypass is the point of
+	// this path. Uses a checklist (not a plain numbered list) since GH-4395
+	// restricted analyzeAndSplit to explicit work-item structure.
 	config := &DecomposeConfig{
 		Enabled:             false, // Disabled for normal path — bypass is the point
 		MinComplexity:       "complex",
@@ -606,10 +800,10 @@ func TestDecomposeForRetry_BypassesAllGates(t *testing.T) {
 	task := &Task{
 		ID:    "GH-1716",
 		Title: "Implement auth system",
-		Description: `Short task with numbered steps:
-1. Add user model
-2. Add login endpoint
-3. Add session middleware`,
+		Description: `Short task with a checklist:
+- [ ] Add user model
+- [ ] Add login endpoint
+- [ ] Add session middleware`,
 		ProjectPath: "/test/project",
 	}
 
@@ -860,14 +1054,16 @@ func TestDecomposeWithContext_LLMClassifierSkipsWordCountGate(t *testing.T) {
 	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("COMPLEX", "multiple adapter changes required"))
 	decomposer.SetClassifier(classifier)
 
-	// Short description (~30 words) with numbered steps — well under MinDescriptionWords
+	// Short description (~30 words) with a checklist — well under MinDescriptionWords.
+	// Uses a checklist (not a plain numbered list) since GH-4395 restricted
+	// analyzeAndSplit to explicit work-item structure.
 	task := &Task{
 		ID:    "GH-1716",
 		Title: "Add webhook support to three adapters",
 		Description: `Add outbound webhook support to three adapters:
-1. Telegram adapter
-2. Slack adapter
-3. GitHub adapter`,
+- [ ] Telegram adapter
+- [ ] Slack adapter
+- [ ] GitHub adapter`,
 		ProjectPath: "/test/project",
 	}
 
@@ -957,11 +1153,13 @@ func TestDecomposedSubtasks_ExecutionEventsJoinParentRow(t *testing.T) {
 		ID:          "GH-4021",
 		ExecutionID: parentExecutionID,
 		Title:       "Fix ledger FK violation for decomposed subtasks",
+		// Checklist (not a plain numbered list) since GH-4395 restricted
+		// analyzeAndSplit to explicit work-item structure.
 		Description: `This task requires multiple coordinated changes:
 
-1. Root-cause the FOREIGN KEY constraint failure for subtask ledger writes
-2. Route subtask execution events to the parent's executions row
-3. Add regression coverage decomposing a task into multiple subtasks`,
+- [ ] Root-cause the FOREIGN KEY constraint failure for subtask ledger writes
+- [ ] Route subtask execution events to the parent's executions row
+- [ ] Add regression coverage decomposing a task into multiple subtasks`,
 		ProjectPath: "/test/project",
 	}
 

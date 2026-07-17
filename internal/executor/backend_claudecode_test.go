@@ -1446,3 +1446,101 @@ exit 0
 		t.Errorf("expected task_id in log line, got: %s", logOutput)
 	}
 }
+
+// TestClaudeCodeBackendStdoutTailOnEmptyStderrFailure covers GH-4395: a
+// nonzero exit with no stderr ("unknown: exit status 1" with stderr="")
+// previously left no diagnostic evidence at all — the raw stdout the CLI did
+// produce (even if it never assembled into a valid stream-json event) was
+// silently discarded, so triage required re-running the task. The backend
+// must now capture and surface that raw stdout as result.StdoutTail.
+func TestClaudeCodeBackendStdoutTailOnEmptyStderrFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	script := tmpDir + "/fake-claude"
+
+	// Emits plain (non-JSON) diagnostic lines to stdout, nothing to stderr,
+	// then exits 1 — reproducing the exact "unknown: exit status 1" /
+	// stderr="" signature from the GH-4395 incident log.
+	body := `#!/bin/sh
+echo "internal error: worker crashed before producing a result event"
+echo "last tool: Bash(go test ./...)"
+exit 1
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	opts := ExecuteOptions{
+		Prompt:       "hello",
+		ProjectPath:  tmpDir,
+		EventHandler: func(BackendEvent) {},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := backend.Execute(ctx, opts)
+	if err == nil {
+		t.Fatal("expected error from fake CLI exiting 1, got nil")
+	}
+	ccErr, ok := err.(*ClaudeCodeError)
+	if !ok {
+		t.Fatalf("expected *ClaudeCodeError, got %T: %v", err, err)
+	}
+	if ccErr.Type != ErrorTypeUnknown {
+		t.Fatalf("expected ErrorTypeUnknown, got %q", ccErr.Type)
+	}
+	if ccErr.Stderr != "" {
+		t.Fatalf("expected empty stderr reproducing the incident signature, got %q", ccErr.Stderr)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result even on failure")
+	}
+	if !strings.Contains(result.StdoutTail, "internal error: worker crashed") {
+		t.Errorf("StdoutTail missing expected diagnostic line, got: %q", result.StdoutTail)
+	}
+	if !strings.Contains(result.StdoutTail, "last tool: Bash(go test ./...)") {
+		t.Errorf("StdoutTail missing second diagnostic line, got: %q", result.StdoutTail)
+	}
+}
+
+// TestClaudeCodeBackendStdoutTailNotSetOnSuccess verifies StdoutTail is only
+// populated as a failure diagnostic (GH-4395) — it's not meant to duplicate
+// the full transcript on the (much more common) success path.
+func TestClaudeCodeBackendStdoutTailNotSetOnSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	script := tmpDir + "/fake-claude"
+
+	body := `#!/bin/sh
+echo '{"type":"result","result":"done"}'
+exit 0
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	opts := ExecuteOptions{
+		Prompt:       "hello",
+		ProjectPath:  tmpDir,
+		EventHandler: func(BackendEvent) {},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := backend.Execute(ctx, opts)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result.StdoutTail != "" {
+		t.Errorf("expected empty StdoutTail on success, got: %q", result.StdoutTail)
+	}
+}

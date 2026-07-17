@@ -31,6 +31,13 @@ const GracePeriod = 5 * time.Second
 // most recent stderr — which classifyClaudeCodeError actually inspects — is kept.
 const MaxStderrBufferBytes = 1 << 20 // 1 MiB
 
+// MaxStdoutTailBufferBytes caps the in-memory raw-stdout tail buffer kept
+// purely for failure diagnostics (GH-4395). This is intentionally much
+// smaller than MaxStderrBufferBytes — it exists to give triage something
+// to look at when a nonzero exit produced no stderr and no parsed assistant
+// text, not to reconstruct the full session transcript.
+const MaxStdoutTailBufferBytes = 64 * 1024 // 64 KiB
+
 // DefaultHeartbeatTimeout is the default time to wait for any stream-json event before considering the process hung.
 const DefaultHeartbeatTimeout = 5 * time.Minute
 
@@ -567,6 +574,9 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	result := &BackendResult{}
 	// GH-2332: bounded stderr buffer to prevent OOM on long sessions.
 	stderrOutput := newBoundedBuffer(MaxStderrBufferBytes)
+	// GH-4395: bounded raw-stdout tail, independent of stream-json parsing —
+	// kept as a diagnostic fallback for nonzero exits where stderr is empty.
+	stdoutTail := newBoundedBuffer(MaxStdoutTailBufferBytes)
 	var wg sync.WaitGroup
 
 	// Channel to signal command completion
@@ -686,6 +696,11 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 
 		for scanner.Scan() {
 			line := scanner.Text()
+
+			// GH-4395: capture the raw line regardless of whether it parses as
+			// a stream-json event — a crash mid-line or non-JSON diagnostic
+			// output would otherwise vanish entirely.
+			stdoutTail.WriteLine(line)
 
 			// Update heartbeat timestamp on each stream event
 			lastEventAt.Store(time.Now().UnixNano())
@@ -873,6 +888,11 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 		// patched binary.
 		result.Stderr = stderr
 		result.ErrorType = string(ccErr.Type)
+		// GH-4395: always attach the raw stdout tail on failure — the primary
+		// value is when stderr and LastAssistantText are both empty (the
+		// exact "unknown: exit status 1" signature with no diagnostics), but
+		// it's cheap to keep even when other diagnostics are present.
+		result.StdoutTail = stdoutTail.String()
 
 		// GH-2112: Log OOM kills at error level for monitoring
 		if ccErr.Type == ErrorTypeOOM {
