@@ -142,6 +142,13 @@ func (d *Dispatcher) SetDecomposer(decomposer *TaskDecomposer) {
 func (d *Dispatcher) Start(ctx context.Context) error {
 	d.log.Info("Starting dispatcher")
 
+	// GH-4392: reconcile dead-owner claimed executions before any other
+	// recovery/adoption step and before any worker exists for this process.
+	// See reconcileOrphanedExecutions's doc comment for why this runs first
+	// and why it is scoped to claimed rows only (leaves GH-3732 restart
+	// adoption below untouched for genuinely-continuing queued work).
+	d.reconcileOrphanedExecutions()
+
 	// Recover stale RUNNING tasks first, before queue adoption below creates
 	// any workers — hasLiveWorker must reflect "nothing alive yet" for this
 	// pass, exactly as before GH-3732 (crashed-worker recovery is unchanged
@@ -191,6 +198,110 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	go d.runStaleRecoveryLoop(ctx)
 
 	return nil
+}
+
+// reconcileOrphanedExecutions transitions every claimed, non-terminal
+// ("queued" or "running") execution row found at boot to "stalled", freeing
+// its execution_claims generation lock so nextRetryGeneration can hand out a
+// generation+1 retry on the next dispatch attempt (GH-4392).
+//
+// Incident context: nextRetryGeneration (GH-4372) only advances the
+// generation when the claimed execution it finds is in a TERMINAL status —
+// "queued" and "running" both read as a live owner forever. A daemon
+// restart that leaves rows claimed-but-queued (e.g. TASK-409's AWS cutover,
+// which killed the local process mid-flight) therefore wedges those tasks:
+// every future dispatch attempt sees the same non-terminal claim and backs
+// off, and the periodic stale sweep only ever looked at "running" rows, so
+// it silently reset 0 tasks.
+//
+// Why this is safe: Dispatcher.Start calls this before adoptQueuedProjects
+// creates any worker and before the periodic recovery loop starts — no
+// worker exists yet, so no row returned by GetClaimedNonTerminalExecutions
+// can have been created by THIS process. Under the single-daemon invariant
+// (H7/#4311) every claimed non-terminal row at this point in Start was
+// therefore left behind by a prior, now-dead daemon process.
+//
+// Scoped to CLAIMED rows only (GetClaimedNonTerminalExecutions inner-joins
+// execution_claims) — a non-terminal row with no claims entry was never
+// inserted through ExecutionLifecycle.Begin, so it cannot be blocking a
+// future dispatch attempt via the claim mechanism; GH-3732's queued-project
+// restart adoption (adoptQueuedProjects, below) still owns getting such a
+// row a worker, unchanged. This is what keeps
+// TestDispatcher_AdoptQueuedProjectsOnRestart and
+// TestDispatcher_BootWithQueuedRows_FIFODrainNoStaleReap passing: their
+// fixtures use bare store.SaveExecution, which never writes a claims row.
+//
+// Mirrors the decomposed-parent and HasCompletedExecution guards
+// recoverStaleRunningTasks/recoverStaleQueuedTasks use below, so a row whose
+// real work already shipped (via decomposed children, or a duplicate row for
+// an already-completed task) is deleted instead of marked stalled. Also
+// mirrors the GH-4092 merged-PR heal check for "running" rows, so a dead
+// daemon's in-flight run that had, in fact, already shipped a merged PR
+// heals to "completed" instead of being marked "stalled".
+func (d *Dispatcher) reconcileOrphanedExecutions() int {
+	orphans, err := d.store.GetClaimedNonTerminalExecutions()
+	if err != nil {
+		d.log.Warn("Failed to fetch claimed non-terminal executions for boot-time orphan reconciliation", slog.Any("error", err))
+		return 0
+	}
+
+	var reconciled int
+	for _, exec := range orphans {
+		if allComplete, childIDs, evidence, gErr := decomposedChildrenAllComplete(d.store, exec.TaskID, exec.ProjectPath, d.log); gErr != nil {
+			d.log.Warn("Failed to check decomposed-parent guard during boot orphan reconciliation",
+				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID), slog.Any("error", gErr))
+		} else if allComplete {
+			d.log.Warn("decomposed-parent guard fired during boot orphan reconciliation",
+				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID),
+				slog.Any("children", childIDs), slog.Any("evidence", evidence))
+			d.deleteOrphanRunningRow(exec)
+			continue
+		}
+
+		completed, hceErr := d.store.HasCompletedExecution(exec.TaskID, exec.ProjectPath)
+		if hceErr != nil {
+			d.log.Warn("HasCompletedExecution error during boot orphan reconciliation; treating as not completed",
+				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID), slog.Any("error", hceErr))
+		}
+		if completed {
+			d.log.Info("Deleting orphan row found at boot (task already completed)",
+				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID))
+			d.deleteOrphanRunningRow(exec)
+			continue
+		}
+
+		if exec.Status == string(ExecStatusRunning) {
+			branch := fmt.Sprintf("pilot/%s", exec.TaskID)
+			if mergedURL, mergedErr := staleRunningMergedPRCheck(d.ctx, exec.ProjectPath, branch); mergedErr == nil && mergedURL != "" {
+				durationMs := time.Since(exec.CreatedAt).Milliseconds()
+				if err := d.store.MarkExecutionCompleted(exec.ID, mergedURL, "", durationMs); err != nil {
+					d.log.Error("Failed to heal boot orphan to completed", slog.String("id", exec.ID), slog.Any("error", err))
+				} else {
+					d.log.Info("Boot orphan's branch already merged; healed to completed instead of stalled",
+						slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID), slog.String("pr_url", mergedURL))
+					d.recordExecutionEvent(exec.ID, memory.StageCompleted,
+						fmt.Sprintf("boot orphan healed to completed after restart (merged PR: %s, GH-4392)", mergedURL))
+				}
+				continue
+			}
+		}
+
+		d.log.Warn("Reconciling dead-owner execution found at boot — transitioning to stalled to free its claim for retry",
+			slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID),
+			slog.String("project", exec.ProjectPath), slog.String("prior_status", exec.Status),
+			slog.Time("created_at", exec.CreatedAt))
+		if err := d.store.UpdateExecutionStatus(exec.ID, string(ExecStatusStalled), "orphaned by daemon restart: non-terminal claimed row at boot before this process claimed any work (GH-4392)"); err != nil {
+			d.log.Error("Failed to reconcile orphaned execution at boot", slog.String("id", exec.ID), slog.Any("error", err))
+			continue
+		}
+		reconciled++
+		d.recordExecutionEvent(exec.ID, memory.StageStalled, "orphaned queued/running execution reconciled at daemon boot (dead pre-restart owner, GH-4392)")
+	}
+
+	if reconciled > 0 {
+		d.log.Info("boot-time orphan reconciliation complete", slog.Int("reconciled", reconciled), slog.Int("found", len(orphans)))
+	}
+	return reconciled
 }
 
 // adoptQueuedProjects recreates a worker for every project that still has

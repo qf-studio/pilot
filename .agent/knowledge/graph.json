@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T09:45:00+00:00",
+  "updated": "2026-07-17T11:05:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -785,6 +785,35 @@
       }
     },
     "memories": {
+      "nextretrygeneration-blind-to-dead-owner-nonterminal-claims": {
+        "type": "pitfall",
+        "summary": "nextRetryGeneration reads a dead-owner claim on a non-terminal (queued/running) row as a live owner forever — root cause of the TASK-409 cutover's \"dispatch claim lost\" wedge; fixed by boot-time reconciliation of claimed non-terminal rows to stalled (GH-4392, 2026-07-17).",
+        "file": ".agent/knowledge/memories/pitfalls/nextretrygeneration-blind-to-dead-owner-nonterminal-claims.md",
+        "concepts": [
+          "executor",
+          "dispatcher",
+          "execution-claims",
+          "daemon-restart",
+          "orphan-reconciliation",
+          "TASK-409"
+        ],
+        "confidence": 0.9,
+        "created": "2026-07-17"
+      },
+      "timestamp-hardening-parse-then-compare-in-go": {
+        "type": "pattern",
+        "summary": "For SQLite TEXT timestamp columns that can carry two on-disk layouts (pre/post a DSN format fix), scan into time.Time unfiltered and compare/sort in Go — never filter or ORDER BY the raw column in SQL, since lexicographic comparison across layouts doesn't track chronological order (GH-4392, 2026-07-17).",
+        "file": ".agent/knowledge/memories/patterns/timestamp-hardening-parse-then-compare-in-go.md",
+        "concepts": [
+          "sqlite",
+          "database",
+          "timestamp",
+          "time-parsing",
+          "modernc-sqlite"
+        ],
+        "confidence": 0.9,
+        "created": "2026-07-17"
+      },
       "mem-001": {
         "type": "decision",
         "summary": "Go for daemon (single binary), Python for AI logic (flexibility)",

@@ -2461,6 +2461,287 @@ func TestDispatcher_AdoptQueuedProjectsOnRestart(t *testing.T) {
 	}
 }
 
+// TestDispatcher_ReconcileOrphanedExecutions is the GH-4392 regression suite
+// for Dispatcher.Start's boot-time orphan reconciliation: a claimed
+// queued/running row found before this process has created any worker can
+// only have been left behind by a dead prior daemon (single-daemon
+// invariant, H7/#4311) — nextRetryGeneration (GH-4372) otherwise treats such
+// a row as a live owner forever, wedging the task (the TASK-409 AWS cutover
+// incident this issue tracks). Mirrors the guard ordering
+// recoverStaleRunningTasks already uses (decomposed-parent guard, then
+// HasCompletedExecution, then the GH-4092 merged-PR heal) so a boot orphan
+// whose real work already shipped heals or is deleted instead of being
+// marked stalled.
+func TestDispatcher_ReconcileOrphanedExecutions(t *testing.T) {
+	t.Run("claimed queued row becomes stalled and journaled", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4392-Q1", ProjectPath: "/project-orphan-q"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		if reconciled := dispatcher.reconcileOrphanedExecutions(); reconciled != 1 {
+			t.Fatalf("expected 1 reconciled execution, got %d", reconciled)
+		}
+
+		exec, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		if exec.Status != "stalled" {
+			t.Errorf("expected status 'stalled', got %q", exec.Status)
+		}
+
+		events, err := store.ListExecutionEvents(execID)
+		if err != nil {
+			t.Fatalf("ListExecutionEvents: %v", err)
+		}
+		if len(events) != 1 {
+			t.Fatalf("expected 1 execution event, got %d: %+v", len(events), events)
+		}
+		if events[0].Stage != memory.StageStalled {
+			t.Errorf("expected stage %q, got %q", memory.StageStalled, events[0].Stage)
+		}
+		if !strings.Contains(events[0].Detail, "GH-4392") {
+			t.Errorf("expected detail to reference GH-4392, got %q", events[0].Detail)
+		}
+	})
+
+	t.Run("claimed running row becomes stalled when branch not merged", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4392-R1", ProjectPath: "/project-orphan-r"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+
+		origCheck := staleRunningMergedPRCheck
+		staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+		defer func() { staleRunningMergedPRCheck = origCheck }()
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		if reconciled := dispatcher.reconcileOrphanedExecutions(); reconciled != 1 {
+			t.Fatalf("expected 1 reconciled execution, got %d", reconciled)
+		}
+
+		exec, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		if exec.Status != "stalled" {
+			t.Errorf("expected status 'stalled', got %q", exec.Status)
+		}
+	})
+
+	t.Run("claimed running row heals to completed when branch already merged", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4392-R2", ProjectPath: "/project-orphan-merged"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+
+		const mergedPRURL = "https://github.com/qf-studio/pilot/pull/9101"
+		origCheck := staleRunningMergedPRCheck
+		staleRunningMergedPRCheck = func(_ context.Context, projectPath, branch string) (string, error) {
+			if projectPath == "/project-orphan-merged" && branch == "pilot/GH-4392-R2" {
+				return mergedPRURL, nil
+			}
+			return "", nil
+		}
+		defer func() { staleRunningMergedPRCheck = origCheck }()
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		dispatcher.reconcileOrphanedExecutions()
+
+		exec, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		if exec.Status != "completed" {
+			t.Errorf("expected status 'completed', got %q", exec.Status)
+		}
+		if exec.PRUrl != mergedPRURL {
+			t.Errorf("expected pr_url %q, got %q", mergedPRURL, exec.PRUrl)
+		}
+
+		events, err := store.ListExecutionEvents(execID)
+		if err != nil {
+			t.Fatalf("ListExecutionEvents: %v", err)
+		}
+		if len(events) != 1 || events[0].Stage != memory.StageCompleted {
+			t.Fatalf("expected 1 StageCompleted event, got %+v", events)
+		}
+	})
+
+	t.Run("unclaimed queued row (bare SaveExecution) is left untouched", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		// GH-3732 restart-adoption fixtures use bare SaveExecution — no
+		// execution_claims row. Boot reconciliation must not touch these, or
+		// TestDispatcher_AdoptQueuedProjectsOnRestart's FIFO drain breaks.
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-unclaimed", TaskID: "GH-4392-UNCLAIMED", ProjectPath: "/project-unclaimed", Status: "queued",
+		}); err != nil {
+			t.Fatalf("SaveExecution: %v", err)
+		}
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		if reconciled := dispatcher.reconcileOrphanedExecutions(); reconciled != 0 {
+			t.Fatalf("expected 0 reconciled (unclaimed row), got %d", reconciled)
+		}
+
+		exec, err := store.GetExecution("exec-unclaimed")
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		if exec.Status != "queued" {
+			t.Errorf("expected unclaimed row to remain 'queued', got %q", exec.Status)
+		}
+	})
+
+	t.Run("claimed queued row already completed elsewhere is deleted", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		const taskID = "GH-4392-DUP"
+		const projectPath = "/project-orphan-dup"
+
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-dup-completed", TaskID: taskID, ProjectPath: projectPath, Status: "completed",
+			PRUrl: "https://github.com/qf-studio/pilot/pull/9102",
+		}); err != nil {
+			t.Fatalf("SaveExecution(completed): %v", err)
+		}
+
+		task := &Task{ID: taskID, ProjectPath: projectPath}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		dispatcher.reconcileOrphanedExecutions()
+
+		exec, err := store.GetExecution(execID)
+		if err == nil && exec != nil {
+			t.Errorf("expected orphaned duplicate row %s to be deleted, but it still exists with status %q", execID, exec.Status)
+		}
+	})
+}
+
+// TestDispatcher_ReconcileOrphanedExecutions_Idempotent verifies boot
+// reconciliation only ever fires once per row (GH-4392 acceptance
+// criterion): once a dead-owner row has been transitioned to 'stalled', a
+// second restart's boot pass must find nothing left to reconcile —
+// GetClaimedNonTerminalExecutions no longer returns a terminal row — and
+// must not write a second execution_events entry for it.
+func TestDispatcher_ReconcileOrphanedExecutions_Idempotent(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4392-IDEMPOTENT", ProjectPath: "/project-idempotent"}
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	first := NewDispatcher(store, NewRunner(), nil).reconcileOrphanedExecutions()
+	if first != 1 {
+		t.Fatalf("expected 1 reconciled on first pass, got %d", first)
+	}
+
+	// Simulate a second restart: a brand new Dispatcher against the same
+	// store.
+	second := NewDispatcher(store, NewRunner(), nil).reconcileOrphanedExecutions()
+	if second != 0 {
+		t.Fatalf("expected 0 reconciled on second pass (idempotent), got %d", second)
+	}
+
+	events, err := store.ListExecutionEvents(execID)
+	if err != nil {
+		t.Fatalf("ListExecutionEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("expected exactly 1 stalled event across both boot passes, got %d: %+v", len(events), events)
+	}
+}
+
+// TestDispatcher_BootOrphanReconciliation_EnablesGenerationRetry is the
+// GH-4392 acceptance test: a dead daemon's claimed 'queued' row must not
+// wedge the task forever. After Dispatcher.Start's boot reconciliation
+// transitions it to 'stalled' (a terminal status), nextRetryGeneration's
+// dead-owner path (GH-4372) sees the claim is dead and hands out a
+// generation+1 retry on the very next dispatch attempt — closing the
+// "dispatch claim lost" loop that TASK-409's AWS cutover incident hit.
+func TestDispatcher_BootOrphanReconciliation_EnablesGenerationRetry(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4392-RETRY", ProjectPath: "/project-retry"}
+
+	// Simulate the dead pre-restart daemon: it claimed generation 0 and left
+	// the row 'queued' (e.g. TASK-409's AWS cutover kill).
+	if _, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued); err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	// Fresh process, fresh Dispatcher — Start() runs boot reconciliation
+	// before anything else, including before any worker exists.
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("nextRetryGeneration: %v", err)
+	}
+	if !retry {
+		t.Fatalf("expected retry=true after boot reconciliation stalled the dead claim, got retry=false")
+	}
+	if gen != 1 {
+		t.Errorf("expected generation 1, got %d", gen)
+	}
+
+	// The actual dispatch path: a fresh Task struct simulating the next
+	// poller pickup for the same (task.ID, task.ProjectPath).
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+	execID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if execID == "" {
+		t.Fatal("expected a fresh execID claiming generation 1, got empty (pickup dropped)")
+	}
+
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "queued" {
+		t.Errorf("expected fresh generation-1 execution to be 'queued', got %q", exec.Status)
+	}
+
+	genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	}
+	if !found || genCheck != 1 {
+		t.Errorf("expected latest claim generation 1, found=%v got=%d", found, genCheck)
+	}
+}
+
 // TestStore_GetQueuedProjectPaths verifies the distinct-project query backing
 // restart adoption: only queued/pending rows count, duplicates collapse, and
 // completed/running rows are excluded. GH-3732.
