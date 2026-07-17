@@ -2247,6 +2247,59 @@ func TestNewRunnerWithConfig_SkipSelfReview(t *testing.T) {
 	}
 }
 
+// Test that IntentJudgeConfig.MaxDiffChars flows into the wired IntentJudge (GH-4407).
+func TestNewRunnerWithConfig_IntentJudgeMaxDiffChars(t *testing.T) {
+	enabled := true
+	config := &BackendConfig{
+		Type: "claude-code",
+		ClaudeCode: &ClaudeCodeConfig{
+			Command: "sh", // guaranteed present on PATH so exec.LookPath succeeds
+		},
+		IntentJudge: &IntentJudgeConfig{
+			Enabled:      &enabled,
+			MaxDiffChars: 64000,
+		},
+	}
+
+	runner, err := NewRunnerWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewRunnerWithConfig failed: %v", err)
+	}
+	if runner.intentJudge == nil {
+		t.Fatal("expected intent judge to be wired")
+	}
+	if runner.intentJudge.maxDiffChars != 64000 {
+		t.Errorf("maxDiffChars = %d, want 64000", runner.intentJudge.maxDiffChars)
+	}
+}
+
+// Test that an unset MaxDiffChars falls back to the package default rather
+// than zero (which would defeat truncation entirely). GH-4407.
+func TestNewRunnerWithConfig_IntentJudgeDefaultMaxDiffChars(t *testing.T) {
+	enabled := true
+	config := &BackendConfig{
+		Type: "claude-code",
+		ClaudeCode: &ClaudeCodeConfig{
+			Command: "sh",
+		},
+		IntentJudge: &IntentJudgeConfig{
+			Enabled: &enabled,
+			// MaxDiffChars left zero - NewIntentJudge should apply the default.
+		},
+	}
+
+	runner, err := NewRunnerWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewRunnerWithConfig failed: %v", err)
+	}
+	if runner.intentJudge == nil {
+		t.Fatal("expected intent judge to be wired")
+	}
+	if runner.intentJudge.maxDiffChars != maxDiffCharsDefault {
+		t.Errorf("maxDiffChars = %d, want default %d", runner.intentJudge.maxDiffChars, maxDiffCharsDefault)
+	}
+}
+
 // Test ExtractRepoName function (GH-386)
 func TestExtractRepoName(t *testing.T) {
 	tests := []struct {

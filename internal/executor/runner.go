@@ -864,7 +864,13 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 			if config.IntentJudge.Model != "" {
 				runner.intentJudge.model = config.IntentJudge.Model
 			}
-			runner.log.Info("Intent judge initialized", slog.String("model", runner.intentJudge.model))
+			if config.IntentJudge.MaxDiffChars > 0 {
+				runner.intentJudge.maxDiffChars = config.IntentJudge.MaxDiffChars
+			}
+			runner.log.Info("Intent judge initialized",
+				slog.String("model", runner.intentJudge.model),
+				slog.Int("max_diff_chars", runner.intentJudge.maxDiffChars),
+			)
 		}
 	} else if config != nil && config.IntentJudge == nil {
 		runner.log.Debug("Intent judge disabled: no config")

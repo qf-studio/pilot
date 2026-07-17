@@ -584,7 +584,7 @@ func DefaultEffortClassifierConfig() *EffortClassifierConfig {
 //	  intent_judge:
 //	    enabled: true
 //	    model: "claude-haiku-4-5-20251001"
-//	    max_diff_chars: 8000
+//	    max_diff_chars: 32000
 type IntentJudgeConfig struct {
 	// Enabled controls whether the intent judge runs after execution.
 	// Default: true (when config block is present).
@@ -593,8 +593,9 @@ type IntentJudgeConfig struct {
 	// Model is the model to use for intent evaluation. Default: "claude-haiku-4-5-20251001"
 	Model string `yaml:"model,omitempty"`
 
-	// MaxDiffChars is the maximum diff size in characters before truncation.
-	// Default: 8000.
+	// MaxDiffChars is the maximum diff size in characters before truncation
+	// falls back to per-file truncation with a full file manifest (GH-4407).
+	// Default: 32000.
 	MaxDiffChars int `yaml:"max_diff_chars,omitempty"`
 }
 
@@ -604,7 +605,7 @@ func DefaultIntentJudgeConfig() *IntentJudgeConfig {
 	return &IntentJudgeConfig{
 		Enabled:      &enabled,
 		Model:        "claude-haiku-4-5-20251001",
-		MaxDiffChars: 8000,
+		MaxDiffChars: 32000,
 	}
 }
 
