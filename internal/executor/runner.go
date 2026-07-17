@@ -455,6 +455,23 @@ func (t *Task) LogExecutionID() string {
 	return t.ID
 }
 
+// GHIssueRef returns the bare issue number the gh CLI's positional issue
+// argument requires (e.g. "95"). Passing the human-readable, prefixed ID
+// ("GH-95") instead fails every gh issue close/edit/comment call with
+// "invalid issue format" (GH-4405) — the epic close/label/comment
+// side-effects (parent close, coverage-gap label, coverage-gap comment,
+// progress comments) silently degraded to WARN because callers used t.ID
+// directly. Prefers SourceIssueID (already bare for GitHub-sourced tasks —
+// see its field doc above), falling back to stripping the "GH-" prefix from
+// ID for tasks built directly as &Task{} without SourceIssueID populated
+// (e.g. epic.go sub-issue helpers).
+func (t *Task) GHIssueRef() string {
+	if t.SourceIssueID != "" {
+		return t.SourceIssueID
+	}
+	return strings.TrimPrefix(t.ID, "GH-")
+}
+
 // QualityGateResult represents the result of a single quality gate check.
 type QualityGateResult struct {
 	// Name is the gate name (e.g., "build", "test", "lint")

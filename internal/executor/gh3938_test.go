@@ -351,10 +351,14 @@ func TestExecuteSubIssuesTracked_PostsDecomposedChildrenComment(t *testing.T) {
 		t.Fatal("expected non-nil metrics")
 	}
 
+	// GH-4405: gh CLI's positional issue argument is the bare number
+	// ("3938PARENT" once "GH-" is stripped), not the human-readable
+	// prefixed parent.ID ("GH-3938PARENT") gh CLI rejects.
+	parentRef := parent.GHIssueRef()
 	calls := parseGhInvocations(t, logPath)
 	var found string
 	for _, args := range calls {
-		if len(args) >= 4 && args[0] == "issue" && args[1] == "comment" && args[2] == parent.ID {
+		if len(args) >= 4 && args[0] == "issue" && args[1] == "comment" && args[2] == parentRef {
 			// args: issue comment <id> --body <message>
 			for i, a := range args {
 				if a == "--body" && i+1 < len(args) {
@@ -367,7 +371,7 @@ func TestExecuteSubIssuesTracked_PostsDecomposedChildrenComment(t *testing.T) {
 		}
 	}
 	if found == "" {
-		t.Fatalf("no 'gh issue comment %s --body ...' call captured; calls = %v", parent.ID, calls)
+		t.Fatalf("no 'gh issue comment %s --body ...' call captured; calls = %v", parentRef, calls)
 	}
 	want := "decomposed into 2 children: #501, #502"
 	if !strings.Contains(found, want) {

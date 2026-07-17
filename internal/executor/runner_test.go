@@ -2762,6 +2762,42 @@ func TestTask_LogExecutionID(t *testing.T) {
 	}
 }
 
+// TestTask_GHIssueRef verifies GHIssueRef returns the bare issue number gh
+// CLI's positional issue argument requires (GH-4405). Passing the
+// human-readable prefixed ID ("GH-95") directly to `gh issue close/edit/
+// comment` fails with "invalid issue format: \"GH-95\"" and silently
+// degrades epic close/label/comment side-effects to WARN.
+func TestTask_GHIssueRef(t *testing.T) {
+	tests := []struct {
+		name string
+		task *Task
+		want string
+	}{
+		{
+			"prefers SourceIssueID when set (already bare for GitHub)",
+			&Task{ID: "GH-95", SourceIssueID: "95"},
+			"95",
+		},
+		{
+			"falls back to stripping GH- prefix from ID when SourceIssueID is empty",
+			&Task{ID: "GH-8"},
+			"8",
+		},
+		{
+			"ID without GH- prefix is passed through unchanged",
+			&Task{ID: "42"},
+			"42",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.task.GHIssueRef(); got != tt.want {
+				t.Errorf("GHIssueRef() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // CancelAll Tests (GH-883)
 // =============================================================================
