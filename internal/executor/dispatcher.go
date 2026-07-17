@@ -910,6 +910,16 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 	// unconditionally (GH-85: 5 repicks in ~15 min, no backoff growth).
 	// Consult the same persisted repick_backoff row before claiming a fresh
 	// generation, so consecutive repicks back off exponentially too.
+	//
+	// GH-4394 subtask 3: GH-85 happened to be dispatched against the
+	// registered pilot-canary-sandbox project (GH-4240/TASK-379), raising the
+	// hypothesis that task.IsCanary/ProjectConfig.Canary might short-circuit
+	// this gate the same way it deliberately short-circuits metrics recording
+	// elsewhere (runner.go's `!task.IsCanary` guards). Investigated and ruled
+	// out: this gate is keyed only on ProjectPath+TaskID (both stable,
+	// config-registered values, identical for a canary or a real project) and
+	// never inspects IsCanary. See
+	// TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular.
 	backoffKey := repickBackoffKey(task.ProjectPath, task.ID)
 	consecutiveDrops, nextAllowedAt, found, boErr := d.RepickBackoffState(backoffKey)
 	if boErr != nil {

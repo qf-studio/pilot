@@ -2911,6 +2911,73 @@ func TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow(t *tes
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular
+// is the GH-4394 subtask 3 regression test. One of three hypotheses filed
+// against the GH-85 incident (which happened to fire against the registered
+// pilot-canary-sandbox project, GH-4240/TASK-379) was that IsCanary/
+// ProjectConfig.Canary might short-circuit the repick backoff the same way it
+// intentionally short-circuits metrics recording (runner.go's
+// `if r.metricsRecorder != nil && !task.IsCanary` guards). Investigation found
+// no such branch: beginWithGenerationRetry's backoff gate (dispatcher.go
+// ~L913-930) never inspects task.IsCanary, and repickBackoffKey is keyed only
+// on ProjectPath+TaskID, both of which are stable, config-registered values
+// for a canary project just like any other. This test pins that: a
+// canary-flagged task must be throttled by an already-armed backoff window
+// exactly like a non-canary task (mirrors
+// TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow above,
+// with IsCanary: true added) — if a future change adds an IsCanary
+// short-circuit to this gate, this test fails.
+func TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-85", ProjectPath: "/canary-sandbox", IsCanary: true}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Simulate an already-armed backoff window from a prior re-pick, well in
+	// the future so this test isn't timing-sensitive.
+	if err := dispatcher.SetRepickBackoffState(key, 3, time.Now().Add(5*time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	// A prior claim that IS eligible for retry (terminal, not done) —
+	// otherwise nextRetryGeneration itself would short-circuit before the
+	// backoff gate is ever reached, and this test wouldn't prove anything.
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("nextRetryGeneration: %v", err)
+	}
+	if !retry || gen != 1 {
+		t.Fatalf("expected retry=true generation=1 as the precondition for this test, got retry=%v gen=%d", retry, gen)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, IsCanary: true}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatal("expected the canary task's re-pick to be dropped while the backoff window is active, got a fresh execID — IsCanary must not bypass the repick backoff gate")
+	}
+
+	consecutive, _, found, err := dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	}
+	if !found || consecutive != 3 {
+		t.Errorf("expected the throttled canary attempt to leave backoff state untouched (consecutive_drops=3), got found=%v consecutive=%d", found, consecutive)
+	}
+}
+
 // TestDispatcher_ExecutionGeneration verifies ExecutionGeneration reports 0
 // for an ordinary first attempt and the retry generation once
 // beginWithGenerationRetry has claimed one — the signal cmd/pilot's
