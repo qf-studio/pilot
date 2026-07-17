@@ -236,6 +236,15 @@ type BackendResult struct {
 	// no stderr), this captures the refusal reason for diagnosis. GH-2328.
 	LastAssistantText string
 
+	// StdoutTail captures the last portion of raw stdout emitted by the
+	// backend subprocess, populated on nonzero exit. This is a fallback
+	// diagnostic for the "unknown: exit status 1" signature where Stderr
+	// and LastAssistantText are BOTH empty (e.g. the CLI crashes before
+	// completing a stream-json event or writes its error to stdout instead
+	// of stderr) — without it, triage requires re-running the task with a
+	// patched binary just to see what happened. GH-4395.
+	StdoutTail string
+
 	// ErrorType classifies the failure (rate_limit, api_error, oom_killed,
 	// session_not_found, timeout, invalid_config, unknown). GH-2328.
 	ErrorType string

@@ -3611,6 +3611,88 @@ func TestTruncateDiagnostic(t *testing.T) {
 	if diagnosticsMessageMaxChars != 4*1024 {
 		t.Errorf("diagnosticsMessageMaxChars = %d, want 4096", diagnosticsMessageMaxChars)
 	}
+	if diagnosticsStdoutTailMaxChars != 16*1024 {
+		t.Errorf("diagnosticsStdoutTailMaxChars = %d, want 16384", diagnosticsStdoutTailMaxChars)
+	}
+}
+
+// TestPersistBackendDiagnostics_StdoutTail covers GH-4395: when a backend
+// failure carries no stderr and no final assistant text (the "unknown: exit
+// status 1" / stderr="" signature that killed pointer GH-8's child GH-11),
+// the raw stdout tail must still land in execution_logs so triage doesn't
+// require re-running the task.
+func TestPersistBackendDiagnostics_StdoutTail(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	backendResult := &BackendResult{
+		ErrorType:  "unknown",
+		Stderr:     "",
+		StdoutTail: "internal error: worker crashed before producing a result event",
+	}
+	runner.persistBackendDiagnostics("exec-4395", backendResult)
+
+	logs, err := store.GetRecentLogs(10)
+	if err != nil {
+		t.Fatalf("failed to get recent logs: %v", err)
+	}
+
+	var foundTail, foundStderr bool
+	for _, entry := range logs {
+		if strings.Contains(entry.Message, "Backend stdout tail:") {
+			foundTail = true
+			if !strings.Contains(entry.Message, "internal error: worker crashed") {
+				t.Errorf("stdout tail entry missing expected content: %q", entry.Message)
+			}
+		}
+		if strings.Contains(entry.Message, "Backend stderr:") {
+			foundStderr = true
+		}
+	}
+	if !foundTail {
+		t.Error("expected a 'Backend stdout tail:' log entry, found none")
+	}
+	if foundStderr {
+		t.Error("did not expect a 'Backend stderr:' entry when Stderr is empty")
+	}
+}
+
+// TestPersistBackendDiagnostics_StdoutTailTruncated verifies the stdout tail
+// diagnostic honors its character ceiling like the existing stderr/message
+// diagnostics do (GH-4395, mirroring GH-2328's ceilings).
+func TestPersistBackendDiagnostics_StdoutTailTruncated(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	backendResult := &BackendResult{
+		StdoutTail: strings.Repeat("z", 20*1024),
+	}
+	runner.persistBackendDiagnostics("exec-4395-trunc", backendResult)
+
+	logs, err := store.GetRecentLogs(10)
+	if err != nil {
+		t.Fatalf("failed to get recent logs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(logs))
+	}
+	if !strings.Contains(logs[0].Message, "[...truncated]") {
+		t.Errorf("expected truncation marker in persisted stdout tail, got: %q", logs[0].Message[max(0, len(logs[0].Message)-40):])
+	}
 }
 
 // GH-2402: IsPermanentFailure must classify deterministic errors so the

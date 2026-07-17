@@ -1415,6 +1415,10 @@ func (r *Runner) recordMemoryGuardRestoreEvents(executionID string, restored []R
 const (
 	diagnosticsStderrMaxChars  = 16 * 1024
 	diagnosticsMessageMaxChars = 4 * 1024
+	// diagnosticsStdoutTailMaxChars bounds the persisted raw-stdout-tail
+	// diagnostic (GH-4395). Matches the stderr ceiling since both serve the
+	// same triage purpose.
+	diagnosticsStdoutTailMaxChars = 16 * 1024
 )
 
 // truncateDiagnostic trims `s` to at most `max` characters, appending a
@@ -1447,10 +1451,11 @@ func parseDeclinedReason(text string) (string, bool) {
 	return reason, true
 }
 
-// persistBackendDiagnostics writes the backend's stderr, error type, and final
-// assistant text to execution_logs so `unknown: exit status 1` failures are
-// actually diagnosable. Previously these bytes were only emitted via slog to
-// stdout and disappeared when Pilot restarted. GH-2328.
+// persistBackendDiagnostics writes the backend's stderr, error type, final
+// assistant text, and raw stdout tail to execution_logs so `unknown: exit
+// status 1` failures are actually diagnosable. Previously these bytes were
+// only emitted via slog to stdout and disappeared when Pilot restarted.
+// GH-2328, GH-4395.
 func (r *Runner) persistBackendDiagnostics(executionID string, backendResult *BackendResult) {
 	if backendResult == nil || r.logStore == nil {
 		return
@@ -1469,6 +1474,16 @@ func (r *Runner) persistBackendDiagnostics(executionID string, backendResult *Ba
 	if msg := strings.TrimSpace(backendResult.LastAssistantText); msg != "" {
 		r.saveLogEntry(executionID, "error",
 			"Final assistant message:\n"+truncateDiagnostic(msg, diagnosticsMessageMaxChars))
+	}
+
+	// GH-4395: the "unknown: exit status 1" signature is diagnostically dead
+	// when Stderr and LastAssistantText are both empty (CLI crashed before a
+	// stream-json event completed, or wrote to stdout instead of stderr).
+	// The raw stdout tail is the only remaining evidence, so persist it
+	// whenever present rather than requiring a rerun to see what happened.
+	if tail := strings.TrimSpace(backendResult.StdoutTail); tail != "" {
+		r.saveLogEntry(executionID, "error",
+			"Backend stdout tail:\n"+truncateDiagnostic(tail, diagnosticsStdoutTailMaxChars))
 	}
 }
 
@@ -2960,6 +2975,15 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			errorCategory := "unknown"
 			var stderrOutput string // GH-917-5: Always capture stderr for logging
 
+			// GH-4395: some backends return a nil *BackendResult alongside a
+			// non-nil error (e.g. failure before any subprocess output could
+			// be captured), so guard the stdout-tail lookup rather than
+			// assuming backendResult is always populated on failure.
+			var stdoutTailForLog string
+			if backendResult != nil {
+				stdoutTailForLog = backendResult.StdoutTail
+			}
+
 			if beErr, ok := err.(BackendError); ok {
 				result.Error = beErr.Error()
 				stderrOutput = beErr.ErrorStderr() // Capture stderr from classified error
@@ -3011,10 +3035,15 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 				default:
 					// GH-917-5: Log stderr for process errors and unknown errors too
+					// GH-4395: also log the raw stdout tail — for the
+					// "unknown: exit status 1" signature this log line's
+					// stderr field is empty, and the tail is the only
+					// diagnostic evidence short of re-running the task.
 					log.Error("Backend execution failed",
 						slog.String("error", result.Error),
 						slog.String("error_type", beErr.ErrorType()),
 						slog.String("stderr", beErr.ErrorStderr()),
+						slog.String("stdout_tail", truncate(stdoutTailForLog, 500)),
 						slog.Duration("duration", duration),
 					)
 					r.reportProgress(task.ID, "Failed", 100, result.Error)
@@ -3022,9 +3051,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			} else {
 				result.Error = err.Error()
 				// GH-917-5: Log even when error is not a classified backend error
+				// GH-4395: include the stdout tail here too — an unclassified
+				// error still carries whatever raw output the backend produced.
 				log.Error("Backend execution failed",
 					slog.String("error", result.Error),
 					slog.String("error_type", "unclassified"),
+					slog.String("stdout_tail", truncate(stdoutTailForLog, 500)),
 					slog.Duration("duration", duration),
 				)
 				r.reportProgress(task.ID, "Failed", 100, result.Error)
