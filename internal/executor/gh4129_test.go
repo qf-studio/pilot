@@ -264,6 +264,64 @@ func TestRecordRetryAttemptEvent_NamesTheLoop(t *testing.T) {
 	}
 }
 
+// TestRecordMemoryGuardRestoreEvents covers GH-4398: once
+// GitOperations.RestoreDeletedIndexedMemoryDocs has fail-safe-restored
+// protected memory docs on disk, the Runner must record one
+// memory_guard_restore execution event per restored file (naming its path
+// and graph node id) so the intervention is visible in `pilot trace` / the
+// execution_events ledger — otherwise a guard that silently rewrites the
+// branch would be invisible to anyone reviewing the PR.
+func TestRecordMemoryGuardRestoreEvents(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	if err := store.SaveExecution(&memory.Execution{ID: "exec-gh4398-restore", TaskID: "GH-4398-RESTORE", Status: "running"}); err != nil {
+		t.Fatalf("SaveExecution failed: %v", err)
+	}
+
+	restored := []RestoredMemoryDoc{
+		{Path: ".agent/knowledge/memories/pitfalls/mem-158.md", NodeID: "mem-158"},
+		{Path: ".agent/knowledge/memories/learnings/mem-160.md", NodeID: "mem-160"},
+	}
+	runner.recordMemoryGuardRestoreEvents("exec-gh4398-restore", restored)
+
+	events, err := store.ListExecutionEvents("exec-gh4398-restore")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	for i, want := range restored {
+		if events[i].Stage != memory.StageMemoryGuardRestore {
+			t.Errorf("event[%d].Stage = %q, want %q", i, events[i].Stage, memory.StageMemoryGuardRestore)
+		}
+		var detail struct {
+			Path   string `json:"path"`
+			NodeID string `json:"node_id"`
+		}
+		if err := json.Unmarshal([]byte(events[i].Detail), &detail); err != nil {
+			t.Fatalf("event[%d]: failed to unmarshal detail: %v", i, err)
+		}
+		if detail.Path != want.Path || detail.NodeID != want.NodeID {
+			t.Errorf("event[%d] detail = %+v, want path=%q/node_id=%q", i, detail, want.Path, want.NodeID)
+		}
+	}
+
+	// Empty input must not write any events.
+	runner.recordMemoryGuardRestoreEvents("exec-gh4398-restore-empty", nil)
+	emptyEvents, err := store.ListExecutionEvents("exec-gh4398-restore-empty")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(emptyEvents) != 0 {
+		t.Errorf("got %d events for empty restored slice, want 0", len(emptyEvents))
+	}
+}
+
 // statefulQualityChecker fails once with ShouldRetry, then passes with
 // GateDetails/TotalDuration set — used to drive the quality-gate retry loop
 // through runner.Execute end to end (GH-4129).

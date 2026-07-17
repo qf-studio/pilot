@@ -1358,6 +1358,34 @@ func (r *Runner) recordRetryAttemptEvent(executionID, loop string, attempt int) 
 	r.recordExecutionEvent(executionID, memory.StageRetryAttempt, string(detail))
 }
 
+// recordMemoryGuardRestoreEvents is the record-the-intervention leg of the
+// GH-4387 protected-memory guard (GH-4398): given the docs
+// GitOperations.RestoreDeletedIndexedMemoryDocs already restored on disk and
+// staged into a follow-up commit, it WARN-logs each restoration by file and
+// graph node id, then records a StageMemoryGuardRestore execution event per
+// file so the intervention shows up in `pilot trace` / the execution_events
+// ledger — a fail-safe that silently rewrote the branch would otherwise be
+// invisible to anyone reviewing the PR. GH-4397 owns deciding when in the
+// push/PR-create path this fires; this only records what already happened.
+func (r *Runner) recordMemoryGuardRestoreEvents(executionID string, restored []RestoredMemoryDoc) {
+	for _, doc := range restored {
+		r.log.Warn("Restored protected memory doc deleted during execution",
+			slog.String("execution_id", executionID),
+			slog.String("path", doc.Path),
+			slog.String("graph_node_id", doc.NodeID),
+		)
+
+		detail, err := json.Marshal(struct {
+			Path   string `json:"path"`
+			NodeID string `json:"node_id"`
+		}{Path: doc.Path, NodeID: doc.NodeID})
+		if err != nil {
+			continue
+		}
+		r.recordExecutionEvent(executionID, memory.StageMemoryGuardRestore, string(detail))
+	}
+}
+
 // Diagnostic truncation caps used by persistBackendDiagnostics. Exposed as
 // constants so tests can assert the ceiling and project-side tooling can
 // depend on a fixed upper bound. GH-2328.

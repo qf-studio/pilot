@@ -307,6 +307,156 @@ func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch
 	return unindexed, nil
 }
 
+// deletedMemoryDocs returns memory doc paths (relative to the repo root)
+// deleted between baseBranch and HEAD. Mirrors addedMemoryDocs's file
+// selection but with --diff-filter=D: GH-4398's restore guard cares about
+// removals, not additions, of .agent/knowledge/memories/**.md.
+func (g *GitOperations) deletedMemoryDocs(ctx context.Context, baseBranch string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=D",
+		baseBranch+"...HEAD", "--", memoryDocsRelDir)
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to diff deleted memory docs: %w", err)
+	}
+
+	var docs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == "" || !strings.HasSuffix(line, ".md") {
+			continue
+		}
+		docs = append(docs, line)
+	}
+	return docs, nil
+}
+
+// graphIndexedMemoryNodes reads .agent/knowledge/graph.json and returns a map
+// from repo-relative memory doc path to the graph node id that references it,
+// covering both the "file"/"memory_file" (root-relative) and legacy "path"
+// (relative to .agent/knowledge/) key shapes. Unlike indexedMemoryPaths, this
+// does NOT require the file to exist on disk: GH-4398's restore guard runs
+// precisely when the file is missing (deleted), so an on-disk existence check
+// would always fail the case it exists to catch. Returns (nil, nil) when
+// graph.json is absent — no drift gate to protect.
+func (g *GitOperations) graphIndexedMemoryNodes() (map[string]string, error) {
+	raw, err := os.ReadFile(filepath.Join(g.projectPath, graphJSONRelPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read graph.json: %w", err)
+	}
+
+	var graph struct {
+		Nodes struct {
+			Memories map[string]map[string]any `json:"memories"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &graph); err != nil {
+		return nil, fmt.Errorf("failed to parse graph.json: %w", err)
+	}
+
+	nodes := make(map[string]string)
+	for nodeID, node := range graph.Nodes.Memories {
+		for _, field := range graphJSONPathFields {
+			rawPath, ok := node[field].(string)
+			if !ok {
+				continue
+			}
+			// Register both the root-relative ("file"/"memory_file") and the
+			// legacy .agent/knowledge/-relative ("path") candidate forms —
+			// whichever matches the diff's path wins, the other is simply
+			// never looked up. Mirrors indexedMemoryPaths' candidate order.
+			nodes[filepath.ToSlash(rawPath)] = nodeID
+			nodes[filepath.ToSlash(filepath.Join(".agent", "knowledge", rawPath))] = nodeID
+			break
+		}
+	}
+	return nodes, nil
+}
+
+// RestoredMemoryDoc describes one graph-indexed memory file that
+// RestoreDeletedIndexedMemoryDocs restored after finding it deleted relative
+// to baseBranch, plus the graph node id that still references it.
+type RestoredMemoryDoc struct {
+	Path   string
+	NodeID string
+}
+
+// RestoreDeletedIndexedMemoryDocs is the restore leg of the GH-4387 protected-
+// memory guard (GH-4398): it finds any .agent/knowledge/memories/**.md file
+// deleted between baseBranch and HEAD that is still referenced by a node in
+// .agent/knowledge/graph.json, restores it via `git checkout <baseBranch> --
+// <path>` as a fail-safe, and stages the restoration as a follow-up commit so
+// the file rides the same PR the guard is protecting.
+//
+// Deleting a genuinely unindexed memory doc remains allowed: only paths with
+// a surviving graph node are restored. Returns (nil, nil) when there is
+// nothing to restore (no deletions under memories/, no graph.json, or none of
+// the deletions are graph-indexed).
+//
+// Callers own logging + ledger visibility for each restored doc (see
+// Runner.recordMemoryGuardRestoreEvents) and deciding when in the push/PR
+// path this runs (GH-4397); this method only performs the git-level restore.
+func (g *GitOperations) RestoreDeletedIndexedMemoryDocs(ctx context.Context, baseBranch string) ([]RestoredMemoryDoc, error) {
+	deleted, err := g.deletedMemoryDocs(ctx, baseBranch)
+	if err != nil || len(deleted) == 0 {
+		return nil, err
+	}
+
+	nodes, err := g.graphIndexedMemoryNodes()
+	if err != nil || len(nodes) == 0 {
+		return nil, err
+	}
+
+	var restored []RestoredMemoryDoc
+	for _, doc := range deleted {
+		if nodeID, ok := nodes[doc]; ok {
+			restored = append(restored, RestoredMemoryDoc{Path: doc, NodeID: nodeID})
+		}
+	}
+	if len(restored) == 0 {
+		return nil, nil
+	}
+
+	checkoutArgs := append([]string{"checkout", baseBranch, "--"}, restoredPaths(restored)...)
+	checkoutCmd := exec.CommandContext(ctx, "git", checkoutArgs...)
+	checkoutCmd.Dir = g.projectPath
+	if output, err := checkoutCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to restore protected memory doc(s): %w: %s", err, output)
+	}
+
+	addArgs := append([]string{"add", "--"}, restoredPaths(restored)...)
+	addCmd := exec.CommandContext(ctx, "git", addArgs...)
+	addCmd.Dir = g.projectPath
+	if output, err := addCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to stage restored memory doc(s): %w: %s", err, output)
+	}
+
+	message := "fix(memory): restore graph-indexed memory doc(s) deleted during execution\n\n" +
+		"GH-4387/GH-4398: the protected-memory guard detected deletion of file(s)\n" +
+		"still referenced by .agent/knowledge/graph.json and restored them as a\n" +
+		"fail-safe so the Knowledge Graph Drift Gate does not wedge this PR.\n" +
+		"Restored:\n" + strings.Join(restoredPaths(restored), "\n")
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
+	commitCmd.Dir = g.projectPath
+	if output, err := commitCmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("failed to commit restored memory doc(s): %w: %s", err, output)
+	}
+
+	return restored, nil
+}
+
+// restoredPaths extracts the Path field from a []RestoredMemoryDoc, for use
+// as git command arguments.
+func restoredPaths(docs []RestoredMemoryDoc) []string {
+	paths := make([]string, len(docs))
+	for i, d := range docs {
+		paths[i] = d.Path
+	}
+	return paths
+}
+
 // Push pushes the current branch to remote
 func (g *GitOperations) Push(ctx context.Context, branchName string) error {
 	cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", branchName)
