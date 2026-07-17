@@ -4140,14 +4140,14 @@
       "type": "implements"
     },
     {
-      "source": "absolute-state-paths-bypass-cutover-shim",
-      "target": "s6-lite-cutover-recipe",
-      "relation": "refines"
+      "from": "absolute-state-paths-bypass-cutover-shim",
+      "to": "s6-lite-cutover-recipe",
+      "type": "refines"
     },
     {
-      "source": "rlimit-as-breaks-node-subprocesses",
-      "target": "absolute-state-paths-bypass-cutover-shim",
-      "relation": "related"
+      "from": "rlimit-as-breaks-node-subprocesses",
+      "to": "absolute-state-paths-bypass-cutover-shim",
+      "type": "related"
     }
   ],
   "concept_index": {
