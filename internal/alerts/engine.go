@@ -63,6 +63,13 @@ type Engine struct {
 // crashed one.
 const minOrphanEvictionThreshold = 120 * time.Minute
 
+// taskStuckQueuedPhase is the exact Phase string the dispatcher emits
+// (internal/executor/dispatcher.go queueSingleTask, via runner.EmitProgress)
+// the moment a task is admitted to a project's queue, before any worker has
+// picked it up. evaluateStuckTasks treats entries still carrying this phase
+// as merely waiting in line, not stuck (GH-4416).
+const taskStuckQueuedPhase = "Queued"
+
 type progressState struct {
 	Progress      int
 	UpdatedAt     time.Time
@@ -627,6 +634,22 @@ func (e *Engine) evaluateStuckTasks(ctx context.Context) {
 			}
 
 			if stuckDuration <= threshold {
+				continue
+			}
+
+			// GH-4416: a task still sitting in the dispatcher's "Queued" phase
+			// hasn't been picked up by a project worker yet — queue-wait behind
+			// a busy single-lane worker is normal operation (deep queues are
+			// routine now that the box runs multi-project with lane
+			// concurrency 1), not stuckness. Mirrors GH-4033's staleReference
+			// fix in memory/store.go (measure staleness from started_at, not
+			// queue/created time): only arm task_stuck once the task has
+			// actually reached a running/progress stage. Without this, every
+			// queued task past the threshold fires its own warning the moment
+			// the sweep ticks, so a deep queue backlog spams one alert per
+			// waiting task instead of surfacing the (separate) queue-depth
+			// concern.
+			if state.Phase == taskStuckQueuedPhase {
 				continue
 			}
 
