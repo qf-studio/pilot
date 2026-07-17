@@ -677,6 +677,13 @@ Examples:
 							gwAutopilotController.SetReleaseSummaryGenerator(
 								autopilot.NewReleaseSummaryGenerator(apGHClient, os.Getenv("ANTHROPIC_API_KEY"), logging.WithComponent("autopilot")),
 							)
+							// GH-4412: wire the always-on Dispatcher liveness signal so the
+							// orphan-running sweep's live-worker exclusion set isn't silently
+							// empty outside --dashboard mode (see SetMonitor's dashboard-only
+							// wiring further down).
+							if gwDispatcher != nil {
+								gwAutopilotController.SetDispatcherLiveness(gwDispatcher)
+							}
 						}
 					}
 				}
@@ -2206,6 +2213,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			dispatcher = nil
 		} else {
 			logging.WithComponent("start").Info("Task dispatcher started")
+		}
+	}
+
+	// GH-4412: wire the always-on Dispatcher liveness signal into every
+	// autopilot controller, unconditionally (unlike SetMonitor above, which
+	// only runs in --dashboard mode). Without this, the orphan-running sweep's
+	// live-worker exclusion set is silently empty in the common headless
+	// (--telegram/--github, no --dashboard) deployment.
+	if dispatcher != nil {
+		for _, ctrl := range autopilotControllers {
+			ctrl.SetDispatcherLiveness(dispatcher)
 		}
 	}
 

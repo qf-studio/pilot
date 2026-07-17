@@ -1041,6 +1041,38 @@ func (d *Dispatcher) GetWorkerStatus() map[string]WorkerStatus {
 	return status
 }
 
+// GetRunningTaskIDs returns the task IDs every ProjectWorker is currently
+// processing. Unlike executor.Monitor.GetRunningTaskIDs (only populated in
+// --dashboard mode, see cmd/pilot/main.go's SetMonitor wiring), the
+// Dispatcher and its workers are always constructed, so this is the
+// authoritative "is a live worker actually holding this task right now"
+// signal regardless of dashboard/headless mode. GH-4412: the autopilot
+// orphan-running sweep previously relied solely on the optional Monitor for
+// this exclusion set, which is empty in headless (--telegram/--github only)
+// deployments — silently disabling the "live worker" guard and leaving only
+// the 10-minute execution_events heartbeat window to protect a genuinely
+// running task, which a single long-running tool call can easily exceed.
+func (d *Dispatcher) GetRunningTaskIDs() []string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var ids []string
+	for _, worker := range d.workers {
+		// Read currentTaskID/processing directly instead of worker.Status(),
+		// which also queries the store for QueuedCount — unneeded here and
+		// this can be called on every sweep tick.
+		if !worker.processing.Load() {
+			continue
+		}
+		if v := worker.currentTaskID.Load(); v != nil {
+			if taskID, ok := v.(string); ok && taskID != "" {
+				ids = append(ids, taskID)
+			}
+		}
+	}
+	return ids
+}
+
 // GetExecutionStatus returns the current status of an execution.
 func (d *Dispatcher) GetExecutionStatus(execID string) (*memory.Execution, error) {
 	return d.store.GetExecution(execID)

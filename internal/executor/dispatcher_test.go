@@ -271,6 +271,59 @@ func TestDispatcher_GetWorkerStatus(t *testing.T) {
 	}
 }
 
+// TestDispatcher_GetRunningTaskIDs verifies the GH-4412 always-on liveness
+// signal: it must report exactly the task IDs of workers currently marked
+// processing, and must not report idle workers or workers with no current
+// task. This is what the autopilot orphan-running sweep unions with the
+// (dashboard-only) Monitor's set so a live worker is never mistaken for an
+// orphan when the daemon runs headless (no --dashboard, no Monitor wired).
+func TestDispatcher_GetRunningTaskIDs(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// No workers yet.
+	if ids := dispatcher.GetRunningTaskIDs(); len(ids) != 0 {
+		t.Errorf("expected 0 running task IDs with no workers, got %v", ids)
+	}
+
+	log := slog.Default()
+	idleWorker := NewProjectWorker("/proj-idle", store, runner, log)
+	dispatcher.mu.Lock()
+	dispatcher.workers["/proj-idle"] = idleWorker
+	dispatcher.mu.Unlock()
+
+	// Idle worker (processing=false) must not be reported live.
+	if ids := dispatcher.GetRunningTaskIDs(); len(ids) != 0 {
+		t.Errorf("expected 0 running task IDs with only an idle worker, got %v", ids)
+	}
+
+	liveWorker := NewProjectWorker("/proj-live", store, runner, log)
+	liveWorker.processing.Store(true)
+	liveWorker.currentTaskID.Store("GH-4412")
+	dispatcher.mu.Lock()
+	dispatcher.workers["/proj-live"] = liveWorker
+	dispatcher.mu.Unlock()
+
+	ids := dispatcher.GetRunningTaskIDs()
+	if len(ids) != 1 || ids[0] != "GH-4412" {
+		t.Errorf("expected [GH-4412], got %v", ids)
+	}
+
+	// Once the worker goes idle again, it must drop out of the live set.
+	liveWorker.processing.Store(false)
+	if ids := dispatcher.GetRunningTaskIDs(); len(ids) != 0 {
+		t.Errorf("expected 0 running task IDs after worker goes idle, got %v", ids)
+	}
+}
+
 func TestDispatcher_MultipleProjects(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

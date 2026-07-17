@@ -14,6 +14,54 @@ import (
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
+// mockDispatcherLiveness implements DispatcherLiveness for testing the
+// GH-4412 always-on live-worker signal (independent of the dashboard-only
+// TaskMonitor).
+type mockDispatcherLiveness struct {
+	runningTaskIDs []string
+}
+
+func (m *mockDispatcherLiveness) GetRunningTaskIDs() []string {
+	return m.runningTaskIDs
+}
+
+// TestSweepOrphanedRunningExecutions_LiveDispatcherEntryNotFlipped is the
+// GH-4412 regression gate: a status='running' row whose task_id is in the
+// Dispatcher's live-worker set must never be resolved by the orphan sweep,
+// even with NO Monitor wired at all (the common headless --telegram/--github
+// deployment, where TaskMonitor is only set up in --dashboard mode). Before
+// this fix, an unwired c.monitor meant the sweep's exclusion set was silently
+// empty, so a genuinely running task with no execution_events heartbeat in
+// the last orphanRunningHeartbeatWindow (e.g. one long tool call) would be
+// wrongly marked failed out from under its still-running worker.
+func TestSweepOrphanedRunningExecutions_LiveDispatcherEntryNotFlipped(t *testing.T) {
+	cfg := DefaultConfig()
+	c := NewController(cfg, nil, nil, "owner", "repo")
+
+	evalMock := &mockEvalStore{
+		orphanedRunning: []*memory.Execution{
+			{ID: "exec-live", TaskID: "GH-4412", ProjectPath: "/proj"},
+		},
+		executionEvents: map[string][]*memory.Event{
+			"exec-live": {
+				{ExecutionID: "exec-live", Stage: memory.StageRunning, OccurredAt: time.Now().Add(-14 * time.Minute)},
+			},
+		},
+	}
+	c.SetEvalStore(evalMock)
+	// No monitor wired (headless mode) — only the Dispatcher liveness signal.
+	c.SetDispatcherLiveness(&mockDispatcherLiveness{runningTaskIDs: []string{"GH-4412"}})
+
+	c.sweepOrphanedRunningExecutions(nil)
+
+	if len(evalMock.resolvedOrphans) != 0 {
+		t.Fatalf("expected GH-4412 (live per Dispatcher, no Monitor wired) to never be resolved, got %d resolve calls: %+v", len(evalMock.resolvedOrphans), evalMock.resolvedOrphans)
+	}
+	if len(evalMock.lastExcludeTaskIDs) != 1 || evalMock.lastExcludeTaskIDs[0] != "GH-4412" {
+		t.Errorf("expected FindOrphanedRunningExecutions to be called with the Dispatcher's live set, got %v", evalMock.lastExcludeTaskIDs)
+	}
+}
+
 // TestSweepOrphanedRunningExecutions_LiveMonitorEntryNotFlipped is the GH-4206
 // regression gate: a status='running' row whose task_id is in the live
 // Monitor's running/queued set must never be resolved by the orphan sweep,
@@ -67,6 +115,40 @@ func TestSweepOrphanedRunningExecutions_FreshHeartbeatNotFlipped(t *testing.T) {
 
 	if len(evalMock.resolvedOrphans) != 0 {
 		t.Fatalf("expected fresh-heartbeat row to survive the sweep, got resolve calls: %+v", evalMock.resolvedOrphans)
+	}
+}
+
+// TestSweepOrphanedRunningExecutions_StaleHeartbeatWithinRunnerCeilingNotFlipped
+// is the GH-4412 regression gate for the heartbeat-window floor: a row whose
+// last heartbeat is old enough to have tripped the pre-fix fixed 10-minute
+// orphanRunningHeartbeatWindow (here, 20 minutes — comfortably past 10, but
+// still far inside the runner's own 30-60m task timeouts and 120m watchdog
+// kill ceiling) must survive the sweep even with no live Monitor/Dispatcher
+// entry at all. Only a genuinely runner-ceiling-exceeding silence (see
+// TestSweepOrphanedRunningExecutions_StaleNoEvidenceMarkedFailed's 2-hour gap)
+// may resolve the row.
+func TestSweepOrphanedRunningExecutions_StaleHeartbeatWithinRunnerCeilingNotFlipped(t *testing.T) {
+	cfg := DefaultConfig()
+	c := NewController(cfg, nil, nil, "owner", "repo")
+
+	evalMock := &mockEvalStore{
+		orphanedRunning: []*memory.Execution{
+			{ID: "exec-still-running", TaskID: "GH-4412", ProjectPath: "/proj"},
+		},
+		executionEvents: map[string][]*memory.Event{
+			"exec-still-running": {
+				{ExecutionID: "exec-still-running", Stage: memory.StageRunning, OccurredAt: time.Now().Add(-20 * time.Minute)},
+			},
+		},
+	}
+	c.SetEvalStore(evalMock)
+	// No monitor, no Dispatcher liveness wired — the heartbeat-window floor
+	// alone must be what protects this row.
+
+	c.sweepOrphanedRunningExecutions(nil)
+
+	if len(evalMock.resolvedOrphans) != 0 {
+		t.Fatalf("expected 20-minute-stale row to survive the sweep (within the runner's 120m ceiling), got resolve calls: %+v", evalMock.resolvedOrphans)
 	}
 }
 

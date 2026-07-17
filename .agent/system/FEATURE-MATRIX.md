@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-17 (v2.151.0)
+**Last Updated:** 2026-07-16 (v2.151.0)
 
 ## Legend
 
@@ -68,6 +68,7 @@
 | Branch switch hard fail | ✅ | executor | - | - | Abort execution on git checkout failure (v0.34.0) |
 | Sub-issue PR callback | ✅ | executor | - | - | Wire sub-issue PRs back to autopilot controller chain (v0.23.1, GH-588) |
 | Error classification engine | ✅ | executor | - | - | parseClaudeCodeError() routes rate_limit/api_error/timeout for retry (v0.48.0, GH-917) |
+| Kernel-evidence-gated OOM classification | ✅ | executor | - | - | Exit 137/139 requires dmesg OOM-killer evidence (or a heartbeat/watchdog self-kill flag) before labeling oom_killed; bare exit code alone now classifies as unconfirmed "timeout" (v2.241.2, GH-4412) |
 | Retry on label removal | ✅ | executor | - | - | Allow retry when pilot-failed label is manually removed (v0.33.2) |
 | Code simplification pipeline | ✅ | executor | - | - | simplify.go integrated into execution pipeline for code quality (v0.61.0, GH-995) |
 | Context markers | ✅ | executor | - | - | markers.go for context save points before risky operations (v0.61.0) |

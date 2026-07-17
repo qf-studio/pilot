@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T11:05:00+00:00",
+  "updated": "2026-07-17T15:18:52+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -2973,6 +2973,23 @@
         ],
         "confidence": 0.95,
         "created": "2026-07-17"
+      },
+      "bare-exit-137-mislabeled-oom": {
+        "type": "pitfall",
+        "summary": "classifyClaudeCodeError labeled every unexplained exit 137/139 \"oom_killed\" with zero kernel evidence — heartbeat/watchdog self-kills and external SIGKILLs (e.g. the orphan-running sweep) got the same label as a real kernel OOM",
+        "file": ".agent/knowledge/memories/pitfalls/bare-exit-137-mislabeled-oom.md",
+        "concepts": [
+          "executor",
+          "error-classification",
+          "oom",
+          "sigkill",
+          "heartbeat",
+          "watchdog",
+          "dmesg",
+          "retry"
+        ],
+        "confidence": 0.9,
+        "created": "2026-07-17"
       }
     }
   },
@@ -4653,8 +4670,8 @@
   },
   "last_updated": "2026-07-17T09:45:00+00:00",
   "stats": {
-    "total_nodes": 256,
+    "total_nodes": 257,
     "total_edges": 226,
-    "memory_count": 160
+    "memory_count": 161
   }
 }
