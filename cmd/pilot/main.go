@@ -1064,7 +1064,9 @@ Examples:
 
 			// Show startup banner (headless mode)
 			gatewayURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
-			banner.StartupBanner(version, gatewayURL)
+			gwDBPath := resolvedDBPath(cfg)
+			banner.StartupBanner(version, gatewayURL, gwDBPath)
+			logging.WithComponent("start").Info("resolved storage path", slog.String("db_path", gwDBPath))
 
 			// Show Telegram status in gateway mode (GH-349)
 			if hasTelegram && cfg.Adapters.Telegram.Polling {
@@ -1353,6 +1355,26 @@ func daemonLockDir(cfg *config.Config) string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".pilot", "data")
+}
+
+// resolvedDBPath returns the fully resolved (absolute, symlink-evaluated)
+// filesystem path to the SQLite ledger the daemon will read/write, given
+// cfg.Memory.Path (same fallback as daemonLockDir).
+//
+// GH-4393: a config-supplied absolute storage path silently bypassed the
+// host's directory shim, leaving the daemon writing to a shadow ledger for
+// hours before anyone noticed. Resolving symlinks here — and surfacing the
+// result in the startup banner — makes that class of drift visible
+// immediately instead of requiring a post-incident audit.
+func resolvedDBPath(cfg *config.Config) string {
+	dir := daemonLockDir(cfg)
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	return filepath.Join(dir, "pilot.db")
 }
 
 // acquireDaemonLock takes the adapter-agnostic single-instance guard
@@ -2108,8 +2130,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 
 	// Show startup banner (skip in dashboard mode to avoid corrupting TUI)
+	tgDBPath := resolvedDBPath(cfg)
+	logging.WithComponent("start").Info("resolved storage path", slog.String("db_path", tgDBPath))
 	if !dashboardMode {
-		banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, cfg)
+		banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, tgDBPath, cfg)
 	}
 
 	// Log autopilot status

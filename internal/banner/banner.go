@@ -39,13 +39,19 @@ func PrintCompact() {
 	fmt.Println("Pilot - AI That Ships Your Tickets")
 }
 
-// StartupBanner prints the full startup banner
-func StartupBanner(version, gateway string) {
+// StartupBanner prints the full startup banner.
+// dbPath is the fully resolved (absolute, symlink-evaluated) path to the
+// SQLite ledger the daemon will read/write. GH-4393: a config-supplied
+// absolute storage path silently bypassed the host's directory shim,
+// leaving the daemon writing to a shadow ledger for hours undetected —
+// printing the resolved path here makes that drift visible at a glance.
+func StartupBanner(version, gateway, dbPath string) {
 	fmt.Print(Logo)
 	fmt.Printf("   %s\n", Tagline)
 	fmt.Println()
 	fmt.Printf("   Version:  %s\n", version)
 	fmt.Printf("   Gateway:  %s\n", gateway)
+	fmt.Printf("   Database: %s\n", dbPath)
 	fmt.Println()
 }
 
@@ -97,8 +103,10 @@ func StartupWithHealth(version string, cfg *config.Config) {
 	fmt.Println()
 }
 
-// StartupTelegram prints telegram-specific startup with health
-func StartupTelegram(version, project, chatID string, cfg *config.Config) {
+// StartupTelegram prints telegram-specific startup with health.
+// dbPath is the fully resolved (absolute, symlink-evaluated) path to the
+// SQLite ledger the daemon will read/write (GH-4393 — see StartupBanner).
+func StartupTelegram(version, project, chatID, dbPath string, cfg *config.Config) {
 	report := health.RunChecks(cfg, version)
 
 	// ASCII logo
@@ -181,6 +189,7 @@ func StartupTelegram(version, project, chatID string, cfg *config.Config) {
 
 	fmt.Println()
 	fmt.Printf("Project: %s\n", project)
+	fmt.Printf("Database: %s\n", dbPath)
 	if chatID != "" {
 		fmt.Printf("Chat ID: %s\n", chatID)
 	}
