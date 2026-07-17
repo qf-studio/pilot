@@ -733,6 +733,139 @@ func TestClaimExecution_ProjectScoping(t *testing.T) {
 	}
 }
 
+// TestRepickBackoff_PersistsAcrossStoreReopen is the GH-4394 regression test:
+// the whole point of persisting repick-backoff state (rather than keeping it
+// purely in-process, as it was under #4385) is that a fresh Store handle —
+// standing in for a daemon restart or a second process opening the same DB
+// file — sees the SAME cooldown a prior handle recorded, instead of it
+// resetting to "not found" / zero drops.
+func TestRepickBackoff_PersistsAcrossStoreReopen(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	key := "/project|GH-85"
+
+	store1, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+
+	nextAllowedAt := time.Now().Add(2 * time.Minute).Truncate(time.Second)
+	if err := store1.SetRepickBackoff(key, 3, nextAllowedAt); err != nil {
+		t.Fatalf("SetRepickBackoff failed: %v", err)
+	}
+	if err := store1.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Simulate a restart: a brand new Store handle over the same data dir.
+	store2, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore (reopen) failed: %v", err)
+	}
+	defer func() { _ = store2.Close() }()
+
+	drops, gotNextAllowedAt, found, err := store2.GetRepickBackoff(key)
+	if err != nil {
+		t.Fatalf("GetRepickBackoff failed: %v", err)
+	}
+	if !found {
+		t.Fatal("expected repick backoff state to survive a store reopen (restart)")
+	}
+	if drops != 3 {
+		t.Errorf("expected consecutive_drops=3 to survive reopen, got %d", drops)
+	}
+	if !gotNextAllowedAt.Equal(nextAllowedAt) {
+		t.Errorf("expected next_allowed_at=%v to survive reopen, got %v", nextAllowedAt, gotNextAllowedAt)
+	}
+}
+
+// TestRepickBackoff_GetMissingKeyNotFound verifies a key with no recorded
+// drop reports found=false rather than a zero-value row — the normal
+// "not throttled" case for a task that has never dropped.
+func TestRepickBackoff_GetMissingKeyNotFound(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	_, _, found, err := store.GetRepickBackoff("/project|GH-does-not-exist")
+	if err != nil {
+		t.Fatalf("GetRepickBackoff failed: %v", err)
+	}
+	if found {
+		t.Error("expected a never-recorded key to report found=false")
+	}
+}
+
+// TestRepickBackoff_SetOverwritesExistingRow verifies a second SetRepickBackoff
+// call for the same key replaces the prior state (the growing-cooldown case:
+// each consecutive drop overwrites the previous count/deadline) rather than
+// erroring on the existing primary key or leaving stale data behind.
+func TestRepickBackoff_SetOverwritesExistingRow(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	key := "/project|GH-4394"
+	if err := store.SetRepickBackoff(key, 1, time.Now().Add(30*time.Second)); err != nil {
+		t.Fatalf("SetRepickBackoff (1st) failed: %v", err)
+	}
+	secondDeadline := time.Now().Add(60 * time.Second).Truncate(time.Second)
+	if err := store.SetRepickBackoff(key, 2, secondDeadline); err != nil {
+		t.Fatalf("SetRepickBackoff (2nd) failed: %v", err)
+	}
+
+	drops, nextAllowedAt, found, err := store.GetRepickBackoff(key)
+	if err != nil {
+		t.Fatalf("GetRepickBackoff failed: %v", err)
+	}
+	if !found {
+		t.Fatal("expected key to be found after two SetRepickBackoff calls")
+	}
+	if drops != 2 {
+		t.Errorf("expected the second call's consecutive_drops=2 to win, got %d", drops)
+	}
+	if !nextAllowedAt.Equal(secondDeadline) {
+		t.Errorf("expected the second call's deadline %v to win, got %v", secondDeadline, nextAllowedAt)
+	}
+}
+
+// TestRepickBackoff_ClearRemovesRow verifies ClearRepickBackoff (the
+// recordSuccess path) removes the row entirely, so a subsequent Get reports
+// found=false rather than a lingering stale entry.
+func TestRepickBackoff_ClearRemovesRow(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	key := "/project|GH-4370"
+	if err := store.SetRepickBackoff(key, 2, time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoff failed: %v", err)
+	}
+	if err := store.ClearRepickBackoff(key); err != nil {
+		t.Fatalf("ClearRepickBackoff failed: %v", err)
+	}
+
+	_, _, found, err := store.GetRepickBackoff(key)
+	if err != nil {
+		t.Fatalf("GetRepickBackoff failed: %v", err)
+	}
+	if found {
+		t.Error("expected ClearRepickBackoff to remove the row")
+	}
+
+	// Clearing a key that was never set must be a no-op, not an error.
+	if err := store.ClearRepickBackoff("/project|GH-never-set"); err != nil {
+		t.Errorf("expected clearing a nonexistent key to be a no-op, got error: %v", err)
+	}
+}
+
 // TestGetDecomposedChildTaskIDs covers the GH-4216 (Defect A, fix 3)
 // cross-task-id dispatch guard's read helper: no decomposed event, a
 // decomposed event with children, duplicate refs collapsed, and project-path

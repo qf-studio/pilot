@@ -109,6 +109,14 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// lost, or already terminal per the HasTerminalCompletion re-check right
 	// below) gets a growing cooldown instead of repeating the full
 	// monitor/alert/dashboard side-effect sequence on every ~30s poll tick.
+	//
+	// GH-4394: wire the durable backing store on every call (idempotent — the
+	// same *Dispatcher for the process lifetime in production, a fresh one
+	// per test) so the cooldown survives a daemon restart or a shadow-DB
+	// split-brain instead of silently resetting to zero mid-storm.
+	if deps.Dispatcher != nil {
+		repickBackoff.setPersister(deps.Dispatcher)
+	}
 	backoffKey := repickBackoffKey(projectPath, taskID)
 	if deps.Dispatcher != nil && !repickBackoff.allow(backoffKey) {
 		logging.WithComponent("dispatch").Debug("task in repick backoff window, skipping dispatch",

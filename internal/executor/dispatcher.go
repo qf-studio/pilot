@@ -709,6 +709,26 @@ func (d *Dispatcher) HasTerminalCompletion(taskID, projectPath string) (bool, er
 	return HasTerminalCompletion(d.store, taskID, projectPath)
 }
 
+// RepickBackoffState, SetRepickBackoffState, and ClearRepickBackoffState
+// expose the store's repick_backoff table to callers outside this package —
+// e.g. cmd/pilot's repickBackoffTracker (GH-4394). The tracker owns the
+// exponential-growth policy and its own in-process cache for the hot path;
+// these are thin store proxies so that cache is backed by the same durable
+// ledger every other dispatch-admission state (execution_claims, etc.) uses,
+// rather than resetting to empty on daemon restart or diverging across a
+// shadow-DB split-brain (#4393).
+func (d *Dispatcher) RepickBackoffState(key string) (consecutiveDrops int, nextAllowedAt time.Time, found bool, err error) {
+	return d.store.GetRepickBackoff(key)
+}
+
+func (d *Dispatcher) SetRepickBackoffState(key string, consecutiveDrops int, nextAllowedAt time.Time) error {
+	return d.store.SetRepickBackoff(key, consecutiveDrops, nextAllowedAt)
+}
+
+func (d *Dispatcher) ClearRepickBackoffState(key string) error {
+	return d.store.ClearRepickBackoff(key)
+}
+
 // QueueTask adds a task to the execution queue and returns the execution ID.
 // The task will be executed by the project's worker in FIFO order.
 // If a decomposer is configured and the task is complex, it will be split

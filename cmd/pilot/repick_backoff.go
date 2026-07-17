@@ -1,8 +1,11 @@
 package main
 
 import (
+	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // GH-4376: the poller's label-removed retry heuristic (external studio-sdk
@@ -27,18 +30,68 @@ type repickBackoffEntry struct {
 	nextAllowedAt    time.Time
 }
 
+// repickBackoffPersister durably mirrors the tracker's in-memory entries
+// (GH-4394). Implemented by *executor.Dispatcher, which proxies to the
+// store's repick_backoff table. A nil persister (e.g. in the tracker's own
+// unit tests, or before the dispatcher is wired) makes the tracker behave
+// exactly as it did pre-GH-4394: pure in-memory, reset on restart.
+type repickBackoffPersister interface {
+	RepickBackoffState(key string) (consecutiveDrops int, nextAllowedAt time.Time, found bool, err error)
+	SetRepickBackoffState(key string, consecutiveDrops int, nextAllowedAt time.Time) error
+	ClearRepickBackoffState(key string) error
+}
+
 // repickBackoffTracker throttles repeated dispatch attempts for the same task
 // after a dropped pickup (claim lost, or a completed-but-open issue the
 // poller re-admitted despite terminal ledger evidence). Backoff grows
 // exponentially per consecutive drop and is capped at
 // repickBackoffBaseInterval * 2^repickBackoffMaxShift.
+//
+// GH-4394: state is mirrored to persist (when wired) so a daemon restart or
+// a shadow-DB split-brain doesn't silently reset a task's cooldown to zero
+// mid-storm — the in-memory map remains the hot-path cache, but the durable
+// copy is what a fresh process (or a fresh check after the first process
+// crashed) rehydrates from.
 type repickBackoffTracker struct {
 	mu      sync.Mutex
 	entries map[string]*repickBackoffEntry
+	persist repickBackoffPersister
 }
 
 func newRepickBackoffTracker() *repickBackoffTracker {
 	return &repickBackoffTracker{entries: make(map[string]*repickBackoffEntry)}
+}
+
+// setPersister wires (or rewires) the durable backing store. Safe to call
+// repeatedly — handleIssueGeneric calls it on every invocation with the
+// current deps.Dispatcher, which is idempotent for the common case (the same
+// dispatcher instance for the process lifetime) and correctly picks up a new
+// dispatcher in tests that construct a fresh one per test.
+func (t *repickBackoffTracker) setPersister(p repickBackoffPersister) {
+	t.mu.Lock()
+	t.persist = p
+	t.mu.Unlock()
+}
+
+// hydrate loads key's persisted state into the in-memory cache on first
+// touch (e.g. right after a restart, before this process has recorded any
+// drop of its own for key). Must be called with t.mu held.
+func (t *repickBackoffTracker) hydrateLocked(key string) *repickBackoffEntry {
+	if t.persist == nil {
+		return nil
+	}
+	consecutiveDrops, nextAllowedAt, found, err := t.persist.RepickBackoffState(key)
+	if err != nil {
+		logging.WithComponent("dispatch").Warn("failed to load persisted repick backoff state",
+			slog.String("key", key), slog.Any("error", err))
+		return nil
+	}
+	if !found {
+		return nil
+	}
+	e := &repickBackoffEntry{consecutiveDrops: consecutiveDrops, nextAllowedAt: nextAllowedAt}
+	t.entries[key] = e
+	return e
 }
 
 // allow reports whether a dispatch attempt for key may proceed now — false
@@ -48,7 +101,10 @@ func (t *repickBackoffTracker) allow(key string) bool {
 	defer t.mu.Unlock()
 	e, ok := t.entries[key]
 	if !ok {
-		return true
+		e = t.hydrateLocked(key)
+		if e == nil {
+			return true
+		}
 	}
 	return !time.Now().Before(e.nextAllowedAt)
 }
@@ -61,8 +117,11 @@ func (t *repickBackoffTracker) recordDrop(key string) int {
 	defer t.mu.Unlock()
 	e, ok := t.entries[key]
 	if !ok {
-		e = &repickBackoffEntry{}
-		t.entries[key] = e
+		e = t.hydrateLocked(key)
+		if e == nil {
+			e = &repickBackoffEntry{}
+			t.entries[key] = e
+		}
 	}
 	e.consecutiveDrops++
 	shift := e.consecutiveDrops - 1
@@ -70,6 +129,12 @@ func (t *repickBackoffTracker) recordDrop(key string) int {
 		shift = repickBackoffMaxShift
 	}
 	e.nextAllowedAt = time.Now().Add(repickBackoffBaseInterval * time.Duration(uint64(1)<<uint(shift)))
+	if t.persist != nil {
+		if err := t.persist.SetRepickBackoffState(key, e.consecutiveDrops, e.nextAllowedAt); err != nil {
+			logging.WithComponent("dispatch").Warn("failed to persist repick backoff state",
+				slog.String("key", key), slog.Any("error", err))
+		}
+	}
 	return e.consecutiveDrops
 }
 
@@ -80,6 +145,12 @@ func (t *repickBackoffTracker) recordSuccess(key string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.entries, key)
+	if t.persist != nil {
+		if err := t.persist.ClearRepickBackoffState(key); err != nil {
+			logging.WithComponent("dispatch").Warn("failed to clear persisted repick backoff state",
+				slog.String("key", key), slog.Any("error", err))
+		}
+	}
 }
 
 // repickBackoff is the process-wide tracker consulted by handleIssueGeneric.

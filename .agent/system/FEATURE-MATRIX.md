@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-16 (v2.151.0)
+**Last Updated:** 2026-07-17 (v2.151.0)
 
 ## Legend
 
@@ -68,7 +68,6 @@
 | Branch switch hard fail | ✅ | executor | - | - | Abort execution on git checkout failure (v0.34.0) |
 | Sub-issue PR callback | ✅ | executor | - | - | Wire sub-issue PRs back to autopilot controller chain (v0.23.1, GH-588) |
 | Error classification engine | ✅ | executor | - | - | parseClaudeCodeError() routes rate_limit/api_error/timeout for retry (v0.48.0, GH-917) |
-| Kernel-evidence-gated OOM classification | ✅ | executor | - | - | Exit 137/139 requires dmesg OOM-killer evidence (or a heartbeat/watchdog self-kill flag) before labeling oom_killed; bare exit code alone now classifies as unconfirmed "timeout" (v2.241.2, GH-4412) |
 | Retry on label removal | ✅ | executor | - | - | Allow retry when pilot-failed label is manually removed (v0.33.2) |
 | Code simplification pipeline | ✅ | executor | - | - | simplify.go integrated into execution pipeline for code quality (v0.61.0, GH-995) |
 | Context markers | ✅ | executor | - | - | markers.go for context save points before risky operations (v0.61.0) |
@@ -338,7 +337,7 @@
 | Config validation preflight | ✅ | executor | - | - | Validate config fields on startup before accepting issues (v0.48.0) |
 | GitLab docs sync CI | ✅ | ci | - | - | GitHub Action syncs docs/ to GitLab repo on merge to main (v0.23.2) |
 | Poller registration refactor | ✅ | main | - | - | Extract poller registration pattern from main.go (v2.30.0, PR #1857) |
-| Repick-storm backoff | ✅ | main (handler_common.go) | - | - | Per-issue exponential backoff (capped at 30s×32) + independent `HasTerminalCompletion` re-check at the shared dispatch chokepoint — throttles the poller's label-removed retry heuristic re-admitting a completed-but-open issue every poll tick; storm rate on `pilot_poller_skipped_total{reason="repick_storm_backoff"}` (GH-4376) |
+| Repick-storm backoff | ✅ | main (handler_common.go) + memory (repick_backoff table) | - | - | Per-issue exponential backoff (capped at 30s×32) + independent `HasTerminalCompletion` re-check at the shared dispatch chokepoint — throttles the poller's label-removed retry heuristic re-admitting a completed-but-open issue every poll tick; storm rate on `pilot_poller_skipped_total{reason="repick_storm_backoff"}` (GH-4376). Cooldown state now mirrors to the store's `repick_backoff` table via `*Dispatcher.{RepickBackoffState,SetRepickBackoffState,ClearRepickBackoffState}` so a daemon restart or shadow-DB split-brain no longer resets it to zero mid-storm (GH-85 retried 5x/15min with no growth; GH-4394 subtask 1/5 — other repick entry points still need wiring) |
 | Secrets check | ✅ | - | `make check-secrets` | - | Scan test files for realistic secret patterns before push |
 | Windows hot upgrade | ✅ | upgrade | - | - | Allow dashboard hot upgrade on Windows without restart (v1.46.0) |
 | Windows forward slashes | ✅ | navigator | - | - | Use forward slashes for embed.FS on Windows (v1.46.0) |
