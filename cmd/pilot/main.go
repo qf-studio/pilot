@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -503,6 +504,7 @@ Examples:
 			var gwAutopilotStateStore *autopilot.StateStore
 			var gwAlertsEngine *alerts.Engine
 			var gwTgApprovalHandler *approval.TelegramHandler
+			var gwSlackApprovalHandler *approval.SlackHandler
 
 			if needsPollingInfra {
 				// Create shared runner with config (GH-956: enables worktree isolation)
@@ -617,8 +619,22 @@ Examples:
 						if slackChannel == "" {
 							slackChannel = cfg.Adapters.Slack.Channel
 						}
-						slackApprovalHandler := approval.NewSlackHandler(&slackApprovalClientAdapter{adapter: slackAdapter}, slackChannel)
-						approvalMgr.RegisterHandler(slackApprovalHandler)
+						gwSlackApprovalHandler = approval.NewSlackHandler(&slackApprovalClientAdapter{adapter: slackAdapter}, slackChannel)
+						// GH-4411: persist decisions directly to PRState via the manager so a
+						// button click on a Rehydrate-restored request isn't lost when no
+						// waiter goroutine survived the restart (mirrors GH-3825's Telegram fix).
+						gwSlackApprovalHandler.WithDecisionRecorder(approvalMgr)
+						if gwStore != nil {
+							gwSlackApprovalHandler.WithStore(gwStore)
+							if rErr := gwSlackApprovalHandler.Rehydrate(context.Background()); rErr != nil {
+								logging.WithComponent("approval").Warn("slack approval rehydrate failed", slog.Any("error", rErr))
+							}
+						}
+						approvalMgr.RegisterHandler(gwSlackApprovalHandler)
+						// GH-4411: prune requests that expired while the daemon was
+						// down (or with no in-process waiter) instead of leaving them
+						// pending forever.
+						startApprovalExpirySweep(context.Background(), gwSlackApprovalHandler)
 					}
 				}
 
@@ -1323,16 +1339,24 @@ func setupDashboardLogging(cfg *config.Config) {
 }
 
 // approvalExpirySweepInterval is how often startApprovalExpirySweep checks
-// for pending Telegram approvals past their expires_at.
+// for pending approvals past their expires_at.
 const approvalExpirySweepInterval = 1 * time.Minute
 
-// startApprovalExpirySweep runs a background loop that prunes pending Telegram
+// expirablePendingHandler is satisfied by any approval handler that persists
+// pending requests and needs its own timeout sweep post-restart (currently
+// *approval.TelegramHandler and *approval.SlackHandler; GH-3825, GH-4411).
+type expirablePendingHandler interface {
+	PruneExpired(ctx context.Context) (int, error)
+}
+
+// startApprovalExpirySweep runs a background loop that prunes pending
 // approvals whose expires_at has passed, editing their message to show they
-// expired. A request rehydrated after a restart (see TelegramHandler.Rehydrate)
-// has no waiter goroutine enforcing its own timeout, so without this sweep it
-// would sit in the pending set forever instead of resolving (GH-3825).
-func startApprovalExpirySweep(ctx context.Context, handler *approval.TelegramHandler) {
-	if handler == nil {
+// expired. A request rehydrated after a restart (see TelegramHandler/
+// SlackHandler.Rehydrate) has no waiter goroutine enforcing its own timeout,
+// so without this sweep it would sit in the pending set forever instead of
+// resolving (GH-3825, GH-4411).
+func startApprovalExpirySweep(ctx context.Context, handler expirablePendingHandler) {
+	if handler == nil || reflect.ValueOf(handler).IsNil() {
 		return
 	}
 	logging.SafeGo("approval-expiry-sweep", func() {
@@ -1514,6 +1538,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 
 	// Register Slack approval handler if enabled
+	var slackApprovalHandlerImpl *approval.SlackHandler
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
 		if cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled {
 			slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
@@ -1522,8 +1547,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			if slackChannel == "" {
 				slackChannel = cfg.Adapters.Slack.Channel
 			}
-			slackApprovalHandler := approval.NewSlackHandler(&slackApprovalClientAdapter{adapter: slackAdapter}, slackChannel)
-			approvalMgr.RegisterHandler(slackApprovalHandler)
+			slackApprovalHandlerImpl = approval.NewSlackHandler(&slackApprovalClientAdapter{adapter: slackAdapter}, slackChannel)
+			// GH-4411: persist decisions directly to PRState via the manager so a
+			// button click on a Rehydrate-restored request isn't lost when no
+			// waiter goroutine survived the restart (mirrors GH-3825's Telegram fix).
+			slackApprovalHandlerImpl.WithDecisionRecorder(approvalMgr)
+			approvalMgr.RegisterHandler(slackApprovalHandlerImpl)
 			logging.WithComponent("start").Info("registered Slack approval handler",
 				slog.String("channel", slackChannel))
 		}
@@ -1692,6 +1721,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// GH-3825: prune requests that expired while the daemon was down (or with
 	// no in-process waiter) instead of leaving them pending forever.
 	startApprovalExpirySweep(ctx, tgApprovalHandlerImpl)
+
+	// GH-4411: same restart-survival treatment for Slack approvals.
+	if store != nil && slackApprovalHandlerImpl != nil {
+		slackApprovalHandlerImpl.WithStore(store)
+		if rErr := slackApprovalHandlerImpl.Rehydrate(ctx); rErr != nil {
+			logging.WithComponent("approval").Warn("slack approval rehydrate failed", slog.Any("error", rErr))
+		}
+	}
+	startApprovalExpirySweep(ctx, slackApprovalHandlerImpl)
 
 	// GH-726: Initialize autopilot state store for crash recovery
 	var autopilotStateStore *autopilot.StateStore
