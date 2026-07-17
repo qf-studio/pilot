@@ -549,7 +549,7 @@ func TestClassifyClaudeCodeError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := classifyClaudeCodeError(tt.stderr, nil, false)
+			err := classifyClaudeCodeError(tt.stderr, nil, false, "", false)
 			if err.Type != tt.expectType {
 				t.Errorf("classifyClaudeCodeError() type = %q, want %q", err.Type, tt.expectType)
 			}
@@ -596,7 +596,7 @@ func TestParseClaudeCodeError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := parseClaudeCodeError(tt.stderr, nil, false)
+			err := parseClaudeCodeError(tt.stderr, nil, false, "", false)
 			ccErr, ok := err.(*ClaudeCodeError)
 			if !ok {
 				t.Errorf("parseClaudeCodeError() did not return *ClaudeCodeError, got %T", err)
@@ -685,34 +685,41 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestClassifyClaudeCodeError_OOM(t *testing.T) {
-	// GH-2112: OOM/SIGKILL detection via exit code
+	// GH-2112/GH-4412: OOM/SIGKILL detection via exit code, gated on kernel
+	// OOM evidence — a bare 137/139 with no confirming dmesg entry must NOT
+	// be labeled oom_killed (see TestClassifyClaudeCodeError_ShutdownVsOOM
+	// for the unconfirmed-kill case).
 	tests := []struct {
-		name       string
-		exitCode   int
-		stderr     string
-		expectType ClaudeCodeErrorType
-		expectMsg  string
+		name               string
+		exitCode           int
+		stderr             string
+		kernelOOMConfirmed bool
+		expectType         ClaudeCodeErrorType
+		expectMsg          string
 	}{
 		{
-			name:       "exit 137 (SIGKILL) classified as OOM",
-			exitCode:   137,
-			stderr:     "",
-			expectType: ErrorTypeOOM,
-			expectMsg:  "Process killed by SIGKILL (exit code 137)",
+			name:               "exit 137 (SIGKILL) with kernel evidence classified as OOM",
+			exitCode:           137,
+			stderr:             "",
+			kernelOOMConfirmed: true,
+			expectType:         ErrorTypeOOM,
+			expectMsg:          "Process killed by SIGKILL (exit code 137, confirmed via kernel OOM-killer log)",
 		},
 		{
-			name:       "exit 139 (SIGSEGV) classified as OOM",
-			exitCode:   139,
-			stderr:     "",
-			expectType: ErrorTypeOOM,
-			expectMsg:  "Process killed by SIGSEGV (exit code 139)",
+			name:               "exit 139 (SIGSEGV) with kernel evidence classified as OOM",
+			exitCode:           139,
+			stderr:             "",
+			kernelOOMConfirmed: true,
+			expectType:         ErrorTypeOOM,
+			expectMsg:          "Process killed by SIGSEGV (exit code 139, confirmed via kernel OOM-killer log)",
 		},
 		{
-			name:       "exit 137 with stderr still classified as OOM",
-			exitCode:   137,
-			stderr:     "some output before death",
-			expectType: ErrorTypeOOM,
-			expectMsg:  "Process killed by SIGKILL (exit code 137)",
+			name:               "exit 137 with stderr and kernel evidence still classified as OOM",
+			exitCode:           137,
+			stderr:             "some output before death",
+			kernelOOMConfirmed: true,
+			expectType:         ErrorTypeOOM,
+			expectMsg:          "Process killed by SIGKILL (exit code 137, confirmed via kernel OOM-killer log)",
 		},
 		{
 			name:       "exit 1 with empty stderr is not OOM",
@@ -736,7 +743,7 @@ func TestClassifyClaudeCodeError_OOM(t *testing.T) {
 				cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", tt.exitCode))
 				exitErr = cmd.Run()
 			}
-			err := classifyClaudeCodeError(tt.stderr, exitErr, false)
+			err := classifyClaudeCodeError(tt.stderr, exitErr, false, "", tt.kernelOOMConfirmed)
 			if err.Type != tt.expectType {
 				t.Errorf("type = %q, want %q", err.Type, tt.expectType)
 			}
@@ -747,48 +754,170 @@ func TestClassifyClaudeCodeError_OOM(t *testing.T) {
 	}
 }
 
-func TestClassifyClaudeCodeError_ShutdownVsOOM(t *testing.T) {
-	// GH-4105: exit 137/139 must be classified as oom_killed only when the run
-	// context was NOT already cancelled by our own shutdown/timeout path.
-	// When the context was cancelled, the same exit codes are expected
-	// teardown noise and must be tagged shutdown_terminated instead.
+// TestClassifyClaudeCodeError_UnconfirmedKillNotOOM covers the core GH-4412
+// fix: an exit 137/139 that is neither our own context-cancellation teardown
+// nor a Pilot-initiated heartbeat/watchdog kill nor backed by a dmesg
+// OOM-killer entry must NOT be labeled oom_killed. Bare exit code is not
+// evidence — plenty of external SIGKILL sources (the orphan-running sweep
+// bug this task is part of, a manual `kill -9`, cgroup OOM without dmesg
+// access) produce the identical exit code.
+func TestClassifyClaudeCodeError_UnconfirmedKillNotOOM(t *testing.T) {
 	tests := []struct {
-		name         string
-		exitCode     int
-		ctxCancelled bool
-		expectType   ClaudeCodeErrorType
-		expectMsg    string
+		name       string
+		exitCode   int
+		expectType ClaudeCodeErrorType
+		expectMsg  string
 	}{
 		{
-			// (a) exit 137, context not cancelled -> oom_killed
-			name:         "exit 137, context not cancelled -> oom_killed",
+			name:       "exit 137, no kernel evidence -> not OOM",
+			exitCode:   137,
+			expectType: ErrorTypeTimeout,
+			expectMsg:  "Process killed by SIGKILL (exit code 137, no kernel OOM evidence found)",
+		},
+		{
+			name:       "exit 139, no kernel evidence -> not OOM",
+			exitCode:   139,
+			expectType: ErrorTypeTimeout,
+			expectMsg:  "Process killed by SIGSEGV (exit code 139, no kernel OOM evidence found)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", tt.exitCode))
+			exitErr := cmd.Run()
+			err := classifyClaudeCodeError("", exitErr, false, "", false)
+			if err.Type != tt.expectType {
+				t.Errorf("type = %q, want %q (must not be oom_killed without kernel evidence)", err.Type, tt.expectType)
+			}
+			if err.Type == ErrorTypeOOM {
+				t.Errorf("unconfirmed kill must never classify as oom_killed")
+			}
+			if tt.expectMsg != "" && err.Message != tt.expectMsg {
+				t.Errorf("message = %q, want %q", err.Message, tt.expectMsg)
+			}
+		})
+	}
+}
+
+// TestClassifyClaudeCodeError_SelfKillNotOOM covers the second half of the
+// GH-4412 fix: heartbeat-timeout and watchdog-timeout kills call
+// cmd.Process.Kill() directly rather than going through context
+// cancellation, so ctx.Err() stays nil for them. Before this fix they fell
+// straight into the ctxCancelled==false branch and were mislabeled
+// oom_killed even though Pilot itself killed the process on purpose.
+func TestClassifyClaudeCodeError_SelfKillNotOOM(t *testing.T) {
+	tests := []struct {
+		name           string
+		exitCode       int
+		selfKillReason string
+		expectType     ClaudeCodeErrorType
+		expectMsg      string
+	}{
+		{
+			name:           "heartbeat timeout kill -> shutdown_terminated, not OOM",
+			exitCode:       137,
+			selfKillReason: "heartbeat timeout",
+			expectType:     ErrorTypeShutdownTerminated,
+			expectMsg:      "Process terminated by SIGKILL after Pilot heartbeat timeout (exit code 137)",
+		},
+		{
+			name:           "watchdog timeout kill -> shutdown_terminated, not OOM",
+			exitCode:       137,
+			selfKillReason: "watchdog timeout",
+			expectType:     ErrorTypeShutdownTerminated,
+			expectMsg:      "Process terminated by SIGKILL after Pilot watchdog timeout (exit code 137)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", tt.exitCode))
+			exitErr := cmd.Run()
+			// kernelOOMConfirmed=true is passed to prove selfKillReason takes
+			// precedence over evidence — Pilot's own kill is never OOM
+			// regardless of what dmesg says (e.g. host memory pressure that
+			// didn't actually kill this process).
+			err := classifyClaudeCodeError("", exitErr, false, tt.selfKillReason, true)
+			if err.Type != tt.expectType {
+				t.Errorf("type = %q, want %q", err.Type, tt.expectType)
+			}
+			if err.Type == ErrorTypeOOM {
+				t.Errorf("self-inflicted kill must never classify as oom_killed")
+			}
+			if tt.expectMsg != "" && err.Message != tt.expectMsg {
+				t.Errorf("message = %q, want %q", err.Message, tt.expectMsg)
+			}
+		})
+	}
+}
+
+func TestClassifyClaudeCodeError_ShutdownVsOOM(t *testing.T) {
+	// GH-4105/GH-4412: exit 137/139 must be classified as oom_killed only
+	// when the run context was NOT already cancelled by our own
+	// shutdown/timeout path AND kernel dmesg evidence confirms an actual
+	// OOM-killer event. When the context was cancelled, the same exit codes
+	// are expected teardown noise and must be tagged shutdown_terminated
+	// instead. Without kernel evidence, an unexplained kill is tagged
+	// "timeout" (cause unconfirmed), never oom_killed.
+	tests := []struct {
+		name               string
+		exitCode           int
+		ctxCancelled       bool
+		kernelOOMConfirmed bool
+		expectType         ClaudeCodeErrorType
+		expectMsg          string
+	}{
+		{
+			// (a) exit 137, context not cancelled, kernel evidence -> oom_killed
+			name:               "exit 137, context not cancelled, kernel evidence -> oom_killed",
+			exitCode:           137,
+			ctxCancelled:       false,
+			kernelOOMConfirmed: true,
+			expectType:         ErrorTypeOOM,
+			expectMsg:          "Process killed by SIGKILL (exit code 137, confirmed via kernel OOM-killer log)",
+		},
+		{
+			// (a2) exit 137, context not cancelled, NO kernel evidence -> not oom_killed
+			name:         "exit 137, context not cancelled, no kernel evidence -> not oom_killed",
 			exitCode:     137,
 			ctxCancelled: false,
-			expectType:   ErrorTypeOOM,
-			expectMsg:    "Process killed by SIGKILL (exit code 137)",
+			expectType:   ErrorTypeTimeout,
+			expectMsg:    "Process killed by SIGKILL (exit code 137, no kernel OOM evidence found)",
 		},
 		{
 			// (b) exit 137, context cancelled -> shutdown classification
-			name:         "exit 137, context cancelled -> shutdown_terminated",
-			exitCode:     137,
-			ctxCancelled: true,
-			expectType:   ErrorTypeShutdownTerminated,
-			expectMsg:    "Process terminated by SIGKILL after context cancellation (exit code 137)",
+			// (kernel evidence irrelevant — our own teardown wins)
+			name:               "exit 137, context cancelled -> shutdown_terminated",
+			exitCode:           137,
+			ctxCancelled:       true,
+			kernelOOMConfirmed: true,
+			expectType:         ErrorTypeShutdownTerminated,
+			expectMsg:          "Process terminated by SIGKILL after context cancellation (exit code 137)",
 		},
 		{
 			// (c) exit 139 mirror
-			name:         "exit 139, context not cancelled -> oom_killed",
-			exitCode:     139,
-			ctxCancelled: false,
-			expectType:   ErrorTypeOOM,
-			expectMsg:    "Process killed by SIGSEGV (exit code 139)",
+			name:               "exit 139, context not cancelled, kernel evidence -> oom_killed",
+			exitCode:           139,
+			ctxCancelled:       false,
+			kernelOOMConfirmed: true,
+			expectType:         ErrorTypeOOM,
+			expectMsg:          "Process killed by SIGSEGV (exit code 139, confirmed via kernel OOM-killer log)",
 		},
 		{
-			name:         "exit 139, context cancelled -> shutdown_terminated",
+			name:         "exit 139, context not cancelled, no kernel evidence -> not oom_killed",
 			exitCode:     139,
-			ctxCancelled: true,
-			expectType:   ErrorTypeShutdownTerminated,
-			expectMsg:    "Process terminated by SIGSEGV after context cancellation (exit code 139)",
+			ctxCancelled: false,
+			expectType:   ErrorTypeTimeout,
+			expectMsg:    "Process killed by SIGSEGV (exit code 139, no kernel OOM evidence found)",
+		},
+		{
+			name:               "exit 139, context cancelled -> shutdown_terminated",
+			exitCode:           139,
+			ctxCancelled:       true,
+			kernelOOMConfirmed: true,
+			expectType:         ErrorTypeShutdownTerminated,
+			expectMsg:          "Process terminated by SIGSEGV after context cancellation (exit code 139)",
 		},
 		{
 			// (d) clean exit unaffected — no exit error at all, ctxCancelled must not
@@ -807,7 +936,7 @@ func TestClassifyClaudeCodeError_ShutdownVsOOM(t *testing.T) {
 				cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", tt.exitCode))
 				exitErr = cmd.Run()
 			}
-			err := classifyClaudeCodeError("", exitErr, tt.ctxCancelled)
+			err := classifyClaudeCodeError("", exitErr, tt.ctxCancelled, "", tt.kernelOOMConfirmed)
 			if err.Type != tt.expectType {
 				t.Errorf("type = %q, want %q", err.Type, tt.expectType)
 			}
@@ -815,6 +944,83 @@ func TestClassifyClaudeCodeError_ShutdownVsOOM(t *testing.T) {
 				t.Errorf("message = %q, want %q", err.Message, tt.expectMsg)
 			}
 		})
+	}
+}
+
+// TestDmesgHasRecentOOMKill covers the dmesg-parsing evidence check added by
+// GH-4412. It must (a) match the kernel's "Killed process <pid>" signature
+// line, (b) require the line be at-or-after the `since` cutoff so a
+// recycled-PID entry from an unrelated, older process doesn't produce a
+// false positive, and (c) fail closed (no evidence) on any parse ambiguity.
+func TestDmesgHasRecentOOMKill(t *testing.T) {
+	// Fixed reference instant so timestamp math is deterministic regardless
+	// of when the test runs.
+	base := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.Local)
+
+	tests := []struct {
+		name   string
+		output string
+		pid    int
+		since  time.Time
+		want   bool
+	}{
+		{
+			name: "recent OOM kill for pid matches",
+			output: "[Fri Jul 17 11:59:00 2026] some unrelated line\n" +
+				"[Fri Jul 17 12:00:30 2026] Out of memory: Killed process 4242 (claude) total-vm:..., anon-rss:...",
+			pid:   4242,
+			since: base,
+			want:  true,
+		},
+		{
+			name:   "OOM kill for a different pid does not match",
+			output: "[Fri Jul 17 12:00:30 2026] Out of memory: Killed process 9999 (claude) total-vm:...",
+			pid:    4242,
+			since:  base,
+			want:   false,
+		},
+		{
+			name:   "stale entry before since cutoff does not match (recycled PID guard)",
+			output: "[Fri Jul 17 08:00:00 2026] Out of memory: Killed process 4242 (some-other-process) total-vm:...",
+			pid:    4242,
+			since:  base,
+			want:   false,
+		},
+		{
+			name:   "no dmesg output at all",
+			output: "",
+			pid:    4242,
+			since:  base,
+			want:   false,
+		},
+		{
+			name:   "matching text but unparseable timestamp is not evidence",
+			output: "[not-a-timestamp] Killed process 4242 (claude)",
+			pid:    4242,
+			since:  base,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dmesgHasRecentOOMKill(tt.output, tt.pid, tt.since)
+			if got != tt.want {
+				t.Errorf("dmesgHasRecentOOMKill() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHasKernelOOMEvidence_InvalidPID verifies the pid<=0 guard short-circuits
+// without spawning dmesg at all — defensive against callers that pass an
+// unset/negative pid (e.g. cmd.Process nil-checked incorrectly upstream).
+func TestHasKernelOOMEvidence_InvalidPID(t *testing.T) {
+	if hasKernelOOMEvidence(0, time.Now()) {
+		t.Error("hasKernelOOMEvidence(0, ...) should return false")
+	}
+	if hasKernelOOMEvidence(-1, time.Now()) {
+		t.Error("hasKernelOOMEvidence(-1, ...) should return false")
 	}
 }
 

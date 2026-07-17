@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,7 +107,18 @@ func (e *ClaudeCodeError) ErrorStderr() string { return e.Stderr }
 // classifyClaudeCodeError examines stderr output and exit code to classify the error.
 // ctxCancelled indicates whether the run's context was already cancelled (by our
 // own shutdown or timeout path) at the time the process exited — GH-4105.
-func classifyClaudeCodeError(stderr string, originalErr error, ctxCancelled bool) *ClaudeCodeError {
+// selfKillReason, when non-empty, names the Pilot-internal watchdog that issued
+// the kill directly via cmd.Process.Kill() (e.g. "heartbeat timeout", "watchdog
+// timeout") — these kills happen outside the context-cancellation path, so
+// ctxCancelled alone doesn't catch them. GH-4412.
+// kernelOOMConfirmed indicates the caller already checked dmesg (or, in future,
+// a cgroup memory.events oom_kill counter) for a kernel OOM-killer entry naming
+// the subprocess PID. A bare 137/139 exit is NOT sufficient evidence of OOM on
+// its own — GH-4412: the orphan-running sweep and other SIGKILL sources produce
+// the identical exit code, and labeling every one of them "oom_killed" without
+// kernel evidence is a misdiagnosis that pollutes metrics and mis-routes retry
+// strategy.
+func classifyClaudeCodeError(stderr string, originalErr error, ctxCancelled bool, selfKillReason string, kernelOOMConfirmed bool) *ClaudeCodeError {
 	// GH-2112: Check exit code first — OOM kills (137=SIGKILL, 139=SIGSEGV) often
 	// produce no stderr, so exit code is the only reliable signal.
 	if exitCode := extractExitCode(originalErr); exitCode == 137 || exitCode == 139 {
@@ -114,9 +126,10 @@ func classifyClaudeCodeError(stderr string, originalErr error, ctxCancelled bool
 		if exitCode == 139 {
 			sigName = "SIGSEGV"
 		}
-		// GH-4105: if we ourselves cancelled the context (shutdown/timeout),
-		// the resulting SIGKILL/SIGSEGV-shaped exit is expected process
-		// teardown, not a genuine out-of-memory kill.
+		// GH-4105/GH-4412: if we ourselves cancelled the context (shutdown/
+		// timeout) OR killed the process directly via a heartbeat/watchdog
+		// timeout, the resulting SIGKILL/SIGSEGV-shaped exit is expected
+		// process teardown, not a genuine out-of-memory kill.
 		if ctxCancelled {
 			return &ClaudeCodeError{
 				Type:    ErrorTypeShutdownTerminated,
@@ -124,9 +137,30 @@ func classifyClaudeCodeError(stderr string, originalErr error, ctxCancelled bool
 				Stderr:  strings.TrimSpace(stderr),
 			}
 		}
+		if selfKillReason != "" {
+			return &ClaudeCodeError{
+				Type:    ErrorTypeShutdownTerminated,
+				Message: fmt.Sprintf("Process terminated by %s after Pilot %s (exit code %d)", sigName, selfKillReason, exitCode),
+				Stderr:  strings.TrimSpace(stderr),
+			}
+		}
+		// GH-4412: an unexplained 137/139 is NOT automatically OOM. Only
+		// label it oom_killed when the caller confirmed a kernel OOM-killer
+		// entry for this PID. Otherwise this is an external kill of unknown
+		// origin (another process's `kill -9`, a sweep/reaper bug, etc.) —
+		// classify it in the same "killed, cause unconfirmed" bucket as the
+		// stderr-detected signal-kill case below so it still gets a sane
+		// (non-OOM) retry strategy instead of silently defaulting to OOM.
+		if kernelOOMConfirmed {
+			return &ClaudeCodeError{
+				Type:    ErrorTypeOOM,
+				Message: fmt.Sprintf("Process killed by %s (exit code %d, confirmed via kernel OOM-killer log)", sigName, exitCode),
+				Stderr:  strings.TrimSpace(stderr),
+			}
+		}
 		return &ClaudeCodeError{
-			Type:    ErrorTypeOOM,
-			Message: fmt.Sprintf("Process killed by %s (exit code %d)", sigName, exitCode),
+			Type:    ErrorTypeTimeout,
+			Message: fmt.Sprintf("Process killed by %s (exit code %d, no kernel OOM evidence found)", sigName, exitCode),
 			Stderr:  strings.TrimSpace(stderr),
 		}
 	}
@@ -225,8 +259,64 @@ func extractExitCode(err error) int {
 
 // parseClaudeCodeError examines stderr output and exit code to classify the error.
 // This function matches the specification in GH-917 and returns error interface.
-func parseClaudeCodeError(stderr string, originalErr error, ctxCancelled bool) error {
-	return classifyClaudeCodeError(stderr, originalErr, ctxCancelled)
+func parseClaudeCodeError(stderr string, originalErr error, ctxCancelled bool, selfKillReason string, kernelOOMConfirmed bool) error {
+	return classifyClaudeCodeError(stderr, originalErr, ctxCancelled, selfKillReason, kernelOOMConfirmed)
+}
+
+// kernelOOMEvidenceTimeout bounds how long the dmesg subprocess may run before
+// classification gives up and treats the kill as unconfirmed — dmesg must
+// never block classification of an already-failed execution. GH-4412.
+const kernelOOMEvidenceTimeout = 2 * time.Second
+
+// dmesgTimestampRe matches the `[Mon Jan  2 15:04:05 2006]` prefix `dmesg -T`
+// emits on each ring-buffer line.
+var dmesgTimestampRe = regexp.MustCompile(`^\[([A-Za-z]{3} [A-Za-z]{3}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4})\]`)
+
+// hasKernelOOMEvidence best-effort checks dmesg for a kernel OOM-killer log
+// line naming pid, logged at or after since. It returns false — "no evidence"
+// — on any failure: dmesg missing, permission denied (kernel.dmesg_restrict,
+// common on hardened hosts), or no matching entry. Absence of evidence must
+// never be treated as evidence of OOM; the caller falls back to a
+// cause-unconfirmed classification instead. GH-4412 (relevant to the #4401
+// cgroup work: once subprocesses run inside a delegated cgroup, a
+// memory.events oom_kill counter check can be added here alongside dmesg).
+func hasKernelOOMEvidence(pid int, since time.Time) bool {
+	if pid <= 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), kernelOOMEvidenceTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "dmesg", "-T").Output()
+	if err != nil {
+		return false
+	}
+	return dmesgHasRecentOOMKill(string(out), pid, since)
+}
+
+// dmesgHasRecentOOMKill scans dmesg -T output for a "Killed process <pid>"
+// line (the kernel OOM-killer's signature message) timestamped at or after
+// since. Lines whose timestamp can't be parsed are skipped rather than
+// counted as evidence — a false negative here is far safer than a false
+// positive that mislabels an unrelated, recycled-PID kill as OOM.
+func dmesgHasRecentOOMKill(dmesgOutput string, pid int, since time.Time) bool {
+	needle := fmt.Sprintf("Killed process %d", pid)
+	for _, line := range strings.Split(dmesgOutput, "\n") {
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		m := dmesgTimestampRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		ts, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", m[1], time.Local)
+		if err != nil {
+			continue
+		}
+		if !ts.Before(since) {
+			return true
+		}
+	}
+	return false
 }
 
 // ClaudeCodeBackend implements Backend for Claude Code CLI.
@@ -453,6 +543,10 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	}
 
 	// Start the command
+	// GH-4412: recorded so an unexplained 137/139 exit's dmesg evidence check
+	// only considers OOM-killer log lines from this run, not a stale entry
+	// left over from an earlier process that reused the same PID.
+	startTime := time.Now()
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start Claude Code: %w", err)
 	}
@@ -477,6 +571,13 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 
 	// Channel to signal command completion
 	cmdDone := make(chan struct{})
+
+	// GH-4412: track whether Pilot itself killed the process directly via
+	// cmd.Process.Kill() (heartbeat/watchdog timeout) rather than through
+	// context cancellation. These kills produce the identical 137/139 exit
+	// code as a genuine kernel OOM kill but ctx.Err() stays nil for them, so
+	// without this flag they were silently mislabeled oom_killed.
+	var heartbeatKilled, watchdogKilled atomic.Bool
 
 	// Heartbeat tracking: store last event time as Unix nano (atomic int64)
 	var lastEventAt atomic.Int64
@@ -518,6 +619,9 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 								slog.Any("error", err),
 							)
 						} else {
+							// GH-4412: mark self-inflicted so classification
+							// doesn't mislabel the resulting 137 as OOM.
+							heartbeatKilled.Store(true)
 							b.log.Info("Hung process killed successfully",
 								slog.Int("pid", cmd.Process.Pid),
 							)
@@ -560,6 +664,9 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 						slog.Any("error", err),
 					)
 				} else {
+					// GH-4412: mark self-inflicted so classification doesn't
+					// mislabel the resulting 137 as OOM.
+					watchdogKilled.Store(true)
 					b.log.Info("Watchdog killed process successfully",
 						slog.Int("pid", cmd.Process.Pid),
 					)
@@ -733,7 +840,32 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 		// shutdown/timeout path) so 137/139 exits during teardown aren't
 		// misclassified as OOM kills.
 		stderr := stderrOutput.String()
-		ccErr := parseClaudeCodeError(stderr, err, ctx.Err() != nil).(*ClaudeCodeError)
+		ctxCancelled := ctx.Err() != nil
+
+		// GH-4412: heartbeat/watchdog kills call cmd.Process.Kill() directly
+		// (not through context cancellation), so ctxCancelled alone misses
+		// them — without this they were mislabeled oom_killed too.
+		selfKillReason := ""
+		switch {
+		case heartbeatKilled.Load():
+			selfKillReason = "heartbeat timeout"
+		case watchdogKilled.Load():
+			selfKillReason = "watchdog timeout"
+		}
+
+		// GH-4412: an unexplained 137/139 (not our own shutdown/heartbeat/
+		// watchdog kill) requires kernel dmesg evidence before it's labeled
+		// OOM — the exit code alone is also produced by external SIGKILL
+		// sources (e.g. the orphan-running sweep's prior kill-and-mislabel
+		// bug this task is part of).
+		kernelOOMConfirmed := false
+		if !ctxCancelled && selfKillReason == "" {
+			if exitCode := extractExitCode(err); exitCode == 137 || exitCode == 139 {
+				kernelOOMConfirmed = hasKernelOOMEvidence(cmd.Process.Pid, startTime)
+			}
+		}
+
+		ccErr := parseClaudeCodeError(stderr, err, ctxCancelled, selfKillReason, kernelOOMConfirmed).(*ClaudeCodeError)
 
 		// GH-2328: surface the raw stderr + classification so the runner can
 		// write them to execution_logs. Without this, "unknown: exit status 1"
