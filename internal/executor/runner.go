@@ -1613,6 +1613,20 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 		)
 	}
 
+	// GH-4397: restore any graph-indexed memory doc the epic session deleted —
+	// the file's graph.json node survives, so an unrestored deletion trips the
+	// Knowledge Graph Drift Gate the same way an unindexed addition does (see
+	// GH-4286 above). Runs after the strip guard and before push so the
+	// restoration commit rides the same branch this PR is built from.
+	if restored, restoreErr := git.RestoreDeletedIndexedMemoryDocs(ctx, baseBranch); restoreErr != nil {
+		r.log.Warn("Failed to restore deleted protected memory doc(s) on epic branch",
+			slog.String("task_id", task.ID),
+			slog.Any("error", restoreErr),
+		)
+	} else if len(restored) > 0 {
+		r.recordMemoryGuardRestoreEvents(task.LogExecutionID(), restored)
+	}
+
 	r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
 
 	// Push the parent branch. TASK-359: a real deliverable that fails to push is a
@@ -4104,6 +4118,21 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					slog.String("task_id", task.ID),
 					slog.Any("files", stripped),
 				)
+			}
+
+			// GH-4397: restore any graph-indexed memory doc this session deleted
+			// — the file's graph.json node survives, so an unrestored deletion
+			// trips the Knowledge Graph Drift Gate the same way an unindexed
+			// addition does (see GH-4286 above). Runs after the strip guard and
+			// before push so the restoration commit rides the same branch this
+			// PR is built from.
+			if restored, restoreErr := git.RestoreDeletedIndexedMemoryDocs(ctx, baseBranch); restoreErr != nil {
+				log.Warn("Failed to restore deleted protected memory doc(s) from branch",
+					slog.String("task_id", task.ID),
+					slog.Any("error", restoreErr),
+				)
+			} else if len(restored) > 0 {
+				r.recordMemoryGuardRestoreEvents(task.LogExecutionID(), restored)
 			}
 
 			// Pre-push lint gate (GH-1376)
