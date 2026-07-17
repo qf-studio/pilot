@@ -2296,13 +2296,11 @@ func (s *Store) UpdateExecutionTitle(executionID, title string) error {
 // existed (started_at is NULL) or rows inserted directly with status='running'
 // (bypassing UpdateExecutionStatus, e.g. in tests).
 func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execution, error) {
-	staleTime := time.Now().Add(-staleDuration)
 	rows, err := s.db.Query(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, started_at, completed_at
 		FROM executions
-		WHERE status = 'running' AND COALESCE(started_at, created_at) < ?
-		ORDER BY COALESCE(started_at, created_at) ASC
-	`, staleTime)
+		WHERE status = 'running'
+	`)
 	if err != nil {
 		return nil, err
 	}
@@ -2324,20 +2322,21 @@ func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execu
 		}
 		executions = append(executions, &exec)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-	return executions, rows.Err()
+	return filterAndSortStale(executions, staleDuration), nil
 }
 
 // GetStaleQueuedExecutions returns executions that have been in "queued" status
 // for longer than the specified duration. Used to detect stuck queue entries.
 func (s *Store) GetStaleQueuedExecutions(staleDuration time.Duration) ([]*Execution, error) {
-	staleTime := time.Now().Add(-staleDuration)
 	rows, err := s.db.Query(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
 		FROM executions
-		WHERE status = 'queued' AND created_at < ?
-		ORDER BY created_at ASC
-	`, staleTime)
+		WHERE status = 'queued'
+	`)
 	if err != nil {
 		return nil, err
 	}
@@ -2355,8 +2354,115 @@ func (s *Store) GetStaleQueuedExecutions(staleDuration time.Duration) ([]*Execut
 		}
 		executions = append(executions, &exec)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-	return executions, rows.Err()
+	return filterAndSortStale(executions, staleDuration), nil
+}
+
+// staleReference returns the timestamp GetStaleRunningExecutions and
+// GetStaleQueuedExecutions measure staleness from: started_at for a running
+// row (GH-4033 — a decomposed subtask can sit queued behind a sibling
+// legitimately before a worker picks it up), falling back to created_at when
+// unset (queued rows, or running rows written before started_at existed).
+func staleReference(exec *Execution) time.Time {
+	if exec.StartedAt != nil {
+		return *exec.StartedAt
+	}
+	return exec.CreatedAt
+}
+
+// filterAndSortStale filters execs to those older than staleDuration and
+// sorts the result oldest-first, matching the callers' prior `ORDER BY ...
+// ASC` SQL clause.
+//
+// GH-4392: staleness is decided by comparing driver-parsed time.Time values
+// in Go, not by a `created_at < ?` SQL string-range predicate. Every row's
+// created_at is scanned into a time.Time above regardless of the on-disk
+// text layout, but rows written before the DSN's `_time_format=sqlite` fix
+// (GH-4332/#4345) can carry a different text layout than rows written after
+// it. Lexicographic SQL comparison across those two layouts is not
+// guaranteed to match chronological order, so a `WHERE created_at < ?`
+// predicate can silently drop legacy-format rows from the result set (no
+// error — they just never come back). That is exactly how the stale
+// recovery sweep logged "reset 0 tasks" straight through the GH-4392
+// incident while 5 dead-owner queued rows sat unrecovered. Comparing already
+// -parsed time.Time values sidesteps the on-disk format entirely.
+func filterAndSortStale(execs []*Execution, staleDuration time.Duration) []*Execution {
+	cutoff := time.Now().Add(-staleDuration)
+	stale := make([]*Execution, 0, len(execs))
+	for _, exec := range execs {
+		if staleReference(exec).Before(cutoff) {
+			stale = append(stale, exec)
+		}
+	}
+	sort.Slice(stale, func(i, j int) bool {
+		return staleReference(stale[i]).Before(staleReference(stale[j]))
+	})
+	return stale
+}
+
+// GetClaimedNonTerminalExecutions returns every execution currently in a
+// non-terminal, in-flight status ("queued" or "running") that also holds at
+// least one execution_claims row naming it — i.e. every row created through
+// the real ExecutionLifecycle.Begin/ClaimExecution path, as opposed to a
+// direct executions-table insert. No time filter applies.
+//
+// Used exclusively by the dispatcher's boot-time orphan reconciliation
+// (GH-4392): Dispatcher.Start calls this before any worker exists for this
+// process, so under the single-daemon invariant (H7/#4311) every row it
+// returns necessarily predates — and was left behind by — a prior, now-dead
+// daemon process. No duration threshold applies because none is needed: at
+// boot, "non-terminal and claimed" already implies "orphaned, holding a dead
+// claim."
+//
+// Scoped to claimed rows specifically (the JOIN) rather than every
+// non-terminal row: nextRetryGeneration's dead-claim blind spot is what
+// GH-4392 fixes, and only a row with an execution_claims entry can be
+// blocking a future dispatch attempt that way. A non-terminal row with no
+// claim was never inserted through the claim path — GH-3732's queued-project
+// restart adoption still owns getting it a worker, unchanged by this fix.
+func (s *Store) GetClaimedNonTerminalExecutions() ([]*Execution, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT e.id, e.task_id, e.project_path, e.status, e.output, e.error, e.duration_ms, e.pr_url, e.commit_sha, e.created_at, e.started_at, e.completed_at
+		FROM executions e
+		JOIN execution_claims c ON c.execution_id = e.id
+		WHERE e.status IN ('queued', 'running')
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var startedAt sql.NullTime
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &startedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		if startedAt.Valid {
+			exec.StartedAt = &startedAt.Time
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Sort in Go (not SQL ORDER BY created_at) for the same reason
+	// filterAndSortStale does — legacy-format rows must not be misordered by
+	// a raw string comparison.
+	sort.Slice(executions, func(i, j int) bool {
+		return staleReference(executions[i]).Before(staleReference(executions[j]))
+	})
+
+	return executions, nil
 }
 
 // GetQueuedProjectPaths returns the distinct project paths that currently

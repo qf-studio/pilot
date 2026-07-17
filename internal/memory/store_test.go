@@ -2755,6 +2755,138 @@ func TestGetStaleQueuedExecutions(t *testing.T) {
 	}
 }
 
+// TestGetStaleQueuedExecutions_LegacyTimestampFormat is the GH-4392
+// timestamp-format-hardening regression test. Rows written before the DSN's
+// `_time_format=sqlite` fix (GH-4332/#4345) carry created_at in Go's raw
+// time.Time.String() layout ("2006-01-02 15:04:05.999999999 -0700 MST"),
+// distinct from the layout `_time_format=sqlite` now writes
+// ("2006-01-02 15:04:05.999999999-07:00"). A `WHERE created_at < ?` SQL
+// predicate compares these lexicographically and is not guaranteed to match
+// chronological order across the two layouts — this is how the stale
+// recovery sweep silently logged "reset 0 tasks" straight through the
+// GH-4392 incident. GetStaleQueuedExecutions must correctly classify
+// legacy-format rows by parsing created_at into a time.Time (which the
+// modernc.org/sqlite driver's read path already supports for both layouts)
+// and comparing in Go, never by raw SQL string range.
+func TestGetStaleQueuedExecutions_LegacyTimestampFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	staleDuration := time.Hour
+	now := time.Now()
+
+	// Pre-#4345 rows were written via Go's default time.Time.String()
+	// formatting (what modernc.org/sqlite falls back to without
+	// _time_format=sqlite) — reproduce that exact on-disk text layout
+	// directly, bypassing the store's own (now-fixed) write path.
+	const legacyLayout = "2006-01-02 15:04:05.999999999 -0700 MST"
+
+	insertLegacy := func(id, taskID string, createdAt time.Time) {
+		t.Helper()
+		if err := store.SaveExecution(&Execution{ID: id, TaskID: taskID, ProjectPath: "/proj-legacy", Status: "queued"}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", id, err)
+		}
+		legacyText := createdAt.UTC().Format(legacyLayout)
+		if _, err := store.db.Exec(`UPDATE executions SET created_at = ? WHERE id = ?`, legacyText, id); err != nil {
+			t.Fatalf("set legacy-format created_at for %s: %v", id, err)
+		}
+	}
+
+	insertLegacy("legacy-stale", "TASK-LEGACY-STALE", now.Add(-2*time.Hour))
+	insertLegacy("legacy-fresh", "TASK-LEGACY-FRESH", now)
+
+	results, err := store.GetStaleQueuedExecutions(staleDuration)
+	if err != nil {
+		t.Fatalf("GetStaleQueuedExecutions: %v", err)
+	}
+
+	got := make(map[string]bool, len(results))
+	for _, r := range results {
+		got[r.ID] = true
+	}
+
+	if !got["legacy-stale"] {
+		t.Errorf("expected legacy-format stale row to be detected as stale, results: %v", results)
+	}
+	if got["legacy-fresh"] {
+		t.Errorf("expected legacy-format fresh row NOT to be detected as stale, results: %v", results)
+	}
+}
+
+// TestGetClaimedNonTerminalExecutions is the GH-4392 regression test for the
+// store method backing Dispatcher.Start's boot-time orphan reconciliation:
+// only rows that are BOTH non-terminal ('queued'/'running') AND hold an
+// execution_claims row must come back — a non-terminal row with no claim was
+// never inserted through ExecutionLifecycle.Begin and cannot be blocking a
+// future dispatch attempt via the claim mechanism (GH-3732's restart
+// adoption owns that case instead).
+func TestGetClaimedNonTerminalExecutions(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Claimed + queued: must be returned.
+	if err := store.SaveExecution(&Execution{ID: "exec-claimed-q", TaskID: "TASK-CLAIMED-Q", ProjectPath: "/proj", Status: "queued"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if _, err := store.ClaimExecution("TASK-CLAIMED-Q", "/proj", 0, "exec-claimed-q"); err != nil {
+		t.Fatalf("ClaimExecution: %v", err)
+	}
+
+	// Claimed + running: must be returned.
+	if err := store.SaveExecution(&Execution{ID: "exec-claimed-r", TaskID: "TASK-CLAIMED-R", ProjectPath: "/proj", Status: "running"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if _, err := store.ClaimExecution("TASK-CLAIMED-R", "/proj", 0, "exec-claimed-r"); err != nil {
+		t.Fatalf("ClaimExecution: %v", err)
+	}
+
+	// Claimed + completed (terminal): must NOT be returned.
+	if err := store.SaveExecution(&Execution{ID: "exec-claimed-done", TaskID: "TASK-CLAIMED-DONE", ProjectPath: "/proj", Status: "completed"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if _, err := store.ClaimExecution("TASK-CLAIMED-DONE", "/proj", 0, "exec-claimed-done"); err != nil {
+		t.Fatalf("ClaimExecution: %v", err)
+	}
+
+	// Unclaimed + queued (bare SaveExecution, e.g. GH-3732 restart-adoption
+	// fixtures): must NOT be returned.
+	if err := store.SaveExecution(&Execution{ID: "exec-unclaimed-q", TaskID: "TASK-UNCLAIMED-Q", ProjectPath: "/proj", Status: "queued"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	results, err := store.GetClaimedNonTerminalExecutions()
+	if err != nil {
+		t.Fatalf("GetClaimedNonTerminalExecutions: %v", err)
+	}
+
+	got := make(map[string]bool, len(results))
+	for _, r := range results {
+		got[r.ID] = true
+	}
+
+	for _, wantID := range []string{"exec-claimed-q", "exec-claimed-r"} {
+		if !got[wantID] {
+			t.Errorf("expected %s in claimed non-terminal results, got %v", wantID, results)
+		}
+	}
+	for _, notWantID := range []string{"exec-claimed-done", "exec-unclaimed-q"} {
+		if got[notWantID] {
+			t.Errorf("did not expect %s in claimed non-terminal results, got %v", notWantID, results)
+		}
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 claimed non-terminal executions, got %d: %v", len(results), results)
+	}
+}
+
 // TestGetStaleRunningExecutions_UsesStartedAtNotCreatedAt is the GH-4033
 // regression test: a decomposed subtask's execution row is created (queued) at
 // decomposition time but can legitimately sit behind a FIFO sibling for a while
