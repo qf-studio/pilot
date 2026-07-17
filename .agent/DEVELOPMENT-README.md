@@ -150,7 +150,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.241.1 (box build `v2.241.1-3-g70b28845`, incl. #4388) — **daemon runs on AWS** (`i-0e0c1ca34e7b561f9`, TASK-409; ops via `pilot-aws` skill; NO local daemon). First automated release train proven 07-16 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.241.2 (box build `v2.241.1-3-g70b28845`, incl. #4388) — **daemon runs on AWS** (`i-0e0c1ca34e7b561f9`, TASK-409; ops via `pilot-aws` skill; NO local daemon). First automated release train proven 07-16 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (July 13–17 2026):**
 - **S6-lite AWS cutover COMPLETE + battle-proven (TASK-409, 07-16/17):** founder daemon moved to EC2 (t3.xlarge, path-shim design keeps ledger keys valid). Two latent-on-darwin P0s detonated on first Linux run and were RCA'd+fixed same night: **#4393** shadow-ledger split-brain (unshimmed `.pilot` config path → 3h invisible ledger; shim + DB merge) and **#4401** RLIMIT_AS "RSS cap" killing every executor API fetch in 25ms (12h zero completions; cap disabled, cgroup fix queued). Queue then proven at **10 parallel executions**, first SaaS PRs from the box (canary#98, pointer#18), Pilot executing #4393's own hardening subtasks. Pitfalls: `absolute-state-paths-bypass-cutover-shim`, `rlimit-as-breaks-node-subprocesses`. OOM cap OFF until #4401.
