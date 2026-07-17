@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // mockSlackClient implements SlackClient for testing
@@ -268,5 +270,275 @@ func TestSlackHandler_CancelRequest_NotFound(t *testing.T) {
 	err := handler.CancelRequest(context.Background(), "nonexistent")
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// --- GH-4411: restart-survival tests (persistence, Rehydrate, DecisionRecorder) ---
+// These mirror the Telegram handler's GH-3825 test suite in telegram_test.go,
+// reusing its mockPendingStore/mockDecisionRecorder test doubles (same package).
+
+func TestSlackHandler_WithStore_PersistOnSend(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+	handler := NewSlackHandler(client, "#approvals").WithStore(store)
+
+	req := &Request{
+		ID: "persist-1", TaskID: "T-1", Stage: StagePreMerge,
+		Title: "Test", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if store.len() != 1 {
+		t.Fatalf("expected 1 persisted row, got %d", store.len())
+	}
+	row := store.get("persist-1")
+	if row == nil {
+		t.Fatal("expected row to be stored")
+	}
+	if row.TaskID != "T-1" {
+		t.Errorf("expected TaskID T-1, got %s", row.TaskID)
+	}
+}
+
+func TestSlackHandler_WithStore_DeleteOnInteraction(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+	handler := NewSlackHandler(client, "#approvals").WithStore(store)
+
+	req := &Request{
+		ID: "del-int-1", TaskID: "T-2", Stage: StagePreMerge,
+		Title: "Test", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if store.len() != 1 {
+		t.Fatal("expected 1 row after send")
+	}
+
+	handler.HandleInteraction(context.Background(), "approve", "approve:del-int-1", "U1", "user", "")
+
+	if store.len() != 0 {
+		t.Errorf("expected 0 rows after interaction, got %d", store.len())
+	}
+}
+
+func TestSlackHandler_WithStore_DeleteOnCancel(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+	handler := NewSlackHandler(client, "#approvals").WithStore(store)
+
+	req := &Request{
+		ID: "del-cancel-1", TaskID: "T-3", Stage: StagePreMerge,
+		Title: "Test", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if err := handler.CancelRequest(context.Background(), "del-cancel-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if store.len() != 0 {
+		t.Errorf("expected 0 rows after cancel, got %d", store.len())
+	}
+}
+
+func TestSlackHandler_Rehydrate_RestoresNonExpired(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+
+	future := time.Now().Add(time.Hour)
+	past := time.Now().Add(-time.Hour)
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "live", TaskID: "T-live", Stage: "pre_merge",
+		Title: "Live", CreatedAt: time.Now(), ExpiresAt: future,
+	})
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "dead", TaskID: "T-dead", Stage: "pre_merge",
+		Title: "Dead", CreatedAt: time.Now(), ExpiresAt: past,
+	})
+
+	handler := NewSlackHandler(client, "#approvals").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handler.mu.RLock()
+	_, livePending := handler.pending["live"]
+	_, deadPending := handler.pending["dead"]
+	handler.mu.RUnlock()
+
+	if !livePending {
+		t.Error("expected non-expired approval to be rehydrated")
+	}
+	if deadPending {
+		t.Error("expected expired approval to NOT be rehydrated")
+	}
+	if store.get("dead") != nil {
+		t.Error("expected expired row to be deleted from store")
+	}
+}
+
+func TestSlackHandler_Rehydrate_NoStore(t *testing.T) {
+	client := &mockSlackClient{}
+	handler := NewSlackHandler(client, "#approvals")
+	// No store attached — Rehydrate should be a no-op.
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("expected no error without store, got: %v", err)
+	}
+}
+
+// TestSlackHandler_Rehydrate_HonorsOldButtonRequestID is the GH-4411
+// regression test: a click on the ORIGINAL Slack message (posted before a
+// daemon restart) must resolve, because Rehydrate re-arms the same
+// requestID rather than requiring a freshly-posted message. This is the
+// "Rehydrate" option chosen over "Re-post" — old buttons must keep working.
+func TestSlackHandler_Rehydrate_HonorsOldButtonRequestID(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-int", TaskID: "T-R", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewSlackHandler(client, "#approvals").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	// Simulate a click on the pre-restart message — its button value still
+	// carries "approve:rehy-int" verbatim.
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:rehy-int", "U1", "tester", "")
+	if !handled {
+		t.Error("expected interaction to be handled after rehydrate")
+	}
+}
+
+func TestSlackHandler_HandleInteraction_RecordsDecisionViaRecorder(t *testing.T) {
+	client := &mockSlackClient{}
+	recorder := &mockDecisionRecorder{}
+	handler := NewSlackHandler(client, "#approvals").WithDecisionRecorder(recorder)
+
+	req := &Request{ID: "req-1", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handler.HandleInteraction(context.Background(), "approve", "approve:req-1", "U1", "tester", "")
+
+	calls := recorder.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 RecordDecision call, got %d", len(calls))
+	}
+	if calls[0].requestID != "req-1" || calls[0].decision != DecisionApproved || calls[0].by != "tester" {
+		t.Errorf("unexpected recorded decision: %+v", calls[0])
+	}
+}
+
+// TestSlackHandler_Rehydrate_InteractionRecordsDecisionDirectly is the
+// GH-4411 regression test: after a restart, Rehydrate reconstructs the
+// pending entry with a fresh ResponseCh that no goroutine is reading (the
+// original waiter died with the old process). Without a DecisionRecorder,
+// the decision made by a button click would only be sent into that unread
+// channel and lost. With the recorder wired, HandleInteraction must persist
+// the decision directly (mirrors GH-3825's Telegram fix).
+func TestSlackHandler_Rehydrate_InteractionRecordsDecisionDirectly(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+	recorder := &mockDecisionRecorder{}
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-rec", TaskID: "T-R2", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewSlackHandler(client, "#approvals").WithStore(store).WithDecisionRecorder(recorder)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	handled := handler.HandleInteraction(context.Background(), "reject", "reject:rehy-rec", "U2", "reviewer", "")
+	if !handled {
+		t.Fatal("expected interaction to be handled")
+	}
+
+	calls := recorder.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected decision to be recorded directly after rehydrate, got %d calls", len(calls))
+	}
+	if calls[0].requestID != "rehy-rec" || calls[0].decision != DecisionRejected || calls[0].by != "reviewer" {
+		t.Errorf("unexpected recorded decision: %+v", calls[0])
+	}
+}
+
+func TestSlackHandler_PruneExpired_RemovesExpiredAndDeletesFromStore(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+	handler := NewSlackHandler(client, "#approvals").WithStore(store)
+
+	req := &Request{
+		ID: "exp-1", TaskID: "T-Exp", Stage: StagePreMerge,
+		Title: "Expiring", ExpiresAt: time.Now().Add(10 * time.Millisecond),
+	}
+	responseCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+
+	handler.mu.RLock()
+	_, stillPending := handler.pending["exp-1"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected expired request to be removed from pending")
+	}
+	if store.get("exp-1") != nil {
+		t.Error("expected expired row to be deleted from store")
+	}
+
+	select {
+	case resp, ok := <-responseCh:
+		if ok && resp.Decision != DecisionTimeout {
+			t.Errorf("expected timeout decision, got %v", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Error("timeout waiting for response channel to resolve")
+	}
+}
+
+func TestSlackHandler_HandleInteraction_ExpiredRaceIsTreatedAsTimeout(t *testing.T) {
+	client := &mockSlackClient{}
+	recorder := &mockDecisionRecorder{}
+	handler := NewSlackHandler(client, "#approvals").WithDecisionRecorder(recorder)
+
+	req := &Request{
+		ID: "race-1", TaskID: "T-Race", Stage: StagePreMerge,
+		Title: "Racing", ExpiresAt: time.Now().Add(10 * time.Millisecond),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:race-1", "U1", "tester", "")
+	if !handled {
+		t.Error("expected interaction to be handled")
+	}
+
+	if len(recorder.getCalls()) != 0 {
+		t.Error("expected no decision to be recorded for an interaction that arrived after expiry")
 	}
 }

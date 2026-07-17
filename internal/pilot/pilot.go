@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/asana"
 	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
@@ -229,9 +230,37 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 				&slackApprovalClientAdapter{adapter: slackAdapter},
 				approvalChannel,
 			)
+			// GH-4411: persist decisions directly to PRState via the manager so a
+			// button click on a Rehydrate-restored request isn't lost when no
+			// waiter goroutine survived the restart (mirrors GH-3825's Telegram fix).
+			p.slackApprovalHdlr.WithDecisionRecorder(p.approvalMgr)
+			if p.store != nil {
+				p.slackApprovalHdlr.WithStore(p.store)
+				if rErr := p.slackApprovalHdlr.Rehydrate(ctx); rErr != nil {
+					logging.WithComponent("pilot").Warn("slack approval rehydrate failed", slog.Any("error", rErr))
+				}
+			}
 			p.approvalMgr.RegisterHandler(p.slackApprovalHdlr)
 			logging.WithComponent("pilot").Info("registered Slack approval handler",
 				slog.String("channel", approvalChannel))
+
+			// GH-4411: prune requests that expired while the daemon was down (or
+			// with no in-process waiter) instead of leaving them pending forever.
+			slackApprovalHdlr := p.slackApprovalHdlr
+			logging.SafeGo("approval-expiry-sweep-slack", func() {
+				ticker := time.NewTicker(1 * time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if _, err := slackApprovalHdlr.PruneExpired(ctx); err != nil {
+							logging.WithComponent("approval").Warn("expired Slack approval sweep failed", slog.Any("error", err))
+						}
+					}
+				}
+			})
 
 			// Set up Slack interaction webhook handler
 			signingSecret := cfg.Adapters.Slack.Approval.SigningSecret
