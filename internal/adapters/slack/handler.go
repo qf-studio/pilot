@@ -38,14 +38,38 @@ func (a *MemberResolverAdapter) ResolveIdentity(senderID string) (string, error)
 	return a.Inner.ResolveSlackIdentity(senderID, "")
 }
 
+// ApprovalCallbackHandler routes approve/reject interactive-button callbacks
+// (Pre-Execution/Pre-Merge/Post-Failure approval messages) dispatched from
+// Slack. *approval.SlackHandler implements this directly — decoupled from the
+// approval package to avoid an import cycle (mirrors telegram.ApprovalCallbackHandler,
+// GH-3825 precedent, GH-4431).
+type ApprovalCallbackHandler interface {
+	HandleInteraction(ctx context.Context, actionID, value, userID, username, responseURL string) bool
+}
+
+// isApprovalCallback reports whether a Socket Mode "callback" event is an
+// approval-flow button (Merge/Reject etc.) rather than an execute/cancel
+// task-confirmation button. Matches on the Slack action_id (set by
+// approval.SlackHandler as "approve"/"reject") with the button value prefix
+// as a fallback, since the two must stay in sync with internal/approval/slack.go's
+// buildApprovalBlocks (GH-4431).
+func isApprovalCallback(actionID, value string) bool {
+	switch actionID {
+	case "approve", "reject":
+		return true
+	}
+	return strings.HasPrefix(value, "approve:") || strings.HasPrefix(value, "reject:")
+}
+
 // Handler processes incoming Slack events and coordinates task execution.
 // Delegates intent detection and task lifecycle to the shared comms.Handler (GH-2143).
 type Handler struct {
 	socketClient    *SocketModeClient
-	apiClient       *Client           // Kept for client access; Messenger wraps this
-	commsHandler    commsHandlerIface // Shared message handler for intent dispatch + task execution
-	allowedChannels map[string]bool   // Allowed channel IDs for security
-	allowedUsers    map[string]bool   // Allowed user IDs for security
+	apiClient       *Client                 // Kept for client access; Messenger wraps this
+	commsHandler    commsHandlerIface       // Shared message handler for intent dispatch + task execution
+	approvalHandler ApprovalCallbackHandler // Routes approve/reject callbacks to approval.SlackHandler (GH-4431)
+	allowedChannels map[string]bool         // Allowed channel IDs for security
+	allowedUsers    map[string]bool         // Allowed user IDs for security
 	stopCh          chan struct{}
 	wg              sync.WaitGroup
 	log             *slog.Logger
@@ -53,12 +77,13 @@ type Handler struct {
 
 // HandlerConfig holds configuration for the Slack handler.
 type HandlerConfig struct {
-	AppToken        string         // Slack app-level token (xapp-...)
-	BotToken        string         // Slack bot token (xoxb-...)
-	Client          *Client        // Optional: reuse existing API client
-	CommsHandler    *comms.Handler // Shared handler for intent dispatch + task lifecycle
-	AllowedChannels []string       // Channel IDs allowed to send tasks
-	AllowedUsers    []string       // User IDs allowed to send tasks
+	AppToken        string                  // Slack app-level token (xapp-...)
+	BotToken        string                  // Slack bot token (xoxb-...)
+	Client          *Client                 // Optional: reuse existing API client
+	CommsHandler    *comms.Handler          // Shared handler for intent dispatch + task lifecycle
+	ApprovalHandler ApprovalCallbackHandler // Routes approve/reject callbacks (optional, GH-4431)
+	AllowedChannels []string                // Channel IDs allowed to send tasks
+	AllowedUsers    []string                // User IDs allowed to send tasks
 }
 
 // NewHandler creates a new Slack event handler.
@@ -88,6 +113,7 @@ func NewHandler(config *HandlerConfig) *Handler {
 		socketClient:    NewSocketModeClient(config.AppToken),
 		apiClient:       apiClient,
 		commsHandler:    commsH,
+		approvalHandler: config.ApprovalHandler,
 		allowedChannels: allowedChannels,
 		allowedUsers:    allowedUsers,
 		stopCh:          make(chan struct{}),
@@ -216,6 +242,17 @@ func (h *Handler) isAllowed(channelID, userID string) bool {
 // The conversion mirrors sdkshim.MessageEventToIncomingMessage; it is inlined
 // here to avoid the sdkshim → config → slack → sdkshim import cycle.
 func (h *Handler) HandleMessage(ctx context.Context, ev core.MessageEvent) error {
+	// GH-4431: approval (Merge/Reject) button clicks must never reach comms —
+	// comms only understands execute/cancel task-confirmation semantics and
+	// has no concept of approval requests, so an approve/reject click routed
+	// there always fell through to "No pending task to confirm." Intercept
+	// before building the comms message and hand off to approval.SlackHandler
+	// directly (mirrors Telegram's GH-3825 routing).
+	if ev.Action == "callback" && h.approvalHandler != nil && isApprovalCallback(ev.CallbackID, ev.Data) {
+		h.approvalHandler.HandleInteraction(ctx, ev.CallbackID, ev.Data, ev.Sender.UserID, ev.Sender.DisplayName, "")
+		return nil
+	}
+
 	msg := &comms.IncomingMessage{
 		ContextID:  ev.ChannelID,
 		SenderID:   ev.Sender.UserID,

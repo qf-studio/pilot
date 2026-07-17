@@ -315,6 +315,161 @@ func TestHandler_HandleMessage_CallbackAction(t *testing.T) {
 	}
 }
 
+// mockApprovalHandler records HandleInteraction calls for approval-routing tests (GH-4431).
+type mockApprovalHandler struct {
+	calls []approvalCall
+	ret   bool
+}
+
+type approvalCall struct {
+	actionID, value, userID, username, responseURL string
+}
+
+func (m *mockApprovalHandler) HandleInteraction(_ context.Context, actionID, value, userID, username, responseURL string) bool {
+	m.calls = append(m.calls, approvalCall{actionID, value, userID, username, responseURL})
+	return m.ret
+}
+
+// TestHandler_HandleMessage_ApprovalCallback_Approve is the regression test for
+// GH-4431: a socket-mode "Merge"/"Approve" button click must be routed to the
+// approval handler, not forwarded to comms (which has no concept of approval
+// requests and previously replied "No pending task to confirm." for every
+// approval click).
+func TestHandler_HandleMessage_ApprovalCallback_Approve(t *testing.T) {
+	mockComms := &mockCommsHandler{}
+	mockApproval := &mockApprovalHandler{ret: true}
+	h := NewHandler(&HandlerConfig{
+		AppToken:        "xapp-test-token",
+		BotToken:        "xoxb-test-token",
+		ApprovalHandler: mockApproval,
+	})
+	h.commsHandler = mockComms
+
+	ev := core.MessageEvent{
+		Action:     "callback",
+		ChannelID:  "C123",
+		CallbackID: "approve",
+		Data:       "approve:REQ-1",
+		Sender:     core.Identity{UserID: "U789", DisplayName: "alice"},
+	}
+
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if len(mockComms.got) != 0 {
+		t.Fatalf("HandleMessage() delivered %d messages to comms, want 0 (approval clicks must not reach comms)", len(mockComms.got))
+	}
+	if len(mockApproval.calls) != 1 {
+		t.Fatalf("HandleMessage() called approval handler %d times, want 1", len(mockApproval.calls))
+	}
+	call := mockApproval.calls[0]
+	if call.actionID != "approve" {
+		t.Errorf("actionID = %q, want approve", call.actionID)
+	}
+	if call.value != "approve:REQ-1" {
+		t.Errorf("value = %q, want approve:REQ-1", call.value)
+	}
+	if call.userID != "U789" {
+		t.Errorf("userID = %q, want U789", call.userID)
+	}
+	if call.username != "alice" {
+		t.Errorf("username = %q, want alice", call.username)
+	}
+}
+
+// TestHandler_HandleMessage_ApprovalCallback_Reject mirrors the Approve case
+// for the reject button, and covers the value-prefix fallback match (GH-4431).
+func TestHandler_HandleMessage_ApprovalCallback_Reject(t *testing.T) {
+	mockApproval := &mockApprovalHandler{ret: true}
+	h := NewHandler(&HandlerConfig{
+		AppToken:        "xapp-test-token",
+		BotToken:        "xoxb-test-token",
+		ApprovalHandler: mockApproval,
+	})
+
+	ev := core.MessageEvent{
+		Action:     "callback",
+		ChannelID:  "C123",
+		CallbackID: "reject",
+		Data:       "reject:REQ-2",
+		Sender:     core.Identity{UserID: "U789"},
+	}
+
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if len(mockApproval.calls) != 1 {
+		t.Fatalf("HandleMessage() called approval handler %d times, want 1", len(mockApproval.calls))
+	}
+	if mockApproval.calls[0].value != "reject:REQ-2" {
+		t.Errorf("value = %q, want reject:REQ-2", mockApproval.calls[0].value)
+	}
+}
+
+// TestHandler_HandleMessage_ExecuteCallback_StillReachesComms verifies the
+// execute/cancel task-confirmation buttons are unaffected by the approval
+// routing added for GH-4431 — they must still reach comms.
+func TestHandler_HandleMessage_ExecuteCallback_StillReachesComms(t *testing.T) {
+	mockComms := &mockCommsHandler{}
+	mockApproval := &mockApprovalHandler{}
+	h := NewHandler(&HandlerConfig{
+		AppToken:        "xapp-test-token",
+		BotToken:        "xoxb-test-token",
+		ApprovalHandler: mockApproval,
+	})
+	h.commsHandler = mockComms
+
+	ev := core.MessageEvent{
+		Action:     "callback",
+		ChannelID:  "C123",
+		CallbackID: "execute",
+		Data:       "execute",
+		Sender:     core.Identity{UserID: "U789"},
+	}
+
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if len(mockApproval.calls) != 0 {
+		t.Errorf("execute callback must not be routed to approval handler, got %d calls", len(mockApproval.calls))
+	}
+	if len(mockComms.got) != 1 {
+		t.Fatalf("HandleMessage() delivered %d messages to comms, want 1", len(mockComms.got))
+	}
+	if !mockComms.got[0].IsCallback || mockComms.got[0].ActionID != "execute" {
+		t.Errorf("expected execute callback to reach comms unchanged, got %+v", mockComms.got[0])
+	}
+}
+
+// TestHandler_HandleMessage_ApprovalCallback_NilApprovalHandler covers a
+// deployment where approval isn't configured (nil ApprovalHandler): the
+// approve/reject click falls through to comms rather than panicking. comms
+// will reply "Unknown action" per the GH-4431 fallthrough fix, but the
+// important thing here is HandleMessage must not panic on a nil handler.
+func TestHandler_HandleMessage_ApprovalCallback_NilApprovalHandler(t *testing.T) {
+	mockComms := &mockCommsHandler{}
+	h := NewHandler(&HandlerConfig{
+		AppToken: "xapp-test-token",
+		BotToken: "xoxb-test-token",
+	})
+	h.commsHandler = mockComms
+
+	ev := core.MessageEvent{
+		Action:     "callback",
+		ChannelID:  "C123",
+		CallbackID: "approve",
+		Data:       "approve:REQ-3",
+		Sender:     core.Identity{UserID: "U789"},
+	}
+
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if len(mockComms.got) != 1 {
+		t.Fatalf("HandleMessage() delivered %d messages to comms, want 1 (fallback when no approval handler configured)", len(mockComms.got))
+	}
+}
+
 func TestHandler_HandleMessage_NilCommsHandler(t *testing.T) {
 	h := NewHandler(&HandlerConfig{
 		AppToken: "xapp-test-token",

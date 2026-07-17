@@ -360,7 +360,7 @@
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
 | Approval engine | ✅ | approval | `--env=prod` | `approval` | Wired to autopilot controller |
-| Slack approval | ✅ | approval | - | `adapters.slack.approval` | Interactive messages, registered in main.go |
+| Slack approval | ✅ | approval | - | `adapters.slack.approval` | Interactive messages, registered in main.go; Socket Mode clicks routed via `slack.ApprovalCallbackHandler` in `adapters/slack/handler.go` (GH-4431, HTTP-webhook-only wiring was the sole path before) |
 | Telegram approval | ✅ | approval | - | - | Inline keyboards, registered in main.go |
 | Rule-based triggers | ✅ | approval | - | `approval.rules[]` | RuleEvaluator with 4 matchers wired into Manager (GH-636) |
 | Non-blocking async approval | ✅ | autopilot | - | `approval.async_dispatch` | handleAwaitApproval tick-handler; PR-A stall no longer blocks PR-B (GH-2685) |
