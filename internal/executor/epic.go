@@ -2045,15 +2045,35 @@ const (
 //
 // When no failure signal is present and the child is not externally owned,
 // or no log store is wired to check against, the original (result, err) pass
-// through unchanged. Otherwise this polls findTerminalChildExecution for
-// taskID (scoped to projectPath) until it finds a terminal row, the context
-// is cancelled, or childOutcomeReconcileTimeout elapses — whichever comes
-// first, so this can never block the epic indefinitely. On terminal success
-// ("completed" / "no_op") it synthesizes a passing ExecutionResult from the
-// tracked row so the caller's normal success/no-op handling applies; on
-// terminal failure it enriches the returned error with the tracked row's
-// real error message instead of the uninformative "unknown: exit status 1"
-// backend classification.
+// through unchanged. Otherwise this polls findChildExecutionState for taskID
+// (scoped to projectPath) until it finds a terminal row or the context is
+// cancelled. On terminal success ("completed" / "no_op") it synthesizes a
+// passing ExecutionResult from the tracked row so the caller's normal
+// success/no-op handling applies; on terminal failure it enriches the
+// returned error with the tracked row's real error message instead of the
+// uninformative "unknown: exit status 1" backend classification.
+//
+// GH-4413: childOutcomeReconcileTimeout only bounds time spent with the
+// child actually RUNNING, not time spent QUEUED behind a busy project
+// worker. Pilot dispatches one task per project at a time (ProjectWorker,
+// TASK-393) — a child epic sub-issue landing behind other queued work on a
+// busy project can legitimately wait well past 5 minutes before a worker
+// ever picks it up, and that queue-wait was previously charged against the
+// same 5m ceiling used for detecting a genuinely stuck/silent execution.
+// GH-9 (TASK-04) failed exactly this way: child GH-26 was still "queued"
+// when the 5m deadline fired, then went on to complete fine standalone
+// moments later. The ceiling below is now anchored to the child's own
+// started_at (GH-4033's "worker actually began running" stamp, set by
+// UpdateExecutionStatus's transition to "running") rather than to when this
+// call started polling, so a long queue-wait no longer erodes the budget the
+// child gets once it actually starts executing. While the child is still
+// "queued" (or no row is visible yet), this keeps polling with no ceiling at
+// all — the dispatcher's own recoverStaleQueuedTasks sweep (GH-2331,
+// StaleQueuedThreshold) already reaps a queued row whose owning project has
+// no live worker (a dead claim) to a terminal status, which surfaces here on
+// the next tick via the terminal-row check; a queued row with a live worker
+// is, by that same GH-2331 reasoning, just waiting its turn and must not be
+// timed out. ctx cancellation remains the only bound while queued.
 func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath, selfExecID string, result *ExecutionResult, execErr error, externallyOwned bool) (*ExecutionResult, error) {
 	hasFailureSignal := execErr != nil || (result != nil && !result.Success)
 	if !hasFailureSignal && !externallyOwned {
@@ -2099,9 +2119,17 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 		timeout = defaultChildOutcomeReconcileTimeout
 	}
 
-	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+
+	// runningDeadline is set lazily, only once the child is actually
+	// observed "running" — until then it stays zero and no timeout applies
+	// (GH-4413: queue-wait must not erode the running budget). It anchors to
+	// the row's own started_at when available so a slow first poll after the
+	// child started doesn't donate free extra time, and falls back to "now"
+	// for rows written directly as "running" with no started_at stamp (e.g.
+	// the epic loop's own inline sub-issue rows, GH-4141).
+	var runningDeadline time.Time
 
 	for {
 		select {
@@ -2117,15 +2145,34 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 		case <-ticker.C:
 		}
 
-		row, err := r.findTerminalChildExecution(taskID, projectPath, selfExecID)
-		if err == nil && row != nil {
-			return r.resolveChildTerminalOutcome(row, result, execErr)
+		terminal, running, startedAt, err := r.findChildExecutionState(taskID, projectPath, selfExecID)
+		if err == nil && terminal != nil {
+			return r.resolveChildTerminalOutcome(terminal, result, execErr)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			r.log.Warn("reconcileChildOutcome: execution status lookup failed",
 				"task_id", taskID, "project_path", projectPath, "error", err)
 		}
-		if time.Now().After(deadline) {
+
+		if !running {
+			// Still queued (or no row visible yet): no ceiling applies. A
+			// queued row behind a live worker is legitimately waiting its
+			// turn (GH-2331); a queued row with a dead claim gets reaped to
+			// a terminal status by recoverStaleQueuedTasks and will be
+			// caught by the terminal check above on a later tick. Reset any
+			// previously-observed running deadline in case the child
+			// regressed to queued (a fresh re-pick row sorting first).
+			runningDeadline = time.Time{}
+			continue
+		}
+		if runningDeadline.IsZero() {
+			if startedAt != nil {
+				runningDeadline = startedAt.Add(timeout)
+			} else {
+				runningDeadline = time.Now().Add(timeout)
+			}
+		}
+		if time.Now().After(runningDeadline) {
 			r.log.Warn("reconcileChildOutcome: gave up waiting for terminal child execution state",
 				"task_id", taskID, "project_path", projectPath, "timeout", timeout)
 			if externallyOwned {
@@ -2169,6 +2216,47 @@ func (r *Runner) findTerminalChildExecution(taskID, projectPath, selfExecID stri
 		}
 	}
 	return nil, nil
+}
+
+// findChildExecutionState is findTerminalChildExecution's sibling for the
+// reconcileChildOutcome poll loop (GH-4413): alongside the terminal-row scan
+// it also reports whether the child is actually executing, so the loop can
+// tell "hasn't started" (queued behind a busy ProjectWorker, TASK-393) apart
+// from "stuck" (running but silent past the timeout) instead of charging
+// queue-wait against the same ceiling meant for a stalled execution.
+//
+// running is derived from the newest non-terminal row (rows are ordered
+// created_at DESC by ListExecutionsByTaskIDExcluding) rather than any
+// non-terminal row, mirroring GH-4381's ordering trap avoidance for the
+// terminal case: a fresh re-pick can leave an older "running" row behind a
+// newer "queued" duplicate, and the newest row is the one actually governing
+// the child's current state. startedAt is that row's started_at column
+// (GH-4033: stamped by UpdateExecutionStatus's transition to "running"),
+// nil when unset — callers fall back to treating "now" as the observed
+// start in that case.
+//
+// Return shape mirrors findTerminalChildExecution: (nil, false, nil,
+// sql.ErrNoRows) when no other row exists at all (nothing to wait for);
+// (nil, false, nil, nil) when rows exist but the newest is still "queued";
+// (nil, true, startedAt, nil) when the newest is "running".
+func (r *Runner) findChildExecutionState(taskID, projectPath, selfExecID string) (terminal *memory.Execution, running bool, startedAt *time.Time, err error) {
+	rows, err := r.logStore.ListExecutionsByTaskIDExcluding(taskID, projectPath, selfExecID)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	if len(rows) == 0 {
+		return nil, false, nil, sql.ErrNoRows
+	}
+	for _, row := range rows {
+		if isTerminalExecutionStatus(row.Status) {
+			return row, false, nil, nil
+		}
+	}
+	newest := rows[0]
+	if newest.Status == string(ExecStatusRunning) {
+		return nil, true, newest.StartedAt, nil
+	}
+	return nil, false, nil, nil
 }
 
 // resolveChildTerminalOutcome turns a terminal execution row into the

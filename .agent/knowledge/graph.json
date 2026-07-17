@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T15:18:52+00:00",
+  "updated": "2026-07-17T19:10:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -2990,6 +2990,17 @@
         ],
         "confidence": 0.9,
         "created": "2026-07-17"
+      },
+      "reconcile-timeout-counts-queue-wait": {
+        "type": "pitfall",
+        "summary": "reconcileChildOutcome's 5m ceiling was anchored to when the parent started polling, not to when the child actually started running — a child queued behind the busy single-lane ProjectWorker (TASK-393) burned the same budget meant for detecting a stuck execution, failing epics on busy projects structurally (GH-9/GH-26). Fixed by anchoring the deadline to the child's own started_at, applied only once the child is observed running.",
+        "file": ".agent/knowledge/memories/pitfalls/bug_reconcile_timeout_counts_queue_wait.md",
+        "concepts": [
+          "executor",
+          "dispatcher"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-17"
       }
     }
   },
@@ -4668,10 +4679,10 @@
       "mem-152"
     ]
   },
-  "last_updated": "2026-07-17T09:45:00+00:00",
+  "last_updated": "2026-07-17T19:10:00+00:00",
   "stats": {
-    "total_nodes": 257,
+    "total_nodes": 258,
     "total_edges": 226,
-    "memory_count": 161
+    "memory_count": 162
   }
 }
