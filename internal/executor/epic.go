@@ -1301,6 +1301,114 @@ func creatableSubtasks(subtasks []PlannedSubtask, parentID string, log *slog.Log
 	return foldVerifyOnlySubtasks(valid)
 }
 
+// normalizeSubtaskTitleForMatch canonicalizes a subtask title for recovery
+// reconciliation (GH-4406): case-insensitive, whitespace-trimmed, and
+// truncated to the same 80-char limit createSubIssuesViaGitHub/
+// createSubIssuesViaAdapter enforce via truncateTitle. This mirrors the
+// deterministic part of those functions' title-resolution pipeline, so a
+// freshly planned subtask's raw title compares equal to an already-created
+// issue's title in the common case (a well-formed conventional-commit title
+// never hits the analysis-title fallback in validateSubtaskTitle).
+func normalizeSubtaskTitleForMatch(title string) string {
+	return strings.ToLower(strings.TrimSpace(truncateTitle(title, 80)))
+}
+
+// reconcileRecoveredSubIssues matches recovered (already-existing) sub-issues
+// against the current plan's subtasks by normalized title (GH-4406). Matched
+// recovered issues are "adopted" — kept with their real tracker state/number,
+// but re-attached to this run's PlannedSubtask so Order/DependsOn/
+// Description reflect the current plan rather than whatever the prior run's
+// issue body happened to contain. Planned subtasks with no matching
+// recovered issue are returned as `missing` for the caller to create.
+func reconcileRecoveredSubIssues(planned []PlannedSubtask, recovered []CreatedIssue) (adopted []CreatedIssue, missing []PlannedSubtask) {
+	byTitle := make(map[string]CreatedIssue, len(recovered))
+	for _, iss := range recovered {
+		byTitle[normalizeSubtaskTitleForMatch(iss.Subtask.Title)] = iss
+	}
+
+	claimed := make(map[string]bool, len(recovered))
+	for _, st := range planned {
+		key := normalizeSubtaskTitleForMatch(st.Title)
+		if iss, ok := byTitle[key]; ok && !claimed[key] {
+			iss.Subtask = st
+			adopted = append(adopted, iss)
+			claimed[key] = true
+			continue
+		}
+		missing = append(missing, st)
+	}
+	return adopted, missing
+}
+
+// reconcilePartialSubIssueRecovery is the GH-4406 fix for the epic recovery
+// livelock: when recoverExistingSubIssues finds fewer children than the
+// current plan calls for, the old behavior treated ANY shortfall as a hard
+// coverage gap and declined unconditionally — so a partially-decomposed
+// epic (e.g., 2 of 9 planned sub-issues created by a prior, interrupted run)
+// would replan the same subtasks, recover the same 2 pre-existing children,
+// and decline again on every retry cycle, forever.
+//
+// This adopts recovered issues that match a planned subtask by (normalized)
+// title, then creates issues ONLY for the planned subtasks that have no
+// match — it never re-creates a sub-issue that already exists. If none of
+// the recovered issues match any planned subtask, the existing children are
+// assumed to be stale/unrelated to this plan (a genuine conflict) and are
+// returned unchanged so the caller falls back to its existing
+// decline-and-flag path (handleSubIssueCoverageGap).
+func (r *Runner) reconcilePartialSubIssueRecovery(ctx context.Context, plan *EpicPlan, planned []PlannedSubtask, recovered []CreatedIssue, executionPath string) ([]CreatedIssue, error) {
+	adopted, missing := reconcileRecoveredSubIssues(planned, recovered)
+	if len(adopted) == 0 || len(missing) == 0 {
+		// Nothing recognizable to adopt (a genuine conflict — let the caller
+		// decline), or nothing missing (the recovered set already covers the
+		// plan by title despite a raw count mismatch, e.g. duplicate titles).
+		return recovered, nil
+	}
+
+	r.log.Info("Reconciling partial sub-issue recovery: adopting matched children, creating missing subtasks",
+		"parent_id", plan.ParentTask.ID,
+		"adopted", len(adopted),
+		"missing", len(missing),
+	)
+
+	missingPlan := &EpicPlan{
+		ParentTask:  plan.ParentTask,
+		Subtasks:    missing,
+		TotalEffort: plan.TotalEffort,
+		PlanOutput:  plan.PlanOutput,
+	}
+
+	// Mirrors the useAdapterCreator determination in CreateSubIssues so the
+	// missing subtasks are created through the same backend the initial
+	// (blocked) creation attempt would have used.
+	useAdapterCreator := r.subIssueCreator != nil &&
+		plan.ParentTask != nil &&
+		plan.ParentTask.SourceAdapter != "" &&
+		plan.ParentTask.SourceAdapter != "github"
+
+	var createdMissing []CreatedIssue
+	var err error
+	if useAdapterCreator {
+		createdMissing, err = r.createSubIssuesViaAdapter(ctx, missingPlan)
+	} else {
+		createdMissing, err = r.createSubIssuesViaGitHub(ctx, missingPlan, executionPath)
+	}
+
+	merged := make([]CreatedIssue, 0, len(adopted)+len(createdMissing))
+	merged = append(merged, adopted...)
+	for _, iss := range createdMissing {
+		// createSubIssuesViaGitHub/createSubIssuesViaAdapter never set State —
+		// it's only populated by recoverExistingSubIssues. A sub-issue that
+		// was just created is always open; without this, the caller's
+		// State=="open" filter (runner.go, after this reconciliation) would
+		// silently drop every freshly-created child from execution.
+		if iss.State == "" {
+			iss.State = "open"
+		}
+		merged = append(merged, iss)
+	}
+	return merged, err
+}
+
 // createSubIssuesViaAdapter creates sub-issues using the SubIssueCreator interface.
 // Used for non-GitHub adapters like Linear, Jira, GitLab, Azure DevOps.
 func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) ([]CreatedIssue, error) {

@@ -2116,20 +2116,34 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						// as if the plan were fully covered.
 						plannedNow := creatableSubtasks(plan.Subtasks, plan.ParentTask.ID, nil)
 						if len(recovered) < len(plannedNow) {
-							gapPlan := &EpicPlan{ParentTask: plan.ParentTask, Subtasks: plannedNow, TotalEffort: plan.TotalEffort, PlanOutput: plan.PlanOutput}
-							gapErr := r.handleSubIssueCoverageGap(ctx, gapPlan, recovered, executionPath, err)
-							r.reportProgress(task.ID, "Needs Clarification", 100, gapErr.Error())
-							return &ExecutionResult{
-								TaskID:         task.ID,
-								Success:        false,
-								Declined:       true,
-								DeclinedReason: gapErr.Error(),
-								Outcome:        "declined",
-								Error:          gapErr.Error(),
-								Duration:       time.Since(start),
-								IsEpic:         true,
-								EpicPlan:       plan,
-							}, nil
+							// GH-4406: a raw shortfall isn't necessarily a coverage gap —
+							// reconcile plan-vs-existing before declining. Adopts recovered
+							// children that match a planned subtask by title and creates
+							// issues only for the ones genuinely missing; only a real
+							// conflict (nothing recovered matches the plan) or a failed
+							// creation attempt falls through to the decline below.
+							reconciled, reconcileErr := r.reconcilePartialSubIssueRecovery(ctx, plan, plannedNow, recovered, executionPath)
+							cause := err
+							if reconcileErr != nil {
+								cause = reconcileErr
+							}
+							if len(reconciled) < len(plannedNow) {
+								gapPlan := &EpicPlan{ParentTask: plan.ParentTask, Subtasks: plannedNow, TotalEffort: plan.TotalEffort, PlanOutput: plan.PlanOutput}
+								gapErr := r.handleSubIssueCoverageGap(ctx, gapPlan, reconciled, executionPath, cause)
+								r.reportProgress(task.ID, "Needs Clarification", 100, gapErr.Error())
+								return &ExecutionResult{
+									TaskID:         task.ID,
+									Success:        false,
+									Declined:       true,
+									DeclinedReason: gapErr.Error(),
+									Outcome:        "declined",
+									Error:          gapErr.Error(),
+									Duration:       time.Since(start),
+									IsEpic:         true,
+									EpicPlan:       plan,
+								}, nil
+							}
+							recovered = reconciled
 						}
 
 						if allChildrenDone(recovered) {
