@@ -46,6 +46,10 @@ In `~/.pilot/config.yaml` for the new project:
 2. **Execution mode**: prefer `orchestrator.execution.mode: auto` (parallel + overlap guard) over bare `parallel` once the `auto` wiring fix ships; before that, `sequential` is the safe choice for a brand-new repo's first batch.
 3. **Token durability**: launch with `GITHUB_TOKEN=$(gh auth token) pilot start ...` or a fine-grained PAT in config. A dead token 401s **all** polling silently.
 
+## Rule 7 — Actions-only repos with zero `required_checks` timed out at `waiting_ci` (fixed GH-4384)
+
+2026-07-16 incident (`qf-studio/pointer`, first cycle): PRs #5/#6/#7 all timed out at `waiting_ci` after 30m with green checks (`gh pr checks` passing). Root cause: the new repo had no `required_checks` and `ci_checks.mode: auto` — GitHub Actions only ever writes check-runs, never legacy commit statuses, so the CI watcher's fallback to the combined-status endpoint saw a permanent `state=pending`/`total_count=0` for that repo. Fixed in `internal/autopilot/ci_monitor.go` (`checkAutoDiscoveredRuns`): once check-runs have been discovered for a SHA, completion is always evaluated from those discovered check-runs — the legacy combined-status endpoint is never consulted again for that SHA, even on a transient empty check-runs read. Established repos with a non-empty `required_checks`/`ci_checks.required` allowlist were unaffected (see GH-4333→#4342). No config action needed post-fix, but if a new repo still hits `waiting_ci` timeouts with green checks, check `daemon.log` for "CI checks discovered" vs a "using commit-status API" line for the same SHA — the latter after the former is the regression signature.
+
 ## Pre-flight checklist (before adding the `pilot` label)
 
 - [ ] Scaffold issue merged to `main` (Rule 1) — or this IS the scaffold issue

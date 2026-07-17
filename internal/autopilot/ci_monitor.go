@@ -262,12 +262,42 @@ func (m *CIMonitor) checkAllRuns(checkRuns *github.CheckRunsResponse) CIStatus {
 // GetCIStatus) that only run after this SHA already resolved to CISuccess once
 // earlier in the PR lifecycle, so re-discovering "no CI" from scratch would
 // incorrectly restart the grace period (GH-3873).
+//
+// GH-4384: once check-runs have been discovered for a SHA (m.discoveredChecks
+// is non-empty), check-runs IS the completion source of truth for that SHA —
+// the legacy combined-status endpoint must never be consulted again for it.
+// GitHub Actions only ever writes check-runs, never legacy commit statuses, so
+// combined-status permanently reports state=pending/total_count=0 for an
+// Actions-only repo. Discovery (top of checkStatus) and completion (here) must
+// read the same API for the same SHA, or a repo with zero required_checks and
+// an empty combined-status response looks identical to "CI still pending"
+// forever, even though the discovered check-runs already completed green
+// (observed on qf-studio/pointer PRs #5/#6/#7: 30m CI timeouts with green
+// checks). A transient empty ListCheckRuns response on a later poll — GitHub's
+// check-runs listing is eventually consistent — must not be mistaken for "no
+// CI configured" once this SHA is already known to report via check-runs.
 func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, checkRuns *github.CheckRunsResponse, skipGrace bool) (CIStatus, error) {
 	// Filter checks by exclusion patterns
 	var filteredRuns []github.CheckRun
 	for _, run := range checkRuns.CheckRuns {
 		if !m.matchesExclude(run.Name) {
 			filteredRuns = append(filteredRuns, run)
+		}
+	}
+
+	if len(filteredRuns) == 0 {
+		m.mu.RLock()
+		alreadyDiscovered := len(m.discoveredChecks[sha]) > 0
+		m.mu.RUnlock()
+
+		if alreadyDiscovered {
+			// Check-runs already resolved as the source of truth for this SHA;
+			// a momentarily empty response is a transient read, not evidence
+			// that CI stopped existing. Never fall through to combined-status.
+			m.log.Debug("check-runs momentarily empty for a SHA with prior discovery; staying pending rather than consulting combined-status",
+				"sha", ShortSHA(sha),
+			)
+			return CIPending, nil
 		}
 	}
 
