@@ -271,7 +271,7 @@ func (d *Dispatcher) reconcileOrphanedExecutions() int {
 		}
 
 		if exec.Status == string(ExecStatusRunning) {
-			branch := fmt.Sprintf("pilot/%s", exec.TaskID)
+			branch := mergedPRCheckBranch(exec)
 			if mergedURL, mergedErr := staleRunningMergedPRCheck(d.ctx, exec.ProjectPath, branch); mergedErr == nil && mergedURL != "" {
 				durationMs := time.Since(exec.CreatedAt).Milliseconds()
 				if err := d.store.MarkExecutionCompleted(exec.ID, mergedURL, "", durationMs); err != nil {
@@ -473,8 +473,11 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 		// own status update raced the reap. HasCompletedExecution above only
 		// catches a *separate* completed row for the same task; this row IS the
 		// one being reaped, so it never satisfies that check. Consult the task
-		// branch's PR state directly before failing it.
-		branch := fmt.Sprintf("pilot/%s", exec.TaskID)
+		// branch's PR state directly before failing it. GH-4409: prefer the
+		// branch actually recorded on the row (mergedPRCheckBranch) over
+		// reconstructing "pilot/{TaskID}" — a decomposed subtask's work lands
+		// on its parent's branch, not a branch named after the subtask.
+		branch := mergedPRCheckBranch(exec)
 		if mergedURL, mergedErr := staleRunningMergedPRCheck(d.ctx, exec.ProjectPath, branch); mergedErr == nil && mergedURL != "" {
 			d.log.Info("Stale running task's branch already merged; healing to completed instead of failed",
 				slog.String("execution_id", exec.ID),
@@ -527,6 +530,25 @@ func (d *Dispatcher) deleteOrphanRunningRow(exec *memory.Execution) {
 	} else if pruned > 0 {
 		d.log.Info("Pruned orphaned task worktree", slog.String("task_id", exec.TaskID), slog.Int("count", pruned))
 	}
+}
+
+// mergedPRCheckBranch reports the branch staleRunningMergedPRCheck should
+// probe for exec: exec.TaskBranch when the row recorded one, falling back to
+// reconstructing "pilot/{TaskID}" only for legacy rows saved before
+// TaskBranch was persisted (or a row where it was never set).
+//
+// GH-4409: reconstructing "pilot/{TaskID}" unconditionally was wrong for a
+// decomposed subtask — decompose.go stamps subtask.Branch = parent.Branch,
+// so a child's real work lands on its PARENT's branch (e.g. GH-4393-5 ships
+// on pilot/GH-4393, not pilot/GH-4393-5). Probing the reconstructed
+// child-only branch found nothing to merge, so a claimed running child whose
+// work already shipped via the parent missed this heal and was re-run at
+// stalled->generation+1.
+func mergedPRCheckBranch(exec *memory.Execution) string {
+	if exec.TaskBranch != "" {
+		return exec.TaskBranch
+	}
+	return fmt.Sprintf("pilot/%s", exec.TaskID)
 }
 
 // staleRunningMergedPRCheck reports the URL of a merged PR for branch in
@@ -856,16 +878,22 @@ func (d *Dispatcher) nextRetryGeneration(taskID, projectPath string) (generation
 	}
 
 	claimedExec, err := d.store.GetExecution(execID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// Claim row landed but its executions row never did (Begin's
-			// save-failure case) — treat conservatively as still owned
-			// rather than guessing a retry is safe.
-			return 0, false, nil
-		}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, false, err
 	}
-	if !isTerminalExecutionStatus(claimedExec.Status) {
+	// GH-4409: sql.ErrNoRows means the claim row survives but the executions
+	// row it names does not — either Begin's save-failure case (claim landed,
+	// the executions INSERT never did) or a dangling claim left behind by
+	// deleteOrphanRunningRow / boot reconciliation deleting an execution row
+	// without pruning its claims (both current call sites only delete rows
+	// they've already confirmed are done, but a future caller deleting a
+	// claimed row for a NOT-done task must not wedge that task forever).
+	// Neither case is a live owner, so fall through to the done-check below
+	// instead of the old conservative "treat as still owned" — that
+	// short-circuited before HasTerminalCompletion could ever run, so a
+	// not-done task behind a dangling claim retried nothing, silently,
+	// forever.
+	if err == nil && !isTerminalExecutionStatus(claimedExec.Status) {
 		return 0, false, nil // live owner — today's ErrClaimLost drop path
 	}
 

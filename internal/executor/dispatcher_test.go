@@ -871,6 +871,60 @@ func TestRecoverStaleRunningTasks_HealsToCompletedWhenBranchMerged(t *testing.T)
 	}
 }
 
+// TestRecoverStaleRunningTasks_HealsUsingRecordedBranchNotTaskID is the
+// GH-4409 regression guard for finding #2 in the #4403 review: a decomposed
+// subtask's real work lands on its PARENT's branch (decompose.go stamps
+// subtask.Branch = parent.Branch before the subtask ever runs), not a branch
+// reconstructed from the subtask's own task ID. A stale "running" row for a
+// subtask (e.g. GH-4393-5) whose recorded TaskBranch is the parent's branch
+// (pilot/GH-4393) must probe THAT branch for a merged PR — probing the
+// reconstructed "pilot/GH-4393-5" finds nothing, since nothing ever pushes
+// there, so the heal is missed and the child re-runs already-shipped work.
+func TestRecoverStaleRunningTasks_HealsUsingRecordedBranchNotTaskID(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{
+		ID: "exec-subtask-run", TaskID: "GH-4393-5", ProjectPath: "/project-epic",
+		Status: "running", TaskBranch: "pilot/GH-4393",
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	const mergedPRURL = "https://github.com/qf-studio/pilot/pull/4393"
+	origCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, projectPath, branch string) (string, error) {
+		if branch == "pilot/GH-4393-5" {
+			t.Errorf("staleRunningMergedPRCheck probed the reconstructed subtask branch %q instead of the recorded parent branch", branch)
+		}
+		if projectPath == "/project-epic" && branch == "pilot/GH-4393" {
+			return mergedPRURL, nil
+		}
+		return "", nil
+	}
+	defer func() { staleRunningMergedPRCheck = origCheck }()
+
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+		StaleRecoveryInterval: time.Hour,
+	}
+	dispatcher := NewDispatcher(store, NewRunner(), config)
+	dispatcher.recoverStaleRunningTasks()
+
+	got, err := store.GetExecution("exec-subtask-run")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if got.Status != "completed" {
+		t.Errorf("expected subtask row with merged parent branch to heal to 'completed', got %q (error=%q)", got.Status, got.Error)
+	}
+	if got.PRUrl != mergedPRURL {
+		t.Errorf("expected pr_url = %q, got %q", mergedPRURL, got.PRUrl)
+	}
+}
+
 // TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR guards the negative
 // case: a genuinely orphaned running row (no live worker, no merged PR on its
 // branch) must still be marked "failed" — the GH-4092 healing path must not
@@ -2635,6 +2689,48 @@ func TestDispatcher_ReconcileOrphanedExecutions(t *testing.T) {
 		}
 	})
 
+	t.Run("claimed running row heals using recorded branch, not reconstructed task-id branch", func(t *testing.T) {
+		// GH-4409: boot reconciliation's own merged-PR heal check must use the
+		// same branch-derivation fix as recoverStaleRunningTasks — a claimed
+		// decomposed-subtask row found at boot recorded its PARENT's branch,
+		// not one reconstructed from its own task ID.
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		subtask := &Task{ID: "GH-4409-5", ProjectPath: "/project-epic-boot", Branch: "pilot/GH-4409"}
+		execID, err := NewExecutionLifecycle(store).Begin(subtask, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+
+		const mergedPRURL = "https://github.com/qf-studio/pilot/pull/9202"
+		origCheck := staleRunningMergedPRCheck
+		staleRunningMergedPRCheck = func(_ context.Context, projectPath, branch string) (string, error) {
+			if branch == "pilot/GH-4409-5" {
+				t.Errorf("staleRunningMergedPRCheck probed the reconstructed subtask branch %q instead of the recorded parent branch", branch)
+			}
+			if projectPath == "/project-epic-boot" && branch == "pilot/GH-4409" {
+				return mergedPRURL, nil
+			}
+			return "", nil
+		}
+		defer func() { staleRunningMergedPRCheck = origCheck }()
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		dispatcher.reconcileOrphanedExecutions()
+
+		exec, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		if exec.Status != "completed" {
+			t.Errorf("expected status 'completed', got %q", exec.Status)
+		}
+		if exec.PRUrl != mergedPRURL {
+			t.Errorf("expected pr_url %q, got %q", mergedPRURL, exec.PRUrl)
+		}
+	})
+
 	t.Run("unclaimed queued row (bare SaveExecution) is left untouched", func(t *testing.T) {
 		store, cleanup := setupTestStore(t)
 		defer cleanup()
@@ -3172,6 +3268,82 @@ func TestDispatcher_ExecutionGeneration(t *testing.T) {
 	} else if gen != 1 {
 		t.Errorf("expected generation 1 after a re-pick claimed it, got %d", gen)
 	}
+}
+
+// TestNextRetryGeneration_DanglingClaimFallsThroughToDoneCheck is the GH-4409
+// regression guard for finding #1 in the #4403 review: nextRetryGeneration's
+// GetExecution(execID) call can return sql.ErrNoRows for a claim row whose
+// executions row was deleted out from under it (Begin's own save-failure
+// case, or a future path that deletes a claimed row — mirroring
+// deleteOrphanRunningRow — without pruning execution_claims). The old code
+// treated ErrNoRows as "still owned" unconditionally, short-circuiting
+// before HasTerminalCompletion ever ran — a not-done task behind such a
+// dangling claim could never retry, silently, forever. The fix falls
+// through to the done-check instead: retry only when the task genuinely
+// isn't done yet, preserving GH-4350's "never re-arm a done task" invariant
+// for the case where it IS done.
+func TestNextRetryGeneration_DanglingClaimFallsThroughToDoneCheck(t *testing.T) {
+	t.Run("not done: dangling claim yields a generation+1 retry instead of wedging", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4409-DANGLE-1", ProjectPath: "/project-dangle-1"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+		// Simulate a future row-delete path (mirroring deleteOrphanRunningRow)
+		// deleting the execution row without pruning its execution_claims
+		// entry, for a task that is NOT actually done — unlike today's real
+		// call sites, which only ever delete after confirming completion.
+		if err := store.DeleteExecution(execID); err != nil {
+			t.Fatalf("DeleteExecution: %v", err)
+		}
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+		if err != nil {
+			t.Fatalf("nextRetryGeneration: %v", err)
+		}
+		if !retry {
+			t.Fatalf("expected retry=true for a dangling claim on a not-done task, got retry=false (task permanently wedged)")
+		}
+		if gen != 1 {
+			t.Errorf("expected generation 1, got %d", gen)
+		}
+	})
+
+	t.Run("done: dangling claim must not re-arm an already-completed task", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4409-DANGLE-2", ProjectPath: "/project-dangle-2"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+		// A separate execution row proves the task's real deliverable already
+		// shipped (HasCompletedExecution's own-task-id definition of "done")
+		// before the claimed row is deleted out from under it.
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-done-elsewhere", TaskID: task.ID, ProjectPath: task.ProjectPath,
+			Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/1",
+		}); err != nil {
+			t.Fatalf("SaveExecution(done): %v", err)
+		}
+		if err := store.DeleteExecution(execID); err != nil {
+			t.Fatalf("DeleteExecution: %v", err)
+		}
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		_, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+		if err != nil {
+			t.Fatalf("nextRetryGeneration: %v", err)
+		}
+		if retry {
+			t.Fatalf("expected retry=false — GH-4350's no_op/done invariant must not be reopened by a dangling claim, got retry=true")
+		}
+	})
 }
 
 // TestStore_GetQueuedProjectPaths verifies the distinct-project query backing
