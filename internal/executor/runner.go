@@ -1579,6 +1579,22 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 		)
 	}
 
+	// GH-4387: restore any indexed memory doc this epic session deleted —
+	// left deleted, the surviving graph.json node dangles and fails the
+	// Knowledge Graph Drift Gate's "Broken file links" check (PR #4385, #4375).
+	if restored, restoreErr := git.RestoreDeletedIndexedMemoryDocs(ctx, baseBranch); restoreErr != nil {
+		r.log.Warn("Failed to restore deleted indexed memory doc(s) on epic branch",
+			slog.String("task_id", task.ID),
+			slog.Any("error", restoreErr),
+		)
+	} else if len(restored) > 0 {
+		r.log.Warn("Restored deleted indexed memory doc(s) on epic branch to avoid drift-gate failure",
+			slog.String("task_id", task.ID),
+			slog.Any("files", restoredMemoryDocPaths(restored)),
+		)
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageMemoryGuardRestore, formatRestoredMemoryDocs(restored))
+	}
+
 	r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
 
 	// Push the parent branch. TASK-359: a real deliverable that fails to push is a
@@ -4056,6 +4072,23 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					slog.String("task_id", task.ID),
 					slog.Any("files", stripped),
 				)
+			}
+
+			// GH-4387: restore any indexed memory doc this session deleted —
+			// left deleted, the surviving graph.json node dangles and fails
+			// the Knowledge Graph Drift Gate's "Broken file links" check
+			// (PR #4385, #4375).
+			if restored, restoreErr := git.RestoreDeletedIndexedMemoryDocs(ctx, baseBranch); restoreErr != nil {
+				log.Warn("Failed to restore deleted indexed memory doc(s) on branch",
+					slog.String("task_id", task.ID),
+					slog.Any("error", restoreErr),
+				)
+			} else if len(restored) > 0 {
+				log.Warn("Restored deleted indexed memory doc(s) on branch to avoid drift-gate failure",
+					slog.String("task_id", task.ID),
+					slog.Any("files", restoredMemoryDocPaths(restored)),
+				)
+				r.recordExecutionEvent(task.LogExecutionID(), memory.StageMemoryGuardRestore, formatRestoredMemoryDocs(restored))
 			}
 
 			// Pre-push lint gate (GH-1376)

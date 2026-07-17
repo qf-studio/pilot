@@ -935,6 +935,15 @@ const (
 	// of a second execution starting silently. Detail carries a short
 	// human-readable note naming which sub-issue/task lost the claim.
 	StageDispatchClaimLost Stage = "dispatch_claim_lost"
+	// StageMemoryGuardRestore records that the finalize-path guard
+	// (GitOperations.RestoreDeletedIndexedMemoryDocs) restored one or more
+	// .agent/knowledge/memories/** files that this execution's branch had
+	// deleted despite a surviving node in .agent/knowledge/graph.json (GH-4387).
+	// Left deleted, the dangling node fails the Knowledge Graph Drift Gate and
+	// wedges the PR in awaiting-approval (PR #4385, #4375) — this stage makes
+	// the automatic recovery visible in `pilot trace` / the ledger. Detail
+	// carries "restored=<path> (node=<id>)" lines, one per file.
+	StageMemoryGuardRestore Stage = "memory_guard_restore"
 )
 
 // Event represents a single stage-transition record for an execution.

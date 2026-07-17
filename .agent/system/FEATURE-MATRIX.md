@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-17 (v2.151.0)
+**Last Updated:** 2026-07-16 (v2.151.0)
 
 ## Legend
 
@@ -228,6 +228,7 @@
 | CI log pattern learning | ✅ | autopilot | - | - | Wire CI log learning into autopilot feedback loop (v2.50.0, PR #1977) |
 | Staticcheck S1011 fix | ✅ | memory | - | - | Replace loop with append for staticcheck compliance (v2.46.1, PR #1971) |
 | Execution stage ledger (data layer) | ✅ | memory | - | - | `execution_events` table + Stage enum, `InsertExecutionEvent`/`ListExecutionEvents`/`ListExecutionsForTask`; no consumers wired yet (TASK-379 C3, GH-3844, v2.208.0) |
+| Graph-indexed memory-file deletion guard | ✅ | executor | - | - | `GitOperations.RestoreDeletedIndexedMemoryDocs` runs in the finalize path (before push) on all three PR-creating paths (direct, epic, decomposed-parent): restores any `.agent/knowledge/memories/**` file the branch deleted despite a surviving node in `.agent/knowledge/graph.json` (handles both `file` and legacy `path` node keys, resolved as of the base branch so a since-deleted file can still be matched), commits the restoration, logs a WARN, and records `memory.StageMemoryGuardRestore`. No-ops when `graph.json` is absent. Converts the recurring "drift gate red, PR wedged in awaiting" failure class (PR #4385, #4375) into a self-healing no-op (GH-4387, v2.241.2+) |
 
 ## Dashboard
 

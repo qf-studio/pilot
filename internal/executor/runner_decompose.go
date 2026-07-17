@@ -422,6 +422,22 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 		)
 	}
 
+	// GH-4387: restore any indexed memory doc a subtask session deleted —
+	// left deleted, the surviving graph.json node dangles and fails the
+	// Knowledge Graph Drift Gate's "Broken file links" check (PR #4385, #4375).
+	if restored, restoreErr := git.RestoreDeletedIndexedMemoryDocs(ctx, baseBranch); restoreErr != nil {
+		log.Warn("Failed to restore deleted indexed memory doc(s) on decomposed-parent branch",
+			slog.String("task_id", task.ID),
+			slog.Any("error", restoreErr),
+		)
+	} else if len(restored) > 0 {
+		log.Warn("Restored deleted indexed memory doc(s) on decomposed-parent branch to avoid drift-gate failure",
+			slog.String("task_id", task.ID),
+			slog.Any("files", restoredMemoryDocPaths(restored)),
+		)
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageMemoryGuardRestore, formatRestoredMemoryDocs(restored))
+	}
+
 	r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")
 
 	var pushErr error
