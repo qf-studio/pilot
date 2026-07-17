@@ -583,13 +583,39 @@ func (c *Controller) selfHealTask(taskID, prURL string) {
 // even though the execution itself is still progressing. This is the hard
 // regression gate for a genuinely running task (the GH-4206 case) — it must
 // never be flipped mid-execution. TASK-399/GH-4209.
+//
+// GH-4412: 10 minutes sits far below every legitimate runner ceiling (30-60m
+// per-complexity task timeouts, doubled to a 120m watchdog kill floor —
+// runner.go watchdogTimeout = 2 * timeout). A live execution mid-way through
+// one long tool call/build with no other heartbeat easily exceeds 10 minutes
+// while its worker is still legitimately running. minOrphanRunningThreshold
+// floors this window at that 120m runner ceiling, mirroring GH-4092's
+// minOrphanEvictionThreshold fix for the alert engine's stuck-task eviction.
 const orphanRunningHeartbeatWindow = 10 * time.Minute
+
+// minOrphanRunningThreshold floors orphanRunningHeartbeatWindow at the
+// runner's own worst-case single-attempt budget: a Complex task's 60m default
+// timeout doubled by the runner's watchdog (runner.go watchdogTimeout = 2 *
+// timeout) = 120m. GH-4412: mirrors GH-4092 (internal/alerts/engine.go's
+// minOrphanEvictionThreshold) — no heartbeat-based orphan window should ever
+// be shorter than the time the runner itself is willing to let a task run
+// before giving up on it.
+const minOrphanRunningThreshold = 120 * time.Minute
+
+// effectiveOrphanRunningWindow returns orphanRunningHeartbeatWindow floored at
+// minOrphanRunningThreshold (GH-4412).
+func effectiveOrphanRunningWindow() time.Duration {
+	if orphanRunningHeartbeatWindow < minOrphanRunningThreshold {
+		return minOrphanRunningThreshold
+	}
+	return orphanRunningHeartbeatWindow
+}
 
 // sweepOrphanedRunningExecutions resolves status='running' execution rows
 // that are not actually in flight: absent from both the live Monitor's
 // running/queued set (dashboard mode only) and the Dispatcher's live-worker
 // set (GH-4412, always available), and with no execution_events heartbeat
-// inside orphanRunningHeartbeatWindow. Each surviving candidate resolves to
+// inside effectiveOrphanRunningWindow(). Each surviving candidate resolves to
 // 'completed' when its pr_url or branch matches a PR in mergedPRs, else
 // 'failed'. mergedPRs is the same already-fetched PR list
 // ScanRecentlyMergedPRsWithWindow built for this tick — this sweep makes no
@@ -603,9 +629,9 @@ func (c *Controller) sweepOrphanedRunningExecutions(mergedPRs []*github.PullRequ
 	// Dispatcher liveness signal. Relying on c.monitor alone left this
 	// exclusion set silently empty in headless (--dashboard not passed)
 	// deployments, so a live 14+ minute execution with no execution_events
-	// heartbeat in the last orphanRunningHeartbeatWindow (e.g. one long tool
-	// call/build) had no other guard against being swept out from under its
-	// still-running worker.
+	// heartbeat in the last window (formerly a fixed 10 minutes, now floored
+	// at minOrphanRunningThreshold — see effectiveOrphanRunningWindow) had no
+	// other guard against being swept out from under its still-running worker.
 	var liveTaskIDs []string
 	if c.monitor != nil {
 		liveTaskIDs = append(liveTaskIDs, c.monitor.GetRunningTaskIDs()...)
@@ -620,6 +646,7 @@ func (c *Controller) sweepOrphanedRunningExecutions(mergedPRs []*github.PullRequ
 		return
 	}
 
+	heartbeatWindow := effectiveOrphanRunningWindow()
 	for _, exec := range orphans {
 		events, evErr := c.evalStore.ListExecutionEvents(exec.ID)
 		if evErr != nil {
@@ -629,7 +656,7 @@ func (c *Controller) sweepOrphanedRunningExecutions(mergedPRs []*github.PullRequ
 		}
 		if len(events) > 0 {
 			last := events[len(events)-1].OccurredAt
-			if time.Since(last) < orphanRunningHeartbeatWindow {
+			if time.Since(last) < heartbeatWindow {
 				c.log.Debug("orphan-running sweep: recent heartbeat, treating as in-flight",
 					"execution_id", exec.ID, "task_id", exec.TaskID, "last_event", last)
 				continue
