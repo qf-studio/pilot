@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T22:50:46+00:00",
+  "updated": "2026-07-17T23:47:35+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3058,6 +3058,20 @@
         ],
         "confidence": 0.9,
         "created": "2026-07-17"
+      },
+      "gh4436-restore-ci-poll-hypothesis-refuted": {
+        "type": "learning",
+        "summary": "GH-4415 hypothesis (RestoreState watchers only listen for new check-run events, skipping current-state poll) refuted: autopilot CI checking is 100% poll-based with no event/webhook watcher architecture at all, applied identically to restored and fresh PRs",
+        "file": ".agent/knowledge/memories/learnings/gh4436-restore-ci-poll-hypothesis-refuted.md",
+        "concepts": [
+          "autopilot",
+          "ci-monitor",
+          "restore-state",
+          "gh-4415",
+          "epic-decomposition"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-17"
       }
     }
   },
@@ -4191,6 +4205,11 @@
       "from": "rlimit-as-breaks-node-subprocesses",
       "to": "absolute-state-paths-bypass-cutover-shim",
       "type": "related"
+    },
+    {
+      "from": "gh4436-restore-ci-poll-hypothesis-refuted",
+      "to": "autopilot",
+      "type": "relates_to"
     }
   ],
   "concept_index": {
@@ -4744,10 +4763,10 @@
       "decomposer-narrative-bullets-as-subtask-boundaries"
     ]
   },
-  "last_updated": "2026-07-17T22:50:46+00:00",
+  "last_updated": "2026-07-17T23:47:35+00:00",
   "stats": {
-    "total_nodes": 262,
-    "total_edges": 226,
-    "memory_count": 166
+    "total_nodes": 265,
+    "total_edges": 227,
+    "memory_count": 169
   }
 }
