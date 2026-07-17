@@ -109,6 +109,29 @@ func TestRepickBackoffKey_NamespacesByProjectPath(t *testing.T) {
 	}
 }
 
+// TestRepickBackoffKey_FormatMatchesDispatcherPackage is the GH-4394 subtask
+// 4 regression test for the "one shared per-task backoff" invariant across
+// packages. cmd/pilot and internal/executor each define their own
+// repickBackoffKey (duplicated rather than imported, since internal/executor
+// cannot import cmd/pilot — see dispatcher.go's repickBackoffKey doc comment)
+// but both MUST read/write the exact same repick_backoff store row for a
+// given (projectPath, taskID), or the poller's outer backoff gate
+// (handleIssueGeneric) and the dispatcher's terminal-claim re-pick gate
+// (beginWithGenerationRetry) would silently throttle two different keys —
+// each seeing an empty/reset backoff the other has already grown, exactly
+// the kind of gap GH-85 fell into. Pinning this package's key to the literal
+// "projectPath|taskID" format means any future edit to the separator or
+// field order here, without an identical edit on the internal/executor side
+// (internal/executor/dispatcher_test.go has the matching pin), fails this
+// test immediately instead of silently splitting the shared backoff in two.
+func TestRepickBackoffKey_FormatMatchesDispatcherPackage(t *testing.T) {
+	got := repickBackoffKey("/repo/a", "GH-85")
+	want := "/repo/a|GH-85"
+	if got != want {
+		t.Errorf("repickBackoffKey format changed: got %q, want %q — internal/executor's repickBackoffKey must be updated identically or the shared backoff store silently splits into two divergent keys", got, want)
+	}
+}
+
 // fakeRepickBackoffPersister is an in-memory stand-in for
 // *executor.Dispatcher's store-backed RepickBackoffState/
 // SetRepickBackoffState/ClearRepickBackoffState trio, used to verify the

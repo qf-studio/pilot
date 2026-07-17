@@ -2978,6 +2978,24 @@ func TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular
 	}
 }
 
+// TestRepickBackoffKey_FormatMatchesCmdPilotPackage is the GH-4394 subtask 4
+// counterpart to cmd/pilot's TestRepickBackoffKey_FormatMatchesDispatcherPackage.
+// cmd/pilot cannot import internal/executor's unexported repickBackoffKey (and
+// internal/executor cannot import cmd/pilot without a cycle), so the format is
+// duplicated by hand on both sides — see this package's repickBackoffKey doc
+// comment. Both pins assert the identical literal "projectPath|taskID"
+// format; a future edit to either side alone, without updating the other,
+// fails whichever pin didn't move — catching a silent split of the "one
+// shared per-task backoff" the poller's outer gate and this package's
+// beginWithGenerationRetry both read/write.
+func TestRepickBackoffKey_FormatMatchesCmdPilotPackage(t *testing.T) {
+	got := repickBackoffKey("/repo/a", "GH-85")
+	want := "/repo/a|GH-85"
+	if got != want {
+		t.Errorf("repickBackoffKey format changed: got %q, want %q — cmd/pilot's repickBackoffKey must be updated identically or the shared backoff store silently splits into two divergent keys", got, want)
+	}
+}
+
 // TestDispatcher_ExecutionGeneration verifies ExecutionGeneration reports 0
 // for an ordinary first attempt and the retry generation once
 // beginWithGenerationRetry has claimed one — the signal cmd/pilot's
