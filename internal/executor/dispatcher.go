@@ -815,6 +815,20 @@ const (
 	dispatcherRepickBackoffMaxShift     = 5
 )
 
+// dispatcherRepickHardCap is the hard ceiling on consecutive repicks for one
+// task before beginWithGenerationRetry stops retrying altogether and marks
+// the task's claimed execution "stalled" instead (GH-4394 subtask 5).
+// Exponential backoff (capped at dispatcherRepickBackoffMaxShift, i.e.
+// dispatcherRepickBackoffBaseInterval*32 ≈ 16 minutes) only slows repeats
+// down — left unbounded, a task that can never succeed keeps burning a real
+// backend execution every ~16 minutes forever. GH-85 hit 5 consecutive
+// repicks in ~15 minutes with NO backoff growth at all before anyone
+// noticed; matches cmd/pilot's repickBackoffWarnThreshold (the point at
+// which that package's own log line escalates to WARN) so the WARN and the
+// hard stop land on the same incident, not two different thresholds someone
+// has to reconcile later.
+const dispatcherRepickHardCap = 5
+
 // repickBackoffKey namespaces backoff state by project path + task ID,
 // matching cmd/pilot's repickBackoffKey — task_id alone is not unique across
 // projects (GH-4276).
@@ -929,6 +943,19 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 			slog.Any("error", boErr))
 		return "", nil
 	}
+	// GH-4394 subtask 5: exponential backoff alone never stops retrying — it
+	// only slows the interval down, capping at ~16 min forever. A task stuck
+	// past dispatcherRepickHardCap consecutive repicks is treated as a
+	// permanent failure: stop granting new generations and mark it stalled
+	// instead, so it stops burning a real backend execution on every window
+	// expiry and instead waits for a human to investigate/re-arm it. Checked
+	// before the backoff-window gate below so the hard stop takes effect the
+	// moment the cap is crossed, rather than waiting out one more window.
+	if found && consecutiveDrops >= dispatcherRepickHardCap {
+		d.stallTaskAfterRepickHardCap(task, gen, consecutiveDrops)
+		return "", nil
+	}
+
 	if found && time.Now().Before(nextAllowedAt) {
 		d.log.Info("dispatch re-pick throttled — task still within repick backoff window, dropping duplicate retry",
 			slog.String("task_id", task.ID),
@@ -967,6 +994,70 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 		return "", nil
 	}
 	return "", fmt.Errorf("failed to save retry execution: %w", retryErr)
+}
+
+// stallTaskAfterRepickHardCap marks (taskID, projectPath)'s currently claimed
+// execution "stalled" and raises an alert once dispatcherRepickHardCap
+// consecutive repicks have been exhausted (GH-4394 subtask 5) — the hard
+// stop that replaces "retry forever, just slower" once exponential backoff
+// alone has proven the task can't succeed on its own.
+//
+// Idempotent by design: if the claimed execution is already "stalled" (a
+// prior poll tick already tripped this same cap), the ledger write and alert
+// are skipped so a task sitting past the cap doesn't re-alert on every
+// backoff-window expiry — it stays quiet until a human re-arms it (e.g. via
+// SetRepickBackoffState/ClearRepickBackoffState) or the underlying issue is
+// closed.
+func (d *Dispatcher) stallTaskAfterRepickHardCap(task *Task, gen, consecutiveDrops int) {
+	_, execID, found, err := d.store.LatestClaimGeneration(task.ID, task.ProjectPath)
+	if err != nil || !found || execID == "" {
+		d.log.Warn("repick hard cap reached but no claimed execution found to stall",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Int("consecutive_drops", consecutiveDrops),
+			slog.Any("error", err))
+		return
+	}
+
+	claimedExec, getErr := d.store.GetExecution(execID)
+	alreadyStalled := getErr == nil && claimedExec != nil && claimedExec.Status == string(ExecStatusStalled)
+
+	reason := fmt.Sprintf(
+		"repick backoff hard cap reached: %d consecutive failed re-picks (cap=%d) — stopping automatic retries, manual re-arm required",
+		consecutiveDrops, dispatcherRepickHardCap,
+	)
+	if uerr := d.store.UpdateExecutionStatus(execID, string(ExecStatusStalled), reason); uerr != nil {
+		d.log.Warn("failed to mark execution stalled after repick hard cap",
+			slog.String("task_id", task.ID), slog.String("execution_id", execID), slog.Any("error", uerr))
+	}
+
+	if alreadyStalled {
+		return
+	}
+
+	d.recordExecutionEvent(execID, memory.StageStalled, reason)
+	d.log.Warn("repick hard cap reached — task marked stalled, no further automatic retries",
+		slog.String("task_id", task.ID),
+		slog.String("project", task.ProjectPath),
+		slog.Int("consecutive_drops", consecutiveDrops),
+		slog.Int("hard_cap", dispatcherRepickHardCap),
+		slog.Int("generation", gen),
+	)
+	if d.runner != nil {
+		d.runner.EmitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeTaskFailed,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Error:     reason,
+			Metadata: map[string]string{
+				"reason":            "repick_hard_cap_stalled",
+				"consecutive_drops": fmt.Sprintf("%d", consecutiveDrops),
+				"hard_cap":          fmt.Sprintf("%d", dispatcherRepickHardCap),
+			},
+			Timestamp: time.Now(),
+		})
+	}
 }
 
 // queueDecomposedTask handles queuing a decomposed task and its subtasks.

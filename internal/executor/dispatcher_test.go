@@ -2911,6 +2911,140 @@ func TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow(t *tes
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_HardCapStallsInsteadOfRetrying is
+// the GH-4394 subtask 5 acceptance test: exponential backoff alone (subtask
+// 2/3) never stops a doomed task from retrying — it only slows the interval
+// down, capping at ~16 min forever. Once consecutive repicks reach
+// dispatcherRepickHardCap, beginWithGenerationRetry must stop granting new
+// generations altogether, mark the claimed execution "stalled", and raise an
+// alert — instead of retrying yet again once the backoff window (already
+// elapsed here) permits it.
+func TestDispatcher_BeginWithGenerationRetry_HardCapStallsInsteadOfRetrying(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-HARDCAP", ProjectPath: "/project-hardcap", Title: "Hard cap task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Already at the hard cap, and the backoff window has already elapsed —
+	// proving the hard cap itself (not the window) is what stops the retry.
+	if err := dispatcher.SetRepickBackoffState(key, dispatcherRepickHardCap, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	// A prior claim that IS eligible for retry (terminal, not done) —
+	// otherwise nextRetryGeneration itself would short-circuit before the
+	// hard cap gate is ever reached.
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("nextRetryGeneration: %v", err)
+	}
+	if !retry || gen != 1 {
+		t.Fatalf("expected retry=true generation=1 as the precondition for this test, got retry=%v gen=%d", retry, gen)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatal("expected the re-pick to be dropped once the hard cap is reached, got a fresh execID")
+	}
+
+	if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	} else if found && genCheck != 0 {
+		t.Errorf("expected no generation-1 claim once the hard cap tripped, latest generation=%d", genCheck)
+	}
+
+	stalledExec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if stalledExec.Status != "stalled" {
+		t.Errorf("expected the claimed execution to be marked stalled, got status=%q", stalledExec.Status)
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event, got %d: %+v", len(processor.events), processor.events)
+	}
+	if processor.events[0].TaskID != task.ID {
+		t.Errorf("expected alert for task %q, got %q", task.ID, processor.events[0].TaskID)
+	}
+	if processor.events[0].Metadata["reason"] != "repick_hard_cap_stalled" {
+		t.Errorf("expected alert metadata reason=repick_hard_cap_stalled, got %q", processor.events[0].Metadata["reason"])
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_HardCapIsIdempotent covers the
+// GH-4394 subtask 5 quiet-repeat requirement: once a task has been stalled by
+// the hard cap, subsequent poll ticks that reach the same gate (e.g. after
+// the backoff window elapses again) must not re-alert or write a duplicate
+// execution event — the task stays quiet until a human re-arms it.
+func TestDispatcher_BeginWithGenerationRetry_HardCapIsIdempotent(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-HARDCAP-IDEMPOTENT", ProjectPath: "/project-hardcap-idempotent"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	if err := dispatcher.SetRepickBackoffState(key, dispatcherRepickHardCap, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+	for i := 0; i < 2; i++ {
+		if execID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued); err != nil {
+			t.Fatalf("beginWithGenerationRetry call %d: %v", i, err)
+		} else if execID != "" {
+			t.Fatalf("beginWithGenerationRetry call %d: expected dropped retry, got execID %q", i, execID)
+		}
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event across both calls, got %d: %+v", len(processor.events), processor.events)
+	}
+
+	events, err := store.ListExecutionEvents(execID)
+	if err != nil {
+		t.Fatalf("ListExecutionEvents: %v", err)
+	}
+	stalledEvents := 0
+	for _, e := range events {
+		if e.Stage == memory.StageStalled {
+			stalledEvents++
+		}
+	}
+	if stalledEvents != 1 {
+		t.Errorf("expected exactly 1 stalled execution event across both calls, got %d: %+v", stalledEvents, events)
+	}
+}
+
 // TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular
 // is the GH-4394 subtask 3 regression test. One of three hypotheses filed
 // against the GH-85 incident (which happened to fire against the registered
