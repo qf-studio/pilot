@@ -2323,7 +2323,7 @@ func (s *Store) UpdateExecutionTitle(executionID, title string) error {
 // (bypassing UpdateExecutionStatus, e.g. in tests).
 func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execution, error) {
 	rows, err := s.db.Query(`
-		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, started_at, completed_at
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, started_at, completed_at, COALESCE(task_branch, '')
 		FROM executions
 		WHERE status = 'running'
 	`)
@@ -2337,7 +2337,7 @@ func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execu
 		var exec Execution
 		var startedAt sql.NullTime
 		var completedAt sql.NullTime
-		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &startedAt, &completedAt); err != nil {
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &startedAt, &completedAt, &exec.TaskBranch); err != nil {
 			return nil, err
 		}
 		if startedAt.Valid {
@@ -2451,7 +2451,7 @@ func filterAndSortStale(execs []*Execution, staleDuration time.Duration) []*Exec
 // restart adoption still owns getting it a worker, unchanged by this fix.
 func (s *Store) GetClaimedNonTerminalExecutions() ([]*Execution, error) {
 	rows, err := s.db.Query(`
-		SELECT DISTINCT e.id, e.task_id, e.project_path, e.status, e.output, e.error, e.duration_ms, e.pr_url, e.commit_sha, e.created_at, e.started_at, e.completed_at
+		SELECT DISTINCT e.id, e.task_id, e.project_path, e.status, e.output, e.error, e.duration_ms, e.pr_url, e.commit_sha, e.created_at, e.started_at, e.completed_at, COALESCE(e.task_branch, '')
 		FROM executions e
 		JOIN execution_claims c ON c.execution_id = e.id
 		WHERE e.status IN ('queued', 'running')
@@ -2466,7 +2466,7 @@ func (s *Store) GetClaimedNonTerminalExecutions() ([]*Execution, error) {
 		var exec Execution
 		var startedAt sql.NullTime
 		var completedAt sql.NullTime
-		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &startedAt, &completedAt); err != nil {
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &startedAt, &completedAt, &exec.TaskBranch); err != nil {
 			return nil, err
 		}
 		if startedAt.Valid {
