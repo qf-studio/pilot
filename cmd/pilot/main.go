@@ -210,6 +210,7 @@ func main() {
 		newTeamCmd(),
 		newBudgetCmd(),
 		newDoctorCmd(),
+		newFDCheckCmd(),
 		newSetupCmd(),
 		newReplayCmd(),
 		newTunnelCmd(),

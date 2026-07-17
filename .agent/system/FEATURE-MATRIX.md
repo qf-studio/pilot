@@ -311,6 +311,7 @@
 | Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
 | Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
 | Agent doc size check | ✅ | health | `pilot doctor` | - | Warns >500 lines, errors >1000 lines per .agent/*.md (GH-2462) |
+| DB path / daemon fd assertion | ✅ | cmd/pilot | `pilot fd-check` | - | Cheap `/proc` check: compares `resolvedDBPath(cfg)` against what the live `pilot`-comm process actually has open in its `/proc/<pid>/fd` table (not just config/lock-file self-report); exit 1 on mismatch, exit 2 if fd table unreadable, `--json` for scripting. Meant to be polled externally (e.g. `pilot-board-remote` on the AWS box) so a shadow-ledger drift like #4393 screams instead of going unnoticed (GH-4393-5, v2.241.1) |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
