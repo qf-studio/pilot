@@ -106,4 +106,4 @@ S0: 10 · S1: 3 · S2: ~9 (incl. ownership-transfer pre-step) · S3: ~6 · S4: ~
 
 ---
 
-**Last Updated**: 2026-07-16 (v6 — B6 shipped, R-track complete & proven via v2.241.0 automated release, #4370/#4372 in flight, TASK-408 archived)
+**Last Updated**: 2026-07-17 (v7 — S6-lite founder-box cutover COMPLETE and battle-proven: 2 latent-on-darwin P0s found+fixed post-cutover (#4393 shadow ledger, #4401 RLIMIT_AS), queue proven at 10 parallel executions on the box, first automated SaaS PRs shipped from AWS (canary#98, pointer#18), Pilot self-fixing #4393 hardening. OOM cap OFF until #4401. Prior v6: B6 shipped, R-track proven via v2.241.0)

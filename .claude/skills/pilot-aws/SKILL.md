@@ -143,6 +143,8 @@ every grant minimally; never print policy docs containing secrets.
 
 | Symptom | Likely cause | Move |
 |---|---|---|
+| Board says queue empty but daemon log shows executions; log claim generations exceed claims table | split-brain shadow ledger (#4393 class — daemon opened a DB at an unshimmed path) | `sudo readlink /proc/$(pgrep -x pilot)/fd/*` must include `/var/lib/pilot/pilot-home/data/pilot.db`; if not: STOP daemon, locate+merge shadow DB, fix shim |
+| ALL task executions fail `unknown: exit status 1` after ~3m, 0 tokens, stream shows `api_retry`/`fetch failed`; judge/preflight children work | RLIMIT_AS cap on executor children (#4401 class — GH-3028 "RSS cap", darwin no-op) | `grep 'address space' /proc/<claude-child>/limits` must be `unlimited`; config `subprocess_limits` is `enabled: false` since 2026-07-17 (backup `config.yaml.bak-4396`) — OOM cap off until #4401 |
 | Queue frozen, pollers 403 "rate limit … user ID" | user-aggregate GitHub pool exhausted (startup rescans, parallel sessions) | wait for rolling window; stop nonessential gh usage; see #4391 |
 | Queue frozen, "dispatch claim lost" every poll, no 403s | dead-owner non-terminal rows holding gen-N claims (post-restart/cutover) | see #4392; workaround = mark orphan rows `stalled` with audit note (exact-id UPDATE, never string time-ranges) |
 | tmux session gone, no pilot process | wrapper/script error at spawn | check `daemon-stderr.log`; verify wrapper intact (`cat start-pilot.sh`); restart per above |
