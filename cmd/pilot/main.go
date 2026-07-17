@@ -662,8 +662,12 @@ Examples:
 							// ghClient stays for the legacy poller/webhook until later phases.
 							apGHClient := githubSDK.NewClient(ghToken)
 
-							// GH-1870: Board sync option for gateway autopilot controller.
+							// GH-4391: budget-aware gate for background scans (merged-PR
+							// scans, orphan-PR sweeps) — pollers and active-PR CI watches
+							// are never gated by it.
 							var gwBoardOpts []autopilot.ControllerOption
+							gwBoardOpts = append(gwBoardOpts, autopilot.WithRateLimitBudget(autopilot.NewGitHubBudgetClient(ghToken)))
+							// GH-1870: Board sync option for gateway autopilot controller.
 							if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
 								bs := githubSDK.NewProjectBoardSync(apGHClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), parts[0])
 								statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
@@ -1584,8 +1588,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// (graceful no-op) when ANTHROPIC_API_KEY is unset.
 			releaseSummaryGen := autopilot.NewReleaseSummaryGenerator(apGHClient, os.Getenv("ANTHROPIC_API_KEY"), logging.WithComponent("autopilot"))
 
-			// GH-1870: Build board sync option for autopilot controllers.
+			// GH-4391: one shared budget-aware gate for every controller
+			// constructed below (default + per-project) — background scans
+			// (merged-PR scans, orphan-PR sweeps) suspend when the token's
+			// GitHub primary-rate-limit budget falls below the configured
+			// floor; pollers and active-PR CI watches are never gated by it.
 			var autopilotBoardOpts []autopilot.ControllerOption
+			autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithRateLimitBudget(autopilot.NewGitHubBudgetClient(ghToken)))
+
+			// GH-1870: Build board sync option for autopilot controllers.
 			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
 				owner := ""
 				if parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2); len(parts) == 2 {
@@ -2430,32 +2441,18 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					fmt.Printf("   ◌ sequential mode · waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
 				}
 
-				// Start autopilot processing loops for all controllers
+				// GH-4391: scans (ScanExistingPRs, ScanRecentlyMergedPRsWithWindow,
+				// Start's recovery sweep) run staggered, one repo at a time, instead
+				// of bursting all repos concurrently — bursting all 11 configured
+				// repos' 30-day merged-PR lookback at once burned the entire GitHub
+				// rate budget and produced 173x secondary-rate-limit 503s on the
+				// founder box (2026-07-16 22:26Z), starving the issue pollers for
+				// 67+ minutes. The scan window is now configurable (default 72h, not
+				// the historical 720h) via autopilot.startup_merged_pr_scan_window.
+				autopilot.RunStaggeredStartupScans(ctx, autopilotControllers, cfg.Orchestrator.Autopilot.StartupScanWindow(), time.Sleep)
+
+				// Start each controller's run loop.
 				for repoName, controller := range autopilotControllers {
-					// Scan for existing PRs
-					if err := controller.ScanExistingPRs(ctx); err != nil {
-						logging.WithComponent("autopilot").Warn("failed to scan existing PRs",
-							slog.String("repo", repoName),
-							slog.Any("error", err),
-						)
-					}
-
-					// Scan for recently merged PRs (GH-416). TASK-399/GH-4209: startup
-					// uses the wide-lookback catch-up sweep — not the periodic loop's
-					// 30-min scanWindow — so a merge that landed while the daemon was
-					// down still self-heals its execution row (and any orphaned
-					// 'running' rows resolve) instead of staying red in HISTORY forever.
-					if err := controller.ScanRecentlyMergedPRsWithWindow(ctx, autopilot.StartupMergedPRLookback); err != nil {
-						logging.WithComponent("autopilot").Warn("failed to scan merged PRs",
-							slog.String("repo", repoName),
-							slog.Any("error", err),
-						)
-					}
-
-					// GH-2970: startup recovery sweep for stale parent issues
-					controller.Start(ctx)
-
-					// Start controller run loop
 					go func(c *autopilot.Controller, repo string) {
 						if err := c.Run(ctx); err != nil && err != context.Canceled {
 							logging.WithComponent("autopilot").Error("autopilot controller stopped",

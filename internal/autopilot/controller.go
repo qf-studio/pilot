@@ -245,6 +245,19 @@ func WithReleaseNotOptedIn() ControllerOption {
 	}
 }
 
+// WithRateLimitBudget wires a shared GitHubBudgetClient so background GitHub
+// consumers — merged-PR scans, orphan-PR sweeps — suspend when the daemon's
+// GitHub primary-rate-limit budget falls below config.RateLimitFloorPercent,
+// while pollers and active-PR CI watches (processAllPRs, ScanExistingPRs)
+// keep running regardless (GH-4391). Nil is a no-op: background scans
+// always run, matching pre-GH-4391 behavior for callers that don't
+// construct a budget client.
+func WithRateLimitBudget(bc *GitHubBudgetClient) ControllerOption {
+	return func(c *Controller) {
+		c.budgetClient = bc
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -410,6 +423,13 @@ type Controller struct {
 	// window with no backoff left green, approved PRs unmerged for over an hour because
 	// every tick burned through the exhausted quota re-fetching every tracked PR.
 	rateLimitedUntil time.Time
+
+	// budgetClient tracks the shared GitHub primary-rate-limit budget across
+	// the daemon's background consumers (GH-4391). Nil (the zero value) is
+	// valid: backgroundScanAllowed treats "no budget client wired" as
+	// always-allowed, so this is purely additive for callers that don't opt
+	// in via WithRateLimitBudget.
+	budgetClient *GitHubBudgetClient
 }
 
 // NewController creates an autopilot controller with all required components.
@@ -4274,6 +4294,9 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 	if c.rateLimitCooldownActive() {
 		return
 	}
+	if !c.backgroundScanAllowed(ctx) {
+		return
+	}
 
 	prs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
 	if err != nil {
@@ -4388,6 +4411,29 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 // the last restart — still self-heals its execution row instead of leaving it
 // permanently red in HISTORY.
 func (c *Controller) ScanRecentlyMergedPRsWithWindow(ctx context.Context, scanWindow time.Duration) error {
+	// GH-4391: this scan is the dominant startup API cost (a full paginated
+	// closed-PR list, up to 5 000 PRs across pages) — skip it entirely when
+	// the shared rate-limit budget is below floor. Background scans yield to
+	// pollers/active-PR CI watches; a skipped tick self-heals on the next
+	// periodic call once the budget recovers.
+	if !c.backgroundScanAllowed(ctx) {
+		return nil
+	}
+
+	// GH-4391: before paying for the full paginated fetch, ask "has anything
+	// changed since the last scan of this repo" via a conditional GET — a
+	// 304 (unchanged) response is free against the primary rate limit. Only
+	// the full scan below costs real budget. A probe error falls through to
+	// the full scan (fail open) rather than silently skipping.
+	if c.budgetClient != nil {
+		changed, err := c.budgetClient.ProbeRepoChanged(ctx, c.owner, c.repo)
+		if err == nil && !changed {
+			c.log.Debug("skipping merged-PR scan: no repo activity since last scan (304)",
+				"owner", c.owner, "repo", c.repo)
+			return nil
+		}
+	}
+
 	// Run the scan unconditionally — it covers self-heal + merge metrics even when
 	// neither auto-release nor board sync is enabled (e.g. a plain GH-issue-source
 	// deployment). Internal gates below handle release-trigger and board-writeback
@@ -4824,6 +4870,39 @@ func (c *Controller) enterRateLimitCooldown(retryAfter time.Duration) time.Durat
 	c.rateLimitedUntil = time.Now().Add(retryAfter)
 	c.mu.Unlock()
 	return retryAfter
+}
+
+// backgroundScanAllowed reports whether a background GitHub consumer
+// (merged-PR scan, orphan-PR sweep) may proceed right now. It is the
+// proactive counterpart to rateLimitCooldownActive's reactive backoff:
+// rather than waiting for a 403 to already have happened, it checks GitHub's
+// free /rate_limit endpoint and pauses background work before the budget is
+// exhausted — while pollers and active-PR CI watches (processAllPRs,
+// ScanExistingPRs) never call this and always get the reserve (GH-4391).
+//
+// A nil budgetClient (not wired via WithRateLimitBudget) always allows,
+// keeping this additive rather than a behavior change for existing callers.
+func (c *Controller) backgroundScanAllowed(ctx context.Context) bool {
+	if c.budgetClient == nil {
+		return true
+	}
+
+	floor := c.config.RateLimitFloorPercent
+	if floor <= 0 {
+		floor = DefaultRateLimitFloorPercent
+	}
+
+	below, justCrossed := c.budgetClient.BelowFloor(ctx, floor)
+	if !below {
+		return true
+	}
+
+	c.metrics.RecordRateLimitFloorEngaged()
+	if justCrossed {
+		c.log.Warn("GitHub rate-limit budget below floor, pausing background scans (merged-PR scan, orphan-PR sweep) until it recovers",
+			"floor_percent", floor, "owner", c.owner, "repo", c.repo)
+	}
+	return false
 }
 
 // processAllPRs processes all active PRs in one iteration.

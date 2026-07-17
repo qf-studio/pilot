@@ -109,6 +109,7 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 			agg.OrphanPRsRegistered[k] += v
 		}
 		agg.DuplicateRegistrationsSkipped += s.DuplicateRegistrationsSkipped
+		agg.RateLimitFloorHits += s.RateLimitFloorHits
 
 		for stage, count := range s.ActivePRsByStage {
 			agg.ActivePRsByStage[stage] += count

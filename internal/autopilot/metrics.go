@@ -81,6 +81,13 @@ type Metrics struct {
 	// is already handled safely (no-op, not a bug).
 	DuplicateRegistrationsSkipped int64
 
+	// RateLimitFloorHits counts every background-scan tick (merged-PR scan,
+	// orphan-PR sweep) skipped because the GitHub primary rate-limit budget
+	// was below the configured floor (GH-4391). A sustained non-zero rate
+	// means the daemon is rate-starved — see the paired WARN log, emitted
+	// once per below-floor engagement rather than per tick.
+	RateLimitFloorHits int64
+
 	// Gauges (point-in-time values)
 	ActivePRsByStage map[PRStage]int
 	QueueDepth       int // issues with `pilot` label, no `pilot-in-progress`
@@ -182,6 +189,16 @@ func (m *Metrics) RecordDuplicateRegistrationSkipped() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.DuplicateRegistrationsSkipped++
+}
+
+// RecordRateLimitFloorEngaged increments the counter for a background scan
+// skipped because the GitHub rate-limit budget was below the configured
+// floor (GH-4391). Called once per skipped tick — the caller is
+// responsible for only logging a WARN on the below-floor edge.
+func (m *Metrics) RecordRateLimitFloorEngaged() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.RateLimitFloorHits++
 }
 
 // RecordPRMerged increments the merged PR counter.
@@ -461,6 +478,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		PollerDeferredScopeOverlap:    copyStringIntMap(m.PollerDeferredScopeOverlap),
 		OrphanPRsRegistered:           copyStringIntMap(m.OrphanPRsRegistered),
 		DuplicateRegistrationsSkipped: m.DuplicateRegistrationsSkipped,
+		RateLimitFloorHits:            m.RateLimitFloorHits,
 		ActivePRsByStage:              copyStageIntMap(m.ActivePRsByStage),
 		QueueDepth:                    m.QueueDepth,
 		FailedQueueDepth:              m.FailedQueueDepth,
@@ -543,6 +561,9 @@ type MetricsSnapshot struct {
 
 	// Duplicate registration skips (GH-3828)
 	DuplicateRegistrationsSkipped int64
+
+	// Background scans skipped for GitHub rate-limit budget floor (GH-4391)
+	RateLimitFloorHits int64
 
 	// Gauges
 	ActivePRsByStage map[PRStage]int

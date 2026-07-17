@@ -174,6 +174,25 @@ type Config struct {
 	// This catches PRs that were merged while Pilot was offline.
 	MergedPRScanWindow time.Duration `yaml:"merged_pr_scan_window"`
 
+	// StartupMergedPRScanWindow is how far back the one-time startup
+	// catch-up sweep (ScanRecentlyMergedPRsWithWindow, called once per
+	// controller before the Run loop starts) looks — distinct from the
+	// periodic loop's MergedPRScanWindow above. GH-4391: defaults to 72h via
+	// StartupScanWindow(), not the historical 30-day StartupMergedPRLookback
+	// — that 720h window was the dominant startup API cost that starved the
+	// GitHub issue pollers of rate-limit budget on 2026-07-16. Configurable
+	// for deployments whose merge cadence genuinely needs a longer catch-up.
+	StartupMergedPRScanWindow time.Duration `yaml:"startup_merged_pr_scan_window"`
+
+	// RateLimitFloorPercent is the GitHub primary-rate-limit floor (as a
+	// percentage of the token's total budget, e.g. 15 for 15%) below which
+	// background GitHub consumers — merged-PR scans, orphan-PR sweeps —
+	// pause until the budget recovers (GH-4391). Pollers and active-PR CI
+	// watches (processAllPRs, ScanExistingPRs) are never gated by this
+	// floor: they are the reserve it protects. Zero uses
+	// DefaultRateLimitFloorPercent.
+	RateLimitFloorPercent int `yaml:"rate_limit_floor_percent"`
+
 	// Name is a user-friendly label for this environment (e.g. "staging", "production").
 	// When empty, defaults to the Environment value.
 	Name string `yaml:"name"`
@@ -389,6 +408,20 @@ func DefaultConfig() *Config {
 		MergedPRScanWindow:   30 * time.Minute,
 		Environments:         defaultEnvironments(),
 	}
+}
+
+// DefaultStartupMergedPRScanWindow is the fallback for
+// Config.StartupMergedPRScanWindow (GH-4391).
+const DefaultStartupMergedPRScanWindow = 72 * time.Hour
+
+// StartupScanWindow returns the configured startup merged-PR catch-up
+// lookback, falling back to DefaultStartupMergedPRScanWindow when unset
+// (GH-4391).
+func (c *Config) StartupScanWindow() time.Duration {
+	if c.StartupMergedPRScanWindow > 0 {
+		return c.StartupMergedPRScanWindow
+	}
+	return DefaultStartupMergedPRScanWindow
 }
 
 // ReleaseConfig holds configuration for automatic release creation.
