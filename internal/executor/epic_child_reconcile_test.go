@@ -473,3 +473,177 @@ func TestExecuteSubIssues_NoLogStoreFailsImmediately(t *testing.T) {
 		t.Errorf("ExecuteSubIssues took %s, want near-immediate failure with no log store wired", elapsed)
 	}
 }
+
+// TestExecuteSubIssues_ClaimLost_QueuedBeyondTimeoutStillSucceeds is the
+// GH-4413 regression: pointer epic GH-9 (TASK-04) failed because child GH-26
+// was queued behind the busy pointer project's single-lane worker
+// (ProjectWorker, TASK-393) — not stuck or silent, just waiting its turn —
+// and childOutcomeReconcileTimeout's 5m ceiling counted that queue-wait
+// against the same budget meant for detecting a genuinely stalled
+// execution. GH-26 went on to complete fine once it was actually picked up.
+// The child here stays "queued" (no started_at) for longer than
+// childOutcomeReconcileTimeout before finally transitioning to "running"
+// and completing quickly — this must succeed, not time out, because the
+// ceiling only applies once the child is actually executing.
+func TestExecuteSubIssues_ClaimLost_QueuedBeyondTimeoutStillSucceeds(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const taskID = "GH-301"
+	const projectPath = ""
+
+	claimed, err := store.ClaimExecution(taskID, projectPath, 0, "exec-owner")
+	if err != nil {
+		t.Fatalf("ClaimExecution: %v", err)
+	}
+	if !claimed {
+		t.Fatal("test setup: expected the seeded claim to win")
+	}
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-owner",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "queued",
+	}); err != nil {
+		t.Fatalf("SaveExecution (queued row): %v", err)
+	}
+
+	issues := makeSubIssues(1, 301)
+	parent := &Task{ID: "GH-93", Title: "[epic] queued behind busy project worker"}
+
+	execCalled := false
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		execCalled = true
+		return &ExecutionResult{TaskID: task.ID, Success: true}, nil
+	}
+
+	runner := newTestRunnerWithExecFunc(execFn)
+	runner.logStore = store
+	runner.childOutcomeReconcilePollInterval = 20 * time.Millisecond
+	// SQLite's CURRENT_TIMESTAMP (what UpdateExecutionStatus stamps started_at
+	// with) has only whole-second resolution, so a startedAt-anchored deadline
+	// can read up to ~1s earlier than the real transition moment. timeout and
+	// queuedPhase below are sized with enough margin over that 1s ceiling that
+	// the assertions are deterministic rather than flaky.
+	const timeout = 1500 * time.Millisecond
+	const queuedPhase = 2000 * time.Millisecond // > timeout: proves queue-wait isn't charged against it
+	runner.childOutcomeReconcileTimeout = timeout
+
+	// Simulate the child sitting queued behind other work on a busy project
+	// for longer than childOutcomeReconcileTimeout, then finally being
+	// picked up (started_at stamped by the "running" transition, GH-4033)
+	// and completing quickly once it actually starts.
+	go func() {
+		time.Sleep(queuedPhase)
+		if uErr := store.UpdateExecutionStatus("exec-owner", "running"); uErr != nil {
+			t.Errorf("UpdateExecutionStatus(running): %v", uErr)
+		}
+		time.Sleep(100 * time.Millisecond) // well under timeout, running phase
+		if mcErr := store.MarkExecutionCompleted("exec-owner", "https://github.com/owner/repo/pull/9301", "sha-301", 500); mcErr != nil {
+			t.Errorf("MarkExecutionCompleted: %v", mcErr)
+		}
+	}()
+
+	start := time.Now()
+	err = runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, "")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ExecuteSubIssues returned error, want nil (queue-wait must not count against the running timeout): %v", err)
+	}
+	if execCalled {
+		t.Error("expected the backend NOT to be invoked when the execution claim was already lost")
+	}
+	if elapsed < queuedPhase {
+		t.Errorf("elapsed = %s, want >= %s (test setup kept the child queued past the timeout before it started running)", elapsed, queuedPhase)
+	}
+}
+
+// TestExecuteSubIssues_ClaimLost_RunningSilentlyTimesOutFromStartedAt is the
+// GH-4413 counterpart to the queued case above: once the child is actually
+// "running" (started_at stamped) and then goes silent past
+// childOutcomeReconcileTimeout without reaching a terminal state, the epic
+// must still time out — the fix narrows what counts against the ceiling, it
+// does not remove the ceiling for a genuinely stuck execution. The queued
+// phase before the child starts running is deliberately longer than the
+// timeout itself, so a passing run also proves the deadline is anchored to
+// started_at (when the child began running) rather than to when this call
+// started polling.
+func TestExecuteSubIssues_ClaimLost_RunningSilentlyTimesOutFromStartedAt(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const taskID = "GH-302"
+	const projectPath = ""
+
+	claimed, err := store.ClaimExecution(taskID, projectPath, 0, "exec-owner")
+	if err != nil {
+		t.Fatalf("ClaimExecution: %v", err)
+	}
+	if !claimed {
+		t.Fatal("test setup: expected the seeded claim to win")
+	}
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-owner",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "queued",
+	}); err != nil {
+		t.Fatalf("SaveExecution (queued row): %v", err)
+	}
+
+	issues := makeSubIssues(1, 302)
+	parent := &Task{ID: "GH-94", Title: "[epic] running child goes silent"}
+
+	execCalled := false
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		execCalled = true
+		return &ExecutionResult{TaskID: task.ID, Success: true}, nil
+	}
+
+	runner := newTestRunnerWithExecFunc(execFn)
+	runner.logStore = store
+	runner.childOutcomeReconcilePollInterval = 20 * time.Millisecond
+	// See the queued-success test above for why timeout/queuedPhase are sized
+	// against SQLite's whole-second CURRENT_TIMESTAMP resolution.
+	const timeout = 1500 * time.Millisecond
+	const queuedPhase = 2000 * time.Millisecond // > timeout: a call-start-anchored deadline would fire before this elapses
+	runner.childOutcomeReconcileTimeout = timeout
+
+	// Queued longer than the timeout (must not count against it), then
+	// starts running and never reaches a terminal state.
+	go func() {
+		time.Sleep(queuedPhase)
+		if uErr := store.UpdateExecutionStatus("exec-owner", "running"); uErr != nil {
+			t.Errorf("UpdateExecutionStatus(running): %v", uErr)
+		}
+	}()
+
+	start := time.Now()
+	err = runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, "")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error for a child stuck silently running, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for externally-owned child execution") {
+		t.Errorf("error = %q, want it to contain the reconcile timeout message", err.Error())
+	}
+	if execCalled {
+		t.Error("expected the backend NOT to be invoked when the execution claim was already lost")
+	}
+	// The deadline must anchor to started_at (~queuedPhase in), not to when
+	// this call began polling — a call-start-anchored deadline would have
+	// fired at ~timeout, well before the child ever started running.
+	if elapsed < queuedPhase {
+		t.Errorf("elapsed = %s, want >= %s (timed out before the child even started running — deadline not anchored to started_at)", elapsed, queuedPhase)
+	}
+}
