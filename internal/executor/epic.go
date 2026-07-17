@@ -746,7 +746,14 @@ func (r *Runner) handleSubIssueCoverageGap(ctx context.Context, plan *EpicPlan, 
 		return gap
 	}
 
-	if err := ghAddLabels(ctx, executionPath, parentID, []string{"pilot-needs-clarification"}); err != nil {
+	// GH-4405: gh CLI's positional issue argument requires the bare number
+	// ("95"), not the human-readable prefixed parentID used for logging
+	// above ("GH-95") — passing the prefixed form fails every call below
+	// with "invalid issue format" and these side-effects silently degrade
+	// to WARN.
+	ghRef := plan.ParentTask.GHIssueRef()
+
+	if err := ghAddLabels(ctx, executionPath, ghRef, []string{"pilot-needs-clarification"}); err != nil {
 		r.log.Warn("failed to label parent with pilot-needs-clarification after coverage gap",
 			"parent_id", parentID, "error", err)
 	}
@@ -755,7 +762,7 @@ func (r *Runner) handleSubIssueCoverageGap(ctx context.Context, plan *EpicPlan, 
 			"The following planned subtasks have no issue and were never dispatched:\n\n%s\n\n"+
 			"This issue stays open. Resolve the underlying failure and remove `pilot-needs-clarification` to retry decomposition.",
 		gap.Created, gap.Planned, bulletList(missing))
-	if err := ghIssueComment(ctx, executionPath, parentID, comment); err != nil {
+	if err := ghIssueComment(ctx, executionPath, ghRef, comment); err != nil {
 		r.log.Warn("failed to post coverage-gap comment on parent",
 			"parent_id", parentID, "error", err)
 	}
@@ -2415,6 +2422,13 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		subTaskRepoPath = projectPath
 	}
 
+	// GH-4405: gh CLI's positional issue argument requires the bare number
+	// ("95"); parent.ID is the human-readable prefixed form ("GH-95") used
+	// for logging/log-joins throughout this function and fails every
+	// UpdateIssueProgress/CloseIssueWithComment call below with "invalid
+	// issue format" if passed directly.
+	parentRef := parent.GHIssueRef()
+
 	r.log.Info("Starting sequential sub-issue execution",
 		"parent_id", parent.ID,
 		"total_issues", total,
@@ -2424,7 +2438,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 	// (GH-3938) instead of a generic "starting" message — the actual child
 	// issue numbers are already known at this point.
 	startMsg := fmt.Sprintf("🚀 %s — starting sequential execution", formatDecomposedChildrenSummary(issues))
-	if err := r.UpdateIssueProgress(ctx, projectPath, parent.ID, startMsg); err != nil {
+	if err := r.UpdateIssueProgress(ctx, projectPath, parentRef, startMsg); err != nil {
 		r.log.Warn("Failed to update parent progress", "error", err)
 		// Non-fatal, continue execution
 	}
@@ -2466,7 +2480,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			)
 			skipNote := "recovered child has no task description — manual dispatch needed"
 			_ = r.UpdateIssueProgress(ctx, projectPath, issueRef, skipNote)
-			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID,
+			_ = r.UpdateIssueProgress(ctx, projectPath, parentRef,
 				fmt.Sprintf("⚠️ Skipped sub-issue #%s: no task description (manual dispatch needed)", issueRef))
 			childStates = append(childStates, "skipped")
 			continue
@@ -2475,7 +2489,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// Update parent with current progress
 		progressMsg := fmt.Sprintf("⏳ Progress: %d/%d - Starting: **%s** (%s)",
 			i, total, issue.Subtask.Title, issueRef)
-		if err := r.UpdateIssueProgress(ctx, projectPath, parent.ID, progressMsg); err != nil {
+		if err := r.UpdateIssueProgress(ctx, projectPath, parentRef, progressMsg); err != nil {
 			r.log.Warn("Failed to update parent progress", "error", err)
 		}
 
@@ -2602,7 +2616,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		if err != nil {
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",
 				i+1, total, issue.Subtask.Title, err)
-			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
+			_ = r.UpdateIssueProgress(ctx, projectPath, parentRef, failMsg)
 			r.finalizeSubIssueExecution(subExecID, "failed", result, subExecStart)
 			return childStates, metrics, fmt.Errorf("sub-issue %s failed: %w", issueRef, err)
 		}
@@ -2627,7 +2641,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 				childStates = append(childStates, "no_op")
 				noOpMsg := fmt.Sprintf("↩️ %d/%d produced no changes (no-op): %s — %s",
 					i+1, total, issue.Subtask.Title, result.Error)
-				_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, noOpMsg)
+				_ = r.UpdateIssueProgress(ctx, projectPath, parentRef, noOpMsg)
 				r.log.Info("sub-issue no-op; continuing epic",
 					"parent_id", parent.ID,
 					"sub_issue", issueRef,
@@ -2638,7 +2652,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			}
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - %s",
 				i+1, total, issue.Subtask.Title, result.Error)
-			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
+			_ = r.UpdateIssueProgress(ctx, projectPath, parentRef, failMsg)
 			r.finalizeSubIssueExecution(subExecID, "failed", result, subExecStart)
 			return childStates, metrics, fmt.Errorf("sub-issue %s failed: %s", issueRef, result.Error)
 		}
@@ -2672,7 +2686,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 
 			warnMsg := fmt.Sprintf("⚠️ %d/%d produced commits (%s) but no PR — work not delivered; leaving issue open for retry: %s — recovery: %s",
 				i+1, total, shortSHA, issue.Subtask.Title, recovery)
-			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, warnMsg)
+			_ = r.UpdateIssueProgress(ctx, projectPath, parentRef, warnMsg)
 			r.log.Error("sub-issue committed work but produced no PR — refusing to discard",
 				"parent_id", parent.ID,
 				"sub_issue", issueRef,
@@ -2715,7 +2729,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 				case depends && r.subIssueMergeWait != nil:
 					waitMsg := fmt.Sprintf("⏳ Waiting for PR #%d to merge before starting next sub-issue (%d/%d) — %s depends on it (%s)",
 						prNum, i+1, total, nextRef, reason)
-					_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, waitMsg)
+					_ = r.UpdateIssueProgress(ctx, projectPath, parentRef, waitMsg)
 
 					// Fail-loud decision log (GH-4234): every wait decision names the
 					// dependent child, why it's judged dependent, and the PR it waits on.
@@ -2731,7 +2745,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 
 					if err := r.subIssueMergeWait(ctx, prNum); err != nil {
 						failMsg := fmt.Sprintf("❌ Merge wait failed for %s (PR #%d): %v", issueRef, prNum, err)
-						_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
+						_ = r.UpdateIssueProgress(ctx, projectPath, parentRef, failMsg)
 						return childStates, metrics, fmt.Errorf("merge wait failed for sub-issue %s (PR #%d): %w", issueRef, prNum, err)
 					}
 
@@ -2786,9 +2800,9 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 
 	// All done - update and close parent
 	completeMsg := fmt.Sprintf("✅ Completed: %d/%d sub-issues done\n\nAll sub-tasks executed successfully.", total, total)
-	_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, completeMsg)
+	_ = r.UpdateIssueProgress(ctx, projectPath, parentRef, completeMsg)
 
-	if err := r.CloseIssueWithComment(ctx, projectPath, parent.ID, "All sub-issues completed successfully."); err != nil {
+	if err := r.CloseIssueWithComment(ctx, projectPath, parentRef, "All sub-issues completed successfully."); err != nil {
 		r.log.Warn("Failed to close parent issue", "error", err)
 		// Non-fatal
 	}
