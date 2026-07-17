@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T22:40:00+00:00",
+  "updated": "2026-07-17T22:50:46+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3043,6 +3043,21 @@
         ],
         "confidence": 0.95,
         "created": "2026-07-17"
+      },
+      "decomposer-narrative-bullets-as-subtask-boundaries": {
+        "type": "pitfall",
+        "summary": "TaskDecomposer.analyzeAndSplit() matched any \"- \" bullet / numbered line as a subtask boundary, including narrative timeline prose in #4390's issue body — exploded into junk subtasks. Fixed by restricting analyzeAndSplit to checklists + \"## Task N\" headers only (GH-4395).",
+        "file": ".agent/knowledge/memories/pitfalls/decomposer-narrative-bullets-as-subtask-boundaries.md",
+        "concepts": [
+          "executor",
+          "decomposition",
+          "decomposer",
+          "issue-parsing",
+          "GH-4395",
+          "GH-4390"
+        ],
+        "confidence": 0.9,
+        "created": "2026-07-17"
       }
     }
   },
@@ -4195,7 +4210,8 @@
       "mem-101",
       "mem-102",
       "mem-125",
-      "mem-142"
+      "mem-142",
+      "decomposer-narrative-bullets-as-subtask-boundaries"
     ],
     "claude-code-integration": [
       "TASK-387"
@@ -4706,7 +4722,8 @@
       "mem-150"
     ],
     "decomposition": [
-      "mem-151"
+      "mem-151",
+      "decomposer-narrative-bullets-as-subtask-boundaries"
     ],
     "ci": [
       "mem-151"
@@ -4719,12 +4736,18 @@
     ],
     "status-report": [
       "mem-152"
+    ],
+    "decomposer": [
+      "decomposer-narrative-bullets-as-subtask-boundaries"
+    ],
+    "issue-parsing": [
+      "decomposer-narrative-bullets-as-subtask-boundaries"
     ]
   },
-  "last_updated": "2026-07-17T19:10:00+00:00",
+  "last_updated": "2026-07-17T22:50:46+00:00",
   "stats": {
-    "total_nodes": 261,
+    "total_nodes": 262,
     "total_edges": 226,
-    "memory_count": 165
+    "memory_count": 166
   }
 }

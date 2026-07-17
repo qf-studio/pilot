@@ -365,37 +365,36 @@ func (d *TaskDecomposer) SkipLogDetail(result *DecomposeResult) string {
 }
 
 // analyzeAndSplit breaks a task into subtasks based on structure analysis.
+//
+// GH-4395: only explicit work-item structure is treated as a decomposition
+// boundary — checklists and "## Task N" headers. #4390's issue body carried a
+// timestamped incident timeline written as plain "- " bullets; the previous
+// generic numbered-list/bullet-point/file-group strategies matched those
+// narrative lines just as readily as real work items, so each timeline entry
+// became a "subtask" (one of which then failed and took the parent down with
+// it). extractNumberedSteps/extractBulletPoints/extractFileGroups remain as
+// standalone helpers — extractNumberedSteps still guards LLM epic-plan output
+// (epic_test.go) and extractAcceptanceCriteria is reused by
+// epic_verify_fold.go — but neither generic strategy is wired into the
+// structural-split decision below anymore. A task with prose but no explicit
+// checklist or "## Task N" headers now falls back to no-decompose
+// (SkipReasonNoSplitPoints) rather than guessing at boundaries.
 func (d *TaskDecomposer) analyzeAndSplit(task *Task) []*Task {
 	desc := task.Description
 
-	// Try different decomposition strategies in order of preference
-	var parts []string
-
-	// Strategy 1: Numbered steps (1. 2. 3. or 1) 2) 3))
-	parts = extractNumberedSteps(desc)
-	if len(parts) >= 2 {
-		return d.createSubtasks(task, parts, "step")
-	}
-
-	// Strategy 2: Bullet points (- or *)
-	parts = extractBulletPoints(desc)
-	if len(parts) >= 2 {
-		return d.createSubtasks(task, parts, "item")
-	}
-
-	// Strategy 3: Acceptance criteria sections
-	parts = extractAcceptanceCriteria(desc)
+	// Strategy 1: Checklist / acceptance-criteria items ("- [ ] ..." or "[ ] ...")
+	parts := extractAcceptanceCriteria(desc)
 	if len(parts) >= 2 {
 		return d.createSubtasks(task, parts, "criteria")
 	}
 
-	// Strategy 4: File/module groups mentioned
-	parts = extractFileGroups(desc)
+	// Strategy 2: Explicit "## Task N" (or "### Task N") headers
+	parts = extractTaskHeaders(desc)
 	if len(parts) >= 2 {
-		return d.createSubtasks(task, parts, "module")
+		return d.createSubtasks(task, parts, "task")
 	}
 
-	// No decomposition points found
+	// No explicit work-item structure found — fall back to no-decompose.
 	return []*Task{task}
 }
 
@@ -547,6 +546,53 @@ func extractFileGroups(text string) []string {
 	}
 
 	return groups
+}
+
+// extractTaskHeaders finds explicit "## Task N" / "### Task N" markdown
+// headers (GH-4395) and returns the header title plus the section body (the
+// text up to the next such header, or end of string) as one part per
+// section. This is deliberately narrower than a generic heading matcher: it
+// requires the literal word "Task" followed by a number, so narrative
+// headers like "### 1. pilot_prs_merged_total did not increment" (#4390's
+// incident timeline, numbered but not "Task N") do not match.
+// Matches: "## Task 1", "## Task 1: Title", "### Task 2 - Title".
+func extractTaskHeaders(text string) []string {
+	headerPattern := regexp.MustCompile(`(?mi)^#{2,3}\s*Task\s+\d+\s*[:\-]?\s*(.*)$`)
+	locs := headerPattern.FindAllStringSubmatchIndex(text, -1)
+
+	if len(locs) < 2 {
+		return nil
+	}
+
+	parts := make([]string, 0, len(locs))
+	for i, loc := range locs {
+		title := strings.TrimSpace(text[loc[2]:loc[3]])
+
+		bodyStart := loc[1]
+		bodyEnd := len(text)
+		if i+1 < len(locs) {
+			bodyEnd = locs[i+1][0]
+		}
+		body := strings.TrimSpace(text[bodyStart:bodyEnd])
+
+		part := title
+		if body != "" {
+			if part != "" {
+				part += "\n\n" + body
+			} else {
+				part = body
+			}
+		}
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+
+	if len(parts) < 2 {
+		return nil
+	}
+
+	return parts
 }
 
 // generateSubtaskID creates a subtask ID from parent ID.

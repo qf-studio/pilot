@@ -115,10 +115,12 @@ func TestTaskDecomposer_SkipReason_TableDriven(t *testing.T) {
 			task: &Task{
 				ID:    "GH-7",
 				Title: "refactor the executor pipeline",
-				Description: "1. Update decompose.go\n" +
-					"2. Update runner.go\n" +
-					"3. Update dispatcher.go\n" +
-					"4. Add tests\n" +
+				// Checklist (not a plain numbered list) since GH-4395 restricted
+				// analyzeAndSplit to explicit work-item structure.
+				Description: "- [ ] Update decompose.go\n" +
+					"- [ ] Update runner.go\n" +
+					"- [ ] Update dispatcher.go\n" +
+					"- [ ] Add tests\n" +
 					strings.Repeat("word ", 50),
 			},
 			wantSkipReason: SkipReasonNone,

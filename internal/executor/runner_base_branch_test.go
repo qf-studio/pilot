@@ -96,10 +96,12 @@ func TestCreateSubtasks_BaseBranchPropagation(t *testing.T) {
 			parent := &Task{
 				ID:    "GH-3513",
 				Title: "Multi-step task",
+				// Checklist (not a plain numbered list) since GH-4395 restricted
+				// analyzeAndSplit to explicit work-item structure.
 				Description: `Implement three separate features:
-1. Add user authentication module
-2. Add payment processing module
-3. Add reporting dashboard`,
+- [ ] Add user authentication module
+- [ ] Add payment processing module
+- [ ] Add reporting dashboard`,
 				ProjectPath: "/repo",
 				Branch:      "pilot/GH-3513",
 				CreatePR:    true,
