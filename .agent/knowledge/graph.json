@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T08:20:00+00:00",
+  "updated": "2026-07-17T09:45:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -759,17 +759,17 @@
       "TASK-409": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-409-s6-lite-aws-cutover.md",
         "title": "S6-lite — move the founder daemon to AWS (atomic cutover, TUI preserved)",
-        "status": "unknown",
+        "status": "completed",
         "concepts": [
           "workflow",
-          "markers",
-          "authentication",
-          "context",
-          "testing",
-          "theory of mind",
           "api",
+          "theory of mind",
+          "database",
+          "testing",
+          "context",
+          "markers",
           "deployment",
-          "database"
+          "authentication"
         ]
       },
       "TASK-410": {
@@ -2931,6 +2931,19 @@
         ],
         "confidence": 0.95,
         "created": "2026-07-17"
+      },
+      "rlimit-as-breaks-node-subprocesses": {
+        "type": "pitfall",
+        "summary": "RLIMIT_AS is not an RSS cap — 4GB address-space limit breaks all Node/V8 HTTPS fetches with instant generic 'fetch failed' (#4401, 12h zero completions post-cutover). darwin no-op code detonates on first Linux run. Check /proc/<child>/limits early.",
+        "file": ".agent/knowledge/memories/pitfalls/rlimit-as-breaks-node-subprocesses.md",
+        "concepts": [
+          "executor",
+          "aws-box",
+          "subprocess-limits",
+          "ops-discipline"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-17"
       }
     }
   },
@@ -4059,6 +4072,11 @@
       "source": "absolute-state-paths-bypass-cutover-shim",
       "target": "s6-lite-cutover-recipe",
       "relation": "refines"
+    },
+    {
+      "source": "rlimit-as-breaks-node-subprocesses",
+      "target": "absolute-state-paths-bypass-cutover-shim",
+      "relation": "related"
     }
   ],
   "concept_index": {
@@ -4604,10 +4622,10 @@
       "mem-152"
     ]
   },
-  "last_updated": "2026-07-17T08:20:00+00:00",
+  "last_updated": "2026-07-17T09:45:00+00:00",
   "stats": {
-    "total_nodes": 255,
-    "total_edges": 225,
-    "memory_count": 159
+    "total_nodes": 256,
+    "total_edges": 226,
+    "memory_count": 160
   }
 }
