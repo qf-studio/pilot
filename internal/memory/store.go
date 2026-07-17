@@ -935,6 +935,13 @@ const (
 	// of a second execution starting silently. Detail carries a short
 	// human-readable note naming which sub-issue/task lost the claim.
 	StageDispatchClaimLost Stage = "dispatch_claim_lost"
+	// StageMemoryGuardRestore records that the GH-4387 protected-memory guard
+	// fail-safe-restored a .agent/knowledge/memories/**.md file the execution
+	// had deleted while it was still referenced by a .agent/knowledge/graph.json
+	// node (GH-4398). One event per restored file; Detail is a JSON object:
+	// {"path","node_id"}. Without this, a guard that silently rewrites the
+	// branch would be invisible to anyone reviewing the PR or `pilot trace`.
+	StageMemoryGuardRestore Stage = "memory_guard_restore"
 )
 
 // Event represents a single stage-transition record for an execution.

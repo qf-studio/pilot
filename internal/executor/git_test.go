@@ -970,6 +970,200 @@ func TestStripUnindexedMemoryDocs(t *testing.T) {
 	})
 }
 
+// TestRestoreDeletedIndexedMemoryDocs covers GH-4398: the restore leg of the
+// GH-4387 protected-memory guard. A session that deletes a memory doc still
+// referenced by .agent/knowledge/graph.json must have that file restored via
+// `git checkout <base> -- <path>` and staged into a follow-up commit, so the
+// PR never trips the Knowledge Graph Drift Gate; deleting a genuinely
+// unindexed doc must remain allowed.
+func TestRestoreDeletedIndexedMemoryDocs(t *testing.T) {
+	dir, _ := initTestRepo(t)
+	ctx := context.Background()
+	git := NewGitOperations(dir)
+
+	base, err := git.GetCurrentBranch(ctx)
+	if err != nil {
+		t.Fatalf("GetCurrentBranch failed: %v", err)
+	}
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	t.Run("restores an indexed memory doc deleted via the file key", func(t *testing.T) {
+		docRel := ".agent/knowledge/memories/pitfalls/mem_task_indexed.md"
+		graph := fmt.Sprintf(`{"nodes":{"memories":{"mem-restore-1":{"file":%q}}}}`, docRel)
+		write(docRel, "# an indexed pitfall the branch base already carries")
+		write(".agent/knowledge/graph.json", graph)
+		run("add", docRel, ".agent/knowledge/graph.json")
+		run("commit", "-m", "chore: seed indexed memory doc on base")
+		base2, err := git.GetCurrentBranch(ctx)
+		if err != nil {
+			t.Fatalf("GetCurrentBranch failed: %v", err)
+		}
+
+		run("checkout", "-b", "pilot/GH-restore-indexed")
+		run("rm", docRel)
+		run("commit", "-m", "chore(memory): strip what looked like an unused doc")
+
+		if _, statErr := os.Stat(filepath.Join(dir, docRel)); !os.IsNotExist(statErr) {
+			t.Fatalf("expected %s deleted before restore, stat err = %v", docRel, statErr)
+		}
+
+		restored, err := git.RestoreDeletedIndexedMemoryDocs(ctx, base2)
+		if err != nil {
+			t.Fatalf("RestoreDeletedIndexedMemoryDocs failed: %v", err)
+		}
+		if len(restored) != 1 || restored[0].Path != docRel || restored[0].NodeID != "mem-restore-1" {
+			t.Fatalf("restored = %+v, want [{%s mem-restore-1}]", restored, docRel)
+		}
+
+		content, statErr := os.ReadFile(filepath.Join(dir, docRel))
+		if statErr != nil {
+			t.Fatalf("expected %s restored to disk, err = %v", docRel, statErr)
+		}
+		if string(content) != "# an indexed pitfall the branch base already carries" {
+			t.Errorf("restored content = %q, want original base content", content)
+		}
+
+		// The restoration must be committed so it rides the same PR/branch.
+		hasChanges, err := git.HasUncommittedChanges(ctx)
+		if err != nil {
+			t.Fatalf("HasUncommittedChanges failed: %v", err)
+		}
+		if hasChanges {
+			t.Error("expected restoration committed, working tree still dirty")
+		}
+		diffCmd := exec.Command("git", "diff", "--name-only", base2+"...HEAD")
+		diffCmd.Dir = dir
+		out, err := diffCmd.Output()
+		if err != nil {
+			t.Fatalf("git diff failed: %v", err)
+		}
+		if strings.Contains(string(out), docRel) {
+			t.Errorf("expected %s to have zero net diff vs base after restore, got: %s", docRel, out)
+		}
+	})
+
+	t.Run("leaves a genuinely unindexed memory doc deletion alone", func(t *testing.T) {
+		run("checkout", base)
+		docRel := ".agent/knowledge/memories/learnings/mem_task_unindexed.md"
+		write(docRel, "# never indexed")
+		write(".agent/knowledge/graph.json", `{"nodes":{"memories":{}}}`)
+		run("add", docRel, ".agent/knowledge/graph.json")
+		run("commit", "-m", "chore: seed unindexed memory doc on base")
+		base3, err := git.GetCurrentBranch(ctx)
+		if err != nil {
+			t.Fatalf("GetCurrentBranch failed: %v", err)
+		}
+
+		run("checkout", "-b", "pilot/GH-restore-unindexed")
+		run("rm", docRel)
+		run("commit", "-m", "chore(memory): strip unindexed doc")
+
+		restored, err := git.RestoreDeletedIndexedMemoryDocs(ctx, base3)
+		if err != nil {
+			t.Fatalf("RestoreDeletedIndexedMemoryDocs failed: %v", err)
+		}
+		if len(restored) != 0 {
+			t.Fatalf("restored = %v, want none (doc was never indexed)", restored)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, docRel)); !os.IsNotExist(statErr) {
+			t.Errorf("expected %s to remain deleted, stat err = %v", docRel, statErr)
+		}
+	})
+
+	t.Run("protects a legacy path-key node", func(t *testing.T) {
+		run("checkout", base)
+		docRel := ".agent/knowledge/memories/pitfalls/mem_task_legacy.md"
+		write(docRel, "# indexed via the legacy path key")
+		write(".agent/knowledge/graph.json", `{"nodes":{"memories":{"mem-legacy-1":{"path":"memories/pitfalls/mem_task_legacy.md"}}}}`)
+		run("add", docRel, ".agent/knowledge/graph.json")
+		run("commit", "-m", "chore: seed legacy-path-indexed memory doc on base")
+		base4, err := git.GetCurrentBranch(ctx)
+		if err != nil {
+			t.Fatalf("GetCurrentBranch failed: %v", err)
+		}
+
+		run("checkout", "-b", "pilot/GH-restore-legacy")
+		run("rm", docRel)
+		run("commit", "-m", "chore(memory): strip legacy-indexed doc")
+
+		restored, err := git.RestoreDeletedIndexedMemoryDocs(ctx, base4)
+		if err != nil {
+			t.Fatalf("RestoreDeletedIndexedMemoryDocs failed: %v", err)
+		}
+		if len(restored) != 1 || restored[0].Path != docRel || restored[0].NodeID != "mem-legacy-1" {
+			t.Fatalf("restored = %+v, want [{%s mem-legacy-1}]", restored, docRel)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, docRel)); statErr != nil {
+			t.Errorf("expected %s restored to disk, err = %v", docRel, statErr)
+		}
+	})
+
+	t.Run("no-op when graph.json is absent at base", func(t *testing.T) {
+		noGraphDir := t.TempDir()
+		runIn := func(args ...string) {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = noGraphDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		writeIn := func(rel, content string) {
+			t.Helper()
+			full := filepath.Join(noGraphDir, rel)
+			if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+				t.Fatalf("mkdir for %s: %v", rel, err)
+			}
+			if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+				t.Fatalf("write %s: %v", rel, err)
+			}
+		}
+
+		runIn("init")
+		runIn("config", "user.email", "test@test.com")
+		runIn("config", "user.name", "Test User")
+		docRel := ".agent/knowledge/memories/pitfalls/mem_task_no_graph.md"
+		writeIn(docRel, "# no graph.json in this project")
+		runIn("add", docRel)
+		runIn("commit", "-m", "chore: seed doc, no graph.json")
+		noGraphGit := NewGitOperations(noGraphDir)
+		noGraphBase, err := noGraphGit.GetCurrentBranch(ctx)
+		if err != nil {
+			t.Fatalf("GetCurrentBranch failed: %v", err)
+		}
+
+		runIn("checkout", "-b", "pilot/GH-restore-no-graph")
+		runIn("rm", docRel)
+		runIn("commit", "-m", "chore(memory): strip doc, no graph.json to protect")
+
+		restored, err := noGraphGit.RestoreDeletedIndexedMemoryDocs(ctx, noGraphBase)
+		if err != nil {
+			t.Fatalf("RestoreDeletedIndexedMemoryDocs failed: %v", err)
+		}
+		if len(restored) != 0 {
+			t.Fatalf("restored = %v, want none (no graph.json to protect)", restored)
+		}
+	})
+}
+
 // TestCreateRecoveryRef verifies GH-3785's recovery-ref mechanism: a commit
 // pinned under refs/pilot-recovery/<taskID> resolves to the expected sha,
 // survives being looked up independent of any branch, and sanitizes the
