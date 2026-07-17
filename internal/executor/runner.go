@@ -5558,6 +5558,15 @@ func (r *Runner) emitAlertEvent(event AlertEvent) {
 	r.alertProcessor.ProcessEvent(event)
 }
 
+// EmitAlertEvent exposes emitAlertEvent to callers outside this package's own
+// execution loop that hold a *Runner — e.g. Dispatcher's repick-backoff hard
+// cap (GH-4394 subtask 5), which needs to raise its own alert when it gives
+// up retrying a task, without duplicating the alertProcessor nil-guard/warn-
+// once logic that already lives here.
+func (r *Runner) EmitAlertEvent(event AlertEvent) {
+	r.emitAlertEvent(event)
+}
+
 // dispatchWebhook sends a webhook event if webhook manager is configured
 func (r *Runner) dispatchWebhook(ctx context.Context, eventType webhooks.EventType, data any) {
 	if r.webhooks == nil {

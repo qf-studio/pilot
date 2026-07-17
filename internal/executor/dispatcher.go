@@ -709,6 +709,47 @@ func (d *Dispatcher) HasTerminalCompletion(taskID, projectPath string) (bool, er
 	return HasTerminalCompletion(d.store, taskID, projectPath)
 }
 
+// RepickBackoffState, SetRepickBackoffState, and ClearRepickBackoffState
+// expose the store's repick_backoff table to callers outside this package —
+// e.g. cmd/pilot's repickBackoffTracker (GH-4394). The tracker owns the
+// exponential-growth policy and its own in-process cache for the hot path;
+// these are thin store proxies so that cache is backed by the same durable
+// ledger every other dispatch-admission state (execution_claims, etc.) uses,
+// rather than resetting to empty on daemon restart or diverging across a
+// shadow-DB split-brain (#4393).
+func (d *Dispatcher) RepickBackoffState(key string) (consecutiveDrops int, nextAllowedAt time.Time, found bool, err error) {
+	return d.store.GetRepickBackoff(key)
+}
+
+func (d *Dispatcher) SetRepickBackoffState(key string, consecutiveDrops int, nextAllowedAt time.Time) error {
+	return d.store.SetRepickBackoff(key, consecutiveDrops, nextAllowedAt)
+}
+
+func (d *Dispatcher) ClearRepickBackoffState(key string) error {
+	return d.store.ClearRepickBackoff(key)
+}
+
+// ExecutionGeneration returns the execution_claims generation most recently
+// claimed for (taskID, projectPath): 0 for an ordinary first attempt, >0 when
+// beginWithGenerationRetry claimed a retry generation because the prior
+// claim was terminal but the task was not yet done (GH-4394). Callers use
+// this to distinguish a genuine fresh dispatch (safe to clear repick
+// backoff) from a repick whose backoff was just extended directly against
+// the store by beginWithGenerationRetry — clearing it unconditionally on any
+// successful QueueTask return is what let GH-85 re-pick 5x in ~15 minutes
+// with no backoff growth: every repick looked identical to a fresh dispatch
+// from the poller-chokepoint's point of view.
+func (d *Dispatcher) ExecutionGeneration(taskID, projectPath string) (int, error) {
+	gen, _, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, nil
+	}
+	return gen, nil
+}
+
 // QueueTask adds a task to the execution queue and returns the execution ID.
 // The task will be executed by the project's worker in FIFO order.
 // If a decomposer is configured and the task is complex, it will be split
@@ -760,6 +801,39 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 
 	// Queue single task
 	return d.queueSingleTask(ctx, task)
+}
+
+// dispatcherRepickBackoffBaseInterval and dispatcherRepickBackoffMaxShift
+// mirror the growth policy in cmd/pilot/repick_backoff.go (#4385) exactly.
+// Duplicated rather than imported — cmd/pilot depends on this package, not
+// the reverse, so importing it here would create a cycle — but both sides
+// read/write the SAME repick_backoff store row (repickBackoffKey below
+// matches cmd/pilot's), so as long as the formulas agree a repick from
+// EITHER entry point grows the SAME cooldown (GH-4394 subtask 2).
+const (
+	dispatcherRepickBackoffBaseInterval = 30 * time.Second
+	dispatcherRepickBackoffMaxShift     = 5
+)
+
+// dispatcherRepickHardCap is the hard ceiling on consecutive repicks for one
+// task before beginWithGenerationRetry stops retrying altogether and marks
+// the task's claimed execution "stalled" instead (GH-4394 subtask 5).
+// Exponential backoff (capped at dispatcherRepickBackoffMaxShift, i.e.
+// dispatcherRepickBackoffBaseInterval*32 ≈ 16 minutes) only slows repeats
+// down — left unbounded, a task that can never succeed keeps burning a real
+// backend execution every ~16 minutes forever. GH-85 hit 5 consecutive
+// repicks in ~15 minutes with NO backoff growth at all before anyone
+// noticed; matches cmd/pilot's repickBackoffWarnThreshold (the point at
+// which that package's own log line escalates to WARN) so the WARN and the
+// hard stop land on the same incident, not two different thresholds someone
+// has to reconcile later.
+const dispatcherRepickHardCap = 5
+
+// repickBackoffKey namespaces backoff state by project path + task ID,
+// matching cmd/pilot's repickBackoffKey — task_id alone is not unique across
+// projects (GH-4276).
+func repickBackoffKey(projectPath, taskID string) string {
+	return projectPath + "|" + taskID
 }
 
 // nextRetryGeneration inspects the highest execution_claims generation
@@ -841,12 +915,76 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 		return "", nil
 	}
 
+	// GH-4394 subtask 2: cmd/pilot's per-issue backoff (#4385) only gates
+	// whether handleIssueGeneric calls QueueTask at all — it has no
+	// visibility into a repick decided *inside* this call, and QueueTask's
+	// only production caller IS handleIssueGeneric. That let this path
+	// bypass the throttle entirely: every poll tick that got past the outer
+	// gate found a fresh terminal-but-not-done claim here and re-armed
+	// unconditionally (GH-85: 5 repicks in ~15 min, no backoff growth).
+	// Consult the same persisted repick_backoff row before claiming a fresh
+	// generation, so consecutive repicks back off exponentially too.
+	//
+	// GH-4394 subtask 3: GH-85 happened to be dispatched against the
+	// registered pilot-canary-sandbox project (GH-4240/TASK-379), raising the
+	// hypothesis that task.IsCanary/ProjectConfig.Canary might short-circuit
+	// this gate the same way it deliberately short-circuits metrics recording
+	// elsewhere (runner.go's `!task.IsCanary` guards). Investigated and ruled
+	// out: this gate is keyed only on ProjectPath+TaskID (both stable,
+	// config-registered values, identical for a canary or a real project) and
+	// never inspects IsCanary. See
+	// TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular.
+	backoffKey := repickBackoffKey(task.ProjectPath, task.ID)
+	consecutiveDrops, nextAllowedAt, found, boErr := d.RepickBackoffState(backoffKey)
+	if boErr != nil {
+		d.log.Warn("failed to read repick backoff state — dropping retry to be safe",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Any("error", boErr))
+		return "", nil
+	}
+	// GH-4394 subtask 5: exponential backoff alone never stops retrying — it
+	// only slows the interval down, capping at ~16 min forever. A task stuck
+	// past dispatcherRepickHardCap consecutive repicks is treated as a
+	// permanent failure: stop granting new generations and mark it stalled
+	// instead, so it stops burning a real backend execution on every window
+	// expiry and instead waits for a human to investigate/re-arm it. Checked
+	// before the backoff-window gate below so the hard stop takes effect the
+	// moment the cap is crossed, rather than waiting out one more window.
+	if found && consecutiveDrops >= dispatcherRepickHardCap {
+		d.stallTaskAfterRepickHardCap(task, gen, consecutiveDrops)
+		return "", nil
+	}
+
+	if found && time.Now().Before(nextAllowedAt) {
+		d.log.Info("dispatch re-pick throttled — task still within repick backoff window, dropping duplicate retry",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Int("consecutive_drops", consecutiveDrops),
+			slog.Time("next_allowed_at", nextAllowedAt),
+		)
+		return "", nil
+	}
+
 	retryExecID, retryErr := lifecycle.Begin(task, initial, gen)
 	if retryErr == nil {
+		newConsecutive := consecutiveDrops + 1
+		shift := newConsecutive - 1
+		if shift > dispatcherRepickBackoffMaxShift {
+			shift = dispatcherRepickBackoffMaxShift
+		}
+		newNextAllowedAt := time.Now().Add(dispatcherRepickBackoffBaseInterval * time.Duration(uint64(1)<<uint(shift)))
+		if setErr := d.SetRepickBackoffState(backoffKey, newConsecutive, newNextAllowedAt); setErr != nil {
+			d.log.Warn("failed to persist repick backoff growth after re-pick",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Any("error", setErr))
+		}
 		d.log.Info("dispatch re-pick: prior claim was terminal but task is not done — claiming next generation for retry",
 			slog.String("task_id", task.ID),
 			slog.String("project", task.ProjectPath),
 			slog.Int("generation", gen),
+			slog.Int("consecutive_repicks", newConsecutive),
 		)
 		return retryExecID, nil
 	}
@@ -856,6 +994,70 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 		return "", nil
 	}
 	return "", fmt.Errorf("failed to save retry execution: %w", retryErr)
+}
+
+// stallTaskAfterRepickHardCap marks (taskID, projectPath)'s currently claimed
+// execution "stalled" and raises an alert once dispatcherRepickHardCap
+// consecutive repicks have been exhausted (GH-4394 subtask 5) — the hard
+// stop that replaces "retry forever, just slower" once exponential backoff
+// alone has proven the task can't succeed on its own.
+//
+// Idempotent by design: if the claimed execution is already "stalled" (a
+// prior poll tick already tripped this same cap), the ledger write and alert
+// are skipped so a task sitting past the cap doesn't re-alert on every
+// backoff-window expiry — it stays quiet until a human re-arms it (e.g. via
+// SetRepickBackoffState/ClearRepickBackoffState) or the underlying issue is
+// closed.
+func (d *Dispatcher) stallTaskAfterRepickHardCap(task *Task, gen, consecutiveDrops int) {
+	_, execID, found, err := d.store.LatestClaimGeneration(task.ID, task.ProjectPath)
+	if err != nil || !found || execID == "" {
+		d.log.Warn("repick hard cap reached but no claimed execution found to stall",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Int("consecutive_drops", consecutiveDrops),
+			slog.Any("error", err))
+		return
+	}
+
+	claimedExec, getErr := d.store.GetExecution(execID)
+	alreadyStalled := getErr == nil && claimedExec != nil && claimedExec.Status == string(ExecStatusStalled)
+
+	reason := fmt.Sprintf(
+		"repick backoff hard cap reached: %d consecutive failed re-picks (cap=%d) — stopping automatic retries, manual re-arm required",
+		consecutiveDrops, dispatcherRepickHardCap,
+	)
+	if uerr := d.store.UpdateExecutionStatus(execID, string(ExecStatusStalled), reason); uerr != nil {
+		d.log.Warn("failed to mark execution stalled after repick hard cap",
+			slog.String("task_id", task.ID), slog.String("execution_id", execID), slog.Any("error", uerr))
+	}
+
+	if alreadyStalled {
+		return
+	}
+
+	d.recordExecutionEvent(execID, memory.StageStalled, reason)
+	d.log.Warn("repick hard cap reached — task marked stalled, no further automatic retries",
+		slog.String("task_id", task.ID),
+		slog.String("project", task.ProjectPath),
+		slog.Int("consecutive_drops", consecutiveDrops),
+		slog.Int("hard_cap", dispatcherRepickHardCap),
+		slog.Int("generation", gen),
+	)
+	if d.runner != nil {
+		d.runner.EmitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeTaskFailed,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Error:     reason,
+			Metadata: map[string]string{
+				"reason":            "repick_hard_cap_stalled",
+				"consecutive_drops": fmt.Sprintf("%d", consecutiveDrops),
+				"hard_cap":          fmt.Sprintf("%d", dispatcherRepickHardCap),
+			},
+			Timestamp: time.Now(),
+		})
+	}
 }
 
 // queueDecomposedTask handles queuing a decomposed task and its subtasks.

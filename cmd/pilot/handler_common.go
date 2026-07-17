@@ -109,6 +109,14 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// lost, or already terminal per the HasTerminalCompletion re-check right
 	// below) gets a growing cooldown instead of repeating the full
 	// monitor/alert/dashboard side-effect sequence on every ~30s poll tick.
+	//
+	// GH-4394: wire the durable backing store on every call (idempotent — the
+	// same *Dispatcher for the process lifetime in production, a fresh one
+	// per test) so the cooldown survives a daemon restart or a shadow-DB
+	// split-brain instead of silently resetting to zero mid-storm.
+	if deps.Dispatcher != nil {
+		repickBackoff.setPersister(deps.Dispatcher)
+	}
 	backoffKey := repickBackoffKey(projectPath, taskID)
 	if deps.Dispatcher != nil && !repickBackoff.allow(backoffKey) {
 		logging.WithComponent("dispatch").Debug("task in repick backoff window, skipping dispatch",
@@ -245,7 +253,20 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 				deps.Metrics.RecordPollerSkipped(repickMetricsRepo(task), skipreason.ReasonRepickStormBackoff)
 			}
 		} else {
-			repickBackoff.recordSuccess(backoffKey)
+			// GH-4394 subtask 2: a repick (Dispatcher.beginWithGenerationRetry
+			// claiming execution_claims generation > 0 because the prior claim
+			// was terminal but the task wasn't done) already extended this
+			// key's backoff directly against the store from inside QueueTask.
+			// Clearing it here unconditionally — as if every successful
+			// QueueTask return were a brand-new generation-0 dispatch — is
+			// exactly what let GH-85 re-pick 5x in ~15 min with no backoff
+			// growth: this chokepoint couldn't tell a repick apart from a
+			// fresh pickup. Only clear for a genuine first attempt; on a
+			// generation lookup error, err toward NOT clearing (leaves any
+			// backoff intact rather than risking silently undoing growth).
+			if gen, genErr := deps.Dispatcher.ExecutionGeneration(taskID, projectPath); genErr == nil && gen == 0 {
+				repickBackoff.recordSuccess(backoffKey)
+			}
 			if deps.Monitor != nil {
 				deps.Monitor.Queue(taskID)
 			}

@@ -392,6 +392,25 @@ func (s *Store) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (task_id, project_path, generation)
 		)`,
+		// GH-4394: repick backoff (#4385) was tracked purely in an
+		// in-process map (cmd/pilot/repick_backoff.go) that reset to empty on
+		// every daemon restart AND diverged per-process whenever a shadow DB
+		// split-brain put two pilot processes on different SQLite files
+		// (#4393) — evidenced by GH-85 re-picking 5x in ~15 minutes with no
+		// backoff growth across a daemon restart mid-storm. Persisting the
+		// cooldown to the canonical ledger (same file execution_claims lives
+		// in) means whichever process instance loads this row next continues
+		// the SAME growing backoff instead of starting over at zero. Keyed by
+		// the same opaque "project_path|task_id" string the tracker already
+		// uses (repickBackoffKey) rather than split columns, so the
+		// persistence layer stays a pure key/value mirror of the in-memory
+		// entries with no re-derivation logic on either side.
+		`CREATE TABLE IF NOT EXISTS repick_backoff (
+			key TEXT PRIMARY KEY,
+			consecutive_drops INTEGER NOT NULL DEFAULT 0,
+			next_allowed_at DATETIME NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 
 	for _, migration := range migrations {
@@ -2647,6 +2666,48 @@ func (s *Store) LatestClaimGeneration(taskID, projectPath string) (generation in
 		return 0, "", false, err
 	}
 	return generation, executionID, true, nil
+}
+
+// GetRepickBackoff returns the persisted repick-backoff cooldown state for
+// key (a "project_path|task_id" string minted by cmd/pilot's
+// repickBackoffKey). found is false when no drop has ever been recorded for
+// key, or its state was cleared by ClearRepickBackoff after a successful
+// dispatch — the normal "not throttled" case (GH-4394).
+func (s *Store) GetRepickBackoff(key string) (consecutiveDrops int, nextAllowedAt time.Time, found bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT consecutive_drops, next_allowed_at FROM repick_backoff WHERE key = ?
+	`, key).Scan(&consecutiveDrops, &nextAllowedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, time.Time{}, false, nil
+		}
+		return 0, time.Time{}, false, err
+	}
+	return consecutiveDrops, nextAllowedAt, true, nil
+}
+
+// SetRepickBackoff persists a consecutive-drop count and cooldown deadline
+// for key, replacing whatever was stored before (GH-4394). The caller (the
+// in-process repickBackoffTracker) owns the exponential-growth policy; this
+// is a plain upsert of whatever it computed.
+func (s *Store) SetRepickBackoff(key string, consecutiveDrops int, nextAllowedAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO repick_backoff (key, consecutive_drops, next_allowed_at, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (key) DO UPDATE SET
+			consecutive_drops = excluded.consecutive_drops,
+			next_allowed_at = excluded.next_allowed_at,
+			updated_at = CURRENT_TIMESTAMP
+	`, key, consecutiveDrops, nextAllowedAt)
+	return err
+}
+
+// ClearRepickBackoff removes any cooldown state for key (GH-4394) — called
+// once a dispatch for the task actually proceeds, so the next drop, if any,
+// starts a fresh backoff sequence rather than continuing to escalate.
+func (s *Store) ClearRepickBackoff(key string) error {
+	_, err := s.db.Exec(`DELETE FROM repick_backoff WHERE key = ?`, key)
+	return err
 }
 
 // CrossPattern represents a pattern that applies across multiple projects.

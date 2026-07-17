@@ -2795,6 +2795,385 @@ func TestDispatcher_BootOrphanReconciliation_EnablesGenerationRetry(t *testing.T
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_ArmsRepickBackoff is the GH-4394
+// subtask 2 regression test: a successful terminal-claim re-pick (the
+// "dispatch re-pick: prior claim was terminal but task is not done" path)
+// must extend the SAME repick_backoff row the poller-originated throttle
+// (#4385) reads/writes, not leave it untouched the way it did before this
+// fix — which was the actual mechanism behind GH-85 re-picking 5x in ~15 min
+// with no backoff growth.
+func TestDispatcher_BeginWithGenerationRetry_ArmsRepickBackoff(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-ARM", ProjectPath: "/project-arm"}
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	if _, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found {
+		t.Fatal("expected no repick backoff state before the first re-pick")
+	}
+
+	before := time.Now()
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID == "" {
+		t.Fatal("expected the first re-pick to succeed with a fresh execID")
+	}
+
+	consecutive, nextAllowedAt, found, err := dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState after re-pick: %v", err)
+	}
+	if !found {
+		t.Fatal("expected the re-pick to persist repick backoff state")
+	}
+	if consecutive != 1 {
+		t.Errorf("expected consecutive_drops=1 after one re-pick, got %d", consecutive)
+	}
+	if !nextAllowedAt.After(before) {
+		t.Errorf("expected next_allowed_at (%v) to be after the re-pick (%v)", nextAllowedAt, before)
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow is the
+// GH-4394 subtask 2 core regression test: once a re-pick has armed the
+// backoff, a SECOND re-pick attempt for the same task within the cooldown
+// window must be dropped — not silently re-armed on every poll tick the way
+// GH-85 was (5 repicks in ~15 min, no growth).
+func TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-THROTTLE", ProjectPath: "/project-throttle"}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Simulate an already-armed backoff window from a prior re-pick, well in
+	// the future so this test isn't timing-sensitive.
+	if err := dispatcher.SetRepickBackoffState(key, 3, time.Now().Add(5*time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	// A prior claim that IS eligible for retry (terminal, not done) —
+	// otherwise nextRetryGeneration itself would short-circuit before the
+	// backoff gate is ever reached, and this test wouldn't prove anything.
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("nextRetryGeneration: %v", err)
+	}
+	if !retry || gen != 1 {
+		t.Fatalf("expected retry=true generation=1 as the precondition for this test, got retry=%v gen=%d", retry, gen)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatal("expected the re-pick to be dropped while the backoff window is active, got a fresh execID")
+	}
+
+	if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	} else if found && genCheck != 0 {
+		t.Errorf("expected no generation-1 claim to have been made while throttled, latest generation=%d", genCheck)
+	}
+
+	consecutive, _, found, err := dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	}
+	if !found || consecutive != 3 {
+		t.Errorf("expected the throttled attempt to leave backoff state untouched (consecutive_drops=3), got found=%v consecutive=%d", found, consecutive)
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_HardCapStallsInsteadOfRetrying is
+// the GH-4394 subtask 5 acceptance test: exponential backoff alone (subtask
+// 2/3) never stops a doomed task from retrying — it only slows the interval
+// down, capping at ~16 min forever. Once consecutive repicks reach
+// dispatcherRepickHardCap, beginWithGenerationRetry must stop granting new
+// generations altogether, mark the claimed execution "stalled", and raise an
+// alert — instead of retrying yet again once the backoff window (already
+// elapsed here) permits it.
+func TestDispatcher_BeginWithGenerationRetry_HardCapStallsInsteadOfRetrying(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-HARDCAP", ProjectPath: "/project-hardcap", Title: "Hard cap task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Already at the hard cap, and the backoff window has already elapsed —
+	// proving the hard cap itself (not the window) is what stops the retry.
+	if err := dispatcher.SetRepickBackoffState(key, dispatcherRepickHardCap, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	// A prior claim that IS eligible for retry (terminal, not done) —
+	// otherwise nextRetryGeneration itself would short-circuit before the
+	// hard cap gate is ever reached.
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("nextRetryGeneration: %v", err)
+	}
+	if !retry || gen != 1 {
+		t.Fatalf("expected retry=true generation=1 as the precondition for this test, got retry=%v gen=%d", retry, gen)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatal("expected the re-pick to be dropped once the hard cap is reached, got a fresh execID")
+	}
+
+	if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	} else if found && genCheck != 0 {
+		t.Errorf("expected no generation-1 claim once the hard cap tripped, latest generation=%d", genCheck)
+	}
+
+	stalledExec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if stalledExec.Status != "stalled" {
+		t.Errorf("expected the claimed execution to be marked stalled, got status=%q", stalledExec.Status)
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event, got %d: %+v", len(processor.events), processor.events)
+	}
+	if processor.events[0].TaskID != task.ID {
+		t.Errorf("expected alert for task %q, got %q", task.ID, processor.events[0].TaskID)
+	}
+	if processor.events[0].Metadata["reason"] != "repick_hard_cap_stalled" {
+		t.Errorf("expected alert metadata reason=repick_hard_cap_stalled, got %q", processor.events[0].Metadata["reason"])
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_HardCapIsIdempotent covers the
+// GH-4394 subtask 5 quiet-repeat requirement: once a task has been stalled by
+// the hard cap, subsequent poll ticks that reach the same gate (e.g. after
+// the backoff window elapses again) must not re-alert or write a duplicate
+// execution event — the task stays quiet until a human re-arms it.
+func TestDispatcher_BeginWithGenerationRetry_HardCapIsIdempotent(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-HARDCAP-IDEMPOTENT", ProjectPath: "/project-hardcap-idempotent"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	if err := dispatcher.SetRepickBackoffState(key, dispatcherRepickHardCap, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+	for i := 0; i < 2; i++ {
+		if execID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued); err != nil {
+			t.Fatalf("beginWithGenerationRetry call %d: %v", i, err)
+		} else if execID != "" {
+			t.Fatalf("beginWithGenerationRetry call %d: expected dropped retry, got execID %q", i, execID)
+		}
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event across both calls, got %d: %+v", len(processor.events), processor.events)
+	}
+
+	events, err := store.ListExecutionEvents(execID)
+	if err != nil {
+		t.Fatalf("ListExecutionEvents: %v", err)
+	}
+	stalledEvents := 0
+	for _, e := range events {
+		if e.Stage == memory.StageStalled {
+			stalledEvents++
+		}
+	}
+	if stalledEvents != 1 {
+		t.Errorf("expected exactly 1 stalled execution event across both calls, got %d: %+v", stalledEvents, events)
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular
+// is the GH-4394 subtask 3 regression test. One of three hypotheses filed
+// against the GH-85 incident (which happened to fire against the registered
+// pilot-canary-sandbox project, GH-4240/TASK-379) was that IsCanary/
+// ProjectConfig.Canary might short-circuit the repick backoff the same way it
+// intentionally short-circuits metrics recording (runner.go's
+// `if r.metricsRecorder != nil && !task.IsCanary` guards). Investigation found
+// no such branch: beginWithGenerationRetry's backoff gate (dispatcher.go
+// ~L913-930) never inspects task.IsCanary, and repickBackoffKey is keyed only
+// on ProjectPath+TaskID, both of which are stable, config-registered values
+// for a canary project just like any other. This test pins that: a
+// canary-flagged task must be throttled by an already-armed backoff window
+// exactly like a non-canary task (mirrors
+// TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow above,
+// with IsCanary: true added) — if a future change adds an IsCanary
+// short-circuit to this gate, this test fails.
+func TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-85", ProjectPath: "/canary-sandbox", IsCanary: true}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Simulate an already-armed backoff window from a prior re-pick, well in
+	// the future so this test isn't timing-sensitive.
+	if err := dispatcher.SetRepickBackoffState(key, 3, time.Now().Add(5*time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	// A prior claim that IS eligible for retry (terminal, not done) —
+	// otherwise nextRetryGeneration itself would short-circuit before the
+	// backoff gate is ever reached, and this test wouldn't prove anything.
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("nextRetryGeneration: %v", err)
+	}
+	if !retry || gen != 1 {
+		t.Fatalf("expected retry=true generation=1 as the precondition for this test, got retry=%v gen=%d", retry, gen)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, IsCanary: true}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatal("expected the canary task's re-pick to be dropped while the backoff window is active, got a fresh execID — IsCanary must not bypass the repick backoff gate")
+	}
+
+	consecutive, _, found, err := dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	}
+	if !found || consecutive != 3 {
+		t.Errorf("expected the throttled canary attempt to leave backoff state untouched (consecutive_drops=3), got found=%v consecutive=%d", found, consecutive)
+	}
+}
+
+// TestRepickBackoffKey_FormatMatchesCmdPilotPackage is the GH-4394 subtask 4
+// counterpart to cmd/pilot's TestRepickBackoffKey_FormatMatchesDispatcherPackage.
+// cmd/pilot cannot import internal/executor's unexported repickBackoffKey (and
+// internal/executor cannot import cmd/pilot without a cycle), so the format is
+// duplicated by hand on both sides — see this package's repickBackoffKey doc
+// comment. Both pins assert the identical literal "projectPath|taskID"
+// format; a future edit to either side alone, without updating the other,
+// fails whichever pin didn't move — catching a silent split of the "one
+// shared per-task backoff" the poller's outer gate and this package's
+// beginWithGenerationRetry both read/write.
+func TestRepickBackoffKey_FormatMatchesCmdPilotPackage(t *testing.T) {
+	got := repickBackoffKey("/repo/a", "GH-85")
+	want := "/repo/a|GH-85"
+	if got != want {
+		t.Errorf("repickBackoffKey format changed: got %q, want %q — cmd/pilot's repickBackoffKey must be updated identically or the shared backoff store silently splits into two divergent keys", got, want)
+	}
+}
+
+// TestDispatcher_ExecutionGeneration verifies ExecutionGeneration reports 0
+// for an ordinary first attempt and the retry generation once
+// beginWithGenerationRetry has claimed one — the signal cmd/pilot's
+// handleIssueGeneric uses (GH-4394 subtask 2) to tell a genuine fresh
+// dispatch apart from a repick before deciding whether to clear the repick
+// backoff.
+func TestDispatcher_ExecutionGeneration(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-GEN", ProjectPath: "/project-gen"}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+
+	if gen, err := dispatcher.ExecutionGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("ExecutionGeneration (no claim yet): %v", err)
+	} else if gen != 0 {
+		t.Errorf("expected generation 0 with no claim at all, got %d", gen)
+	}
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if gen, err := dispatcher.ExecutionGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("ExecutionGeneration (generation 0 claimed): %v", err)
+	} else if gen != 0 {
+		t.Errorf("expected generation 0 for a fresh first attempt, got %d", gen)
+	}
+
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+	if _, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued); err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+
+	if gen, err := dispatcher.ExecutionGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("ExecutionGeneration (after re-pick): %v", err)
+	} else if gen != 1 {
+		t.Errorf("expected generation 1 after a re-pick claimed it, got %d", gen)
+	}
+}
+
 // TestStore_GetQueuedProjectPaths verifies the distinct-project query backing
 // restart adoption: only queued/pending rows count, duplicates collapse, and
 // completed/running rows are excluded. GH-3732.

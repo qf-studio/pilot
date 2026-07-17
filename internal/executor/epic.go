@@ -2443,6 +2443,21 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// executions. Begin now claims (taskID, subTaskRepoPath, generation 0)
 		// atomically before invoking the backend; losing the claim means
 		// another channel already owns this sub-issue.
+		//
+		// GH-4394 subtask 4: this is the "sub-issue paths" entry point named
+		// in the parent issue's fix list. It deliberately does NOT consult
+		// repick_backoff and never passes generation > 0 — nextRetryGeneration
+		// (the only generation+1 decider in this codebase) lives solely in
+		// dispatcher.go, reached only through beginWithGenerationRetry, which
+		// already backoff-gates every real repick (subtasks 2/3). When an
+		// epic is repicked and re-discovers this same still-open child, this
+		// Begin() collides with the earlier terminal claim at generation 0 and
+		// loses (ErrClaimLost) — the backend is never invoked a second time
+		// for an already-failed child, so there is no unthrottled retry here
+		// to throttle. See TestExecuteSubIssues_RepickDoesNotBypassBackoff.
+		// If this loop ever grows its own generation+1 retry, it must route
+		// through the same shared repick_backoff store beginWithGenerationRetry
+		// uses instead of re-implementing a second, driftable copy.
 		subExecID, err := NewExecutionLifecycle(r.logStore).Begin(subTask, ExecStatusRunning)
 
 		var result *ExecutionResult
