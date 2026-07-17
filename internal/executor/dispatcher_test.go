@@ -2795,6 +2795,166 @@ func TestDispatcher_BootOrphanReconciliation_EnablesGenerationRetry(t *testing.T
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_ArmsRepickBackoff is the GH-4394
+// subtask 2 regression test: a successful terminal-claim re-pick (the
+// "dispatch re-pick: prior claim was terminal but task is not done" path)
+// must extend the SAME repick_backoff row the poller-originated throttle
+// (#4385) reads/writes, not leave it untouched the way it did before this
+// fix — which was the actual mechanism behind GH-85 re-picking 5x in ~15 min
+// with no backoff growth.
+func TestDispatcher_BeginWithGenerationRetry_ArmsRepickBackoff(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-ARM", ProjectPath: "/project-arm"}
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	if _, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found {
+		t.Fatal("expected no repick backoff state before the first re-pick")
+	}
+
+	before := time.Now()
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID == "" {
+		t.Fatal("expected the first re-pick to succeed with a fresh execID")
+	}
+
+	consecutive, nextAllowedAt, found, err := dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState after re-pick: %v", err)
+	}
+	if !found {
+		t.Fatal("expected the re-pick to persist repick backoff state")
+	}
+	if consecutive != 1 {
+		t.Errorf("expected consecutive_drops=1 after one re-pick, got %d", consecutive)
+	}
+	if !nextAllowedAt.After(before) {
+		t.Errorf("expected next_allowed_at (%v) to be after the re-pick (%v)", nextAllowedAt, before)
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow is the
+// GH-4394 subtask 2 core regression test: once a re-pick has armed the
+// backoff, a SECOND re-pick attempt for the same task within the cooldown
+// window must be dropped — not silently re-armed on every poll tick the way
+// GH-85 was (5 repicks in ~15 min, no growth).
+func TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-THROTTLE", ProjectPath: "/project-throttle"}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Simulate an already-armed backoff window from a prior re-pick, well in
+	// the future so this test isn't timing-sensitive.
+	if err := dispatcher.SetRepickBackoffState(key, 3, time.Now().Add(5*time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	// A prior claim that IS eligible for retry (terminal, not done) —
+	// otherwise nextRetryGeneration itself would short-circuit before the
+	// backoff gate is ever reached, and this test wouldn't prove anything.
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("nextRetryGeneration: %v", err)
+	}
+	if !retry || gen != 1 {
+		t.Fatalf("expected retry=true generation=1 as the precondition for this test, got retry=%v gen=%d", retry, gen)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatal("expected the re-pick to be dropped while the backoff window is active, got a fresh execID")
+	}
+
+	if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	} else if found && genCheck != 0 {
+		t.Errorf("expected no generation-1 claim to have been made while throttled, latest generation=%d", genCheck)
+	}
+
+	consecutive, _, found, err := dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	}
+	if !found || consecutive != 3 {
+		t.Errorf("expected the throttled attempt to leave backoff state untouched (consecutive_drops=3), got found=%v consecutive=%d", found, consecutive)
+	}
+}
+
+// TestDispatcher_ExecutionGeneration verifies ExecutionGeneration reports 0
+// for an ordinary first attempt and the retry generation once
+// beginWithGenerationRetry has claimed one — the signal cmd/pilot's
+// handleIssueGeneric uses (GH-4394 subtask 2) to tell a genuine fresh
+// dispatch apart from a repick before deciding whether to clear the repick
+// backoff.
+func TestDispatcher_ExecutionGeneration(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4394-GEN", ProjectPath: "/project-gen"}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+
+	if gen, err := dispatcher.ExecutionGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("ExecutionGeneration (no claim yet): %v", err)
+	} else if gen != 0 {
+		t.Errorf("expected generation 0 with no claim at all, got %d", gen)
+	}
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if gen, err := dispatcher.ExecutionGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("ExecutionGeneration (generation 0 claimed): %v", err)
+	} else if gen != 0 {
+		t.Errorf("expected generation 0 for a fresh first attempt, got %d", gen)
+	}
+
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+	if _, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued); err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+
+	if gen, err := dispatcher.ExecutionGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("ExecutionGeneration (after re-pick): %v", err)
+	} else if gen != 1 {
+		t.Errorf("expected generation 1 after a re-pick claimed it, got %d", gen)
+	}
+}
+
 // TestStore_GetQueuedProjectPaths verifies the distinct-project query backing
 // restart adoption: only queued/pending rows count, duplicates collapse, and
 // completed/running rows are excluded. GH-3732.

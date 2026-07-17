@@ -253,7 +253,20 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 				deps.Metrics.RecordPollerSkipped(repickMetricsRepo(task), skipreason.ReasonRepickStormBackoff)
 			}
 		} else {
-			repickBackoff.recordSuccess(backoffKey)
+			// GH-4394 subtask 2: a repick (Dispatcher.beginWithGenerationRetry
+			// claiming execution_claims generation > 0 because the prior claim
+			// was terminal but the task wasn't done) already extended this
+			// key's backoff directly against the store from inside QueueTask.
+			// Clearing it here unconditionally — as if every successful
+			// QueueTask return were a brand-new generation-0 dispatch — is
+			// exactly what let GH-85 re-pick 5x in ~15 min with no backoff
+			// growth: this chokepoint couldn't tell a repick apart from a
+			// fresh pickup. Only clear for a genuine first attempt; on a
+			// generation lookup error, err toward NOT clearing (leaves any
+			// backoff intact rather than risking silently undoing growth).
+			if gen, genErr := deps.Dispatcher.ExecutionGeneration(taskID, projectPath); genErr == nil && gen == 0 {
+				repickBackoff.recordSuccess(backoffKey)
+			}
 			if deps.Monitor != nil {
 				deps.Monitor.Queue(taskID)
 			}

@@ -431,6 +431,87 @@ func TestHandleIssueGeneric_RepickBackoff_ThrottlesRepeatedDrops(t *testing.T) {
 	}
 }
 
+// TestHandleIssueGeneric_RepickDoesNotClearBackoff is the GH-4394 subtask 2
+// regression test for the actual GH-85 mechanism: before this fix, a
+// terminal-claim re-pick (Dispatcher.beginWithGenerationRetry claiming
+// generation > 0 because the prior claim failed but the task wasn't done)
+// returned a valid, non-empty execID indistinguishable from a genuine fresh
+// dispatch — so handleIssueGeneric's blanket repickBackoff.recordSuccess
+// call wiped the backoff the re-pick had just armed, and the very next poll
+// tick re-picked again with zero growth. This seeds a generation-0 FAILED
+// (terminal, not done) execution so the single handleIssueGeneric call below
+// exercises the re-pick path end-to-end, then asserts the backoff survives.
+func TestHandleIssueGeneric_RepickDoesNotClearBackoff(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-handler-repick-arms-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+
+	taskID := "GH-4394-REPICK-ARM"
+	projectPath := "/tmp/pilot-gh-4394-repick-arm-does-not-exist"
+	backoffKey := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(backoffKey) })
+
+	// Generation 0: a failed (terminal, not done) execution — exactly the
+	// "prior claim was terminal but task is not done" precondition.
+	seed := &executor.Task{ID: taskID, ProjectPath: projectPath}
+	seedExecID, err := executor.NewExecutionLifecycle(store).Begin(seed, executor.ExecStatusRunning, 0)
+	if err != nil {
+		t.Fatalf("setup: generation 0 Begin failed: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(seedExecID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: executor.NewMonitor(), ProjectPath: projectPath}
+	info := IssueInfo{TaskID: taskID, Title: "repick", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "repick", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	// The re-pick's own backoff bookkeeping (the assertion this test cares
+	// about) happens synchronously right after QueueTask returns, before
+	// WaitForExecution starts polling — a short-lived context lets
+	// WaitForExecution bail out quickly via ctx.Done() instead of blocking on
+	// a real backend execution against a project path that doesn't exist.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = handleIssueGeneric(ctx, deps, info, task)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleIssueGeneric hung waiting for the re-picked execution")
+	}
+
+	if repickBackoff.allow(backoffKey) {
+		t.Fatal("expected the re-pick's backoff to survive handleIssueGeneric's success handling, but it was cleared")
+	}
+
+	consecutive, _, found, err := dispatcher.RepickBackoffState(backoffKey)
+	if err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	}
+	if !found || consecutive != 1 {
+		t.Errorf("expected persisted repick backoff consecutive_drops=1 after the re-pick, got found=%v consecutive=%d", found, consecutive)
+	}
+}
+
 // TestAdapterSpecificPRNumberExtraction verifies that PR/MR number extraction
 // uses the correct adapter-specific regex for each forge (GH-2293).
 func TestAdapterSpecificPRNumberExtraction(t *testing.T) {

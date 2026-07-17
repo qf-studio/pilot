@@ -729,6 +729,27 @@ func (d *Dispatcher) ClearRepickBackoffState(key string) error {
 	return d.store.ClearRepickBackoff(key)
 }
 
+// ExecutionGeneration returns the execution_claims generation most recently
+// claimed for (taskID, projectPath): 0 for an ordinary first attempt, >0 when
+// beginWithGenerationRetry claimed a retry generation because the prior
+// claim was terminal but the task was not yet done (GH-4394). Callers use
+// this to distinguish a genuine fresh dispatch (safe to clear repick
+// backoff) from a repick whose backoff was just extended directly against
+// the store by beginWithGenerationRetry — clearing it unconditionally on any
+// successful QueueTask return is what let GH-85 re-pick 5x in ~15 minutes
+// with no backoff growth: every repick looked identical to a fresh dispatch
+// from the poller-chokepoint's point of view.
+func (d *Dispatcher) ExecutionGeneration(taskID, projectPath string) (int, error) {
+	gen, _, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, nil
+	}
+	return gen, nil
+}
+
 // QueueTask adds a task to the execution queue and returns the execution ID.
 // The task will be executed by the project's worker in FIFO order.
 // If a decomposer is configured and the task is complex, it will be split
@@ -780,6 +801,25 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 
 	// Queue single task
 	return d.queueSingleTask(ctx, task)
+}
+
+// dispatcherRepickBackoffBaseInterval and dispatcherRepickBackoffMaxShift
+// mirror the growth policy in cmd/pilot/repick_backoff.go (#4385) exactly.
+// Duplicated rather than imported — cmd/pilot depends on this package, not
+// the reverse, so importing it here would create a cycle — but both sides
+// read/write the SAME repick_backoff store row (repickBackoffKey below
+// matches cmd/pilot's), so as long as the formulas agree a repick from
+// EITHER entry point grows the SAME cooldown (GH-4394 subtask 2).
+const (
+	dispatcherRepickBackoffBaseInterval = 30 * time.Second
+	dispatcherRepickBackoffMaxShift     = 5
+)
+
+// repickBackoffKey namespaces backoff state by project path + task ID,
+// matching cmd/pilot's repickBackoffKey — task_id alone is not unique across
+// projects (GH-4276).
+func repickBackoffKey(projectPath, taskID string) string {
+	return projectPath + "|" + taskID
 }
 
 // nextRetryGeneration inspects the highest execution_claims generation
@@ -861,12 +901,53 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 		return "", nil
 	}
 
+	// GH-4394 subtask 2: cmd/pilot's per-issue backoff (#4385) only gates
+	// whether handleIssueGeneric calls QueueTask at all — it has no
+	// visibility into a repick decided *inside* this call, and QueueTask's
+	// only production caller IS handleIssueGeneric. That let this path
+	// bypass the throttle entirely: every poll tick that got past the outer
+	// gate found a fresh terminal-but-not-done claim here and re-armed
+	// unconditionally (GH-85: 5 repicks in ~15 min, no backoff growth).
+	// Consult the same persisted repick_backoff row before claiming a fresh
+	// generation, so consecutive repicks back off exponentially too.
+	backoffKey := repickBackoffKey(task.ProjectPath, task.ID)
+	consecutiveDrops, nextAllowedAt, found, boErr := d.RepickBackoffState(backoffKey)
+	if boErr != nil {
+		d.log.Warn("failed to read repick backoff state — dropping retry to be safe",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Any("error", boErr))
+		return "", nil
+	}
+	if found && time.Now().Before(nextAllowedAt) {
+		d.log.Info("dispatch re-pick throttled — task still within repick backoff window, dropping duplicate retry",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Int("consecutive_drops", consecutiveDrops),
+			slog.Time("next_allowed_at", nextAllowedAt),
+		)
+		return "", nil
+	}
+
 	retryExecID, retryErr := lifecycle.Begin(task, initial, gen)
 	if retryErr == nil {
+		newConsecutive := consecutiveDrops + 1
+		shift := newConsecutive - 1
+		if shift > dispatcherRepickBackoffMaxShift {
+			shift = dispatcherRepickBackoffMaxShift
+		}
+		newNextAllowedAt := time.Now().Add(dispatcherRepickBackoffBaseInterval * time.Duration(uint64(1)<<uint(shift)))
+		if setErr := d.SetRepickBackoffState(backoffKey, newConsecutive, newNextAllowedAt); setErr != nil {
+			d.log.Warn("failed to persist repick backoff growth after re-pick",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Any("error", setErr))
+		}
 		d.log.Info("dispatch re-pick: prior claim was terminal but task is not done — claiming next generation for retry",
 			slog.String("task_id", task.ID),
 			slog.String("project", task.ProjectPath),
 			slog.Int("generation", gen),
+			slog.Int("consecutive_repicks", newConsecutive),
 		)
 		return retryExecID, nil
 	}
