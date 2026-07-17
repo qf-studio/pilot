@@ -1377,6 +1377,67 @@ func resolvedDBPath(cfg *config.Config) string {
 	return filepath.Join(dir, "pilot.db")
 }
 
+// errShadowInit reports the GH-4393 class of failure: the configured state
+// dir does not exist yet — meaning singleton.Acquire is about to
+// os.MkdirAll it and start writing a brand-new, empty ledger — while the
+// default ~/.pilot/data location already holds evidence of a real, previously
+// run daemon (a pilot.lock and/or pilot.db). See checkShadowInit.
+type errShadowInit struct {
+	dir, defaultDir      string
+	lockExists, dbExists bool
+}
+
+func (e *errShadowInit) Error() string {
+	return fmt.Sprintf(
+		"refusing to start: configured state dir %q does not exist yet, but %q already has a pilot ledger (lock=%v, db=%v) — "+
+			"this looks like the GH-4393 split-brain pattern (config path pointing somewhere the daemon has never run, while a real ledger sits elsewhere). "+
+			"If %q really is a fresh install, create it explicitly first (mkdir -p %q) to confirm; otherwise fix Memory.Path in config.yaml to point at the existing ledger",
+		e.dir, e.defaultDir, e.lockExists, e.dbExists, e.dir, e.dir,
+	)
+}
+
+// checkShadowInit guards against GH-4393: a daemon whose configured state
+// dir doesn't exist yet is about to silently initialize an empty ledger
+// there via singleton.Acquire's os.MkdirAll. To the daemon, an empty dir at
+// a valid path just looks like "first run" — nothing fails. But if the
+// well-known default location (~/.pilot/data) already has a lockfile-era
+// ledger (evidence this host has run pilot before) and it differs from the
+// configured dir, that's path drift, not a genuine first run: the box
+// daemon in the #4393 incident auto-created a shadow ledger at a config
+// path that had never existed on that host while the real ledger sat
+// untouched elsewhere for 3 hours before anyone noticed.
+//
+// A genuine fresh install (nothing has ever run on this host) leaves the
+// default dir absent too, so lockExists/dbExists are both false and this
+// is a no-op. An operator who deliberately wants a second, independent
+// state tree can override by creating dir themselves (mkdir -p) before
+// starting — the existence check above then short-circuits.
+func checkShadowInit(dir string) error {
+	if fileExists(dir) {
+		return nil // not an auto-create — dir already has a history of its own
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	defaultDir := filepath.Join(home, ".pilot", "data")
+
+	if absDir, aerr := filepath.Abs(dir); aerr == nil {
+		if absDefault, derr := filepath.Abs(defaultDir); derr == nil && filepath.Clean(absDir) == filepath.Clean(absDefault) {
+			return nil // configured dir IS the default — nothing "elsewhere" to compare against
+		}
+	}
+
+	lockExists := fileExists(filepath.Join(defaultDir, singleton.LockFileName))
+	dbExists := fileExists(filepath.Join(defaultDir, "pilot.db"))
+	if !lockExists && !dbExists {
+		return nil // default location has no history either — genuine first run
+	}
+
+	return &errShadowInit{dir: dir, defaultDir: defaultDir, lockExists: lockExists, dbExists: dbExists}
+}
+
 // acquireDaemonLock takes the adapter-agnostic single-instance guard
 // (GH-4311): an OS-level flock on <Memory.Path>/pilot.lock, held for the
 // process lifetime and released automatically on exit or crash (flock
@@ -1389,6 +1450,13 @@ func resolvedDBPath(cfg *config.Config) string {
 // match with no confirmation the target actually exited.
 func acquireDaemonLock(cfg *config.Config, replace bool) (*singleton.Lock, error) {
 	dir := daemonLockDir(cfg)
+
+	if err := checkShadowInit(dir); err != nil {
+		fmt.Println()
+		fmt.Printf("✗ %s\n", err)
+		fmt.Println()
+		return nil, err
+	}
 
 	lock, err := singleton.Acquire(dir)
 	if err == nil {
