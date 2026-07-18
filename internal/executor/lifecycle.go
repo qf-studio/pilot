@@ -178,6 +178,26 @@ func (l *ExecutionLifecycle) Classify(result *ExecutionResult, execErr error, ov
 			outcome.Error = result.Error
 		}
 	}
+
+	// GH-4404: a PR is ground truth that work was delivered. Something
+	// downstream of PR creation — an intent-judge veto arriving after
+	// delivery (#4407's truncated-diff false-veto is the incident that
+	// exposed this), or any other terminal-but-not-completed signal — can
+	// still classify the attempt as failed/declined/etc. Left uncorrected,
+	// that write makes HasTerminalCompletion disagree with GitHub reality:
+	// the row reads "not done" while the PR sits open, so the poller
+	// re-picks the task and re-executes it from scratch — the duplicate-PR
+	// class TASK-407 was built to prevent, reached by a different door
+	// (pointer GH-16/GH-15). Promote to completed whenever a PR exists,
+	// unless the caller supplied an explicit override — epic.go's
+	// stranded-work override is the mirror case (commits with NO PR,
+	// deliberately kept non-completed so the issue stays open for
+	// recovery) and never collides with this: it never has a PRUrl to
+	// promote on.
+	if outcome.Status != ExecStatusCompleted && len(override) == 0 && result != nil && result.PRUrl != "" {
+		outcome = FinishOutcome{Status: ExecStatusCompleted}
+	}
+
 	if len(override) > 0 {
 		outcome.Status = override[0]
 	}
