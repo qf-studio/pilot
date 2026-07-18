@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T22:50:46+00:00",
+  "updated": "2026-07-18T13:50:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3058,6 +3058,36 @@
         ],
         "confidence": 0.9,
         "created": "2026-07-17"
+      },
+      "hard-cap-rearm-in-memory-gate": {
+        "type": "pitfall",
+        "summary": "Re-arming a hard-cap-stalled task needs 4 clears (backoff row, stale gen-0 claim #4372, stalled executions row, wait out in-memory next_eligible) — DB deletes alone never dispatch; obsolete once #4455 binary deployed",
+        "file": ".agent/knowledge/memories/pitfalls/hard-cap-rearm-in-memory-gate.md",
+        "concepts": [
+          "dispatcher",
+          "ledger",
+          "dispatch"
+        ]
+      },
+      "alert-engine-counts-operator-cancels": {
+        "type": "pitfall",
+        "summary": "consecutive_failures alert counts operator-cancelled rows as failures — surgery days fire false CRITICAL pages naming an innocent task (GH-4393 2026-07-18); exclude cancelled from the counter",
+        "file": ".agent/knowledge/memories/pitfalls/alert-engine-counts-operator-cancels.md",
+        "concepts": [
+          "alerts",
+          "ledger",
+          "dispatcher"
+        ]
+      },
+      "tui-subtask-ghost-rows": {
+        "type": "pitfall",
+        "summary": "Internal subtasks (GH-N-i) stick at 'running 100%' in TUI forever — completion never closes the in-memory dashboard row and no ledger row reconciles it; restart clears; trust ledger",
+        "file": ".agent/knowledge/memories/pitfalls/tui-subtask-ghost-rows.md",
+        "concepts": [
+          "dashboard",
+          "executor",
+          "ledger"
+        ]
       }
     }
   },
@@ -4191,6 +4221,21 @@
       "from": "rlimit-as-breaks-node-subprocesses",
       "to": "absolute-state-paths-bypass-cutover-shim",
       "type": "related"
+    },
+    {
+      "from": "hard-cap-rearm-in-memory-gate",
+      "to": "alert-engine-counts-operator-cancels",
+      "type": "related"
+    },
+    {
+      "from": "tui-subtask-ghost-rows",
+      "to": "hard-cap-rearm-in-memory-gate",
+      "type": "related"
+    },
+    {
+      "from": "hard-cap-rearm-in-memory-gate",
+      "to": "slack-approval-socket-mode-unroutable",
+      "type": "related"
     }
   ],
   "concept_index": {
@@ -4744,10 +4789,10 @@
       "decomposer-narrative-bullets-as-subtask-boundaries"
     ]
   },
-  "last_updated": "2026-07-17T22:50:46+00:00",
+  "last_updated": "2026-07-18T13:50:00+00:00",
   "stats": {
-    "total_nodes": 262,
-    "total_edges": 226,
-    "memory_count": 166
+    "total_nodes": 267,
+    "total_edges": 229,
+    "memory_count": 171
   }
 }
