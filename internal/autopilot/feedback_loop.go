@@ -333,7 +333,18 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 	if logs != "" {
 		sb.WriteString("<details><summary>CI Error Logs</summary>\n\n")
 		sb.WriteString("```\n")
-		sb.WriteString(extractFailureExcerpt(logs, maxCIErrorExcerptChars))
+		if bundle, ok := strings.CutPrefix(logs, ciExcerptSentinel); ok {
+			// GH-4460: logs is already a pre-assembled, budget-capped bundle
+			// of per-check failing-step excerpts (CIMonitor.GetFailedCheckExcerpts).
+			// Re-running the single-blob marker search below would misfire —
+			// there's no top-level --- FAIL:/panic: marker in a multi-check
+			// bundle — and its last-N-lines fallback would clobber earlier
+			// checks' excerpts. Assembly already respects the char budget, so
+			// this truncation is a defensive no-op in the normal case.
+			sb.WriteString(truncateKeepingTail(bundle, maxCIErrorExcerptChars))
+		} else {
+			sb.WriteString(extractFailureExcerpt(logs, maxCIErrorExcerptChars))
+		}
 		sb.WriteString("\n```\n\n")
 		sb.WriteString("</details>\n\n")
 	}

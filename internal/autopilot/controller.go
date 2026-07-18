@@ -238,6 +238,19 @@ func WithProjectPath(path string) ControllerOption {
 	}
 }
 
+// WithStepLogClient wires the in-tree GitHub client (internal/adapters/github)
+// CIMonitor uses to resolve a failed check run down to its actual failing
+// step via the jobs API + check-run annotations (GH-4460). The studio-sdk
+// client passed as ghClient does not yet expose those APIs, so this is a
+// second, narrower client sharing the same token. Optional: without it,
+// CI-failure excerpts fall back to whole-job-log tails instead of the
+// specific failing step.
+func WithStepLogClient(c2 StepLogClient) ControllerOption {
+	return func(c *Controller) {
+		c.stepLogClient = c2
+	}
+}
+
 // WithReleaseOverride wires a per-project release config overlay (GH-3930)
 // for this controller's repo. Nil is a no-op. NewController applies the
 // overlay (ProjectReleaseConfig.Apply) against the resolved global/env
@@ -385,6 +398,13 @@ type Controller struct {
 	// GH-4454.
 	pilotLabel string
 
+	// stepLogClient is the optional in-tree GitHub client CIMonitor uses to
+	// resolve a failed check run down to its actual failing step via the
+	// jobs API + check-run annotations (GH-4460). Wired into c.ciMonitor
+	// after construction (see WithStepLogClient); nil means
+	// GetFailedCheckExcerpts falls back to whole-job-log tails.
+	stepLogClient StepLogClient
+
 	// laneStarvationStreak counts consecutive reconcileLaneStarvation poll
 	// cycles this lane has had open (non-blocked) pilot-labeled issues with
 	// zero queued/running executions, guarded by mu. Reset to 0 the moment
@@ -501,6 +521,9 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	}
 
 	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, cfg)
+	if c.stepLogClient != nil {
+		c.ciMonitor.SetStepLogClient(c.stepLogClient)
+	}
 	c.autoMerger = NewAutoMerger(ghClient, approvalMgr, c.ciMonitor, owner, repo, cfg)
 	c.feedbackLoop = NewFeedbackLoop(ghClient, owner, repo, cfg)
 
@@ -1859,7 +1882,9 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 
 	// GH-1567: Fetch actual CI error logs to include in fix issues.
 	// This prevents Pilot from having to rediscover errors by running linter/tests itself.
-	ciLogs := c.ciMonitor.GetFailedCheckLogs(ctx, prState.HeadSHA, 2000)
+	// GH-4460: failing-step-tail excerpts (not whole-job/head-of-log) so the
+	// continuation issue body is self-contained enough to pass preflight.
+	ciLogs := c.ciMonitor.GetFailedCheckExcerpts(ctx, prState.HeadSHA)
 
 	issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPreMerge, failedChecks, ciLogs, iteration+1)
 	// GH-4459: the PR must never be closed unless the continuation fix issue
@@ -2914,7 +2939,8 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		c.log.Warn("post-merge CI failed", "pr", prState.PRNumber, "sha", ShortSHA(mainSHA))
 		failedChecks, _ := c.ciMonitor.GetFailedChecks(ctx, mainSHA)
 		// GH-1567: Fetch CI error logs for post-merge failures too.
-		ciLogs := c.ciMonitor.GetFailedCheckLogs(ctx, mainSHA, 2000)
+		// GH-4460: failing-step-tail excerpts, see the matching comment above.
+		ciLogs := c.ciMonitor.GetFailedCheckExcerpts(ctx, mainSHA)
 
 		// GH-4312: port the pre-merge cascade/size guards (~:1502-1593) to the
 		// post-merge path. Post-merge failures normally start a new lineage

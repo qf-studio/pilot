@@ -664,6 +664,10 @@ Examples:
 
 							// GH-1870: Board sync option for gateway autopilot controller.
 							var gwBoardOpts []autopilot.ControllerOption
+							// GH-4460: the in-tree client exposes the jobs/annotations APIs the
+							// studio-sdk client doesn't yet — wire it so CI-failure excerpts
+							// resolve to the actual failing step instead of a whole-job tail.
+							gwBoardOpts = append(gwBoardOpts, autopilot.WithStepLogClient(ghClient))
 							// GH-4454: match the polling-path pilot-label wiring so the
 							// lane-starvation reconciler searches the same trigger label
 							// the webhook/legacy poller watches for.
@@ -1601,6 +1605,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 			// GH-1870: Build board sync option for autopilot controllers.
 			var autopilotBoardOpts []autopilot.ControllerOption
+			// GH-4460: the in-tree client exposes the jobs/annotations APIs the
+			// studio-sdk client doesn't yet — wire it so CI-failure excerpts
+			// resolve to the actual failing step instead of a whole-job tail.
+			autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithStepLogClient(ghClient))
 			// GH-4454: every controller's lane-starvation reconciler needs the
 			// same trigger label the GitHub SDK poller watches for
 			// (poller_github.go resolves this identically: ghCfg.PilotLabel,
