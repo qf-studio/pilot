@@ -1443,6 +1443,31 @@ func (d *Dispatcher) GetRunningTaskIDs() []string {
 	return ids
 }
 
+// QueuedOrRunningCount returns the number of tasks currently queued or being
+// processed for projectPath — the same live/store-backed signals
+// GetWorkerStatus exposes, collapsed to one int for a single project. A
+// project with no live worker at all (nothing ever dispatched, or the worker
+// drained its queue and exited) returns 0, which is itself the "nothing in
+// flight" signal the lane-starvation detector needs (GH-4454): a project
+// lane can have open pilot-labeled issues on GitHub while never having had a
+// worker created for it here, e.g. every candidate issue is stuck behind a
+// scope-overlap defer or a repick-hard-cap-stalled head issue.
+func (d *Dispatcher) QueuedOrRunningCount(projectPath string) int {
+	d.mu.RLock()
+	worker, ok := d.workers[projectPath]
+	d.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+
+	status := worker.Status()
+	count := status.QueuedCount
+	if status.IsProcessing {
+		count++
+	}
+	return count
+}
+
 // GetExecutionStatus returns the current status of an execution.
 func (d *Dispatcher) GetExecutionStatus(execID string) (*memory.Execution, error) {
 	return d.store.GetExecution(execID)

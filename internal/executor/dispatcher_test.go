@@ -324,6 +324,84 @@ func TestDispatcher_GetRunningTaskIDs(t *testing.T) {
 	}
 }
 
+// TestDispatcher_QueuedOrRunningCount verifies the GH-4454 lane-starvation
+// signal: 0 for a project with no worker at all, the raw queued count for an
+// idle worker sitting on a backlog, +1 while a worker is actively processing,
+// and the sum of both when a worker is processing with more still queued.
+func TestDispatcher_QueuedOrRunningCount(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// No worker for this project path at all.
+	if got := dispatcher.QueuedOrRunningCount("/proj-none"); got != 0 {
+		t.Errorf("expected 0 for a project with no worker, got %d", got)
+	}
+
+	log := slog.Default()
+
+	// Idle worker, no queued tasks in the store: 0.
+	idleWorker := NewProjectWorker("/proj-idle", store, runner, log)
+	dispatcher.mu.Lock()
+	dispatcher.workers["/proj-idle"] = idleWorker
+	dispatcher.mu.Unlock()
+
+	if got := dispatcher.QueuedOrRunningCount("/proj-idle"); got != 0 {
+		t.Errorf("expected 0 for an idle worker with no queued tasks, got %d", got)
+	}
+
+	// Worker actively processing, still no queued tasks: 1.
+	liveWorker := NewProjectWorker("/proj-live", store, runner, log)
+	liveWorker.processing.Store(true)
+	liveWorker.currentTaskID.Store("GH-4454")
+	dispatcher.mu.Lock()
+	dispatcher.workers["/proj-live"] = liveWorker
+	dispatcher.mu.Unlock()
+
+	if got := dispatcher.QueuedOrRunningCount("/proj-live"); got != 1 {
+		t.Errorf("expected 1 for a processing worker with no queued tasks, got %d", got)
+	}
+
+	// Worker with real queued rows backing it in the store, not processing:
+	// count matches the queue depth. Rows are written directly via
+	// SaveExecution (status "queued") rather than QueueTask, so no worker
+	// goroutine races this assertion by actually picking the task up.
+	for i := 0; i < 2; i++ {
+		exec := &memory.Execution{
+			ID:          fmt.Sprintf("TEST-QUEUED-%d", i),
+			TaskID:      fmt.Sprintf("TEST-QUEUED-%d", i),
+			ProjectPath: "/proj-queued",
+			Status:      "queued",
+			CreatedAt:   time.Now(),
+		}
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save queued execution %d: %v", i, err)
+		}
+	}
+	queuedWorker := NewProjectWorker("/proj-queued", store, runner, log)
+	dispatcher.mu.Lock()
+	dispatcher.workers["/proj-queued"] = queuedWorker
+	dispatcher.mu.Unlock()
+
+	got := dispatcher.QueuedOrRunningCount("/proj-queued")
+	if got != 2 {
+		t.Errorf("expected 2 for a worker with 2 queued tasks and not processing, got %d", got)
+	}
+
+	// Same worker now also marked processing: queued count + 1.
+	queuedWorker.processing.Store(true)
+	if got := dispatcher.QueuedOrRunningCount("/proj-queued"); got != 3 {
+		t.Errorf("expected 3 for a worker with 2 queued tasks and processing, got %d", got)
+	}
+}
+
 func TestDispatcher_MultipleProjects(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

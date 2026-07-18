@@ -138,6 +138,18 @@ type DispatcherLiveness interface {
 	GetRunningTaskIDs() []string
 }
 
+// LaneQueueStatus reports how many tasks are queued or actively running for
+// a single project lane right now. GH-4454: DispatcherLiveness above only
+// exposes task IDs across every project a Dispatcher drives, which cannot
+// tell "this repo's lane is empty" from "this repo's lane's tasks just don't
+// happen to be running this instant" — the lane-starvation reconciler needs
+// a project-scoped count instead. Satisfied by *executor.Dispatcher.
+type LaneQueueStatus interface {
+	// QueuedOrRunningCount returns the number of tasks queued or being
+	// processed for projectPath. Zero means the lane is currently idle.
+	QueuedOrRunningCount(projectPath string) int
+}
+
 // EvalStore persists eval tasks extracted from merged PRs.
 type EvalStore interface {
 	SaveEvalTask(task *memory.EvalTask) error
@@ -204,6 +216,17 @@ func WithMemoryStore(s *memory.Store) ControllerOption {
 	}
 }
 
+// WithPilotLabel overrides the trigger label reconcileLaneStarvation searches
+// open issues for (GH-4454). Empty (the zero value / unset) falls back to
+// github.LabelPilot ("pilot") in NewController — pass this only when
+// adapters.github.pilot_label deviates from the default, mirroring
+// poller_github.go's own ghCfg.PilotLabel resolution.
+func WithPilotLabel(label string) ControllerOption {
+	return func(c *Controller) {
+		c.pilotLabel = label
+	}
+}
+
 // WithProjectPath sets the filesystem project path used to scope execution
 // self-heal (SelfHealExecutionAfterMerge) to this project's rows. It MUST match
 // the value the executor stored in executions.project_path — an absolute fs path
@@ -259,6 +282,7 @@ type Controller struct {
 	notifier         Notifier
 	monitor          TaskMonitor        // GH-1336: sync dashboard state on merge
 	dispatcherLive   DispatcherLiveness // GH-4412: always-on live-worker signal (unlike monitor, dashboard-only)
+	laneQueueStatus  LaneQueueStatus    // GH-4454: project-scoped queued/running count for lane-starvation detection
 	boardSync        projectBoardSyncer
 	doneStatus       string
 	failStatus       string
@@ -355,6 +379,18 @@ type Controller struct {
 	// alertedMissingReleases (GH-3991).
 	alertedStaleScopes map[string]bool
 
+	// pilotLabel is the trigger label reconcileLaneStarvation searches open
+	// issues for (default github.LabelPilot = "pilot", overridable via
+	// WithPilotLabel to match a non-default adapters.github.pilot_label).
+	// GH-4454.
+	pilotLabel string
+
+	// laneStarvationStreak counts consecutive reconcileLaneStarvation poll
+	// cycles this lane has had open (non-blocked) pilot-labeled issues with
+	// zero queued/running executions, guarded by mu. Reset to 0 the moment
+	// either condition clears. GH-4454.
+	laneStarvationStreak int
+
 	// alertedPersistFailures deduplicates pr_persist_failed alerts per PR
 	// number, guarded by mu — same rationale as alertedMissingReleases: a
 	// wedged PR retries every tick, and without this map the alerts engine's
@@ -444,6 +480,13 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	// running them first is safe.
 	for _, opt := range opts {
 		opt(c)
+	}
+
+	// GH-4454: default the lane-starvation trigger label to the SDK's own
+	// "pilot" constant when WithPilotLabel was never applied, matching
+	// poller_github.go's ghCfg.PilotLabel fallback.
+	if c.pilotLabel == "" {
+		c.pilotLabel = github.LabelPilot
 	}
 
 	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, cfg)
@@ -731,6 +774,14 @@ func (c *Controller) SetMonitor(m TaskMonitor) {
 // whenever an executor.Dispatcher exists.
 func (c *Controller) SetDispatcherLiveness(d DispatcherLiveness) {
 	c.dispatcherLive = d
+}
+
+// SetLaneQueueStatus wires the project-scoped queued/running count the
+// lane-starvation reconciler needs. GH-4454: like SetDispatcherLiveness,
+// callers should wire this unconditionally whenever an executor.Dispatcher
+// exists — reconcileLaneStarvation is a no-op (skips silently) while nil.
+func (c *Controller) SetLaneQueueStatus(s LaneQueueStatus) {
+	c.laneQueueStatus = s
 }
 
 // SetStateStore sets the persistent state store for crash recovery.
@@ -4766,6 +4817,9 @@ func (c *Controller) Run(ctx context.Context) error {
 			// orphaned by a manual tag push that bypassed the release train)
 			// whose PR is, in fact, already merged and tagged.
 			c.reconcileReleaseBackfill(ctx)
+			// GH-4454: poll-cycle lane-starvation sweep — this project's lane
+			// has open pilot-labeled issues but nothing queued/running.
+			c.reconcileLaneStarvation(ctx)
 		case <-ticker.C:
 			c.processAllPRs(ctx)
 

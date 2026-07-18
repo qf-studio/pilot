@@ -184,6 +184,7 @@
 | Cooldown periods | ✅ | alerts | - | `alerts.defaults.cooldown` | Avoid spam |
 | PagerDuty escalation | ✅ | alerts | - | - | Auto-escalate after 3 retries (v0.38.0, GH-848) |
 | Deadlock detector | ✅ | autopilot | - | - | Alert after 1h with no progress on PR (v0.38.0, GH-849) |
+| Lane-starvation detector | ✅ | autopilot/alerts | - | `alerts.rules[].condition.lane_starvation_poll_cycles` | Alert when a project lane has open non-blocked pilot-labeled issues but 0 queued/running executions for N consecutive poll cycles (default 3, cooldown 30m) — catches wedged/stalled issues that never produce a PR or execution row for the other health checks to watch (v2.241.2, GH-4454) |
 | Alert dispatch metrics | ✅ | alerts/gateway | - | - | alerts_fired_total, alert_delivery_total, alert_events_dropped_total, alert_queue_depth on /metrics (TASK-332) |
 | Rate limit detection | ✅ | executor | - | - | Detect GitHub API rate limits, pause + resume at reset time (v0.34.0) |
 | GitHub token fallback + live validation | ✅ | cmd/pilot, health | `pilot doctor` | `adapters.github.token` | config → `GITHUB_TOKEN` env → `gh auth token` fallback; authenticated startup check logs ERROR + fires `config_error` alert on a dead/expired token (GH-3718) |

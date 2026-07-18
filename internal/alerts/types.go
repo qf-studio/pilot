@@ -52,6 +52,11 @@ const (
 	// Release monitoring (GH-3952): a merged pilot/GH-* PR that never
 	// produced its expected release tag.
 	AlertTypeReleaseMissing AlertType = "release_missing"
+
+	// Lane-starvation detection (GH-4454): a project lane has open
+	// pilot-labeled issues but nothing queued/running for too many
+	// consecutive poll cycles.
+	AlertTypeLaneStarvation AlertType = "lane_starvation"
 )
 
 // Alert represents an alert event
@@ -108,6 +113,9 @@ type RuleCondition struct {
 
 	// Escalation conditions (GH-848)
 	EscalationRetries int `yaml:"escalation_retries"` // Failures before escalation (default 3)
+
+	// Lane-starvation detection (GH-4454)
+	LaneStarvationPollCycles int `yaml:"lane_starvation_poll_cycles"` // Consecutive idle poll cycles before firing (default 3)
 }
 
 // AlertConfig holds the main alerting configuration
@@ -366,6 +374,19 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when a merged PR did not produce its expected release tag",
+		},
+		// Lane-starvation detection (GH-4454)
+		{
+			Name:    "lane_starvation",
+			Type:    AlertTypeLaneStarvation,
+			Enabled: true,
+			Condition: RuleCondition{
+				LaneStarvationPollCycles: 3,
+			},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when a project lane has open pilot-labeled issues but nothing queued/running for too many poll cycles",
 		},
 	}
 }

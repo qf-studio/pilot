@@ -128,6 +128,13 @@ const (
 	// did not produce its expected release tag, so a stalled release
 	// pipeline doesn't go unnoticed.
 	EventTypeReleaseMissing EventType = "release_missing"
+
+	// Lane starvation events (GH-4454): fired every poll cycle a project
+	// lane has open pilot-labeled issues but zero queued/running executions.
+	// Metadata carries repo, project_path, open_issue_count, and
+	// poll_cycles_starved (the running streak) — see
+	// autopilot.Controller.reconcileLaneStarvation, the sole emitter.
+	EventTypeLaneStarvation EventType = "lane_starvation"
 )
 
 const (
@@ -360,6 +367,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleConfigError(ctx, event)
 	case EventTypeReleaseMissing:
 		e.handleReleaseMissing(ctx, event)
+	case EventTypeLaneStarvation:
+		e.handleLaneStarvation(ctx, event)
 	case EventTypeBudgetExceeded, EventTypeBudgetWarning:
 		e.handleBudgetEvent(ctx, event)
 	case EventTypeAutopilotMetrics:
@@ -561,6 +570,40 @@ func (e *Engine) handleReleaseMissing(ctx context.Context, event Event) {
 			message := fmt.Sprintf("Release missing for %s: expected tag %s after PR #%s was merged",
 				event.Metadata["repo"], event.Metadata["tag"], event.Metadata["pr"])
 			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+}
+
+// handleLaneStarvation fires AlertTypeLaneStarvation rules when a project
+// lane's poll_cycles_starved streak (GH-4454, emitted by
+// autopilot.Controller.reconcileLaneStarvation every poll cycle the lane
+// looks starved) reaches RuleCondition.LaneStarvationPollCycles. The emitting
+// side does no threshold filtering of its own — mirroring
+// handleAutopilotMetrics's ownership of FailedQueueThreshold/PRStuckTimeout —
+// so a rule override here takes effect without any autopilot-side change.
+func (e *Engine) handleLaneStarvation(ctx context.Context, event Event) {
+	streak := 0
+	if v, ok := event.Metadata["poll_cycles_starved"]; ok {
+		_, _ = fmt.Sscanf(v, "%d", &streak)
+	}
+	openIssues := event.Metadata["open_issue_count"]
+	repo := event.Metadata["repo"]
+
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled || rule.Type != AlertTypeLaneStarvation {
+			continue
+		}
+
+		threshold := rule.Condition.LaneStarvationPollCycles
+		if threshold <= 0 {
+			threshold = 3
+		}
+
+		if streak >= threshold && e.shouldFire(rule) {
+			alert := e.createAlert(rule, event,
+				fmt.Sprintf("Lane %s has %s open pilot-labeled issue(s) but nothing queued/running for %d consecutive poll cycles",
+					repo, openIssues, streak))
 			e.fireAlert(ctx, rule, alert)
 		}
 	}
