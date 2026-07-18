@@ -391,6 +391,17 @@ type Controller struct {
 	// either condition clears. GH-4454.
 	laneStarvationStreak int
 
+	// selfClosedPRs marks PR numbers autopilot closed itself as an internal
+	// state transition rather than a human rejection, guarded by mu. Stamped
+	// via markSelfClosed, consumed (checked + deleted, one-shot) via
+	// consumeSelfClosedMarker the next time checkExternalMergeOrClose observes
+	// the PR closed on GitHub. GH-4458 foundation for the rung escalation
+	// ladder — no rung stamps this yet, but the poll path already honors it so
+	// a future rung closing a PR it intends to keep/reuse doesn't trip
+	// notifyExternalClose's reclassify + branch-delete semantics (GH-3818/D10),
+	// which must stay reserved for real external (human) closes.
+	selfClosedPRs map[int]time.Time
+
 	// alertedPersistFailures deduplicates pr_persist_failed alerts per PR
 	// number, guarded by mu — same rationale as alertedMissingReleases: a
 	// wedged PR retries every tick, and without this map the alerts engine's
@@ -3941,8 +3952,79 @@ func (c *Controller) closeAndReexecute(ctx context.Context, prState *PRState, cl
 	return nil
 }
 
+// labelNeedsHuman flags an issue whose PR has been held by escalateAndHold:
+// automated recovery gave up, but the PR/branch were deliberately left
+// intact for a human to finish. This mirrors github.Label* naming but lives
+// in this package rather than the vendored studio-sdk github client (which
+// controller.go's ghClient is built against) since it isn't a stable,
+// versioned part of that SDK. GH-4458.
+const labelNeedsHuman = "pilot-needs-human"
+
+// escalateAndHold is the give-up rung for automated recovery paths that must
+// not throw away in-flight work: unlike closeAndReexecute, it never closes
+// the PR, never deletes the branch, and never re-triggers execution. It
+// sets StageFailed (so the poll loop stops re-driving this PR through
+// CI/merge), applies labelNeedsHuman plus any caller-supplied labels to the
+// linked issue (e.g. "needs-manual-rebase"), posts a diagnostic PR comment
+// naming the reason, and fires an alert through the existing engine so
+// configured channels (Slack/Telegram/PagerDuty) notify a human. The PR
+// itself is left open with its branch intact for manual recovery.
+//
+// GH-4458 foundation for the rung escalation ladder — no rung calls this
+// yet; it is unit-tested standalone here so the attribution/labels/alert
+// behavior is verified independently of any specific rung wiring it up.
+func (c *Controller) escalateAndHold(ctx context.Context, prState *PRState, reason string, labels []string, comment string) {
+	prState.Stage = StageFailed
+	prState.Error = reason
+
+	if prState.IssueNumber > 0 {
+		allLabels := append([]string{labelNeedsHuman}, labels...)
+		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, allLabels); err != nil {
+			c.log.Warn("escalateAndHold: failed to add labels", "issue", prState.IssueNumber, "pr", prState.PRNumber, "labels", allLabels, "error", err)
+		}
+	}
+
+	if comment != "" {
+		if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+			c.log.Warn("escalateAndHold: failed to post PR comment", "pr", prState.PRNumber, "error", err)
+		}
+	}
+
+	if c.alertsEngine == nil {
+		c.log.Error("escalateAndHold: alert not delivered, SetAlertsEngine was never called", "pr", prState.PRNumber, "reason", reason)
+	} else {
+		c.alertsEngine.ProcessEvent(alerts.Event{
+			Type:      alerts.EventTypeTaskFailed,
+			TaskID:    fmt.Sprintf("pr-%d-escalated", prState.PRNumber),
+			TaskTitle: fmt.Sprintf("PR #%d needs human attention", prState.PRNumber),
+			Project:   c.repoKey(),
+			Error:     reason,
+			Timestamp: time.Now(),
+			Metadata: map[string]string{
+				"repo":   c.repoKey(),
+				"pr":     strconv.Itoa(prState.PRNumber),
+				"issue":  strconv.Itoa(prState.IssueNumber),
+				"labels": strings.Join(labels, ","),
+			},
+		})
+	}
+
+	c.log.Warn("escalateAndHold: PR held for human review, branch intact", "pr", prState.PRNumber, "issue", prState.IssueNumber, "reason", reason, "labels", labels)
+}
+
 // removePR removes PR from tracking and cleans up the remote branch.
 func (c *Controller) removePR(prNumber int) {
+	c.removePRTracking(prNumber, true)
+}
+
+// removePRTracking removes a PR from in-memory/persisted tracking and,
+// when deleteBranch is true, also deletes its remote branch. removePR is
+// the normal entry point (deleteBranch always true); GH-4458's self-close
+// path calls this directly with deleteBranch=false, since a stamped
+// self-close is autopilot's own internal state transition and whatever
+// flow closed the PR may still need the branch — deleting it out from under
+// that flow would be an unrecoverable, one-way action.
+func (c *Controller) removePRTracking(prNumber int, deleteBranch bool) {
 	c.mu.Lock()
 	prState, ok := c.activePRs[prNumber]
 	var branchName string
@@ -3963,7 +4045,7 @@ func (c *Controller) removePR(prNumber int) {
 	c.mu.Unlock()
 
 	// Clean up remote branch for closed/failed PRs (merged PRs already handled in handleMerging)
-	if branchName != "" && c.ghClient != nil {
+	if deleteBranch && branchName != "" && c.ghClient != nil {
 		if err := c.ghClient.DeleteBranch(context.Background(), c.owner, c.repo, branchName); err != nil {
 			c.log.Debug("branch cleanup on PR removal", "branch", branchName, "pr", prNumber, "error", err)
 		} else {
@@ -3973,7 +4055,7 @@ func (c *Controller) removePR(prNumber int) {
 
 	c.persistRemovePR(prNumber)
 	c.removePRFailures(prNumber)
-	c.log.Info("PR removed from tracking", "pr", prNumber)
+	c.log.Info("PR removed from tracking", "pr", prNumber, "branch_deleted", deleteBranch)
 }
 
 // GetActivePRs returns detached snapshots of all tracked PRs.
@@ -5142,8 +5224,20 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		return true
 	}
 
-	// Check if PR was closed (without merge) externally
+	// Check if PR was closed (without merge)
 	if ghPR.State == "closed" {
+		// GH-4458: a stamped self-close is autopilot's own internal state
+		// transition, not a human rejection — skip notifyExternalClose's
+		// reclassify-to-failed + retry-ready relabeling and removePR's branch
+		// delete (both reserved for real external closes, GH-3818/D10) and
+		// just stop tracking the PR. Whatever internal flow closed it may
+		// still need the branch.
+		if c.consumeSelfClosedMarker(prState.PRNumber) {
+			c.log.Info("PR closed internally (self-close marker), skipping external-close handling", "pr", prState.PRNumber)
+			c.removePRTracking(prState.PRNumber, false)
+			return true
+		}
+
 		c.log.Info("PR closed externally, removing from tracking", "pr", prState.PRNumber)
 		c.notifyExternalClose(ctx, prState)
 		c.removePR(prState.PRNumber)
@@ -5201,6 +5295,53 @@ func (c *Controller) clearRetryLabels(ctx context.Context, issueNumber int) {
 			c.log.Debug("retry label cleanup", "issue", issueNumber, "label", label, "error", err)
 		}
 	}
+}
+
+// selfCloseMarkerTTL bounds how long a markSelfClosed stamp stays valid.
+// A self-close should be visible as "closed" on GitHub within the very next
+// poll (CIPollInterval defaults to 30s; Run's idle backoff tier tops out at
+// 60s), so this is generous headroom for GitHub API propagation delay
+// without leaving a stale marker around indefinitely if the close never
+// actually lands (e.g. ClosePullRequest itself errored). GH-4458.
+const selfCloseMarkerTTL = 10 * time.Minute
+
+// markSelfClosed stamps prNumber as closed by autopilot itself — an internal
+// state transition, not a human rejection — so the next
+// checkExternalMergeOrClose poll that observes it closed on GitHub skips
+// notifyExternalClose's reclassify-to-failed + retry-ready relabeling and
+// removePR's branch delete (both reserved for real external closes,
+// GH-3818/D10). GH-4458 foundation for the rung escalation ladder: no rung
+// calls this yet, but the poll path already honors the stamp.
+func (c *Controller) markSelfClosed(prNumber int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.selfClosedPRs == nil {
+		c.selfClosedPRs = make(map[int]time.Time)
+	}
+	c.selfClosedPRs[prNumber] = time.Now()
+}
+
+// consumeSelfClosedMarker reports whether prNumber carries a live
+// markSelfClosed stamp, and removes it from the set either way — a stamp is
+// only ever consulted once, at the moment the poll path sees the PR closed.
+// Opportunistically sweeps every other expired entry in the same pass so an
+// abandoned stamp (the marked close never actually completed on GitHub)
+// cannot grow the map unbounded over a long-lived daemon.
+func (c *Controller) consumeSelfClosedMarker(prNumber int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	for pr, stampedAt := range c.selfClosedPRs {
+		if now.Sub(stampedAt) > selfCloseMarkerTTL {
+			delete(c.selfClosedPRs, pr)
+		}
+	}
+	stampedAt, ok := c.selfClosedPRs[prNumber]
+	if !ok {
+		return false
+	}
+	delete(c.selfClosedPRs, prNumber)
+	return now.Sub(stampedAt) <= selfCloseMarkerTTL
 }
 
 // notifyExternalClose runs once autopilot observes a PR closed without a merge —
