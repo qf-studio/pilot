@@ -1884,6 +1884,48 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 	return executions, rows.Err()
 }
 
+// terminalExecutionStatuses are the statuses that make an executions row's
+// outcome final. Shared by UpdateExecutionStatus (which stamps completed_at
+// for any of these) and the CAS-guarded writes below (GH-4423): a guarded
+// write is rejected once the row's CURRENT status is already one of these,
+// so a terminal row can never be silently clobbered by a second terminal
+// write racing in after the first one landed.
+//
+// GH-4243 dead-API audit: "cancelled" is confirmed dead as a write value —
+// no production call site ever passes it to UpdateExecutionStatus,
+// MarkExecutionCompleted, or Begin/Transition/Finish (executor.Status has
+// no ExecStatusCancelled constant). It's kept in this terminal-state list
+// only defensively — matching monitor.go's separate in-memory TaskStatus
+// enum, which does have a StatusCancelled, and matching dispatcher.go's
+// WaitForExecution terminal-status switch, which reads "cancelled" as a
+// possible historical/manually-written value. Not removed since dropping
+// it would silently stop setting completed_at on that historical value.
+var terminalExecutionStatuses = []string{
+	"completed", "failed", "cancelled", "declined", "stalled", "no_op", "rate_limited", "infra", "skipped",
+}
+
+func isTerminalExecutionStatus(status string) bool {
+	for _, t := range terminalExecutionStatuses {
+		if status == t {
+			return true
+		}
+	}
+	return false
+}
+
+// notTerminalClause returns a "status NOT IN (?, ?, ...)" SQL fragment sized
+// to terminalExecutionStatuses, plus its matching bind args — the CAS guard
+// every UpdateExecutionStatusIfNotTerminal / MarkExecutionCompletedIfNotTerminal
+// write appends to its WHERE clause (GH-4423).
+func notTerminalClause() (string, []interface{}) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(terminalExecutionStatuses)), ",")
+	args := make([]interface{}, len(terminalExecutionStatuses))
+	for i, st := range terminalExecutionStatuses {
+		args[i] = st
+	}
+	return placeholders, args
+}
+
 // UpdateExecutionStatus updates the status of an execution record.
 // Optionally sets the error message if provided. Also sets completed_at for terminal states.
 func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) error {
@@ -1893,17 +1935,7 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 	}
 
 	// Set completed_at for terminal states.
-	//
-	// GH-4243 dead-API audit: "cancelled" is confirmed dead as a write value —
-	// no production call site ever passes it to UpdateExecutionStatus,
-	// MarkExecutionCompleted, or Begin/Transition/Finish (executor.Status has
-	// no ExecStatusCancelled constant). It's kept in this terminal-state list
-	// only defensively — matching monitor.go's separate in-memory TaskStatus
-	// enum, which does have a StatusCancelled, and matching dispatcher.go's
-	// WaitForExecution terminal-status switch, which reads "cancelled" as a
-	// possible historical/manually-written value. Not removed since dropping
-	// it would silently stop setting completed_at on that historical value.
-	if status == "completed" || status == "failed" || status == "cancelled" || status == "declined" || status == "stalled" || status == "no_op" || status == "rate_limited" || status == "infra" || status == "skipped" {
+	if isTerminalExecutionStatus(status) {
 		return s.withRetry("UpdateExecutionStatus", func() error {
 			_, err := s.db.Exec(`
 				UPDATE executions
@@ -1937,6 +1969,86 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 		`, status, errStr, id)
 		return err
 	})
+}
+
+// UpdateExecutionStatusIfNotTerminal is UpdateExecutionStatus's CAS-guarded
+// counterpart (GH-4423). It appends "AND status NOT IN (<terminalExecutionStatuses>)"
+// to the WHERE clause, so the write only lands while the row is still
+// non-terminal — once a row reaches a terminal status, this method can never
+// silently overwrite it with another write.
+//
+// This closes the TOCTOU in the stale-running/stale-queued reapers
+// (dispatcher.go): both gather evidence across several steps
+// (HasCompletedExecution, live-worker check, merged-PR check for the running
+// reap) and then used to write UpdateExecutionStatus(id, "failed", ...)
+// blind — if the row reached a terminal status (e.g. completed) in the gap
+// between evidence-gathering and that write, the completed row silently got
+// stamped failed. Routed through this guard instead, that write is now
+// rejected — logged at ERROR with both the attempted and actual status, so
+// the #4404/#4457-class debugging trail has evidence instead of a vanished
+// completion.
+//
+// Returns applied=false with err=nil when the guard rejected the write: this
+// is not a failure for the caller to retry or escalate — the row already
+// reached its true terminal state through another writer, and the rejection
+// itself has already been logged here.
+func (s *Store) UpdateExecutionStatusIfNotTerminal(id, status string, errorMsg ...string) (applied bool, err error) {
+	var errStr *string
+	if len(errorMsg) > 0 && errorMsg[0] != "" {
+		errStr = &errorMsg[0]
+	}
+
+	var setClause string
+	switch {
+	case isTerminalExecutionStatus(status):
+		setClause = "status = ?, error = COALESCE(?, error), completed_at = CURRENT_TIMESTAMP"
+	case status == "running":
+		setClause = "status = ?, error = COALESCE(?, error), started_at = CURRENT_TIMESTAMP"
+	default:
+		setClause = "status = ?, error = COALESCE(?, error)"
+	}
+
+	notTerminal, notTerminalArgs := notTerminalClause()
+
+	err = s.withRetry("UpdateExecutionStatusIfNotTerminal", func() error {
+		args := append([]interface{}{status, errStr, id}, notTerminalArgs...)
+		result, execErr := s.db.Exec(`
+			UPDATE executions
+			SET `+setClause+`
+			WHERE id = ? AND status NOT IN (`+notTerminal+`)
+		`, args...)
+		if execErr != nil {
+			return execErr
+		}
+		affected, raErr := result.RowsAffected()
+		if raErr != nil {
+			return raErr
+		}
+		applied = affected > 0
+		return nil
+	})
+	if err == nil && !applied {
+		s.logRejectedTerminalWrite("UpdateExecutionStatusIfNotTerminal", id, status)
+	}
+	return applied, err
+}
+
+// logRejectedTerminalWrite logs the ERROR evidence trail for a CAS write
+// rejected by UpdateExecutionStatusIfNotTerminal / MarkExecutionCompletedIfNotTerminal
+// (GH-4423): both the attempted status and the row's actual current status,
+// so a terminal->terminal collision leaves a trace instead of disappearing
+// silently.
+func (s *Store) logRejectedTerminalWrite(method, id, attemptedStatus string) {
+	var current string
+	if scanErr := s.db.QueryRow(`SELECT status FROM executions WHERE id = ?`, id).Scan(&current); scanErr != nil {
+		slog.Error("CAS-guarded write rejected but failed to read current status for evidence (GH-4423)",
+			slog.String("method", method), slog.String("execution_id", id),
+			slog.String("attempted_status", attemptedStatus), slog.Any("error", scanErr))
+		return
+	}
+	slog.Error("CAS-guarded write rejected: row already terminal (GH-4423)",
+		slog.String("method", method), slog.String("execution_id", id),
+		slog.String("attempted_status", attemptedStatus), slog.String("current_status", current))
 }
 
 // UpdateExecutionStatusByTaskID updates the status of the most recent execution
@@ -2277,6 +2389,45 @@ func (s *Store) MarkExecutionCompleted(id, prURL, commitSHA string, durationMs i
 		`, prURL, commitSHA, durationMs, id)
 		return err
 	})
+}
+
+// MarkExecutionCompletedIfNotTerminal is MarkExecutionCompleted's CAS-guarded
+// counterpart (GH-4423), scoped to the same "AND status NOT IN
+// (<terminalExecutionStatuses>)" guard as UpdateExecutionStatusIfNotTerminal.
+// ExecutionLifecycle.Persist's success branch routes through this so a
+// duplicate Finish call on an execution that already reached a terminal
+// status (e.g. a racing writer already recorded "failed") cannot silently
+// resurrect and overwrite it as "completed". Returns applied=false with
+// err=nil when the guard rejected the write — the rejection is already
+// logged (both attempted and actual status) by the time this returns.
+func (s *Store) MarkExecutionCompletedIfNotTerminal(id, prURL, commitSHA string, durationMs int64) (applied bool, err error) {
+	notTerminal, notTerminalArgs := notTerminalClause()
+
+	err = s.withRetry("MarkExecutionCompletedIfNotTerminal", func() error {
+		args := append([]interface{}{prURL, commitSHA, durationMs, id}, notTerminalArgs...)
+		result, execErr := s.db.Exec(`
+			UPDATE executions
+			SET status = 'completed',
+				pr_url = ?,
+				commit_sha = ?,
+				duration_ms = ?,
+				completed_at = CURRENT_TIMESTAMP
+			WHERE id = ? AND status NOT IN (`+notTerminal+`)
+		`, args...)
+		if execErr != nil {
+			return execErr
+		}
+		affected, raErr := result.RowsAffected()
+		if raErr != nil {
+			return raErr
+		}
+		applied = affected > 0
+		return nil
+	})
+	if err == nil && !applied {
+		s.logRejectedTerminalWrite("MarkExecutionCompletedIfNotTerminal", id, "completed")
+	}
+	return applied, err
 }
 
 // UpdateExecutionEffort records the resolved effort and complexity levels for a completed execution.

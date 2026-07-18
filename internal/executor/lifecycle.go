@@ -137,11 +137,20 @@ func (l *ExecutionLifecycle) Begin(task *Task, initial Status, generation ...int
 
 // Transition moves execID to a non-terminal status (e.g. queued -> running).
 // Terminal moves go through Finish instead, which also persists metrics.
+//
+// GH-4423: routed through the CAS-guarded store write so a Transition racing
+// in after Finish already recorded a terminal status (e.g. a duplicate
+// dispatch resuming a worker for a row that already completed) is rejected
+// instead of silently resurrecting the row to a non-terminal status. A
+// rejection is not surfaced as an error here — the store already logs the
+// both-states evidence, and the caller has no terminal-vs-not distinction to
+// act on beyond what already happened to the row.
 func (l *ExecutionLifecycle) Transition(execID string, s Status) error {
 	if l.store == nil || execID == "" {
 		return nil
 	}
-	return l.store.UpdateExecutionStatus(execID, string(s))
+	_, err := l.store.UpdateExecutionStatusIfNotTerminal(execID, string(s))
+	return err
 }
 
 // FinishOutcome is what Finish computed and persisted, so callers can drive
@@ -224,15 +233,21 @@ func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, resul
 		return nil
 	}
 
+	// GH-4423: both branches route through the CAS-guarded store writes — a
+	// duplicate Finish call (the same execID finished twice, e.g. a retried
+	// callback) can no longer silently overwrite a terminal status this row
+	// already reached. A rejected write returns err=nil here (the store
+	// already logged the both-states evidence); metrics are still saved
+	// below regardless, since they're informational and idempotent.
 	var statusErr error
 	if outcome.Status == ExecStatusCompleted {
 		var prURL, commitSHA string
 		if result != nil {
 			prURL, commitSHA = result.PRUrl, result.CommitSHA
 		}
-		statusErr = l.store.MarkExecutionCompleted(execID, prURL, commitSHA, duration.Milliseconds())
+		_, statusErr = l.store.MarkExecutionCompletedIfNotTerminal(execID, prURL, commitSHA, duration.Milliseconds())
 	} else {
-		statusErr = l.store.UpdateExecutionStatus(execID, string(outcome.Status), outcome.Error)
+		_, statusErr = l.store.UpdateExecutionStatusIfNotTerminal(execID, string(outcome.Status), outcome.Error)
 	}
 
 	if result != nil {

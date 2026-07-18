@@ -517,13 +517,36 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 			continue
 		}
 
+		// GH-4423: a merged PR isn't the only liveness evidence a branch can
+		// carry — an OPEN PR (the normal state for minutes-to-hours while CI
+		// runs or a reviewer is pending) means the worker already shipped its
+		// deliverable and is simply waiting, not orphaned. Without this check,
+		// any task whose PR review outlasts StaleRunningThreshold got marked
+		// failed on every 5-minute reap tick past that point.
+		if openURL, openErr := staleRunningOpenPRCheck(d.ctx, exec.ProjectPath, branch); openErr == nil && openURL != "" {
+			d.log.Info("Stale running task's branch has an open PR; treating as live, not orphaned",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.String("pr_url", openURL),
+			)
+			continue
+		}
+
 		d.log.Warn("Marking stale running task as failed",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
 			slog.Time("created_at", exec.CreatedAt),
 		)
-		if err := d.store.UpdateExecutionStatus(exec.ID, "failed", "stale running task recovered (orphaned worker)"); err != nil {
+		// GH-4423: CAS-guarded — if this row completed in the gap between the
+		// evidence gathered above and this write (the reaper's own TOCTOU
+		// window), the write is rejected instead of clobbering the completed
+		// row. The store already logs the rejection at ERROR with both states.
+		applied, err := d.store.UpdateExecutionStatusIfNotTerminal(exec.ID, "failed", "stale running task recovered (orphaned worker)")
+		if err != nil {
 			d.log.Error("Failed to mark stale running task", slog.String("id", exec.ID), slog.Any("error", err))
+		} else if !applied {
+			d.log.Warn("Skipped marking stale running task failed — row reached a terminal status during reap (GH-4423 CAS guard)",
+				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID))
 		} else {
 			resetCount++
 			// GH-4101: without this, the terminal transition a restart forces on an
@@ -586,6 +609,22 @@ var staleRunningMergedPRCheck = func(ctx context.Context, projectPath, branch st
 		return "", nil
 	}
 	return NewGitOperations(projectPath).FindMergedPRByBranch(ctx, branch)
+}
+
+// staleRunningOpenPRCheck reports the URL of an OPEN PR for branch in
+// projectPath, or "" if none exists. GH-4423: an open PR is liveness evidence
+// just like a merged one — it's the normal state for minutes-to-hours while
+// CI runs or a reviewer is pending, not evidence of an orphaned worker.
+// staleRunningMergedPRCheck alone only recognized a MERGED PR, so a task
+// legitimately waiting on an open PR past StaleRunningThreshold got no credit
+// here and was marked failed on the very next reap tick. Mirrors
+// staleRunningMergedPRCheck's test-mode short-circuit; tests override this
+// var directly.
+var staleRunningOpenPRCheck = func(ctx context.Context, projectPath, branch string) (string, error) {
+	if testing.Testing() {
+		return "", nil
+	}
+	return NewGitOperations(projectPath).FindOpenPRByBranch(ctx, branch)
 }
 
 // mergedPRPreflightCheck reports the URL of a merged PR for a queued task's
@@ -677,8 +716,17 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 		// every project with queued rows a worker, so reaching here means the
 		// project genuinely has none (e.g. removed from config), not that a
 		// normal restart failed to reconnect it.
-		if err := d.store.UpdateExecutionStatus(exec.ID, "failed", "queued task orphaned by restart; project no longer configured"); err != nil {
+		//
+		// GH-4423: CAS-guarded — same TOCTOU window as the stale-running reap
+		// above; if this row went terminal between the guards above and this
+		// write, the write is rejected instead of clobbering it (the store
+		// already logs both states at ERROR).
+		applied, err := d.store.UpdateExecutionStatusIfNotTerminal(exec.ID, "failed", "queued task orphaned by restart; project no longer configured")
+		if err != nil {
 			d.log.Error("Failed to mark stale queued task", slog.String("id", exec.ID), slog.Any("error", err))
+		} else if !applied {
+			d.log.Warn("Skipped marking stale queued task failed — row reached a terminal status during reap (GH-4423 CAS guard)",
+				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID))
 		} else {
 			resetCount++
 			// GH-4101: mirrors the stale-running event above — the audit trail must
