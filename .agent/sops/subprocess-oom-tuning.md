@@ -71,15 +71,26 @@ Watch for Pilot-side OOM kills in the dashboard:
 
 If legitimate tasks are being killed (cap too tight), raise `max_rss_mb` by 25%.
 
-## Step 4 — Linux RLIMIT_AS (Optional)
+## Step 4 — Linux cgroup v2 memory.max (GH-4401)
 
-On Linux, Pilot also calls `prlimit64(pid, RLIMIT_AS, cap, nil)` after process start.
-This prevents mmap/malloc from reserving virtual memory beyond the cap, catching
-runaway allocators before RSS peaks. It is purely additive — the RSS monitor
-SIGKILL is the primary enforcement.
+On Linux, Pilot creates a per-subprocess cgroup v2 leaf
+(`/sys/fs/cgroup/pilot/pilot-<pid>/`) and sets `memory.max` to the configured
+cap. This enforces actual resident memory (with reclaim before any kill) —
+it does **not** touch virtual address space, unlike the RLIMIT_AS
+implementation this replaced (GH-4401: RLIMIT_AS broke 100% of Linux
+executor subprocesses by making every Node/V8 HTTPS fetch fail instantly
+with a generic `fetch failed` ~25ms after a successful TLS handshake —
+never do this again).
 
-If `prlimit64` fails (permission error, kernel version < 3.2), a WARN log is emitted
-and the RSS monitor continues protecting the process.
+cgroup v2 requires root or a delegated subtree. If creation fails (not
+mounted, no permission), a WARN log is emitted once per subprocess and
+execution degrades to telemetry-only mode. Run `pilot doctor` to check
+`subprocess_limits cgroup v2 available` — it warns explicitly when the cap
+will silently degrade.
+
+Independent of cgroup availability, Pilot also always sets
+`NODE_OPTIONS=--max-old-space-size=<max_rss_mb>` on the subprocess — a
+cooperative V8 heap bound that costs nothing and never breaks networking.
 
 ## Disabling the Cap (Emergency Rollback)
 

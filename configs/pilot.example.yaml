@@ -342,11 +342,17 @@ executor:
 
   # Subprocess memory limits + RSS telemetry (GH-3028)
   # RSS sampler runs on every execution (Linux: /proc/<pid>/status, macOS: ps).
-  # Memory cap (Enabled=true) applies RLIMIT_AS on Linux only; macOS degrades to
-  # telemetry-only. Collect one week of peak_rss_mb data before enabling the cap.
+  # Memory cap (Enabled=true) is a real RSS cap: a cgroup v2 memory.max leaf on
+  # Linux (best-effort — degrades to telemetry-only if cgroup v2 isn't
+  # mounted/delegated to the pilot process) plus a cooperative
+  # NODE_OPTIONS=--max-old-space-size V8 heap bound on every platform.
+  # Collect one week of peak_rss_mb data before enabling the cap.
+  # GH-4401: this was RLIMIT_AS (virtual address space) through v2.241.x —
+  # NEVER go back to that; it broke 100% of Linux executor subprocesses by
+  # making every Node/V8 HTTPS fetch fail instantly.
   # subprocess_limits:
   #   enabled: false              # flip to true after tuning max_rss_mb
-  #   max_rss_mb: 4096            # virtual address space cap in MiB (Linux only)
+  #   max_rss_mb: 4096            # RSS cap in MiB
   #   sample_interval_sec: 10     # how often to poll RSS
 
   # Knowledge-graph memory injection (TASK-387) - append relevant past

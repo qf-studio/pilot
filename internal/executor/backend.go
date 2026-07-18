@@ -358,7 +358,13 @@ type BackendConfig struct {
 
 	// SubprocessLimits controls memory caps and RSS telemetry for the Claude Code
 	// subprocess. Enabled=false by default; flip after collecting a baseline week of
-	// peak_rss_mb data to choose a safe cap. GH-3028.
+	// peak_rss_mb data to choose a safe cap. GH-3028. The cap is enforced via a
+	// cgroup v2 memory.max leaf on Linux (best-effort — degrades to
+	// telemetry-only if cgroup v2 isn't delegated) plus a cooperative
+	// NODE_OPTIONS=--max-old-space-size V8 heap bound on every platform.
+	// GH-4401: NEVER RLIMIT_AS — it caps virtual address space, not RSS, and
+	// broke 100% of executor subprocesses on Linux by making every Node/V8
+	// HTTPS fetch fail instantly.
 	SubprocessLimits *SubprocessLimitsConfig `yaml:"subprocess_limits,omitempty"`
 
 	// Simplification contains code simplification settings (GH-995)
@@ -965,17 +971,25 @@ type OpenAIConfig struct {
 //	executor:
 //	  subprocess_limits:
 //	    enabled: false           # flip to true after one baseline bench cycle
-//	    max_rss_mb: 4096         # cap at 4 GiB virtual address space (Linux only)
+//	    max_rss_mb: 4096         # RSS cap in MiB (cgroup v2 on Linux; NODE_OPTIONS heap bound everywhere)
 //	    sample_interval_sec: 10  # how often to poll /proc/<pid>/status
 type SubprocessLimitsConfig struct {
-	// Enabled controls whether RLIMIT_AS is applied to the subprocess.
-	// Default: false. Flip to true after collecting a baseline week of peak_rss_mb
-	// data to choose a safe cap (recommended: p99 × 1.5).
+	// Enabled controls whether the memory cap is applied to the subprocess
+	// (cgroup v2 memory.max leaf on Linux + NODE_OPTIONS heap bound on every
+	// platform). Default: false. Flip to true after collecting a baseline
+	// week of peak_rss_mb data to choose a safe cap (recommended: p99 × 1.5).
 	Enabled bool `yaml:"enabled"`
 
-	// MaxRSSMB is the virtual address space limit in MiB applied via RLIMIT_AS on Linux.
-	// Ignored when Enabled=false or on non-Linux platforms.
-	// Default: 4096 (4 GiB).
+	// MaxRSSMB is the resident memory cap in MiB. On Linux, best-effort
+	// enforced via a cgroup v2 memory.max leaf (degrades to telemetry-only
+	// if cgroup v2 isn't mounted/delegated — see CgroupV2MemoryAvailable).
+	// On every platform, also passed to the subprocess as
+	// NODE_OPTIONS=--max-old-space-size=<MaxRSSMB>, a cooperative V8 heap
+	// bound. Ignored when Enabled=false. Default: 4096 (4 GiB).
+	// GH-4401: this field previously drove an RLIMIT_AS virtual-address-space
+	// cap, which is NOT an RSS cap and broke 100% of Linux executor
+	// subprocesses by making every Node/V8 HTTPS fetch fail instantly. Never
+	// reintroduce RLIMIT_AS here.
 	MaxRSSMB int `yaml:"max_rss_mb,omitempty"`
 
 	// SampleIntervalSec controls how often (in seconds) the RSS sampler polls the subprocess.

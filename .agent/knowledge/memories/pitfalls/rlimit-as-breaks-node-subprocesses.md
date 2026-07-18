@@ -35,3 +35,17 @@ code/config that silently does nothing on macOS and detonates on first Linux run
 
 Box workaround: `subprocess_limits.enabled: false` (config.yaml.bak-4396) —
 OOM protection off until #4401 ships the cgroup implementation.
+
+**Fix shipped (#4401):** `applyResourceLimits` (resource_limits_linux.go) now
+creates a per-subprocess cgroup v2 leaf (`/sys/fs/cgroup/pilot/pilot-<pid>/`,
+`memory.max`) instead of calling `prlimit64`/RLIMIT_AS — this caps actual
+resident memory, never virtual address space, so it cannot reproduce this
+bug class. Best-effort: degrades to telemetry-only (WARN log) if cgroup v2
+isn't mounted/delegated (no root, as on the ec2-user-run box) — `pilot
+doctor` surfaces this via the "subprocess_limits cgroup v2 available" check.
+Additionally, `NODE_OPTIONS=--max-old-space-size=<max_rss_mb>` is now always
+injected when the cap is enabled — a cooperative V8 heap bound that works
+regardless of cgroup availability and costs nothing. Regression coverage:
+`TestApplyResourceLimits_NodeFetchSucceeds` spawns a real Node child under
+the full cap pipeline and asserts an HTTPS fetch succeeds — this is the test
+that would have caught the original RLIMIT_AS bug before cutover.
