@@ -2424,6 +2424,96 @@ func TestEngine_TaskProgressUpdatesStuckState(t *testing.T) {
 	}
 }
 
+// TestEngine_EvaluateStuckTasks_QueuedTaskDoesNotFire pins GH-4416: a task
+// still sitting in the dispatcher's "Queued" phase (admitted to a project's
+// queue, not yet picked up by a worker) must not fire task_stuck no matter
+// how long it has waited — queue-wait behind a busy single-lane project
+// worker is normal operation, not stuckness. Once the task actually starts
+// running (Phase changes to "Running", mirroring dispatcher.go's
+// queueSingleTask -> project worker EmitProgress sequence), the same
+// no-progress duration DOES fire.
+func TestEngine_EvaluateStuckTasks_QueuedTaskDoesNotFire(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "task_stuck",
+				Type:    AlertTypeTaskStuck,
+				Enabled: true,
+				Condition: RuleCondition{
+					ProgressUnchangedFor: 30 * time.Minute,
+				},
+				Severity: SeverityWarning,
+				Channels: []string{"test-channel"},
+				Cooldown: 0,
+			},
+		},
+	}
+
+	t.Run("queued past threshold: no alert", func(t *testing.T) {
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		// Mirrors dispatcher.go queueSingleTask: task admitted to queue 46
+		// minutes ago (past the 30m threshold) but never picked up by a
+		// worker — its only progress event is the "Queued" phase emitted at
+		// admission time.
+		engine.handleTaskStarted(Event{
+			Type:      EventTypeTaskStarted,
+			TaskID:    "GH-4406",
+			Timestamp: time.Now().Add(-46 * time.Minute),
+		})
+		engine.handleTaskProgress(Event{
+			Type:      EventTypeTaskProgress,
+			TaskID:    "GH-4406",
+			Phase:     "Queued",
+			Progress:  0,
+			Timestamp: time.Now().Add(-46 * time.Minute),
+		})
+
+		engine.evaluateStuckTasks(context.Background())
+		engine.WaitForDispatch()
+
+		if alerts := mockCh.getAlerts(); len(alerts) != 0 {
+			t.Errorf("expected 0 alerts for a merely-queued task, got %d", len(alerts))
+		}
+	})
+
+	t.Run("running past threshold: alert fires", func(t *testing.T) {
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		engine.handleTaskStarted(Event{
+			Type:      EventTypeTaskStarted,
+			TaskID:    "GH-4387",
+			Timestamp: time.Now().Add(-46 * time.Minute),
+		})
+		// Worker picked up the task and transitioned it to "Running" 46
+		// minutes ago (past threshold) with no further progress since.
+		engine.handleTaskProgress(Event{
+			Type:      EventTypeTaskProgress,
+			TaskID:    "GH-4387",
+			Phase:     "Running",
+			Progress:  2,
+			Timestamp: time.Now().Add(-46 * time.Minute),
+		})
+
+		engine.evaluateStuckTasks(context.Background())
+		engine.WaitForDispatch()
+
+		if alerts := mockCh.getAlerts(); len(alerts) != 1 {
+			t.Errorf("expected 1 alert for a genuinely stuck running task, got %d", len(alerts))
+		}
+	})
+}
+
 // TestEngine_EvaluateStuckTasks_EpicParentRefreshedByChildExecution pins
 // GH-4033: an epic parent's stuck_for must be computed from the most recent
 // child sub-issue's execution-start activity, not from the one-time
