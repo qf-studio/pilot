@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-17T22:50:46+00:00",
+  "updated": "2026-07-18T00:37:50+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -371,6 +371,20 @@
         "name": "Ci",
         "aliases": [],
         "domain": "general"
+      },
+      "gh4438-restore-ci-poll-noop-confirms-refutation": {
+        "type": "learning",
+        "summary": "GH-4438 (call new shared check-runs helper from RestoreState before 30m timer) is a no-op: dependency (GH-4437's fetchCheckRuns) never merged, and RestoreState/handleWaitingCI have no event-driven watcher/timer-start mechanism to short-circuit — independently re-confirms GH-4436",
+        "file": ".agent/knowledge/memories/learnings/gh4438-restore-ci-poll-noop-confirms-refutation.md",
+        "concepts": [
+          "autopilot",
+          "ci-monitor",
+          "restore-state",
+          "gh-4415",
+          "epic-decomposition"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-18"
       }
     },
     "tasks": {
@@ -4191,6 +4205,11 @@
       "from": "rlimit-as-breaks-node-subprocesses",
       "to": "absolute-state-paths-bypass-cutover-shim",
       "type": "related"
+    },
+    {
+      "from": "gh4438-restore-ci-poll-noop-confirms-refutation",
+      "to": "autopilot",
+      "type": "relates_to"
     }
   ],
   "concept_index": {
@@ -4744,10 +4763,10 @@
       "decomposer-narrative-bullets-as-subtask-boundaries"
     ]
   },
-  "last_updated": "2026-07-17T22:50:46+00:00",
+  "last_updated": "2026-07-18T00:37:50+00:00",
   "stats": {
-    "total_nodes": 262,
-    "total_edges": 226,
-    "memory_count": 166
+    "total_nodes": 263,
+    "total_edges": 227,
+    "memory_count": 167
   }
 }

@@ -1068,6 +1068,18 @@ func (c *Controller) removePRFailures(prNumber int) {
 // RestoreState loads PR states and per-PR failures from the persistent store.
 // If state is found in the store, ScanExistingPRs is unnecessary.
 // Returns the number of restored PRs.
+//
+// Decision (GH-4438, re-confirms GH-4436): this intentionally does nothing
+// CI-related. GH-4415 hypothesized that a PR re-armed here needs an explicit
+// "poll current check-runs now" call before a 30m timer starts, because it
+// assumed an event-driven CI watcher that only reacts to *new* check-run
+// events post-restore. That watcher doesn't exist — CI status is uniform
+// poll-based for every PR in StageWaitingCI (restored via RestoreState or
+// freshly registered via OnPRCreated alike), driven by processAllPRs ->
+// ProcessPR -> handleWaitingCI (below) on every tick, and CIWaitStartedAt is
+// persisted/restored rather than reset here (see state_store.go, GH-4130).
+// There is nothing to call and no timer object to short-circuit at this
+// layer. See .agent/knowledge/memories/learnings/gh4438-restore-ci-poll-noop-confirms-refutation.md.
 func (c *Controller) RestoreState() (int, error) {
 	if c.stateStore == nil {
 		return 0, nil
