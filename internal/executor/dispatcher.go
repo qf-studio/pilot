@@ -881,6 +881,27 @@ func repickBackoffKey(projectPath, taskID string) string {
 	return projectPath + "|" + taskID
 }
 
+// priorClaimWasOperatorCancelled reports whether (taskID, projectPath)'s
+// currently claimed execution — the one nextRetryGeneration just examined to
+// grant this retry — has status "cancelled". There is no in-repo call site
+// that writes "cancelled" (see store.go's UpdateExecutionStatus comment); it
+// is a value an operator sets by hand (direct DB write) to unblock a wedged
+// head-of-queue task. GH-4454 subtask 2: that manual intervention must not
+// be treated as a failure by beginWithGenerationRetry's hard-cap accounting.
+// Errors are treated as "not cancelled" — the caller falls through to the
+// ordinary backoff/hard-cap path, which is the safe default.
+func (d *Dispatcher) priorClaimWasOperatorCancelled(taskID, projectPath string) bool {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil {
+		return false
+	}
+	return exec.Status == "cancelled"
+}
+
 // nextRetryGeneration inspects the highest execution_claims generation
 // currently held for (taskID, projectPath) and reports whether a fresh
 // Begin(..., generation+1) is warranted (GH-4372). Three outcomes:
@@ -966,6 +987,44 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 		return "", nil
 	}
 
+	backoffKey := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// GH-4454 subtask 2: an operator manually cancelling a wedged
+	// head-of-queue execution to unblock the lane is not evidence the task
+	// can't succeed — unlike a genuine failure, it's deliberate human
+	// intervention. Left uncounted-for, each cancel-and-repick cycle still
+	// grew the SAME consecutiveDrops counter a real failure would, so an
+	// operator trying to rescue a wedged task tripped
+	// dispatcherRepickHardCap on their own unblock attempts and permanently
+	// stalled the very task they were trying to save (GH-4454: 7h silent
+	// idle after a wedged head issue starved its lane). Clear any
+	// accumulated backoff state and grant the retry immediately, without
+	// consulting or growing the hard-cap counter.
+	if d.priorClaimWasOperatorCancelled(task.ID, task.ProjectPath) {
+		if err := d.ClearRepickBackoffState(backoffKey); err != nil {
+			d.log.Warn("failed to clear repick backoff state for operator-cancelled claim",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Any("error", err))
+		}
+		retryExecID, retryErr := lifecycle.Begin(task, initial, gen)
+		if retryErr == nil {
+			d.log.Info("dispatch re-pick: prior claim was operator-cancelled — claiming next generation without counting toward repick hard cap",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Int("generation", gen),
+			)
+			return retryExecID, nil
+		}
+		if errors.Is(retryErr, ErrClaimLost) {
+			// Race: another channel claimed generation gen between our
+			// decision and this Begin call — drop it, same as any other
+			// duplicate pickup.
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to save retry execution: %w", retryErr)
+	}
+
 	// GH-4394 subtask 2: cmd/pilot's per-issue backoff (#4385) only gates
 	// whether handleIssueGeneric calls QueueTask at all — it has no
 	// visibility into a repick decided *inside* this call, and QueueTask's
@@ -985,7 +1044,6 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 	// config-registered values, identical for a canary or a real project) and
 	// never inspects IsCanary. See
 	// TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular.
-	backoffKey := repickBackoffKey(task.ProjectPath, task.ID)
 	consecutiveDrops, nextAllowedAt, found, boErr := d.RepickBackoffState(backoffKey)
 	if boErr != nil {
 		d.log.Warn("failed to read repick backoff state — dropping retry to be safe",

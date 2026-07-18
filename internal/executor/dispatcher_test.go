@@ -3054,6 +3054,75 @@ func TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow(t *tes
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_OperatorCancelBypassesHardCap is
+// the GH-4454 subtask 2 acceptance test: an operator-cancelled claim
+// (status="cancelled", the manual-intervention value used to unblock a
+// wedged head-of-queue task — see priorClaimWasOperatorCancelled) must not
+// be treated as a failure by the hard-cap accounting. Even with the
+// persisted consecutive-drop count already AT dispatcherRepickHardCap,
+// beginWithGenerationRetry must still grant the retry (not stall the task
+// or raise an alert) and must clear the backoff state instead of growing
+// it — otherwise an operator's own cancel-to-unblock attempts permanently
+// stall the very task they were trying to save.
+func TestDispatcher_BeginWithGenerationRetry_OperatorCancelBypassesHardCap(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4454-CANCEL", ProjectPath: "/project-cancel", Title: "Operator-cancelled task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Already at the hard cap — if this repick were treated like an ordinary
+	// failure-driven retry, it would trip stallTaskAfterRepickHardCap.
+	if err := dispatcher.SetRepickBackoffState(key, dispatcherRepickHardCap, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	// Operator-cancelled, not failed — the manual-intervention value that
+	// must be exempted from the hard-cap counter.
+	if err := store.UpdateExecutionStatus(execID, "cancelled"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as cancelled: %v", err)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID == "" {
+		t.Fatal("expected the operator-cancelled repick to succeed despite the hard cap being reached")
+	}
+
+	if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	} else if !found || genCheck != 1 {
+		t.Errorf("expected a generation-1 claim after the operator-cancelled repick, found=%v generation=%d", found, genCheck)
+	}
+
+	if len(processor.events) != 0 {
+		t.Fatalf("expected no hard-cap alert for an operator-cancelled repick, got %d: %+v", len(processor.events), processor.events)
+	}
+
+	if stalledExec, err := store.GetExecution(execID); err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	} else if stalledExec.Status == "stalled" {
+		t.Error("expected the operator-cancelled execution to be left alone, not marked stalled")
+	}
+
+	if _, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found {
+		t.Error("expected the operator-cancelled repick to clear backoff state instead of growing it")
+	}
+}
+
 // TestDispatcher_BeginWithGenerationRetry_HardCapStallsInsteadOfRetrying is
 // the GH-4394 subtask 5 acceptance test: exponential backoff alone (subtask
 // 2/3) never stops a doomed task from retrying — it only slows the interval
