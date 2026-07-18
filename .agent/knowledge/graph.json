@@ -374,7 +374,7 @@
       },
       "gh4438-restore-ci-poll-noop-confirms-refutation": {
         "type": "learning",
-        "summary": "GH-4438 (call new shared check-runs helper from RestoreState before 30m timer) is a no-op: dependency (GH-4437's fetchCheckRuns) never merged, and RestoreState/handleWaitingCI have no event-driven watcher/timer-start mechanism to short-circuit — independently re-confirms GH-4436",
+        "summary": "GH-4438's literal premise (GH-4437's fetchCheckRuns helper, an event-driven watcher/timer at RestoreState) is refuted, but Run()'s ticker.C does not fire on creation, so restored waiting_ci PRs sat unchecked until the first tick — fixed with an immediate pollTick() call in Run() before the select loop, after the intent judge rejected an initial no-op pass",
         "file": ".agent/knowledge/memories/learnings/gh4438-restore-ci-poll-noop-confirms-refutation.md",
         "concepts": [
           "autopilot",

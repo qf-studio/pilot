@@ -1069,17 +1069,14 @@ func (c *Controller) removePRFailures(prNumber int) {
 // If state is found in the store, ScanExistingPRs is unnecessary.
 // Returns the number of restored PRs.
 //
-// Decision (GH-4438, re-confirms GH-4436): this intentionally does nothing
-// CI-related. GH-4415 hypothesized that a PR re-armed here needs an explicit
-// "poll current check-runs now" call before a 30m timer starts, because it
-// assumed an event-driven CI watcher that only reacts to *new* check-run
-// events post-restore. That watcher doesn't exist — CI status is uniform
-// poll-based for every PR in StageWaitingCI (restored via RestoreState or
-// freshly registered via OnPRCreated alike), driven by processAllPRs ->
-// ProcessPR -> handleWaitingCI (below) on every tick, and CIWaitStartedAt is
-// persisted/restored rather than reset here (see state_store.go, GH-4130).
-// There is nothing to call and no timer object to short-circuit at this
-// layer. See .agent/knowledge/memories/learnings/gh4438-restore-ci-poll-noop-confirms-refutation.md.
+// RestoreState itself stays a pure state load (no GitHub/CI calls, no
+// context) so it can run synchronously and cheaply during startup wiring.
+// The current-state CI poll for whatever it restores into StageWaitingCI
+// happens immediately once Run's loop starts (GH-4438): Run calls its poll
+// tick once before entering the ticker select, instead of waiting for the
+// ticker's first tick, so a PR whose CI already went terminal while the
+// daemon was down for a deploy is rechecked right away rather than sitting
+// idle for up to CIPollInterval. See Run() below.
 func (c *Controller) RestoreState() (int, error) {
 	if c.stateStore == nil {
 		return 0, nil
@@ -4749,6 +4746,42 @@ func (c *Controller) Run(ctx context.Context) error {
 	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
+	// pollTick runs one current-state poll of every active PR and re-tunes
+	// the ticker interval based on what's still in flight afterward.
+	pollTick := func() {
+		c.processAllPRs(ctx)
+
+		// Adjust interval based on active PR states
+		newInterval := idlePollInterval
+		activePRs := c.GetActivePRs()
+		for _, pr := range activePRs {
+			if pr.Stage == StageWaitingCI || pr.Stage == StagePRCreated {
+				newInterval = fastPollInterval
+				break
+			}
+		}
+
+		// Update ticker interval if it changed
+		if newInterval != currentInterval {
+			c.log.Debug("adjusting poll interval",
+				"old_interval", currentInterval,
+				"new_interval", newInterval,
+				"active_prs", len(activePRs),
+			)
+			ticker.Reset(newInterval)
+			currentInterval = newInterval
+		}
+	}
+
+	// GH-4438: run the first poll immediately instead of waiting for the
+	// ticker's first tick. time.Ticker only fires after its interval
+	// elapses, so without this, any PR restored into StageWaitingCI by
+	// RestoreState/ScanExistingPRs before Run was called (e.g. its CI
+	// already went terminal while the daemon was down for a deploy) would
+	// sit unchecked for up to CIPollInterval before its status was
+	// rechecked, even though the check-runs data was already available.
+	pollTick()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -4779,28 +4812,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			// whose PR is, in fact, already merged and tagged.
 			c.reconcileReleaseBackfill(ctx)
 		case <-ticker.C:
-			c.processAllPRs(ctx)
-
-			// Adjust interval based on active PR states
-			newInterval := idlePollInterval
-			activePRs := c.GetActivePRs()
-			for _, pr := range activePRs {
-				if pr.Stage == StageWaitingCI || pr.Stage == StagePRCreated {
-					newInterval = fastPollInterval
-					break
-				}
-			}
-
-			// Update ticker interval if it changed
-			if newInterval != currentInterval {
-				c.log.Debug("adjusting poll interval",
-					"old_interval", currentInterval,
-					"new_interval", newInterval,
-					"active_prs", len(activePRs),
-				)
-				ticker.Reset(newInterval)
-				currentInterval = newInterval
-			}
+			pollTick()
 		}
 	}
 }
