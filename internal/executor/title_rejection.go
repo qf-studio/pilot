@@ -238,9 +238,20 @@ func ghIssueComment(ctx context.Context, dir, issueID, body string) error {
 }
 
 func ghAddLabels(ctx context.Context, dir, issueID string, labels []string) error {
+	return ghEditLabels(ctx, dir, issueID, labels, nil)
+}
+
+// ghEditLabels adds and removes GitHub issue labels via a single `gh issue
+// edit` call. Used by stallTaskAfterRepickHardCap (dispatcher.go, GH-4454
+// subtask 3) to swap pilot-failed/pilot-in-progress for pilot-blocked in one
+// shot, alongside ghAddLabels' add-only callers.
+func ghEditLabels(ctx context.Context, dir, issueID string, addLabels, removeLabels []string) error {
 	args := []string{"issue", "edit", issueID}
-	for _, l := range labels {
+	for _, l := range addLabels {
 		args = append(args, "--add-label", l)
+	}
+	for _, l := range removeLabels {
+		args = append(args, "--remove-label", l)
 	}
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	if dir != "" {

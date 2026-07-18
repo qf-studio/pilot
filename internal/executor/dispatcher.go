@@ -1152,6 +1152,7 @@ func (d *Dispatcher) stallTaskAfterRepickHardCap(task *Task, gen, consecutiveDro
 		slog.Int("hard_cap", dispatcherRepickHardCap),
 		slog.Int("generation", gen),
 	)
+	d.surfaceStalledIssue(task, reason)
 	if d.runner != nil {
 		d.runner.EmitAlertEvent(AlertEvent{
 			Type:      AlertEventTypeTaskFailed,
@@ -1166,6 +1167,64 @@ func (d *Dispatcher) stallTaskAfterRepickHardCap(task *Task, gen, consecutiveDro
 			},
 			Timestamp: time.Now(),
 		})
+	}
+}
+
+// surfaceStalledIssue labels a repick-hard-cap-stalled task's GitHub issue
+// pilot-blocked (removing pilot-failed/pilot-in-progress) and posts an
+// explanatory comment — GH-4454 subtask 3.
+//
+// Why this matters: studio-sdk's GitHub poller groups open "pilot"-labeled
+// issues by shared directory reference (scope overlap) and, within each
+// group, dispatches only the OLDEST issue every poll tick, deferring every
+// other issue in that group. That grouping/ordering has no visibility into
+// this dispatcher's independent repick_backoff hard cap — it re-admits a
+// pilot-failed issue as a candidate via its own separate retry counter,
+// unaware the store-side execution behind it was already stalled above.
+// Being the oldest issue in its scope cluster, the stalled head keeps
+// winning the dispatch slot on every tick, silently starving every issue
+// that shares its scope forever (GH-4454: 7h idle after exactly this). The
+// poller DOES unconditionally exclude any issue carrying pilot-blocked from
+// its candidate list before scope grouping ever runs, so applying that label
+// here removes the stalled issue from contention entirely and lets the
+// next-oldest overlapping issue through instead of silently starving.
+//
+// Best-effort and GitHub-only: a labeling/comment failure is logged, not
+// fatal — the store-side "stalled" status the caller already wrote is the
+// durable source of truth regardless of whether this side channel succeeds.
+func (d *Dispatcher) surfaceStalledIssue(task *Task, reason string) {
+	if task.SourceAdapter != "" && task.SourceAdapter != "github" {
+		return
+	}
+	issueNum := strings.TrimPrefix(task.ID, "GH-")
+	if task.SourceIssueID != "" {
+		issueNum = task.SourceIssueID
+	}
+	if issueNum == "" {
+		return
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(issueNum, "%d", &parsed); err != nil || parsed <= 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	defer cancel()
+
+	comment := fmt.Sprintf(
+		"Pilot stopped retrying (repick hard cap): %s\n\n"+
+			"Labeled `pilot-blocked` so this issue stops winning scope-overlap "+
+			"dispatch priority over sibling issues that touch the same files. "+
+			"To re-arm after fixing the underlying blocker:\n```\ngh issue edit %d --remove-label pilot-blocked --remove-label pilot-failed --add-label pilot-retry-ready\n```",
+		reason, parsed,
+	)
+	if err := ghIssueComment(ctx, task.ProjectPath, issueNum, comment); err != nil {
+		d.log.Warn("stalled-issue surfacing: failed to post comment",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+	}
+	if err := ghEditLabels(ctx, task.ProjectPath, issueNum, []string{"pilot-blocked"}, []string{"pilot-failed", "pilot-in-progress"}); err != nil {
+		d.log.Warn("stalled-issue surfacing: failed to update labels",
+			slog.String("task_id", task.ID), slog.Any("error", err))
 	}
 }
 

@@ -3201,6 +3201,110 @@ func TestDispatcher_BeginWithGenerationRetry_HardCapStallsInsteadOfRetrying(t *t
 	}
 }
 
+// TestDispatcher_StallTaskAfterRepickHardCap_SurfacesStalledIssue is the
+// GH-4454 subtask 3 regression test: reaching the repick hard cap must label
+// the task's GitHub issue pilot-blocked (dropping pilot-failed/
+// pilot-in-progress) instead of leaving it eligible to keep winning
+// studio-sdk's scope-overlap dispatch grouping — a stalled head issue that
+// keeps winning its scope cluster silently starves every sibling issue that
+// touches the same files (the "7h silent idle" in GH-4454's title).
+func TestDispatcher_StallTaskAfterRepickHardCap_SurfacesStalledIssue(t *testing.T) {
+	fakeBin := t.TempDir()
+	logFile := filepath.Join(t.TempDir(), "gh-calls.log")
+	script := filepath.Join(fakeBin, "gh")
+	content := "#!/bin/sh\n" + `echo "$@" >> "` + logFile + `"` + "\nexit 0\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	origPATH := os.Getenv("PATH")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+origPATH)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	projectDir := t.TempDir()
+	task := &Task{ID: "GH-9001", ProjectPath: projectDir, Title: "Wedged head issue", SourceAdapter: "github"}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	dispatcher.stallTaskAfterRepickHardCap(task, 0, dispatcherRepickHardCap)
+
+	stalledExec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if stalledExec.Status != "stalled" {
+		t.Fatalf("expected execution stalled, got %q", stalledExec.Status)
+	}
+
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("expected gh CLI to be invoked, but log file missing: %v", err)
+	}
+	calls := string(logBytes)
+	if !strings.Contains(calls, "issue comment 9001") {
+		t.Errorf("expected a comment posted to issue 9001, got calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "issue edit 9001") {
+		t.Errorf("expected a label edit on issue 9001, got calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--add-label pilot-blocked") {
+		t.Errorf("expected pilot-blocked to be added, got calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--remove-label pilot-failed") {
+		t.Errorf("expected pilot-failed to be removed, got calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--remove-label pilot-in-progress") {
+		t.Errorf("expected pilot-in-progress to be removed, got calls:\n%s", calls)
+	}
+}
+
+// TestDispatcher_StallTaskAfterRepickHardCap_NonGitHubTaskSkipsGHCLI ensures
+// the GH-4454 subtask 3 surfacing logic only shells out for GitHub-sourced
+// tasks — mirrors postTitleRejectionEscalation's existing adapter guard so a
+// Linear/GitLab/Jira task never triggers a `gh` CLI call it can't act on.
+func TestDispatcher_StallTaskAfterRepickHardCap_NonGitHubTaskSkipsGHCLI(t *testing.T) {
+	fakeBin := t.TempDir()
+	logFile := filepath.Join(t.TempDir(), "gh-calls.log")
+	script := filepath.Join(fakeBin, "gh")
+	content := "#!/bin/sh\n" + `echo "$@" >> "` + logFile + `"` + "\nexit 0\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	origPATH := os.Getenv("PATH")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+origPATH)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	projectDir := t.TempDir()
+	task := &Task{ID: "GL-42", ProjectPath: projectDir, Title: "Non-GitHub task", SourceAdapter: "gitlab"}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	dispatcher.stallTaskAfterRepickHardCap(task, 0, dispatcherRepickHardCap)
+
+	if _, err := os.ReadFile(logFile); err == nil {
+		t.Error("expected no gh CLI invocation for a non-GitHub task")
+	}
+}
+
 // TestDispatcher_BeginWithGenerationRetry_HardCapIsIdempotent covers the
 // GH-4394 subtask 5 quiet-repeat requirement: once a task has been stalled by
 // the hard cap, subsequent poll ticks that reach the same gate (e.g. after
