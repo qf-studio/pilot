@@ -2825,6 +2825,53 @@ func TestDispatcher_ReconcileOrphanedExecutions_Idempotent(t *testing.T) {
 	}
 }
 
+// TestDispatcher_ReconcileOrphanedExecutions_ClearsRepickBackoff is the
+// GH-4454 subtask 1 regression test: a daemon restart is not evidence a task
+// can't succeed, so boot reconciliation stalling a dead-owner row must clear
+// any repick_backoff state already accumulated for that task — otherwise the
+// generation+1 retry this stall enables inherits a consecutive-drop count
+// inflated by restart churn instead of genuine failures, pushing the task
+// toward dispatcherRepickHardCap for reasons unrelated to the task itself.
+func TestDispatcher_ReconcileOrphanedExecutions_ClearsRepickBackoff(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4454-BACKOFF", ProjectPath: "/project-boot-backoff"}
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Simulate consecutive drops already accumulated BEFORE the restart (e.g.
+	// real repicks from a prior daemon lifetime), sitting one shy of the hard
+	// cap.
+	const preExistingDrops = dispatcherRepickHardCap - 1
+	if err := dispatcher.SetRepickBackoffState(key, preExistingDrops, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("setup SetRepickBackoffState: %v", err)
+	}
+
+	if reconciled := dispatcher.reconcileOrphanedExecutions(); reconciled != 1 {
+		t.Fatalf("expected 1 reconciled execution, got %d", reconciled)
+	}
+
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "stalled" {
+		t.Errorf("expected status 'stalled', got %q", exec.Status)
+	}
+
+	if _, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found {
+		t.Fatal("expected boot reconciliation to clear repick backoff state for the row it stalled, but state still exists")
+	}
+}
+
 // TestDispatcher_BootOrphanReconciliation_EnablesGenerationRetry is the
 // GH-4392 acceptance test: a dead daemon's claimed 'queued' row must not
 // wedge the task forever. After Dispatcher.Start's boot reconciliation

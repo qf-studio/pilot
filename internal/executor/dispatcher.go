@@ -203,7 +203,11 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 // reconcileOrphanedExecutions transitions every claimed, non-terminal
 // ("queued" or "running") execution row found at boot to "stalled", freeing
 // its execution_claims generation lock so nextRetryGeneration can hand out a
-// generation+1 retry on the next dispatch attempt (GH-4392).
+// generation+1 retry on the next dispatch attempt (GH-4392). Every row it
+// stalls also has its repick_backoff state cleared (GH-4454) — a daemon
+// restart is not evidence the task can't succeed, so the retry this stall
+// enables must not inherit a consecutive-drop count inflated by restart
+// churn rather than genuine failures.
 //
 // Incident context: nextRetryGeneration (GH-4372) only advances the
 // generation when the claimed execution it finds is in a TERMINAL status —
@@ -296,6 +300,25 @@ func (d *Dispatcher) reconcileOrphanedExecutions() int {
 		}
 		reconciled++
 		d.recordExecutionEvent(exec.ID, memory.StageStalled, "orphaned queued/running execution reconciled at daemon boot (dead pre-restart owner, GH-4392)")
+
+		// GH-4454: a daemon restart is not evidence the task can't succeed —
+		// but the "stalled" status this loop just wrote is exactly the
+		// terminal-but-not-done claim nextRetryGeneration looks for, so the
+		// very next dispatch attempt repicks it and beginWithGenerationRetry
+		// treats that repick as one more consecutive drop toward
+		// dispatcherRepickHardCap. Left alone, repeated restarts (or one
+		// restart on top of pre-existing real drops) push a perfectly healthy
+		// task over the hard cap on restart churn alone, permanently stalling
+		// it via stallTaskAfterRepickHardCap for a reason that has nothing to
+		// do with the task itself. Clear any accumulated backoff state here so
+		// the retry this stall enables starts a fresh consecutive-drop count
+		// instead of inheriting one inflated by the restart.
+		backoffKey := repickBackoffKey(exec.ProjectPath, exec.TaskID)
+		if err := d.ClearRepickBackoffState(backoffKey); err != nil {
+			d.log.Warn("failed to clear repick backoff state for boot-stalled execution",
+				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID),
+				slog.String("project", exec.ProjectPath), slog.Any("error", err))
+		}
 	}
 
 	if reconciled > 0 {
