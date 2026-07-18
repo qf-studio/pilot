@@ -216,6 +216,99 @@ func TestExecutionLifecycle_Finish_Override(t *testing.T) {
 	}
 }
 
+// TestExecutionLifecycle_Finish_PRExistsPromotesToCompleted is the GH-4404
+// regression test: pointer GH-16/GH-15 re-picked a task whose PR was already
+// open because something downstream of PR creation (an intent-judge veto
+// arriving after delivery — #4407's truncated-diff false-veto is the
+// incident that exposed this) classified the attempt as a non-completed
+// terminal status. That write made HasTerminalCompletion disagree with
+// GitHub reality (a real PR existed but the row read "not done"), so the
+// poller re-picked the task and risked a duplicate PR. A PR is ground truth
+// that work was delivered, so Classify/Finish must promote to completed
+// whenever result.PRUrl is non-empty, regardless of what TerminalStatus
+// would otherwise classify the result as.
+func TestExecutionLifecycle_Finish_PRExistsPromotesToCompleted(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-16", ProjectPath: "/tmp/project"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	result := &ExecutionResult{
+		TaskID:  task.ID,
+		Success: false, // e.g. an intent-judge veto arriving after the PR was created
+		Error:   "intent judge vetoed: diff appears to be missing implementation",
+		PRUrl:   "https://github.com/qf-studio/pointer/pull/18",
+	}
+
+	if classified := TerminalStatus(result); classified != "failed" {
+		t.Fatalf("test setup invalid: expected TerminalStatus to classify as failed without the PR-exists guard, got %q", classified)
+	}
+
+	outcome, err := lifecycle.Finish(execID, result, nil, 11*time.Minute)
+	if err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+	if outcome.Status != ExecStatusCompleted {
+		t.Errorf("expected outcome status %q, got %q", ExecStatusCompleted, outcome.Status)
+	}
+
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("failed to load execution: %v", err)
+	}
+	if exec.Status != string(ExecStatusCompleted) {
+		t.Errorf("expected status %q, got %q", ExecStatusCompleted, exec.Status)
+	}
+	if exec.PRUrl != result.PRUrl {
+		t.Errorf("expected pr_url to be persisted, got %+v", exec)
+	}
+
+	done, err := store.HasTerminalCompletion(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion: %v", err)
+	}
+	if !done {
+		t.Error("expected HasTerminalCompletion to count the PR-delivered row as done — a false 'not done' here is exactly what let the poller re-pick and risk a duplicate PR")
+	}
+}
+
+// TestExecutionLifecycle_Finish_OverrideWinsOverPRSelfHeal verifies the
+// GH-4404 PR-exists self-heal never overrides an explicit caller override —
+// epic.go's stranded-work override (executeSubIssuesTracked) must still be
+// able to force a non-completed status even if, hypothetically, a PRUrl were
+// present, since the caller's override reflects context (e.g. the PR itself
+// being invalid/abandoned) that Classify cannot see from result alone.
+func TestExecutionLifecycle_Finish_OverrideWinsOverPRSelfHeal(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-17", ProjectPath: "/tmp/project"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	result := &ExecutionResult{
+		TaskID:  task.ID,
+		Success: false,
+		PRUrl:   "https://github.com/qf-studio/pointer/pull/19",
+	}
+
+	outcome, err := lifecycle.Finish(execID, result, nil, time.Second, ExecStatusFailed)
+	if err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+	if outcome.Status != ExecStatusFailed {
+		t.Errorf("expected explicit override to win over PR self-heal, got %q", outcome.Status)
+	}
+}
+
 // TestExecutionLifecycle_Begin_EmptyTitle_BackfillsViaUpdateExecutionTitle is
 // the GH-4281 integration test for the Begin+UpdateExecutionTitle round trip:
 // a caller that starts an execution before a title is resolvable (Begin with
