@@ -39,7 +39,7 @@
 | Smart retry | ✅ | executor | - | - | Error-type-specific retry with exponential backoff (v0.51.0) |
 | OOM smart-retry | ✅ | executor | - | `executor.retry.oom_killed` | Retry OOM-killed subprocess once after 10s (GH-3028, v2.147.0) |
 | RSS telemetry | ✅ | executor | - | `executor.subprocess_limits` | Peak/final RSS sampled per execution; stored in DB + shown in history (GH-3028, v2.147.0) |
-| Subprocess memory cap | ✅ | executor | - | `executor.subprocess_limits.enabled` | RLIMIT_AS via prlimit64 on Linux (default off; tune after RSS baseline) (GH-3028, v2.147.0) |
+| Subprocess memory cap | ✅ | executor | - | `executor.subprocess_limits.enabled` | cgroup v2 `memory.max` leaf on Linux + cooperative `NODE_OPTIONS=--max-old-space-size` everywhere; degrades to telemetry-only if cgroup v2 undelegated (default off; tune after RSS baseline). Replaces RLIMIT_AS, which broke 100% of Linux executor subprocesses (GH-3028, GH-4401) |
 | Acceptance criteria | ✅ | executor | - | - | Extract from issue body, include in prompts (v0.51.0) |
 | Worktree isolation | ✅ | executor | - | `executor.use_worktree` | Execute in git worktree, allows uncommitted changes (v0.53.2) |
 | Signal parser v2 | ✅ | executor | - | - | JSON pilot-signal blocks with validation (v0.56.0) |

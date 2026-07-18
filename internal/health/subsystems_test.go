@@ -29,6 +29,7 @@ func TestCheckDisabledSubsystems_EmptyConfig_AllDisabled(t *testing.T) {
 		"releaser resolved",
 		"model routing enabled",
 		"subprocess_limits enabled",
+		"subprocess_limits cgroup v2 available",
 		"intent classifier",
 		"approval channel deliverable",
 	}
@@ -152,6 +153,36 @@ func TestCheckSubprocessLimitsEnabled(t *testing.T) {
 	cfg.Executor.SubprocessLimits.Enabled = true
 	if wired, reason := checkSubprocessLimitsEnabled(cfg); !wired {
 		t.Errorf("subprocess_limits.enabled=true: wired=false, want true (reason=%q)", reason)
+	}
+}
+
+// TestCheckSubprocessLimitsCgroupAvailable covers the GH-4401 preflight
+// guard: it must not report "wired" when the cap isn't enabled (nothing to
+// warn about), and when enabled must directly reflect
+// executor.CgroupV2MemoryAvailable() so operators are warned before the cap
+// silently degrades to telemetry-only on hosts without cgroup v2 delegation.
+func TestCheckSubprocessLimitsCgroupAvailable(t *testing.T) {
+	cfg := &config.Config{Executor: &executor.BackendConfig{}}
+	if wired, reason := checkSubprocessLimitsCgroupAvailable(cfg); wired {
+		t.Errorf("nil subprocess_limits: wired=true, want false (reason=%q)", reason)
+	}
+
+	cfg.Executor.SubprocessLimits = executor.DefaultSubprocessLimitsConfig()
+	if wired, reason := checkSubprocessLimitsCgroupAvailable(cfg); wired {
+		t.Errorf("subprocess_limits.enabled=false: wired=true, want false (reason=%q)", reason)
+	}
+
+	cfg.Executor.SubprocessLimits.Enabled = true
+	wantAvailable, wantReason := executor.CgroupV2MemoryAvailable()
+	gotWired, gotReason := checkSubprocessLimitsCgroupAvailable(cfg)
+	if gotWired != wantAvailable {
+		t.Errorf("wired=%v, want %v (matching executor.CgroupV2MemoryAvailable)", gotWired, wantAvailable)
+	}
+	if gotWired && gotReason != wantReason {
+		t.Errorf("wired reason = %q, want %q", gotReason, wantReason)
+	}
+	if !gotWired && gotReason == "" {
+		t.Error("unwired: empty reason")
 	}
 }
 

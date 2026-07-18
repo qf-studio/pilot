@@ -370,6 +370,30 @@ func (b *ClaudeCodeBackend) SetSubprocessLimits(cfg *SubprocessLimitsConfig) {
 	b.subprocessLimits = cfg
 }
 
+// nodeOptionsEnv returns the NODE_OPTIONS value to inject into the Claude
+// Code subprocess env, merging in a --max-old-space-size flag sized from
+// cfg.MaxRSSMB when the cap is enabled. Returns "" when the cap is disabled
+// (existing is ignored in that case — nothing to inject, the subprocess
+// inherits its own NODE_OPTIONS via os.Environ() unchanged). When existing
+// is non-empty, the heap flag is appended rather than replacing it, so a
+// caller's own NODE_OPTIONS (e.g. --experimental-* flags) survives.
+//
+// GH-4401: this is a cooperative, heap-only bound — independent of the
+// cgroup v2 memory.max cap applied via applyResourceLimits. It costs nothing
+// and degrades nothing even when the cgroup cap can't be created (no
+// permission/delegation), unlike the removed RLIMIT_AS approach which broke
+// fetch outright.
+func nodeOptionsEnv(existing string, cfg *SubprocessLimitsConfig) string {
+	if cfg == nil || !cfg.Enabled || cfg.MaxRSSMB <= 0 {
+		return ""
+	}
+	heapFlag := fmt.Sprintf("--max-old-space-size=%d", cfg.MaxRSSMB)
+	if existing != "" {
+		return existing + " " + heapFlag
+	}
+	return heapFlag
+}
+
 // SetProviderEnv configures provider-routing env vars injected into the
 // Claude Code subprocess (GH-2371). When any value is non-empty, the
 // corresponding ANTHROPIC_* env var is appended to the subprocess env,
@@ -531,6 +555,15 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	if b.config.MaxOutputTokens > 0 {
 		env = append(env, fmt.Sprintf("CLAUDE_CODE_MAX_OUTPUT_TOKENS=%d", b.config.MaxOutputTokens))
 	}
+	// GH-4401: cooperative V8 heap cap. NEVER use RLIMIT_AS here (it broke
+	// 100% of executor children on Linux — see applyResourceLimits below).
+	// NODE_OPTIONS=--max-old-space-size bounds the JS heap without touching
+	// virtual address space, so undici/fetch's own mmap-heavy connection
+	// pool is unaffected. This is additive to (and independent of) the
+	// cgroup v2 memory.max cap applied after cmd.Start().
+	if nodeOpts := nodeOptionsEnv(os.Getenv("NODE_OPTIONS"), b.subprocessLimits); nodeOpts != "" {
+		env = append(env, "NODE_OPTIONS="+nodeOpts)
+	}
 	cmd.Env = env
 
 	b.log.Debug("Starting Claude Code",
@@ -559,8 +592,13 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	}
 	b.log.Debug("Claude Code started", slog.Int("pid", cmd.Process.Pid))
 
-	// GH-3028: apply RSS cap (Linux: RLIMIT_AS via prlimit64; darwin/other: no-op).
-	applyResourceLimits(cmd.Process.Pid, b.subprocessLimits)
+	// GH-3028/GH-4401: apply RSS cap via a cgroup v2 memory.max leaf on
+	// Linux (darwin/other: telemetry-only no-op). The returned cleanup
+	// removes the leaf; it's deferred here rather than called eagerly
+	// because it must run after cmd.Wait() reaps the process below —
+	// cgroup.procs must be empty before rmdir succeeds.
+	cleanupResourceLimits := applyResourceLimits(cmd.Process.Pid, b.subprocessLimits)
+	defer cleanupResourceLimits()
 
 	// GH-3028: start RSS sampler — collects peak/final RSS for telemetry.
 	sampleInterval := 10 * time.Second

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // SubsystemCheck reports whether a subsystem that can silently no-op is
@@ -42,6 +43,9 @@ func CheckDisabledSubsystems(cfg *config.Config) []SubsystemCheck {
 
 	wired, reason = checkSubprocessLimitsEnabled(cfg)
 	checks = append(checks, SubsystemCheck{Name: "subprocess_limits enabled", Wired: wired, Reason: reason})
+
+	wired, reason = checkSubprocessLimitsCgroupAvailable(cfg)
+	checks = append(checks, SubsystemCheck{Name: "subprocess_limits cgroup v2 available", Wired: wired, Reason: reason})
 
 	wired, reason = checkIntentClassifier(cfg)
 	checks = append(checks, SubsystemCheck{Name: "intent classifier", Wired: wired, Reason: reason})
@@ -129,6 +133,27 @@ func checkSubprocessLimitsEnabled(cfg *config.Config) (bool, string) {
 		return false, "executor.subprocess_limits.enabled=false — no RSS telemetry or memory cap on task subprocesses"
 	}
 	return true, "executor.subprocess_limits.enabled=true"
+}
+
+// checkSubprocessLimitsCgroupAvailable reports whether the host can actually
+// enforce the memory cap the operator asked for. GH-4401: the RLIMIT_AS
+// implementation that shipped with GH-3028 always "succeeded" (prlimit64
+// rarely fails outright) while silently breaking every Node/V8 HTTPS fetch
+// inside the subprocess — the failure mode was invisible until 100% of
+// executions started dying in production. The replacement (cgroup v2
+// memory.max) fails safe instead: it degrades to telemetry-only mode rather
+// than corrupting subprocess networking, but that degrade is still silent
+// unless surfaced here. Skipped entirely when the cap isn't enabled, since
+// there's nothing to warn about.
+func checkSubprocessLimitsCgroupAvailable(cfg *config.Config) (bool, string) {
+	if cfg.Executor == nil || cfg.Executor.SubprocessLimits == nil || !cfg.Executor.SubprocessLimits.Enabled {
+		return false, "subprocess_limits not enabled — cgroup v2 availability not checked"
+	}
+	available, reason := executor.CgroupV2MemoryAvailable()
+	if !available {
+		return false, "memory cap will silently degrade to telemetry-only (cooperative NODE_OPTIONS heap bound still applies): " + reason
+	}
+	return true, reason
 }
 
 // checkIntentClassifier reports whether the pre-flight issue-quality judge
