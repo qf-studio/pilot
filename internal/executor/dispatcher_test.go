@@ -1041,6 +1041,131 @@ func TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR(t *testing.T) {
 	}
 }
 
+// TestRecoverStaleRunningTasks_SkipsWhenOpenPRExists is the GH-4423 regression
+// test for finding 1's second half: an OPEN PR on the task's branch — the
+// normal state for minutes-to-hours while CI/review runs — must be treated as
+// liveness evidence exactly like a merged PR, not "no evidence" that gets the
+// row marked failed. Before this fix, staleRunningMergedPRCheck alone
+// couldn't see this and any task whose review outlasted StaleRunningThreshold
+// got marked failed on the next reap tick despite already having shipped a PR.
+func TestRecoverStaleRunningTasks_SkipsWhenOpenPRExists(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-open-pr-run", TaskID: "GH-4423-E", ProjectPath: "/project-open-pr", Status: "running"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	origMergedCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { staleRunningMergedPRCheck = origMergedCheck }()
+
+	const openPRURL = "https://github.com/qf-studio/pilot/pull/4422"
+	origOpenCheck := staleRunningOpenPRCheck
+	staleRunningOpenPRCheck = func(_ context.Context, projectPath, branch string) (string, error) {
+		if projectPath == "/project-open-pr" && branch == "pilot/GH-4423-E" {
+			return openPRURL, nil
+		}
+		return "", nil
+	}
+	defer func() { staleRunningOpenPRCheck = origOpenCheck }()
+
+	config := &DispatcherConfig{StaleRunningThreshold: 0, StaleQueuedThreshold: 0, StaleRecoveryInterval: time.Hour}
+	dispatcher := NewDispatcher(store, NewRunner(), config)
+
+	resetCount := dispatcher.recoverStaleRunningTasks()
+	if resetCount != 0 {
+		t.Errorf("expected resetCount=0 (open PR is liveness, not a reap), got %d", resetCount)
+	}
+
+	got, err := store.GetExecution("exec-open-pr-run")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if got.Status != "running" {
+		t.Errorf("expected row with an open PR to remain 'running' (not failed/completed), got %q", got.Status)
+	}
+
+	events, err := store.ListExecutionEvents("exec-open-pr-run")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected no execution events for a skipped (still-live) row, got %d: %+v", len(events), events)
+	}
+}
+
+// TestRecoverStaleRunningTasks_CASRejectsRaceWithCompletion is the GH-4423
+// regression test for finding 1's TOCTOU: if the row's own worker completes
+// it for real in the gap between the reaper's evidence-gathering
+// (staleRunningMergedPRCheck's GitHub round trip here) and the reaper's final
+// "mark failed" write, that final write must be rejected instead of
+// silently stamping the completed row failed. The merged-PR-check override
+// below simulates the race by completing the row as a side effect, mirroring
+// a concurrent writer finishing the task mid-reap.
+func TestRecoverStaleRunningTasks_CASRejectsRaceWithCompletion(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-race-run", TaskID: "GH-4423-F", ProjectPath: "/project-race", Status: "running"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	const racingPRURL = "https://github.com/qf-studio/pilot/pull/4424"
+
+	origMergedCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) {
+		// Simulate the real worker completing this exact row for real,
+		// concurrently with this reap tick's evidence-gathering — the row is
+		// now genuinely 'completed' by the time the reaper reaches its final
+		// write below, but this check itself reports "no merge evidence"
+		// (mirroring the check having run before the race landed).
+		if err := store.MarkExecutionCompleted("exec-race-run", racingPRURL, "cafefeed", 1234); err != nil {
+			t.Fatalf("failed to simulate racing completion: %v", err)
+		}
+		return "", nil
+	}
+	defer func() { staleRunningMergedPRCheck = origMergedCheck }()
+
+	origOpenCheck := staleRunningOpenPRCheck
+	staleRunningOpenPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { staleRunningOpenPRCheck = origOpenCheck }()
+
+	config := &DispatcherConfig{StaleRunningThreshold: 0, StaleQueuedThreshold: 0, StaleRecoveryInterval: time.Hour}
+	dispatcher := NewDispatcher(store, NewRunner(), config)
+
+	resetCount := dispatcher.recoverStaleRunningTasks()
+	if resetCount != 0 {
+		t.Errorf("expected resetCount=0 — the CAS guard must reject the failed-write, got %d", resetCount)
+	}
+
+	got, err := store.GetExecution("exec-race-run")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if got.Status != "completed" {
+		t.Errorf("expected the racing completion to survive the reap ('completed'), got %q (error=%q)", got.Status, got.Error)
+	}
+	if got.PRUrl != racingPRURL {
+		t.Errorf("expected pr_url from the racing completion to survive, got %q", got.PRUrl)
+	}
+
+	// The reaper must not have recorded a stale_running-failed audit event
+	// over the real completion — only evidence of the reap's own outcome
+	// (none, since the write was rejected) may exist.
+	events, err := store.ListExecutionEvents("exec-race-run")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	for _, e := range events {
+		if e.Stage == memory.StageFailed {
+			t.Errorf("expected no stale_running-failed event over a racing completion, got %+v", e)
+		}
+	}
+}
+
 // TestRecoverStaleRunningTasks_WritesExecutionEvent verifies GH-4101: marking
 // a stale running task failed also writes an execution_events row, closing
 // the gap where a restart/orphan-driven terminal transition was invisible in

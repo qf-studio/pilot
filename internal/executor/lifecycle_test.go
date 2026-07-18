@@ -92,6 +92,41 @@ func TestExecutionLifecycle_Transition_QueuedToRunning(t *testing.T) {
 	}
 }
 
+// TestExecutionLifecycle_Transition_RejectsWhenAlreadyTerminal is the GH-4423
+// regression test for finding 2: Transition must not resurrect a row that
+// already reached a terminal status back to a non-terminal one (e.g. a
+// duplicate/late dispatch resuming a worker for a row Finish already closed
+// out). The CAS guard in UpdateExecutionStatusIfNotTerminal rejects the
+// write silently (no error) — the terminal status must survive.
+func TestExecutionLifecycle_Transition_RejectsWhenAlreadyTerminal(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4423-T1", ProjectPath: "/tmp/project"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+	if _, err := lifecycle.Finish(execID, &ExecutionResult{TaskID: task.ID, Success: true, CommitSHA: "abc123"}, nil, time.Second); err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+
+	// A late/duplicate Transition call racing in after Finish already closed
+	// out the row must be rejected, not resurrect it to "running".
+	if err := lifecycle.Transition(execID, ExecStatusRunning); err != nil {
+		t.Fatalf("Transition on an already-terminal row should not error, got: %v", err)
+	}
+
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("failed to load execution: %v", err)
+	}
+	if exec.Status != string(ExecStatusCompleted) {
+		t.Errorf("expected terminal status to survive a late Transition, got %q", exec.Status)
+	}
+}
+
 // TestExecutionLifecycle_Finish_Success verifies the success path atomically
 // persists status/pr_url/commit_sha and saves metrics.
 func TestExecutionLifecycle_Finish_Success(t *testing.T) {
@@ -134,6 +169,53 @@ func TestExecutionLifecycle_Finish_Success(t *testing.T) {
 	}
 	if exec.TokensTotal != result.TokensTotal {
 		t.Errorf("expected metrics to be persisted: tokens_total = %d, want %d", exec.TokensTotal, result.TokensTotal)
+	}
+}
+
+// TestExecutionLifecycle_Finish_DuplicateCallRejectsSecondWrite is the GH-4423
+// regression test for finding 2: "a duplicate Finish overwrites a terminal
+// state silently". A second Finish call against an execID that already
+// reached a terminal status (e.g. a retried callback finishing the same
+// execution twice with a different outcome) must not overwrite the first,
+// genuine terminal status — Persist's CAS guard should reject the second
+// write instead.
+func TestExecutionLifecycle_Finish_DuplicateCallRejectsSecondWrite(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4423-T2", ProjectPath: "/tmp/project"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	firstResult := &ExecutionResult{
+		TaskID:    task.ID,
+		Success:   true,
+		PRUrl:     "https://github.com/qf-studio/pilot/pull/4423",
+		CommitSHA: "first-commit",
+	}
+	if _, err := lifecycle.Finish(execID, firstResult, nil, time.Second); err != nil {
+		t.Fatalf("first Finish failed: %v", err)
+	}
+
+	// A second, later Finish call for the same execID (e.g. a retried
+	// callback) reports a completely different outcome — this must not land.
+	secondResult := &ExecutionResult{TaskID: task.ID, Success: false, Error: "boom"}
+	if _, err := lifecycle.Finish(execID, secondResult, nil, time.Second); err != nil {
+		t.Fatalf("second Finish should not error even though its write is rejected, got: %v", err)
+	}
+
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("failed to load execution: %v", err)
+	}
+	if exec.Status != string(ExecStatusCompleted) {
+		t.Errorf("expected the FIRST Finish's terminal status to survive, got %q", exec.Status)
+	}
+	if exec.PRUrl != firstResult.PRUrl || exec.CommitSHA != firstResult.CommitSHA {
+		t.Errorf("expected the first Finish's pr_url/commit_sha to survive a duplicate call, got %+v", exec)
 	}
 }
 

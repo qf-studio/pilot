@@ -4446,6 +4446,136 @@ func TestResolveOrphanedRunningExecution_IdempotentOnAlreadyTerminalRow(t *testi
 	}
 }
 
+// TestUpdateExecutionStatusIfNotTerminal_AppliesFromNonTerminal verifies the
+// CAS guard's normal case: a write against a still-running row applies
+// exactly like plain UpdateExecutionStatus would. GH-4423.
+func TestUpdateExecutionStatusIfNotTerminal_AppliesFromNonTerminal(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "cas-running", TaskID: "GH-4423-A", ProjectPath: "/proj", Status: "running"})
+
+	applied, err := store.UpdateExecutionStatusIfNotTerminal("cas-running", "failed", "orphaned worker")
+	if err != nil {
+		t.Fatalf("UpdateExecutionStatusIfNotTerminal: %v", err)
+	}
+	if !applied {
+		t.Error("expected applied=true for a write against a non-terminal row")
+	}
+
+	exec, err := store.GetExecution("cas-running")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", exec.Status)
+	}
+	if exec.CompletedAt == nil {
+		t.Error("expected completed_at to be set for the terminal write")
+	}
+}
+
+// TestUpdateExecutionStatusIfNotTerminal_RejectsWhenAlreadyTerminal is the
+// GH-4423 regression test for the TOCTOU class this issue targets: a stale
+// reaper's blind failure-write must not clobber a row that already reached a
+// terminal status (e.g. completed) between the reaper's evidence-gathering
+// and its final write.
+func TestUpdateExecutionStatusIfNotTerminal_RejectsWhenAlreadyTerminal(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{
+		ID: "cas-completed", TaskID: "GH-4423-B", ProjectPath: "/proj",
+		Status: "completed", PRUrl: "https://github.com/org/repo/pull/99",
+	})
+
+	applied, err := store.UpdateExecutionStatusIfNotTerminal("cas-completed", "failed", "stale running task recovered (orphaned worker)")
+	if err != nil {
+		t.Fatalf("UpdateExecutionStatusIfNotTerminal: %v", err)
+	}
+	if applied {
+		t.Error("expected applied=false — row already terminal, write must be rejected")
+	}
+
+	exec, err := store.GetExecution("cas-completed")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "completed" {
+		t.Errorf("expected status to remain 'completed', got %q", exec.Status)
+	}
+	if exec.PRUrl != "https://github.com/org/repo/pull/99" {
+		t.Errorf("expected pr_url to remain stamped, got %q", exec.PRUrl)
+	}
+}
+
+// TestMarkExecutionCompletedIfNotTerminal_AppliesFromNonTerminal verifies the
+// CAS-guarded completion write applies normally against a running row. GH-4423.
+func TestMarkExecutionCompletedIfNotTerminal_AppliesFromNonTerminal(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "cas-mec-running", TaskID: "GH-4423-C", ProjectPath: "/proj", Status: "running"})
+
+	applied, err := store.MarkExecutionCompletedIfNotTerminal("cas-mec-running", "https://github.com/org/repo/pull/100", "abc123", 500)
+	if err != nil {
+		t.Fatalf("MarkExecutionCompletedIfNotTerminal: %v", err)
+	}
+	if !applied {
+		t.Error("expected applied=true for a write against a non-terminal row")
+	}
+
+	exec, err := store.GetExecution("cas-mec-running")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "completed" || exec.PRUrl != "https://github.com/org/repo/pull/100" {
+		t.Errorf("expected completed with pr_url stamped, got status=%q pr_url=%q", exec.Status, exec.PRUrl)
+	}
+}
+
+// TestMarkExecutionCompletedIfNotTerminal_RejectsWhenAlreadyTerminal verifies
+// a duplicate Finish call (ExecutionLifecycle.Persist's success branch) can't
+// resurrect and overwrite a row that already reached a different terminal
+// status (e.g. "failed" from a racing writer). GH-4423.
+func TestMarkExecutionCompletedIfNotTerminal_RejectsWhenAlreadyTerminal(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "cas-mec-failed", TaskID: "GH-4423-D", ProjectPath: "/proj", Status: "failed", Error: "boom"})
+
+	applied, err := store.MarkExecutionCompletedIfNotTerminal("cas-mec-failed", "https://github.com/org/repo/pull/101", "def456", 500)
+	if err != nil {
+		t.Fatalf("MarkExecutionCompletedIfNotTerminal: %v", err)
+	}
+	if applied {
+		t.Error("expected applied=false — row already terminal, write must be rejected")
+	}
+
+	exec, err := store.GetExecution("cas-mec-failed")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected status to remain 'failed', got %q", exec.Status)
+	}
+	if exec.PRUrl != "" {
+		t.Errorf("expected pr_url to remain empty, got %q", exec.PRUrl)
+	}
+}
+
 // TestSelfHealExecutionByPRURL_HealsMatchingRow verifies the pr_url-keyed
 // fallback heal used when a merged PR's issue number can't be resolved at
 // all. TASK-399/GH-4209.
