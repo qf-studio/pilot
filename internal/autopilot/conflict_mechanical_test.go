@@ -119,12 +119,14 @@ func TestController_HandleMergeConflict_MechanicalResolutionSucceeds(t *testing.
 	}
 }
 
-// TestController_HandleMergeConflict_SourceFileConflictFallsThrough verifies
-// that a conflict touching a source file (not just go.mod/go.sum) still falls
-// through to the existing closeAndReexecute rung even when a real project
-// path is configured and the mechanical rung actually runs the local merge —
-// current behavior for this conflict shape is unchanged.
-func TestController_HandleMergeConflict_SourceFileConflictFallsThrough(t *testing.T) {
+// TestController_HandleMergeConflict_SourceFileConflictEscalatesInsteadOfClosing
+// verifies that a conflict touching a source file (not just go.mod/go.sum)
+// no longer falls through to closeAndReexecute (GH-4459): once the local
+// merge replay determines the conflict surface and it isn't go.mod/go.sum-only,
+// the PR must be held via escalateAndHold instead of closed — closing it here
+// throws away in-flight work for a conflict shape no automatic rung can ever
+// resolve.
+func TestController_HandleMergeConflict_SourceFileConflictEscalatesInsteadOfClosing(t *testing.T) {
 	local := newFixtureRepo(t)
 	ctx := context.Background()
 
@@ -141,10 +143,11 @@ func TestController_HandleMergeConflict_SourceFileConflictFallsThrough(t *testin
 	runFixtureGit(t, local, "push", "origin", "main")
 
 	var (
-		prClosed          bool
-		closeCommentBody  string
-		pilotLabelAdded   bool
-		inProgressRemoved bool
+		prClosed        bool
+		branchDeleted   bool
+		escalateComment string
+		issueCreated    bool
+		labelsAdded     []string
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -157,23 +160,21 @@ func TestController_HandleMergeConflict_SourceFileConflictFallsThrough(t *testin
 		case r.URL.Path == "/repos/owner/repo/issues/56/comments" && r.Method == http.MethodPost:
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			closeCommentBody = body["body"]
+			escalateComment = body["body"]
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(github.PRComment{ID: 1})
 		case r.URL.Path == "/repos/owner/repo/issues/21/labels" && r.Method == http.MethodPost:
 			var body map[string][]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			for _, l := range body["labels"] {
-				if l == github.LabelPilot {
-					pilotLabelAdded = true
-				}
-			}
+			labelsAdded = append(labelsAdded, body["labels"]...)
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode([]github.Label{})
-		case r.URL.Path == "/repos/owner/repo/issues/21/labels/pilot-in-progress" && r.Method == http.MethodDelete:
-			inProgressRemoved = true
-			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/repos/owner/repo/issues/21/labels/pilot-done" && r.Method == http.MethodDelete:
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(github.Issue{Number: 999})
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/git/refs/heads/") && r.Method == http.MethodDelete:
+			branchDeleted = true
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusOK)
@@ -208,18 +209,36 @@ func TestController_HandleMergeConflict_SourceFileConflictFallsThrough(t *testin
 		t.Fatal("PR 56 not found in activePRs")
 	}
 	if pr.Stage != StageFailed {
-		t.Fatalf("Stage = %s, want %s (close-and-reexecute fallback)", pr.Stage, StageFailed)
+		t.Fatalf("Stage = %s, want %s (escalateAndHold)", pr.Stage, StageFailed)
 	}
 	if pr.RebaseAttempts != 0 {
 		t.Fatalf("RebaseAttempts = %d, want 0 (mechanical resolution never ran to success)", pr.RebaseAttempts)
 	}
-	if !prClosed {
-		t.Fatal("expected PR to be closed via close-and-reexecute fallback")
+	if prClosed {
+		t.Fatal("PR must NOT be closed for a non-go.mod/go.sum conflict — escalateAndHold holds it instead (GH-4459)")
 	}
-	if closeCommentBody == "" {
-		t.Fatal("expected close-and-reexecute comment to be posted")
+	if c.consumeSelfClosedMarker(56) {
+		t.Fatal("escalateAndHold must never stamp a self-close marker — the PR was never closed")
 	}
-	if !pilotLabelAdded || !inProgressRemoved {
-		t.Fatal("expected issue restored to dispatch-ready state (pilot label re-added, in-progress removed)")
+	if branchDeleted {
+		t.Fatal("branch must NOT be deleted when the PR is held via escalateAndHold")
+	}
+	if issueCreated {
+		t.Fatal("no re-execution issue should be created when the PR is held via escalateAndHold")
+	}
+	if pr.Error != "auto-rebase failed" {
+		t.Fatalf("Error = %q, want %q", pr.Error, "auto-rebase failed")
+	}
+	if escalateComment == "" || !strings.Contains(escalateComment, "main.go") {
+		t.Fatalf("expected escalateAndHold comment to name the conflicted file, got: %q", escalateComment)
+	}
+	found := false
+	for _, l := range labelsAdded {
+		if l == "needs-manual-rebase" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected needs-manual-rebase label on the issue, got labels: %v", labelsAdded)
 	}
 }

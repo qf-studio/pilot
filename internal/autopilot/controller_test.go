@@ -7204,11 +7204,17 @@ func TestController_handleMerging_MergeFollowupFlagPersists(t *testing.T) {
 
 // --- GH-2588: CI fix size guard tests ---
 
-// TestCIFixSizeGuard_OversizedPR_BlocksFixIssue is a cascade-2 reproduction:
-// a failing PR with 512 additions must NOT spawn a fix(ci) issue and must be closed.
-func TestCIFixSizeGuard_OversizedPR_BlocksFixIssue(t *testing.T) {
+// TestCIFixSizeGuard_OversizedPR_EscalatesInsteadOfClosing is a cascade-2
+// reproduction: a failing PR with 512 additions must NOT spawn a fix(ci)
+// issue and must NOT be self-closed (GH-4459) — a closed PR with no
+// continuation issue is the exact dead end that lost the GH-4415 fix twice.
+// It must instead be escalated via escalateAndHold: PR/branch left intact,
+// StageFailed, pilot-needs-human applied to the linked issue.
+func TestCIFixSizeGuard_OversizedPR_EscalatesInsteadOfClosing(t *testing.T) {
 	issueCreated := false
 	prClosed := false
+	branchDeleted := false
+	var labelsAdded []string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -7239,10 +7245,19 @@ func TestCIFixSizeGuard_OversizedPR_BlocksFixIssue(t *testing.T) {
 			resp := github.Issue{Number: 200}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			labelsAdded = append(labelsAdded, body["labels"]...)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{})
 		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == http.MethodPatch:
 			prClosed = true
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{}"))
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/git/refs/heads/") && r.Method == http.MethodDelete:
+			branchDeleted = true
+			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{}"))
@@ -7272,14 +7287,29 @@ func TestCIFixSizeGuard_OversizedPR_BlocksFixIssue(t *testing.T) {
 	if issueCreated {
 		t.Error("fix issue must NOT be created when failing PR exceeds size floor")
 	}
-	if !prClosed {
-		t.Error("oversized failing PR must be closed by the size guard")
+	if prClosed {
+		t.Error("size guard must never self-close the PR — hold via escalateAndHold instead (GH-4459)")
+	}
+	if branchDeleted {
+		t.Error("size guard must never delete the branch")
+	}
+	if c.consumeSelfClosedMarker(42) {
+		t.Error("escalateAndHold must never stamp a self-close marker — the PR was never closed")
 	}
 	if prState.Stage != StageFailed {
 		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
 	}
-	if !strings.Contains(prState.Error, "CI fix size guard") {
-		t.Errorf("error should mention size guard, got: %s", prState.Error)
+	if !strings.Contains(prState.Error, "CI fix size guard fired") {
+		t.Errorf("Error should record the escalateAndHold reason, got: %s", prState.Error)
+	}
+	found := false
+	for _, l := range labelsAdded {
+		if l == labelNeedsHuman {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pilot-needs-human label on the issue, got labels: %v", labelsAdded)
 	}
 }
 
@@ -7496,10 +7526,13 @@ func TestCIFixSizeGuard_WellTestedPR_AllowsFixIssue(t *testing.T) {
 // TestCIFixSizeGuard_GenuineCascade_StillBlocksFixIssue verifies that a PR
 // with >200 PRODUCTION lines across unrelated files (no tests, no
 // bookkeeping) still trips the guard — the GH-4284 exclusion fix must not
-// weaken genuine cascade-contamination detection.
+// weaken genuine cascade-contamination detection. Per GH-4459 the guard no
+// longer self-closes the PR; it escalates and holds instead.
 func TestCIFixSizeGuard_GenuineCascade_StillBlocksFixIssue(t *testing.T) {
 	issueCreated := false
 	prClosed := false
+	branchDeleted := false
+	var labelsAdded []string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -7529,10 +7562,19 @@ func TestCIFixSizeGuard_GenuineCascade_StillBlocksFixIssue(t *testing.T) {
 			resp := github.Issue{Number: 600}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues/11/labels" && r.Method == http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			labelsAdded = append(labelsAdded, body["labels"]...)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{})
 		case r.URL.Path == "/repos/owner/repo/pulls/77" && r.Method == http.MethodPatch:
 			prClosed = true
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{}"))
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/git/refs/heads/") && r.Method == http.MethodDelete:
+			branchDeleted = true
+			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{}"))
@@ -7562,14 +7604,248 @@ func TestCIFixSizeGuard_GenuineCascade_StillBlocksFixIssue(t *testing.T) {
 	if issueCreated {
 		t.Error("fix issue must NOT be created — 300 production additions is genuine cascade contamination")
 	}
-	if !prClosed {
-		t.Error("genuinely oversized failing PR must still be closed by the size guard")
+	if prClosed {
+		t.Error("size guard must never self-close the PR — hold via escalateAndHold instead (GH-4459)")
+	}
+	if branchDeleted {
+		t.Error("size guard must never delete the branch")
+	}
+	if c.consumeSelfClosedMarker(77) {
+		t.Error("escalateAndHold must never stamp a self-close marker — the PR was never closed")
 	}
 	if prState.Stage != StageFailed {
 		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
 	}
 	if !strings.Contains(prState.Error, "CI fix size guard") {
 		t.Errorf("error should mention size guard, got: %s", prState.Error)
+	}
+	found := false
+	for _, l := range labelsAdded {
+		if l == labelNeedsHuman {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pilot-needs-human label on the issue, got labels: %v", labelsAdded)
+	}
+}
+
+// TestHandleCIFailed_FixIssueCreateErrors_EscalatesInsteadOfClosing covers the
+// CI-fail rung of GH-4459: when CreateFailureIssue's underlying GitHub call
+// errors (here, a 500 from the issues-create endpoint), the PR must be held
+// via escalateAndHold rather than closed with no continuation — a closed PR
+// paired with a failed fix-issue create is the exact dead end that lost the
+// GH-4415 fix twice.
+func TestHandleCIFailed_FixIssueCreateErrors_EscalatesInsteadOfClosing(t *testing.T) {
+	prClosed := false
+	branchDeleted := false
+	var labelsAdded []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/preflight1/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues/30" && r.Method == http.MethodGet:
+			resp := github.Issue{Number: 30, Body: "<!-- autopilot-meta branch:pilot/GH-30 pr:88 iteration:1 -->"}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/88/files" && r.Method == http.MethodGet:
+			files := []*github.PRFile{{Filename: "internal/foo.go", Status: "modified", Additions: 10}}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, files))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"internal server error"}`))
+		case r.URL.Path == "/repos/owner/repo/issues/30/labels" && r.Method == http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			labelsAdded = append(labelsAdded, body["labels"]...)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{})
+		case r.URL.Path == "/repos/owner/repo/pulls/88" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/git/refs/heads/") && r.Method == http.MethodDelete:
+			branchDeleted = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.MaxCIFixPRSize = 200
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:    88,
+		IssueNumber: 30,
+		HeadSHA:     "preflight1",
+		Stage:       StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if prClosed {
+		t.Error("PR must NOT be closed when the continuation fix issue fails to create — hold via escalateAndHold instead (GH-4459)")
+	}
+	if branchDeleted {
+		t.Error("branch must NOT be deleted when the PR is held via escalateAndHold")
+	}
+	if c.consumeSelfClosedMarker(88) {
+		t.Error("escalateAndHold must never stamp a self-close marker — the PR was never closed")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	if prState.Error != "CI-fix continuation declined at preflight" {
+		t.Errorf("Error = %q, want %q", prState.Error, "CI-fix continuation declined at preflight")
+	}
+	found := false
+	for _, l := range labelsAdded {
+		if l == labelNeedsHuman {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pilot-needs-human label on the issue, got labels: %v", labelsAdded)
+	}
+}
+
+// TestHandleCIFailed_FixIssuePreflightDeclined_EscalatesInsteadOfClosing covers
+// the other half of the CI-fail rung (GH-4459): CreateFailureIssue can
+// legitimately return (0, nil) when GH-4307's dedup guard sees the key
+// already claimed but not yet recorded (a create still in flight, or a prior
+// crash after claiming but before recording). Reproduced here by pre-claiming
+// the exact dedup key handleCIFailed will compute before calling it. The PR
+// must still be held via escalateAndHold, not closed with no continuation.
+func TestHandleCIFailed_FixIssuePreflightDeclined_EscalatesInsteadOfClosing(t *testing.T) {
+	prClosed := false
+	branchDeleted := false
+	issueCreated := false
+	var labelsAdded []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/preflight2/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues/31" && r.Method == http.MethodGet:
+			resp := github.Issue{Number: 31, Body: "<!-- autopilot-meta branch:pilot/GH-31 pr:89 iteration:1 -->"}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/89/files" && r.Method == http.MethodGet:
+			files := []*github.PRFile{{Filename: "internal/foo.go", Status: "modified", Additions: 10}}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, files))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 700}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues/31/labels" && r.Method == http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			labelsAdded = append(labelsAdded, body["labels"]...)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{})
+		case r.URL.Path == "/repos/owner/repo/pulls/89" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/git/refs/heads/") && r.Method == http.MethodDelete:
+			branchDeleted = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.MaxCIFixPRSize = 200
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	store := newTestStateStore(t)
+	c.SetStateStore(store)
+
+	prState := &PRState{
+		PRNumber:    89,
+		IssueNumber: 31,
+		HeadSHA:     "preflight2",
+		Stage:       StageCIFailed,
+	}
+
+	// Pre-claim the exact dedup key handleCIFailed will compute (iteration+1
+	// increments the issue-body iteration of 1 to 2, but the dedup key itself
+	// doesn't carry iteration — only PR number, failure type, and the failed
+	// check names GetFailedChecks returns for HeadSHA "preflight2"). Claiming
+	// but never recording simulates a create still in flight, forcing
+	// CreateFailureIssue's dedup guard to return (0, nil).
+	dedupRepo := "owner/repo"
+	dedupKey := spawnedFixDedupKey(89, FailureCIPreMerge, []string{"build"})
+	claimed, err := store.ClaimSpawnedFix(dedupRepo, dedupKey)
+	if err != nil {
+		t.Fatalf("ClaimSpawnedFix: %v", err)
+	}
+	if !claimed {
+		t.Fatal("expected to win the dedup claim (fresh store)")
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if issueCreated {
+		t.Error("fix issue must NOT be created — the dedup key is already claimed but not yet recorded")
+	}
+	if prClosed {
+		t.Error("PR must NOT be closed when the continuation fix issue is declined at preflight — hold via escalateAndHold instead (GH-4459)")
+	}
+	if branchDeleted {
+		t.Error("branch must NOT be deleted when the PR is held via escalateAndHold")
+	}
+	if c.consumeSelfClosedMarker(89) {
+		t.Error("escalateAndHold must never stamp a self-close marker — the PR was never closed")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	if prState.Error != "CI-fix continuation declined at preflight" {
+		t.Errorf("Error = %q, want %q", prState.Error, "CI-fix continuation declined at preflight")
+	}
+	found := false
+	for _, l := range labelsAdded {
+		if l == labelNeedsHuman {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pilot-needs-human label on the issue, got labels: %v", labelsAdded)
 	}
 }
 

@@ -1742,6 +1742,17 @@ func (c *Controller) postTestEvidenceHoldComment(ctx context.Context, prState *P
 // Each fix issue embeds an iteration counter in autopilot-meta; when the
 // counter reaches MaxCIFixIterations the PR transitions to StageFailed
 // instead of spawning another fix issue.
+// ciFailedChecksSummary formats a stable one-line description of a CI
+// failure, reused for PR/issue comments and escalateAndHold reasons across
+// handleCIFailed's rungs: "CI checks failed" when GetFailedChecks returned
+// nothing more specific, or "CI checks failed (check1, check2)" otherwise.
+func ciFailedChecksSummary(failedChecks []string) string {
+	if len(failedChecks) == 0 {
+		return "CI checks failed"
+	}
+	return fmt.Sprintf("CI checks failed (%s)", strings.Join(failedChecks, ", "))
+}
+
 func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error {
 	failedChecks, err := c.ciMonitor.GetFailedChecks(ctx, prState.HeadSHA)
 	if err != nil {
@@ -1826,24 +1837,21 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				c.log.Warn("CI fix size guard fired — failing PR exceeds size floor, refusing to spawn fix issue",
 					"pr", prState.PRNumber, "production_additions", production, "test_additions", test,
 					"bookkeeping_additions", bookkeeping, "limit", c.config.MaxCIFixPRSize)
-				if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
-					c.log.Warn("CI fix size guard: failed to close oversized failed PR",
-						"pr", prState.PRNumber, "error", err)
-				}
 				// GH-3260: Sync board card to "Blocked/Failed" column on execution failure (size guard).
 				if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
 					if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
 						c.log.Warn("board sync on exec failure (size guard) failed", "pr", prState.PRNumber, "error", err)
 					}
 				}
-				// GH-3806: see the matching comment on the iteration-limit branch above.
-				prState.Stage = StageFailed
-				prState.Error = fmt.Sprintf("CI fix size guard: PR has %d production additions, over limit %d%s (likely cascade contamination — escalate to human)",
-					production, c.config.MaxCIFixPRSize, excludedAdditionsSuffix(bookkeeping, test))
-				prState.TerminalLabel = github.LabelFailed
+				// GH-4459: never self-close here — a closed PR with no fix
+				// issue to continue the work is the exact dead end that lost
+				// the GH-4415 fix twice. Hold for a human instead, PR and
+				// branch intact.
+				comment := fmt.Sprintf("CI fix size guard fired: PR has %d production additions, over limit %d%s (likely cascade contamination). No fix issue will be created. %s",
+					production, c.config.MaxCIFixPRSize, excludedAdditionsSuffix(bookkeeping, test), ciFailedChecksSummary(failedChecks))
+				c.escalateAndHold(ctx, prState, "CI fix size guard fired", []string{labelNeedsHuman}, comment)
 				c.metrics.RecordPRFailed()
 				c.metrics.RecordCIRun("fail")
-				c.metrics.RecordIssueProcessed("failed")
 				return nil
 			}
 		}
@@ -1854,8 +1862,29 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	ciLogs := c.ciMonitor.GetFailedCheckLogs(ctx, prState.HeadSHA, 2000)
 
 	issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPreMerge, failedChecks, ciLogs, iteration+1)
-	if err != nil {
-		return fmt.Errorf("failed to create fix issue: %w", err)
+	// GH-4459: the PR must never be closed unless the continuation fix issue
+	// actually cleared preflight admission — CreateFailureIssue's dedup guard
+	// can legitimately return (0, nil) when a claim is in flight but not yet
+	// recorded (GH-4307), and a transient error from the create call itself
+	// leaves nothing to continue the work either way. Closing the PR in
+	// either case is the exact dead end that lost the GH-4415 fix twice:
+	// hold for a human instead, PR and branch intact, rather than looping
+	// silently (a retry after a real create error will keep re-hitting the
+	// already-claimed dedup key and observe the same decline).
+	if err != nil || issueNum <= 0 {
+		if err != nil {
+			c.log.Warn("CI-fix continuation declined at preflight: failed to create fix issue",
+				"pr", prState.PRNumber, "error", err)
+		} else {
+			c.log.Warn("CI-fix continuation declined at preflight: no fix issue number returned",
+				"pr", prState.PRNumber)
+		}
+		comment := fmt.Sprintf("Could not create a continuation fix issue for this CI failure — holding this PR for manual review instead of closing it with no follow-up. %s",
+			ciFailedChecksSummary(failedChecks))
+		c.escalateAndHold(ctx, prState, "CI-fix continuation declined at preflight", []string{labelNeedsHuman}, comment)
+		c.metrics.RecordPRFailed()
+		c.metrics.RecordCIRun("fail")
+		return nil
 	}
 
 	// GH-1964/GH-1979: Learn from CI failure patterns (self-improvement).
@@ -1898,12 +1927,8 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	// issue pilot-failed instead of leaving it stranded on a stale label — the
 	// fix issue created above carries the retry forward, so this issue must not
 	// also be re-queued (that would double-dispatch the same failure).
-	reason := "CI checks failed"
-	if len(failedChecks) > 0 {
-		reason = fmt.Sprintf("CI checks failed (%s)", strings.Join(failedChecks, ", "))
-	}
 	prState.Stage = StageFailed
-	prState.Error = fmt.Sprintf("%s; fix issue #%d created to continue this work", reason, issueNum)
+	prState.Error = fmt.Sprintf("%s; fix issue #%d created to continue this work", ciFailedChecksSummary(failedChecks), issueNum)
 	prState.TerminalLabel = github.LabelFailed
 	c.metrics.RecordPRFailed()
 	c.metrics.RecordCIRun("fail")
@@ -3824,7 +3849,26 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 	}
 	c.log.Warn("auto-rebase failed, attempting mechanical go.mod/go.sum resolution", "pr", prState.PRNumber, "error", err)
 
-	if c.attemptMechanicalConflictResolution(ctx, prState) {
+	resolved, conflictedFiles := c.attemptMechanicalConflictResolution(ctx, prState)
+	if resolved {
+		return nil
+	}
+
+	// GH-4459: a conflict surface we actually determined (via the local merge
+	// replay above) is NOT go.mod/go.sum-only is not something auto-rebase or
+	// mechanical resolution will ever fix — closeAndReexecute would throw away
+	// the in-flight PR and re-dispatch from scratch for a conflict a human
+	// needs to look at. Hold it instead. Every other failure mode here (local
+	// merge replay error, clean-merge-despite-API-failure, or a go.mod/go.sum
+	// conflict whose mechanical resolution itself failed) still falls through
+	// to closeAndReexecute unchanged — conflictedFiles is only populated for
+	// the "not go.mod/go.sum-only" case.
+	if len(conflictedFiles) > 0 {
+		comment := fmt.Sprintf(
+			"Merge conflict detected. Auto-rebase failed and the conflict surface is not limited to go.mod/go.sum — holding for manual resolution instead of closing.\n\nConflicted files:\n- %s",
+			strings.Join(conflictedFiles, "\n- "),
+		)
+		c.escalateAndHold(ctx, prState, "auto-rebase failed", []string{"needs-manual-rebase"}, comment)
 		return nil
 	}
 
@@ -3840,16 +3884,25 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 // go.mod/go.sum, resolves it mechanically and pushes the fix to the PR
 // branch.
 //
-// Returns true when the conflict was resolved and prState was advanced (either
-// to StageWaitingCI, or to StageFailed if this pushed RebaseAttempts past the
-// same oscillation cap the auto-rebase rung uses, GH-3715). Returns false for
-// every other outcome — local merge replay error, a conflict surface beyond
-// go.mod/go.sum, or resolveGoModSumConflict failing (unresolvable hunk, `go
-// mod tidy` failure, or post-tidy build failure) — leaving current behavior
-// (fall through to closeAndReexecute) unchanged.
-func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, prState *PRState) bool {
+// Returns (true, nil) when the conflict was resolved and prState was advanced
+// (either to StageWaitingCI, or to StageFailed if this pushed RebaseAttempts
+// past the same oscillation cap the auto-rebase rung uses, GH-3715).
+//
+// Returns (false, conflictedFiles) — a non-empty file list — only when the
+// local replay determined the conflict surface and it is NOT confined to
+// go.mod/go.sum: the caller (GH-4459) escalates and holds instead of falling
+// through to closeAndReexecute, since this is a conflict a human needs to
+// resolve, not one that will ever clear on retry.
+//
+// Returns (false, nil) for every other outcome — local merge replay error,
+// a conflict surface we couldn't determine (clean merge despite the GitHub
+// API failure), or resolveGoModSumConflict failing on a genuine go.mod/go.sum
+// conflict (unresolvable hunk, `go mod tidy` failure, or post-tidy build
+// failure) — leaving current behavior (fall through to closeAndReexecute)
+// unchanged.
+func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, prState *PRState) (bool, []string) {
 	if c.projectPath == "" || prState.BranchName == "" {
-		return false
+		return false, nil
 	}
 
 	baseBranch := c.resolveMainBranchName()
@@ -3857,24 +3910,24 @@ func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, pr
 	defer cleanup()
 	if err != nil {
 		c.log.Warn("mechanical conflict resolution: local merge replay failed", "pr", prState.PRNumber, "error", err)
-		return false
+		return false, nil
 	}
 	if !result.Conflicted() {
 		// UpdatePullRequestBranch failed for a reason other than a textual
 		// conflict (e.g. permissions) — don't guess at a fix, fall through.
 		c.log.Warn("mechanical conflict resolution: local merge replay succeeded cleanly despite GitHub API failure", "pr", prState.PRNumber)
-		return false
+		return false, nil
 	}
 	if !isGoModSumOnlyConflict(result.ConflictedFiles) {
-		c.log.Info("mechanical conflict resolution: conflict surface is not go.mod/go.sum-only, falling through",
+		c.log.Info("mechanical conflict resolution: conflict surface is not go.mod/go.sum-only, escalating for manual resolution",
 			"pr", prState.PRNumber, "files", result.ConflictedFiles)
-		return false
+		return false, result.ConflictedFiles
 	}
 
 	if err := resolveGoModSumConflict(ctx, result.WorktreePath, prState.BranchName, result.ConflictedFiles); err != nil {
 		c.log.Warn("mechanical conflict resolution: resolution failed, falling through to close-and-reexecute",
 			"pr", prState.PRNumber, "error", err)
-		return false
+		return false, nil
 	}
 
 	// GH-3715: a mechanical resolution returns the PR to StageWaitingCI without
@@ -3902,13 +3955,13 @@ func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, pr
 		prState.Error = errMsg
 		c.metrics.RecordPRFailed()
 		c.metrics.RecordIssueProcessed("failed")
-		return true
+		return true, nil
 	}
 
 	c.log.Info("mechanically resolved go.mod/go.sum conflict", "pr", prState.PRNumber, "attempt", prState.RebaseAttempts, "max", c.config.MaxRebaseAttempts)
 	prState.Stage = StageWaitingCI // mechanical resolution triggers new CI
 	prState.HeadSHA = ""           // force refresh on next tick
-	return true
+	return true, nil
 }
 
 // closeAndReexecute is the fallback rung of handleMergeConflict: comment on
