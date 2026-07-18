@@ -728,10 +728,22 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			ExecutorBackend: cfg.Executor,
 		})
 
+		// GH-4431: route Socket Mode approve/reject clicks to the same
+		// SlackHandler that the (HTTP-only) interaction webhook uses, so
+		// approval buttons are also routable on socket-mode deployments that
+		// have no public Interactivity Request URL. Guard against wrapping a
+		// nil *approval.SlackHandler in a non-nil interface (p.slackApprovalHdlr
+		// is nil when Slack approval isn't enabled).
+		var slackApprovalHandler slack.ApprovalCallbackHandler
+		if p.slackApprovalHdlr != nil {
+			slackApprovalHandler = p.slackApprovalHdlr
+		}
+
 		p.slackHandler = slack.NewHandler(&slack.HandlerConfig{
 			AppToken:        cfg.Adapters.Slack.AppToken,
 			Client:          slackClient,
 			CommsHandler:    slackCommsHandler,
+			ApprovalHandler: slackApprovalHandler,
 			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
 			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
 		})

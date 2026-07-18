@@ -269,6 +269,55 @@ func TestHandleMessage_CallbackConfirmation(t *testing.T) {
 	}
 }
 
+// TestHandleMessage_CallbackUnknownAction is the regression test for GH-4431:
+// an ActionID reaching this shared callback path that is neither a known
+// execute-like nor cancel-like value (e.g. an approval button's action_id
+// that should have been intercepted upstream) must get a distinct "Unknown
+// action" reply instead of silently being treated as a cancel — which
+// previously surfaced as the misleading "No pending task to confirm."
+// regardless of whether a task was actually pending.
+func TestHandleMessage_CallbackUnknownAction(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.mu.Lock()
+	h.pendingTasks["ch1"] = &PendingTask{
+		TaskID:      "TEST-456",
+		Description: "build feature",
+		ContextID:   "ch1",
+		CreatedAt:   time.Now(),
+	}
+	h.mu.Unlock()
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID:  "ch1",
+		SenderID:   "u1",
+		IsCallback: true,
+		CallbackID: "cb-1",
+		ActionID:   "approve",
+	})
+
+	if len(m.acks) == 0 {
+		t.Error("expected callback acknowledgment")
+	}
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected unknown-action message")
+	}
+	if texts[0].text != "Unknown action: approve" {
+		t.Errorf("unexpected: %s", texts[0].text)
+	}
+
+	// The pending task must be untouched — an unknown action must not
+	// silently cancel a real pending task.
+	h.mu.Lock()
+	_, stillPending := h.pendingTasks["ch1"]
+	h.mu.Unlock()
+	if !stillPending {
+		t.Error("unknown action must not consume/cancel the pending task")
+	}
+}
+
 func TestHandleMessage_NoConfirmationPending(t *testing.T) {
 	m := &handlerMock{}
 	h := newTestHandler(m)

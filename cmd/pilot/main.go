@@ -1538,6 +1538,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 
 	// Register Slack approval handler if enabled
+	var slackApprovalHandler slack.ApprovalCallbackHandler
 	var slackApprovalHandlerImpl *approval.SlackHandler
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
 		if cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled {
@@ -1553,6 +1554,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// waiter goroutine survived the restart (mirrors GH-3825's Telegram fix).
 			slackApprovalHandlerImpl.WithDecisionRecorder(approvalMgr)
 			approvalMgr.RegisterHandler(slackApprovalHandlerImpl)
+			// GH-4431: route Socket Mode approve/reject clicks to this handler
+			// (see slack.HandlerConfig.ApprovalHandler below) — without this,
+			// approval buttons are unroutable on socket-mode deployments since
+			// they have no public HTTP Interactivity endpoint to receive them.
+			slackApprovalHandler = slackApprovalHandlerImpl
 			logging.WithComponent("start").Info("registered Slack approval handler",
 				slog.String("channel", slackChannel))
 		}
@@ -2675,6 +2681,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		slackChatHandler := slack.NewHandler(&slack.HandlerConfig{
 			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
 			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
+			ApprovalHandler: slackApprovalHandler,
 		})
 
 		slackBridge := sdkSlack.New(sdkSlack.Config{

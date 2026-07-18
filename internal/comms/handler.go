@@ -201,8 +201,24 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	// Handle callback (button press) — check pending confirmation
 	if msg.IsCallback {
 		_ = h.messenger.AcknowledgeCallback(ctx, msg.CallbackID)
-		confirmed := msg.ActionID == "execute" || msg.ActionID == "confirm" || msg.ActionID == "yes"
-		h.handleConfirmation(ctx, contextID, msg.ThreadID, confirmed)
+		switch msg.ActionID {
+		case "execute", "confirm", "yes":
+			h.handleConfirmation(ctx, contextID, msg.ThreadID, true)
+		case "cancel", "no":
+			h.handleConfirmation(ctx, contextID, msg.ThreadID, false)
+		default:
+			// GH-4431: this shared path only understands execute/cancel task
+			// confirmation semantics. An ActionID reaching here that matches
+			// neither is a routing bug upstream (e.g. an approval button that
+			// should have been intercepted before comms) — reply distinctly
+			// instead of silently treating it as a cancel of whatever task
+			// happens to be pending, which produced the misleading "No
+			// pending task to confirm." for every misrouted click.
+			h.log.Warn("unknown callback action_id reached comms",
+				slog.String("context_id", contextID),
+				slog.String("action_id", msg.ActionID))
+			_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("Unknown action: %s", msg.ActionID))
+		}
 		return
 	}
 
