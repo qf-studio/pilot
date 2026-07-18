@@ -9,8 +9,22 @@ import (
 	"sync"
 	"time"
 
+	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
+
+// StepLogClient is the minimal in-tree GitHub client surface CIMonitor needs
+// to resolve a failed check run down to its actual failing step (GH-4460):
+// the jobs API for the step breakdown, and check-run annotations as a
+// fallback for check runs that aren't backed by a GitHub Actions job (e.g.
+// third-party Checks-API integrations report annotations but have no
+// job/step breakdown). This is deliberately a separate, in-tree client
+// (internal/adapters/github) rather than the studio-sdk client CIMonitor
+// otherwise uses — the SDK does not yet expose the jobs/annotations APIs.
+type StepLogClient interface {
+	GetWorkflowJob(ctx context.Context, owner, repo string, jobID int64) (*ghadapter.WorkflowJob, error)
+	GetCheckRunAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]ghadapter.CheckRunAnnotation, error)
+}
 
 // CIMonitor watches GitHub CI status for PRs.
 type CIMonitor struct {
@@ -21,6 +35,11 @@ type CIMonitor struct {
 	waitTimeout    time.Duration
 	requiredChecks []string
 	log            *slog.Logger
+
+	// stepLogClient is optional (GH-4460). When unset, GetFailedCheckExcerpts
+	// falls back to whole-job-log tails instead of resolving the specific
+	// failing step.
+	stepLogClient StepLogClient
 
 	// CI checks configuration (auto-discovery)
 	ciChecks *CIChecksConfig
@@ -116,6 +135,13 @@ func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIM
 		discoveryStart:   make(map[string]time.Time),
 		log:              startupLog,
 	}
+}
+
+// SetStepLogClient injects the in-tree GitHub client used to resolve a
+// failed check run down to its specific failing step (GH-4460). Optional:
+// without it, GetFailedCheckExcerpts falls back to whole-job-log tails.
+func (m *CIMonitor) SetStepLogClient(c StepLogClient) {
+	m.stepLogClient = c
 }
 
 // WaitForCI polls until all required checks complete or timeout.
@@ -594,6 +620,101 @@ func (m *CIMonitor) GetFailedCheckLogs(ctx context.Context, sha string, maxLen i
 		result = result[:maxLen]
 	}
 	return result
+}
+
+// GetFailedCheckExcerpts fetches, for each failed check run on sha, the tail
+// of its actual failing step (GH-4460) rather than the whole job log, and
+// assembles them into a single budget-capped, self-contained block: a
+// heading, the tail excerpt, and a permalink fallback per check. Returns ""
+// when there are no in-scope failed checks or the check-run list can't be
+// fetched.
+//
+// This replaces GetFailedCheckLogs in the fix-issue creation path: that
+// method's small maxLen (2000 chars, applied to the head of the *combined*
+// blob) let one check's runner-setup preamble consume the entire budget
+// before the real failure line was ever reached, which is what made every
+// GH-4415 continuation (4444/4446/4449/4453) bounce at preflight with
+// "provide only runner setup information".
+func (m *CIMonitor) GetFailedCheckExcerpts(ctx context.Context, sha string) string {
+	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	if err != nil {
+		m.log.Warn("failed to list check runs for excerpt fetch", "sha", ShortSHA(sha), "error", err)
+		return ""
+	}
+
+	var excerpts []FailingStepExcerpt
+	for _, run := range checkRuns.CheckRuns {
+		if run.Conclusion != github.ConclusionFailure {
+			continue
+		}
+		if !m.isScopedCheck(run.Name) {
+			continue
+		}
+		excerpts = append(excerpts, m.buildFailingStepExcerpt(ctx, run))
+	}
+
+	body := AssembleFailureExcerptsBody(excerpts, failedCheckExcerptBudgetChars)
+	if body == "" {
+		return ""
+	}
+	return ciExcerptSentinel + body
+}
+
+// buildFailingStepExcerpt resolves one failed check run down to its actual
+// failing step and returns the trailing lines of that step's log. It falls
+// through progressively coarser signal when the finer one is unavailable:
+//  1. jobs API step breakdown + timestamp-sliced job log tail (GitHub
+//     Actions-backed checks — the common case)
+//  2. check-run annotations (checks posted directly via the Checks API by
+//     third-party CI apps have no job/step breakdown at all)
+//  3. whole job log, last N lines (old behavior, still an improvement over
+//     the previous head-of-combined-blob truncation)
+func (m *CIMonitor) buildFailingStepExcerpt(ctx context.Context, run github.CheckRun) FailingStepExcerpt {
+	excerpt := FailingStepExcerpt{
+		CheckName:    run.Name,
+		PermalinkURL: run.DetailsURL,
+	}
+
+	if m.stepLogClient != nil {
+		job, jobErr := m.stepLogClient.GetWorkflowJob(ctx, m.owner, m.repo, run.ID)
+		if jobErr != nil {
+			m.log.Debug("jobs API lookup failed, falling back", "check", run.Name, "id", run.ID, "error", jobErr)
+		} else if step, found := resolveFailingStep(job.Steps); found {
+			if jobLog, logErr := m.ghClient.GetJobLogs(ctx, m.owner, m.repo, run.ID); logErr == nil {
+				if window, ok := sliceLogByStepWindow(jobLog, step); ok {
+					excerpt.StepName = step.Name
+					excerpt.Tail = tailLines(window, failedCheckExcerptMaxLines)
+					excerpt.Source = "step"
+					return excerpt
+				}
+			}
+		}
+
+		if anns, annErr := m.stepLogClient.GetCheckRunAnnotations(ctx, m.owner, m.repo, run.ID); annErr == nil {
+			var sb strings.Builder
+			for _, a := range anns {
+				if a.AnnotationLevel != "failure" {
+					continue
+				}
+				fmt.Fprintf(&sb, "%s:%d: %s\n", a.Path, a.StartLine, a.Message)
+			}
+			if sb.Len() > 0 {
+				excerpt.Tail = sb.String()
+				excerpt.Source = "annotations"
+				return excerpt
+			}
+		}
+	}
+
+	// Fallback: whole job log, tail only (still better than head-of-log).
+	jobLog, err := m.ghClient.GetJobLogs(ctx, m.owner, m.repo, run.ID)
+	if err != nil {
+		m.log.Warn("failed to fetch logs for check run", "check", run.Name, "id", run.ID, "error", err)
+		return excerpt
+	}
+	excerpt.Tail = tailLines(jobLog, failedCheckExcerptMaxLines)
+	excerpt.Source = "job"
+	return excerpt
 }
 
 // GetCheckLogs fetches logs for all completed, in-scope check runs for sha and
