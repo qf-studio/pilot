@@ -324,6 +324,84 @@ func TestDispatcher_GetRunningTaskIDs(t *testing.T) {
 	}
 }
 
+// TestDispatcher_QueuedOrRunningCount verifies the GH-4454 lane-starvation
+// signal: 0 for a project with no worker at all, the raw queued count for an
+// idle worker sitting on a backlog, +1 while a worker is actively processing,
+// and the sum of both when a worker is processing with more still queued.
+func TestDispatcher_QueuedOrRunningCount(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// No worker for this project path at all.
+	if got := dispatcher.QueuedOrRunningCount("/proj-none"); got != 0 {
+		t.Errorf("expected 0 for a project with no worker, got %d", got)
+	}
+
+	log := slog.Default()
+
+	// Idle worker, no queued tasks in the store: 0.
+	idleWorker := NewProjectWorker("/proj-idle", store, runner, log)
+	dispatcher.mu.Lock()
+	dispatcher.workers["/proj-idle"] = idleWorker
+	dispatcher.mu.Unlock()
+
+	if got := dispatcher.QueuedOrRunningCount("/proj-idle"); got != 0 {
+		t.Errorf("expected 0 for an idle worker with no queued tasks, got %d", got)
+	}
+
+	// Worker actively processing, still no queued tasks: 1.
+	liveWorker := NewProjectWorker("/proj-live", store, runner, log)
+	liveWorker.processing.Store(true)
+	liveWorker.currentTaskID.Store("GH-4454")
+	dispatcher.mu.Lock()
+	dispatcher.workers["/proj-live"] = liveWorker
+	dispatcher.mu.Unlock()
+
+	if got := dispatcher.QueuedOrRunningCount("/proj-live"); got != 1 {
+		t.Errorf("expected 1 for a processing worker with no queued tasks, got %d", got)
+	}
+
+	// Worker with real queued rows backing it in the store, not processing:
+	// count matches the queue depth. Rows are written directly via
+	// SaveExecution (status "queued") rather than QueueTask, so no worker
+	// goroutine races this assertion by actually picking the task up.
+	for i := 0; i < 2; i++ {
+		exec := &memory.Execution{
+			ID:          fmt.Sprintf("TEST-QUEUED-%d", i),
+			TaskID:      fmt.Sprintf("TEST-QUEUED-%d", i),
+			ProjectPath: "/proj-queued",
+			Status:      "queued",
+			CreatedAt:   time.Now(),
+		}
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save queued execution %d: %v", i, err)
+		}
+	}
+	queuedWorker := NewProjectWorker("/proj-queued", store, runner, log)
+	dispatcher.mu.Lock()
+	dispatcher.workers["/proj-queued"] = queuedWorker
+	dispatcher.mu.Unlock()
+
+	got := dispatcher.QueuedOrRunningCount("/proj-queued")
+	if got != 2 {
+		t.Errorf("expected 2 for a worker with 2 queued tasks and not processing, got %d", got)
+	}
+
+	// Same worker now also marked processing: queued count + 1.
+	queuedWorker.processing.Store(true)
+	if got := dispatcher.QueuedOrRunningCount("/proj-queued"); got != 3 {
+		t.Errorf("expected 3 for a worker with 2 queued tasks and processing, got %d", got)
+	}
+}
+
 func TestDispatcher_MultipleProjects(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -2825,6 +2903,53 @@ func TestDispatcher_ReconcileOrphanedExecutions_Idempotent(t *testing.T) {
 	}
 }
 
+// TestDispatcher_ReconcileOrphanedExecutions_ClearsRepickBackoff is the
+// GH-4454 subtask 1 regression test: a daemon restart is not evidence a task
+// can't succeed, so boot reconciliation stalling a dead-owner row must clear
+// any repick_backoff state already accumulated for that task — otherwise the
+// generation+1 retry this stall enables inherits a consecutive-drop count
+// inflated by restart churn instead of genuine failures, pushing the task
+// toward dispatcherRepickHardCap for reasons unrelated to the task itself.
+func TestDispatcher_ReconcileOrphanedExecutions_ClearsRepickBackoff(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4454-BACKOFF", ProjectPath: "/project-boot-backoff"}
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Simulate consecutive drops already accumulated BEFORE the restart (e.g.
+	// real repicks from a prior daemon lifetime), sitting one shy of the hard
+	// cap.
+	const preExistingDrops = dispatcherRepickHardCap - 1
+	if err := dispatcher.SetRepickBackoffState(key, preExistingDrops, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("setup SetRepickBackoffState: %v", err)
+	}
+
+	if reconciled := dispatcher.reconcileOrphanedExecutions(); reconciled != 1 {
+		t.Fatalf("expected 1 reconciled execution, got %d", reconciled)
+	}
+
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "stalled" {
+		t.Errorf("expected status 'stalled', got %q", exec.Status)
+	}
+
+	if _, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found {
+		t.Fatal("expected boot reconciliation to clear repick backoff state for the row it stalled, but state still exists")
+	}
+}
+
 // TestDispatcher_BootOrphanReconciliation_EnablesGenerationRetry is the
 // GH-4392 acceptance test: a dead daemon's claimed 'queued' row must not
 // wedge the task forever. After Dispatcher.Start's boot reconciliation
@@ -3007,6 +3132,75 @@ func TestDispatcher_BeginWithGenerationRetry_ThrottledWithinBackoffWindow(t *tes
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_OperatorCancelBypassesHardCap is
+// the GH-4454 subtask 2 acceptance test: an operator-cancelled claim
+// (status="cancelled", the manual-intervention value used to unblock a
+// wedged head-of-queue task — see priorClaimWasOperatorCancelled) must not
+// be treated as a failure by the hard-cap accounting. Even with the
+// persisted consecutive-drop count already AT dispatcherRepickHardCap,
+// beginWithGenerationRetry must still grant the retry (not stall the task
+// or raise an alert) and must clear the backoff state instead of growing
+// it — otherwise an operator's own cancel-to-unblock attempts permanently
+// stall the very task they were trying to save.
+func TestDispatcher_BeginWithGenerationRetry_OperatorCancelBypassesHardCap(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4454-CANCEL", ProjectPath: "/project-cancel", Title: "Operator-cancelled task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Already at the hard cap — if this repick were treated like an ordinary
+	// failure-driven retry, it would trip stallTaskAfterRepickHardCap.
+	if err := dispatcher.SetRepickBackoffState(key, dispatcherRepickHardCap, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	// Operator-cancelled, not failed — the manual-intervention value that
+	// must be exempted from the hard-cap counter.
+	if err := store.UpdateExecutionStatus(execID, "cancelled"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as cancelled: %v", err)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID == "" {
+		t.Fatal("expected the operator-cancelled repick to succeed despite the hard cap being reached")
+	}
+
+	if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	} else if !found || genCheck != 1 {
+		t.Errorf("expected a generation-1 claim after the operator-cancelled repick, found=%v generation=%d", found, genCheck)
+	}
+
+	if len(processor.events) != 0 {
+		t.Fatalf("expected no hard-cap alert for an operator-cancelled repick, got %d: %+v", len(processor.events), processor.events)
+	}
+
+	if stalledExec, err := store.GetExecution(execID); err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	} else if stalledExec.Status == "stalled" {
+		t.Error("expected the operator-cancelled execution to be left alone, not marked stalled")
+	}
+
+	if _, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found {
+		t.Error("expected the operator-cancelled repick to clear backoff state instead of growing it")
+	}
+}
+
 // TestDispatcher_BeginWithGenerationRetry_HardCapStallsInsteadOfRetrying is
 // the GH-4394 subtask 5 acceptance test: exponential backoff alone (subtask
 // 2/3) never stops a doomed task from retrying — it only slows the interval
@@ -3082,6 +3276,110 @@ func TestDispatcher_BeginWithGenerationRetry_HardCapStallsInsteadOfRetrying(t *t
 	}
 	if processor.events[0].Metadata["reason"] != "repick_hard_cap_stalled" {
 		t.Errorf("expected alert metadata reason=repick_hard_cap_stalled, got %q", processor.events[0].Metadata["reason"])
+	}
+}
+
+// TestDispatcher_StallTaskAfterRepickHardCap_SurfacesStalledIssue is the
+// GH-4454 subtask 3 regression test: reaching the repick hard cap must label
+// the task's GitHub issue pilot-blocked (dropping pilot-failed/
+// pilot-in-progress) instead of leaving it eligible to keep winning
+// studio-sdk's scope-overlap dispatch grouping — a stalled head issue that
+// keeps winning its scope cluster silently starves every sibling issue that
+// touches the same files (the "7h silent idle" in GH-4454's title).
+func TestDispatcher_StallTaskAfterRepickHardCap_SurfacesStalledIssue(t *testing.T) {
+	fakeBin := t.TempDir()
+	logFile := filepath.Join(t.TempDir(), "gh-calls.log")
+	script := filepath.Join(fakeBin, "gh")
+	content := "#!/bin/sh\n" + `echo "$@" >> "` + logFile + `"` + "\nexit 0\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	origPATH := os.Getenv("PATH")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+origPATH)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	projectDir := t.TempDir()
+	task := &Task{ID: "GH-9001", ProjectPath: projectDir, Title: "Wedged head issue", SourceAdapter: "github"}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	dispatcher.stallTaskAfterRepickHardCap(task, 0, dispatcherRepickHardCap)
+
+	stalledExec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if stalledExec.Status != "stalled" {
+		t.Fatalf("expected execution stalled, got %q", stalledExec.Status)
+	}
+
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("expected gh CLI to be invoked, but log file missing: %v", err)
+	}
+	calls := string(logBytes)
+	if !strings.Contains(calls, "issue comment 9001") {
+		t.Errorf("expected a comment posted to issue 9001, got calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "issue edit 9001") {
+		t.Errorf("expected a label edit on issue 9001, got calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--add-label pilot-blocked") {
+		t.Errorf("expected pilot-blocked to be added, got calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--remove-label pilot-failed") {
+		t.Errorf("expected pilot-failed to be removed, got calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--remove-label pilot-in-progress") {
+		t.Errorf("expected pilot-in-progress to be removed, got calls:\n%s", calls)
+	}
+}
+
+// TestDispatcher_StallTaskAfterRepickHardCap_NonGitHubTaskSkipsGHCLI ensures
+// the GH-4454 subtask 3 surfacing logic only shells out for GitHub-sourced
+// tasks — mirrors postTitleRejectionEscalation's existing adapter guard so a
+// Linear/GitLab/Jira task never triggers a `gh` CLI call it can't act on.
+func TestDispatcher_StallTaskAfterRepickHardCap_NonGitHubTaskSkipsGHCLI(t *testing.T) {
+	fakeBin := t.TempDir()
+	logFile := filepath.Join(t.TempDir(), "gh-calls.log")
+	script := filepath.Join(fakeBin, "gh")
+	content := "#!/bin/sh\n" + `echo "$@" >> "` + logFile + `"` + "\nexit 0\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	origPATH := os.Getenv("PATH")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+origPATH)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	projectDir := t.TempDir()
+	task := &Task{ID: "GL-42", ProjectPath: projectDir, Title: "Non-GitHub task", SourceAdapter: "gitlab"}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	dispatcher.stallTaskAfterRepickHardCap(task, 0, dispatcherRepickHardCap)
+
+	if _, err := os.ReadFile(logFile); err == nil {
+		t.Error("expected no gh CLI invocation for a non-GitHub task")
 	}
 }
 

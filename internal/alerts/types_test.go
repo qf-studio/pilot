@@ -64,6 +64,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeEscalation: {"escalation", true},
 		// Release monitoring (GH-3952)
 		AlertTypeReleaseMissing: {"release_missing", true},
+		// Lane-starvation detection (GH-4454)
+		AlertTypeLaneStarvation: {"lane_starvation", true},
 	}
 
 	if len(rules) != len(expectedRules) {

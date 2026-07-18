@@ -203,7 +203,11 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 // reconcileOrphanedExecutions transitions every claimed, non-terminal
 // ("queued" or "running") execution row found at boot to "stalled", freeing
 // its execution_claims generation lock so nextRetryGeneration can hand out a
-// generation+1 retry on the next dispatch attempt (GH-4392).
+// generation+1 retry on the next dispatch attempt (GH-4392). Every row it
+// stalls also has its repick_backoff state cleared (GH-4454) — a daemon
+// restart is not evidence the task can't succeed, so the retry this stall
+// enables must not inherit a consecutive-drop count inflated by restart
+// churn rather than genuine failures.
 //
 // Incident context: nextRetryGeneration (GH-4372) only advances the
 // generation when the claimed execution it finds is in a TERMINAL status —
@@ -296,6 +300,25 @@ func (d *Dispatcher) reconcileOrphanedExecutions() int {
 		}
 		reconciled++
 		d.recordExecutionEvent(exec.ID, memory.StageStalled, "orphaned queued/running execution reconciled at daemon boot (dead pre-restart owner, GH-4392)")
+
+		// GH-4454: a daemon restart is not evidence the task can't succeed —
+		// but the "stalled" status this loop just wrote is exactly the
+		// terminal-but-not-done claim nextRetryGeneration looks for, so the
+		// very next dispatch attempt repicks it and beginWithGenerationRetry
+		// treats that repick as one more consecutive drop toward
+		// dispatcherRepickHardCap. Left alone, repeated restarts (or one
+		// restart on top of pre-existing real drops) push a perfectly healthy
+		// task over the hard cap on restart churn alone, permanently stalling
+		// it via stallTaskAfterRepickHardCap for a reason that has nothing to
+		// do with the task itself. Clear any accumulated backoff state here so
+		// the retry this stall enables starts a fresh consecutive-drop count
+		// instead of inheriting one inflated by the restart.
+		backoffKey := repickBackoffKey(exec.ProjectPath, exec.TaskID)
+		if err := d.ClearRepickBackoffState(backoffKey); err != nil {
+			d.log.Warn("failed to clear repick backoff state for boot-stalled execution",
+				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID),
+				slog.String("project", exec.ProjectPath), slog.Any("error", err))
+		}
 	}
 
 	if reconciled > 0 {
@@ -858,6 +881,27 @@ func repickBackoffKey(projectPath, taskID string) string {
 	return projectPath + "|" + taskID
 }
 
+// priorClaimWasOperatorCancelled reports whether (taskID, projectPath)'s
+// currently claimed execution — the one nextRetryGeneration just examined to
+// grant this retry — has status "cancelled". There is no in-repo call site
+// that writes "cancelled" (see store.go's UpdateExecutionStatus comment); it
+// is a value an operator sets by hand (direct DB write) to unblock a wedged
+// head-of-queue task. GH-4454 subtask 2: that manual intervention must not
+// be treated as a failure by beginWithGenerationRetry's hard-cap accounting.
+// Errors are treated as "not cancelled" — the caller falls through to the
+// ordinary backoff/hard-cap path, which is the safe default.
+func (d *Dispatcher) priorClaimWasOperatorCancelled(taskID, projectPath string) bool {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil {
+		return false
+	}
+	return exec.Status == "cancelled"
+}
+
 // nextRetryGeneration inspects the highest execution_claims generation
 // currently held for (taskID, projectPath) and reports whether a fresh
 // Begin(..., generation+1) is warranted (GH-4372). Three outcomes:
@@ -943,6 +987,44 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 		return "", nil
 	}
 
+	backoffKey := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// GH-4454 subtask 2: an operator manually cancelling a wedged
+	// head-of-queue execution to unblock the lane is not evidence the task
+	// can't succeed — unlike a genuine failure, it's deliberate human
+	// intervention. Left uncounted-for, each cancel-and-repick cycle still
+	// grew the SAME consecutiveDrops counter a real failure would, so an
+	// operator trying to rescue a wedged task tripped
+	// dispatcherRepickHardCap on their own unblock attempts and permanently
+	// stalled the very task they were trying to save (GH-4454: 7h silent
+	// idle after a wedged head issue starved its lane). Clear any
+	// accumulated backoff state and grant the retry immediately, without
+	// consulting or growing the hard-cap counter.
+	if d.priorClaimWasOperatorCancelled(task.ID, task.ProjectPath) {
+		if err := d.ClearRepickBackoffState(backoffKey); err != nil {
+			d.log.Warn("failed to clear repick backoff state for operator-cancelled claim",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Any("error", err))
+		}
+		retryExecID, retryErr := lifecycle.Begin(task, initial, gen)
+		if retryErr == nil {
+			d.log.Info("dispatch re-pick: prior claim was operator-cancelled — claiming next generation without counting toward repick hard cap",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Int("generation", gen),
+			)
+			return retryExecID, nil
+		}
+		if errors.Is(retryErr, ErrClaimLost) {
+			// Race: another channel claimed generation gen between our
+			// decision and this Begin call — drop it, same as any other
+			// duplicate pickup.
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to save retry execution: %w", retryErr)
+	}
+
 	// GH-4394 subtask 2: cmd/pilot's per-issue backoff (#4385) only gates
 	// whether handleIssueGeneric calls QueueTask at all — it has no
 	// visibility into a repick decided *inside* this call, and QueueTask's
@@ -962,7 +1044,6 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 	// config-registered values, identical for a canary or a real project) and
 	// never inspects IsCanary. See
 	// TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular.
-	backoffKey := repickBackoffKey(task.ProjectPath, task.ID)
 	consecutiveDrops, nextAllowedAt, found, boErr := d.RepickBackoffState(backoffKey)
 	if boErr != nil {
 		d.log.Warn("failed to read repick backoff state — dropping retry to be safe",
@@ -1071,6 +1152,7 @@ func (d *Dispatcher) stallTaskAfterRepickHardCap(task *Task, gen, consecutiveDro
 		slog.Int("hard_cap", dispatcherRepickHardCap),
 		slog.Int("generation", gen),
 	)
+	d.surfaceStalledIssue(task, reason)
 	if d.runner != nil {
 		d.runner.EmitAlertEvent(AlertEvent{
 			Type:      AlertEventTypeTaskFailed,
@@ -1085,6 +1167,64 @@ func (d *Dispatcher) stallTaskAfterRepickHardCap(task *Task, gen, consecutiveDro
 			},
 			Timestamp: time.Now(),
 		})
+	}
+}
+
+// surfaceStalledIssue labels a repick-hard-cap-stalled task's GitHub issue
+// pilot-blocked (removing pilot-failed/pilot-in-progress) and posts an
+// explanatory comment — GH-4454 subtask 3.
+//
+// Why this matters: studio-sdk's GitHub poller groups open "pilot"-labeled
+// issues by shared directory reference (scope overlap) and, within each
+// group, dispatches only the OLDEST issue every poll tick, deferring every
+// other issue in that group. That grouping/ordering has no visibility into
+// this dispatcher's independent repick_backoff hard cap — it re-admits a
+// pilot-failed issue as a candidate via its own separate retry counter,
+// unaware the store-side execution behind it was already stalled above.
+// Being the oldest issue in its scope cluster, the stalled head keeps
+// winning the dispatch slot on every tick, silently starving every issue
+// that shares its scope forever (GH-4454: 7h idle after exactly this). The
+// poller DOES unconditionally exclude any issue carrying pilot-blocked from
+// its candidate list before scope grouping ever runs, so applying that label
+// here removes the stalled issue from contention entirely and lets the
+// next-oldest overlapping issue through instead of silently starving.
+//
+// Best-effort and GitHub-only: a labeling/comment failure is logged, not
+// fatal — the store-side "stalled" status the caller already wrote is the
+// durable source of truth regardless of whether this side channel succeeds.
+func (d *Dispatcher) surfaceStalledIssue(task *Task, reason string) {
+	if task.SourceAdapter != "" && task.SourceAdapter != "github" {
+		return
+	}
+	issueNum := strings.TrimPrefix(task.ID, "GH-")
+	if task.SourceIssueID != "" {
+		issueNum = task.SourceIssueID
+	}
+	if issueNum == "" {
+		return
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(issueNum, "%d", &parsed); err != nil || parsed <= 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	defer cancel()
+
+	comment := fmt.Sprintf(
+		"Pilot stopped retrying (repick hard cap): %s\n\n"+
+			"Labeled `pilot-blocked` so this issue stops winning scope-overlap "+
+			"dispatch priority over sibling issues that touch the same files. "+
+			"To re-arm after fixing the underlying blocker:\n```\ngh issue edit %d --remove-label pilot-blocked --remove-label pilot-failed --add-label pilot-retry-ready\n```",
+		reason, parsed,
+	)
+	if err := ghIssueComment(ctx, task.ProjectPath, issueNum, comment); err != nil {
+		d.log.Warn("stalled-issue surfacing: failed to post comment",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+	}
+	if err := ghEditLabels(ctx, task.ProjectPath, issueNum, []string{"pilot-blocked"}, []string{"pilot-failed", "pilot-in-progress"}); err != nil {
+		d.log.Warn("stalled-issue surfacing: failed to update labels",
+			slog.String("task_id", task.ID), slog.Any("error", err))
 	}
 }
 
@@ -1301,6 +1441,31 @@ func (d *Dispatcher) GetRunningTaskIDs() []string {
 		}
 	}
 	return ids
+}
+
+// QueuedOrRunningCount returns the number of tasks currently queued or being
+// processed for projectPath — the same live/store-backed signals
+// GetWorkerStatus exposes, collapsed to one int for a single project. A
+// project with no live worker at all (nothing ever dispatched, or the worker
+// drained its queue and exited) returns 0, which is itself the "nothing in
+// flight" signal the lane-starvation detector needs (GH-4454): a project
+// lane can have open pilot-labeled issues on GitHub while never having had a
+// worker created for it here, e.g. every candidate issue is stuck behind a
+// scope-overlap defer or a repick-hard-cap-stalled head issue.
+func (d *Dispatcher) QueuedOrRunningCount(projectPath string) int {
+	d.mu.RLock()
+	worker, ok := d.workers[projectPath]
+	d.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+
+	status := worker.Status()
+	count := status.QueuedCount
+	if status.IsProcessing {
+		count++
+	}
+	return count
 }
 
 // GetExecutionStatus returns the current status of an execution.

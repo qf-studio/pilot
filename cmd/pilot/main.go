@@ -664,6 +664,12 @@ Examples:
 
 							// GH-1870: Board sync option for gateway autopilot controller.
 							var gwBoardOpts []autopilot.ControllerOption
+							// GH-4454: match the polling-path pilot-label wiring so the
+							// lane-starvation reconciler searches the same trigger label
+							// the webhook/legacy poller watches for.
+							if cfg.Adapters.GitHub.PilotLabel != "" {
+								gwBoardOpts = append(gwBoardOpts, autopilot.WithPilotLabel(cfg.Adapters.GitHub.PilotLabel))
+							}
 							if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
 								bs := githubSDK.NewProjectBoardSync(apGHClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), parts[0])
 								statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
@@ -699,6 +705,9 @@ Examples:
 							// wiring further down).
 							if gwDispatcher != nil {
 								gwAutopilotController.SetDispatcherLiveness(gwDispatcher)
+								// GH-4454: project-scoped queued/running count for the
+								// lane-starvation reconciler.
+								gwAutopilotController.SetLaneQueueStatus(gwDispatcher)
 							}
 						}
 					}
@@ -1592,6 +1601,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 			// GH-1870: Build board sync option for autopilot controllers.
 			var autopilotBoardOpts []autopilot.ControllerOption
+			// GH-4454: every controller's lane-starvation reconciler needs the
+			// same trigger label the GitHub SDK poller watches for
+			// (poller_github.go resolves this identically: ghCfg.PilotLabel,
+			// defaulting to "pilot" — WithPilotLabel leaves it unset when
+			// PilotLabel is empty, so NewController's own default applies).
+			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.PilotLabel != "" {
+				autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithPilotLabel(cfg.Adapters.GitHub.PilotLabel))
+			}
 			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
 				owner := ""
 				if parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2); len(parts) == 2 {
@@ -2268,6 +2285,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	if dispatcher != nil {
 		for _, ctrl := range autopilotControllers {
 			ctrl.SetDispatcherLiveness(dispatcher)
+			// GH-4454: wire the project-scoped queued/running count the
+			// lane-starvation reconciler needs, unconditionally alongside the
+			// liveness signal above.
+			ctrl.SetLaneQueueStatus(dispatcher)
 		}
 	}
 

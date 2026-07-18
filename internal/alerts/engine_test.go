@@ -1273,6 +1273,228 @@ func TestHandleReleaseMissing(t *testing.T) {
 	})
 }
 
+// TestHandleLaneStarvation covers the GH-4454 lane-starvation rule: the
+// emitting side (autopilot.Controller.reconcileLaneStarvation) does no
+// threshold filtering of its own and sends the raw streak on every starved
+// tick, so handleLaneStarvation alone is responsible for comparing that
+// streak against RuleCondition.LaneStarvationPollCycles and respecting
+// cooldown — mirroring TestHandleReleaseMissing above.
+func TestHandleLaneStarvation(t *testing.T) {
+	newEvent := func(repo, openIssues, streak string) Event {
+		return Event{
+			Type: EventTypeLaneStarvation,
+			Metadata: map[string]string{
+				"repo":                repo,
+				"project_path":        "/proj",
+				"open_issue_count":    openIssues,
+				"poll_cycles_starved": streak,
+			},
+			Timestamp: time.Now(),
+		}
+	}
+
+	t.Run("below threshold does not fire", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:      "lane_starvation",
+					Type:      AlertTypeLaneStarvation,
+					Enabled:   true,
+					Condition: RuleCondition{LaneStarvationPollCycles: 3},
+					Severity:  SeverityWarning,
+					Channels:  []string{"test-channel"},
+					Cooldown:  0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("qf-studio/pilot", "2", "2"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts below threshold, got %d", got)
+		}
+	})
+
+	t.Run("at threshold fires with repo/open-issue/streak in message", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:      "lane_starvation",
+					Type:      AlertTypeLaneStarvation,
+					Enabled:   true,
+					Condition: RuleCondition{LaneStarvationPollCycles: 3},
+					Severity:  SeverityWarning,
+					Channels:  []string{"test-channel"},
+					Cooldown:  0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("qf-studio/pilot", "2", "3"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		got := mockCh.getAlerts()
+		if len(got) != 1 {
+			t.Fatalf("expected 1 alert at threshold, got %d", len(got))
+		}
+		if got[0].Type != AlertTypeLaneStarvation {
+			t.Errorf("expected alert type %s, got %s", AlertTypeLaneStarvation, got[0].Type)
+		}
+		if !strings.Contains(got[0].Message, "qf-studio/pilot") ||
+			!strings.Contains(got[0].Message, "2") ||
+			!strings.Contains(got[0].Message, "3") {
+			t.Errorf("expected alert message to mention repo/open-issue-count/streak, got %q", got[0].Message)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:      "lane_starvation",
+					Type:      AlertTypeLaneStarvation,
+					Enabled:   false, // Disabled
+					Condition: RuleCondition{LaneStarvationPollCycles: 3},
+					Severity:  SeverityWarning,
+					Channels:  []string{"test-channel"},
+					Cooldown:  0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("qf-studio/pilot", "2", "5"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+
+	t.Run("zero LaneStarvationPollCycles falls back to default of 3", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "lane_starvation",
+					Type:     AlertTypeLaneStarvation,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+					// Condition.LaneStarvationPollCycles left unset (zero value).
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		// Streak of 2 should NOT fire against the default threshold of 3.
+		engine.ProcessEvent(newEvent("qf-studio/pilot", "1", "2"))
+		engine.flushForTest()
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts below default threshold, got %d", got)
+		}
+
+		// Streak of 3 should fire.
+		engine.ProcessEvent(newEvent("qf-studio/pilot", "1", "3"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		if got := len(mockCh.getAlerts()); got != 1 {
+			t.Errorf("expected 1 alert at default threshold, got %d", got)
+		}
+	})
+
+	t.Run("cooldown suppresses repeat fires", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:      "lane_starvation",
+					Type:      AlertTypeLaneStarvation,
+					Enabled:   true,
+					Condition: RuleCondition{LaneStarvationPollCycles: 3},
+					Severity:  SeverityWarning,
+					Channels:  []string{"test-channel"},
+					Cooldown:  30 * time.Minute,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("qf-studio/pilot", "2", "3"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		// Next poll cycle's streak (4) is still within cooldown and must be
+		// suppressed even though it's further past threshold.
+		engine.ProcessEvent(newEvent("qf-studio/pilot", "2", "4"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 1 {
+			t.Errorf("expected 1 alert (second suppressed by cooldown), got %d", got)
+		}
+	})
+}
+
 func TestEngine_ChannelAcceptsSeverity(t *testing.T) {
 	config := &AlertConfig{Enabled: true}
 	engine := NewEngine(config)
