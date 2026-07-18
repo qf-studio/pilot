@@ -153,13 +153,29 @@ func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (CIStatus, error)
 	}
 }
 
+// fetchCheckRuns retrieves the current check-runs "state" for sha via the
+// GitHub Checks API. GH-4437: this is the single shared current-state read
+// used by every check-runs consumer in CIMonitor — CI-status aggregation
+// (checkStatus, and transitively WaitForCI/CheckCI/GetCIStatus), failed-check
+// name/log lookups (GetFailedChecks, GetFailedCheckLogs, GetCheckLogs), and
+// single-check lookups (GetCheckStatus). Because CheckCI (reached via
+// ProcessPR -> handleWaitingCI on every processAllPRs tick) is the only
+// production caller of a check-runs poll, and it runs identically for a PR
+// registered fresh (OnPRCreated) or restored on boot (RestoreState), a fresh
+// PR and a restored PR both resolve current CI state through this one call
+// path — extracting it here keeps that true at the ListCheckRuns call site
+// itself, not just by convention.
+func (m *CIMonitor) fetchCheckRuns(ctx context.Context, sha string) (*github.CheckRunsResponse, error) {
+	return m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+}
+
 // checkStatus gets current CI status for a SHA.
 // skipGrace, when true, bypasses the no-CI discovery grace period entirely
 // (see checkAutoDiscoveredRuns) for callers that already know CI resolved
 // once for this SHA earlier in the PR lifecycle.
 func (m *CIMonitor) checkStatus(ctx context.Context, sha string, skipGrace bool) (CIStatus, error) {
 	// Get check runs (GitHub Actions)
-	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	checkRuns, err := m.fetchCheckRuns(ctx, sha)
 	if err != nil {
 		return CIPending, err
 	}
@@ -512,7 +528,7 @@ func (m *CIMonitor) GetCIStatus(ctx context.Context, sha string) (CIStatus, erro
 // Exclude-matched checks (e.g. an always-on scheduled canary) are dropped so
 // fix-issue bodies don't attribute an unrelated failure to this SHA's CI.
 func (m *CIMonitor) GetFailedChecks(ctx context.Context, sha string) ([]string, error) {
-	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	checkRuns, err := m.fetchCheckRuns(ctx, sha)
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +569,7 @@ func (m *CIMonitor) isScopedCheck(name string) bool {
 // Logs are truncated to maxLen total characters to keep issues readable.
 // GH-1567: Include actual CI error output in fix issues.
 func (m *CIMonitor) GetFailedCheckLogs(ctx context.Context, sha string, maxLen int) string {
-	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	checkRuns, err := m.fetchCheckRuns(ctx, sha)
 	if err != nil {
 		m.log.Warn("failed to list check runs for log fetch", "sha", ShortSHA(sha), "error", err)
 		return ""
@@ -602,7 +618,7 @@ func (m *CIMonitor) GetFailedCheckLogs(ctx context.Context, sha string, maxLen i
 // test-evidence gate (GH-4329) needs to see the test job's own passing output
 // to tell a rigorous run from one that silently skipped everything.
 func (m *CIMonitor) GetCheckLogs(ctx context.Context, sha string, maxLen int) string {
-	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	checkRuns, err := m.fetchCheckRuns(ctx, sha)
 	if err != nil {
 		m.log.Warn("failed to list check runs for log fetch", "sha", ShortSHA(sha), "error", err)
 		return ""
@@ -647,7 +663,7 @@ func (m *CIMonitor) GetCheckLogs(ctx context.Context, sha string, maxLen int) st
 
 // GetCheckStatus returns the current status of a specific check by name.
 func (m *CIMonitor) GetCheckStatus(ctx context.Context, sha, checkName string) (CIStatus, error) {
-	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	checkRuns, err := m.fetchCheckRuns(ctx, sha)
 	if err != nil {
 		return CIPending, err
 	}
