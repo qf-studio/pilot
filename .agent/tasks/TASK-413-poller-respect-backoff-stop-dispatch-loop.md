@@ -1,0 +1,74 @@
+# TASK-413: Poller must respect repick backoff — kill the 30s dispatch→reject loop
+
+**Created**: 2026-07-19 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-19
+
+## Problem (observed 2026-07-17 → 2026-07-19, GH-4391 on the founder box)
+
+After a task hits the repick hard cap (or any dispatcher-side gate), the
+GitHub poller keeps re-picking it **every ~30s poll tick, forever**:
+
+```
+Dispatching issue for parallel execution … number=4391
+Execution failed without PR, unmarking for retry … number=4391   (<1s later)
+```
+
+Measured damage over ~2 days for ONE task: **4,233 loop cycles**, each
+burning (a) a board-sync GraphQL call, (b) REST calls for the issue fetch,
+(c) every other cycle a pre-flight intent-judge subprocess (~30s runtime,
+~280MB RSS, killed on context deadline), and (d) an `execution_claims`
+INSERT — GH-4391 accumulated **15 claim generations (0–14)** with zero
+executions. This loop was a substantial contributor to the user-aggregate
+GitHub rate-pool exhaustion that, among other things, killed the 07-18
+release-train tick.
+
+Mechanism: the dispatcher correctly rejects the task pre-claim (backoff /
+hard-cap gate in `repick_backoff` + stalled-row check), but the poller
+treats every rejection as a transient failure — "unmarking for retry" —
+and re-picks on the next tick. The gate and the poller disagree about
+whose state is authoritative.
+
+## Deliverables
+
+1. **Poller consults backoff before dispatching**: when a task's
+   `repick_backoff.next_allowed_at` is in the future (or its latest
+   execution row is terminal-stalled at cap), the poller must SKIP the
+   issue for the tick — no dispatch attempt, no judge run, no board-sync
+   write, no claim insert. Cheapest available check first.
+2. **Distinguish gate-rejection from real failure** in the dispatch result:
+   a typed sentinel (e.g. `ErrDispatchGated`) so "Execution failed without
+   PR, unmarking for retry" is only logged for genuine failures. Gated
+   skips log at DEBUG once per backoff window, not per tick.
+3. **No claim-generation churn on gated dispatch**: gate must be evaluated
+   before the claim insert (GH-4391's 15 stale generations came from this).
+4. **Loop breaker alert**: if the same task is dispatched-and-rejected ≥10
+   consecutive times regardless of cause, emit one WARNING alert naming the
+   task and stop retrying until operator action or backoff expiry — never
+   silently loop for days.
+5. Table-driven tests: gated task skipped (no judge/claim/board calls —
+   assert via mocks), gate expiry resumes dispatch, sentinel logging, loop
+   breaker fires once at threshold.
+
+## Constraints
+
+- Do NOT change hard-cap semantics themselves (#4455 owns cap counting).
+- Backoff store (`repick_backoff` schema: key, consecutive_drops,
+  next_allowed_at, updated_at) unchanged.
+- Poller behavior for healthy tasks unchanged.
+
+## Acceptance
+
+- [ ] A backoff-gated task produces zero API calls / judge runs / claim
+      rows until `next_allowed_at`
+- [ ] Real dispatch failures still unmark-for-retry exactly as today
+- [ ] ≥10 consecutive rejections → single WARNING alert + stop
+- [ ] Tests green, lint clean
+
+## Refs
+
+- Pilot issue: https://github.com/qf-studio/pilot/issues/4469
+- Incident: GH-4391 loop, 4,233 cycles 07-17→07-19, 15 claim generations
+- Pitfall memory: `hard-cap-rearm-in-memory-gate` (4-step manual re-arm this
+  task makes unnecessary)
+- #4455 (repick hard-cap counting), #4372 (gen-0 re-claim), GH-4391
+  (rate-budget client — complementary; this task removes the loop that
+  burns the budget, that task makes the budget survivable)

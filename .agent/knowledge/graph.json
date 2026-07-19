@@ -796,6 +796,31 @@
           "knowledge",
           "authentication"
         ]
+      },
+      "TASK-412": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-412-self-upgrade-preflight-and-loud-failure.md",
+        "title": "Self-upgrade must preflight binary writability and fail loudly",
+        "status": "unknown",
+        "concepts": [
+          "testing",
+          "context",
+          "deployment"
+        ]
+      },
+      "TASK-413": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-413-poller-respect-backoff-stop-dispatch-loop.md",
+        "title": "Poller must respect repick backoff \u2014 kill the 30s dispatch\u2192reject loop",
+        "status": "unknown",
+        "concepts": [
+          "knowledge",
+          "api",
+          "testing",
+          "context",
+          "database",
+          "workflow",
+          "deployment",
+          "authentication"
+        ]
       }
     },
     "memories": {
@@ -4255,6 +4280,21 @@
       "from": "TASK-411",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-412",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-413",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-413",
+      "to": "workflow",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -4325,7 +4365,8 @@
       "TASK-405",
       "TASK-407",
       "TASK-410",
-      "TASK-411"
+      "TASK-411",
+      "TASK-413"
     ],
     "deployment": [
       "TASK-386",
@@ -4372,7 +4413,9 @@
       "TASK-407",
       "TASK-409",
       "TASK-410",
-      "TASK-411"
+      "TASK-411",
+      "TASK-412",
+      "TASK-413"
     ],
     "authentication": [
       "TASK-386",
@@ -4402,7 +4445,8 @@
       "TASK-408",
       "TASK-405",
       "TASK-409",
-      "TASK-411"
+      "TASK-411",
+      "TASK-413"
     ],
     "testing": [
       "TASK-386",
@@ -4450,7 +4494,9 @@
       "TASK-407",
       "TASK-409",
       "TASK-410",
-      "TASK-411"
+      "TASK-411",
+      "TASK-412",
+      "TASK-413"
     ],
     "api": [
       "TASK-386",
@@ -4478,7 +4524,8 @@
       "TASK-407",
       "TASK-409",
       "TASK-410",
-      "TASK-411"
+      "TASK-411",
+      "TASK-413"
     ],
     "context": [
       "TASK-386",
@@ -4519,7 +4566,9 @@
       "TASK-405",
       "TASK-407",
       "TASK-409",
-      "TASK-411"
+      "TASK-411",
+      "TASK-412",
+      "TASK-413"
     ],
     "markers": [
       "TASK-387",
@@ -4559,7 +4608,8 @@
       "TASK-404",
       "TASK-408",
       "TASK-407",
-      "TASK-409"
+      "TASK-409",
+      "TASK-413"
     ],
     "workflow": [
       "TASK-387",
@@ -4599,7 +4649,8 @@
       "TASK-403",
       "TASK-408",
       "TASK-407",
-      "TASK-409"
+      "TASK-409",
+      "TASK-413"
     ],
     "simplification": [
       "TASK-387",
@@ -4815,10 +4866,10 @@
       "decomposer-narrative-bullets-as-subtask-boundaries"
     ]
   },
-  "last_updated": "2026-07-19T09:49:13.278483+00:00",
+  "last_updated": "2026-07-19T19:42:25.832183+00:00",
   "stats": {
-    "total_nodes": 268,
-    "total_edges": 230,
+    "total_nodes": 270,
+    "total_edges": 233,
     "memory_count": 171
   }
 }
