@@ -1,0 +1,14 @@
+# Pilot ledger backup schedule — see pilot-backup.service for install steps.
+#
+# 03:30 UTC: queue-quiet window (release train cuts ~14:00Z, busy hours
+# ~10-19Z per .agent/DEVELOPMENT-README.md current-state notes).
+[Unit]
+Description=Nightly Pilot ledger backup to S3
+
+[Timer]
+OnCalendar=*-*-* 03:30 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

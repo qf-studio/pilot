@@ -356,6 +356,7 @@
 | Docs board sync page | ✅ | docs | - | - | GitHub Projects V2 Board Sync documentation (v2.38.0) |
 | Docs CLI/homepage update | ✅ | docs | - | - | Update CLI commands and homepage for v2.25 (v2.38.0) |
 | Docs architecture update | ✅ | docs | - | - | Update architecture page with new adapters (v2.38.0) |
+| Nightly ledger backup to S3 | ✅ | scripts/box | - | - | Daemon-independent `pilot-backup-s3.sh` (VACUUM INTO snapshot + knowledge JSON, SSE-KMS upload, head-object verify) + `pilot-backup.timer`/`.service` (03:30 UTC) + restore SOP; repo-tracked, operator installs on box (GH-4465) |
 
 ## Approval Workflows
 
