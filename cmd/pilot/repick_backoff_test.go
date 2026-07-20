@@ -216,6 +216,90 @@ func TestRepickBackoffTracker_HydratesFromPersisterAfterRestart(t *testing.T) {
 	}
 }
 
+// TestRepickBackoffTracker_GateStatus_LogsOncePerWindow is the GH-4469
+// deliverable-2 regression test: gateStatus must report shouldLog=true only
+// on the FIRST observation of a given backoff window, so
+// terminalCompletionChecker.HasCompletedExecution logs its DEBUG "gated" line
+// once per window instead of once per ~30s poll tick for the entire
+// (potentially 16-minute) cooldown.
+func TestRepickBackoffTracker_GateStatus_LogsOncePerWindow(t *testing.T) {
+	tr := newRepickBackoffTracker()
+	key := "proj|GH-4391"
+
+	// No drop recorded yet — not gated.
+	if gated, shouldLog := tr.gateStatus(key); gated || shouldLog {
+		t.Fatalf("expected a never-seen key to be ungated with no log, got gated=%v shouldLog=%v", gated, shouldLog)
+	}
+
+	tr.recordDrop(key)
+
+	gated, shouldLog := tr.gateStatus(key)
+	if !gated || !shouldLog {
+		t.Fatalf("expected first gateStatus check after a drop to be gated=true shouldLog=true, got gated=%v shouldLog=%v", gated, shouldLog)
+	}
+
+	// Subsequent checks within the same window must not re-log.
+	for i := 0; i < 3; i++ {
+		gated, shouldLog = tr.gateStatus(key)
+		if !gated {
+			t.Fatalf("check %d: expected key to remain gated within its backoff window", i)
+		}
+		if shouldLog {
+			t.Fatalf("check %d: expected shouldLog=false for repeat checks within the same window", i)
+		}
+	}
+}
+
+// TestRepickBackoffTracker_GateStatus_ResetsLogFlagOnNewWindow verifies that
+// once a backoff window expires, the next drop's new window logs once again
+// rather than staying permanently silenced from the prior window.
+func TestRepickBackoffTracker_GateStatus_ResetsLogFlagOnNewWindow(t *testing.T) {
+	tr := newRepickBackoffTracker()
+	key := "proj|GH-4391b"
+
+	tr.recordDrop(key)
+	if gated, shouldLog := tr.gateStatus(key); !gated || !shouldLog {
+		t.Fatalf("expected first window to be gated+logged, got gated=%v shouldLog=%v", gated, shouldLog)
+	}
+
+	// Force the window to have already elapsed.
+	tr.mu.Lock()
+	tr.entries[key].nextAllowedAt = time.Now().Add(-time.Second)
+	tr.mu.Unlock()
+
+	if gated, shouldLog := tr.gateStatus(key); gated || shouldLog {
+		t.Fatalf("expected an elapsed window to report ungated with no log, got gated=%v shouldLog=%v", gated, shouldLog)
+	}
+
+	// A fresh drop starts a new window that must log once again.
+	tr.recordDrop(key)
+	if gated, shouldLog := tr.gateStatus(key); !gated || !shouldLog {
+		t.Fatalf("expected the new window to be gated+logged again, got gated=%v shouldLog=%v", gated, shouldLog)
+	}
+}
+
+// TestRepickBackoffTracker_GateStatus_HydratesFromPersister verifies a fresh
+// tracker (simulating a restart) whose map has never seen the key still
+// correctly reports it as gated when the persister holds a live cooldown —
+// mirroring TestRepickBackoffTracker_HydratesFromPersisterAfterRestart but
+// for the gate-check path terminalCompletionChecker uses.
+func TestRepickBackoffTracker_GateStatus_HydratesFromPersister(t *testing.T) {
+	key := "proj|GH-4391c"
+	persist := &fakeRepickBackoffPersister{
+		consecutiveDrops: 2,
+		nextAllowedAt:    time.Now().Add(5 * time.Minute),
+		found:            true,
+	}
+
+	tr := newRepickBackoffTracker()
+	tr.setPersister(persist)
+
+	gated, shouldLog := tr.gateStatus(key)
+	if !gated || !shouldLog {
+		t.Fatalf("expected a restarted tracker to hydrate the persisted cooldown as gated+logged, got gated=%v shouldLog=%v", gated, shouldLog)
+	}
+}
+
 // TestRepickBackoffTracker_RecordSuccessClearsPersister verifies
 // recordSuccess clears the persister's state, not just the in-memory map —
 // otherwise a restart right after a successful dispatch would rehydrate the

@@ -102,7 +102,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	if deps.Dispatcher != nil && deps.Dispatcher.IsActive(taskID, projectPath) {
 		logging.WithComponent("dispatch").Debug("Task already queued or running, skipping dispatch",
 			slog.String("task_id", taskID))
-		return &HandlerResult{Success: false, BranchName: task.Branch}, nil
+		return &HandlerResult{Success: false, BranchName: task.Branch, Error: executor.ErrDispatchGated}, nil
 	}
 
 	// GH-4376: per-issue backoff — a task that was recently dropped (claim
@@ -121,7 +121,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	if deps.Dispatcher != nil && !repickBackoff.allow(backoffKey) {
 		logging.WithComponent("dispatch").Debug("task in repick backoff window, skipping dispatch",
 			slog.String("task_id", taskID))
-		return &HandlerResult{Success: false, BranchName: task.Branch}, nil
+		return &HandlerResult{Success: false, BranchName: task.Branch, Error: executor.ErrDispatchGated}, nil
 	}
 
 	// GH-4376/GH-4350: independent terminal-completion re-check at the shared
@@ -144,7 +144,8 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			if deps.Metrics != nil {
 				deps.Metrics.RecordPollerSkipped(repickMetricsRepo(task), skipreason.ReasonRepickStormBackoff)
 			}
-			return &HandlerResult{Success: false, BranchName: task.Branch}, nil
+			fireLoopBreakerAlert(deps, taskID, title, projectPath, consecutive)
+			return &HandlerResult{Success: false, BranchName: task.Branch, Error: executor.ErrDispatchGated}, nil
 		}
 	}
 
@@ -217,6 +218,12 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// 6. Dispatch via dispatcher OR direct execute via runner
 	var result *executor.ExecutionResult
 	var execErr error
+	// gatedDrop marks the execID=="" branch below (GH-4372 duplicate/terminal
+	// drop) so the final HandlerResult can carry executor.ErrDispatchGated
+	// (GH-4469) without disturbing the existing execErr-driven monitor/alert
+	// side effects in steps 7-9, which intentionally treat this path as
+	// "nothing to wait for" rather than a failure.
+	var gatedDrop bool
 
 	if deps.Dispatcher != nil {
 		execID, qErr := deps.Dispatcher.QueueTask(ctx, task)
@@ -252,6 +259,8 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			if deps.Metrics != nil {
 				deps.Metrics.RecordPollerSkipped(repickMetricsRepo(task), skipreason.ReasonRepickStormBackoff)
 			}
+			fireLoopBreakerAlert(deps, taskID, title, projectPath, consecutive)
+			gatedDrop = true
 		} else {
 			// GH-4394 subtask 2: a repick (Dispatcher.beginWithGenerationRetry
 			// claiming execution_claims generation > 0 because the prior claim
@@ -360,10 +369,16 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	}
 
 	// 10. Build and return HandlerResult
+	hrErr := execErr
+	if hrErr == nil && gatedDrop {
+		// GH-4469: distinguish "dropped a duplicate/terminal pickup" from a
+		// genuine execution failure for anything that inspects HandlerResult.
+		hrErr = executor.ErrDispatchGated
+	}
 	hr := &HandlerResult{
 		Success:    execErr == nil && result != nil && result.Success,
 		BranchName: task.Branch,
-		Error:      execErr,
+		Error:      hrErr,
 		Result:     result,
 	}
 	if result != nil {
@@ -391,6 +406,35 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	}
 
 	return hr, execErr
+}
+
+// fireLoopBreakerAlert emits AlertTypeDispatchLoopBreaker exactly once per
+// storm — the tick where consecutive first reaches repickLoopBreakerThreshold
+// (GH-4469). consecutive strictly increases while a task keeps dropping and
+// is reset by repickBackoff.recordSuccess on the first genuine dispatch, so
+// comparing for equality (rather than >=) fires the alert once without
+// needing separate dedup state; a nil AlertsEngine (e.g. in tests without one
+// wired) is a no-op.
+func fireLoopBreakerAlert(deps HandlerDeps, taskID, title, projectPath string, consecutive int) {
+	if consecutive != repickLoopBreakerThreshold {
+		return
+	}
+	logging.WithComponent("dispatch").Warn(
+		"dispatch loop breaker: task rejected 10+ consecutive times, stopping until operator action or backoff expiry",
+		slog.String("task_id", taskID), slog.Int("consecutive_drops", consecutive))
+	if deps.AlertsEngine == nil {
+		return
+	}
+	deps.AlertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeDispatchLoopBreaker,
+		TaskID:    taskID,
+		TaskTitle: title,
+		Project:   projectPath,
+		Metadata: map[string]string{
+			"consecutive_drops": fmt.Sprintf("%d", consecutive),
+		},
+		Timestamp: time.Now(),
+	})
 }
 
 // repickMetricsRepo returns the repo label to record repick-storm skips

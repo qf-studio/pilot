@@ -22,12 +22,27 @@ const (
 	// repickBackoffMaxShift caps backoff growth at base * 2^5 = base * 32.
 	repickBackoffMaxShift      = 5
 	repickBackoffWarnThreshold = 5 // consecutive drops before escalating to WARN
+
+	// repickLoopBreakerThreshold is the consecutive-drop count (GH-4469) at
+	// which handleIssueGeneric fires a single WARNING alert naming the task,
+	// on top of the ordinary Warn-level log escalation at
+	// repickBackoffWarnThreshold. By this point the exponential backoff has
+	// already been capped (repickBackoffMaxShift) for several drops, so the
+	// task is being silently re-offered every ~16 minutes rather than every
+	// 30s — still worth paging an operator about, since GH-4391 accumulated
+	// this pattern for two days before anyone noticed.
+	repickLoopBreakerThreshold = 10
 )
 
 // repickBackoffEntry tracks one task_id/project_path pair's cooldown state.
 type repickBackoffEntry struct {
 	consecutiveDrops int
 	nextAllowedAt    time.Time
+	// gateLogged records whether the current backoff window has already
+	// emitted its once-per-window DEBUG "gated" log line (GH-4469 deliverable
+	// 2) — set by gateStatus, cleared once nextAllowedAt passes so the next
+	// window logs exactly once again.
+	gateLogged bool
 }
 
 // repickBackoffPersister durably mirrors the tracker's in-memory entries
@@ -107,6 +122,30 @@ func (t *repickBackoffTracker) allow(key string) bool {
 		}
 	}
 	return !time.Now().Before(e.nextAllowedAt)
+}
+
+// gateStatus reports whether key is currently within its backoff window
+// (gated) and, if so, whether the caller should emit its once-per-window
+// DEBUG log line (GH-4469 deliverable 2) — true only the first time
+// gateStatus observes this window as gated, false on every subsequent poll
+// tick until the window expires and a new one begins.
+func (t *repickBackoffTracker) gateStatus(key string) (gated bool, shouldLog bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.entries[key]
+	if !ok {
+		e = t.hydrateLocked(key)
+		if e == nil {
+			return false, false
+		}
+	}
+	if time.Now().Before(e.nextAllowedAt) {
+		shouldLog = !e.gateLogged
+		e.gateLogged = true
+		return true, shouldLog
+	}
+	e.gateLogged = false
+	return false, false
 }
 
 // recordDrop registers a dropped pickup for key, extending its backoff window

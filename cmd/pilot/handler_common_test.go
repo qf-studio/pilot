@@ -5,12 +5,14 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/gitlab"
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -509,6 +511,235 @@ func TestHandleIssueGeneric_RepickDoesNotClearBackoff(t *testing.T) {
 	}
 	if !found || consecutive != 1 {
 		t.Errorf("expected persisted repick backoff consecutive_drops=1 after the re-pick, got found=%v consecutive=%d", found, consecutive)
+	}
+}
+
+// TestHandleIssueGeneric_GatedReturns_CarryErrDispatchGated is the GH-4469
+// deliverable-2 regression test: every one of handleIssueGeneric's
+// pre-dispatch admission gates must set HandlerResult.Error to
+// executor.ErrDispatchGated (checkable via errors.Is), so anything that
+// inspects the result can distinguish "the dispatcher intentionally declined
+// this tick" from a genuine execution failure — even though the vendored
+// github SDK poller itself doesn't consult this field (GH-4469's fix for that
+// path is gating earlier, at terminalCompletionChecker).
+func TestHandleIssueGeneric_GatedReturns_CarryErrDispatchGated(t *testing.T) {
+	t.Run("IsActive dedup gate", func(t *testing.T) {
+		dispatcher := newHandlerTestDispatcher(t)
+		taskID := "GH-4469-ACTIVE"
+		projectPath := "/tmp/pilot-gh-4469-active-does-not-exist"
+		task := &executor.Task{ID: taskID, Title: "t", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+		// Queue the task once so IsActive reports true on the next check.
+		if _, err := dispatcher.QueueTask(context.Background(), task); err != nil {
+			t.Fatalf("setup QueueTask failed: %v", err)
+		}
+
+		deps := HandlerDeps{Dispatcher: dispatcher, Monitor: executor.NewMonitor(), ProjectPath: projectPath}
+		info := IssueInfo{TaskID: taskID, Title: "t", Adapter: "github", LogMark: "▸"}
+
+		hr, err := handleIssueGeneric(context.Background(), deps, info, task)
+		if err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+		if !errors.Is(hr.Error, executor.ErrDispatchGated) {
+			t.Errorf("expected hr.Error to wrap executor.ErrDispatchGated, got: %v", hr.Error)
+		}
+	})
+
+	t.Run("repick backoff window gate", func(t *testing.T) {
+		dispatcher := newHandlerTestDispatcher(t)
+		taskID := "GH-4469-BACKOFF"
+		projectPath := "/tmp/pilot-gh-4469-backoff-does-not-exist"
+		backoffKey := repickBackoffKey(projectPath, taskID)
+		t.Cleanup(func() { repickBackoff.recordSuccess(backoffKey) })
+		repickBackoff.setPersister(dispatcher)
+		repickBackoff.recordDrop(backoffKey)
+
+		deps := HandlerDeps{Dispatcher: dispatcher, Monitor: executor.NewMonitor(), ProjectPath: projectPath}
+		info := IssueInfo{TaskID: taskID, Title: "t", Adapter: "github", LogMark: "▸"}
+		task := &executor.Task{ID: taskID, Title: "t", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+		hr, err := handleIssueGeneric(context.Background(), deps, info, task)
+		if err != nil {
+			t.Fatalf("expected nil error, got: %v", err)
+		}
+		if !errors.Is(hr.Error, executor.ErrDispatchGated) {
+			t.Errorf("expected hr.Error to wrap executor.ErrDispatchGated, got: %v", hr.Error)
+		}
+	})
+
+	t.Run("terminal completion re-check gate", func(t *testing.T) {
+		taskID := "GH-4469-TERMINAL"
+		projectPath := "/tmp/pilot-gh-4469-terminal-does-not-exist"
+		backoffKey := repickBackoffKey(projectPath, taskID)
+		t.Cleanup(func() { repickBackoff.recordSuccess(backoffKey) })
+
+		store, err := memory.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatalf("NewStore failed: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		dispatcher2 := executor.NewDispatcher(store, executor.NewRunner(), nil)
+		if err := dispatcher2.Start(context.Background()); err != nil {
+			t.Fatalf("failed to start dispatcher: %v", err)
+		}
+		t.Cleanup(dispatcher2.Stop)
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-gh-4469-terminal", TaskID: taskID, ProjectPath: projectPath,
+			Status: "completed", PRUrl: "https://github.com/qf-studio/pilot-canary-sandbox/pull/1",
+		}); err != nil {
+			t.Fatalf("failed to seed completed execution: %v", err)
+		}
+
+		deps := HandlerDeps{Dispatcher: dispatcher2, Monitor: executor.NewMonitor(), ProjectPath: projectPath}
+		info := IssueInfo{TaskID: taskID, Title: "t", Adapter: "github", LogMark: "▸"}
+		task := &executor.Task{ID: taskID, Title: "t", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+		hr, hErr := handleIssueGeneric(context.Background(), deps, info, task)
+		if hErr != nil {
+			t.Fatalf("expected nil error, got: %v", hErr)
+		}
+		if !errors.Is(hr.Error, executor.ErrDispatchGated) {
+			t.Errorf("expected hr.Error to wrap executor.ErrDispatchGated, got: %v", hr.Error)
+		}
+	})
+}
+
+// testAlertChannel is a minimal alerts.Channel implementation that records
+// every alert it receives, for tests that need to observe what
+// handleIssueGeneric's AlertsEngine actually dispatched.
+type testAlertChannel struct {
+	mu     sync.Mutex
+	alerts []alerts.Alert
+}
+
+func (c *testAlertChannel) Name() string { return "test-channel" }
+func (c *testAlertChannel) Type() string { return "webhook" }
+func (c *testAlertChannel) Send(_ context.Context, alert *alerts.Alert) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.alerts = append(c.alerts, *alert)
+	return nil
+}
+func (c *testAlertChannel) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.alerts)
+}
+
+// waitForAlertCount polls until ch has recorded at least n alerts or the
+// timeout elapses (alerts.Engine.ProcessEvent is asynchronous).
+func waitForAlertCount(t *testing.T, ch *testAlertChannel, n int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ch.count() >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d alert(s), got %d", n, ch.count())
+}
+
+// TestHandleIssueGeneric_LoopBreakerAlert_FiresOnceAtThreshold is the GH-4469
+// deliverable-4 regression test: repeatedly hitting the same gate (here, the
+// terminal-completion re-check) must fire exactly one
+// AlertTypeDispatchLoopBreaker WARNING when the consecutive-drop count first
+// reaches repickLoopBreakerThreshold (10) — not before, and not again on
+// every subsequent tick past it.
+func TestHandleIssueGeneric_LoopBreakerAlert_FiresOnceAtThreshold(t *testing.T) {
+	taskID := "GH-4469-LOOP-BREAKER"
+	projectPath := "/tmp/pilot-gh-4469-loop-breaker-does-not-exist"
+	backoffKey := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(backoffKey) })
+
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	d2 := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := d2.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(d2.Stop)
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-gh-4469-loop-breaker", TaskID: taskID, ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/qf-studio/pilot-canary-sandbox/pull/1",
+	}); err != nil {
+		t.Fatalf("failed to seed completed execution: %v", err)
+	}
+
+	config := &alerts.AlertConfig{
+		Enabled: true,
+		Channels: []alerts.ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []alerts.AlertRule{
+			{
+				Name:     "dispatch_loop_breaker",
+				Type:     alerts.AlertTypeDispatchLoopBreaker,
+				Enabled:  true,
+				Severity: alerts.SeverityWarning,
+				Channels: []string{"test-channel"},
+				Cooldown: 0,
+			},
+		},
+	}
+	testCh := &testAlertChannel{}
+	alertDispatcher := alerts.NewDispatcher(config)
+	alertDispatcher.RegisterChannel(testCh)
+	engine := alerts.NewEngine(config, alerts.WithDispatcher(alertDispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := engine.Start(ctx); err != nil {
+		t.Fatalf("failed to start alerts engine: %v", err)
+	}
+
+	deps := HandlerDeps{Dispatcher: d2, Monitor: executor.NewMonitor(), ProjectPath: projectPath, AlertsEngine: engine}
+	info := IssueInfo{TaskID: taskID, Title: "loop breaker", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "loop breaker", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	forceExpire := func() {
+		repickBackoff.mu.Lock()
+		if e, ok := repickBackoff.entries[backoffKey]; ok {
+			e.nextAllowedAt = time.Now().Add(-time.Second)
+		}
+		repickBackoff.mu.Unlock()
+	}
+
+	// Drive 9 drops (simulating 9 prior poll ticks each ~30s+ apart) — no
+	// alert expected yet.
+	for i := 0; i < 9; i++ {
+		if i > 0 {
+			forceExpire()
+		}
+		if _, err := handleIssueGeneric(context.Background(), deps, info, task); err != nil {
+			t.Fatalf("drop %d: unexpected error: %v", i+1, err)
+		}
+	}
+	if got := testCh.count(); got != 0 {
+		t.Fatalf("expected 0 alerts before reaching the threshold, got %d", got)
+	}
+
+	// 10th consecutive drop: must fire exactly one alert.
+	forceExpire()
+	if _, err := handleIssueGeneric(context.Background(), deps, info, task); err != nil {
+		t.Fatalf("10th drop: unexpected error: %v", err)
+	}
+	waitForAlertCount(t, testCh, 1, 2*time.Second)
+	if got := testCh.count(); got != 1 {
+		t.Fatalf("expected exactly 1 alert at the threshold, got %d", got)
+	}
+
+	// An 11th drop must not fire a second alert.
+	forceExpire()
+	if _, err := handleIssueGeneric(context.Background(), deps, info, task); err != nil {
+		t.Fatalf("11th drop: unexpected error: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := testCh.count(); got != 1 {
+		t.Fatalf("expected still exactly 1 alert past the threshold, got %d", got)
 	}
 }
 

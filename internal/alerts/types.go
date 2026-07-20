@@ -57,6 +57,12 @@ const (
 	// pilot-labeled issues but nothing queued/running for too many
 	// consecutive poll cycles.
 	AlertTypeLaneStarvation AlertType = "lane_starvation"
+
+	// Dispatch loop breaker (GH-4469): the same task has been
+	// dispatched-and-rejected (gated or genuinely failed) 10+ consecutive
+	// times without ever completing — see repickLoopBreakerThreshold in
+	// cmd/pilot/repick_backoff.go, GH-4391's 4,233-cycle incident.
+	AlertTypeDispatchLoopBreaker AlertType = "dispatch_loop_breaker"
 )
 
 // Alert represents an alert event
@@ -387,6 +393,20 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when a project lane has open pilot-labeled issues but nothing queued/running for too many poll cycles",
+		},
+		// Dispatch loop breaker (GH-4469): caller (handleIssueGeneric) does its
+		// own threshold counting via repickLoopBreakerThreshold and fires the
+		// event exactly once per storm (at consecutive drop == 10), so no
+		// Condition field is needed here — mirrors release_missing.
+		{
+			Name:        "dispatch_loop_breaker",
+			Type:        AlertTypeDispatchLoopBreaker,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when a task is dispatched-and-rejected 10+ consecutive times without ever completing",
 		},
 	}
 }

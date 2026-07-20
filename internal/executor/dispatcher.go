@@ -23,6 +23,20 @@ import (
 // error text (GH-4008).
 var ErrTaskAlreadyActive = errors.New("task already queued or running")
 
+// ErrDispatchGated marks a HandlerResult produced by one of handleIssueGeneric's
+// pre-dispatch admission gates (already-active dedup, repick backoff window,
+// terminal-completion re-check) rather than a genuine execution failure
+// (GH-4469). Every adapter wrapper forwards HandlerResult.Error into its
+// result struct unchanged, so anything that CAN inspect the error (in-tree
+// pollers, tests, future adapters) can use errors.Is(err, ErrDispatchGated) to
+// tell "the dispatcher intentionally declined this tick" apart from "the
+// execution actually failed" instead of inferring it from Success/PRNumber
+// alone. Note the vendored github SDK poller's own unmark decision does not
+// consult this field at all (it only looks at Success/PRNumber) — for that
+// path GH-4469's fix is gating earlier, at terminalCompletionChecker (see
+// cmd/pilot/main.go), so the gated tick never reaches handleIssueGeneric.
+var ErrDispatchGated = errors.New("dispatch gated: pre-dispatch admission check declined this tick")
+
 // terminalExecutionStatuses is every execution status WaitForExecution and
 // the GH-4372 retry decider both treat as "finished" — the execution is no
 // longer in flight, regardless of whether it succeeded. Kept as the single

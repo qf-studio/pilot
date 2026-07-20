@@ -3188,11 +3188,32 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 // executor.HasTerminalCompletion is the same broadened "done" definition
 // dispatcher.go's own pickup guard (hasTerminalSuccessLedger) uses, so both
 // re-arm points agree.
+//
+// GH-4469: this is also the earliest host-controllable checkpoint in the
+// vendored github SDK poller's per-issue candidate loop
+// (studio-sdk/sdk/integrations/github/poller.go: hasCompletedExecution runs
+// before scope-grouping, the fresh-label GH API refresh, the pre-flight judge
+// subprocess, markProcessed, board-sync, and the dispatch/claim-insert
+// itself). GH-4391 looped 4,233 times over two days because the ONLY existing
+// gate was inside handleIssueGeneric (cmd/pilot/handler_common.go), which the
+// poller only reaches AFTER already paying for the judge run and board-sync
+// write — a rejection there still cost the full cycle every ~30s. Consulting
+// the repick backoff here, before any of that, makes a backoff-gated task
+// look identical to an already-completed one to the poller: it's skipped via
+// recordSkip(ReasonCompletedExecution) with zero further API calls, judge
+// runs, or claim rows until next_allowed_at passes.
 type terminalCompletionChecker struct {
 	store *memory.Store
 }
 
 func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath string) (bool, error) {
+	if gated, shouldLog := repickBackoff.gateStatus(repickBackoffKey(projectPath, taskID)); gated {
+		if shouldLog {
+			logging.WithComponent("dispatch").Debug("task in repick backoff window, skipping poller candidacy entirely",
+				slog.String("task_id", taskID))
+		}
+		return true, nil
+	}
 	return executor.HasTerminalCompletion(c.store, taskID, projectPath)
 }
 
