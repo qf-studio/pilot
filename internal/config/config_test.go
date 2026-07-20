@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/gateway"
 )
 
@@ -1282,6 +1283,74 @@ projects:
 	}
 }
 
+// TestProjectConfigProjectBoardYAML covers GH-4472: a projects[].github.project_board
+// block parses into ProjectGitHubConfig.ProjectBoard; a project with no block gets nil.
+func TestProjectConfigProjectBoardYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+version: "1.0"
+adapters:
+  github:
+    repo: "acme/default"
+projects:
+  - name: "pointer"
+    path: "/p1"
+    github:
+      owner: "acme"
+      repo: "pointer"
+      project_board:
+        enabled: true
+        project_number: 2
+        status_field: "Status"
+        source_enabled: true
+        source_status: "Todo"
+        statuses:
+          in_progress: "In Progress"
+          review: "In Review"
+          done: "Done"
+          failed: "Blocked"
+  - name: "no-board"
+    path: "/p2"
+    github:
+      owner: "acme"
+      repo: "no-board"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Projects) != 2 {
+		t.Fatalf("Projects length = %d, want 2", len(cfg.Projects))
+	}
+
+	pointer := cfg.Projects[0]
+	if pointer.GitHub == nil || pointer.GitHub.ProjectBoard == nil {
+		t.Fatal("pointer project ProjectBoard = nil, want set")
+	}
+	pb := pointer.GitHub.ProjectBoard
+	if !pb.Enabled || pb.ProjectNumber != 2 || pb.StatusField != "Status" {
+		t.Errorf("pointer ProjectBoard = %+v, want enabled/project_number=2/status_field=Status", pb)
+	}
+	if !pb.SourceEnabled || pb.SourceStatus != "Todo" {
+		t.Errorf("pointer ProjectBoard source = %+v, want source_enabled/source_status=Todo", pb)
+	}
+	if pb.Statuses.InProgress != "In Progress" || pb.Statuses.Done != "Done" {
+		t.Errorf("pointer ProjectBoard statuses = %+v", pb.Statuses)
+	}
+
+	noBoard := cfg.Projects[1]
+	if noBoard.GitHub == nil {
+		t.Fatal("no-board project GitHub = nil")
+	}
+	if noBoard.GitHub.ProjectBoard != nil {
+		t.Errorf("no-board project ProjectBoard = %+v, want nil", noBoard.GitHub.ProjectBoard)
+	}
+}
+
 func TestProjectConfigQualityYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
@@ -1743,6 +1812,79 @@ func TestFindProjectByRepo(t *testing.T) {
 		proj := empty.FindProjectByRepo("my-org/app-one")
 		if proj != nil {
 			t.Errorf("expected nil, got %v", proj)
+		}
+	})
+}
+
+// TestResolveProjectBoard covers the GH-4472 per-project board resolution
+// precedence: project override → default-repo global fallback → none.
+func TestResolveProjectBoard(t *testing.T) {
+	globalBoard := &github.ProjectBoardConfig{Enabled: true, ProjectNumber: 2}
+	projectBoard := &github.ProjectBoardConfig{Enabled: true, ProjectNumber: 1}
+
+	cfg := &Config{
+		Adapters: &AdaptersConfig{
+			GitHub: &github.Config{
+				Repo:         "acme/default",
+				ProjectBoard: globalBoard,
+			},
+		},
+		Projects: []*ProjectConfig{
+			{
+				Name:   "with-board",
+				GitHub: &ProjectGitHubConfig{Owner: "acme", Repo: "with-board", ProjectBoard: projectBoard},
+			},
+			{
+				Name:   "no-board",
+				GitHub: &ProjectGitHubConfig{Owner: "acme", Repo: "no-board"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		ownerRepo     string
+		isDefaultRepo bool
+		want          *github.ProjectBoardConfig
+	}{
+		{
+			name:          "project with its own board, non-default repo",
+			ownerRepo:     "acme/with-board",
+			isDefaultRepo: false,
+			want:          projectBoard,
+		},
+		{
+			name:          "project without a board, non-default repo, no fallback",
+			ownerRepo:     "acme/no-board",
+			isDefaultRepo: false,
+			want:          nil,
+		},
+		{
+			name:          "default repo with no project entry falls back to global",
+			ownerRepo:     "acme/default",
+			isDefaultRepo: true,
+			want:          globalBoard,
+		},
+		{
+			name:          "unknown repo, not default, no board",
+			ownerRepo:     "acme/unknown",
+			isDefaultRepo: false,
+			want:          nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cfg.ResolveProjectBoard(tt.ownerRepo, tt.isDefaultRepo)
+			if got != tt.want {
+				t.Errorf("ResolveProjectBoard(%q, %v) = %v, want %v", tt.ownerRepo, tt.isDefaultRepo, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("nil adapters config, default repo, no panic", func(t *testing.T) {
+		empty := &Config{}
+		if got := empty.ResolveProjectBoard("acme/default", true); got != nil {
+			t.Errorf("expected nil, got %v", got)
 		}
 	})
 }

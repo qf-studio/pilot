@@ -280,6 +280,12 @@ func (p *ProjectConfig) ResolveBaseBranch() string {
 type ProjectGitHubConfig struct {
 	Owner string `yaml:"owner"`
 	Repo  string `yaml:"repo"`
+	// ProjectBoard configures GitHub Projects V2 board sync/source for this
+	// project's repo (GH-4472). Unbinds board wiring from the single
+	// adapters.github.repo default — each project repo can carry its own
+	// board. Nil means this project gets no board wiring of its own; the
+	// default repo still falls back to adapters.github.project_board.
+	ProjectBoard *github.ProjectBoardConfig `yaml:"project_board,omitempty"`
 }
 
 // ProjectLinearConfig holds Linear-specific project configuration for project pairing.
@@ -296,6 +302,24 @@ func (c *Config) FindProjectByRepo(ownerRepo string) *ProjectConfig {
 				return p
 			}
 		}
+	}
+	return nil
+}
+
+// ResolveProjectBoard returns the effective GitHub Projects V2 board config
+// for a repo (GH-4472). Precedence:
+//  1. A projects[] entry matching ownerRepo with its own github.project_board
+//     wins — every project repo can carry its own board.
+//  2. isDefaultRepo (ownerRepo == adapters.github.repo) with no project-level
+//     override falls back to adapters.github.project_board, preserving
+//     today's single-board behavior byte-for-byte.
+//  3. Any other repo with no project-level config gets no board wiring.
+func (c *Config) ResolveProjectBoard(ownerRepo string, isDefaultRepo bool) *github.ProjectBoardConfig {
+	if proj := c.FindProjectByRepo(ownerRepo); proj != nil && proj.GitHub != nil && proj.GitHub.ProjectBoard != nil {
+		return proj.GitHub.ProjectBoard
+	}
+	if isDefaultRepo && c.Adapters != nil && c.Adapters.GitHub != nil {
+		return c.Adapters.GitHub.ProjectBoard
 	}
 	return nil
 }

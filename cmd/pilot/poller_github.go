@@ -243,6 +243,15 @@ func githubSDKPollerTargets(cfg *config.Config, defaultProjectPath string) []git
 	return targets
 }
 
+// resolveSDKProjectBoard resolves this target's effective board config
+// (GH-4472: Config.ResolveProjectBoard's project-override → default-repo
+// fallback precedence) and maps it to the studio-sdk shape. Split out as its
+// own function so the poller-wiring precedence can be unit tested without
+// constructing the full SDK poller (network client, rate-limit scheduler).
+func resolveSDKProjectBoard(cfg *config.Config, target githubSDKPollerTarget) *githubSDK.ProjectBoardConfig {
+	return toSDKProjectBoardConfig(cfg.ResolveProjectBoard(target.repoFullName, target.isDefault))
+}
+
 // resolveRepoMetrics returns the autopilot.Metrics for repoFullName's
 // per-repo controller, falling back to the default-repo controller, or nil if
 // neither is configured. GH-4376: lets the shared handler chokepoint
@@ -299,26 +308,11 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 		},
 	}
 
-	// Board layer is wired for the default repo only — parity with the in-tree path,
-	// which gates board source/sync to adapters.github.repo (main.go). Per-project
-	// board sync is a 4d.6+ question; project repos get no board wiring.
-	if target.isDefault {
-		if pb := ghCfg.ProjectBoard; pb != nil {
-			sdkCfg.ProjectBoard = &githubSDK.ProjectBoardConfig{
-				Enabled:       pb.Enabled,
-				ProjectNumber: pb.ProjectNumber,
-				StatusField:   pb.StatusField,
-				Statuses: githubSDK.ProjectStatuses{
-					InProgress: pb.Statuses.InProgress,
-					Review:     pb.Statuses.Review,
-					Done:       pb.Statuses.Done,
-					Failed:     pb.Statuses.Failed,
-				},
-				SourceEnabled: pb.SourceEnabled,
-				SourceStatus:  pb.SourceStatus,
-			}
-		}
-	}
+	// GH-4472: per-target board resolution — a project repo carries its own
+	// github.project_board; the default adapter repo falls back to the
+	// global adapters.github.project_board when it has no project-level
+	// override (byte-identical to the pre-GH-4472 default-repo-only path).
+	sdkCfg.ProjectBoard = resolveSDKProjectBoard(deps.Cfg, target)
 
 	pollerDeps := sdkcore.PollerDeps{
 		Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {

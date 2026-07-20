@@ -7,6 +7,14 @@ import (
 	"github.com/qf-studio/pilot/internal/config"
 )
 
+func ghProjWithBoard(name, owner, repo, path string, pb *github.ProjectBoardConfig) *config.ProjectConfig {
+	return &config.ProjectConfig{
+		Name:   name,
+		Path:   path,
+		GitHub: &config.ProjectGitHubConfig{Owner: owner, Repo: repo, ProjectBoard: pb},
+	}
+}
+
 func ghProj(name, owner, repo, path string) *config.ProjectConfig {
 	return &config.ProjectConfig{
 		Name:   name,
@@ -90,6 +98,63 @@ func TestGithubSDKPollerTargets(t *testing.T) {
 				if got[i] != tt.want[i] {
 					t.Errorf("target[%d] = %+v, want %+v", i, got[i], tt.want[i])
 				}
+			}
+		})
+	}
+}
+
+// TestResolveSDKProjectBoard covers GH-4472 poller wiring: sdkCfg.ProjectBoard
+// is resolved per-target via Config.ResolveProjectBoard, not gated on
+// target.isDefault the way the pre-GH-4472 code hard-coded it.
+func TestResolveSDKProjectBoard(t *testing.T) {
+	globalBoard := &github.ProjectBoardConfig{Enabled: true, ProjectNumber: 2, StatusField: "Status"}
+	projectBoard := &github.ProjectBoardConfig{Enabled: true, ProjectNumber: 1, StatusField: "Status", SourceEnabled: true, SourceStatus: "Todo"}
+
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			GitHub: &github.Config{Repo: "acme/default", ProjectBoard: globalBoard},
+		},
+		Projects: []*config.ProjectConfig{
+			ghProjWithBoard("with-board", "acme", "with-board", "/wb", projectBoard),
+			ghProj("no-board", "acme", "no-board", "/nb"),
+		},
+	}
+
+	tests := []struct {
+		name   string
+		target githubSDKPollerTarget
+		want   *github.ProjectBoardConfig // nil means expect sdkCfg.ProjectBoard == nil
+	}{
+		{
+			name:   "non-default target with its own project board gets it wired",
+			target: githubSDKPollerTarget{repoFullName: "acme/with-board", isDefault: false},
+			want:   projectBoard,
+		},
+		{
+			name:   "non-default target without a project board stays nil (no fallback to global)",
+			target: githubSDKPollerTarget{repoFullName: "acme/no-board", isDefault: false},
+			want:   nil,
+		},
+		{
+			name:   "default target with no project-level override keeps the global fallback",
+			target: githubSDKPollerTarget{repoFullName: "acme/default", isDefault: true},
+			want:   globalBoard,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveSDKProjectBoard(cfg, tt.target)
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("resolveSDKProjectBoard() = %+v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("resolveSDKProjectBoard() = nil, want non-nil")
+			}
+			if got.ProjectNumber != tt.want.ProjectNumber || got.SourceEnabled != tt.want.SourceEnabled || got.SourceStatus != tt.want.SourceStatus {
+				t.Errorf("resolveSDKProjectBoard() = %+v, want mapped from %+v", got, tt.want)
 			}
 		})
 	}
