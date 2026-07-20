@@ -3161,6 +3161,15 @@
           "ci",
           "github"
         ]
+      },
+      "go-caches-on-root-volume-fill-disk": {
+        "type": "pitfall",
+        "summary": "Go build+module caches on the box's 30GB root volume filled the disk — SSM (commands AND sessions) fails with empty output while agent pings Online; reboot can't self-heal (cloud-init growpart hits ENOSPC); recovery = EBS detach-rescue via mgmt runner; GOCACHE/GOMODCACHE now live on the data volume",
+        "file": ".agent/knowledge/memories/pitfalls/go-caches-on-root-volume-fill-disk.md",
+        "concepts": [
+          "executor",
+          "dispatcher"
+        ]
       }
     }
   },

@@ -1,6 +1,6 @@
 # feat(github): per-project Projects V2 board config — unbind board sync/source from the default repo
 
-**Created**: 2026-07-20 · **Status**: 🚀 Dispatched to Pilot
+**Created**: 2026-07-20 · **Status**: ✅ SHIPPED 2026-07-20 (PR #4473 merged, deployed; follow-ups #4474 #4475 #4478 all shipped same day)
 
 ## Problem
 
