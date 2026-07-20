@@ -4,6 +4,8 @@ import (
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 
 	github "github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/config"
 )
 
 // toSDKProjectBoardConfig maps the internal GitHub ProjectBoard config to the
@@ -27,4 +29,20 @@ func toSDKProjectBoardConfig(pb *github.ProjectBoardConfig) *githubSDK.ProjectBo
 		SourceEnabled: pb.SourceEnabled,
 		SourceStatus:  pb.SourceStatus,
 	}
+}
+
+// projectBoardControllerOpts resolves the effective board config for repoFullName
+// (GH-4472: Config.ResolveProjectBoard's project-override → default-repo-fallback
+// precedence) and, if enabled, returns the autopilot ControllerOption that wires
+// ProjectBoardSync for it. Returns nil when the repo has no board config or board
+// sync is disabled — callers append the (possibly empty) result to their option
+// slice unconditionally.
+func projectBoardControllerOpts(apGHClient *githubSDK.Client, cfg *config.Config, repoFullName, owner string, isDefaultRepo bool) []autopilot.ControllerOption {
+	pb := cfg.ResolveProjectBoard(repoFullName, isDefaultRepo)
+	if pb == nil || !pb.Enabled {
+		return nil
+	}
+	bs := githubSDK.NewProjectBoardSync(apGHClient, toSDKProjectBoardConfig(pb), owner)
+	statuses := pb.GetStatuses()
+	return []autopilot.ControllerOption{autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed, statuses.Review, statuses.InProgress)}
 }

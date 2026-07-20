@@ -674,11 +674,10 @@ Examples:
 							if cfg.Adapters.GitHub.PilotLabel != "" {
 								gwBoardOpts = append(gwBoardOpts, autopilot.WithPilotLabel(cfg.Adapters.GitHub.PilotLabel))
 							}
-							if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
-								bs := githubSDK.NewProjectBoardSync(apGHClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), parts[0])
-								statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
-								gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed, statuses.Review, statuses.InProgress))
-							}
+							// GH-4472: resolve via project override → default-repo fallback
+							// instead of reading the global block directly, so a projects[]
+							// entry for this same repo with its own project_board wins.
+							gwBoardOpts = append(gwBoardOpts, projectBoardControllerOpts(apGHClient, cfg, cfg.Adapters.GitHub.Repo, parts[0], true)...)
 							// TASK-352: scope self-heal to the project's fs path (matches
 							// executions.project_path) so merged work flips failed→completed.
 							gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectPath(projectPath))
@@ -1603,28 +1602,23 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// (graceful no-op) when ANTHROPIC_API_KEY is unset.
 			releaseSummaryGen := autopilot.NewReleaseSummaryGenerator(apGHClient, os.Getenv("ANTHROPIC_API_KEY"), logging.WithComponent("autopilot"))
 
-			// GH-1870: Build board sync option for autopilot controllers.
-			var autopilotBoardOpts []autopilot.ControllerOption
+			// GH-1870: Build shared (non-board) options for every autopilot
+			// controller. GH-4472: board sync is resolved per-repo below via
+			// projectBoardControllerOpts instead of being folded into this
+			// shared slice — a single global ProjectBoard here would leak
+			// onto every project controller regardless of its own repo.
+			var autopilotSharedOpts []autopilot.ControllerOption
 			// GH-4460: the in-tree client exposes the jobs/annotations APIs the
 			// studio-sdk client doesn't yet — wire it so CI-failure excerpts
 			// resolve to the actual failing step instead of a whole-job tail.
-			autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithStepLogClient(ghClient))
+			autopilotSharedOpts = append(autopilotSharedOpts, autopilot.WithStepLogClient(ghClient))
 			// GH-4454: every controller's lane-starvation reconciler needs the
 			// same trigger label the GitHub SDK poller watches for
 			// (poller_github.go resolves this identically: ghCfg.PilotLabel,
 			// defaulting to "pilot" — WithPilotLabel leaves it unset when
 			// PilotLabel is empty, so NewController's own default applies).
 			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.PilotLabel != "" {
-				autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithPilotLabel(cfg.Adapters.GitHub.PilotLabel))
-			}
-			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
-				owner := ""
-				if parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2); len(parts) == 2 {
-					owner = parts[0]
-				}
-				bs := githubSDK.NewProjectBoardSync(apGHClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), owner)
-				statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
-				autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed, statuses.Review, statuses.InProgress))
+				autopilotSharedOpts = append(autopilotSharedOpts, autopilot.WithPilotLabel(cfg.Adapters.GitHub.PilotLabel))
 			}
 
 			// Create controller for default repo (adapters.github.repo)
@@ -1647,7 +1641,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 					// TASK-352: scope self-heal to the project's fs path. Fresh slice so
 					// the per-project loop below does not alias this controller's option.
-					ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(projectPath))
+					ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotSharedOpts...), autopilot.WithProjectPath(projectPath))
+					// GH-4472: default repo resolves project override → global fallback.
+					ctrlOpts = append(ctrlOpts, projectBoardControllerOpts(apGHClient, cfg, cfg.Adapters.GitHub.Repo, parts[0], true)...)
 					// GH-3931: apply the per-project release overlay (GH-3930) when configured.
 					if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil && proj.Release != nil {
 						ctrlOpts = append(ctrlOpts, autopilot.WithReleaseOverride(proj.Release))
@@ -1682,7 +1678,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 				// TASK-352: scope self-heal to this project's fs path (matches
 				// executions.project_path). Fresh slice to avoid aliasing the shared opts.
-				ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(proj.Path))
+				ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotSharedOpts...), autopilot.WithProjectPath(proj.Path))
+				// GH-4472: this project's own github.project_board (if set) wins;
+				// no fallback here — only the default adapter repo inherits the
+				// global block.
+				ctrlOpts = append(ctrlOpts, projectBoardControllerOpts(apGHClient, cfg, repoFullName, proj.GitHub.Owner, false)...)
 				// GH-4001: a project's own `release:` block keeps today's overlay
 				// semantics (GH-3931/GH-3930); no block means this repo never
 				// opted into release automation and must not inherit the

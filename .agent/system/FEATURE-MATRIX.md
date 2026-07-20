@@ -132,6 +132,7 @@
 | Jira/Asana autopilot wire | ✅ | adapters | - | - | OnPRCreated + HeadSHA/BranchName for Jira + Asana (v1.19.0, GH-1397) |
 | GitHub Projects V2 Board | ✅ | adapters/github | - | `adapters.github.project_board` | GraphQL board sync: Review/Done/Failed columns (v2.30.0, PR #1863) |
 | GitHub Projects V2 Board Source | ✅ | adapters/github | - | `adapters.github.project_board.source_enabled` | Pull work FROM a board column (FindIssuesFromProject); opt-in via source_enabled/source_status (GH-3228) |
+| Per-project Projects V2 board | ✅ | config, cmd/pilot | - | `projects.<name>.github.project_board` | Unbinds board sync/source from the single default repo — each `projects[]` repo can carry its own board (`config.Config.ResolveProjectBoard`: project override → default-repo global fallback → none); wired into both the SDK poller (`poller_github.go`) and every autopilot controller construction site (`main.go`) (v2.242.0, GH-4472) |
 | Common Adapter Registry | ✅ | adapters | - | - | Unified Adapter interface, generic ProcessedStore table (v2.30.0, PR #1845) |
 | Linear workspace mode | ✅ | adapters/linear | - | `adapters.linear.projects` | Project-scoped routing via project_ids mapping for multi-project setups |
 | Plane.so state transitions | ✅ | adapters/plane | - | - | State transitions and PR comments on Plane.so issues (v2.25.0, PR #1843) |
