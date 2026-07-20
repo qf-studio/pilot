@@ -281,6 +281,21 @@ func WithReleaseNotOptedIn() ControllerOption {
 	}
 }
 
+// WithCIChecksOverride wires a per-project CI-checks / required-checks
+// overlay (GH-4478) for this controller's repo. Nil is a no-op. Without
+// this, every controller's CIMonitor is built from the single global
+// Config.RequiredChecks / Config.CIChecks — fine for the default repo
+// (adapters.github.repo), which that config is tuned for, but silently
+// wrong for any other project whose check-run names differ (see
+// ProjectCIChecksOverride doc for the qf-studio/pointer#108 repro). Must be
+// applied before NewController constructs c.ciMonitor — see the options
+// loop at the top of NewController.
+func WithCIChecksOverride(o *ProjectCIChecksOverride) ControllerOption {
+	return func(c *Controller) {
+		c.projectCIChecks = o
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -358,6 +373,13 @@ type Controller struct {
 	// (GH-4001). Only affects the "resolved release policy" log source tag —
 	// resolvedReleaseCfg is already forced disabled either way.
 	releaseNotOptedIn bool
+
+	// projectCIChecks is the per-project CI-checks / required-checks overlay
+	// (GH-4478), wired via WithCIChecksOverride. Nil = no project-level
+	// override — this controller's CIMonitor is built from the global
+	// Config.RequiredChecks / Config.CIChecks, same as before this option
+	// existed. Applied once during NewController, before c.ciMonitor is built.
+	projectCIChecks *ProjectCIChecksOverride
 
 	// resolvedReleaseCfg is the effective release config computed once in
 	// NewController: env-scoped config wins over global, then projectRelease
@@ -520,7 +542,24 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		c.pilotLabel = github.LabelPilot
 	}
 
-	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, cfg)
+	// GH-4478: apply the per-project CI-checks overlay (if any) on a shallow
+	// copy of cfg before constructing CIMonitor, rather than mutating cfg
+	// itself — cfg is the single shared Config.Orchestrator.Autopilot object
+	// every controller in cmd/pilot/main.go is constructed with, so mutating
+	// it in place would leak this project's overlay onto every other
+	// controller's CIMonitor too (the exact class of bug this overlay fixes).
+	ciMonitorCfg := cfg
+	if c.projectCIChecks != nil {
+		overlay := *cfg
+		if c.projectCIChecks.RequiredChecks != nil {
+			overlay.RequiredChecks = c.projectCIChecks.RequiredChecks
+		}
+		if c.projectCIChecks.CIChecks != nil {
+			overlay.CIChecks = c.projectCIChecks.CIChecks
+		}
+		ciMonitorCfg = &overlay
+	}
+	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, ciMonitorCfg)
 	if c.stepLogClient != nil {
 		c.ciMonitor.SetStepLogClient(c.stepLogClient)
 	}
