@@ -28,10 +28,10 @@ type SnapshotSource interface {
 // recomputed from the merged counters/gauges, not summed.
 //
 // Store-hydrated lifetime baselines (HydrateFromStore) and the
-// issue-level ship/attempt gauges are owned by exactly one controller —
-// the default, see the HydrateFromStore call site in main.go — so summing
-// the other (zero-valued for these fields) controllers alongside it does
-// not double-count.
+// issue-level ship/attempt gauges (all-model and per-model, GH-4483) are
+// owned by exactly one controller — the default, see the HydrateFromStore
+// call site in main.go — so summing the other (zero-valued for these
+// fields) controllers alongside it does not double-count.
 type AggregateMetrics struct {
 	sources []*Metrics
 }
@@ -59,6 +59,8 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		PollerDeferredScopeOverlap: make(map[string]int64),
 		OrphanPRsRegistered:        make(map[string]int64),
 		ActivePRsByStage:           make(map[PRStage]int),
+		IssuesShippedByModel:       make(map[string]int64),
+		IssuesAttemptedByModel:     make(map[string]int64),
 		SnapshotAt:                 time.Now(),
 	}
 
@@ -117,6 +119,12 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		agg.FailedQueueDepth += s.FailedQueueDepth
 		agg.IssuesShipped += s.IssuesShipped
 		agg.IssuesAttempted += s.IssuesAttempted
+		for k, v := range s.IssuesShippedByModel {
+			agg.IssuesShippedByModel[k] += v
+		}
+		for k, v := range s.IssuesAttemptedByModel {
+			agg.IssuesAttemptedByModel[k] += v
+		}
 
 		// Each source's APIErrorRate is already "errors in the last 5min / 5"
 		// for that source's independent error timestamps, so the fleet-wide

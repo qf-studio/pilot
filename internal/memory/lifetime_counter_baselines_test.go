@@ -131,3 +131,69 @@ func TestGetLifetimeCounterBaselines_PerLabel(t *testing.T) {
 		t.Errorf("total executions = %d, want 4 (base-5 queued row excluded)", totalExecs)
 	}
 }
+
+// TestGetLifetimeCounterBaselines_FullTaxonomy pins GH-4483: the per-model
+// execution baseline must preserve the executions table's full status
+// taxonomy (declined/no_op/rate_limited/infra/skipped each get their own
+// result label) instead of collapsing every non-completed/non-stalled status
+// into "failed" — the same defect TASK-392/#4070 fixed for the headline
+// pilot_success_rate. Also pins that rows with an empty model_name are
+// excluded entirely rather than bucketed under "unknown".
+func TestGetLifetimeCounterBaselines_FullTaxonomy(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	execs := []*Execution{
+		{ID: "tax-1", TaskID: "TASK-1", ProjectPath: "/p", Status: "declined", ModelName: "claude-sonnet-5"},
+		{ID: "tax-2", TaskID: "TASK-2", ProjectPath: "/p", Status: "no_op", ModelName: "claude-sonnet-5"},
+		{ID: "tax-3", TaskID: "TASK-3", ProjectPath: "/p", Status: "rate_limited", ModelName: "claude-sonnet-5"},
+		{ID: "tax-4", TaskID: "TASK-4", ProjectPath: "/p", Status: "infra", ModelName: "claude-sonnet-5"},
+		{ID: "tax-5", TaskID: "TASK-5", ProjectPath: "/p", Status: "skipped", ModelName: "claude-sonnet-5"},
+		{ID: "tax-6", TaskID: "TASK-6", ProjectPath: "/p", Status: "failed", ModelName: "claude-sonnet-5"},
+		// Empty model_name (pre-GH-4041 / died-before-invoking-Claude): must
+		// be excluded entirely, not folded into a "model=unknown" bucket.
+		{ID: "tax-7", TaskID: "TASK-7", ProjectPath: "/p", Status: "failed", ModelName: ""},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.ID, err)
+		}
+	}
+
+	b, err := store.GetLifetimeCounterBaselines()
+	if err != nil {
+		t.Fatalf("GetLifetimeCounterBaselines: %v", err)
+	}
+
+	wantExecs := map[ModelResultKey]int64{
+		{Model: "claude-sonnet-5", Result: "declined"}:     1,
+		{Model: "claude-sonnet-5", Result: "no_op"}:        1,
+		{Model: "claude-sonnet-5", Result: "rate_limited"}: 1,
+		{Model: "claude-sonnet-5", Result: "infra"}:        1,
+		{Model: "claude-sonnet-5", Result: "skipped"}:      1,
+		{Model: "claude-sonnet-5", Result: "failed"}:       1,
+	}
+	for k, want := range wantExecs {
+		if got := b.ExecutionsByModelResult[k]; got != want {
+			t.Errorf("ExecutionsByModelResult[%+v] = %d, want %d", k, got, want)
+		}
+	}
+	for k := range b.ExecutionsByModelResult {
+		if _, ok := wantExecs[k]; !ok {
+			t.Errorf("unexpected ExecutionsByModelResult key %+v = %d", k, b.ExecutionsByModelResult[k])
+		}
+	}
+
+	// No key for the empty-model row's status, under any model label
+	// (including "unknown").
+	for k := range b.ExecutionsByModelResult {
+		if k.Model == "" || k.Model == "unknown" {
+			t.Errorf("empty/unknown model row leaked into ExecutionsByModelResult: %+v", k)
+		}
+	}
+}

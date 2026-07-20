@@ -2145,6 +2145,118 @@ func TestGetIssueLevelCounts(t *testing.T) {
 	}
 }
 
+// TestGetIssueLevelCountsByModel table-drives the GH-4483 per-model
+// counterpart to GetIssueLevelCounts: pins the acceptance scenario of a task
+// retried twice on the same model before shipping — issue-level per-model
+// success must read 100% even though the attempt-level signal for that model
+// would read 33%. Also pins that rows with an empty model_name are excluded
+// entirely rather than bucketed under "unknown".
+func TestGetIssueLevelCountsByModel(t *testing.T) {
+	tests := []struct {
+		name        string
+		execs       []*Execution
+		projectPath string
+		want        map[string]IssueLevelModelCounts
+	}{
+		{
+			name:  "empty table",
+			execs: nil,
+			want:  map[string]IssueLevelModelCounts{},
+		},
+		{
+			name: "2 failed attempts + 1 completed, same task_id same model: 100% issue-level success",
+			execs: []*Execution{
+				{ID: "ilcm-1", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "failed", ModelName: "claude-sonnet-5"},
+				{ID: "ilcm-2", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "failed", ModelName: "claude-sonnet-5"},
+				{ID: "ilcm-3", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "completed", ModelName: "claude-sonnet-5"},
+			},
+			want: map[string]IssueLevelModelCounts{
+				"claude-sonnet-5": {Model: "claude-sonnet-5", Attempted: 1, Shipped: 1},
+			},
+		},
+		{
+			name: "distinct models tracked separately",
+			execs: []*Execution{
+				{ID: "ilcm-4", TaskID: "TASK-A", ProjectPath: "/p", Status: "completed", ModelName: "claude-sonnet-5"},
+				{ID: "ilcm-5", TaskID: "TASK-B", ProjectPath: "/p", Status: "failed", ModelName: "claude-opus-4-6"},
+				{ID: "ilcm-6", TaskID: "TASK-C", ProjectPath: "/p", Status: "declined", ModelName: "claude-opus-4-6"},
+			},
+			want: map[string]IssueLevelModelCounts{
+				"claude-sonnet-5": {Model: "claude-sonnet-5", Attempted: 1, Shipped: 1},
+				"claude-opus-4-6": {Model: "claude-opus-4-6", Attempted: 2, Shipped: 0},
+			},
+		},
+		{
+			name: "empty model_name rows excluded, not bucketed under unknown",
+			execs: []*Execution{
+				{ID: "ilcm-7", TaskID: "TASK-D", ProjectPath: "/p", Status: "completed", ModelName: "claude-sonnet-5"},
+				{ID: "ilcm-8", TaskID: "TASK-E", ProjectPath: "/p", Status: "failed", ModelName: ""},
+			},
+			want: map[string]IssueLevelModelCounts{
+				"claude-sonnet-5": {Model: "claude-sonnet-5", Attempted: 1, Shipped: 1},
+			},
+		},
+		{
+			name: "project filter scopes dedupe to matching path",
+			execs: []*Execution{
+				{ID: "ilcm-9", TaskID: "TASK-X", ProjectPath: "/alpha", Status: "completed", ModelName: "claude-sonnet-5"},
+				{ID: "ilcm-10", TaskID: "TASK-Y", ProjectPath: "/beta", Status: "completed", ModelName: "claude-sonnet-5"},
+			},
+			projectPath: "/beta",
+			want: map[string]IssueLevelModelCounts{
+				"claude-sonnet-5": {Model: "claude-sonnet-5", Attempted: 1, Shipped: 1},
+			},
+		},
+		{
+			// GH-4240: a canary sandbox execution must not count, even though
+			// it's a normal 'completed' row with a real model name.
+			name: "canary execution excluded regardless of status",
+			execs: []*Execution{
+				{ID: "ilcm-11", TaskID: "TASK-REAL", ProjectPath: "/p", Status: "completed", ModelName: "claude-sonnet-5"},
+				{ID: "ilcm-12", TaskID: "TASK-CANARY", ProjectPath: "/canary-sandbox", Status: "completed", ModelName: "claude-sonnet-5", IsCanary: true},
+			},
+			want: map[string]IssueLevelModelCounts{
+				"claude-sonnet-5": {Model: "claude-sonnet-5", Attempted: 1, Shipped: 1},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			for _, e := range tt.execs {
+				if err := store.SaveExecution(e); err != nil {
+					t.Fatalf("SaveExecution %s: %v", e.ID, err)
+				}
+			}
+
+			counts, err := store.GetIssueLevelCountsByModel(tt.projectPath)
+			if err != nil {
+				t.Fatalf("GetIssueLevelCountsByModel: %v", err)
+			}
+
+			got := make(map[string]IssueLevelModelCounts, len(counts))
+			for _, c := range counts {
+				got[c.Model] = c
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d model buckets, want %d: got=%+v want=%+v", len(got), len(tt.want), got, tt.want)
+			}
+			for model, want := range tt.want {
+				if got[model] != want {
+					t.Errorf("model %q counts = %+v, want %+v", model, got[model], want)
+				}
+			}
+		})
+	}
+}
+
 // TestGetLifetimePRCountersFromExecutions covers GH-4121: PR-outcome counters
 // hydrated all-time from the executions table (not the execution_events
 // ledger, which only goes back to its TASK-379/GH-3844 introduction). Pins:

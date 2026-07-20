@@ -216,6 +216,45 @@ func TestIssueLevelSuccessRate(t *testing.T) {
 	}
 }
 
+// TestIssueLevelSuccessRateByModel pins GH-4483: the per-model counterpart to
+// TestIssueLevelSuccessRate above. A task retried twice on the same model
+// before shipping (2 failed attempts + 1 completed attempt, same task_id,
+// same model) counts as 1 shipped / 1 attempted for that model — 100% at the
+// issue level — even though the attempt-level ExecutionsByResult counter for
+// that model shows 1 success / 2 failed (33%).
+func TestIssueLevelSuccessRateByModel(t *testing.T) {
+	m := NewMetrics()
+
+	// Per-attempt view still records every retry as its own event, charged
+	// to the model that was loaded for that attempt.
+	m.RecordExecution("claude-sonnet-5", "failed")
+	m.RecordExecution("claude-sonnet-5", "failed")
+	m.RecordExecution("claude-sonnet-5", "success")
+
+	// Issue-level view is deduped by task_id within the model: 1 unique
+	// issue, shipped on claude-sonnet-5.
+	m.SetIssueLevelCountsByModel(
+		map[string]int64{"claude-sonnet-5": 1},
+		map[string]int64{"claude-sonnet-5": 1},
+	)
+
+	snap := m.Snapshot()
+
+	if got := snap.IssuesShippedByModel["claude-sonnet-5"]; got != 1 {
+		t.Errorf("IssuesShippedByModel[claude-sonnet-5] = %d, want 1", got)
+	}
+	if got := snap.IssuesAttemptedByModel["claude-sonnet-5"]; got != 1 {
+		t.Errorf("IssuesAttemptedByModel[claude-sonnet-5] = %d, want 1", got)
+	}
+
+	// Per-attempt view is unaffected and stays a distinct, lower-fidelity
+	// efficiency signal (2 failed attempts still count against the model).
+	ek := execKey{Model: "claude-sonnet-5", Result: "failed"}
+	if got := snap.ExecutionsByResult[ek]; got != 2 {
+		t.Errorf("ExecutionsByResult[%+v] = %d, want 2", ek, got)
+	}
+}
+
 func TestAPIErrorRate(t *testing.T) {
 	m := NewMetrics()
 

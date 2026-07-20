@@ -3432,6 +3432,63 @@ func (s *Store) GetIssueLevelCounts(projectPath string) (*IssueLevelCounts, erro
 	return &c, nil
 }
 
+// IssueLevelModelCounts holds unique-issue attempt/ship counts for one model,
+// deduped by task_id within that model — the per-model counterpart to
+// IssueLevelCounts. GH-4483: the attempt-level pilot_executions_total{model,
+// result} counter charges every retry/rate-limit death to its model, so a
+// task that failed twice on claude-sonnet-5 before shipping on the third
+// attempt reads as 1 success / 2 failures (33%) even though the issue
+// eventually shipped. This pairs with GetIssueLevelCounts to answer "did
+// issues on this model eventually ship" instead of "how many attempts on
+// this model succeeded".
+type IssueLevelModelCounts struct {
+	Model     string
+	Attempted int // distinct task_id with at least one execution row on this model
+	Shipped   int // distinct task_id with at least one 'completed' execution row on this model
+}
+
+// GetIssueLevelCountsByModel returns unique-issue attempt/ship counts broken
+// out by model_name, deduped by task_id within each model bucket. If
+// projectPath is non-empty, only executions for that project are counted.
+// Rows with an empty model_name are excluded rather than bucketed under
+// "unknown" — see GetLifetimeCounterBaselines for why. GH-4483.
+func (s *Store) GetIssueLevelCountsByModel(projectPath string) ([]IssueLevelModelCounts, error) {
+	const cols = `
+		SELECT
+			model_name,
+			COUNT(DISTINCT task_id),
+			COUNT(DISTINCT CASE WHEN status = 'completed' THEN task_id END)
+		FROM executions
+		WHERE COALESCE(is_canary, 0) = 0 AND model_name IS NOT NULL AND model_name != ''`
+
+	var rows *sql.Rows
+	var err error
+	// GH-4240: canary sandbox executions never count toward issue-level
+	// attempted/shipped baselines, project-scoped or not.
+	if projectPath != "" {
+		rows, err = s.db.Query(cols+` AND project_path = ? GROUP BY model_name`, projectPath)
+	} else {
+		rows, err = s.db.Query(cols + ` GROUP BY model_name`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get issue-level counts by model: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []IssueLevelModelCounts
+	for rows.Next() {
+		var c IssueLevelModelCounts
+		if err := rows.Scan(&c.Model, &c.Attempted, &c.Shipped); err != nil {
+			return nil, fmt.Errorf("failed to scan issue-level model count row: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate issue-level model counts: %w", err)
+	}
+	return out, nil
+}
+
 // ModelDirectionKey identifies a token bucket by model and direction, mirroring
 // autopilot's internal tokenKey so lifetime baselines line up with the
 // in-memory Prometheus counter they hydrate (GH-4041).
@@ -3463,12 +3520,25 @@ type LifetimeCounterBaselines struct {
 // Prometheus counters are keyed (model+direction for tokens, model for cost,
 // model+result for executions). GH-4041.
 //
-// The execution "result" label collapses the executions table's richer status
-// vocabulary (completed/failed/declined/no_op/stalled/rate_limited/infra/
-// skipped) into the three values RecordExecution ever actually receives live
-// (runner.go TerminalStatus / outcomeLabel): "success" for completed,
-// "stalled" for stalled, everything else terminal folds into "failed" — so a
-// restart does not introduce label values the live path never produces.
+// GH-4483: the execution "result" label used to collapse the executions
+// table's richer status vocabulary (completed/failed/declined/no_op/stalled/
+// rate_limited/infra/skipped) down to just "success"/"stalled"/"failed" —
+// mirroring what the live RecordExecution() call sites happened to emit at
+// the time. That made every non-failure terminal outcome (declined, no_op,
+// rate_limited, infra, skipped) read as a genuine "failed" in the per-model
+// panel, the same defect TASK-392/#4070 fixed for the headline
+// pilot_success_rate. This now preserves the full taxonomy instead, mirroring
+// that fix: each status gets its own result label. The live per-event
+// counter still only ever emits a narrower set of labels between restarts
+// (see runner.go), but the store-hydrated baseline — which is what dashboards
+// and this daemon's own restarts read — is now accurate, and the label set
+// widens over time as the daemon restarts and re-hydrates.
+//
+// Rows with an empty model_name are excluded entirely rather than bucketed
+// under "unknown": they are pre-GH-4041 rows or executions that died before
+// invoking Claude, and carry zero tokens (verified: SUM(tokens_input+
+// tokens_output)=0 for every such row), so they are not a real "model" and
+// only pollute the per-model panel.
 func (s *Store) GetLifetimeCounterBaselines() (*LifetimeCounterBaselines, error) {
 	baselines := &LifetimeCounterBaselines{
 		TokensByModelDirection:  make(map[ModelDirectionKey]int64),
@@ -3524,15 +3594,22 @@ func (s *Store) GetLifetimeCounterBaselines() (*LifetimeCounterBaselines, error)
 
 	execRows, err := s.db.Query(`
 		SELECT
-			COALESCE(NULLIF(model_name, ''), 'unknown'),
+			model_name,
 			CASE
 				WHEN status = 'completed' THEN 'success'
+				WHEN status = 'declined' THEN 'declined'
+				WHEN status = 'no_op' THEN 'no_op'
 				WHEN status = 'stalled' THEN 'stalled'
+				WHEN status = 'rate_limited' THEN 'rate_limited'
+				WHEN status = 'infra' THEN 'infra'
+				WHEN status = 'skipped' THEN 'skipped'
 				ELSE 'failed'
 			END AS result,
 			COUNT(*)
 		FROM executions
-		WHERE status NOT IN ('queued', 'pending', 'running') AND COALESCE(is_canary, 0) = 0
+		WHERE status NOT IN ('queued', 'pending', 'running')
+			AND COALESCE(is_canary, 0) = 0
+			AND model_name IS NOT NULL AND model_name != ''
 		GROUP BY model_name, result
 	`)
 	if err != nil {

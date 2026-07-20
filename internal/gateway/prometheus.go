@@ -269,6 +269,25 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeType(w, "pilot_issue_level_success_rate", "gauge")
 	writeGauge(w, "pilot_issue_level_success_rate", snap.IssueLevelSuccessRate)
 
+	// pilot_issues_shipped_by_model_total / pilot_issues_attempted_by_model_total
+	// (GH-4483): per-model counterpart to pilot_issues_shipped_total /
+	// pilot_issues_attempted_total above — deduped by task_id within each
+	// model, so a task retried on the same model before shipping counts once,
+	// not once per attempt. Pairs with pilot_executions_total{model,result},
+	// which is per-attempt and dominated by mid-flight retries/rate-limit
+	// deaths, to show eventual delivery per model.
+	writeHelp(w, "pilot_issues_shipped_by_model_total", "Number of unique issues that reached completed status on a given model, deduped by task_id across retry attempts on that model")
+	writeType(w, "pilot_issues_shipped_by_model_total", "gauge")
+	for model, count := range snap.IssuesShippedByModel {
+		writeGaugeLabeled(w, "pilot_issues_shipped_by_model_total", float64(count), "model", model)
+	}
+
+	writeHelp(w, "pilot_issues_attempted_by_model_total", "Number of unique issues attempted on a given model, deduped by task_id across retry attempts on that model")
+	writeType(w, "pilot_issues_attempted_by_model_total", "gauge")
+	for model, count := range snap.IssuesAttemptedByModel {
+		writeGaugeLabeled(w, "pilot_issues_attempted_by_model_total", float64(count), "model", model)
+	}
+
 	// --- Histograms ---
 
 	// pilot_pr_time_to_merge_seconds
