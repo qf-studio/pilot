@@ -31,6 +31,20 @@ jobs:
       - name: Run checker tests
         run: python3 -m unittest discover -s scripts -p "*_test.py"
 
+  box-scripts:
+    name: Box Scripts (ShellCheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: scripts/box
+
+      - name: Run pilot-backup-s3 test suite
+        run: ./scripts/box/pilot-backup-s3_test.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

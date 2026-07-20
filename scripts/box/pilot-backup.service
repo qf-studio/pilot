@@ -1,0 +1,20 @@
+# Pilot ledger backup — oneshot service invoked by pilot-backup.timer.
+#
+# Install (operator step, not automated by this repo):
+#   sudo cp scripts/box/pilot-backup.service scripts/box/pilot-backup.timer \
+#       /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pilot-backup.timer
+#
+# Runs as ec2-user (same user as the pilot daemon) so it inherits the
+# instance role credentials and read access to ~/.pilot/data. See
+# .agent/sops/operations/ledger-restore-from-s3.md for the restore path.
+[Unit]
+Description=Pilot ledger backup to S3
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+ExecStart=/var/lib/pilot/repos/startups/pilot/scripts/box/pilot-backup-s3.sh
