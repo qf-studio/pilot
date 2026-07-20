@@ -358,6 +358,7 @@
 | Docs CLI/homepage update | ✅ | docs | - | - | Update CLI commands and homepage for v2.25 (v2.38.0) |
 | Docs architecture update | ✅ | docs | - | - | Update architecture page with new adapters (v2.38.0) |
 | Nightly ledger backup to S3 | ✅ | scripts/box | - | - | Daemon-independent `pilot-backup-s3.sh` (VACUUM INTO snapshot + knowledge JSON, SSE-KMS upload, head-object verify) + `pilot-backup.timer`/`.service` (03:30 UTC) + restore SOP; repo-tracked, operator installs on box (GH-4465) |
+| Shadow-ledger startup guard | ✅ | memory + main | `pilot start` | - | `memory.NewStoreGuarded` refuses to open a brand-new/empty state directory when a home-relative `~/.pilot/last_known_good.json` marker shows this daemon previously ran with a non-empty ledger at a different resolved path — returns typed `*memory.ErrSplitBrainLedger`, which `runPollingMode` treats as fatal (unlike an ordinary store-open error, which degrades gracefully). Startup also logs the symlink-resolved absolute DB path in the first lines of `daemon.log` (`logMemoryStartupBanner`/`resolveMemoryDBPath`) so a shadow-path open is visible immediately instead of only in hindsight. Closes the code-hardening half of the 2026-07-16 cutover incident (GH-4393; ops recovery + shim already done, see TASK-409) |
 
 ## Approval Workflows
 

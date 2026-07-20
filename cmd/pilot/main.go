@@ -1398,6 +1398,34 @@ func daemonLockDir(cfg *config.Config) string {
 	return filepath.Join(home, ".pilot", "data")
 }
 
+// resolveMemoryDBPath symlink-resolves configuredPath and returns the
+// absolute path to the pilot.db file it points at (GH-4393). If
+// configuredPath doesn't exist yet — a genuine first run, or about to be
+// auto-created by the memory store or lock acquisition — EvalSymlinks can't
+// resolve it, so this falls back to the unresolved path.
+func resolveMemoryDBPath(configuredPath string) string {
+	resolved, err := filepath.EvalSymlinks(configuredPath)
+	if err != nil {
+		resolved = configuredPath
+	}
+	return filepath.Join(resolved, "pilot.db")
+}
+
+// logMemoryStartupBanner logs the configured memory/state directory and its
+// symlink-resolved absolute path (GH-4393). A configured path that silently
+// diverges from where it actually resolves on disk — e.g. an absolute path
+// left over from a host migration that a cutover shim didn't cover — is
+// otherwise invisible until writes vanish from the canonical ledger. Emitted
+// as early as possible (right after the single-instance lock is acquired)
+// so it lands in the first lines of daemon.log.
+func logMemoryStartupBanner(cfg *config.Config) {
+	configuredPath := daemonLockDir(cfg)
+	logging.WithComponent("start").Info("memory store path resolved",
+		slog.String("configured_path", configuredPath),
+		slog.String("resolved_db_path", resolveMemoryDBPath(configuredPath)),
+	)
+}
+
 // acquireDaemonLock takes the adapter-agnostic single-instance guard
 // (GH-4311): an OS-level flock on <Memory.Path>/pilot.lock, held for the
 // process lifetime and released automatically on exit or crash (flock
@@ -1480,6 +1508,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		return err
 	}
 	defer func() { _ = daemonLock.Release() }()
+
+	// GH-4393: log the resolved, symlink-evaluated absolute DB path in the
+	// first lines of daemon.log. The 2026-07-16 cutover incident produced a
+	// shadow ledger — an absolute Memory.Path left over from a host
+	// migration that bypassed the cutover shim — that was indistinguishable
+	// from a healthy first run until executions silently diverged from the
+	// canonical tree for three hours. Logging the resolved path up front
+	// makes that divergence visible immediately instead of only in hindsight.
+	logMemoryStartupBanner(cfg)
 
 	// Check Telegram config if enabled
 	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
@@ -1743,9 +1780,20 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		approvalMgr.WithStateWriter(autopilot.NewMultiControllerStateWriter(allControllers...))
 	}
 
-	// Initialize memory store early for dashboard persistence (GH-367)
-	store, err := memory.NewStore(cfg.Memory.Path)
+	// Initialize memory store early for dashboard persistence (GH-367).
+	// NewStoreGuarded (GH-4393) refuses to hand back a store that looks like
+	// a shadow ledger: a brand-new/empty state directory opened despite this
+	// daemon having run before with real history recorded elsewhere. That is
+	// a different failure mode than "couldn't open the DB" — it looks
+	// healthy, so unlike an ordinary store error it must abort startup
+	// rather than degrade gracefully with store=nil.
+	store, err := memory.NewStoreGuarded(cfg.Memory.Path)
 	if err != nil {
+		var splitBrain *memory.ErrSplitBrainLedger
+		if errors.As(err, &splitBrain) {
+			logging.WithComponent("start").Error("refusing to start: possible shadow ledger detected", slog.Any("error", err))
+			return err
+		}
 		logging.WithComponent("start").Warn("Failed to open memory store", slog.Any("error", err))
 		store = nil
 	} else {

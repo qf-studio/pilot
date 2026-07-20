@@ -79,6 +79,15 @@ func NewStore(dataPath string) (*Store, error) {
 	return store, nil
 }
 
+// executionCount returns the number of rows in the executions table. Used by
+// NewStoreGuarded (GH-4393) to tell a freshly-initialized, empty ledger
+// apart from one with real history.
+func (s *Store) executionCount() (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM executions").Scan(&count)
+	return count, err
+}
+
 // migrate creates necessary tables
 func (s *Store) migrate() error {
 	migrations := []string{
