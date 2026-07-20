@@ -234,6 +234,33 @@ type CIChecksConfig struct {
 	DiscoveryGracePeriod time.Duration `yaml:"discovery_grace_period"`
 }
 
+// ProjectCIChecksOverride lets a per-project controller override the global
+// CI-checks / required-checks allowlist (GH-4478). Nil fields inherit from
+// the global Config.RequiredChecks / Config.CIChecks. Mirrors the
+// ProjectReleaseConfig overlay pattern (GH-3930) — without an overlay, every
+// project controller shared Config.Orchestrator.Autopilot's single global
+// required_checks list (same object passed to every NewController call in
+// cmd/pilot/main.go), so a repo whose check-run names differ from the
+// default repo's allowlist polled waiting_ci forever: checkRequiredChecks
+// only flips an entry when a live check run's name matches one of the
+// allowlisted names, so a total name mismatch aggregates to CIPending
+// indefinitely — never CISuccess, never CIFailure — even once every actual
+// check run on the SHA is green. Confirmed live: qf-studio/pointer#108
+// (checks "integration"/"go"/"web" all SUCCESS by 12:20:25Z) stayed
+// waiting_ci/pending because the global required_checks: [test, lint] —
+// tuned for the qf-studio/pilot repo's own CI job names — silently applied
+// to the pointer controller too.
+type ProjectCIChecksOverride struct {
+	// RequiredChecks overrides the legacy Config.RequiredChecks allowlist for
+	// this project. Nil (omitted) inherits the global list; an explicit
+	// empty slice disables the legacy allowlist for this project so it falls
+	// through to CIChecks/auto-discovery instead of the global manual list.
+	RequiredChecks []string `yaml:"required_checks,omitempty"`
+
+	// CIChecks overrides Config.CIChecks wholesale for this project when set.
+	CIChecks *CIChecksConfig `yaml:"ci_checks,omitempty"`
+}
+
 // defaultEnvironments returns built-in environment configs matching legacy behavior.
 func defaultEnvironments() map[string]*EnvironmentConfig {
 	return map[string]*EnvironmentConfig{

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-18T13:50:00+00:00",
+  "updated": "2026-07-20T13:00:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3151,6 +3151,16 @@
           "dispatcher",
           "dispatch"
         ]
+      },
+      "global-required-checks-leak-across-projects": {
+        "type": "pitfall",
+        "summary": "Global autopilot.required_checks/ci_checks allowlist is shared by every project controller; a repo whose check-run names differ polls waiting_ci forever with all checks green (qf-studio/pointer#108 repro) — fixed by per-project ProjectCIChecksOverride overlay (GH-4478)",
+        "file": ".agent/knowledge/memories/pitfalls/global-required-checks-leak-across-projects.md",
+        "concepts": [
+          "autopilot",
+          "ci",
+          "github"
+        ]
       }
     }
   },
@@ -4902,10 +4912,10 @@
       "decomposer-narrative-bullets-as-subtask-boundaries"
     ]
   },
-  "last_updated": "2026-07-20T11:25:47.452793+00:00",
+  "last_updated": "2026-07-20T13:00:00+00:00",
   "stats": {
-    "total_nodes": 271,
+    "total_nodes": 272,
     "total_edges": 234,
-    "memory_count": 171
+    "memory_count": 172
   }
 }

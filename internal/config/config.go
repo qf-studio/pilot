@@ -254,6 +254,14 @@ type ProjectConfig struct {
 	// Config.Orchestrator.Autopilot's global and per-environment release
 	// blocks.
 	Release *autopilot.ProjectReleaseConfig `yaml:"release,omitempty"`
+	// CIChecks overlays the global required-checks / CI-checks allowlist for
+	// this project (GH-4478). Without it, every project controller shares
+	// Config.Orchestrator.Autopilot's single global RequiredChecks/CIChecks —
+	// fine for the default repo those names are tuned for, but a project
+	// whose check-run names differ polls waiting_ci forever (checkRequiredChecks
+	// only flips CISuccess when a live run's name matches an allowlisted name).
+	// Unset fields inherit from the global config.
+	CIChecks *autopilot.ProjectCIChecksOverride `yaml:"ci_checks,omitempty"`
 	// Canary marks this project as a synthetic sandbox (e.g. the TASK-379 V8
 	// canary workflow) rather than real work (GH-4240). Executions dispatched
 	// for a canary project are still fully persisted and event-logged — the

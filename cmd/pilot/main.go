@@ -1645,8 +1645,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					// GH-4472: default repo resolves project override → global fallback.
 					ctrlOpts = append(ctrlOpts, projectBoardControllerOpts(apGHClient, cfg, cfg.Adapters.GitHub.Repo, parts[0], true)...)
 					// GH-3931: apply the per-project release overlay (GH-3930) when configured.
-					if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil && proj.Release != nil {
-						ctrlOpts = append(ctrlOpts, autopilot.WithReleaseOverride(proj.Release))
+					if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil {
+						if proj.Release != nil {
+							ctrlOpts = append(ctrlOpts, autopilot.WithReleaseOverride(proj.Release))
+						}
+						// GH-4478: apply the per-project CI-checks overlay when configured;
+						// nil is a no-op (inherits the global required-checks/CI-checks).
+						if proj.CIChecks != nil {
+							ctrlOpts = append(ctrlOpts, autopilot.WithCIChecksOverride(proj.CIChecks))
+						}
 					}
 					controller := autopilot.NewController(
 						cfg.Orchestrator.Autopilot,
@@ -1700,6 +1707,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							slog.String("repo", repoFullName),
 						)
 					}
+				}
+				// GH-4478: apply the per-project CI-checks overlay when configured;
+				// nil is a no-op (inherits the global required-checks/CI-checks) —
+				// unlike Release, there's no "opt-in" warning here since inheriting
+				// the global CI-checks config was always the pre-existing behavior.
+				if proj.CIChecks != nil {
+					ctrlOpts = append(ctrlOpts, autopilot.WithCIChecksOverride(proj.CIChecks))
 				}
 				controller := autopilot.NewController(
 					cfg.Orchestrator.Autopilot,
