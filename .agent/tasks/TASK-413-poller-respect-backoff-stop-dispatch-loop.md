@@ -1,6 +1,6 @@
 # TASK-413: Poller must respect repick backoff — kill the 30s dispatch→reject loop
 
-**Created**: 2026-07-19 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-19
+**Created**: 2026-07-19 · **Status**: 🏃 EXECUTING since 2026-07-20 09:45Z (row 3950; addendum on issue: claim-lost drops must not count toward cap) · **Last Updated**: 2026-07-20
 
 ## Problem (observed 2026-07-17 → 2026-07-19, GH-4391 on the founder box)
 

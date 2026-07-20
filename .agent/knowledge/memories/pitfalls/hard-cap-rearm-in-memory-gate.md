@@ -32,12 +32,19 @@ Dispatch attempts that end at "unmarking for retry" with NO subsequent
 "dispatch claim lost" line = dropped before the claim stage = in-memory gate,
 not DB state.
 
-## Status
-#4455 (merged 2026-07-18, active since the v2.241.2-27 deploy) makes the false
-stall itself impossible — restart churn and operator cancels no longer count
-toward the cap, and the new retry path re-dispatches stalled rows without
-surgery (observed on GH-4391 minutes after restart). This recipe stays relevant
-only for pre-fix binaries or genuine hard-cap stalls.
+## Status (updated 2026-07-20)
+#4455 narrowed the false-stall class (restart churn + operator cancels no
+longer count) but did NOT close it: **claim-lost drops still count** — see
+[[claim-lost-drops-count-toward-hard-cap]] (GH-4469 killed while queued,
+v2.242.0 binary). This recipe remains the live workaround until
+GH-4469/TASK-413 ships.
+
+**In-memory gate refinement (observed on v2.242.0):** the DB-only 3-step
+surgery dispatches immediately **only when the backoff drops predate the
+current daemon process** (GH-4391, 2026-07-19: backoff loaded from a prior
+boot, delete worked instantly). If drops accrued during the current process,
+the in-memory `next_eligible` survives the DB delete — wait it out (~16 min
+storm cadence; GH-4469 dispatched at 09:45Z right on schedule) or restart.
 
 Related: [[slack-approval-socket-mode-unroutable]] (same session family),
 TASK-407 #4372 note.

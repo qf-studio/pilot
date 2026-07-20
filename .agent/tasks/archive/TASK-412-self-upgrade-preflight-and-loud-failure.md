@@ -1,6 +1,6 @@
 # TASK-412: Self-upgrade must preflight binary writability and fail loudly
 
-**Created**: 2026-07-19 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-19
+**Created**: 2026-07-19 · **Status**: ✅ SHIPPED 2026-07-20 (PR #4470 merged, live on box v2.242.0-4) · **Last Updated**: 2026-07-20
 
 ## Problem (observed 2026-07-19, v2.242.0 auto-upgrade on the founder box)
 

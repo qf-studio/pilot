@@ -18,7 +18,7 @@ PROFILE    quantflow                   # export AWS_PROFILE=quantflow for every 
 REGION     eu-central-1
 RUNNER     i-0147f5c24d234cdbb         # mgmt runner (AdministratorAccess) — IAM/privileged ops only
 DAEMON     tmux session "pilot" as ec2-user, wrapper /home/ec2-user/start-pilot.sh
-BINARY     /usr/local/bin/pilot        # built on-box from source (go + make present)
+BINARY     /var/lib/pilot/bin/pilot    # ec2-user-owned (self-upgrade works, #4470); /usr/local/bin/pilot is a SYMLINK to it — never `sudo install` over the symlink; rollback at pilot.prev
 STATE      /home/ec2-user/.pilot → /var/lib/pilot/pilot-home (200GB data volume)
 REPOS      /Users/aleks.petrov/Projects → /var/lib/pilot/repos (path shim — ledger keys
            on the macOS-era absolute paths; NEVER "fix" these symlinks)
@@ -96,12 +96,15 @@ process, `curl -s localhost:9091/metrics | grep pilot_queue_depth` (via SSM).
 
 ### Rebuild / upgrade the box binary
 ```bash
-SSM (as ec2-user): cd /Users/aleks.petrov/Projects/startups/pilot && \
+SSM (as ec2-user, NO sudo — dir is ec2-user-owned since 2026-07-19):
+  cd /Users/aleks.petrov/Projects/startups/pilot && \
   git fetch -q --tags origin main && git checkout -q <tag-or-origin/main> && \
-  make build && sudo install -m 0755 bin/pilot /usr/local/bin/pilot && \
-  git checkout -q main && /usr/local/bin/pilot version
+  make build && install -m 0755 bin/pilot /var/lib/pilot/bin/pilot && \
+  git checkout -q main && /var/lib/pilot/bin/pilot version
 ```
 Then RESTART (above) to activate. Prefer building from a released tag.
+For releases, daemon self-upgrade also works now (#4470 preflight + writable
+dir) — letting it upgrade itself on the next train is the default path.
 Expect ~1 quiet hour post-restart until #4391 ships: startup rescans can burn
 the GitHub user-aggregate rate pool (see Troubleshooting).
 

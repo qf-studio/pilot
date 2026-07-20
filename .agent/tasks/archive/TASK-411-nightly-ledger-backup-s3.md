@@ -1,6 +1,6 @@
 # TASK-411: Nightly ledger backup to S3 — script + systemd units + restore SOP
 
-**Created**: 2026-07-19 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-19
+**Created**: 2026-07-19 · **Status**: ✅ SHIPPED 2026-07-20 (PR #4466 merged, timer installed on box 09:36Z, first backup verified in S3) · **Last Updated**: 2026-07-20
 
 ## Problem
 
