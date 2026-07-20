@@ -5299,6 +5299,16 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			}
 		}
 
+		// GH-4475: Sync board card to "Done" column on external merge, same as
+		// the internal merge path (line ~2472). Without this the card stays
+		// stuck in "In Review" until moved by hand — the issue/branch/PR
+		// bookkeeping above all ran, but the board itself was never told.
+		if c.boardSync != nil && prState.IssueNodeID != "" && c.doneStatus != "" {
+			if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.doneStatus); err != nil {
+				c.log.Warn("board sync on external merge failed", "pr", prState.PRNumber, "error", err)
+			}
+		}
+
 		// GH-411: Trigger release for externally merged PRs if auto-release is enabled
 		if c.releaseConfigured() && prState.Stage != StageReleasing {
 			action, scopeKey, _ := c.releaseActionFor(ctx, prState.IssueNumber)
@@ -5358,6 +5368,16 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 
 		c.log.Info("PR closed externally, removing from tracking", "pr", prState.PRNumber)
 		c.notifyExternalClose(ctx, prState)
+
+		// GH-4475: Sync board card to the failed status on external close
+		// (unmerged) — mirrors the Done sync above for external merge, and
+		// the failStatus syncs used on internal execution failures.
+		if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
+			if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
+				c.log.Warn("board sync on external close failed", "pr", prState.PRNumber, "error", err)
+			}
+		}
+
 		c.removePR(prState.PRNumber)
 		return true
 	}

@@ -1590,6 +1590,107 @@ func TestController_CheckExternalClose(t *testing.T) {
 	}
 }
 
+// TestController_CheckExternalMerge_BoardSync verifies GH-4475: checkExternalMergeOrClose
+// syncs the board card to doneStatus for an externally-merged PR, the same way the
+// internal merge path (handleMerged) does. Before this fix the external-merge branch
+// closed the issue, deleted the branch, and removed tracking but never touched the board.
+func TestController_CheckExternalMerge_BoardSync(t *testing.T) {
+	const issueNodeID = "IssueNodeID_extmerge"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42":
+			resp := github.PullRequest{
+				Number:  42,
+				State:   "closed",
+				Merged:  true,
+				HTMLURL: "https://github.com/owner/repo/pull/42",
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+
+	mock := &mockBoardSyncer{}
+	c := NewController(cfg, ghClient, nil, "owner", "repo",
+		withBoardSyncerForTest(mock, "Done", "Failed", "In Review", "In Dev"))
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", issueNodeID)
+	// OnPRCreated itself fires a reviewStatus sync — reset so we only observe
+	// the external-merge sync under test.
+	mock.calls = nil
+
+	c.processAllPRs(context.Background())
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("board sync calls = %d, want 1 (externally-merged PR card should move to Done)", len(mock.calls))
+	}
+	if mock.calls[0].issueNodeID != issueNodeID {
+		t.Errorf("board sync issueNodeID = %q, want %q", mock.calls[0].issueNodeID, issueNodeID)
+	}
+	if mock.calls[0].statusName != "Done" {
+		t.Errorf("board sync statusName = %q, want %q", mock.calls[0].statusName, "Done")
+	}
+}
+
+// TestController_CheckExternalClose_BoardSync verifies GH-4475: checkExternalMergeOrClose
+// syncs the board card to failStatus for an externally-closed (unmerged) PR.
+func TestController_CheckExternalClose_BoardSync(t *testing.T) {
+	const issueNodeID = "IssueNodeID_extclose"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42":
+			resp := github.PullRequest{
+				Number:  42,
+				State:   "closed",
+				Merged:  false,
+				HTMLURL: "https://github.com/owner/repo/pull/42",
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/issues/10":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"node_id": issueNodeID})
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+
+	mock := &mockBoardSyncer{}
+	c := NewController(cfg, ghClient, nil, "owner", "repo",
+		withBoardSyncerForTest(mock, "Done", "Failed", "In Review", "In Dev"))
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", issueNodeID)
+	// OnPRCreated itself fires a reviewStatus sync — reset so we only observe
+	// the external-close sync under test.
+	mock.calls = nil
+
+	c.processAllPRs(context.Background())
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("board sync calls = %d, want 1 (externally-closed PR card should move to Failed)", len(mock.calls))
+	}
+	if mock.calls[0].issueNodeID != issueNodeID {
+		t.Errorf("board sync issueNodeID = %q, want %q", mock.calls[0].issueNodeID, issueNodeID)
+	}
+	if mock.calls[0].statusName != "Failed" {
+		t.Errorf("board sync statusName = %q, want %q", mock.calls[0].statusName, "Failed")
+	}
+}
+
 func TestController_CheckExternalMergeOrClose_OpenPR(t *testing.T) {
 	// Test that open PRs are processed normally
 	ciCheckCalled := false
