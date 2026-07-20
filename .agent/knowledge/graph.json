@@ -3189,6 +3189,26 @@
           "autopilot",
           "testing"
         ]
+      },
+      "require-approval-flip-doesnt-release-held-prs": {
+        "type": "pitfall",
+        "summary": "Flipping environments.<env>.require_approval to false only affects PRs reaching handleCIPassed after restart — PRs already persisted at awaiting_approval rehydrate with their old ApprovalRequestID and silently wait out the 24h approval_timeout default action; sweep and manually merge (or clear ApprovalRequestID) after a flip (PR #4485, 2026-07-20)",
+        "file": ".agent/knowledge/memories/pitfalls/require-approval-flip-doesnt-release-held-prs.md",
+        "concepts": [
+          "autopilot",
+          "approval",
+          "config"
+        ]
+      },
+      "approvals-off-stage-auto-merge": {
+        "type": "decision",
+        "summary": "Founder 2026-07-20: stage.require_approval=false globally (all repos incl. pilot) — auto-merge on green CI; size-floor/scope-drift/test-evidence gates remain the human rails; made safe by #4487 (CI re-validation + approval rescind at merge chokepoint) landing first",
+        "file": ".agent/knowledge/memories/decisions/approvals-off-stage-auto-merge.md",
+        "concepts": [
+          "autopilot",
+          "approval",
+          "release"
+        ]
       }
     }
   },
@@ -4940,10 +4960,10 @@
       "decomposer-narrative-bullets-as-subtask-boundaries"
     ]
   },
-  "last_updated": "2026-07-20T13:00:00+00:00",
+  "last_updated": "2026-07-20T22:00:00+00:00",
   "stats": {
-    "total_nodes": 274,
+    "total_nodes": 276,
     "total_edges": 234,
-    "memory_count": 174
+    "memory_count": 176
   }
 }

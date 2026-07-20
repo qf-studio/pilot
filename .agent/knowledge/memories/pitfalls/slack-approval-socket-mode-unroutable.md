@@ -36,6 +36,18 @@ the response was "unknown or already-processed", which Slack renders as a
 at startup. Remaining proof: one fresh PR approved via Slack button actually
 merging. Until observed, treat clicks-route-but-merge-unproven.
 
+**PROVEN e2e 2026-07-20 19:32Z**: fresh PR #4484 (green CI, awaiting_approval)
+approved via Slack button → merged 19:32:30Z. Clicks route AND merge. Closed.
+
+**Send-side loss mode (2026-07-20 evening)**: an approval REQUEST can be lost
+in transit — PR #4485's request was submitted 20:06:42Z (`async approval
+request submitted … channel=slack`) but no Slack message ever appeared;
+daemon log shows `slack: websocket read error: close 1006` + `envelope
+missing envelope_id, skipping` at 20:11–20:12Z. The submit is logged as
+INFO success before the socket actually delivers, and no retry/resend exists
+for a lost approval message — the PR waits out the 24h `approval_timeout`
+default action. See [[require-approval-flip-doesnt-release-held-prs]].
+
 ## How to apply
 - Fix: route `approve:`/`reject:` action values (or approval action IDs) to
   `HandleInteraction` inside the socket callback path before the comms
