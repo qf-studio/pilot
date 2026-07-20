@@ -163,6 +163,127 @@ func TestHydrateFromStore_NonFailuresExcludedFromFailed(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_PerModelTaxonomyAndEmptyModelExcluded pins GH-4483:
+// the per-model execution baseline (pilot_executions_total{model,result})
+// must preserve the full status taxonomy instead of collapsing every
+// non-completed/non-stalled status into "failed", and rows with an empty
+// model_name must be absent from the series entirely rather than surfacing
+// as model="unknown".
+func TestHydrateFromStore_PerModelTaxonomyAndEmptyModelExcluded(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	execs := []*memory.Execution{
+		{ID: "pm-1", TaskID: "TASK-1", ProjectPath: "/p", Status: "declined", ModelName: "claude-sonnet-5"},
+		{ID: "pm-2", TaskID: "TASK-2", ProjectPath: "/p", Status: "no_op", ModelName: "claude-sonnet-5"},
+		{ID: "pm-3", TaskID: "TASK-3", ProjectPath: "/p", Status: "infra", ModelName: "claude-sonnet-5"},
+		{ID: "pm-4", TaskID: "TASK-4", ProjectPath: "/p", Status: "skipped", ModelName: "claude-sonnet-5"},
+		{ID: "pm-5", TaskID: "TASK-5", ProjectPath: "/p", Status: "failed", ModelName: "claude-sonnet-5"},
+		// Empty model_name, various non-failure statuses: must not appear
+		// under model="unknown" (or any other model label) at all.
+		{ID: "pm-6", TaskID: "TASK-6", ProjectPath: "/p", Status: "no_op", ModelName: ""},
+		{ID: "pm-7", TaskID: "TASK-7", ProjectPath: "/p", Status: "declined", ModelName: ""},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.ID, err)
+		}
+	}
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	snap := metrics.Snapshot()
+
+	// Each non-failure status on the named model gets its own result label —
+	// none of them collapse into "failed".
+	wantExecs := map[execKey]int64{
+		{Model: "claude-sonnet-5", Result: "declined"}: 1,
+		{Model: "claude-sonnet-5", Result: "no_op"}:    1,
+		{Model: "claude-sonnet-5", Result: "infra"}:    1,
+		{Model: "claude-sonnet-5", Result: "skipped"}:  1,
+		{Model: "claude-sonnet-5", Result: "failed"}:   1, // pm-5 only
+	}
+	for k, want := range wantExecs {
+		if got := snap.ExecutionsByResult[k]; got != want {
+			t.Errorf("ExecutionsByResult[%+v] = %d, want %d", k, got, want)
+		}
+	}
+
+	// The genuine "failed" bucket for this model must be exactly 1 (pm-5) —
+	// the non-failure statuses above must not have inflated it.
+	if got := snap.ExecutionsByResult[execKey{Model: "claude-sonnet-5", Result: "failed"}]; got != 1 {
+		t.Errorf("ExecutionsByResult[claude-sonnet-5,failed] = %d, want 1 (non-failures must not collapse in)", got)
+	}
+
+	// No key for any empty/unknown model label — pm-6 and pm-7 must be
+	// absent from the series entirely, not surfaced as model="unknown".
+	for k := range snap.ExecutionsByResult {
+		if k.Model == "" || k.Model == "unknown" {
+			t.Errorf("empty/unknown model row leaked into ExecutionsByResult: %+v", k)
+		}
+	}
+
+	var execSum int64
+	for _, v := range snap.ExecutionsByResult {
+		execSum += v
+	}
+	if execSum != 5 {
+		t.Errorf("sum(ExecutionsByResult) = %d, want 5 (pm-1..pm-5 only; pm-6/pm-7 excluded)", execSum)
+	}
+}
+
+// TestHydrateFromStore_IssueLevelCountsByModel pins GH-4483: a task retried
+// twice on the same model before shipping (2 failed rows + 1 completed row,
+// same task_id, same model) hydrates to 100% issue-level success for that
+// model, distinct from the attempt-level ExecutionsByResult view.
+func TestHydrateFromStore_IssueLevelCountsByModel(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	execs := []*memory.Execution{
+		{ID: "ilm-1", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "failed", ModelName: "claude-sonnet-5"},
+		{ID: "ilm-2", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "failed", ModelName: "claude-sonnet-5"},
+		{ID: "ilm-3", TaskID: "TASK-RETRY", ProjectPath: "/p", Status: "completed", ModelName: "claude-sonnet-5"},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.ID, err)
+		}
+	}
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	snap := metrics.Snapshot()
+
+	if got := snap.IssuesAttemptedByModel["claude-sonnet-5"]; got != 1 {
+		t.Errorf("IssuesAttemptedByModel[claude-sonnet-5] = %d, want 1 (deduped by task_id)", got)
+	}
+	if got := snap.IssuesShippedByModel["claude-sonnet-5"]; got != 1 {
+		t.Errorf("IssuesShippedByModel[claude-sonnet-5] = %d, want 1", got)
+	}
+
+	// Attempt-level semantics for this model are unchanged: all 3 rows still
+	// count individually, 2 of them "failed".
+	if got := snap.ExecutionsByResult[execKey{Model: "claude-sonnet-5", Result: "failed"}]; got != 2 {
+		t.Errorf("ExecutionsByResult[claude-sonnet-5,failed] = %d, want 2", got)
+	}
+	if got := snap.ExecutionsByResult[execKey{Model: "claude-sonnet-5", Result: "success"}]; got != 1 {
+		t.Errorf("ExecutionsByResult[claude-sonnet-5,success] = %d, want 1", got)
+	}
+}
+
 // TestHydrateFromStore_IssueLevelCounts pins TASK-392: a task retried twice
 // before shipping (2 failed rows + 1 completed row, same task_id) hydrates to
 // issue-level success 100%, distinct from the per-attempt view.

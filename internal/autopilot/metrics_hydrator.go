@@ -63,6 +63,21 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 	}
 	metrics.SetIssueLevelCounts(int64(issueLevel.Shipped), int64(issueLevel.Attempted))
 
+	// GH-4483: per-model counterpart to the issue-level gauges above — see
+	// GetIssueLevelCountsByModel doc comment for why this exists alongside
+	// the attempt-level ExecutionsByModelResult baseline hydrated above.
+	issueLevelByModel, err := store.GetIssueLevelCountsByModel("")
+	if err != nil {
+		return fmt.Errorf("hydrate metrics from store: issue-level counts by model: %w", err)
+	}
+	shippedByModel := make(map[string]int64, len(issueLevelByModel))
+	attemptedByModel := make(map[string]int64, len(issueLevelByModel))
+	for _, c := range issueLevelByModel {
+		shippedByModel[c.Model] = int64(c.Shipped)
+		attemptedByModel[c.Model] = int64(c.Attempted)
+	}
+	metrics.SetIssueLevelCountsByModel(shippedByModel, attemptedByModel)
+
 	// GH-4121: pilot_prs_merged_total / pilot_prs_failed_total from the
 	// executions table (all-time), not the execution_events ledger — the
 	// ledger only goes back to its TASK-379/GH-3844 introduction and

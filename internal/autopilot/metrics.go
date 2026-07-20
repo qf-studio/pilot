@@ -92,6 +92,15 @@ type Metrics struct {
 	IssuesShipped   int64 // distinct task_id that reached status='completed'
 	IssuesAttempted int64 // distinct task_id with at least one execution
 
+	// Issue-level outcome gauges broken out by model (GH-4483): same
+	// dedupe-by-task_id semantics as IssuesShipped/IssuesAttempted above, but
+	// per model — so the per-model panel can show eventual delivery next to
+	// the attempt-level ExecutionsByResult signal, which is dominated by
+	// mid-flight retries/rate-limit deaths and reads far lower than the
+	// issue's actual eventual-success rate.
+	IssuesShippedByModel   map[string]int64
+	IssuesAttemptedByModel map[string]int64
+
 	// Histograms (stored as recent samples for summary stats)
 	PRTimeToMerge      []time.Duration
 	CIWaitDurations    []time.Duration
@@ -126,6 +135,8 @@ func NewMetrics() *Metrics {
 		PollerDispatched:           make(map[string]int64),
 		PollerDeferredScopeOverlap: make(map[string]int64),
 		OrphanPRsRegistered:        make(map[string]int64),
+		IssuesShippedByModel:       make(map[string]int64),
+		IssuesAttemptedByModel:     make(map[string]int64),
 		ActivePRsByStage:           make(map[PRStage]int),
 		PRTimeToMerge:              make([]time.Duration, 0, 100),
 		CIWaitDurations:            make([]time.Duration, 0, 100),
@@ -369,6 +380,18 @@ func (m *Metrics) SetIssueLevelCounts(shipped, attempted int64) {
 	m.IssuesAttempted = attempted
 }
 
+// SetIssueLevelCountsByModel replaces the per-model issue-level outcome
+// gauges from a store.GetIssueLevelCountsByModel query (unique task_id,
+// deduped across retries, within each model). Like SetIssueLevelCounts, this
+// is a full replace each cycle rather than an increment — dedupe-by-task_id
+// can't be computed from deltas alone. GH-4483.
+func (m *Metrics) SetIssueLevelCountsByModel(shipped, attempted map[string]int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.IssuesShippedByModel = shipped
+	m.IssuesAttemptedByModel = attempted
+}
+
 // --- Histogram recording ---
 
 // RecordPRTimeToMerge records the duration from PR creation to merge.
@@ -466,6 +489,8 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		FailedQueueDepth:              m.FailedQueueDepth,
 		IssuesShipped:                 m.IssuesShipped,
 		IssuesAttempted:               m.IssuesAttempted,
+		IssuesShippedByModel:          copyStringIntMap(m.IssuesShippedByModel),
+		IssuesAttemptedByModel:        copyStringIntMap(m.IssuesAttemptedByModel),
 		TotalActivePRs:                sumStageMap(m.ActivePRsByStage),
 		AvgPRTimeToMerge:              avgDuration(m.PRTimeToMerge),
 		AvgCIWaitDuration:             avgDuration(m.CIWaitDurations),
@@ -551,6 +576,11 @@ type MetricsSnapshot struct {
 	FailedQueueDepth int
 	IssuesShipped    int64 // TASK-392: distinct task_id reaching 'completed'
 	IssuesAttempted  int64 // TASK-392: distinct task_id with any execution
+
+	// Per-model issue-level gauges (GH-4483): same semantics as
+	// IssuesShipped/IssuesAttempted, keyed by model.
+	IssuesShippedByModel   map[string]int64
+	IssuesAttemptedByModel map[string]int64
 
 	// Computed summaries
 	SuccessRate           float64 // per-attempt; excludes rate_limited (TASK-392)

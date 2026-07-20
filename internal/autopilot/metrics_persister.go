@@ -76,6 +76,22 @@ func (mp *MetricsPersister) refreshIssueLevelCounts() {
 		return
 	}
 	mp.controller.Metrics().SetIssueLevelCounts(int64(counts.Shipped), int64(counts.Attempted))
+
+	// GH-4483: per-model counterpart, refreshed the same way — a
+	// point-in-time re-derivation each cycle rather than an incremental
+	// hydration.
+	countsByModel, err := mp.store.GetIssueLevelCountsByModel("")
+	if err != nil {
+		mp.log.Warn("failed to refresh issue-level counts by model", slog.Any("error", err))
+		return
+	}
+	shippedByModel := make(map[string]int64, len(countsByModel))
+	attemptedByModel := make(map[string]int64, len(countsByModel))
+	for _, c := range countsByModel {
+		shippedByModel[c.Model] = int64(c.Shipped)
+		attemptedByModel[c.Model] = int64(c.Attempted)
+	}
+	mp.controller.Metrics().SetIssueLevelCountsByModel(shippedByModel, attemptedByModel)
 }
 
 func (mp *MetricsPersister) persist() {
