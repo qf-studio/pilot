@@ -26,6 +26,16 @@ package — seeing that exact string means the click was ROUTED WRONG, not that
 approval state is missing. The #4426 persistence work fixed a real but
 secondary gap; the primary gap is routing (#4431).
 
+## Addendum 2026-07-20 — routing FIXED on v2.243.0, end-to-end proof pending
+
+On box binary v2.243.0-2 the socket path now reaches the approval handler:
+daemon log 15:12Z shows `component=approval.slack decision=approved user=hello`
+for founder clicks (requests were stale — PRs already externally merged — so
+the response was "unknown or already-processed", which Slack renders as a
+"stuck" button). `registered Slack approval handler channel=#pointer` appears
+at startup. Remaining proof: one fresh PR approved via Slack button actually
+merging. Until observed, treat clicks-route-but-merge-unproven.
+
 ## How to apply
 - Fix: route `approve:`/`reject:` action values (or approval action IDs) to
   `HandleInteraction` inside the socket callback path before the comms
