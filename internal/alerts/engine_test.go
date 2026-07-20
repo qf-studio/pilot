@@ -1273,6 +1273,107 @@ func TestHandleReleaseMissing(t *testing.T) {
 	})
 }
 
+// TestHandleDispatchLoopBreaker covers the GH-4469 loop-breaker rule: the
+// emitting side (handleIssueGeneric, cmd/pilot/handler_common.go) does its
+// own threshold counting (fires exactly once, at consecutive drop == 10) and
+// sends a single event, so this test only needs to verify the event turns
+// into exactly one alert carrying the task and consecutive-drops metadata —
+// mirroring TestHandleReleaseMissing above.
+func TestHandleDispatchLoopBreaker(t *testing.T) {
+	t.Run("fires with task_id and consecutive_drops metadata", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "dispatch_loop_breaker",
+					Type:     AlertTypeDispatchLoopBreaker,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type:   EventTypeDispatchLoopBreaker,
+			TaskID: "GH-4391",
+			Metadata: map[string]string{
+				"consecutive_drops": "10",
+			},
+			Timestamp: time.Now(),
+		})
+
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].Type != AlertTypeDispatchLoopBreaker {
+			t.Errorf("expected alert type %s, got %s", AlertTypeDispatchLoopBreaker, alerts[0].Type)
+		}
+		if !strings.Contains(alerts[0].Message, "GH-4391") || !strings.Contains(alerts[0].Message, "10") {
+			t.Errorf("expected alert message to mention the task and consecutive-drop count, got %q", alerts[0].Message)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "dispatch_loop_breaker",
+					Type:     AlertTypeDispatchLoopBreaker,
+					Enabled:  false,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type:   EventTypeDispatchLoopBreaker,
+			TaskID: "GH-4391",
+			Metadata: map[string]string{
+				"consecutive_drops": "10",
+			},
+			Timestamp: time.Now(),
+		})
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+}
+
 // TestHandleLaneStarvation covers the GH-4454 lane-starvation rule: the
 // emitting side (autopilot.Controller.reconcileLaneStarvation) does no
 // threshold filtering of its own and sends the raw streak on every starved

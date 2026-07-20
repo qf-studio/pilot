@@ -135,6 +135,13 @@ const (
 	// poll_cycles_starved (the running streak) — see
 	// autopilot.Controller.reconcileLaneStarvation, the sole emitter.
 	EventTypeLaneStarvation EventType = "lane_starvation"
+
+	// Dispatch loop breaker events (GH-4469): fired exactly once by
+	// handleIssueGeneric (cmd/pilot/handler_common.go) when a task's
+	// consecutive dispatch-and-reject count reaches repickLoopBreakerThreshold
+	// (10) — regardless of whether the rejections were backoff gates or
+	// genuine failures. Metadata carries task_id and consecutive_drops.
+	EventTypeDispatchLoopBreaker EventType = "dispatch_loop_breaker"
 )
 
 const (
@@ -369,6 +376,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleReleaseMissing(ctx, event)
 	case EventTypeLaneStarvation:
 		e.handleLaneStarvation(ctx, event)
+	case EventTypeDispatchLoopBreaker:
+		e.handleDispatchLoopBreaker(ctx, event)
 	case EventTypeBudgetExceeded, EventTypeBudgetWarning:
 		e.handleBudgetEvent(ctx, event)
 	case EventTypeAutopilotMetrics:
@@ -604,6 +613,25 @@ func (e *Engine) handleLaneStarvation(ctx context.Context, event Event) {
 			alert := e.createAlert(rule, event,
 				fmt.Sprintf("Lane %s has %s open pilot-labeled issue(s) but nothing queued/running for %d consecutive poll cycles",
 					repo, openIssues, streak))
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+}
+
+// handleDispatchLoopBreaker fires AlertTypeDispatchLoopBreaker rules when a
+// task's consecutive dispatch-and-reject count reaches the caller's
+// threshold (GH-4469). The caller (handleIssueGeneric) already computed and
+// gated on the exact threshold before emitting this event, so — like
+// handleReleaseMissing — no Condition-based counting happens here.
+func (e *Engine) handleDispatchLoopBreaker(ctx context.Context, event Event) {
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if rule.Type == AlertTypeDispatchLoopBreaker && e.shouldFire(rule) {
+			message := fmt.Sprintf("Task %s has been dispatched-and-rejected %s consecutive times without completing — stopping until operator action or backoff expiry",
+				event.TaskID, event.Metadata["consecutive_drops"])
+			alert := e.createAlert(rule, event, message)
 			e.fireAlert(ctx, rule, alert)
 		}
 	}

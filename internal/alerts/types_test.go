@@ -66,6 +66,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeReleaseMissing: {"release_missing", true},
 		// Lane-starvation detection (GH-4454)
 		AlertTypeLaneStarvation: {"lane_starvation", true},
+		// Dispatch loop breaker (GH-4469)
+		AlertTypeDispatchLoopBreaker: {"dispatch_loop_breaker", true},
 	}
 
 	if len(rules) != len(expectedRules) {

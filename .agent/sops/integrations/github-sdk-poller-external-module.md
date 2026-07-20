@@ -58,6 +58,50 @@ bump `go.mod` in `pilot` to the new version. That is a cross-repo task, not
 a single Pilot-issue scope — flag it as a follow-up rather than attempting
 it inside a `pilot/GH-*` branch.
 
+## Earliest controllable checkpoint: `ExecutionChecker`/`TaskChecker`, not `HandlerResult.Error`
+
+If the task is "stop the poller from even attempting dispatch" (not just
+suppress a log line after the fact), `handleIssueGeneric`'s returned
+`HandlerResult.Error` is too late — the vendored poller's per-issue loop
+(`sdk/integrations/github/poller.go`) only inspects `err` (from
+`onIssueWithResult`) and `result.Success`/`result.PRNumber`; it never reads
+`result.Error`. By the time your Handler runs, the poller has already
+walked scope-overlap grouping, done a fresh-label GH API refresh, run the
+pre-flight judge subprocess (~30s/~280MB), called `markProcessed`, and
+logged the INFO "Dispatching issue for parallel execution" announcement.
+
+The actual earliest host-controllable checkpoint in the loop is the
+`core.ExecutionChecker` hook (`HasCompletedExecution(taskID, projectPath)`,
+wired via `terminalCompletionChecker` in `cmd/pilot/main.go`) — it runs
+*before* candidate filtering, the judge, and the claim insert. To make the
+poller skip a task entirely for a tick (not just avoid one log line), gate
+inside that checker rather than downstream in `handleIssueGeneric`.
+
+Confirm the exact call order before assuming a hook fires early enough:
+
+```bash
+grep -n "hasCompletedExecution\|hasMergedWork\|hasPendingDependencies\|passesPreFlight\|markProcessed\|Dispatching issue for parallel execution" \
+  $(go env GOPATH)/pkg/mod/github.com/qf-studio/studio-sdk@<version>/sdk/integrations/github/poller.go
+```
+
+GitLab's vendored poller (`sdk/integrations/gitlab/poller.go`) has **no**
+`ExecutionChecker`/`TaskChecker`/`PreFlightJudge` hooks at all — this
+early-checkpoint pattern is GitHub-only; GitLab must rely on the
+`handleIssueGeneric` gates (downstream, post-announcement).
+
+- GH-4469 (2026-07-20): GH-4391 looped 4,233 dispatch→reject cycles over
+  ~2 days because the repick-backoff gate lived only in
+  `handleIssueGeneric`, downstream of the judge subprocess and claim
+  insert. Fix: `terminalCompletionChecker.HasCompletedExecution` now
+  consults `repickBackoff` first and reports `true` (as if terminally
+  complete) while a task is gated — the poller then treats it exactly like
+  an already-completed issue and skips the rest of the loop for that tick.
+  `ErrDispatchGated` (a new sentinel in `internal/executor/dispatcher.go`)
+  was still added for `handleIssueGeneric`'s own gates, but it is
+  introspection-only for the GitHub SDK poller (never read by it) — its
+  value is for tests/logging and for adapters that DO consult
+  `HandlerResult.Error`.
+
 ## History
 
 - GH-4008 (2026-07-07): task asked to suppress the "Dispatching issue for
