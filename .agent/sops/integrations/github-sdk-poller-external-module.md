@@ -58,50 +58,6 @@ bump `go.mod` in `pilot` to the new version. That is a cross-repo task, not
 a single Pilot-issue scope — flag it as a follow-up rather than attempting
 it inside a `pilot/GH-*` branch.
 
-## Earliest controllable checkpoint: `ExecutionChecker`/`TaskChecker`, not `HandlerResult.Error`
-
-If the task is "stop the poller from even attempting dispatch" (not just
-suppress a log line after the fact), `handleIssueGeneric`'s returned
-`HandlerResult.Error` is too late — the vendored poller's per-issue loop
-(`sdk/integrations/github/poller.go`) only inspects `err` (from
-`onIssueWithResult`) and `result.Success`/`result.PRNumber`; it never reads
-`result.Error`. By the time your Handler runs, the poller has already
-walked scope-overlap grouping, done a fresh-label GH API refresh, run the
-pre-flight judge subprocess (~30s/~280MB), called `markProcessed`, and
-logged the INFO "Dispatching issue for parallel execution" announcement.
-
-The actual earliest host-controllable checkpoint in the loop is the
-`core.ExecutionChecker` hook (`HasCompletedExecution(taskID, projectPath)`,
-wired via `terminalCompletionChecker` in `cmd/pilot/main.go`) — it runs
-*before* candidate filtering, the judge, and the claim insert. To make the
-poller skip a task entirely for a tick (not just avoid one log line), gate
-inside that checker rather than downstream in `handleIssueGeneric`.
-
-Confirm the exact call order before assuming a hook fires early enough:
-
-```bash
-grep -n "hasCompletedExecution\|hasMergedWork\|hasPendingDependencies\|passesPreFlight\|markProcessed\|Dispatching issue for parallel execution" \
-  $(go env GOPATH)/pkg/mod/github.com/qf-studio/studio-sdk@<version>/sdk/integrations/github/poller.go
-```
-
-GitLab's vendored poller (`sdk/integrations/gitlab/poller.go`) has **no**
-`ExecutionChecker`/`TaskChecker`/`PreFlightJudge` hooks at all — this
-early-checkpoint pattern is GitHub-only; GitLab must rely on the
-`handleIssueGeneric` gates (downstream, post-announcement).
-
-- GH-4469 (2026-07-20): GH-4391 looped 4,233 dispatch→reject cycles over
-  ~2 days because the repick-backoff gate lived only in
-  `handleIssueGeneric`, downstream of the judge subprocess and claim
-  insert. Fix: `terminalCompletionChecker.HasCompletedExecution` now
-  consults `repickBackoff` first and reports `true` (as if terminally
-  complete) while a task is gated — the poller then treats it exactly like
-  an already-completed issue and skips the rest of the loop for that tick.
-  `ErrDispatchGated` (a new sentinel in `internal/executor/dispatcher.go`)
-  was still added for `handleIssueGeneric`'s own gates, but it is
-  introspection-only for the GitHub SDK poller (never read by it) — its
-  value is for tests/logging and for adapters that DO consult
-  `HandlerResult.Error`.
-
 ## History
 
 - GH-4008 (2026-07-07): task asked to suppress the "Dispatching issue for
@@ -109,3 +65,27 @@ early-checkpoint pattern is GitHub-only; GitLab must rely on the
   Fixed the graded acceptance criterion (zero ERROR lines) entirely from
   `handler_common.go`; the INFO announcement suppression was left as an
   explicit out-of-repo-scope note (would require a `studio-sdk` release).
+
+- GH-4474 (2026-07-20): board-sourced card stranded in "In Progress"
+  forever when dispatch failed pre-execution (`syncBoardStatusInProgress`
+  fires at confirmed dispatch, before spec-guard/preflight can still
+  reject the run; the poller's candidate source only reads the source
+  column, so a stranded card becomes permanently unpickable). Unlike
+  GH-4008, there was **no pilot-side workaround** — the revert has to
+  happen inside the vendored poller's own failure branches, which pilot
+  cannot reach from `handleIssueGeneric`. Fixed directly in the sibling
+  studio-sdk checkout (`~/Projects/startups/studio-sdk`, not the module
+  cache): added `syncBoardStatusRetry` (reverts to
+  `projectBoardSource.config.SourceStatus`, default `"Todo"`) called from
+  all 5 unmark-for-retry branches in both sequential and parallel dispatch
+  paths. Shipped as studio-sdk PR #103 (branch `pilot/GH-4474-board-retry`,
+  merge commit `8c9f4da9706604552d0927066a85577b5bab9217`), merged same
+  day. **No new semver tag was cut within ~5 minutes of merge** (compare:
+  PR #102 merged 2026-07-14T16:00Z, but the next tag `v0.31.1` wasn't
+  released until 2026-07-14T20:16Z — the auto-tagger runs on a multi-hour
+  delay, not synchronously on merge). Rather than block the pilot-side fix
+  on that tag, pinned `go.mod` directly to the merge commit via
+  `go get github.com/qf-studio/studio-sdk@<sha>` (resolves to a
+  `v0.31.2-0.<timestamp>-<sha12>` pseudo-version) — a normal, low-risk
+  fallback when you need a studio-sdk fix now and don't want to wait on
+  (or manually trigger) the release daemon.
