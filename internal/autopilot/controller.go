@@ -2393,6 +2393,26 @@ func (c *Controller) shouldDeferIssueClose(ctx context.Context, issueNum, prNum 
 }
 
 func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error {
+	// GH-4477: re-validate CI live at the merge chokepoint instead of trusting
+	// the ci_status frozen by handleCIPassed/handleWaitingCI. Once a PR
+	// reaches StageAwaitApproval, ci_status is never touched again — a
+	// re-run or a late-reporting check that flips to failure during the
+	// (human, potentially long) approval wait left the stale "success" value
+	// in place with nothing to rescind it, and nearly merged a red PR
+	// (#4466, 2026-07-19). Fail-open on a transient API error here (mirrors
+	// the size-floor/scope-drift gates in handleCIPassed) — only a definitive
+	// CIFailure regresses the PR; we must not block a legitimate merge on a
+	// flaky status-check call.
+	if c.ciMonitor != nil {
+		status, err := c.ciMonitor.CheckCI(ctx, prState.HeadSHA)
+		if err != nil {
+			c.log.Warn("handleMerging: CI re-validation failed, proceeding with frozen ci_status (fail-open)",
+				"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA), "error", err)
+		} else if status == CIFailure {
+			return c.rescindApprovalOnCIRegression(ctx, prState, status)
+		}
+	}
+
 	prState.MergeAttempts++
 
 	c.log.Info("handleMerging: attempting merge",
@@ -2550,6 +2570,46 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			}
 		}
 	}
+
+	return nil
+}
+
+// rescindApprovalOnCIRegression handles a CI regression discovered at the
+// handleMerging chokepoint (GH-4477): the PR was escalated to
+// StageAwaitApproval on a since-stale ci_status=success and CI has now
+// failed. This refuses the merge, un-freezes ci_status, cancels/clears the
+// approval so a re-escalation can't fast-track past a fresh gate on the old
+// decision, and routes back to StageCIFailed to reuse the existing
+// CI-failure pipeline (continuation-issue creation, notification, iteration
+// limits) rather than duplicating it here.
+func (c *Controller) rescindApprovalOnCIRegression(ctx context.Context, prState *PRState, status CIStatus) error {
+	c.log.Warn("handleMerging: CI regressed since approval — refusing to merge a red PR",
+		"pr", prState.PRNumber,
+		"stale_ci_status", prState.CIStatus,
+		"revalidated_status", status,
+	)
+
+	// Cancel any outstanding approval request (e.g. a pending Slack/Telegram
+	// approval message) and clear the recorded decision. Without clearing
+	// ApprovalDecision, a future re-escalation of this same PR would hit
+	// handleAwaitApproval's "decision already recorded" path and skip
+	// straight back to StageMerging on the stale "approved" decision instead
+	// of waiting for a fresh one.
+	if c.approvalMgr != nil && prState.ApprovalRequestID != "" {
+		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+		if prState.IssueNumber == 0 {
+			taskID = fmt.Sprintf("PR-%d", prState.PRNumber)
+		}
+		c.approvalMgr.CancelPending(ctx, taskID)
+	}
+	prState.ApprovalRequestID = ""
+	prState.ApprovalDecision = ""
+	prState.ApprovalRequestedAt = time.Time{}
+	prState.EscalationReason = ""
+
+	prState.CIStatus = status
+	prState.Stage = StageCIFailed
+	c.metrics.RecordCIRun("fail")
 
 	return nil
 }
