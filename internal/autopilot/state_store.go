@@ -36,6 +36,13 @@ func NewStateStoreFromPath(path string) (*StateStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	// modernc.org/sqlite's ":memory:" database is private per-connection, not
+	// shared across the pool — a second concurrent connection sees a fresh,
+	// unmigrated database ("no such table"). Test callers of this path are
+	// the only ones exercising this store from more than one goroutine (e.g.
+	// GH-4476's release-tick retry runs in a background goroutine), so pin
+	// the pool to a single connection to keep it one logical database.
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
 		return nil, fmt.Errorf("failed to set database pragmas: %w", err)
 	}

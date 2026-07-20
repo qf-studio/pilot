@@ -3170,6 +3170,25 @@
           "executor",
           "dispatcher"
         ]
+      },
+      "release-tick-retry-with-backoff-and-alert": {
+        "type": "pattern",
+        "summary": "on_schedule release-train scheduleReleaseTick now retries a transient GitHub failure (rate limit/5xx/network) every 15-30m for up to 6h past the scheduled time via scheduleReleaseTickWithRetry before firing a release_tick_failed alert, instead of forfeiting the whole day (GH-4476)",
+        "file": ".agent/knowledge/memories/patterns/release-tick-retry-with-backoff-and-alert.md",
+        "concepts": [
+          "autopilot",
+          "release",
+          "alerts"
+        ]
+      },
+      "sqlite-memory-dsn-serializes-to-one-conn": {
+        "type": "pitfall",
+        "summary": "NewStateStoreFromPath(\":memory:\") test stores need db.SetMaxOpenConns(1) -- modernc.org/sqlite in-memory DBs are private per pooled connection, so concurrent goroutines can see an unmigrated \"no such table\" database (GH-4476)",
+        "file": ".agent/knowledge/memories/pitfalls/sqlite-memory-dsn-serializes-to-one-conn.md",
+        "concepts": [
+          "autopilot",
+          "testing"
+        ]
       }
     }
   },
@@ -4923,8 +4942,8 @@
   },
   "last_updated": "2026-07-20T13:00:00+00:00",
   "stats": {
-    "total_nodes": 272,
+    "total_nodes": 274,
     "total_edges": 234,
-    "memory_count": 172
+    "memory_count": 174
   }
 }

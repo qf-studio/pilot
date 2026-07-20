@@ -2,12 +2,14 @@ package autopilot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/alerts"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 	"github.com/robfig/cron/v3"
 )
@@ -117,7 +119,7 @@ func (c *Controller) startScheduleRelease(ctx context.Context) {
 	cronInst := cron.New(cron.WithLocation(loc))
 	entryID, err := cronInst.AddFunc(rel.Schedule, func() {
 		scheduledAt := previousScheduledTime(schedule, time.Now().In(loc))
-		c.scheduleReleaseTick(ctx, scheduledAt)
+		c.scheduleReleaseTickWithRetry(ctx, scheduledAt)
 	})
 	if err != nil {
 		c.log.Error("startScheduleRelease: failed to register cron job",
@@ -180,8 +182,21 @@ func (c *Controller) recoverMissedTrainTick(ctx context.Context, rel *ReleaseCon
 	}
 
 	c.log.Warn("recovering missed train", "scheduled_at", prevScheduled.Format(time.RFC3339))
-	c.scheduleReleaseTick(ctx, prevScheduled)
+	c.scheduleReleaseTickWithRetry(ctx, prevScheduled)
 }
+
+// releaseTickOutcome classifies a scheduleReleaseTick result so
+// scheduleReleaseTickWithRetry knows whether to retry (GH-4476): a transient
+// GitHub API failure (releaseTickFailed) is retried, while success and a
+// legitimate no-op (nothing merged, empty train, no resolvable member PRs)
+// are both terminal and must not be retried.
+type releaseTickOutcome int
+
+const (
+	releaseTickSucceeded releaseTickOutcome = iota
+	releaseTickSkipped
+	releaseTickFailed
+)
 
 // scheduleReleaseTick batches everything merged since the last tag into one
 // scope-release carrier for Trigger "on_schedule" (GH-3993). scheduledAt is
@@ -190,14 +205,18 @@ func (c *Controller) recoverMissedTrainTick(ctx context.Context, rel *ReleaseCon
 // and a restart-recovered tick for the same slot always resolve to the same
 // key; enqueueScopeRelease's INSERT OR IGNORE then makes a double-fire for
 // the same slot exactly-once.
-func (c *Controller) scheduleReleaseTick(ctx context.Context, scheduledAt time.Time) {
+//
+// Returns releaseTickFailed (with the triggering error) for a transient
+// GitHub API failure so scheduleReleaseTickWithRetry can retry the tick
+// instead of forfeiting the day's release train (GH-4476).
+func (c *Controller) scheduleReleaseTick(ctx context.Context, scheduledAt time.Time) (releaseTickOutcome, error) {
 	rel := c.resolvedRelease()
 	branch := c.resolveMainBranchName()
 
 	hasTag, err := c.repoHasAnyTag(ctx, c.owner, c.repo)
 	if err != nil {
 		c.log.Warn("scheduleReleaseTick: failed to check for an existing tag, skipping this tick", "error", err)
-		return
+		return releaseTickFailed, err
 	}
 
 	var memberPRs []int
@@ -211,12 +230,12 @@ func (c *Controller) scheduleReleaseTick(ctx context.Context, scheduledAt time.T
 		memberPRs, err = c.firstReleaseTrainMembers(ctx, c.owner, c.repo)
 		if err != nil {
 			c.log.Warn("scheduleReleaseTick: failed to list merged PRs for first release, skipping this tick", "error", err)
-			return
+			return releaseTickFailed, err
 		}
 		if len(memberPRs) == 0 {
 			c.log.Debug("scheduleReleaseTick: no merged PRs yet, skipping first release",
 				"scheduled_at", scheduledAt.Format(time.RFC3339))
-			return
+			return releaseTickSkipped, nil
 		}
 		c.log.Info("scheduleReleaseTick: first release train — no prior tag, releasing entire merged history",
 			"repo", fmt.Sprintf("%s/%s", c.owner, c.repo),
@@ -227,7 +246,7 @@ func (c *Controller) scheduleReleaseTick(ctx context.Context, scheduledAt time.T
 		currentVersion, verErr := c.releaser.GetCurrentVersionForRepo(ctx, c.owner, c.repo)
 		if verErr != nil {
 			c.log.Warn("scheduleReleaseTick: failed to get current version, skipping this tick", "error", verErr)
-			return
+			return releaseTickFailed, verErr
 		}
 		lastTag := currentVersion.String(rel.TagPrefix)
 
@@ -235,12 +254,12 @@ func (c *Controller) scheduleReleaseTick(ctx context.Context, scheduledAt time.T
 		if cmpErr != nil {
 			c.log.Warn("scheduleReleaseTick: failed to compare commits, skipping this tick",
 				"last_tag", lastTag, "branch", branch, "error", cmpErr)
-			return
+			return releaseTickFailed, cmpErr
 		}
 		if len(commits) == 0 {
 			c.log.Debug("scheduleReleaseTick: empty train, skipping",
 				"last_tag", lastTag, "scheduled_at", scheduledAt.Format(time.RFC3339))
-			return
+			return releaseTickSkipped, nil
 		}
 
 		memberPRs = c.resolveTrainMemberPRs(ctx, commits)
@@ -248,13 +267,130 @@ func (c *Controller) scheduleReleaseTick(ctx context.Context, scheduledAt time.T
 			c.log.Warn("scheduleReleaseTick: no resolvable member PRs (direct-commit-only train), skipping — "+
 				"v1 limitation, the scope-release carrier requires a real merged PR",
 				"last_tag", lastTag, "commits", len(commits), "scheduled_at", scheduledAt.Format(time.RFC3339))
-			return
+			return releaseTickSkipped, nil
 		}
 	}
 
 	scopeKey := trainScopeKey(scheduledAt)
 	title := fmt.Sprintf("Release train %s", scheduledAt.Format("2006-01-02 15:04"))
 	c.enqueueScopeRelease(ctx, scopeKey, title, memberPRs)
+	return releaseTickSucceeded, nil
+}
+
+// releaseTickRetryMinInterval, releaseTickRetryMaxInterval, and
+// releaseTickRetryWindow bound scheduleReleaseTickWithRetry's backoff loop
+// (GH-4476): short enough between attempts that a transient outage doesn't
+// cost the release train its whole day, long enough not to hammer an
+// already-rate-limited API, and bounded overall so a permanently-broken tick
+// still gives up and alerts instead of retrying forever. Package-level vars
+// (not consts) so tests can shrink them instead of a real test run waiting
+// out real minutes/hours — see scope_schedule_retry_test.go.
+var (
+	// releaseTickRetryMinInterval is the default wait between retry attempts
+	// absent a rate-limit error's own Retry-After/X-RateLimit-Reset delay.
+	releaseTickRetryMinInterval = 15 * time.Minute
+	// releaseTickRetryMaxInterval caps any single retry wait, including one
+	// driven by a rate-limit header, so a runaway header value can't stall
+	// the loop for hours between attempts.
+	releaseTickRetryMaxInterval = 30 * time.Minute
+	// releaseTickRetryWindow bounds how long past the scheduled fire time
+	// the loop keeps retrying before giving up and firing a
+	// release_tick_failed alert. GH-4476: the 2026-07-18 16:00 Europe/Berlin
+	// tick hit a GitHub 403 and the train simply skipped the day with no
+	// retry at all — this window gives a same-day transient failure (rate
+	// limit, 5xx, network blip) room to clear before conceding the day.
+	releaseTickRetryWindow = 6 * time.Hour
+)
+
+// scheduleReleaseTickWithRetry runs scheduleReleaseTick and, on a transient
+// GitHub failure, retries with backoff for up to releaseTickRetryWindow past
+// scheduledAt instead of forfeiting the train until the next scheduled day
+// (GH-4476). The retry loop runs in its own goroutine so the cron callback
+// and recoverMissedTrainTick's synchronous call both return immediately;
+// ctx cancellation (daemon shutdown) stops the loop without firing the
+// exhausted-retries alert, since a restart already re-attempts the tick via
+// recoverMissedTrainTick.
+func (c *Controller) scheduleReleaseTickWithRetry(ctx context.Context, scheduledAt time.Time) {
+	outcome, err := c.scheduleReleaseTick(ctx, scheduledAt)
+	if outcome != releaseTickFailed {
+		return
+	}
+	go c.retryReleaseTick(ctx, scheduledAt, err)
+}
+
+// retryReleaseTick is scheduleReleaseTickWithRetry's backoff loop. Every
+// attempt's wait is releaseTickRetryMinInterval..releaseTickRetryMaxInterval,
+// preferring a rate-limit error's own Retry-After/X-RateLimit-Reset delay
+// (clamped to the same bounds) over the default interval so the retry
+// actually lands after the reported quota reset instead of guessing.
+func (c *Controller) retryReleaseTick(ctx context.Context, scheduledAt time.Time, firstErr error) {
+	deadline := scheduledAt.Add(releaseTickRetryWindow)
+	lastErr := firstErr
+	attempts := 1
+
+	for time.Now().Before(deadline) {
+		wait := releaseTickRetryMinInterval
+		var rlErr *github.RateLimitError
+		if errors.As(lastErr, &rlErr) && rlErr.RetryAfter > releaseTickRetryMinInterval {
+			wait = rlErr.RetryAfter
+		}
+		if wait > releaseTickRetryMaxInterval {
+			wait = releaseTickRetryMaxInterval
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+
+		attempts++
+		outcome, err := c.scheduleReleaseTick(ctx, scheduledAt)
+		if outcome != releaseTickFailed {
+			if outcome == releaseTickSucceeded {
+				c.log.Info("scheduleReleaseTick: retry succeeded after a transient failure",
+					"scheduled_at", scheduledAt.Format(time.RFC3339), "attempts", attempts)
+			}
+			return
+		}
+		lastErr = err
+		c.log.Warn("scheduleReleaseTick: retry attempt failed, will retry",
+			"scheduled_at", scheduledAt.Format(time.RFC3339), "attempts", attempts, "error", err)
+	}
+
+	c.fireReleaseTickFailedAlert(scheduledAt, lastErr, attempts)
+}
+
+// fireReleaseTickFailedAlert fires a loud release_tick_failed alert (GH-4476)
+// once scheduleReleaseTickWithRetry has exhausted releaseTickRetryWindow of
+// retries without a successful (or legitimately-skipped) result. Mirrors
+// fireReleaseMissingAlert's alerts-engine-or-log-ERROR pattern so an
+// exhausted retry surfaces loudly instead of silently skipping the day's
+// release train the way the pre-GH-4476 bug did.
+func (c *Controller) fireReleaseTickFailedAlert(scheduledAt time.Time, lastErr error, attempts int) {
+	msg := fmt.Sprintf(
+		"release train tick scheduled for %s in %s/%s failed after %d attempt(s) over %s: %v — the release train did not run this cycle",
+		scheduledAt.Format(time.RFC3339), c.owner, c.repo, attempts, releaseTickRetryWindow, lastErr,
+	)
+	c.log.Error("scheduleReleaseTick: exhausted retries, giving up on this tick",
+		"scheduled_at", scheduledAt.Format(time.RFC3339), "attempts", attempts, "error", lastErr,
+	)
+
+	if c.alertsEngine == nil {
+		c.log.Error("release_tick_failed alert not delivered: SetAlertsEngine was never called",
+			"scheduled_at", scheduledAt.Format(time.RFC3339))
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventType("release_tick_failed"),
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo":         c.owner + "/" + c.repo,
+			"scheduled_at": scheduledAt.Format(time.RFC3339),
+			"attempts":     strconv.Itoa(attempts),
+		},
+	})
 }
 
 // repoHasAnyTag reports whether owner/repo has at least one published

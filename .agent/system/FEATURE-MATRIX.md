@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-20 (v2.151.0)
+**Last Updated:** 2026-07-17 (v2.151.0)
 
 ## Legend
 
@@ -132,7 +132,6 @@
 | Jira/Asana autopilot wire | ✅ | adapters | - | - | OnPRCreated + HeadSHA/BranchName for Jira + Asana (v1.19.0, GH-1397) |
 | GitHub Projects V2 Board | ✅ | adapters/github | - | `adapters.github.project_board` | GraphQL board sync: Review/Done/Failed columns (v2.30.0, PR #1863) |
 | GitHub Projects V2 Board Source | ✅ | adapters/github | - | `adapters.github.project_board.source_enabled` | Pull work FROM a board column (FindIssuesFromProject); opt-in via source_enabled/source_status (GH-3228) |
-| Per-project Projects V2 board | ✅ | config, cmd/pilot | - | `projects.<name>.github.project_board` | Unbinds board sync/source from the single default repo — each `projects[]` repo can carry its own board (`config.Config.ResolveProjectBoard`: project override → default-repo global fallback → none); wired into both the SDK poller (`poller_github.go`) and every autopilot controller construction site (`main.go`) (v2.242.0, GH-4472) |
 | Common Adapter Registry | ✅ | adapters | - | - | Unified Adapter interface, generic ProcessedStore table (v2.30.0, PR #1845) |
 | Linear workspace mode | ✅ | adapters/linear | - | `adapters.linear.projects` | Project-scoped routing via project_ids mapping for multi-project setups |
 | Plane.so state transitions | ✅ | adapters/plane | - | - | State transitions and PR comments on Plane.so issues (v2.25.0, PR #1843) |
@@ -416,6 +415,7 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
+| Release train tick retry | ✅ | autopilot | - | - | `scheduleReleaseTickWithRetry` retries a failed `on_schedule` tick (rate limit/5xx/network) every 15-30m for up to 6h past the scheduled time before giving up, instead of forfeiting the whole day the way the 2026-07-18 403 did; exhausted retries fire a `release_tick_failed` alert via the alerts engine (GH-4476, v2.243.0) |
 
 ## Epic Management
 
@@ -591,7 +591,6 @@ quality:
 
 | Feature | Version | Package | Notes |
 |---------|---------|---------|-------|
-| Per-model taxonomy fix + issue-level-by-model gauges | v2.243.0+ | autopilot + memory + gateway | `GetLifetimeCounterBaselines`/hydrator no longer collapse declined/no_op/rate_limited/infra/skipped into `failed` for the per-model `pilot_executions_total{model,result}` baseline (same defect TASK-392/GH-4070 fixed for the headline rate, now applied to the per-model breakout); empty-`model_name` rows (zero-token, pre-GH-4041 or died-before-invoking-Claude) excluded entirely instead of bucketed under `model=unknown`. New `pilot_issues_shipped_by_model_total`/`pilot_issues_attempted_by_model_total` gauges (`Store.GetIssueLevelCountsByModel`, deduped by `task_id` within each model) give eventual per-model delivery next to the attempt-level counter, which reads far lower since every retry/rate-limit death is its own row (GH-4483) |
 | Issue-level success rate + rate_limited exclusion | v2.235.0+ | autopilot + memory + gateway | `pilot_issue_level_success_rate` / `pilot_issues_shipped_total` / `pilot_issues_attempted_total` dedupe by `task_id` across retries; `pilot_success_rate` now excludes `rate_limited` from the denominator; hydrator no longer folds declined/no_op/stalled/infra/skipped into `failed` (TASK-392 / GH-4070) |
 | Poller skip-by-reason counters | v2.150.0 | adapters/github | `pilot_poller_skipped/dispatched/deferred` Prometheus counters (TASK-293 / GH-3064) |
 | `WithRetry` centralized in `doRequest` | v2.150.0 | adapters/github | All GitHub client methods now get retry; `RecordAPIError` wired (TASK-294 / GH-3065) |
