@@ -322,3 +322,118 @@ func TestCanHotRestart(t *testing.T) {
 		t.Error("CanHotRestart() = false, want true on Unix")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// progressLogThrottle (GH-4468: download progress logging hygiene)
+// ---------------------------------------------------------------------------
+
+func TestNewProgressLogThrottle_NilClockDefaultsToReal(t *testing.T) {
+	th := newProgressLogThrottle(nil)
+	if _, ok := th.clock.(realClock); !ok {
+		t.Errorf("expected realClock default when nil is passed, got %T", th.clock)
+	}
+}
+
+func TestProgressLogThrottle_ShouldLog_TableDriven(t *testing.T) {
+	tests := []struct {
+		name  string
+		calls []int // sequence of pct values, no simulated time elapsed between calls
+		want  []bool
+	}{
+		{
+			name:  "first call always logs",
+			calls: []int{5},
+			want:  []bool{true},
+		},
+		{
+			name:  "same decile suppressed after first log",
+			calls: []int{5, 6, 7, 9},
+			want:  []bool{true, false, false, false},
+		},
+		{
+			name:  "crossing a 10% boundary logs",
+			calls: []int{5, 12, 12, 23},
+			want:  []bool{true, true, false, true},
+		},
+		{
+			name:  "0% and 100% always log",
+			calls: []int{0, 0, 50, 100, 100},
+			want:  []bool{true, true, true, true, true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := newFakeClock(time.Now())
+			th := newProgressLogThrottle(fc)
+			for i, pct := range tt.calls {
+				got := th.shouldLog(pct)
+				if got != tt.want[i] {
+					t.Errorf("call #%d shouldLog(%d) = %v, want %v", i, pct, got, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestProgressLogThrottle_ElapsedTimeReopensSameDecile verifies the ≥1s
+// escape hatch: even without crossing a 10% boundary, once the hygiene
+// interval has passed the next update logs again.
+func TestProgressLogThrottle_ElapsedTimeReopensSameDecile(t *testing.T) {
+	fc := newFakeClock(time.Now())
+	th := newProgressLogThrottle(fc)
+
+	if !th.shouldLog(11) {
+		t.Fatal("first call should log")
+	}
+	if th.shouldLog(15) {
+		t.Fatal("same decile with no elapsed time should be suppressed")
+	}
+
+	// Advance the clock past the hygiene interval without crossing a decile.
+	<-fc.After(progressLogHygieneInterval)
+
+	if !th.shouldLog(16) {
+		t.Error("same decile after the hygiene interval elapsed should log")
+	}
+}
+
+// TestProgressLogThrottle_DoesNotGateCallback confirms the throttle is only
+// a logging decision — PerformHotUpgrade must still forward every update to
+// cfg.OnProgress so the TUI progress bar stays smooth.
+func TestProgressLogThrottle_DoesNotGateCallback(t *testing.T) {
+	tc := &NoOpTaskChecker{}
+	h, _ := newTestHotUpgrader(t, tc)
+
+	newBinary := []byte(strings.Repeat("x", 200*1024)) // large enough for multiple 32KB chunks
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(newBinary)
+	}))
+	defer server.Close()
+
+	h.graceful.upgrader.httpClient = server.Client()
+
+	release := &Release{
+		TagName: "v2.0.0",
+		Assets: []Asset{
+			{
+				Name:               fmt.Sprintf("pilot-%s-%s", runtime.GOOS, runtime.GOARCH),
+				BrowserDownloadURL: server.URL + "/pilot",
+				Size:               int64(len(newBinary)),
+			},
+		},
+	}
+
+	var callbackCount int
+	cfg := &HotUpgradeConfig{
+		OnProgress: func(pct int, msg string) {
+			callbackCount++
+		},
+	}
+
+	_ = h.PerformHotUpgrade(context.Background(), release, cfg)
+
+	if callbackCount < 2 {
+		t.Errorf("expected multiple OnProgress callbacks despite log throttling, got %d", callbackCount)
+	}
+}

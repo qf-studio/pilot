@@ -2933,6 +2933,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
 						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
+						reportUpgradeFailure(alertsEngine, version, info.Latest, err)
 					} else {
 						// On Unix, process is replaced and this line is never reached.
 						// On Windows, hot restart is not supported — binary is installed

@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-19 (v2.151.0)
+**Last Updated:** 2026-07-17 (v2.151.0)
 
 ## Legend
 
@@ -456,6 +456,7 @@
 | Project add wizard | ✅ | cli | `pilot project add` (no flags) | - | gh CLI auth, repo picker, token seeding; `--no-wizard` for CI (GH-3017, v2.187.1) |
 | Shell completion | ✅ | main | `pilot completion` | - | bash/zsh/fish |
 | Zip archive support | ✅ | upgrade | - | - | Windows self-upgrade handles .zip archives |
+| Self-upgrade writability preflight | ✅ | upgrade | - | - | Upgrade() probes binary dir before downloading; typed ErrBinaryNotWritable (dir+uid+hint); ERROR log + service_unhealthy alert on auto-upgrade failure; download progress logging throttled to ≥1s/10% steps (GH-4468) |
 | Pipeline hardening | ✅ | executor | - | - | 4 correctness checks: constants, parity, coverage, dropped features (v1.10.0, GH-1321) |
 | Pre-commit hooks | ✅ | - | `make install-hooks` | - | Git hooks for secret scanning + lint |
 | Qwen Code bug fixes | ✅ | executor | `--backend qwen` | - | 5x pricing correction, CLI version check, session_not_found handling (v1.9.2, GH-1316) |

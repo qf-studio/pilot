@@ -167,8 +167,65 @@ func ReleasesBehind(releases []Release, currentVersion string) int {
 	return count
 }
 
+// ErrBinaryNotWritable is returned by Upgrade when the process cannot write
+// to the directory holding the binary — e.g. a root-owned binary with the
+// daemon running as a non-root user. Detected via a preflight probe before
+// any download happens (GH-4468: previously this only surfaced as an EACCES
+// from createBackup() after a ~30MB download had already completed, with no
+// ERROR log or alert marking the failure).
+type ErrBinaryNotWritable struct {
+	// Dir is the binary's containing directory that failed the write probe.
+	Dir string
+	// UID is the process's effective user id (-1 on platforms without one,
+	// e.g. Windows).
+	UID int
+	// Err is the underlying OS error from the probe.
+	Err error
+}
+
+func (e *ErrBinaryNotWritable) Error() string {
+	return fmt.Sprintf(
+		"binary directory %s is not writable by uid %d: %v — relocate the binary to a directory this user owns, or fix ownership/permissions on %s",
+		e.Dir, e.UID, e.Err, e.Dir,
+	)
+}
+
+func (e *ErrBinaryNotWritable) Unwrap() error {
+	return e.Err
+}
+
+// upgradeProbeFilename is the throwaway file checkBinaryWritable creates and
+// removes to confirm write access without touching the real binary/backup.
+const upgradeProbeFilename = ".pilot-upgrade-probe"
+
+// checkBinaryWritable verifies the process can create, write, and delete a
+// file in dir — the same access createBackup() and installBinary() will need
+// later in the flow. Called as a preflight so a doomed upgrade fails in
+// microseconds instead of after downloading the full release asset.
+func checkBinaryWritable(dir string) error {
+	probePath := filepath.Join(dir, upgradeProbeFilename)
+
+	f, err := os.OpenFile(probePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return &ErrBinaryNotWritable{Dir: dir, UID: os.Getuid(), Err: err}
+	}
+	_ = f.Close()
+
+	if err := os.Remove(probePath); err != nil {
+		return &ErrBinaryNotWritable{Dir: dir, UID: os.Getuid(), Err: err}
+	}
+
+	return nil
+}
+
 // Upgrade downloads and installs the latest version
 func (u *Upgrader) Upgrade(ctx context.Context, release *Release, onProgress func(pct int, msg string)) error {
+	// Preflight: fail loud before spending time/bandwidth on a download that
+	// can never be installed (GH-4468).
+	if err := checkBinaryWritable(filepath.Dir(u.binaryPath)); err != nil {
+		return err
+	}
+
 	// Find appropriate asset for current platform
 	asset := u.findAsset(release)
 	if asset == nil {

@@ -38,6 +38,53 @@ func DefaultHotUpgradeConfig() *HotUpgradeConfig {
 	}
 }
 
+// progressLogHygieneInterval is the minimum gap between two INFO-level
+// "upgrade progress" log lines for the same run, unless a 10% boundary or
+// the 0%/100% endpoints are crossed. downloadAsset reports progress on every
+// 32KB chunk — for a ~30MB release that's roughly a thousand callbacks in a
+// few hundred milliseconds, which without throttling turns into hundreds of
+// log lines per second (GH-4468 incident: daemon.log was too noisy to
+// contain the one ERROR line that mattered).
+const progressLogHygieneInterval = time.Second
+
+// progressLogThrottle decides whether a given progress update is significant
+// enough to log at INFO. It does not gate the OnProgress callback itself —
+// UI consumers (the TUI progress bar) still get every update; only the log
+// line is throttled.
+type progressLogThrottle struct {
+	clock   clock
+	started bool
+	lastAt  time.Time
+	lastPct int
+}
+
+func newProgressLogThrottle(clk clock) *progressLogThrottle {
+	if clk == nil {
+		clk = realClock{}
+	}
+	return &progressLogThrottle{clock: clk}
+}
+
+// shouldLog reports whether pct should produce a log line, then (if so)
+// records it as the new baseline. Always logs the first call and the
+// 0%/100% endpoints so start and completion are never dropped.
+func (t *progressLogThrottle) shouldLog(pct int) bool {
+	now := t.clock.Now()
+
+	log := !t.started ||
+		pct <= 0 || pct >= 100 ||
+		pct/10 != t.lastPct/10 ||
+		now.Sub(t.lastAt) >= progressLogHygieneInterval
+
+	if log {
+		t.started = true
+		t.lastAt = now
+		t.lastPct = pct
+	}
+
+	return log
+}
+
 // NewHotUpgrader creates a new HotUpgrader instance
 func NewHotUpgrader(currentVersion string, taskChecker TaskChecker) (*HotUpgrader, error) {
 	graceful, err := NewGracefulUpgrader(currentVersion, taskChecker)
@@ -66,8 +113,11 @@ func (h *HotUpgrader) PerformHotUpgrade(ctx context.Context, release *Release, c
 
 	currentVersion := h.graceful.GetUpgrader().currentVersion
 
+	logThrottle := newProgressLogThrottle(nil)
 	progress := func(pct int, msg string) {
-		slog.Info("upgrade progress", slog.Int("percent", pct), slog.String("msg", msg))
+		if logThrottle.shouldLog(pct) {
+			slog.Info("upgrade progress", slog.Int("percent", pct), slog.String("msg", msg))
+		}
 		if cfg.OnProgress != nil {
 			cfg.OnProgress(pct, msg)
 		}

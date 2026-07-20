@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -15,8 +16,41 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/upgrade"
 )
+
+// reportUpgradeFailure makes a self-upgrade failure loud (GH-4468): before
+// this, the auto-upgrade path only logged progress at INFO and a failure
+// left no ERROR line and no alert — an operator found out from the TUI hours
+// after the fact. Logs at ERROR with the full error, then raises a
+// service_unhealthy alert (severity WARNING — a failed self-upgrade is not
+// itself availability-affecting) through the alerts engine if one is wired,
+// mirroring the existing self-upgrade-staleness alert (GH-3790).
+func reportUpgradeFailure(alertsEngine *alerts.Engine, currentVersion, targetVersion string, err error) {
+	slog.Error("self-upgrade failed",
+		slog.String("current_version", currentVersion),
+		slog.String("target_version", targetVersion),
+		slog.Any("error", err),
+	)
+
+	if alertsEngine == nil {
+		return
+	}
+
+	alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeConfigError,
+		TaskID:    "self-upgrade",
+		TaskTitle: "Self-upgrade failed",
+		Error:     err.Error(),
+		Metadata: map[string]string{
+			"check":           "self_upgrade_failed",
+			"current_version": currentVersion,
+			"target_version":  targetVersion,
+		},
+		Timestamp: time.Now(),
+	})
+}
 
 // confirmPromptTimeout bounds how long the upgrade confirmation prompt waits
 // for input before giving up, so an unattended/non-interactive invocation
