@@ -246,6 +246,7 @@
 | Hot upgrade key | ✅ | dashboard | `u` key | - | In-place upgrade from dashboard |
 | SQLite persistence | ✅ | dashboard | - | - | Metrics survive restarts (v0.21.2) |
 | Queue state panel | ✅ | dashboard | - | - | 5-state: done/running/queued/pending/failed with shimmer (v0.63.0) |
+| Queue card store reconciliation | ✅ | executor | - | - | `Monitor.ReconcileWithStore` runs on the dashboard's 2s refresh tick (polling mode): pulls the `executions.status` for every in-memory running/queued/pending card and force-terminates it (completed/failed/cancelled/stalled) if the DB row already terminated — fixes cards stuck at running/100% after a no-commit failure or externally closed PR that never called back into `Monitor` (GH-4490) |
 | Git graph panel | ✅ | dashboard | `g` key | - | Live git graph: 3-state toggle, auto-refresh 15s, auto-prune, scrollable (v1.40.2) |
 | Dashboard API | ✅ | gateway | - | - | REST endpoints: /api/v1/tasks, /api/v1/autopilot, /api/v1/history (v1.55.0, GH-1599) |
 | Web dashboard | ✅ | gateway | - | - | Embedded React frontend at /dashboard with SSE log streaming (v1.56.0, GH-1609) |
