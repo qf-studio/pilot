@@ -208,6 +208,26 @@ func WithProjectBoardSync(bs *github.ProjectBoardSync, doneStatus, failStatus, r
 	}
 }
 
+// WithProjectBoardSource wires a GitHub Projects V2 board as the poll-cycle
+// audit source for reconcileUnsourcedBoardIssues (GH-4488). It does NOT
+// affect dispatch — the studio-sdk poller already replaces label discovery
+// with board sourcing internally when project_board.source_enabled is true
+// (that logic lives in the vendored studio-sdk module, out of reach from
+// this repo). What was missing is visibility: an open pilot-labeled issue
+// that isn't sourced by the board (absent, or in the wrong status) was
+// silently dropped with zero log lines, indistinguishable from a dead
+// poller (GH-4488 evidence: pointer#136 sat undispatched 09:10Z-10:13Z).
+// sourceStatus is the board column dispatch reads from (config's
+// project_board.source_status, default "Todo") — an issue whose card is in
+// any other column counts as unsourced for this audit, same as one with no
+// card at all.
+func WithProjectBoardSource(src *github.ProjectBoardSource, sourceStatus string) ControllerOption {
+	return func(c *Controller) {
+		c.boardSource = src
+		c.boardSourceStatus = sourceStatus
+	}
+}
+
 // WithMemoryStore wires an execution-level approval persister so that
 // approval_request_id and approval_decision are written to the executions table.
 func WithMemoryStore(s *memory.Store) ControllerOption {
@@ -316,7 +336,16 @@ type Controller struct {
 	failStatus       string
 	reviewStatus     string // GH-3260: board column for PR-created (In Progress → Review)
 	inProgressStatus string // GH-3260: reserved for symmetry; not yet emitted
-	log              *slog.Logger
+
+	// boardSource is the GH-4488 poll-cycle audit source: when non-nil (wired
+	// via WithProjectBoardSource, only when project_board.source_enabled is
+	// true), reconcileUnsourcedBoardIssues cross-checks open pilot-labeled
+	// issues against FindIssuesFromProject(boardSourceStatus) to catch
+	// labeled work the board-sourced poller is silently ignoring. Nil =
+	// board sourcing disabled for this repo, audit is a no-op.
+	boardSource       *github.ProjectBoardSource
+	boardSourceStatus string
+	log               *slog.Logger
 
 	// State tracking
 	activePRs map[int]*PRState
@@ -468,6 +497,24 @@ type Controller struct {
 	// once the per-PR circuit breaker opens, never alert at all (GH-4380).
 	alertedApprovalFailures map[int]bool
 
+	// warnedUnsourcedIssues deduplicates the "labeled issue not board-sourced"
+	// WARN reconcileUnsourcedBoardIssues emits, per issue number, guarded by
+	// mu — logged once per poll-session (not every tick) while the issue
+	// stays unsourced, and cleared the moment the issue is no longer open,
+	// no longer labeled, or becomes sourced, so a later recurrence (or a
+	// different issue) warns again instead of going permanently silent
+	// (GH-4488).
+	warnedUnsourcedIssues map[int]bool
+
+	// alertedBoardSyncScope dedupes the board_sync_scope_error alert
+	// (GH-4488) so a persistent INSUFFICIENT_SCOPES / auth-class failure on
+	// UpdateProjectItemStatus fires exactly once per controller boot instead
+	// of once per stale-card WARN — every board sync call site retries every
+	// tick a PR sits in that stage, and without this guard the alerts
+	// engine's per-rule cooldown would still let a repeat through every
+	// cooldown window. Guarded by mu.
+	alertedBoardSyncScope bool
+
 	// epicVeto tracks, per epic parent issue number, how many consecutive
 	// reconcile passes have failed the SAME close-veto (same blocking child +
 	// same reason), guarded by mu. Lets reconcileEpicParent tell "still
@@ -522,6 +569,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		alertedApprovalFailures: make(map[int]bool),
 		epicVeto:                make(map[int]*epicCloseVetoTracking),
 		epicResolvedParents:     make(map[int]bool),
+		warnedUnsourcedIssues:   make(map[int]bool),
 	}
 
 	// Options must apply before the releaser is constructed below: the
@@ -987,6 +1035,69 @@ func (c *Controller) alertPersistFailureOnce(prNumber int, persistErr error) {
 	})
 }
 
+// insufficientScopeMarker is the GraphQL error text GitHub returns when the
+// token driving board sync lacks the projectV2 scope. studio-sdk has no
+// typed error for this (only RateLimitError/AuthError, both 401-class) —
+// see sdk/integrations/github/errors.go — so classification is a string
+// match against the wrapped error text, same as the WARN log this
+// supersedes ("board sync: failed to update project item status ...
+// INSUFFICIENT_SCOPES: 'projectV2' requires read:project, token has
+// [gist, read:org, repo, workflow]", GH-4488 evidence).
+const insufficientScopeMarker = "INSUFFICIENT_SCOPES"
+
+// isInsufficientScopeError reports whether err is a GitHub GraphQL
+// INSUFFICIENT_SCOPES failure, as opposed to a transient board-sync error
+// (network blip, rate limit, item briefly missing from the board) that
+// should stay a WARN rather than page anyone.
+func isInsufficientScopeError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), insufficientScopeMarker)
+}
+
+// alertBoardSyncScopeFailureOnce fires a config_error alert the first time a
+// board sync call fails with INSUFFICIENT_SCOPES, deduplicated per
+// controller boot via alertedBoardSyncScope (GH-4488). Every
+// UpdateProjectItemStatus call site already retries on its own poll tick
+// (PR created, exec failure, CI failure, merge, external merge/close) and
+// logs a WARN on every failure — without this guard, a token missing
+// read:project would either alert once per stage transition across every
+// active PR (spam) or, since the WARN is silent to everyone not tailing
+// daemon.log, alert no one at all: cards go stale (In Progress after ship)
+// and read as a second stuck task to whoever's watching (GH-4488 evidence:
+// pointer#129 shipped 08:38Z, card never left In Progress). Non-scope
+// errors (rate limits, transient network failures, item not yet on the
+// board) are left to the existing per-call-site WARN — they're expected to
+// self-resolve and don't indicate a broken credential.
+func (c *Controller) alertBoardSyncScopeFailureOnce(err error) {
+	if !isInsufficientScopeError(err) {
+		return
+	}
+
+	c.mu.Lock()
+	if c.alertedBoardSyncScope {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedBoardSyncScope = true
+	c.mu.Unlock()
+
+	msg := fmt.Sprintf(
+		"board sync for %s cannot update project item status: %s — the GitHub token is missing a required scope (read:project); board cards will go stale until it's reissued",
+		c.repoKey(), err,
+	)
+	if c.alertsEngine == nil {
+		c.log.Error("board_sync_scope_error alert not delivered: SetAlertsEngine was never called", "repo", c.repoKey(), "error", err)
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeConfigError,
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo": c.repoKey(),
+		},
+	})
+}
+
 // approvalFailedCommentMarker is embedded in the PR comment so
 // alertApprovalSubmitFailureOnce's fallback comment is only ever posted once
 // per PR, mirroring misconfigCommentMarker's idempotency check.
@@ -1365,6 +1476,7 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 	if c.boardSync != nil && issueNodeID != "" && c.reviewStatus != "" {
 		if err := c.boardSync.UpdateProjectItemStatus(context.Background(), issueNodeID, c.reviewStatus); err != nil {
 			c.log.Warn("board sync on PR created failed", "pr", prNumber, "error", err)
+			c.alertBoardSyncScopeFailureOnce(err)
 		}
 	}
 }
@@ -1859,6 +1971,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 			if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
 				if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
 					c.log.Warn("board sync on exec failure (iteration limit) failed", "pr", prState.PRNumber, "error", err)
+					c.alertBoardSyncScopeFailureOnce(err)
 				}
 			}
 
@@ -1903,6 +2016,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
 					if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
 						c.log.Warn("board sync on exec failure (size guard) failed", "pr", prState.PRNumber, "error", err)
+						c.alertBoardSyncScopeFailureOnce(err)
 					}
 				}
 				// GH-4459: never self-close here — a closed PR with no fix
@@ -1983,6 +2097,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
 		if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
 			c.log.Warn("board sync on CI fail failed", "pr", prState.PRNumber, "error", err)
+			c.alertBoardSyncScopeFailureOnce(err)
 		}
 	}
 
@@ -2531,6 +2646,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		if c.boardSync != nil && prState.IssueNodeID != "" {
 			if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.doneStatus); err != nil {
 				c.log.Warn("board sync on merge failed", "pr", prState.PRNumber, "error", err)
+				c.alertBoardSyncScopeFailureOnce(err)
 			}
 		}
 	}
@@ -4838,6 +4954,7 @@ func (c *Controller) ScanRecentlyMergedPRsWithWindow(ctx context.Context, scanWi
 				} else if err := c.boardSync.UpdateProjectItemStatus(ctx, nodeID, c.doneStatus); err != nil {
 					c.log.Warn("board sync on external merge failed",
 						"pr", pr.Number, "issue", issueNum, "error", err)
+					c.alertBoardSyncScopeFailureOnce(err)
 				}
 			}
 		}
@@ -5080,6 +5197,10 @@ func (c *Controller) Run(ctx context.Context) error {
 			// GH-4454: poll-cycle lane-starvation sweep — this project's lane
 			// has open pilot-labeled issues but nothing queued/running.
 			c.reconcileLaneStarvation(ctx)
+			// GH-4488: poll-cycle board-sourcing audit — this project's board
+			// sourcing is enabled but has open labeled issues it isn't
+			// covering (absent from the board, or wrong status).
+			c.reconcileUnsourcedBoardIssues(ctx)
 		case <-ticker.C:
 			c.processAllPRs(ctx)
 
@@ -5366,6 +5487,7 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		if c.boardSync != nil && prState.IssueNodeID != "" && c.doneStatus != "" {
 			if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.doneStatus); err != nil {
 				c.log.Warn("board sync on external merge failed", "pr", prState.PRNumber, "error", err)
+				c.alertBoardSyncScopeFailureOnce(err)
 			}
 		}
 
@@ -5435,6 +5557,7 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
 			if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
 				c.log.Warn("board sync on external close failed", "pr", prState.PRNumber, "error", err)
+				c.alertBoardSyncScopeFailureOnce(err)
 			}
 		}
 

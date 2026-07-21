@@ -86,6 +86,15 @@ type Metrics struct {
 	QueueDepth       int // issues with `pilot` label, no `pilot-in-progress`
 	FailedQueueDepth int // issues with `pilot-failed`
 
+	// UnsourcedLabeledIssues is the GH-4488 board-sourcing audit gauge: repo
+	// → count of open pilot-labeled issues that project_board.source_enabled
+	// board sourcing is silently ignoring (absent from the board, or in a
+	// status other than source_status). Set by
+	// reconcileUnsourcedBoardIssues every poll cycle; nonzero indicates a
+	// board-sourced repo has labeled work the poller will never dispatch
+	// until either the board or the label is fixed.
+	UnsourcedLabeledIssues map[string]int64
+
 	// Issue-level outcome gauges (TASK-392): unique task_id counts, deduped
 	// across retry attempts. Contrast with IssuesProcessed, which is
 	// per-attempt (a task retried twice before shipping contributes 3 events).
@@ -137,6 +146,7 @@ func NewMetrics() *Metrics {
 		OrphanPRsRegistered:        make(map[string]int64),
 		IssuesShippedByModel:       make(map[string]int64),
 		IssuesAttemptedByModel:     make(map[string]int64),
+		UnsourcedLabeledIssues:     make(map[string]int64),
 		ActivePRsByStage:           make(map[PRStage]int),
 		PRTimeToMerge:              make([]time.Duration, 0, 100),
 		CIWaitDurations:            make([]time.Duration, 0, 100),
@@ -370,6 +380,19 @@ func (m *Metrics) SetFailedQueueDepth(depth int) {
 	m.FailedQueueDepth = depth
 }
 
+// SetUnsourcedLabeledIssues updates the GH-4488 board-sourcing audit gauge
+// for a repo. Called once per poll cycle by reconcileUnsourcedBoardIssues;
+// a fresh call always overwrites the prior value (not additive), so the
+// gauge tracks the live set size rather than accumulating.
+func (m *Metrics) SetUnsourcedLabeledIssues(repo string, count int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.UnsourcedLabeledIssues == nil {
+		m.UnsourcedLabeledIssues = make(map[string]int64)
+	}
+	m.UnsourcedLabeledIssues[repo] = count
+}
+
 // SetIssueLevelCounts updates the issue-level outcome gauges from a
 // store.IssueLevelCounts query (unique task_id, deduped across retries).
 // TASK-392.
@@ -487,6 +510,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		ActivePRsByStage:              copyStageIntMap(m.ActivePRsByStage),
 		QueueDepth:                    m.QueueDepth,
 		FailedQueueDepth:              m.FailedQueueDepth,
+		UnsourcedLabeledIssues:        copyStringIntMap(m.UnsourcedLabeledIssues),
 		IssuesShipped:                 m.IssuesShipped,
 		IssuesAttempted:               m.IssuesAttempted,
 		IssuesShippedByModel:          copyStringIntMap(m.IssuesShippedByModel),
@@ -574,8 +598,13 @@ type MetricsSnapshot struct {
 	TotalActivePRs   int
 	QueueDepth       int
 	FailedQueueDepth int
-	IssuesShipped    int64 // TASK-392: distinct task_id reaching 'completed'
-	IssuesAttempted  int64 // TASK-392: distinct task_id with any execution
+
+	// UnsourcedLabeledIssues is the GH-4488 board-sourcing audit gauge: repo
+	// → count of open pilot-labeled issues not covered by board sourcing.
+	UnsourcedLabeledIssues map[string]int64
+
+	IssuesShipped   int64 // TASK-392: distinct task_id reaching 'completed'
+	IssuesAttempted int64 // TASK-392: distinct task_id with any execution
 
 	// Per-model issue-level gauges (GH-4483): same semantics as
 	// IssuesShipped/IssuesAttempted, keyed by model.

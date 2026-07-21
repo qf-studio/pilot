@@ -58,6 +58,7 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		PollerDispatched:           make(map[string]int64),
 		PollerDeferredScopeOverlap: make(map[string]int64),
 		OrphanPRsRegistered:        make(map[string]int64),
+		UnsourcedLabeledIssues:     make(map[string]int64),
 		ActivePRsByStage:           make(map[PRStage]int),
 		IssuesShippedByModel:       make(map[string]int64),
 		IssuesAttemptedByModel:     make(map[string]int64),
@@ -109,6 +110,9 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		}
 		for k, v := range s.OrphanPRsRegistered {
 			agg.OrphanPRsRegistered[k] += v
+		}
+		for k, v := range s.UnsourcedLabeledIssues {
+			agg.UnsourcedLabeledIssues[k] += v
 		}
 		agg.DuplicateRegistrationsSkipped += s.DuplicateRegistrationsSkipped
 
