@@ -230,6 +230,7 @@
 | CI log pattern learning | ✅ | autopilot | - | - | Wire CI log learning into autopilot feedback loop (v2.50.0, PR #1977) |
 | Staticcheck S1011 fix | ✅ | memory | - | - | Replace loop with append for staticcheck compliance (v2.46.1, PR #1971) |
 | Execution stage ledger (data layer) | ✅ | memory | - | - | `execution_events` table + Stage enum, `InsertExecutionEvent`/`ListExecutionEvents`/`ListExecutionsForTask`; no consumers wired yet (TASK-379 C3, GH-3844, v2.208.0) |
+| Memory-doc deletion hard veto | ✅ | executor | - | - | `GitOperations.EnforceMemoryDocDeletionGuard`, wired into all 3 finalize/PR paths (`finalizeEpicBranchPR`, inline `executeWithOptions`, `finalizeDecomposedParentPR`): blocks push when a `.agent/knowledge/memories/**.md` deletion was graph-indexed on **baseBranch** (not just HEAD, so a commit that deletes the doc and its graph node together is still caught), unless the task explicitly names memory/knowledge-graph files. Also fixed `StripUnindexedMemoryDocs`/`RestoreDeletedIndexedMemoryDocs` to match indexed docs by slug/concept_index fallback and check every path field (not just the first present one), closing the false-negative that let an indexed doc through as "unindexed" (TASK-410 class, GH-4484/GH-4489/PR #4495, GH-4496) |
 
 ## Dashboard
 
