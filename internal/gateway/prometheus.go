@@ -129,6 +129,16 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeType(w, "pilot_circuit_breaker_trips_total", "counter")
 	writeCounter(w, "pilot_circuit_breaker_trips_total", snap.CircuitBreakerTrips)
 
+	// pilot_rate_limit_floor_engaged_total (GH-4391): counts distinct
+	// episodes where the shared GitHub rate-limit budget dropped below the
+	// reserved floor and background scans (merged-PR scans, orphan-PR
+	// sweeps, reconciler evidence fetches) were paused. Pollers and
+	// active-PR CI watches are never gated, so this metric being nonzero
+	// does not imply degraded polling.
+	writeHelp(w, "pilot_rate_limit_floor_engaged_total", "Total GitHub rate-limit budget-floor engagement episodes (background scans paused; pollers/active-PR CI watches unaffected)")
+	writeType(w, "pilot_rate_limit_floor_engaged_total", "counter")
+	writeCounter(w, "pilot_rate_limit_floor_engaged_total", snap.RateLimitFloorEngagements)
+
 	// pilot_api_errors_total
 	writeHelp(w, "pilot_api_errors_total", "Total API errors by endpoint")
 	writeType(w, "pilot_api_errors_total", "counter")

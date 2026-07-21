@@ -39,11 +39,18 @@ type Metrics struct {
 	// (one per push+CI-run), not one. Unlike PRsFailed (RecordPRFailed), which
 	// also folds in approval rejections and merge/release failures, this is
 	// scoped to CI outcomes only.
-	CIRuns                map[string]int64
-	CircuitBreakerTrips   int64
-	APIErrors             map[string]int64 // endpoint → count
-	LabelCleanups         map[string]int64 // label → count
-	ApprovalPersistMisses map[string]int64 // kind → count (request_id, decision)
+	CIRuns              map[string]int64
+	CircuitBreakerTrips int64
+	// RateLimitFloorEngagements counts distinct episodes (not calls) where
+	// the shared GitHub rate-budget floor engaged and this controller
+	// skipped a PriorityBackground scan (merged-PR scan, orphan-PR sweep) —
+	// GH-4391. One increment per transition into the engaged state per
+	// controller, deduped via Controller.budgetFloorSkipped, mirroring how
+	// the ghbudget.Tracker itself dedupes its WARN log.
+	RateLimitFloorEngagements int64
+	APIErrors                 map[string]int64 // endpoint → count
+	LabelCleanups             map[string]int64 // label → count
+	ApprovalPersistMisses     map[string]int64 // kind → count (request_id, decision)
 	// IntentJudgeFailures counts pre-flight intent-judge subprocess failures
 	// by cause (context_deadline, external_sigkill, other) — GH-4377: the SDK
 	// poller's pre-flight gate previously failed open on every judge crash
@@ -250,6 +257,16 @@ func (m *Metrics) RecordCircuitBreakerTrip() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.CircuitBreakerTrips++
+}
+
+// RecordRateLimitFloorEngaged increments the rate-limit budget-floor
+// engagement counter (GH-4391). Call sites are expected to dedupe per
+// episode themselves (see Controller.backgroundScanAllowed) — this method
+// does no deduplication on its own.
+func (m *Metrics) RecordRateLimitFloorEngaged() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.RateLimitFloorEngagements++
 }
 
 // RecordAPIError increments the API error counter for a given endpoint.
@@ -494,6 +511,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		PRsConflicting:                m.PRsConflicting,
 		CIRuns:                        copyStringIntMap(m.CIRuns),
 		CircuitBreakerTrips:           m.CircuitBreakerTrips,
+		RateLimitFloorEngagements:     m.RateLimitFloorEngagements,
 		APIErrors:                     copyStringIntMap(m.APIErrors),
 		LabelCleanups:                 copyStringIntMap(m.LabelCleanups),
 		ApprovalPersistMisses:         copyStringIntMap(m.ApprovalPersistMisses),
@@ -567,20 +585,21 @@ func (m *Metrics) apiErrorRate() float64 {
 // MetricsSnapshot is a read-only copy of metrics at a point in time.
 type MetricsSnapshot struct {
 	// Counters
-	IssuesProcessed        map[string]int64
-	PRsMerged              int64
-	PRsFailed              int64
-	PRsConflicting         int64
-	CIRuns                 map[string]int64 // GH-4134: result → count (pass, fail)
-	CircuitBreakerTrips    int64
-	APIErrors              map[string]int64
-	LabelCleanups          map[string]int64
-	ApprovalPersistMisses  map[string]int64
-	ApprovalSubmitFailures int64
-	IntentJudgeFailures    map[string]int64 // GH-4377: cause → count
-	TokensConsumed         map[tokenKey]int64
-	ExecutionCostUSD       map[string]float64
-	ExecutionsByResult     map[execKey]int64
+	IssuesProcessed           map[string]int64
+	PRsMerged                 int64
+	PRsFailed                 int64
+	PRsConflicting            int64
+	CIRuns                    map[string]int64 // GH-4134: result → count (pass, fail)
+	CircuitBreakerTrips       int64
+	RateLimitFloorEngagements int64 // GH-4391: distinct floor-engagement episodes across this controller's background scans
+	APIErrors                 map[string]int64
+	LabelCleanups             map[string]int64
+	ApprovalPersistMisses     map[string]int64
+	ApprovalSubmitFailures    int64
+	IntentJudgeFailures       map[string]int64 // GH-4377: cause → count
+	TokensConsumed            map[tokenKey]int64
+	ExecutionCostUSD          map[string]float64
+	ExecutionsByResult        map[execKey]int64
 
 	// Poller dispatch/skip counters (TASK-293)
 	PollerSkipped              map[pollerSkipKey]int64

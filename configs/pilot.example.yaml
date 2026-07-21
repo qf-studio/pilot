@@ -561,6 +561,30 @@ autopilot:
   ci_poll_interval: 30s
   approval_source: "telegram"   # telegram, slack, or github-review
 
+  # GH-4391: shared GitHub rate-limit budget. The GitHub primary rate limit
+  # is pooled per authenticated user across every client/session that user
+  # holds, so a startup burst of wide scans across many repos can silently
+  # starve the issue pollers even though `gh api rate_limit` looks fine from
+  # a different token/session's view of the same pool. These three settings
+  # bound that burst; defaults match the incident-driven values below.
+  #
+  # startup_merged_pr_scan_window: lookback for the one-time boot catch-up
+  # sweep (self-heal + board write-back for PRs merged while the daemon was
+  # down). Down from a hardcoded 720h (30d) — a restart minutes after the
+  # last startup scan doesn't need to re-walk a month of history; it also
+  # shrinks further on restart via a persisted per-repo cursor.
+  startup_merged_pr_scan_window: 72h
+  # rate_limit_floor_pct: once remaining/limit on the shared budget drops
+  # below this fraction, background scans (merged-PR scans, orphan-PR
+  # sweeps, reconciler evidence fetches) pause until headroom recovers.
+  # Issue pollers and active-PR CI watches are never gated — they're the
+  # highest-value consumer and must always get the reserve.
+  rate_limit_floor_pct: 0.15
+  # scan_stagger_interval: average delay between per-repo startup scans
+  # (jittered +/- 25%), so N repos' scans spread out over roughly
+  # N * scan_stagger_interval instead of all firing back-to-back at boot.
+  scan_stagger_interval: 3s
+
   # Automatic release creation on PR merge (GH-3926).
   release:
     enabled: false
