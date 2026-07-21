@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -38,6 +39,7 @@ import (
 	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/ghbudget"
 	"github.com/qf-studio/pilot/internal/health"
 	"github.com/qf-studio/pilot/internal/health/verify"
 	"github.com/qf-studio/pilot/internal/logging"
@@ -1520,6 +1522,25 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// makes that divergence visible immediately instead of only in hindsight.
 	logMemoryStartupBanner(cfg)
 
+	// GH-4391: install the shared GitHub rate-limit budget tracker over
+	// http.DefaultTransport before any GitHub client is constructed below.
+	// Neither of Pilot's two GitHub HTTP clients (internal/adapters/github,
+	// the vendored studio-sdk client) exposes a way to inject a custom
+	// transport, and both leave http.Client.Transport nil, so they resolve
+	// http.DefaultTransport per-request — installing here observes every
+	// outbound GitHub API call from both clients (pollers, autopilot scans,
+	// CI watches) without touching either client's source. The 2026-07-16
+	// incident this closes: startup rescans across 11 repos burned the
+	// entire shared per-user rate budget in under an hour and 403'd every
+	// issue poller for 67+ minutes with no visibility into why. See
+	// internal/ghbudget for the full writeup.
+	rateBudgetFloorPct := ghbudget.DefaultFloorPct
+	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.RateLimitFloorPct > 0 {
+		rateBudgetFloorPct = cfg.Orchestrator.Autopilot.RateLimitFloorPct
+	}
+	rateBudgetTracker := ghbudget.NewTracker(rateBudgetFloorPct, logging.WithComponent("ghbudget"))
+	http.DefaultTransport = &ghbudget.RoundTripper{Next: http.DefaultTransport, Tracker: rateBudgetTracker}
+
 	// Check Telegram config if enabled
 	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
 	if hasTelegram && cfg.Adapters.Telegram.BotToken == "" {
@@ -1651,6 +1672,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// studio-sdk client doesn't yet — wire it so CI-failure excerpts
 			// resolve to the actual failing step instead of a whole-job tail.
 			autopilotSharedOpts = append(autopilotSharedOpts, autopilot.WithStepLogClient(ghClient))
+			// GH-4391: every controller shares the one process-wide rate-limit
+			// budget tracker installed above — the GitHub primary rate limit is
+			// pooled per authenticated user across every client/controller, so
+			// a single Tracker (not one per repo) is the correct scope.
+			autopilotSharedOpts = append(autopilotSharedOpts, autopilot.WithRateBudget(rateBudgetTracker))
 			// GH-4454: every controller's lane-starvation reconciler needs the
 			// same trigger label the GitHub SDK poller watches for
 			// (poller_github.go resolves this identically: ghCfg.PilotLabel,
@@ -2529,8 +2555,29 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					fmt.Printf("   ◌ sequential mode · waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
 				}
 
-				// Start autopilot processing loops for all controllers
-				for repoName, controller := range autopilotControllers {
+				// GH-4391: startup scan window + inter-repo stagger interval come
+				// from autopilot config, falling back to the pre-GH-4391 wide
+				// 30-day lookback (and no stagger) when autopilot config is unset
+				// — DefaultConfig() supplies the new defaults (72h window, 3s
+				// stagger) in the common case.
+				startupScanWindow := autopilot.StartupMergedPRLookback
+				var scanStagger time.Duration
+				if cfg.Orchestrator.Autopilot != nil {
+					if cfg.Orchestrator.Autopilot.StartupMergedPRScanWindow > 0 {
+						startupScanWindow = cfg.Orchestrator.Autopilot.StartupMergedPRScanWindow
+					}
+					scanStagger = cfg.Orchestrator.Autopilot.ScanStaggerInterval
+				}
+
+				// GH-4391: stagger per-repo startup scans (jittered, serialized)
+				// instead of bursting every repo's ScanExistingPRs +
+				// ScanRecentlyMergedPRsAtStartup back-to-back — that burst is what
+				// exhausted the entire shared GitHub rate budget within an hour in
+				// the 2026-07-16 incident and 403'd every issue poller for 67+
+				// minutes. Start/Run still fire immediately after each repo's own
+				// scan completes, so a staggered repo isn't left un-polled any
+				// longer than its own scan takes.
+				autopilot.StaggerRepoScans(ctx, autopilotControllers, scanStagger, func(ctx context.Context, repoName string, controller *autopilot.Controller) {
 					// Scan for existing PRs
 					if err := controller.ScanExistingPRs(ctx); err != nil {
 						logging.WithComponent("autopilot").Warn("failed to scan existing PRs",
@@ -2540,11 +2587,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					}
 
 					// Scan for recently merged PRs (GH-416). TASK-399/GH-4209: startup
-					// uses the wide-lookback catch-up sweep — not the periodic loop's
+					// uses a wide-lookback catch-up sweep — not the periodic loop's
 					// 30-min scanWindow — so a merge that landed while the daemon was
 					// down still self-heals its execution row (and any orphaned
-					// 'running' rows resolve) instead of staying red in HISTORY forever.
-					if err := controller.ScanRecentlyMergedPRsWithWindow(ctx, autopilot.StartupMergedPRLookback); err != nil {
+					// 'running' rows resolve) instead of staying red in HISTORY
+					// forever. GH-4391: the window is now configurable (default 72h,
+					// down from the previous hardcoded 720h) and shrinks further on
+					// restart via a per-repo cursor persisted across process
+					// lifetimes (ScanRecentlyMergedPRsAtStartup).
+					if err := controller.ScanRecentlyMergedPRsAtStartup(ctx, startupScanWindow); err != nil {
 						logging.WithComponent("autopilot").Warn("failed to scan merged PRs",
 							slog.String("repo", repoName),
 							slog.Any("error", err),
@@ -2563,7 +2614,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							)
 						}
 					}(controller, repoName)
-				}
+				})
 
 				if len(autopilotControllers) > 0 && !dashboardMode {
 					fmt.Printf("● autopilot enabled · %s environment (%d repos)\n", cfg.Orchestrator.Autopilot.Environment, len(autopilotControllers))

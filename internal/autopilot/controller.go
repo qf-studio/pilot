@@ -14,6 +14,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/ghbudget"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -324,6 +325,20 @@ func WithCIChecksOverride(o *ProjectCIChecksOverride) ControllerOption {
 	}
 }
 
+// WithRateBudget wires the shared, process-wide GitHub rate-limit budget
+// tracker (GH-4391). All controllers in a multi-repo daemon share ONE
+// tracker — GitHub's primary rate limit is pooled per authenticated user
+// across every repo/client, not per-controller — so callers should
+// construct a single *ghbudget.Tracker in main.go and pass it to every
+// NewController call. Nil (the default) disables floor gating entirely:
+// ScanRecentlyMergedPRsWithWindow and reconcileOrphanPRs always proceed,
+// matching pre-GH-4391 behavior.
+func WithRateBudget(b *ghbudget.Tracker) ControllerOption {
+	return func(c *Controller) {
+		c.rateBudget = b
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -554,6 +569,25 @@ type Controller struct {
 	// window with no backoff left green, approved PRs unmerged for over an hour because
 	// every tick burned through the exhausted quota re-fetching every tracked PR.
 	rateLimitedUntil time.Time
+
+	// rateBudget is the shared, process-wide GitHub rate-limit budget
+	// tracker wired via WithRateBudget (GH-4391). Nil = floor gating
+	// disabled (background scans always proceed, matching pre-GH-4391
+	// behavior). ScanRecentlyMergedPRsWithWindow and reconcileOrphanPRs
+	// consult rateBudget.Allow(ghbudget.PriorityBackground) before doing any
+	// work; ghbudget.Tracker.Allow is nil-safe so no separate nil check is
+	// needed at call sites.
+	rateBudget *ghbudget.Tracker
+
+	// budgetFloorSkipped dedupes the "skipping background scan, budget floor
+	// engaged" WARN and RecordRateLimitFloorEngaged metric per controller,
+	// guarded by mu — same rationale as alertedBoardSyncScope: both
+	// ScanRecentlyMergedPRsWithWindow and reconcileOrphanPRs re-check the
+	// floor every tick while it stays engaged, and without this latch the
+	// metric would increment (and, absent ghbudget.Tracker's own dedup, the
+	// log would spam) once per skipped call instead of once per episode.
+	// Cleared the moment a gated call observes the floor has cleared.
+	budgetFloorSkipped bool
 }
 
 // NewController creates an autopilot controller with all required components.
@@ -4709,6 +4743,10 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 	if c.rateLimitCooldownActive() {
 		return
 	}
+	// GH-4391: PriorityBackground consumer — see ScanRecentlyMergedPRsWithWindow.
+	if !c.backgroundScanAllowed("orphan_pr_sweep") {
+		return
+	}
 
 	prs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
 	if err != nil {
@@ -4803,6 +4841,64 @@ func (c *Controller) backstopCheckReleaseMissing(ctx context.Context, rel *Relea
 // not the GitHub call volume (mem-048).
 const StartupMergedPRLookback = 30 * 24 * time.Hour
 
+// startupScanCursorBuffer pads the "time since last startup scan" window
+// computed by ScanRecentlyMergedPRsAtStartup, to tolerate scheduler jitter
+// and clock skew between restarts — a merge that landed in the few minutes
+// before the previous startup scan must not be silently dropped by an
+// overly tight shrink.
+const startupScanCursorBuffer = 10 * time.Minute
+
+// ScanRecentlyMergedPRsAtStartup is the startup catch-up entry point
+// (TASK-399/GH-4209, cheapened by GH-4391). A hardcoded StartupMergedPRLookback
+// forces every restart to re-walk a wide catch-up window even when the
+// daemon was down for only a few minutes; instead this shrinks the effective
+// window to "time since this repo's last successful startup scan" (persisted
+// via stateStore metadata) whenever that's narrower than configuredWindow.
+// ListPullRequests always fetches the full closed-PR list regardless of
+// window (mem-048), so this doesn't change GitHub call volume by itself —
+// what it does is keep the in-memory scan (and everything it triggers:
+// self-heal, board write-back, release checks) proportional to actual
+// downtime instead of always re-processing configuredWindow worth of merges,
+// and it keeps ScanRecentlyMergedPRsWithWindow's PriorityBackground gate
+// (GH-4391) cheap to skip when the rate budget is already tight right after
+// boot.
+//
+// The cursor only advances when the scan actually ran. If the rate-budget
+// floor gate skipped it (see backgroundScanAllowed), the next attempt must
+// keep computing from the old cursor — advancing it here would wrongly
+// assume this restart's scan happened and shrink the next attempt's window
+// past merges that were never actually scanned.
+func (c *Controller) ScanRecentlyMergedPRsAtStartup(ctx context.Context, configuredWindow time.Duration) error {
+	cursorKey := "startup_merged_pr_scan_cursor:" + c.repoKey()
+	effectiveWindow := configuredWindow
+	if c.stateStore != nil {
+		if raw, err := c.stateStore.GetMetadata(cursorKey); err == nil && raw != "" {
+			if lastScan, perr := time.Parse(time.RFC3339, raw); perr == nil {
+				if since := time.Since(lastScan) + startupScanCursorBuffer; since < effectiveWindow {
+					effectiveWindow = since
+				}
+			}
+		}
+	}
+
+	// Snapshot the gate decision before scanning: ScanRecentlyMergedPRsWithWindow
+	// re-checks it internally (that's the single source of truth for the
+	// skip WARN/metric), but we need to know here whether to advance the
+	// cursor once it returns.
+	willScan := c.rateBudget.Allow(ghbudget.PriorityBackground)
+
+	if err := c.ScanRecentlyMergedPRsWithWindow(ctx, effectiveWindow); err != nil {
+		return err
+	}
+
+	if willScan && c.stateStore != nil {
+		if err := c.stateStore.SaveMetadata(cursorKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			c.log.Warn("failed to persist startup merged-PR scan cursor", "error", err)
+		}
+	}
+	return nil
+}
+
 // ScanRecentlyMergedPRs scans for Pilot PRs that were merged externally, using
 // the configured MergedPRScanWindow. This catches PRs that need release
 // triggering but were merged outside of autopilot (e.g. via `gh pr merge` or
@@ -4823,6 +4919,15 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 // the last restart — still self-heals its execution row instead of leaving it
 // permanently red in HISTORY.
 func (c *Controller) ScanRecentlyMergedPRsWithWindow(ctx context.Context, scanWindow time.Duration) error {
+	// GH-4391: this is a PriorityBackground consumer — skip when the shared
+	// rate-budget floor is engaged so the little headroom that's left goes
+	// to pollers and active-PR CI watches instead. Returning nil (not an
+	// error) matches rateLimitCooldownActive's early-return below and avoids
+	// a spurious "failed to scan merged PRs" WARN at the call site.
+	if !c.backgroundScanAllowed("merged_pr_scan") {
+		return nil
+	}
+
 	// Run the scan unconditionally — it covers self-heal + merge metrics even when
 	// neither auto-release nor board sync is enabled (e.g. a plain GH-issue-source
 	// deployment). Internal gates below handle release-trigger and board-writeback
@@ -5243,6 +5348,41 @@ func (c *Controller) rateLimitCooldownActive() bool {
 	until := c.rateLimitedUntil
 	c.mu.RUnlock()
 	return time.Now().Before(until)
+}
+
+// backgroundScanAllowed reports whether a PriorityBackground GitHub consumer
+// (merged-PR scan, orphan-PR sweep, reconciler evidence fetch) may proceed,
+// consulting the shared rate-budget tracker (GH-4391). A nil c.rateBudget
+// (floor gating not wired) always allows, matching pre-GH-4391 behavior.
+//
+// On the first tick the floor is engaged, logs one WARN and increments the
+// RateLimitFloorEngagements metric — not on every subsequent tick while it
+// stays engaged (budgetFloorSkipped latches until the floor clears), so a
+// sustained low-budget window doesn't spam the log the way the pre-GH-4391
+// incident's 44 unthrottled cooldown-pause WARNs did.
+func (c *Controller) backgroundScanAllowed(scanName string) bool {
+	if c.rateBudget.Allow(ghbudget.PriorityBackground) {
+		c.mu.Lock()
+		wasSkipped := c.budgetFloorSkipped
+		c.budgetFloorSkipped = false
+		c.mu.Unlock()
+		if wasSkipped {
+			c.log.Info("rate-limit budget floor cleared, resuming background scans", "scan", scanName)
+		}
+		return true
+	}
+
+	c.mu.Lock()
+	alreadyWarned := c.budgetFloorSkipped
+	c.budgetFloorSkipped = true
+	c.mu.Unlock()
+
+	if !alreadyWarned {
+		c.log.Warn("skipping background scan, GitHub rate-limit budget floor engaged — pollers and active-PR CI watches are unaffected",
+			"scan", scanName, "owner", c.owner, "repo", c.repo)
+		c.metrics.RecordRateLimitFloorEngaged()
+	}
+	return false
 }
 
 // enterRateLimitCooldown records a backoff window so processAllPRs and

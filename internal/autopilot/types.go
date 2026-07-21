@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/ghbudget"
 )
 
 // Environment defines deployment environment behavior.
@@ -170,9 +172,45 @@ type Config struct {
 	// Release holds auto-release configuration.
 	Release *ReleaseConfig `yaml:"release"`
 
-	// MergedPRScanWindow is how far back to look for merged PRs on startup (default: 30m).
-	// This catches PRs that were merged while Pilot was offline.
+	// MergedPRScanWindow is how far back to look for merged PRs on the
+	// periodic (every-tick) scan, default 30m. This catches PRs that were
+	// merged externally (e.g. via `gh pr merge`) between ticks. See
+	// StartupMergedPRScanWindow for the one-time boot catch-up sweep, which
+	// uses a much wider window since it needs to cover time the daemon was
+	// offline.
 	MergedPRScanWindow time.Duration `yaml:"merged_pr_scan_window"`
+
+	// StartupMergedPRScanWindow is the lookback window for the one-time
+	// startup catch-up sweep (ScanRecentlyMergedPRsAtStartup), distinct from
+	// MergedPRScanWindow's periodic 30m. Default 72h (down from the previous
+	// hardcoded 720h/30d — GH-4391): GH-4391 found the 720h default was the
+	// dominant cost of a multi-repo boot, and 72h already covers any
+	// plausible daemon downtime with room to spare. Widen this only if a
+	// deployment is expected to stay down for multiple days between
+	// restarts; StateStore-backed cursor persistence (see
+	// ScanRecentlyMergedPRsAtStartup) further shrinks the *effective* window
+	// on a routine restart, so this value is a ceiling, not what's actually
+	// scanned on every boot.
+	StartupMergedPRScanWindow time.Duration `yaml:"startup_merged_pr_scan_window"`
+
+	// RateLimitFloorPct is the fraction of the GitHub primary rate limit
+	// (X-RateLimit-Remaining / X-RateLimit-Limit) below which background
+	// GitHub API consumers — merged-PR scans, orphan-PR sweeps, reconciler
+	// evidence fetches — are paused until headroom recovers (GH-4391).
+	// Issue pollers and active-PR CI watches are never gated by this floor.
+	// Default 0.15 (ghbudget.DefaultFloorPct). Set to 0 to use the default;
+	// there is no way to disable the floor entirely short of setting it
+	// negative, which ghbudget.NewTracker also treats as "use the default".
+	RateLimitFloorPct float64 `yaml:"rate_limit_floor_pct"`
+
+	// ScanStaggerInterval is the average delay between per-repo startup
+	// scans (GH-4391): with N configured repos, boot fires each repo's
+	// ScanExistingPRs + ScanRecentlyMergedPRsAtStartup + stale-parent sweep
+	// roughly ScanStaggerInterval apart (jittered) instead of bursting all N
+	// back-to-back, which is what triggered GitHub secondary-rate-limit 503s
+	// on an 11-repo boot. Default 3s. Set to 0 to use the default; there is
+	// no way to disable staggering short of setting a very small value.
+	ScanStaggerInterval time.Duration `yaml:"scan_stagger_interval"`
 
 	// Name is a user-friendly label for this environment (e.g. "staging", "production").
 	// When empty, defaults to the Environment value.
@@ -400,21 +438,24 @@ func DefaultConfig() *Config {
 			Enabled:       true,
 			MaxIterations: 3,
 		},
-		AutoCreateIssues:     true,
-		IssueLabels:          []string{"pilot", "autopilot-fix"},
-		NotifyOnFailure:      true,
-		MaxFailures:          3,
-		MaxCIFixIterations:   3,
-		MaxCIFixPRSize:       200,
-		FailureResetTimeout:  30 * time.Minute,
-		MaxMergesPerHour:     10,
-		MaxMergeAttempts:     5,
-		MaxRebaseAttempts:    3,
-		MaxReleasingAttempts: 10,
-		ApprovalTimeout:      1 * time.Hour,
-		Release:              nil, // Disabled by default
-		MergedPRScanWindow:   30 * time.Minute,
-		Environments:         defaultEnvironments(),
+		AutoCreateIssues:          true,
+		IssueLabels:               []string{"pilot", "autopilot-fix"},
+		NotifyOnFailure:           true,
+		MaxFailures:               3,
+		MaxCIFixIterations:        3,
+		MaxCIFixPRSize:            200,
+		FailureResetTimeout:       30 * time.Minute,
+		MaxMergesPerHour:          10,
+		MaxMergeAttempts:          5,
+		MaxRebaseAttempts:         3,
+		MaxReleasingAttempts:      10,
+		ApprovalTimeout:           1 * time.Hour,
+		Release:                   nil, // Disabled by default
+		MergedPRScanWindow:        30 * time.Minute,
+		StartupMergedPRScanWindow: 72 * time.Hour, // GH-4391: down from the previous hardcoded 720h
+		RateLimitFloorPct:         ghbudget.DefaultFloorPct,
+		ScanStaggerInterval:       3 * time.Second,
+		Environments:              defaultEnvironments(),
 	}
 }
 
