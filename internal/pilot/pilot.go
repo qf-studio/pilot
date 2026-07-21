@@ -1132,6 +1132,23 @@ func (p *Pilot) GetTaskStates() []*executor.TaskState {
 	return p.orchestrator.GetTaskStates()
 }
 
+// Store returns the shared memory store, or nil if persistence is disabled.
+func (p *Pilot) Store() *memory.Store {
+	return p.store
+}
+
+// ReconcileTaskStatesWithStore corrects orchestrator-tracked task states
+// against the executions table (source of truth) — a card whose
+// Complete/Fail callback never fired (no-commit failure, externally closed
+// PR) would otherwise be stuck displaying "running" forever. See
+// executor.Monitor.ReconcileWithStore (GH-4490).
+func (p *Pilot) ReconcileTaskStatesWithStore() error {
+	if p.store == nil {
+		return nil
+	}
+	return p.orchestrator.ReconcileWithStore(p.store)
+}
+
 // SuppressProgressLogs disables slog output for progress updates.
 // Use this when a visual progress display is active to prevent log spam.
 func (p *Pilot) SuppressProgressLogs(suppress bool) {

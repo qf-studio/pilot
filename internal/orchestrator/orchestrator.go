@@ -21,6 +21,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // Config holds orchestrator configuration
@@ -365,6 +366,16 @@ func (o *Orchestrator) GetRunningTasks() []*executor.TaskState {
 	return o.monitor.GetRunning()
 }
 
+// ReconcileWithStore corrects any orchestrator-tracked task whose executions
+// row has already reached a terminal status while the in-memory monitor
+// still shows it as running/queued/pending — a card whose Complete/Fail
+// callback never fired (no-commit failure, externally closed PR) would
+// otherwise be stuck displaying "running" forever. See
+// executor.Monitor.ReconcileWithStore (GH-4490).
+func (o *Orchestrator) ReconcileWithStore(store *memory.Store) error {
+	return o.monitor.ReconcileWithStore(store)
+}
+
 // SetAlertProcessor sets the alert processor on the underlying runner for task lifecycle events.
 // The processor interface is satisfied by alerts.Engine.
 func (o *Orchestrator) SetAlertProcessor(processor executor.AlertEventProcessor) {
@@ -675,4 +686,3 @@ func (o *Orchestrator) ProcessAzureDevOpsIssueEvent(ctx context.Context, ev sdkc
 
 	return nil
 }
-

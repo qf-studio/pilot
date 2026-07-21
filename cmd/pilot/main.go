@@ -1094,7 +1094,9 @@ Examples:
 			if dashboardMode {
 				// GH-2291: Pass adapter poller infrastructure so the dashboard
 				// merges task states from both adapter pollers and gateway webhooks.
-				return runDashboardMode(p, cfg, gwProgram, gwMonitor, gwRunner, scopedProjectPath(dashboardScope, projectPath))
+				// GH-4490: also pass gwStore so collectTasks() can reconcile gwMonitor
+				// against the executions table before every merge.
+				return runDashboardMode(p, cfg, gwProgram, gwMonitor, gwRunner, gwStore, scopedProjectPath(dashboardScope, projectPath))
 			}
 
 			// Show startup banner (headless mode)
