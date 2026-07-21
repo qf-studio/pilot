@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 
 	github "github.com/qf-studio/pilot/internal/adapters/github"
@@ -33,10 +35,20 @@ func toSDKProjectBoardConfig(pb *github.ProjectBoardConfig) *githubSDK.ProjectBo
 
 // projectBoardControllerOpts resolves the effective board config for repoFullName
 // (GH-4472: Config.ResolveProjectBoard's project-override → default-repo-fallback
-// precedence) and, if enabled, returns the autopilot ControllerOption that wires
-// ProjectBoardSync for it. Returns nil when the repo has no board config or board
+// precedence) and, if enabled, returns the autopilot ControllerOption(s) that wire
+// it into the controller. Returns nil when the repo has no board config or board
 // sync is disabled — callers append the (possibly empty) result to their option
 // slice unconditionally.
+//
+// When pb.SourceEnabled is also set, a second option wires a ProjectBoardSource
+// so the controller's reconcileUnsourcedBoardIssues sweep (GH-4488) can audit the
+// same board the studio-sdk poller is already sourcing dispatch candidates from
+// — that switch (board replaces label discovery entirely) happens inside the
+// vendored studio-sdk poller and isn't observable from here, which is exactly
+// why an open pilot-labeled issue the board doesn't cover was previously
+// invisible: nothing outside the poller re-derived the comparison. A malformed
+// repoFullName (no "/") skips the source wiring rather than panicking; sync still
+// applies since it doesn't need a repo.
 func projectBoardControllerOpts(apGHClient *githubSDK.Client, cfg *config.Config, repoFullName, owner string, isDefaultRepo bool) []autopilot.ControllerOption {
 	pb := cfg.ResolveProjectBoard(repoFullName, isDefaultRepo)
 	if pb == nil || !pb.Enabled {
@@ -44,5 +56,19 @@ func projectBoardControllerOpts(apGHClient *githubSDK.Client, cfg *config.Config
 	}
 	bs := githubSDK.NewProjectBoardSync(apGHClient, toSDKProjectBoardConfig(pb), owner)
 	statuses := pb.GetStatuses()
-	return []autopilot.ControllerOption{autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed, statuses.Review, statuses.InProgress)}
+	opts := []autopilot.ControllerOption{autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed, statuses.Review, statuses.InProgress)}
+
+	if pb.SourceEnabled {
+		repoParts := strings.SplitN(repoFullName, "/", 2)
+		if len(repoParts) == 2 && repoParts[0] != "" && repoParts[1] != "" {
+			sourceStatus := pb.SourceStatus
+			if sourceStatus == "" {
+				sourceStatus = "Todo"
+			}
+			src := githubSDK.NewProjectBoardSource(apGHClient, toSDKProjectBoardConfig(pb), repoParts[0], repoParts[1])
+			opts = append(opts, autopilot.WithProjectBoardSource(src, sourceStatus))
+		}
+	}
+
+	return opts
 }

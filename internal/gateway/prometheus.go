@@ -224,6 +224,13 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeType(w, "pilot_failed_queue_depth", "gauge")
 	writeGauge(w, "pilot_failed_queue_depth", float64(snap.FailedQueueDepth))
 
+	// pilot_poller_unsourced_labeled_issues (GH-4488)
+	writeHelp(w, "pilot_poller_unsourced_labeled_issues", "Open issues carrying the dispatch label that project board sourcing is not covering (absent from the board, or in a status other than source_status), by repo — nonzero means a board-sourced repo is silently ignoring labeled work")
+	writeType(w, "pilot_poller_unsourced_labeled_issues", "gauge")
+	for repo, count := range snap.UnsourcedLabeledIssues {
+		writeGaugeLabeled(w, "pilot_poller_unsourced_labeled_issues", float64(count), "repo", repo)
+	}
+
 	// pilot_active_prs
 	writeHelp(w, "pilot_active_prs", "Number of active PRs by stage")
 	writeType(w, "pilot_active_prs", "gauge")
