@@ -115,6 +115,14 @@ type ReleaseNotifier interface {
 // GH-1336: Sync monitor state when autopilot merges PR so dashboard shows correct status.
 type TaskMonitor interface {
 	Complete(taskID, prURL string)
+	// Fail marks a task's dashboard card as a terminal failure. GH-4490
+	// subtask 3: notifyExternalClose calls this the moment it observes a PR
+	// closed without merging — by then the card is usually already
+	// StatusCompleted (the execution that opened the PR ran Complete() when
+	// it finished), which sits outside Monitor.ReconcileWithStore's
+	// candidate set (Running/Queued/Pending only), so the periodic backstop
+	// alone would never flip a "done" card to reflect discarded work.
+	Fail(taskID, errorMsg string)
 	// GetRunningTaskIDs returns the IDs of tasks the in-process Monitor currently
 	// considers running or queued. TASK-399/GH-4209: the orphan-running sweep
 	// excludes these before flipping any persisted 'running' row, so a
@@ -5697,6 +5705,18 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 			c.log.Warn("failed to reclassify completed execution after PR close",
 				"task_id", taskID, "pr", prState.PRNumber, "error", err)
 		}
+	}
+
+	// GH-4490 subtask 3: drive the in-memory dashboard card straight to a
+	// terminal Failed state the moment we observe the close. The card is
+	// almost always already StatusCompleted here — the execution that opened
+	// this PR called monitor.Complete() when it finished successfully — which
+	// puts it outside ReconcileWithStore's periodic-backstop candidate set
+	// (subtask 1 only rescues Running/Queued/Pending cards). Without this
+	// event-driven call the card is left showing "done" indefinitely even
+	// though the PR it shipped was discarded unmerged.
+	if c.monitor != nil && prState.IssueNumber > 0 {
+		c.monitor.Fail(fmt.Sprintf("GH-%d", prState.IssueNumber), reason)
 	}
 
 	prComment := fmt.Sprintf("This PR was closed without merging: %s", reason)

@@ -3342,17 +3342,25 @@ func TestController_ConsecutiveAPIFailures_Reset(t *testing.T) {
 // mockTaskMonitor implements TaskMonitor for testing.
 type mockTaskMonitor struct {
 	completedTasks map[string]string // taskID -> prURL
+	failedTasks    map[string]string // taskID -> errorMsg; GH-4490 subtask 3
 	runningTaskIDs []string          // TASK-399/GH-4209: live Monitor running/queued set
 }
 
 func newMockTaskMonitor() *mockTaskMonitor {
 	return &mockTaskMonitor{
 		completedTasks: make(map[string]string),
+		failedTasks:    make(map[string]string),
 	}
 }
 
 func (m *mockTaskMonitor) Complete(taskID, prURL string) {
 	m.completedTasks[taskID] = prURL
+}
+
+// Fail implements TaskMonitor. GH-4490 subtask 3: records the terminal-failure
+// call notifyExternalClose makes when a PR closes without merging.
+func (m *mockTaskMonitor) Fail(taskID, errorMsg string) {
+	m.failedTasks[taskID] = errorMsg
 }
 
 // GetRunningTaskIDs implements TaskMonitor. TASK-399/GH-4209.
@@ -6455,6 +6463,95 @@ func TestNotifyExternalClose_ReclassifiesCompletedExecution(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNotifyExternalClose_MonitorFailDrivesCardTerminal is the GH-4490
+// subtask 3 regression test: by the time a PR closes without merging, the
+// execution that opened it has almost always already called
+// monitor.Complete(), so the dashboard card sits at StatusCompleted — outside
+// Monitor.ReconcileWithStore's periodic-backstop candidate set (subtask 1
+// only rescues Running/Queued/Pending cards). notifyExternalClose must call
+// monitor.Fail directly so the card flips to a terminal failure the moment
+// the close is observed, instead of showing "done" forever.
+func TestNotifyExternalClose_MonitorFailDrivesCardTerminal(t *testing.T) {
+	tests := []struct {
+		name        string
+		issueNumber int
+		prError     string
+		wantFail    bool
+		wantTaskID  string
+		wantReason  string
+	}{
+		{
+			name:        "issue closed unmerged with recorded reason - card fails with reason",
+			issueNumber: 3789,
+			prError:     "CI checks failed (build); fix issue #3803 created to continue this work",
+			wantFail:    true,
+			wantTaskID:  "GH-3789",
+			wantReason:  "CI checks failed (build); fix issue #3803 created to continue this work",
+		},
+		{
+			name:        "issue closed unmerged with no recorded reason - default reason used",
+			issueNumber: 3790,
+			prError:     "",
+			wantFail:    true,
+			wantTaskID:  "GH-3790",
+			wantReason:  "closed without merging (no reason recorded)",
+		},
+		{
+			name:        "PR has no linked issue - nothing to fail",
+			issueNumber: 0,
+			prError:     "CI checks failed",
+			wantFail:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[]"))
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+			mockMonitor := newMockTaskMonitor()
+			c.SetMonitor(mockMonitor)
+
+			prState := &PRState{PRNumber: 42, IssueNumber: tt.issueNumber, Error: tt.prError}
+			c.notifyExternalClose(context.Background(), prState)
+
+			if tt.wantFail {
+				gotReason, ok := mockMonitor.failedTasks[tt.wantTaskID]
+				if !ok {
+					t.Fatalf("monitor.Fail was not called for taskID %s: %+v", tt.wantTaskID, mockMonitor.failedTasks)
+				}
+				if gotReason != tt.wantReason {
+					t.Errorf("Fail reason = %q, want %q", gotReason, tt.wantReason)
+				}
+			} else if len(mockMonitor.failedTasks) != 0 {
+				t.Errorf("expected no monitor.Fail calls, got %+v", mockMonitor.failedTasks)
+			}
+		})
+	}
+}
+
+// TestNotifyExternalClose_MonitorFailNotCalledWithoutMonitor verifies the nil
+// guard: when no dashboard monitor is wired (headless deployment), notifyExternalClose
+// must not panic and simply skips the card-fail step. GH-4490 subtask 3.
+func TestNotifyExternalClose_MonitorFailNotCalledWithoutMonitor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 42, IssueNumber: 3789, Error: "CI checks failed"}
+	c.notifyExternalClose(context.Background(), prState) // must not panic
 }
 
 // TestNotifyExternalClose_ReclassifyNotCalledWithoutEvalStore verifies the nil
