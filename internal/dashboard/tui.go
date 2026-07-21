@@ -2137,6 +2137,15 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 		stateLabel = "failed"
 		meta = truncateVisual(task.Phase, 5)
 		iconStyle = statusFailedStyle
+	case "no_op":
+		// GH-4490 subtask 2: mirrors statusIconStyle's existing "no_op" glyph
+		// (TASK-358) — a no-commit run is a terminal, non-failure outcome, so
+		// it gets the same subdued pending style rather than the red failed
+		// styling.
+		icon = "○"
+		stateLabel = "no_op"
+		meta = truncateVisual(task.Phase, 5)
+		iconStyle = statusPendingStyle
 	default: // pending
 		icon = "·"
 		stateLabel = "pending"

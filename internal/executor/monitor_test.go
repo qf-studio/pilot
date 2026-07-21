@@ -143,6 +143,28 @@ func TestMonitorFail(t *testing.T) {
 	}
 }
 
+// TestMonitorNoOp verifies NoOp lands the card on StatusNoOp — distinct from
+// Fail's StatusFailed — since a no-commit run is a non-failure terminal
+// outcome (GH-4490 subtask 2).
+func TestMonitorNoOp(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Test Task", "")
+	monitor.Start("task-1")
+
+	monitor.NoOp("task-1", "no new commit produced — worktree HEAD matches base branch parent")
+
+	state, _ := monitor.Get("task-1")
+	if state.Status != StatusNoOp {
+		t.Errorf("Expected status no_op, got %s", state.Status)
+	}
+	if state.Error != "no new commit produced — worktree HEAD matches base branch parent" {
+		t.Errorf("Expected error message, got '%s'", state.Error)
+	}
+	if state.CompletedAt == nil {
+		t.Error("CompletedAt not set")
+	}
+}
+
 func TestMonitorGetAll(t *testing.T) {
 	monitor := NewMonitor()
 	monitor.Register("task-1", "Task 1", "")
@@ -629,10 +651,12 @@ func TestMonitorReconcileWithStore_RunningBecomesCompleted(t *testing.T) {
 	}
 }
 
-// A no-commit failure records a terminal-but-not-"failed" status (e.g.
-// no_op) on the executions row without ever calling Monitor.Fail — the
-// reconciler must still stop the card from displaying "running".
-func TestMonitorReconcileWithStore_QueuedBecomesFailedOnNoOp(t *testing.T) {
+// A no-commit failure records a terminal, non-failure status (no_op) on the
+// executions row without ever calling Monitor.Fail or Monitor.NoOp directly —
+// the reconciler must still stop the card from displaying "running", and must
+// land on StatusNoOp (not StatusFailed) so the card doesn't misreport a
+// no-op as a genuine failure (GH-4490 subtask 2).
+func TestMonitorReconcileWithStore_QueuedBecomesNoOp(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -655,8 +679,8 @@ func TestMonitorReconcileWithStore_QueuedBecomesFailedOnNoOp(t *testing.T) {
 	if !ok {
 		t.Fatal("GH-21 not found after reconcile")
 	}
-	if state.Status != StatusFailed {
-		t.Errorf("Status = %s, want %s", state.Status, StatusFailed)
+	if state.Status != StatusNoOp {
+		t.Errorf("Status = %s, want %s", state.Status, StatusNoOp)
 	}
 	if state.Error == "" {
 		t.Error("expected a reconciliation error message to be set")
@@ -773,7 +797,7 @@ func TestTerminalMonitorStatus(t *testing.T) {
 		{"cancelled", StatusCancelled, true},
 		{"stalled", StatusStalled, true},
 		{"failed", StatusFailed, true},
-		{"no_op", StatusFailed, true},
+		{"no_op", StatusNoOp, true},
 		{"declined", StatusFailed, true},
 		{"declined-preflight", StatusFailed, true},
 		{"rate_limited", StatusFailed, true},

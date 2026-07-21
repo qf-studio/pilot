@@ -2638,6 +2638,11 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 			status = "done"
 		case executor.StatusFailed:
 			status = "failed"
+		case executor.StatusNoOp:
+			// GH-4490 subtask 2: a no-commit run is a non-failure terminal
+			// outcome — must not fall to "pending" (looks unstarted) or
+			// "failed" (looks like a genuine failure).
+			status = "no_op"
 		default:
 			status = "pending"
 		}
