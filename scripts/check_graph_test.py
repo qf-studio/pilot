@@ -215,6 +215,36 @@ class MainExitCodeTest(unittest.TestCase):
                 f.truncate()
             self.assertEqual(self._run_main(root, graph_path, memories_base), 0)
 
+    def test_deleted_indexed_and_added_unindexed_together_exits_one(self):
+        """GH-4496 regression: a single PR that both deletes an indexed
+        memory doc (broken link) AND adds a fresh unindexed one (present but
+        not referenced) must fail the gate on BOTH counts simultaneously —
+        neither direction may mask the other. This is the combined shape the
+        drift gate must catch even though strikes 1-2 of the TASK-410 series
+        additionally removed the dangling node itself (see
+        TestEnforceMemoryDocDeletionGuard in internal/executor/git_test.go
+        for that base-branch-aware case, which this single-tree-snapshot
+        gate cannot see)."""
+        with tempfile.TemporaryDirectory() as root:
+            graph_path, memories_base = self._build_repo(root)
+            # Delete the indexed file on disk but leave its graph node
+            # pointing at it — a broken link.
+            os.remove(os.path.join(memories_base, "patterns", "a.md"))
+            # Add a brand-new doc that no node references — an unindexed
+            # file.
+            _write(os.path.join(memories_base, "patterns", "orphan.md"), "x")
+
+            with open(graph_path, "r", encoding="utf-8") as f:
+                import json
+                graph = json.load(f)
+
+            broken_links = cg.find_broken_file_links(graph, root)
+            unindexed = cg.find_unindexed_memory_files(graph, memories_base, root)
+            self.assertEqual(broken_links, [("mem-001", ".agent/knowledge/memories/patterns/a.md")])
+            self.assertEqual(unindexed, [os.path.join(".agent", "knowledge", "memories", "patterns", "orphan.md")])
+
+            self.assertEqual(self._run_main(root, graph_path, memories_base), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1659,6 +1659,23 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 		r.recordMemoryGuardRestoreEvents(task.LogExecutionID(), restored)
 	}
 
+	// GH-4496: hard veto — after strip+restore above, any memory doc still
+	// net-deleted vs baseBranch is a pre-existing, currently-unindexed doc an
+	// epic session deleted outside its lane. Three strikes in 26 hours showed
+	// advisory-only handling here lets deletions ride into unrelated PRs
+	// unnoticed; block the push instead.
+	if vetoed, vetoErr := git.EnforceMemoryDocDeletionGuard(ctx, baseBranch, taskExplicitlyTargetsMemoryFiles(task)); vetoErr != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("blocked: %v", vetoErr)
+		r.log.Warn("Vetoed memory doc deletion(s) outside epic branch's lane",
+			slog.String("task_id", task.ID),
+			slog.Any("files", vetoed),
+			slog.Any("error", vetoErr),
+		)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+
 	r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
 
 	// Push the parent branch. TASK-359: a real deliverable that fails to push is a
@@ -4182,6 +4199,24 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				)
 			} else if len(restored) > 0 {
 				r.recordMemoryGuardRestoreEvents(task.LogExecutionID(), restored)
+			}
+
+			// GH-4496: hard veto — after strip+restore above, any memory doc
+			// still net-deleted vs baseBranch is a pre-existing,
+			// currently-unindexed doc this session deleted outside its lane.
+			// Three strikes in 26 hours showed advisory-only handling here
+			// lets deletions ride into unrelated PRs unnoticed; block the
+			// push instead.
+			if vetoed, vetoErr := git.EnforceMemoryDocDeletionGuard(ctx, baseBranch, taskExplicitlyTargetsMemoryFiles(task)); vetoErr != nil {
+				result.Success = false
+				result.Error = fmt.Sprintf("blocked: %v", vetoErr)
+				log.Warn("Vetoed memory doc deletion(s) outside branch's lane",
+					slog.String("task_id", task.ID),
+					slog.Any("files", vetoed),
+					slog.Any("error", vetoErr),
+				)
+				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+				return result, nil
 			}
 
 			// Pre-push lint gate (GH-1376)

@@ -436,6 +436,23 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 		r.recordMemoryGuardRestoreEvents(task.LogExecutionID(), restored)
 	}
 
+	// GH-4496: hard veto — after strip+restore above, any memory doc still
+	// net-deleted vs baseBranch is a pre-existing, currently-unindexed doc a
+	// subtask session deleted outside its lane. Three strikes in 26 hours
+	// showed advisory-only handling here lets deletions ride into unrelated
+	// PRs unnoticed; block the push instead.
+	if vetoed, vetoErr := git.EnforceMemoryDocDeletionGuard(ctx, baseBranch, taskExplicitlyTargetsMemoryFiles(task)); vetoErr != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("blocked: %v", vetoErr)
+		log.Warn("Vetoed memory doc deletion(s) outside decomposed-parent branch's lane",
+			slog.String("task_id", task.ID),
+			slog.Any("files", vetoed),
+			slog.Any("error", vetoErr),
+		)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+
 	r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")
 
 	var pushErr error

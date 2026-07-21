@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,8 +168,106 @@ const (
 )
 
 // graphJSONPathFields are the node fields check-graph.py accepts as a memory
-// file reference, in the same priority order.
+// file reference. Unlike check-graph.py (which takes the first field present
+// and stops), the Go readers below check ALL of these per node — GH-4496
+// found the "stop at first field" shortcut can leave a resolvable path
+// ignored when a node carries more than one path-shaped field.
 var graphJSONPathFields = []string{"file", "path", "memory_file"}
+
+// memoryGraphDoc is the subset of .agent/knowledge/graph.json the executor's
+// memory-doc guards read: node groups (only "memories" carries file paths)
+// plus concept_index, which GH-4496 strike 3 showed can carry a memory doc's
+// slug even when no node's path field resolves cleanly.
+type memoryGraphDoc struct {
+	Nodes struct {
+		Memories map[string]map[string]any `json:"memories"`
+	} `json:"nodes"`
+	ConceptIndex map[string][]string `json:"concept_index"`
+}
+
+// loadMemoryGraph reads and parses .agent/knowledge/graph.json once for all
+// of the memory-doc guards below. Returns (nil, nil) when the file is
+// absent — a project without one has no drift gate to protect.
+func (g *GitOperations) loadMemoryGraph() (*memoryGraphDoc, error) {
+	raw, err := os.ReadFile(filepath.Join(g.projectPath, graphJSONRelPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read graph.json: %w", err)
+	}
+
+	var graph memoryGraphDoc
+	if err := json.Unmarshal(raw, &graph); err != nil {
+		return nil, fmt.Errorf("failed to parse graph.json: %w", err)
+	}
+	return &graph, nil
+}
+
+// loadMemoryGraphAtRef reads and parses graph.json as it existed at ref
+// (e.g. baseBranch), independent of whatever the current working tree/HEAD
+// holds. This matters for EnforceMemoryDocDeletionGuard: strikes 1-2 of the
+// TASK-410 series deleted a memory doc AND its graph.json node in the same
+// commit, so checking indexed-status against HEAD's graph.json (as
+// graphIndexedMemoryNodes does for the restore pass) sees no dangling
+// reference and misses it entirely. Checking against baseBranch's graph.json
+// instead answers the question that actually matters: was this doc part of
+// the curated knowledge graph before this branch touched it? Returns
+// (nil, nil) when graph.json didn't exist at ref.
+func (g *GitOperations) loadMemoryGraphAtRef(ctx context.Context, ref string) (*memoryGraphDoc, error) {
+	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+graphJSONRelPath)
+	cmd.Dir = g.projectPath
+	raw, err := cmd.Output()
+	if err != nil {
+		// Most common cause: graph.json didn't exist at ref. Treat the same
+		// as "no graph to protect" rather than failing the guard closed.
+		return nil, nil
+	}
+
+	var graph memoryGraphDoc
+	if err := json.Unmarshal(raw, &graph); err != nil {
+		return nil, fmt.Errorf("failed to parse graph.json at %s: %w", ref, err)
+	}
+	return &graph, nil
+}
+
+// memorySlug returns a memory doc's graph-identity slug: its basename with
+// the .md extension stripped. Current-convention nodes key nodes.memories by
+// this slug directly; legacy nodes instead carry a path-shaped field whose
+// basename is this slug.
+func memorySlug(path string) string {
+	return strings.TrimSuffix(filepath.Base(path), ".md")
+}
+
+// indexedMemorySlugs returns every memory-doc slug that graph.json
+// references ANYWHERE: as a nodes.memories node ID (current convention), as
+// the basename of a node's file/path/memory_file field (regardless of
+// whether that field resolves to an existing path on disk), or as a value
+// inside concept_index. This is intentionally broader and more permissive
+// than resolving exact paths — GH-4496 strike 3 (PR #4495, commit 78870958)
+// deleted a doc whose node WAS present in nodes.memories with a correct
+// "file" field; whatever the strip pass's exact-path check missed, a
+// slug appearing anywhere in the graph must still veto deletion.
+func indexedMemorySlugs(graph *memoryGraphDoc) map[string]bool {
+	slugs := make(map[string]bool)
+	if graph == nil {
+		return slugs
+	}
+	for nodeID, node := range graph.Nodes.Memories {
+		slugs[nodeID] = true
+		for _, field := range graphJSONPathFields {
+			if rawPath, ok := node[field].(string); ok {
+				slugs[memorySlug(rawPath)] = true
+			}
+		}
+	}
+	for _, values := range graph.ConceptIndex {
+		for _, v := range values {
+			slugs[v] = true
+		}
+	}
+	return slugs
+}
 
 // addedMemoryDocs returns memory doc paths (relative to the repo root) added
 // between baseBranch and HEAD. Mirrors the file selection in
@@ -207,25 +306,16 @@ func (g *GitOperations) addedMemoryDocs(ctx context.Context, baseBranch string) 
 // whichever candidate exists on disk. Returns (nil, nil) when graph.json is
 // absent — a project without the file has no drift gate to protect.
 func (g *GitOperations) indexedMemoryPaths() (map[string]bool, error) {
-	raw, err := os.ReadFile(filepath.Join(g.projectPath, graphJSONRelPath))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read graph.json: %w", err)
-	}
-
-	var graph struct {
-		Nodes struct {
-			Memories map[string]map[string]any `json:"memories"`
-		} `json:"nodes"`
-	}
-	if err := json.Unmarshal(raw, &graph); err != nil {
-		return nil, fmt.Errorf("failed to parse graph.json: %w", err)
+	graph, err := g.loadMemoryGraph()
+	if err != nil || graph == nil {
+		return nil, err
 	}
 
 	indexed := make(map[string]bool)
 	for _, node := range graph.Nodes.Memories {
+		// GH-4496: check every path-shaped field on the node, not just the
+		// first one present — a node carrying both a resolvable and a stale
+		// field must not have the resolvable one shadowed.
 		for _, field := range graphJSONPathFields {
 			rawPath, ok := node[field].(string)
 			if !ok {
@@ -241,9 +331,7 @@ func (g *GitOperations) indexedMemoryPaths() (map[string]bool, error) {
 				if rel, relErr := filepath.Rel(g.projectPath, candidate); relErr == nil {
 					indexed[filepath.ToSlash(rel)] = true
 				}
-				break
 			}
-			break
 		}
 	}
 	return indexed, nil
@@ -262,26 +350,51 @@ func (g *GitOperations) indexedMemoryPaths() (map[string]bool, error) {
 // execution's (project CLAUDE.md "Memory: Navigator only"), so an execution
 // that added one unindexed is out of its lane; stripping it here keeps the
 // rest of the diff intact instead of failing the whole task.
+//
+// GH-4496: a doc only counts as unindexed when BOTH the exact-path check
+// (indexedMemoryPaths) AND the slug-anywhere-in-the-graph check
+// (indexedMemorySlugs) come back negative — three strikes in 26 hours showed
+// the exact-path check alone can misjudge a genuinely indexed doc (strike 3,
+// PR #4495/commit 78870958, deleted a doc whose node had a correct "file"
+// field). Every doc considered and the verdict is logged so a future
+// misjudgment is diagnosable from the run log instead of only from a later
+// graph-vs-disk audit.
 func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch string) ([]string, error) {
 	added, err := g.addedMemoryDocs(ctx, baseBranch)
 	if err != nil || len(added) == 0 {
 		return nil, err
 	}
 
-	indexed, err := g.indexedMemoryPaths()
+	graph, err := g.loadMemoryGraph()
 	if err != nil {
 		return nil, err
 	}
-	if indexed == nil {
+	if graph == nil {
 		// No graph.json in this project - nothing to reconcile against.
 		return nil, nil
 	}
 
+	indexed, err := g.indexedMemoryPaths()
+	if err != nil {
+		return nil, err
+	}
+	slugs := indexedMemorySlugs(graph)
+
 	var unindexed []string
 	for _, doc := range added {
-		if !indexed[doc] {
-			unindexed = append(unindexed, doc)
+		slug := memorySlug(doc)
+		byPath := indexed[doc]
+		bySlug := slugs[slug]
+		slog.Default().Debug("strip-unindexed-memory-docs: checked added doc",
+			slog.String("doc", doc),
+			slog.String("slug", slug),
+			slog.Bool("indexed_by_path", byPath),
+			slog.Bool("indexed_by_slug", bySlug),
+		)
+		if byPath || bySlug {
+			continue
 		}
+		unindexed = append(unindexed, doc)
 	}
 	if len(unindexed) == 0 {
 		return nil, nil
@@ -339,25 +452,14 @@ func (g *GitOperations) deletedMemoryDocs(ctx context.Context, baseBranch string
 // would always fail the case it exists to catch. Returns (nil, nil) when
 // graph.json is absent — no drift gate to protect.
 func (g *GitOperations) graphIndexedMemoryNodes() (map[string]string, error) {
-	raw, err := os.ReadFile(filepath.Join(g.projectPath, graphJSONRelPath))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read graph.json: %w", err)
-	}
-
-	var graph struct {
-		Nodes struct {
-			Memories map[string]map[string]any `json:"memories"`
-		} `json:"nodes"`
-	}
-	if err := json.Unmarshal(raw, &graph); err != nil {
-		return nil, fmt.Errorf("failed to parse graph.json: %w", err)
+	graph, err := g.loadMemoryGraph()
+	if err != nil || graph == nil {
+		return nil, err
 	}
 
 	nodes := make(map[string]string)
 	for nodeID, node := range graph.Nodes.Memories {
+		// GH-4496: check every path-shaped field, not just the first present.
 		for _, field := range graphJSONPathFields {
 			rawPath, ok := node[field].(string)
 			if !ok {
@@ -369,7 +471,6 @@ func (g *GitOperations) graphIndexedMemoryNodes() (map[string]string, error) {
 			// never looked up. Mirrors indexedMemoryPaths' candidate order.
 			nodes[filepath.ToSlash(rawPath)] = nodeID
 			nodes[filepath.ToSlash(filepath.Join(".agent", "knowledge", rawPath))] = nodeID
-			break
 		}
 	}
 	return nodes, nil
@@ -455,6 +556,94 @@ func restoredPaths(docs []RestoredMemoryDoc) []string {
 		paths[i] = d.Path
 	}
 	return paths
+}
+
+// ErrMemoryDocDeletionVetoed is returned by EnforceMemoryDocDeletionGuard when
+// the branch still carries a net deletion of a pre-existing
+// .agent/knowledge/memories/**.md file after the strip/restore passes have
+// already run, and the task never said it was allowed to touch memory docs.
+var ErrMemoryDocDeletionVetoed = fmt.Errorf("execution deleted memory doc(s) outside its lane")
+
+// EnforceMemoryDocDeletionGuard is the GH-4496 hard-veto leg of the TASK-410
+// memory-loss series: it must run AFTER StripUnindexedMemoryDocs and
+// RestoreDeletedIndexedMemoryDocs, and reports any file under
+// .agent/knowledge/memories/ that is STILL net-deleted relative to
+// baseBranch AND was indexed in baseBranch's graph.json before this branch
+// touched it.
+//
+// The baseBranch check (not HEAD's current graph.json) is deliberate: in
+// strikes 1-2 of the TASK-410 series (GH-4484, GH-4489) the offending commit
+// deleted the memory doc AND its graph.json node together, so by the time
+// any HEAD-relative check runs there is no dangling reference left to
+// notice — the tree looks internally consistent even though it destroyed
+// curated knowledge. Checking against the graph as it stood on baseBranch
+// catches exactly that case. Deleting a doc that was never indexed on
+// baseBranch either (see TestFinalizeDecomposedParentPR_AllowsDeletingUnindexedMemoryDoc)
+// remains allowed — this guard is about protecting the graph's existing
+// knowledge, not blocking all memory-doc deletions outright.
+//
+// Unless allowMemoryChanges is true — the task itself explicitly targets
+// memory files — this is a hard veto (the caller must block push and fail
+// the run) rather than advisory-only, converting a silent-data-loss class
+// into a loud, reviewable failure.
+func (g *GitOperations) EnforceMemoryDocDeletionGuard(ctx context.Context, baseBranch string, allowMemoryChanges bool) ([]string, error) {
+	if allowMemoryChanges {
+		return nil, nil
+	}
+	deleted, err := g.deletedMemoryDocs(ctx, baseBranch)
+	if err != nil || len(deleted) == 0 {
+		return nil, err
+	}
+
+	baseGraph, err := g.loadMemoryGraphAtRef(ctx, baseBranch)
+	if err != nil {
+		return nil, err
+	}
+	if baseGraph == nil {
+		return nil, nil
+	}
+	baseSlugs := indexedMemorySlugs(baseGraph)
+
+	var vetoed []string
+	for _, doc := range deleted {
+		if baseSlugs[memorySlug(doc)] {
+			vetoed = append(vetoed, doc)
+		}
+	}
+	if len(vetoed) == 0 {
+		return nil, nil
+	}
+	return vetoed, fmt.Errorf("%w: %v", ErrMemoryDocDeletionVetoed, vetoed)
+}
+
+// memoryFileIntentKeywords are lower-cased substrings in a task's title or
+// description that indicate the task itself is expected to touch
+// .agent/knowledge/memories/** — e.g. a Navigator memory-authoring or
+// memory-tooling task — so EnforceMemoryDocDeletionGuard should not veto its
+// deletions.
+var memoryFileIntentKeywords = []string{
+	".agent/knowledge/memories",
+	"memory doc",
+	"memory-doc",
+	"knowledge graph",
+	"graph.json",
+}
+
+// taskExplicitlyTargetsMemoryFiles reports whether task's title or
+// description mentions the memory-doc/knowledge-graph system explicitly,
+// per memoryFileIntentKeywords. Used to scope EnforceMemoryDocDeletionGuard's
+// veto to executions that never said they needed to touch memory docs.
+func taskExplicitlyTargetsMemoryFiles(task *Task) bool {
+	if task == nil {
+		return false
+	}
+	haystack := strings.ToLower(task.Title + "\n" + task.Description)
+	for _, kw := range memoryFileIntentKeywords {
+		if strings.Contains(haystack, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // Push pushes the current branch to remote

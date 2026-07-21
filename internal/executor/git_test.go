@@ -968,6 +968,64 @@ func TestStripUnindexedMemoryDocs(t *testing.T) {
 			t.Fatalf("stripped = %v, want none", stripped)
 		}
 	})
+
+	// GH-4496 strike 3 (PR #4495, commit 78870958): a doc whose node is
+	// keyed by its slug (current convention: no "file" field at all, just
+	// type/summary/concepts) was deleted because the exact-path check found
+	// nothing to resolve. The slug fallback must protect it.
+	t.Run("leaves a doc indexed only by node-ID slug alone", func(t *testing.T) {
+		run("checkout", base)
+		run("checkout", "-b", "pilot/GH-slug-indexed")
+
+		docRel := ".agent/knowledge/memories/pitfalls/board-sourced-repo-ignores-labeled-issues.md"
+		write(docRel, "# a pitfall indexed by convention, no file field")
+
+		graph := `{"nodes":{"memories":{"board-sourced-repo-ignores-labeled-issues":{"type":"pitfall","summary":"no file field, node id is the slug"}}}}`
+		write(".agent/knowledge/graph.json", graph)
+
+		run("add", docRel, ".agent/knowledge/graph.json")
+		run("commit", "-m", "docs: capture pitfall, indexed by node id only")
+
+		stripped, err := git.StripUnindexedMemoryDocs(ctx, base)
+		if err != nil {
+			t.Fatalf("StripUnindexedMemoryDocs failed: %v", err)
+		}
+		if len(stripped) != 0 {
+			t.Fatalf("stripped = %v, want none (doc is indexed by node id)", stripped)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, docRel)); statErr != nil {
+			t.Errorf("expected %s to remain, stat err = %v", docRel, statErr)
+		}
+	})
+
+	// GH-4496: a doc referenced only via concept_index (no matching node ID
+	// or file/path field at all) must still be protected — the strip pass
+	// must never delete a doc whose slug appears ANYWHERE in the graph.
+	t.Run("leaves a doc indexed only via concept_index alone", func(t *testing.T) {
+		run("checkout", base)
+		run("checkout", "-b", "pilot/GH-concept-indexed")
+
+		docRel := ".agent/knowledge/memories/pitfalls/mem_task_concept_only.md"
+		write(docRel, "# a pitfall referenced only from concept_index")
+
+		graph := `{"nodes":{"memories":{"mem-other":{"file":".agent/knowledge/memories/pitfalls/unrelated.md"}}},` +
+			`"concept_index":{"poller":["mem_task_concept_only"]}}`
+		write(".agent/knowledge/graph.json", graph)
+
+		run("add", docRel, ".agent/knowledge/graph.json")
+		run("commit", "-m", "docs: capture pitfall, indexed via concept_index only")
+
+		stripped, err := git.StripUnindexedMemoryDocs(ctx, base)
+		if err != nil {
+			t.Fatalf("StripUnindexedMemoryDocs failed: %v", err)
+		}
+		if len(stripped) != 0 {
+			t.Fatalf("stripped = %v, want none (doc is indexed via concept_index)", stripped)
+		}
+		if _, statErr := os.Stat(filepath.Join(dir, docRel)); statErr != nil {
+			t.Errorf("expected %s to remain, stat err = %v", docRel, statErr)
+		}
+	})
 }
 
 // TestRestoreDeletedIndexedMemoryDocs covers GH-4398: the restore leg of the
@@ -1162,6 +1220,155 @@ func TestRestoreDeletedIndexedMemoryDocs(t *testing.T) {
 			t.Fatalf("restored = %v, want none (no graph.json to protect)", restored)
 		}
 	})
+}
+
+// TestEnforceMemoryDocDeletionGuard covers GH-4496's hard-veto guard: run
+// AFTER StripUnindexedMemoryDocs/RestoreDeletedIndexedMemoryDocs, it must
+// refuse (return an error) any net deletion, relative to baseBranch, of a
+// .agent/knowledge/memories/**.md file that WAS graph-indexed on baseBranch
+// — unless the task explicitly targets memory files. It deliberately checks
+// baseBranch's graph.json rather than HEAD's: strikes 1-2 of the TASK-410
+// series (GH-4484, GH-4489) deleted the doc AND its graph.json node
+// together, so an indexed check against the current tree would see nothing
+// dangling and miss it. Deleting a doc that was never indexed on baseBranch
+// either must remain allowed (see
+// TestFinalizeDecomposedParentPR_AllowsDeletingUnindexedMemoryDoc) — this
+// guard protects existing knowledge, it doesn't ban all memory-doc
+// deletions outright.
+func TestEnforceMemoryDocDeletionGuard(t *testing.T) {
+	dir, _ := initTestRepo(t)
+	ctx := context.Background()
+	git := NewGitOperations(dir)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	docRel := ".agent/knowledge/memories/pitfalls/mem_task_preexisting.md"
+	write(docRel, "# a pre-existing, indexed doc on base")
+	write(".agent/knowledge/graph.json", `{"nodes":{"memories":{"mem-preexisting":{"file":"`+docRel+`"}}}}`)
+	run("add", docRel, ".agent/knowledge/graph.json")
+	run("commit", "-m", "chore: seed pre-existing indexed doc on base")
+	base, err := git.GetCurrentBranch(ctx)
+	if err != nil {
+		t.Fatalf("GetCurrentBranch failed: %v", err)
+	}
+
+	t.Run("vetoes a deletion when the task does not target memory files", func(t *testing.T) {
+		run("checkout", "-b", "pilot/GH-veto-deny")
+		run("rm", docRel)
+		// Strikes 1-2 shape: the node is removed from graph.json in the same
+		// commit that deletes the file, so a HEAD-relative indexed check
+		// would find nothing dangling. The guard must still catch this by
+		// checking baseBranch's graph.json.
+		write(".agent/knowledge/graph.json", `{"nodes":{"memories":{}}}`)
+		run("add", ".agent/knowledge/graph.json")
+		run("commit", "-m", "feat: unrelated change that also deleted a memory doc + its node")
+
+		vetoed, err := git.EnforceMemoryDocDeletionGuard(ctx, base, false)
+		if err == nil {
+			t.Fatal("expected EnforceMemoryDocDeletionGuard to veto the deletion, got nil error")
+		}
+		if !errors.Is(err, ErrMemoryDocDeletionVetoed) {
+			t.Errorf("expected ErrMemoryDocDeletionVetoed, got: %v", err)
+		}
+		if len(vetoed) != 1 || vetoed[0] != docRel {
+			t.Fatalf("vetoed = %v, want [%s]", vetoed, docRel)
+		}
+	})
+
+	t.Run("allows the deletion when the task explicitly targets memory files", func(t *testing.T) {
+		run("checkout", base)
+		run("checkout", "-b", "pilot/GH-veto-allow")
+		run("rm", docRel)
+		write(".agent/knowledge/graph.json", `{"nodes":{"memories":{}}}`)
+		run("add", ".agent/knowledge/graph.json")
+		run("commit", "-m", "chore(memory): intentionally remove a stale doc")
+
+		vetoed, err := git.EnforceMemoryDocDeletionGuard(ctx, base, true)
+		if err != nil {
+			t.Fatalf("expected no veto when allowMemoryChanges=true, got: %v", err)
+		}
+		if len(vetoed) != 0 {
+			t.Fatalf("vetoed = %v, want none", vetoed)
+		}
+	})
+
+	t.Run("allows a deletion of a doc that was never indexed on base", func(t *testing.T) {
+		run("checkout", base)
+		run("checkout", "-b", "pilot/GH-veto-unindexed")
+		unindexedRel := ".agent/knowledge/memories/pitfalls/mem_task_unindexed.md"
+		write(unindexedRel, "# never indexed")
+		run("add", unindexedRel)
+		run("commit", "-m", "chore: seed an unindexed doc")
+		run("rm", unindexedRel)
+		run("commit", "-m", "feat: unrelated change that deletes an unindexed doc")
+
+		vetoed, err := git.EnforceMemoryDocDeletionGuard(ctx, base, false)
+		if err != nil {
+			t.Fatalf("expected no veto for a doc never indexed on base, got: %v", err)
+		}
+		if len(vetoed) != 0 {
+			t.Fatalf("vetoed = %v, want none", vetoed)
+		}
+	})
+
+	t.Run("no-op when no memory docs were deleted", func(t *testing.T) {
+		run("checkout", base)
+		run("checkout", "-b", "pilot/GH-veto-noop")
+		write("internal/qux.go", "package qux")
+		run("add", "internal/qux.go")
+		run("commit", "-m", "feat: add qux")
+
+		vetoed, err := git.EnforceMemoryDocDeletionGuard(ctx, base, false)
+		if err != nil {
+			t.Fatalf("expected no veto, got: %v", err)
+		}
+		if len(vetoed) != 0 {
+			t.Fatalf("vetoed = %v, want none", vetoed)
+		}
+	})
+}
+
+// TestTaskExplicitlyTargetsMemoryFiles covers the keyword heuristic that
+// scopes EnforceMemoryDocDeletionGuard's veto (GH-4496): a task whose title
+// or description mentions the memory-doc/knowledge-graph system should not
+// have its memory-doc deletions vetoed.
+func TestTaskExplicitlyTargetsMemoryFiles(t *testing.T) {
+	cases := []struct {
+		name string
+		task *Task
+		want bool
+	}{
+		{"nil task", nil, false},
+		{"unrelated task", &Task{Title: "fix: dashboard queue card status", Description: "reconcile stuck cards"}, false},
+		{"title mentions memory doc", &Task{Title: "fix(memory): strip unindexed memory doc pass"}, true},
+		{"description mentions knowledge graph", &Task{Title: "chore", Description: "clean up the Knowledge Graph Drift Gate"}, true},
+		{"description mentions graph.json path", &Task{Title: "chore", Description: "touches .agent/knowledge/memories/pitfalls"}, true},
+		{"case-insensitive match", &Task{Title: "Chore: tidy GRAPH.JSON"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := taskExplicitlyTargetsMemoryFiles(tc.task); got != tc.want {
+				t.Errorf("taskExplicitlyTargetsMemoryFiles(%+v) = %v, want %v", tc.task, got, tc.want)
+			}
+		})
+	}
 }
 
 // TestCreateRecoveryRef verifies GH-3785's recovery-ref mechanism: a commit
