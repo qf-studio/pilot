@@ -250,7 +250,7 @@ func TestRoundTripper_DistinctURLsCachedIndependently(t *testing.T) {
 		}
 		w.Header().Set("ETag", etag)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(fmt.Sprintf(`page-%s-body`, page)))
+		fmt.Fprintf(w, `page-%s-body`, page)
 	}))
 	defer server.Close()
 
