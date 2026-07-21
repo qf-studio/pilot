@@ -1402,6 +1402,75 @@ func TestProcessQueue_MergedPRPreflight_UnmergedBranchProceedsNormally(t *testin
 	}
 }
 
+// TestProcessQueue_NoCommitFailure_CardBecomesNoOp is the GH-4490 subtask 2
+// regression test: a queued task whose backend succeeds but produces no git
+// commits classifies to the "no_op" executions status (TerminalStatus's
+// no_changes signature). Before this fix, the dispatcher's terminal-outcome
+// branch only called EmitProgress — which drives phase/progress but never
+// the Monitor's Status field — so the dashboard card stayed at
+// running/100% until the periodic reconciler's next tick (subtask 1's
+// backstop) caught up. The card must now transition to a terminal,
+// non-failure state (StatusNoOp, not StatusFailed) on this same event path.
+func TestProcessQueue_NoCommitFailure_CardBecomesNoOp(t *testing.T) {
+	const branch = "pilot/GH-8003"
+	dir := setupPRGuardRepo(t, branch, false) // no additional commits
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{
+		ID:           "exec-no-commit-card",
+		TaskID:       "GH-8003",
+		ProjectPath:  dir,
+		Status:       "queued",
+		TaskBranch:   branch,
+		TaskCreatePR: true,
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	origCheck := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { mergedPRPreflightCheck = origCheck }()
+
+	// Backend always succeeds but makes no git commits — the same no-commit
+	// setup TestRunner_PRCreate_EmptyBranch_TriggersRetry uses, which
+	// classifies to TerminalStatus "no_op" via the no_changes signature.
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "analysis complete"}}
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	monitor := NewMonitor()
+	monitor.Register(exec.TaskID, "no-commit test task", "")
+	monitor.Queue(exec.TaskID)
+	runner.SetMonitor(monitor)
+
+	worker := NewProjectWorker(dir, store, runner, slog.Default())
+
+	worker.processQueue(context.Background())
+
+	got, err := store.GetExecution(exec.ID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if got.Status != "no_op" {
+		t.Fatalf("expected execution status 'no_op', got %q (test setup drifted from TerminalStatus classification)", got.Status)
+	}
+
+	state, ok := monitor.Get(exec.TaskID)
+	if !ok {
+		t.Fatal("task not found in monitor after processQueue")
+	}
+	if state.Status != StatusNoOp {
+		t.Errorf("card Status = %s, want %s (card must not stay running or read as a generic failure)", state.Status, StatusNoOp)
+	}
+	if state.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set — card must be terminal, not stuck at running")
+	}
+}
+
 // TestProcessQueue_TerminalSuccessLedger_SkipsBackend is the GH-4184
 // regression test for the 17:48->18:12 race: the poller's re-arm guard
 // decided "not yet completed" at poll time and let a retry queue; the

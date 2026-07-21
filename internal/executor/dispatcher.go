@@ -1914,6 +1914,26 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			// Emit progress callback with a phase that matches the classified outcome.
 			w.runner.EmitProgress(exec.TaskID, terminalPhaseLabel(string(outcome.Status)), 100,
 				fmt.Sprintf("%s: %s", outcome.Status, truncateForLog(outcome.Error, 60)))
+			// GH-4490 subtask 2: EmitProgress alone only drives phase/progress —
+			// it never moves the in-memory card's Status off "running" (see
+			// Monitor.UpdateProgress), so a no-commit run (outcome.Status ==
+			// no_op) previously left the dashboard card stuck at running/100%
+			// until the periodic reconciler's next tick (subtask 1's backstop).
+			// Drive the terminal transition here instead, on the same
+			// event-driven path that already knows the classified outcome, so
+			// the card matches the executions-table status immediately: no_op
+			// is a non-failure terminal outcome and must not be reported as
+			// Failed. Other non-completed subtypes (stalled, rate_limited,
+			// infra, skipped, declined) are left to their own detection sites
+			// (e.g. runner.go's Stall) or the periodic reconciler.
+			if w.runner.monitor != nil {
+				switch outcome.Status {
+				case ExecStatusNoOp:
+					w.runner.monitor.NoOp(exec.TaskID, outcome.Error)
+				case ExecStatusFailed:
+					w.runner.monitor.Fail(exec.TaskID, outcome.Error)
+				}
+			}
 		default:
 			w.log.Info("Task completed successfully",
 				slog.String("task_id", exec.TaskID),

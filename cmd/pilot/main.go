@@ -1094,7 +1094,9 @@ Examples:
 			if dashboardMode {
 				// GH-2291: Pass adapter poller infrastructure so the dashboard
 				// merges task states from both adapter pollers and gateway webhooks.
-				return runDashboardMode(p, cfg, gwProgram, gwMonitor, gwRunner, scopedProjectPath(dashboardScope, projectPath))
+				// GH-4490: also pass gwStore so collectTasks() can reconcile gwMonitor
+				// against the executions table before every merge.
+				return runDashboardMode(p, cfg, gwProgram, gwMonitor, gwRunner, gwStore, scopedProjectPath(dashboardScope, projectPath))
 			}
 
 			// Show startup banner (headless mode)
@@ -3018,6 +3020,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					return
 				case <-ticker.C:
 					if monitor != nil {
+						// GH-4490: reconcile against the executions table (source of
+						// truth) before rendering — event-driven transitions alone can
+						// leave a card stuck at running/100% after a no-commit failure
+						// or an externally closed PR that never calls back into monitor.
+						if store != nil {
+							if reconcileErr := monitor.ReconcileWithStore(store); reconcileErr != nil {
+								logging.WithComponent("dashboard").Warn("failed to reconcile monitor with store", slog.Any("error", reconcileErr))
+							}
+						}
 						tasks := convertTaskStatesToDisplay(monitor.GetAll())
 						program.Send(dashboard.UpdateTasks(tasks)())
 					}

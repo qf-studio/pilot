@@ -143,6 +143,28 @@ func TestMonitorFail(t *testing.T) {
 	}
 }
 
+// TestMonitorNoOp verifies NoOp lands the card on StatusNoOp — distinct from
+// Fail's StatusFailed — since a no-commit run is a non-failure terminal
+// outcome (GH-4490 subtask 2).
+func TestMonitorNoOp(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Test Task", "")
+	monitor.Start("task-1")
+
+	monitor.NoOp("task-1", "no new commit produced — worktree HEAD matches base branch parent")
+
+	state, _ := monitor.Get("task-1")
+	if state.Status != StatusNoOp {
+		t.Errorf("Expected status no_op, got %s", state.Status)
+	}
+	if state.Error != "no new commit produced — worktree HEAD matches base branch parent" {
+		t.Errorf("Expected error message, got '%s'", state.Error)
+	}
+	if state.CompletedAt == nil {
+		t.Error("CompletedAt not set")
+	}
+}
+
 func TestMonitorGetAll(t *testing.T) {
 	monitor := NewMonitor()
 	monitor.Register("task-1", "Task 1", "")
@@ -586,5 +608,209 @@ func TestMonitorHydrateFromStoreNilStore(t *testing.T) {
 	}
 	if m.Count() != 0 {
 		t.Errorf("Expected count 0, got %d", m.Count())
+	}
+}
+
+// GH-4490: ReconcileWithStore is the periodic backstop that catches a card
+// left at running/100% when the normal event path never fires (no-commit
+// failure, externally closed PR) — it must pull the terminal outcome from
+// the executions table (source of truth) rather than trust stale in-memory
+// state.
+func TestMonitorReconcileWithStore_RunningBecomesCompleted(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "e1", TaskID: "GH-20", ProjectPath: "/p", Status: "completed", PRUrl: "https://example.com/pr/1",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewMonitor()
+	m.Register("GH-20", "Task 20", "")
+	m.SetProjectInfo("GH-20", "/p", "proj")
+	m.Start("GH-20")
+	m.UpdateProgress("GH-20", "Implementing", 60, "working")
+
+	if err := m.ReconcileWithStore(store); err != nil {
+		t.Fatalf("ReconcileWithStore: %v", err)
+	}
+
+	state, ok := m.Get("GH-20")
+	if !ok {
+		t.Fatal("GH-20 not found after reconcile")
+	}
+	if state.Status != StatusCompleted {
+		t.Errorf("Status = %s, want %s", state.Status, StatusCompleted)
+	}
+	if state.Progress != 100 {
+		t.Errorf("Progress = %d, want 100", state.Progress)
+	}
+	if state.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set")
+	}
+}
+
+// A no-commit failure records a terminal, non-failure status (no_op) on the
+// executions row without ever calling Monitor.Fail or Monitor.NoOp directly —
+// the reconciler must still stop the card from displaying "running", and must
+// land on StatusNoOp (not StatusFailed) so the card doesn't misreport a
+// no-op as a genuine failure (GH-4490 subtask 2).
+func TestMonitorReconcileWithStore_QueuedBecomesNoOp(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "e1", TaskID: "GH-21", ProjectPath: "/p", Status: "no_op",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewMonitor()
+	m.Register("GH-21", "Task 21", "")
+	m.SetProjectInfo("GH-21", "/p", "proj")
+	m.Queue("GH-21")
+
+	if err := m.ReconcileWithStore(store); err != nil {
+		t.Fatalf("ReconcileWithStore: %v", err)
+	}
+
+	state, ok := m.Get("GH-21")
+	if !ok {
+		t.Fatal("GH-21 not found after reconcile")
+	}
+	if state.Status != StatusNoOp {
+		t.Errorf("Status = %s, want %s", state.Status, StatusNoOp)
+	}
+	if state.Error == "" {
+		t.Error("expected a reconciliation error message to be set")
+	}
+}
+
+// If the store row is itself still non-terminal, the running card must be
+// left untouched.
+func TestMonitorReconcileWithStore_LeavesRunningTaskAlone(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "e1", TaskID: "GH-22", ProjectPath: "/p", Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewMonitor()
+	m.Register("GH-22", "Task 22", "")
+	m.SetProjectInfo("GH-22", "/p", "proj")
+	m.Start("GH-22")
+	m.UpdateProgress("GH-22", "Implementing", 42, "working")
+
+	if err := m.ReconcileWithStore(store); err != nil {
+		t.Fatalf("ReconcileWithStore: %v", err)
+	}
+
+	state, ok := m.Get("GH-22")
+	if !ok {
+		t.Fatal("GH-22 not found after reconcile")
+	}
+	if state.Status != StatusRunning {
+		t.Errorf("Status = %s, want %s", state.Status, StatusRunning)
+	}
+	if state.Progress != 42 {
+		t.Errorf("Progress = %d, want 42 (should be untouched)", state.Progress)
+	}
+}
+
+// A task with no matching executions row yet (registered but not dispatched)
+// must not error and must be left alone.
+func TestMonitorReconcileWithStore_NoExecutionRow(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	m := NewMonitor()
+	m.Register("GH-23", "Task 23", "")
+
+	if err := m.ReconcileWithStore(store); err != nil {
+		t.Fatalf("ReconcileWithStore: %v", err)
+	}
+
+	state, ok := m.Get("GH-23")
+	if !ok {
+		t.Fatal("GH-23 not found after reconcile")
+	}
+	if state.Status != StatusPending {
+		t.Errorf("Status = %s, want %s", state.Status, StatusPending)
+	}
+}
+
+// A task already terminal in-memory (e.g. Complete() already fired) must
+// not be re-touched by a later reconcile pass, even if it's still present
+// in the monitor.
+func TestMonitorReconcileWithStore_AlreadyTerminalUntouched(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "e1", TaskID: "GH-24", ProjectPath: "/p", Status: "failed",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewMonitor()
+	m.Register("GH-24", "Task 24", "")
+	m.SetProjectInfo("GH-24", "/p", "proj")
+	m.Start("GH-24")
+	m.Complete("GH-24", "https://example.com/pr/2")
+
+	if err := m.ReconcileWithStore(store); err != nil {
+		t.Fatalf("ReconcileWithStore: %v", err)
+	}
+
+	state, ok := m.Get("GH-24")
+	if !ok {
+		t.Fatal("GH-24 not found after reconcile")
+	}
+	if state.Status != StatusCompleted {
+		t.Errorf("Status = %s, want %s (already-terminal state must not be overwritten by a stale store row)", state.Status, StatusCompleted)
+	}
+}
+
+func TestMonitorReconcileWithStoreNilStore(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-25", "Task 25", "")
+	if err := m.ReconcileWithStore(nil); err != nil {
+		t.Errorf("ReconcileWithStore(nil) should be a no-op, got error: %v", err)
+	}
+}
+
+func TestTerminalMonitorStatus(t *testing.T) {
+	tests := []struct {
+		dbStatus string
+		want     TaskStatus
+		terminal bool
+	}{
+		{"", "", false},
+		{"queued", "", false},
+		{"pending", "", false},
+		{"running", "", false},
+		{"completed", StatusCompleted, true},
+		{"cancelled", StatusCancelled, true},
+		{"stalled", StatusStalled, true},
+		{"failed", StatusFailed, true},
+		{"no_op", StatusNoOp, true},
+		{"declined", StatusFailed, true},
+		{"declined-preflight", StatusFailed, true},
+		{"rate_limited", StatusFailed, true},
+		{"infra", StatusFailed, true},
+		{"skipped", StatusFailed, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.dbStatus, func(t *testing.T) {
+			got, terminal := terminalMonitorStatus(tt.dbStatus)
+			if got != tt.want || terminal != tt.terminal {
+				t.Errorf("terminalMonitorStatus(%q) = (%q, %v), want (%q, %v)", tt.dbStatus, got, terminal, tt.want, tt.terminal)
+			}
+		})
 	}
 }

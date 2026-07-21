@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -21,6 +23,11 @@ const (
 	StatusFailed    TaskStatus = "failed"
 	StatusCancelled TaskStatus = "cancelled"
 	StatusStalled   TaskStatus = "stalled"
+	// StatusNoOp marks a run that ended deterministically with no deliverable
+	// (e.g. "no new commit produced") — a non-failure terminal outcome,
+	// distinct from StatusFailed so the card doesn't misreport a no-op as a
+	// genuine failure (GH-4490 subtask 2).
+	StatusNoOp TaskStatus = "no_op"
 )
 
 // TaskState holds the current state of a task
@@ -120,6 +127,96 @@ func (m *Monitor) HydrateFromStore(store *memory.Store) error {
 	return nil
 }
 
+// ReconcileWithStore corrects any in-memory task whose executions row has
+// already reached a terminal status while the Monitor still shows it as
+// running/queued/pending. Event-driven transitions (Start/Complete/Fail/...)
+// are skipped or raced in some failure paths — e.g. a no-commit failure or
+// an externally closed PR that updates the executions row without ever
+// calling back into this Monitor — which otherwise leaves a card stuck at
+// "running"/100% forever (GH-4490). The executions table is the source of
+// truth, so call this periodically (e.g. alongside the dashboard's refresh
+// tick, before GetAll()) as a self-correcting backstop on top of the normal
+// event path, not a replacement for it.
+func (m *Monitor) ReconcileWithStore(store *memory.Store) error {
+	if store == nil {
+		return nil
+	}
+
+	m.mu.RLock()
+	type candidate struct {
+		id          string
+		projectPath string
+	}
+	candidates := make([]candidate, 0, len(m.tasks))
+	for id, state := range m.tasks {
+		switch state.Status {
+		case StatusRunning, StatusQueued, StatusPending:
+			candidates = append(candidates, candidate{id: id, projectPath: state.ProjectPath})
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, c := range candidates {
+		dbStatus, err := store.GetExecutionStatusByTaskID(c.id, c.projectPath)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue // no execution row yet (e.g. registered but not dispatched) — nothing to reconcile
+			}
+			return fmt.Errorf("reconcile monitor with store: %w", err)
+		}
+
+		newStatus, terminal := terminalMonitorStatus(dbStatus)
+		if !terminal {
+			continue
+		}
+
+		m.mu.Lock()
+		if state, ok := m.tasks[c.id]; ok {
+			switch state.Status {
+			case StatusRunning, StatusQueued, StatusPending:
+				now := time.Now()
+				state.Status = newStatus
+				state.CompletedAt = &now
+				state.Phase = string(newStatus)
+				if newStatus == StatusCompleted {
+					state.Progress = 100
+				} else if state.Error == "" {
+					state.Error = fmt.Sprintf("reconciled from executions table: status=%q", dbStatus)
+				}
+			}
+		}
+		m.mu.Unlock()
+	}
+
+	return nil
+}
+
+// terminalMonitorStatus maps a raw executions.status value to the Monitor's
+// terminal TaskStatus for card display. Mirrors the non-terminal set used by
+// GetTasksForMonitorHydration (queued/pending/running); everything else is
+// terminal. no_op gets its own TaskStatus (GH-4490 subtask 2) so a no-commit
+// run reads distinctly from a genuine failure; the remaining subtypes with no
+// direct TaskStatus equivalent (declined, declined-preflight, rate_limited,
+// infra, skipped, failed) still fold into StatusFailed — the point there is
+// only to stop the card from displaying "running" once the DB row is
+// terminal, not to preserve every outcome subtype (GH-4490).
+func terminalMonitorStatus(dbStatus string) (TaskStatus, bool) {
+	switch dbStatus {
+	case "", "queued", "pending", "running":
+		return "", false
+	case "completed":
+		return StatusCompleted, true
+	case "cancelled":
+		return StatusCancelled, true
+	case "stalled":
+		return StatusStalled, true
+	case "no_op":
+		return StatusNoOp, true
+	default:
+		return StatusFailed, true
+	}
+}
+
 // SetProjectInfo sets the project path and name for a task (GH-2167).
 func (m *Monitor) SetProjectInfo(taskID, projectPath, projectName string) {
 	m.mu.Lock()
@@ -208,6 +305,23 @@ func (m *Monitor) Fail(taskID, errorMsg string) {
 		state.CompletedAt = &now
 		state.Phase = "Failed"
 		state.Error = errorMsg
+	}
+}
+
+// NoOp marks a task as terminated with no deliverable (e.g. "no new commit
+// produced") — a non-failure terminal outcome, so callers must use this
+// instead of Fail when the classified execution outcome is no_op (GH-4490
+// subtask 2).
+func (m *Monitor) NoOp(taskID, message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if state, ok := m.tasks[taskID]; ok {
+		now := time.Now()
+		state.Status = StatusNoOp
+		state.CompletedAt = &now
+		state.Phase = "No-op"
+		state.Error = message
 	}
 }
 

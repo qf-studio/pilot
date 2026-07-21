@@ -2481,7 +2481,7 @@ func scopedProjectPath(scope, projectPath string) string {
 }
 
 // runDashboardMode runs the TUI dashboard with live task updates
-func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program, gwMonitor *executor.Monitor, gwRunner *executor.Runner, projectPath string) error {
+func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program, gwMonitor *executor.Monitor, gwRunner *executor.Runner, gwStore *memory.Store, projectPath string) error {
 	// Suppress slog output to prevent corrupting TUI display (GH-164)
 	logging.Suppress()
 	p.SuppressProgressLogs(true)
@@ -2502,23 +2502,10 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program
 
 	// GH-2291: collectTasks merges task states from adapter pollers (gwMonitor)
 	// and gateway webhook tasks (p.GetTaskStates()) into a single view.
-	// convertTaskStatesToDisplay deduplicates by task ID.
+	// GH-4490 subtask 4: reconciles both sources against the executions table
+	// first — see collectDashboardTasks.
 	collectTasks := func() []dashboard.TaskDisplay {
-		var allStates []*executor.TaskState
-		if gwMonitor != nil {
-			allStates = append(allStates, gwMonitor.GetAll()...)
-		}
-		allStates = append(allStates, p.GetTaskStates()...)
-		if projectPath != "" {
-			filtered := allStates[:0]
-			for _, s := range allStates {
-				if s.ProjectPath == projectPath {
-					filtered = append(filtered, s)
-				}
-			}
-			allStates = filtered
-		}
-		return convertTaskStatesToDisplay(allStates)
+		return collectDashboardTasks(p, gwMonitor, gwStore, projectPath)
 	}
 
 	// GH-2291: Wire adapter poller runner progress/token callbacks to the dashboard.
@@ -2615,6 +2602,45 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program
 	return p.Stop()
 }
 
+// collectDashboardTasks merges task states from adapter pollers (gwMonitor)
+// and gateway webhook tasks (p.GetTaskStates()) into a single deduplicated
+// view (convertTaskStatesToDisplay dedupes by task ID), optionally filtered
+// to projectPath.
+//
+// GH-4490 subtask 4: reconciles both sources against the executions table
+// (source of truth) before reading them. This dashboard mode has its own
+// merge/ticker path independent of runPollingMode's (cmd/pilot/main.go,
+// subtask 1) — without this reconcile step here too, a card (and the header
+// running-count derived from the same m.tasks) would still show stale
+// "running" after a no-commit failure or an externally closed PR, same bug
+// class, different call site.
+func collectDashboardTasks(p *pilot.Pilot, gwMonitor *executor.Monitor, gwStore *memory.Store, projectPath string) []dashboard.TaskDisplay {
+	if gwMonitor != nil && gwStore != nil {
+		if reconcileErr := gwMonitor.ReconcileWithStore(gwStore); reconcileErr != nil {
+			logging.WithComponent("dashboard").Warn("failed to reconcile gateway monitor with store", slog.Any("error", reconcileErr))
+		}
+	}
+	if reconcileErr := p.ReconcileTaskStatesWithStore(); reconcileErr != nil {
+		logging.WithComponent("dashboard").Warn("failed to reconcile pilot task states with store", slog.Any("error", reconcileErr))
+	}
+
+	var allStates []*executor.TaskState
+	if gwMonitor != nil {
+		allStates = append(allStates, gwMonitor.GetAll()...)
+	}
+	allStates = append(allStates, p.GetTaskStates()...)
+	if projectPath != "" {
+		filtered := allStates[:0]
+		for _, s := range allStates {
+			if s.ProjectPath == projectPath {
+				filtered = append(filtered, s)
+			}
+		}
+		allStates = filtered
+	}
+	return convertTaskStatesToDisplay(allStates)
+}
+
 // convertTaskStatesToDisplay converts executor TaskStates to dashboard TaskDisplay format.
 // Maps all 5 states: done, running, queued, pending, failed for state-aware dashboard rendering.
 // GH-1220: Added deduplication safety net to prevent duplicate tasks in rendering.
@@ -2638,6 +2664,11 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 			status = "done"
 		case executor.StatusFailed:
 			status = "failed"
+		case executor.StatusNoOp:
+			// GH-4490 subtask 2: a no-commit run is a non-failure terminal
+			// outcome — must not fall to "pending" (looks unstarted) or
+			// "failed" (looks like a genuine failure).
+			status = "no_op"
 		default:
 			status = "pending"
 		}
