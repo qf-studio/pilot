@@ -420,6 +420,16 @@ func (s *Store) migrate() error {
 			next_allowed_at DATETIME NOT NULL,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// GH-4502: a stall-watchdog kill (execution status "stalled") is not
+		// evidence a task's code is broken — it's a healthy session sitting in
+		// a long silent model turn that got killed defensively — so it must
+		// not grow the same consecutive_drops counter a genuine failure does
+		// (incident: pilot-console GH-24, 4 stall-kills wedged a healthy task
+		// at dispatcherRepickHardCap). Tracked in its own column on the same
+		// row (same key, same ledger) rather than a separate table, so it
+		// rides along with the existing repick_backoff persistence/migration
+		// path instead of duplicating it.
+		`ALTER TABLE repick_backoff ADD COLUMN stall_drops INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, migration := range migrations {
@@ -2902,6 +2912,43 @@ func (s *Store) SetRepickBackoff(key string, consecutiveDrops int, nextAllowedAt
 // starts a fresh backoff sequence rather than continuing to escalate.
 func (s *Store) ClearRepickBackoff(key string) error {
 	_, err := s.db.Exec(`DELETE FROM repick_backoff WHERE key = ?`, key)
+	return err
+}
+
+// GetStallDropCount returns the persisted count of consecutive stall-kill
+// drops for key (same "project_path|task_id" string repickBackoffKey mints).
+// found is false when no stall drop has ever been recorded for key — the
+// normal case for a task that has never had a stall-watchdog kill (GH-4502).
+// Distinct from consecutive_drops on the same row: that counter tracks
+// genuine (non-stall) drops toward dispatcherRepickHardCap, this one tracks
+// stall-kills toward the separate, higher dispatcherStallRepickCap.
+func (s *Store) GetStallDropCount(key string) (count int, found bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT stall_drops FROM repick_backoff WHERE key = ?
+	`, key).Scan(&count)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return count, true, nil
+}
+
+// SetStallDropCount persists count as the stall-kill drop count for key
+// (GH-4502), creating the repick_backoff row if key has no prior state.
+// consecutive_drops/next_allowed_at are only supplied for a brand-new row
+// (both effectively "never throttled") — an existing row's genuine-failure
+// counter and backoff window are left untouched by the ON CONFLICT clause,
+// since a stall-kill must not perturb genuine-failure accounting.
+func (s *Store) SetStallDropCount(key string, count int) error {
+	_, err := s.db.Exec(`
+		INSERT INTO repick_backoff (key, consecutive_drops, next_allowed_at, stall_drops, updated_at)
+		VALUES (?, 0, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (key) DO UPDATE SET
+			stall_drops = excluded.stall_drops,
+			updated_at = CURRENT_TIMESTAMP
+	`, key, count)
 	return err
 }
 

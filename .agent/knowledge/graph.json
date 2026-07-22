@@ -3169,6 +3169,16 @@
           "dispatch"
         ]
       },
+      "stall-status-reused-as-hold-marker": {
+        "type": "pitfall",
+        "summary": "ExecStatusStalled is both the watchdog's genuine-kill outcome AND the dispatcher's own escalate-and-hold marker \u2014 carve-outs/idempotency checks keyed on Status alone get this backwards (GH-4502): hard-cap check must run before priorClaimWasStalled, and escalation idempotency must match exact reason text, not just status",
+        "file": ".agent/knowledge/memories/pitfalls/stall-status-reused-as-hold-marker.md",
+        "concepts": [
+          "dispatcher",
+          "ledger",
+          "dispatch"
+        ]
+      },
       "global-required-checks-leak-across-projects": {
         "type": "pitfall",
         "summary": "Global autopilot.required_checks/ci_checks allowlist is shared by every project controller; a repo whose check-run names differ polls waiting_ci forever with all checks green (qf-studio/pointer#108 repro) \u2014 fixed by per-project ProjectCIChecksOverride overlay (GH-4478)",
@@ -4427,6 +4437,16 @@
       "from": "TASK-415",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "stall-status-reused-as-hold-marker",
+      "to": "claim-lost-drops-count-toward-hard-cap",
+      "type": "related"
+    },
+    {
+      "from": "stall-status-reused-as-hold-marker",
+      "to": "hard-cap-rearm-in-memory-gate",
+      "type": "related"
     }
   ],
   "concept_index": {
@@ -4868,7 +4888,8 @@
       "mem-100"
     ],
     "dispatcher": [
-      "mem-101"
+      "mem-101",
+      "stall-status-reused-as-hold-marker"
     ],
     "concurrency": [
       "mem-101",
@@ -4921,7 +4942,8 @@
     ],
     "dispatch": [
       "mem-139",
-      "board-sourced-repo-ignores-labeled-issues"
+      "board-sourced-repo-ignores-labeled-issues",
+      "stall-status-reused-as-hold-marker"
     ],
     "dashboard": [
       "mem-142",
@@ -4929,7 +4951,8 @@
       "mem-151"
     ],
     "ledger": [
-      "mem-142"
+      "mem-142",
+      "stall-status-reused-as-hold-marker"
     ],
     "retry": [
       "mem-142"
@@ -5021,10 +5044,10 @@
       "board-sourced-repo-ignores-labeled-issues"
     ]
   },
-  "last_updated": "2026-07-22T13:41:19.826417+00:00",
+  "last_updated": "2026-07-22T16:55:24.000000+00:00",
   "stats": {
-    "total_nodes": 280,
-    "total_edges": 237,
-    "memory_count": 179
+    "total_nodes": 281,
+    "total_edges": 239,
+    "memory_count": 180
   }
 }
