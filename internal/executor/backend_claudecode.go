@@ -467,6 +467,10 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 			"-p", opts.Prompt,
 			"--verbose",
 			"--output-format", "stream-json",
+			// GH-4501: stream delta chunks during a turn (not just one complete
+			// message at the end) so a long silent "thinking" turn still emits
+			// stdout lines that reset the stall watchdog's idle clock.
+			"--include-partial-messages",
 			"--dangerously-skip-permissions",
 		}
 		b.log.Info("Resuming session from PR context",
@@ -479,6 +483,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 			"-p", opts.Prompt,
 			"--verbose",
 			"--output-format", "stream-json",
+			"--include-partial-messages", // GH-4501
 			"--dangerously-skip-permissions",
 		}
 		b.log.Info("Resuming session for context continuation",
@@ -489,6 +494,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 			"-p", opts.Prompt,
 			"--verbose",
 			"--output-format", "stream-json",
+			"--include-partial-messages", // GH-4501
 			"--dangerously-skip-permissions",
 		}
 	}
@@ -987,6 +993,21 @@ func (b *ClaudeCodeBackend) parseStreamEvent(line string) BackendEvent {
 
 	// Map stream event type to backend event type
 	switch streamEvent.Type {
+	case "stream_event":
+		// GH-4501: partial-message chunk from --include-partial-messages
+		// (message_start, content_block_start/delta/stop, message_delta,
+		// message_stop). The complete "assistant" event for this turn still
+		// arrives separately once the turn finishes, so classify these as a
+		// distinct no-op event type rather than re-deriving text/tool_use from
+		// them — that would double-process the same content. Every stdout
+		// line already resets the stall watchdog's idle clock unconditionally
+		// (see the EventHandler call site in Execute), so simply existing is
+		// enough for these to do their job.
+		event.Type = EventTypeStreamDelta
+		if streamEvent.Event != nil {
+			event.Message = streamEvent.Event.Type
+		}
+
 	case "system":
 		switch streamEvent.Subtype {
 		case "init":

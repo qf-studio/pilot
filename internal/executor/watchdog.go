@@ -13,6 +13,31 @@ const defaultStallWatchdogInterval = 30 * time.Second
 // stall timeout can't spin the watchdog hot.
 const minStallWatchdogInterval = time.Second
 
+// highEffortStallFloor is the minimum stall timeout applied to high-effort or
+// complex-lane executions (GH-4501). A single high-effort thinking turn can
+// legitimately produce no complete message — and, rarely, no partial-message
+// delta either — for several minutes, so the default 3m stall timeout is too
+// aggressive for these lanes.
+const highEffortStallFloor = 10 * time.Minute
+
+// effortAwareStallTimeout raises configured to highEffortStallFloor for
+// high-effort or complex-lane executions, unless configured (an explicit
+// stall_timeout_ms) is already higher — an explicit config value always wins
+// when it's the larger of the two. When configured <= 0 (stall detection
+// disabled via a negative StallTimeoutMs), it is returned unchanged so the
+// watchdog stays off for every lane. GH-4501.
+func effortAwareStallTimeout(configured time.Duration, effort string, complexity Complexity) time.Duration {
+	if configured <= 0 {
+		return configured
+	}
+	if effort == "high" || complexity == ComplexityComplex {
+		if configured < highEffortStallFloor {
+			return highEffortStallFloor
+		}
+	}
+	return configured
+}
+
 // watchdogTickInterval derives the watchdog poll interval from stallTimeout so a
 // small configured timeout is actually honored (detection latency ≈ one tick).
 // It is min(defaultStallWatchdogInterval, stallTimeout/3), floored at

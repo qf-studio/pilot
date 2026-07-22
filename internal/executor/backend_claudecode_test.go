@@ -202,6 +202,195 @@ func TestClaudeCodeBackendParseToolInput(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeBackendParsePartialMessageStreamEvent covers GH-4501: with
+// --include-partial-messages, the CLI wraps mid-turn delta chunks in a
+// top-level {"type":"stream_event","event":{"type":"..."}} envelope. These
+// must classify as EventTypeStreamDelta — a distinct, unhandled-in-processing
+// type — rather than being misparsed as a complete assistant/tool event.
+func TestClaudeCodeBackendParsePartialMessageStreamEvent(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+
+	tests := []struct {
+		name string
+		line string
+	}{
+		{
+			name: "message_start",
+			line: `{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":2,"output_tokens":5}}},"session_id":"s1","uuid":"u1"}`,
+		},
+		{
+			name: "content_block_start",
+			line: `{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"session_id":"s1","uuid":"u2"}`,
+		},
+		{
+			name: "content_block_delta text",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial chunk"}},"session_id":"s1","uuid":"u3"}`,
+		},
+		{
+			name: "content_block_delta thinking",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reasoning..."}},"session_id":"s1","uuid":"u4"}`,
+		},
+		{
+			name: "content_block_stop",
+			line: `{"type":"stream_event","event":{"type":"content_block_stop","index":0},"session_id":"s1","uuid":"u5"}`,
+		},
+		{
+			name: "message_delta",
+			line: `{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":14}},"session_id":"s1","uuid":"u6"}`,
+		},
+		{
+			name: "message_stop",
+			line: `{"type":"stream_event","event":{"type":"message_stop"},"session_id":"s1","uuid":"u7"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := backend.parseStreamEvent(tt.line)
+
+			if event.Type != EventTypeStreamDelta {
+				t.Errorf("Type = %q, want %q", event.Type, EventTypeStreamDelta)
+			}
+			if event.ToolName != "" {
+				t.Errorf("ToolName should be empty for a partial delta, got %q", event.ToolName)
+			}
+			// A partial text_delta/thinking_delta must never surface as
+			// TokensInput/TokensOutput on its own — usage in these envelopes
+			// lives under "event", which the top-level StreamEvent.Usage field
+			// (tagged "usage" at the top level) does not reach, so accounting
+			// stays sourced from the complete assistant/result events only.
+			if event.TokensInput != 0 || event.TokensOutput != 0 {
+				t.Errorf("partial delta should not carry token usage, got in=%d out=%d", event.TokensInput, event.TokensOutput)
+			}
+			if event.Raw != tt.line {
+				t.Errorf("Raw = %q, want %q", event.Raw, tt.line)
+			}
+		})
+	}
+}
+
+// TestClaudeCodeBackendPartialDeltasDoNotDuplicateCompleteMessage covers
+// GH-4501's double-processing requirement: a realistic interleaved sequence
+// (partial deltas for a turn, followed by the complete "assistant" event for
+// the same turn, followed by "result") must produce exactly one
+// EventTypeText event with the full text and exactly one token-usage
+// accounting event — not one per delta.
+func TestClaudeCodeBackendPartialDeltasDoNotDuplicateCompleteMessage(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start"}}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi! What"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" can I help?"}}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Hi! What can I help?"}]}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"}}}`,
+		`{"type":"stream_event","event":{"type":"message_stop"}}`,
+		`{"type":"result","result":"Hi! What can I help?","is_error":false,"usage":{"input_tokens":2,"output_tokens":14}}`,
+	}
+
+	var (
+		textEvents   int
+		deltaEvents  int
+		fullText     string
+		tokensInput  int64
+		tokensOutput int64
+	)
+	for _, line := range lines {
+		event := backend.parseStreamEvent(line)
+		switch event.Type {
+		case EventTypeText:
+			textEvents++
+			fullText = event.Message
+		case EventTypeStreamDelta:
+			deltaEvents++
+		}
+		tokensInput += event.TokensInput
+		tokensOutput += event.TokensOutput
+	}
+
+	if textEvents != 1 {
+		t.Errorf("expected exactly 1 EventTypeText, got %d", textEvents)
+	}
+	if fullText != "Hi! What can I help?" {
+		t.Errorf("assembled text = %q, want full complete-message text", fullText)
+	}
+	if deltaEvents != 7 {
+		t.Errorf("expected 7 EventTypeStreamDelta events, got %d", deltaEvents)
+	}
+	if tokensInput != 2 || tokensOutput != 14 {
+		t.Errorf("token accounting = in=%d out=%d, want in=2 out=14 (sourced only from the result event)", tokensInput, tokensOutput)
+	}
+}
+
+// TestClaudeCodeBackendIncludesPartialMessagesFlag covers GH-4501: the CLI
+// must be invoked with --include-partial-messages so long silent "thinking"
+// turns still emit stdout that resets the stall watchdog's idle clock. Uses
+// a fake CLI script (same technique as TestClaudeCodeBackendResumeSessionFallback)
+// to capture the real argv rather than asserting against unexported
+// arg-building internals.
+func TestClaudeCodeBackendIncludesPartialMessagesFlag(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	logFile := tmpDir + "/calls.log"
+	script := tmpDir + "/fake-claude"
+
+	body := `#!/bin/sh
+printf '%s\n' "$*" >> ` + logFile + `
+exit 0
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+
+	t.Run("default invocation", func(t *testing.T) {
+		opts := ExecuteOptions{
+			Prompt:       "hello",
+			ProjectPath:  tmpDir,
+			EventHandler: func(BackendEvent) {},
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := backend.Execute(ctx, opts); err != nil {
+			t.Fatalf("Execute() error: %v", err)
+		}
+	})
+
+	t.Run("resume invocation", func(t *testing.T) {
+		opts := ExecuteOptions{
+			Prompt:          "hello",
+			ProjectPath:     tmpDir,
+			ResumeSessionID: "abc-123",
+			EventHandler:    func(BackendEvent) {},
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := backend.Execute(ctx, opts); err != nil {
+			t.Fatalf("Execute() error: %v", err)
+		}
+	})
+
+	data, readErr := os.ReadFile(logFile)
+	if readErr != nil {
+		t.Fatalf("read log: %v", readErr)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 CLI invocations, got %d: %q", len(lines), lines)
+	}
+	for i, line := range lines {
+		if !strings.Contains(line, "--include-partial-messages") {
+			t.Errorf("invocation %d missing --include-partial-messages: %q", i, line)
+		}
+	}
+}
+
 func TestClaudeCodeBackendIsAvailable(t *testing.T) {
 	// Test with non-existent command
 	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{

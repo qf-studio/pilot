@@ -190,6 +190,19 @@ const (
 	// task finished (BackgroundTaskStatus carries "completed"/"failed"/
 	// "stopped"). GH-4357.
 	EventTypeTaskNotification BackendEventType = "task_notification"
+
+	// EventTypeStreamDelta indicates a partial/delta stream-json chunk
+	// (message_start, content_block_start/delta/stop, message_delta,
+	// message_stop) emitted only when --include-partial-messages is passed to
+	// the CLI. These exist purely to keep stdout non-silent — and thus the
+	// stall watchdog's idle clock fresh — during a long single-turn "thinking"
+	// stretch that produces no complete message for minutes (GH-4501). They
+	// must not be treated as complete assistant/tool events: the full
+	// "assistant" event for the same turn still arrives separately once the
+	// turn finishes, so processing deltas as text/tool_use would double-count
+	// output. Deliberately unhandled in processBackendEvent's switch (no
+	// case) so they generate no per-delta log lines.
+	EventTypeStreamDelta BackendEventType = "stream_delta"
 )
 
 // BackendResult contains the outcome of a backend execution.

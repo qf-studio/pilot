@@ -282,6 +282,22 @@ type StreamEvent struct {
 	// Status carries the terminal status ("completed"/"failed"/"stopped") on
 	// task_notification system events (GH-4357).
 	Status string `json:"status,omitempty"`
+	// Event carries the inner partial-message chunk when Type == "stream_event"
+	// (emitted only with --include-partial-messages, GH-4501). These arrive
+	// mid-turn — message_start, content_block_start/delta/stop, message_delta,
+	// message_stop — solely to keep stdout non-silent during long "thinking"
+	// turns; the complete "assistant" event still arrives separately afterward,
+	// so only Type is captured here for classification, not full delta content.
+	Event *StreamEventInner `json:"event,omitempty"`
+}
+
+// StreamEventInner captures just the inner event type for a "stream_event"
+// wrapper line (GH-4501). The delta/content_block payload shape varies by
+// inner type (message_start, content_block_delta, message_delta, ...) and is
+// intentionally not modeled here — these chunks exist to reset the stall
+// watchdog's idle clock, not to be re-parsed as complete assistant output.
+type StreamEventInner struct {
+	Type string `json:"type"`
 }
 
 // UsageInfo represents token usage in stream events
@@ -2733,7 +2749,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		stallDone               = make(chan struct{})
 	)
 	lastEventAt.Store(time.Now().UnixNano())
-	stallTimeout := r.effectiveStallTimeout()
+	// GH-4501: high-effort/complex-lane turns can still produce several
+	// minutes of silent stdout even with --include-partial-messages (e.g. an
+	// extended non-tool reasoning stretch with no content_block_delta at all),
+	// so raise the floor for those lanes as defense-in-depth alongside the
+	// partial-message streaming fix. An explicit stall_timeout_ms config value
+	// higher than the floor still wins.
+	stallTimeout := effortAwareStallTimeout(r.effectiveStallTimeout(), selectedEffort, complexity)
 	var stallExecutionCtx context.Context
 	var stallCancel context.CancelFunc
 	if stallTimeout > 0 {
