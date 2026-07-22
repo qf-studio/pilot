@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
@@ -265,6 +266,14 @@ func (p *ParallelRunner) executeSubagent(ctx context.Context, projectPath string
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = projectPath
 
+	// GH-4503: same fix as the primary backends — own process group so
+	// Cancel() and ctx-cancellation can reach any children this subagent
+	// forks, not just the tracked PID.
+	configureProcessGroup(cmd)
+	cmd.Cancel = func() error {
+		return killProcessGroup(cmd, syscall.SIGKILL)
+	}
+
 	// Track running command
 	cmdID := fmt.Sprintf("%s-%d", task.Type, time.Now().UnixNano())
 	p.mu.Lock()
@@ -306,7 +315,8 @@ func (p *ParallelRunner) Cancel() {
 
 	for id, cmd := range p.running {
 		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+			// GH-4503: signal the whole process group.
+			_ = killProcessGroup(cmd, syscall.SIGKILL)
 			p.log.Debug("Cancelled subagent", slog.String("id", id))
 		}
 	}

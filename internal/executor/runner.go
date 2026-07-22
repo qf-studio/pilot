@@ -4644,7 +4644,9 @@ func (r *Runner) Cancel(taskID string) error {
 		return fmt.Errorf("task %s is not running", taskID)
 	}
 
-	return cmd.Process.Kill()
+	// GH-4503: signal the whole process group, not just the tracked PID, so
+	// backgrounded grandchildren die with it.
+	return killProcessGroup(cmd, syscall.SIGKILL)
 }
 
 // recordLearning records the execution outcome for pattern learning.
@@ -4802,10 +4804,13 @@ func (r *Runner) CancelAll() {
 
 	r.log.Info("Cancelling all running tasks", slog.Int("count", len(toCancel)))
 
-	// Send SIGTERM to all processes for graceful shutdown
+	// Send SIGTERM to all processes for graceful shutdown.
+	// GH-4503: signal the whole process group, not just the tracked PID, so
+	// backgrounded grandchildren (e.g. Claude Code's Bash tool - GH-4357)
+	// get the same chance to shut down cleanly.
 	for id, cmd := range toCancel {
 		if cmd.Process != nil {
-			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			if err := killProcessGroup(cmd, syscall.SIGTERM); err != nil {
 				r.log.Debug("Failed to send SIGTERM", slog.String("task_id", id), slog.Any("error", err))
 			} else {
 				r.log.Debug("Sent SIGTERM to process", slog.String("task_id", id), slog.Int("pid", cmd.Process.Pid))
@@ -4824,7 +4829,9 @@ func (r *Runner) CancelAll() {
 
 		for id, cmd := range remaining {
 			if cmd.Process != nil {
-				if err := cmd.Process.Kill(); err != nil {
+				// GH-4503: signal the whole process group, not just the
+				// tracked PID.
+				if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
 					r.log.Debug("Failed to kill process", slog.String("task_id", id), slog.Any("error", err))
 				} else {
 					r.log.Info("Force killed process after grace period", slog.String("task_id", id), slog.Int("pid", cmd.Process.Pid))

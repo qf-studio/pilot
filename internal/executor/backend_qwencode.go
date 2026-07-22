@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
@@ -244,6 +245,15 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 	cmd := exec.CommandContext(ctx, b.config.Command, args...)
 	cmd.Dir = opts.ProjectPath
 
+	// GH-4503: same fix as the Claude Code backend — give the subprocess its
+	// own process group so every kill path below reaches any children it
+	// forks, and override the default (single-PID) ctx-cancellation Cancel
+	// to signal the whole group instead.
+	configureProcessGroup(cmd)
+	cmd.Cancel = func() error {
+		return killProcessGroup(cmd, syscall.SIGKILL)
+	}
+
 	b.log.Debug("Starting Qwen Code",
 		slog.String("command", b.config.Command),
 		slog.String("project", opts.ProjectPath),
@@ -306,7 +316,8 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 					}
 
 					if cmd.Process != nil {
-						if err := cmd.Process.Kill(); err != nil {
+						// GH-4503: signal the whole process group.
+						if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
 							b.log.Error("Failed to kill hung process",
 								slog.Int("pid", cmd.Process.Pid),
 								slog.Any("error", err),
@@ -343,7 +354,8 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 					opts.WatchdogCallback(cmd.Process.Pid, opts.WatchdogTimeout)
 				}
 
-				if err := cmd.Process.Kill(); err != nil {
+				// GH-4503: signal the whole process group.
+				if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
 					b.log.Error("Watchdog failed to kill process",
 						slog.Int("pid", cmd.Process.Pid),
 						slog.Any("error", err),
@@ -444,7 +456,8 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 					b.log.Warn("Grace period expired, sending SIGKILL",
 						slog.Int("pid", cmd.Process.Pid),
 					)
-					if err := cmd.Process.Kill(); err != nil {
+					// GH-4503: signal the whole process group.
+					if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
 						b.log.Error("Failed to kill process",
 							slog.Int("pid", cmd.Process.Pid),
 							slog.Any("error", err),

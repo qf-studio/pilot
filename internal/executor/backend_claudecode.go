@@ -538,6 +538,22 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	cmd := exec.CommandContext(ctx, b.config.Command, args...)
 	cmd.Dir = opts.ProjectPath
 
+	// GH-4503: give the subprocess its own process group so every kill path
+	// below can reach children Claude Code's Bash tool backgrounds (GH-4357's
+	// task_started/task_notification events prove it forks them) instead of
+	// orphaning them — see pilot-console GH-24 (gen-0's claude process
+	// survived its session kill for 1h14m, 335M RSS, reparented to the
+	// daemon). WaitDelay bounds cmd.Wait() so a surviving grandchild holding
+	// the stdout/stderr pipes open can't hang it forever.
+	configureProcessGroup(cmd)
+	// exec.CommandContext's default Cancel signals only cmd.Process
+	// (single PID) the instant ctx is done — which is exactly the path the
+	// stall/heartbeat watchdogs drive via context cancellation below.
+	// Override it to signal the whole process group instead.
+	cmd.Cancel = func() error {
+		return killProcessGroup(cmd, syscall.SIGKILL)
+	}
+
 	// GH-2328: Signal executor mode to the child process. Project `CLAUDE.md`
 	// and auto-memory can detect this and skip Navigator-only "DO NOT write
 	// code" rules without relying on prompt-prefix heuristics.
@@ -666,8 +682,10 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 					}
 
 					// Kill the hung process
+					// GH-4503: signal the whole process group, not just the
+					// tracked PID, so backgrounded grandchildren die too.
 					if cmd.Process != nil {
-						if err := cmd.Process.Kill(); err != nil {
+						if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
 							b.log.Error("Failed to kill hung process",
 								slog.Int("pid", cmd.Process.Pid),
 								slog.Any("error", err),
@@ -712,7 +730,9 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				}
 
 				// Kill the process
-				if err := cmd.Process.Kill(); err != nil {
+				// GH-4503: signal the whole process group, not just the
+				// tracked PID, so backgrounded grandchildren die too.
+				if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
 					b.log.Error("Watchdog failed to kill process",
 						slog.Int("pid", cmd.Process.Pid),
 						slog.Any("error", err),
@@ -844,7 +864,11 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 					b.log.Warn("Grace period expired, sending SIGKILL",
 						slog.Int("pid", cmd.Process.Pid),
 					)
-					if err := cmd.Process.Kill(); err != nil {
+					// GH-4503: signal the whole process group, not just the
+					// tracked PID. Note cmd.Cancel (set at spawn) already
+					// group-kills on ctx.Done(), so this is a defense-in-depth
+					// re-strike rather than the primary kill.
+					if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
 						b.log.Error("Failed to kill process",
 							slog.Int("pid", cmd.Process.Pid),
 							slog.Any("error", err),
