@@ -1303,6 +1303,41 @@ func (s *Store) ReclassifyCompletionAsFailed(taskID, projectPath, reason string)
 	})
 }
 
+// TerminateNonTerminalExecution flips the latest execution row for taskID
+// (same created_at DESC, rowid DESC selection as GetExecutionStatusByTaskID)
+// to status='failed' when it is still queued/pending/running. GH-4499: covers
+// the gap ReclassifyCompletionAsFailed intentionally leaves open — that method
+// only ever demotes a genuine "completed" row, so a PR closed externally while
+// its execution row was still non-terminal (e.g. the poller never got to mark
+// it completed, or it was killed mid-flight) left the row stuck forever. On
+// the next daemon restart HydrateFromStore re-seeds that row into the Monitor
+// as a running card, and Monitor.ReconcileWithStore (GH-4490) can't rescue it
+// because the reconciler trusts the executions row as source of truth.
+//
+// Only the latest row is eligible — selecting it via the subquery before
+// applying the status filter means a newer row from a live retry (which
+// would sort first) shields any older non-terminal row from being touched.
+//
+// projectPath follows ReclassifyCompletionAsFailed's scoping convention:
+// empty drops the scope and matches by task_id alone.
+func (s *Store) TerminateNonTerminalExecution(taskID, projectPath, reason string) error {
+	return s.withRetry("TerminateNonTerminalExecution", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'failed',
+				error = ?,
+				completed_at = CURRENT_TIMESTAMP
+			WHERE id = (
+				SELECT id FROM executions
+				WHERE task_id = ? AND (? = '' OR project_path = ?)
+				ORDER BY created_at DESC, rowid DESC
+				LIMIT 1
+			) AND status IN ('queued', 'pending', 'running')
+		`, reason, taskID, projectPath, projectPath)
+		return err
+	})
+}
+
 // SetApprovalDecision records an approval decision on the execution linked to requestID.
 // It sets approval_decision, approval_decision_at, and approval_decision_by on the row
 // whose approval_request_id matches. Returns sql.ErrNoRows if no matching row is found.

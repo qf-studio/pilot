@@ -131,6 +131,21 @@ CREATE TABLE IF NOT EXISTS executions (
 
 ---
 
+### 1d. `executor.Monitor` — dashboard's in-memory consumer of `executions`
+
+**Location:** `internal/executor/monitor.go`
+
+`Monitor` is not a store — it's an in-memory map (`taskID → TaskState`) that the dashboard TUI reads directly on every refresh tick. It is downstream of `executions`, not a third source of truth: every terminal card the dashboard shows should ultimately agree with the row `executions` holds for that task.
+
+Two convergence points keep it that way:
+
+- **`HydrateFromStore`** (GH-4246) seeds the Monitor from `GetTasksForMonitorHydration`'s non-terminal rows once at daemon startup, so a restart with queued/running work in the DB doesn't leave the queue view blind. This is a one-shot read at boot, not a subscription — after hydration, the Monitor's state only changes via explicit event calls (`Start`/`Complete`/`Fail`/...) from the code paths that drive an execution, or via the periodic reconciler below.
+- **`ReconcileWithStore`** (GH-4490) is the periodic backstop: on each dashboard refresh tick it re-reads `GetExecutionStatusByTaskID` for every card the Monitor still shows as running/queued/pending and flips it to the DB's terminal status if the DB has already moved on. This exists because several failure paths (a no-commit failure, an externally closed PR) update the `executions` row directly without always routing back through a Monitor event call, which would otherwise leave a card stuck at "running"/100% forever.
+
+Both convergence points trust the `executions` row as source of truth and never write to it — they only pull the Monitor's in-memory view into agreement with it. This is why a still-non-terminal `executions` row is a hazard independent of whether the event-driven Monitor call (e.g. `monitor.Fail` from `notifyExternalClose`, GH-4490 subtask 3) also fired: `HydrateFromStore` re-seeds straight from the row on the next restart regardless of what the in-memory Monitor showed before the process died, and `ReconcileWithStore` only rescues Running/Queued/Pending *Monitor* cards backed by a *terminal* DB row — a row that is itself still non-terminal gives the reconciler nothing to converge on. `TerminateNonTerminalExecution` (GH-4499) closes that gap on the DB side, so both convergence points always have a terminal row to agree on once a PR closes without merging.
+
+---
+
 ## 2. Divergence Catalog
 
 | Question | `autopilot_processed` answer | `executions` answer | Footgun |

@@ -3728,6 +3728,200 @@ func TestReclassifyCompletionAsFailed_HealsBackOnMerge(t *testing.T) {
 	}
 }
 
+// TestTerminateNonTerminalExecution covers GH-4499: a PR closed externally
+// while its execution row was still queued/pending/running (never reached
+// "completed") must have that row terminated too, mirroring the sibling
+// TestReclassifyCompletionAsFailed coverage for the already-completed case.
+// ReclassifyCompletionAsFailed's completed-only guard is intentionally left
+// unchanged — these two methods cover disjoint status sets.
+func TestTerminateNonTerminalExecution(t *testing.T) {
+	tests := []struct {
+		name            string
+		row             Execution
+		taskID          string
+		projectPath     string
+		reason          string
+		wantStatusAfter string
+		wantTerminated  bool // expect error=reason and completed_at set
+	}{
+		{
+			name: "running row - terminated to failed",
+			row: Execution{
+				ID: "exec-running", TaskID: "GH-4499", ProjectPath: "/project",
+				Status: "running",
+			},
+			taskID:          "GH-4499",
+			projectPath:     "/project",
+			reason:          "closed without merging (no reason recorded)",
+			wantStatusAfter: "failed",
+			wantTerminated:  true,
+		},
+		{
+			name: "queued row - terminated to failed",
+			row: Execution{
+				ID: "exec-queued", TaskID: "GH-4499", ProjectPath: "/project",
+				Status: "queued",
+			},
+			taskID:          "GH-4499",
+			projectPath:     "/project",
+			reason:          "PR closed without merging",
+			wantStatusAfter: "failed",
+			wantTerminated:  true,
+		},
+		{
+			name: "pending row - terminated to failed",
+			row: Execution{
+				ID: "exec-pending", TaskID: "GH-4499", ProjectPath: "/project",
+				Status: "pending",
+			},
+			taskID:          "GH-4499",
+			projectPath:     "/project",
+			reason:          "PR closed without merging",
+			wantStatusAfter: "failed",
+			wantTerminated:  true,
+		},
+		{
+			name: "completed row - untouched (ReclassifyCompletionAsFailed's job, not this method's)",
+			row: Execution{
+				ID: "exec-completed", TaskID: "GH-4499", ProjectPath: "/project",
+				Status: "completed", PRUrl: "https://github.com/o/r/pull/1",
+			},
+			taskID:          "GH-4499",
+			projectPath:     "/project",
+			reason:          "PR closed without merging",
+			wantStatusAfter: "completed",
+			wantTerminated:  false,
+		},
+		{
+			name: "already failed row - untouched (idempotent)",
+			row: Execution{
+				ID: "exec-failed", TaskID: "GH-4499", ProjectPath: "/project",
+				Status: "failed", Error: "prior failure",
+			},
+			taskID:          "GH-4499",
+			projectPath:     "/project",
+			reason:          "PR closed without merging",
+			wantStatusAfter: "failed",
+			wantTerminated:  false,
+		},
+		{
+			name: "different task ID - untouched",
+			row: Execution{
+				ID: "exec-other-task", TaskID: "GH-999", ProjectPath: "/project",
+				Status: "running",
+			},
+			taskID:          "GH-4499", // terminate call targets a different task
+			projectPath:     "/project",
+			reason:          "PR closed without merging",
+			wantStatusAfter: "running",
+			wantTerminated:  false,
+		},
+		{
+			name: "different project path - untouched (cross-repo isolation)",
+			row: Execution{
+				ID: "exec-other-project", TaskID: "GH-4499", ProjectPath: "/other-project",
+				Status: "running",
+			},
+			taskID:          "GH-4499",
+			projectPath:     "/project", // terminate call scoped to a different project
+			reason:          "PR closed without merging",
+			wantStatusAfter: "running",
+			wantTerminated:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			if err := store.SaveExecution(&tt.row); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			if err := store.TerminateNonTerminalExecution(tt.taskID, tt.projectPath, tt.reason); err != nil {
+				t.Fatalf("TerminateNonTerminalExecution: %v", err)
+			}
+
+			got, err := store.GetExecution(tt.row.ID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != tt.wantStatusAfter {
+				t.Errorf("status after terminate = %q, want %q", got.Status, tt.wantStatusAfter)
+			}
+			if tt.wantTerminated {
+				if got.CompletedAt == nil {
+					t.Error("expected completed_at to be set after terminate")
+				}
+				if got.Error != tt.reason {
+					t.Errorf("error = %q, want %q", got.Error, tt.reason)
+				}
+			}
+		})
+	}
+}
+
+// TestTerminateNonTerminalExecution_NewerRowShields verifies that only the
+// latest execution row (same created_at DESC, rowid DESC selection as
+// GetExecutionStatusByTaskID) is eligible for termination — a newer row from
+// a live retry must shield an older non-terminal row from being touched.
+// GH-4499.
+func TestTerminateNonTerminalExecution_NewerRowShields(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID := "GH-4499"
+	projectPath := "/project"
+	base := time.Now().Add(-time.Hour)
+
+	// Older row is stuck running (e.g. a stale execution that never reached
+	// a terminal status before this PR close was observed).
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-old", TaskID: taskID, ProjectPath: projectPath,
+		Status: "running", CreatedAt: base,
+	}); err != nil {
+		t.Fatalf("SaveExecution (old): %v", err)
+	}
+
+	// A newer row for the same task is a live retry that already completed
+	// — this is the row the close actually pertains to.
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-new", TaskID: taskID, ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/o/r/pull/2", CreatedAt: base.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveExecution (new): %v", err)
+	}
+
+	if err := store.TerminateNonTerminalExecution(taskID, projectPath, "PR closed without merging"); err != nil {
+		t.Fatalf("TerminateNonTerminalExecution: %v", err)
+	}
+
+	oldRow, err := store.GetExecution("exec-old")
+	if err != nil {
+		t.Fatalf("GetExecution(exec-old): %v", err)
+	}
+	if oldRow.Status != "running" {
+		t.Errorf("old row status = %q, want %q (shielded by newer row)", oldRow.Status, "running")
+	}
+
+	newRow, err := store.GetExecution("exec-new")
+	if err != nil {
+		t.Fatalf("GetExecution(exec-new): %v", err)
+	}
+	if newRow.Status != "completed" {
+		t.Errorf("new row status = %q, want %q (untouched by TerminateNonTerminalExecution)", newRow.Status, "completed")
+	}
+}
+
 func TestGetLifetimeTokens_ExcludesZeroTokenRows(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)
