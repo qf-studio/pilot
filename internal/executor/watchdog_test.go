@@ -242,3 +242,158 @@ func TestEffectiveStallTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestEffortAwareStallTimeout covers GH-4501: high-effort or complex-lane
+// executions get a raised stall-timeout floor (defense-in-depth alongside the
+// --include-partial-messages streaming fix), but an explicit configured
+// timeout that's already higher always wins, and disabled stall detection
+// (configured <= 0) is never re-enabled by this logic.
+func TestEffortAwareStallTimeout(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured time.Duration
+		effort     string
+		complexity Complexity
+		want       time.Duration
+	}{
+		{
+			name:       "default effort, default complexity: unchanged at 3m",
+			configured: 3 * time.Minute,
+			effort:     "medium",
+			complexity: ComplexityMedium,
+			want:       3 * time.Minute,
+		},
+		{
+			name:       "high effort raises 3m default to the 10m floor",
+			configured: 3 * time.Minute,
+			effort:     "high",
+			complexity: ComplexityMedium,
+			want:       highEffortStallFloor,
+		},
+		{
+			name:       "complex-lane raises 3m default to the 10m floor",
+			configured: 3 * time.Minute,
+			effort:     "medium",
+			complexity: ComplexityComplex,
+			want:       highEffortStallFloor,
+		},
+		{
+			name:       "explicit config already above the floor wins",
+			configured: 15 * time.Minute,
+			effort:     "high",
+			complexity: ComplexityComplex,
+			want:       15 * time.Minute,
+		},
+		{
+			name:       "explicit config exactly at the floor is left unchanged",
+			configured: highEffortStallFloor,
+			effort:     "high",
+			complexity: ComplexityMedium,
+			want:       highEffortStallFloor,
+		},
+		{
+			name:       "disabled stall detection stays disabled regardless of effort",
+			configured: 0,
+			effort:     "high",
+			complexity: ComplexityComplex,
+			want:       0,
+		},
+		{
+			name:       "negative (explicitly disabled) stays disabled",
+			configured: -1,
+			effort:     "high",
+			complexity: ComplexityComplex,
+			want:       -1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := effortAwareStallTimeout(tt.configured, tt.effort, tt.complexity)
+			if got != tt.want {
+				t.Errorf("effortAwareStallTimeout(%v, %q, %q) = %v, want %v",
+					tt.configured, tt.effort, tt.complexity, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStallWatchdog_PartialDeltasSurviveGapBetweenCompleteEvents covers
+// GH-4501's core regression: a long silent single model turn now emits
+// partial-message stdout lines (thanks to --include-partial-messages) even
+// though the two surrounding *complete* stream-json events (e.g. two
+// "assistant" messages) are far more than stallTimeout apart. Every stdout
+// line resets the watchdog's idle clock unconditionally (mirroring the real
+// EventHandler wiring in runner.go), so the session must survive.
+func TestStallWatchdog_PartialDeltasSurviveGapBetweenCompleteEvents(t *testing.T) {
+	r := &Runner{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	var (
+		lastEventAt   atomic.Int64
+		stallDetected atomic.Bool
+		inFlight      atomic.Int64
+		done          = make(chan struct{})
+	)
+
+	stallTimeout := 300 * time.Millisecond
+	// watchdogTickInterval floors at 1s, so the watchdog's first real check
+	// lands ~1s in — comfortably after the simulated gap below.
+	start := time.Now()
+	lastEventAt.Store(start.UnixNano())
+
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, func() {})
+
+	// Simulate partial-delta lines arriving every 150ms (well under
+	// stallTimeout) for 900ms — spanning a gap between "complete" events far
+	// larger than stallTimeout, but with no single idle gap exceeding it.
+	deltaInterval := 150 * time.Millisecond
+	deadline := start.Add(900 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		time.Sleep(deltaInterval)
+		lastEventAt.Store(time.Now().UnixNano()) // simulates EventHandler firing on a delta line
+	}
+
+	// Give the watchdog's ~1s tick a chance to fire before we conclude.
+	time.Sleep(300 * time.Millisecond)
+	close(done)
+
+	if stallDetected.Load() {
+		t.Fatal("stall watchdog fired despite partial-delta lines keeping the idle clock fresh")
+	}
+}
+
+// TestStallWatchdog_NoPartialDeltasFiresOnGenuineSilence is the negative
+// control for the test above: with no lines at all resetting lastEventAt
+// (the pre-GH-4501 failure mode — a CLI without --include-partial-messages
+// during a long silent turn), the watchdog must still fire once idle exceeds
+// stallTimeout.
+func TestStallWatchdog_NoPartialDeltasFiresOnGenuineSilence(t *testing.T) {
+	r := &Runner{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	var (
+		lastEventAt   atomic.Int64
+		stallDetected atomic.Bool
+		inFlight      atomic.Int64
+		done          = make(chan struct{})
+	)
+
+	// Simulate a stale last-event timestamp from well before the watchdog's
+	// first tick, with nothing refreshing it in between.
+	lastEventAt.Store(time.Now().Add(-1 * time.Second).UnixNano())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stallTimeout := 50 * time.Millisecond
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
+
+	select {
+	case <-ctx.Done():
+		// expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("stall watchdog did not fire on genuine silence past stallTimeout")
+	}
+	if !stallDetected.Load() {
+		t.Fatal("stallDetected should be true after genuine silence")
+	}
+	close(done)
+}
