@@ -180,6 +180,11 @@ type EvalStore interface {
 	// "failed" with reason, so a PR closed without merging can never leave a
 	// "completed" row behind that HasCompletedExecution keeps trusting. GH-3818.
 	ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error
+	// TerminateNonTerminalExecution flips the latest execution row to "failed"
+	// with reason when it is still queued/pending/running, so a PR closed
+	// externally can never leave a non-terminal row behind that resurrects as
+	// a stuck running dashboard card on the next restart. GH-4499.
+	TerminateNonTerminalExecution(taskID, projectPath, reason string) error
 	// SelfHealExecutionByPRURL is the pr_url-keyed fallback self-heal used when
 	// a merged PR's issue number can't be resolved from branch or body markers
 	// at all. TASK-399/GH-4209.
@@ -5843,6 +5848,23 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
 		if err := c.evalStore.ReclassifyCompletionAsFailed(taskID, c.projectPath, reason); err != nil {
 			c.log.Warn("failed to reclassify completed execution after PR close",
+				"task_id", taskID, "pr", prState.PRNumber, "error", err)
+		}
+	}
+
+	// GH-4499: terminate any still-queued/pending/running execution row for
+	// this issue now that its PR was closed without merging. Unlike the
+	// reclassify call above (which only demotes a genuine "completed" row),
+	// this catches the case where the execution row never reached
+	// "completed" before the close was observed — without it, the row stays
+	// non-terminal forever, HydrateFromStore re-seeds it into the Monitor as
+	// a running card on the next restart, and Monitor.ReconcileWithStore
+	// (GH-4490) can't rescue it because the reconciler trusts the executions
+	// row as source of truth.
+	if c.evalStore != nil && prState.IssueNumber > 0 {
+		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+		if err := c.evalStore.TerminateNonTerminalExecution(taskID, c.projectPath, reason); err != nil {
+			c.log.Warn("failed to terminate non-terminal execution after PR close",
 				"task_id", taskID, "pr", prState.PRNumber, "error", err)
 		}
 	}

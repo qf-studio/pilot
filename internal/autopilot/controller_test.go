@@ -5010,6 +5010,7 @@ type mockEvalStore struct {
 	selfHealed   []selfHealCall
 	updateStatus []updateStatusCall
 	reclassified []reclassifyCall
+	terminated   []terminateCall
 	// execStatusByTaskID configures GetExecutionStatusByTaskID responses keyed by
 	// task ID (e.g. "GH-11"). Missing keys return sql.ErrNoRows, matching a real
 	// store's behavior when no execution row exists for that task.
@@ -5048,6 +5049,13 @@ type reclassifyCall struct {
 	Reason      string
 }
 
+// terminateCall records one TerminateNonTerminalExecution invocation. GH-4499.
+type terminateCall struct {
+	TaskID      string
+	ProjectPath string
+	Reason      string
+}
+
 func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
 	m.saved = append(m.saved, task)
 	return nil
@@ -5074,6 +5082,12 @@ func (m *mockEvalStore) SelfHealExecutionAfterMerge(taskID, projectPath, prURL s
 // ReclassifyCompletionAsFailed records the call for assertions. GH-3818.
 func (m *mockEvalStore) ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error {
 	m.reclassified = append(m.reclassified, reclassifyCall{TaskID: taskID, ProjectPath: projectPath, Reason: reason})
+	return nil
+}
+
+// TerminateNonTerminalExecution records the call for assertions. GH-4499.
+func (m *mockEvalStore) TerminateNonTerminalExecution(taskID, projectPath, reason string) error {
+	m.terminated = append(m.terminated, terminateCall{TaskID: taskID, ProjectPath: projectPath, Reason: reason})
 	return nil
 }
 
@@ -6463,6 +6477,99 @@ func TestNotifyExternalClose_ReclassifiesCompletedExecution(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNotifyExternalClose_TerminatesNonTerminalExecution covers GH-4499: a
+// PR closed externally while its execution row was still
+// queued/pending/running (never reached "completed") must have that row
+// terminated too — otherwise it survives forever, HydrateFromStore re-seeds
+// it into the Monitor as a running card on the next restart, and
+// Monitor.ReconcileWithStore (GH-4490) can't rescue it because the
+// reconciler trusts the executions row as source of truth.
+func TestNotifyExternalClose_TerminatesNonTerminalExecution(t *testing.T) {
+	tests := []struct {
+		name          string
+		issueNumber   int
+		prError       string
+		wantTerminate bool
+		wantTaskID    string
+		wantReason    string
+	}{
+		{
+			name:          "issue closed unmerged with recorded reason - terminated",
+			issueNumber:   3789,
+			prError:       "CI checks failed (build); fix issue #3803 created to continue this work",
+			wantTerminate: true,
+			wantTaskID:    "GH-3789",
+			wantReason:    "CI checks failed (build); fix issue #3803 created to continue this work",
+		},
+		{
+			name:          "issue closed unmerged with no recorded reason - default reason used",
+			issueNumber:   3790,
+			prError:       "",
+			wantTerminate: true,
+			wantTaskID:    "GH-3790",
+			wantReason:    "closed without merging (no reason recorded)",
+		},
+		{
+			name:          "PR has no linked issue - nothing to terminate",
+			issueNumber:   0,
+			prError:       "CI checks failed",
+			wantTerminate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[]"))
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+			evalMock := &mockEvalStore{}
+			c.SetEvalStore(evalMock)
+
+			prState := &PRState{PRNumber: 42, IssueNumber: tt.issueNumber, Error: tt.prError}
+			c.notifyExternalClose(context.Background(), prState)
+
+			if tt.wantTerminate {
+				if len(evalMock.terminated) != 1 {
+					t.Fatalf("terminate calls = %d, want 1: %+v", len(evalMock.terminated), evalMock.terminated)
+				}
+				got := evalMock.terminated[0]
+				if got.TaskID != tt.wantTaskID {
+					t.Errorf("TaskID = %q, want %q", got.TaskID, tt.wantTaskID)
+				}
+				if got.Reason != tt.wantReason {
+					t.Errorf("Reason = %q, want %q", got.Reason, tt.wantReason)
+				}
+			} else if len(evalMock.terminated) != 0 {
+				t.Errorf("expected no terminate calls, got %+v", evalMock.terminated)
+			}
+		})
+	}
+}
+
+// TestNotifyExternalClose_TerminateNotCalledWithoutEvalStore verifies the nil
+// guard: when no eval store is configured, notifyExternalClose must not panic
+// and simply skips the terminate step. GH-4499, mirrors the GH-3818
+// TestNotifyExternalClose_ReclassifyNotCalledWithoutEvalStore guard.
+func TestNotifyExternalClose_TerminateNotCalledWithoutEvalStore(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 42, IssueNumber: 3789, Error: "CI checks failed"}
+	c.notifyExternalClose(context.Background(), prState) // must not panic
 }
 
 // TestNotifyExternalClose_MonitorFailDrivesCardTerminal is the GH-4490
