@@ -3700,6 +3700,353 @@ func TestDispatcher_BeginWithGenerationRetry_ThrottlesCanaryProjectSameAsRegular
 	}
 }
 
+// markLatestClaimedExecution sets the status of (taskID, projectPath)'s
+// currently claimed execution to status — a small test helper used to
+// simulate a drop of a given class (e.g. "stalled" or "failed") before
+// calling beginWithGenerationRetry to observe how the dispatcher accounts
+// for it (GH-4502).
+func markLatestClaimedExecution(t *testing.T, store *memory.Store, taskID, projectPath, status string) string {
+	t.Helper()
+	_, execID, found, err := store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	}
+	if !found {
+		t.Fatal("expected a claimed execution to exist")
+	}
+	if err := store.UpdateExecutionStatus(execID, status); err != nil {
+		t.Fatalf("UpdateExecutionStatus(%q): %v", status, err)
+	}
+	return execID
+}
+
+// TestDispatcher_BeginWithGenerationRetry_StallDropsDoNotCountTowardHardCap
+// is the GH-4502 core acceptance test: pilot-console GH-24 saw 4 consecutive
+// stall-watchdog kills wedge a healthy task, because each stall-kill grew
+// the same consecutiveDrops counter a genuine failure does, tripping
+// dispatcherRepickHardCap (5) on stalls alone. Four stalled drops followed
+// by one genuine failed drop must leave the shared consecutiveDrops counter
+// at 1 (only the failure counts) — not wedge the task — while the stall
+// counter independently reflects the 4 stall-kills.
+func TestDispatcher_BeginWithGenerationRetry_StallDropsDoNotCountTowardHardCap(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4502-STALL4", ProjectPath: "/project-stall4"}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+
+	if _, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning); err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	// Four consecutive stall-kills: each repick must be granted (not wedged)
+	// and must NOT grow consecutive_drops.
+	for i := 0; i < 4; i++ {
+		markLatestClaimedExecution(t, store, task.ID, task.ProjectPath, "stalled")
+		execID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+		if err != nil {
+			t.Fatalf("beginWithGenerationRetry (stall %d): %v", i+1, err)
+		}
+		if execID == "" {
+			t.Fatalf("expected stall drop %d to be granted a retry, got dropped", i+1)
+		}
+	}
+
+	stallDrops, found, err := dispatcher.StallDropCount(key)
+	if err != nil {
+		t.Fatalf("StallDropCount: %v", err)
+	}
+	if !found || stallDrops != 4 {
+		t.Errorf("expected stall_drops=4 after 4 stall-kills, got found=%v count=%d", found, stallDrops)
+	}
+	if consecutive, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found && consecutive != 0 {
+		t.Errorf("expected consecutive_drops=0 after only stall-kills, got found=%v consecutive=%d", found, consecutive)
+	}
+
+	// A fifth, genuine failure must grow consecutive_drops — and must still
+	// be granted, since only 1 genuine failure has happened so far, nowhere
+	// near dispatcherRepickHardCap.
+	markLatestClaimedExecution(t, store, task.ID, task.ProjectPath, "failed")
+	execID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry (failed): %v", err)
+	}
+	if execID == "" {
+		t.Fatal("expected the task to NOT be wedged after 4 stalls + 1 failure — hard cap must not have tripped")
+	}
+
+	consecutive, _, found, err := dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState after failure: %v", err)
+	}
+	if !found || consecutive != 1 {
+		t.Errorf("expected consecutive_drops=1 reflecting only the genuine failure, got found=%v consecutive=%d", found, consecutive)
+	}
+
+	if stallDrops, _, err := dispatcher.StallDropCount(key); err != nil {
+		t.Fatalf("StallDropCount after failure: %v", err)
+	} else if stallDrops != 4 {
+		t.Errorf("expected stall_drops to remain 4 (untouched by the genuine failure), got %d", stallDrops)
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_StallCapEscalatesWithDistinctReason
+// is the GH-4502 stall-cap acceptance test: unlike the operator-cancel carve
+// out, stall-kills must NOT bypass accounting entirely — until the
+// silent-turn stall root cause ships, a complex-lane task could stall
+// deterministically forever, and an unlimited bypass would retry it forever,
+// burning tokens. Once dispatcherStallRepickCap consecutive stall-kills have
+// accumulated, the next stall-killed repick must escalate/hold the task with
+// a distinct, truthful reason string identifying the stall class — not the
+// generic hard-cap message a genuine failure would produce.
+func TestDispatcher_BeginWithGenerationRetry_StallCapEscalatesWithDistinctReason(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4502-STALLCAP", ProjectPath: "/project-stallcap", Title: "Stall-capped task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Already at the stall cap.
+	if err := dispatcher.SetStallDropCount(key, dispatcherStallRepickCap); err != nil {
+		t.Fatalf("SetStallDropCount: %v", err)
+	}
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "stalled"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as stalled: %v", err)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatal("expected the re-pick to be dropped once the stall cap is reached, got a fresh execID")
+	}
+
+	stalledExec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if stalledExec.Status != "stalled" {
+		t.Errorf("expected the claimed execution to be marked stalled, got status=%q", stalledExec.Status)
+	}
+	if !strings.Contains(stalledExec.Error, "stall") {
+		t.Errorf("expected a stall-class reason string, got %q", stalledExec.Error)
+	}
+	if strings.Contains(stalledExec.Error, "consecutive failed re-picks") {
+		t.Errorf("expected the stall-class reason to be distinct from the generic hard-cap message, got %q", stalledExec.Error)
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event, got %d: %+v", len(processor.events), processor.events)
+	}
+	if processor.events[0].Metadata["reason"] != "stall_repick_cap_stalled" {
+		t.Errorf("expected alert metadata reason=stall_repick_cap_stalled, got %q", processor.events[0].Metadata["reason"])
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_OperatorCancelAndStallCarveOutsAreIndependent
+// is the GH-4502 regression guard: adding the stall carve-out must not
+// disturb the existing operator-cancel carve-out (priorClaimWasOperatorCancelled,
+// consulted at the top of beginWithGenerationRetry) — an operator-cancelled
+// claim must still bypass the hard cap entirely and clear backoff state,
+// exactly as TestDispatcher_BeginWithGenerationRetry_OperatorCancelBypassesHardCap
+// already pins, even with a nonzero stall_drops count sitting on the same
+// repick_backoff row.
+func TestDispatcher_BeginWithGenerationRetry_OperatorCancelAndStallCarveOutsAreIndependent(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4502-CANCEL-INDEP", ProjectPath: "/project-cancel-indep", Title: "Operator-cancelled task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Already at the hard cap AND carrying a stall-drop count on the same
+	// row — proving the operator-cancel carve-out still bypasses everything.
+	if err := dispatcher.SetRepickBackoffState(key, dispatcherRepickHardCap, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+	if err := dispatcher.SetStallDropCount(key, dispatcherStallRepickCap-1); err != nil {
+		t.Fatalf("SetStallDropCount: %v", err)
+	}
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "cancelled"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as cancelled: %v", err)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID == "" {
+		t.Fatal("expected the operator-cancelled repick to succeed despite the hard cap and stall-drop count")
+	}
+
+	if len(processor.events) != 0 {
+		t.Fatalf("expected no alert for an operator-cancelled repick, got %d: %+v", len(processor.events), processor.events)
+	}
+
+	if _, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found {
+		t.Error("expected the operator-cancelled repick to clear all backoff state (including stall_drops), instead of granting a stall carve-out")
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_MixedStallAndFailedDropsHardCapAtFive
+// is the GH-4502 mixed-sequence acceptance test: stalled drops interleaved
+// with failed drops must advance independent counters, and the shared
+// consecutiveDrops counter must still trip dispatcherRepickHardCap at
+// exactly 5 GENUINE failures, regardless of how many stall-kills were
+// interleaved between them.
+func TestDispatcher_BeginWithGenerationRetry_MixedStallAndFailedDropsHardCapAtFive(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4502-MIXED", ProjectPath: "/project-mixed", Title: "Mixed drop-class task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+
+	if _, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning); err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	// stalled, failed, stalled, failed, stalled, failed, stalled, failed —
+	// 4 genuine failures and 4 stall-kills interleaved, each independently
+	// granted. The hard-cap check consults the counter as it stood BEFORE
+	// this call's grant, so this loop leaves consecutive_drops at 4 (not yet
+	// tripped) and stall_drops at 4; a 5th genuine failure after the loop is
+	// what actually trips the cap.
+	sequence := []string{"stalled", "failed", "stalled", "failed", "stalled", "failed", "stalled", "failed"}
+	wantConsecutive, wantStallDrops := 0, 0
+	for i, status := range sequence {
+		markLatestClaimedExecution(t, store, task.ID, task.ProjectPath, status)
+		execID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+		if err != nil {
+			t.Fatalf("beginWithGenerationRetry (drop %d, %s): %v", i+1, status, err)
+		}
+		if execID == "" {
+			t.Fatalf("drop %d (%s): expected the retry to be granted before the hard cap trips, got dropped", i+1, status)
+		}
+
+		if status == "stalled" {
+			wantStallDrops++
+		} else {
+			wantConsecutive++
+		}
+
+		// This test is about drop-CLASS accounting, not the exponential
+		// backoff-window timing a genuine failure also arms — re-arm the
+		// window into the past after every granted retry so the next
+		// iteration's decision is governed only by the cap, not by whether
+		// wall-clock time has crossed the (up to ~16-minute) cooldown yet.
+		if consecutive, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+			t.Fatalf("RepickBackoffState (drop %d): %v", i+1, err)
+		} else if found {
+			if err := dispatcher.SetRepickBackoffState(key, consecutive, time.Now().Add(-time.Minute)); err != nil {
+				t.Fatalf("SetRepickBackoffState (drop %d): %v", i+1, err)
+			}
+		}
+	}
+
+	if wantConsecutive != dispatcherRepickHardCap-1 {
+		t.Fatalf("test setup error: expected the sequence to accumulate exactly %d genuine failures, got %d", dispatcherRepickHardCap-1, wantConsecutive)
+	}
+
+	consecutive, _, found, err := dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	}
+	if !found || consecutive != dispatcherRepickHardCap-1 {
+		t.Errorf("expected consecutive_drops=%d just short of the hard cap, got found=%v consecutive=%d", dispatcherRepickHardCap-1, found, consecutive)
+	}
+
+	stallDrops, _, err := dispatcher.StallDropCount(key)
+	if err != nil {
+		t.Fatalf("StallDropCount: %v", err)
+	}
+	if stallDrops != wantStallDrops {
+		t.Errorf("expected stall_drops=%d (unaffected by interleaved genuine failures), got %d", wantStallDrops, stallDrops)
+	}
+
+	// The hard-cap check consults the counter as it stood BEFORE the current
+	// call, so it takes one more granted genuine failure (bringing the
+	// stored count up to dispatcherRepickHardCap) before the NEXT one is the
+	// first to see consecutive_drops >= cap and actually trip it.
+	markLatestClaimedExecution(t, store, task.ID, task.ProjectPath, "failed")
+	fifthExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry (5th failure): %v", err)
+	}
+	if fifthExecID == "" {
+		t.Fatal("expected the 5th genuine failure to still be granted (consecutive_drops was 4 going in)")
+	}
+	if consecutive, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState after 5th failure: %v", err)
+	} else if !found || consecutive != dispatcherRepickHardCap {
+		t.Fatalf("expected consecutive_drops=%d after the 5th failure, got found=%v consecutive=%d", dispatcherRepickHardCap, found, consecutive)
+	} else if err := dispatcher.SetRepickBackoffState(key, consecutive, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState after 5th failure: %v", err)
+	}
+
+	// The 6th genuine failure must trip the hard cap: dropped, task marked
+	// stalled, exactly one hard-cap alert fired.
+	markLatestClaimedExecution(t, store, task.ID, task.ProjectPath, "failed")
+	finalExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry (6th failure): %v", err)
+	}
+	if finalExecID != "" {
+		t.Fatalf("expected the 6th genuine failure to trip the hard cap and be dropped, got execID %q", finalExecID)
+	}
+
+	consecutive, _, found, err = dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState after final failure: %v", err)
+	}
+	if !found || consecutive != dispatcherRepickHardCap {
+		t.Errorf("expected consecutive_drops=%d at the hard cap, got found=%v consecutive=%d", dispatcherRepickHardCap, found, consecutive)
+	}
+
+	if stallDrops, _, err := dispatcher.StallDropCount(key); err != nil {
+		t.Fatalf("StallDropCount after final failure: %v", err)
+	} else if stallDrops != wantStallDrops {
+		t.Errorf("expected stall_drops to remain %d (untouched by the hard-cap trip), got %d", wantStallDrops, stallDrops)
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 hard-cap alert event, got %d: %+v", len(processor.events), processor.events)
+	}
+	if processor.events[0].Metadata["reason"] != "repick_hard_cap_stalled" {
+		t.Errorf("expected alert metadata reason=repick_hard_cap_stalled, got %q", processor.events[0].Metadata["reason"])
+	}
+}
+
 // TestRepickBackoffKey_FormatMatchesCmdPilotPackage is the GH-4394 subtask 4
 // counterpart to cmd/pilot's TestRepickBackoffKey_FormatMatchesDispatcherPackage.
 // cmd/pilot cannot import internal/executor's unexported repickBackoffKey (and

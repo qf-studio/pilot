@@ -836,6 +836,19 @@ func (d *Dispatcher) ClearRepickBackoffState(key string) error {
 	return d.store.ClearRepickBackoff(key)
 }
 
+// StallDropCount and SetStallDropCount expose the store's per-key stall-kill
+// counter (GH-4502) — the carve-out for drops caused by the stall watchdog
+// killing a healthy-but-slow session, tracked separately from the
+// consecutive_drops genuine-failure counter above so 4 stall-kills can't
+// wedge a task at dispatcherRepickHardCap the way pilot-console GH-24 did.
+func (d *Dispatcher) StallDropCount(key string) (count int, found bool, err error) {
+	return d.store.GetStallDropCount(key)
+}
+
+func (d *Dispatcher) SetStallDropCount(key string, count int) error {
+	return d.store.SetStallDropCount(key, count)
+}
+
 // ExecutionGeneration returns the execution_claims generation most recently
 // claimed for (taskID, projectPath): 0 for an ordinary first attempt, >0 when
 // beginWithGenerationRetry claimed a retry generation because the prior
@@ -936,6 +949,22 @@ const (
 // has to reconcile later.
 const dispatcherRepickHardCap = 5
 
+// dispatcherStallRepickCap is the hard ceiling on consecutive stall-watchdog
+// kills for one task before beginWithGenerationRetry stops granting
+// stall-carved-out retries and stalls the task instead (GH-4502). Stall-kills
+// are counted separately from dispatcherRepickHardCap's consecutiveDrops
+// (see priorClaimWasStalled) because a stall-kill is not evidence the task's
+// code is broken — it's a healthy session sitting in a long silent model
+// turn that the watchdog killed defensively (incident: pilot-console GH-24,
+// 4 identical stall-kills wedged a healthy task at the shared hard cap and
+// required a manual re-arm). But this must not be an unlimited bypass
+// either: until the silent-turn stall root cause ships (tracked separately),
+// a complex-lane task can stall deterministically on every generation, and a
+// pure bypass would retry forever, burning tokens on every attempt. Set
+// higher than dispatcherRepickHardCap (8 vs 5) since stalls are a weaker
+// signal of a doomed task than genuine failures are.
+const dispatcherStallRepickCap = 8
+
 // repickBackoffKey namespaces backoff state by project path + task ID,
 // matching cmd/pilot's repickBackoffKey — task_id alone is not unique across
 // projects (GH-4276).
@@ -962,6 +991,30 @@ func (d *Dispatcher) priorClaimWasOperatorCancelled(taskID, projectPath string) 
 		return false
 	}
 	return exec.Status == "cancelled"
+}
+
+// priorClaimWasStalled reports whether (taskID, projectPath)'s currently
+// claimed execution — the one nextRetryGeneration just examined to grant
+// this retry — was killed by the stall watchdog (status "stalled"). A
+// stall-kill is not evidence the task's code is broken: it's a healthy
+// session sitting in a long silent model turn that got killed defensively
+// (the #4484 outcome taxonomy classifies stall as its own class in
+// runner.go, but that classification was telemetry-only until GH-4502).
+// Left uncarved-out, each stall-kill grew the SAME consecutiveDrops counter
+// a real failure would, so 4 consecutive stall-kills wedged a healthy task
+// at dispatcherRepickHardCap (incident: pilot-console GH-24). Errors are
+// treated as "not stalled" — the caller falls through to the ordinary
+// backoff/hard-cap path, which is the safe default.
+func (d *Dispatcher) priorClaimWasStalled(taskID, projectPath string) bool {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil {
+		return false
+	}
+	return exec.Status == string(ExecStatusStalled)
 }
 
 // nextRetryGeneration inspects the highest execution_claims generation
@@ -1095,7 +1148,10 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 	// gate found a fresh terminal-but-not-done claim here and re-armed
 	// unconditionally (GH-85: 5 repicks in ~15 min, no backoff growth).
 	// Consult the same persisted repick_backoff row before claiming a fresh
-	// generation, so consecutive repicks back off exponentially too.
+	// generation, so consecutive repicks back off exponentially too. Read
+	// here (rather than after the GH-4502 stall check below) so the hard-cap
+	// check that follows immediately can run BEFORE priorClaimWasStalled is
+	// ever consulted — see that check's comment for why the order matters.
 	//
 	// GH-4394 subtask 3: GH-85 happened to be dispatched against the
 	// registered pilot-canary-sandbox project (GH-4240/TASK-379), raising the
@@ -1120,11 +1176,71 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 	// permanent failure: stop granting new generations and mark it stalled
 	// instead, so it stops burning a real backend execution on every window
 	// expiry and instead waits for a human to investigate/re-arm it. Checked
-	// before the backoff-window gate below so the hard stop takes effect the
-	// moment the cap is crossed, rather than waiting out one more window.
+	// before the GH-4502 stall check below (not just the backoff-window gate)
+	// because escalating marks the claimed execution's status "stalled" as
+	// its hold marker (escalateStalledTask) — indistinguishable, by status
+	// alone, from a genuine stall-watchdog kill. Without this ordering, the
+	// NEXT poll tick after a hard-cap escalation would see status "stalled"
+	// on the same claimed execution, priorClaimWasStalled would (wrongly)
+	// return true, and the stall carve-out below would keep minting fresh
+	// generations forever — completely defeating the hard cap it just
+	// tripped. Consulting consecutiveDrops (which only a genuine failure
+	// grows, and which persists untouched across escalation) first keeps a
+	// hard-capped task sticky regardless of what its execution's status flips
+	// to afterward.
 	if found && consecutiveDrops >= dispatcherRepickHardCap {
 		d.stallTaskAfterRepickHardCap(task, gen, consecutiveDrops)
 		return "", nil
+	}
+
+	// GH-4502: a stall-watchdog kill is not evidence the task's code is
+	// broken — it's a healthy session sitting in a long silent model turn
+	// that got killed defensively — so it must not grow the same
+	// consecutiveDrops counter a genuine failure does (incident:
+	// pilot-console GH-24, 4 stall-kills wedged a healthy task at
+	// dispatcherRepickHardCap). Tracked in its own persisted counter with its
+	// own, higher cap instead of an unlimited bypass: until the silent-turn
+	// stall root cause ships, a complex-lane task could stall on every
+	// generation, and an uncapped carve-out would retry forever. Only
+	// consulted once the hard-cap check above has cleared (see its comment).
+	if d.priorClaimWasStalled(task.ID, task.ProjectPath) {
+		stallDrops, _, stallErr := d.StallDropCount(backoffKey)
+		if stallErr != nil {
+			d.log.Warn("failed to read stall drop count — dropping retry to be safe",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Any("error", stallErr))
+			return "", nil
+		}
+		if stallDrops >= dispatcherStallRepickCap {
+			d.stallTaskAfterStallCap(task, gen, stallDrops)
+			return "", nil
+		}
+
+		retryExecID, retryErr := lifecycle.Begin(task, initial, gen)
+		if retryErr == nil {
+			newStallDrops := stallDrops + 1
+			if setErr := d.SetStallDropCount(backoffKey, newStallDrops); setErr != nil {
+				d.log.Warn("failed to persist stall drop count after re-pick",
+					slog.String("task_id", task.ID),
+					slog.String("project", task.ProjectPath),
+					slog.Any("error", setErr))
+			}
+			d.log.Info("dispatch re-pick: prior claim was stall-killed — claiming next generation without counting toward repick hard cap",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Int("generation", gen),
+				slog.Int("consecutive_stall_drops", newStallDrops),
+			)
+			return retryExecID, nil
+		}
+		if errors.Is(retryErr, ErrClaimLost) {
+			// Race: another channel claimed generation gen between our
+			// decision and this Begin call — drop it, same as any other
+			// duplicate pickup.
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to save retry execution: %w", retryErr)
 	}
 
 	if found && time.Now().Before(nextAllowedAt) {
@@ -1180,25 +1296,78 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 // SetRepickBackoffState/ClearRepickBackoffState) or the underlying issue is
 // closed.
 func (d *Dispatcher) stallTaskAfterRepickHardCap(task *Task, gen, consecutiveDrops int) {
-	_, execID, found, err := d.store.LatestClaimGeneration(task.ID, task.ProjectPath)
-	if err != nil || !found || execID == "" {
-		d.log.Warn("repick hard cap reached but no claimed execution found to stall",
-			slog.String("task_id", task.ID),
-			slog.String("project", task.ProjectPath),
-			slog.Int("consecutive_drops", consecutiveDrops),
-			slog.Any("error", err))
-		return
-	}
-
-	claimedExec, getErr := d.store.GetExecution(execID)
-	alreadyStalled := getErr == nil && claimedExec != nil && claimedExec.Status == string(ExecStatusStalled)
-
 	reason := fmt.Sprintf(
 		"repick backoff hard cap reached: %d consecutive failed re-picks (cap=%d) — stopping automatic retries, manual re-arm required",
 		consecutiveDrops, dispatcherRepickHardCap,
 	)
+	d.escalateStalledTask(task, gen, consecutiveDrops, reason, map[string]string{
+		"reason":            "repick_hard_cap_stalled",
+		"consecutive_drops": fmt.Sprintf("%d", consecutiveDrops),
+		"hard_cap":          fmt.Sprintf("%d", dispatcherRepickHardCap),
+	})
+}
+
+// stallTaskAfterStallCap marks the task's claimed execution "stalled" and
+// raises an alert once dispatcherStallRepickCap consecutive stall-watchdog
+// kills have been exhausted (GH-4502) — the same escalate-and-hold path
+// stallTaskAfterRepickHardCap takes for genuine failures, but with a
+// distinct, truthful reason string: a run of stall-kills means the session
+// keeps getting killed mid-turn, not that the code itself is failing, and an
+// operator investigating must be able to tell those two classes apart at a
+// glance instead of reading the generic hard-cap message and assuming the
+// task's code is broken.
+func (d *Dispatcher) stallTaskAfterStallCap(task *Task, gen, stallDrops int) {
+	reason := fmt.Sprintf(
+		"stall repick cap reached: %d consecutive stall-watchdog kills (cap=%d) — the session keeps stalling mid-turn, not failing; stopping automatic retries, manual re-arm required",
+		stallDrops, dispatcherStallRepickCap,
+	)
+	d.escalateStalledTask(task, gen, stallDrops, reason, map[string]string{
+		"reason":      "stall_repick_cap_stalled",
+		"stall_drops": fmt.Sprintf("%d", stallDrops),
+		"stall_cap":   fmt.Sprintf("%d", dispatcherStallRepickCap),
+	})
+}
+
+// escalateStalledTask marks (taskID, projectPath)'s currently claimed
+// execution "stalled" and raises an alert with reason/alertMetadata, shared
+// by stallTaskAfterRepickHardCap (genuine-failure hard cap) and
+// stallTaskAfterStallCap (stall-kill cap, GH-4502) so both drop classes take
+// the identical escalate-and-hold path and differ only in the reason string
+// and alert metadata surfaced to the operator.
+//
+// Idempotent by design: if the claimed execution is already "stalled" (a
+// prior poll tick already tripped this same cap), the ledger write and alert
+// are skipped so a task sitting past the cap doesn't re-alert on every
+// backoff-window expiry — it stays quiet until a human re-arms it (e.g. via
+// SetRepickBackoffState/ClearRepickBackoffState) or the underlying issue is
+// closed.
+func (d *Dispatcher) escalateStalledTask(task *Task, gen, dropCount int, reason string, alertMetadata map[string]string) {
+	_, execID, found, err := d.store.LatestClaimGeneration(task.ID, task.ProjectPath)
+	if err != nil || !found || execID == "" {
+		d.log.Warn("repick cap reached but no claimed execution found to stall",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Int("drop_count", dropCount),
+			slog.Any("error", err))
+		return
+	}
+
+	// GH-4502: matching on the exact prior reason text (not just
+	// Status=="stalled") matters because the stall-cap class is ITSELF
+	// triggered by a claimed execution whose status is already "stalled" (a
+	// genuine, fresh watchdog kill) — Status alone can't tell that apart from
+	// "already escalated by a prior call to this same function". A prior
+	// call always leaves the exact reason string (dropCount/cap baked in) as
+	// Error, so an unchanged dropCount on a repeat tick reproduces the
+	// identical string and is correctly recognized as a repeat; a genuine
+	// fresh stall-kill carries the runner's own message instead and never
+	// matches.
+	claimedExec, getErr := d.store.GetExecution(execID)
+	alreadyStalled := getErr == nil && claimedExec != nil &&
+		claimedExec.Status == string(ExecStatusStalled) && claimedExec.Error == reason
+
 	if uerr := d.store.UpdateExecutionStatus(execID, string(ExecStatusStalled), reason); uerr != nil {
-		d.log.Warn("failed to mark execution stalled after repick hard cap",
+		d.log.Warn("failed to mark execution stalled after repick cap",
 			slog.String("task_id", task.ID), slog.String("execution_id", execID), slog.Any("error", uerr))
 	}
 
@@ -1207,12 +1376,12 @@ func (d *Dispatcher) stallTaskAfterRepickHardCap(task *Task, gen, consecutiveDro
 	}
 
 	d.recordExecutionEvent(execID, memory.StageStalled, reason)
-	d.log.Warn("repick hard cap reached — task marked stalled, no further automatic retries",
+	d.log.Warn("repick cap reached — task marked stalled, no further automatic retries",
 		slog.String("task_id", task.ID),
 		slog.String("project", task.ProjectPath),
-		slog.Int("consecutive_drops", consecutiveDrops),
-		slog.Int("hard_cap", dispatcherRepickHardCap),
+		slog.Int("drop_count", dropCount),
 		slog.Int("generation", gen),
+		slog.String("reason", reason),
 	)
 	d.surfaceStalledIssue(task, reason)
 	if d.runner != nil {
@@ -1222,11 +1391,7 @@ func (d *Dispatcher) stallTaskAfterRepickHardCap(task *Task, gen, consecutiveDro
 			TaskTitle: task.Title,
 			Project:   task.ProjectPath,
 			Error:     reason,
-			Metadata: map[string]string{
-				"reason":            "repick_hard_cap_stalled",
-				"consecutive_drops": fmt.Sprintf("%d", consecutiveDrops),
-				"hard_cap":          fmt.Sprintf("%d", dispatcherRepickHardCap),
-			},
+			Metadata:  alertMetadata,
 			Timestamp: time.Now(),
 		})
 	}
