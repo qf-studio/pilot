@@ -400,15 +400,74 @@ func TestJudgeIssue_BodyTruncation(t *testing.T) {
 		return []byte("DECISION: accept\nREASON: Looks good.\nCONFIDENCE: 0.9"), nil
 	}
 
-	largeBody := strings.Repeat("x", 5000) // > maxPreflightBodyChars (4000)
+	largeBody := strings.Repeat("x", maxPreflightBodyChars+5000) // > maxPreflightBodyChars (32000)
 
 	judge := newIntentJudgeWithRunner(runner)
 	_, err := judge.JudgeIssue(context.Background(), "title", largeBody, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(receivedPrompt, "...[truncated]") {
-		t.Error("expected body to be truncated in prompt")
+	if !strings.Contains(receivedPrompt, "...[truncated: 5000 chars omitted from middle of issue body]") {
+		t.Error("expected body to be middle-truncated with the omission marker in prompt")
+	}
+}
+
+// TestJudgeIssue_BodyMiddleTruncationPreservesTailACs is the direct
+// regression test for GH-4507: qf-studio/pilot-console#26 (a complete,
+// 22,926-char spec) was falsely rejected as reject_vague because the old
+// 4000-char tail-cut discarded the acceptance criteria, which live at the
+// end of our issue spec format. A body over the new 32000-char cap must
+// still deliver those trailing ACs verbatim to the judge, alongside an
+// explicit omission marker (never a bare "...[truncated]" that could be
+// mistaken for missing content).
+func TestJudgeIssue_BodyMiddleTruncationPreservesTailACs(t *testing.T) {
+	var receivedPrompt string
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		for i, arg := range args {
+			if arg == "-p" && i+1 < len(args) {
+				receivedPrompt = args[i+1]
+				break
+			}
+		}
+		return []byte("DECISION: accept\nREASON: Looks good.\nCONFIDENCE: 0.9"), nil
+	}
+
+	acSection := "## Acceptance Criteria\nAC1: does the thing\nAC2: handles the edge case\nAC3: has a test"
+	middle := strings.Repeat("filler spec content describing the implementation. ", 1000)
+	// Pad the tail so the AC section lands in the final 2000 chars of the body.
+	tailPadding := strings.Repeat("z", 2000-len(acSection))
+	body := "## Problem\n" + middle + tailPadding + acSection
+	if len(body) <= maxPreflightBodyChars {
+		t.Fatalf("test fixture body (%d chars) must exceed maxPreflightBodyChars (%d) to exercise truncation", len(body), maxPreflightBodyChars)
+	}
+	if !strings.HasSuffix(body[len(body)-2000:], acSection) {
+		t.Fatalf("test setup error: ACs are not within the final 2000 chars of the fixture body")
+	}
+
+	judge := newIntentJudgeWithRunner(runner)
+	_, err := judge.JudgeIssue(context.Background(), "title", body, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(receivedPrompt, acSection) {
+		t.Error("expected acceptance criteria from the tail of the body to survive truncation verbatim")
+	}
+	if !strings.Contains(receivedPrompt, "...[truncated: ") || !strings.Contains(receivedPrompt, "chars omitted from middle of issue body]") {
+		t.Error("expected a middle-omission marker in the prompt")
+	}
+}
+
+// TestPreflightPrompt_HasTruncationInstruction is the preflight-path
+// counterpart to TestIntentJudge_PerFileTruncationPreservesManifest's
+// GH-4407 prompt instruction: the preflight judge must be told that a
+// truncation marker is never evidence of vagueness. GH-4507.
+func TestPreflightPrompt_HasTruncationInstruction(t *testing.T) {
+	if !strings.Contains(preflightJudgeSystemPrompt, "truncated: N chars omitted from middle of issue body") {
+		t.Error("expected preflight prompt to reference the middle-truncation marker format")
+	}
+	if !strings.Contains(strings.ToLower(preflightJudgeSystemPrompt), "not evidence the issue is vague") {
+		t.Error("expected preflight prompt to instruct that a truncation marker is not evidence of vagueness")
 	}
 }
 
