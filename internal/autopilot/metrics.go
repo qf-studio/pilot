@@ -30,9 +30,25 @@ type Metrics struct {
 
 	// Counters
 	IssuesProcessed map[string]int64 // result → count (success, failed, rate_limited)
-	PRsMerged       int64
-	PRsFailed       int64
-	PRsConflicting  int64
+	// PRsMerged/PRsFailed are pure session counters (GH-4511): they start at
+	// 0 on every boot and are only ever incremented live (RecordPRMerged/
+	// RecordPRFailed). They are NEVER hydrated with a store baseline —
+	// doing so previously caused Prometheus counter-reset artifacts, since a
+	// hydrated baseline landing below the pre-restart live value looks like
+	// a reset to increase()/rate(), which then replays the entire baseline
+	// as fabricated new activity. All-time totals live on the
+	// PRsMergedLifetime/PRsFailedLifetime gauges below instead.
+	PRsMerged      int64
+	PRsFailed      int64
+	PRsConflicting int64
+	// PRsMergedLifetime/PRsFailedLifetime (GH-4511) are gauges: hydrated once
+	// at boot from the store's lifetime baseline (HydratePRsMergedLifetime/
+	// HydratePRsFailedLifetime) and bumped alongside the session counters on
+	// every live RecordPRMerged/RecordPRFailed call. Gauges are immune to the
+	// counter-reset misinterpretation above, so this is the correct series
+	// for all-time/dashboard totals across restarts.
+	PRsMergedLifetime int64
+	PRsFailedLifetime int64
 	// CIRuns counts distinct CI verdicts by result ("pass"/"fail"), GH-4134.
 	// One entry per StageCIPassed transition or terminal handleCIFailed call —
 	// a multi-iteration CI-fix cascade on one PR is several distinct verdicts
@@ -212,18 +228,22 @@ func (m *Metrics) RecordDuplicateRegistrationSkipped() {
 	m.DuplicateRegistrationsSkipped++
 }
 
-// RecordPRMerged increments the merged PR counter.
+// RecordPRMerged increments the merged PR session counter and its lifetime
+// gauge counterpart (GH-4511).
 func (m *Metrics) RecordPRMerged() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PRsMerged++
+	m.PRsMergedLifetime++
 }
 
-// RecordPRFailed increments the failed PR counter.
+// RecordPRFailed increments the failed PR session counter and its lifetime
+// gauge counterpart (GH-4511).
 func (m *Metrics) RecordPRFailed() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PRsFailed++
+	m.PRsFailedLifetime++
 }
 
 // RecordCIRun increments the CI verdict counter for a given result
@@ -352,21 +372,25 @@ func (m *Metrics) HydrateIssuesProcessed(result string, n int64) {
 	m.IssuesProcessed[result] += n
 }
 
-// HydratePRsMerged adds a store-lifetime baseline to the merged-PR counter.
-// See HydrateExecutions (GH-4093, restores pilot_prs_merged_total across
-// restarts from the durable execution_events ledger).
-func (m *Metrics) HydratePRsMerged(n int64) {
+// HydratePRsMergedLifetime adds a store-lifetime baseline to the merged-PR
+// lifetime gauge. GH-4511: this used to add onto the live PRsMerged counter
+// (see HydrateExecutions / GH-4093), which caused Prometheus counter-reset
+// artifacts whenever the hydrated baseline landed below the pre-restart live
+// value — increase()/rate() would then replay the whole baseline as
+// fabricated new activity. PRsMerged is now session-only; the lifetime
+// baseline lands exclusively on this gauge.
+func (m *Metrics) HydratePRsMergedLifetime(n int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.PRsMerged += n
+	m.PRsMergedLifetime += n
 }
 
-// HydratePRsFailed adds a store-lifetime baseline to the failed-PR counter.
-// See HydrateExecutions (GH-4093).
-func (m *Metrics) HydratePRsFailed(n int64) {
+// HydratePRsFailedLifetime adds a store-lifetime baseline to the failed-PR
+// lifetime gauge. See HydratePRsMergedLifetime (GH-4511, GH-4093).
+func (m *Metrics) HydratePRsFailedLifetime(n int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.PRsFailed += n
+	m.PRsFailedLifetime += n
 }
 
 // --- Gauge updates ---
@@ -508,6 +532,8 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		IssuesProcessed:               copyStringIntMap(m.IssuesProcessed),
 		PRsMerged:                     m.PRsMerged,
 		PRsFailed:                     m.PRsFailed,
+		PRsMergedLifetime:             m.PRsMergedLifetime,
+		PRsFailedLifetime:             m.PRsFailedLifetime,
 		PRsConflicting:                m.PRsConflicting,
 		CIRuns:                        copyStringIntMap(m.CIRuns),
 		CircuitBreakerTrips:           m.CircuitBreakerTrips,
@@ -588,6 +614,8 @@ type MetricsSnapshot struct {
 	IssuesProcessed           map[string]int64
 	PRsMerged                 int64
 	PRsFailed                 int64
+	PRsMergedLifetime         int64 // GH-4511: all-time gauge counterpart to session-only PRsMerged
+	PRsFailedLifetime         int64 // GH-4511: all-time gauge counterpart to session-only PRsFailed
 	PRsConflicting            int64
 	CIRuns                    map[string]int64 // GH-4134: result → count (pass, fail)
 	CircuitBreakerTrips       int64

@@ -90,15 +90,37 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		}
 	}
 
-	// pilot_prs_merged_total
-	writeHelp(w, "pilot_prs_merged_total", "Total PRs successfully merged, lifetime, one per shipped issue (task_id) regardless of retries")
+	// pilot_prs_merged_total (GH-4511): session-scoped only — starts at 0 on
+	// every process restart and is never hydrated with a store baseline. A
+	// hydrated baseline previously caused Prometheus counter-reset artifacts:
+	// when the baseline landed below the pre-restart live value,
+	// increase()/rate() treated it as a reset and replayed the whole
+	// baseline as fabricated new activity. Use pilot_prs_merged_lifetime for
+	// the all-time total instead.
+	writeHelp(w, "pilot_prs_merged_total", "PRs successfully merged since this process started, one per shipped issue (task_id) regardless of retries. Resets to 0 on restart — see pilot_prs_merged_lifetime for the all-time total")
 	writeType(w, "pilot_prs_merged_total", "counter")
 	writeCounter(w, "pilot_prs_merged_total", snap.PRsMerged)
 
-	// pilot_prs_failed_total
-	writeHelp(w, "pilot_prs_failed_total", "Total genuine PR-family failures, lifetime (a PR was created but failed CI/merge/release; excludes coding-stage failures with no PR and issues that later shipped)")
+	// pilot_prs_failed_total (GH-4511): session-scoped only, see
+	// pilot_prs_merged_total above.
+	writeHelp(w, "pilot_prs_failed_total", "Genuine PR-family failures since this process started (a PR was created but failed CI/merge/release; excludes coding-stage failures with no PR and issues that later shipped). Resets to 0 on restart — see pilot_prs_failed_lifetime for the all-time total")
 	writeType(w, "pilot_prs_failed_total", "counter")
 	writeCounter(w, "pilot_prs_failed_total", snap.PRsFailed)
+
+	// pilot_prs_merged_lifetime / pilot_prs_failed_lifetime (GH-4511): gauges
+	// hydrated once at boot from the store's durable lifetime baseline
+	// (GetLifetimePRCountersFromExecutions) and bumped alongside the session
+	// counters above on every live merge/failure. Gauges are immune to the
+	// counter-reset misinterpretation that affected the old hydrated
+	// counters, so this is the correct series for all-time/dashboard totals
+	// across restarts.
+	writeHelp(w, "pilot_prs_merged_lifetime", "Total PRs successfully merged, all-time across restarts, one per shipped issue (task_id) regardless of retries")
+	writeType(w, "pilot_prs_merged_lifetime", "gauge")
+	writeGauge(w, "pilot_prs_merged_lifetime", float64(snap.PRsMergedLifetime))
+
+	writeHelp(w, "pilot_prs_failed_lifetime", "Total genuine PR-family failures, all-time across restarts (a PR was created but failed CI/merge/release; excludes coding-stage failures with no PR and issues that later shipped)")
+	writeType(w, "pilot_prs_failed_lifetime", "gauge")
+	writeGauge(w, "pilot_prs_failed_lifetime", float64(snap.PRsFailedLifetime))
 
 	// pilot_ci_runs_total (GH-4134): true CI pass/fail counter, distinct from
 	// the pilot_prs_failed_total proxy — that counter also folds in approval

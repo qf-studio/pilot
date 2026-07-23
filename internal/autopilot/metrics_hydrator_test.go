@@ -330,13 +330,18 @@ func TestHydrateFromStore_IssueLevelCounts(t *testing.T) {
 	}
 }
 
-// TestHydrateFromStore_PRFamilyCounters pins GH-4121: pilot_prs_merged_total
-// and pilot_prs_failed_total hydrate all-time from the executions table (not
+// TestHydrateFromStore_PRFamilyCounters pins GH-4121: pilot_prs_merged_lifetime
+// and pilot_prs_failed_lifetime hydrate all-time from the executions table (not
 // the execution_events ledger, which only goes back to its TASK-379/GH-3844
 // introduction and undercounts against every other lifetime counter on this
 // Metrics). A bare executor-level task failure with no PR ever created must
-// not inflate PRsFailed, and pre-ledger executions (no execution_events rows
-// at all) must still contribute — the entire point of the fix.
+// not inflate PRsFailedLifetime, and pre-ledger executions (no execution_events
+// rows at all) must still contribute — the entire point of the fix.
+//
+// GH-4511: PRsMerged/PRsFailed are now pure session counters that must start
+// at 0 regardless of what's hydrated — the lifetime baseline lands only on
+// PRsMergedLifetime/PRsFailedLifetime (gauges, immune to the Prometheus
+// counter-reset misinterpretation that hydrating a live Counter caused).
 func TestHydrateFromStore_PRFamilyCounters(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := memory.NewStore(tmpDir)
@@ -371,21 +376,140 @@ func TestHydrateFromStore_PRFamilyCounters(t *testing.T) {
 	}
 	snap := metrics.Snapshot()
 
-	if snap.PRsMerged != 3 {
-		t.Errorf("PRsMerged = %d, want 3 (pr-1, pr-2, pr-5 deduped to its completed attempt)", snap.PRsMerged)
+	// GH-4511: hydration must never touch the session counters — they start
+	// at 0 every boot regardless of the store's lifetime baseline.
+	if snap.PRsMerged != 0 {
+		t.Errorf("PRsMerged = %d, want 0 (session counter must not be hydrated)", snap.PRsMerged)
 	}
-	if snap.PRsFailed != 1 {
-		t.Errorf("PRsFailed = %d, want 1 (pr-3 only; pr-4 has no PR, pr-5 shipped on retry)", snap.PRsFailed)
+	if snap.PRsFailed != 0 {
+		t.Errorf("PRsFailed = %d, want 0 (session counter must not be hydrated)", snap.PRsFailed)
 	}
-	if snap.PRsMerged > snap.IssuesShipped {
-		t.Errorf("PRsMerged = %d must not exceed IssuesShipped = %d", snap.PRsMerged, snap.IssuesShipped)
+
+	if snap.PRsMergedLifetime != 3 {
+		t.Errorf("PRsMergedLifetime = %d, want 3 (pr-1, pr-2, pr-5 deduped to its completed attempt)", snap.PRsMergedLifetime)
+	}
+	if snap.PRsFailedLifetime != 1 {
+		t.Errorf("PRsFailedLifetime = %d, want 1 (pr-3 only; pr-4 has no PR, pr-5 shipped on retry)", snap.PRsFailedLifetime)
+	}
+	if snap.PRsMergedLifetime > snap.IssuesShipped {
+		t.Errorf("PRsMergedLifetime = %d must not exceed IssuesShipped = %d", snap.PRsMergedLifetime, snap.IssuesShipped)
 	}
 
 	// Acceptance: live merges on top of the hydrated baseline must not
-	// double count — a fresh live RecordPRMerged() call adds exactly 1.
+	// double count on the lifetime gauge, and the session counter tracks
+	// only the live call.
 	metrics.RecordPRMerged()
-	if got := metrics.Snapshot().PRsMerged; got != 4 {
-		t.Errorf("PRsMerged after live merge = %d, want 4 (hydrated 3 + live 1)", got)
+	got := metrics.Snapshot()
+	if got.PRsMerged != 1 {
+		t.Errorf("PRsMerged after live merge = %d, want 1 (session-only, no hydrated baseline)", got.PRsMerged)
+	}
+	if got.PRsMergedLifetime != 4 {
+		t.Errorf("PRsMergedLifetime after live merge = %d, want 4 (hydrated 3 + live 1)", got.PRsMergedLifetime)
+	}
+}
+
+// TestHydrateFromStore_PRsMergedRestartResetSemantics pins GH-4511's AC1: a
+// restart must never make the Prometheus-visible pilot_prs_merged_total
+// series drop to some intermediate value below its pre-restart high-water
+// mark — it must either keep climbing or cleanly reset to 0. A drop to a
+// nonzero value below the pre-restart value is exactly what previously
+// caused Prometheus's increase()/rate() to misfire: seeing a value that
+// looks like a reset (lower than before) but isn't 0 makes those functions
+// add the ENTIRE pre-reset value back in as fabricated "new" activity
+// (observed live: sum(increase(...[3h])) = 1236 against a true 3h count of
+// 3). Since PRsMerged is now a pure session counter (never hydrated) it
+// always resets cleanly to 0 on restart, which is the one shape
+// increase()/rate() are designed to compensate for correctly. The
+// all-time truth instead lives on PRsMergedLifetime, a gauge, which is
+// immune to reset misinterpretation entirely and must never regress across
+// a restart when the store itself is monotonic.
+func TestHydrateFromStore_PRsMergedRestartResetSemantics(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Two merges shipped before this process ever started.
+	for _, id := range []string{"boot-1", "boot-2"} {
+		if err := store.SaveExecution(&memory.Execution{
+			ID: id, TaskID: "TASK-" + id, ProjectPath: "/p", Status: "completed",
+			PRUrl: "https://github.com/o/r/pull/" + id,
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", id, err)
+		}
+	}
+
+	// --- Session 1 (pre-restart) ---
+	session1 := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, session1); err != nil {
+		t.Fatalf("HydrateFromStore (session 1): %v", err)
+	}
+
+	// One genuine live merge happens during session 1. In production this
+	// pairs RecordPRMerged with a store write (recordMergeSuccess +
+	// self-heal/MarkExecutionCompleted); mirror that here so the store stays
+	// the source of truth for the next boot's hydration.
+	session1.RecordPRMerged()
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "live-1", TaskID: "TASK-live-1", ProjectPath: "/p", Status: "completed",
+		PRUrl: "https://github.com/o/r/pull/live-1",
+	}); err != nil {
+		t.Fatalf("SaveExecution live-1: %v", err)
+	}
+
+	preRestart := session1.Snapshot()
+	if preRestart.PRsMerged != 1 {
+		t.Fatalf("pre-restart PRsMerged = %d, want 1", preRestart.PRsMerged)
+	}
+	if preRestart.PRsMergedLifetime != 3 {
+		t.Fatalf("pre-restart PRsMergedLifetime = %d, want 3", preRestart.PRsMergedLifetime)
+	}
+
+	// --- Restart: fresh Metrics, re-hydrated from the same store ---
+	session2 := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, session2); err != nil {
+		t.Fatalf("HydrateFromStore (session 2): %v", err)
+	}
+	postRestart := session2.Snapshot()
+
+	// The core AC1 assertion: the session counter resets cleanly to 0, NOT
+	// to some value between 0 and the pre-restart high-water mark (1). A
+	// nonzero-but-lower value is what fabricates the counter-reset spike;
+	// 0 is the one shape increase()/rate() handle correctly.
+	if postRestart.PRsMerged != 0 {
+		t.Errorf("post-restart PRsMerged = %d, want 0 (session counter must never be hydrated)", postRestart.PRsMerged)
+	}
+
+	// The lifetime gauge must reflect the store's current truth and must
+	// never regress below what it reported pre-restart.
+	if postRestart.PRsMergedLifetime < preRestart.PRsMergedLifetime {
+		t.Errorf("post-restart PRsMergedLifetime = %d, want >= pre-restart %d",
+			postRestart.PRsMergedLifetime, preRestart.PRsMergedLifetime)
+	}
+	if postRestart.PRsMergedLifetime != 3 {
+		t.Errorf("post-restart PRsMergedLifetime = %d, want 3 (unchanged store truth)", postRestart.PRsMergedLifetime)
+	}
+
+	// A second genuine live merge happens in session 2, post-restart.
+	session2.RecordPRMerged()
+	final := session2.Snapshot()
+
+	// Windowed increase() semantics check: across the whole test (session 1
+	// start through session 2's live merge), exactly 2 genuine merges
+	// occurred. That must equal the lifetime gauge's total delta — the
+	// invariant a dashboard actually cares about — regardless of the
+	// session counter having reset to 0 in between.
+	totalGenuineMerges := int64(2)
+	if delta := final.PRsMergedLifetime - 2; delta != totalGenuineMerges {
+		t.Errorf("lifetime gauge delta across restart = %d, want %d genuine merges", delta, totalGenuineMerges)
+	}
+	// And the post-restart session counter reflects only the post-restart
+	// activity (1), never replaying the pre-restart merge that already
+	// reset to 0 at hydration.
+	if final.PRsMerged != 1 {
+		t.Errorf("final session PRsMerged = %d, want 1 (only the post-restart live merge)", final.PRsMerged)
 	}
 }
 
@@ -579,8 +703,8 @@ func TestHydrateFromStore_ExcludesCanaryRows(t *testing.T) {
 		if snap.IssuesShipped != 2 {
 			t.Errorf("IssuesShipped = %d, want 2", snap.IssuesShipped)
 		}
-		if snap.PRsMerged != 2 {
-			t.Errorf("PRsMerged = %d, want 2", snap.PRsMerged)
+		if snap.PRsMergedLifetime != 2 {
+			t.Errorf("PRsMergedLifetime = %d, want 2", snap.PRsMergedLifetime)
 		}
 		if snap.CIRuns["pass"] != 2 {
 			t.Errorf("CIRuns[pass] = %d, want 2", snap.CIRuns["pass"])
@@ -595,8 +719,8 @@ func TestHydrateFromStore_ExcludesCanaryRows(t *testing.T) {
 		if snap.IssuesAttempted != 1 {
 			t.Errorf("IssuesAttempted = %d, want 1 (sandbox row excluded)", snap.IssuesAttempted)
 		}
-		if snap.PRsMerged != 1 {
-			t.Errorf("PRsMerged = %d, want 1 (sandbox row excluded)", snap.PRsMerged)
+		if snap.PRsMergedLifetime != 1 {
+			t.Errorf("PRsMergedLifetime = %d, want 1 (sandbox row excluded)", snap.PRsMergedLifetime)
 		}
 		if snap.CIRuns["pass"] != 1 {
 			t.Errorf("CIRuns[pass] = %d, want 1 (sandbox row excluded)", snap.CIRuns["pass"])
