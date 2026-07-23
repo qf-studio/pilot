@@ -1361,6 +1361,17 @@ func (r *Runner) recordExecutionEvent(executionID string, stage memory.Stage, de
 	}
 }
 
+// applyGhostSHAGuardWithPreserve wraps the free applyGhostSHAGuard so a
+// GH-4517 dirty-worktree auto-preserve is also recorded to the
+// execution_events audit trail — without this, the only trace of a
+// ~44-minute rescue is a WARN log line, invisible in `pilot trace` and the
+// dashboard (AC3).
+func (r *Runner) applyGhostSHAGuardWithPreserve(ctx context.Context, task *Task, result *ExecutionResult, executionPath string, log *slog.Logger) {
+	if applyGhostSHAGuard(ctx, task, result, executionPath, log) {
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageWorkPreserved, result.Error)
+	}
+}
+
 // recordResearchPhaseEvent persists the parallel-research phase's cost to the
 // execution_events ledger — previously only slog.Info, so per-execution
 // research spend wasn't queryable (GH-4129).
@@ -3322,7 +3333,9 @@ retrySucceeded:
 
 	// GH-3126: Ghost-SHA guard — reject SHAs that are already on the base branch.
 	// Skipped for LocalMode tasks (read-only intents have no commit expectation — GH-3642).
-	applyGhostSHAGuard(ctx, task, result, executionPath, log)
+	// GH-4517: also auto-preserves any uncommitted worktree changes it finds
+	// before the caller's deferred worktree cleanup can delete them.
+	r.applyGhostSHAGuardWithPreserve(ctx, task, result, executionPath, log)
 
 	// Fill in additional metrics from state
 	result.FilesChanged = state.filesWrite
@@ -3557,6 +3570,37 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							recorder.SetModel(result.ModelName)
 							recorder.SetNavigator(state.hasNavigator)
 							if finErr := recorder.Finish("declined"); finErr != nil {
+								log.Warn("Failed to finish recording", slog.Any("error", finErr))
+							}
+						}
+						return result, nil
+					}
+
+					// GH-4517: before declaring a genuine no_changes no-op, check
+					// whether the worktree still has uncommitted changes despite
+					// zero counted commits — the model may have done real work and
+					// simply never run `git commit` (pilot-console#26/B8, where the
+					// same failure mode showed up via the ghost-SHA guard instead
+					// of this no-commit-after-retry path). If so, auto-preserve
+					// instead of letting the deferred worktree cleanup delete it.
+					if sha, preserved := preserveDirtyWorktreeAsWIP(ctx, git, task, log); preserved {
+						result.CommitSHA = sha
+						result.Success = false
+						result.Error = fmt.Sprintf(
+							"worktree had uncommitted work after no-commit retry — auto-preserved as %s on branch %s; needs manual review, not a genuine no-op",
+							sha[:min(7, len(sha))], task.Branch,
+						)
+						r.recordExecutionEvent(task.LogExecutionID(), memory.StageWorkPreserved, result.Error)
+						log.Warn("executor: auto-preserved dirty worktree after no-commit retry",
+							slog.String("task_id", task.ID),
+							slog.String("sha", sha[:min(7, len(sha))]),
+						)
+						r.reportProgress(task.ID, "Auto-Preserved", 100, result.Error)
+						r.persistBackendDiagnostics(task.LogExecutionID(), backendResult)
+						if recorder != nil {
+							recorder.SetModel(result.ModelName)
+							recorder.SetNavigator(state.hasNavigator)
+							if finErr := recorder.Finish("failed"); finErr != nil {
 								log.Warn("Failed to finish recording", slog.Any("error", finErr))
 							}
 						}

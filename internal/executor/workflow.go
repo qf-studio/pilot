@@ -173,6 +173,26 @@ to the actual change you made):
 
 ---
 
+### Completion Contract (Non-negotiable)
+
+Work is only complete once you have run ` + "`git commit`" + ` on the task
+branch — never before. Passing tests, a working build, or a final message
+claiming all acceptance criteria are met do NOT count as done while the
+working tree is still dirty. "Tests pass" in a dirty tree is not done — if
+` + "`git status --porcelain`" + ` shows anything unexpected, commit it before
+you conclude.
+
+**After any context compaction** (if your context was summarized or you
+notice earlier turns are no longer directly visible): before reporting
+anything as complete, run ` + "`git log --oneline -5`" + ` and
+` + "`git status --porcelain`" + ` in the task branch and verify they
+actually reflect the work you believe you did. Do not attribute your own
+prior uncommitted edits to "an earlier session" and skip straight to
+verification — if ` + "`git log`" + ` does not show your commit, the work is
+not saved yet. Commit it now, before doing anything else.
+
+---
+
 ### Error Recovery
 
 **Stuck after 3 attempts?**

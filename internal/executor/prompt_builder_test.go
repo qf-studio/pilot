@@ -487,6 +487,49 @@ func TestBuildPromptContainsErrcheckGuidance(t *testing.T) {
 	}
 }
 
+// TestBuildPromptContainsCompletionContract covers GH-4517 AC4: the prompt
+// must explicitly state that work is only complete after `git commit`, and
+// that after a context compaction the model must verify git log/git status
+// before concluding anything is done — "tests pass" in a dirty tree is not
+// done. Incident: pilot-console#26 (B8), 2026-07-23 — a session attributed
+// its own uncommitted work to "an earlier session" post-compaction and
+// skipped straight to reporting completion.
+func TestBuildPromptContainsCompletionContract(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "pilot-test-completion-contract")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	agentDir := filepath.Join(tempDir, ".agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("Failed to create .agent dir: %v", err)
+	}
+
+	runner := NewRunner()
+	task := &Task{
+		ID:          "GH-4517",
+		Title:       "harvester backstop for dirty worktrees",
+		Description: "auto-preserve uncommitted work instead of classifying no_op",
+		ProjectPath: tempDir,
+		Branch:      "pilot/GH-4517",
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	for _, want := range []string{
+		"Completion Contract",
+		"git commit",
+		"context was compacted",
+		"git status --porcelain",
+		"git log",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("BuildPrompt should contain %q (completion contract / post-compaction verify), got:\n%s", want, prompt)
+		}
+	}
+}
+
 // GH-3224: every executor prompt must carry the evidence-backed-spec directive
 // so the model does not silently no-op on explicit changes that "look correct."
 func TestBuildPromptContainsEvidenceBackedSpecDirective(t *testing.T) {

@@ -980,6 +980,19 @@ const (
 	// {"path","node_id"}. Without this, a guard that silently rewrites the
 	// branch would be invisible to anyone reviewing the PR or `pilot trace`.
 	StageMemoryGuardRestore Stage = "memory_guard_restore"
+	// StageWorkPreserved records the GH-4517 harvester backstop firing: the
+	// worktree was about to be classified no_op (and deleted by the runner's
+	// deferred worktree cleanup) but still had uncommitted changes, so the
+	// executor auto-committed them to the task branch as a wip(<task-id>)
+	// commit and pushed instead of silently discarding the work. Detail
+	// carries the same human-readable message as result.Error (short SHA,
+	// branch, "needs manual review" note). Distinct from StageCommit (a
+	// normal, agent-authored commit) and StageNoOp (a genuine no-op with
+	// nothing to preserve) — this is a rescue path for a session that did
+	// real work but never ran `git commit` itself. Incident: pilot-console#26
+	// (B8), 2026-07-23 — 44 minutes of completed, test-passing work destroyed
+	// before this backstop existed.
+	StageWorkPreserved Stage = "work_preserved"
 )
 
 // Event represents a single stage-transition record for an execution.
