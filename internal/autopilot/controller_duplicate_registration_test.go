@@ -135,7 +135,6 @@ func TestController_OnPRCreated_DuplicateDoesNotDuplicateMergedComment(t *testin
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")

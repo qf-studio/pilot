@@ -2337,7 +2337,6 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		logging.WithComponent("start").Info("autopilot enabled",
 			slog.String("environment", string(cfg.Orchestrator.Autopilot.Environment)),
 			slog.Bool("auto_merge", cfg.Orchestrator.Autopilot.AutoMerge),
-			slog.Bool("auto_review", cfg.Orchestrator.Autopilot.AutoReview),
 		)
 	}
 

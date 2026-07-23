@@ -445,7 +445,6 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.CIPollInterval = 10 * time.Millisecond
 	cfg.DevCITimeout = 1 * time.Second
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
@@ -547,7 +546,6 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	cfg.Environment = EnvStage
 	cfg.CIPollInterval = 10 * time.Millisecond
 	cfg.CIWaitTimeout = 1 * time.Second
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -725,7 +723,6 @@ func TestController_HandleMerging_SelfHealsExecution(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	// TASK-352: scope self-heal to the project's filesystem path (the value the
@@ -1272,7 +1269,6 @@ func TestController_MergeAttemptIncrement(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -1352,7 +1348,6 @@ func TestController_FirstMergeAttemptSucceedsOnNoCIRepo(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = nil
 	cfg.CIChecks = &CIChecksConfig{
 		Mode:                 "auto",
@@ -3025,7 +3020,6 @@ func TestController_handleMerging_ConflictClearsLabel(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -3130,7 +3124,6 @@ func TestController_handleMerging_Success_RemovesFailedLabel(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -3231,7 +3224,6 @@ func TestController_handleMerging_Success_ClearsRetryLabels(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -3490,7 +3482,6 @@ func TestController_MonitorCompletedOnMerge(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.CIPollInterval = 10 * time.Millisecond
 	cfg.DevCITimeout = 1 * time.Second
 	cfg.RequiredChecks = []string{"build"}
@@ -3551,7 +3542,6 @@ func TestController_MonitorNilSafe(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.CIPollInterval = 10 * time.Millisecond
 	cfg.DevCITimeout = 1 * time.Second
 	cfg.RequiredChecks = []string{"build"}
@@ -4146,7 +4136,6 @@ func TestController_handleMergeConflict_AutoRebaseSuccess(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -4248,7 +4237,6 @@ func TestController_handleMergeConflict_AutoRebaseFails(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -4331,7 +4319,6 @@ func TestHandleMerged_LearnsFromReviews(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	loop, cleanup := newTestLearningLoop(t)
@@ -4376,7 +4363,6 @@ func TestHandleMerged_NoReviews(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	loop, cleanup := newTestLearningLoop(t)
@@ -4411,7 +4397,6 @@ func TestHandleMerged_NilLearningLoop(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	// learningLoop intentionally not set
@@ -5244,7 +5229,6 @@ func TestHandleMerged_ExtractsEvalTask(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	evalMock := &mockEvalStore{}
@@ -7309,7 +7293,6 @@ func TestController_handleMerging_IdempotentCompletionComment(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -7386,7 +7369,6 @@ func TestController_handleMerging_CommentFlagPersists(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -7445,7 +7427,6 @@ func TestController_handleMerging_NotifiesApprovalGatedMerge(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	notifier := &mockApprovalMergeNotifier{}
@@ -7487,7 +7468,6 @@ func TestController_handleMerging_NoApprovalGate_SkipsMergeFollowup(t *testing.T
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	notifier := &mockApprovalMergeNotifier{}
@@ -7524,7 +7504,6 @@ func TestController_handleMerging_MergeFollowupNotDoubleFired(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	notifier := &mockApprovalMergeNotifier{}
@@ -8728,7 +8707,6 @@ func TestController_IssuesProcessed_Success(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "mergesha1", "pilot/GH-10", "")

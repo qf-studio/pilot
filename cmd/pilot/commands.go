@@ -2914,7 +2914,6 @@ Note: Pilot must be running with --env flag for this to work.`,
 					"enabled":     true,
 					"environment": autopilotCfg.Environment,
 					"auto_merge":  autopilotCfg.AutoMerge,
-					"auto_review": autopilotCfg.AutoReview,
 					"release": map[string]interface{}{
 						"enabled": autopilotCfg.Release != nil && autopilotCfg.Release.Enabled,
 						"trigger": func() string {
@@ -2946,7 +2945,6 @@ Note: Pilot must be running with --env flag for this to work.`,
 
 			fmt.Println("Configuration:")
 			fmt.Printf("  Auto Merge:     %v\n", autopilotCfg.AutoMerge)
-			fmt.Printf("  Auto Review:    %v\n", autopilotCfg.AutoReview)
 			fmt.Printf("  Merge Method:   %s\n", autopilotCfg.MergeMethod)
 			fmt.Printf("  CI Timeout:     %s\n", autopilotCfg.CIWaitTimeout)
 			fmt.Printf("  Max Failures:   %d\n", autopilotCfg.MaxFailures)

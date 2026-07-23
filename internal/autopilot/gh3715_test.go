@@ -222,7 +222,6 @@ func TestController_HandleMerging_ResetsRebaseAttemptsOnSuccess(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")

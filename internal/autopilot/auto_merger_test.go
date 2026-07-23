@@ -201,7 +201,6 @@ func TestAutoMerger_MergePR_DevEnvironment(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = true
 	cfg.MergeMethod = github.MergeMethodSquash
 
 	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
@@ -248,7 +247,6 @@ func TestAutoMerger_MergePR_NonProdWithApprovalDisabled(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = true
 
 	merger := NewAutoMerger(ghClient, approvalMgr, nil, "owner", "repo", cfg)
 
@@ -286,7 +284,6 @@ func TestAutoMerger_MergePR_DefaultMergeMethod(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.MergeMethod = "" // Empty - should default to squash
 
 	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
@@ -320,7 +317,6 @@ func TestAutoMerger_MergePR_MergeFailure(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = true
 
 	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
@@ -329,43 +325,6 @@ func TestAutoMerger_MergePR_MergeFailure(t *testing.T) {
 	err := merger.MergePR(context.Background(), prState)
 	if err == nil {
 		t.Error("MergePR() should return error when merge fails")
-	}
-}
-
-func TestAutoMerger_MergePR_AutoReviewFailureContinues(t *testing.T) {
-	mergeWasCalled := false
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/owner/repo/pulls/42/reviews":
-			// Auto-review fails (e.g., already reviewed)
-			w.WriteHeader(http.StatusUnprocessableEntity)
-		case "/repos/owner/repo/pulls/42/merge":
-			// Merge should still be attempted
-			mergeWasCalled = true
-			w.WriteHeader(http.StatusOK)
-		default:
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-	defer server.Close()
-
-	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-	cfg := DefaultConfig()
-	cfg.Environment = EnvDev
-	cfg.AutoReview = true
-
-	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
-
-	prState := &PRState{PRNumber: 42}
-
-	err := merger.MergePR(context.Background(), prState)
-	if err != nil {
-		t.Errorf("MergePR() error = %v", err)
-	}
-
-	if !mergeWasCalled {
-		t.Error("merge should still be called when auto-review fails")
 	}
 }
 
@@ -388,7 +347,6 @@ func TestAutoMerger_MergePR_StageEnvironment(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvStage
-	cfg.AutoReview = true
 
 	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
@@ -401,40 +359,6 @@ func TestAutoMerger_MergePR_StageEnvironment(t *testing.T) {
 
 	if !mergeWasCalled {
 		t.Error("merge should be called for stage environment")
-	}
-}
-
-func TestAutoMerger_ApprovePR(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/owner/repo/pulls/42/reviews" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-
-		var body map[string]string
-		_ = json.NewDecoder(r.Body).Decode(&body)
-
-		if body["event"] != github.ReviewEventApprove {
-			t.Errorf("expected APPROVE event, got %s", body["event"])
-		}
-		if body["body"] != "Auto-approved by Pilot autopilot" {
-			t.Errorf("unexpected review body: %s", body["body"])
-		}
-
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-	cfg := DefaultConfig()
-
-	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
-
-	err := merger.approvePR(context.Background(), 42)
-	if err != nil {
-		t.Errorf("approvePR() error = %v", err)
 	}
 }
 
@@ -494,7 +418,6 @@ func TestAutoMerger_MergePR_AllMergeMethods(t *testing.T) {
 			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			cfg := DefaultConfig()
 			cfg.Environment = EnvDev
-			cfg.AutoReview = false
 			cfg.MergeMethod = method
 
 			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
@@ -567,7 +490,6 @@ func TestAutoMerger_MergePR_SquashUsePRTitle(t *testing.T) {
 			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			cfg := DefaultConfig()
 			cfg.Environment = EnvDev
-			cfg.AutoReview = false
 			cfg.MergeMethod = tt.method
 
 			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
@@ -637,7 +559,6 @@ func TestAutoMerger_MergePR_SquashStripsIssuePrefix(t *testing.T) {
 			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			cfg := DefaultConfig()
 			cfg.Environment = EnvDev
-			cfg.AutoReview = false
 			cfg.MergeMethod = github.MergeMethodSquash
 
 			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
@@ -867,7 +788,6 @@ func TestAutoMerger_MergePR_StageWithCIVerification(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvStage
-	cfg.AutoReview = true
 	cfg.RequiredChecks = []string{}
 
 	ciMonitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
@@ -924,7 +844,6 @@ func TestAutoMerger_MergePR_StageWithCIFailure(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvStage
-	cfg.AutoReview = true
 	cfg.RequiredChecks = []string{}
 
 	ciMonitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
@@ -974,7 +893,6 @@ func TestAutoMerger_MergePR_DevWithCIVerification(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	ciMonitor := NewCIMonitor(ghClient, "owner", "repo", cfg)

@@ -54,17 +54,8 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 		"pr", prState.PRNumber,
 		"env", m.config.EnvironmentName(),
 		"method", m.config.MergeMethod,
-		"auto_review", m.config.AutoReview,
 		"sha", ShortSHA(prState.HeadSHA),
 	)
-
-	// Auto-review if enabled (creates approval review on the PR)
-	if m.config.AutoReview {
-		if err := m.approvePR(ctx, prState.PRNumber); err != nil {
-			m.log.Warn("auto-review failed", "pr", prState.PRNumber, "error", err)
-			// Continue anyway - might not need review or already reviewed
-		}
-	}
 
 	// Final CI verification immediately before merge to prevent race conditions.
 	// CI status can change between initial check and merge, so we verify again.
@@ -165,12 +156,6 @@ Tracked in #2598.`,
 		m.log.Warn("postMisconfigComment: failed to post PR comment",
 			"pr", prState.PRNumber, "error", postErr)
 	}
-}
-
-// approvePR creates an approval review on the PR.
-func (m *AutoMerger) approvePR(ctx context.Context, prNumber int) error {
-	body := "Auto-approved by Pilot autopilot"
-	return m.ghClient.ApprovePullRequest(ctx, m.owner, m.repo, prNumber, body)
 }
 
 // CanMerge checks if a PR is in a mergeable state.

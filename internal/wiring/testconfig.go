@@ -22,7 +22,6 @@ func MinimalConfig() *config.Config {
 func WithAutopilot(cfg *config.Config) *config.Config {
 	cfg.Orchestrator.Autopilot.Enabled = true
 	cfg.Orchestrator.Autopilot.AutoMerge = true
-	cfg.Orchestrator.Autopilot.AutoReview = true
 	return cfg
 }
 

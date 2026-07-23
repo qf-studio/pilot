@@ -88,7 +88,6 @@ func TestController_PRStateRace_Concurrent(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.Environment = EnvProd // prod → approval path is reachable
-	cfg.AutoReview = false
 	cfg.CIPollInterval = time.Millisecond
 	cfg.CIWaitTimeout = time.Hour // don't time out CI mid-test
 	cfg.MaxFailures = 1 << 30     // keep the per-PR circuit breaker from tripping
