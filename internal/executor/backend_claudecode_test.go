@@ -1,9 +1,12 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -1731,5 +1734,217 @@ exit 0
 	}
 	if result.StdoutTail != "" {
 		t.Errorf("expected empty StdoutTail on success, got: %q", result.StdoutTail)
+	}
+}
+
+// TestReadBoundedLine_OversizedLineDoesNotExitSilently covers GH-4519: unlike
+// bufio.Scanner, which aborts the entire read with bufio.ErrTooLong the
+// moment a line exceeds its fixed buffer (and never surfaces that error to
+// the caller unless Err() is checked), readBoundedLine must keep draining an
+// oversized line to its end and let the caller continue reading subsequent
+// lines — this is the exact silent-exit bug that let a hung child process
+// wedge on a full stdout pipe and get SIGKILLed by the heartbeat monitor.
+func TestReadBoundedLine_OversizedLineDoesNotExitSilently(t *testing.T) {
+	const maxBytes = 1024 * 1024 // 1 MiB, matches maxStdoutLineBytes
+
+	oversized := strings.Repeat("a", 5*1024*1024) // 5 MiB, no newline yet
+	input := oversized + "\n" + `{"type":"result","result":"done"}` + "\n"
+
+	// Sanity check that a bufio.Scanner with the same 1MB buffer really does
+	// abort silently on this input, i.e. this test reproduces the original bug.
+	t.Run("reproduces bufio.Scanner ErrTooLong", func(t *testing.T) {
+		scanner := bufio.NewScanner(strings.NewReader(input))
+		buf := make([]byte, 0, 64*1024)
+		scanner.Buffer(buf, maxBytes)
+		lineCount := 0
+		for scanner.Scan() {
+			lineCount++
+		}
+		if lineCount != 0 {
+			t.Fatalf("expected scanner to abort before returning any line, got %d lines", lineCount)
+		}
+		if !errors.Is(scanner.Err(), bufio.ErrTooLong) {
+			t.Fatalf("expected bufio.ErrTooLong, got %v", scanner.Err())
+		}
+	})
+
+	reader := bufio.NewReaderSize(strings.NewReader(input), 64*1024)
+
+	var totalBytesSeenByHeartbeat int
+	onBytes := func(n int) { totalBytesSeenByHeartbeat += n }
+
+	// First line: oversized, must be truncated but must NOT return an error —
+	// the loop must be able to continue to the next line.
+	line, truncated, totalBytes, err := readBoundedLine(reader, maxBytes, onBytes)
+	if err != nil {
+		t.Fatalf("readBoundedLine returned error on oversized line, want nil (silent exit not allowed): %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected truncated=true for a line exceeding maxBytes")
+	}
+	if len(line) != maxBytes {
+		t.Fatalf("expected kept line length %d, got %d", maxBytes, len(line))
+	}
+	if totalBytes != len(oversized) {
+		t.Fatalf("expected totalBytes=%d, got %d", len(oversized), totalBytes)
+	}
+	if totalBytesSeenByHeartbeat == 0 {
+		t.Fatal("expected onBytes callback to fire while draining the oversized line (heartbeat must track raw byte flow)")
+	}
+
+	// Second line: normal, must parse cleanly — proving the reader survived
+	// the oversized line and continues with subsequent lines.
+	line2, truncated2, _, err2 := readBoundedLine(reader, maxBytes, onBytes)
+	if err2 != nil {
+		t.Fatalf("readBoundedLine returned error on subsequent normal line: %v", err2)
+	}
+	if truncated2 {
+		t.Fatal("normal line should not be marked truncated")
+	}
+	want := `{"type":"result","result":"done"}`
+	if string(line2) != want {
+		t.Fatalf("line2 = %q, want %q", string(line2), want)
+	}
+
+	// Third read: EOF, terminal error must be surfaced (not swallowed).
+	_, _, _, err3 := readBoundedLine(reader, maxBytes, onBytes)
+	if !errors.Is(err3, io.EOF) {
+		t.Fatalf("expected io.EOF at end of stream, got %v", err3)
+	}
+}
+
+// TestClaudeCodeBackendSurvivesOversizedStdoutLine covers GH-4519 end to end:
+// a single stream-json line over 1MB (e.g. a tool result carrying a base64
+// blob) must not kill the stdout reader. Before the fix, bufio.Scanner
+// aborted on this input and stopped draining stdout entirely; since the fake
+// CLI keeps writing past the OS pipe buffer capacity afterward, the child
+// blocks and the run would eventually be killed rather than complete.
+func TestClaudeCodeBackendSurvivesOversizedStdoutLine(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	script := tmpDir + "/fake-claude"
+
+	// Emit one line well over the 1MB cap (5MB of 'a's) with no embedded
+	// newlines, then a normal stream-json result event.
+	body := `#!/bin/sh
+head -c 5000000 /dev/zero | tr '\0' 'a'
+echo ""
+echo '{"type":"result","subtype":"success","result":"done","is_error":false}'
+exit 0
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	var events []BackendEvent
+	opts := ExecuteOptions{
+		Prompt:      "hello",
+		ProjectPath: tmpDir,
+		EventHandler: func(e BackendEvent) {
+			events = append(events, e)
+		},
+	}
+
+	// Generous timeout: with the fix this completes in well under a second.
+	// A regression that reintroduces the silent-scanner-exit bug would hang
+	// here until context cancellation, blowing well past this bound.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	result, err := backend.Execute(ctx, opts)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("Execute() took %v, want well under 5s — suggests the oversized line wedged the reader", elapsed)
+	}
+	if !result.SawSuccessResult {
+		t.Error("expected SawSuccessResult=true — the result event after the oversized line must still parse")
+	}
+	if result.Output != "done" {
+		t.Errorf("result.Output = %q, want %q", result.Output, "done")
+	}
+	// Note: result.StdoutTail is only attached to the result on failure
+	// (GH-4395 — success runs don't need the diagnostic transcript); the
+	// truncation-marker content itself is covered on the failure path by
+	// TestClaudeCodeBackendStdoutTailShowsTruncationMarkerOnFailure below.
+
+	sawResultEvent := false
+	for _, e := range events {
+		if e.Type == EventTypeResult {
+			sawResultEvent = true
+		}
+	}
+	if !sawResultEvent {
+		t.Error("expected the result event to reach EventHandler after the oversized line")
+	}
+}
+
+// TestClaudeCodeBackendStdoutTailShowsTruncationMarkerOnFailure covers AC2:
+// when a run fails, the bounded diagnostic stdoutTail must contain a
+// truncation marker (not the raw multi-megabyte line) for any oversized
+// line encountered — proving the reader captured evidence instead of
+// silently dropping it (GH-4519), while keeping memory bounded.
+func TestClaudeCodeBackendStdoutTailShowsTruncationMarkerOnFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	script := tmpDir + "/fake-claude"
+
+	// Oversized line with no subsequent successful result event, then a
+	// nonzero exit — reproduces the failure-diagnostics path (GH-4395)
+	// combined with an oversized line (GH-4519), without GH-2107's
+	// SawSuccessResult recovery masking the failure.
+	body := `#!/bin/sh
+head -c 5000000 /dev/zero | tr '\0' 'a'
+echo ""
+exit 1
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	opts := ExecuteOptions{
+		Prompt:       "hello",
+		ProjectPath:  tmpDir,
+		EventHandler: func(BackendEvent) {},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	result, err := backend.Execute(ctx, opts)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from fake CLI exiting 1, got nil")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("Execute() took %v, want well under 5s — suggests the oversized line wedged the reader", elapsed)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result even on failure")
+	}
+	if !strings.Contains(result.StdoutTail, "[line truncated:") {
+		t.Errorf("expected StdoutTail to contain a truncation marker, got: %q", truncate(result.StdoutTail, 300))
+	}
+	if !strings.Contains(result.StdoutTail, "5000000 bytes") {
+		t.Errorf("expected truncation marker to report the original line size, got: %q", truncate(result.StdoutTail, 300))
+	}
+	// AC2: bounded memory — the raw 5MB payload must never appear in the
+	// (64KB-capped) tail, only the small marker + snippet.
+	if len(result.StdoutTail) > MaxStdoutTailBufferBytes+1024 {
+		t.Errorf("StdoutTail is %d bytes, expected it to stay close to the %d-byte cap", len(result.StdoutTail), MaxStdoutTailBufferBytes)
 	}
 }
