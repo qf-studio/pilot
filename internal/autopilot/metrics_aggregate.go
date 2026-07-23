@@ -76,6 +76,12 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		}
 		agg.PRsMerged += s.PRsMerged
 		agg.PRsFailed += s.PRsFailed
+		// PRsMergedLifetime/PRsFailedLifetime (GH-4511) are hydrated on exactly
+		// one controller (the default, same as IssuesShipped/IssuesAttempted
+		// above) — summing the other zero-valued sources alongside it is safe
+		// and matches the pattern documented in the AggregateMetrics doc comment.
+		agg.PRsMergedLifetime += s.PRsMergedLifetime
+		agg.PRsFailedLifetime += s.PRsFailedLifetime
 		agg.PRsConflicting += s.PRsConflicting
 		for k, v := range s.CIRuns {
 			agg.CIRuns[k] += v

@@ -849,6 +849,92 @@ func TestController_ScanRecentlyMergedPRs_SelfHeals(t *testing.T) {
 	}
 }
 
+// TestController_ScanRecentlyMergedPRs_HealsProjectPathMismatch pins GH-4511's
+// merge-persist miss fix: SelfHealExecutionByPRURL (the project-path-unscoped
+// pr_url-keyed fallback heal) now runs unconditionally on every discovered
+// merged Pilot PR, not only when resolveIssueNumFromPR fails to resolve an
+// issue number. Before the fix, a PR merged on a standard "pilot/GH-N" branch
+// (issueNum resolves fine) whose executions row was written under a
+// different project_path (e.g. a multi-project shared DB) would never heal:
+// selfHealForPR's task_id+project_path-scoped SelfHealExecutionAfterMerge
+// finds no matching row, and the unscoped pr_url fallback was skipped
+// entirely because issueNum != 0. recordMergeSuccess still counts the merge
+// live, so the store's lifetime baseline
+// (GetLifetimePRCountersFromExecutions) permanently desynced from the live
+// session counter across a restart — the "1236 vs 3" symptom reported in
+// GH-4511. Uses a real *memory.Store (not mockEvalStore) as EvalStore so the
+// assertion exercises the actual SQL query the metrics hydrator reads at boot.
+func TestController_ScanRecentlyMergedPRs_HealsProjectPathMismatch(t *testing.T) {
+	mergedAt := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	pr := github.PullRequest{
+		Number:         88,
+		Head:           github.PRRef{Ref: "pilot/GH-9001", SHA: "sha88"},
+		Base:           github.PRRef{Ref: "main"},
+		HTMLURL:        "https://github.com/owner/repo/pull/88",
+		Title:          "fix(x): something",
+		Body:           "work",
+		Merged:         true,
+		MergedAt:       mergedAt,
+		MergeCommitSHA: "merge-sha-88",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{&pr})
+		case r.URL.Path == "/repos/owner/repo/issues/9001":
+			// No "Parent: GH-N" marker — resolveParentIssue returns 0, so the
+			// parent-heal branch inside selfHealForPR isn't taken.
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.Issue{Body: "work"})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// The execution row for the shipped issue lives under a DIFFERENT
+	// project_path than the controller's configured one — simulating a
+	// multi-project shared DB where the task_id+project_path-scoped heal
+	// finds nothing, even though the row's own pr_url already matches the
+	// merged PR (stamped at creation time by UpdateExecutionResult).
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-9001", TaskID: "GH-9001", ProjectPath: "/other/project",
+		Status: "failed", PRUrl: pr.HTMLURL,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.MergedPRScanWindow = 30 * time.Minute
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithProjectPath("/proj/pilot"))
+	c.SetEvalStore(store)
+
+	if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+		t.Fatalf("ScanRecentlyMergedPRs: %v", err)
+	}
+
+	counters, err := store.GetLifetimePRCountersFromExecutions("")
+	if err != nil {
+		t.Fatalf("GetLifetimePRCountersFromExecutions: %v", err)
+	}
+	if counters.Merged != 1 {
+		t.Errorf("Merged = %d, want 1 — the pr_url-keyed fallback heal must recover a row whose "+
+			"project_path doesn't match the controller's scope even though issueNum resolved fine", counters.Merged)
+	}
+}
+
 // B3 (TASK-309): a PR persisted at stage='releasing' but absent from the in-memory
 // activePRs map (e.g. after a daemon restart) must not be re-registered by the
 // scanner while the release is fresh. A 'releasing' row stuck past

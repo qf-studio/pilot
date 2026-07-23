@@ -2285,7 +2285,8 @@ func healAndBackfillRows(db *sql.DB, whereClause string, whereArgs []interface{}
 	}
 
 	for _, c := range candidates {
-		if c.status != "completed" {
+		switch {
+		case c.status != "completed":
 			if _, err := tx.Exec(`
 				UPDATE executions
 				SET status = 'completed',
@@ -2294,6 +2295,22 @@ func healAndBackfillRows(db *sql.DB, whereClause string, whereArgs []interface{}
 					pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
 				WHERE id = ?
 			`, prURL, prURL, c.id); err != nil {
+				return err
+			}
+		case prURL != "":
+			// GH-4511: the row is already 'completed' (GH-4277 backfill-only
+			// case — only the ledger's terminal event is missing), but if its
+			// own pr_url column is still empty, backfill it from the caller's
+			// known prURL now rather than leaving it permanently blank. A
+			// blank pr_url here excludes the row from
+			// GetLifetimePRCountersFromExecutions's non-empty-pr_url filter
+			// forever, silently desyncing the lifetime PR-merged baseline
+			// from the live session counter that already counted this merge.
+			if _, err := tx.Exec(`
+				UPDATE executions
+				SET pr_url = ?
+				WHERE id = ? AND pr_url = ''
+			`, prURL, c.id); err != nil {
 				return err
 			}
 		}

@@ -4945,6 +4945,56 @@ func TestSelfHealExecutionByPRURL_EmptyURLNoOp(t *testing.T) {
 	}
 }
 
+// TestSelfHealExecutionAfterMerge_BackfillsEmptyPRUrlOnCompletedRow pins
+// GH-4511's fix to healAndBackfillRows: a row already sitting at
+// status='completed' (the GH-4277/GH-4292 backfill-only candidate — missing
+// only its terminal execution_events entry) whose own pr_url column is still
+// empty must have pr_url backfilled from the caller's known prURL. Before
+// this fix, the completed-row branch only appended the missing ledger event
+// and left pr_url untouched, so such a row stayed permanently invisible to
+// GetLifetimePRCountersFromExecutions's non-empty-pr_url filter even though the
+// live in-memory PRsMerged counter had already counted the merge —
+// desyncing the lifetime baseline from the session counter across a
+// restart.
+func TestSelfHealExecutionAfterMerge_BackfillsEmptyPRUrlOnCompletedRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	prURL := "https://github.com/org/repo/pull/77"
+	if err := store.SaveExecution(&Execution{
+		ID: "backfill-pr-url", TaskID: "GH-77", ProjectPath: "/proj",
+		Status: "completed", PRUrl: "",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	if err := store.SelfHealExecutionAfterMerge("GH-77", "/proj", prURL); err != nil {
+		t.Fatalf("SelfHealExecutionAfterMerge: %v", err)
+	}
+
+	healed, err := store.GetExecution("backfill-pr-url")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if healed.Status != "completed" {
+		t.Errorf("status = %q, want unchanged 'completed'", healed.Status)
+	}
+	if healed.PRUrl != prURL {
+		t.Errorf("PRUrl = %q, want backfilled %q", healed.PRUrl, prURL)
+	}
+
+	counters, err := store.GetLifetimePRCountersFromExecutions("")
+	if err != nil {
+		t.Fatalf("GetLifetimePRCountersFromExecutions: %v", err)
+	}
+	if counters.Merged != 1 {
+		t.Errorf("Merged = %d, want 1 — backfilled pr_url must make the row visible to the lifetime query", counters.Merged)
+	}
+}
+
 // TestSelfHealExecutionAfterMerge_ExcludesRunningQueuedPending is the
 // GH-4209 regression test for the store.go:1446 IN(...) exclusion this task
 // must preserve unmodified: running/queued/pending rows are never healed by

@@ -5038,11 +5038,24 @@ func (c *Controller) ScanRecentlyMergedPRsWithWindow(ctx context.Context, scanWi
 			// gates because the heal must happen on every discovered merged Pilot PR.
 			c.selfHealForPR(ctx, issueNum, pr.HTMLURL)
 
-			// TASK-399/GH-4209: last-resort heal when issueNum couldn't be
-			// resolved at all (no branch-prefix match, no "Closes #N"/"Parent:
-			// GH-N" body marker) — match directly on the row's own
-			// already-stamped pr_url instead of going through task_id.
-			if issueNum == 0 && c.evalStore != nil {
+			// TASK-399/GH-4209, GH-4511: defensive fallback heal, matching
+			// directly on the row's own already-stamped pr_url instead of
+			// going through task_id/project_path. Originally gated on
+			// issueNum == 0 (only ran as a last resort when branch-prefix/body
+			// marker resolution failed entirely), but selfHealForPR's
+			// task_id+project_path-scoped heal can also silently miss when
+			// issueNum resolves fine yet the matching executions row belongs
+			// to a different project_path (multi-project shared DB) or
+			// otherwise isn't found by the scoped query — recordMergeSuccess
+			// above has already counted the merge live regardless, so a row
+			// left un-healed here permanently disappears from
+			// GetLifetimePRCountersFromExecutions and desyncs the lifetime
+			// gauge from the session counter across a restart (GH-4511 "1236
+			// vs 3" miss). Now always attempted: idempotent (only touches
+			// non-completed/backfill-eligible rows) and cheap (single
+			// pr_url-keyed query), so running it unconditionally alongside
+			// selfHealForPR is safe.
+			if c.evalStore != nil {
 				if err := c.evalStore.SelfHealExecutionByPRURL(pr.HTMLURL); err != nil {
 					c.log.Warn("selfHealForPR: pr_url fallback heal failed", "pr", pr.Number, "error", err)
 				}

@@ -78,7 +78,7 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 	}
 	metrics.SetIssueLevelCountsByModel(shippedByModel, attemptedByModel)
 
-	// GH-4121: pilot_prs_merged_total / pilot_prs_failed_total from the
+	// GH-4121: pilot_prs_merged_lifetime / pilot_prs_failed_lifetime from the
 	// executions table (all-time), not the execution_events ledger — the
 	// ledger only goes back to its TASK-379/GH-3844 introduction and
 	// undercounted these two counters ~20x against every other lifetime
@@ -87,12 +87,25 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 	// designated-owner Metrics (see AggregateMetrics doc comment) exactly
 	// once — hydrating any other controller's Metrics here would double
 	// count in the fleet-wide aggregate.
+	//
+	// GH-4511: this baseline now lands on the PRsMergedLifetime/
+	// PRsFailedLifetime gauges instead of the live PRsMerged/PRsFailed
+	// counters. Hydrating the live counters directly caused Prometheus
+	// counter-reset artifacts — this lifetime query's value is a lower bound
+	// (see GetLifetimePRCountersFromExecutions's task_id dedup and the
+	// merge-persist miss path fixed in ScanRecentlyMergedPRsWithWindow/
+	// SelfHealExecutionByPRURL), so it can legitimately land below the
+	// pre-restart live counter value. On a plain Counter, increase()/rate()
+	// would then treat that as a reset and replay the whole baseline as
+	// fabricated new activity (observed live: 1236 reported vs 3 true merges
+	// in a 3h window). A gauge has no such reset semantics, so it's safe to
+	// set from an absolute lifetime snapshot on every boot.
 	prCounters, err := store.GetLifetimePRCountersFromExecutions("")
 	if err != nil {
 		return fmt.Errorf("hydrate metrics from store: lifetime PR counters: %w", err)
 	}
-	metrics.HydratePRsMerged(prCounters.Merged)
-	metrics.HydratePRsFailed(prCounters.Failed)
+	metrics.HydratePRsMergedLifetime(prCounters.Merged)
+	metrics.HydratePRsFailedLifetime(prCounters.Failed)
 
 	// GH-4134: pilot_ci_runs_total{result} from the execution_events ledger —
 	// unlike PRsMerged/PRsFailed there is no pre-ledger source to fall back to
