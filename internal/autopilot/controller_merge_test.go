@@ -196,7 +196,6 @@ func TestController_HandleMerging_ClosesIssueWithPilotDone(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
 	cfg.AutoMerge = true
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -270,7 +269,6 @@ func TestController_HandleMerging_CallsOnIssueDone(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
 	cfg.AutoMerge = true
-	cfg.AutoReview = false
 	cfg.RequiredChecks = []string{"ci"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")

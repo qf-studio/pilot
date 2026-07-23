@@ -58,7 +58,6 @@ func TestController_ExecutionEvents_PRLifecycle(t *testing.T) {
 			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			cfg := DefaultConfig()
 			cfg.Environment = EnvStage
-			cfg.AutoReview = false
 			cfg.RequiredChecks = []string{"build"}
 			if configure != nil {
 				configure(cfg)

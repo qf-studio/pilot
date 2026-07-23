@@ -82,7 +82,6 @@ func TestController_RestoreState_WaitingCIPolling_GH4415(t *testing.T) {
 		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 		cfg := &Config{
 			Environment:    EnvDev,
-			AutoReview:     false,
 			AutoMerge:      true,
 			MergeMethod:    github.MergeMethodSquash,
 			CIWaitTimeout:  30 * time.Minute,
@@ -192,7 +191,6 @@ func TestController_RestoreState_WaitingCIPolling_GH4415(t *testing.T) {
 		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 		cfg := &Config{
 			Environment:    EnvDev,
-			AutoReview:     false,
 			AutoMerge:      true,
 			MergeMethod:    github.MergeMethodSquash,
 			CIWaitTimeout:  30 * time.Minute,

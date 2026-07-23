@@ -100,8 +100,6 @@ type Config struct {
 	GitHubReview *GitHubReviewConfig `yaml:"github_review"`
 
 	// PR Handling
-	// AutoReview enables automatic PR review comments.
-	AutoReview bool `yaml:"auto_review"`
 	// AutoMerge enables automatic PR merging when conditions are met.
 	AutoMerge bool `yaml:"auto_merge"`
 	// MergeMethod specifies how to merge PRs: merge, squash, or rebase.
@@ -421,7 +419,6 @@ func DefaultConfig() *Config {
 		GitHubReview: &GitHubReviewConfig{
 			PollInterval: 30 * time.Second,
 		},
-		AutoReview:     true,
 		AutoMerge:      true,
 		MergeMethod:    "squash",
 		CIWaitTimeout:  30 * time.Minute,

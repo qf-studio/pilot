@@ -52,7 +52,6 @@ func TestFullWorkflow_IssueToMerge(t *testing.T) {
 	cfg.CIPollInterval = 10 * time.Millisecond
 	cfg.DevCITimeout = 5 * time.Second
 	cfg.RequiredChecks = []string{"build", "test"}
-	cfg.AutoReview = false
 
 	controller := autopilot.NewController(cfg, ghClient, nil, "owner", "repo")
 

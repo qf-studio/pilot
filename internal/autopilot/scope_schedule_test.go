@@ -400,7 +400,6 @@ func TestAutoMerger_SquashTitleSuffix_ResolvesAsTrainMember(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, mergeServer.URL)
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
-	cfg.AutoReview = false
 	cfg.MergeMethod = github.MergeMethodSquash
 
 	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
