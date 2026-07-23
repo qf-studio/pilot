@@ -1391,6 +1391,51 @@ func startApprovalExpirySweep(ctx context.Context, handler expirablePendingHandl
 	})
 }
 
+// queueDepthRefreshInterval is how often startQueueDepthRefresh polls the
+// store for the queued-task count. 30s is cheap (one COUNT query) and keeps
+// the gauge close enough to real-time for alerting/dashboards (GH-4512).
+const queueDepthRefreshInterval = 30 * time.Second
+
+// startQueueDepthRefresh launches a background loop that periodically calls
+// autopilot.RefreshQueueDepth so pilot_queue_depth stays live on any daemon
+// serving metrics — not just when the interactive TUI dashboard's own 2s
+// refresh loop (cmd/pilot/main.go, dashboard-mode branch) happens to be
+// running.
+//
+// GH-4512: a headless daemon (`pilot start --telegram --github`, no
+// --dashboard) previously exported a frozen pilot_queue_depth gauge forever,
+// because RefreshQueueDepth's sole call site lived inside the dashboard-only
+// ticker. Fleet observability (hosted S2 tenants, S4 C15 Prometheus alarms)
+// runs headless by design, so the gauge must be refreshed independently of
+// the TUI.
+//
+// An initial synchronous refresh runs before the loop starts so the gauge is
+// correct immediately at boot rather than only after the first tick. The
+// loop exits on ctx cancellation, stopping the ticker via defer so the
+// goroutine does not leak past daemon shutdown.
+func startQueueDepthRefresh(ctx context.Context, store *memory.Store, metrics *autopilot.Metrics, interval time.Duration) {
+	if store == nil || metrics == nil {
+		return
+	}
+	if err := autopilot.RefreshQueueDepth(store, metrics); err != nil {
+		logging.WithComponent("start").Warn("failed to refresh queue depth gauge", slog.Any("error", err))
+	}
+	logging.SafeGo("queue-depth-refresh", func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := autopilot.RefreshQueueDepth(store, metrics); err != nil {
+					logging.WithComponent("start").Warn("failed to refresh queue depth gauge", slog.Any("error", err))
+				}
+			}
+		}
+	})
+}
+
 // daemonLockDir resolves the directory that holds the single-instance lock
 // file, falling back to the same default memory.Path uses when config
 // somehow leaves Memory unset.
@@ -2061,6 +2106,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				logging.WithComponent("gateway").Error("gateway background error", "error", err)
 			}
 		}()
+
+		// GH-4512: refresh pilot_queue_depth from the daemon lifecycle itself
+		// (gated on the same !noGateway && cfg.Gateway != nil condition that
+		// starts /metrics above), so headless runs keep the gauge live. The
+		// dashboard-mode branch further down still runs its own 2s refresh
+		// for snappier TUI updates — both writers are idempotent sets.
+		if autopilotController != nil {
+			startQueueDepthRefresh(ctx, store, autopilotController.Metrics(), queueDepthRefreshInterval)
+		}
 	}
 
 	// Create monitor and TUI program for dashboard mode
