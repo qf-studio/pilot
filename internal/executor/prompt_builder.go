@@ -273,6 +273,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		sb.WriteString("\nIf any verification fails, fix it before committing.\n\n")
 
 		sb.WriteString("CRITICAL: You MUST commit all changes before completing. A task is NOT complete until changes are committed. Use format: `type(scope): description (TASK-XX)`\n")
+		sb.WriteString("If your context was compacted mid-session, run `git log`/`git status` before concluding anything is done — verify the commit actually exists rather than assuming earlier work already landed.\n")
 	} else if hasNavigator && complexity.ShouldSkipNavigator() {
 		// Trivial task in Navigator project - minimal prompt without Navigator overhead (GH-216)
 		// Still need Pilot execution mode notice since CLAUDE.md may have "don't write code" rules
