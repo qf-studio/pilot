@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -37,6 +38,20 @@ const MaxStderrBufferBytes = 1 << 20 // 1 MiB
 // to look at when a nonzero exit produced no stderr and no parsed assistant
 // text, not to reconstruct the full session transcript.
 const MaxStdoutTailBufferBytes = 64 * 1024 // 64 KiB
+
+// maxStdoutLineBytes caps how much of a single stdout stream-json line the
+// reader keeps before treating it as oversized (GH-4519). A line over this
+// cap (e.g. a tool result embedding a base64 blob) is truncated rather than
+// aborting the read — bufio.Scanner previously errored out with
+// bufio.ErrTooLong on exactly this case and silently stopped draining the
+// pipe, wedging the child process and freezing the heartbeat.
+const maxStdoutLineBytes = 1024 * 1024 // 1 MiB
+
+// stdoutTruncationSnippetBytes bounds how much of an oversized line's kept
+// prefix is copied into stdoutTail alongside the truncation marker. Keeping
+// this small ensures the marker survives stdoutTail's own tail-truncation
+// policy instead of being pushed out by megabytes of low-value snippet data.
+const stdoutTruncationSnippetBytes = 256
 
 // DefaultHeartbeatTimeout is the default time to wait for any stream-json event before considering the process hung.
 const DefaultHeartbeatTimeout = 5 * time.Minute
@@ -753,67 +768,109 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	wg.Add(1)
 	logging.SafeGo("executor-backend-claudecode", func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stdout)
-		// Increase buffer size for large JSON events
-		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
+		reader := bufio.NewReaderSize(stdout, 64*1024)
 
-		for scanner.Scan() {
-			line := scanner.Text()
+		for {
+			lineBytes, truncated, totalBytes, rerr := readBoundedLine(reader, maxStdoutLineBytes, func(n int) {
+				// GH-4519: heartbeat must track raw byte flow, not just
+				// completed lines — an oversized line spanning many reads
+				// must not let the heartbeat monitor think the process is
+				// hung while it's still actively streaming data.
+				lastEventAt.Store(time.Now().UnixNano())
+			})
 
-			// GH-4395: capture the raw line regardless of whether it parses as
-			// a stream-json event — a crash mid-line or non-JSON diagnostic
-			// output would otherwise vanish entirely.
-			stdoutTail.WriteLine(line)
+			if len(lineBytes) > 0 || truncated {
+				line := string(lineBytes)
 
-			// Update heartbeat timestamp on each stream event
-			lastEventAt.Store(time.Now().UnixNano())
-
-			if opts.Verbose {
-				fmt.Printf("   %s\n", line)
-			}
-
-			// Parse and convert to BackendEvent
-			event := b.parseStreamEvent(line)
-			if opts.EventHandler != nil {
-				opts.EventHandler(event)
-			}
-
-			// GH-2328: track the last assistant text block so refusals (Claude
-			// exits 0 after politely declining) can be surfaced to the user.
-			if event.Type == EventTypeText && event.Message != "" {
-				result.LastAssistantText = event.Message
-			}
-
-			// Track final result
-			if event.Type == EventTypeResult {
-				// GH-2103: Cancel heartbeat on result event.
-				// On slow I/O flush, the heartbeat timer could fire and kill
-				// the process after it had already produced output.
-				cancelHeartbeat()
-
-				if event.IsError {
-					result.Error = event.Message
+				if truncated {
+					// GH-4519: a stream-json line over the 1MB cap (e.g. a
+					// tool result carrying a base64 blob) previously made
+					// bufio.Scanner abort with ErrTooLong and silently stop
+					// draining the pipe — the child then blocked writing to
+					// a full pipe, the heartbeat froze, and the heartbeat
+					// monitor SIGKILLed a process that was still alive and
+					// producing output. Record a bounded marker instead and
+					// keep reading subsequent lines.
+					snippet := line
+					if len(snippet) > stdoutTruncationSnippetBytes {
+						snippet = snippet[:stdoutTruncationSnippetBytes]
+					}
+					stdoutTail.WriteLine(fmt.Sprintf("[line truncated: %d bytes] %s", totalBytes, snippet))
 				} else {
-					result.Output = event.Message
-					result.SawSuccessResult = true // GH-2107: track successful result for timeout recovery
+					// GH-4395: capture the raw line regardless of whether it parses as
+					// a stream-json event — a crash mid-line or non-JSON diagnostic
+					// output would otherwise vanish entirely.
+					stdoutTail.WriteLine(line)
 				}
-				// Cancel heartbeat — process is finishing, don't kill it
-				cancelHeartbeat()
+
+				if opts.Verbose {
+					fmt.Printf("   %s\n", line)
+				}
+
+				// GH-4519: an oversized line's kept prefix dropped its
+				// closing braces/brackets along with the rest of the line,
+				// so it is essentially never complete JSON — only attempt
+				// to parse it if it actually validates; otherwise skip
+				// parsing this line rather than feeding a corrupt event
+				// through.
+				if !truncated || json.Valid(lineBytes) {
+					// Parse and convert to BackendEvent
+					event := b.parseStreamEvent(line)
+					if opts.EventHandler != nil {
+						opts.EventHandler(event)
+					}
+
+					// GH-2328: track the last assistant text block so refusals (Claude
+					// exits 0 after politely declining) can be surfaced to the user.
+					if event.Type == EventTypeText && event.Message != "" {
+						result.LastAssistantText = event.Message
+					}
+
+					// Track final result
+					if event.Type == EventTypeResult {
+						// GH-2103: Cancel heartbeat on result event.
+						// On slow I/O flush, the heartbeat timer could fire and kill
+						// the process after it had already produced output.
+						cancelHeartbeat()
+
+						if event.IsError {
+							result.Error = event.Message
+						} else {
+							result.Output = event.Message
+							result.SawSuccessResult = true // GH-2107: track successful result for timeout recovery
+						}
+						// Cancel heartbeat — process is finishing, don't kill it
+						cancelHeartbeat()
+					}
+
+					// Capture session ID from init event (GH-1265)
+					if event.Type == EventTypeInit && event.SessionID != "" {
+						result.SessionID = event.SessionID
+					}
+
+					// Accumulate token usage
+					result.TokensInput += event.TokensInput
+					result.TokensOutput += event.TokensOutput
+					result.CacheCreationInputTokens += event.CacheCreationInputTokens
+					result.CacheReadInputTokens += event.CacheReadInputTokens
+					if event.Model != "" {
+						result.Model = event.Model
+					}
+				}
 			}
 
-			// Capture session ID from init event (GH-1265)
-			if event.Type == EventTypeInit && event.SessionID != "" {
-				result.SessionID = event.SessionID
-			}
-
-			// Accumulate token usage
-			result.TokensInput += event.TokensInput
-			result.TokensOutput += event.TokensOutput
-			result.CacheCreationInputTokens += event.CacheCreationInputTokens
-			result.CacheReadInputTokens += event.CacheReadInputTokens
-			if event.Model != "" {
-				result.Model = event.Model
+			if rerr != nil {
+				// GH-4519: a reader exiting must never be silent — the
+				// previous scanner-based loop had no Err() check at all, so
+				// an ErrTooLong (or any other read error) stopped draining
+				// stdout with zero diagnostic trace.
+				if !errors.Is(rerr, io.EOF) {
+					b.log.Warn("stdout reader exited with error",
+						slog.String("task_id", opts.TaskID),
+						slog.Any("error", rerr),
+					)
+				}
+				return
 			}
 		}
 	})
@@ -829,6 +886,13 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 			if opts.Verbose {
 				fmt.Printf("   [err] %s\n", line)
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			// GH-4519: a reader exiting must never be silent.
+			b.log.Warn("stderr reader exited with error",
+				slog.String("task_id", opts.TaskID),
+				slog.Any("error", err),
+			)
 		}
 	})
 
@@ -999,6 +1063,54 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// readBoundedLine reads a single newline-terminated line from r, keeping at
+// most maxBytes of it. Unlike bufio.Scanner (which aborts the entire read
+// with bufio.ErrTooLong the moment a line exceeds its fixed buffer), this
+// keeps draining an oversized line to its end so the caller can continue
+// reading subsequent lines — GH-4519: a silently-abandoned oversized line
+// left the child process blocked writing to a full pipe, which froze the
+// heartbeat and got the whole (otherwise-healthy) process SIGKILLed.
+//
+// onBytes, if non-nil, is invoked with the length of each underlying chunk
+// read — including chunks belonging to a line that ends up truncated — so
+// callers can drive a heartbeat off raw byte flow rather than only
+// completed lines.
+//
+// It returns the (possibly truncated) line content without the trailing
+// newline, whether truncation occurred, the original untruncated line
+// length in bytes, and any terminal read error (e.g. io.EOF).
+func readBoundedLine(r *bufio.Reader, maxBytes int, onBytes func(n int)) (line []byte, truncated bool, totalBytes int, err error) {
+	var buf []byte
+	for {
+		chunk, isPrefix, rerr := r.ReadLine()
+		if len(chunk) > 0 {
+			if onBytes != nil {
+				onBytes(len(chunk))
+			}
+			totalBytes += len(chunk)
+			if len(buf) < maxBytes {
+				remaining := maxBytes - len(buf)
+				take := chunk
+				if len(take) > remaining {
+					take = take[:remaining]
+				}
+				buf = append(buf, take...)
+				if len(take) < len(chunk) {
+					truncated = true
+				}
+			} else {
+				truncated = true
+			}
+		}
+		if rerr != nil {
+			return buf, truncated, totalBytes, rerr
+		}
+		if !isPrefix {
+			return buf, truncated, totalBytes, nil
+		}
+	}
 }
 
 // parseStreamEvent converts Claude Code stream-json to BackendEvent.
