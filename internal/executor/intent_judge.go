@@ -215,8 +215,45 @@ var (
 	preflightDecisionRegex   = regexp.MustCompile(`DECISION:\s*(\S+)`)
 	preflightReasonRegex     = regexp.MustCompile(`REASON:\s*(.+)`)
 	preflightConfidenceRegex = regexp.MustCompile(`CONFIDENCE:\s*([0-9]*\.?[0-9]+)`)
-	maxPreflightBodyChars    = 4000
+
+	// maxPreflightBodyChars caps the issue body sent to the preflight judge.
+	// GH-4507: raised from 4000 to 32000 — matching maxDiffCharsDefault, same
+	// token-budget reasoning as GH-4407. At 4000 chars, qf-studio/pilot-console#26
+	// (a complete, 22,926-char spec) was falsely rejected as reject_vague: the
+	// judge saw only ~17% of the issue and correctly noticed the acceptance
+	// criteria it referenced weren't visible. Bodies still over this larger
+	// cap are now middle-truncated (truncatePreflightBody) rather than
+	// tail-cut, since acceptance criteria, scope fences, and refs live at the
+	// end of our issue spec format.
+	maxPreflightBodyChars = 32000
 )
+
+// truncatePreflightBody middle-truncates a body over maxPreflightBodyChars,
+// preserving a head slice (context) and a tail slice (acceptance criteria,
+// scope fences, refs) with an explicit omission marker in between. GH-4507:
+// replaces the previous tail-cut "...[truncated]", which discarded the exact
+// sections (ACs, scope, refs) that live at the end of long, fully-specified
+// issues, causing the preflight judge to see only a head fragment and
+// falsely reject_vague.
+func truncatePreflightBody(body string) string {
+	if len(body) <= maxPreflightBodyChars {
+		return body
+	}
+
+	// Head gets 1/4 of the budget (context, problem statement); the rest is
+	// kept from the tail, where acceptance criteria, scope fences, and refs
+	// live in our issue spec format.
+	headChars := maxPreflightBodyChars / 4
+	tailChars := maxPreflightBodyChars - headChars
+	if headChars+tailChars >= len(body) {
+		return body
+	}
+
+	omitted := len(body) - headChars - tailChars
+	head := body[:headChars]
+	tail := body[len(body)-tailChars:]
+	return fmt.Sprintf("%s\n...[truncated: %d chars omitted from middle of issue body]\n%s", head, omitted, tail)
+}
 
 const preflightJudgeSystemPrompt = `You are a pre-flight issue quality judge. Evaluate whether a GitHub issue is actionable for an autonomous AI developer.
 
@@ -227,6 +264,8 @@ Classify the issue as exactly one of:
 - reject_conflicting: contains contradictory requirements that cannot all be satisfied
 - reject_stale: describes something already done or clearly outdated
 - reject_out_of_scope: outside the repository's purpose or requires unavailable external resources
+
+IMPORTANT — truncation handling: A "...[truncated: N chars omitted from middle of issue body]" marker inside the issue description means content was cut from the middle for length only — it is NOT evidence the issue is vague or missing specification. Never cite the presence of this marker itself as a reason for reject_vague, and never base reject_vague on a section (e.g. specific acceptance criteria) simply because it falls inside the omitted range. Judge actionability from the head and tail content that IS shown.
 
 Output exactly:
 DECISION: <classification>
@@ -377,11 +416,10 @@ func buildJudgeDiffPayload(diff string, maxChars int) string {
 // JudgeIssue evaluates whether a GitHub issue is actionable before dispatching to a worker.
 // Returns a PreFlightVerdict with decision, reason, and confidence.
 // Empty body is treated as vague (returns reject_vague, not an error).
-// Body is truncated to maxPreflightBodyChars before sending.
+// Bodies over maxPreflightBodyChars are middle-truncated (see
+// truncatePreflightBody) before sending.
 func (j *IntentJudge) JudgeIssue(ctx context.Context, title, body, repoContext string) (*PreFlightVerdict, error) {
-	if len(body) > maxPreflightBodyChars {
-		body = body[:maxPreflightBodyChars] + "\n...[truncated]"
-	}
+	body = truncatePreflightBody(body)
 
 	userContent := fmt.Sprintf("## Issue Title\n%s\n\n## Issue Description\n%s", title, body)
 	if repoContext != "" {
