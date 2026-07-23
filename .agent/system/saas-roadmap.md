@@ -1,7 +1,7 @@
 # Roadmap: Pilot SaaS Build (TASK-405 Program — "S-milestones")
 
 **Source plan**: `.agent/tasks/TASK-405-pilot-saas-platform.md` + `saas-architecture.md` / `saas-kanban-sync-design.md` / `saas-fleet-design.md`
-**As of**: 2026-07-23 — **S0 ✅ · S1 ✅ · H1–H12 ✅ · S3 UI mock ✅ · R-track ✅ · S6-lite (founder box on AWS) ✅ · S2 FULLY DISPATCHED (built: B5/A4/B6/reconciler ✅ · queued: B8 console#26, A3 console#27, C13 console#28, B11 cloud-infra#15 · exit after merges: ownership transfer + hosted-canary proof)** (v8 of this doc). Build proceeds on the AWS founder daemon. Final R-proof pending: epic-lifecycle canary green on `duplicate-pr` → close #4265. See **Progress** below; the milestone table is the plan of record.
+**As of**: 2026-07-23 midday — **S0 ✅ · S1 ✅ · H1–H12 ✅ · S3 UI mock ✅ · R-track ✅ · S6-lite ✅ · S2: C13 ✅ SHIPPED (console#28→PR#29, merged 35 min after dispatch) · B8 console#26 + A3 console#27 + B11 infra#15 WEDGED pending the 07-23 16:00-Berlin train** (v8.1 of this doc). B8 stall-killed ×2 on v2.245.0 (TASK-416 defect — fixes #4504-#4506 ride the train); B11 has an orphaned `running` row holding its gen-0 claim (#4392 class — post-train workaround: mark row `stalled`, exact-rowid + audit note); A3 queued behind B8. Post-train checklist in marker `2026-07-23_s2-wedged-pending-train.md`. Exit after merges: ownership transfer + hosted-canary proof. Final R-proof pending: epic-lifecycle canary green on `duplicate-pr` → close #4265.
 
 **Live status (2026-07-14):**
 - **S0 ✅** — auth Nil-tenant (auth-service#429), all sdk SyncCapable + fixes (sdk#83–86, #91–100), PILOT_HOSTED (pilot#4274) all merged. S0.6 (Golden AMI v2) is the one deferred item (folded into S2 infra — not needed until hosted provisioning).
