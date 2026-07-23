@@ -1,6 +1,6 @@
 # feat(fleet): B8 config push — render, versioned spec, SSM apply with rollback, reconciler drift phase
 
-**Status**: 🚀 DISPATCHED 2026-07-23 → [pilot-console#26](https://github.com/qf-studio/pilot-console/issues/26).
+**Status**: ✅ PR UP + REVIEWED 2026-07-23 eve — [pilot-console#30](https://github.com/qf-studio/pilot-console/pull/30) (+2971/−85, CI green, awaiting auto-merge). Delivery took 5 generations: gen 0/1 stall-killed (v2.245.0, TASK-416 class) → false `declined-preflight` (4000-char judge cap, fixed via pilot#4507→PR#4509) → gen 2 heartbeat-SIGKILL on stdout base64 flood (unfiled) → gen 3 implemented everything but **never committed** (post-compaction amnesia; work destroyed by no_op worktree cleanup → pilot#4517→PR#4518 auto-preserve fix) → gen 4 delivered after re-arm + dispatch-note inoculation. Review verdict: AC4 rollback truthfulness (DONE/NOOP markers, no blind rollback on unknown outcome) + AC5 async drift sweep (decoupled from decide(), cooldowns, fleet-wide cap 2) + C12 `PILOT_HOSTED=1` fold all confirmed in diff. Archive once #30 merges.
 Adversarial review same day: 4-agent pass (3 lenses + surface research), 30 findings
 (3 blocker / 8 major) all incorporated below.
 **Repo**: `qf-studio/pilot-console` · Labels: `pilot`, `no-decompose`.

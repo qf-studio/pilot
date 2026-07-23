@@ -1,6 +1,6 @@
 # TASK-405: Pilot SaaS Platform ("Pilot Cloud")
 
-**Created**: 2026-07-13 · **Status**: ACTIVE — S0 ✅ · S1 ✅ · H1–H12 ✅ · S3 UI mock ✅ · R-track ✅ · S6-lite ✅ · S2 FULLY DISPATCHED 2026-07-23 (built: B5/A4/B6/reconciler/**C13 ✅ #28→PR#29**; wedged pending 07-23 train: B8 console#26 · A3 console#27 · B11 infra#15; exit after merges = ownership transfer + hosted-canary proof). Live status: `.agent/system/saas-roadmap.md` v8.1
+**Created**: 2026-07-13 · **Status**: ACTIVE — S0 ✅ · S1 ✅ · H1–H12 ✅ · S3 UI mock ✅ · R-track ✅ · S6-lite ✅ · S2 NEARLY CLOSED 2026-07-23 eve (built: B5/A4/B6/reconciler/**C13 ✅ PR#29**/**B11 ✅ infra PR#19**; **B8 PR#30 up+reviewed, awaiting auto-merge**; A3 console#27 next; exit after merges = laptop e2e + SSM grants + ownership transfer + hosted-canary proof). Live status: `.agent/system/saas-roadmap.md` v8.2
 **Owner**: Aleks (founder decisions) + Pilot (execution)
 **Execution roadmap**: `.agent/system/saas-roadmap.md` — S-milestones, dispatch rules, test strategy
 
