@@ -1982,6 +1982,23 @@ func TestProcessQueue_NoOpTerminalLedger_SkipsBackend(t *testing.T) {
 	}
 }
 
+// blockingBackend blocks every Execute call until the passed-in context is
+// canceled. GH-4513: TestQueueTask_ConcurrentDuplicate_DispatchesOnce used to
+// run its dispatcher against NewRunner()'s real ClaudeCodeBackend, whose
+// preflight check fails fast (~0.5-1s, chdir into the test's non-existent
+// project path) — see that test's doc comment for why this raced the
+// concurrent QueueTask calls it was supposed to be testing. Blocking here
+// instead of racing a real backend keeps the winning dispatch's execution row
+// pinned at status "running" for the entire test, deterministically.
+type blockingBackend struct{}
+
+func (b *blockingBackend) Name() string      { return "mock-blocking" }
+func (b *blockingBackend) IsAvailable() bool { return true }
+func (b *blockingBackend) Execute(ctx context.Context, _ ExecuteOptions) (*BackendResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 // TestQueueTask_ConcurrentDuplicate_DispatchesOnce is the GH-4347 race test
 // for the dispatchMu fix: QueueTask's duplicate check (IsTaskQueued) and its
 // executions-row insert used to be two unlocked store calls, so concurrent
@@ -1992,6 +2009,30 @@ func TestProcessQueue_NoOpTerminalLedger_SkipsBackend(t *testing.T) {
 // path reusing the SAME small issue number (acceptance criteria (b) and (c):
 // concurrent poll ticks still dispatch once, and small-issue-number reuse
 // across projects/cycles never cross-collides).
+//
+// GH-4513: this used to wire up NewRunner() — the REAL ClaudeCodeBackend —
+// as the dispatcher's runner. The winning QueueTask call's ensureWorker()
+// starts a background ProjectWorker goroutine that immediately picks up the
+// freshly-queued row, transitions it to "running", and calls runner.Execute,
+// which is NOT covered by dispatchMu — only QueueTask's own duplicate check +
+// insert are. Against a real backend, Execute's preflight check fails fast
+// (chdir into the test's non-existent /Users/pilot-op/... project path,
+// observed ~0.5-1s locally, plausibly faster or slower under CI load/-race
+// scheduling) and marks the row terminal ("failed"). If that terminal
+// transition lands before all `concurrency` goroutines have made it through
+// dispatchMu's serialized IsTaskQueued check, a "loser" goroutine that checks
+// afterward no longer sees the row as queued/running (IsTaskQueued only
+// matches those two statuses) and falls through to
+// beginWithGenerationRetry's legitimate repick-a-dead-claim path — which
+// mints a second real dispatch and a second nil-error QueueTask return,
+// inflating `successes` past 1. This is exactly the class of bug the test is
+// meant to catch, just misfired at the test's own instrumentation instead of
+// at dispatchMu: the real backend's completion latency is not something this
+// test can control, so the assertion window's length was never guaranteed to
+// outlast it. Swapping in blockingBackend (which never lets Execute return
+// until the test tears the dispatcher down) removes that timing dependency
+// entirely — the row is now guaranteed to stay non-terminal for as long as
+// the test needs it to, regardless of scheduler/CI load.
 func TestQueueTask_ConcurrentDuplicate_DispatchesOnce(t *testing.T) {
 	const concurrency = 8
 
@@ -2006,7 +2047,9 @@ func TestQueueTask_ConcurrentDuplicate_DispatchesOnce(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	runner := NewRunner()
+	runner := NewRunnerWithBackend(&blockingBackend{})
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
 	dispatcher := NewDispatcher(store, runner, nil)
 	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
