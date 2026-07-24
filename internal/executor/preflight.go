@@ -184,6 +184,19 @@ func checkOpenAIAPIKey(backendType string) error {
 
 // checkGitClean verifies the git working directory has no uncommitted changes.
 // This prevents execution from accidentally including unrelated changes.
+//
+// GH-4526: on hosted tenants the daemon scaffolds Navigator's `.agent/`
+// directory into freshly-cloned repos a couple minutes after clone
+// (NavigatorInitializer.Initialize) — those repos don't track `.agent/` yet
+// (box repos do, having committed it years ago, so this never surfaced
+// there). That scaffold write leaves an untracked `.agent/` in every fresh
+// hosted clone, which this check then reports as "dirty", permanently
+// blocking the very first dispatch on every hosted repo. The scaffold is the
+// daemon's own bookkeeping, not user work, so untracked paths under
+// `.agent/` are excluded from the dirty count here. Changes to an already
+// *tracked* file under `.agent/` (e.g. a box repo's committed graph.json)
+// still count as dirty — this does not weaken the check for genuine user
+// changes.
 func checkGitClean(ctx context.Context, projectPath string) error {
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	cmd.Dir = projectPath
@@ -192,12 +205,37 @@ func checkGitClean(ctx context.Context, projectPath string) error {
 		return fmt.Errorf("git status failed: %w", err)
 	}
 	changes := strings.TrimSpace(string(output))
-	if len(changes) > 0 {
-		// Count number of changed files
-		lines := strings.Split(changes, "\n")
-		return fmt.Errorf("working directory has %d uncommitted change(s): run 'git stash' or 'git commit' first", len(lines))
+	if len(changes) == 0 {
+		return nil
+	}
+
+	var dirty []string
+	for _, line := range strings.Split(changes, "\n") {
+		if isScaffoldNoise(line) {
+			continue
+		}
+		dirty = append(dirty, line)
+	}
+
+	if len(dirty) > 0 {
+		return fmt.Errorf("working directory has %d uncommitted change(s): run 'git stash' or 'git commit' first", len(dirty))
 	}
 	return nil
+}
+
+// isScaffoldNoise reports whether a `git status --porcelain` line represents
+// an untracked path created by the daemon's own Navigator scaffold
+// (NavigatorInitializer.Initialize, internal/executor/navigator.go) rather
+// than a genuine user change. Only untracked ("??") entries are eligible —
+// a modified/staged file under `.agent/` (which box repos commit) is still
+// real dirty state and must keep failing this check. GH-4526.
+func isScaffoldNoise(line string) bool {
+	if len(line) < 3 || !strings.HasPrefix(line, "??") {
+		return false
+	}
+	path := strings.TrimSpace(line[2:])
+	path = strings.Trim(path, `"`)
+	return path == ".agent" || strings.HasPrefix(path, ".agent/")
 }
 
 // checkGitRepo verifies the directory is a valid git repository.

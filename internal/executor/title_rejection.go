@@ -246,6 +246,13 @@ func ghAddLabels(ctx context.Context, dir, issueID string, labels []string) erro
 // subtask 3) to swap pilot-failed/pilot-in-progress for pilot-blocked in one
 // shot, alongside ghAddLabels' add-only callers.
 func ghEditLabels(ctx context.Context, dir, issueID string, addLabels, removeLabels []string) error {
+	// GH-4526: hosted tenants onboard with zero pre-existing pilot-*
+	// labels, and `gh issue edit` hard-fails if any --add-label/
+	// --remove-label target doesn't exist on the repo yet. Ensure every
+	// label this edit touches exists first (best-effort — see
+	// ensureGitHubLabels doc).
+	ensureGitHubLabels(ctx, dir, append(append([]string{}, addLabels...), removeLabels...))
+
 	args := []string{"issue", "edit", issueID}
 	for _, l := range addLabels {
 		args = append(args, "--add-label", l)

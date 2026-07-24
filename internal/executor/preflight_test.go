@@ -101,6 +101,114 @@ func TestCheckGitClean(t *testing.T) {
 	})
 }
 
+// TestCheckGitClean_IgnoresUntrackedScaffoldDir is the GH-4526 regression
+// test: on hosted tenants, NavigatorInitializer.Initialize scaffolds an
+// untracked .agent/ directory into a freshly-cloned repo a couple minutes
+// after clone. Before this fix, that untracked scaffold made checkGitClean
+// report the repo as dirty on every hosted repo's first dispatch, tripping
+// the repick hard cap and permanently blocking the daemon. Simulate the
+// exact scenario: init a clean repo, then create files under .agent/ without
+// adding/committing them (mirrors Initialize's os.MkdirAll + os.WriteFile
+// calls) — the check must still pass.
+func TestCheckGitClean_IgnoresUntrackedScaffoldDir(t *testing.T) {
+	ctx := context.Background()
+
+	tmpDir := t.TempDir()
+	if err := exec.Command("git", "init", tmpDir).Run(); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test").Run()
+
+	// Commit an initial file so the repo isn't itself all-untracked (mirrors
+	// a real cloned project repo with existing tracked content).
+	readme := filepath.Join(tmpDir, "README.md")
+	if err := os.WriteFile(readme, []byte("# test\n"), 0644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "add", "README.md").Run(); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "commit", "-m", "initial").Run(); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+
+	t.Run("clean_before_scaffold", func(t *testing.T) {
+		if err := checkGitClean(ctx, tmpDir); err != nil {
+			t.Errorf("expected clean repo before scaffold, got: %v", err)
+		}
+	})
+
+	// Simulate the daemon's Navigator scaffold: untracked .agent/ tree.
+	agentDir := filepath.Join(tmpDir, ".agent", "tasks")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("mkdir .agent/tasks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".agent", "DEVELOPMENT-README.md"), []byte("nav\n"), 0644); err != nil {
+		t.Fatalf("write scaffold file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, ".gitkeep"), []byte{}, 0644); err != nil {
+		t.Fatalf("write .gitkeep: %v", err)
+	}
+
+	t.Run("untracked_agent_scaffold_still_passes", func(t *testing.T) {
+		if err := checkGitClean(ctx, tmpDir); err != nil {
+			t.Errorf("expected untracked .agent/ scaffold to be ignored, got: %v", err)
+		}
+	})
+
+	t.Run("genuine_untracked_file_outside_agent_still_fails", func(t *testing.T) {
+		other := filepath.Join(tmpDir, "unrelated.txt")
+		if err := os.WriteFile(other, []byte("oops"), 0644); err != nil {
+			t.Fatalf("write unrelated file: %v", err)
+		}
+		defer os.Remove(other)
+
+		err := checkGitClean(ctx, tmpDir)
+		if err == nil {
+			t.Error("expected error: a genuinely untracked file outside .agent/ must still fail the check")
+		}
+	})
+
+	t.Run("modified_tracked_file_still_fails", func(t *testing.T) {
+		if err := os.WriteFile(readme, []byte("# test\nmodified\n"), 0644); err != nil {
+			t.Fatalf("modify README: %v", err)
+		}
+		defer func() {
+			_ = exec.Command("git", "-C", tmpDir, "checkout", "--", "README.md").Run()
+		}()
+
+		err := checkGitClean(ctx, tmpDir)
+		if err == nil {
+			t.Error("expected error: a modified tracked file must still fail the check, even alongside an untracked .agent/ scaffold")
+		}
+	})
+}
+
+func TestIsScaffoldNoise(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"untracked agent dir", "?? .agent/", true},
+		{"untracked nested agent file", "?? .agent/tasks/foo.md", true},
+		{"untracked agent no slash", "?? .agent", true},
+		{"untracked unrelated file", "?? unrelated.txt", false},
+		{"untracked lookalike name", "?? .agentconfig", false},
+		{"modified tracked agent file", " M .agent/knowledge/graph.json", false},
+		{"added tracked agent file", "A  .agent/system/foo.md", false},
+		{"deleted tracked file", " D somefile.go", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isScaffoldNoise(tt.line); got != tt.want {
+				t.Errorf("isScaffoldNoise(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunPreflightChecks(t *testing.T) {
 	ctx := context.Background()
 
