@@ -743,11 +743,26 @@ type Runner struct {
 	// defaultChildOutcomeReconcileTimeout); tests shrink these for fast runs.
 	childOutcomeReconcilePollInterval time.Duration
 	childOutcomeReconcileTimeout      time.Duration
+	// GH-4536 (TASK-419): absolute backstop on reconcileChildOutcome's
+	// queued-phase poll, which is otherwise unbounded by design (GH-4413).
+	// Zero uses defaultChildOutcomeQueuedAbsoluteCeiling; tests shrink this
+	// for fast runs.
+	childOutcomeQueuedAbsoluteCeiling time.Duration
 	// GH-4300: bounds the retry loop around each per-subtask `gh issue create`
 	// call. Zero uses the package defaults (defaultSubIssueCreateRetryAttempts /
 	// defaultSubIssueCreateRetryDelay); tests shrink the delay for fast runs.
 	subIssueCreateRetryAttempts int
 	subIssueCreateRetryDelay    time.Duration
+	// reclaimSelfOwnedQueuedChildFn lets reconcileChildOutcome (epic.go,
+	// GH-4536/TASK-419) take over a queued child that only this Runner's own
+	// ProjectWorker could ever run — force-stalling the dead-end claim and
+	// re-claiming it via the shared beginWithGenerationRetry/repick_backoff
+	// path instead of polling forever. Wired by NewDispatcher to
+	// Dispatcher.reclaimSelfOwnedQueuedChild; nil in tests/call paths that
+	// bypass the real Dispatcher (e.g. direct ExecuteSubIssues calls), in
+	// which case a detected self-owned deadlock fails the sub-issue instead
+	// of hanging.
+	reclaimSelfOwnedQueuedChildFn func(subTask *Task) (execID string, ok bool, err error)
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
@@ -757,6 +772,16 @@ type Runner struct {
 // PILOT_ALLOW_UNMANAGED_REPO=1 is set, which logs a WARN).
 func (r *Runner) SetRepoAllowlist(allow RepoAllowlist) {
 	r.repoAllowlist = allow
+}
+
+// setReclaimSelfOwnedQueuedChildFn wires the takeover mechanism used when
+// reconcileChildOutcome (epic.go, GH-4536/TASK-419) detects a queued child
+// only this Runner's own ProjectWorker could ever run. Called by
+// NewDispatcher; unexported since only the Dispatcher constructor should set
+// it — everything else should treat the Runner/Dispatcher wiring as an
+// implementation detail.
+func (r *Runner) setReclaimSelfOwnedQueuedChildFn(fn func(subTask *Task) (execID string, ok bool, err error)) {
+	r.reclaimSelfOwnedQueuedChildFn = fn
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -2129,6 +2154,27 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		)
 		r.reportProgress(task.ID, "Planning", 10, "Running epic planning...")
 
+		// GH-4536 (TASK-419): the epic block previously ran with no deadline
+		// at all — Runner.Execute built its per-task watchdog context (below,
+		// ~runner.go:2461) only AFTER this entire block, so an epic that
+		// planned successfully and entered sub-issue execution never got a
+		// bound and Execute() could block forever, leaving the parent
+		// execution row stuck non-terminal (dispatcher.go:2122's
+		// lifecycle.Persist is only reached once Execute returns). Bound the
+		// epic block from its very first Claude call.
+		//
+		// Budget choice: a single shared deadline across N sequential
+		// sub-issues would starve later sub-issues (planning eats into the
+		// same budget the last sub-issue needs). So planning gets its own
+		// bounded context here, and once the plan is known the multi-package
+		// branch below derives a second, independent context sized off the
+		// actual sub-issue count (see epicCtx below) — deriving it fresh from
+		// the top-level ctx, not nested under planCtx, so planning's
+		// cancellation can't shrink the execution phase's budget.
+		planTimeout := r.modelRouter.GetTimeoutForComplexity(ComplexityComplex)
+		planCtx, planCancel := context.WithTimeout(ctx, planTimeout)
+		defer planCancel()
+
 		planFn := r.planEpicFn
 		if planFn == nil {
 			planFn = r.PlanEpic
@@ -2138,7 +2184,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		// previously emitted nothing past spec_validated, leaving `pilot trace`
 		// silent for the entire epic lifecycle.
 		r.recordExecutionEvent(task.LogExecutionID(), memory.StageClaudeStarted, "epic planning invoked claude")
-		plan, err := planFn(ctx, task, executionPath)
+		plan, err := planFn(planCtx, task, executionPath)
 		if err != nil {
 			// GH-1687: Planning failure is non-fatal — fall through to direct execution
 			r.log.Warn("Epic planning failed, falling back to direct execution",
@@ -2184,6 +2230,24 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			} else {
 				// Multi-package epic: safe to create separate GitHub issues
 
+				// GH-4536 (TASK-419): size the execution-phase ceiling from the
+				// actual planned sub-issue count now that it's known, rather
+				// than reusing planCtx's single-task budget (which would
+				// starve later sub-issues) or leaving this phase unbounded
+				// (the original incident — see epic.go's reconcileChildOutcome
+				// for the self-ownership half of this fix). Each planned
+				// sub-issue gets a full complex-task budget. Derived fresh
+				// from the top-level ctx (not nested under planCtx), so
+				// planning's own — already-expired-by-now — deadline can't
+				// shrink this one.
+				perSubIssueTimeout := r.modelRouter.GetTimeoutForComplexity(ComplexityComplex)
+				epicTimeout := perSubIssueTimeout * time.Duration(len(plan.Subtasks))
+				if epicTimeout < perSubIssueTimeout {
+					epicTimeout = perSubIssueTimeout // overflow/empty-plan guard
+				}
+				epicCtx, epicCancel := context.WithTimeout(ctx, epicTimeout)
+				defer epicCancel()
+
 				// GH-3513 wave 2 (#3538/#3553): refuse to create sub-issues from a
 				// plan whose ParentTask diverges from the dispatched task — children
 				// were observed claiming "parent: GH-201" while unrelated epics ran.
@@ -2213,7 +2277,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// GH-412: Create sub-issues from the plan
 				r.reportProgress(task.ID, "Creating Issues", 40, "Creating GitHub sub-issues...")
 
-				issues, err := r.CreateSubIssues(ctx, plan, executionPath)
+				issues, err := r.CreateSubIssues(epicCtx, plan, executionPath)
 				if err != nil {
 					// GH-2883: Recover existing sub-issues instead of failing hard when they
 					// were already created by a prior run (e.g., Pilot restarted mid-epic).
@@ -2226,7 +2290,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						if recover == nil {
 							recover = recoverExistingSubIssues
 						}
-						recovered, _ := recover(ctx, executionPath, plan.ParentTask.ID)
+						recovered, _ := recover(epicCtx, executionPath, plan.ParentTask.ID)
 
 						// GH-4300: a recovered set smaller than this run's plan means at
 						// least one planned subtask never got an issue created at all (the
@@ -2246,14 +2310,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							// issues only for the ones genuinely missing; only a real
 							// conflict (nothing recovered matches the plan) or a failed
 							// creation attempt falls through to the decline below.
-							reconciled, reconcileErr := r.reconcilePartialSubIssueRecovery(ctx, plan, plannedNow, recovered, executionPath)
+							reconciled, reconcileErr := r.reconcilePartialSubIssueRecovery(epicCtx, plan, plannedNow, recovered, executionPath)
 							cause := err
 							if reconcileErr != nil {
 								cause = reconcileErr
 							}
 							if len(reconciled) < len(plannedNow) {
 								gapPlan := &EpicPlan{ParentTask: plan.ParentTask, Subtasks: plannedNow, TotalEffort: plan.TotalEffort, PlanOutput: plan.PlanOutput}
-								gapErr := r.handleSubIssueCoverageGap(ctx, gapPlan, reconciled, executionPath, cause)
+								gapErr := r.handleSubIssueCoverageGap(epicCtx, gapPlan, reconciled, executionPath, cause)
 								r.reportProgress(task.ID, "Needs Clarification", 100, gapErr.Error())
 								return &ExecutionResult{
 									TaskID:         task.ID,
@@ -2346,7 +2410,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// one whose deliverables shipped entirely via child sub-issue PRs.
 				// GH-3938: childMetrics carries the real tokens/files/cost every child
 				// actually burned, rolled up onto the epic-parent's own result below.
-				childStates, childMetrics, err := r.executeSubIssuesTracked(ctx, task, issues, executionPath, task.ProjectPath)
+				childStates, childMetrics, err := r.executeSubIssuesTracked(epicCtx, task, issues, executionPath, task.ProjectPath)
 				if err != nil {
 					execErr := fmt.Sprintf("sub-issue execution failed: %v", err)
 					r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(execErr, 200))
@@ -2399,7 +2463,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 					// instead of warn-and-continue, so a stranded epic is never recorded
 					// as a "completed" row with an empty PR (Shape A). A pre-create
 					// merged-work check avoids opening a duplicate PR (Shape C).
-					r.finalizeEpicBranchPR(ctx, task, NewGitOperations(executionPath), epicResult, childStates)
+					r.finalizeEpicBranchPR(epicCtx, task, NewGitOperations(executionPath), epicResult, childStates)
 				} else {
 					r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 				}

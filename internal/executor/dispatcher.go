@@ -133,7 +133,7 @@ func NewDispatcher(store *memory.Store, runner *Runner, config *DispatcherConfig
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Dispatcher{
+	d := &Dispatcher{
 		config:  config,
 		store:   store,
 		runner:  runner,
@@ -142,6 +142,16 @@ func NewDispatcher(store *memory.Store, runner *Runner, config *DispatcherConfig
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+
+	// GH-4536 (TASK-419): wire the self-owned-queued-child takeover mechanism
+	// into the Runner so reconcileChildOutcome (epic.go) can break the
+	// structural self-deadlock instead of polling forever. nil runner is only
+	// used by tests exercising Dispatcher in isolation.
+	if runner != nil {
+		runner.setReclaimSelfOwnedQueuedChildFn(d.reclaimSelfOwnedQueuedChild)
+	}
+
+	return d
 }
 
 // SetDecomposer sets the task decomposer for auto-splitting complex tasks.
@@ -779,6 +789,108 @@ func (d *Dispatcher) hasLiveWorker(projectPath string) bool {
 	defer d.mu.RUnlock()
 	_, ok := d.workers[projectPath]
 	return ok
+}
+
+// projectWorkerIdentityKey is the context.Value key used to mark a context as
+// being executed synchronously by a ProjectWorker (TASK-393's sole
+// per-project serialization point). GH-4536 (TASK-419).
+type projectWorkerIdentityKey struct{}
+
+// withProjectWorkerIdentity marks ctx as executing synchronously on
+// projectPath's ProjectWorker. Set once, at processQueue's call into
+// Runner.Execute — the only place that call happens — so anything deep in
+// the call stack (epic.go's reconcileChildOutcome) can explicitly detect
+// "I am the project's own worker" instead of inferring it from timing or a
+// package-level global. GH-4536 (TASK-419): this is what lets a queued child
+// of an epic be recognized as unrunnable-by-anyone-else, rather than waited
+// on forever as if it were just queued behind other work (GH-2331/GH-4413's
+// legitimate case, which by construction never carries this identity for a
+// DIFFERENT project).
+func withProjectWorkerIdentity(ctx context.Context, projectPath string) context.Context {
+	return context.WithValue(ctx, projectWorkerIdentityKey{}, projectPath)
+}
+
+// projectWorkerIdentity returns the project path of the ProjectWorker
+// executing ctx synchronously, and whether that identity was set at all.
+// false for contexts built outside the real Dispatcher->ProjectWorker path
+// (e.g. tests calling epic/runner code directly with a bare context) —
+// callers must treat "unknown" as "not self-owned", preserving existing
+// behavior for those paths.
+func projectWorkerIdentity(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(projectWorkerIdentityKey{}).(string)
+	return v, ok
+}
+
+// reclaimSelfOwnedQueuedChild takes over a queued sub-issue execution that
+// only the caller's own ProjectWorker could ever run (GH-4536/TASK-419): the
+// blocked worker IS the sole goroutine serializing subTask.ProjectPath
+// (TASK-393), so waiting for some other channel to progress a queued row it
+// owns is a guaranteed, structural deadlock, not a legitimate queue-wait.
+//
+// Mechanics mirror reconcileOrphanedExecutions' boot-time precedent (dead
+// claim -> "stalled" -> clear repick backoff -> eligible for a fresh
+// generation) but scoped to one row and triggered in-flight rather than only
+// at boot, with a CAS guard since other writers may be live:
+//  1. Force the existing non-terminal claim to "stalled" via
+//     UpdateExecutionStatusIfNotTerminal, freeing nextRetryGeneration to grant
+//     a new generation for it (a plain "queued"/"running" claim reads as a
+//     live owner forever, GH-4372).
+//  2. Clear its repick_backoff state — this deadlock is not a genuine
+//     execution failure and must not inherit or grow the orphan channel's
+//     drop count toward dispatcherRepickHardCap (mirrors GH-4454).
+//  3. Route the actual re-claim through beginWithGenerationRetry — the one
+//     production caller of nextRetryGeneration+the shared repick_backoff
+//     store — instead of re-implementing a second, driftable claim-retry path
+//     (the exact warning at epic.go's sub-issue Begin() call site).
+//
+// Returns ok=false (no error) when beginWithGenerationRetry itself declines
+// the retry (hard cap already tripped, still inside the backoff window, or a
+// genuine race lost to another channel) — the caller must fail the sub-issue
+// rather than hang, per GH-4536's acceptance criteria, not treat this as
+// grounds to keep polling.
+func (d *Dispatcher) reclaimSelfOwnedQueuedChild(subTask *Task) (execID string, ok bool, err error) {
+	taskID, projectPath := subTask.ID, subTask.ProjectPath
+
+	existing, lookupErr := d.store.GetLatestExecutionByTaskID(taskID, projectPath)
+	if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+		return "", false, fmt.Errorf("reclaimSelfOwnedQueuedChild: execution lookup failed: %w", lookupErr)
+	}
+	if existing != nil && !isTerminalExecutionStatus(existing.Status) {
+		reason := "GH-4536 (TASK-419): force-stalled for takeover — this Runner's own ProjectWorker is the only goroutine that could ever run this queued child"
+		applied, casErr := d.store.UpdateExecutionStatusIfNotTerminal(existing.ID, string(ExecStatusStalled), reason)
+		if casErr != nil {
+			return "", false, fmt.Errorf("reclaimSelfOwnedQueuedChild: force-stall failed: %w", casErr)
+		}
+		if applied {
+			d.log.Warn("reclaimSelfOwnedQueuedChild: force-stalled self-owned queued child for takeover",
+				slog.String("task_id", taskID),
+				slog.String("project", projectPath),
+				slog.String("execution_id", existing.ID),
+			)
+			d.recordExecutionEvent(existing.ID, memory.StageStalled, reason)
+		} else {
+			// Lost a race with another writer (e.g. the sweep reaping the same
+			// row concurrently) — it already reached a terminal status, which
+			// is exactly what we needed; fall through to the claim attempt.
+			d.log.Info("reclaimSelfOwnedQueuedChild: existing claim already reached a terminal status before force-stall landed",
+				slog.String("task_id", taskID), slog.String("project", projectPath))
+		}
+
+		backoffKey := repickBackoffKey(projectPath, taskID)
+		if clearErr := d.ClearRepickBackoffState(backoffKey); clearErr != nil {
+			d.log.Warn("reclaimSelfOwnedQueuedChild: failed to clear repick backoff state",
+				slog.String("task_id", taskID), slog.String("project", projectPath), slog.Any("error", clearErr))
+		}
+	}
+
+	newExecID, beginErr := d.beginWithGenerationRetry(subTask, ExecStatusRunning)
+	if beginErr != nil {
+		return "", false, fmt.Errorf("reclaimSelfOwnedQueuedChild: beginWithGenerationRetry failed: %w", beginErr)
+	}
+	if newExecID == "" {
+		return "", false, nil
+	}
+	return newExecID, true, nil
 }
 
 // IsActive reports whether taskID is already queued or running in
@@ -1617,6 +1729,18 @@ func (d *Dispatcher) ensureWorker(projectPath string) {
 	d.wg.Add(1)
 	logging.SafeGo("executor-dispatcher", func() {
 		defer d.wg.Done()
+		// GH-4536 (TASK-419): remove this worker from d.workers once its
+		// goroutine actually exits. This defer runs during panic unwind
+		// before SafeGo's own recover (defers inside the wrapped fn fire
+		// first), so it covers normal return (ctx cancellation, Stop()) AND
+		// the SafeGo panic-recover path (dispatcher.go's own comment on that
+		// mechanism) alike. Before this, hasLiveWorker was pure map presence
+		// and never reflected reality: a worker that panicked mid-task left
+		// its project permanently "live"-but-dead until a daemon restart, and
+		// recoverStaleQueuedTasks/recoverStaleRunningTasks — which both skip
+		// any project where hasLiveWorker is true — could never reap behind
+		// it.
+		defer d.removeWorker(projectPath, worker)
 		worker.Run(d.ctx)
 	})
 
@@ -1624,6 +1748,22 @@ func (d *Dispatcher) ensureWorker(projectPath string) {
 
 	// Signal to process any queued tasks
 	worker.Signal()
+}
+
+// removeWorker deletes worker from d.workers, but only if it is still the
+// CURRENT entry registered for projectPath (GH-4536/TASK-419). The identity
+// check guards a narrow race: if a brand-new worker was already registered
+// for the same project (e.g. ensureWorker ran again right as this one's
+// Run() was returning) before this cleanup runs, a bare
+// delete(d.workers, projectPath) would remove the NEW live worker's entry
+// instead of this exiting one's — comparing pointer identity first ensures
+// only the actual exiting worker's own map entry is ever removed.
+func (d *Dispatcher) removeWorker(projectPath string, worker *ProjectWorker) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.workers[projectPath] == worker {
+		delete(d.workers, projectPath)
+	}
 }
 
 // GetWorkerStatus returns the status of all active workers.
@@ -2034,7 +2174,12 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 
 		// Execute (blocking)
 		start := time.Now()
-		result, execErr := w.runner.Execute(ctx, task)
+		// GH-4536 (TASK-419): mark ctx as executing on THIS project's
+		// ProjectWorker — the only place Runner.Execute is invoked
+		// synchronously by the dispatcher — so a queued epic sub-issue owned
+		// by this same project (reconcileChildOutcome, epic.go) can be
+		// recognized as self-owned rather than waited on forever.
+		result, execErr := w.runner.Execute(withProjectWorkerIdentity(ctx, w.projectPath), task)
 		duration := time.Since(start)
 
 		// GH-4243: single chokepoint classifies the outcome (TerminalStatus).
