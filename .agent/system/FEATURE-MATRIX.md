@@ -335,6 +335,7 @@
 | Runner accessor methods | ✅ | executor | - | - | Has* introspection methods for test + wiring verification (v2.39.0, PR #1930) |
 | Docs version sync CI | ✅ | ci | - | - | Workflow closes previous version-sync PRs before creating new (v2.38.11) |
 | GoReleaser CI builds | ✅ | ci | - | - | Binary builds + uploads on release tag (v0.24.1) |
+| Release asset completeness gate | ✅ | ci | - | - | `scripts/verify-release-assets.sh` runs after the GoReleaser step in `release.yml` and asserts every expected asset (`pilot-{linux,darwin}-{amd64,arm64}.tar.gz`, `pilot-windows-amd64.zip`, `checksums.txt`) exists on the tag's release, retrying to absorb listing lag, failing the train loudly on a miss (GH-4523) |
 | install.sh | ✅ | install | - | - | curl-pipe installer for Linux/macOS (v0.3.x) |
 | Homebrew formula | ✅ | install | `brew install` | - | Homebrew tap formula for macOS (v0.3.x) |
 | Integration tests (patterns) | ✅ | testing | - | - | Integration tests for self-review pattern accumulation (v2.44.0, GH-1956) |
