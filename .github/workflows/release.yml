@@ -31,3 +31,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      # GH-4523: v2.245.1's release was reported missing the linux
+      # tarballs, and nothing in this pipeline would have caught that
+      # class of failure. Assert the full asset set landed on the release
+      # before we call the train green (see
+      # .agent/sops/operations/release-asset-completeness-gate.md for the
+      # root-cause writeup).
+      - name: Verify release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/verify-release-assets.sh "${GITHUB_REF_NAME}"
