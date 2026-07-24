@@ -24,6 +24,11 @@ import (
 type StepLogClient interface {
 	GetWorkflowJob(ctx context.Context, owner, repo string, jobID int64) (*ghadapter.WorkflowJob, error)
 	GetCheckRunAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]ghadapter.CheckRunAnnotation, error)
+	// GetWorkflowRunIDForJob and RerunFailedJobs back the GH-4533
+	// infra-failure auto-retry path: a failed check run only carries a job
+	// ID, but the rerun-failed-jobs API operates on the owning workflow run.
+	GetWorkflowRunIDForJob(ctx context.Context, owner, repo string, jobID int64) (int64, error)
+	RerunFailedJobs(ctx context.Context, owner, repo string, runID int64) error
 }
 
 // CIMonitor watches GitHub CI status for PRs.
@@ -620,6 +625,59 @@ func (m *CIMonitor) GetFailedCheckLogs(ctx context.Context, sha string, maxLen i
 		result = result[:maxLen]
 	}
 	return result
+}
+
+// FailedCheckLog pairs one failed, in-scope check run's name and job ID with
+// its raw job log — GH-4533's infra-vs-code classifier
+// (classifyCheckFailure) needs to evaluate each failed check's log
+// independently rather than the single concatenated blob GetFailedCheckLogs
+// produces, and the auto-retry path needs each check's job ID to resolve its
+// owning workflow run via GetWorkflowRunIDForJob.
+type FailedCheckLog struct {
+	CheckName string
+	JobID     int64
+	Logs      string
+}
+
+// GetFailedCheckLogsByCheck fetches raw job logs for each failed, in-scope
+// check run individually, scoped by isScopedCheck (same scoping as
+// GetFailedChecks, GH-4307). It reuses the GetJobLogs path from
+// GetFailedCheckLogs above but keeps each check's log (and job ID) separate
+// instead of concatenating them into one budget-capped blob, so callers
+// (GH-4533) can classify each failure independently.
+//
+// A log-fetch failure for one check still yields an entry for that check,
+// with an empty Logs field, rather than dropping it silently — every failed,
+// in-scope check must be accounted for before the caller can conclude "every
+// check classifies infra", and classifyCheckFailure already treats empty
+// logs as FailureClassCode (fail-safe).
+func (m *CIMonitor) GetFailedCheckLogsByCheck(ctx context.Context, sha string) []FailedCheckLog {
+	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	if err != nil {
+		m.log.Warn("failed to list check runs for per-check log fetch", "sha", ShortSHA(sha), "error", err)
+		return nil
+	}
+
+	var results []FailedCheckLog
+	for _, run := range checkRuns.CheckRuns {
+		if run.Conclusion != github.ConclusionFailure {
+			continue
+		}
+		if !m.isScopedCheck(run.Name) {
+			continue
+		}
+
+		logs, err := m.ghClient.GetJobLogs(ctx, m.owner, m.repo, run.ID)
+		if err != nil {
+			m.log.Warn("failed to fetch logs for check run",
+				"check", run.Name,
+				"id", run.ID,
+				"error", err,
+			)
+		}
+		results = append(results, FailedCheckLog{CheckName: run.Name, JobID: run.ID, Logs: logs})
+	}
+	return results
 }
 
 // GetFailedCheckExcerpts fetches, for each failed check run on sha, the tail

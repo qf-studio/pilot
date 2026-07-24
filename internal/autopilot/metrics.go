@@ -55,7 +55,14 @@ type Metrics struct {
 	// (one per push+CI-run), not one. Unlike PRsFailed (RecordPRFailed), which
 	// also folds in approval rejections and merge/release failures, this is
 	// scoped to CI outcomes only.
-	CIRuns              map[string]int64
+	CIRuns map[string]int64
+	// PRFailureClasses counts terminal handleCIFailed calls by classification
+	// ("code"/"infra", see FailureClass — GH-4533), regardless of whether the
+	// failure resulted in an auto-retry or a spawned fix issue. Distinct from
+	// CIRuns: CIRuns tracks verdict/outcome ("fail"/"infra_retry"/
+	// "infra_fail"), this tracks the classification the outcome was decided
+	// from.
+	PRFailureClasses    map[string]int64
 	CircuitBreakerTrips int64
 	// RateLimitFloorEngagements counts distinct episodes (not calls) where
 	// the shared GitHub rate-budget floor engaged and this controller
@@ -156,6 +163,7 @@ func NewMetrics() *Metrics {
 	return &Metrics{
 		IssuesProcessed:            make(map[string]int64),
 		CIRuns:                     make(map[string]int64),
+		PRFailureClasses:           make(map[string]int64),
 		APIErrors:                  make(map[string]int64),
 		LabelCleanups:              make(map[string]int64),
 		ApprovalPersistMisses:      make(map[string]int64),
@@ -263,6 +271,19 @@ func (m *Metrics) HydrateCIRun(result string, n int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.CIRuns[result] += n
+}
+
+// RecordPRFailedClass increments the terminal-failure classification counter
+// (GH-4533). Called once per terminal handleCIFailed call, alongside
+// RecordPRFailed, regardless of whether the classification triggered an
+// auto-retry or a spawned fix issue.
+func (m *Metrics) RecordPRFailedClass(class FailureClass) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.PRFailureClasses == nil {
+		m.PRFailureClasses = make(map[string]int64)
+	}
+	m.PRFailureClasses[string(class)]++
 }
 
 // RecordPRConflicting increments the conflicting PR counter.
@@ -536,6 +557,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		PRsFailedLifetime:             m.PRsFailedLifetime,
 		PRsConflicting:                m.PRsConflicting,
 		CIRuns:                        copyStringIntMap(m.CIRuns),
+		PRFailureClasses:              copyStringIntMap(m.PRFailureClasses),
 		CircuitBreakerTrips:           m.CircuitBreakerTrips,
 		RateLimitFloorEngagements:     m.RateLimitFloorEngagements,
 		APIErrors:                     copyStringIntMap(m.APIErrors),
@@ -618,6 +640,7 @@ type MetricsSnapshot struct {
 	PRsFailedLifetime         int64 // GH-4511: all-time gauge counterpart to session-only PRsFailed
 	PRsConflicting            int64
 	CIRuns                    map[string]int64 // GH-4134: result → count (pass, fail)
+	PRFailureClasses          map[string]int64 // GH-4533: class → count (code, infra)
 	CircuitBreakerTrips       int64
 	RateLimitFloorEngagements int64 // GH-4391: distinct floor-engagement episodes across this controller's background scans
 	APIErrors                 map[string]int64
