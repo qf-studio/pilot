@@ -801,6 +801,31 @@ func (c *Client) GetJobLogs(ctx context.Context, owner, repo string, jobID int64
 	return string(body), nil
 }
 
+// GetWorkflowRunIDForJob fetches a single GitHub Actions job by ID and
+// returns the workflow run ID it belongs to.
+// Uses GET /repos/{owner}/{repo}/actions/jobs/{job_id} (delegates to
+// GetWorkflowJob in jobs.go) and extracts .run_id.
+// GH-4532: autopilot's rerun-failed-jobs flow only has the job ID from a
+// failing check run, but RerunFailedJobs operates on the run, not the job.
+func (c *Client) GetWorkflowRunIDForJob(ctx context.Context, owner, repo string, jobID int64) (int64, error) {
+	job, err := c.GetWorkflowJob(ctx, owner, repo, jobID)
+	if err != nil {
+		return 0, err
+	}
+	return job.RunID, nil
+}
+
+// RerunFailedJobs re-runs only the failed jobs in a workflow run, leaving
+// jobs that already succeeded untouched.
+// Uses POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs,
+// which returns 201 Created with an empty body on success.
+// GH-4532: lets autopilot recover a run with a flaky/transient job failure
+// without re-running the entire workflow.
+func (c *Client) RerunFailedJobs(ctx context.Context, owner, repo string, runID int64) error {
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/rerun-failed-jobs", owner, repo, runID)
+	return c.doRequest(ctx, http.MethodPost, path, nil, nil)
+}
+
 // isNotFoundError checks if error is a 404 not found error
 func isNotFoundError(err error) bool {
 	if err == nil {
