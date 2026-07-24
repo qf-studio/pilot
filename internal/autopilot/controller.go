@@ -1975,6 +1975,20 @@ func ciFailedChecksSummary(failedChecks []string) string {
 }
 
 func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error {
+	// GH-4533: classify the failure as code vs. CI infrastructure outage
+	// before doing anything else. An infra-classified failure with retry
+	// budget remaining short-circuits straight into a rerun, skipping the
+	// iteration/size guards and fix-issue machinery below entirely — there is
+	// nothing in the PR's own code for those to act on. infraNote carries an
+	// optional human-readable reason (currently only set on budget
+	// exhaustion) folded into prState.Error if this falls through anyway.
+	perCheckLogs := c.ciMonitor.GetFailedCheckLogsByCheck(ctx, prState.HeadSHA)
+	failureClass := classifyPRFailure(perCheckLogs)
+	infraNote, retried := c.maybeRetryInfraFailure(ctx, prState, perCheckLogs, failureClass)
+	if retried {
+		return nil
+	}
+
 	failedChecks, err := c.ciMonitor.GetFailedChecks(ctx, prState.HeadSHA)
 	if err != nil {
 		c.log.Warn("failed to get failed checks", "error", err)
@@ -2034,7 +2048,8 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 			prState.Error = reason
 			prState.TerminalLabel = github.LabelFailed
 			c.metrics.RecordPRFailed()
-			c.metrics.RecordCIRun("fail")
+			c.metrics.RecordPRFailedClass(failureClass)
+			c.recordCIFailVerdict(failureClass)
 			c.metrics.RecordIssueProcessed("failed")
 			return nil
 		}
@@ -2074,7 +2089,8 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 					production, c.config.MaxCIFixPRSize, excludedAdditionsSuffix(bookkeeping, test), ciFailedChecksSummary(failedChecks))
 				c.escalateAndHold(ctx, prState, "CI fix size guard fired", []string{labelNeedsHuman}, comment)
 				c.metrics.RecordPRFailed()
-				c.metrics.RecordCIRun("fail")
+				c.metrics.RecordPRFailedClass(failureClass)
+				c.recordCIFailVerdict(failureClass)
 				return nil
 			}
 		}
@@ -2108,7 +2124,8 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 			ciFailedChecksSummary(failedChecks))
 		c.escalateAndHold(ctx, prState, "CI-fix continuation declined at preflight", []string{labelNeedsHuman}, comment)
 		c.metrics.RecordPRFailed()
-		c.metrics.RecordCIRun("fail")
+		c.metrics.RecordPRFailedClass(failureClass)
+		c.recordCIFailVerdict(failureClass)
 		return nil
 	}
 
@@ -2154,11 +2171,113 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	// fix issue created above carries the retry forward, so this issue must not
 	// also be re-queued (that would double-dispatch the same failure).
 	prState.Stage = StageFailed
-	prState.Error = fmt.Sprintf("%s; fix issue #%d created to continue this work", ciFailedChecksSummary(failedChecks), issueNum)
+	prState.Error = fmt.Sprintf("%s; fix issue #%d created to continue this work%s", ciFailedChecksSummary(failedChecks), issueNum, infraNote)
 	prState.TerminalLabel = github.LabelFailed
 	c.metrics.RecordPRFailed()
-	c.metrics.RecordCIRun("fail")
+	c.metrics.RecordPRFailedClass(failureClass)
+	c.recordCIFailVerdict(failureClass)
 	return nil
+}
+
+// maxInfraRerunBudget caps how many times handleCIFailed will auto-retry a
+// single PR's failed jobs after classifying the failure as a CI
+// infrastructure outage (GH-4533), scoped per HeadSHA via
+// PRState.InfraRerunSHA/InfraRerunCount. Once exhausted on a given SHA, the
+// failure falls through to the normal fix-issue path even though it is still
+// classified infra — a genuinely flaky runner deserves a couple of retries,
+// not an unbounded loop.
+const maxInfraRerunBudget = 2
+
+// maybeRetryInfraFailure auto-retries prState's failed jobs when every
+// scoped failed check classifies as a CI infrastructure outage and the
+// per-SHA retry budget is not yet exhausted (GH-4533). Returns retried=true
+// when a rerun was actually issued and prState was mutated into
+// StageWaitingCI — the caller must return nil immediately without falling
+// through to the fix-issue path. When retried is false, note carries an
+// optional human-readable reason (currently only set on budget exhaustion)
+// to fold into the eventual prState.Error.
+func (c *Controller) maybeRetryInfraFailure(ctx context.Context, prState *PRState, checks []FailedCheckLog, class FailureClass) (note string, retried bool) {
+	if class != FailureClassInfra || c.stepLogClient == nil {
+		return "", false
+	}
+
+	// A new HeadSHA resets the effective budget to 0 even though
+	// InfraRerunCount itself is not zeroed until the next successful retry —
+	// see PRState.InfraRerunSHA doc comment.
+	effectiveCount := prState.InfraRerunCount
+	if prState.HeadSHA != prState.InfraRerunSHA {
+		effectiveCount = 0
+	}
+	if effectiveCount >= maxInfraRerunBudget {
+		c.log.Warn("CI infra-failure retry budget exhausted, falling through to fix-issue path",
+			"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA), "attempts", effectiveCount)
+		return fmt.Sprintf(" (infra retries exhausted (%d/%d))", effectiveCount, maxInfraRerunBudget), false
+	}
+
+	rerunCount := c.rerunInfraFailures(ctx, prState, checks)
+	if rerunCount == 0 {
+		// Fail-safe: couldn't resolve/rerun anything (e.g. job/run lookup
+		// errors across the board) — fall through without charging the
+		// budget, since nothing was actually retried.
+		c.log.Warn("CI classified as infra outage but no jobs could be rerun, falling through to fix-issue path",
+			"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA))
+		return "", false
+	}
+
+	prState.InfraRerunCount = effectiveCount + 1
+	prState.InfraRerunSHA = prState.HeadSHA
+	prState.Stage = StageWaitingCI
+	c.metrics.RecordCIRun("infra_retry")
+	c.log.Warn("CI failure classified as infra outage, auto-retried failed jobs",
+		"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA),
+		"attempt", prState.InfraRerunCount, "budget", maxInfraRerunBudget, "runs_rerun", rerunCount)
+	return "", true
+}
+
+// rerunInfraFailures resolves each failed check's job ID to its owning
+// workflow run and calls RerunFailedJobs once per unique run (GH-4533): a
+// check run's ID doubles as its job ID, but RerunFailedJobs operates on the
+// owning run, so several failed checks from the same run must not each
+// trigger their own rerun call. Returns the number of unique runs
+// successfully rerun; individual resolve/rerun errors are logged and skipped
+// rather than aborting the whole batch.
+func (c *Controller) rerunInfraFailures(ctx context.Context, prState *PRState, checks []FailedCheckLog) int {
+	runIDs := make(map[int64]struct{})
+	for _, chk := range checks {
+		runID, err := c.stepLogClient.GetWorkflowRunIDForJob(ctx, c.owner, c.repo, chk.JobID)
+		if err != nil {
+			c.log.Warn("infra retry: failed to resolve workflow run for job",
+				"pr", prState.PRNumber, "check", chk.CheckName, "job", chk.JobID, "error", err)
+			continue
+		}
+		runIDs[runID] = struct{}{}
+	}
+
+	rerun := 0
+	for runID := range runIDs {
+		if err := c.stepLogClient.RerunFailedJobs(ctx, c.owner, c.repo, runID); err != nil {
+			c.log.Warn("infra retry: RerunFailedJobs failed",
+				"pr", prState.PRNumber, "run", runID, "error", err)
+			continue
+		}
+		rerun++
+	}
+	return rerun
+}
+
+// recordCIFailVerdict records the terminal CI-run verdict metric for a
+// non-retried failure (GH-4533): "fail" preserves the pre-GH-4533 meaning
+// for genuine code failures and any other non-infra fallthrough (e.g. a
+// mixed infra+code signal across checks), while "infra_fail" is reserved for
+// the budget-exhausted infra path so dashboards can distinguish "gave up
+// retrying a flaky runner" from "an actual code failure" without CIRuns
+// ["fail"] silently absorbing both.
+func (c *Controller) recordCIFailVerdict(class FailureClass) {
+	if class == FailureClassInfra {
+		c.metrics.RecordCIRun("infra_fail")
+		return
+	}
+	c.metrics.RecordCIRun("fail")
 }
 
 // handleReviewRequested processes a PR that received "changes requested" review feedback.

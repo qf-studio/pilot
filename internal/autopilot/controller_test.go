@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -2612,6 +2613,322 @@ func TestHandleCIFailed_RecordsCIRunOnFail(t *testing.T) {
 	}
 	if got := snap.CIRuns["pass"]; got != 0 {
 		t.Errorf("CIRuns[pass] = %d, want 0", got)
+	}
+}
+
+// gh4533InfraTestServer builds one httptest.Server answering both the
+// studio-sdk client's endpoints (check-runs list, job log fetch) and the
+// in-tree client's endpoints (jobs API, rerun-failed-jobs), matching the
+// GH-4526 incident this feature auto-remediates: real checks green, a lint
+// job failing on a 429 rate-limited action download. jobID/runID are fixed
+// at 100/500. Extra path handlers (issues, PR patch, etc.) can be layered on
+// via the extra func before the default catch-all.
+func gh4533InfraTestServer(t *testing.T, sha string, rerunCalled *bool, extra func(w http.ResponseWriter, r *http.Request) bool) *httptest.Server {
+	t.Helper()
+	const infraLog = `Run actions/checkout@v4
+##[error]Failed to download action 'https://api.github.com/repos/actions/checkout/tarball/v4'. Error: Response status code does not indicate success: 429 (Too Many Requests).`
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if extra != nil && extra(w, r) {
+			return
+		}
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/"+sha+"/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 2,
+				CheckRuns: []github.CheckRun{
+					{ID: 99, Name: "build", Status: "completed", Conclusion: "success"},
+					{ID: 100, Name: "lint", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/100/logs":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(infraLog))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/100":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{ID: 100, RunID: 500, Name: "lint", Status: "completed"})
+		case r.URL.Path == "/repos/owner/repo/actions/runs/500/rerun-failed-jobs" && r.Method == http.MethodPost:
+			if rerunCalled != nil {
+				*rerunCalled = true
+			}
+			w.WriteHeader(http.StatusCreated)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+}
+
+// TestHandleCIFailed_InfraFailure_AutoRetries replays the GH-4526 incident
+// scenario (green real checks + a 429-rate-limited action-download lint job)
+// end-to-end: handleCIFailed must classify the failure as infra, call
+// RerunFailedJobs exactly once (deduped to the one owning run), leave the PR
+// open and unmodified, spawn no fix issue, and re-enter StageWaitingCI.
+func TestHandleCIFailed_InfraFailure_AutoRetries(t *testing.T) {
+	rerunCalled := false
+	issueCreated := false
+	prClosed := false
+
+	server := gh4533InfraTestServer(t, "infrasha1", &rerunCalled, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 900}))
+			return true
+		case r.URL.Path == "/repos/owner/repo/pulls/50" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+			return true
+		}
+		return false
+	})
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+
+	prState := &PRState{
+		PRNumber: 50,
+		HeadSHA:  "infrasha1",
+		Stage:    StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if !rerunCalled {
+		t.Error("expected RerunFailedJobs to be called for the infra-classified failure")
+	}
+	if issueCreated {
+		t.Error("no fix issue should be created for an infra-classified failure with retry budget remaining")
+	}
+	if prClosed {
+		t.Error("PR must not be closed on an infra auto-retry")
+	}
+	if prState.Stage != StageWaitingCI {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageWaitingCI)
+	}
+	if prState.InfraRerunCount != 1 {
+		t.Errorf("InfraRerunCount = %d, want 1", prState.InfraRerunCount)
+	}
+	if prState.InfraRerunSHA != "infrasha1" {
+		t.Errorf("InfraRerunSHA = %q, want %q", prState.InfraRerunSHA, "infrasha1")
+	}
+
+	snap := c.metrics.Snapshot()
+	if got := snap.CIRuns["infra_retry"]; got != 1 {
+		t.Errorf("CIRuns[infra_retry] = %d, want 1", got)
+	}
+	if got := snap.CIRuns["fail"]; got != 0 {
+		t.Errorf("CIRuns[fail] = %d, want 0 (not a terminal fail)", got)
+	}
+}
+
+// TestHandleCIFailed_InfraFailure_RetryBudgetExhausted covers the case where
+// an infra-classified failure has already exhausted its 2-retry budget on
+// this exact SHA: handleCIFailed must NOT retry again, must fall through to
+// the normal fix-issue/close-PR path, and must record CIRuns["infra_fail"]
+// (not the generic "fail") plus a budget-exhausted note in prState.Error.
+func TestHandleCIFailed_InfraFailure_RetryBudgetExhausted(t *testing.T) {
+	rerunCalled := false
+	issueCreated := false
+	prClosed := false
+
+	server := gh4533InfraTestServer(t, "infrasha2", &rerunCalled, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 901}))
+			return true
+		case r.URL.Path == "/repos/owner/repo/pulls/51" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+			return true
+		}
+		return false
+	})
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+
+	prState := &PRState{
+		PRNumber:        51,
+		HeadSHA:         "infrasha2",
+		Stage:           StageCIFailed,
+		InfraRerunCount: 2,
+		InfraRerunSHA:   "infrasha2", // budget already spent on this exact SHA
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if rerunCalled {
+		t.Error("RerunFailedJobs must not be called once the retry budget is exhausted")
+	}
+	if !issueCreated {
+		t.Error("expected a fix issue once the infra retry budget is exhausted")
+	}
+	if !prClosed {
+		t.Error("expected the PR to be closed once the infra retry budget is exhausted")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	if !strings.Contains(prState.Error, "infra retries exhausted (2/2)") {
+		t.Errorf("Error = %q, want it to mention 'infra retries exhausted (2/2)'", prState.Error)
+	}
+
+	snap := c.metrics.Snapshot()
+	if got := snap.CIRuns["infra_fail"]; got != 1 {
+		t.Errorf("CIRuns[infra_fail] = %d, want 1", got)
+	}
+	if got := snap.CIRuns["fail"]; got != 0 {
+		t.Errorf("CIRuns[fail] = %d, want 0 (budget-exhausted infra failure records infra_fail)", got)
+	}
+	if got := snap.PRFailureClasses["infra"]; got != 1 {
+		t.Errorf("PRFailureClasses[infra] = %d, want 1", got)
+	}
+}
+
+// TestHandleCIFailed_InfraFailure_BudgetResetOnNewSHA covers GH-4533's
+// per-SHA budget reset: a PR that already spent its 2-retry budget on a
+// prior SHA must still get a fresh budget once HeadSHA moves to a new commit
+// (e.g. after an unrelated push), even though InfraRerunCount itself is not
+// zeroed until the next successful retry.
+func TestHandleCIFailed_InfraFailure_BudgetResetOnNewSHA(t *testing.T) {
+	rerunCalled := false
+
+	server := gh4533InfraTestServer(t, "infrasha3", &rerunCalled, nil)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+
+	prState := &PRState{
+		PRNumber:        52,
+		HeadSHA:         "infrasha3",
+		Stage:           StageCIFailed,
+		InfraRerunCount: 2,
+		InfraRerunSHA:   "infrasha2-old", // budget was spent on a different, prior SHA
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if !rerunCalled {
+		t.Error("expected RerunFailedJobs to be called: budget resets on a new HeadSHA")
+	}
+	if prState.Stage != StageWaitingCI {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageWaitingCI)
+	}
+	if prState.InfraRerunCount != 1 {
+		t.Errorf("InfraRerunCount = %d, want 1 (reset to 0, then incremented by this retry)", prState.InfraRerunCount)
+	}
+	if prState.InfraRerunSHA != "infrasha3" {
+		t.Errorf("InfraRerunSHA = %q, want %q", prState.InfraRerunSHA, "infrasha3")
+	}
+}
+
+// TestHandleCIFailed_RealCodeFailure_StillHitsFixIssuePath is a regression
+// guard (GH-4533): a genuine code failure (real errcheck annotation in the
+// job log) must be unaffected by the new classify-first path — still
+// classified code, still spawns a fix issue and closes the PR, still records
+// the plain CIRuns["fail"] (not infra_fail).
+func TestHandleCIFailed_RealCodeFailure_StillHitsFixIssuePath(t *testing.T) {
+	issueCreated := false
+	prClosed := false
+
+	const codeLog = `Run golangci-lint run ./...
+internal/autopilot/controller.go:1234:6: Error return value of c.ghClient.ClosePullRequest is not checked (errcheck)
+##[error]Process completed with exit code 1.`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/codesha1/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{ID: 200, Name: "lint", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/200/logs":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(codeLog))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 902}))
+		case r.URL.Path == "/repos/owner/repo/pulls/53" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+
+	prState := &PRState{
+		PRNumber: 53,
+		HeadSHA:  "codesha1",
+		Stage:    StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if !issueCreated {
+		t.Error("expected a fix issue for a genuine code failure")
+	}
+	if !prClosed {
+		t.Error("expected the PR to be closed for a genuine code failure")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	if strings.Contains(prState.Error, "infra retries exhausted") {
+		t.Errorf("Error = %q, must not mention infra retries for a code failure", prState.Error)
+	}
+
+	snap := c.metrics.Snapshot()
+	if got := snap.CIRuns["fail"]; got != 1 {
+		t.Errorf("CIRuns[fail] = %d, want 1", got)
+	}
+	if got := snap.CIRuns["infra_fail"]; got != 0 {
+		t.Errorf("CIRuns[infra_fail] = %d, want 0", got)
+	}
+	if got := snap.PRFailureClasses["code"]; got != 1 {
+		t.Errorf("PRFailureClasses[code] = %d, want 1", got)
 	}
 }
 

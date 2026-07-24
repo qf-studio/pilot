@@ -1744,6 +1744,139 @@ func TestCIMonitor_MapCombinedStatus(t *testing.T) {
 	}
 }
 
+// TestCIMonitor_GetFailedCheckLogsByCheck covers GH-4533: per-check logs
+// scoped the same way GetFailedChecks is (isScopedCheck), used to feed
+// classifyPRFailure. Unlike GetFailedCheckLogs (single combined string), this
+// keeps each check's logs separate along with its job ID, and a log-fetch
+// error is preserved as an empty-Logs entry rather than dropped — dropping it
+// would let classifyPRFailure wrongly see a partial check list as "all
+// infra".
+func TestCIMonitor_GetFailedCheckLogsByCheck(t *testing.T) {
+	t.Run("fetches per-check logs for failed, in-scope checks only", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/owner/repo/commits/abc123/check-runs":
+				resp := github.CheckRunsResponse{
+					TotalCount: 3,
+					CheckRuns: []github.CheckRun{
+						{ID: 100, Name: "lint", Status: "completed", Conclusion: "failure"},
+						{ID: 101, Name: "test", Status: "completed", Conclusion: "success"},
+						{ID: 102, Name: "build", Status: "completed", Conclusion: "failure"},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/repos/owner/repo/actions/jobs/100/logs":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("lint failure output"))
+			case "/repos/owner/repo/actions/jobs/102/logs":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("build failure output"))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+		results := monitor.GetFailedCheckLogsByCheck(context.Background(), "abc123")
+
+		if len(results) != 2 {
+			t.Fatalf("len(results) = %d, want 2 (only failed checks)", len(results))
+		}
+		byName := make(map[string]FailedCheckLog)
+		for _, r := range results {
+			byName[r.CheckName] = r
+		}
+		if lint, ok := byName["lint"]; !ok || lint.JobID != 100 || !contains(lint.Logs, "lint failure output") {
+			t.Errorf("lint entry = %+v, want job 100 with lint failure output", lint)
+		}
+		if build, ok := byName["build"]; !ok || build.JobID != 102 || !contains(build.Logs, "build failure output") {
+			t.Errorf("build entry = %+v, want job 102 with build failure output", build)
+		}
+		if _, ok := byName["test"]; ok {
+			t.Error("passing check 'test' should not appear in results")
+		}
+	})
+
+	t.Run("log fetch error keeps the check with empty logs, not dropped", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/owner/repo/commits/abc123/check-runs":
+				resp := github.CheckRunsResponse{
+					TotalCount: 1,
+					CheckRuns: []github.CheckRun{
+						{ID: 100, Name: "lint", Status: "completed", Conclusion: "failure"},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/repos/owner/repo/actions/jobs/100/logs":
+				w.WriteHeader(http.StatusInternalServerError)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+		results := monitor.GetFailedCheckLogsByCheck(context.Background(), "abc123")
+
+		if len(results) != 1 {
+			t.Fatalf("len(results) = %d, want 1 (check preserved despite log fetch error)", len(results))
+		}
+		if results[0].Logs != "" {
+			t.Errorf("Logs = %q, want empty string on fetch error", results[0].Logs)
+		}
+		if results[0].CheckName != "lint" || results[0].JobID != 100 {
+			t.Errorf("result = %+v, want CheckName=lint JobID=100", results[0])
+		}
+	})
+
+	t.Run("respects scoping (excludes out-of-scope failed checks)", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/owner/repo/commits/abc123/check-runs":
+				resp := github.CheckRunsResponse{
+					TotalCount: 2,
+					CheckRuns: []github.CheckRun{
+						{ID: 100, Name: "lint", Status: "completed", Conclusion: "failure"},
+						{ID: 101, Name: "unrelated-check", Status: "completed", Conclusion: "failure"},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/repos/owner/repo/actions/jobs/100/logs":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("lint failure output"))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		cfg.RequiredChecks = []string{"lint"}
+		monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+		results := monitor.GetFailedCheckLogsByCheck(context.Background(), "abc123")
+
+		if len(results) != 1 {
+			t.Fatalf("len(results) = %d, want 1 (unrelated-check out of scope)", len(results))
+		}
+		if results[0].CheckName != "lint" {
+			t.Errorf("CheckName = %q, want lint", results[0].CheckName)
+		}
+	})
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
 }

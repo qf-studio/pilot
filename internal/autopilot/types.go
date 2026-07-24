@@ -945,6 +945,18 @@ type PRState struct {
 	// Mirrors the MergeNotificationPosted guard above for the same race
 	// (GH-4164).
 	MergeFollowupPosted bool
+	// InfraRerunCount tracks how many times handleCIFailed has auto-retried
+	// this PR's failed jobs after classifying the failure as a CI
+	// infrastructure outage rather than a code failure (GH-4533). Scoped to
+	// InfraRerunSHA: a new HeadSHA resets the effective budget to 0 even
+	// though this field is not zeroed until the next successful retry, so a
+	// daemon restart cannot silently grant a fresh budget on the same SHA.
+	// Persisted.
+	InfraRerunCount int
+	// InfraRerunSHA is the HeadSHA the InfraRerunCount budget above applies
+	// to. When it no longer matches the PR's current HeadSHA, the effective
+	// retry budget is treated as 0 (GH-4533). Persisted.
+	InfraRerunSHA string
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -991,6 +1003,8 @@ func (ps *PRState) snapshot() *PRState {
 		ScopeTitle:              ps.ScopeTitle,
 		ConflictRecorded:        ps.ConflictRecorded,
 		MergeFollowupPosted:     ps.MergeFollowupPosted,
+		InfraRerunCount:         ps.InfraRerunCount,
+		InfraRerunSHA:           ps.InfraRerunSHA,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.

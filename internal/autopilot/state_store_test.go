@@ -90,6 +90,60 @@ func TestStateStore_SaveAndLoadPRState(t *testing.T) {
 	}
 }
 
+// TestStateStore_InfraRerunFields_SurvivesRestart verifies that
+// InfraRerunCount/InfraRerunSHA are persisted to SQLite and reloaded
+// correctly via both GetPRState and LoadAllPRStates (GH-4533) — the path a
+// daemon restart actually uses to restore activePRs. Without this, a
+// restart between an infra-outage rerun and the next CI verdict would
+// silently grant a fresh 2-retry budget on the same SHA.
+func TestStateStore_InfraRerunFields_SurvivesRestart(t *testing.T) {
+	store := newTestStateStore(t)
+
+	pr := &PRState{
+		PRNumber:        56,
+		PRURL:           "https://github.com/owner/repo/pull/56",
+		IssueNumber:     21,
+		BranchName:      "pilot/GH-21",
+		HeadSHA:         "sha56",
+		Stage:           StageWaitingCI,
+		InfraRerunCount: 1,
+		InfraRerunSHA:   "sha56",
+		CreatedAt:       time.Now().Truncate(time.Second),
+	}
+
+	if err := store.SavePRState("owner/repo", pr); err != nil {
+		t.Fatalf("SavePRState failed: %v", err)
+	}
+
+	loaded, err := store.GetPRState("owner/repo", 56)
+	if err != nil {
+		t.Fatalf("GetPRState failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("GetPRState returned nil")
+	}
+	if loaded.InfraRerunCount != 1 {
+		t.Errorf("GetPRState: InfraRerunCount = %d, want 1", loaded.InfraRerunCount)
+	}
+	if loaded.InfraRerunSHA != "sha56" {
+		t.Errorf("GetPRState: InfraRerunSHA = %q, want %q", loaded.InfraRerunSHA, "sha56")
+	}
+
+	all, err := store.LoadAllPRStates("owner/repo")
+	if err != nil {
+		t.Fatalf("LoadAllPRStates failed: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("LoadAllPRStates returned %d states, want 1", len(all))
+	}
+	if all[0].InfraRerunCount != 1 {
+		t.Errorf("LoadAllPRStates: InfraRerunCount = %d, want 1", all[0].InfraRerunCount)
+	}
+	if all[0].InfraRerunSHA != "sha56" {
+		t.Errorf("LoadAllPRStates: InfraRerunSHA = %q, want %q", all[0].InfraRerunSHA, "sha56")
+	}
+}
+
 func TestStateStore_LoadAllPRStates(t *testing.T) {
 	store := newTestStateStore(t)
 
