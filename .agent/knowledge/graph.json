@@ -909,6 +909,20 @@
           "knowledge",
           "workflow"
         ]
+      },
+      "TASK-420": {
+        "path": ".agent/tasks/TASK-420-dashboard-panel-truth-divergence.md",
+        "title": "Dashboard panels disagree about the same task \u2014 queue marks live work \"done\", history keeps dead work \"running\"",
+        "status": "dispatched",
+        "concepts": [
+          "testing",
+          "skills",
+          "knowledge",
+          "api",
+          "authentication",
+          "context",
+          "deployment"
+        ]
       }
     },
     "memories": {
@@ -4653,6 +4667,11 @@
       "from": "TASK-419",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-420",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -4689,7 +4708,8 @@
     ],
     "skills": [
       "TASK-386",
-      "TASK-387"
+      "TASK-387",
+      "TASK-420"
     ],
     "knowledge": [
       "TASK-386",
@@ -4735,7 +4755,8 @@
       "TASK-415",
       "TASK-416",
       "TASK-417",
-      "TASK-419"
+      "TASK-419",
+      "TASK-420"
     ],
     "deployment": [
       "TASK-386",
@@ -4795,7 +4816,8 @@
       "claude-cli-refuses-root-hosted-units",
       "oauth-ssm-params-rot-live-credentials-source-of-truth",
       "shared-oauth-session-strands-second-machine",
-      "TASK-419"
+      "TASK-419",
+      "TASK-420"
     ],
     "authentication": [
       "TASK-386",
@@ -4829,7 +4851,8 @@
       "TASK-413",
       "TASK-414",
       "TASK-415",
-      "TASK-417"
+      "TASK-417",
+      "TASK-420"
     ],
     "testing": [
       "TASK-386",
@@ -4885,7 +4908,8 @@
       "TASK-416",
       "TASK-417",
       "TASK-418",
-      "TASK-419"
+      "TASK-419",
+      "TASK-420"
     ],
     "api": [
       "TASK-386",
@@ -4920,7 +4944,8 @@
       "TASK-416",
       "TASK-417",
       "TASK-418",
-      "TASK-419"
+      "TASK-419",
+      "TASK-420"
     ],
     "context": [
       "TASK-386",
@@ -4968,7 +4993,8 @@
       "TASK-415",
       "TASK-417",
       "TASK-418",
-      "TASK-419"
+      "TASK-419",
+      "TASK-420"
     ],
     "markers": [
       "TASK-387",
@@ -5348,10 +5374,10 @@
       "shared-oauth-session-strands-second-machine"
     ]
   },
-  "last_updated": "2026-07-24T21:48:50.110807+00:00",
+  "last_updated": "2026-07-24T22:19:41.609985+00:00",
   "stats": {
-    "total_nodes": 293,
-    "total_edges": 247,
+    "total_nodes": 294,
+    "total_edges": 248,
     "memory_count": 188
   }
 }
