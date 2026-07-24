@@ -2023,6 +2023,18 @@ func evaluateEmptyBranchPRGuard(decomposed bool, childTerminalStates []string, r
 const (
 	defaultChildOutcomeReconcilePollInterval = 3 * time.Second
 	defaultChildOutcomeReconcileTimeout      = 5 * time.Minute
+	// defaultChildOutcomeQueuedAbsoluteCeiling is a GH-4536 (TASK-419)
+	// backstop on the queued-phase poll, which by design otherwise has "no
+	// ceiling at all" while the child is queued (GH-4413, see the big
+	// comment on reconcileChildOutcome below). The self-ownership takeover
+	// added alongside this constant is the real fix for the self-deadlock
+	// this guards against; this ceiling exists only so an unforeseen variant
+	// of the same failure class degrades to a bounded failure instead of
+	// reproducing the hang. Sized generously above any legitimate queue-wait
+	// this codebase is known to produce (GH-2331's queued-behind-other-work
+	// case; the GH-4531 incident's own child sat queued ~7 minutes before
+	// the deadlock) so it should never fire for a real wait.
+	defaultChildOutcomeQueuedAbsoluteCeiling = 2 * time.Hour
 )
 
 // reconcileChildOutcome re-checks a sub-issue's own execution row before
@@ -2080,8 +2092,18 @@ const (
 // no live worker (a dead claim) to a terminal status, which surfaces here on
 // the next tick via the terminal-row check; a queued row with a live worker
 // is, by that same GH-2331 reasoning, just waiting its turn and must not be
-// timed out. ctx cancellation remains the only bound while queued.
-func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath, selfExecID string, result *ExecutionResult, execErr error, externallyOwned bool) (*ExecutionResult, error) {
+// timed out. ctx cancellation remains the only bound while queued — except
+// for the self-ownership case immediately below and the absolute backstop
+// ceiling further down (both GH-4536/TASK-419).
+//
+// GH-4536 (TASK-419): a queued child whose project_path matches the project
+// this call is ITSELF executing on (per ctx's projectWorkerIdentity, set at
+// dispatcher.go's processQueue) is not "just waiting its turn" — under
+// TASK-393's one-worker-per-project invariant, this goroutine IS the only
+// one that could ever pick it up, so waiting on it is a guaranteed deadlock.
+// subTask carries that child's full Task (including ProjectPath) so a
+// detected self-deadlock can be taken over inline rather than merely failed.
+func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath, selfExecID string, result *ExecutionResult, execErr error, externallyOwned bool, subTask *Task) (*ExecutionResult, error) {
 	hasFailureSignal := execErr != nil || (result != nil && !result.Success)
 	if !hasFailureSignal && !externallyOwned {
 		return result, execErr
@@ -2125,6 +2147,15 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 	if timeout <= 0 {
 		timeout = defaultChildOutcomeReconcileTimeout
 	}
+	// GH-4536 (TASK-419): absolute backstop for the queued phase, which is
+	// otherwise unbounded by design (see the GH-4413 comment above). Anchored
+	// to when this poll loop started, not to any per-tick state, so it can't
+	// be reset by a state regression the way runningDeadline deliberately is.
+	queuedCeiling := r.childOutcomeQueuedAbsoluteCeiling
+	if queuedCeiling <= 0 {
+		queuedCeiling = defaultChildOutcomeQueuedAbsoluteCeiling
+	}
+	pollStart := time.Now()
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -2162,13 +2193,36 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 		}
 
 		if !running {
-			// Still queued (or no row visible yet): no ceiling applies. A
-			// queued row behind a live worker is legitimately waiting its
-			// turn (GH-2331); a queued row with a dead claim gets reaped to
-			// a terminal status by recoverStaleQueuedTasks and will be
-			// caught by the terminal check above on a later tick. Reset any
-			// previously-observed running deadline in case the child
-			// regressed to queued (a fresh re-pick row sorting first).
+			// GH-4536 (TASK-419): a queued (or not-yet-visible) child that
+			// this call is externally owned for, and whose project this call
+			// is ITSELF executing on, is not "just waiting its turn" — it is
+			// unrunnable by anyone else (TASK-393's one-worker-per-project
+			// invariant), so this is a guaranteed structural deadlock, not a
+			// legitimate queue-wait. Detected explicitly via ctx identity,
+			// never inferred from how long we've been polling. Take over
+			// (preferred) or fail distinctly — never keep polling.
+			if externallyOwned {
+				if workerProject, hasIdentity := projectWorkerIdentity(ctx); hasIdentity && workerProject == projectPath {
+					return r.reconcileSelfOwnedTakeover(ctx, taskID, projectPath, subTask)
+				}
+			}
+			// Still queued (or no row visible yet), and not self-owned: no
+			// per-tick ceiling applies. A queued row behind a live worker on
+			// a DIFFERENT project is legitimately waiting its turn (GH-2331);
+			// a queued row with a dead claim gets reaped to a terminal status
+			// by recoverStaleQueuedTasks and will be caught by the terminal
+			// check above on a later tick. Reset any previously-observed
+			// running deadline in case the child regressed to queued (a
+			// fresh re-pick row sorting first). The absolute backstop below
+			// still bounds the total wait regardless.
+			if time.Since(pollStart) > queuedCeiling {
+				r.log.Warn("reconcileChildOutcome: gave up waiting for a queued child past the absolute backstop ceiling",
+					"task_id", taskID, "project_path", projectPath, "queued_ceiling", queuedCeiling)
+				if externallyOwned {
+					return &ExecutionResult{TaskID: taskID}, fmt.Errorf("reconcileChildOutcome: queued child %s exceeded absolute backstop ceiling (%s) without reaching a terminal state (GH-4536/TASK-419)", taskID, queuedCeiling)
+				}
+				return result, execErr
+			}
 			runningDeadline = time.Time{}
 			continue
 		}
@@ -2188,6 +2242,53 @@ func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath,
 			return result, execErr
 		}
 	}
+}
+
+// reconcileSelfOwnedTakeover breaks the GH-4536 (TASK-419) self-deadlock:
+// ctx carries proof that this call is running on subTask.ProjectPath's own
+// ProjectWorker (TASK-393's sole per-project serialization point), and the
+// child is still queued — under the one-worker-per-project model that queued
+// child can never be picked up by any other goroutine. Waiting on it, as the
+// externally-owned poll loop otherwise would, is a guaranteed hang, not a
+// legitimate queue-wait (the GH-2331 assumption reconcileChildOutcome
+// otherwise relies on).
+//
+// Prefers takeover: force-stall the dead-end claim and re-claim it through
+// the shared beginWithGenerationRetry/repick_backoff path
+// (reclaimSelfOwnedQueuedChildFn, wired by NewDispatcher — see the warning at
+// this file's sub-issue Begin() call site about not re-implementing a second,
+// driftable claim-retry path), then execute the child inline: this IS the
+// worker that would have run it anyway. Falls back to a distinct, greppable
+// failure — never a hang, never a silent success — when no reclaim mechanism
+// is wired (e.g. a test exercising this path directly, without a real
+// Dispatcher) or the reclaim itself is rejected (hard cap already tripped,
+// still inside the backoff window, or a genuine race lost to another
+// channel).
+func (r *Runner) reconcileSelfOwnedTakeover(ctx context.Context, taskID, projectPath string, subTask *Task) (*ExecutionResult, error) {
+	if r.reclaimSelfOwnedQueuedChildFn == nil {
+		return &ExecutionResult{TaskID: taskID}, fmt.Errorf("reconcileChildOutcome: self-owned-queued-child deadlock detected for task=%s project=%s (GH-4536/TASK-419) and no reclaim mechanism is wired — refusing to wait forever", taskID, projectPath)
+	}
+
+	newExecID, ok, err := r.reclaimSelfOwnedQueuedChildFn(subTask)
+	if err != nil {
+		return &ExecutionResult{TaskID: taskID}, fmt.Errorf("reconcileChildOutcome: self-owned-queued-child takeover failed for task=%s project=%s (GH-4536/TASK-419): %w", taskID, projectPath, err)
+	}
+	if !ok {
+		return &ExecutionResult{TaskID: taskID}, fmt.Errorf("reconcileChildOutcome: self-owned-queued-child takeover rejected for task=%s project=%s (GH-4536/TASK-419): reclaim declined (hard cap, backoff window, or lost a race) — failing instead of hanging", taskID, projectPath)
+	}
+
+	r.log.Info("reconcileChildOutcome: took over self-owned queued child after claim-loss deadlock detection",
+		"task_id", taskID, "project_path", projectPath, "execution_id", newExecID)
+
+	var execResult *ExecutionResult
+	var execErr error
+	if r.executeFunc != nil {
+		execResult, execErr = r.executeFunc(ctx, subTask)
+	} else {
+		execResult, execErr = r.executeWithOptions(ctx, subTask, true)
+	}
+
+	return r.reconcileChildOutcome(ctx, taskID, projectPath, newExecID, execResult, execErr, false, subTask)
 }
 
 // findTerminalChildExecution scans every execution row tracked for taskID
@@ -2576,7 +2677,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			r.recordExecutionEvent(parent.LogExecutionID(), memory.StageDispatchClaimLost,
 				fmt.Sprintf("sub-issue %s claim lost to another dispatch channel", issueRef))
 
-			result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, "", nil, nil, true)
+			result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, "", nil, nil, true, subTask)
 		} else {
 			if err != nil {
 				r.log.Warn("Failed to insert sub-issue execution row",
@@ -2610,7 +2711,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			// is actually done — it can race a separately-tracked run of the same
 			// sub-issue. Re-check the child's own execution row before trusting
 			// this signal as terminal.
-			result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, subExecID, result, err, false)
+			result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, subExecID, result, err, false, subTask)
 		}
 
 		if err != nil {
