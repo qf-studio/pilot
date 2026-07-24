@@ -730,14 +730,14 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
-          "authentication",
-          "api",
-          "theory of mind",
+          "testing",
           "context",
-          "frontend",
-          "deployment",
           "knowledge",
-          "testing"
+          "authentication",
+          "theory of mind",
+          "frontend",
+          "api",
+          "deployment"
         ]
       },
       "TASK-407": {
@@ -5168,7 +5168,7 @@
       "workflow-yaml-requires-front-matter"
     ]
   },
-  "last_updated": "2026-07-24T11:19:46.585307+00:00",
+  "last_updated": "2026-07-24T16:35:53.928590+00:00",
   "stats": {
     "total_nodes": 285,
     "total_edges": 243,
