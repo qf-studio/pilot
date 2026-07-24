@@ -1,6 +1,6 @@
 ---
 name: hard-cap-rearm-in-memory-gate
-description: Re-arming a hard-cap-stalled task needs FOUR clears — backoff row, stale gen-0 claim (#4372), the stalled executions row itself, AND waiting out the daemon's in-memory next_eligible gate; DB deletes alone do not dispatch
+description: Re-arming a hard-cap-stalled task needs FIVE clears — backoff row, stale gen-0 claim (#4372), the stalled executions row, the daemon's in-memory next_eligible gate, AND the pilot-blocked GitHub label (which filters the issue out of the poller candidate list SILENTLY, with zero log lines)
 type: pitfall
 ---
 
@@ -26,11 +26,25 @@ re-arm (`DELETE FROM repick_backoff`) did nothing: the poller kept logging
 5. **Wait for the noted `next_eligible` to pass.** GH-69 dispatched at
    literally 11:24:26Z — the exact expiry second. Nothing you do in the DB
    accelerates this; only a daemon restart clears the map early.
+6. **Remove the `pilot-blocked` label on the ISSUE** (added 2026-07-24,
+   GH-4531): when the cap trips, the daemon labels the issue `pilot-blocked`,
+   and the poller filters those out of its candidate list **before** any
+   evaluation. All five DB/memory clears above plus a full daemon restart
+   still yield **zero dispatch and zero log lines** while that label is on.
+   ```
+   gh issue edit <N> --remove-label pilot-blocked --add-label pilot-retry-ready
+   ```
 
 ## Diagnostic signature
 Dispatch attempts that end at "unmarking for retry" with NO subsequent
 "dispatch claim lost" line = dropped before the claim stage = in-memory gate,
 not DB state.
+
+**Total log silence** for the task — while OTHER issues in the same repo are
+visibly evaluated in the same ticks — is the `pilot-blocked` label, not DB
+state. Don't debug the ledger: `gh issue view <N> --json labels` first. (The
+label is applied by the cap handler, so DB surgery and the label always drift
+apart — clearing one never clears the other.)
 
 ## Status (updated 2026-07-20)
 #4455 narrowed the false-stall class (restart churn + operator cancels no

@@ -150,7 +150,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** box build `v2.245.1-6-gc3258c33` (release train still owes #4514–#4522 to the running binary; rollback `/var/lib/pilot/bin/pilot.prev` if a build misbehaves — the 07-21 `-4` build died silently ~2min post-boot once with zero forensics) — **daemon runs on AWS** (`i-0e0c1ca34e7b561f9`, TASK-409; ops via `pilot-aws` skill; NO local daemon; binary at `/var/lib/pilot/bin/pilot`, `/usr/local/bin/pilot` is a symlink) — **⚡ approvals OFF since 07-20 21:41Z**: auto-merge on green CI, proven unattended 07-21 (pointer #144/#145, pilot #4497) — **GH-4391 rate-budget client LIVE** (15% poller floor, ETag conditional scans, 72h/cursor/3s-stagger startup; metric `pilot_rate_limit_floor_engaged_total`) | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** box runs **`Pilot 2.245.2`** (built 07-24 14:32Z, self-upgraded; verified live on the box — rollback `/var/lib/pilot/bin/pilot.prev` if a build misbehaves) — **daemon runs on AWS** (`i-0e0c1ca34e7b561f9`, TASK-409; ops via `pilot-aws` skill; NO local daemon; binary at `/var/lib/pilot/bin/pilot`, `/usr/local/bin/pilot` is a symlink) — **⚡ approvals OFF since 07-20 21:41Z**: auto-merge on green CI, proven unattended 07-21 (pointer #144/#145, pilot #4497) — **GH-4391 rate-budget client LIVE** (15% poller floor, ETag conditional scans, 72h/cursor/3s-stagger startup; metric `pilot_rate_limit_floor_engaged_total`) | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **PRIORITY (founder directive 07-17):** pointer delivery first → pilot reliability second → SaaS/platform (TASK-405, auth-service) PARKED. Memory: `founder-priority-pointer-first-saas-parked`.
 
