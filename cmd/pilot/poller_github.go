@@ -285,6 +285,21 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	repoOwner, repoName := repoParts[0], repoParts[1]
 	repoLog := log.With(slog.String("repo", target.repoFullName))
 
+	// GH-4526: ensure every pilot-* label exists on this repo before the
+	// poller starts dispatching. Hosted tenant repos are onboarded with none
+	// of these labels pre-created; without this, the first label write
+	// (stalled-issue surfacing, title-rejection escalation, retry counters,
+	// ...) fails with "label ... not found" and that failure is silently
+	// swallowed by its best-effort caller. `gh label create --force` is
+	// idempotent, so re-running this on every restart is harmless.
+	func() {
+		labelCtx, labelCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer labelCancel()
+		for _, labelErr := range executor.EnsureRepoLabels(labelCtx, target.projectPath) {
+			repoLog.Warn("failed to ensure pilot label exists", slog.Any("error", labelErr))
+		}
+	}()
+
 	// Determine interval (shared adapter polling config; projects have no per-repo interval).
 	interval := 30 * time.Second
 	if ghCfg.Polling != nil && ghCfg.Polling.Interval > 0 {

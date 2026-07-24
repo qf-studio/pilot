@@ -182,20 +182,40 @@ func checkOpenAIAPIKey(backendType string) error {
 	return fmt.Errorf("%s backend requires an API key: set OPENAI_API_KEY (or configure executor.openai.api_key)", backendType)
 }
 
-// checkGitClean verifies the git working directory has no uncommitted changes.
-// This prevents execution from accidentally including unrelated changes.
+// checkGitClean verifies the git working directory has no uncommitted changes,
+// ignoring paths the daemon's own scaffolding/excludes never auto-stage (see
+// isExcluded / defaultExcludeDirs in git.go).
+//
+// GH-4526: on a freshly cloned hosted-tenant repo, the daemon scaffolds
+// Navigator's ".agent/" directory in place (untracked) shortly after clone.
+// Before this fix, that untracked directory made this check see the working
+// directory as dirty on every fresh clone — the daemon's own scaffolding
+// permanently blocked its own first dispatch via this exact preflight check
+// (5 re-picks, then the repick hard cap, then pilot-blocked). Filtering
+// scaffold/exclude paths out of the dirty count — the same allowlist
+// GitOperations.Commit already uses so it never auto-stages ".agent/" et al
+// — makes "clean" mean "clean modulo the daemon's own known writes" without
+// weakening the check for genuinely dirty user files.
 func checkGitClean(ctx context.Context, projectPath string) error {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
 	cmd.Dir = projectPath
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("git status failed: %w", err)
 	}
-	changes := strings.TrimSpace(string(output))
+	var changes []string
+	for _, entry := range strings.Split(strings.TrimRight(string(output), "\x00"), "\x00") {
+		if len(entry) < 4 {
+			continue
+		}
+		path := entry[3:]
+		if isExcluded(path) {
+			continue
+		}
+		changes = append(changes, path)
+	}
 	if len(changes) > 0 {
-		// Count number of changed files
-		lines := strings.Split(changes, "\n")
-		return fmt.Errorf("working directory has %d uncommitted change(s): run 'git stash' or 'git commit' first", len(lines))
+		return fmt.Errorf("working directory has %d uncommitted change(s): run 'git stash' or 'git commit' first", len(changes))
 	}
 	return nil
 }

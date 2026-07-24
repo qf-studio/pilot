@@ -101,6 +101,61 @@ func TestCheckGitClean(t *testing.T) {
 	})
 }
 
+// TestCheckGitClean_IgnoresScaffoldedAgentDir is the GH-4526 regression
+// guard: the daemon scaffolds an untracked ".agent/" directory into fresh
+// clones shortly after they land, and before this fix that untracked
+// directory alone made checkGitClean report the working directory as dirty
+// — permanently blocking every dispatch on a freshly onboarded hosted tenant
+// repo via its own preflight check. ".agent/" is one of git.go's
+// defaultExcludeDirs (the same list GitOperations.Commit already refuses to
+// auto-stage), so simulating exactly that scaffold write here proves the
+// check now treats it as clean.
+func TestCheckGitClean_IgnoresScaffoldedAgentDir(t *testing.T) {
+	ctx := context.Background()
+
+	tmpDir := t.TempDir()
+	if err := exec.Command("git", "init", tmpDir).Run(); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test").Run()
+
+	// Simulate the daemon's Navigator scaffold: an untracked .agent/ tree,
+	// exactly as init_project.go's createNavigatorStructure leaves behind.
+	agentDir := filepath.Join(tmpDir, ".agent", "tasks")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("failed to scaffold .agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".agent", "DEVELOPMENT-README.md"), []byte("# Navigator Index\n"), 0o644); err != nil {
+		t.Fatalf("failed to write scaffold file: %v", err)
+	}
+
+	t.Run("untracked_agent_dir_alone_is_clean", func(t *testing.T) {
+		if err := checkGitClean(ctx, tmpDir); err != nil {
+			t.Errorf("expected untracked .agent/ scaffold to be ignored, got: %v", err)
+		}
+	})
+
+	// A genuinely dirty user file alongside the scaffold must still fail —
+	// the fix must not weaken the check for real uncommitted changes.
+	t.Run("real_user_file_alongside_scaffold_still_dirty", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(tmpDir, "real_change.go"), []byte("package x"), 0o644); err != nil {
+			t.Fatalf("failed to create real change file: %v", err)
+		}
+		err := checkGitClean(ctx, tmpDir)
+		if err == nil {
+			t.Fatal("expected error: a genuinely dirty user file must still fail git_clean")
+		}
+		if !strings.Contains(err.Error(), "uncommitted change") {
+			t.Errorf("expected error to mention uncommitted changes, got: %v", err)
+		}
+		// Only the real file should count, not the excluded scaffold.
+		if !strings.Contains(err.Error(), "1 uncommitted change(s)") {
+			t.Errorf("expected exactly 1 counted change (scaffold excluded), got: %v", err)
+		}
+	})
+}
+
 func TestRunPreflightChecks(t *testing.T) {
 	ctx := context.Background()
 
