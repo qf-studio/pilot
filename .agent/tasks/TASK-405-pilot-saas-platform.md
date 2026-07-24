@@ -1,6 +1,6 @@
 # TASK-405: Pilot SaaS Platform ("Pilot Cloud")
 
-**Created**: 2026-07-13 · **Status**: ACTIVE — S0 ✅ · S1 ✅ · H1–H12 ✅ · S3 UI mock ✅ · R-track ✅ · S6-lite ✅ · S2 NEARLY CLOSED 2026-07-23 eve (built: B5/A4/B6/reconciler/**C13 ✅ PR#29**/**B11 ✅ infra PR#19**; **B8 PR#30 up+reviewed, awaiting auto-merge**; A3 console#27 next; exit after merges = laptop e2e + SSM grants + ownership transfer + hosted-canary proof). Live status: `.agent/system/saas-roadmap.md` v8.2
+**Created**: 2026-07-13 · **Status**: ACTIVE — S0 ✅ · S1 ✅ · H1–H12 ✅ · S3 UI mock ✅ · R-track ✅ · S6-lite ✅ · **S2 BUILD COMPLETE 2026-07-23 night** (all epics merged: B5/A4/B6/reconciler/C13 PR#29/B11 PR#19/**B8 PR#30 merged 18:54Z**/**A3 PR#31 merged 20:20Z**; TASK-417 archived). S2 exit sequence is the only open S2 work — **step 1 (laptop e2e) IN PROGRESS 2026-07-24**: operator pre-steps done (IAM `/tenants/*` grant, v2.245.0 tarball in S3, console-role grants for `aleks` via managed policy `pilot-console-e2e` — grants step pulled forward), e2e surfaced 2 real defects (console#34 BinaryS3URI ✅ merged PR#35; console#36 SendCommand-terminal-during-SSM-registration → PR#37 open) + pilot#4523 (v2.245.1 missing linux tarballs). Resume: merge PR#37 → rerun 3 e2e legs → canary ownership transfer → hosted-canary proof → S2 EXIT → spec S3 backend. Live status: `.agent/system/saas-roadmap.md` v8.4
 **Owner**: Aleks (founder decisions) + Pilot (execution)
 **Execution roadmap**: `.agent/system/saas-roadmap.md` — S-milestones, dispatch rules, test strategy
 
