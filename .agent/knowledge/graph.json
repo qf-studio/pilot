@@ -730,14 +730,14 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
-          "testing",
-          "context",
-          "knowledge",
-          "authentication",
           "theory of mind",
-          "frontend",
+          "authentication",
+          "deployment",
           "api",
-          "deployment"
+          "context",
+          "testing",
+          "knowledge",
+          "frontend"
         ]
       },
       "TASK-407": {
@@ -881,6 +881,19 @@
           "workflow",
           "database",
           "testing"
+        ]
+      },
+      "TASK-418": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-418-ci-infra-failure-classification.md",
+        "title": "CI infra-failure classification \u2014 retry transient GitHub outages instead of closing PRs",
+        "status": "dispatched",
+        "concepts": [
+          "theory of mind",
+          "deployment",
+          "testing",
+          "workflow",
+          "context",
+          "api"
         ]
       }
     },
@@ -3308,6 +3321,72 @@
         ],
         "confidence": 0.95,
         "created": "2026-07-23"
+      },
+      "ci-infra-failure-misclassified-as-code": {
+        "type": "pitfall",
+        "summary": "GitHub reports conclusion=failure identically for real lint findings and runner-infra death (429 action download / 504 action fetch); handleCIFailed (controller.go:1977) trusts it blindly, so an infra flake closed a correct PR (GH-4526/PR#4529), spawned garbage fix issue #4530, and burned the repick budget into pilot-blocked. Durable fix: TASK-418 / #4531.",
+        "file": ".agent/knowledge/memories/pitfalls/ci-infra-failure-misclassified-as-code.md",
+        "concepts": [
+          "autopilot",
+          "ci",
+          "github",
+          "executor",
+          "metrics"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-24"
+      },
+      "cdk-merged-not-deployed-rots": {
+        "type": "pitfall",
+        "summary": "IaC merged green on synth-only CI but never deployed rots against the provider: the first fleet-VPC deploy 2026-07-24 hit infra#20 (DLM policy missing required ExecutionRoleArn) and infra#21 (AWS retired the pinned postgres 17.4 minor). Budget first deploys as bug-finding, never as a formality on a gate's critical path.",
+        "file": ".agent/knowledge/memories/pitfalls/cdk-merged-not-deployed-rots.md",
+        "concepts": [
+          "infrastructure",
+          "deployment",
+          "aws",
+          "pilot-console"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-24"
+      },
+      "ready-gate-couples-credential-validity": {
+        "type": "pitfall",
+        "summary": "GH-3769 registered live adapter credential probes as /ready readiness checkers (adapter_preflight.go:133 -> server.go:414 returns 503 if any fails), so one expired token makes a lifecycle gate polling /ready report a dead credential as 'instance not ready' \u2014 auth faults present as provisioning faults. pilot-console#45 addresses it.",
+        "file": ".agent/knowledge/memories/pitfalls/ready-gate-couples-credential-validity.md",
+        "concepts": [
+          "health",
+          "gateway",
+          "pilot-console",
+          "deployment"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-24"
+      },
+      "claude-cli-refuses-root-hosted-units": {
+        "type": "pitfall",
+        "summary": "The claude CLI refuses --dangerously-skip-permissions as root, so a systemd unit with no User= silently cannot execute anything; the same default puts the ledger at /.pilot off the data volume. Hosted units need User=pilot + explicit HOME on the data volume + ExecStartPre=+ for privileged pre-steps (pilot-console#53).",
+        "file": ".agent/knowledge/memories/pitfalls/claude-cli-refuses-root-hosted-units.md",
+        "concepts": [
+          "executor",
+          "deployment",
+          "pilot-console",
+          "ledger"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-24"
+      },
+      "oauth-ssm-params-rot-live-credentials-source-of-truth": {
+        "type": "pitfall",
+        "summary": "A CLAUDE_CODE_OAUTH_TOKEN copied into SSM is a snapshot that expires into silent 401 loops \u2014 the live ~/.claude/.credentials.json on a working machine is the only source of truth; separately a well-formed ANTHROPIC_API_KEY can still have zero credits. console secrets.validKeys lacks the OAuth key, forcing raw SSM puts.",
+        "file": ".agent/knowledge/memories/pitfalls/oauth-ssm-params-rot-live-credentials-source-of-truth.md",
+        "concepts": [
+          "pilot-console",
+          "deployment",
+          "anthropic-api",
+          "executor"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-24"
       }
     }
   },
@@ -4526,6 +4605,16 @@
       "from": "TASK-417",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "TASK-418",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-418",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -4548,7 +4637,10 @@
       "mem-142",
       "decomposer-narrative-bullets-as-subtask-boundaries",
       "stream-reader-silent-exit-on-oversized-line",
-      "workflow-yaml-requires-front-matter"
+      "workflow-yaml-requires-front-matter",
+      "ci-infra-failure-misclassified-as-code",
+      "claude-cli-refuses-root-hosted-units",
+      "oauth-ssm-params-rot-live-credentials-source-of-truth"
     ],
     "claude-code-integration": [
       "TASK-387"
@@ -4656,7 +4748,12 @@
       "TASK-414",
       "TASK-415",
       "TASK-416",
-      "TASK-417"
+      "TASK-417",
+      "TASK-418",
+      "cdk-merged-not-deployed-rots",
+      "ready-gate-couples-credential-validity",
+      "claude-cli-refuses-root-hosted-units",
+      "oauth-ssm-params-rot-live-credentials-source-of-truth"
     ],
     "authentication": [
       "TASK-386",
@@ -4744,7 +4841,8 @@
       "TASK-414",
       "TASK-415",
       "TASK-416",
-      "TASK-417"
+      "TASK-417",
+      "TASK-418"
     ],
     "api": [
       "TASK-386",
@@ -4777,7 +4875,8 @@
       "TASK-414",
       "TASK-415",
       "TASK-416",
-      "TASK-417"
+      "TASK-417",
+      "TASK-418"
     ],
     "context": [
       "TASK-386",
@@ -4823,7 +4922,8 @@
       "TASK-413",
       "TASK-414",
       "TASK-415",
-      "TASK-417"
+      "TASK-417",
+      "TASK-418"
     ],
     "markers": [
       "TASK-387",
@@ -4913,7 +5013,8 @@
       "TASK-413",
       "TASK-415",
       "TASK-416",
-      "TASK-417"
+      "TASK-417",
+      "TASK-418"
     ],
     "simplification": [
       "TASK-387",
@@ -4963,14 +5064,16 @@
       "TASK-409",
       "TASK-411",
       "TASK-415",
-      "TASK-417"
+      "TASK-417",
+      "TASK-418"
     ],
     "autopilot": [
       "mem-100",
       "mem-103",
       "mem-123",
       "mem-139",
-      "mem-142"
+      "mem-142",
+      "ci-infra-failure-misclassified-as-code"
     ],
     "epic": [
       "mem-100"
@@ -5049,7 +5152,8 @@
     ],
     "ledger": [
       "mem-142",
-      "stall-status-reused-as-hold-marker"
+      "stall-status-reused-as-hold-marker",
+      "claude-cli-refuses-root-hosted-units"
     ],
     "retry": [
       "mem-142"
@@ -5067,7 +5171,8 @@
       "mem-150"
     ],
     "github": [
-      "mem-143"
+      "mem-143",
+      "ci-infra-failure-misclassified-as-code"
     ],
     "dedup": [
       "mem-143"
@@ -5120,7 +5225,8 @@
       "decomposer-narrative-bullets-as-subtask-boundaries"
     ],
     "ci": [
-      "mem-151"
+      "mem-151",
+      "ci-infra-failure-misclassified-as-code"
     ],
     "user-preference": [
       "mem-152"
@@ -5165,13 +5271,35 @@
       "workflow-yaml-requires-front-matter"
     ],
     "pilot-console": [
-      "workflow-yaml-requires-front-matter"
+      "workflow-yaml-requires-front-matter",
+      "cdk-merged-not-deployed-rots",
+      "ready-gate-couples-credential-validity",
+      "claude-cli-refuses-root-hosted-units",
+      "oauth-ssm-params-rot-live-credentials-source-of-truth"
+    ],
+    "metrics": [
+      "ci-infra-failure-misclassified-as-code"
+    ],
+    "infrastructure": [
+      "cdk-merged-not-deployed-rots"
+    ],
+    "aws": [
+      "cdk-merged-not-deployed-rots"
+    ],
+    "health": [
+      "ready-gate-couples-credential-validity"
+    ],
+    "gateway": [
+      "ready-gate-couples-credential-validity"
+    ],
+    "anthropic-api": [
+      "oauth-ssm-params-rot-live-credentials-source-of-truth"
     ]
   },
-  "last_updated": "2026-07-24T16:35:53.928590+00:00",
+  "last_updated": "2026-07-24T17:42:49.512481+00:00",
   "stats": {
-    "total_nodes": 285,
-    "total_edges": 243,
-    "memory_count": 182
+    "total_nodes": 291,
+    "total_edges": 245,
+    "memory_count": 187
   }
 }
