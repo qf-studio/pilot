@@ -101,6 +101,68 @@ func TestCheckGitClean(t *testing.T) {
 	})
 }
 
+// TestCheckGitClean_IgnoresScaffoldedAgentDir is the GH-4526 regression
+// test: NavigatorInitializer.Initialize scaffolds an untracked .agent/
+// structure into every fresh hosted clone before the first dispatch runs.
+// checkGitClean must not treat that self-inflicted scaffold as a dirty
+// working directory — otherwise every first dispatch on a hosted tenant
+// repo deadlocks itself on its own preflight (5 re-picks, repick hard cap,
+// pilot-blocked, per the incident on i-0decbc0dcf225cf18).
+func TestCheckGitClean_IgnoresScaffoldedAgentDir(t *testing.T) {
+	ctx := context.Background()
+
+	tmpDir := t.TempDir()
+	if err := exec.Command("git", "init", tmpDir).Run(); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test").Run()
+
+	// Simulate a real project file already committed (the "fresh clone" state).
+	readme := filepath.Join(tmpDir, "README.md")
+	if err := os.WriteFile(readme, []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to write README: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "add", "README.md").Run(); err != nil {
+		t.Fatalf("failed to stage README: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpDir, "commit", "-m", "initial").Run(); err != nil {
+		t.Fatalf("failed to commit README: %v", err)
+	}
+
+	t.Run("untracked_agent_scaffold_is_ignored", func(t *testing.T) {
+		agentDir := filepath.Join(tmpDir, ".agent", "system")
+		if err := os.MkdirAll(agentDir, 0755); err != nil {
+			t.Fatalf("failed to create scaffold dir: %v", err)
+		}
+		scaffoldFile := filepath.Join(agentDir, "DEVELOPMENT-README.md")
+		if err := os.WriteFile(scaffoldFile, []byte("scaffolded"), 0644); err != nil {
+			t.Fatalf("failed to write scaffold file: %v", err)
+		}
+
+		if err := checkGitClean(ctx, tmpDir); err != nil {
+			t.Errorf("expected no error for untracked .agent/ scaffold, got: %v", err)
+		}
+	})
+
+	t.Run("genuinely_dirty_user_file_still_blocks", func(t *testing.T) {
+		// The scaffold from the previous subtest is still present — a
+		// genuinely dirty user file alongside it must still be caught.
+		dirtyFile := filepath.Join(tmpDir, "main.go")
+		if err := os.WriteFile(dirtyFile, []byte("package main"), 0644); err != nil {
+			t.Fatalf("failed to write dirty user file: %v", err)
+		}
+
+		err := checkGitClean(ctx, tmpDir)
+		if err == nil {
+			t.Fatal("expected error for genuinely dirty user file, got nil")
+		}
+		if !strings.Contains(err.Error(), "uncommitted change") {
+			t.Errorf("expected error to mention uncommitted changes, got: %v", err)
+		}
+	})
+}
+
 func TestRunPreflightChecks(t *testing.T) {
 	ctx := context.Background()
 
