@@ -1,6 +1,6 @@
 # TASK-421: Repick hard cap counts non-failures — a task queued behind a long task is auto-blocked for waiting its turn
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ SHIPPED — merged and released in v2.246.0 (2026-07-25)
 **Created**: 2026-07-25
 **Assignee**: Pilot
 

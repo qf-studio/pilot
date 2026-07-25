@@ -1,6 +1,6 @@
 # TASK-418: CI infra-failure classification — retry transient GitHub outages instead of closing PRs
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ SHIPPED — merged and released in v2.246.0 (2026-07-25)
 **Created**: 2026-07-24
 **Assignee**: Pilot
 
@@ -178,4 +178,4 @@ make lint
 
 ---
 
-**Last Updated**: 2026-07-24
+**Last Updated**: 2026-07-25

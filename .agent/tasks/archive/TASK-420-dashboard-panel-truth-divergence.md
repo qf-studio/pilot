@@ -1,6 +1,6 @@
 # TASK-420: Dashboard panels disagree about the same task — queue marks live work "done", history keeps dead work "running"
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ SHIPPED — merged and released in v2.246.0 (2026-07-25)
 **Created**: 2026-07-24
 **Assignee**: Pilot
 
@@ -203,4 +203,4 @@ make lint
 
 ---
 
-**Last Updated**: 2026-07-24
+**Last Updated**: 2026-07-25

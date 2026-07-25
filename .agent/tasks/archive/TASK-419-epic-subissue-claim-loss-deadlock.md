@@ -1,6 +1,6 @@
 # TASK-419: Epic sub-issue claim-loss self-deadlock — the ProjectWorker waits forever for a child only it can run
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ SHIPPED — merged and released in v2.246.0 (2026-07-25)
 **Created**: 2026-07-24
 **Assignee**: Pilot
 
@@ -255,4 +255,4 @@ make lint
 
 ---
 
-**Last Updated**: 2026-07-24
+**Last Updated**: 2026-07-25
