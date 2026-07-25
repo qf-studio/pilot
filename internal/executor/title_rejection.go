@@ -245,7 +245,18 @@ func ghAddLabels(ctx context.Context, dir, issueID string, labels []string) erro
 // edit` call. Used by stallTaskAfterRepickHardCap (dispatcher.go, GH-4454
 // subtask 3) to swap pilot-failed/pilot-in-progress for pilot-blocked in one
 // shot, alongside ghAddLabels' add-only callers.
+//
+// GH-4526: `gh issue edit` validates every label it references — both
+// --add-label and --remove-label — against the repo's label set before
+// applying anything, and fails the whole call atomically if any one of them
+// is missing (`gh issue edit: 'pilot-failed' not found`). Hosted tenant
+// repos are onboarded with zero pre-existing pilot-* labels, so the very
+// first surfacing call (e.g. stallTaskAfterRepickHardCap) failed outright on
+// every fresh repo. Pre-creating whatever labels this call is about to
+// reference sidesteps that without a separate onboarding step.
 func ghEditLabels(ctx context.Context, dir, issueID string, addLabels, removeLabels []string) error {
+	ghEnsureLabels(ctx, dir, append(append([]string{}, addLabels...), removeLabels...))
+
 	args := []string{"issue", "edit", issueID}
 	for _, l := range addLabels {
 		args = append(args, "--add-label", l)
@@ -263,4 +274,30 @@ func ghEditLabels(ctx context.Context, dir, issueID string, addLabels, removeLab
 		return fmt.Errorf("gh issue edit: %w (stderr: %s)", err, stderr.String())
 	}
 	return nil
+}
+
+// pilotLabelColor is applied to any pilot-* label ghEnsureLabels has to
+// create on demand — a plain, unobtrusive gray. The color is cosmetic only;
+// nothing in the dispatch pipeline reads it back.
+const pilotLabelColor = "ededed"
+
+// ghEnsureLabels idempotently creates any of the given labels that don't yet
+// exist on the repo. `gh label create --force` updates-in-place rather than
+// erroring when the label is already present, so repeat calls are no-ops.
+// Best-effort: a creation failure (e.g. missing repo permissions) is not
+// fatal here — the caller's own `gh issue edit` is the source of truth for
+// whether the edit itself ultimately succeeded.
+func ghEnsureLabels(ctx context.Context, dir string, labels []string) {
+	seen := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		if l == "" || seen[l] {
+			continue
+		}
+		seen[l] = true
+		cmd := exec.CommandContext(ctx, "gh", "label", "create", l, "--color", pilotLabelColor, "--force")
+		if dir != "" {
+			cmd.Dir = dir
+		}
+		_ = cmd.Run()
+	}
 }

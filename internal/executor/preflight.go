@@ -182,20 +182,50 @@ func checkOpenAIAPIKey(backendType string) error {
 	return fmt.Errorf("%s backend requires an API key: set OPENAI_API_KEY (or configure executor.openai.api_key)", backendType)
 }
 
-// checkGitClean verifies the git working directory has no uncommitted changes.
-// This prevents execution from accidentally including unrelated changes.
+// checkGitClean verifies the git working directory has no uncommitted changes
+// outside of Pilot's own scaffold/excluded paths.
+//
+// GH-4526: on a hosted tenant repo, NavigatorInitializer.Initialize
+// (navigator.go) auto-scaffolds an untracked .agent/ structure into the
+// fresh clone before the first dispatch ever runs (box repos never hit this
+// because .agent/ is already committed there). This check's own definition
+// of "dirty" then blocks every dispatch attempt on that self-inflicted
+// scaffold — 5 re-picks, repick hard cap, pilot-blocked, on a repo whose only
+// "uncommitted change" is Pilot's own bootstrapping, not the user's code.
+// Reuse the exact defaultExcludeDirs/defaultExcludeGlobs list git.go's
+// Commit() step already uses to decide what it will never auto-stage
+// (.agent/, .claude/, node_modules/, build artifacts, lock files, ...): a
+// path the executor already treats as "not really a project change" for
+// commit purposes is, by the same reasoning, not evidence of a dirty working
+// tree for preflight purposes either. Genuinely dirty user files (anything
+// NOT matching that exclude list) still block exactly as before.
 func checkGitClean(ctx context.Context, projectPath string) error {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
 	cmd.Dir = projectPath
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("git status failed: %w", err)
 	}
-	changes := strings.TrimSpace(string(output))
-	if len(changes) > 0 {
-		// Count number of changed files
-		lines := strings.Split(changes, "\n")
-		return fmt.Errorf("working directory has %d uncommitted change(s): run 'git stash' or 'git commit' first", len(lines))
+
+	trimmed := strings.TrimRight(string(output), "\x00")
+	if trimmed == "" {
+		return nil
+	}
+
+	var dirty []string
+	for _, entry := range strings.Split(trimmed, "\x00") {
+		if len(entry) < 4 {
+			continue
+		}
+		path := entry[3:]
+		if isExcluded(path) {
+			continue
+		}
+		dirty = append(dirty, path)
+	}
+
+	if len(dirty) > 0 {
+		return fmt.Errorf("working directory has %d uncommitted change(s): run 'git stash' or 'git commit' first", len(dirty))
 	}
 	return nil
 }

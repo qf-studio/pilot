@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -166,13 +167,110 @@ func TestRecordTitleRejection_NilTrackerIsNoOp(t *testing.T) {
 // TestClearTitleRejectionState_NilTrackerIsNoOp mirrors the nil-tracker guard
 // for the success-path clear helper.
 func TestClearTitleRejectionState_NilTrackerIsNoOp(t *testing.T) {
-	r := newSilentRunnerTask359() // titleRejections left nil
+	r := newSilentRunnerTask359()                 // titleRejections left nil
 	r.clearTitleRejectionState(&Task{ID: "GH-1"}) // must not panic
 }
 
 // TestClearTitleRejectionState_DropsTrackedCount verifies the success-path
 // helper actually resets the counter (mirrors TestTitleRejectionTracker_Clear
 // but through the Runner-level wrapper finalize paths call).
+// TestGhEditLabels_CreatesMissingLabelsBeforeEditing is the GH-4526
+// regression test for the secondary finding on the same incident: a repo
+// onboarded with zero pre-existing pilot-* labels made every `gh issue edit`
+// call fail atomically with `gh issue edit: 'pilot-failed' not found`
+// (real `gh` validates every --add-label/--remove-label against the repo's
+// label set before applying anything). The fake `gh` below reproduces that
+// atomic-validation behavior: `gh issue edit` fails if any referenced label
+// isn't already recorded via a prior `gh label create`. ghEditLabels must
+// ensure-create every label it references first so the edit succeeds even
+// when none of them exist yet.
+func TestGhEditLabels_CreatesMissingLabelsBeforeEditing(t *testing.T) {
+	fakeBin := t.TempDir()
+	logFile := filepath.Join(t.TempDir(), "gh-calls.log")
+	labelsFile := filepath.Join(t.TempDir(), "labels.txt")
+	script := filepath.Join(fakeBin, "gh")
+
+	content := "#!/bin/sh\n" +
+		`echo "$@" >> "` + logFile + `"` + "\n" +
+		`if [ "$1" = "label" ] && [ "$2" = "create" ]; then` + "\n" +
+		`  echo "$3" >> "` + labelsFile + `"` + "\n" +
+		`  exit 0` + "\n" +
+		`fi` + "\n" +
+		`if [ "$1" = "issue" ] && [ "$2" = "edit" ]; then` + "\n" +
+		`  shift 3` + "\n" +
+		`  while [ $# -gt 0 ]; do` + "\n" +
+		`    case "$1" in` + "\n" +
+		`      --add-label|--remove-label)` + "\n" +
+		`        if ! grep -qxF "$2" "` + labelsFile + `" 2>/dev/null; then` + "\n" +
+		`          echo "gh issue edit: '$2' not found" >&2` + "\n" +
+		`          exit 1` + "\n" +
+		`        fi` + "\n" +
+		`        shift 2 ;;` + "\n" +
+		`      *) shift ;;` + "\n" +
+		`    esac` + "\n" +
+		`  done` + "\n" +
+		`  exit 0` + "\n" +
+		`fi` + "\n" +
+		`exit 0` + "\n"
+
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+	err := ghEditLabels(context.Background(), "", "42", []string{"pilot-blocked"}, []string{"pilot-failed", "pilot-in-progress"})
+	if err != nil {
+		t.Fatalf("expected ghEditLabels to succeed on a repo with zero pre-existing labels, got: %v", err)
+	}
+
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("expected gh CLI to be invoked, but log file missing: %v", err)
+	}
+	calls := string(logBytes)
+
+	for _, label := range []string{"pilot-blocked", "pilot-failed", "pilot-in-progress"} {
+		if !strings.Contains(calls, "label create "+label) {
+			t.Errorf("expected gh label create for %q, got calls:\n%s", label, calls)
+		}
+	}
+	if !strings.Contains(calls, "issue edit 42") {
+		t.Errorf("expected gh issue edit 42, got calls:\n%s", calls)
+	}
+
+	// The label creates must precede the issue edit — otherwise the fake gh's
+	// atomic-validation check above would have failed the edit.
+	createIdx := strings.Index(calls, "label create pilot-blocked")
+	editIdx := strings.Index(calls, "issue edit 42")
+	if createIdx == -1 || editIdx == -1 || createIdx > editIdx {
+		t.Errorf("expected label create calls before issue edit, got calls:\n%s", calls)
+	}
+}
+
+// TestGhEditLabels_SkipsEmptyLabels guards ghEnsureLabels against shelling
+// out for empty label strings (defensive: no known caller passes one today).
+func TestGhEditLabels_SkipsEmptyLabels(t *testing.T) {
+	fakeBin := t.TempDir()
+	logFile := filepath.Join(t.TempDir(), "gh-calls.log")
+	script := filepath.Join(fakeBin, "gh")
+	content := "#!/bin/sh\n" + `echo "$@" >> "` + logFile + `"` + "\nexit 0\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+	ghEnsureLabels(context.Background(), "", []string{"", "pilot-blocked", ""})
+
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("expected gh CLI to be invoked: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logBytes)), "\n")
+	if len(lines) != 1 {
+		t.Errorf("expected exactly 1 gh label create call (empty labels skipped), got %d:\n%s", len(lines), string(logBytes))
+	}
+}
+
 func TestClearTitleRejectionState_DropsTrackedCount(t *testing.T) {
 	r := newSilentRunnerTask359()
 	r.titleRejections = newTitleRejectionTracker()
