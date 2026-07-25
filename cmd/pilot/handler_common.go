@@ -134,17 +134,28 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// every ~30s poll cycle regardless).
 	if deps.Dispatcher != nil {
 		if done, hcErr := deps.Dispatcher.HasTerminalCompletion(taskID, projectPath); hcErr == nil && done {
-			consecutive := repickBackoff.recordDrop(backoffKey)
-			logFields := []any{slog.String("task_id", taskID), slog.Int("consecutive_drops", consecutive)}
-			if consecutive >= repickBackoffWarnThreshold {
-				logging.WithComponent("dispatch").Warn("repick storm: completed-but-open issue re-admitted repeatedly", logFields...)
+			// GH-4540/TASK-421: a completed-but-open issue being re-admitted
+			// is not a failed re-pick — the task already succeeded — so this
+			// must not grow consecutive_drops (the counter
+			// beginWithGenerationRetry gates dispatcherRepickHardCap on).
+			// recordClaimLostDrop still grows the shared backoff cooldown
+			// window, so the storm is still throttled the way TASK-413
+			// intends; it just never counts toward the hard cap.
+			claimLostDrops := repickBackoff.recordClaimLostDrop(backoffKey)
+			logFields := []any{
+				slog.String("task_id", taskID),
+				slog.String("drop_reason", "already has terminal completion"),
+				slog.Int("claim_lost_drops", claimLostDrops),
+			}
+			if claimLostDrops >= repickBackoffWarnThreshold {
+				logging.WithComponent("dispatch").Warn("repick storm: completed-but-open issue re-admitted repeatedly — not counted toward repick hard cap", logFields...)
 			} else {
-				logging.WithComponent("dispatch").Debug("skipping dispatch — task already has terminal completion", logFields...)
+				logging.WithComponent("dispatch").Debug("skipping dispatch — task already has terminal completion — not counted toward repick hard cap", logFields...)
 			}
 			if deps.Metrics != nil {
 				deps.Metrics.RecordPollerSkipped(repickMetricsRepo(task), skipreason.ReasonRepickStormBackoff)
 			}
-			fireLoopBreakerAlert(deps, taskID, title, projectPath, consecutive)
+			fireLoopBreakerAlert(deps, taskID, title, projectPath, claimLostDrops)
 			return &HandlerResult{Success: false, BranchName: task.Branch, Error: executor.ErrDispatchGated}, nil
 		}
 	}
@@ -249,17 +260,35 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			// never matches a row) and surfaced as "failed to get execution:
 			// sql: no rows in result set" — an ERROR the SDK poller logged on
 			// every tick for a task that was never actually a failure.
-			consecutive := repickBackoff.recordDrop(backoffKey)
-			logFields := []any{slog.String("task_id", taskID), slog.Int("consecutive_drops", consecutive)}
-			if consecutive >= repickBackoffWarnThreshold {
-				logging.WithComponent("dispatch").Warn("repick storm: claim-lost/terminal drop recurring", logFields...)
+			// GH-4540/TASK-421: this branch fires whenever QueueTask silently
+			// dropped the pickup — a live owner already has the task
+			// queued/running, the task is already terminally done, or a
+			// retry Begin() lost a race — none of which are a genuine failed
+			// re-pick. Must not grow consecutive_drops. recordClaimLostDrop
+			// still grows the shared backoff cooldown window so a
+			// repeatedly-re-offered task is still throttled, just via a
+			// counter the hard cap never reads. Re-check IsActive purely to
+			// give the log a best-effort, human-readable reason — it does
+			// not change what gets counted.
+			dropReason := "already terminal or a retry race was lost"
+			if deps.Dispatcher.IsActive(taskID, projectPath) {
+				dropReason = "already queued or running"
+			}
+			claimLostDrops := repickBackoff.recordClaimLostDrop(backoffKey)
+			logFields := []any{
+				slog.String("task_id", taskID),
+				slog.String("drop_reason", dropReason),
+				slog.Int("claim_lost_drops", claimLostDrops),
+			}
+			if claimLostDrops >= repickBackoffWarnThreshold {
+				logging.WithComponent("dispatch").Warn("repick storm: claim-lost/terminal drop recurring — not counted toward repick hard cap", logFields...)
 			} else {
-				logging.WithComponent("dispatch").Debug("dispatch dropped duplicate/terminal pickup, nothing to wait for", logFields...)
+				logging.WithComponent("dispatch").Debug("dispatch dropped duplicate/terminal pickup, nothing to wait for — not counted toward repick hard cap", logFields...)
 			}
 			if deps.Metrics != nil {
 				deps.Metrics.RecordPollerSkipped(repickMetricsRepo(task), skipreason.ReasonRepickStormBackoff)
 			}
-			fireLoopBreakerAlert(deps, taskID, title, projectPath, consecutive)
+			fireLoopBreakerAlert(deps, taskID, title, projectPath, claimLostDrops)
 			gatedDrop = true
 		} else {
 			// GH-4394 subtask 2: a repick (Dispatcher.beginWithGenerationRetry

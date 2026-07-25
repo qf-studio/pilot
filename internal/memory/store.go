@@ -430,6 +430,21 @@ func (s *Store) migrate() error {
 		// rides along with the existing repick_backoff persistence/migration
 		// path instead of duplicating it.
 		`ALTER TABLE repick_backoff ADD COLUMN stall_drops INTEGER NOT NULL DEFAULT 0`,
+		// GH-4540/TASK-421: a dispatch attempt refused because the task is
+		// already queued/running, or already terminally done, is not
+		// evidence of a genuine failure any more than a stall-kill is (same
+		// reasoning as stall_drops above) — but unlike a stall-kill, this
+		// class of drop is detected at the cmd/pilot chokepoint
+		// (handleIssueGeneric), not inside beginWithGenerationRetry, so it
+		// needs its own column reachable from that package too. See
+		// cmd/pilot/repick_backoff.go's recordClaimLostDrop.
+		`ALTER TABLE repick_backoff ADD COLUMN claim_lost_drops INTEGER NOT NULL DEFAULT 0`,
+		// GH-4540/TASK-421: an infra-classified failure (status "infra" —
+		// e.g. a hosted git_clean preflight deadlock or a CI outage) is not
+		// evidence the task's own code is broken, mirroring stall_drops'
+		// reasoning exactly but for a different prior-claim status. See
+		// Dispatcher.priorClaimWasInfra.
+		`ALTER TABLE repick_backoff ADD COLUMN infra_drops INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, migration := range migrations {
@@ -2822,9 +2837,16 @@ func (s *Store) DeleteExecution(id string) error {
 // duplicate.
 func (s *Store) IsTaskQueued(taskID, projectPath string) (bool, error) {
 	var count int
+	// GH-4540/TASK-421: 'decomposed' was missing from this allowlist even
+	// though it is a non-terminal status (see executor.terminalExecutionStatuses)
+	// — an epic parent sitting "decomposed" was invisible to this check (and
+	// thus to Dispatcher.IsActive's pre-dispatch admission gate) while still
+	// being a live, non-terminal claim owner from nextRetryGeneration's point
+	// of view, letting the poller re-offer it on every tick and generate an
+	// unbounded run of claim-lost drops.
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM executions
-		WHERE task_id = ? AND project_path = ? AND status IN ('queued', 'pending', 'running')
+		WHERE task_id = ? AND project_path = ? AND status IN ('queued', 'pending', 'running', 'decomposed')
 	`, taskID, canonicalizeProjectPath(projectPath)).Scan(&count)
 	if err != nil {
 		return false, err
@@ -2979,6 +3001,83 @@ func (s *Store) SetStallDropCount(key string, count int) error {
 			stall_drops = excluded.stall_drops,
 			updated_at = CURRENT_TIMESTAMP
 	`, key, count)
+	return err
+}
+
+// GetInfraDropCount returns the persisted count of consecutive
+// infra-classified repick drops for key (GH-4540/TASK-421) — the same
+// "project_path|task_id" string repickBackoffKey mints. found is false when
+// no infra drop has ever been recorded for key. Distinct from
+// consecutive_drops on the same row: that counter tracks genuine (non-infra,
+// non-stall) drops toward dispatcherRepickHardCap; this one tracks
+// infra-classified repicks toward the separate dispatcherInfraRepickCap.
+func (s *Store) GetInfraDropCount(key string) (count int, found bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT infra_drops FROM repick_backoff WHERE key = ?
+	`, key).Scan(&count)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return count, true, nil
+}
+
+// SetInfraDropCount persists count as the infra-classified drop count for
+// key (GH-4540/TASK-421), creating the repick_backoff row if key has no
+// prior state. consecutive_drops/next_allowed_at are only supplied for a
+// brand-new row — an existing row's genuine-failure counter and backoff
+// window are left untouched by the ON CONFLICT clause, since an
+// infra-classified repick must not perturb genuine-failure accounting.
+func (s *Store) SetInfraDropCount(key string, count int) error {
+	_, err := s.db.Exec(`
+		INSERT INTO repick_backoff (key, consecutive_drops, next_allowed_at, infra_drops, updated_at)
+		VALUES (?, 0, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (key) DO UPDATE SET
+			infra_drops = excluded.infra_drops,
+			updated_at = CURRENT_TIMESTAMP
+	`, key, count)
+	return err
+}
+
+// GetClaimLostDropCount returns the persisted count of consecutive
+// claim-lost/already-done drops for key (GH-4540/TASK-421) — dropped pickups
+// that cmd/pilot's handleIssueGeneric chokepoint refused because the task
+// was already active or already terminally done, not because anything
+// failed. Distinct from consecutive_drops: that counter only grows for a
+// genuine failed re-pick (see Dispatcher.beginWithGenerationRetry); this one
+// exists purely for backoff-window growth and observability (WARN
+// escalation, loop-breaker alert) so a task queued behind another task
+// indefinitely is never pushed toward dispatcherRepickHardCap.
+func (s *Store) GetClaimLostDropCount(key string) (count int, found bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT claim_lost_drops FROM repick_backoff WHERE key = ?
+	`, key).Scan(&count)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return count, true, nil
+}
+
+// SetClaimLostBackoff persists claimLostDrops and the backoff cooldown
+// deadline for key (GH-4540/TASK-421), creating the repick_backoff row if
+// key has no prior state. Unlike SetRepickBackoff, this intentionally never
+// touches consecutive_drops — growing the shared cooldown window (so a
+// repeatedly-re-offered task still gets throttled the way TASK-413 intends)
+// must not also push the task toward the genuine-failure hard cap.
+func (s *Store) SetClaimLostBackoff(key string, claimLostDrops int, nextAllowedAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO repick_backoff (key, consecutive_drops, next_allowed_at, claim_lost_drops, updated_at)
+		VALUES (?, 0, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (key) DO UPDATE SET
+			next_allowed_at = excluded.next_allowed_at,
+			claim_lost_drops = excluded.claim_lost_drops,
+			updated_at = CURRENT_TIMESTAMP
+	`, key, nextAllowedAt, claimLostDrops)
 	return err
 }
 

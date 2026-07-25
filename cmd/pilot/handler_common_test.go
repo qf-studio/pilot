@@ -162,6 +162,58 @@ func TestHandleIssueGeneric_AlreadyActive_SkipsDispatch(t *testing.T) {
 	}
 }
 
+// TestHandleIssueGeneric_DecomposedTask_SkipsDispatchViaPrecheck is the
+// GH-4540/TASK-421 regression test for the actual GH-4537 mechanism: a
+// decomposed epic-parent's claim was invisible to IsActive() (IsTaskQueued's
+// SQL allowlist was missing 'decomposed'), so handleIssueGeneric's early
+// IsActive precheck (GH-4008) never caught it and every poll tick fell
+// through to the claim-lost drop path further down. Seeding a
+// decomposed-status execution and asserting the precheck alone gates the
+// call — no monitor registration, no QueueTask reached — mirrors
+// TestHandleIssueGeneric_AlreadyActive_SkipsDispatch for the decomposed case.
+func TestHandleIssueGeneric_DecomposedTask_SkipsDispatchViaPrecheck(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+
+	taskID := "GH-4537-DECOMPOSED-PRECHECK"
+	projectPath := "/tmp/pilot-gh-4537-decomposed-does-not-exist"
+	seed := &executor.Task{ID: taskID, ProjectPath: projectPath}
+	seedExecID, err := executor.NewExecutionLifecycle(store).Begin(seed, executor.ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(seedExecID, "decomposed"); err != nil {
+		t.Fatalf("setup: failed to mark seed execution decomposed: %v", err)
+	}
+
+	monitor := executor.NewMonitor()
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: monitor, ProjectPath: projectPath}
+	info := IssueInfo{TaskID: taskID, Title: "decomposed epic", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "decomposed epic", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	hr, err := handleIssueGeneric(context.Background(), deps, info, task)
+	if err != nil {
+		t.Fatalf("expected nil error for a decomposed task, got: %v", err)
+	}
+	if hr.Success {
+		t.Error("expected Success=false for a decomposed task")
+	}
+	if !errors.Is(hr.Error, executor.ErrDispatchGated) {
+		t.Errorf("expected hr.Error to wrap executor.ErrDispatchGated, got: %v", hr.Error)
+	}
+	if _, ok := monitor.Get(taskID); ok {
+		t.Error("expected monitor registration to be skipped for a decomposed task — the IsActive precheck should have gated it")
+	}
+}
+
 // TestHandleIssueGeneric_QueueTaskRace_DowngradesToDebug verifies that when
 // QueueTask itself rejects a task as already-active — the TOCTOU race
 // between the pre-check and the enqueue attempt — handleIssueGeneric still
@@ -740,6 +792,86 @@ func TestHandleIssueGeneric_LoopBreakerAlert_FiresOnceAtThreshold(t *testing.T) 
 	time.Sleep(100 * time.Millisecond)
 	if got := testCh.count(); got != 1 {
 		t.Fatalf("expected still exactly 1 alert past the threshold, got %d", got)
+	}
+}
+
+// TestHandleIssueGeneric_TerminalCompletionStorm_NeverCountsTowardHardCap is
+// the GH-4540/TASK-421 primary regression test for the main handler_common.go
+// fix: before this fix, a completed-but-open issue re-admitted repeatedly by
+// the poller (GH-91's mechanism) grew consecutive_drops via
+// repickBackoff.recordDrop on every tick — the SAME persisted counter
+// beginWithGenerationRetry gates dispatcherRepickHardCap (5) on — so a task
+// that had already succeeded could still end up wedged/stalled purely from
+// being redundantly re-offered. Driving the HasTerminalCompletion gate well
+// past the hard cap (8 ticks) must leave consecutive_drops at 0/not-found
+// (never touched) while claim_lost_drops grows to match every tick, proving
+// the two counters are now fully decoupled.
+func TestHandleIssueGeneric_TerminalCompletionStorm_NeverCountsTowardHardCap(t *testing.T) {
+	taskID := "GH-4540-STORM-HARDCAP"
+	projectPath := "/tmp/pilot-gh-4540-storm-hardcap-does-not-exist"
+	backoffKey := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(backoffKey) })
+
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-gh-4540-storm-hardcap", TaskID: taskID, ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/qf-studio/pilot-canary-sandbox/pull/1",
+	}); err != nil {
+		t.Fatalf("failed to seed completed execution: %v", err)
+	}
+
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: executor.NewMonitor(), ProjectPath: projectPath}
+	info := IssueInfo{TaskID: taskID, Title: "storm", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "storm", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	forceExpire := func() {
+		repickBackoff.mu.Lock()
+		if e, ok := repickBackoff.entries[backoffKey]; ok {
+			e.nextAllowedAt = time.Now().Add(-time.Second)
+		}
+		repickBackoff.mu.Unlock()
+	}
+
+	// Drive well past dispatcherRepickHardCap's ticks worth of re-admissions —
+	// each one refused for the exact same "already terminal" reason.
+	const ticks = 8
+	for i := 0; i < ticks; i++ {
+		if i > 0 {
+			forceExpire()
+		}
+		hr, err := handleIssueGeneric(context.Background(), deps, info, task)
+		if err != nil {
+			t.Fatalf("tick %d: unexpected error: %v", i+1, err)
+		}
+		if hr.Success {
+			t.Fatalf("tick %d: expected Success=false", i+1)
+		}
+		if !errors.Is(hr.Error, executor.ErrDispatchGated) {
+			t.Fatalf("tick %d: expected hr.Error to wrap executor.ErrDispatchGated, got: %v", i+1, hr.Error)
+		}
+	}
+
+	if consecutive, _, found, err := dispatcher.RepickBackoffState(backoffKey); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found && consecutive != 0 {
+		t.Errorf("expected consecutive_drops to never grow from terminal-completion re-admissions, got found=%v consecutive=%d", found, consecutive)
+	}
+
+	claimLostDrops, found, err := dispatcher.ClaimLostDropCount(backoffKey)
+	if err != nil {
+		t.Fatalf("ClaimLostDropCount: %v", err)
+	}
+	if !found || claimLostDrops != ticks {
+		t.Errorf("expected claim_lost_drops=%d after %d re-admissions, got found=%v count=%d", ticks, ticks, found, claimLostDrops)
 	}
 }
 

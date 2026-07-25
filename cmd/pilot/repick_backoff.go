@@ -37,7 +37,13 @@ const (
 // repickBackoffEntry tracks one task_id/project_path pair's cooldown state.
 type repickBackoffEntry struct {
 	consecutiveDrops int
-	nextAllowedAt    time.Time
+	// claimLostDrops (GH-4540/TASK-421) counts dispatch attempts refused
+	// because the task was already active or already terminally done — a
+	// non-failure, tracked separately from consecutiveDrops so it grows the
+	// shared backoff cooldown window (nextAllowedAt) for throttling purposes
+	// without ever feeding dispatcherRepickHardCap's gating counter.
+	claimLostDrops int
+	nextAllowedAt  time.Time
 	// gateLogged records whether the current backoff window has already
 	// emitted its once-per-window DEBUG "gated" log line (GH-4469 deliverable
 	// 2) — set by gateStatus, cleared once nextAllowedAt passes so the next
@@ -54,6 +60,12 @@ type repickBackoffPersister interface {
 	RepickBackoffState(key string) (consecutiveDrops int, nextAllowedAt time.Time, found bool, err error)
 	SetRepickBackoffState(key string, consecutiveDrops int, nextAllowedAt time.Time) error
 	ClearRepickBackoffState(key string) error
+	// ClaimLostDropCount and SetClaimLostBackoff (GH-4540/TASK-421) persist
+	// the claim-lost sibling counter recordClaimLostDrop grows — mirroring
+	// the three methods above but never touching consecutive_drops, the
+	// column beginWithGenerationRetry gates dispatcherRepickHardCap on.
+	ClaimLostDropCount(key string) (count int, found bool, err error)
+	SetClaimLostBackoff(key string, claimLostDrops int, nextAllowedAt time.Time) error
 }
 
 // repickBackoffTracker throttles repeated dispatch attempts for the same task
@@ -104,7 +116,17 @@ func (t *repickBackoffTracker) hydrateLocked(key string) *repickBackoffEntry {
 	if !found {
 		return nil
 	}
-	e := &repickBackoffEntry{consecutiveDrops: consecutiveDrops, nextAllowedAt: nextAllowedAt}
+	// GH-4540/TASK-421: also rehydrate the claim-lost sibling counter so a
+	// fresh process (or a fresh check after a restart) resumes the correct
+	// escalation/loop-breaker count instead of starting back at zero — a
+	// separate read since it lives in its own column, mirroring how
+	// StallDropCount is read independently on the dispatcher side.
+	claimLostDrops, _, clErr := t.persist.ClaimLostDropCount(key)
+	if clErr != nil {
+		logging.WithComponent("dispatch").Warn("failed to load persisted claim-lost drop count",
+			slog.String("key", key), slog.Any("error", clErr))
+	}
+	e := &repickBackoffEntry{consecutiveDrops: consecutiveDrops, claimLostDrops: claimLostDrops, nextAllowedAt: nextAllowedAt}
 	t.entries[key] = e
 	return e
 }
@@ -175,6 +197,42 @@ func (t *repickBackoffTracker) recordDrop(key string) int {
 		}
 	}
 	return e.consecutiveDrops
+}
+
+// recordClaimLostDrop registers a dispatch attempt for key that was refused
+// because the task was already active (queued/running) or already
+// terminally done — a non-failure (GH-4540/TASK-421). Unlike recordDrop,
+// this does NOT grow consecutiveDrops (the counter beginWithGenerationRetry
+// gates dispatcherRepickHardCap on), so a task refused for either of these
+// reasons — however many times, however long it waits — can never be pushed
+// toward the hard cap on that basis alone. It still grows the same
+// exponential backoff window (nextAllowedAt) recordDrop does, so a task that
+// keeps getting redundantly re-offered is still throttled the way TASK-413
+// intends, just via an independent counter.
+func (t *repickBackoffTracker) recordClaimLostDrop(key string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.entries[key]
+	if !ok {
+		e = t.hydrateLocked(key)
+		if e == nil {
+			e = &repickBackoffEntry{}
+			t.entries[key] = e
+		}
+	}
+	e.claimLostDrops++
+	shift := e.claimLostDrops - 1
+	if shift > repickBackoffMaxShift {
+		shift = repickBackoffMaxShift
+	}
+	e.nextAllowedAt = time.Now().Add(repickBackoffBaseInterval * time.Duration(uint64(1)<<uint(shift)))
+	if t.persist != nil {
+		if err := t.persist.SetClaimLostBackoff(key, e.claimLostDrops, e.nextAllowedAt); err != nil {
+			logging.WithComponent("dispatch").Warn("failed to persist claim-lost backoff state",
+				slog.String("key", key), slog.Any("error", err))
+		}
+	}
+	return e.claimLostDrops
 }
 
 // recordSuccess clears any backoff state for key once a dispatch actually
