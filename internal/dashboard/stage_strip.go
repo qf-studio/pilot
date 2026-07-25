@@ -88,6 +88,15 @@ func displayStatus(execStatus string) string {
 // work starts, so the row has zero execution_events — with no override it
 // rendered an unknown-glyph meter and a blank "–" label (indistinguishable
 // from a truly unaccounted-for row) instead of a muted, labeled one.
+//
+// cancelled (TASK-420/GH-4537): unlike failed/stalled, a cancellation is a
+// pure executions.status write with no execution_events row of its own (see
+// memory.terminalExecutionStatuses' dead-API note — it's written by operator
+// surgery / claim-loss cleanup, not the normal event-emitting path). Without
+// this entry buildStageInfo has no terminal signal to reduce over, so the
+// label freezes at whatever rung the row last reached (typically "running")
+// and HISTORY renders a task cancelled hours ago as still running — the
+// GH-4531 ghost row captured 2026-07-24 22:17:07Z that motivated this task.
 var mutedOutcomes = map[string]bool{
 	"skipped":            true,
 	"no_op":              true,
@@ -95,6 +104,7 @@ var mutedOutcomes = map[string]bool{
 	"rate_limited":       true,
 	"infra":              true,
 	"declined-preflight": true,
+	"cancelled":          true,
 }
 
 // stageStripCleanTerminalEvents are execution_events that close out a run
@@ -127,6 +137,28 @@ func stageInfoForExecution(events []*memory.Event, status string) StageInfo {
 		info.Known = true
 	}
 	return info
+}
+
+// HistoryStatus is the icon-status + stage-meter pair every HISTORY call site
+// renders together for one execution row.
+type HistoryStatus struct {
+	Status string    // icon/vocabulary value — see statusIconStyle
+	Stage  StageInfo // stage-meter fraction + label for the same row
+}
+
+// resolveHistoryStatus is the single resolver every HISTORY-populating call
+// site (tui.go's hydrateFromStore/storeRefreshCmd, zoom.go's historyZoomCmd)
+// must go through for a memory.Execution row (TASK-420/GH-4537). Before this,
+// each of the three call sites hand-chained `status := displayStatus(...)`
+// into `stageInfoForExecution(events, status)` itself — correct by
+// coincidence (the two happened to agree at every call site) but not
+// enforced, which is exactly the "two independent strings" shape GH-4368's
+// icon/text split came from. Routing every call site through one function
+// makes that divergence structurally impossible instead of merely absent
+// today.
+func resolveHistoryStatus(execStatus string, events []*memory.Event) HistoryStatus {
+	status := displayStatus(execStatus)
+	return HistoryStatus{Status: status, Stage: stageInfoForExecution(events, status)}
 }
 
 // buildStageInfo reduces an execution's execution_events timeline to a

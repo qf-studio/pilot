@@ -775,6 +775,90 @@ func TestMonitorReconcileWithStore_AlreadyTerminalUntouched(t *testing.T) {
 	}
 }
 
+// TASK-420/GH-4537: a Monitor entry that reached a terminal state prematurely
+// (e.g. via a claim-loss race or duplicate-dispatch bug elsewhere in the
+// pipeline) must self-heal back to running once the ledger — the
+// authoritative source — still says the execution is running. Before this
+// fix, ReconcileWithStore only ever corrected non-terminal -> terminal
+// (GH-4490's Case 1); a Monitor card stuck at "done" while the ledger still
+// says "running" would never recover, even across the periodic 2s reconcile
+// ticker, producing the exact QUEUE false-complete captured in GH-4536
+// (2026-07-24 22:17:07Z, "3 live claude/node procs" while the card read
+// "done").
+func TestMonitorReconcileWithStore_TerminalRevertsToRunning(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "e1", TaskID: "GH-30", ProjectPath: "/p", Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewMonitor()
+	m.Register("GH-30", "Task 30", "")
+	m.SetProjectInfo("GH-30", "/p", "proj")
+	m.Start("GH-30")
+	// Simulate the premature-terminal race: the in-memory card already
+	// believes the task is done, even though the ledger still says running.
+	m.Complete("GH-30", "https://example.com/pr/3")
+
+	state, ok := m.Get("GH-30")
+	if !ok {
+		t.Fatal("GH-30 not found before reconcile")
+	}
+	if state.Status != StatusCompleted {
+		t.Fatalf("precondition failed: Status = %s, want %s", state.Status, StatusCompleted)
+	}
+
+	if err := m.ReconcileWithStore(store); err != nil {
+		t.Fatalf("ReconcileWithStore: %v", err)
+	}
+
+	state, ok = m.Get("GH-30")
+	if !ok {
+		t.Fatal("GH-30 not found after reconcile")
+	}
+	if state.Status != StatusRunning {
+		t.Errorf("Status = %s, want %s (a running ledger row must always win over a stale terminal Monitor entry)", state.Status, StatusRunning)
+	}
+	if state.CompletedAt != nil {
+		t.Error("expected CompletedAt to be cleared when reverting to running")
+	}
+}
+
+// A Monitor entry that is genuinely queued/pending (never terminal) must be
+// left alone by the new running-reversion branch — it should keep whatever
+// non-terminal status it already has rather than being forced to
+// StatusRunning.
+func TestMonitorReconcileWithStore_QueuedStaysQueuedWhenStoreRunning(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "e1", TaskID: "GH-31", ProjectPath: "/p", Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewMonitor()
+	m.Register("GH-31", "Task 31", "")
+	m.SetProjectInfo("GH-31", "/p", "proj")
+	m.Queue("GH-31")
+
+	if err := m.ReconcileWithStore(store); err != nil {
+		t.Fatalf("ReconcileWithStore: %v", err)
+	}
+
+	state, ok := m.Get("GH-31")
+	if !ok {
+		t.Fatal("GH-31 not found after reconcile")
+	}
+	if state.Status != StatusQueued {
+		t.Errorf("Status = %s, want %s (non-terminal statuses other than running must not be forced to running)", state.Status, StatusQueued)
+	}
+}
+
 func TestMonitorReconcileWithStoreNilStore(t *testing.T) {
 	m := NewMonitor()
 	m.Register("GH-25", "Task 25", "")

@@ -120,6 +120,17 @@ func NewAutopilotPanel(controller *autopilot.Controller) *AutopilotPanel {
 // "+ N more" summary line.
 const maxAutopilotRows = 4
 
+// autopilotNoActivePRLabel is shown when GetActivePRs() is empty. TASK-420/
+// GH-4537: previously read "idle · no active PR" — "idle" reads as "nothing
+// is happening", but this panel only tracks PR-side lifecycle (CI/approval/
+// merge/release); it says nothing about executions in flight pre-PR. The
+// 2026-07-24 22:17:07Z capture had this panel showing exactly that text while
+// a Claude Code process was actively running toward GH-4536's first commit —
+// correct for what the panel tracks, but routinely misread as "nothing is
+// running" (see queue/history for that). Drop "idle" and point at the queue
+// instead of implying total inactivity.
+const autopilotNoActivePRLabel = "no active PR · check queue for running work"
+
 // View renders the autopilot panel in the history-row grammar: one line per
 // active PR — status glyph, #id, title, 5-cell lifecycle meter
 // (ci→rebase→merge→tag→release), stage label, age — plus a ↳ detail line
@@ -141,7 +152,7 @@ func (p *AutopilotPanel) View() string {
 
 	prs := p.controller.GetActivePRs()
 	if len(prs) == 0 {
-		return renderPanelStyled("autopilot", "", "  "+dimStyle.Render("idle · no active PR"), tw, chrome)
+		return renderPanelStyled("autopilot", "", "  "+dimStyle.Render(autopilotNoActivePRLabel), tw, chrome)
 	}
 
 	cfg := p.controller.Config()
@@ -350,11 +361,30 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+// QueueStatus is the closed vocabulary for TaskDisplay.Status (TASK-420/
+// GH-4537). It is a presentational rename of the executor package's
+// TaskStatus/ExecStatus* vocabulary (internal/executor/monitor.go,
+// internal/executor/lifecycle.go) — StatusCompleted -> "done", etc. — chosen
+// once, in convertTaskStatesToDisplay (cmd/pilot/commands.go), the single
+// function every UpdateTasks producer funnels through. Before this type
+// existed the value was a bare string with no named source of truth; nothing
+// stopped a sixth call site from inventing its own spelling of "done".
+type QueueStatus string
+
+const (
+	QueueStatusDone    QueueStatus = "done"    // executor.StatusCompleted
+	QueueStatusRunning QueueStatus = "running" // executor.StatusRunning
+	QueueStatusQueued  QueueStatus = "queued"  // executor.StatusQueued
+	QueueStatusFailed  QueueStatus = "failed"  // executor.StatusFailed (and cancelled/stalled — see terminalMonitorStatus)
+	QueueStatusNoOp    QueueStatus = "no_op"   // executor.StatusNoOp
+	QueueStatusPending QueueStatus = "pending" // executor.StatusPending / zero value
+)
+
 // TaskDisplay represents a task for display
 type TaskDisplay struct {
 	ID          string
 	Title       string
-	Status      string
+	Status      QueueStatus
 	Phase       string
 	Progress    int
 	Duration    string
@@ -697,7 +727,6 @@ func (m *Model) hydrateFromStore() {
 	// groupedHistory dedups by task ID a 4×-retried task collapses the panel to a
 	// couple of entries. Cap on task_id instead so 5 real tasks always show.
 	for _, exec := range firstNDistinctByTask(executions, 5) {
-		status := displayStatus(exec.Status)
 		completedAt := exec.CreatedAt
 		if exec.CompletedAt != nil {
 			completedAt = *exec.CompletedAt
@@ -709,14 +738,17 @@ func (m *Model) hydrateFromStore() {
 		if err != nil {
 			slog.Warn("failed to load execution events", slog.Any("error", err), slog.String("execution_id", exec.ID))
 		}
+		// TASK-420/GH-4537: resolveHistoryStatus is the single resolver for
+		// icon-status + stage label — see stage_strip.go.
+		hs := resolveHistoryStatus(exec.Status, events)
 		m.completedTasks = append(m.completedTasks, CompletedTask{
 			ID:          exec.TaskID,
 			Title:       exec.TaskTitle,
-			Status:      status,
+			Status:      hs.Status,
 			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 			CompletedAt: completedAt,
 			PeakRSSMB:   exec.PeakRSSMB,
-			Stage:       stageInfoForExecution(events, status),
+			Stage:       hs.Stage,
 			PRUrl:       exec.PRUrl,
 		})
 	}
@@ -1031,7 +1063,6 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 			return msg
 		}
 		for _, exec := range firstNDistinctByTask(executions, 5) {
-			status := displayStatus(exec.Status)
 			completedAt := exec.CreatedAt
 			if exec.CompletedAt != nil {
 				completedAt = *exec.CompletedAt
@@ -1042,14 +1073,17 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 			if err != nil {
 				slog.Warn("store refresh: failed to load execution events", slog.Any("error", err), slog.String("execution_id", exec.ID))
 			}
+			// TASK-420/GH-4537: resolveHistoryStatus is the single resolver for
+			// icon-status + stage label — see stage_strip.go.
+			hs := resolveHistoryStatus(exec.Status, events)
 			msg.completedTasks = append(msg.completedTasks, CompletedTask{
 				ID:          exec.TaskID,
 				Title:       exec.TaskTitle,
-				Status:      status,
+				Status:      hs.Status,
 				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 				CompletedAt: completedAt,
 				PeakRSSMB:   exec.PeakRSSMB,
-				Stage:       stageInfoForExecution(events, status),
+				Stage:       hs.Stage,
 				PRUrl:       exec.PRUrl,
 			})
 		}
@@ -1938,17 +1972,17 @@ func (m Model) renderMetricsCards() string {
 }
 
 // taskStatePriority returns sort priority for task states (lower = higher in list).
-func taskStatePriority(status string) int {
+func taskStatePriority(status QueueStatus) int {
 	switch status {
-	case "done":
+	case QueueStatusDone:
 		return 0
-	case "running":
+	case QueueStatusRunning:
 		return 1
-	case "queued":
+	case QueueStatusQueued:
 		return 2
-	case "pending":
+	case QueueStatusPending:
 		return 3
-	case "failed":
+	case QueueStatusFailed:
 		return 4
 	default:
 		return 5
@@ -1973,7 +2007,7 @@ func (m Model) renderTasks() string {
 				content.WriteString("\n")
 			}
 			offset := 0
-			if task.Status == "queued" {
+			if task.Status == QueueStatusQueued {
 				offset = queueIdx
 				queueIdx++
 			}
@@ -1985,7 +2019,7 @@ func (m Model) renderTasks() string {
 	// — running count first, then intake adapter status (buildAdapterLegend).
 	running := 0
 	for _, t := range m.tasks {
-		if t.Status == "running" {
+		if t.Status == QueueStatusRunning {
 			running++
 		}
 	}
@@ -2117,27 +2151,27 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 	var iconStyle lipgloss.Style
 
 	switch task.Status {
-	case "done":
+	case QueueStatusDone:
 		icon = "✓"
 		stateLabel = "done"
 		meta = extractPRNumber(task.PRURL)
 		iconStyle = statusDoneStyle
-	case "running":
+	case QueueStatusRunning:
 		icon = "●"
 		stateLabel = "running"
 		meta = fmt.Sprintf("%4d%%", task.Progress)
 		iconStyle = statusRunningStyle
-	case "queued":
+	case QueueStatusQueued:
 		icon = "◌"
 		stateLabel = "queued"
 		meta = fmt.Sprintf("  #%d", queueOffset+1)
 		iconStyle = statusQueuedStyle
-	case "failed":
+	case QueueStatusFailed:
 		icon = "✗"
 		stateLabel = "failed"
 		meta = truncateVisual(task.Phase, 5)
 		iconStyle = statusFailedStyle
-	case "no_op":
+	case QueueStatusNoOp:
 		// GH-4490 subtask 2: mirrors statusIconStyle's existing "no_op" glyph
 		// (TASK-358) — a no-commit run is a terminal, non-failure outcome, so
 		// it gets the same subdued pending style rather than the red failed
@@ -2155,7 +2189,7 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 
 	// Pulse the running icon on animation tick
 	renderedIcon := iconStyle.Render(icon)
-	if task.Status == "running" && !m.sparklineTick {
+	if task.Status == QueueStatusRunning && !m.sparklineTick {
 		renderedIcon = dimStyle.Render(icon)
 	}
 
@@ -2174,11 +2208,11 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 	const barWidth = 16
 	var progressBar string
 	switch task.Status {
-	case "done":
+	case QueueStatusDone:
 		progressBar = segmentMeter(1, 1, barWidth, gromTheme.Success)
-	case "running":
+	case QueueStatusRunning:
 		progressBar = segmentMeter(task.Progress, 100, barWidth, gromTheme.Accent)
-	case "failed":
+	case QueueStatusFailed:
 		progressBar = segmentMeter(task.Progress, 100, barWidth, gromTheme.Error)
 	default: // queued, pending — no known progress yet
 		progressBar = meterTrack.Render(strings.Repeat("■", barWidth))
@@ -2588,6 +2622,11 @@ func statusIconStyle(status string) (string, lipgloss.Style) {
 		return "!", statusPendingStyle // TASK-358: plumbing/resource failure, not the work
 	case "skipped":
 		return "·", statusPendingStyle // TASK-358: never ran / cancelled
+	case "cancelled":
+		// TASK-420/GH-4537: explicit case rather than falling through to the
+		// default glyph — cancelled is a real, muted terminal outcome (see
+		// mutedOutcomes in stage_strip.go), not an unaccounted-for row.
+		return "○", statusPendingStyle
 	case "running":
 		return "●", statusRunningStyle
 	case "pending":

@@ -2167,6 +2167,19 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			lastDashboardUpdate = time.Now()
 			dashboardMu.Unlock()
 
+			// TASK-420/GH-4537: this was the one UpdateTasks producer of the
+			// five that skipped the GH-4490 reconcile step before rendering —
+			// the periodic ticker below (~2s cadence) self-heals eventually,
+			// but this path could still push a queue snapshot with a stale
+			// Monitor status (e.g. a false-complete card) straight to the
+			// dashboard on every progress tick in between. Reconcile against
+			// the executions table (ledger authoritative) the same way the
+			// ticker does before converting.
+			if store != nil {
+				if reconcileErr := monitor.ReconcileWithStore(store); reconcileErr != nil {
+					logging.WithComponent("dashboard").Warn("failed to reconcile monitor with store", slog.Any("error", reconcileErr))
+				}
+			}
 			tasks := convertTaskStatesToDisplay(monitor.GetAll())
 			program.Send(dashboard.UpdateTasks(tasks)())
 
