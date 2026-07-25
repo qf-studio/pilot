@@ -15,7 +15,7 @@ func TestRenderTask_WidthAware(t *testing.T) {
 	longTitle := "a very long queued task title that definitely exceeds twenty visible characters by a lot"
 
 	widths := []int{65, 90, 120}
-	statuses := []string{"done", "running", "queued", "failed", "pending"}
+	statuses := []QueueStatus{QueueStatusDone, QueueStatusRunning, QueueStatusQueued, QueueStatusFailed, QueueStatusPending}
 
 	for _, iw := range widths {
 		for _, status := range statuses {
@@ -76,7 +76,7 @@ func TestRenderTask_NarrowRegressionPin(t *testing.T) {
 	task := TaskDisplay{
 		ID:       "GH-1234",
 		Title:    "a very long title that exceeds twenty chars for sure",
-		Status:   "done",
+		Status:   QueueStatusDone,
 		Progress: 42,
 		PRURL:    "https://github.com/o/r/pull/42",
 	}
@@ -95,7 +95,7 @@ func TestRenderTask_NarrowRegressionPin(t *testing.T) {
 // glyph, not color — see grom_chrome_test.go for the width-invariant pattern.
 func TestRenderTask_BarColumnsAligned(t *testing.T) {
 	m := NewModel("test")
-	statuses := []string{"done", "running", "queued", "failed", "pending"}
+	statuses := []QueueStatus{QueueStatusDone, QueueStatusRunning, QueueStatusQueued, QueueStatusFailed, QueueStatusPending}
 
 	for _, iw := range []int{65, 90, 120} {
 		for _, status := range statuses {

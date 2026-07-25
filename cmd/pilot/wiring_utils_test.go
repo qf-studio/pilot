@@ -269,7 +269,7 @@ func TestConvertTaskStatesToDisplay(t *testing.T) {
 		if displays[i].ID != exp.id {
 			t.Errorf("display[%d].ID = %q, want %q", i, displays[i].ID, exp.id)
 		}
-		if displays[i].Status != exp.status {
+		if string(displays[i].Status) != exp.status {
 			t.Errorf("display[%d].Status = %q, want %q", i, displays[i].Status, exp.status)
 		}
 	}
@@ -324,6 +324,33 @@ func TestConvertTaskStatesToDisplay_DefaultStatus(t *testing.T) {
 	}
 	if displays[0].Status != "pending" {
 		t.Errorf("expected 'pending' for unknown status, got %q", displays[0].Status)
+	}
+}
+
+// TestConvertTaskStatesToDisplay_TerminalStatusesNeverLookPending is a
+// TASK-420/GH-4537 regression test: executor.StatusCancelled and
+// executor.StatusStalled used to fall through convertTaskStatesToDisplay's
+// switch into the default "pending" bucket, which misleadingly implies the
+// task hasn't started yet rather than that it's a dead, terminal outcome.
+// They must map alongside StatusFailed to dashboard.QueueStatusFailed.
+func TestConvertTaskStatesToDisplay_TerminalStatusesNeverLookPending(t *testing.T) {
+	states := []*executor.TaskState{
+		{ID: "GH-1", Title: "Cancelled", Status: executor.StatusCancelled},
+		{ID: "GH-2", Title: "Stalled", Status: executor.StatusStalled},
+	}
+
+	displays := convertTaskStatesToDisplay(states)
+
+	if len(displays) != 2 {
+		t.Fatalf("expected 2 displays, got %d", len(displays))
+	}
+	for _, d := range displays {
+		if d.Status == dashboard.QueueStatusPending {
+			t.Errorf("display[%s].Status = %q, a terminal outcome must never render as pending", d.ID, d.Status)
+		}
+		if d.Status != dashboard.QueueStatusFailed {
+			t.Errorf("display[%s].Status = %q, want %q", d.ID, d.Status, dashboard.QueueStatusFailed)
+		}
 	}
 }
 

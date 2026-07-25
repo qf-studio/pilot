@@ -412,7 +412,7 @@ func (m Model) renderZoomedQueue(w, h int) string {
 	offsets := make([]int, len(sorted))
 	qi := 0
 	for i, t := range sorted {
-		if t.Status == "queued" {
+		if t.Status == QueueStatusQueued {
 			offsets[i] = qi
 			qi++
 		}
@@ -447,7 +447,7 @@ func (m Model) renderZoomedAutopilot(w, h int) string {
 	}
 	prs := m.autopilotPanel.sortedActivePRs()
 	if len(prs) == 0 {
-		return renderPanelStyled("autopilot", "", "  "+dimStyle.Render("idle · no active PR"), w, focusChrome)
+		return renderPanelStyled("autopilot", "", "  "+dimStyle.Render(autopilotNoActivePRLabel), w, focusChrome)
 	}
 
 	cfg := m.autopilotPanel.controller.Config()
@@ -545,7 +545,6 @@ func historyZoomCmd(store *memory.Store, projectPath string) tea.Cmd {
 
 		var tasks []CompletedTask
 		for _, exec := range firstNDistinctByTask(executions, 100) {
-			status := displayStatus(exec.Status)
 			completedAt := exec.CreatedAt
 			if exec.CompletedAt != nil {
 				completedAt = *exec.CompletedAt
@@ -555,14 +554,17 @@ func historyZoomCmd(store *memory.Store, projectPath string) tea.Cmd {
 				slog.Warn("history zoom: failed to load execution events",
 					slog.Any("error", err), slog.String("execution_id", exec.ID))
 			}
+			// TASK-420/GH-4537: resolveHistoryStatus is the single resolver for
+			// icon-status + stage label — see stage_strip.go.
+			hs := resolveHistoryStatus(exec.Status, events)
 			tasks = append(tasks, CompletedTask{
 				ID:          exec.TaskID,
 				Title:       exec.TaskTitle,
-				Status:      status,
+				Status:      hs.Status,
 				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 				CompletedAt: completedAt,
 				PeakRSSMB:   exec.PeakRSSMB,
-				Stage:       stageInfoForExecution(events, status),
+				Stage:       hs.Stage,
 				PRUrl:       exec.PRUrl,
 			})
 		}

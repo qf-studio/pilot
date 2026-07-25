@@ -127,16 +127,28 @@ func (m *Monitor) HydrateFromStore(store *memory.Store) error {
 	return nil
 }
 
-// ReconcileWithStore corrects any in-memory task whose executions row has
-// already reached a terminal status while the Monitor still shows it as
-// running/queued/pending. Event-driven transitions (Start/Complete/Fail/...)
-// are skipped or raced in some failure paths — e.g. a no-commit failure or
-// an externally closed PR that updates the executions row without ever
-// calling back into this Monitor — which otherwise leaves a card stuck at
-// "running"/100% forever (GH-4490). The executions table is the source of
-// truth, so call this periodically (e.g. alongside the dashboard's refresh
-// tick, before GetAll()) as a self-correcting backstop on top of the normal
-// event path, not a replacement for it.
+// ReconcileWithStore corrects any in-memory task whose Status disagrees with
+// its executions row in either direction (GH-4490; extended bidirectionally
+// by TASK-420/GH-4537):
+//
+//  1. non-terminal Monitor state, terminal store row — the original GH-4490
+//     case. Event-driven transitions (Start/Complete/Fail/...) are skipped or
+//     raced in some failure paths — e.g. a no-commit failure or an externally
+//     closed PR that updates the executions row without ever calling back
+//     into this Monitor — which otherwise leaves a card stuck at
+//     "running"/100% forever.
+//  2. terminal Monitor state, store row still "running" — the false-complete
+//     case captured 2026-07-24 22:17:07Z (queue showed "✓ done GH-4536" while
+//     its executions row was running with 3 live processes). Whatever raced
+//     Monitor into a terminal state early (duplicate dispatch, a stale
+//     completion callback, ...), the executions row is still the ground
+//     truth for "is this task's work actually finished" — a terminal Monitor
+//     card must not survive a store row that says otherwise.
+//
+// The executions table is the source of truth, so call this periodically
+// (e.g. alongside the dashboard's refresh tick, before GetAll()) as a
+// self-correcting backstop on top of the normal event path, not a
+// replacement for it.
 func (m *Monitor) ReconcileWithStore(store *memory.Store) error {
 	if store == nil {
 		return nil
@@ -146,13 +158,11 @@ func (m *Monitor) ReconcileWithStore(store *memory.Store) error {
 	type candidate struct {
 		id          string
 		projectPath string
+		status      TaskStatus
 	}
 	candidates := make([]candidate, 0, len(m.tasks))
 	for id, state := range m.tasks {
-		switch state.Status {
-		case StatusRunning, StatusQueued, StatusPending:
-			candidates = append(candidates, candidate{id: id, projectPath: state.ProjectPath})
-		}
+		candidates = append(candidates, candidate{id: id, projectPath: state.ProjectPath, status: state.Status})
 	}
 	m.mu.RUnlock()
 
@@ -163,6 +173,29 @@ func (m *Monitor) ReconcileWithStore(store *memory.Store) error {
 				continue // no execution row yet (e.g. registered but not dispatched) — nothing to reconcile
 			}
 			return fmt.Errorf("reconcile monitor with store: %w", err)
+		}
+
+		if dbStatus == "running" {
+			// Case 2: ledger says running but Monitor already shows a
+			// terminal outcome — revert the false-complete/false-terminal
+			// card back to running so a live task never renders done.
+			if c.status == StatusRunning || c.status == StatusQueued || c.status == StatusPending {
+				continue
+			}
+			m.mu.Lock()
+			if state, ok := m.tasks[c.id]; ok && state.Status != StatusRunning {
+				state.Status = StatusRunning
+				state.CompletedAt = nil
+				state.Error = ""
+				state.Phase = "Running (reconciled)"
+			}
+			m.mu.Unlock()
+			continue
+		}
+
+		// Case 1: existing non-terminal -> terminal correction.
+		if c.status != StatusRunning && c.status != StatusQueued && c.status != StatusPending {
+			continue
 		}
 
 		newStatus, terminal := terminalMonitorStatus(dbStatus)

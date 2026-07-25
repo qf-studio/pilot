@@ -395,6 +395,27 @@ func TestStageInfoForExecution_MutedOutcomesTable(t *testing.T) {
 			events: nil,
 			want:   StageInfo{Reached: 0, Label: "infra", Failed: false, Known: true, Muted: true},
 		},
+		{
+			// TASK-420/GH-4537: cancellation is written directly to the
+			// executions row (claim-loss cleanup / operator surgery) without
+			// ever emitting an execution_events row of its own — before this
+			// status was added to mutedOutcomes, the running-max reducer
+			// froze on the last real event ("running") and HISTORY kept
+			// showing a ghost "running Nh ago" row for a task that was
+			// actually dead (GH-4531 capture). Zero-events case.
+			status: "cancelled",
+			events: nil,
+			want:   StageInfo{Reached: 0, Label: "cancelled", Failed: false, Known: true, Muted: true},
+		},
+		{
+			// Same ghost-row scenario but with a prior "running" event on
+			// record (the realistic case — the task really was running
+			// before it got cancelled) — the muted-outcome override must
+			// still win over the running-max reducer's frozen label.
+			status: "cancelled",
+			events: []*memory.Event{evt(memory.StageRunning)},
+			want:   StageInfo{Reached: 2, Label: "cancelled", Failed: false, Known: true, Muted: true},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.status, func(t *testing.T) {
@@ -420,4 +441,42 @@ func TestDisplayStatus(t *testing.T) {
 			t.Errorf("displayStatus(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// TestResolveHistoryStatus_SharedByAllCallSites is the TASK-420/GH-4537
+// regression test: resolveHistoryStatus is now the one place hydrateFromStore
+// (tui.go), storeRefreshCmd (tui.go), and historyZoomCmd (zoom.go) go through
+// to turn an executions.status + its event ladder into a rendered HISTORY
+// row. A genuinely-running execution must never resolve to a done/success
+// status, and a cancelled (terminal) execution must never resolve to
+// "running" even though its last real event was a running rung — reproducing
+// the exact divergence captured on the dashboard: GH-A stuck "running" for
+// hours while other panels called it done, GH-B cancelled but HISTORY still
+// showed "running Nh ago".
+func TestResolveHistoryStatus_SharedByAllCallSites(t *testing.T) {
+	t.Run("running task never resolves to a done status", func(t *testing.T) {
+		hs := resolveHistoryStatus("running", []*memory.Event{evt(memory.StageQueued), evt(memory.StageRunning)})
+		if hs.Status != "running" {
+			t.Errorf("Status = %q, want %q (a running execution must never render as done/success)", hs.Status, "running")
+		}
+		if hs.Stage.Label == "success" || hs.Stage.Label == "completed" {
+			t.Errorf("Stage.Label = %q, must not read as a completed outcome for a running task", hs.Stage.Label)
+		}
+	})
+
+	t.Run("cancelled task never resolves to running, even with a running event on record", func(t *testing.T) {
+		hs := resolveHistoryStatus("cancelled", []*memory.Event{evt(memory.StageQueued), evt(memory.StageRunning)})
+		if hs.Status == "running" {
+			t.Errorf("Status = %q, want non-running (a cancelled/terminal execution must never render as running)", hs.Status)
+		}
+		if hs.Stage.Label == "running" {
+			t.Errorf("Stage.Label = %q, want %q (muted-outcome override must beat the running-max reducer's frozen label)", hs.Stage.Label, "cancelled")
+		}
+		if hs.Stage.Label != "cancelled" {
+			t.Errorf("Stage.Label = %q, want %q", hs.Stage.Label, "cancelled")
+		}
+		if !hs.Stage.Muted {
+			t.Error("expected cancelled outcome to be muted, matching other terminal-without-ladder-rung statuses")
+		}
+	})
 }

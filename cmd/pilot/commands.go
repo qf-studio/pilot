@@ -2644,6 +2644,14 @@ func collectDashboardTasks(p *pilot.Pilot, gwMonitor *executor.Monitor, gwStore 
 // convertTaskStatesToDisplay converts executor TaskStates to dashboard TaskDisplay format.
 // Maps all 5 states: done, running, queued, pending, failed for state-aware dashboard rendering.
 // GH-1220: Added deduplication safety net to prevent duplicate tasks in rendering.
+//
+// TASK-420/GH-4537: this is the ONE place a executor.TaskStatus becomes a
+// dashboard.QueueStatus — every one of the five UpdateTasks call sites
+// (cmd/pilot/main.go, cmd/pilot/commands.go) funnels through here, so there
+// is a single closed mapping, not five independently-typed strings. Callers
+// are responsible for reconciling the TaskState against the executions table
+// (Monitor.ReconcileWithStore) before calling this — the ledger, not the
+// in-memory TaskStatus, is what's authoritative for done-vs-running.
 func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDisplay {
 	seen := make(map[string]bool)
 	var displays []dashboard.TaskDisplay
@@ -2654,23 +2662,23 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 		}
 		seen[state.ID] = true
 
-		var status string
+		var status dashboard.QueueStatus
 		switch state.Status {
 		case executor.StatusRunning:
-			status = "running"
+			status = dashboard.QueueStatusRunning
 		case executor.StatusQueued:
-			status = "queued"
+			status = dashboard.QueueStatusQueued
 		case executor.StatusCompleted:
-			status = "done"
-		case executor.StatusFailed:
-			status = "failed"
+			status = dashboard.QueueStatusDone
+		case executor.StatusFailed, executor.StatusCancelled, executor.StatusStalled:
+			status = dashboard.QueueStatusFailed
 		case executor.StatusNoOp:
 			// GH-4490 subtask 2: a no-commit run is a non-failure terminal
 			// outcome — must not fall to "pending" (looks unstarted) or
 			// "failed" (looks like a genuine failure).
-			status = "no_op"
+			status = dashboard.QueueStatusNoOp
 		default:
-			status = "pending"
+			status = dashboard.QueueStatusPending
 		}
 
 		var duration string

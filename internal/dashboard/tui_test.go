@@ -2001,7 +2001,7 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 			name:        "idle",
 			ctl:         newFakeCtl(nil, 3, nil),
 			wantLines:   5, // top border + empty + content + empty + bottom border
-			wantContain: "idle · no active PR",
+			wantContain: "no active PR · check queue for running work",
 			wantAbsent:  "STATE",
 		},
 		{
