@@ -923,6 +923,18 @@
           "context",
           "deployment"
         ]
+      },
+      "TASK-421": {
+        "path": ".agent/tasks/TASK-421-repick-counter-counts-non-failures.md",
+        "title": "Repick hard cap counts non-failures \u2014 a task queued behind a long task is auto-blocked for waiting its turn",
+        "status": "in-progress",
+        "concepts": [
+          "deployment",
+          "context",
+          "knowledge",
+          "api",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -4672,6 +4684,11 @@
       "from": "TASK-420",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-421",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -4756,7 +4773,8 @@
       "TASK-416",
       "TASK-417",
       "TASK-419",
-      "TASK-420"
+      "TASK-420",
+      "TASK-421"
     ],
     "deployment": [
       "TASK-386",
@@ -4817,7 +4835,8 @@
       "oauth-ssm-params-rot-live-credentials-source-of-truth",
       "shared-oauth-session-strands-second-machine",
       "TASK-419",
-      "TASK-420"
+      "TASK-420",
+      "TASK-421"
     ],
     "authentication": [
       "TASK-386",
@@ -4909,7 +4928,8 @@
       "TASK-417",
       "TASK-418",
       "TASK-419",
-      "TASK-420"
+      "TASK-420",
+      "TASK-421"
     ],
     "api": [
       "TASK-386",
@@ -4945,7 +4965,8 @@
       "TASK-417",
       "TASK-418",
       "TASK-419",
-      "TASK-420"
+      "TASK-420",
+      "TASK-421"
     ],
     "context": [
       "TASK-386",
@@ -4994,7 +5015,8 @@
       "TASK-417",
       "TASK-418",
       "TASK-419",
-      "TASK-420"
+      "TASK-420",
+      "TASK-421"
     ],
     "markers": [
       "TASK-387",
@@ -5374,10 +5396,10 @@
       "shared-oauth-session-strands-second-machine"
     ]
   },
-  "last_updated": "2026-07-24T22:19:41.609985+00:00",
+  "last_updated": "2026-07-25T10:48:54.561315+00:00",
   "stats": {
-    "total_nodes": 294,
-    "total_edges": 248,
+    "total_nodes": 295,
+    "total_edges": 249,
     "memory_count": 188
   }
 }
