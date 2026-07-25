@@ -4090,6 +4090,170 @@ func TestDispatcher_BeginWithGenerationRetry_MixedStallAndFailedDropsHardCapAtFi
 	}
 }
 
+// TestDispatcher_IsActive_TreatsDecomposedAsActive is the GH-4540/TASK-421
+// regression test for the actual GH-4537 mechanism: IsTaskQueued's SQL
+// allowlist was missing 'decomposed', so a decomposed epic-parent's claim was
+// invisible to IsActive() even though nextRetryGeneration (via
+// isTerminalExecutionStatus) correctly treats "decomposed" as a live,
+// non-terminal owner. That blind spot let a stream of redundant dispatch
+// attempts slip past handler_common.go's IsActive precheck straight into the
+// claim-lost drop path. Seeding a decomposed-status execution and asserting
+// IsActive reports true pins the fix directly at the source.
+func TestDispatcher_IsActive_TreatsDecomposedAsActive(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4537-DECOMPOSED", ProjectPath: "/project-decomposed"}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+
+	if _, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning); err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	markLatestClaimedExecution(t, store, task.ID, task.ProjectPath, "decomposed")
+
+	if !dispatcher.IsActive(task.ID, task.ProjectPath) {
+		t.Error("expected IsActive to report true for a decomposed (non-terminal) claim, got false")
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_InfraDropsDoNotCountTowardHardCap
+// is the GH-4540/TASK-421 infra-carve-out acceptance test, mirroring
+// TestDispatcher_BeginWithGenerationRetry_StallDropsDoNotCountTowardHardCap:
+// incident GH-4526 wedged a healthy task at dispatcherRepickHardCap on
+// environment/infra failures alone (hosted git_clean preflight deadlocks, CI
+// outages) — each infra-classified drop grew the same consecutiveDrops
+// counter a genuine code failure does. Four consecutive infra drops followed
+// by one genuine failed drop must leave the shared consecutive_drops counter
+// at 1 (only the failure counts), while infra_drops independently reflects
+// the 4 infra-classified drops.
+func TestDispatcher_BeginWithGenerationRetry_InfraDropsDoNotCountTowardHardCap(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4540-INFRA4", ProjectPath: "/project-infra4"}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+
+	if _, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning); err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	// Four consecutive infra-classified drops: each repick must be granted
+	// (not wedged) and must NOT grow consecutive_drops.
+	for i := 0; i < 4; i++ {
+		markLatestClaimedExecution(t, store, task.ID, task.ProjectPath, "infra")
+		execID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+		if err != nil {
+			t.Fatalf("beginWithGenerationRetry (infra %d): %v", i+1, err)
+		}
+		if execID == "" {
+			t.Fatalf("expected infra drop %d to be granted a retry, got dropped", i+1)
+		}
+	}
+
+	infraDrops, found, err := dispatcher.InfraDropCount(key)
+	if err != nil {
+		t.Fatalf("InfraDropCount: %v", err)
+	}
+	if !found || infraDrops != 4 {
+		t.Errorf("expected infra_drops=4 after 4 infra-classified drops, got found=%v count=%d", found, infraDrops)
+	}
+	if consecutive, _, found, err := dispatcher.RepickBackoffState(key); err != nil {
+		t.Fatalf("RepickBackoffState: %v", err)
+	} else if found && consecutive != 0 {
+		t.Errorf("expected consecutive_drops=0 after only infra drops, got found=%v consecutive=%d", found, consecutive)
+	}
+
+	// A fifth, genuine failure must grow consecutive_drops — and must still
+	// be granted, since only 1 genuine failure has happened so far, nowhere
+	// near dispatcherRepickHardCap.
+	markLatestClaimedExecution(t, store, task.ID, task.ProjectPath, "failed")
+	execID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry (failed): %v", err)
+	}
+	if execID == "" {
+		t.Fatal("expected the task to NOT be wedged after 4 infra drops + 1 failure — hard cap must not have tripped")
+	}
+
+	consecutive, _, found, err := dispatcher.RepickBackoffState(key)
+	if err != nil {
+		t.Fatalf("RepickBackoffState after failure: %v", err)
+	}
+	if !found || consecutive != 1 {
+		t.Errorf("expected consecutive_drops=1 reflecting only the genuine failure, got found=%v consecutive=%d", found, consecutive)
+	}
+
+	if infraDrops, _, err := dispatcher.InfraDropCount(key); err != nil {
+		t.Fatalf("InfraDropCount after failure: %v", err)
+	} else if infraDrops != 4 {
+		t.Errorf("expected infra_drops to remain 4 (untouched by the genuine failure), got %d", infraDrops)
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_InfraCapEscalatesWithDistinctReason
+// is the GH-4540/TASK-421 infra-cap acceptance test, mirroring
+// TestDispatcher_BeginWithGenerationRetry_StallCapEscalatesWithDistinctReason:
+// once dispatcherInfraRepickCap consecutive infra-classified drops have
+// accumulated, the next infra-classified repick must escalate/hold the task
+// with a distinct, truthful reason string identifying the infra class — not
+// the generic hard-cap message a genuine code failure would produce.
+func TestDispatcher_BeginWithGenerationRetry_InfraCapEscalatesWithDistinctReason(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4540-INFRACAP", ProjectPath: "/project-infracap", Title: "Infra-capped task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(task.ProjectPath, task.ID)
+
+	// Already at the infra cap.
+	if err := dispatcher.SetInfraDropCount(key, dispatcherInfraRepickCap); err != nil {
+		t.Fatalf("SetInfraDropCount: %v", err)
+	}
+
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "infra"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as infra: %v", err)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatal("expected the re-pick to be dropped once the infra cap is reached, got a fresh execID")
+	}
+
+	infraExec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if infraExec.Status != "stalled" {
+		t.Errorf("expected the claimed execution to be marked stalled, got status=%q", infraExec.Status)
+	}
+	if !strings.Contains(infraExec.Error, "infra") {
+		t.Errorf("expected an infra-class reason string, got %q", infraExec.Error)
+	}
+	if strings.Contains(infraExec.Error, "consecutive failed re-picks") {
+		t.Errorf("expected the infra-class reason to be distinct from the generic hard-cap message, got %q", infraExec.Error)
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event, got %d: %+v", len(processor.events), processor.events)
+	}
+	if processor.events[0].Metadata["reason"] != "infra_repick_cap_stalled" {
+		t.Errorf("expected alert metadata reason=infra_repick_cap_stalled, got %q", processor.events[0].Metadata["reason"])
+	}
+}
+
 // TestRepickBackoffKey_FormatMatchesCmdPilotPackage is the GH-4394 subtask 4
 // counterpart to cmd/pilot's TestRepickBackoffKey_FormatMatchesDispatcherPackage.
 // cmd/pilot cannot import internal/executor's unexported repickBackoffKey (and

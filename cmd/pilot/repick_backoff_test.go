@@ -140,6 +140,16 @@ type fakeRepickBackoffPersister struct {
 	consecutiveDrops int
 	nextAllowedAt    time.Time
 	found            bool
+
+	// claimLostDrops (GH-4540/TASK-421) backs ClaimLostDropCount/
+	// SetClaimLostBackoff — deliberately a separate counter from
+	// consecutiveDrops above, mirroring the real store's separate
+	// claim_lost_drops column that must never perturb consecutive_drops.
+	// nextAllowedAt/found above are shared, matching the real
+	// repick_backoff row: both a genuine drop and a claim-lost drop grow the
+	// same cooldown window.
+	claimLostDrops int
+	claimLostFound bool
 }
 
 func (f *fakeRepickBackoffPersister) RepickBackoffState(key string) (int, time.Time, bool, error) {
@@ -157,6 +167,20 @@ func (f *fakeRepickBackoffPersister) ClearRepickBackoffState(key string) error {
 	f.consecutiveDrops = 0
 	f.nextAllowedAt = time.Time{}
 	f.found = false
+	f.claimLostDrops = 0
+	f.claimLostFound = false
+	return nil
+}
+
+func (f *fakeRepickBackoffPersister) ClaimLostDropCount(key string) (int, bool, error) {
+	return f.claimLostDrops, f.claimLostFound, nil
+}
+
+func (f *fakeRepickBackoffPersister) SetClaimLostBackoff(key string, claimLostDrops int, nextAllowedAt time.Time) error {
+	f.claimLostDrops = claimLostDrops
+	f.claimLostFound = true
+	f.nextAllowedAt = nextAllowedAt
+	f.found = true
 	return nil
 }
 

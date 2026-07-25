@@ -961,6 +961,34 @@ func (d *Dispatcher) SetStallDropCount(key string, count int) error {
 	return d.store.SetStallDropCount(key, count)
 }
 
+// InfraDropCount and SetInfraDropCount expose the store's per-key
+// infra-classified-repick counter (GH-4540/TASK-421) — the carve-out for
+// drops caused by an environment/infra failure (e.g. a hosted git_clean
+// preflight deadlock or a CI outage) rather than the task's own code,
+// tracked separately from consecutive_drops the same way StallDropCount is.
+func (d *Dispatcher) InfraDropCount(key string) (count int, found bool, err error) {
+	return d.store.GetInfraDropCount(key)
+}
+
+func (d *Dispatcher) SetInfraDropCount(key string, count int) error {
+	return d.store.SetInfraDropCount(key, count)
+}
+
+// ClaimLostDropCount and SetClaimLostBackoff expose the store's per-key
+// claim-lost/already-done drop counter (GH-4540/TASK-421) to cmd/pilot's
+// repickBackoffTracker — the sibling counter that grows the shared backoff
+// cooldown window for a dispatch attempt refused because the task was
+// already active or already terminally done, WITHOUT touching
+// consecutive_drops (the counter beginWithGenerationRetry gates the hard cap
+// on). See repickBackoffPersister in cmd/pilot/repick_backoff.go.
+func (d *Dispatcher) ClaimLostDropCount(key string) (count int, found bool, err error) {
+	return d.store.GetClaimLostDropCount(key)
+}
+
+func (d *Dispatcher) SetClaimLostBackoff(key string, claimLostDrops int, nextAllowedAt time.Time) error {
+	return d.store.SetClaimLostBackoff(key, claimLostDrops, nextAllowedAt)
+}
+
 // ExecutionGeneration returns the execution_claims generation most recently
 // claimed for (taskID, projectPath): 0 for an ordinary first attempt, >0 when
 // beginWithGenerationRetry claimed a retry generation because the prior
@@ -1077,6 +1105,19 @@ const dispatcherRepickHardCap = 5
 // signal of a doomed task than genuine failures are.
 const dispatcherStallRepickCap = 8
 
+// dispatcherInfraRepickCap is the hard ceiling on consecutive
+// infra-classified repicks for one task before beginWithGenerationRetry
+// stops granting infra-carved-out retries and stalls the task instead
+// (GH-4540/TASK-421). Infra-classified failures (status "infra" — a hosted
+// preflight deadlock, a CI outage) are counted separately from
+// dispatcherRepickHardCap's consecutiveDrops (see priorClaimWasInfra)
+// because they are not evidence the task's own code is broken (incident:
+// GH-4526 accrued drops from environment failures alone). Set to the same
+// value as dispatcherStallRepickCap: both are weaker signals of a doomed
+// task than a genuine code failure, and reusing the established number
+// avoids inventing a third arbitrary threshold.
+const dispatcherInfraRepickCap = 8
+
 // repickBackoffKey namespaces backoff state by project path + task ID,
 // matching cmd/pilot's repickBackoffKey — task_id alone is not unique across
 // projects (GH-4276).
@@ -1127,6 +1168,29 @@ func (d *Dispatcher) priorClaimWasStalled(taskID, projectPath string) bool {
 		return false
 	}
 	return exec.Status == string(ExecStatusStalled)
+}
+
+// priorClaimWasInfra reports whether (taskID, projectPath)'s currently
+// claimed execution — the one nextRetryGeneration just examined to grant
+// this retry — was classified as an infrastructure/environment failure
+// (status "infra") rather than a genuine code failure. GH-4526 accrued
+// consecutive_drops purely from environment failures (a hosted git_clean
+// preflight deadlock and a CI infra outage) — the task's code was never at
+// fault, but each drop counted identically to a real failure toward
+// dispatcherRepickHardCap. Mirrors priorClaimWasStalled exactly, for the
+// "infra" status instead of "stalled". Errors are treated as "not infra" —
+// the caller falls through to the ordinary backoff/hard-cap path, which is
+// the safe default.
+func (d *Dispatcher) priorClaimWasInfra(taskID, projectPath string) bool {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil {
+		return false
+	}
+	return exec.Status == string(ExecStatusInfra)
 }
 
 // nextRetryGeneration inspects the highest execution_claims generation
@@ -1355,6 +1419,54 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 		return "", fmt.Errorf("failed to save retry execution: %w", retryErr)
 	}
 
+	// GH-4540/TASK-421: an infra-classified failure (status "infra" — e.g. a
+	// hosted git_clean preflight deadlock or a CI outage) is not evidence the
+	// task's own code is broken, exactly mirroring the stall carve-out above
+	// (incident: GH-4526 wedged a healthy task at dispatcherRepickHardCap on
+	// environment failures alone). Tracked in its own persisted counter with
+	// its own cap rather than an unlimited bypass, for the same reason the
+	// stall carve-out is capped: a task whose environment is durably broken
+	// (not just transiently flaky) must still stop retrying eventually.
+	if d.priorClaimWasInfra(task.ID, task.ProjectPath) {
+		infraDrops, _, infraErr := d.InfraDropCount(backoffKey)
+		if infraErr != nil {
+			d.log.Warn("failed to read infra drop count — dropping retry to be safe",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Any("error", infraErr))
+			return "", nil
+		}
+		if infraDrops >= dispatcherInfraRepickCap {
+			d.stallTaskAfterInfraCap(task, gen, infraDrops)
+			return "", nil
+		}
+
+		retryExecID, retryErr := lifecycle.Begin(task, initial, gen)
+		if retryErr == nil {
+			newInfraDrops := infraDrops + 1
+			if setErr := d.SetInfraDropCount(backoffKey, newInfraDrops); setErr != nil {
+				d.log.Warn("failed to persist infra drop count after re-pick",
+					slog.String("task_id", task.ID),
+					slog.String("project", task.ProjectPath),
+					slog.Any("error", setErr))
+			}
+			d.log.Info("dispatch re-pick: prior claim was infra-classified — claiming next generation without counting toward repick hard cap",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+				slog.Int("generation", gen),
+				slog.Int("consecutive_infra_drops", newInfraDrops),
+			)
+			return retryExecID, nil
+		}
+		if errors.Is(retryErr, ErrClaimLost) {
+			// Race: another channel claimed generation gen between our
+			// decision and this Begin call — drop it, same as any other
+			// duplicate pickup.
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to save retry execution: %w", retryErr)
+	}
+
 	if found && time.Now().Before(nextAllowedAt) {
 		d.log.Info("dispatch re-pick throttled — task still within repick backoff window, dropping duplicate retry",
 			slog.String("task_id", task.ID),
@@ -1437,6 +1549,25 @@ func (d *Dispatcher) stallTaskAfterStallCap(task *Task, gen, stallDrops int) {
 		"reason":      "stall_repick_cap_stalled",
 		"stall_drops": fmt.Sprintf("%d", stallDrops),
 		"stall_cap":   fmt.Sprintf("%d", dispatcherStallRepickCap),
+	})
+}
+
+// stallTaskAfterInfraCap marks the task's claimed execution "stalled" and
+// raises an alert once dispatcherInfraRepickCap consecutive
+// infra-classified repicks have been exhausted (GH-4540/TASK-421) — the same
+// escalate-and-hold path stallTaskAfterRepickHardCap/stallTaskAfterStallCap
+// take, but with a distinct, truthful reason string: a run of
+// infra-classified drops means the environment kept failing the task, not
+// that the task's own code is broken.
+func (d *Dispatcher) stallTaskAfterInfraCap(task *Task, gen, infraDrops int) {
+	reason := fmt.Sprintf(
+		"infra repick cap reached: %d consecutive infra-classified failures (cap=%d) — the environment keeps failing this task, not the task's code; stopping automatic retries, manual re-arm required",
+		infraDrops, dispatcherInfraRepickCap,
+	)
+	d.escalateStalledTask(task, gen, infraDrops, reason, map[string]string{
+		"reason":      "infra_repick_cap_stalled",
+		"infra_drops": fmt.Sprintf("%d", infraDrops),
+		"infra_cap":   fmt.Sprintf("%d", dispatcherInfraRepickCap),
 	})
 }
 
