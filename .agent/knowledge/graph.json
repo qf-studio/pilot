@@ -371,6 +371,41 @@
         "name": "Ci",
         "aliases": [],
         "domain": "general"
+      },
+      "config": {
+        "name": "Config",
+        "aliases": [],
+        "domain": "general"
+      },
+      "yaml": {
+        "name": "Yaml",
+        "aliases": [],
+        "domain": "general"
+      },
+      "hosted-tenant": {
+        "name": "Hosted-Tenant",
+        "aliases": [],
+        "domain": "general"
+      },
+      "saas": {
+        "name": "Saas",
+        "aliases": [],
+        "domain": "general"
+      },
+      "merge": {
+        "name": "Merge",
+        "aliases": [],
+        "domain": "general"
+      },
+      "pilot-console": {
+        "name": "Pilot-Console",
+        "aliases": [],
+        "domain": "general"
+      },
+      "silent-failure": {
+        "name": "Silent-Failure",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -730,14 +765,14 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
-          "theory of mind",
           "authentication",
-          "deployment",
-          "api",
-          "context",
+          "frontend",
           "testing",
+          "context",
+          "api",
           "knowledge",
-          "frontend"
+          "deployment",
+          "theory of mind"
         ]
       },
       "TASK-407": {
@@ -3455,6 +3490,24 @@
         ],
         "confidence": 0.95,
         "created": "2026-07-25"
+      },
+      "mem-160": {
+        "type": "pitfall",
+        "summary": "Top-level autopilot: YAML binds to nothing (only orchestrator.autopilot) and Enabled is set only by --env — daemon opens PRs while no CI monitor or merger exists; tell is a missing autopilot_pr_state table",
+        "path": "memories/pitfalls/top-level-autopilot-yaml-binds-to-nothing.md",
+        "confidence": 0.98,
+        "concepts": [
+          "autopilot",
+          "config",
+          "yaml",
+          "hosted-tenant",
+          "saas",
+          "merge",
+          "pilot-console",
+          "silent-failure"
+        ],
+        "created": "2026-07-26",
+        "last_validated": "2026-07-26"
       }
     }
   },
@@ -4703,6 +4756,11 @@
       "from": "TASK-421",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "mem-160",
+      "to": "TASK-405",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -5183,7 +5241,8 @@
       "mem-139",
       "mem-142",
       "ci-infra-failure-misclassified-as-code",
-      "required-checks-allowlist-makes-other-gates-decorative"
+      "required-checks-allowlist-makes-other-gates-decorative",
+      "mem-160"
     ],
     "epic": [
       "mem-100"
@@ -5389,7 +5448,8 @@
       "ready-gate-couples-credential-validity",
       "claude-cli-refuses-root-hosted-units",
       "oauth-ssm-params-rot-live-credentials-source-of-truth",
-      "shared-oauth-session-strands-second-machine"
+      "shared-oauth-session-strands-second-machine",
+      "mem-160"
     ],
     "metrics": [
       "ci-infra-failure-misclassified-as-code"
@@ -5415,12 +5475,30 @@
     ],
     "configuration": [
       "required-checks-allowlist-makes-other-gates-decorative"
+    ],
+    "config": [
+      "mem-160"
+    ],
+    "yaml": [
+      "mem-160"
+    ],
+    "hosted-tenant": [
+      "mem-160"
+    ],
+    "saas": [
+      "mem-160"
+    ],
+    "merge": [
+      "mem-160"
+    ],
+    "silent-failure": [
+      "mem-160"
     ]
   },
-  "last_updated": "2026-07-25T15:33:54.311193+00:00",
+  "last_updated": "2026-07-26T15:57:32.635694+00:00",
   "stats": {
-    "total_nodes": 296,
-    "total_edges": 249,
-    "memory_count": 189
+    "total_nodes": 304,
+    "total_edges": 250,
+    "memory_count": 190
   }
 }

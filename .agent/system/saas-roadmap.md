@@ -106,4 +106,92 @@ S0: 10 · S1: 3 · S2: ~9 (incl. ownership-transfer pre-step) · S3: ~6 · S4: ~
 
 ---
 
-**Last Updated**: 2026-07-24 night (v8.7 — step 4 blocked on the MERGE LEG: hosted tenant executes and opens green PRs (#103/#105) that never merge; exit evidence not met, diagnostic query in the S2 row. Prior v8.6: fleet VPC live, consolectl shipped, tenant executing after a 7-layer defect cascade; v8.5: e2e 3/3 green; v8.4: e2e pre-steps)
+**Last Updated**: 2026-07-26 (v8.8 — **MERGE LEG ROOT-CAUSED**, see below. Prior v8.7: step 4 blocked, diagnosis pending; v8.6: fleet VPC live, consolectl shipped, tenant executing after a 7-layer defect cascade; v8.5: e2e 3/3 green)
+
+## v8.8 (2026-07-26) — merge leg root-caused; SaaS unparked
+
+**Program UNPARKED** (founder, 07-26) — supersedes the 07-17 "SaaS parked" directive.
+
+**Tenant Anthropic key provisioned.** `/tenants/13508a69-d0e3-4c77-8314-e817d04d2e0d/ANTHROPIC_API_KEY`
+written as SecureString v1 under the tenant CMK `0699dcd8-…`, sourced from the
+pointer org's funded key (`POINTER_LLM_API_KEY`, probe → HTTP 200). Before this
+the tenant path held **only** `GITHUB_TOKEN` + `PILOT_GATEWAY_TOKEN` — no Anthropic
+key at all, which is why the operator hot-copied the box's OAuth credentials on
+07-24 and stranded the box (the 07-25 incident). Live-verified for contrast:
+`/pilot/ANTHROPIC_API_KEY` → HTTP 400 `credit balance is too low`.
+⚠️ Pointer org balance is **$107.88 with auto-reload OFF** — it will hard-stop at
+zero exactly like `/pilot` did, and it is shared with pointer production traffic.
+
+**THE MERGE LEG: autopilot was never enabled on the tenant daemon.** Verified three ways:
+
+1. **Observed** — `sqlite3 …/pilot.db ".tables"` on `i-0decbc0dcf225cf18`: no
+   `autopilot_pr_state` table exists (only `autopilot_metrics`). The roadmap's v8.7
+   diagnostic assumed "no rows"; the table itself is absent, i.e. the subsystem never ran.
+2. **Config** — `pilot-console/internal/fleet/configrender.go:109` `writeAutopilotBlock`
+   emits `autopilot:` at **YAML top level**, but `internal/config/config.go:41` `Config`
+   has **no top-level `Autopilot` field** — the only binding is
+   `orchestrator.autopilot` (`config.go:153`). There is no normalization lifting the key.
+   The entire rendered block is silently discarded by the decoder. It also never
+   emits `enabled: true`.
+3. **Code** — `cmd/pilot/main.go:422-426` sets `Autopilot.Enabled = true` **only** when
+   `--env` is passed. The tenant systemd unit is
+   `ExecStart=/opt/pilot/bin/pilot start --config /var/lib/pilot/config.yaml` — no `--env`.
+   Every controller site (`main.go:1687/1768/1828/2349`) is guarded by
+   `Autopilot != nil && Autopilot.Enabled` → none construct.
+
+⇒ Issues execute → PRs open → **nothing ever adopts them**. #103/#105 sit green and
+unmerged not because of approvals but because no CI monitor or merger exists in the process.
+
+**v8.7's leading hypothesis is REFUTED**: the instance config reads
+`require_approval: false` (line 41) — and it would not have mattered, since the block
+is inert. Also corrected: v8.7 claimed "no PR has ever merged on `pilot-canary-sandbox`";
+in fact #71/#72/#77/#78/#81/#84 all merged cleanly through 07-15 under the local daemon.
+The break begins at #87 (07-16), three days *before* the hosted cutover — so the local
+daemon's canary handling regressed separately and still needs its own look.
+
+**Collateral finding**: `configs/pilot.example.yaml:553` documents the same dead
+top-level `autopilot:` shape. Any operator who copies the example gets a silently
+ignored autopilot block. Worth a strict-decode (`KnownFields`) issue.
+
+**Third defect, same family**: `autopilot.default_environment` (`internal/autopilot/types.go:88`)
+is declared and **read nowhere** — `grep -rn DefaultEnvironment --include=*.go` returns the
+declaration plus two comments, no readers. `ResolvedEnv()` (`types.go:332`) checks
+`activeEnvName` (set only via `--env`) then falls through to legacy `Environment` → `"stage"`.
+So the `hosted` environment can never activate from config alone. Harmless here only by
+coincidence: built-in `stage` (`branch: main`, `require_approval: false`, `ci_timeout: 30m`)
+matches what `hosted` intended.
+
+### ✅ MERGE LEG FIRING — S2 exit evidence met (2026-07-26 15:56Z)
+
+Operator hot-fix on `i-0decbc0dcf225cf18`: nested the autopilot block under `orchestrator:`
++ `enabled: true` (backup `/var/lib/pilot/config.yaml.bak-premerge-fix`), `systemctl restart pilot`
+— whose `ExecStartPre=+/opt/pilot/fetch-secrets.sh` also pulled the new tenant
+`ANTHROPIC_API_KEY` into `/run/pilot/env`. Result inside 3 minutes:
+
+```
+15:53:08  autopilot enabled ... environment=stage auto_merge=true
+15:53:09  restoring Pilot PR for tracking pr=105 / pr=103 → restored=2
+15:53:55  waiting_ci → ci_passed   (checks=[test])
+15:54:58  ci_passed → merging
+15:56:00  PR #105 MERGED (squash) · 15:56:10 PR #103 MERGED
+          issues 101/102 closed, branches deleted
+```
+
+`autopilot_pr_state` now exists with both rows at `stage=merged, merge_attempts=1`.
+**Two fresh merged PRs fully on the hosted path** — first ever. Remaining for the
+"all `pilot` issues closed" half of the exit bar: #104 (fresh), #99/#100 (stale
+`pilot-retry-1`; #100 also `pilot-blocked`, epic-lifecycle scenario).
+
+⚠️ The hot-fix is **ephemeral** — `configpush.go:27` rewrites `/var/lib/pilot/config.yaml`
+on the next config push and will clobber it. Permanent fixes dispatched:
+- [pilot-console#55](https://github.com/qf-studio/pilot-console/issues/55) — `writeAutopilotBlock`
+  nest + `enabled: true`, with a round-trip-through-pilot's-structs test (a golden-string
+  test would not have caught this).
+- [pilot#4544](https://github.com/qf-studio/pilot/issues/4544) — honor (or delete) `default_environment`.
+- **Unfiled, needs a call**: strict YAML decode (`KnownFields(true)`) in pilot's config loader —
+  the class-level fix, but it would reject existing configs carrying legacy/misplaced keys,
+  including the dead top-level `autopilot:` block at `configs/pilot.example.yaml:553`.
+
+Cosmetic noise seen during the merge: auto-review 422 "Can not approve your own pull request"
+(instance runs 2.245.0, predates pilot#4520→PR#4522) and a 404 removing a non-existent
+`pilot-in-progress` label.
