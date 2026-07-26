@@ -102,7 +102,7 @@ func checkReleaserResolved(cfg *config.Config) (bool, string) {
 
 	source := "global"
 	relCfg := ap.Release
-	if env := ap.ResolvedEnv(); env != nil && env.Release != nil {
+	if env := ap.ResolvedEnvOrDefault(); env != nil && env.Release != nil {
 		relCfg = env.Release
 		source = "env:" + ap.EnvironmentName()
 	}

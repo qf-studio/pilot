@@ -237,7 +237,10 @@ func TestReleaseConfig_PublishMode(t *testing.T) {
 
 func TestResolvedEnv_LegacyDev(t *testing.T) {
 	cfg := &Config{Environment: EnvDev}
-	env := cfg.ResolvedEnv()
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
 
 	if env.RequireApproval {
 		t.Error("dev: RequireApproval should be false")
@@ -252,7 +255,10 @@ func TestResolvedEnv_LegacyDev(t *testing.T) {
 
 func TestResolvedEnv_LegacyStage(t *testing.T) {
 	cfg := &Config{Environment: EnvStage}
-	env := cfg.ResolvedEnv()
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
 
 	if env.RequireApproval {
 		t.Error("stage: RequireApproval should be false")
@@ -267,7 +273,10 @@ func TestResolvedEnv_LegacyStage(t *testing.T) {
 
 func TestResolvedEnv_LegacyProd(t *testing.T) {
 	cfg := &Config{Environment: EnvProd}
-	env := cfg.ResolvedEnv()
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
 
 	if !env.RequireApproval {
 		t.Error("prod: RequireApproval should be true")
@@ -295,7 +304,10 @@ func TestResolvedEnv_NewStyleMap(t *testing.T) {
 		t.Fatalf("SetActiveEnvironment: %v", err)
 	}
 
-	env := cfg.ResolvedEnv()
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
 	if env.Branch != "develop" {
 		t.Errorf("Branch = %q, want %q", env.Branch, "develop")
 	}
@@ -321,7 +333,10 @@ func TestResolvedEnv_CustomEnv(t *testing.T) {
 		t.Fatalf("SetActiveEnvironment: %v", err)
 	}
 
-	env := cfg.ResolvedEnv()
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
 	if !env.RequireApproval {
 		t.Error("qa: RequireApproval should be true")
 	}
@@ -345,9 +360,104 @@ func TestResolvedEnv_NewOverridesLegacy(t *testing.T) {
 		t.Fatalf("SetActiveEnvironment: %v", err)
 	}
 
-	env := cfg.ResolvedEnv()
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
 	if env.RequireApproval {
 		t.Error("new-style dev should override legacy prod: RequireApproval should be false")
+	}
+}
+
+// TestResolvedEnv_DefaultEnvironmentMatch verifies that DefaultEnvironment
+// (GH-4545) resolves to the matching Environments entry when no runtime
+// --env override (activeEnvName) is active. Before this, DefaultEnvironment
+// was read nowhere in ResolvedEnv — resolution always fell straight through
+// to the legacy Environment/stage default regardless of what
+// default_environment was set to (AUDIT-2026-05-25 P2 finding).
+func TestResolvedEnv_DefaultEnvironmentMatch(t *testing.T) {
+	cfg := &Config{
+		DefaultEnvironment: "qa",
+		Environments: map[string]*EnvironmentConfig{
+			"qa": {Branch: "qa", RequireApproval: true, CITimeout: 10 * time.Minute},
+		},
+	}
+
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
+	if env.Branch != "qa" {
+		t.Errorf("Branch = %q, want %q", env.Branch, "qa")
+	}
+	if !env.RequireApproval {
+		t.Error("RequireApproval should be true")
+	}
+}
+
+// TestResolvedEnv_DefaultEnvironmentMismatch verifies that an unresolvable
+// DefaultEnvironment is a hard error, not a silent fall-through to the
+// legacy stage default — a typo'd default_environment must be surfaced, not
+// swallowed.
+func TestResolvedEnv_DefaultEnvironmentMismatch(t *testing.T) {
+	cfg := &Config{
+		DefaultEnvironment: "typo-env",
+		Environments: map[string]*EnvironmentConfig{
+			"qa": {Branch: "qa"},
+		},
+	}
+
+	env, err := cfg.ResolvedEnv()
+	if err == nil {
+		t.Fatal("ResolvedEnv: expected error for unresolvable default_environment, got nil")
+	}
+	if env != nil {
+		t.Errorf("ResolvedEnv: expected nil env on error, got %+v", env)
+	}
+}
+
+// TestResolvedEnv_ActiveEnvOverridesDefaultEnvironment verifies that a
+// runtime --env selection (activeEnvName) still takes priority over
+// DefaultEnvironment, even when DefaultEnvironment would itself be
+// unresolvable.
+func TestResolvedEnv_ActiveEnvOverridesDefaultEnvironment(t *testing.T) {
+	cfg := &Config{
+		DefaultEnvironment: "typo-env",
+		Environments: map[string]*EnvironmentConfig{
+			"dev": {RequireApproval: false},
+		},
+	}
+	if err := cfg.SetActiveEnvironment("dev"); err != nil {
+		t.Fatalf("SetActiveEnvironment: %v", err)
+	}
+
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
+	if env.RequireApproval {
+		t.Error("active env should override default_environment: RequireApproval should be false")
+	}
+}
+
+// TestResolvedEnvOrDefault_FallsBackOnDefaultEnvironmentMismatch verifies
+// that the lenient wrapper used by hot-path callers falls back to the
+// built-in stage default (rather than returning nil / panicking downstream)
+// when DefaultEnvironment is unresolvable.
+func TestResolvedEnvOrDefault_FallsBackOnDefaultEnvironmentMismatch(t *testing.T) {
+	cfg := &Config{
+		DefaultEnvironment: "typo-env",
+		Environments: map[string]*EnvironmentConfig{
+			"qa": {Branch: "qa"},
+		},
+	}
+
+	env := cfg.ResolvedEnvOrDefault()
+	if env == nil {
+		t.Fatal("ResolvedEnvOrDefault: expected non-nil stage fallback, got nil")
+	}
+	if env.CITimeout != 30*time.Minute {
+		t.Errorf("ResolvedEnvOrDefault: CITimeout = %v, want stage default 30m", env.CITimeout)
 	}
 }
 
