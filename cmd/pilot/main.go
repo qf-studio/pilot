@@ -2347,8 +2347,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	// Log autopilot status
 	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
+		// GH-4550: use EnvironmentName() (which honors DefaultEnvironment)
+		// rather than the raw legacy Environment field, so this line reports
+		// the environment actually resolved by ResolvedEnv() even when
+		// default_environment is set in config with no --env flag.
 		logging.WithComponent("start").Info("autopilot enabled",
-			slog.String("environment", string(cfg.Orchestrator.Autopilot.Environment)),
+			slog.String("environment", cfg.Orchestrator.Autopilot.EnvironmentName()),
 			slog.Bool("auto_merge", cfg.Orchestrator.Autopilot.AutoMerge),
 		)
 	}
