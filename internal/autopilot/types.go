@@ -329,6 +329,11 @@ func defaultEnvironments() map[string]*EnvironmentConfig {
 // ResolvedEnv returns the active environment config.
 // If activeEnvName is set and the Environments map contains it, that entry is returned.
 // Otherwise falls back to the legacy Environment field and synthesizes from defaultEnvironments.
+//
+// Precedence (GH-4547): --env (activeEnvName, set via SetActiveEnvironment) >
+// DefaultEnvironment (config-file default) > legacy Environment field > "stage".
+// DefaultEnvironment was previously defined but never consulted here, so setting
+// it in config.yaml silently had zero effect unless --env also happened to match.
 func (c *Config) ResolvedEnv() *EnvironmentConfig {
 	// New-style: runtime-selected environment takes priority.
 	if c.activeEnvName != "" {
@@ -342,7 +347,20 @@ func (c *Config) ResolvedEnv() *EnvironmentConfig {
 		}
 	}
 
+	// Next: DefaultEnvironment wins over the legacy Environment field when set.
+	if c.DefaultEnvironment != "" {
+		if c.Environments != nil {
+			if env, ok := c.Environments[c.DefaultEnvironment]; ok {
+				return env
+			}
+		}
+		if env, ok := defaultEnvironments()[c.DefaultEnvironment]; ok {
+			return env
+		}
+	}
+
 	// Legacy: derive from the Environment field using built-in defaults.
+	// Absence of DefaultEnvironment must preserve this exact fallback chain.
 	envName := string(c.Environment)
 	if envName == "" {
 		envName = "stage"
@@ -369,14 +387,19 @@ func (c *Config) EffectiveApprovalSource() ApprovalSource {
 }
 
 // EnvironmentName returns the human-readable active environment name.
-// Checks Name field first (user-friendly label), then activeEnvName,
-// then falls back to the Environment enum value.
+// Checks Name field first (user-friendly label), then activeEnvName (--env),
+// then DefaultEnvironment, then falls back to the Environment enum value.
+// Mirrors the ResolvedEnv precedence (GH-4547) so the name reported here
+// always names the config ResolvedEnv actually returned.
 func (c *Config) EnvironmentName() string {
 	if c.Name != "" {
 		return c.Name
 	}
 	if c.activeEnvName != "" {
 		return c.activeEnvName
+	}
+	if c.DefaultEnvironment != "" {
+		return c.DefaultEnvironment
 	}
 	if c.Environment != "" {
 		return string(c.Environment)

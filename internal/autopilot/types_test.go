@@ -351,6 +351,135 @@ func TestResolvedEnv_NewOverridesLegacy(t *testing.T) {
 	}
 }
 
+// TestResolvedEnv_DefaultEnvironmentPrecedence verifies the GH-4547 precedence
+// chain: --env (activeEnvName via SetActiveEnvironment) wins over
+// DefaultEnvironment; DefaultEnvironment wins over the legacy Environment
+// field; and when DefaultEnvironment is unset, today's exact legacy-fallback
+// behavior (Environment field, defaulting to stage) is preserved unchanged.
+func TestResolvedEnv_DefaultEnvironmentPrecedence(t *testing.T) {
+	t.Run("default_environment wins over legacy Environment field", func(t *testing.T) {
+		cfg := &Config{
+			Environment:        EnvProd, // legacy: would require approval
+			DefaultEnvironment: "dev",   // should win: no approval required
+		}
+		env := cfg.ResolvedEnv()
+		if env.RequireApproval {
+			t.Error("DefaultEnvironment=dev should win over legacy Environment=prod: RequireApproval should be false")
+		}
+		if env.CITimeout != 5*time.Minute {
+			t.Errorf("CITimeout = %v, want 5m (dev)", env.CITimeout)
+		}
+	})
+
+	t.Run("default_environment resolves against custom Environments map", func(t *testing.T) {
+		cfg := &Config{
+			Environment:        EnvProd,
+			DefaultEnvironment: "staging",
+			Environments: map[string]*EnvironmentConfig{
+				"staging": {Branch: "develop", RequireApproval: false, CITimeout: 15 * time.Minute},
+			},
+		}
+		env := cfg.ResolvedEnv()
+		if env.Branch != "develop" {
+			t.Errorf("Branch = %q, want %q", env.Branch, "develop")
+		}
+		if env.RequireApproval {
+			t.Error("custom staging env via DefaultEnvironment should not require approval")
+		}
+	})
+
+	t.Run("--env still wins over default_environment", func(t *testing.T) {
+		cfg := &Config{
+			DefaultEnvironment: "prod", // would require approval
+			Environments: map[string]*EnvironmentConfig{
+				"dev": {RequireApproval: false, CITimeout: 5 * time.Minute, SkipPostMergeCI: true},
+			},
+		}
+		if err := cfg.SetActiveEnvironment("dev"); err != nil {
+			t.Fatalf("SetActiveEnvironment: %v", err)
+		}
+		env := cfg.ResolvedEnv()
+		if env.RequireApproval {
+			t.Error("--env=dev should win over default_environment=prod: RequireApproval should be false")
+		}
+	})
+
+	t.Run("absent default_environment preserves legacy fallback to stage", func(t *testing.T) {
+		cfg := &Config{} // no Environment, no DefaultEnvironment, no activeEnvName
+		env := cfg.ResolvedEnv()
+		if env.RequireApproval {
+			t.Error("empty config should fall back to stage: RequireApproval should be false")
+		}
+		if env.CITimeout != 30*time.Minute {
+			t.Errorf("CITimeout = %v, want 30m (stage default)", env.CITimeout)
+		}
+		if env.SkipPostMergeCI {
+			t.Error("empty config should fall back to stage: SkipPostMergeCI should be false")
+		}
+	})
+
+	t.Run("absent default_environment preserves legacy Environment field behavior", func(t *testing.T) {
+		cfg := &Config{Environment: EnvProd}
+		env := cfg.ResolvedEnv()
+		if !env.RequireApproval {
+			t.Error("legacy Environment=prod with no DefaultEnvironment should still require approval")
+		}
+	})
+
+	t.Run("unknown default_environment falls through to legacy field", func(t *testing.T) {
+		cfg := &Config{
+			Environment:        EnvDev,
+			DefaultEnvironment: "does-not-exist",
+		}
+		env := cfg.ResolvedEnv()
+		if env.RequireApproval {
+			t.Error("unknown DefaultEnvironment should fall through to legacy Environment=dev: RequireApproval should be false")
+		}
+		if env.CITimeout != 5*time.Minute {
+			t.Errorf("CITimeout = %v, want 5m (legacy dev fallback)", env.CITimeout)
+		}
+	})
+}
+
+// TestEnvironmentName_DefaultEnvironmentPrecedence mirrors
+// TestResolvedEnv_DefaultEnvironmentPrecedence for EnvironmentName, ensuring
+// the reported name always matches what ResolvedEnv actually returns.
+func TestEnvironmentName_DefaultEnvironmentPrecedence(t *testing.T) {
+	t.Run("default_environment wins over legacy Environment field", func(t *testing.T) {
+		cfg := &Config{Environment: EnvProd, DefaultEnvironment: "dev"}
+		if got := cfg.EnvironmentName(); got != "dev" {
+			t.Errorf("EnvironmentName() = %q, want %q", got, "dev")
+		}
+	})
+
+	t.Run("--env still wins over default_environment", func(t *testing.T) {
+		cfg := &Config{
+			DefaultEnvironment: "prod",
+			Environments: map[string]*EnvironmentConfig{
+				"dev": {RequireApproval: false},
+			},
+		}
+		if err := cfg.SetActiveEnvironment("dev"); err != nil {
+			t.Fatalf("SetActiveEnvironment: %v", err)
+		}
+		if got := cfg.EnvironmentName(); got != "dev" {
+			t.Errorf("EnvironmentName() = %q, want %q", got, "dev")
+		}
+	})
+
+	t.Run("absent default_environment preserves legacy behavior", func(t *testing.T) {
+		cfg := &Config{}
+		if got := cfg.EnvironmentName(); got != "stage" {
+			t.Errorf("EnvironmentName() = %q, want %q", got, "stage")
+		}
+
+		cfg2 := &Config{Environment: EnvProd}
+		if got := cfg2.EnvironmentName(); got != "prod" {
+			t.Errorf("EnvironmentName() = %q, want %q", got, "prod")
+		}
+	})
+}
+
 // TestEffectiveApprovalSource_EnvOverridesTopLevel verifies that a per-env
 // approval_source (e.g. environments.stage.approval_source: slack) actually
 // takes effect. Before GH-4380, nothing ever read this field — a config with
