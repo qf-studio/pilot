@@ -416,14 +416,28 @@ func (c *Config) EffectiveApprovalSource() ApprovalSource {
 }
 
 // EnvironmentName returns the human-readable active environment name.
-// Checks Name field first (user-friendly label), then activeEnvName,
-// then falls back to the Environment enum value.
+// Checks Name field first (user-friendly label), then activeEnvName (--env
+// flag), then DefaultEnvironment (GH-4550: config-declared default, used
+// when no --env override is active — mirrors ResolvedEnv's priority order
+// so the name reported here always matches the environment config that
+// ResolvedEnv actually resolves to), then falls back to the legacy
+// Environment enum value, then "stage". An unresolvable DefaultEnvironment
+// (no matching key in Environments) falls back to "stage" rather than the
+// typo'd name, matching ResolvedEnvOrDefault's error-recovery behavior.
 func (c *Config) EnvironmentName() string {
 	if c.Name != "" {
 		return c.Name
 	}
 	if c.activeEnvName != "" {
 		return c.activeEnvName
+	}
+	if c.DefaultEnvironment != "" {
+		if c.Environments != nil {
+			if _, ok := c.Environments[c.DefaultEnvironment]; ok {
+				return c.DefaultEnvironment
+			}
+		}
+		return "stage"
 	}
 	if c.Environment != "" {
 		return string(c.Environment)

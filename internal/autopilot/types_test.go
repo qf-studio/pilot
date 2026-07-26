@@ -713,3 +713,71 @@ func TestEnvironmentName_NewStyle(t *testing.T) {
 		t.Errorf("EnvironmentName() = %q, want %q", got2, "canary")
 	}
 }
+
+// TestEnvironmentName_DefaultEnvironment verifies EnvironmentName() honors
+// DefaultEnvironment when no --env flag (activeEnvName) is active (GH-4550).
+// Before this, EnvironmentName() never consulted DefaultEnvironment at all,
+// so the "autopilot enabled" startup log reported the legacy Environment
+// field (or "stage") instead of the configured default_environment.
+func TestEnvironmentName_DefaultEnvironment(t *testing.T) {
+	tests := []struct {
+		name               string
+		defaultEnvironment string
+		environments       map[string]*EnvironmentConfig
+		activeEnv          string // set via SetActiveEnvironment, empty = not set
+		legacyEnvironment  Environment
+		want               string
+	}{
+		{
+			name:               "default_environment resolves with no --env flag",
+			defaultEnvironment: "qa",
+			environments: map[string]*EnvironmentConfig{
+				"qa": {Branch: "qa-branch"},
+			},
+			want: "qa",
+		},
+		{
+			name:               "activeEnvName overrides default_environment",
+			defaultEnvironment: "qa",
+			environments: map[string]*EnvironmentConfig{
+				"qa":  {Branch: "qa-branch"},
+				"dev": {Branch: "dev-branch"},
+			},
+			activeEnv: "dev",
+			want:      "dev",
+		},
+		{
+			name:               "unresolvable default_environment falls back to stage, not the typo'd name",
+			defaultEnvironment: "typo-env",
+			environments: map[string]*EnvironmentConfig{
+				"dev": {Branch: "dev-branch"},
+			},
+			want: "stage",
+		},
+		{
+			name:              "neither set falls back to legacy Environment field",
+			legacyEnvironment: EnvProd,
+			want:              "prod",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Environment:        tt.legacyEnvironment,
+				DefaultEnvironment: tt.defaultEnvironment,
+				Environments:       tt.environments,
+			}
+			if tt.activeEnv != "" {
+				if err := cfg.SetActiveEnvironment(tt.activeEnv); err != nil {
+					t.Fatalf("SetActiveEnvironment(%q): %v", tt.activeEnv, err)
+				}
+			}
+
+			got := cfg.EnvironmentName()
+			if got != tt.want {
+				t.Errorf("EnvironmentName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
