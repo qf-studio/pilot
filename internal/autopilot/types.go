@@ -85,13 +85,14 @@ type Config struct {
 	// Environment determines the automation level (dev/stage/prod).
 	Environment Environment `yaml:"environment,omitempty"`
 
-	// DefaultEnvironment names the environment SetActiveEnvironment should
-	// activate when no --env override is supplied. It is not consulted
-	// automatically: ResolvedEnv() only honors an environment once
-	// SetActiveEnvironment has populated activeEnvName/activeEnvConfig from
-	// this value (or from --env); until that call is made, ResolvedEnv()
-	// falls back to the legacy Environment field, which itself defaults to
-	// "stage" when unset.
+	// DefaultEnvironment names the config-declared default environment used
+	// when no runtime --env override is active (GH-4545). ResolvedEnv()
+	// consults it directly (no SetActiveEnvironment call required): it
+	// resolves against the Environments map first, then the built-in
+	// dev/stage/prod defaults (GH-4558), matching the same valid set
+	// Validate() and SetActiveEnvironment() accept. Precedence, highest
+	// first: activeEnvName (set via SetActiveEnvironment, e.g. --env) >
+	// DefaultEnvironment > legacy Environment field > "stage".
 	DefaultEnvironment string `yaml:"default_environment,omitempty"`
 	// Environments is a map of named environment pipeline configs.
 	Environments map[string]*EnvironmentConfig `yaml:"environments,omitempty"`
@@ -340,7 +341,10 @@ func defaultEnvironments() map[string]*EnvironmentConfig {
 //     SetActiveEnvironment, e.g. the --env CLI flag). Takes priority.
 //  2. DefaultEnvironment — the config-declared default environment used when
 //     no runtime --env override is active (GH-4545). If set, it must match a
-//     key in the Environments map; an unresolvable DefaultEnvironment is a
+//     key in the Environments map or one of the built-in dev/stage/prod
+//     defaults (GH-4558: Validate() and SetActiveEnvironment() already treat
+//     built-ins as valid; ResolvedEnv() must resolve everything Validate()
+//     accepts). An unresolvable DefaultEnvironment (neither source) is a
 //     config error, not a signal to silently fall through to the legacy
 //     stage default. Before this, the field was read nowhere (AUDIT
 //     2026-05-25 P2 finding) — setting or misspelling it had zero effect.
@@ -365,6 +369,13 @@ func (c *Config) ResolvedEnv() (*EnvironmentConfig, error) {
 			if env, ok := c.Environments[c.DefaultEnvironment]; ok {
 				return env, nil
 			}
+		}
+		// GH-4558: Validate() and SetActiveEnvironment() already accept the
+		// built-in dev/stage/prod names even without an Environments map
+		// entry; ResolvedEnv() must resolve them too, or a Validate()-clean
+		// config silently runs stage semantics instead of the declared one.
+		if env, ok := defaultEnvironments()[c.DefaultEnvironment]; ok {
+			return env, nil
 		}
 		available := make([]string, 0, len(c.Environments))
 		for name := range c.Environments {
@@ -422,8 +433,9 @@ func (c *Config) EffectiveApprovalSource() ApprovalSource {
 // so the name reported here always matches the environment config that
 // ResolvedEnv actually resolves to), then falls back to the legacy
 // Environment enum value, then "stage". An unresolvable DefaultEnvironment
-// (no matching key in Environments) falls back to "stage" rather than the
-// typo'd name, matching ResolvedEnvOrDefault's error-recovery behavior.
+// (matching neither an Environments key nor a built-in dev/stage/prod name,
+// GH-4558) falls back to "stage" rather than the typo'd name, matching
+// ResolvedEnvOrDefault's error-recovery behavior.
 func (c *Config) EnvironmentName() string {
 	if c.Name != "" {
 		return c.Name
@@ -436,6 +448,11 @@ func (c *Config) EnvironmentName() string {
 			if _, ok := c.Environments[c.DefaultEnvironment]; ok {
 				return c.DefaultEnvironment
 			}
+		}
+		// GH-4558: mirror ResolvedEnv's built-in fallback so the reported
+		// name always names the config ResolvedEnv() actually returns.
+		if _, ok := defaultEnvironments()[c.DefaultEnvironment]; ok {
+			return c.DefaultEnvironment
 		}
 		return "stage"
 	}
