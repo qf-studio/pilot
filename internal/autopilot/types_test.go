@@ -1,6 +1,7 @@
 package autopilot
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -458,6 +459,113 @@ func TestResolvedEnvOrDefault_FallsBackOnDefaultEnvironmentMismatch(t *testing.T
 	}
 	if env.CITimeout != 30*time.Minute {
 		t.Errorf("ResolvedEnvOrDefault: CITimeout = %v, want stage default 30m", env.CITimeout)
+	}
+}
+
+// TestResolvedEnv_TableDriven consolidates the five GH-4544 acceptance cases
+// for default_environment resolution into one table: flag-only, default-only,
+// both (flag wins), neither (legacy fallback to stage), and unknown default
+// name (error names the available environments). This complements, rather
+// than replaces, the individual tests above which cover the pre-GH-4545
+// absent-default_environment paths in more detail.
+func TestResolvedEnv_TableDriven(t *testing.T) {
+	tests := []struct {
+		name               string
+		defaultEnvironment string
+		environments       map[string]*EnvironmentConfig
+		activeEnv          string // set via SetActiveEnvironment, empty = not set
+		legacyEnvironment  Environment
+		wantErr            bool
+		wantErrContains    []string
+		wantBranch         string
+		wantCITimeout      time.Duration
+	}{
+		{
+			name: "flag-only: activeEnvName resolves without default_environment set",
+			environments: map[string]*EnvironmentConfig{
+				"dev": {Branch: "dev-branch", CITimeout: 5 * time.Minute},
+			},
+			activeEnv:     "dev",
+			wantBranch:    "dev-branch",
+			wantCITimeout: 5 * time.Minute,
+		},
+		{
+			name:               "default-only: default_environment resolves with no --env flag",
+			defaultEnvironment: "qa",
+			environments: map[string]*EnvironmentConfig{
+				"qa": {Branch: "qa-branch", CITimeout: 10 * time.Minute},
+			},
+			wantBranch:    "qa-branch",
+			wantCITimeout: 10 * time.Minute,
+		},
+		{
+			name:               "both set: flag wins over default_environment",
+			defaultEnvironment: "qa",
+			environments: map[string]*EnvironmentConfig{
+				"qa":  {Branch: "qa-branch", CITimeout: 10 * time.Minute},
+				"dev": {Branch: "dev-branch", CITimeout: 5 * time.Minute},
+			},
+			activeEnv:     "dev",
+			wantBranch:    "dev-branch",
+			wantCITimeout: 5 * time.Minute,
+		},
+		{
+			name:              "neither set: legacy fallback to stage",
+			legacyEnvironment: "",
+			wantCITimeout:     30 * time.Minute, // built-in stage default
+		},
+		{
+			name:               "unknown default_environment name: error names available envs",
+			defaultEnvironment: "typo-env",
+			environments: map[string]*EnvironmentConfig{
+				"dev": {Branch: "dev-branch"},
+				"qa":  {Branch: "qa-branch"},
+			},
+			wantErr:         true,
+			wantErrContains: []string{"typo-env", "dev", "qa"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Environment:        tt.legacyEnvironment,
+				DefaultEnvironment: tt.defaultEnvironment,
+				Environments:       tt.environments,
+			}
+			if tt.activeEnv != "" {
+				if err := cfg.SetActiveEnvironment(tt.activeEnv); err != nil {
+					t.Fatalf("SetActiveEnvironment(%q): %v", tt.activeEnv, err)
+				}
+			}
+
+			env, err := cfg.ResolvedEnv()
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("ResolvedEnv: expected error, got nil")
+				}
+				if env != nil {
+					t.Errorf("ResolvedEnv: expected nil env on error, got %+v", env)
+				}
+				for _, substr := range tt.wantErrContains {
+					if !strings.Contains(err.Error(), substr) {
+						t.Errorf("ResolvedEnv error %q does not contain %q", err.Error(), substr)
+					}
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("ResolvedEnv: unexpected error: %v", err)
+			}
+			if tt.wantBranch != "" && env.Branch != tt.wantBranch {
+				t.Errorf("Branch = %q, want %q", env.Branch, tt.wantBranch)
+			}
+			if env.CITimeout != tt.wantCITimeout {
+				t.Errorf("CITimeout = %v, want %v", env.CITimeout, tt.wantCITimeout)
+			}
+		})
 	}
 }
 

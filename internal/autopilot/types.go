@@ -3,6 +3,7 @@ package autopilot
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -365,7 +366,12 @@ func (c *Config) ResolvedEnv() (*EnvironmentConfig, error) {
 				return env, nil
 			}
 		}
-		return nil, fmt.Errorf("default_environment %q does not match any key in environments config", c.DefaultEnvironment)
+		available := make([]string, 0, len(c.Environments))
+		for name := range c.Environments {
+			available = append(available, name)
+		}
+		sort.Strings(available)
+		return nil, fmt.Errorf("default_environment %q does not match any key in environments config (available: %s)", c.DefaultEnvironment, strings.Join(available, ", "))
 	}
 
 	// Legacy: derive from the Environment field using built-in defaults.
