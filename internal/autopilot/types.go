@@ -82,10 +82,15 @@ type Config struct {
 	// Enabled controls whether autopilot mode is active.
 	Enabled bool `yaml:"enabled"`
 	// Environment determines the automation level (dev/stage/prod).
-	// DEPRECATED: use Environments map + DefaultEnvironment instead.
 	Environment Environment `yaml:"environment,omitempty"`
 
-	// DefaultEnvironment is the name of the environment used when --env is not specified.
+	// DefaultEnvironment names the environment SetActiveEnvironment should
+	// activate when no --env override is supplied. It is not consulted
+	// automatically: ResolvedEnv() only honors an environment once
+	// SetActiveEnvironment has populated activeEnvName/activeEnvConfig from
+	// this value (or from --env); until that call is made, ResolvedEnv()
+	// falls back to the legacy Environment field, which itself defaults to
+	// "stage" when unset.
 	DefaultEnvironment string `yaml:"default_environment,omitempty"`
 	// Environments is a map of named environment pipeline configs.
 	Environments map[string]*EnvironmentConfig `yaml:"environments,omitempty"`
