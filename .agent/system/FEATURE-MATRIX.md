@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-25 (v2.151.0)
+**Last Updated:** 2026-07-24 (v2.151.0)
 
 ## Legend
 
@@ -403,6 +403,7 @@
 | CI error logs in fix issues | ✅ | autopilot | - | - | Embed CI error output in generated fix issues (v1.58.0, GH-1566) |
 | Branch lineage circuit breaker | ✅ | autopilot | - | - | Circuit breaker keyed by branch lineage, not PR ID (v1.58.0, GH-1567) |
 | Environment config | ✅ | autopilot | - | `environments` | EnvironmentConfig + ResolvedEnv(), no hardcoded env checks (v1.59.0, GH-1640) |
+| `default_environment` actually read | ✅ | autopilot | - | `default_environment` | `ResolvedEnv()` now checks `DefaultEnvironment` against the `environments` map (between the runtime `--env` check and the legacy `Environment` fallback) and errors if it's set but unresolvable, instead of silently falling through to stage. Previously the field was read nowhere (AUDIT-2026-05-25 P2). Hot-path callers use the new `ResolvedEnvOrDefault()` wrapper, which logs and falls back to stage on error (GH-4545, v2.246.0) |
 | Post-merge deployer | ✅ | autopilot | - | `environments.*.deploy` | Webhook and branch-push deployment triggers after merge (v1.60.0, GH-1641) |
 | CLI `--env` flag | ✅ | main | `--env=stage` | - | Renamed from `--autopilot`, updated onboarding + config (v1.60.1, GH-1642) |
 | Prod auto-approve safety | ✅ | autopilot | - | - | Block auto-merge when pre_merge approval disabled in prod (v1.61.0) |

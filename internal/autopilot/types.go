@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -326,20 +327,40 @@ func defaultEnvironments() map[string]*EnvironmentConfig {
 	}
 }
 
-// ResolvedEnv returns the active environment config.
-// If activeEnvName is set and the Environments map contains it, that entry is returned.
-// Otherwise falls back to the legacy Environment field and synthesizes from defaultEnvironments.
-func (c *Config) ResolvedEnv() *EnvironmentConfig {
+// ResolvedEnv returns the active environment config, and an error if the
+// config is misconfigured in a way that must not be silently papered over.
+// Resolution order:
+//  1. activeEnvName — the runtime-selected environment (set via
+//     SetActiveEnvironment, e.g. the --env CLI flag). Takes priority.
+//  2. DefaultEnvironment — the config-declared default environment used when
+//     no runtime --env override is active (GH-4545). If set, it must match a
+//     key in the Environments map; an unresolvable DefaultEnvironment is a
+//     config error, not a signal to silently fall through to the legacy
+//     stage default. Before this, the field was read nowhere (AUDIT
+//     2026-05-25 P2 finding) — setting or misspelling it had zero effect.
+//  3. Legacy Environment field, matched against built-in dev/stage/prod
+//     defaults (defaultEnvironments()), falling back to stage.
+func (c *Config) ResolvedEnv() (*EnvironmentConfig, error) {
 	// New-style: runtime-selected environment takes priority.
 	if c.activeEnvName != "" {
 		if c.activeEnvConfig != nil {
-			return c.activeEnvConfig
+			return c.activeEnvConfig, nil
 		}
 		if c.Environments != nil {
 			if env, ok := c.Environments[c.activeEnvName]; ok {
-				return env
+				return env, nil
 			}
 		}
+	}
+
+	// Config-declared default environment, when no runtime --env override is active.
+	if c.DefaultEnvironment != "" {
+		if c.Environments != nil {
+			if env, ok := c.Environments[c.DefaultEnvironment]; ok {
+				return env, nil
+			}
+		}
+		return nil, fmt.Errorf("default_environment %q does not match any key in environments config", c.DefaultEnvironment)
 	}
 
 	// Legacy: derive from the Environment field using built-in defaults.
@@ -349,10 +370,25 @@ func (c *Config) ResolvedEnv() *EnvironmentConfig {
 	}
 	defaults := defaultEnvironments()
 	if env, ok := defaults[envName]; ok {
-		return env
+		return env, nil
 	}
 	// Unknown legacy environment: treat as stage (safe default).
-	return defaults["stage"]
+	return defaults["stage"], nil
+}
+
+// ResolvedEnvOrDefault calls ResolvedEnv and, on error (an unresolvable
+// DefaultEnvironment), logs the error and falls back to the built-in stage
+// default rather than propagating the error. Hot-path callers (CI timeout
+// checks, approval gating, release resolution, etc.) that cannot
+// meaningfully surface a config error mid-request should use this instead of
+// ResolvedEnv directly.
+func (c *Config) ResolvedEnvOrDefault() *EnvironmentConfig {
+	env, err := c.ResolvedEnv()
+	if err != nil {
+		slog.Error("ResolvedEnv: falling back to stage default", "error", err)
+		return defaultEnvironments()["stage"]
+	}
+	return env
 }
 
 // EffectiveApprovalSource returns the approval channel that actually governs
@@ -362,7 +398,7 @@ func (c *Config) ResolvedEnv() *EnvironmentConfig {
 // at all — a per-env `approval_source: slack` override in the environments
 // map silently had zero effect on which handler a request was routed to.
 func (c *Config) EffectiveApprovalSource() ApprovalSource {
-	if env := c.ResolvedEnv(); env != nil && env.ApprovalSource != "" {
+	if env := c.ResolvedEnvOrDefault(); env != nil && env.ApprovalSource != "" {
 		return env.ApprovalSource
 	}
 	return c.ApprovalSource

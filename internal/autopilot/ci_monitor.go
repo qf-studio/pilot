@@ -62,7 +62,7 @@ type CIMonitor struct {
 // Handles both legacy RequiredChecks and new CIChecks configuration.
 func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIMonitor {
 	timeout := cfg.CIWaitTimeout
-	envCITimeout := cfg.ResolvedEnv().CITimeout
+	envCITimeout := cfg.ResolvedEnvOrDefault().CITimeout
 	if envCITimeout > 0 && (timeout == 0 || envCITimeout < timeout) {
 		timeout = envCITimeout
 	}

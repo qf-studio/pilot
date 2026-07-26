@@ -668,7 +668,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	// releaser below was constructed with.
 	baseRelCfg := resolveRelease(cfg)
 	relSource := "none"
-	if env := cfg.ResolvedEnv(); env != nil && env.Release != nil {
+	if env := cfg.ResolvedEnvOrDefault(); env != nil && env.Release != nil {
 		relSource = "env:" + cfg.EnvironmentName()
 	} else if cfg.Release != nil {
 		relSource = "global"
@@ -703,7 +703,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	}
 
 	// Initialize deployer if post-merge config exists
-	if env := cfg.ResolvedEnv(); env.PostMerge != nil && env.PostMerge.Action != "" && env.PostMerge.Action != "none" {
+	if env := cfg.ResolvedEnvOrDefault(); env.PostMerge != nil && env.PostMerge.Action != "" && env.PostMerge.Action != "none" {
 		c.deployer = NewDeployer(ghClient, owner, repo, env.PostMerge)
 	}
 
@@ -1728,7 +1728,7 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	// This respects explicit user overrides (e.g. short timeouts in tests) while defaulting
 	// to the environment-specific timeout when no override is set.
 	ciTimeout := c.config.CIWaitTimeout
-	envCITimeout := c.config.ResolvedEnv().CITimeout
+	envCITimeout := c.config.ResolvedEnvOrDefault().CITimeout
 	if envCITimeout > 0 && (ciTimeout == 0 || envCITimeout < ciTimeout) {
 		ciTimeout = envCITimeout
 	}
@@ -1917,7 +1917,7 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		return nil
 	}
 
-	if c.config.ResolvedEnv().RequireApproval {
+	if c.config.ResolvedEnvOrDefault().RequireApproval {
 		c.log.Info("awaiting approval before merge", "pr", prState.PRNumber)
 		prState.Stage = StageAwaitApproval
 		prState.EscalationReason = fmt.Sprintf("environments.%s.require_approval=true", c.config.EnvironmentName())
@@ -2996,7 +2996,7 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 	// GH-2086: Close parent issue when all sub-issues are done.
 	c.maybeCloseParentIssue(ctx, prState)
 
-	if c.config.ResolvedEnv().SkipPostMergeCI {
+	if c.config.ResolvedEnvOrDefault().SkipPostMergeCI {
 		// Fast path: skip post-merge CI, check if we should release immediately
 		if c.releaseConfigured() && !c.resolvedRelease().RequireCI {
 			action, scopeKey, scopeTitle := c.releaseActionFor(ctx, prState.IssueNumber)
@@ -3264,7 +3264,7 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 
 	// Enforce timeout using same logic as handleWaitingCI.
 	ciTimeout := c.config.CIWaitTimeout
-	envCITimeout := c.config.ResolvedEnv().CITimeout
+	envCITimeout := c.config.ResolvedEnvOrDefault().CITimeout
 	if envCITimeout > 0 && (ciTimeout == 0 || envCITimeout < ciTimeout) {
 		ciTimeout = envCITimeout
 	}
@@ -3425,14 +3425,14 @@ func (c *Controller) getMainBranchSHA(ctx context.Context) (string, error) {
 
 // resolveMainBranchName returns the branch name post-merge CI should track.
 // Preference order:
-//  1. c.config.ResolvedEnv().Branch — the per-environment branch (prod=main, stage=develop, etc.)
+//  1. c.config.ResolvedEnvOrDefault().Branch — the per-environment branch (prod=main, stage=develop, etc.)
 //  2. Literal "main" with a WARN log — last-resort fallback so we never block a release on an empty branch name.
 //
 // A broader fallback through ProjectConfig (BranchFrom/DefaultBranch) would
 // require wiring the pilot global Config into autopilot.Controller — deferred
 // to a follow-up; not needed for the workshop-scope incident this fix targets.
 func (c *Controller) resolveMainBranchName() string {
-	if env := c.config.ResolvedEnv(); env != nil && env.Branch != "" {
+	if env := c.config.ResolvedEnvOrDefault(); env != nil && env.Branch != "" {
 		return env.Branch
 	}
 	c.log.Warn("resolveMainBranchName: no environment branch configured, falling back to literal \"main\" — set environments.<env>.branch to silence this warning",
@@ -3445,7 +3445,7 @@ func (c *Controller) resolveMainBranchName() string {
 // resolveRelease is a package-level helper used during construction (before Controller
 // exists) and by the resolvedRelease method below. Env-scoped config wins over global.
 func resolveRelease(cfg *Config) *ReleaseConfig {
-	if env := cfg.ResolvedEnv(); env != nil && env.Release != nil {
+	if env := cfg.ResolvedEnvOrDefault(); env != nil && env.Release != nil {
 		return env.Release
 	}
 	return cfg.Release
