@@ -312,6 +312,77 @@ func TestConfig_Validate_OrchestratorBounds(t *testing.T) {
 	}
 }
 
+// TestConfig_Validate_AutopilotDefaultEnvironment verifies that the
+// top-level Config.Validate() wires through to autopilot.Config.Validate()
+// (GH-4546): an unknown orchestrator.autopilot.default_environment must be
+// a startup error listing the available environment keys, rather than
+// silently falling back at runtime.
+func TestConfig_Validate_AutopilotDefaultEnvironment(t *testing.T) {
+	tests := []struct {
+		name      string
+		autopilot *autopilot.Config
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:      "nil autopilot config is valid",
+			autopilot: nil,
+			wantErr:   false,
+		},
+		{
+			name:      "empty default_environment is valid",
+			autopilot: &autopilot.Config{},
+			wantErr:   false,
+		},
+		{
+			name: "default_environment matching a built-in is valid",
+			autopilot: &autopilot.Config{
+				DefaultEnvironment: "prod",
+			},
+			wantErr: false,
+		},
+		{
+			name: "default_environment matching a custom environments key is valid",
+			autopilot: &autopilot.Config{
+				DefaultEnvironment: "canary",
+				Environments: map[string]*autopilot.EnvironmentConfig{
+					"canary": {Branch: "canary"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "unknown default_environment is a startup error listing available keys",
+			autopilot: &autopilot.Config{
+				DefaultEnvironment: "typo-env",
+				Environments: map[string]*autopilot.EnvironmentConfig{
+					"canary": {Branch: "canary"},
+				},
+			},
+			wantErr:   true,
+			errSubstr: `default_environment "typo-env" is not a known environment`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Orchestrator = &OrchestratorConfig{MaxConcurrent: 1, Autopilot: tt.autopilot}
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
+				} else if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestConfig_Validate_QualityBounds(t *testing.T) {
 	tests := []struct {
 		name      string

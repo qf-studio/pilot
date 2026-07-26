@@ -913,6 +913,12 @@ func (c *Config) Validate() error {
 		// GH-3989: Validate release.trigger + schedule/schedule_timezone
 		// alongside publish, at the same three levels.
 		if c.Orchestrator.Autopilot != nil {
+			// GH-4546: Validate default_environment resolves to a real
+			// environment instead of silently falling back at runtime.
+			if err := c.Orchestrator.Autopilot.Validate(); err != nil {
+				return fmt.Errorf("orchestrator.autopilot: %w", err)
+			}
+
 			if release := c.Orchestrator.Autopilot.Release; release != nil {
 				if !validReleasePublishValues[release.Publish] {
 					return fmt.Errorf("orchestrator.autopilot.release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", release.Publish)

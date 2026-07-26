@@ -471,6 +471,35 @@ func (c *Config) SetActiveEnvironment(name string) error {
 	return fmt.Errorf("unknown environment %q: must be one of dev, stage, prod or defined in environments config", name)
 }
 
+// Validate checks the autopilot Config for startup errors. Currently it
+// verifies that DefaultEnvironment, when set, resolves to a real
+// environment: either a key in the Environments map or one of the built-in
+// dev/stage/prod defaults — the same set SetActiveEnvironment accepts.
+// Before this, an unknown default_environment had no dedicated check at
+// load time: nothing here rejected it, so a typo silently fell through to
+// whatever ResolvedEnv()'s legacy/stage fallback produced instead of
+// surfacing as a config error (GH-4546).
+func (c *Config) Validate() error {
+	if c.DefaultEnvironment == "" {
+		return nil
+	}
+
+	valid := map[string]bool{"dev": true, "stage": true, "prod": true}
+	for name := range c.Environments {
+		valid[name] = true
+	}
+	if valid[c.DefaultEnvironment] {
+		return nil
+	}
+
+	available := make([]string, 0, len(valid))
+	for name := range valid {
+		available = append(available, name)
+	}
+	sort.Strings(available)
+	return fmt.Errorf("default_environment %q is not a known environment; available environments: %s", c.DefaultEnvironment, strings.Join(available, ", "))
+}
+
 // DefaultConfig returns sensible defaults for autopilot configuration.
 func DefaultConfig() *Config {
 	return &Config{

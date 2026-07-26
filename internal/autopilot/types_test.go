@@ -569,6 +569,66 @@ func TestResolvedEnv_TableDriven(t *testing.T) {
 	}
 }
 
+// TestConfig_Validate_DefaultEnvironmentUnknown verifies that an unknown
+// default_environment is a startup error listing the available environment
+// keys, rather than silently falling back (GH-4546). Before this, nothing
+// checked DefaultEnvironment at all — a typo had no dedicated error path.
+func TestConfig_Validate_DefaultEnvironmentUnknown(t *testing.T) {
+	cfg := &Config{
+		DefaultEnvironment: "produciton", // typo
+		Environments: map[string]*EnvironmentConfig{
+			"canary": {Branch: "canary"},
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want error for unknown default_environment")
+	}
+	if !strings.Contains(err.Error(), `default_environment "produciton"`) {
+		t.Errorf("Validate() error = %q, want it to name the bad value", err.Error())
+	}
+	for _, want := range []string{"dev", "stage", "prod", "canary"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Validate() error = %q, want it to list available environment %q", err.Error(), want)
+		}
+	}
+}
+
+// TestConfig_Validate_DefaultEnvironmentMatchesCustomKey verifies that a
+// default_environment matching a user-defined Environments key is valid.
+func TestConfig_Validate_DefaultEnvironmentMatchesCustomKey(t *testing.T) {
+	cfg := &Config{
+		DefaultEnvironment: "canary",
+		Environments: map[string]*EnvironmentConfig{
+			"canary": {Branch: "canary"},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() = %v, want nil", err)
+	}
+}
+
+// TestConfig_Validate_DefaultEnvironmentMatchesBuiltin verifies that a
+// default_environment naming one of the built-in dev/stage/prod
+// environments is valid even without an explicit Environments entry —
+// matching the resolution semantics of SetActiveEnvironment.
+func TestConfig_Validate_DefaultEnvironmentMatchesBuiltin(t *testing.T) {
+	cfg := &Config{DefaultEnvironment: "prod"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() = %v, want nil", err)
+	}
+}
+
+// TestConfig_Validate_DefaultEnvironmentEmpty verifies that an unset
+// default_environment is valid (no default configured, legacy resolution applies).
+func TestConfig_Validate_DefaultEnvironmentEmpty(t *testing.T) {
+	cfg := &Config{}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() = %v, want nil", err)
+	}
+}
+
 // TestEffectiveApprovalSource_EnvOverridesTopLevel verifies that a per-env
 // approval_source (e.g. environments.stage.approval_source: slack) actually
 // takes effect. Before GH-4380, nothing ever read this field — a config with
