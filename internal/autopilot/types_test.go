@@ -417,6 +417,70 @@ func TestResolvedEnv_DefaultEnvironmentMismatch(t *testing.T) {
 	}
 }
 
+// TestResolvedEnv_DefaultEnvironmentBuiltin verifies that a built-in
+// dev/stage/prod default_environment resolves even with no Environments map
+// entry for it (GH-4558). Before this fix, Validate() and
+// SetActiveEnvironment() already accepted the built-in names, but
+// ResolvedEnv()'s DefaultEnvironment branch only ever checked the
+// Environments map — a Validate()-clean config with e.g.
+// default_environment: dev and no environments: map errored here and
+// silently ran stage semantics via ResolvedEnvOrDefault's fallback.
+func TestResolvedEnv_DefaultEnvironmentBuiltin(t *testing.T) {
+	tests := []struct {
+		name          string
+		defaultEnv    string
+		wantApproval  bool
+		wantCITimeout time.Duration
+	}{
+		{name: "dev", defaultEnv: "dev", wantApproval: false, wantCITimeout: 5 * time.Minute},
+		{name: "stage", defaultEnv: "stage", wantApproval: false, wantCITimeout: 30 * time.Minute},
+		{name: "prod", defaultEnv: "prod", wantApproval: true, wantCITimeout: 30 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{DefaultEnvironment: tt.defaultEnv}
+
+			env, err := cfg.ResolvedEnv()
+			if err != nil {
+				t.Fatalf("ResolvedEnv: unexpected error: %v", err)
+			}
+			if env.RequireApproval != tt.wantApproval {
+				t.Errorf("RequireApproval = %v, want %v", env.RequireApproval, tt.wantApproval)
+			}
+			if env.CITimeout != tt.wantCITimeout {
+				t.Errorf("CITimeout = %v, want %v", env.CITimeout, tt.wantCITimeout)
+			}
+		})
+	}
+}
+
+// TestResolvedEnv_DefaultEnvironmentMapWinsOverBuiltin verifies that when
+// DefaultEnvironment names a key that exists in BOTH the Environments map
+// and the built-in set, the map entry wins — GH-4558's built-in fallback
+// must only trigger on a map miss, never shadow an explicit override of a
+// built-in name (e.g. a project that redefines "prod" with different
+// settings).
+func TestResolvedEnv_DefaultEnvironmentMapWinsOverBuiltin(t *testing.T) {
+	cfg := &Config{
+		DefaultEnvironment: "prod",
+		Environments: map[string]*EnvironmentConfig{
+			"prod": {Branch: "prod", RequireApproval: false, CITimeout: 15 * time.Minute},
+		},
+	}
+
+	env, err := cfg.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
+	if env.RequireApproval {
+		t.Error("expected Environments map entry to win over built-in prod (RequireApproval should be false)")
+	}
+	if env.CITimeout != 15*time.Minute {
+		t.Errorf("CITimeout = %v, want map override 15m", env.CITimeout)
+	}
+}
+
 // TestResolvedEnv_ActiveEnvOverridesDefaultEnvironment verifies that a
 // runtime --env selection (activeEnvName) still takes priority over
 // DefaultEnvironment, even when DefaultEnvironment would itself be
@@ -837,6 +901,63 @@ func TestEnvironmentName_DefaultEnvironment(t *testing.T) {
 			got := cfg.EnvironmentName()
 			if got != tt.want {
 				t.Errorf("EnvironmentName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEnvironmentName_DefaultEnvironmentBuiltin verifies EnvironmentName()
+// reports a built-in dev/stage/prod default_environment by name, rather than
+// falling back to "stage", when there is no Environments map entry for it
+// (GH-4558). The name reported here must always match the environment
+// config ResolvedEnv() actually resolves to.
+func TestEnvironmentName_DefaultEnvironmentBuiltin(t *testing.T) {
+	for _, name := range []string{"dev", "stage", "prod"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &Config{DefaultEnvironment: name}
+			got := cfg.EnvironmentName()
+			if got != name {
+				t.Errorf("EnvironmentName() = %q, want %q", got, name)
+			}
+		})
+	}
+}
+
+// TestValidateAcceptedDefaultEnvironmentAlwaysResolves is the GH-4558
+// invariant test: any default_environment name that Validate() accepts must
+// also resolve via ResolvedEnv() without error. This is exactly the defect
+// class that slipped through before this fix — Validate() and ResolvedEnv()
+// each maintained their own idea of the valid name set, and they diverged
+// for built-in names used without a matching Environments map entry.
+func TestValidateAcceptedDefaultEnvironmentAlwaysResolves(t *testing.T) {
+	tests := []struct {
+		name         string
+		defaultEnv   string
+		environments map[string]*EnvironmentConfig
+	}{
+		{name: "builtin dev, no environments map", defaultEnv: "dev"},
+		{name: "builtin stage, no environments map", defaultEnv: "stage"},
+		{name: "builtin prod, no environments map", defaultEnv: "prod"},
+		{
+			name:       "custom key present in environments map",
+			defaultEnv: "hosted",
+			environments: map[string]*EnvironmentConfig{
+				"hosted": {Branch: "main"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				DefaultEnvironment: tt.defaultEnv,
+				Environments:       tt.environments,
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate() = %v, want nil (precondition for this test)", err)
+			}
+			if _, err := cfg.ResolvedEnv(); err != nil {
+				t.Errorf("ResolvedEnv() = %v, want nil: Validate() accepted %q but ResolvedEnv() rejected it", err, tt.defaultEnv)
 			}
 		})
 	}
