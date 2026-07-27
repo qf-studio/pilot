@@ -19,6 +19,7 @@ import (
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // TestGithubPollerRegistration_Fields verifies the SDK-based registration has the correct
@@ -344,5 +345,130 @@ func TestSdkPreFlightJudge_JudgeIssue_NilMetricsSafe(t *testing.T) {
 
 	if _, err := sp.JudgeIssue(context.Background(), "title", "body", ""); err == nil {
 		t.Fatal("expected error for a nonexistent claude binary")
+	}
+}
+
+// --- GH-4587: dispatch-gated declines must read the execution_claims +
+// executions ledger, not be mistranslated into the vendored SDK poller's
+// "failed without PR, unmarking for retry" / "completed execution exists"
+// branches ---
+
+// TestHandlerResult_IsDispatchGated verifies the helper handlers.go now
+// relies on to translate a HandlerResult into an sdkcore.IssueResult:
+// a bare or wrapped executor.ErrDispatchGated reports true; a genuine
+// execution error, or no error at all, reports false.
+func TestHandlerResult_IsDispatchGated(t *testing.T) {
+	gated := &HandlerResult{Error: executor.ErrDispatchGated}
+	if !gated.IsDispatchGated() {
+		t.Error("expected IsDispatchGated() = true for a bare ErrDispatchGated")
+	}
+
+	wrapped := &HandlerResult{Error: fmt.Errorf("dispatch: %w", executor.ErrDispatchGated)}
+	if !wrapped.IsDispatchGated() {
+		t.Error("expected IsDispatchGated() = true for a wrapped ErrDispatchGated")
+	}
+
+	genuine := &HandlerResult{Error: errors.New("execution failed: boom")}
+	if genuine.IsDispatchGated() {
+		t.Error("expected IsDispatchGated() = false for a genuine execution error")
+	}
+
+	clean := &HandlerResult{}
+	if clean.IsDispatchGated() {
+		t.Error("expected IsDispatchGated() = false for a nil Error")
+	}
+}
+
+// TestGithubSDKTranslation_LiveClaimStillRunning_DoesNotMislabelAsFailed is
+// the GH-4587 criterion-(a) regression test: a task with a live claim
+// (genuinely queued/running per the real execution_claims + executions
+// ledger — not any in-memory/status-label heuristic) must translate into an
+// sdkcore.IssueResult with Success=true, so the vendored GitHub poller's
+// "!result.Success && result.PRNumber == 0 -> unmarking for retry" branch
+// never fires for a task another channel/generation is actively working.
+//
+// handleGithubIssueEventSDK itself can't be exercised end-to-end in a unit
+// test — it resolves a real GitHub token/repo and fetches the live issue
+// over the network before ever reaching handleIssueGeneric, which is why
+// every other SDK-handler test in this file (e.g.
+// TestGithubHandlerSDKFunctionInvariants) asserts against its source body
+// instead. This test drives the actual translation formula
+// (`hr.Success || hr.IsDispatchGated()`, verbatim from handlers.go) against
+// a *real* HandlerResult produced by handleIssueGeneric with a genuinely
+// active task in a real on-disk store — the same admission gate
+// handleGithubIssueEventSDK's own call into handleIssueGeneric reaches — so
+// it's the ledger read, not a mock, proving the mislabel doesn't trip.
+func TestGithubSDKTranslation_LiveClaimStillRunning_DoesNotMislabelAsFailed(t *testing.T) {
+	dispatcher := newHandlerTestDispatcher(t)
+
+	taskID := "GH-4587-LIVE-CLAIM"
+	projectPath := "/tmp/pilot-gh-4587-live-claim-does-not-exist"
+	seedTask := &executor.Task{ID: taskID, Title: "seed", ProjectPath: projectPath}
+	if _, err := dispatcher.QueueTask(context.Background(), seedTask); err != nil {
+		t.Fatalf("failed to seed queued task: %v", err)
+	}
+
+	deps := HandlerDeps{Dispatcher: dispatcher, Monitor: executor.NewMonitor(), ProjectPath: projectPath}
+	info := IssueInfo{TaskID: taskID, Title: "seed", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "seed", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	hr, err := handleIssueGeneric(context.Background(), deps, info, task)
+	if err != nil {
+		t.Fatalf("expected nil error for an already-active task, got: %v", err)
+	}
+	if !errors.Is(hr.Error, executor.ErrDispatchGated) {
+		t.Fatalf("expected hr.Error to wrap ErrDispatchGated, got: %v", hr.Error)
+	}
+
+	// This is the exact formula handleGithubIssueEventSDK / handleGitlabIssueWithResult
+	// (cmd/pilot/handlers.go) use to build the sdkcore.IssueResult handed back to the poller.
+	issueResult := &sdkcore.IssueResult{
+		Success:  hr.Success || hr.IsDispatchGated(),
+		PRNumber: hr.PRNumber,
+	}
+
+	if !issueResult.Success {
+		t.Error("expected Success=true for a live-claim admission-gate decline — Success=false here " +
+			"would trip the vendored poller's 'failed without PR, unmarking for retry' branch " +
+			"for a task that is still actively running")
+	}
+	if issueResult.PRNumber != 0 {
+		t.Errorf("expected PRNumber=0 (no execution happened), got %d", issueResult.PRNumber)
+	}
+}
+
+// TestTerminalCompletionChecker_LiveRunningExecution_NotReportedAsCompleted
+// is the GH-4587 criterion-(b) regression test: the ExecutionChecker wired
+// into the SDK poller (terminalCompletionChecker, poller_github.go:362) must
+// gate "completed execution exists — skipping re-dispatch" on the executions
+// ledger's actual status, not merely on "some execution row for this task
+// exists" — a task with a live (running, non-terminal) execution row and no
+// completed row must report false, distinct from
+// TestTerminalCompletionChecker_GenuineCompletion_StillReportsTrue (which
+// covers the true/completed side) and the repick-backoff gating tests in
+// terminal_completion_checker_test.go (an intentionally separate signal,
+// GH-4469).
+func TestTerminalCompletionChecker_LiveRunningExecution_NotReportedAsCompleted(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	taskID := "GH-4587-LIVE-RUNNING"
+	projectPath := "/tmp/pilot-gh-4587-live-running-does-not-exist"
+	seed := &executor.Task{ID: taskID, ProjectPath: projectPath}
+	if _, err := executor.NewExecutionLifecycle(store).Begin(seed, executor.ExecStatusRunning); err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	checker := terminalCompletionChecker{store: store}
+	done, err := checker.HasCompletedExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if done {
+		t.Fatal("expected HasCompletedExecution = false for a task with only a live running execution row — " +
+			"reporting true here would make the poller skip re-checking a task that is not actually done")
 	}
 }

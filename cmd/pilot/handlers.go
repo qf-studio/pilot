@@ -557,7 +557,7 @@ func handleGitlabIssueWithResult(ctx context.Context, cfg *config.Config, client
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success,
+		Success:    hr.Success || hr.IsDispatchGated(), // GH-4587: an admission-gate decline is not a genuine failure
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
@@ -819,7 +819,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success,
+		Success:    hr.Success || hr.IsDispatchGated(), // GH-4587: an admission-gate decline is not a genuine failure
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
