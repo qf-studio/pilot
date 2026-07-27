@@ -1012,6 +1012,17 @@
           "deployment",
           "testing"
         ]
+      },
+      "TASK-426": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-426-pre-push-gate-lint-findings.md",
+        "title": "Fix 4 lint findings blocking the local pre-push gate",
+        "status": "unknown",
+        "concepts": [
+          "testing",
+          "knowledge",
+          "context",
+          "deployment"
+        ]
       }
     },
     "memories": {
@@ -4839,6 +4850,11 @@
       "from": "TASK-425",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-426",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -4928,7 +4944,8 @@
       "TASK-422",
       "TASK-423",
       "TASK-424",
-      "TASK-425"
+      "TASK-425",
+      "TASK-426"
     ],
     "deployment": [
       "TASK-386",
@@ -4994,7 +5011,8 @@
       "TASK-422",
       "TASK-423",
       "TASK-424",
-      "TASK-425"
+      "TASK-425",
+      "TASK-426"
     ],
     "authentication": [
       "TASK-386",
@@ -5093,7 +5111,8 @@
       "TASK-422",
       "TASK-423",
       "TASK-424",
-      "TASK-425"
+      "TASK-425",
+      "TASK-426"
     ],
     "api": [
       "TASK-386",
@@ -5183,7 +5202,8 @@
       "TASK-418",
       "TASK-419",
       "TASK-420",
-      "TASK-421"
+      "TASK-421",
+      "TASK-426"
     ],
     "markers": [
       "TASK-387",
@@ -5592,10 +5612,10 @@
       "mem-160"
     ]
   },
-  "last_updated": "2026-07-27T12:50:07.949363+00:00",
+  "last_updated": "2026-07-27T12:57:58.545438+00:00",
   "stats": {
-    "total_nodes": 309,
-    "total_edges": 255,
+    "total_nodes": 310,
+    "total_edges": 256,
     "memory_count": 191
   }
 }
