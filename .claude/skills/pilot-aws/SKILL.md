@@ -141,6 +141,14 @@ every grant minimally; never print policy docs containing secrets.
    + restart.
 5. Trust the ledger over dashboard panels (known mislabel: awaiting_approval
    rendered as "rebase" until the GH-4383 fix is in the running binary).
+6. **Name your ledger.** Every status/diagnosis claim must state which data
+   source produced it: box DB (via SSM), GitHub, or the laptop archive. The
+   laptop's `~/.pilot/data/pilot.db` is a FROZEN pre-2026-07-16 archive
+   (S6-lite cutover) — plausible-looking rows, months stale. A 2026-07-27
+   incident: a session read it and confidently misdiagnosed healthy tasks as
+   "failed". Before reasoning about any DB: verify the path is the box's
+   (`/var/lib/pilot/pilot-home/data/pilot.db`) and check row freshness
+   (`select max(datetime(created_at)) from executions`). mem-160 family.
 
 ## Troubleshooting quick table
 
