@@ -979,6 +979,18 @@
           "testing",
           "authentication"
         ]
+      },
+      "TASK-423": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-423-epic-no-commits-guard-stale-ref.md",
+        "title": "Task 423 Epic No Commits Guard Stale Ref",
+        "status": "unknown",
+        "concepts": [
+          "testing",
+          "api",
+          "knowledge",
+          "deployment",
+          "authentication"
+        ]
       }
     },
     "memories": {
@@ -4775,6 +4787,11 @@
       "from": "TASK-422",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-423",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -4861,7 +4878,8 @@
       "TASK-419",
       "TASK-420",
       "TASK-421",
-      "TASK-422"
+      "TASK-422",
+      "TASK-423"
     ],
     "deployment": [
       "TASK-386",
@@ -4924,7 +4942,8 @@
       "TASK-419",
       "TASK-420",
       "TASK-421",
-      "TASK-422"
+      "TASK-422",
+      "TASK-423"
     ],
     "authentication": [
       "TASK-386",
@@ -4960,7 +4979,8 @@
       "TASK-415",
       "TASK-417",
       "TASK-420",
-      "TASK-422"
+      "TASK-422",
+      "TASK-423"
     ],
     "testing": [
       "TASK-386",
@@ -5019,7 +5039,8 @@
       "TASK-419",
       "TASK-420",
       "TASK-421",
-      "TASK-422"
+      "TASK-422",
+      "TASK-423"
     ],
     "api": [
       "TASK-386",
@@ -5057,7 +5078,8 @@
       "TASK-419",
       "TASK-420",
       "TASK-421",
-      "TASK-422"
+      "TASK-422",
+      "TASK-423"
     ],
     "context": [
       "TASK-386",
@@ -5516,10 +5538,10 @@
       "mem-160"
     ]
   },
-  "last_updated": "2026-07-27T10:23:33.710949+00:00",
+  "last_updated": "2026-07-27T10:48:34.617598+00:00",
   "stats": {
-    "total_nodes": 305,
-    "total_edges": 251,
+    "total_nodes": 306,
+    "total_edges": 252,
     "memory_count": 190
   }
 }
