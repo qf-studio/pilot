@@ -420,13 +420,48 @@ func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch
 	return unindexed, nil
 }
 
+// resolveGuardBaseRef resolves the ref the memory-doc guards should diff
+// against: origin/<baseBranch> when it resolves locally, falling back to the
+// local <baseBranch> ref otherwise. Mirrors CountNewCommitsAgainstOrigin's
+// GH-4566 fix for the no-commits guard.
+//
+// TASK-424: worktrees are cut from a freshly fetched origin/<base>
+// (worktree.go), but nothing fast-forwards the shared clone's local <base>
+// ref on every path — so a memory doc merged to origin/<base> after the
+// local ref last synced was invisible to every guard leg that diffed against
+// the stale local baseBranch. The doc was neither seen as deleted (strip
+// leg diffs against a base that never had it) nor protected (the veto leg's
+// baseBranch graph.json also predates it), so the deletion only materialized
+// at squash-merge on GitHub, where no guard runs (strikes 4/5: #4534/#4535,
+// #4551).
+//
+// Fetches origin/<baseBranch> first (best-effort — offline / no-remote
+// environments fall through). If origin/<baseBranch> still doesn't resolve
+// locally (no "origin" remote configured — bare local repos, some unit
+// tests), returns the local <baseBranch> ref unchanged, preserving prior
+// behavior in that environment.
+func (g *GitOperations) resolveGuardBaseRef(ctx context.Context, baseBranch string) string {
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
+	fetchCmd.Dir = g.projectPath
+	_ = fetchCmd.Run() // best-effort; fall back to whatever origin/<base> already resolves to (or local base)
+
+	verifyCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "-q", "origin/"+baseBranch)
+	verifyCmd.Dir = g.projectPath
+	if err := verifyCmd.Run(); err == nil {
+		return "origin/" + baseBranch
+	}
+	return baseBranch
+}
+
 // deletedMemoryDocs returns memory doc paths (relative to the repo root)
-// deleted between baseBranch and HEAD. Mirrors addedMemoryDocs's file
+// deleted between baseRef and HEAD. Mirrors addedMemoryDocs's file
 // selection but with --diff-filter=D: GH-4398's restore guard cares about
-// removals, not additions, of .agent/knowledge/memories/**.md.
-func (g *GitOperations) deletedMemoryDocs(ctx context.Context, baseBranch string) ([]string, error) {
+// removals, not additions, of .agent/knowledge/memories/**.md. Callers pass
+// an already-resolved ref (see resolveGuardBaseRef) rather than a raw branch
+// name.
+func (g *GitOperations) deletedMemoryDocs(ctx context.Context, baseRef string) ([]string, error) {
 	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=D",
-		baseBranch+"...HEAD", "--", memoryDocsRelDir)
+		baseRef+"...HEAD", "--", memoryDocsRelDir)
 	cmd.Dir = g.projectPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -500,7 +535,9 @@ type RestoredMemoryDoc struct {
 // Runner.recordMemoryGuardRestoreEvents) and deciding when in the push/PR
 // path this runs (GH-4397); this method only performs the git-level restore.
 func (g *GitOperations) RestoreDeletedIndexedMemoryDocs(ctx context.Context, baseBranch string) ([]RestoredMemoryDoc, error) {
-	deleted, err := g.deletedMemoryDocs(ctx, baseBranch)
+	baseRef := g.resolveGuardBaseRef(ctx, baseBranch)
+
+	deleted, err := g.deletedMemoryDocs(ctx, baseRef)
 	if err != nil || len(deleted) == 0 {
 		return nil, err
 	}
@@ -520,7 +557,10 @@ func (g *GitOperations) RestoreDeletedIndexedMemoryDocs(ctx context.Context, bas
 		return nil, nil
 	}
 
-	checkoutArgs := append([]string{"checkout", baseBranch, "--"}, restoredPaths(restored)...)
+	// TASK-424: restore from baseRef (origin/<baseBranch> when it resolves),
+	// not the raw baseBranch — a doc merged to origin after the local branch
+	// last synced exists there even though the stale local ref never saw it.
+	checkoutArgs := append([]string{"checkout", baseRef, "--"}, restoredPaths(restored)...)
 	checkoutCmd := exec.CommandContext(ctx, "git", checkoutArgs...)
 	checkoutCmd.Dir = g.projectPath
 	if output, err := checkoutCmd.CombinedOutput(); err != nil {
@@ -590,12 +630,18 @@ func (g *GitOperations) EnforceMemoryDocDeletionGuard(ctx context.Context, baseB
 	if allowMemoryChanges {
 		return nil, nil
 	}
-	deleted, err := g.deletedMemoryDocs(ctx, baseBranch)
+	baseRef := g.resolveGuardBaseRef(ctx, baseBranch)
+
+	deleted, err := g.deletedMemoryDocs(ctx, baseRef)
 	if err != nil || len(deleted) == 0 {
 		return nil, err
 	}
 
-	baseGraph, err := g.loadMemoryGraphAtRef(ctx, baseBranch)
+	// TASK-424: read baseRef's graph.json (origin/<baseBranch> when it
+	// resolves), not the raw baseBranch's — the stale local base's graph.json
+	// can predate a doc's indexing (or deletion) that already landed on
+	// origin, letting a genuinely-protected doc slip past the veto.
+	baseGraph, err := g.loadMemoryGraphAtRef(ctx, baseRef)
 	if err != nil {
 		return nil, err
 	}
