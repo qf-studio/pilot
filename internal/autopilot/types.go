@@ -968,6 +968,17 @@ type PRState struct {
 	// the counter anyway, giving a freshly-restored row a few more tries before
 	// eviction (GH-3903 404-eviction guard).
 	NotFoundCount int
+	// ClosedReadCount tracks consecutive "closed" reads observed by
+	// checkExternalMergeOrClose since the PR was last read as open.
+	// In-memory only — reset to 0 the moment a poll sees the PR open again
+	// (flapping protection), and naturally reset by a daemon restart.
+	// Required to reach externalCloseConfirmThreshold before a "closed"
+	// read inside externalCloseGraceWindow of CreatedAt is believed
+	// (GH-4570: a PR read closed exactly once, 29s after it was
+	// created/adopted, was destructively acted on — branch delete attempt,
+	// issue relabel — while every other read that same minute showed it
+	// still open).
+	ClosedReadCount int
 	// PersistFailureCount tracks consecutive SavePRState errors for this PR
 	// (e.g. a schema/ON CONFLICT mismatch on an adopted or otherwise
 	// irregular row). Reset to 0 on a successful persist. In-memory only:
@@ -1091,6 +1102,7 @@ func (ps *PRState) snapshot() *PRState {
 		ReleaseBumpType:         ps.ReleaseBumpType,
 		ConsecutiveAPIFailures:  ps.ConsecutiveAPIFailures,
 		NotFoundCount:           ps.NotFoundCount,
+		ClosedReadCount:         ps.ClosedReadCount,
 		PersistFailureCount:     ps.PersistFailureCount,
 		EnvironmentName:         ps.EnvironmentName,
 		PRTitle:                 ps.PRTitle,

@@ -4505,17 +4505,23 @@ func (c *Controller) removePRTracking(prNumber int, deleteBranch bool) {
 	c.mu.Unlock()
 
 	// Clean up remote branch for closed/failed PRs (merged PRs already handled in handleMerging)
+	// GH-4570: branchDeleted reflects the actual DeleteBranch outcome, not merely
+	// whether deletion was requested — logging deleteBranch unconditionally here
+	// claimed a successful delete even when the API call itself failed (observed
+	// in the 2026-07-27 incident: branch_deleted=true was logged regardless).
+	branchDeleted := false
 	if deleteBranch && branchName != "" && c.ghClient != nil {
 		if err := c.ghClient.DeleteBranch(context.Background(), c.owner, c.repo, branchName); err != nil {
 			c.log.Debug("branch cleanup on PR removal", "branch", branchName, "pr", prNumber, "error", err)
 		} else {
+			branchDeleted = true
 			c.log.Info("deleted branch on PR removal", "branch", branchName, "pr", prNumber)
 		}
 	}
 
 	c.persistRemovePR(prNumber)
 	c.removePRFailures(prNumber)
-	c.log.Info("PR removed from tracking", "pr", prNumber, "branch_deleted", deleteBranch)
+	c.log.Info("PR removed from tracking", "pr", prNumber, "branch_deleted", branchDeleted)
 }
 
 // GetActivePRs returns detached snapshots of all tracked PRs.
@@ -5665,6 +5671,27 @@ func isNotFoundError(err error) bool {
 // retry loop.
 const notFoundEvictionThreshold = 5
 
+// externalCloseGraceWindow bounds how long after a PR enters tracking
+// (real OnPRCreated registration, or the reconciler's adoption of an
+// untracked orphan PR — both set CreatedAt to time.Now()) a single "closed"
+// read from GitHub is trusted at face value. GH-4570: a PR adopted by the
+// reconciler was read as closed exactly once, seconds later, and autopilot
+// destructively acted on that single read (attempted branch delete, issue
+// relabel) while the PR was open on GitHub the entire time — GitHub does
+// not guarantee read-after-write consistency immediately after a PR is
+// created (the same window saw a sibling PR 404 three times in a row on
+// fresh reads). Chosen generously above the observed propagation delay.
+const externalCloseGraceWindow = 5 * time.Minute
+
+// externalCloseConfirmThreshold is how many consecutive "closed" reads,
+// while still inside externalCloseGraceWindow, are required before
+// checkExternalMergeOrClose believes a PR is genuinely closed and proceeds
+// with the destructive close flow. Mirrors notFoundEvictionThreshold's
+// tolerance for repeated 404s on the fetch path — GH-4570 applies that same
+// reasoning to the closed-detection path, which previously acted on a
+// single read.
+const externalCloseConfirmThreshold = 3
+
 // evictNotFoundPR drops a PR that has 404'd repeatedly from in-memory
 // tracking and the persisted state store. Unlike removePR, it deliberately
 // does NOT attempt remote branch cleanup: a repeated 404 means this
@@ -5833,7 +5860,38 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			return true
 		}
 
+		// GH-4570: inside the grace window since this PR entered tracking, a
+		// single "closed" read is not enough evidence — require
+		// externalCloseConfirmThreshold consecutive closed reads before
+		// believing it. A read of "open" anywhere resets the counter (below),
+		// so a flapping open/closed/open sequence never accumulates enough
+		// confirmations to trigger the destructive path. Past the grace
+		// window a single read is trusted, same as before this fix.
+		if age := time.Since(prState.CreatedAt); age < externalCloseGraceWindow {
+			prState.ClosedReadCount++
+			if prState.ClosedReadCount < externalCloseConfirmThreshold {
+				c.log.Warn("PR read as closed within grace window — not yet confirmed, treating as transient",
+					"pr", prState.PRNumber,
+					"age", age.Round(time.Second),
+					"closed_read_count", prState.ClosedReadCount,
+					"confirm_threshold", externalCloseConfirmThreshold,
+				)
+				return false
+			}
+			c.log.Info("PR closed read confirmed after repeated reads within grace window",
+				"pr", prState.PRNumber, "closed_read_count", prState.ClosedReadCount)
+		}
+
 		c.log.Info("PR closed externally, removing from tracking", "pr", prState.PRNumber)
+
+		// GH-4570: order the remaining actions by reversibility. Dropping
+		// tracking and relabeling are both cheap to have wrong — tracking
+		// self-heals via the reconciler's orphan-PR adoption, and labels can
+		// be corrected by hand. Deleting the head branch cannot be undone,
+		// so it happens last, in finalizeExternalClose, and only after one
+		// more fresh read confirms the PR is not open.
+		branchName := prState.BranchName
+		c.removePRTracking(prState.PRNumber, false)
 		c.notifyExternalClose(ctx, prState)
 
 		// GH-4475: Sync board card to the failed status on external close
@@ -5846,11 +5904,44 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			}
 		}
 
-		c.removePR(prState.PRNumber)
+		c.finalizeExternalClose(ctx, prState.PRNumber, branchName)
 		return true
 	}
 
+	// PR observed in any other state (i.e. still open): clear any pending
+	// closed-read streak so a later transient closed read starts counting
+	// from zero again (GH-4570 flapping protection).
+	prState.ClosedReadCount = 0
 	return false
+}
+
+// finalizeExternalClose performs the last, irreversible step of the
+// external-close flow: deleting the PR's head branch. GH-4570: by the time
+// this runs, tracking has already been dropped and the issue relabeled —
+// both cheap to have gotten wrong. A branch delete is not, so this re-reads
+// the PR fresh one more time immediately before acting: if GitHub now
+// reports it open, the delete is aborted entirely instead of trusting the
+// earlier confirmed-closed read.
+func (c *Controller) finalizeExternalClose(ctx context.Context, prNumber int, branchName string) {
+	if branchName == "" || c.ghClient == nil {
+		return
+	}
+	fresh, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prNumber)
+	if err != nil {
+		c.log.Warn("GH-4570: could not re-verify PR state before branch delete, skipping delete",
+			"pr", prNumber, "branch", branchName, "error", err)
+		return
+	}
+	if fresh.State == "open" {
+		c.log.Warn("GH-4570: PR re-read as open immediately before branch delete — aborting delete",
+			"pr", prNumber, "branch", branchName)
+		return
+	}
+	if err := c.ghClient.DeleteBranch(ctx, c.owner, c.repo, branchName); err != nil {
+		c.log.Debug("branch cleanup on PR removal", "branch", branchName, "pr", prNumber, "error", err)
+		return
+	}
+	c.log.Info("deleted branch on PR removal", "branch", branchName, "pr", prNumber)
 }
 
 // notifyExternalMerge sends notification when a PR is merged externally.
