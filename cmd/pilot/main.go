@@ -796,7 +796,14 @@ Examples:
 					}
 
 					ctx := context.Background()
-					gwAlertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher), alerts.WithAlertMetrics(alertsMetrics))
+					gwEngineOpts := []alerts.EngineOption{alerts.WithDispatcher(alertsDispatcher), alerts.WithAlertMetrics(alertsMetrics)}
+					if gwStore != nil {
+						// GH-4562: lets the stuck-task evictor stall an orphan-evicted
+						// task's still-alive execution row instead of silently dropping
+						// the tracker entry and leaving a live-looking claim behind.
+						gwEngineOpts = append(gwEngineOpts, alerts.WithExecutionLifecycle(executor.NewExecutionLifecycle(gwStore)))
+					}
+					gwAlertsEngine = alerts.NewEngine(alertsCfg, gwEngineOpts...)
 					if alertErr := gwAlertsEngine.Start(ctx); alertErr != nil {
 						logging.WithComponent("start").Error("alert engine failed to start — downstream alerters will be silently disabled; check alerts config", slog.Any("error", alertErr))
 						gwAlertsEngine = nil
@@ -2417,7 +2424,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 		}
 
-		alertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher), alerts.WithAlertMetrics(alertsMetrics))
+		engineOpts := []alerts.EngineOption{alerts.WithDispatcher(alertsDispatcher), alerts.WithAlertMetrics(alertsMetrics)}
+		if store != nil {
+			// GH-4562: lets the stuck-task evictor stall an orphan-evicted
+			// task's still-alive execution row instead of silently dropping
+			// the tracker entry and leaving a live-looking claim behind.
+			engineOpts = append(engineOpts, alerts.WithExecutionLifecycle(executor.NewExecutionLifecycle(store)))
+		}
+		alertsEngine = alerts.NewEngine(alertsCfg, engineOpts...)
 		if err := alertsEngine.Start(ctx); err != nil {
 			logging.WithComponent("start").Error("alert engine failed to start — downstream alerters will be silently disabled; check alerts config", slog.Any("error", err))
 			alertsEngine = nil

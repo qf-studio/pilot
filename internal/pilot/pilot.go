@@ -1562,6 +1562,10 @@ func (p *Pilot) initAlerts(cfg *config.Config) {
 	p.alertEngine = alerts.NewEngine(alertCfg,
 		alerts.WithLogger(log),
 		alerts.WithDispatcher(dispatcher),
+		// GH-4562: lets the stuck-task evictor stall an orphan-evicted
+		// task's still-alive execution row instead of silently dropping the
+		// tracker entry and leaving a live-looking claim behind.
+		alerts.WithExecutionLifecycle(executor.NewExecutionLifecycle(p.store)),
 	)
 
 	// Wire alerts engine to executor via adapter

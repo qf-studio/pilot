@@ -287,3 +287,33 @@ func (l *ExecutionLifecycle) Finish(execID string, result *ExecutionResult, exec
 	err := l.Persist(execID, outcome, result, duration)
 	return outcome, err
 }
+
+// LatestExecution returns the most recent execution row for taskID, scoped to
+// projectPath the same way memory.Store.GetLatestExecutionByTaskID is (empty
+// projectPath skips the filter). It exists so callers outside the executor
+// package (GH-4562: alerts.Engine's stuck-task evictor) can resolve a taskID
+// to the execID Finish needs without importing internal/memory and reaching
+// past this chokepoint to call Store methods directly. A nil store or a
+// lookup miss (including sql.ErrNoRows) both return (nil, nil) — "nothing
+// found to transition" — mirroring epic.go's sweepStalledEpicChildren, which
+// treats any GetLatestExecutionByTaskID error the same way.
+func (l *ExecutionLifecycle) LatestExecution(taskID, projectPath string) (*memory.Execution, error) {
+	if l.store == nil {
+		return nil, nil
+	}
+	exec, err := l.store.GetLatestExecutionByTaskID(taskID, projectPath)
+	if err != nil {
+		return nil, nil
+	}
+	return exec, nil
+}
+
+// IsTerminalStatus reports whether status is one of the executions-table
+// terminal statuses (dispatcher.go's terminalExecutionStatuses). Exposed
+// alongside LatestExecution so a caller outside the executor package can
+// guard a Finish call on current status without duplicating the terminal
+// vocabulary (GH-4562) — see terminal_status_inventory_test.go's guard
+// against a second copy of this classification.
+func IsTerminalStatus(status string) bool {
+	return isTerminalExecutionStatus(status)
+}
