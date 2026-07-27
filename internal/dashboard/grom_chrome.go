@@ -45,14 +45,8 @@ var warnChrome = render.PanelStyle{
 	Title:  gromTheme.WarningStyle().Bold(true),
 }
 
-// renderPanel builds a grom-style card: lowercase title embedded in the top
-// border, one padding line above and below the content.
-func renderPanel(title, content string, tw int) string {
-	return renderPanelInfo(title, "", content, tw)
-}
-
-// renderPanelInfo is renderPanel with a legend embedded in the top-right
-// border: ╭─ title ────┤ info ├─╮.
+// renderPanelInfo builds a grom-style card with a legend embedded in the
+// top-right border: ╭─ title ────┤ info ├─╮.
 func renderPanelInfo(title, info, content string, tw int) string {
 	return renderPanelStyled(title, info, content, tw, panelChrome)
 }
