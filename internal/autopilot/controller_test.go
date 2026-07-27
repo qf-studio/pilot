@@ -1663,6 +1663,14 @@ func TestController_CheckExternalClose(t *testing.T) {
 		t.Fatal("PR should be tracked initially")
 	}
 
+	// GH-4570: back-date CreatedAt past externalCloseGraceWindow so this test
+	// exercises the "current behavior" (single closed read trusted) branch
+	// rather than the new grace-window confirmation gate, which is covered
+	// separately.
+	c.mu.Lock()
+	c.activePRs[42].CreatedAt = time.Now().Add(-10 * time.Minute)
+	c.mu.Unlock()
+
 	// Process PRs - should detect external close and remove
 	c.processAllPRs(context.Background())
 
@@ -1759,6 +1767,13 @@ func TestController_CheckExternalClose_BoardSync(t *testing.T) {
 	// OnPRCreated itself fires a reviewStatus sync — reset so we only observe
 	// the external-close sync under test.
 	mock.calls = nil
+
+	// GH-4570: back-date CreatedAt past externalCloseGraceWindow so a single
+	// closed read is trusted (this test targets board-sync behavior, not the
+	// grace-window confirmation gate, which is covered separately).
+	c.mu.Lock()
+	c.activePRs[42].CreatedAt = time.Now().Add(-10 * time.Minute)
+	c.mu.Unlock()
 
 	c.processAllPRs(context.Background())
 
@@ -2061,6 +2076,14 @@ func TestController_CheckExternalMerge_MultiplePRs(t *testing.T) {
 	c.OnPRCreated(1, "url1", 10, "sha1", "pilot/GH-10", "")
 	c.OnPRCreated(2, "url2", 20, "sha2", "pilot/GH-20", "")
 	c.OnPRCreated(3, "url3", 30, "sha3", "pilot/GH-30", "")
+
+	// GH-4570: back-date PR 3's CreatedAt past externalCloseGraceWindow so its
+	// closed-without-merge read is trusted immediately (this test targets
+	// multi-PR processing, not the grace-window confirmation gate, which is
+	// covered separately).
+	c.mu.Lock()
+	c.activePRs[3].CreatedAt = time.Now().Add(-10 * time.Minute)
+	c.mu.Unlock()
 
 	// Process PRs
 	c.processAllPRs(context.Background())
@@ -4077,6 +4100,13 @@ func TestController_CIFailedClose_PostsCommentsAndCorrectsLabels(t *testing.T) {
 	// Next poll: the poller observes the PR is now closed on GitHub and runs
 	// notifyExternalClose — this is where GH-3806's audit trail is written.
 	prState, _ := c.GetPRState(42)
+	// GH-4570: back-date CreatedAt past externalCloseGraceWindow so this
+	// single closed read is trusted (this test targets notifyExternalClose's
+	// audit trail, not the grace-window confirmation gate, which is covered
+	// separately).
+	c.mu.Lock()
+	c.activePRs[42].CreatedAt = time.Now().Add(-10 * time.Minute)
+	c.mu.Unlock()
 	ghPR, err := ghClient.GetPullRequest(ctx, "owner", "repo", 42)
 	if err != nil {
 		t.Fatalf("GetPullRequest: %v", err)
