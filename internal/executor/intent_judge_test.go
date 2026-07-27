@@ -600,3 +600,76 @@ func TestDefaultCmdRunner_StderrCaptured(t *testing.T) {
 		t.Errorf("expected stderr tail to contain subprocess stderr, got: %q", jerr.StderrTail)
 	}
 }
+
+// --- GH-4583: prompt-via-stdin (fork/exec E2BIG on large diffs) ---
+
+// TestExtractStdinPrompt verifies the -p value is pulled out of the argv
+// slice for stdin delivery while a bare "-p" flag is preserved — `claude -p`
+// reads its prompt from stdin when invoked without a following value.
+func TestExtractStdinPrompt(t *testing.T) {
+	args := []string{"--print", "-p", "the prompt text", "--model", "x"}
+	rest, prompt, ok := extractStdinPrompt(args)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if prompt != "the prompt text" {
+		t.Errorf("expected extracted prompt %q, got %q", "the prompt text", prompt)
+	}
+	want := []string{"--print", "-p", "--model", "x"}
+	if len(rest) != len(want) {
+		t.Fatalf("expected rest args %v, got %v", want, rest)
+	}
+	for i := range want {
+		if rest[i] != want[i] {
+			t.Errorf("expected rest args %v, got %v", want, rest)
+			break
+		}
+	}
+}
+
+// TestExtractStdinPrompt_NoPromptFlag verifies args without a "-p" flag pass
+// through untouched.
+func TestExtractStdinPrompt_NoPromptFlag(t *testing.T) {
+	args := []string{"--print", "--model", "x"}
+	rest, prompt, ok := extractStdinPrompt(args)
+	if ok {
+		t.Fatal("expected ok=false when no -p flag is present")
+	}
+	if prompt != "" {
+		t.Errorf("expected empty prompt, got %q", prompt)
+	}
+	if len(rest) != len(args) {
+		t.Fatalf("expected args unchanged, got %v", rest)
+	}
+}
+
+// TestDefaultCmdRunner_LargePromptViaStdin is the regression test for
+// GH-4583: the intent judge's prompt (system prompt + issue body + full git
+// diff) was passed as a single argv element to `claude -p <prompt>`. Linux
+// caps a single argv element at MAX_ARG_STRLEN (128KB, see proc(5)); any
+// diff past that made fork/exec fail with "argument list too long" before
+// the judge subprocess ever ran.
+//
+// This drives the real defaultCmdRunner (not a mock) with a 200KB prompt —
+// well over the 128KB cap — through a shell script standing in for the
+// claude binary. The script ignores its positional args (mirroring the
+// flags Judge()/JudgeIssue() send alongside "-p") and echoes stdin back,
+// confirming the prompt now travels via stdin rather than argv and arrives
+// at the subprocess intact.
+func TestDefaultCmdRunner_LargePromptViaStdin(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available on this system")
+	}
+
+	prompt := strings.Repeat("A", 200*1024) // 200KB, over Linux's 128KB MAX_ARG_STRLEN
+
+	judge := NewIntentJudge("sh")
+	out, err := judge.defaultCmdRunner(context.Background(),
+		"-c", "cat", "--", "--print", "-p", prompt, "--model", "x", "--output-format", "text")
+	if err != nil {
+		t.Fatalf("defaultCmdRunner failed on a 200KB prompt (expected no E2BIG): %v", err)
+	}
+	if string(out) != prompt {
+		t.Errorf("prompt not passed through stdin intact: got %d bytes, want %d bytes", len(out), len(prompt))
+	}
+}
