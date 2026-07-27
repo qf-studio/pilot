@@ -30,6 +30,7 @@ import (
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/tunnel"
 	"github.com/qf-studio/pilot/internal/webhooks"
@@ -60,6 +61,17 @@ type Config struct {
 	Team           *TeamConfig             `yaml:"team"`
 	Bot            *BotConfig              `yaml:"bot"`
 	Upgrade        *UpgradeConfig          `yaml:"upgrade"`
+	Ledger         *LedgerConfig           `yaml:"ledger"`
+}
+
+// LedgerConfig controls staleness detection for the executions ledger
+// (GH-4569): a ledger DB that silently stops being written to (wrong path,
+// stale copy, retired archive) answers every query successfully with wrong
+// data — the worst failure shape. StalenessWarnAfter sets how old the
+// newest execution row must be before ledger-reading commands print a loud
+// stderr/dashboard warning.
+type LedgerConfig struct {
+	StalenessWarnAfter time.Duration `yaml:"staleness_warn_after"`
 }
 
 // UpgradeConfig controls self-upgrade behavior (GH-3790). Self-upgrade
@@ -463,6 +475,9 @@ func DefaultConfig() *Config {
 			CrossProject: true,
 			Learning:     DefaultLearningConfig(),
 		},
+		Ledger: &LedgerConfig{
+			StalenessWarnAfter: memory.DefaultStalenessWarnAfter,
+		},
 		Projects: []*ProjectConfig{},
 		Dashboard: &DashboardConfig{
 			RefreshInterval: 1000,
@@ -629,6 +644,7 @@ func Load(path string) (*Config, error) {
 			if err := config.AssertHostedInvariants(); err != nil {
 				return nil, err
 			}
+			applyLedgerStalenessThreshold(config)
 			return config, nil // Return defaults if no config file
 		}
 		return nil, fmt.Errorf("failed to read config: %w", err)
@@ -672,7 +688,20 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	applyLedgerStalenessThreshold(config)
+
 	return config, nil
+}
+
+// applyLedgerStalenessThreshold wires config.Ledger.StalenessWarnAfter
+// (ledger.staleness_warn_after in YAML) into the memory package's
+// staleness-banner check (GH-4569). A non-positive value is ignored by
+// SetStalenessThreshold, leaving memory.DefaultStalenessWarnAfter in
+// effect.
+func applyLedgerStalenessThreshold(config *Config) {
+	if config.Ledger != nil {
+		memory.SetStalenessThreshold(config.Ledger.StalenessWarnAfter)
+	}
 }
 
 // hostedEnvVar gates hosted mode (SaaS S0.7, GH-4274): a control-plane-

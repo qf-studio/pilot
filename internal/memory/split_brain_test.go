@@ -21,7 +21,7 @@ func TestNewStoreGuarded_FirstRunNoMarker(t *testing.T) {
 	withIsolatedHome(t)
 	dataPath := filepath.Join(t.TempDir(), "data")
 
-	store, err := NewStoreGuarded(dataPath)
+	store, err := NewStoreGuarded(dataPath, false)
 	if err != nil {
 		t.Fatalf("NewStoreGuarded failed on genuine first run: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestNewStoreGuarded_HealthyReopenSamePath(t *testing.T) {
 	withIsolatedHome(t)
 	dataPath := filepath.Join(t.TempDir(), "data")
 
-	store, err := NewStoreGuarded(dataPath)
+	store, err := NewStoreGuarded(dataPath, false)
 	if err != nil {
 		t.Fatalf("NewStoreGuarded (first open) failed: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestNewStoreGuarded_HealthyReopenSamePath(t *testing.T) {
 
 	// Reopen the SAME directory — this must succeed even though the marker
 	// now records non-zero history, because the directory pre-existed.
-	store2, err := NewStoreGuarded(dataPath)
+	store2, err := NewStoreGuarded(dataPath, false)
 	if err != nil {
 		t.Fatalf("NewStoreGuarded (reopen) failed: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestNewStoreGuarded_DetectsShadowLedger(t *testing.T) {
 	canonicalPath := filepath.Join(root, "canonical")
 
 	// Simulate a healthy daemon run with real history at the canonical path.
-	store, err := NewStoreGuarded(canonicalPath)
+	store, err := NewStoreGuarded(canonicalPath, false)
 	if err != nil {
 		t.Fatalf("NewStoreGuarded (canonical) failed: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestNewStoreGuarded_DetectsShadowLedger(t *testing.T) {
 	// normal restart against the same (already-populated) canonical path —
 	// this is what makes the marker reflect real history, exactly as it
 	// would after the daemon's first real restart in production.
-	store, err = NewStoreGuarded(canonicalPath)
+	store, err = NewStoreGuarded(canonicalPath, false)
 	if err != nil {
 		t.Fatalf("NewStoreGuarded (canonical restart) failed: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestNewStoreGuarded_DetectsShadowLedger(t *testing.T) {
 	// migration shim), distinct from the canonical path that has history.
 	shadowPath := filepath.Join(root, "shadow")
 
-	_, err = NewStoreGuarded(shadowPath)
+	_, err = NewStoreGuarded(shadowPath, false)
 	if err == nil {
 		t.Fatal("expected NewStoreGuarded to refuse opening a shadow ledger, got nil error")
 	}
@@ -133,7 +133,7 @@ func TestNewStoreGuarded_NoFalsePositiveWhenMarkerHasNoHistory(t *testing.T) {
 	// and never actually ran a task) — a fresh directory elsewhere should
 	// not be treated as a shadow ledger.
 	firstPath := filepath.Join(root, "first")
-	store, err := NewStoreGuarded(firstPath)
+	store, err := NewStoreGuarded(firstPath, false)
 	if err != nil {
 		t.Fatalf("NewStoreGuarded (first) failed: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestNewStoreGuarded_NoFalsePositiveWhenMarkerHasNoHistory(t *testing.T) {
 	}
 
 	secondPath := filepath.Join(root, "second")
-	store2, err := NewStoreGuarded(secondPath)
+	store2, err := NewStoreGuarded(secondPath, false)
 	if err != nil {
 		t.Fatalf("expected no split-brain error when prior marker has zero executions, got: %v", err)
 	}

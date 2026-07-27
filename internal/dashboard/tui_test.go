@@ -353,6 +353,72 @@ func TestHydrateFromStore_LifetimeTokens(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_StaleLedgerShowsBanner is the GH-4569 regression: a
+// ledger whose newest execution is far older than the staleness threshold
+// must surface a warning in the dashboard header, not just answer queries
+// silently with stale data.
+func TestHydrateFromStore_StaleLedgerShowsBanner(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-1", TaskID: "TASK-1", ProjectPath: "/test", Status: "completed",
+		CreatedAt: time.Now().Add(-10 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewModelWithStore("test", store)
+	if m.stalenessBanner == "" {
+		t.Fatal("expected stalenessBanner to be set for a 10-day-old ledger")
+	}
+	if !strings.Contains(m.stalenessBanner, "LEDGER STALE") {
+		t.Errorf("stalenessBanner = %q, want it to mention LEDGER STALE", m.stalenessBanner)
+	}
+
+	header := m.renderChromeHeader()
+	if !strings.Contains(header, "ledger stale") {
+		t.Errorf("renderChromeHeader() does not surface the stale-ledger card; header:\n%s", header)
+	}
+}
+
+// TestHydrateFromStore_FreshLedgerNoBanner is the healthy-path counterpart:
+// a recently-written ledger must not show any staleness banner.
+func TestHydrateFromStore_FreshLedgerNoBanner(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-1", TaskID: "TASK-1", ProjectPath: "/test", Status: "completed",
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewModelWithStore("test", store)
+	if m.stalenessBanner != "" {
+		t.Fatalf("expected no stalenessBanner for a fresh ledger, got %q", m.stalenessBanner)
+	}
+}
+
 // TestHydrateFromStore_HealsFrozenLadderRow is the GH-4368 regression: a row
 // that predates the H4 heal fixes (GH-4277/GH-4298) sits at status='completed'
 // with its execution_events ladder frozen at a non-terminal rung (e.g.

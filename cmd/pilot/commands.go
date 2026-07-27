@@ -438,6 +438,19 @@ func newVersionCmd() *cobra.Command {
 			if buildTime != "unknown" {
 				fmt.Printf("Built: %s\n", buildTime)
 			}
+
+			// GH-4569/GH-4393: always show the resolved absolute ledger DB
+			// path in diagnostics — path ambiguity (configured path vs.
+			// where it actually resolves on disk) was half of the #4393
+			// split-brain incident.
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+			if cfg, err := config.Load(configPath); err == nil {
+				dbPath := resolveMemoryDBPath(daemonLockDir(cfg))
+				fmt.Printf("Ledger DB: %s\n", dbPath)
+			}
 		},
 	}
 }

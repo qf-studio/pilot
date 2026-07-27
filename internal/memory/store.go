@@ -76,6 +76,12 @@ func NewStore(dataPath string) (*Store, error) {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
 
+	// GH-4569: warn (stderr only, never stdout) on every open if the ledger
+	// looks stale or is marked archived — every NewStore caller (CLI
+	// queries, dashboard, pilot start) routes through here, so this is the
+	// one place that reliably covers "any ledger-reading entry point".
+	store.warnIfStale()
+
 	return store, nil
 }
 
