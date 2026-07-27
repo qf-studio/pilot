@@ -258,6 +258,7 @@ func newStartCmd() *cobra.Command {
 		teamMember     string // Member email for project access scoping
 		logFormat      string // Log output format: text or json (GH-847)
 		dashboardScope string // Dashboard metrics scope: "project" (default) or "all" (GH-3534)
+		allowArchived  bool   // GH-4569: override the archive-sentinel start refusal
 	)
 
 	cmd := &cobra.Command{
@@ -458,7 +459,7 @@ Examples:
 
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
-				return runPollingMode(cmd, cfg, projectPath, replace, dashboardMode, noGateway, bootReconcile)
+				return runPollingMode(cmd, cfg, projectPath, replace, dashboardMode, noGateway, allowArchived, bootReconcile)
 			}
 
 			// Full daemon mode with gateway
@@ -1208,6 +1209,7 @@ Examples:
 	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: config default or cwd)")
 	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
+	cmd.Flags().BoolVar(&allowArchived, "i-know-this-is-an-archive", false, "Override the refusal to start against a ledger marked archived (LEDGER-ARCHIVED sentinel) — forensics only")
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Sequential execution: wait for PR merge before next issue")
 	cmd.Flags().StringVar(&envFlag, "env", "",
 		"Environment name: dev, stage, prod, or custom configured environment")
@@ -1549,7 +1551,7 @@ func acquireDaemonLock(cfg *config.Config, replace bool) (*singleton.Lock, error
 // desktop app (and any other client hitting /health) can reach the daemon.
 // bootReconcile carries the GH-3600 upgrade verification outcome for the
 // dashboard to surface; may be nil.
-func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool, bootReconcile *upgrade.BootReconcileResult) error {
+func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway, allowArchived bool, bootReconcile *upgrade.BootReconcileResult) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1867,11 +1869,16 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// a different failure mode than "couldn't open the DB" — it looks
 	// healthy, so unlike an ordinary store error it must abort startup
 	// rather than degrade gracefully with store=nil.
-	store, err := memory.NewStoreGuarded(cfg.Memory.Path)
+	store, err := memory.NewStoreGuarded(cfg.Memory.Path, allowArchived)
 	if err != nil {
 		var splitBrain *memory.ErrSplitBrainLedger
 		if errors.As(err, &splitBrain) {
 			logging.WithComponent("start").Error("refusing to start: possible shadow ledger detected", slog.Any("error", err))
+			return err
+		}
+		var archived *memory.ErrLedgerArchived
+		if errors.As(err, &archived) {
+			logging.WithComponent("start").Error("refusing to start: ledger marked archived", slog.Any("error", err))
 			return err
 		}
 		logging.WithComponent("start").Warn("Failed to open memory store", slog.Any("error", err))

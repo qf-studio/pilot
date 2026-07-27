@@ -479,6 +479,11 @@ type Model struct {
 	// Banner toggle (GH-1520)
 	showBanner bool
 
+	// stalenessBanner holds the formatted stale/archived-ledger warning
+	// (GH-4569), computed once from the store on hydrate. Empty means the
+	// ledger looks healthy — nothing to show.
+	stalenessBanner string
+
 	// Banner metadata (GH-2455 / GH-2459 rework): env name, model stack, adapter
 	// status list.
 	startTime      time.Time
@@ -660,6 +665,16 @@ func NewModelWithStoreAndAutopilot(version string, store *memory.Store, controll
 func (m *Model) hydrateFromStore() {
 	if m.store == nil {
 		return
+	}
+
+	// GH-4569: check for a stale/archived ledger before anything else reads
+	// it — a frozen ledger answers every query successfully with wrong
+	// data, so this must be visible in the header regardless of what else
+	// hydration does below.
+	if info, err := m.store.CheckStaleness(memory.StalenessThreshold()); err != nil {
+		slog.Warn("failed to check ledger staleness", slog.Any("error", err))
+	} else {
+		m.stalenessBanner = info.Banner()
 	}
 
 	// GH-4368: one-shot archaeology heal, before anything below reads
@@ -1563,6 +1578,13 @@ func (m Model) renderChromeHeader() string {
 	// uses the compact banner frame to keep header real-estate small.
 	if m.showBanner {
 		b.WriteString(m.renderBanner())
+		b.WriteString("\n")
+	}
+
+	// Stale/archived ledger warning (GH-4569) — shown above the update
+	// notification so a frozen ledger is the first thing an operator sees.
+	if m.stalenessBanner != "" {
+		b.WriteString(m.renderStalenessBanner())
 		b.WriteString("\n")
 	}
 
@@ -2755,6 +2777,19 @@ func AddCompletedTask(id, title, status, duration string, parentID string, isEpi
 			IsEpic:      isEpic,
 		})
 	}
+}
+
+// renderStalenessBanner renders the stale/archived-ledger warning card
+// (GH-4569): a ledger DB that silently stopped being written to (wrong
+// path, stale copy, retired archive) answers every query successfully with
+// wrong data, so this uses the same loud amber chrome as the update
+// notification.
+func (m Model) renderStalenessBanner() string {
+	tw := m.effectivePanelTotalWidth()
+	iw := tw - 4
+	var content strings.Builder
+	content.WriteString(formatPanelRow(m.stalenessBanner, "", iw))
+	return renderPanelStyled("ledger stale", "", content.String(), tw, warnChrome)
 }
 
 // renderUpdateNotification renders the update notification panel (amber

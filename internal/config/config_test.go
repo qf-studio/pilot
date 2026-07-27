@@ -12,6 +12,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -330,6 +331,36 @@ dashboard:
 		}
 		if config.Dashboard.ShowLogs != false {
 			t.Error("Dashboard.ShowLogs should be false")
+		}
+	})
+
+	t.Run("LedgerStalenessWiring", func(t *testing.T) {
+		// GH-4569: ledger.staleness_warn_after must flow YAML -> Load() ->
+		// Config.Ledger -> memory.StalenessThreshold(), not just sit unused
+		// on the struct.
+		defer memory.SetStalenessThreshold(memory.DefaultStalenessWarnAfter)
+
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+ledger:
+  staleness_warn_after: 48h
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+		if cfg.Ledger == nil || cfg.Ledger.StalenessWarnAfter != 48*time.Hour {
+			t.Fatalf("Ledger.StalenessWarnAfter = %v, want 48h", cfg.Ledger)
+		}
+		if got := memory.StalenessThreshold(); got != 48*time.Hour {
+			t.Errorf("memory.StalenessThreshold() = %v, want 48h (config not wired through)", got)
 		}
 	})
 

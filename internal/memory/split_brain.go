@@ -114,7 +114,13 @@ func dirExists(path string) bool {
 // On a healthy open — including a genuine first run, where no marker exists
 // yet — the marker is (re)written with the resolved path and current
 // execution count so future starts can detect divergence.
-func NewStoreGuarded(dataPath string) (*Store, error) {
+//
+// GH-4569: it also refuses to start against a ledger marked archived (an
+// ArchiveSentinelFilename file next to the DB) unless allowArchived is set
+// (the --i-know-this-is-an-archive escape hatch, for forensics only). The
+// staleness/archive banner itself is still printed unconditionally by the
+// underlying NewStore call, warn-only, regardless of allowArchived.
+func NewStoreGuarded(dataPath string, allowArchived bool) (*Store, error) {
 	preExisted := dirExists(dataPath)
 
 	resolved, err := filepath.EvalSymlinks(dataPath)
@@ -134,6 +140,15 @@ func NewStoreGuarded(dataPath string) (*Store, error) {
 	store, err := NewStore(dataPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if archiveMsg, archived, sentinelErr := readArchiveSentinel(dataPath); sentinelErr == nil && archived && !allowArchived {
+		_ = store.Close()
+		return nil, &ErrLedgerArchived{
+			DataPath: dataPath,
+			DBPath:   dbPath,
+			Message:  archiveMsg,
+		}
 	}
 
 	if !preExisted && lkgErr == nil && lkg != nil && lkg.ExecutionCount > 0 && lkg.DBPath != dbPath {
