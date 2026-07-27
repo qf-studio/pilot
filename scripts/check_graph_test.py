@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Table-driven tests for scripts/check-graph.py."""
+import contextlib
+import datetime
 import importlib.util
+import io
+import json
 import os
 import sys
 import tempfile
@@ -148,6 +152,56 @@ class InvalidConceptRefsTest(unittest.TestCase):
         self.assertEqual(cg.find_invalid_concept_refs(graph), [("mem-001", "nonexistent")])
 
 
+class ParseFrontmatterTest(unittest.TestCase):
+    def test_parses_flat_frontmatter(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "a.md")
+            _write(path, "---\nname: foo-bar\ndescription: does a thing\ntype: pattern\n---\n\n# Foo\n")
+            meta = cg.parse_frontmatter(path)
+            self.assertEqual(meta, {"name": "foo-bar", "description": "does a thing", "type": "pattern"})
+
+    def test_no_frontmatter_returns_empty_dict(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "a.md")
+            _write(path, "# Just a heading, no front-matter\n")
+            self.assertEqual(cg.parse_frontmatter(path), {})
+
+
+class FixUnindexedTest(unittest.TestCase):
+    def test_adds_stub_node_keyed_by_frontmatter_name(self):
+        with tempfile.TemporaryDirectory() as root:
+            rel_path = os.path.join(".agent", "knowledge", "memories", "patterns", "orphan.md")
+            _write(
+                os.path.join(root, rel_path),
+                "---\nname: orphan-pattern\ndescription: an orphan\ntype: pattern\n---\n\nbody\n",
+            )
+            graph = {"nodes": {"memories": {}}}
+            added = cg.fix_unindexed(graph, [rel_path], root)
+
+            self.assertEqual(added, [("orphan-pattern", rel_path)])
+            node = graph["nodes"]["memories"]["orphan-pattern"]
+            today = datetime.date.today().isoformat()
+            self.assertEqual(
+                node,
+                {
+                    "type": "pattern",
+                    "summary": "an orphan",
+                    "file": rel_path,
+                    "created": today,
+                    "last_validated": today,
+                },
+            )
+
+    def test_file_with_no_frontmatter_name_is_left_unindexed(self):
+        with tempfile.TemporaryDirectory() as root:
+            rel_path = os.path.join(".agent", "knowledge", "memories", "patterns", "orphan.md")
+            _write(os.path.join(root, rel_path), "no front-matter here\n")
+            graph = {"nodes": {"memories": {}}}
+            added = cg.fix_unindexed(graph, [rel_path], root)
+            self.assertEqual(added, [])
+            self.assertEqual(graph["nodes"]["memories"], {})
+
+
 class MainExitCodeTest(unittest.TestCase):
     def _build_repo(self, root):
         memories_base = os.path.join(root, ".agent", "knowledge", "memories")
@@ -168,11 +222,16 @@ class MainExitCodeTest(unittest.TestCase):
             json.dump(graph, f)
         return graph_path, memories_base
 
-    def _run_main(self, root, graph_path, memories_base):
+    def _run_main(self, root, graph_path, memories_base, argv=None):
         cg.REPO_ROOT = root
         cg.GRAPH_PATH = graph_path
         cg.MEMORIES_BASE = memories_base
-        return cg.main()
+        old_argv = sys.argv
+        sys.argv = argv if argv is not None else ["check-graph.py"]
+        try:
+            return cg.main()
+        finally:
+            sys.argv = old_argv
 
     def test_clean_repo_exits_zero(self):
         with tempfile.TemporaryDirectory() as root:
@@ -244,6 +303,78 @@ class MainExitCodeTest(unittest.TestCase):
             self.assertEqual(unindexed, [os.path.join(".agent", "knowledge", "memories", "patterns", "orphan.md")])
 
             self.assertEqual(self._run_main(root, graph_path, memories_base), 1)
+
+    def test_fix_indexes_unindexed_file_from_frontmatter(self):
+        with tempfile.TemporaryDirectory() as root:
+            graph_path, memories_base = self._build_repo(root)
+            orphan_path = os.path.join(memories_base, "patterns", "orphan.md")
+            _write(
+                orphan_path,
+                "---\nname: orphan-thing\ndescription: an orphan thing\ntype: learning\n---\n\nbody\n",
+            )
+
+            exit_code = self._run_main(root, graph_path, memories_base, argv=["check-graph.py", "--fix"])
+            self.assertEqual(exit_code, 0)
+
+            with open(graph_path, encoding="utf-8") as f:
+                graph = json.load(f)
+            self.assertIn("orphan-thing", graph["nodes"]["memories"])
+            node = graph["nodes"]["memories"]["orphan-thing"]
+            self.assertEqual(node["type"], "learning")
+            self.assertEqual(node["summary"], "an orphan thing")
+            self.assertEqual(node["file"], os.path.relpath(orphan_path, root))
+
+            # Re-running without --fix now passes clean since the node was
+            # persisted to graph.json on disk.
+            self.assertEqual(self._run_main(root, graph_path, memories_base), 0)
+
+    def test_fix_does_not_touch_broken_links_or_dangling_edges(self):
+        with tempfile.TemporaryDirectory() as root:
+            graph_path, memories_base = self._build_repo(root)
+            # Class 1: break the indexed file link.
+            os.remove(os.path.join(memories_base, "patterns", "a.md"))
+            # Class 3: add a dangling edge.
+            with open(graph_path, "r+", encoding="utf-8") as f:
+                graph = json.load(f)
+                graph["edges"].append({"from": "ghost", "to": "mem-001", "type": "uses"})
+                f.seek(0)
+                json.dump(graph, f)
+                f.truncate()
+
+            exit_code = self._run_main(root, graph_path, memories_base, argv=["check-graph.py", "--fix"])
+            # Neither class is auto-fixable — --fix must still exit 1.
+            self.assertEqual(exit_code, 1)
+
+            with open(graph_path, encoding="utf-8") as f:
+                graph = json.load(f)
+            self.assertEqual(
+                graph["nodes"]["memories"]["mem-001"]["file"],
+                ".agent/knowledge/memories/patterns/a.md",
+            )
+            self.assertIn({"from": "ghost", "to": "mem-001", "type": "uses"}, graph["edges"])
+
+    def test_no_fix_flag_output_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as root:
+            graph_path, memories_base = self._build_repo(root)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                exit_code = self._run_main(root, graph_path, memories_base, argv=["check-graph.py"])
+            output = buf.getvalue()
+
+            self.assertEqual(exit_code, 0)
+            self.assertNotIn("Auto-fixed", output)
+            self.assertEqual(
+                output,
+                "== Broken file links ==\n"
+                "  none\n"
+                "== Unindexed active memory files ==\n"
+                "  none\n"
+                "== Dangling edges ==\n"
+                "  none\n"
+                "== Invalid concept refs (warn only) ==\n"
+                "  none\n"
+                "\nOK: knowledge graph matches disk state\n",
+            )
 
 
 if __name__ == "__main__":
