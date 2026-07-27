@@ -1750,6 +1750,11 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 				slog.Any("error", err),
 			)
 			r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+			// GH-4561: a child sub-issue may already be running/queued on
+			// another dispatch channel while this parent-terminal failure
+			// leaves it permanently unreconciled — sweep it stalled so it
+			// becomes re-dispatchable instead of stuck forever.
+			r.sweepEpicChildrenOnAbort(task, result.Error)
 			return
 		}
 	}
@@ -1798,6 +1803,8 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 		// forever instead of tripping the stop-retry guidance comment.
 		r.recordTitleRejection(ctx, task, result)
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		// GH-4561: see the push-failure sweep above — same abandoned-child risk.
+		r.sweepEpicChildrenOnAbort(task, result.Error)
 		return
 	}
 	r.clearTitleRejectionState(task)
@@ -1811,6 +1818,8 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 			slog.Any("error", prErr),
 		)
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		// GH-4561: see the push-failure sweep above — same abandoned-child risk.
+		r.sweepEpicChildrenOnAbort(task, result.Error)
 		return
 	}
 	result.PRUrl = prURL
@@ -1823,6 +1832,8 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 		result.Success = false
 		result.Error = "epic finalize produced no PR URL"
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		// GH-4561: see the push-failure sweep above — same abandoned-child risk.
+		r.sweepEpicChildrenOnAbort(task, result.Error)
 		return
 	}
 
@@ -2319,6 +2330,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 								gapPlan := &EpicPlan{ParentTask: plan.ParentTask, Subtasks: plannedNow, TotalEffort: plan.TotalEffort, PlanOutput: plan.PlanOutput}
 								gapErr := r.handleSubIssueCoverageGap(epicCtx, gapPlan, reconciled, executionPath, cause)
 								r.reportProgress(task.ID, "Needs Clarification", 100, gapErr.Error())
+								// GH-4561: decompose-abort sweep — reconciled already holds
+								// the partial batch of real sub-issues created before this
+								// coverage gap aborted the rest of decomposition; any of
+								// those already picked up and running elsewhere would
+								// otherwise be orphaned by this parent's terminal "declined".
+								r.sweepStalledEpicChildren(task.ID, task.ProjectPath, createdIssueTaskIDs(reconciled), gapErr.Error())
 								return &ExecutionResult{
 									TaskID:         task.ID,
 									Success:        false,
@@ -2375,6 +2392,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						var gapErr *SubIssueCoverageGapError
 						if errors.As(err, &gapErr) {
 							r.reportProgress(task.ID, "Needs Clarification", 100, gapErr.Error())
+							// GH-4561: decompose-abort sweep — issues already holds the
+							// partial batch of real sub-issues CreateSubIssues created
+							// before this coverage gap aborted the rest of decomposition.
+							r.sweepStalledEpicChildren(task.ID, task.ProjectPath, createdIssueTaskIDs(issues), gapErr.Error())
 							return &ExecutionResult{
 								TaskID:         task.ID,
 								Success:        false,
