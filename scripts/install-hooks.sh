@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install git hooks for the pilot project
 # Hooks installed:
-#   - pre-commit: Secret pattern detection
+#   - pre-commit: Secret pattern detection + knowledge-graph drift check
 #   - pre-push: Full validation gate (build, lint, test, secrets, integration)
 
 set -e
@@ -18,8 +18,10 @@ mkdir -p "$HOOKS_DIR"
 # Install pre-commit hook
 cat > "$HOOKS_DIR/pre-commit" << 'EOF'
 #!/bin/bash
-# Pre-commit hook to prevent realistic-looking secrets in test files
-# This helps avoid GitHub push protection blocks
+# Pre-commit hook to prevent realistic-looking secrets in test files, and to
+# catch knowledge-graph drift (unindexed/broken memory nodes) before it
+# reaches CI's Knowledge Graph Drift Gate.
+# This helps avoid GitHub push protection blocks and red-main drift incidents.
 
 set -e
 
@@ -27,10 +29,6 @@ echo "Checking for realistic secret patterns in staged files..."
 
 # Get list of staged Go test files
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '_test\.go$' || true)
-
-if [ -z "$STAGED_FILES" ]; then
-    exit 0
-fi
 
 # Patterns that look like real secrets (will trigger GitHub push protection)
 # These are regex patterns for grep -E
@@ -86,6 +84,39 @@ if [ $FOUND_SECRETS -eq 1 ]; then
 fi
 
 echo "✓ No realistic secret patterns found"
+
+# Knowledge-graph drift check: only run when a staged path touches
+# .agent/knowledge/, since check-graph.py walks the whole memories tree.
+STAGED_KNOWLEDGE=$(git diff --cached --name-only --diff-filter=ACMR | grep '^\.agent/knowledge/' || true)
+
+if [ -n "$STAGED_KNOWLEDGE" ]; then
+    HOOK_DIR="$(dirname "$0")"
+    PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
+
+    echo ""
+    echo "Checking knowledge-graph drift (staged .agent/knowledge/ changes)..."
+
+    if ! python3 "$PROJECT_ROOT/scripts/check-graph.py"; then
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "COMMIT BLOCKED: knowledge graph drift detected"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "Fix unindexed memory files automatically:"
+        echo "  python3 scripts/check-graph.py --fix"
+        echo ""
+        echo "Broken links / dangling edges need manual review — see the"
+        echo "FAIL lines above."
+        echo ""
+        echo "To bypass this check (not recommended):"
+        echo "  git commit --no-verify"
+        echo ""
+        exit 1
+    fi
+
+    echo "✓ Knowledge graph in sync"
+fi
+
 exit 0
 EOF
 
@@ -146,7 +177,7 @@ chmod +x "$HOOKS_DIR/pre-push"
 echo "✓ Pre-push hook installed"
 echo ""
 echo "Hooks installed:"
-echo "  • pre-commit: Checks for realistic secrets in test files"
-echo "  • pre-push:   Runs full validation gate (build, lint, test, secrets)"
+echo "  • pre-commit: Checks for realistic secrets in test files + knowledge-graph drift"
+echo "  • pre-push:   Runs full validation gate (build, lint, test, secrets, knowledge-graph)"
 echo ""
 echo "Use '--no-verify' to bypass hooks (not recommended)."

@@ -12,7 +12,16 @@ v6.17.0's graph_maintenance.py (reimplemented, not vendored):
   4. Invalid concept refs — node concepts with no matching concept key (WARN)
 
 Exit 0 when classes 1-3 are empty (regardless of class 4). Exit 1 otherwise.
+
+With `--fix`, class 2 (unindexed active memory files) is auto-repaired: a
+stub node is generated in graph.json under nodes.memories for each unindexed
+file, keyed by the file's frontmatter `name`. Classes 1 and 3 are never
+auto-fixed — they need human judgment (a broken link could mean the file
+moved or the node is stale; a dangling edge could mean either endpoint is
+wrong). Without `--fix`, behavior is byte-identical to running with no
+flags at all — this keeps the CI gate (which never passes --fix) read-only.
 """
+import datetime
 import glob
 import json
 import os
@@ -80,6 +89,54 @@ def find_unindexed_memory_files(graph, memories_base, repo_root):
     return sorted(unindexed)
 
 
+def parse_frontmatter(filepath):
+    """Parse the flat `key: value` YAML front-matter block memory files use
+    (--- / name / description / type / ---). Returns {} if the file has no
+    front-matter block. Deliberately avoids a PyYAML dependency since the
+    front-matter here is always flat scalars, and check-graph.py must stay
+    importable in the CI job with no extra installs."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+    if not content.startswith("---"):
+        return {}
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return {}
+    meta = {}
+    for line in parts[1].splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        meta[key.strip()] = value.strip().strip('"').strip("'")
+    return meta
+
+
+def fix_unindexed(graph, unindexed, repo_root):
+    """Auto-repair class 2 (unindexed active memory files): add a stub node
+    under nodes.memories for each, keyed by the file's frontmatter `name`.
+    Files with no `name` in front-matter are left unindexed (still FAIL) —
+    there's no safe key to generate a node under. Returns the list of
+    (node_id, rel_path) actually added, in the same order as `unindexed`."""
+    memories = graph.setdefault("nodes", {}).setdefault("memories", {})
+    today = datetime.date.today().isoformat()
+    added = []
+    for rel_path in unindexed:
+        meta = parse_frontmatter(os.path.join(repo_root, rel_path))
+        node_id = meta.get("name")
+        if not node_id:
+            continue
+        memories[node_id] = {
+            "type": meta.get("type", ""),
+            "summary": meta.get("description", ""),
+            "file": rel_path,
+            "created": today,
+            "last_validated": today,
+        }
+        added.append((node_id, rel_path))
+    return added
+
+
 def find_dangling_edges(graph):
     node_ids = set()
     for category in graph.get("nodes", {}).values():
@@ -104,14 +161,34 @@ def find_invalid_concept_refs(graph):
 
 
 def main():
+    fix = "--fix" in sys.argv[1:]
+
     graph = load_graph(GRAPH_PATH)
 
     broken_links = find_broken_file_links(graph, REPO_ROOT)
     unindexed = find_unindexed_memory_files(graph, MEMORIES_BASE, REPO_ROOT)
+
+    fixed = []
+    if fix and unindexed:
+        fixed = fix_unindexed(graph, unindexed, REPO_ROOT)
+        if fixed:
+            fixed_paths = {rel_path for _, rel_path in fixed}
+            unindexed = [rel_path for rel_path in unindexed if rel_path not in fixed_paths]
+            with open(GRAPH_PATH, "w", encoding="utf-8") as f:
+                json.dump(graph, f, indent=2)
+
     dangling_edges = find_dangling_edges(graph)
     invalid_concepts = find_invalid_concept_refs(graph)
 
     fail = False
+
+    if fix:
+        print("== Auto-fixed (--fix) ==")
+        if fixed:
+            for node_id, rel_path in fixed:
+                print(f"  FIXED {node_id}: {rel_path}")
+        else:
+            print("  none")
 
     print("== Broken file links ==")
     if broken_links:

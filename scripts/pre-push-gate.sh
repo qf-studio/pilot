@@ -83,14 +83,14 @@ run_check_warn() {
 }
 
 # 1. BUILD
-echo -e "${BLUE}[1/5] Build${NC}"
+echo -e "${BLUE}[1/6] Build${NC}"
 if ! run_check "go build" "go build -o /dev/null ./cmd/pilot"; then
     FAILURES=$((FAILURES + 1))
 fi
 echo ""
 
 # 2. LINT
-echo -e "${BLUE}[2/5] Lint${NC}"
+echo -e "${BLUE}[2/6] Lint${NC}"
 if command -v golangci-lint >/dev/null 2>&1; then
     if ! run_check "golangci-lint" "golangci-lint run --timeout 60s"; then
         FAILURES=$((FAILURES + 1))
@@ -102,14 +102,14 @@ fi
 echo ""
 
 # 3. TEST (short mode for speed)
-echo -e "${BLUE}[3/5] Test (short)${NC}"
+echo -e "${BLUE}[3/6] Test (short)${NC}"
 if ! run_check "go test -short" "go test -short -race ./..."; then
     FAILURES=$((FAILURES + 1))
 fi
 echo ""
 
 # 4. SECRETS
-echo -e "${BLUE}[4/5] Secret Patterns${NC}"
+echo -e "${BLUE}[4/6] Secret Patterns${NC}"
 if [ -x "$SCRIPT_DIR/check-secret-patterns.sh" ]; then
     if ! run_check "check-secrets" "$SCRIPT_DIR/check-secret-patterns.sh"; then
         FAILURES=$((FAILURES + 1))
@@ -119,8 +119,15 @@ else
 fi
 echo ""
 
-# 5. INTEGRATION
-echo -e "${BLUE}[5/5] Integration${NC}"
+# 5. KNOWLEDGE GRAPH
+echo -e "${BLUE}[5/6] Knowledge Graph${NC}"
+if ! run_check "check-graph" "python3 $SCRIPT_DIR/check-graph.py"; then
+    FAILURES=$((FAILURES + 1))
+fi
+echo ""
+
+# 6. INTEGRATION
+echo -e "${BLUE}[6/6] Integration${NC}"
 if [ -x "$SCRIPT_DIR/check-integration.sh" ]; then
     if ! run_check "integration" "$SCRIPT_DIR/check-integration.sh"; then
         FAILURES=$((FAILURES + 1))

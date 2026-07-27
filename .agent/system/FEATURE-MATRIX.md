@@ -199,6 +199,7 @@
 | Lint gates | ✅ | quality | - | `quality.gates[].type=lint` | Run lint commands |
 | Build gates | ✅ | quality | - | `quality.gates[].type=build` | Compile check |
 | Retry on failure | ✅ | quality | - | `quality.max_retries` | Auto-retry with feedback |
+| Knowledge-graph drift local prevention | ✅ | scripts | `python3 scripts/check-graph.py --fix` | - | Pre-commit (blocks commits staging `.agent/knowledge/` paths) and pre-push gate (`[5/6] Knowledge Graph`) now run `check-graph.py` locally, so drift is caught before push instead of first surfacing on CI's Knowledge Graph Drift Gate. `--fix` auto-repairs class-2 findings only (unindexed memory files — stub node generated from the file's frontmatter `name`/`type`/`description`); broken links and dangling edges still fail and need human judgment. No-`--fix` behavior (used by CI) is unchanged (GH-4574, follow-up to the 88fad61c red-main incident) |
 
 ## Memory & Learning
 
