@@ -132,6 +132,72 @@ func TestEnforceMemoryDocDeletionGuard_UsesOriginWhenLocalBaseIsStale(t *testing
 	}
 }
 
+// TestStripUnindexedMemoryDocs_UsesOriginWhenLocalBaseIsStale is the GH-4582
+// repro/regression for the strip leg — the last of the three memory-doc
+// guard legs to still diff against the raw local base branch after TASK-424
+// (#4577) fixed its two siblings. A memory doc + its graph.json node land on
+// origin/main via a second clone AFTER this clone's local `main` last synced
+// (same setup as the restore/veto repros above). A worktree branch cut from
+// the fresh origin/main tip inherits the doc pre-indexed — this branch never
+// added it.
+//
+// Comparing against the stale local `main` ref makes addedMemoryDocs
+// misclassify this pre-existing origin doc as added by the branch (it isn't
+// present on the stale local ref at all), which is exactly the
+// mem-014..024/PR-#4582-incident shape: the strip leg then removes a doc the
+// origin-relative veto leg (already fixed) correctly refuses to let go,
+// hard-failing an otherwise-healthy execution. Comparing against origin/main
+// (this fix) sees the doc was never added by this branch and leaves it
+// alone.
+func TestStripUnindexedMemoryDocs_UsesOriginWhenLocalBaseIsStale(t *testing.T) {
+	local, origin := setupSyncTestRepos(t, "main")
+	ctx := context.Background()
+
+	docRel := ".agent/knowledge/memories/patterns/mem_task_origin_strip.md"
+	graph := fmt.Sprintf(`{"nodes":{"memories":{"mem-origin-strip":{"file":%q}}}}`, docRel)
+	pushMemoryDocFromSecondClone(t, origin, "main", docRel, "# indexed only on origin, not on the stale local base", graph)
+
+	// Cut the branch straight from the freshly fetched origin/main tip, the
+	// same way worktree.go does. Local `main` is deliberately left behind —
+	// it still points at setupSyncTestRepos' initial commit and has never
+	// seen docRel or graph.json.
+	runGit(t, local, "fetch", "origin", "main")
+	runGit(t, local, "checkout", "-B", "pilot/GH-4582-strip", "origin/main")
+
+	git := NewGitOperations(local)
+
+	// Precondition: diffing against the stale local `main` ref misclassifies
+	// this pre-existing origin doc as added by the branch, demonstrating the
+	// bug this fix closes.
+	staleAdded, err := git.addedMemoryDocs(ctx, "main")
+	if err != nil {
+		t.Fatalf("addedMemoryDocs(stale local main): %v", err)
+	}
+	if len(staleAdded) != 1 || staleAdded[0] != docRel {
+		t.Fatalf("test setup invalid: expected stale local `main` diff to misclassify %s as added (repro precondition), got %v", docRel, staleAdded)
+	}
+
+	stripped, err := git.StripUnindexedMemoryDocs(ctx, "main")
+	if err != nil {
+		t.Fatalf("StripUnindexedMemoryDocs: %v", err)
+	}
+	if len(stripped) != 0 {
+		t.Fatalf("stripped = %v, want none (doc is indexed and pre-existing on origin, not added by this branch)", stripped)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(local, docRel)); statErr != nil {
+		t.Fatalf("expected %s to remain on disk, err = %v", docRel, statErr)
+	}
+
+	hasChanges, err := git.HasUncommittedChanges(ctx)
+	if err != nil {
+		t.Fatalf("HasUncommittedChanges: %v", err)
+	}
+	if hasChanges {
+		t.Error("expected no strip commit, working tree should be clean")
+	}
+}
+
 // TestResolveGuardBaseRef_NoOriginRemoteFallsBackToLocalBranch covers repos
 // with no "origin" remote configured at all (bare local repos — several
 // existing memory-guard unit tests use initTestRepo, which has none) so the

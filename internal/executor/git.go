@@ -360,7 +360,15 @@ func (g *GitOperations) indexedMemoryPaths() (map[string]bool, error) {
 // misjudgment is diagnosable from the run log instead of only from a later
 // graph-vs-disk audit.
 func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch string) ([]string, error) {
-	added, err := g.addedMemoryDocs(ctx, baseBranch)
+	// GH-4582: resolve baseRef once (origin/<baseBranch> when it resolves,
+	// falling back to the raw baseBranch) so this leg agrees with its
+	// siblings RestoreDeletedIndexedMemoryDocs and EnforceMemoryDocDeletionGuard
+	// on what the base branch contains — a stale local baseBranch made this
+	// leg misclassify pre-existing origin docs as branch-added, which the
+	// origin-relative veto leg then correctly refused to let it delete.
+	baseRef := g.resolveGuardBaseRef(ctx, baseBranch)
+
+	added, err := g.addedMemoryDocs(ctx, baseRef)
 	if err != nil || len(added) == 0 {
 		return nil, err
 	}
