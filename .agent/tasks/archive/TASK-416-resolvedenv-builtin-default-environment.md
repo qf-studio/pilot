@@ -1,6 +1,8 @@
 # fix(autopilot): Validate() accepts built-in default_environment that ResolvedEnv() cannot resolve — silently runs stage
 
-**Created**: 2026-07-26 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-26
+**Created**: 2026-07-26 · **Status**: ✅ Shipped 2026-07-26 (PR #4559, merged `55f58a7c` ~35 min after dispatch) · **Last Updated**: 2026-07-26
+
+Verified post-merge: original repro test passes on main; full `internal/autopilot` suite green.
 
 ## Problem
 
