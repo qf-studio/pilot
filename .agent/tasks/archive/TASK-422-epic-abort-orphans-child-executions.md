@@ -1,6 +1,6 @@
 # fix(executor): epic abort path orphans child executions as permanent `running` — finalize children on parent failure + evictor must heal the ledger row
 
-**Created**: 2026-07-27 · **Status**: Draft · **Last Updated**: 2026-07-27
+**Created**: 2026-07-27 · **Status**: ✅ Shipped 2026-07-27 — GH-4560→PR#4563 (sweep) + #4565 (evictor heal) + GH-4564→PR#4567 (outcome-aware finalize per the refinement below), all merged same-day. Box rows GH-468/469/470 corrected to `completed` (work had shipped: auth-service PRs #472/#474/#475) · **Last Updated**: 2026-07-27
 
 ## Problem
 

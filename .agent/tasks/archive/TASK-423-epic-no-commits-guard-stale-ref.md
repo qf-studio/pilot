@@ -1,6 +1,6 @@
 # fix(executor): no-commits guards diff against stale local base ref — decomposed epics die "No commits between main and pilot/GH-N" at umbrella-PR creation
 
-**Created**: 2026-07-27 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-27
+**Created**: 2026-07-27 · **Status**: ✅ Shipped 2026-07-27 — GH-4566→PR#4568 merged (origin-relative guards at all 3 sites + benign-No-commits backstop). Live proof pending: next decomposed epic on the box should finalize clean; then revisit the GH-916 "~10%" number · **Last Updated**: 2026-07-27
 
 ## Problem
 

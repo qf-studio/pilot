@@ -973,11 +973,11 @@
         "title": "Task 422 Epic Abort Orphans Child Executions",
         "status": "unknown",
         "concepts": [
-          "api",
           "knowledge",
           "deployment",
           "testing",
-          "authentication"
+          "authentication",
+          "api"
         ]
       },
       "TASK-423": {
@@ -985,11 +985,11 @@
         "title": "Task 423 Epic No Commits Guard Stale Ref",
         "status": "unknown",
         "concepts": [
-          "testing",
           "api",
           "knowledge",
-          "deployment",
-          "authentication"
+          "testing",
+          "authentication",
+          "deployment"
         ]
       }
     },
@@ -5538,7 +5538,7 @@
       "mem-160"
     ]
   },
-  "last_updated": "2026-07-27T10:48:34.617598+00:00",
+  "last_updated": "2026-07-27T11:53:01.132355+00:00",
   "stats": {
     "total_nodes": 306,
     "total_edges": 252,
