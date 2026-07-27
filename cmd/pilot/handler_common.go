@@ -47,6 +47,22 @@ type HandlerResult struct {
 	Result *executor.ExecutionResult
 }
 
+// IsDispatchGated reports whether this result's Error is (or wraps)
+// executor.ErrDispatchGated — a pre/post-dispatch admission-gate decline
+// (already-active dedup, repick backoff, terminal-completion re-check,
+// claim-lost drop), not a genuine execution failure.
+//
+// GH-4587: callers translating a HandlerResult into a vendored-SDK
+// sdkcore.IssueResult must consult this before forwarding Success=false with
+// no PR/MR — the SDK poller's "failed without PR/MR, unmarking for retry"
+// branch has no other way to distinguish "genuinely failed" from "declined
+// because another generation/channel already owns this task", and treating
+// the latter as the former churns unmark+re-offer loops against a task
+// that's actively being worked.
+func (hr *HandlerResult) IsDispatchGated() bool {
+	return hr != nil && errors.Is(hr.Error, executor.ErrDispatchGated)
+}
+
 // HandlerDeps groups the shared infrastructure parameters every handler requires.
 type HandlerDeps struct {
 	Cfg          *config.Config

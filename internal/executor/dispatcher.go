@@ -928,6 +928,60 @@ func (d *Dispatcher) HasTerminalCompletion(taskID, projectPath string) (bool, er
 	return HasTerminalCompletion(d.store, taskID, projectPath)
 }
 
+// HasLiveExecutionOwner reports whether taskID currently has a live
+// (non-terminal) execution owner in projectPath (delegates to the
+// package-level HasLiveExecutionOwner helper), exported for callers outside
+// this package — mirrors the HasTerminalCompletion export pattern above.
+func (d *Dispatcher) HasLiveExecutionOwner(taskID, projectPath string) (bool, error) {
+	return HasLiveExecutionOwner(d.store, taskID, projectPath)
+}
+
+// HasLiveExecutionOwner reports whether taskID currently has a live
+// (non-terminal) execution owner in projectPath — mirroring the
+// nextRetryGeneration liveness check this package's own claim-loss retry
+// path already uses. Exported at package level (not just via *Dispatcher) so
+// callers that only hold a *memory.Store — e.g. internal/adapters/gitlab's
+// legacy poller, which has no Dispatcher of its own — can consult it too,
+// the same way cmd/pilot's terminalCompletionChecker calls the package-level
+// HasTerminalCompletion directly.
+//
+// GH-4587: a poller/handler that just received a failed-looking IssueResult
+// (Success=false, no PR/MR) must not treat that as a genuine failure and
+// "unmark for retry" when the task is actually still being executed by
+// someone else — the current execution_claims generation is held by a
+// still-running execution, or the latest executions row for the task is
+// itself non-terminal (queued/pending/running/decomposed, the same set
+// IsTaskQueued and Dispatcher.IsActive use). Either condition means another
+// dispatch is legitimately in flight; unmarking now would let a second
+// channel re-offer the same task while the first is still working it.
+func HasLiveExecutionOwner(store *memory.Store, taskID, projectPath string) (bool, error) {
+	active, err := store.IsTaskQueued(taskID, projectPath)
+	if err != nil {
+		return false, err
+	}
+	if active {
+		return true, nil
+	}
+
+	_, execID, found, err := store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	claimedExec, err := store.GetExecution(execID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Dangling claim, no executions row behind it — not a live
+			// owner, same treatment nextRetryGeneration gives this case.
+			return false, nil
+		}
+		return false, err
+	}
+	return !isTerminalExecutionStatus(claimedExec.Status), nil
+}
+
 // RepickBackoffState, SetRepickBackoffState, and ClearRepickBackoffState
 // expose the store's repick_backoff table to callers outside this package —
 // e.g. cmd/pilot's repickBackoffTracker (GH-4394). The tracker owns the

@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/skipreason"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // ExecutionMode determines how issues are processed
@@ -67,6 +69,15 @@ type Poller struct {
 
 	// GH-1358: Persistent processed store (optional)
 	processedStore ProcessedStore
+
+	// GH-4587: authoritative execution ledger (optional). When set, the
+	// "Execution failed without MR, unmarking for retry" path consults
+	// execution_claims + executions status before unmarking, instead of
+	// trusting IssueResult.Success/MRNumber alone — those are populated by
+	// whatever handler is wired via WithOnIssueWithResult and can look like
+	// "failed" for a task another channel/generation still owns live.
+	store       *memory.Store
+	projectPath string
 
 	// GH-1358: Parallel execution configuration
 	maxConcurrent int
@@ -157,6 +168,26 @@ func WithPollerMetrics(rec skipreason.PollerMetricsRecorder) PollerOption {
 func WithPollerRepoKey(key string) PollerOption {
 	return func(p *Poller) {
 		p.repoKey = key
+	}
+}
+
+// WithStore sets the authoritative execution ledger (execution_claims +
+// executions) the poller consults before unmarking an issue for retry
+// (GH-4587). Optional — when nil, the poller falls back to trusting
+// IssueResult.Success/MRNumber alone, exactly as before.
+func WithStore(store *memory.Store) PollerOption {
+	return func(p *Poller) {
+		p.store = store
+	}
+}
+
+// WithProjectPath sets the project path used to scope store lookups
+// (GH-4587) — task IDs are not unique across projects, so this must match
+// whatever projectPath the same task's executions/execution_claims rows were
+// written under.
+func WithProjectPath(projectPath string) PollerOption {
+	return func(p *Poller) {
+		p.projectPath = projectPath
 	}
 }
 
@@ -615,12 +646,37 @@ func (p *Poller) processIssueAsync(ctx context.Context, issue *Issue) {
 			return
 		}
 
-		// Unmark if execution failed without creating an MR
+		// Unmark if execution failed without creating an MR — but not when a
+		// live claim/execution already owns this task (GH-4587): the
+		// IssueResult's Success=false/MRNumber=0 shape is indistinguishable
+		// from a genuine failure from here, but a dispatch-admission decline
+		// (already queued/running elsewhere, repick backoff, terminal
+		// re-check) looks identical and must not be unmarked for retry —
+		// doing so would re-offer a task another channel/generation is still
+		// actively working.
 		if result != nil && !result.Success && result.MRNumber == 0 {
-			p.logger.Info("Execution failed without MR, unmarking for retry",
-				slog.Int("iid", issue.IID),
-			)
-			p.ClearProcessed(issue.IID)
+			liveOwner := false
+			if p.store != nil {
+				taskID := fmt.Sprintf("GL-%d", issue.IID)
+				live, err := executor.HasLiveExecutionOwner(p.store, taskID, p.projectPath)
+				if err != nil {
+					p.logger.Warn("Failed to check live execution owner before unmarking, unmarking anyway",
+						slog.Int("iid", issue.IID),
+						slog.Any("error", err),
+					)
+				}
+				liveOwner = live
+			}
+			if liveOwner {
+				p.logger.Debug("Execution failed without MR, but a live execution owner exists — not unmarking",
+					slog.Int("iid", issue.IID),
+				)
+			} else {
+				p.logger.Info("Execution failed without MR, unmarking for retry",
+					slog.Int("iid", issue.IID),
+				)
+				p.ClearProcessed(issue.IID)
+			}
 		}
 
 		// Notify autopilot controller of new MR
