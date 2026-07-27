@@ -2,6 +2,7 @@ package alerts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // Engine is the core alerting engine that processes events and triggers alerts
@@ -51,6 +54,16 @@ type Engine struct {
 	// Dispatcher via WithAlertMetrics+WithDispatcherMetrics so delivery counts appear
 	// in AlertSnapshot too.
 	metrics *AlertMetrics
+
+	// lifecycle transitions an orphan-evicted task's execution row to
+	// "stalled" via the ExecutionLifecycle chokepoint (GH-4562). nil (the
+	// zero value, and the default for every call site that doesn't pass
+	// WithExecutionLifecycle) makes evictStuckExecution a no-op — matching
+	// every other nil-store guard already established across
+	// executor.ExecutionLifecycle and epic.go's sweep helpers, and letting
+	// short-lived CLI callers (pilot alerts test, eval regression alerts)
+	// skip wiring a store for a code path they never meaningfully exercise.
+	lifecycle *executor.ExecutionLifecycle
 }
 
 // minOrphanEvictionThreshold floors evaluateStuckTasks' orphan-eviction window
@@ -184,6 +197,19 @@ func WithDispatcher(d *Dispatcher) EngineOption {
 func WithAlertMetrics(m *AlertMetrics) EngineOption {
 	return func(e *Engine) {
 		e.metrics = m
+	}
+}
+
+// WithExecutionLifecycle wires the ExecutionLifecycle chokepoint the
+// stuck-task evictor uses to transition an orphan-evicted task's still-alive
+// execution row to "stalled" (GH-4562), instead of dropping the in-memory
+// tracker entry and silently orphaning the row. Passing lifecycle through the
+// constructor — rather than the evictor reaching into internal/memory or
+// internal/executor ad hoc — keeps Engine's only executor-package dependency
+// at this one seam.
+func WithExecutionLifecycle(lifecycle *executor.ExecutionLifecycle) EngineOption {
+	return func(e *Engine) {
+		e.lifecycle = lifecycle
 	}
 }
 
@@ -701,6 +727,7 @@ func (e *Engine) evaluateStuckTasks(ctx context.Context) {
 					"stuck_for", stuckDuration.Round(time.Minute),
 					"orphan_threshold", orphanThreshold,
 				)
+				e.stallOrphanedExecution(taskID, stuckDuration)
 				continue
 			}
 
@@ -765,6 +792,57 @@ func (e *Engine) evaluateStuckTasks(ctx context.Context) {
 	// the delete in handleTaskCompleted, so without a TTL its counter leaks for the
 	// daemon lifetime. Mirror the GH-2204 orphan-eviction for taskLastProgress.
 	e.evictStaleRetryTrackers(now)
+}
+
+// stallOrphanedExecution transitions taskID's still-non-terminal execution
+// row to "stalled" via the ExecutionLifecycle chokepoint when the stuck-task
+// evictor drops its in-memory tracker entry (GH-4562). Without this, evicting
+// the tracker entry only removes the alerts engine's own bookkeeping — the
+// underlying execution row (and its claim on (task_id, project_path,
+// generation), per TASK-407) is left running/queued forever, since nothing
+// else observes the in-memory eviction. That mirrors the claim-release hazard
+// GH-4561/#4563 fixed for aborted epic parents' orphaned children: "stalled"
+// is itself a terminal status (dispatcher.go's terminalExecutionStatuses), so
+// this transition IS the claim release — the next dispatch pass grants a
+// fresh generation with no separate release call.
+//
+// e.lifecycle is nil for every call site that doesn't pass
+// WithExecutionLifecycle (short-lived CLI callers that never wire a store),
+// and LatestExecution returns (nil, nil) on a nil store or a lookup miss —
+// both cases are a silent no-op, matching epic.go's sweepStalledEpicChildren.
+//
+// Guarding on IsTerminalStatus before calling Finish makes a second eviction
+// sweep over an already-terminal row an explicit no-op rather than leaning
+// solely on Finish's CAS-guarded idempotency (GH-4423's
+// UpdateExecutionStatusIfNotTerminal) — belt-and-suspenders, since either one
+// alone is sufficient to prevent a double-Finish error.
+func (e *Engine) stallOrphanedExecution(taskID string, stuckFor time.Duration) {
+	if e.lifecycle == nil {
+		return
+	}
+	exec, err := e.lifecycle.LatestExecution(taskID, "")
+	if err != nil || exec == nil {
+		return
+	}
+	if executor.IsTerminalStatus(exec.Status) {
+		return
+	}
+
+	reason := fmt.Sprintf("orphan eviction after %s stuck", stuckFor.Round(time.Minute))
+	if _, finishErr := e.lifecycle.Finish(exec.ID, nil, errors.New(reason), 0, executor.ExecStatusStalled); finishErr != nil {
+		e.logger.Warn("stallOrphanedExecution: failed to stall orphaned execution",
+			"task_id", taskID,
+			"execution_id", exec.ID,
+			"error", finishErr,
+		)
+		return
+	}
+	e.logger.Warn("stallOrphanedExecution: stalled orphaned execution after stuck-task eviction",
+		"task_id", taskID,
+		"execution_id", exec.ID,
+		"prior_status", exec.Status,
+		"stuck_for", stuckFor.Round(time.Minute),
+	)
 }
 
 // retryTrackerTTL bounds how long an idle per-source retry counter is retained.
