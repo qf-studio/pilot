@@ -127,15 +127,46 @@ func newJudgeSubprocessError(ctx context.Context, err error, stderr string, peak
 	}
 }
 
+// extractStdinPrompt pulls the value following a "-p" flag out of args so it
+// can be delivered via stdin instead of argv. Linux caps a single argv
+// element at MAX_ARG_STRLEN (128KB, see proc(5)) — the intent judge's prompt
+// embeds the full issue body and git diff, which routinely exceeds that on
+// large PRs and made the subprocess fail before it even started
+// ("fork/exec ...: argument list too long"). GH-4583.
+//
+// The returned rest slice keeps a bare "-p" flag (no value) in place —
+// `claude -p` reads the prompt from stdin when invoked that way — so only
+// the oversized value is removed from argv, not the flag itself.
+func extractStdinPrompt(args []string) (rest []string, prompt string, ok bool) {
+	for i, a := range args {
+		if a == "-p" && i+1 < len(args) {
+			out := make([]string, 0, len(args)-1)
+			out = append(out, args[:i+1]...)
+			out = append(out, args[i+2:]...)
+			return out, args[i+1], true
+		}
+	}
+	return args, "", false
+}
+
 // defaultCmdRunner executes the claude command, sampling RSS and capturing a
 // bounded stderr tail so a kill can be diagnosed instead of surfacing as a
 // bare "signal: killed". GH-4377.
+//
+// GH-4583: the prompt value passed via "-p" is routed through stdin rather
+// than argv — see extractStdinPrompt — so diffs over Linux's 128KB
+// MAX_ARG_STRLEN no longer fail fork/exec with "argument list too long".
 func (j *IntentJudge) defaultCmdRunner(ctx context.Context, args ...string) ([]byte, error) {
+	args, prompt, hasPrompt := extractStdinPrompt(args)
+
 	cmd := exec.CommandContext(ctx, j.claudeCmd, args...)
 	var stdout bytes.Buffer
 	stderr := newBoundedBuffer(maxJudgeStderrCaptureBytes)
 	cmd.Stdout = &stdout
 	cmd.Stderr = stderr
+	if hasPrompt {
+		cmd.Stdin = strings.NewReader(prompt)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
