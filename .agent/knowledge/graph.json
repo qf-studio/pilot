@@ -967,6 +967,18 @@
           "api",
           "testing"
         ]
+      },
+      "TASK-422": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-422-epic-abort-orphans-child-executions.md",
+        "title": "Task 422 Epic Abort Orphans Child Executions",
+        "status": "unknown",
+        "concepts": [
+          "knowledge",
+          "api",
+          "testing",
+          "deployment",
+          "authentication"
+        ]
       }
     },
     "memories": {
@@ -4758,6 +4770,11 @@
       "from": "mem-160",
       "to": "TASK-405",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-422",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -4843,7 +4860,8 @@
       "TASK-417",
       "TASK-419",
       "TASK-420",
-      "TASK-421"
+      "TASK-421",
+      "TASK-422"
     ],
     "deployment": [
       "TASK-386",
@@ -4905,7 +4923,8 @@
       "shared-oauth-session-strands-second-machine",
       "TASK-419",
       "TASK-420",
-      "TASK-421"
+      "TASK-421",
+      "TASK-422"
     ],
     "authentication": [
       "TASK-386",
@@ -4940,7 +4959,8 @@
       "TASK-414",
       "TASK-415",
       "TASK-417",
-      "TASK-420"
+      "TASK-420",
+      "TASK-422"
     ],
     "testing": [
       "TASK-386",
@@ -4998,7 +5018,8 @@
       "TASK-418",
       "TASK-419",
       "TASK-420",
-      "TASK-421"
+      "TASK-421",
+      "TASK-422"
     ],
     "api": [
       "TASK-386",
@@ -5035,7 +5056,8 @@
       "TASK-418",
       "TASK-419",
       "TASK-420",
-      "TASK-421"
+      "TASK-421",
+      "TASK-422"
     ],
     "context": [
       "TASK-386",
@@ -5494,10 +5516,10 @@
       "mem-160"
     ]
   },
-  "last_updated": "2026-07-27T09:12:19.006832+00:00",
+  "last_updated": "2026-07-27T09:44:01.901561+00:00",
   "stats": {
-    "total_nodes": 304,
-    "total_edges": 250,
+    "total_nodes": 305,
+    "total_edges": 251,
     "memory_count": 190
   }
 }
