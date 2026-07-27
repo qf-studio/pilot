@@ -3714,12 +3714,45 @@ func TestIsPermanentFailure(t *testing.T) {
 		// GH-3224: no-op runs (ghost-SHA guard) are deterministic — terminal.
 		{"no-op worktree HEAD", "no new commit produced — worktree HEAD matches base branch parent", true},
 		{"no-op post-push SHA", "no new commit produced — post-push SHA matches base branch", true},
+		// GH-4586: the GH-4496 memory-doc deletion hard veto is deterministic too.
+		{"memory-doc deletion veto", "blocked: execution deleted memory doc(s) outside its lane: [.agent/knowledge/memories/patterns/foo.md]", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := IsPermanentFailure(tt.err); got != tt.want {
 				t.Errorf("IsPermanentFailure(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsDeterministicFailure is the GH-4586 acceptance test for the
+// dispatcher's terminal-error classification: a "blocked:"-prefixed
+// hard-guard veto or any IsPermanentFailure-flagged pattern must be
+// recognized as deterministic (won't change on a bare retry), while an
+// ordinary transient failure must not be.
+func TestIsDeterministicFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  string
+		want bool
+	}{
+		{"empty string", "", false},
+		{"transient network error", "connection refused: dial tcp", false},
+		{"transient quality gate failure", "quality gate failed: 3 lint errors", false},
+		{"PR title guard (IsPermanentFailure pattern)", "PR creation refused: title is not a conventional commit: 'foo'", true},
+		{"ghost-SHA no-op (IsPermanentFailure pattern)", "no new commit produced — worktree HEAD matches base branch parent", true},
+		{"memory-doc deletion veto (IsPermanentFailure pattern)", "blocked: execution deleted memory doc(s) outside its lane: [foo.md]", true},
+		{"blocked: prefix, generic hard-guard veto", "blocked: intent judge rejected diff — scope mismatch", true},
+		{"blocked substring but not a prefix", "cross-project execution blocked: source repo does not match project path", false},
+		{"leading whitespace before blocked: prefix", "  blocked: veto text", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsDeterministicFailure(tt.err); got != tt.want {
+				t.Errorf("IsDeterministicFailure(%q) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

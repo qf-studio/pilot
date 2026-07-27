@@ -36,6 +36,14 @@ var permanentFailurePatterns = []string{
 	// retries. A human (or a re-dispatch carrying the EvidenceBackedSpecDirective)
 	// resolves it.
 	"no new commit produced",
+	// GH-4586: the GH-4496 memory-doc deletion hard veto (git.go
+	// EnforceMemoryDocDeletionGuard) is deterministic — the branch's diff
+	// deleted an indexed memory doc outside its lane, and re-running the
+	// identical prompt against the identical diff reproduces the same veto
+	// every time. Referencing the sentinel error directly (rather than
+	// duplicating its text) keeps this pattern from drifting out of sync with
+	// git.go if the wording ever changes there.
+	ErrMemoryDocDeletionVetoed.Error(),
 }
 
 // IsPermanentFailure reports whether an error message represents a
@@ -52,6 +60,31 @@ func IsPermanentFailure(errStr string) bool {
 		}
 	}
 	return false
+}
+
+// deterministicFailurePrefix marks a hard-guard veto (e.g. the GH-4496
+// memory-doc deletion guard, or the intent-judge/quality-gate vetoes in
+// runner.go / runner_decompose.go) that formats result.Error as
+// "blocked: <underlying error>". Every such veto is deterministic by
+// construction: it fires on the branch's actual diff/content, which a bare
+// retry reproduces byte-for-byte. GH-4586.
+const deterministicFailurePrefix = "blocked:"
+
+// IsDeterministicFailure reports whether an error message represents a
+// failure class that will reproduce identically on a bare retry — either a
+// "blocked:"-prefixed hard-guard veto or any pattern IsPermanentFailure
+// already flags. Dispatcher.beginWithGenerationRetry consults this (GH-4586)
+// to route such failures straight to the operator-attention path instead of
+// spending a fresh generation reproducing a failure that was never going to
+// succeed.
+func IsDeterministicFailure(errStr string) bool {
+	if errStr == "" {
+		return false
+	}
+	if IsPermanentFailure(errStr) {
+		return true
+	}
+	return strings.HasPrefix(strings.TrimSpace(errStr), deterministicFailurePrefix)
 }
 
 // reapErrorSignatures are substrings written by the dispatcher's stale-task

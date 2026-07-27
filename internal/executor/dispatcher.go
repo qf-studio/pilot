@@ -1247,6 +1247,114 @@ func (d *Dispatcher) priorClaimWasInfra(taskID, projectPath string) bool {
 	return exec.Status == string(ExecStatusInfra)
 }
 
+// consecutiveIdenticalFailureThreshold is N in "the last N consecutive
+// generations for the same (task_id, project_path) failed with the exact
+// same error string" (GH-4586). A single failure could be any kind of
+// one-off transient blip, but the SAME error string twice in a row means the
+// retry changed nothing about the outcome — a third identical attempt is not
+// going to behave differently either.
+const consecutiveIdenticalFailureThreshold = 2
+
+// deterministicFailureReasonPrefix / identicalFailureStreakReasonPrefix tag
+// the reason string escalateStalledTask persists to the claimed execution's
+// Error column for the two GH-4586 operator-attention triggers below. They
+// exist so priorClaimWasEscalatedForOperatorAttention (consulted on every
+// later beginWithGenerationRetry call for the same claim) can recognize "this
+// stalled status was OUR escalation" and stay sticky, instead of falling
+// through to priorClaimWasStalled and minting free stall-carve-out retries
+// forever — the exact bypass GH-4502's ordering comment (see the hard-cap
+// check above priorClaimWasStalled) already had to guard against for the
+// repick-hard-cap escalation.
+const (
+	deterministicFailureReasonPrefix   = "deterministic failure (will not retry): "
+	identicalFailureStreakReasonPrefix = "consecutive identical failures (will not retry): "
+)
+
+// priorClaimWasDeterministicFailure reports whether (taskID, projectPath)'s
+// currently claimed execution — the one nextRetryGeneration just examined to
+// grant this retry — failed (status "failed") with a deterministic error
+// class per IsDeterministicFailure (a "blocked:" hard-guard veto, or any
+// pattern IsPermanentFailure already flags). Such a failure reproduces
+// identically on a bare retry — the task's own spec or a hard guard rejected
+// it, not a transient environment blip — so beginWithGenerationRetry must
+// not spend a fresh generation reproducing it. GH-4586. Returns the prior
+// error string alongside the bool so the caller can surface it verbatim in
+// the operator-attention reason. Errors are treated as "not deterministic" —
+// the caller falls through to the ordinary backoff/hard-cap path, which is
+// the safe default.
+func (d *Dispatcher) priorClaimWasDeterministicFailure(taskID, projectPath string) (bool, string) {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false, ""
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil || exec == nil {
+		return false, ""
+	}
+	if exec.Status != string(ExecStatusFailed) || !IsDeterministicFailure(exec.Error) {
+		return false, ""
+	}
+	return true, exec.Error
+}
+
+// priorClaimsHadIdenticalFailureStreak reports whether the most recent
+// consecutiveIdenticalFailureThreshold executions recorded for (taskID,
+// projectPath) all have status "failed" and share the exact same, non-empty
+// Error string — independent of whether that error matches a known
+// deterministic class (GH-4586). Executions are read newest-first via
+// ListExecutionsForTask, which mirrors how beginWithGenerationRetry itself
+// creates one fresh execution row per granted generation, so the newest rows
+// line up with the newest generations. Two identical failures in a row means
+// the retry changed nothing about the outcome, so granting a third
+// generation is unlikely to behave differently either. Errors (or fewer than
+// threshold rows) are treated as "no streak" — the caller falls through to
+// the ordinary backoff/hard-cap path, which is the safe default.
+func (d *Dispatcher) priorClaimsHadIdenticalFailureStreak(taskID, projectPath string) (bool, string) {
+	execs, err := d.store.ListExecutionsForTask(taskID, projectPath)
+	if err != nil || len(execs) < consecutiveIdenticalFailureThreshold {
+		return false, ""
+	}
+	recent := execs[:consecutiveIdenticalFailureThreshold]
+	firstErr := recent[0].Error
+	if firstErr == "" {
+		return false, ""
+	}
+	for _, exec := range recent {
+		if exec.Status != string(ExecStatusFailed) || exec.Error != firstErr {
+			return false, ""
+		}
+	}
+	return true, firstErr
+}
+
+// priorClaimWasEscalatedForOperatorAttention reports whether (taskID,
+// projectPath)'s currently claimed execution was already routed to the
+// GH-4586 operator-attention path (status "stalled" with a reason string
+// carrying deterministicFailureReasonPrefix or
+// identicalFailureStreakReasonPrefix) by a previous call to
+// escalateDeterministicFailure / escalateIdenticalFailureStreak. Consulted
+// BEFORE priorClaimWasStalled so a later poll tick — which would otherwise
+// see status "stalled" on the same claimed execution and (wrongly) treat it
+// as a genuine watchdog stall-kill eligible for the stall carve-out — stays
+// pinned to the operator-attention path instead of minting free retries
+// forever. Mirrors the ordering discipline the GH-4502 hard-cap check above
+// priorClaimWasStalled already established for exactly this class of bypass.
+func (d *Dispatcher) priorClaimWasEscalatedForOperatorAttention(taskID, projectPath string) (bool, string) {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false, ""
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil || exec == nil || exec.Status != string(ExecStatusStalled) {
+		return false, ""
+	}
+	if strings.HasPrefix(exec.Error, deterministicFailureReasonPrefix) ||
+		strings.HasPrefix(exec.Error, identicalFailureStreakReasonPrefix) {
+		return true, exec.Error
+	}
+	return false, ""
+}
+
 // nextRetryGeneration inspects the highest execution_claims generation
 // currently held for (taskID, projectPath) and reports whether a fresh
 // Begin(..., generation+1) is warranted (GH-4372). Three outcomes:
@@ -1368,6 +1476,45 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 			return "", nil
 		}
 		return "", fmt.Errorf("failed to save retry execution: %w", retryErr)
+	}
+
+	// GH-4586: a prior poll tick already routed this claim to the
+	// operator-attention path below (deterministic failure or an identical
+	// failure streak) and marked it "stalled" as the hold marker — the exact
+	// same status a genuine watchdog stall-kill uses. Recognizing "this is OUR
+	// escalation" here, before priorClaimWasStalled ever runs, keeps the task
+	// pinned to the operator-attention path instead of falling through to the
+	// stall carve-out and minting a fresh, free generation on every later poll
+	// tick (the same bypass class the GH-4502 hard-cap check above
+	// priorClaimWasStalled already exists to prevent for that escalation).
+	if wasEscalated, reason := d.priorClaimWasEscalatedForOperatorAttention(task.ID, task.ProjectPath); wasEscalated {
+		d.escalateStalledTask(task, gen, 0, reason, nil)
+		return "", nil
+	}
+
+	// GH-4586: a deterministic failure (a "blocked:" hard-guard veto, or any
+	// class IsPermanentFailure already flags — e.g. the GH-4496 memory-doc
+	// deletion veto) reproduces identically on a bare retry: the task's own
+	// spec or a hard guard rejected the diff, not a transient environment
+	// blip. Spending a fresh generation reproducing it only delays the
+	// eventual repick-hard-cap stall while still burning consecutiveDrops
+	// toward it — route straight to the operator-attention path instead, on
+	// the very first occurrence, rather than waiting for
+	// dispatcherRepickHardCap.
+	if isDeterministic, errStr := d.priorClaimWasDeterministicFailure(task.ID, task.ProjectPath); isDeterministic {
+		d.escalateDeterministicFailure(task, gen, errStr)
+		return "", nil
+	}
+
+	// GH-4586: independent of error class, the last consecutiveIdenticalFailureThreshold
+	// consecutive generations failing with the exact same error string means
+	// the retry changed nothing about the outcome — the task is durably
+	// stuck, not transiently unlucky. Route to the same operator-attention
+	// path rather than burning another generation reproducing it a third
+	// time.
+	if hadStreak, errStr := d.priorClaimsHadIdenticalFailureStreak(task.ID, task.ProjectPath); hadStreak {
+		d.escalateIdenticalFailureStreak(task, gen, errStr)
+		return "", nil
 	}
 
 	// GH-4394 subtask 2: cmd/pilot's per-issue backoff (#4385) only gates
@@ -1622,6 +1769,41 @@ func (d *Dispatcher) stallTaskAfterInfraCap(task *Task, gen, infraDrops int) {
 		"reason":      "infra_repick_cap_stalled",
 		"infra_drops": fmt.Sprintf("%d", infraDrops),
 		"infra_cap":   fmt.Sprintf("%d", dispatcherInfraRepickCap),
+	})
+}
+
+// escalateDeterministicFailure routes a task whose prior claim failed with a
+// deterministic error class (priorClaimWasDeterministicFailure) straight to
+// the operator-attention path via escalateStalledTask, without granting a
+// fresh generation — GH-4586. Fires on the first occurrence rather than
+// waiting for dispatcherRepickHardCap, since a deterministic failure is
+// already known to reproduce identically on retry. The reason string is
+// tagged with deterministicFailureReasonPrefix so
+// priorClaimWasEscalatedForOperatorAttention can recognize this escalation
+// on later poll ticks and stay pinned to this path instead of falling
+// through to the stall carve-out.
+func (d *Dispatcher) escalateDeterministicFailure(task *Task, gen int, errStr string) {
+	reason := deterministicFailureReasonPrefix + errStr
+	d.escalateStalledTask(task, gen, 0, reason, map[string]string{
+		"reason":      "deterministic_failure_stalled",
+		"prior_error": errStr,
+	})
+}
+
+// escalateIdenticalFailureStreak routes a task to the operator-attention
+// path via escalateStalledTask when the last consecutiveIdenticalFailureThreshold
+// generations failed with the exact same error string, independent of
+// whether that error matches a known deterministic class — GH-4586. The
+// reason string is tagged with identicalFailureStreakReasonPrefix so
+// priorClaimWasEscalatedForOperatorAttention can recognize this escalation
+// on later poll ticks and stay pinned to this path instead of falling
+// through to the stall carve-out.
+func (d *Dispatcher) escalateIdenticalFailureStreak(task *Task, gen int, errStr string) {
+	reason := identicalFailureStreakReasonPrefix + errStr
+	d.escalateStalledTask(task, gen, 0, reason, map[string]string{
+		"reason":            "identical_failure_streak_stalled",
+		"consecutive_count": fmt.Sprintf("%d", consecutiveIdenticalFailureThreshold),
+		"prior_error":       errStr,
 	})
 }
 

@@ -4254,6 +4254,205 @@ func TestDispatcher_BeginWithGenerationRetry_InfraCapEscalatesWithDistinctReason
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_DeterministicAndTransientFailures
+// is the GH-4586 table-driven acceptance test covering the two prior-claim
+// error-class outcomes beginWithGenerationRetry must distinguish: a
+// deterministic failure (a "blocked:" hard-guard veto, or any
+// IsPermanentFailure-flagged pattern) must be routed straight to the
+// operator-attention path (escalateStalledTask) WITHOUT granting a fresh
+// generation, while an ordinary transient failure must still be re-picked
+// exactly as before this change.
+func TestDispatcher_BeginWithGenerationRetry_DeterministicAndTransientFailures(t *testing.T) {
+	tests := []struct {
+		name           string
+		priorError     string
+		wantRePicked   bool
+		wantAlertCount int
+		wantReasonHas  string
+	}{
+		{
+			name:           "deterministic blocked: veto is not re-picked",
+			priorError:     "blocked: execution deleted memory doc(s) outside its lane: [foo.md]",
+			wantRePicked:   false,
+			wantAlertCount: 1,
+			wantReasonHas:  "deterministic failure",
+		},
+		{
+			name:           "deterministic IsPermanentFailure pattern is not re-picked",
+			priorError:     "PR creation refused: title is not a conventional commit: 'foo'",
+			wantRePicked:   false,
+			wantAlertCount: 1,
+			wantReasonHas:  "deterministic failure",
+		},
+		{
+			name:           "transient failure IS re-picked",
+			priorError:     "connection reset by peer while cloning repo",
+			wantRePicked:   true,
+			wantAlertCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			task := &Task{ID: "GH-4586-CASE", ProjectPath: "/project-4586", Title: "GH-4586 case task"}
+			runner := NewRunner()
+			processor := &fakeAlertProcessor{}
+			runner.SetAlertProcessor(processor)
+			dispatcher := NewDispatcher(store, runner, nil)
+
+			execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+			if err != nil {
+				t.Fatalf("setup Begin: %v", err)
+			}
+			if err := store.UpdateExecutionStatus(execID, "failed", tt.priorError); err != nil {
+				t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+			}
+
+			freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+			retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+			if err != nil {
+				t.Fatalf("beginWithGenerationRetry: %v", err)
+			}
+
+			if tt.wantRePicked && retryExecID == "" {
+				t.Fatal("expected the transient failure to be re-picked with a fresh execID, got none")
+			}
+			if !tt.wantRePicked && retryExecID != "" {
+				t.Fatalf("expected the deterministic failure NOT to be re-picked, got fresh execID %q", retryExecID)
+			}
+
+			if len(processor.events) != tt.wantAlertCount {
+				t.Fatalf("expected %d alert event(s), got %d: %+v", tt.wantAlertCount, len(processor.events), processor.events)
+			}
+
+			if !tt.wantRePicked {
+				stalledExec, err := store.GetExecution(execID)
+				if err != nil {
+					t.Fatalf("GetExecution: %v", err)
+				}
+				if stalledExec.Status != "stalled" {
+					t.Errorf("expected the claimed execution to be marked stalled, got status=%q", stalledExec.Status)
+				}
+				if !strings.Contains(stalledExec.Error, tt.wantReasonHas) {
+					t.Errorf("expected reason to contain %q, got %q", tt.wantReasonHas, stalledExec.Error)
+				}
+				if processor.events[0].Metadata["reason"] != "deterministic_failure_stalled" {
+					t.Errorf("expected alert metadata reason=deterministic_failure_stalled, got %q", processor.events[0].Metadata["reason"])
+				}
+				if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+					t.Fatalf("LatestClaimGeneration: %v", err)
+				} else if !found || genCheck != 0 {
+					t.Errorf("expected no generation-1 claim for a deterministic failure, found=%v generation=%d", found, genCheck)
+				}
+			} else {
+				if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+					t.Fatalf("LatestClaimGeneration: %v", err)
+				} else if !found || genCheck != 1 {
+					t.Errorf("expected a generation-1 claim after the transient-failure repick, found=%v generation=%d", found, genCheck)
+				}
+			}
+		})
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_IdenticalFailureStreakStopsRetrying
+// is the GH-4586 acceptance test for the second trigger: independent of
+// error class, once the last consecutiveIdenticalFailureThreshold (2)
+// generations for the same (task_id, project_path) failed with the exact
+// same error string, beginWithGenerationRetry must stop granting fresh
+// generations and route to the operator-attention path instead — even
+// though neither individual failure matches a known deterministic pattern.
+func TestDispatcher_BeginWithGenerationRetry_IdenticalFailureStreakStopsRetrying(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4586-STREAK", ProjectPath: "/project-4586-streak", Title: "Identical-failure-streak task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+
+	const repeatedErr = "flaky compile error: undefined symbol xyz"
+
+	// Generation 0: a transient-looking failure that does NOT match any
+	// deterministic pattern on its own.
+	lifecycle := NewExecutionLifecycle(store)
+	gen0ExecID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin gen0: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(gen0ExecID, "failed", repeatedErr); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	// Generation 1: claimed directly (simulating a prior successful repick),
+	// failing with the EXACT SAME error string.
+	gen1ExecID, err := lifecycle.Begin(task, ExecStatusRunning, 1)
+	if err != nil {
+		t.Fatalf("setup Begin gen1: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(gen1ExecID, "failed", repeatedErr); err != nil {
+		t.Fatalf("setup: failed to mark generation 1 as failed: %v", err)
+	}
+
+	// A third dispatch attempt loses the claim (generation 1 already
+	// occupied) and falls into beginWithGenerationRetry, exactly as any
+	// re-pick attempt does.
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatalf("expected the identical-failure streak to stop retrying, got fresh execID %q", retryExecID)
+	}
+
+	if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	} else if !found || genCheck != 1 {
+		t.Errorf("expected no generation-2 claim once the streak fired, found=%v generation=%d", found, genCheck)
+	}
+
+	stalledExec, err := store.GetExecution(gen1ExecID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if stalledExec.Status != "stalled" {
+		t.Errorf("expected the claimed generation-1 execution to be marked stalled, got status=%q", stalledExec.Status)
+	}
+	if !strings.Contains(stalledExec.Error, "consecutive identical failures") {
+		t.Errorf("expected an identical-failure-streak reason string, got %q", stalledExec.Error)
+	}
+	if !strings.Contains(stalledExec.Error, repeatedErr) {
+		t.Errorf("expected the reason to surface the repeated error text, got %q", stalledExec.Error)
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event, got %d: %+v", len(processor.events), processor.events)
+	}
+	if processor.events[0].Metadata["reason"] != "identical_failure_streak_stalled" {
+		t.Errorf("expected alert metadata reason=identical_failure_streak_stalled, got %q", processor.events[0].Metadata["reason"])
+	}
+
+	// A subsequent poll tick re-entering beginWithGenerationRetry for the
+	// same now-"stalled" claim must stay pinned to the operator-attention
+	// path (priorClaimWasEscalatedForOperatorAttention) instead of falling
+	// through to the ordinary stall carve-out and minting a free retry.
+	retryExecID2, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry (second tick): %v", err)
+	}
+	if retryExecID2 != "" {
+		t.Fatalf("expected the second poll tick to stay pinned to the operator-attention path, got fresh execID %q", retryExecID2)
+	}
+	if len(processor.events) != 1 {
+		t.Fatalf("expected the second poll tick to be idempotent (no new alert), got %d: %+v", len(processor.events), processor.events)
+	}
+}
+
 // TestRepickBackoffKey_FormatMatchesCmdPilotPackage is the GH-4394 subtask 4
 // counterpart to cmd/pilot's TestRepickBackoffKey_FormatMatchesDispatcherPackage.
 // cmd/pilot cannot import internal/executor's unexported repickBackoffKey (and
