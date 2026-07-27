@@ -250,3 +250,82 @@ func TestSweepStalledEpicChildren_SkipsAlreadyTerminalChildren(t *testing.T) {
 		t.Errorf("child PRUrl clobbered: got %q", childExec.PRUrl)
 	}
 }
+
+// TestSweepStalledEpicChildren_FinalizesByActualOutcome is the GH-4564
+// acceptance test: a single parent-abort sweep over two non-terminal
+// children must finalize each by its own actual outcome, not blanket-stall
+// both. The reproducing incident (epic GH-431, 2026-07-26) had orphaned
+// children that had already reached pr_created and merged to main — only
+// their Finish was skipped because it was coupled to the parent's finalize.
+// A child whose ladder shows StagePRCreated must be finalized "completed"
+// (shipped work, not a failure); a child whose ladder never reached
+// pr_created keeps the pre-GH-4564 "stalled" behavior, carrying the parent's
+// failure text.
+func TestSweepStalledEpicChildren_FinalizesByActualOutcome(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const projectPath = "/proj"
+	lifecycle := NewExecutionLifecycle(store)
+
+	// Child A: reached pr_created before the parent aborted — simulates
+	// auth-service#472/#474/#475 merging to main while the epic parent's own
+	// umbrella-PR finalize step failed independently.
+	shippedTask := &Task{ID: "GH-472", ProjectPath: projectPath}
+	shippedExecID, err := lifecycle.Begin(shippedTask, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin(shipped child): %v", err)
+	}
+	if err := store.RecordExecutionEvent(shippedExecID, memory.StageQueued, "queued"); err != nil {
+		t.Fatalf("RecordExecutionEvent(StageQueued): %v", err)
+	}
+	if err := store.RecordExecutionEvent(shippedExecID, memory.StagePRCreated, "opened PR auth-service#472"); err != nil {
+		t.Fatalf("RecordExecutionEvent(StagePRCreated): %v", err)
+	}
+
+	// Child B: never reached pr_created — genuinely orphaned, still running
+	// with no delivered work when the parent aborted.
+	orphanTask := &Task{ID: "GH-473", ProjectPath: projectPath}
+	orphanExecID, err := lifecycle.Begin(orphanTask, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin(orphan child): %v", err)
+	}
+	if err := store.RecordExecutionEvent(orphanExecID, memory.StageQueued, "queued"); err != nil {
+		t.Fatalf("RecordExecutionEvent(StageQueued): %v", err)
+	}
+
+	r := newSilentRunnerTask359()
+	r.logStore = store
+
+	const parentFailureReason = "epic PR creation failed: No commits between main and pilot/GH-431"
+	r.sweepStalledEpicChildren("GH-431", projectPath, []string{shippedTask.ID, orphanTask.ID}, parentFailureReason)
+
+	shippedExec, err := store.GetExecution(shippedExecID)
+	if err != nil {
+		t.Fatalf("GetExecution(shipped): %v", err)
+	}
+	if shippedExec.Status != string(ExecStatusCompleted) {
+		t.Errorf("shipped child status = %q, want %q", shippedExec.Status, ExecStatusCompleted)
+	}
+	if shippedExec.Error != "" {
+		t.Errorf("shipped child error = %q, want empty (not stamped as a failure)", shippedExec.Error)
+	}
+
+	orphanExec, err := store.GetExecution(orphanExecID)
+	if err != nil {
+		t.Fatalf("GetExecution(orphan): %v", err)
+	}
+	if orphanExec.Status != string(ExecStatusStalled) {
+		t.Errorf("orphan child status = %q, want %q", orphanExec.Status, ExecStatusStalled)
+	}
+	wantPrefix := "parent epic GH-431 aborted:"
+	if !strings.HasPrefix(orphanExec.Error, wantPrefix) {
+		t.Errorf("orphan child error = %q, want prefix %q", orphanExec.Error, wantPrefix)
+	}
+	if !strings.Contains(orphanExec.Error, parentFailureReason) {
+		t.Errorf("orphan child error = %q, want it to carry the parent's failure text %q", orphanExec.Error, parentFailureReason)
+	}
+}
