@@ -1663,7 +1663,10 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	// GH-3779: classify the parent from its children's terminal states instead of
 	// always leaving Success untouched — a decomposed parent whose children ALL
 	// no-op'd shipped nothing anywhere and must record as no_op, not completed.
-	if guardCount, _ := git.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+	//
+	// GH-4566: compares against origin/<base>, not the (possibly stale) local
+	// <base> ref — see CountNewCommitsAgainstOrigin's doc comment.
+	if guardCount, _ := git.CountNewCommitsAgainstOrigin(ctx, baseBranch); guardCount == 0 {
 		evaluateEmptyBranchPRGuard(true, childTerminalStates, result)
 		if result.Outcome == "no_op" {
 			r.log.Warn("Epic branch has no commits vs base and all children no-op'd, recording epic as no_op",
@@ -1811,6 +1814,37 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	epicPRTitle := fmt.Sprintf("%s: %s", task.ID, normalizedEpicTitle)
 	prURL, prErr := git.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
 	if prErr != nil {
+		// GH-4566 backstop: the origin-relative guard above (line ~1666) should
+		// already have caught an empty umbrella branch before we ever pushed.
+		// If GitHub itself still reports "No commits between" here — some
+		// stale-ref edge case the guard fix doesn't cover, or a push that
+		// landed nothing new — classify it the same way that guard would
+		// (evaluateEmptyBranchPRGuard/GH-3779, off the children's terminal
+		// states) instead of recording a false "infra" failure + alert on an
+		// epic whose work already shipped via child PRs. Defense in depth:
+		// this is a backstop for the guard, not a replacement for it.
+		if containsAny(prErr.Error(), []string{"no commits between"}) {
+			evaluateEmptyBranchPRGuard(true, childTerminalStates, result)
+			if result.Outcome == "no_op" {
+				r.log.Warn("Epic PR creation reported no commits and all children no-op'd, recording epic as no_op",
+					slog.String("task_id", task.ID),
+					slog.Any("error", prErr),
+					slog.String("summary", result.Error),
+				)
+				r.reportProgress(task.ID, "No-Op", 100, result.Error)
+			} else {
+				r.log.Warn("Epic PR creation reported no commits but children shipped, recording epic as completed",
+					slog.String("task_id", task.ID),
+					slog.Any("error", prErr),
+				)
+				r.reportProgress(task.ID, "Complete", 100, "epic branch had no commits at PR-create time; deliverables shipped via child sub-issue PRs")
+			}
+			// GH-4561: still sweep any child left genuinely non-terminal — this
+			// is a no-op for the (expected) case where every child already
+			// reached a terminal state, and a safety net otherwise.
+			r.sweepEpicChildrenOnAbort(task, fmt.Sprintf("epic PR creation reported no commits: %v", prErr))
+			return
+		}
 		result.Success = false
 		result.Error = fmt.Sprintf("epic PR creation failed: %v", prErr)
 		r.log.Warn("Epic PR creation failed",
@@ -3532,6 +3566,10 @@ retrySucceeded:
 		// No-commit detection and retry (GH-916)
 		// ~10% of failures are "No commits between main and pilot/GH-XXX"
 		// Claude runs successfully but makes no actual changes, then PR creation fails.
+		//
+		// GH-4566: both commit counts below compare against origin/<base>, not
+		// the (possibly stale) local <base> ref — see
+		// CountNewCommitsAgainstOrigin's doc comment.
 		if task.CreatePR && !task.DirectCommit && task.Branch != "" {
 			baseBranch := task.BaseBranch
 			if baseBranch == "" {
@@ -3541,7 +3579,7 @@ retrySucceeded:
 				}
 			}
 
-			commitCount, countErr := git.CountNewCommits(ctx, baseBranch)
+			commitCount, countErr := git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
 			if countErr != nil {
 				log.Warn("Failed to count commits for no-commit check",
 					slog.String("task_id", task.ID),
@@ -3620,7 +3658,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				}
 
 				// Check again after retry
-				commitCount, _ = git.CountNewCommits(ctx, baseBranch)
+				commitCount, _ = git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
 				if commitCount == 0 {
 					result.Success = false
 
@@ -4312,7 +4350,10 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// task genuinely produced nothing, so it stays a hard failure (unlike the
 			// decomposed/epic guard in finalizeEpicBranchPR, which treats an empty parent
 			// branch as a legitimate success when children shipped their own PRs).
-			if guardCount, _ := git.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+			//
+			// GH-4566: compares against origin/<base>, not the (possibly stale) local
+			// <base> ref — see CountNewCommitsAgainstOrigin's doc comment.
+			if guardCount, _ := git.CountNewCommitsAgainstOrigin(ctx, baseBranch); guardCount == 0 {
 				evaluateEmptyBranchPRGuard(false, nil, result)
 				if backendResult != nil {
 					backendResult.ErrorType = string(ErrorTypeNoChanges)
