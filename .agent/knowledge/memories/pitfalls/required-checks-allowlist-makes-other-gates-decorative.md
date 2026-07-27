@@ -52,9 +52,16 @@ cannot fix a config problem.**
    [[global-required-checks-leak-across-projects]] — the same allowlist is
    shared across project controllers).
 
-**Status 2026-07-25: UNFIXED.** Founder decision pending on widening the
-allowlist. Everything else from the 07-24/25 incident chain shipped; this is
-the one item a code fix cannot address.
+**Status 2026-07-27: FIXED for the pilot project** (founder-approved).
+Per-project override added on the box (`projects[pilot].ci_checks.required_checks`,
+`ProjectCIChecksOverride` / GH-4478 plumbing at `cmd/pilot/main.go:1773/1834`):
+`[test, lint, Knowledge Graph Drift Gate, Check Secret Patterns,
+Box Scripts (ShellCheck + tests)]`. Daemon restarted 2026-07-27 12:46Z;
+startup log confirms the 5-item allowlist on pilot's CI monitor. Backup:
+`config.yaml.bak-drift-gate-required`. Other projects still inherit the
+global `[test, lint]` (pointer keeps auto-discovery via its `[]` override) —
+the cross-project leak in [[global-required-checks-leak-across-projects]]
+remains for repos without an override.
 
 Related: [[global-required-checks-leak-across-projects]] (same config, the
 cross-project leak), [[ci-infra-failure-misclassified-as-code]] (also lives in
