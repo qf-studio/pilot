@@ -52,12 +52,19 @@ nothing sweeps the children that already have non-terminal ledger rows.
 
 ## Fix
 
+> **Refinement 2026-07-27** (issue comment on GH-4560): in the live incident
+> all three children had actually SUCCEEDED — PRs auth-service#472/#474/#475
+> merged; only Finish was skipped. Finalize by ACTUAL outcome, not blanket
+> `stalled`: reached `pr_created` → `completed`; never reached it → `stalled`.
+> The "No commits" umbrella failure is EXPECTED when children merge directly
+> to main — treat as benign parent outcome, never as child failure.
+
 1. **Epic abort path finalizes children.** On any parent-terminal failure
    (`epic PR creation failed`, title rejection, decompose abort), enumerate the
    epic's child executions with non-terminal status and route each through
-   `ExecutionLifecycle.Finish` with status `stalled` and an error naming the
-   parent's failure (e.g. `parent epic GH-431 aborted: epic PR creation
-   failed`). Use the existing lifecycle API — do NOT add a second write path
+   `ExecutionLifecycle.Finish` with the child's actual outcome (see refinement
+   above), error naming the parent's failure where the child had none. Use the
+   existing lifecycle API — do NOT add a second write path
    (that is the FK-787 class TASK-404 exists to kill).
 2. **Orphan evictor heals the ledger.** When the stuck-task evictor
    (`internal/alerts/engine.go:699`) evicts an entry whose execution row is
