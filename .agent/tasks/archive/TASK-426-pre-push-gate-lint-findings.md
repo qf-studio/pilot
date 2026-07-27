@@ -1,6 +1,6 @@
 # TASK-426: Fix 4 lint findings blocking the local pre-push gate
 
-**Created**: 2026-07-27 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-27
+**Created**: 2026-07-27 · **Status**: ✅ Shipped 2026-07-27 (#4575 → PR #4578, merged 13:48Z; released v2.247.0 — --no-verify habit retired) · **Last Updated**: 2026-07-27
 
 ## Problem
 

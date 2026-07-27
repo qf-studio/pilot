@@ -1,6 +1,6 @@
 # TASK-425: Graph drift local prevention — check-graph in pre-commit/pre-push + `--fix` auto-index
 
-**Created**: 2026-07-27 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-27
+**Created**: 2026-07-27 · **Status**: ✅ Shipped 2026-07-27 (#4574 → PR #4576, merged 13:18Z; released v2.247.0 — pre-commit/pre-push gates live) · **Last Updated**: 2026-07-27
 
 ## Problem
 

@@ -1,6 +1,6 @@
 # TASK-424: Memory-doc guards diff against stale local base ref — make all three legs origin-relative
 
-**Created**: 2026-07-27 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-27
+**Created**: 2026-07-27 · **Status**: ✅ Shipped 2026-07-27 (#4573 → PR #4577, merged 13:25Z; released v2.247.0) · **Last Updated**: 2026-07-27
 
 ## Problem
 
