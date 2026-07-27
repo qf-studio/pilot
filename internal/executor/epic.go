@@ -2513,15 +2513,15 @@ func createdIssueTaskIDs(issues []CreatedIssue) []string {
 	return ids
 }
 
-// sweepStalledEpicChildren marks every non-terminal execution among
-// childTaskIDs "stalled" via the ExecutionLifecycle chokepoint, carrying the
-// parent epic's failure text as the child's error (GH-4561). Each child
-// sub-issue is dispatched as its own independently-claimed GitHub issue
-// (GH-1471) and may already be running/queued on another dispatch channel —
-// the poller, a different ProjectWorker — at the moment the parent epic
-// aborts terminally: epic PR creation failing, the epic's title being
-// rejected, or CreateSubIssues itself aborting mid-decomposition with a
-// partial batch already created (see createdIssueTaskID's doc comment).
+// sweepStalledEpicChildren finalizes every non-terminal execution among
+// childTaskIDs on parent epic abort, via the ExecutionLifecycle chokepoint
+// (GH-4561, refined by GH-4564). Each child sub-issue is dispatched as its
+// own independently-claimed GitHub issue (GH-1471) and may already be
+// running/queued on another dispatch channel — the poller, a different
+// ProjectWorker — at the moment the parent epic aborts terminally: epic PR
+// creation failing, the epic's title being rejected, or CreateSubIssues
+// itself aborting mid-decomposition with a partial batch already created
+// (see createdIssueTaskID's doc comment).
 //
 // Left unswept, that child's execution row sits "running"/"queued" forever —
 // the parent that would have reconciled or retried it is already done, so
@@ -2529,21 +2529,38 @@ func createdIssueTaskIDs(issues []CreatedIssue) []string {
 // Dispatcher.nextRetryGeneration) a live-looking claim blocks any fresh
 // re-pick of the child task indefinitely.
 //
+// GH-4564: a blanket "stalled" is wrong for a child that already shipped —
+// the reproducing incident (epic GH-431, 2026-07-26) had all three orphaned
+// children reach pr_created and merge to main; only their own Finish was
+// skipped because it was coupled to the parent's finalize. Stamping those as
+// stalled would mislabel merged work as failed on the dashboard/history and
+// pollute outcome metrics — the exact mislabel class this sweep exists to
+// fix. So before classifying a child as ExecStatusStalled, this checks
+// whether the child's execution_events ladder already reached StagePRCreated
+// (the poller/other dispatch channel records that event on the same
+// execution row as it drives the child to its own PR). If so, the child is
+// finished as ExecStatusCompleted instead, carrying a note that
+// finalization came from this parent-abort sweep rather than the child's own
+// terminal path. A child that never reached pr_created keeps the original
+// stall behavior, carrying the parent's failure text.
+//
 // Reuses ExecutionLifecycle.Classify/Persist (TASK-404/FK-787: no raw status
 // UPDATEs) with result=nil so Persist's metrics write is skipped entirely — a
 // child that already burned real tokens/cost before going silent must keep
 // that data, not have it zeroed by a synthetic all-empty ExecutionResult. The
-// reason is threaded through as execErr (rather than result.Error) so
+// stall reason is threaded through as execErr (rather than result.Error) so
 // Classify's nil-result path still lands override=ExecStatusStalled with
-// outcome.Error set to the parent-failure text. Classify/Persist are called
+// outcome.Error set to the parent-failure text; the completed path passes a
+// nil execErr with override=ExecStatusCompleted so Classify's error branch is
+// skipped and outcome.Error stays empty. Classify/Persist are called
 // directly instead of the Finish shortcut so the execution_events row can be
 // recorded between them, per Persist's own doc comment (GH-4259): recording
 // the event AFTER Persist would let a poller observe the terminal status via
 // GetExecution and read the (still-missing) event ledger before this write
 // lands.
 //
-// "stalled" is itself a terminal status (dispatcher.go's
-// terminalExecutionStatuses), so this transition IS the claim release: the
+// Both "stalled" and "completed" are terminal statuses (dispatcher.go's
+// terminalExecutionStatuses), so either transition IS the claim release: the
 // next scheduling pass sees a terminal-but-not-done claimed execution and
 // (per nextRetryGeneration) grants a fresh generation — no separate
 // claim-release call is needed.
@@ -2564,6 +2581,39 @@ func (r *Runner) sweepStalledEpicChildren(parentID, projectPath string, childTas
 		if isTerminalExecutionStatus(exec.Status) {
 			continue
 		}
+
+		shippedPR, prCheckErr := r.logStore.HasExecutionEventStage(exec.ID, memory.StagePRCreated)
+		if prCheckErr != nil {
+			r.log.Warn("sweepStalledEpicChildren: failed to check child pr_created ladder, defaulting to stall",
+				slog.String("parent_id", parentID),
+				slog.String("child_id", childID),
+				slog.String("execution_id", exec.ID),
+				slog.Any("error", prCheckErr),
+			)
+		}
+
+		if shippedPR {
+			note := fmt.Sprintf("child reached pr_created before parent epic %s aborted (%s) — finalized as completed via parent-abort sweep", parentID, parentFailureReason)
+			outcome := lifecycle.Classify(nil, nil, ExecStatusCompleted)
+			r.recordExecutionEvent(exec.ID, memory.StageCompleted, note)
+			if persistErr := lifecycle.Persist(exec.ID, outcome, nil, 0); persistErr != nil {
+				r.log.Warn("sweepStalledEpicChildren: failed to complete shipped child execution",
+					slog.String("parent_id", parentID),
+					slog.String("child_id", childID),
+					slog.String("execution_id", exec.ID),
+					slog.Any("error", persistErr),
+				)
+				continue
+			}
+			r.log.Info("sweepStalledEpicChildren: finalized shipped child execution as completed after parent epic abort",
+				slog.String("parent_id", parentID),
+				slog.String("child_id", childID),
+				slog.String("execution_id", exec.ID),
+				slog.String("prior_status", exec.Status),
+			)
+			continue
+		}
+
 		outcome := lifecycle.Classify(nil, errors.New(reason), ExecStatusStalled)
 		r.recordExecutionEvent(exec.ID, memory.StageStalled, reason)
 		if persistErr := lifecycle.Persist(exec.ID, outcome, nil, 0); persistErr != nil {
