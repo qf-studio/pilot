@@ -882,6 +882,35 @@ func (g *GitOperations) CountNewCommits(ctx context.Context, baseBranch string) 
 	return count, nil
 }
 
+// CountNewCommitsAgainstOrigin is CountNewCommits compared against the
+// origin-tracked base branch instead of the local base branch ref. GH-4566:
+// every worktree (parent epic's and children's alike) is cut from a freshly
+// fetched origin/<base> (worktree.go), but nothing fast-forwards the shared
+// clone's local <base> ref during a sequential epic run — so on a stale local
+// <base>, CountNewCommits(ctx, "main") counts commits that landed on origin
+// via other sessions, not commits this branch actually added, and the
+// no-commits guard fires open on an empty umbrella branch.
+//
+// Fetches origin/<baseBranch> first so the comparison reflects the ref the
+// branch was actually cut from. The fetch is best-effort: on failure this
+// still compares against whatever origin/<baseBranch> already resolves to
+// locally, which is strictly fresher than the local <baseBranch> branch in
+// this codepath (worktree creation already fetched it before cutting the
+// branch). If origin/<baseBranch> doesn't resolve at all (no "origin" remote
+// configured — bare local repos, some unit tests), falls back to comparing
+// against the local <baseBranch> ref, preserving CountNewCommits' original
+// behavior in that environment.
+func (g *GitOperations) CountNewCommitsAgainstOrigin(ctx context.Context, baseBranch string) (int, error) {
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
+	fetchCmd.Dir = g.projectPath
+	_ = fetchCmd.Run() // best-effort; fall back to the existing tracking ref on failure
+
+	if count, err := g.CountNewCommits(ctx, "origin/"+baseBranch); err == nil {
+		return count, nil
+	}
+	return g.CountNewCommits(ctx, baseBranch)
+}
+
 // GetCurrentCommitSHA returns the SHA of the current HEAD commit
 func (g *GitOperations) GetCurrentCommitSHA(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
