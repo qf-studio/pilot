@@ -93,7 +93,9 @@ func TestScheduleReleaseTick_EnqueuesTrainWithResolvedMembers(t *testing.T) {
 	c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
 
 	scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
-	c.scheduleReleaseTick(context.Background(), scheduledAt)
+	if _, err := c.scheduleReleaseTick(context.Background(), scheduledAt); err != nil {
+		t.Fatalf("scheduleReleaseTick failed: %v", err)
+	}
 
 	row, err := stateStore.GetScopeRelease("owner/repo", "train:2026-07-10T21:00:00Z")
 	if err != nil {
@@ -126,7 +128,9 @@ func TestScheduleReleaseTick_DropsUnverifiablePRNumber(t *testing.T) {
 	c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
 
 	scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
-	c.scheduleReleaseTick(context.Background(), scheduledAt)
+	if _, err := c.scheduleReleaseTick(context.Background(), scheduledAt); err != nil {
+		t.Fatalf("scheduleReleaseTick failed: %v", err)
+	}
 
 	row, err := stateStore.GetScopeRelease("owner/repo", "train:2026-07-10T21:00:00Z")
 	if err != nil || row == nil {
@@ -146,7 +150,9 @@ func TestScheduleReleaseTick_EmptyCompare_NoRow(t *testing.T) {
 	c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
 
 	scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
-	c.scheduleReleaseTick(context.Background(), scheduledAt)
+	if _, err := c.scheduleReleaseTick(context.Background(), scheduledAt); err != nil {
+		t.Fatalf("scheduleReleaseTick failed: %v", err)
+	}
 
 	rows, err := stateStore.ListScopeReleases("owner/repo", "pending", "releasing", "done", "failed")
 	if err != nil {
@@ -171,7 +177,9 @@ func TestScheduleReleaseTick_DirectCommitOnlyTrain_NoRow(t *testing.T) {
 	c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
 
 	scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
-	c.scheduleReleaseTick(context.Background(), scheduledAt)
+	if _, err := c.scheduleReleaseTick(context.Background(), scheduledAt); err != nil {
+		t.Fatalf("scheduleReleaseTick failed: %v", err)
+	}
 
 	rows, err := stateStore.ListScopeReleases("owner/repo", "pending", "releasing", "done", "failed")
 	if err != nil {
@@ -235,7 +243,9 @@ func TestScheduleReleaseTick_NoTags(t *testing.T) {
 		c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
 
 		scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
-		c.scheduleReleaseTick(context.Background(), scheduledAt)
+		if _, err := c.scheduleReleaseTick(context.Background(), scheduledAt); err != nil {
+			t.Fatalf("scheduleReleaseTick failed: %v", err)
+		}
 
 		row, err := stateStore.GetScopeRelease("owner/repo", "train:2026-07-10T21:00:00Z")
 		if err != nil {
@@ -256,7 +266,9 @@ func TestScheduleReleaseTick_NoTags(t *testing.T) {
 		c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
 
 		scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
-		c.scheduleReleaseTick(context.Background(), scheduledAt)
+		if _, err := c.scheduleReleaseTick(context.Background(), scheduledAt); err != nil {
+			t.Fatalf("scheduleReleaseTick failed: %v", err)
+		}
 
 		rows, err := stateStore.ListScopeReleases("owner/repo", "pending", "releasing", "done", "failed")
 		if err != nil {
@@ -276,7 +288,9 @@ func TestScheduleReleaseTick_NoTags(t *testing.T) {
 		c, stateStore := newScheduleController(t, server.URL, "0 21 * * FRI")
 
 		scheduledAt := time.Date(2026, 7, 10, 21, 0, 0, 0, time.UTC)
-		c.scheduleReleaseTick(context.Background(), scheduledAt)
+		if _, err := c.scheduleReleaseTick(context.Background(), scheduledAt); err != nil {
+			t.Fatalf("scheduleReleaseTick failed: %v", err)
+		}
 
 		row, err := stateStore.GetScopeRelease("owner/repo", "train:2026-07-10T21:00:00Z")
 		if err != nil || row == nil {
