@@ -20,7 +20,11 @@ structurally red → contributed to autopilot destroying PR #4419 (#4422 path).
 2. For each missing file: `git log --oneline --diff-filter=A -1 -- <path>` and
    `--diff-filter=D` → identifies the adding commit and the deleting PR.
 3. Restore: `git checkout <adding-sha> -- <path>`; fix edge keys with a small
-   json rewrite (`ensure_ascii=False`!); re-run gate; commit to main.
+   json rewrite matching the tooling's canonical format — **default
+   `ensure_ascii` (escaped `\uXXXX`), `indent=2`**. Do NOT use
+   `ensure_ascii=False`: Navigator's hook writer re-escapes on its next pass
+   and the format ping-pong produced a 150-line phantom diff on 2026-07-27.
+   Re-run gate; commit to main.
 4. If an OPEN PR carries a deletion: restore the file on its branch via the
    GitHub contents API (base64 PUT with `branch=`) — no local checkout needed.
 
