@@ -33,5 +33,7 @@ Any competent reader pointed at it reasons correctly from wrong data.
 
 **Related**: [[top-level-autopilot-yaml-binds-to-nothing]] (mem-160),
 TASK-409 (cutover), `.claude/skills/pilot-aws/SKILL.md` hard rule 6 (added
-same day). Open hardening ideas: archive-sentinel + staleness banner in CLI
-and dashboard; rename the laptop DB; global CLAUDE.md pointer.
+same day). Hardening executed 2026-07-27: laptop DB renamed to
+`pilot.db.pre-s6-cutover-archive` + `README-MOVED.md` breadcrumb; global
+`~/.claude/CLAUDE.md` pointer added; staleness banner + archive sentinel
+filed as pilot#4569.
