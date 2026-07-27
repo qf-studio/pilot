@@ -2481,6 +2481,128 @@ func (r *Runner) finalizeSubIssueExecution(execID, status string, result *Execut
 	}
 }
 
+// createdIssueTaskID converts a CreatedIssue into its dispatch task-ID form —
+// "GH-N" for GitHub issues (Number > 0) or the raw Identifier for non-GitHub
+// adapters (Number == 0, GH-1471) — mirroring the exact issueRef/taskID
+// derivation executeSubIssuesTracked uses a few lines into its loop below.
+// GH-4561: the decompose-abort sweep (runner.go) must resolve child task IDs
+// straight from CreateSubIssues' returned []CreatedIssue — that abort can
+// fire before executeSubIssuesTracked ever runs, so no StageDecomposed
+// execution_events entry exists yet for GetDecomposedChildTaskIDs to parse.
+// Returns "" for a malformed CreatedIssue (neither a positive Number nor a
+// non-empty Identifier); callers must skip empty results.
+func createdIssueTaskID(issue CreatedIssue) string {
+	if issue.Number > 0 {
+		return fmt.Sprintf("GH-%d", issue.Number)
+	}
+	return issue.Identifier
+}
+
+// createdIssueTaskIDs maps createdIssueTaskID over issues, dropping any entry
+// that resolves to "" (a malformed CreatedIssue with neither a Number nor an
+// Identifier). GH-4561: used by the decompose-abort sweep to turn a partial
+// CreateSubIssues batch straight into the child task IDs sweepStalledEpicChildren
+// expects.
+func createdIssueTaskIDs(issues []CreatedIssue) []string {
+	ids := make([]string, 0, len(issues))
+	for _, iss := range issues {
+		if id := createdIssueTaskID(iss); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// sweepStalledEpicChildren marks every non-terminal execution among
+// childTaskIDs "stalled" via the ExecutionLifecycle chokepoint, carrying the
+// parent epic's failure text as the child's error (GH-4561). Each child
+// sub-issue is dispatched as its own independently-claimed GitHub issue
+// (GH-1471) and may already be running/queued on another dispatch channel —
+// the poller, a different ProjectWorker — at the moment the parent epic
+// aborts terminally: epic PR creation failing, the epic's title being
+// rejected, or CreateSubIssues itself aborting mid-decomposition with a
+// partial batch already created (see createdIssueTaskID's doc comment).
+//
+// Left unswept, that child's execution row sits "running"/"queued" forever —
+// the parent that would have reconciled or retried it is already done, so
+// nothing else ever transitions the row, and (per
+// Dispatcher.nextRetryGeneration) a live-looking claim blocks any fresh
+// re-pick of the child task indefinitely.
+//
+// Reuses ExecutionLifecycle.Classify/Persist (TASK-404/FK-787: no raw status
+// UPDATEs) with result=nil so Persist's metrics write is skipped entirely — a
+// child that already burned real tokens/cost before going silent must keep
+// that data, not have it zeroed by a synthetic all-empty ExecutionResult. The
+// reason is threaded through as execErr (rather than result.Error) so
+// Classify's nil-result path still lands override=ExecStatusStalled with
+// outcome.Error set to the parent-failure text. Classify/Persist are called
+// directly instead of the Finish shortcut so the execution_events row can be
+// recorded between them, per Persist's own doc comment (GH-4259): recording
+// the event AFTER Persist would let a poller observe the terminal status via
+// GetExecution and read the (still-missing) event ledger before this write
+// lands.
+//
+// "stalled" is itself a terminal status (dispatcher.go's
+// terminalExecutionStatuses), so this transition IS the claim release: the
+// next scheduling pass sees a terminal-but-not-done claimed execution and
+// (per nextRetryGeneration) grants a fresh generation — no separate
+// claim-release call is needed.
+func (r *Runner) sweepStalledEpicChildren(parentID, projectPath string, childTaskIDs []string, parentFailureReason string) {
+	if r.logStore == nil || len(childTaskIDs) == 0 {
+		return
+	}
+	lifecycle := NewExecutionLifecycle(r.logStore)
+	reason := fmt.Sprintf("parent epic %s aborted: %s", parentID, parentFailureReason)
+	for _, childID := range childTaskIDs {
+		if childID == "" {
+			continue
+		}
+		exec, err := r.logStore.GetLatestExecutionByTaskID(childID, projectPath)
+		if err != nil || exec == nil {
+			continue
+		}
+		if isTerminalExecutionStatus(exec.Status) {
+			continue
+		}
+		outcome := lifecycle.Classify(nil, errors.New(reason), ExecStatusStalled)
+		r.recordExecutionEvent(exec.ID, memory.StageStalled, reason)
+		if persistErr := lifecycle.Persist(exec.ID, outcome, nil, 0); persistErr != nil {
+			r.log.Warn("sweepStalledEpicChildren: failed to stall orphaned child execution",
+				slog.String("parent_id", parentID),
+				slog.String("child_id", childID),
+				slog.String("execution_id", exec.ID),
+				slog.Any("error", persistErr),
+			)
+			continue
+		}
+		r.log.Warn("sweepStalledEpicChildren: stalled orphaned child execution after parent epic abort",
+			slog.String("parent_id", parentID),
+			slog.String("child_id", childID),
+			slog.String("execution_id", exec.ID),
+			slog.String("prior_status", exec.Status),
+		)
+	}
+}
+
+// sweepEpicChildrenOnAbort is sweepStalledEpicChildren for callers that only
+// hold the parent Task, not its already-resolved child task IDs (GH-4561):
+// finalizeEpicBranchPR's push/title-rejection/PR-creation failure paths run
+// AFTER executeSubIssuesTracked has already recorded the StageDecomposed
+// execution_events entry (executeSubIssuesTracked, ~L2600), so the children
+// can be recovered from the store via GetDecomposedChildTaskIDs instead of
+// threading them through every intermediate call site. A lookup miss (no
+// decomposed event, or a store error) is silent — there is nothing to sweep.
+func (r *Runner) sweepEpicChildrenOnAbort(task *Task, failureReason string) {
+	if r.logStore == nil || task == nil {
+		return
+	}
+	childIDs, found, err := r.logStore.GetDecomposedChildTaskIDs(task.ID, task.ProjectPath)
+	if err != nil || !found || len(childIDs) == 0 {
+		return
+	}
+	r.sweepStalledEpicChildren(task.ID, task.ProjectPath, childIDs, failureReason)
+}
+
 // executeSubIssuesTracked is ExecuteSubIssues plus each child's terminal state
 // (TerminalStatus of its ExecutionResult, e.g. "completed" / "no_op") and the
 // aggregated token/cost/file metrics rolled up from every child that actually
