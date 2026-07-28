@@ -57,11 +57,11 @@ type Metrics struct {
 	// scoped to CI outcomes only.
 	CIRuns map[string]int64
 	// PRFailureClasses counts terminal handleCIFailed calls by classification
-	// ("code"/"infra", see FailureClass — GH-4533), regardless of whether the
-	// failure resulted in an auto-retry or a spawned fix issue. Distinct from
-	// CIRuns: CIRuns tracks verdict/outcome ("fail"/"infra_retry"/
-	// "infra_fail"), this tracks the classification the outcome was decided
-	// from.
+	// ("code"/"infra"/"infra_billing", see FailureClass — GH-4533, extended
+	// GH-4591), regardless of whether the failure resulted in an auto-retry
+	// or a spawned fix issue. Distinct from CIRuns: CIRuns tracks
+	// verdict/outcome ("fail"/"infra_retry"/"infra_fail"), this tracks the
+	// classification the outcome was decided from.
 	PRFailureClasses    map[string]int64
 	CircuitBreakerTrips int64
 	// RateLimitFloorEngagements counts distinct episodes (not calls) where
@@ -640,7 +640,7 @@ type MetricsSnapshot struct {
 	PRsFailedLifetime         int64 // GH-4511: all-time gauge counterpart to session-only PRsFailed
 	PRsConflicting            int64
 	CIRuns                    map[string]int64 // GH-4134: result → count (pass, fail)
-	PRFailureClasses          map[string]int64 // GH-4533: class → count (code, infra)
+	PRFailureClasses          map[string]int64 // GH-4533/GH-4591: class → count (code, infra, infra_billing)
 	CircuitBreakerTrips       int64
 	RateLimitFloorEngagements int64 // GH-4391: distinct floor-engagement episodes across this controller's background scans
 	APIErrors                 map[string]int64

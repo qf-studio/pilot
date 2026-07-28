@@ -158,3 +158,141 @@ func TestClassifyPRFailure_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+// billingAnnotation is the real GitHub Actions check-run output text
+// (GH-4591 live incident 2026-07-28) surfaced when an org billing problem
+// blocks a job from starting at all.
+const billingAnnotation = "The job was not started because recent account payments have failed or your spending limit needs to be increased."
+
+// TestIsJobsNeverStartedInfra_TableDriven covers GH-4591's jobs-never-started
+// billing-refusal detector in isolation: either an annotation keyword match
+// or a known-zero step count is sufficient; an unknown step count must never
+// be treated as zero.
+func TestIsJobsNeverStartedInfra_TableDriven(t *testing.T) {
+	tests := []struct {
+		name string
+		chk  FailedCheckLog
+		want bool
+	}{
+		{
+			name: "annotation text matches billing refusal phrase",
+			chk:  FailedCheckLog{CheckName: "build", AnnotationText: billingAnnotation},
+			want: true,
+		},
+		{
+			name: "annotation text matches spending limit phrasing case-insensitively",
+			chk:  FailedCheckLog{CheckName: "build", AnnotationText: "Your Spending Limit needs review."},
+			want: true,
+		},
+		{
+			name: "steps known and zero",
+			chk:  FailedCheckLog{CheckName: "build", StepsKnown: true, StepsCount: 0},
+			want: true,
+		},
+		{
+			name: "steps known and non-zero is not infra",
+			chk:  FailedCheckLog{CheckName: "build", StepsKnown: true, StepsCount: 4},
+			want: false,
+		},
+		{
+			name: "steps unknown (zero value) must not be treated as zero steps",
+			chk:  FailedCheckLog{CheckName: "build"},
+			want: false,
+		},
+		{
+			name: "no annotation and no step info is not infra",
+			chk:  FailedCheckLog{CheckName: "build", Logs: "some unrelated log text"},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isJobsNeverStartedInfra(tt.chk)
+			if got != tt.want {
+				t.Errorf("isJobsNeverStartedInfra() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifyPRFailure_JobsNeverStarted_TableDriven covers the GH-4591
+// acceptance scenarios end to end through classifyPRFailure: a synthetic
+// billing-refused run (zero steps + annotation) classifies infra_billing; a
+// real test failure (steps executed, one failing) classifies code; and a
+// mixed run (one billing-refused check alongside one genuine code failure)
+// classifies code — a mixed signal must never allow an auto-retry, same
+// fail-safe rule as the pre-existing runner-infra aggregation.
+func TestClassifyPRFailure_JobsNeverStarted_TableDriven(t *testing.T) {
+	codeLog := `internal/autopilot/controller.go:1234:6: Error return value is not checked (errcheck)`
+
+	tests := []struct {
+		name   string
+		checks []FailedCheckLog
+		want   FailureClass
+	}{
+		{
+			name: "billing-refused run: all jobs zero steps with annotation classifies infra_billing",
+			checks: []FailedCheckLog{
+				{CheckName: "lint", JobID: 1, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
+				{CheckName: "test", JobID: 2, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
+			},
+			want: FailureClassInfraBilling,
+		},
+		{
+			name: "billing-refused run: zero steps alone (no annotation captured) still classifies infra_billing",
+			checks: []FailedCheckLog{
+				{CheckName: "lint", JobID: 1, StepsKnown: true, StepsCount: 0},
+				{CheckName: "test", JobID: 2, StepsKnown: true, StepsCount: 0},
+			},
+			want: FailureClassInfraBilling,
+		},
+		{
+			name: "real test failure: steps executed, one failing classifies code",
+			checks: []FailedCheckLog{
+				{CheckName: "test", JobID: 1, Logs: codeLog, StepsKnown: true, StepsCount: 6},
+			},
+			want: FailureClassCode,
+		},
+		{
+			name: "mixed run: billing-refused check alongside genuine code failure classifies code",
+			checks: []FailedCheckLog{
+				{CheckName: "lint", JobID: 1, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
+				{CheckName: "test", JobID: 2, Logs: codeLog, StepsKnown: true, StepsCount: 6},
+			},
+			want: FailureClassCode,
+		},
+		{
+			name: "mixed infra-family run: runner-infra check alongside billing-refused check classifies infra_billing",
+			checks: []FailedCheckLog{
+				{CheckName: "lint", JobID: 1, Logs: `##[error]Failed to download action 'https://api.github.com/repos/actions/checkout/tarball/v4'. Error: Response status code does not indicate success: 429 (Too Many Requests).`},
+				{CheckName: "test", JobID: 2, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
+			},
+			want: FailureClassInfraBilling,
+		},
+		{
+			// Regression guard: an incomplete/stale jobs-API response (e.g. a
+			// job lookup that succeeds but returns no step breakdown) must
+			// not misclassify a genuine code failure as billing just because
+			// StepsCount reads 0 — the real compiler annotation in the log is
+			// definitive proof the job actually ran.
+			name: "real annotation wins over a StepsCount=0 false positive",
+			checks: []FailedCheckLog{
+				{CheckName: "lint", JobID: 1, Logs: codeLog, StepsKnown: true, StepsCount: 0},
+			},
+			want: FailureClassCode,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyPRFailure(tt.checks)
+			if got != tt.want {
+				t.Errorf("classifyPRFailure() = %q, want %q", got, tt.want)
+			}
+			if got.IsInfra() != (tt.want != FailureClassCode) {
+				t.Errorf("IsInfra() = %v inconsistent with want %q", got.IsInfra(), tt.want)
+			}
+		})
+	}
+}

@@ -2671,7 +2671,21 @@ func gh4533InfraTestServer(t *testing.T, sha string, rerunCalled *bool, extra fu
 			_, _ = w.Write([]byte(infraLog))
 		case r.URL.Path == "/repos/owner/repo/actions/jobs/100":
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{ID: 100, RunID: 500, Name: "lint", Status: "completed"})
+			// GH-4591: the 429 action-download failure happens mid-step (the
+			// checkout step actually started running before the download
+			// failed), so real GitHub jobs-API responses for this shape have
+			// a non-empty Steps breakdown — unlike the GH-4591
+			// jobs-never-started shape, whose Steps is always []. Populating
+			// Steps here keeps this fixture distinguishable from that new
+			// shape so classifyPRFailure still reports the generic
+			// FailureClassInfra, not FailureClassInfraBilling.
+			_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{
+				ID: 100, RunID: 500, Name: "lint", Status: "completed",
+				Steps: []ghadapter.JobStep{
+					{Name: "Set up job", Status: "completed", Conclusion: "success", Number: 1},
+					{Name: "Run actions/checkout@v4", Status: "completed", Conclusion: "failure", Number: 2},
+				},
+			})
 		case r.URL.Path == "/repos/owner/repo/actions/runs/500/rerun-failed-jobs" && r.Method == http.MethodPost:
 			if rerunCalled != nil {
 				*rerunCalled = true
@@ -2952,6 +2966,175 @@ internal/autopilot/controller.go:1234:6: Error return value of c.ghClient.CloseP
 	}
 	if got := snap.PRFailureClasses["code"]; got != 1 {
 		t.Errorf("PRFailureClasses[code] = %d, want 1", got)
+	}
+}
+
+// gh4591BillingTestServer mocks the GH-4591 jobs-never-started billing-refusal
+// shape: two failed checks whose check-run Output.Summary carries GitHub's
+// billing-refusal text and whose jobs-API lookup reports an empty Steps
+// breakdown (the job never started, so there is nothing to step through) and
+// no job-logs endpoint at all (a never-started job has no log to fetch).
+func gh4591BillingTestServer(t *testing.T, sha string, rerunCalled *bool, extra func(w http.ResponseWriter, r *http.Request) bool) *httptest.Server {
+	t.Helper()
+	const billingText = "The job was not started because recent account payments have failed or your spending limit needs to be increased."
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if extra != nil && extra(w, r) {
+			return
+		}
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/"+sha+"/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 2,
+				CheckRuns: []github.CheckRun{
+					{ID: 110, Name: "build", Status: "completed", Conclusion: "failure", Output: &github.CheckOutput{Summary: billingText}},
+					{ID: 111, Name: "lint", Status: "completed", Conclusion: "failure", Output: &github.CheckOutput{Summary: billingText}},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/110/logs" || r.URL.Path == "/repos/owner/repo/actions/jobs/111/logs":
+			// A never-started job has no log at all.
+			w.WriteHeader(http.StatusNotFound)
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/110":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{ID: 110, RunID: 600, Name: "build", Status: "completed", Steps: []ghadapter.JobStep{}})
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/111":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{ID: 111, RunID: 600, Name: "lint", Status: "completed", Steps: []ghadapter.JobStep{}})
+		case r.URL.Path == "/repos/owner/repo/actions/runs/600/rerun-failed-jobs" && r.Method == http.MethodPost:
+			if rerunCalled != nil {
+				*rerunCalled = true
+			}
+			w.WriteHeader(http.StatusCreated)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+}
+
+// TestHandleCIFailed_JobsNeverStarted_BillingRefusal replays the GH-4591 live
+// incident (pilot-canary-sandbox#106 wrongly closed, fix issue #107 spawned
+// wastefully; pointer#213/#214 hit the same shape): a check-run pair whose
+// jobs never even started (annotation text + Steps: []) must classify
+// infra_billing, auto-retry via RerunFailedJobs exactly like a generic infra
+// failure, leave the PR open, spawn no fix issue, and fire exactly one
+// ci_billing_refusal alert.
+func TestHandleCIFailed_JobsNeverStarted_BillingRefusal(t *testing.T) {
+	rerunCalled := false
+	issueCreated := false
+	prClosed := false
+
+	server := gh4591BillingTestServer(t, "billingsha1", &rerunCalled, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 910}))
+			return true
+		case r.URL.Path == "/repos/owner/repo/pulls/60" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+			return true
+		}
+		return false
+	})
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+	sink := &fakeAlertSink{}
+	c.SetAlertsEngine(sink)
+
+	prState := &PRState{
+		PRNumber: 60,
+		HeadSHA:  "billingsha1",
+		Stage:    StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if !rerunCalled {
+		t.Error("expected RerunFailedJobs to be called for the billing-refusal-classified failure")
+	}
+	if issueCreated {
+		t.Error("no fix issue should be created for a billing-refusal failure — there is nothing in the PR's code to fix")
+	}
+	if prClosed {
+		t.Error("PR must not be closed on a billing-refusal auto-retry")
+	}
+	if prState.Stage != StageWaitingCI {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageWaitingCI)
+	}
+
+	if len(sink.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event, got %d", len(sink.events))
+	}
+	if sink.events[0].Type != alerts.EventType("ci_billing_refusal") {
+		t.Errorf("alert Type = %q, want ci_billing_refusal", sink.events[0].Type)
+	}
+	if !strings.Contains(sink.events[0].Error, "billing") {
+		t.Errorf("alert message = %q, want it to mention billing", sink.events[0].Error)
+	}
+
+	snap := c.metrics.Snapshot()
+	if got := snap.CIRuns["infra_retry"]; got != 1 {
+		t.Errorf("CIRuns[infra_retry] = %d, want 1", got)
+	}
+}
+
+// TestHandleCIFailed_JobsNeverStarted_AlertFiresOncePerOutageWindow covers the
+// GH-4591 acceptance criterion that the ci_billing_refusal alert fires once
+// per repo per outage window, not once per PR: two different PRs failing CI
+// with the same billing-refusal shape in the same outage window must only
+// produce a single alert event, and a later, distinct outage (after CI has
+// passed again, resetting the dedup guard) must alert again.
+func TestHandleCIFailed_JobsNeverStarted_AlertFiresOncePerOutageWindow(t *testing.T) {
+	server := gh4591BillingTestServer(t, "billingsha2", nil, nil)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+	sink := &fakeAlertSink{}
+	c.SetAlertsEngine(sink)
+
+	pr1 := &PRState{PRNumber: 61, HeadSHA: "billingsha2", Stage: StageCIFailed}
+	pr2 := &PRState{PRNumber: 62, HeadSHA: "billingsha2", Stage: StageCIFailed}
+
+	if err := c.handleCIFailed(context.Background(), pr1); err != nil {
+		t.Fatalf("handleCIFailed(pr1) returned unexpected error: %v", err)
+	}
+	if err := c.handleCIFailed(context.Background(), pr2); err != nil {
+		t.Fatalf("handleCIFailed(pr2) returned unexpected error: %v", err)
+	}
+
+	if len(sink.events) != 1 {
+		t.Fatalf("expected exactly 1 alert across both PRs in the same outage window, got %d", len(sink.events))
+	}
+
+	// CI passing resets the dedup guard, so a later, distinct outage alerts again.
+	if err := c.handleCIPassed(context.Background(), pr1); err != nil {
+		t.Fatalf("handleCIPassed returned unexpected error: %v", err)
+	}
+
+	pr3 := &PRState{PRNumber: 63, HeadSHA: "billingsha2", Stage: StageCIFailed}
+	if err := c.handleCIFailed(context.Background(), pr3); err != nil {
+		t.Fatalf("handleCIFailed(pr3) returned unexpected error: %v", err)
+	}
+
+	if len(sink.events) != 2 {
+		t.Fatalf("expected a second alert after the dedup guard reset via handleCIPassed, got %d total", len(sink.events))
 	}
 }
 
