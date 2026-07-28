@@ -921,6 +921,7 @@ func TestAutoMerger_PostMisconfigComment_Idempotent(t *testing.T) {
 	// Second call: marker present in comment list → posting is skipped.
 	postCount := 0
 	listCallCount := 0
+	labelCount := 0
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -943,6 +944,10 @@ func TestAutoMerger_PostMisconfigComment_Idempotent(t *testing.T) {
 			postCount++
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id":1,"body":"posted"}`))
+		case r.Method == http.MethodPost && path == "/repos/owner/repo/issues/42/labels":
+			labelCount++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -955,16 +960,23 @@ func TestAutoMerger_PostMisconfigComment_Idempotent(t *testing.T) {
 	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 	prState := &PRState{PRNumber: 42}
 
-	// First call — should post the comment.
-	merger.postMisconfigComment(context.Background(), prState)
+	// First call — should post the comment. The parked label is applied to
+	// the linked issue by the controller's park path, never from here.
+	merger.postMisconfigComment(context.Background(), prState, "approval.enabled")
 	if postCount != 1 {
 		t.Errorf("first call: postCount = %d, want 1", postCount)
 	}
+	if labelCount != 0 {
+		t.Errorf("first call: labelCount = %d, want 0 (label is controller-side)", labelCount)
+	}
 
 	// Second call — marker in list, should NOT post again.
-	merger.postMisconfigComment(context.Background(), prState)
+	merger.postMisconfigComment(context.Background(), prState, "approval.enabled")
 	if postCount != 1 {
 		t.Errorf("second call: postCount = %d, want 1 (idempotent)", postCount)
+	}
+	if labelCount != 0 {
+		t.Errorf("second call: labelCount = %d, want 0 (label is controller-side)", labelCount)
 	}
 	if listCallCount != 2 {
 		t.Errorf("listCallCount = %d, want 2", listCallCount)
