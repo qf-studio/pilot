@@ -1938,10 +1938,14 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 	}
 
 	if escalateReason == "" && prState.IssueNumber > 0 {
-		issue, issueErr := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+		// GH-4599: derive the issue to compare from the PR's own "pilot/GH-N"
+		// branch rather than prState.IssueNumber directly — for scope-release
+		// carrier PRs that field is the epic parent (see scopeDriftIssueNumber).
+		driftIssueNum := scopeDriftIssueNumber(c.log, prState.BranchName, prState.IssueNumber)
+		issue, issueErr := c.ghClient.GetIssue(ctx, c.owner, c.repo, driftIssueNum)
 		if issueErr != nil {
 			c.log.Warn("handleCIPassed: GetIssue failed, skipping scope-drift gate (fail-open)",
-				"pr", prState.PRNumber, "issue", prState.IssueNumber, "error", issueErr)
+				"pr", prState.PRNumber, "issue", driftIssueNum, "error", issueErr)
 		} else if reason := ScopeDriftReason(c.log, prState.PRTitle, issue.Title); reason != "" {
 			escalateReason = reason
 		}

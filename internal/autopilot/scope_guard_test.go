@@ -126,6 +126,68 @@ func TestScopeDriftReason_AbstainLogsReason(t *testing.T) {
 	}
 }
 
+// TestIssueNumberFromBranch covers GH-4599 branch-name issue extraction.
+func TestIssueNumberFromBranch(t *testing.T) {
+	cases := []struct {
+		branch  string
+		wantNum int
+		wantOK  bool
+	}{
+		{"pilot/GH-4599", 4599, true},
+		{"pilot/GH-1", 1, true},
+		{"pilot/GH-4393-5", 4393, true}, // decomposed subtask branch — parent number
+		{"", 0, false},
+		{"main", 0, false},
+		{"feature/some-human-branch", 0, false},
+		{"pilot/GH-", 0, false},
+		{"pilot/GH-abc", 0, false},
+	}
+	for _, tc := range cases {
+		gotNum, gotOK := issueNumberFromBranch(tc.branch)
+		if gotNum != tc.wantNum || gotOK != tc.wantOK {
+			t.Errorf("issueNumberFromBranch(%q) = (%d,%v), want (%d,%v)",
+				tc.branch, gotNum, gotOK, tc.wantNum, tc.wantOK)
+		}
+	}
+}
+
+// TestScopeDriftIssueNumber covers GH-4599: prefer the branch-derived issue
+// number over the caller-supplied fallback (which, for scope-release carrier
+// PRs, is the epic parent rather than the PR's own issue), and fall back —
+// with a logged reason — when the branch doesn't match the convention.
+func TestScopeDriftIssueNumber(t *testing.T) {
+	t.Run("branch matches pilot/GH-N — uses branch-derived issue, ignores fallback", func(t *testing.T) {
+		got := scopeDriftIssueNumber(nil, "pilot/GH-4599", 999)
+		if got != 4599 {
+			t.Errorf("got %d, want 4599", got)
+		}
+	})
+
+	t.Run("carrier PR with no BranchName — falls back to epic parent and logs", func(t *testing.T) {
+		var buf strings.Builder
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+		got := scopeDriftIssueNumber(logger, "", 1234)
+		if got != 1234 {
+			t.Errorf("got %d, want fallback 1234", got)
+		}
+		logged := buf.String()
+		if !strings.Contains(logged, "no pilot/GH-N pattern") {
+			t.Errorf("expected fallback to be logged, got: %q", logged)
+		}
+		if !strings.Contains(logged, "level=INFO") {
+			t.Errorf("expected log level INFO, got: %q", logged)
+		}
+	})
+
+	t.Run("human-authored branch name — falls back", func(t *testing.T) {
+		got := scopeDriftIssueNumber(nil, "feature/manual-fix", 42)
+		if got != 42 {
+			t.Errorf("got %d, want fallback 42", got)
+		}
+	})
+}
+
 func TestSizeFloorReason(t *testing.T) {
 	cases := []struct {
 		name  string
