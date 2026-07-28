@@ -195,3 +195,22 @@ on the next config push and will clobber it. Permanent fixes dispatched:
 Cosmetic noise seen during the merge: auto-review 422 "Can not approve your own pull request"
 (instance runs 2.245.0, predates pilot#4520→PR#4522) and a 404 removing a non-existent
 `pilot-in-progress` label.
+
+## v8.9 (2026-07-27 eve) — permanent merge-leg fixes landed; S2 exit = ops sequence + canary trio
+
+- **pilot-console#55 → PR#56 MERGED** (renderer nests `orchestrator.autopilot` + `enabled: true`,
+  round-trip test) and **pilot#4544 CLOSED** (`default_environment` honored). The config-push
+  clobber risk is defused **in code**; it remains live on the tenant until the deployed
+  console/consolectl build carries PR#56.
+- **Tenant live-verified 2026-07-27 ~20:55Z** (SSM `i-0decbc0dcf225cf18`): hot-fix intact
+  (`orchestrator.autopilot.enabled: true`), unit active, version **2.245.0** (predates the
+  self-approve-422 fix #4520 and v2.246–247).
+- **S2 exit remaining**, in order: (1) deploy console build with PR#56 → permanent config push →
+  tenant binary upgrade to v2.247.x (one restart covers push+upgrade); (2) canary wedge cleanup —
+  clear stale `pilot-retry-1` on #99/#100 + reset dirty worktree (` M version.go`), let #104 run;
+  (3) all three canary issues close → S2 exit met → S3 opens.
+- Open founder calls unchanged: fund/replace the tenant Anthropic key (pointer org key,
+  **$107.88, auto-reload OFF**, shared with pointer prod) · strict YAML decode (`KnownFields`) issue.
+- Context: same-day daemon hardening relevant to fleet ops — drift-guard trio #4582/#4583/#4584
+  shipped (strip-leg origin base, intent-judge stdin, terminal-error repick classification +
+  poller ledger gate incl. the GitLab leg); rides the next release train.
