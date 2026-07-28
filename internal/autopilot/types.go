@@ -1016,8 +1016,9 @@ type PRState struct {
 	ReleasingFirstAt time.Time
 	// EscalationReason records why the PR entered StageAwaitApproval (size-floor
 	// gate, scope-drift gate, or env require_approval) so misconfig reporting
-	// names the actual trigger (GH-3569). In-memory only; lost on restart, which
-	// degrades to the env-based fallback wording.
+	// names the actual trigger (GH-3569). Persisted (GH-4598): a restart-time
+	// reload of an already-parked PR must see the actual gate reason rather
+	// than degrading to the generic env-based fallback wording.
 	EscalationReason string
 	// Parked is true once submitAsyncApprovalRequest has determined a gate
 	// demands approval but no approval channel is wired (approvalMgr is nil,
@@ -1029,9 +1030,12 @@ type PRState struct {
 	// write-back to pick back up. The PR now stays in StageAwaitApproval
 	// ("parked") with EscalationReason recording the gate that fired;
 	// Parked itself just dedupes the one-time misconfig log line/PR comment
-	// across repeated ticks. In-memory only; lost on restart, which simply
-	// re-derives Parked=true on the next tick since the underlying
-	// misconfig condition is still true.
+	// across repeated ticks. Persisted (GH-4598): without this, every daemon
+	// restart (or poller re-registration) rehydrated a parked PR with
+	// Parked=false, so the very first post-restart tick treated the still-true
+	// misconfig as brand new — re-logging the WARN and re-invoking
+	// postMisconfigComment (a wasted GitHub round-trip; the comment itself was
+	// already idempotent via its marker check) — instead of staying quiet.
 	Parked bool
 	// TerminalLabel overrides the default pilot-retry-ready label that
 	// notifyExternalClose applies once it observes this PR closed on GitHub.
