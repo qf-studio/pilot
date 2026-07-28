@@ -106,7 +106,7 @@ S0: 10 · S1: 3 · S2: ~9 (incl. ownership-transfer pre-step) · S3: ~6 · S4: ~
 
 ---
 
-**Last Updated**: 2026-07-26 (v8.8 — **MERGE LEG ROOT-CAUSED**, see below. Prior v8.7: step 4 blocked, diagnosis pending; v8.6: fleet VPC live, consolectl shipped, tenant executing after a 7-layer defect cascade; v8.5: e2e 3/3 green)
+**Last Updated**: 2026-07-28 (v9.0 — **S2 EXIT MET**, see below. Prior v8.8: merge leg root-caused; v8.7: step 4 blocked, diagnosis pending; v8.6: fleet VPC live, consolectl shipped, tenant executing after a 7-layer defect cascade; v8.5: e2e 3/3 green)
 
 ## v8.8 (2026-07-26) — merge leg root-caused; SaaS unparked
 
@@ -214,3 +214,45 @@ Cosmetic noise seen during the merge: auto-review 422 "Can not approve your own 
 - Context: same-day daemon hardening relevant to fleet ops — drift-guard trio #4582/#4583/#4584
   shipped (strip-leg origin base, intent-judge stdin, terminal-error repick classification +
   poller ledger gate incl. the GitLab leg); rides the next release train.
+
+## v9.0 (2026-07-28) — **S2 EXIT MET**; GitHub billing wall found+fixed; S3 opens
+
+**Ops sequence executed in order** (marker `2026-07-28_drift-guard-trio-shipped-s2-last-mile.md`):
+(1) consolectl rebuilt from main w/ PR#56 → config **gen 4** created (byte-identical to the
+hot-fix, sha `f9c07194` match) → reconciler pushed, apply script idempotently verified — the
+clobber risk is dead in the DB, not just on disk. (2) Tenant upgraded **2.245.0 → v2.247.0**
+(binary via instance's own GITHUB_TOKEN from the GH release, checksum-verified, inode-verified
+after one restart); `environment=hosted` now honored (#4544 live), GH-104 repick storm (244
+drops) stopped on the spot.
+
+**Blocker discovered mid-sequence: GitHub org Actions billing.** The org's free 2,000
+private-repo minutes exhausted on day 28 + default **$0 Actions budget with Stop-usage** →
+GitHub refused to *start* jobs on ALL private repos (canary + pointer; public pilot unaffected).
+Autopilot misread it as a code failure (annotation "job was not started…payments", all jobs
+`steps_count: 0`), closed correct PR canary#106, spawned a fix-issue chain — loop stopped by
+de-labeling. **Fixed same-day**: business account (QuantFlow DOO) + card + **Actions budget
+$25/mo, Stop-usage ON, alerts 75/90/100%** (recipient nelyaparfenova-dev). Verified by re-running
+pointer's failed run — jobs executed. Forecast: ~$2/mo now, $15–30/mo in build months; tenant
+CI bills to tenants' own orgs, so our curve does not scale with tenant count. → filed **#4591**
+(classifier must treat never-started jobs as infra, not code).
+
+**Exit evidence:**
+- **≥2 fresh merged PRs on the hosted instance** ✅ — #103/#105 (07-26) + **#111 auto-merged
+  14:14Z** + **#113 merged via operator approval** of a merge-gate escalation (the gate asked
+  for a human; false-positive title-type divergence — see #4595).
+- **All `pilot` issues closed** ✅ — canary repo at **0 open**. Epic #100 closed **organically**
+  by `reconcileEpicParents` (children #110/#112 shipped; #104 closed as superseded-by-#103 with
+  an audited `no_op` ledger row per GH-3780 semantics). Version-bump leg (#99/#107/#109) closed
+  operator-side: 4 attempts all killed by the billing outage + the direct-mode clone-corruption
+  defect → filed **#4594** (branches cut from stale HEAD, quality-retry double-apply, git_clean
+  self-wedge; `useWorktree=false` on the tenant path is the root).
+- Golden AMI gap fixed on-instance: **make + go were absent** → default quality gates 127-failed
+  every task; installed (go 1.25.8). Fold into AMI v2 (S0.6).
+
+**New defects filed:** #4591 (billing-shape CI classification) · #4594 (direct-mode clone
+corruption) · #4595 (escalation on approval-less env hard-fails green PRs + title-type gate
+resolves epic parent instead of the child's own issue).
+
+**→ S3 (control plane + auth + dashboard shell) is open.** Next: spec S3 backend (BFF cookie
+sessions, orgs/connections CRUD, Stripe flag-gated, direct email sender — S3 row); tenant
+binary bump to the next tag once the box proves it (train fired 07-28, box self-installing).
