@@ -92,6 +92,51 @@ func ScopeDriftReason(logger *slog.Logger, prTitle, issueTitle string) string {
 	return ""
 }
 
+// pilotBranchPrefix is the branch-name convention Pilot worker branches use
+// for issue-scoped PRs (e.g. "pilot/GH-4599").
+const pilotBranchPrefix = "pilot/GH-"
+
+// issueNumberFromBranch extracts the issue number from a "pilot/GH-N" branch
+// name, using the same fmt.Sscanf convention as resolveIssueNumFromPR
+// (controller.go). Returns 0, false if branchName doesn't carry the prefix or
+// no digits follow it — e.g. a scope-release carrier's empty BranchName, or a
+// human-authored branch.
+func issueNumberFromBranch(branchName string) (int, bool) {
+	if !strings.HasPrefix(branchName, pilotBranchPrefix) {
+		return 0, false
+	}
+	var n int
+	if _, err := fmt.Sscanf(branchName, pilotBranchPrefix+"%d", &n); err != nil || n == 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// scopeDriftIssueNumber resolves which issue number handleCIPassed should
+// fetch for ScopeDriftReason's comparison against the PR title. GH-4599: the
+// caller used to pass prState.IssueNumber straight through, but for a
+// scope-release carrier PR (see epicParentFromScopeKey in scope_release.go)
+// that value is the EPIC PARENT's issue number, not the PR's own originating
+// issue — walking to the epic parent compared the carrier's title against
+// the epic's title, the wrong signal for scope drift. Deriving the number
+// from the "pilot/GH-N" branch-name convention instead targets the PR's own
+// issue. Falls back to fallbackIssueNumber (the walk-to-epic-parent value)
+// with an INFO log line when branchName doesn't match the convention —
+// carrier PRs have no BranchName set, and human-authored PRs use arbitrary
+// branch names, so the fallback preserves prior behavior there. The reason
+// string ScopeDriftReason returns is unaffected: only the issue we compare
+// against changes, not the format of the drift message.
+func scopeDriftIssueNumber(logger *slog.Logger, branchName string, fallbackIssueNumber int) int {
+	if n, ok := issueNumberFromBranch(branchName); ok {
+		return n
+	}
+	if logger != nil {
+		logger.Info("scope-drift issue resolution: branch has no pilot/GH-N pattern, falling back to linked issue number",
+			"branch", branchName, "fallback_issue", fallbackIssueNumber)
+	}
+	return fallbackIssueNumber
+}
+
 // SizeFloorThreshold is the net-additions threshold above which a PR escalates
 // to human approval regardless of env config. Cascade #2's bad PR was 512 LoC.
 // GH-3570: raised from 200 to 500 — routine well-scoped Pilot PRs with tests
