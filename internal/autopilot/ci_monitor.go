@@ -637,6 +637,23 @@ type FailedCheckLog struct {
 	CheckName string
 	JobID     int64
 	Logs      string
+	// AnnotationText carries the failed check run's own Output.Summary/
+	// Output.Text (GH-4591) — GitHub surfaces a billing-refusal message here
+	// ("The job was not started because recent account payments have
+	// failed...") when Actions refuses to start a job at all, in which case
+	// there are zero job logs to search instead. Always populated from the
+	// ListCheckRuns response GetFailedCheckLogsByCheck already fetches — no
+	// extra API call.
+	AnnotationText string
+	// StepsKnown/StepsCount carry the job's step-breakdown count (GH-4591
+	// jobs-never-started detection signal: "all jobs in the run have
+	// conclusion=failure with zero steps executed"). Populated via the
+	// optional StepLogClient jobs-API lookup (GH-4460) when configured.
+	// StepsKnown is false when unavailable (no StepLogClient, or the lookup
+	// itself failed) — classification must never treat that as "definitely
+	// zero steps".
+	StepsKnown bool
+	StepsCount int
 }
 
 // GetFailedCheckLogsByCheck fetches raw job logs for each failed, in-scope
@@ -675,7 +692,21 @@ func (m *CIMonitor) GetFailedCheckLogsByCheck(ctx context.Context, sha string) [
 				"error", err,
 			)
 		}
-		results = append(results, FailedCheckLog{CheckName: run.Name, JobID: run.ID, Logs: logs})
+
+		entry := FailedCheckLog{CheckName: run.Name, JobID: run.ID, Logs: logs}
+		if run.Output != nil {
+			entry.AnnotationText = strings.TrimSpace(run.Output.Summary + "\n" + run.Output.Text)
+		}
+		if m.stepLogClient != nil {
+			if job, jobErr := m.stepLogClient.GetWorkflowJob(ctx, m.owner, m.repo, run.ID); jobErr != nil {
+				m.log.Debug("jobs API lookup failed for per-check classification, steps count unknown",
+					"check", run.Name, "id", run.ID, "error", jobErr)
+			} else {
+				entry.StepsKnown = true
+				entry.StepsCount = len(job.Steps)
+			}
+		}
+		results = append(results, entry)
 	}
 	return results
 }

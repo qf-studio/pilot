@@ -543,6 +543,15 @@ type Controller struct {
 	// cooldown window. Guarded by mu.
 	alertedBoardSyncScope bool
 
+	// alertedBillingRefusal dedupes the ci_billing_refusal alert (GH-4591) so
+	// a GitHub Actions org-billing outage fires exactly one alert per outage
+	// window instead of once per PR whose CI failed during it — an outage
+	// can span many PRs' failed CI runs in the same poll tick. Guarded by mu.
+	// Reset to false by resetBillingRefusalAlert the next time CI passes for
+	// this repo (the signal Actions is running jobs again), so a later,
+	// distinct outage still alerts.
+	alertedBillingRefusal bool
+
 	// epicVeto tracks, per epic parent issue number, how many consecutive
 	// reconcile passes have failed the SAME close-veto (same blocking child +
 	// same reason), guarded by mu. Lets reconcileEpicParent tell "still
@@ -1143,6 +1152,55 @@ func (c *Controller) alertBoardSyncScopeFailureOnce(err error) {
 			"repo": c.repoKey(),
 		},
 	})
+}
+
+// alertBillingRefusalOnce fires a ci_billing_refusal alert the first time a
+// PR's CI failure classifies FailureClassInfraBilling (GH-4591: GitHub
+// Actions refused to start the job at all because of an org billing
+// problem — payment failure or spending limit reached), deduplicated per
+// repo per outage window via alertedBillingRefusal — an outage can span many
+// PRs' failed CI runs in the same poll tick, and without this guard each one
+// would fire its own alert. The window resets the next time CI passes for
+// this repo (resetBillingRefusalAlert), so a later, distinct outage still
+// alerts instead of staying permanently suppressed after the first incident.
+func (c *Controller) alertBillingRefusalOnce(checks []FailedCheckLog) {
+	c.mu.Lock()
+	if c.alertedBillingRefusal {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedBillingRefusal = true
+	c.mu.Unlock()
+
+	names := make([]string, 0, len(checks))
+	for _, chk := range checks {
+		names = append(names, chk.CheckName)
+	}
+	msg := fmt.Sprintf(
+		"CI checks for %s failed because GitHub Actions refused to start the job(s) at all — suspected cause: org billing (payment failure or spending limit reached), not a code problem. Affected checks: %s. PRs are NOT being closed and no fix issues are being spawned; failed jobs will be retried automatically once billing is resolved.",
+		c.repoKey(), strings.Join(names, ", "),
+	)
+	if c.alertsEngine == nil {
+		c.log.Error("ci_billing_refusal alert not delivered: SetAlertsEngine was never called", "repo", c.repoKey())
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventType("ci_billing_refusal"),
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo": c.repoKey(),
+		},
+	})
+}
+
+// resetBillingRefusalAlert clears the ci_billing_refusal dedup guard
+// (GH-4591) once CI passes again for this repo — the signal that GitHub
+// Actions is running jobs again and the billing outage window has ended.
+func (c *Controller) resetBillingRefusalAlert() {
+	c.mu.Lock()
+	c.alertedBillingRefusal = false
+	c.mu.Unlock()
 }
 
 // approvalFailedCommentMarker is embedded in the PR comment so
@@ -1854,6 +1912,12 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 // handleCIPassed proceeds to merge (with approval if required by environment config
 // or by the scope-drift / size-floor defense-in-depth rails).
 func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error {
+	// GH-4591: CI passing is the signal that GitHub Actions is running jobs
+	// again — end the current billing-outage alert window so a later,
+	// distinct outage still alerts instead of staying permanently suppressed
+	// after the first incident.
+	c.resetBillingRefusalAlert()
+
 	c.log.Info("handleCIPassed: CI passed, determining next stage",
 		"pr", prState.PRNumber,
 		"env", c.config.EnvironmentName(),
@@ -1984,6 +2048,9 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	// exhaustion) folded into prState.Error if this falls through anyway.
 	perCheckLogs := c.ciMonitor.GetFailedCheckLogsByCheck(ctx, prState.HeadSHA)
 	failureClass := classifyPRFailure(perCheckLogs)
+	if failureClass == FailureClassInfraBilling {
+		c.alertBillingRefusalOnce(perCheckLogs)
+	}
 	infraNote, retried := c.maybeRetryInfraFailure(ctx, prState, perCheckLogs, failureClass)
 	if retried {
 		return nil
@@ -2197,7 +2264,7 @@ const maxInfraRerunBudget = 2
 // optional human-readable reason (currently only set on budget exhaustion)
 // to fold into the eventual prState.Error.
 func (c *Controller) maybeRetryInfraFailure(ctx context.Context, prState *PRState, checks []FailedCheckLog, class FailureClass) (note string, retried bool) {
-	if class != FailureClassInfra || c.stepLogClient == nil {
+	if !class.IsInfra() || c.stepLogClient == nil {
 		return "", false
 	}
 
@@ -2273,7 +2340,7 @@ func (c *Controller) rerunInfraFailures(ctx context.Context, prState *PRState, c
 // retrying a flaky runner" from "an actual code failure" without CIRuns
 // ["fail"] silently absorbing both.
 func (c *Controller) recordCIFailVerdict(class FailureClass) {
-	if class == FailureClassInfra {
+	if class.IsInfra() {
 		c.metrics.RecordCIRun("infra_fail")
 		return
 	}

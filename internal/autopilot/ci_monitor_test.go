@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -1873,6 +1874,113 @@ func TestCIMonitor_GetFailedCheckLogsByCheck(t *testing.T) {
 		}
 		if results[0].CheckName != "lint" {
 			t.Errorf("CheckName = %q, want lint", results[0].CheckName)
+		}
+	})
+}
+
+// TestCIMonitor_GetFailedCheckLogsByCheck_JobsNeverStarted covers GH-4591:
+// GetFailedCheckLogsByCheck must populate AnnotationText from the check
+// run's own Output.Summary/Text (no extra API call — it rides along with the
+// ListCheckRuns response already fetched) and, when a StepLogClient is
+// wired, StepsKnown/StepsCount from the jobs API — the two signals
+// classifyPRFailure's isJobsNeverStartedInfra needs to recognize a billing
+// refusal that never produced a real job log.
+func TestCIMonitor_GetFailedCheckLogsByCheck_JobsNeverStarted(t *testing.T) {
+	t.Run("populates AnnotationText from check-run Output and StepsCount from jobs API", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/owner/repo/commits/abc123/check-runs":
+				resp := github.CheckRunsResponse{
+					TotalCount: 1,
+					CheckRuns: []github.CheckRun{
+						{
+							ID:         100,
+							Name:       "build",
+							Status:     "completed",
+							Conclusion: "failure",
+							Output: &github.CheckOutput{
+								Title:   "Billing error",
+								Summary: "The job was not started because recent account payments have failed or your spending limit needs to be increased.",
+							},
+						},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/repos/owner/repo/actions/jobs/100/logs":
+				// A job that never started has no log at all.
+				w.WriteHeader(http.StatusNotFound)
+			case "/repos/owner/repo/actions/jobs/100":
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{
+					ID:     100,
+					Name:   "build",
+					Status: "completed",
+					Steps:  []ghadapter.JobStep{},
+				})
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		sdkClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		adapterClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		monitor := NewCIMonitor(sdkClient, "owner", "repo", DefaultConfig())
+		monitor.SetStepLogClient(adapterClient)
+
+		results := monitor.GetFailedCheckLogsByCheck(context.Background(), "abc123")
+
+		if len(results) != 1 {
+			t.Fatalf("len(results) = %d, want 1", len(results))
+		}
+		got := results[0]
+		if !strings.Contains(got.AnnotationText, "was not started") {
+			t.Errorf("AnnotationText = %q, want it to contain the billing-refusal phrase", got.AnnotationText)
+		}
+		if !got.StepsKnown {
+			t.Error("StepsKnown = false, want true (jobs API lookup succeeded)")
+		}
+		if got.StepsCount != 0 {
+			t.Errorf("StepsCount = %d, want 0", got.StepsCount)
+		}
+		if classifyPRFailure(results) != FailureClassInfraBilling {
+			t.Errorf("classifyPRFailure(results) = %q, want %q", classifyPRFailure(results), FailureClassInfraBilling)
+		}
+	})
+
+	t.Run("StepsKnown stays false when no StepLogClient is wired", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/owner/repo/commits/abc123/check-runs":
+				resp := github.CheckRunsResponse{
+					TotalCount: 1,
+					CheckRuns: []github.CheckRun{
+						{ID: 100, Name: "build", Status: "completed", Conclusion: "failure"},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/repos/owner/repo/actions/jobs/100/logs":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("build failure output"))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		monitor := NewCIMonitor(ghClient, "owner", "repo", DefaultConfig())
+		// Deliberately do not call SetStepLogClient.
+
+		results := monitor.GetFailedCheckLogsByCheck(context.Background(), "abc123")
+
+		if len(results) != 1 {
+			t.Fatalf("len(results) = %d, want 1", len(results))
+		}
+		if results[0].StepsKnown {
+			t.Error("StepsKnown = true, want false when no StepLogClient is wired")
 		}
 	})
 }
