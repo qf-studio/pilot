@@ -1019,6 +1019,20 @@ type PRState struct {
 	// names the actual trigger (GH-3569). In-memory only; lost on restart, which
 	// degrades to the env-based fallback wording.
 	EscalationReason string
+	// Parked is true once submitAsyncApprovalRequest has determined a gate
+	// demands approval but no approval channel is wired (approvalMgr is nil,
+	// or approval.pre_merge.enabled=false) — GH-4596. Before this field
+	// existed, that condition transitioned the PR straight to StageFailed,
+	// which is wrong: nothing about the PR itself failed, the approval
+	// plumbing is simply unconfigured, and a human fixing the config later
+	// (or merging manually) had no live PR left for auto-merge/board
+	// write-back to pick back up. The PR now stays in StageAwaitApproval
+	// ("parked") with EscalationReason recording the gate that fired;
+	// Parked itself just dedupes the one-time misconfig log line/PR comment
+	// across repeated ticks. In-memory only; lost on restart, which simply
+	// re-derives Parked=true on the next tick since the underlying
+	// misconfig condition is still true.
+	Parked bool
 	// TerminalLabel overrides the default pilot-retry-ready label that
 	// notifyExternalClose applies once it observes this PR closed on GitHub.
 	// Set by a close path that already determined the issue must NOT be
@@ -1117,6 +1131,7 @@ func (ps *PRState) snapshot() *PRState {
 		ReleasingAttempts:       ps.ReleasingAttempts,
 		ReleasingFirstAt:        ps.ReleasingFirstAt,
 		EscalationReason:        ps.EscalationReason,
+		Parked:                  ps.Parked,
 		TerminalLabel:           ps.TerminalLabel,
 		ScopeKey:                ps.ScopeKey,
 		ScopeTitle:              ps.ScopeTitle,

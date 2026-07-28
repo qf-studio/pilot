@@ -2550,16 +2550,24 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		if reason == "" {
 			reason = fmt.Sprintf("environments.%s.require_approval=true", c.config.EnvironmentName())
 		}
-		c.log.Error("approval misconfig: approval required but pre_merge.enabled=false",
+		// GH-4596: a gate demanding approval with no approval channel wired is a
+		// config gap, not a PR failure — nothing about the PR's code is wrong.
+		// The old behavior transitioned straight to StageFailed, which is a
+		// terminal, un-recoverable state: once a human fixed the config (or
+		// merged manually), there was no live PR left in StageAwaitApproval for
+		// auto-merge/board write-back to resume driving. Stay parked in
+		// StageAwaitApproval instead — EscalationReason (recorded below) names
+		// the gate that fired, and Parked dedupes the one-time log/PR comment
+		// across every subsequent tick while the misconfig persists.
+		prState.EscalationReason = reason
+		if prState.Parked {
+			// Already logged/commented on a prior tick — stay parked quietly.
+			return nil
+		}
+		c.log.Warn("approval required but no approval channel is wired — parking PR in awaiting_approval",
 			"pr", prState.PRNumber, "env", c.config.EnvironmentName(), "escalation_reason", reason)
-		prState.Stage = StageFailed
-		prState.Error = fmt.Sprintf(
-			"approval-misconfig: PR requires approval (%s) but approval.pre_merge.enabled=false → deadlock until config fixed",
-			reason,
-		)
+		prState.Parked = true
 		c.autoMerger.postMisconfigComment(ctx, prState)
-		c.metrics.RecordPRFailed()
-		c.metrics.RecordIssueProcessed("failed")
 		return nil
 	}
 

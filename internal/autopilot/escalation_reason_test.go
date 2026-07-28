@@ -12,35 +12,40 @@ import (
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
-// GH-3569: the misconfig error must name the ACTUAL escalation trigger
-// (size-floor gate, scope-drift gate, or env require_approval) — the old
-// hardcoded message blamed require_approval=true even when the env had it
-// false and a defense-in-depth gate did the escalating (observed on PR #3559).
-func TestSubmitAsyncApprovalRequest_MisconfigErrorText(t *testing.T) {
+// GH-4596: when a gate demands approval but no approval channel is wired
+// (approvalMgr nil, or approval.pre_merge.enabled=false), the PR must stay
+// parked in StageAwaitApproval — not transition to StageFailed — with
+// EscalationReason recording the ACTUAL gate that fired (size-floor gate,
+// scope-drift gate, or env require_approval). Before GH-4596 this branch
+// blamed require_approval=true even when the env had it false and a
+// defense-in-depth gate did the escalating (observed on PR #3559), AND
+// terminated the PR into StageFailed, leaving no live PR for auto-merge/board
+// write-back to resume once the config was fixed.
+func TestSubmitAsyncApprovalRequest_MisconfigParksInsteadOfFailing(t *testing.T) {
 	tests := []struct {
 		name             string
 		escalationReason string
-		wantInError      string
+		wantInReason     string
 	}{
 		{
 			name:             "size-floor gate reason is reported verbatim",
 			escalationReason: "PR adds 656 net lines (> 500 threshold)",
-			wantInError:      "PR adds 656 net lines (> 500 threshold)",
+			wantInReason:     "PR adds 656 net lines (> 500 threshold)",
 		},
 		{
 			name:             "scope-drift gate reason is reported verbatim",
 			escalationReason: `PR title type "feat" diverges from issue title type "fix"`,
-			wantInError:      `PR title type "feat" diverges from issue title type "fix"`,
+			wantInReason:     `PR title type "feat" diverges from issue title type "fix"`,
 		},
 		{
 			name:             "env require_approval reason is reported verbatim",
 			escalationReason: "environments.prod.require_approval=true",
-			wantInError:      "environments.prod.require_approval=true",
+			wantInReason:     "environments.prod.require_approval=true",
 		},
 		{
 			name:             "zero-value falls back to env-based wording",
 			escalationReason: "",
-			wantInError:      "require_approval=true",
+			wantInReason:     "require_approval=true",
 		},
 	}
 
@@ -67,16 +72,56 @@ func TestSubmitAsyncApprovalRequest_MisconfigErrorText(t *testing.T) {
 			if err := c.submitAsyncApprovalRequest(context.Background(), prState); err != nil {
 				t.Fatalf("submitAsyncApprovalRequest returned error: %v", err)
 			}
-			if prState.Stage != StageFailed {
-				t.Errorf("Stage = %v, want StageFailed", prState.Stage)
+			if prState.Stage != StageAwaitApproval {
+				t.Errorf("Stage = %v, want StageAwaitApproval (parked, not failed)", prState.Stage)
 			}
-			if !strings.Contains(prState.Error, tt.wantInError) {
-				t.Errorf("Error %q does not contain %q", prState.Error, tt.wantInError)
+			if !prState.Parked {
+				t.Errorf("Parked = false, want true")
 			}
-			if tt.escalationReason != "" && !strings.Contains(prState.Error, tt.escalationReason) {
-				t.Errorf("Error %q must carry the escalation reason %q", prState.Error, tt.escalationReason)
+			if prState.Error != "" {
+				t.Errorf("Error = %q, want empty — a parked PR is not a failed PR", prState.Error)
+			}
+			if !strings.Contains(prState.EscalationReason, tt.wantInReason) {
+				t.Errorf("EscalationReason %q does not contain %q", prState.EscalationReason, tt.wantInReason)
 			}
 		})
+	}
+}
+
+// GH-4596: a second tick of the same parked PR must not re-post the misconfig
+// comment or otherwise re-run the one-time side effects — Parked dedupes it.
+func TestSubmitAsyncApprovalRequest_MisconfigParkIsIdempotent(t *testing.T) {
+	commentPosts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments") {
+			commentPosts++
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:         93,
+		Stage:            StageAwaitApproval,
+		EscalationReason: "PR adds 656 net lines (> 500 threshold)",
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := c.submitAsyncApprovalRequest(context.Background(), prState); err != nil {
+			t.Fatalf("tick %d: submitAsyncApprovalRequest returned error: %v", i, err)
+		}
+		if prState.Stage != StageAwaitApproval {
+			t.Fatalf("tick %d: Stage = %v, want StageAwaitApproval", i, prState.Stage)
+		}
+	}
+	if commentPosts != 1 {
+		t.Errorf("comment POSTs = %d, want exactly 1 (deduped by Parked across ticks)", commentPosts)
 	}
 }
 
