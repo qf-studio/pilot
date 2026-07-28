@@ -213,3 +213,92 @@ func TestPostMisconfigComment_NamesEscalationReason(t *testing.T) {
 		t.Errorf("comment body still blames require_approval despite a gate reason: %q", postedBody)
 	}
 }
+
+// TestHandleCIPassed_ChildPRAgainstEpicParent_NoScopeDrift is the concrete
+// regression for GH-4595 / GH-4601 (canary PR #113, 2026-07-28, v2.247.0):
+// a decomposed child PR on branch "pilot/GH-112" whose title matches its OWN
+// issue #112 (both "feat(counter): ...") must not escalate for scope drift,
+// even though prState.IssueNumber still carries the epic parent GH-100
+// ("chore(canary): [epic] ...") as the scope-release fallback. Before
+// GH-4605's fix, handleCIPassed fetched the epic parent for the title-type
+// comparison and manufactured a permanent "feat" vs "chore" divergence for
+// every feat-child of a chore-epic. This test exercises the full
+// handleCIPassed gate (scopeDriftIssueNumber + GetIssue + ScopeDriftReason
+// together), not just the unit in TestScopeDriftIssueNumber, so a regression
+// that re-wires handleCIPassed to fetch the wrong issue is caught here too.
+//
+// Acceptance-criteria mapping (parent GH-4595):
+//  1. "Approval-less config + escalating gate: PR stays parked" — covered by
+//     TestSubmitAsyncApprovalRequest_MisconfigParksInsteadOfFailing /
+//     TestSubmitAsyncApprovalRequest_MisconfigParkIsIdempotent (above).
+//  2. "Child PR feat vs own-issue feat under a chore epic: no escalation" —
+//     this test.
+//  3. "Regression: GH-4383 (approval-submit wedge) scenarios unchanged" —
+//     covered by internal/dashboard's TestAutopilotPanel* (GH-4383) plus
+//     gh4130_test.go / gh4477_test.go in this package, which this change
+//     does not touch.
+func TestHandleCIPassed_ChildPRAgainstEpicParent_NoScopeDrift(t *testing.T) {
+	var requestedIssues []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/files") && r.Method == http.MethodGet:
+			files := []*github.PRFile{{Filename: "counter.go", Status: "modified", Additions: 20, Deletions: 2}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(files)
+		case strings.HasSuffix(r.URL.Path, "/issues/112") && r.Method == http.MethodGet:
+			requestedIssues = append(requestedIssues, 112)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"number":112,"title":"feat(counter): add Mul helper with test coverage"}`))
+		case strings.HasSuffix(r.URL.Path, "/issues/100") && r.Method == http.MethodGet:
+			requestedIssues = append(requestedIssues, 100)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"number":100,"title":"chore(canary): [epic] canary rollout"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev // dev env defaults RequireApproval=false (types.go defaultEnvironments)
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:    113,
+		PRTitle:     "feat(counter): add Mul helper with test coverage",
+		BranchName:  "pilot/GH-112",
+		IssueNumber: 100, // epic parent — the pre-GH-4605 (wrong) fallback target
+		Stage:       StageCIPassed,
+	}
+
+	if err := c.handleCIPassed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIPassed: %v", err)
+	}
+
+	if prState.Stage == StageAwaitApproval {
+		t.Errorf("Stage = %v, want no escalation (StageMerging) — scope-drift gate must "+
+			"resolve issue #112 (own issue), not epic #100; EscalationReason=%q",
+			prState.Stage, prState.EscalationReason)
+	}
+	if prState.EscalationReason != "" {
+		t.Errorf("EscalationReason = %q, want empty — titles match once compared against issue #112", prState.EscalationReason)
+	}
+	sawEpicParent := false
+	sawOwnIssue := false
+	for _, n := range requestedIssues {
+		if n == 100 {
+			sawEpicParent = true
+		}
+		if n == 112 {
+			sawOwnIssue = true
+		}
+	}
+	if sawEpicParent {
+		t.Errorf("gate fetched epic parent issue #100 for the title comparison — regression to pre-GH-4605 behavior")
+	}
+	if !sawOwnIssue {
+		t.Fatalf("expected the scope-drift gate to fetch the PR's own issue #112 for comparison, got requests: %v", requestedIssues)
+	}
+}
