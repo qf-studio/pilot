@@ -2571,7 +2571,36 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		c.log.Warn("approval required but no approval channel is wired — parking PR in awaiting_approval",
 			"pr", prState.PRNumber, "env", c.config.EnvironmentName(), "escalation_reason", reason)
 		prState.Parked = true
+		// GH-4595/GH-4600: make the park visible to a human without them having
+		// to read daemon logs — a label on the linked issue (same convention as
+		// escalateAndHold's labelNeedsHuman), the misconfig PR comment below, and
+		// a single deduped operator alert. All three are one-time per PR: the
+		// `if prState.Parked` early-return above already guards this whole
+		// branch on every later tick, so there is no separate dedup map needed.
+		if prState.IssueNumber > 0 {
+			if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{labelParkedAwaitingApproval}); err != nil {
+				c.log.Warn("failed to apply parked-awaiting-approval label", "issue", prState.IssueNumber, "pr", prState.PRNumber, "error", err)
+			}
+		}
 		c.autoMerger.postMisconfigComment(ctx, prState)
+		if c.alertsEngine == nil {
+			c.log.Error("parked_awaiting_approval alert not delivered: SetAlertsEngine was never called", "pr", prState.PRNumber, "reason", reason)
+		} else {
+			c.alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeConfigError,
+				TaskID:    fmt.Sprintf("pr-%d-parked", prState.PRNumber),
+				TaskTitle: fmt.Sprintf("PR #%d parked awaiting approval config", prState.PRNumber),
+				Project:   c.repoKey(),
+				Error:     reason,
+				Timestamp: time.Now(),
+				Metadata: map[string]string{
+					"repo":   c.repoKey(),
+					"pr":     strconv.Itoa(prState.PRNumber),
+					"issue":  strconv.Itoa(prState.IssueNumber),
+					"reason": reason,
+				},
+			})
+		}
 		return nil
 	}
 
@@ -4498,6 +4527,14 @@ func (c *Controller) closeAndReexecute(ctx context.Context, prState *PRState, cl
 // controller.go's ghClient is built against) since it isn't a stable,
 // versioned part of that SDK. GH-4458.
 const labelNeedsHuman = "pilot-needs-human"
+
+// labelParkedAwaitingApproval flags an issue whose PR is parked in
+// StageAwaitApproval because an escalation gate demanded approval but no
+// approval channel is wired (approvalMgr nil, or approval.pre_merge.enabled
+// false). GH-4595/GH-4596/GH-4600: this is an operator config gap, not a PR
+// failure, so it gets its own label distinct from labelNeedsHuman (which
+// implies automated recovery gave up on the PR's code).
+const labelParkedAwaitingApproval = "autopilot/parked-awaiting-approval"
 
 // escalateAndHold is the give-up rung for automated recovery paths that must
 // not throw away in-flight work: unlike closeAndReexecute, it never closes
