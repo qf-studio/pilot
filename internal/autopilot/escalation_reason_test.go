@@ -204,13 +204,107 @@ func TestPostMisconfigComment_NamesEscalationReason(t *testing.T) {
 		EscalationReason: "PR adds 656 net lines (> 500 threshold)",
 	}
 
-	merger.postMisconfigComment(context.Background(), prState)
+	merger.postMisconfigComment(context.Background(), prState, "approval.enabled")
 
 	if !strings.Contains(postedBody, "PR adds 656 net lines") {
 		t.Errorf("comment body does not name the escalation reason: %q", postedBody)
 	}
 	if strings.Contains(postedBody, "require_approval: true") {
 		t.Errorf("comment body still blames require_approval despite a gate reason: %q", postedBody)
+	}
+	if !strings.Contains(postedBody, "approval.enabled") {
+		t.Errorf("comment body does not name the missing config key: %q", postedBody)
+	}
+}
+
+// GH-4597: postMisconfigComment must name the specific missing config key in
+// the comment body (not just the escalation reason), and must NOT apply the
+// parked label itself — that lands on the linked issue via the controller's
+// park path (GH-4600), keeping exactly one labeling site.
+func TestPostMisconfigComment_NamesMissingKeyWithoutLabeling(t *testing.T) {
+	var postedBody string
+	var labeledWith []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			var payload struct {
+				Body string `json:"body"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			postedBody = payload.Body
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels"):
+			var payload struct {
+				Labels []string `json:"labels"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			labeledWith = payload.Labels
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", DefaultConfig())
+	prState := &PRState{
+		PRNumber:         94,
+		EscalationReason: "environments.prod.require_approval=true",
+	}
+
+	merger.postMisconfigComment(context.Background(), prState, "approval.pre_merge.enabled")
+
+	if len(labeledWith) != 0 {
+		t.Errorf("labels POSTed = %v, want none (label is controller-side)", labeledWith)
+	}
+	if !strings.Contains(postedBody, "approval.pre_merge.enabled") {
+		t.Errorf("comment body does not name the missing config key: %q", postedBody)
+	}
+}
+
+// GH-4597: postMisconfigComment must not re-apply the label or re-post the
+// comment once the marker comment already exists on the PR — the label add
+// is idempotent on GitHub's side but still an avoidable API call every tick.
+func TestPostMisconfigComment_SkipsLabelAndCommentWhenAlreadyPosted(t *testing.T) {
+	labelPosts, commentPosts := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"id":1,"body":"` + misconfigCommentMarker + ` already posted"}]`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			commentPosts++
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":2}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels"):
+			labelPosts++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", DefaultConfig())
+	prState := &PRState{PRNumber: 95, EscalationReason: "size-floor"}
+
+	merger.postMisconfigComment(context.Background(), prState, "approval.enabled")
+
+	if labelPosts != 0 {
+		t.Errorf("label POSTs = %d, want 0 (already parked)", labelPosts)
+	}
+	if commentPosts != 0 {
+		t.Errorf("comment POSTs = %d, want 0 (already parked)", commentPosts)
 	}
 }
 

@@ -525,6 +525,15 @@ type Controller struct {
 	// once the per-PR circuit breaker opens, never alert at all (GH-4380).
 	alertedApprovalFailures map[int]bool
 
+	// alertedApprovalMisconfigs deduplicates approval_misconfig config_error
+	// alerts per "PRNumber:reason", guarded by mu. The Parked flag (GH-4596)
+	// cuts off steady-state ticks, but a fresh PRState (re-registration after
+	// manual intervention) starts a new cycle with Parked=false — without this
+	// map every such cycle would re-fire the same misconfig alert. Keyed on
+	// reason (not just PR) so a different gate firing on a later cycle for the
+	// same PR still alerts on its own (GH-4597).
+	alertedApprovalMisconfigs map[string]bool
+
 	// warnedUnsourcedIssues deduplicates the "labeled issue not board-sourced"
 	// WARN reconcileUnsourcedBoardIssues emits, per issue number, guarded by
 	// mu — logged once per poll-session (not every tick) while the issue
@@ -1266,6 +1275,70 @@ func (c *Controller) alertApprovalSubmitFailureOnce(ctx context.Context, prState
 	if _, cerr := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); cerr != nil {
 		c.log.Warn("failed to post approval-submit-failed PR comment", "pr", prState.PRNumber, "error", cerr)
 	}
+}
+
+// approvalMisconfigKey names the specific approval.* YAML key that is unset
+// on the submitAsyncApprovalRequest misconfig path, so the PR comment/alert
+// can tell an operator exactly which flag to flip instead of listing both
+// approval.enabled and approval.pre_merge.enabled as candidates (GH-4597).
+// c.approvalMgr == nil only happens via direct test/caller construction (see
+// approval.NewManager, which never returns/stores a nil *Manager) — treated
+// the same as the top-level gate being off since nothing downstream of it can
+// be enabled either.
+func (c *Controller) approvalMisconfigKey() string {
+	if c.approvalMgr == nil || !c.approvalMgr.IsEnabled() {
+		return "approval.enabled"
+	}
+	return "approval.pre_merge.enabled"
+}
+
+// alertApprovalMisconfigOnce fires a config_error alert the first time
+// submitAsyncApprovalRequest's approvalMgr-nil/pre_merge-disabled branch
+// hits a given {PR, reason} pair, deduplicated via alertedApprovalMisconfigs.
+// The Parked guard (GH-4596) covers steady-state ticks; this map covers
+// fresh cycles that pass the guard again with Parked=false (PR re-registered
+// after manual intervention) — without it each cycle would re-alert, or the
+// alerts engine's per-rule cooldown would absorb the noise and go silent,
+// leaving a parked PR just as invisible as the WARN-only logging GH-4380
+// already fixed for approval-submit failures. GH-4597.
+func (c *Controller) alertApprovalMisconfigOnce(prState *PRState, reason, missingKey string) {
+	key := fmt.Sprintf("%d:%s", prState.PRNumber, reason)
+
+	c.mu.Lock()
+	if c.alertedApprovalMisconfigs == nil {
+		c.alertedApprovalMisconfigs = make(map[string]bool)
+	}
+	if c.alertedApprovalMisconfigs[key] {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedApprovalMisconfigs[key] = true
+	c.mu.Unlock()
+
+	msg := fmt.Sprintf(
+		"PR #%d (%s) requires approval (%s) but %s is not set — merge is blocked until an operator fixes config or merges manually",
+		prState.PRNumber, c.repoKey(), reason, missingKey,
+	)
+	if c.alertsEngine == nil {
+		c.log.Error("approval_misconfig alert not delivered: SetAlertsEngine was never called",
+			"pr", prState.PRNumber, "reason", reason, "missing_config_key", missingKey)
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeConfigError,
+		TaskID:    fmt.Sprintf("pr-%d-approval-misconfig", prState.PRNumber),
+		TaskTitle: fmt.Sprintf("Approval misconfig blocking PR #%d", prState.PRNumber),
+		Project:   c.repoKey(),
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo":               c.repoKey(),
+			"pr":                 strconv.Itoa(prState.PRNumber),
+			"issue":              strconv.Itoa(prState.IssueNumber),
+			"reason":             reason,
+			"missing_config_key": missingKey,
+		},
+	})
 }
 
 // evictPersistFailedPR drops a PR that has failed to persist
@@ -2561,46 +2634,32 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		// merged manually), there was no live PR left in StageAwaitApproval for
 		// auto-merge/board write-back to resume driving. Stay parked in
 		// StageAwaitApproval instead — EscalationReason (recorded below) names
-		// the gate that fired, and Parked dedupes the one-time log/PR comment
-		// across every subsequent tick while the misconfig persists.
+		// the gate that fired, and Parked dedupes the one-time log/PR
+		// comment/alert across every subsequent tick while the misconfig
+		// persists.
 		prState.EscalationReason = reason
 		if prState.Parked {
 			// Already logged/commented on a prior tick — stay parked quietly.
 			return nil
 		}
+		missingKey := c.approvalMisconfigKey()
 		c.log.Warn("approval required but no approval channel is wired — parking PR in awaiting_approval",
-			"pr", prState.PRNumber, "env", c.config.EnvironmentName(), "escalation_reason", reason)
+			"pr", prState.PRNumber, "env", c.config.EnvironmentName(), "escalation_reason", reason, "missing_config_key", missingKey)
 		prState.Parked = true
-		// GH-4595/GH-4600: make the park visible to a human without them having
-		// to read daemon logs — a label on the linked issue (same convention as
-		// escalateAndHold's labelNeedsHuman), the misconfig PR comment below, and
-		// a single deduped operator alert. All three are one-time per PR: the
-		// `if prState.Parked` early-return above already guards this whole
-		// branch on every later tick, so there is no separate dedup map needed.
+		// GH-4595/GH-4600/GH-4597: make the park visible to a human without
+		// them having to read daemon logs — a label on the linked issue (same
+		// convention as escalateAndHold's labelNeedsHuman), the misconfig PR
+		// comment below (naming the exact unset config key), and a single
+		// deduped operator alert. The `if prState.Parked` early-return above
+		// guards every later tick; alertApprovalMisconfigOnce's {PR, reason}
+		// map additionally dedupes across fresh cycles where Parked resets.
 		if prState.IssueNumber > 0 {
 			if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{labelParkedAwaitingApproval}); err != nil {
 				c.log.Warn("failed to apply parked-awaiting-approval label", "issue", prState.IssueNumber, "pr", prState.PRNumber, "error", err)
 			}
 		}
-		c.autoMerger.postMisconfigComment(ctx, prState)
-		if c.alertsEngine == nil {
-			c.log.Error("parked_awaiting_approval alert not delivered: SetAlertsEngine was never called", "pr", prState.PRNumber, "reason", reason)
-		} else {
-			c.alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeConfigError,
-				TaskID:    fmt.Sprintf("pr-%d-parked", prState.PRNumber),
-				TaskTitle: fmt.Sprintf("PR #%d parked awaiting approval config", prState.PRNumber),
-				Project:   c.repoKey(),
-				Error:     reason,
-				Timestamp: time.Now(),
-				Metadata: map[string]string{
-					"repo":   c.repoKey(),
-					"pr":     strconv.Itoa(prState.PRNumber),
-					"issue":  strconv.Itoa(prState.IssueNumber),
-					"reason": reason,
-				},
-			})
-		}
+		c.alertApprovalMisconfigOnce(prState, reason, missingKey)
+		c.autoMerger.postMisconfigComment(ctx, prState, missingKey)
 		return nil
 	}
 

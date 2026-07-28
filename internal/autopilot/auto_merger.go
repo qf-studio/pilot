@@ -121,8 +121,12 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 
 // postMisconfigComment posts a single explanatory comment on the PR when
 // approval is required (by an escalation gate or the environment) but not
-// enabled in config. Idempotent: skips posting if the marker comment exists.
-func (m *AutoMerger) postMisconfigComment(ctx context.Context, prState *PRState) {
+// enabled in config, naming the specific unset config key (GH-4597). The
+// parked-awaiting-approval label lands on the linked issue in the
+// controller's park path, not here. Idempotent: the comment post is skipped
+// if the marker comment already exists, so a PR re-checked every poll tick
+// while parked only gets the one-time side effect once.
+func (m *AutoMerger) postMisconfigComment(ctx context.Context, prState *PRState, missingKey string) {
 	existing, err := m.ghClient.ListIssueComments(ctx, m.owner, m.repo, prState.PRNumber)
 	if err != nil {
 		m.log.Warn("postMisconfigComment: failed to list PR comments, will post anyway",
@@ -142,15 +146,19 @@ func (m *AutoMerger) postMisconfigComment(ctx context.Context, prState *PRState)
 	if reason == "" {
 		reason = fmt.Sprintf("environments.%s.require_approval=true", m.config.EnvironmentName())
 	}
+	// GH-4597: name the specific unset config key (approval.enabled vs
+	// approval.pre_merge.enabled) instead of just listing both as candidates —
+	// an operator staring at this comment should be able to flip one flag,
+	// not guess which of two.
 	body := fmt.Sprintf(`%s
 🚧 **Merge blocked: approval not wired**
 
-This PR requires pre-merge approval (**%s**) but the approval system is disabled (`+"`approval.enabled: false`"+` and/or `+"`approval.pre_merge.enabled: false`"+`).
+This PR requires pre-merge approval (**%s**) but the required config key is not set: `+"`%s`"+`.
 
-To unblock: either enable approval in `+"`~/.pilot/config.yaml`"+` (set `+"`approval.enabled: true`"+` + `+"`approval.pre_merge.enabled: true`"+` + add an approver), or merge manually with `+"`gh pr merge %d`"+`.
+To unblock: set `+"`%s: true`"+` in `+"`~/.pilot/config.yaml`"+` (add an approver if this is the first stage you're enabling), or merge manually with `+"`gh pr merge %d`"+`.
 
 Tracked in #2598.`,
-		misconfigCommentMarker, reason, prState.PRNumber)
+		misconfigCommentMarker, reason, missingKey, missingKey, prState.PRNumber)
 
 	if _, postErr := m.ghClient.AddPRComment(ctx, m.owner, m.repo, prState.PRNumber, body); postErr != nil {
 		m.log.Warn("postMisconfigComment: failed to post PR comment",
