@@ -168,6 +168,20 @@ func (s *StateStore) migrate() error {
 		// grant a fresh 2-retry budget on the same SHA.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN infra_rerun_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN infra_rerun_sha TEXT NOT NULL DEFAULT ''`,
+		// GH-4598: persist Parked + EscalationReason. Both were in-memory-only
+		// (GH-4596/#4602), which meant every daemon restart (or poller replay
+		// re-registering the PR) reset Parked to false and EscalationReason to
+		// "" for a PR already sitting quietly in awaiting_approval with no
+		// approval channel wired. The next tick's submitAsyncApprovalRequest
+		// would then treat the misconfig as brand-new: re-log the WARN, blow
+		// the specific gate reason away in favor of the generic
+		// environments.<env>.require_approval=true fallback, and re-invoke
+		// postMisconfigComment (itself idempotent about the actual GitHub
+		// comment via the marker check, but not free — a wasted
+		// ListIssueComments round-trip every restart). Persisting both fields
+		// lets a restored PR recognize itself as already parked on tick 1.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN parked INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN escalation_reason TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, m := range migrations {
@@ -425,6 +439,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			merge_followup_posted INTEGER NOT NULL DEFAULT 0,
 			infra_rerun_count INTEGER NOT NULL DEFAULT 0,
 			infra_rerun_sha TEXT NOT NULL DEFAULT '',
+			parked INTEGER NOT NULL DEFAULT 0,
+			escalation_reason TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -438,7 +454,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha
+			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
+			parked, escalation_reason
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -447,7 +464,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha
+			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
+			parked, escalation_reason
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -591,8 +609,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
+			parked, escalation_reason
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -618,7 +637,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			pr_title = excluded.pr_title,
 			merge_followup_posted = excluded.merge_followup_posted,
 			infra_rerun_count = excluded.infra_rerun_count,
-			infra_rerun_sha = excluded.infra_rerun_sha
+			infra_rerun_sha = excluded.infra_rerun_sha,
+			parked = excluded.parked,
+			escalation_reason = excluded.escalation_reason
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -628,6 +649,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.ApprovalRequestID, pr.ApprovalDecision, nullTime(pr.ApprovalRequestedAt),
 		pr.PostMergeSHA, nullTime(pr.PostMergeCIStartedAt), pr.RebaseAttempts, pr.ScopeKey,
 		pr.PRTitle, pr.MergeFollowupPosted, pr.InfraRerunCount, pr.InfraRerunSHA,
+		pr.Parked, pr.EscalationReason,
 	)
 	return err
 }
@@ -642,7 +664,8 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha
+			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
+			parked, escalation_reason
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -666,7 +689,8 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
-			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha
+			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
+			parked, escalation_reason
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -688,6 +712,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
 			&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
 			&pr.PRTitle, &pr.MergeFollowupPosted, &pr.InfraRerunCount, &pr.InfraRerunSHA,
+			&pr.Parked, &pr.EscalationReason,
 		); err != nil {
 			return nil, err
 		}
@@ -943,6 +968,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
 		&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
 		&pr.PRTitle, &pr.MergeFollowupPosted, &pr.InfraRerunCount, &pr.InfraRerunSHA,
+		&pr.Parked, &pr.EscalationReason,
 	)
 	if err != nil {
 		return nil, err

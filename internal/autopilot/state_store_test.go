@@ -144,6 +144,63 @@ func TestStateStore_InfraRerunFields_SurvivesRestart(t *testing.T) {
 	}
 }
 
+// TestStateStore_ParkedAndEscalationReason_SurviveRestart is the GH-4598
+// regression test: before this, Parked and EscalationReason were in-memory
+// only (GH-4596/#4602), so a daemon restart reloaded an already-parked PR
+// with Parked=false and EscalationReason="" — the very next tick then
+// treated the still-true misconfig as brand new, re-logging the WARN and
+// re-invoking postMisconfigComment instead of staying quiet. Both fields
+// must now round-trip through SavePRState via both read paths a restart
+// actually uses: GetPRState (single-PR lookups) and LoadAllPRStates (the
+// path RestoreState calls to rehydrate activePRs).
+func TestStateStore_ParkedAndEscalationReason_SurviveRestart(t *testing.T) {
+	store := newTestStateStore(t)
+
+	pr := &PRState{
+		PRNumber:         57,
+		PRURL:            "https://github.com/owner/repo/pull/57",
+		IssueNumber:      22,
+		BranchName:       "pilot/GH-22",
+		HeadSHA:          "sha57",
+		Stage:            StageAwaitApproval,
+		Parked:           true,
+		EscalationReason: "PR adds 656 net lines (> 500 threshold)",
+		CreatedAt:        time.Now().Truncate(time.Second),
+	}
+
+	if err := store.SavePRState("owner/repo", pr); err != nil {
+		t.Fatalf("SavePRState failed: %v", err)
+	}
+
+	loaded, err := store.GetPRState("owner/repo", 57)
+	if err != nil {
+		t.Fatalf("GetPRState failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("GetPRState returned nil")
+	}
+	if !loaded.Parked {
+		t.Error("GetPRState: Parked = false, want true")
+	}
+	if loaded.EscalationReason != pr.EscalationReason {
+		t.Errorf("GetPRState: EscalationReason = %q, want %q", loaded.EscalationReason, pr.EscalationReason)
+	}
+
+	all, err := store.LoadAllPRStates("owner/repo")
+	if err != nil {
+		t.Fatalf("LoadAllPRStates failed: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("LoadAllPRStates returned %d states, want 1", len(all))
+	}
+	if !all[0].Parked {
+		t.Error("LoadAllPRStates: Parked = false, want true")
+	}
+	if all[0].EscalationReason != pr.EscalationReason {
+		t.Errorf("LoadAllPRStates: EscalationReason = %q, want %q", all[0].EscalationReason, pr.EscalationReason)
+	}
+}
+
 func TestStateStore_LoadAllPRStates(t *testing.T) {
 	store := newTestStateStore(t)
 
