@@ -369,3 +369,25 @@ environment" (cosmetic, renders a legacy field) → filed
   identity + SPA hosting). Founder inputs needed: console + sending domain names, Stripe test
   keys/price/webhook secret, ACM DNS validation. Then the S3 exit test (staging signup → payment →
   credentials → provision → first PR, zero operator SSH, 3+ tenants concurrent).
+
+## v9.4 (2026-07-29 night) — LOCAL STACK LIVE; first real E2E run finds UI wire-shape defect
+
+- **`make local-up && make local-seed` works** — daemon shipped the whole mini-wave same-evening:
+  ui#17 (vite proxy) + console#77 (compose: pg two-DB + redis + auth-service + console, JWT
+  local-keys, seed script) merged autonomously; auth PR#484 (gRPC :4002 expose) + PR#482 sat
+  green un-adopted (same class; fix rides the 07-30 train) → operator-reviewed + merged manually.
+  All four containers healthy on first `local-up`; seed creates `demo@pilot.local` /
+  `Pilot Demo Org`.
+- **auth#481 CORRECTION**: PR#482 is a no-op resolution — the expiry fix + true-idempotency
+  (token retained, already-verified short-circuit) were ALREADY in PR#480's final merge; the
+  operator review that filed #481 read a stale revision. Verified directly on main
+  (`user_repository.go:172-213`) + 4 repo-level Postgres tests pass. v9.3's "expired links
+  verify" line is superseded.
+- **E2E verified to the API layer**: BFF login (CSRF header `X-Requested-With: pilot-console`) →
+  session cookie → `/api/v1/me` embeds org — all correct against the real stack.
+- **UI defect found on first real login** → [ui#19](https://github.com/qf-studio/pilot-console-ui/issues/19):
+  httpAdapter casts flat BFF JSON to the mock-shaped `Session {user, org}` → `user=undefined`,
+  `isAuthenticated` true via `undefined !== null`, every login detours to /onboarding and the
+  org-create 409 is swallowed. Exactly the drift class the local stack exists to catch; fix
+  includes wire-fixture tests. **UI dev server currently runs http mode on :5173** against the
+  live stack; mock mode = drop the env var.
