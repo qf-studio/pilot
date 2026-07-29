@@ -358,6 +358,13 @@ environment" (cosmetic, renders a legacy field) → filed
   check-integration.sh BRE `\(\)` empty-group bug false-flagging parameterized test helpers as
   orphan commands. Until fixed: docs-only pushes from the laptop need `--no-verify` (CI on main
   stays the real gate).
+- **Local dev stack dispatched** (founder: "I still didn't see the platform"): UI mock mode
+  verified running on :5173 (bun/vite, mock adapter is the default seam). Full-stack gaps filed as
+  a 3-issue mini-wave — [auth#483](https://github.com/qf-studio/auth-service/issues/483) expose
+  gRPC :4002 in compose · [ui#17](https://github.com/qf-studio/pilot-console-ui/issues/17) vite
+  dev proxy for http mode · [console#77](https://github.com/qf-studio/pilot-console/issues/77)
+  \`make local-up\` compose (pg×2 + redis + auth + console, zero AWS/Stripe creds) + demo seed +
+  quickstart. Target: \`make local-up\` working after the daemon ships them.
 - **Next**: operator staging deploys per infra PR#25 checklist (control-plane EC2 → ALB/ACM → SES
   identity + SPA hosting). Founder inputs needed: console + sending domain names, Stripe test
   keys/price/webhook secret, ACM DNS validation. Then the S3 exit test (staging signup → payment →
