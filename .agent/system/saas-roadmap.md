@@ -322,5 +322,11 @@ box on v2.249.0** (hot restart, verified). Filed
 finalize-on-stall-retry + drain-timeout alert).
 
 **Still in flight from the wave**: auth#477/478, ui#13/14, infra#24 (their repos' queues — check
-after the restart). **Tenant binary bump to v2.249.0** now unblocked (tag proven on the box —
-AM-marker SSM procedure).
+after the restart).
+
+**Tenant bumped to v2.249.0 same evening** (~15:36Z): asset via instance's own GITHUB_TOKEN,
+sha256 verified, mv-swap (backup `/opt/pilot/bin/pilot.v2.247.0.bak`), one restart — unit active,
+`environment=hosted` honored per structured log. ⚠️ The TUI banner mislabels it "stage
+environment" (cosmetic, renders a legacy field) → filed
+[#4611](https://github.com/qf-studio/pilot/issues/4611); verify env via the structured
+`autopilot enabled` log line, not the banner. **Both daemons now on v2.249.0.**
