@@ -14,7 +14,14 @@ import (
 func TestResolveMemoryDBPath(t *testing.T) {
 	t.Run("plain directory resolves to itself", func(t *testing.T) {
 		dir := t.TempDir()
-		want := filepath.Join(dir, "pilot.db")
+		// On macOS, t.TempDir() returns a path under /var, which is itself
+		// a symlink to /private/var. resolveMemoryDBPath canonicalizes via
+		// EvalSymlinks, so the expectation must be canonicalized too.
+		canonicalDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", dir, err)
+		}
+		want := filepath.Join(canonicalDir, "pilot.db")
 		if got := resolveMemoryDBPath(dir); got != want {
 			t.Errorf("resolveMemoryDBPath(%q) = %q, want %q", dir, got, want)
 		}
@@ -43,7 +50,14 @@ func TestResolveMemoryDBPath(t *testing.T) {
 			t.Fatalf("Symlink: %v", err)
 		}
 
-		want := filepath.Join(target, "pilot.db")
+		// Canonicalize target the same way resolveMemoryDBPath does, so this
+		// still passes when root itself sits under a symlinked path (e.g.
+		// macOS /var -> /private/var).
+		canonicalTarget, err := filepath.EvalSymlinks(target)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(%q): %v", target, err)
+		}
+		want := filepath.Join(canonicalTarget, "pilot.db")
 		if got := resolveMemoryDBPath(link); got != want {
 			t.Errorf("resolveMemoryDBPath(%q) = %q, want %q (target of symlink)", link, got, want)
 		}
