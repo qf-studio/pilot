@@ -331,7 +331,7 @@ environment" (cosmetic, renders a legacy field) → filed
 [#4611](https://github.com/qf-studio/pilot/issues/4611); verify env via the structured
 `autopilot enabled` log line, not the banner. **Both daemons now on v2.249.0.**
 
-## v9.3 (2026-07-29 eve) — wave 9/10: auth email leg merged, only #478 remains
+## v9.3 (2026-07-29 eve) — S3 WAVE 10/10 MERGED: both auth email legs closed same-day
 
 - **auth PR#479** (GH-477 EmailSender + password-reset delivery) sat green+CLEAN un-adopted
   11:46Z→15:59Z (~4h13m, no `autoMergeRequest`; board showed autopilot stage=`failed` terminal) —
@@ -343,9 +343,21 @@ environment" (cosmetic, renders a legacy field) → filed
 - **pilot#4610 fixed by the daemon itself**: picked up 15:22Z, PR#4612 merged 15:52Z —
   re-adopt-on-branch-update ships on the next release train (~07-30 14:00Z). Manual merge remains
   the playbook for held PRs until the box carries it.
-- ui#13/14 (PR#15/#16) and infra#24 (PR#25) confirmed merged — the v9.2 "still in flight" list is
-  resolved except **auth#478** (signup verification), now unblocked, pilot-labeled, awaiting
-  daemon pickup.
+- **auth#478 (signup verification) shipped 25 min after #479 merged**: daemon pickup 16:00:24Z
+  (60s after unblock) → PR#480, green — but autopilot stuck at `waiting_ci` with green Actions
+  check-runs (possible GH-4384 recurrence on v2.249.0; evidence commented on the closed issue).
+  Operator-reviewed + merged manually ~16:26Z. Review finding →
+  [auth#481](https://github.com/qf-studio/auth-service/issues/481): pre-existing
+  `ConsumeEmailVerifyToken` never checks `email_verify_token_expires_at` — expired links still
+  verify (TTL is dead); also settle double-click semantics (spec said idempotent-200, storage
+  gives 400). Low risk while verification is informational-only, must land before enforcement.
+- ui#13/14 (PR#15/#16) and infra#24 (PR#25) confirmed merged — **entire 10-issue wave on main.**
+- Local pre-push gate red on macOS, both root-caused + filed:
+  [pilot#4613](https://github.com/qf-studio/pilot/issues/4613) `TestResolveMemoryDBPath`
+  /var→/private/var symlink mismatch · [pilot#4614](https://github.com/qf-studio/pilot/issues/4614)
+  check-integration.sh BRE `\(\)` empty-group bug false-flagging parameterized test helpers as
+  orphan commands. Until fixed: docs-only pushes from the laptop need `--no-verify` (CI on main
+  stays the real gate).
 - **Next**: operator staging deploys per infra PR#25 checklist (control-plane EC2 → ALB/ACM → SES
   identity + SPA hosting). Founder inputs needed: console + sending domain names, Stripe test
   keys/price/webhook secret, ACM DNS validation. Then the S3 exit test (staging signup → payment →
