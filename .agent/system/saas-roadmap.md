@@ -106,7 +106,7 @@ S0: 10 · S1: 3 · S2: ~9 (incl. ownership-transfer pre-step) · S3: ~6 · S4: ~
 
 ---
 
-**Last Updated**: 2026-07-29 eve (v9.3 — **S3 wave 9/10 merged**: auth#477 leg closed manually, only auth#478 in flight. Prior v9.2: console leg merged after 5-PR park cascade + box drain incident; v9.1: wave dispatched; v9.0: S2 exit met)
+**Last Updated**: 2026-07-29 night (v9.3 — **S3 wave 10/10 merged** incl. both auth email legs; local-stack mini-wave dispatched. Prior v9.2: console leg merged after 5-PR park cascade + box drain incident; v9.1: wave dispatched; v9.0: S2 exit met)
 
 ## v8.8 (2026-07-26) — merge leg root-caused; SaaS unparked
 
