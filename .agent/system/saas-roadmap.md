@@ -106,7 +106,7 @@ S0: 10 · S1: 3 · S2: ~9 (incl. ownership-transfer pre-step) · S3: ~6 · S4: ~
 
 ---
 
-**Last Updated**: 2026-07-29 (v9.1 — **S3 BACKEND WAVE DISPATCHED**, 10 issues / 4 repos, see below. Prior v9.0: S2 exit met, billing wall fixed; v8.8: merge leg root-caused; v8.7: step 4 blocked; v8.6: fleet VPC live)
+**Last Updated**: 2026-07-29 eve (v9.2 — **pilot-console S3 leg FULLY MERGED same-day** after a 5-PR park cascade + box drain incident, see below. Prior v9.1: wave dispatched; v9.0: S2 exit met)
 
 ## v8.8 (2026-07-26) — merge leg root-caused; SaaS unparked
 
@@ -296,3 +296,31 @@ module CI friction).
 **Founder/operator inputs needed at staging exit (none block merges)**: console + sending domain
 names (SES identity/DKIM), Stripe account + test-mode keys + price + webhook secret, ACM DNS
 validation, staging deploys per the committed checklist.
+
+## v9.2 (2026-07-29 eve) — pilot-console S3 leg MERGED; 5-PR park cascade + box drain incident
+
+**pilot-console S3 backend is fully on main, same day as dispatch.** The daemon decomposed the
+epics into sub-issues and shipped 4 legs itself (#62 vendored authclient · #63 sessions migration ·
+#69 S3.2 CRUD incl. its own complete BFF · #76 billing wiring incl. a full Stripe service) — then
+the sibling-merge cascade parked the other 5 PRs `needs-manual-rebase` (all sharing
+main.go/config.go/go.mod). Operator recovery, TASK-401-style unification audits: **#67 + #74 closed
+superseded** (main's inline bff/config were strict supersets); **#75 unified** (grafted the two
+missing webhook legs — subscription.deleted→inactive, payment_failed→past_due — new
+`orgs.SetBillingStatusByStripeCustomerID`, and the handler test coverage main lacked); **#68 (email
+sender)** and **#70 (instances API + proxy session dual-auth)** rebased with union resolution.
+All merged manually (a rebased push never re-arms autopilot) → filed
+[#4610](https://github.com/qf-studio/pilot/issues/4610) re-adopt-on-branch-update (5× recurrence
+of the predicted class). Issues #57–61 all closed; repo back to only #45 open.
+
+**Box drain incident (55 min)**: v2.249.0 released 14:20Z but the box's self-upgrade looped on
+`drain timeout: 1 tasks still active: [GH-72]` — a **zombie active-task** from a stalled→retried
+execution (no live worker, rows without `started_at`, PR already externally merged); stale
+recovery never touches the in-memory registry and pollers pause during each drain attempt.
+Operator restart 15:16Z → registry cleared → **self-upgrade completed autonomously 15:17:40Z,
+box on v2.249.0** (hot restart, verified). Filed
+[#4609](https://github.com/qf-studio/pilot/issues/4609) (drain-time process reconciliation +
+finalize-on-stall-retry + drain-timeout alert).
+
+**Still in flight from the wave**: auth#477/478, ui#13/14, infra#24 (their repos' queues — check
+after the restart). **Tenant binary bump to v2.249.0** now unblocked (tag proven on the box —
+AM-marker SSM procedure).
