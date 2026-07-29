@@ -106,7 +106,7 @@ S0: 10 · S1: 3 · S2: ~9 (incl. ownership-transfer pre-step) · S3: ~6 · S4: ~
 
 ---
 
-**Last Updated**: 2026-07-28 (v9.0 — **S2 EXIT MET**, see below. Prior v8.8: merge leg root-caused; v8.7: step 4 blocked, diagnosis pending; v8.6: fleet VPC live, consolectl shipped, tenant executing after a 7-layer defect cascade; v8.5: e2e 3/3 green)
+**Last Updated**: 2026-07-29 (v9.1 — **S3 BACKEND WAVE DISPATCHED**, 10 issues / 4 repos, see below. Prior v9.0: S2 exit met, billing wall fixed; v8.8: merge leg root-caused; v8.7: step 4 blocked; v8.6: fleet VPC live)
 
 ## v8.8 (2026-07-26) — merge leg root-caused; SaaS unparked
 
@@ -256,3 +256,43 @@ resolves epic parent instead of the child's own issue).
 **→ S3 (control plane + auth + dashboard shell) is open.** Next: spec S3 backend (BFF cookie
 sessions, orgs/connections CRUD, Stripe flag-gated, direct email sender — S3 row); tenant
 binary bump to the next tag once the box proves it (train fired 07-28, box self-installing).
+
+## v9.1 (2026-07-29) — S3 backend wave DISPATCHED (10 issues, 4 repos)
+
+Specced from a 3-agent survey (pilot-console routes/db/secrets · auth-service gRPC/email/tenancy
+· pilot-console-ui mock contract) and dispatched in dependency order:
+
+- **pilot-console**: [#57](https://github.com/qf-studio/pilot-console/issues/57) S3.1 BFF cookie
+  sessions (auth-service HTTP login leg + vendored `pkg/authclient` ValidateToken; migration 0005
+  `sessions`) → [#58](https://github.com/qf-studio/pilot-console/issues/58) S3.2 orgs/members/
+  connections CRUD (migration 0006 incl. org billing columns; **test-before-store** credential
+  validation — SSM writer stays write-only) → [#59](https://github.com/qf-studio/pilot-console/issues/59)
+  S3.3 instances API (drift = `applied_config_generation != config_generation`; gate ladder
+  412 missing-connections → 402 billing → 409 claimed; C13 proxy gains session dual-auth) →
+  [#60](https://github.com/qf-studio/pilot-console/issues/60) S3.4 Stripe Checkout flag-gated
+  (`PILOT_CONSOLE_BILLING_CHECKOUT_ENABLED` default off, routes unregistered when off) →
+  [#61](https://github.com/qf-studio/pilot-console/issues/61) S3.5 email sender (vendored
+  SES/Resend transports; `POST /send-email` matches auth-service `HTTPSender` contract byte-for-byte,
+  synchronous 202/502).
+- **auth-service**: [#477](https://github.com/qf-studio/auth-service/issues/477) wire EmailSender +
+  reset-link delivery (closes TODO `service.go:323`; tightens token-for-any-email) →
+  [#478](https://github.com/qf-studio/auth-service/issues/478) signup verification (Register token
+  issuance + `POST /auth/verify-email`; login NOT verification-gated in v1).
+- **pilot-console-ui**: [#13](https://github.com/qf-studio/pilot-console-ui/issues/13) real HTTP
+  adapter (mock/real seam `VITE_API_MODE`, `getMe` bootstrap, single 401 interception, logout) →
+  [#14](https://github.com/qf-studio/pilot-console-ui/issues/14) onboarding gaps (signup/org-create,
+  per-tracker field schemas, Test buttons, Anthropic/Slack fields, 402→checkout redirect).
+- **pilot-cloud-infra**: [#24](https://github.com/qf-studio/pilot-cloud-infra/issues/24) staging
+  control plane (console-api + auth-service(+Redis) systemd/container on control-plane EC2, auth DB
+  as logical DB on existing RDS, ALB+ACM, SES identity parameterized, SPA S3+CloudFront; operator
+  deploy-validation checklist mandatory — the infra#20/#21 "CDK rots without a deploy gate" lesson).
+
+Survey traps baked into issue bodies: auth-service gRPC `tenant_id` is dead on the wire (all calls
+resolve to Default tenant — acceptable for S3 single-tenant mode, do not build against it); access
+tokens keep their `qf_at_` prefix; auth-service runs **nowhere** in this AWS account (infra#24 is
+real scope); email transports AND `pkg/authclient` get vendored (Go `internal/` visibility / private
+module CI friction).
+
+**Founder/operator inputs needed at staging exit (none block merges)**: console + sending domain
+names (SES identity/DKIM), Stripe account + test-mode keys + price + webhook secret, ACM DNS
+validation, staging deploys per the committed checklist.
