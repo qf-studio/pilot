@@ -106,7 +106,7 @@ S0: 10 · S1: 3 · S2: ~9 (incl. ownership-transfer pre-step) · S3: ~6 · S4: ~
 
 ---
 
-**Last Updated**: 2026-07-29 eve (v9.2 — **pilot-console S3 leg FULLY MERGED same-day** after a 5-PR park cascade + box drain incident, see below. Prior v9.1: wave dispatched; v9.0: S2 exit met)
+**Last Updated**: 2026-07-29 eve (v9.3 — **S3 wave 9/10 merged**: auth#477 leg closed manually, only auth#478 in flight. Prior v9.2: console leg merged after 5-PR park cascade + box drain incident; v9.1: wave dispatched; v9.0: S2 exit met)
 
 ## v8.8 (2026-07-26) — merge leg root-caused; SaaS unparked
 
@@ -330,3 +330,23 @@ sha256 verified, mv-swap (backup `/opt/pilot/bin/pilot.v2.247.0.bak`), one resta
 environment" (cosmetic, renders a legacy field) → filed
 [#4611](https://github.com/qf-studio/pilot/issues/4611); verify env via the structured
 `autopilot enabled` log line, not the banner. **Both daemons now on v2.249.0.**
+
+## v9.3 (2026-07-29 eve) — wave 9/10: auth email leg merged, only #478 remains
+
+- **auth PR#479** (GH-477 EmailSender + password-reset delivery) sat green+CLEAN un-adopted
+  11:46Z→15:59Z (~4h13m, no `autoMergeRequest`; board showed autopilot stage=`failed` terminal) —
+  the #4610 class, recurrence #6. Operator-reviewed against all acceptance criteria (lookup-first
+  anti-enumeration — no token minted for unknown addresses; send-failure→202 with new
+  `password_reset_email_failed` audit event; `requireStr` cross-field validation incl. new
+  `PASSWORD_RESET_URL_BASE`; 4 delivery tests) → merged manually 15:59Z, recurrence noted on the
+  issue.
+- **pilot#4610 fixed by the daemon itself**: picked up 15:22Z, PR#4612 merged 15:52Z —
+  re-adopt-on-branch-update ships on the next release train (~07-30 14:00Z). Manual merge remains
+  the playbook for held PRs until the box carries it.
+- ui#13/14 (PR#15/#16) and infra#24 (PR#25) confirmed merged — the v9.2 "still in flight" list is
+  resolved except **auth#478** (signup verification), now unblocked, pilot-labeled, awaiting
+  daemon pickup.
+- **Next**: operator staging deploys per infra PR#25 checklist (control-plane EC2 → ALB/ACM → SES
+  identity + SPA hosting). Founder inputs needed: console + sending domain names, Stripe test
+  keys/price/webhook secret, ACM DNS validation. Then the S3 exit test (staging signup → payment →
+  credentials → provision → first PR, zero operator SSH, 3+ tenants concurrent).
