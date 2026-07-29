@@ -1093,6 +1093,22 @@ type PRState struct {
 	// to. When it no longer matches the PR's current HeadSHA, the effective
 	// retry budget is treated as 0 (GH-4533). Persisted.
 	InfraRerunSHA string
+	// RebaseHoldActive is true while this PR is parked at StageFailed
+	// specifically via escalateAndHold's "needs-manual-rebase" label (GH-4610).
+	// escalateAndHold sets StageFailed for many unrelated reasons (CI-fix size
+	// guard, rebase-oscillation cap, etc.); this flag narrows the re-adoption
+	// scan in reAdoptHeldRebasePR to the one hold an operator's branch push
+	// can actually resolve. Cleared once re-adoption fires (or a fresh
+	// escalateAndHold call supersedes it with a different label set).
+	// Persisted so the flag survives a daemon restart while the PR sits held.
+	RebaseHoldActive bool
+	// ReadoptCount tracks how many times reAdoptHeldRebasePR (GH-4610) has
+	// revived this PR from a needs-manual-rebase hold back to StageWaitingCI
+	// after observing a new head SHA. Capped at maxReadoptAttempts so a
+	// branch that keeps re-conflicting after every push can't ping-pong
+	// between held and waiting_ci forever — it eventually stays parked for a
+	// human. Never reset (lifetime counter for the PR). Persisted.
+	ReadoptCount int
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -1143,6 +1159,8 @@ func (ps *PRState) snapshot() *PRState {
 		MergeFollowupPosted:     ps.MergeFollowupPosted,
 		InfraRerunCount:         ps.InfraRerunCount,
 		InfraRerunSHA:           ps.InfraRerunSHA,
+		RebaseHoldActive:        ps.RebaseHoldActive,
+		ReadoptCount:            ps.ReadoptCount,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.

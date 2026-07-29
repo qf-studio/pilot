@@ -182,6 +182,11 @@ func (s *StateStore) migrate() error {
 		// lets a restored PR recognize itself as already parked on tick 1.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN parked INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN escalation_reason TEXT NOT NULL DEFAULT ''`,
+		// GH-4610: persist the needs-manual-rebase hold flag and the re-adoption
+		// counter so a daemon restart doesn't lose track of which held PRs are
+		// eligible for re-adoption, or reset an already-spent re-adoption budget.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN rebase_hold_active INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN readopt_count INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, m := range migrations {
@@ -441,6 +446,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			infra_rerun_sha TEXT NOT NULL DEFAULT '',
 			parked INTEGER NOT NULL DEFAULT 0,
 			escalation_reason TEXT NOT NULL DEFAULT '',
+			rebase_hold_active INTEGER NOT NULL DEFAULT 0,
+			readopt_count INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -455,7 +462,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason
+			parked, escalation_reason, rebase_hold_active, readopt_count
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -465,7 +472,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason
+			parked, escalation_reason, rebase_hold_active, readopt_count
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -610,8 +617,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			parked, escalation_reason, rebase_hold_active, readopt_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -639,7 +646,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			infra_rerun_count = excluded.infra_rerun_count,
 			infra_rerun_sha = excluded.infra_rerun_sha,
 			parked = excluded.parked,
-			escalation_reason = excluded.escalation_reason
+			escalation_reason = excluded.escalation_reason,
+			rebase_hold_active = excluded.rebase_hold_active,
+			readopt_count = excluded.readopt_count
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -649,7 +658,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.ApprovalRequestID, pr.ApprovalDecision, nullTime(pr.ApprovalRequestedAt),
 		pr.PostMergeSHA, nullTime(pr.PostMergeCIStartedAt), pr.RebaseAttempts, pr.ScopeKey,
 		pr.PRTitle, pr.MergeFollowupPosted, pr.InfraRerunCount, pr.InfraRerunSHA,
-		pr.Parked, pr.EscalationReason,
+		pr.Parked, pr.EscalationReason, pr.RebaseHoldActive, pr.ReadoptCount,
 	)
 	return err
 }
@@ -665,7 +674,7 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason
+			parked, escalation_reason, rebase_hold_active, readopt_count
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -690,7 +699,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason
+			parked, escalation_reason, rebase_hold_active, readopt_count
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -712,7 +721,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
 			&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
 			&pr.PRTitle, &pr.MergeFollowupPosted, &pr.InfraRerunCount, &pr.InfraRerunSHA,
-			&pr.Parked, &pr.EscalationReason,
+			&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 		); err != nil {
 			return nil, err
 		}
@@ -968,7 +977,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
 		&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
 		&pr.PRTitle, &pr.MergeFollowupPosted, &pr.InfraRerunCount, &pr.InfraRerunSHA,
-		&pr.Parked, &pr.EscalationReason,
+		&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 	)
 	if err != nil {
 		return nil, err

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -4611,6 +4612,11 @@ const labelParkedAwaitingApproval = "autopilot/parked-awaiting-approval"
 func (c *Controller) escalateAndHold(ctx context.Context, prState *PRState, reason string, labels []string, comment string) {
 	prState.Stage = StageFailed
 	prState.Error = reason
+	// GH-4610: narrow re-adoption's re-entry scan to holds it can actually
+	// resolve (a rebase an operator fixed by pushing to the branch) rather
+	// than every StageFailed PR — other holds (CI-fix size guard, rebase-
+	// oscillation cap, CI timeout) stay parked even if their branch moves.
+	prState.RebaseHoldActive = slices.Contains(labels, "needs-manual-rebase")
 
 	if prState.IssueNumber > 0 {
 		allLabels := append([]string{labelNeedsHuman}, labels...)
@@ -4645,6 +4651,74 @@ func (c *Controller) escalateAndHold(ctx context.Context, prState *PRState, reas
 	}
 
 	c.log.Warn("escalateAndHold: PR held for human review, branch intact", "pr", prState.PRNumber, "issue", prState.IssueNumber, "reason", reason, "labels", labels)
+}
+
+// maxReadoptAttempts caps how many times reAdoptHeldRebasePR (GH-4610) may
+// revive a single PR from a needs-manual-rebase hold. Without a cap, a
+// branch that keeps re-conflicting after every push would ping-pong
+// autopilot between StageFailed and StageWaitingCI forever instead of
+// eventually staying parked for a human — mirrors the reasoning behind
+// MaxRebaseAttempts (GH-3715) for the auto-rebase oscillation cap.
+const maxReadoptAttempts = 2
+
+// reAdoptHeldRebasePR is GH-4610: escalateAndHold's needs-manual-rebase hold
+// sets StageFailed, which ProcessPR treats as terminal (case StageFailed:
+// "no processing"). Before this, the only way off that hold was a fully
+// manual `gh pr merge` after an operator rebased the branch by hand —
+// autopilot never looked at the PR again even though the branch had been
+// updated to resolve the conflict. This recurred 5x in one wave on
+// 2026-07-29 (pilot-console PRs #67/#68/#70/#74/#75, all parked after
+// sibling-PR merges), every one requiring an operator rebase plus a manual
+// merge.
+//
+// Detection rides the existing PR poll in processAllPRs: compare the stored
+// HeadSHA against the freshly-fetched ghPR head. A changed SHA on a PR held
+// specifically via RebaseHoldActive (not any other StageFailed reason — CI-
+// fix size guard, rebase-oscillation cap, CI timeout, etc. all stay parked)
+// means someone pushed a fix, so re-enter the pipeline at StageWaitingCI for
+// fresh CI on the new head. MergeAttempts/RebaseAttempts are preserved (not
+// reset) so their own caps still apply if the PR conflicts again; the
+// external-merge scan (checkExternalMergeOrClose) remains the fallback for
+// PRs an operator merges by hand instead of pushing a fix.
+func (c *Controller) reAdoptHeldRebasePR(ctx context.Context, prState *PRState, ghPR *github.PullRequest) {
+	if ghPR == nil || prState.Stage != StageFailed || !prState.RebaseHoldActive {
+		return
+	}
+	newHead := ghPR.Head.SHA
+	if newHead == "" || newHead == prState.HeadSHA {
+		return
+	}
+	if prState.ReadoptCount >= maxReadoptAttempts {
+		c.log.Warn("reAdoptHeldRebasePR: re-adoption cap reached, leaving PR parked for manual merge",
+			"pr", prState.PRNumber, "issue", prState.IssueNumber,
+			"readopt_count", prState.ReadoptCount, "max", maxReadoptAttempts,
+		)
+		return
+	}
+
+	prevHold := prState.Error
+	prState.ReadoptCount++
+	prState.RebaseHoldActive = false
+	prState.HeadSHA = newHead
+	prState.Stage = StageWaitingCI
+	prState.CIWaitStartedAt = time.Now()
+	prState.Error = ""
+
+	c.log.Info("reAdoptHeldRebasePR: branch updated on held PR, re-entering pipeline",
+		"pr", prState.PRNumber, "issue", prState.IssueNumber,
+		"new_head", ShortSHA(newHead), "readopt_count", prState.ReadoptCount,
+		"max", maxReadoptAttempts, "prior_hold_reason", prevHold,
+	)
+
+	if prState.IssueNumber > 0 {
+		comment := fmt.Sprintf(
+			"🔄 **Re-adopted**: branch updated (new head `%s`) while held for manual rebase — autopilot is re-entering the pipeline for fresh CI (re-adoption %d/%d).",
+			ShortSHA(newHead), prState.ReadoptCount, maxReadoptAttempts,
+		)
+		if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+			c.log.Warn("reAdoptHeldRebasePR: failed to post PR comment", "pr", prState.PRNumber, "error", err)
+		}
+	}
 }
 
 // removePR removes PR from tracking and cleans up the remote branch.
@@ -5807,6 +5881,13 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 				pr.mu.Unlock()
 				continue
 			}
+
+			// GH-4610: revive a needs-manual-rebase hold back into the pipeline
+			// once its branch has moved (operator pushed a fix) — a no-op for
+			// every PR not currently held in exactly that state. Must run before
+			// ProcessPR, which treats StageFailed as terminal and would never
+			// look at this PR again otherwise.
+			c.reAdoptHeldRebasePR(ctx, pr, ghPR)
 
 			// Detect changes_requested reviews in polling mode (webhook mode uses OnReviewRequested).
 			// Only check PRs that haven't already been transitioned to review_requested.
