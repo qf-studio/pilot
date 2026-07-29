@@ -406,6 +406,21 @@
         "name": "Silent-Failure",
         "aliases": [],
         "domain": "general"
+      },
+      "git": {
+        "name": "Git",
+        "aliases": [],
+        "domain": "general"
+      },
+      "pre-push-gate": {
+        "name": "Pre-Push-Gate",
+        "aliases": [],
+        "domain": "general"
+      },
+      "go-build": {
+        "name": "Go-Build",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -765,14 +780,14 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
-          "authentication",
           "frontend",
-          "testing",
-          "context",
           "api",
-          "knowledge",
+          "context",
           "deployment",
-          "theory of mind"
+          "knowledge",
+          "authentication",
+          "theory of mind",
+          "testing"
         ]
       },
       "TASK-407": {
@@ -3572,6 +3587,20 @@
         ],
         "created": "2026-07-27",
         "last_validated": "2026-07-27"
+      },
+      "mem-161": {
+        "type": "pitfall",
+        "summary": "core.bare=true in shared .git/config makes git status fatal in root AND all linked worktrees; go -buildvcs runs git status, so build/lint/test fail with 'error obtaining VCS status: exit status 128'. Check 'git config --show-origin --get-all core.bare' before debugging individual tools. Fix: git config core.bare false. Also: TestResolveMemoryDBPath (/var symlink) + newTestStartCmd orphan check are known pre-existing macOS gate noise \u2014 reproduce on clean main; CI is the arbiter.",
+        "path": "memories/pitfalls/core-bare-true-poisons-status-and-vcs-stamping.md",
+        "confidence": 0.8,
+        "concepts": [
+          "worktree",
+          "git",
+          "pre-push-gate",
+          "go-build"
+        ],
+        "created": "2026-07-28",
+        "last_validated": "2026-07-28"
       }
     }
   },
@@ -5386,7 +5415,8 @@
       "mem-123"
     ],
     "worktree": [
-      "mem-102"
+      "mem-102",
+      "mem-161"
     ],
     "release": [
       "mem-103",
@@ -5610,12 +5640,21 @@
     ],
     "silent-failure": [
       "mem-160"
+    ],
+    "git": [
+      "mem-161"
+    ],
+    "pre-push-gate": [
+      "mem-161"
+    ],
+    "go-build": [
+      "mem-161"
     ]
   },
-  "last_updated": "2026-07-27T12:57:58.545438+00:00",
+  "last_updated": "2026-07-28T17:06:33.940099+00:00",
   "stats": {
-    "total_nodes": 310,
+    "total_nodes": 314,
     "total_edges": 256,
-    "memory_count": 191
+    "memory_count": 192
   }
 }
