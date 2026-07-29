@@ -29,17 +29,23 @@ echo ""
 # 1. Check for orphan command functions (newXxxCmd not in AddCommand)
 echo "Checking command wiring..."
 
-# Find all newXxxCmd function declarations
-CMD_FUNCS=$(grep -rh 'func new[A-Z][a-zA-Z]*Cmd\(\)' cmd/pilot/*.go 2>/dev/null | grep -oE 'new[A-Z][a-zA-Z]*Cmd' | sort -u || true)
+# Find all newXxxCmd function declarations (zero-arg constructors only —
+# literal parens, not a BRE empty-capture-group `\(\)` which would match
+# any parameter list). Test helpers (e.g. newTestStartCmd(t, ...)) are
+# never CLI commands, so exclude *_test.go from the declaration scan.
+CMD_FUNCS=$(grep -rh --include='*.go' --exclude='*_test.go' 'func new[A-Z][a-zA-Z]*Cmd()' cmd/pilot/ 2>/dev/null | grep -oE 'new[A-Z][a-zA-Z]*Cmd' | sort -u || true)
 
 if [ -n "$CMD_FUNCS" ]; then
     for func in $CMD_FUNCS; do
-        # Check if it's used in AddCommand or called somewhere
-        USED_IN_ADDCMD=$(grep -rh "AddCommand.*${func}()" cmd/pilot/*.go 2>/dev/null || true)
-        CALLED=$(grep -rh "${func}()" cmd/pilot/*.go 2>/dev/null | grep -v "^func " || true)
+        # Check if it's used in AddCommand or called somewhere. Match on
+        # "${func}(" (not "${func}()") so calls with arguments still count
+        # as wired/called, in case a zero-arg constructor is later refactored
+        # to take parameters.
+        USED_IN_ADDCMD=$(grep -rh "AddCommand.*${func}(" cmd/pilot/*.go 2>/dev/null || true)
+        CALLED=$(grep -rh "${func}(" cmd/pilot/*.go 2>/dev/null | grep -v "^func " || true)
 
         # For subcommands, check if they're added to a parent
-        SUBCOMMAND_USAGE=$(grep -rh "\.AddCommand(${func}()" cmd/pilot/*.go 2>/dev/null || true)
+        SUBCOMMAND_USAGE=$(grep -rh "\.AddCommand(${func}(" cmd/pilot/*.go 2>/dev/null || true)
 
         if [ -z "$USED_IN_ADDCMD" ] && [ -z "$CALLED" ] && [ -z "$SUBCOMMAND_USAGE" ]; then
             echo -e "  ${RED}✗${NC} Orphan command: $func() - not wired to AddCommand()"
