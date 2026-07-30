@@ -2012,7 +2012,7 @@ func (r *Runner) recordEpicTerminalEvent(executionID string, result *ExecutionRe
 // executeWithOptions is the internal implementation that allows controlling worktree creation.
 // When allowWorktree is false, it skips worktree creation even if configured.
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
-func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (*ExecutionResult, error) {
+func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (outResult *ExecutionResult, outErr error) {
 	start := time.Now()
 	defer func() {
 		// GH-4240: canary executions are still fully logged, just excluded
@@ -2714,6 +2714,44 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			log.Warn("Failed to capture pre-attempt commit SHA", slog.Any("error", shaErr))
 		}
 	}
+
+	// GH-4594: on a terminal failure (no more quality-gate retries left, or
+	// any other failure path below), discard any uncommitted dirt the failed
+	// attempt left behind in the direct-mode clone so the *next* dispatch on
+	// this same project's shared (non-worktree) clone doesn't wedge on the
+	// git_clean preflight check. Deliberately resets to "HEAD" — not
+	// preAttemptSHA — so it only discards uncommitted changes and never
+	// rewinds commits: both the quality-gate retry loop's kept last-attempt
+	// commit and GH-4517's auto-preserved WIP commit are legitimate committed
+	// work a human may need to review, and must survive this cleanup. Only
+	// genuinely leftover, never-committed dirt (partial fixes, scratch files
+	// Claude wrote before erroring out, etc.) gets discarded here. Worktree
+	// mode doesn't need this: preAttemptSHA stays empty there and the whole
+	// worktree is discarded by cleanupWorktree regardless of outcome. Uses a
+	// fresh context (not ctx, which is frequently already Done() here — this
+	// cleanup runs precisely when the attempt failed via timeout) with its
+	// own short deadline so the cleanup isn't skipped for the most common
+	// failure cause.
+	defer func() {
+		if useWorktree || preAttemptSHA == "" {
+			return
+		}
+		if outResult != nil && outResult.Success {
+			return
+		}
+		resetCtx, resetCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer resetCancel()
+		if resetErr := git.ResetHardToCommit(resetCtx, "HEAD"); resetErr != nil {
+			log.Warn("Failed to discard uncommitted dirt after failed execution",
+				slog.String("task_id", task.ID),
+				slog.Any("error", resetErr),
+			)
+		} else {
+			log.Info("Discarded uncommitted dirt after failed direct-mode execution",
+				slog.String("task_id", task.ID),
+			)
+		}
+	}()
 
 	// GH-994: Create task documentation if Navigator is present
 	agentPath := filepath.Join(executionPath, ".agent")
