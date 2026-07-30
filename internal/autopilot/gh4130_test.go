@@ -30,6 +30,9 @@ func (m *gh4130ExecPersister) RecordExecutionEvent(_ string, _ memory.Stage, _ s
 func (m *gh4130ExecPersister) HasExecutionEventStage(_ string, _ memory.Stage) (bool, error) {
 	return false, nil
 }
+func (m *gh4130ExecPersister) UpdateExecutionStatusIfNotTerminal(_, _ string, _ ...string) (bool, error) {
+	return true, nil
+}
 func (m *gh4130ExecPersister) GetLatestExecutionByTaskID(taskID, _ string) (*memory.Execution, error) {
 	exec, ok := m.execByTask[taskID]
 	if !ok {

@@ -9013,6 +9013,21 @@ type mockApprovalPersister struct {
 
 	execByTask      map[string]string
 	executionEvents []recordedExecutionEvent
+
+	// execStatus tracks each execution row's current status keyed by
+	// execution ID (GH-4620), so UpdateExecutionStatusIfNotTerminal can
+	// mirror the real store's CAS guard: a row already at a terminal status
+	// rejects the write instead of being overwritten.
+	execStatus        map[string]string
+	statusUpdateCalls []struct{ id, status, detail string }
+}
+
+// mockTerminalExecStatuses mirrors memory.terminalExecutionStatuses (private
+// to the memory package) closely enough for mockApprovalPersister's CAS
+// emulation in tests.
+var mockTerminalExecStatuses = map[string]bool{
+	"completed": true, "failed": true, "cancelled": true, "declined": true,
+	"stalled": true, "no_op": true, "rate_limited": true, "infra": true, "skipped": true,
 }
 
 type recordedExecutionEvent struct {
@@ -9036,7 +9051,28 @@ func (m *mockApprovalPersister) GetLatestExecutionByTaskID(taskID, _ string) (*m
 	if !ok {
 		return nil, sql.ErrNoRows
 	}
-	return &memory.Execution{ID: id, TaskID: taskID}, nil
+	return &memory.Execution{ID: id, TaskID: taskID, Status: m.execStatus[id]}, nil
+}
+
+// UpdateExecutionStatusIfNotTerminal emulates memory.Store's CAS-guarded
+// finalize (GH-4620): rejects the write once execStatus[id] is already one
+// of mockTerminalExecStatuses, mirroring the real WHERE status NOT IN (...)
+// guard so tests can assert both the finalize AND the no-clobber behavior.
+func (m *mockApprovalPersister) UpdateExecutionStatusIfNotTerminal(id, status string, errorMsg ...string) (bool, error) {
+	detail := ""
+	if len(errorMsg) > 0 {
+		detail = errorMsg[0]
+	}
+	m.statusUpdateCalls = append(m.statusUpdateCalls, struct{ id, status, detail string }{id, status, detail})
+
+	if m.execStatus == nil {
+		m.execStatus = map[string]string{}
+	}
+	if mockTerminalExecStatuses[m.execStatus[id]] {
+		return false, nil
+	}
+	m.execStatus[id] = status
+	return true, nil
 }
 
 func (m *mockApprovalPersister) RecordExecutionEvent(executionID string, stage memory.Stage, detail string) error {
@@ -9097,6 +9133,96 @@ func TestController_SetApprovalDecision_PersistsToMemoryStore(t *testing.T) {
 	}
 }
 
+// TestController_ProcessPR_StageFailed_FinalizesRunningExecutionRow verifies
+// the GH-4620 fix: a PR transition into StageFailed (here via the dirty-PR
+// merge-conflict path exercised by TestController_ProcessPR_MergeConflict_PRCreated)
+// must finalize a non-terminal source execution row as "failed" instead of
+// leaving it orphaned as "running" for the 2h stale-running sweep to evict.
+func TestController_ProcessPR_StageFailed_FinalizesRunningExecutionRow(t *testing.T) {
+	prClosed := false
+
+	mergeable := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == "GET":
+			resp := github.PullRequest{
+				Number:         42,
+				Head:           github.PRRef{SHA: "abc1234"},
+				Mergeable:      &mergeable,
+				MergeableState: "dirty",
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/repos/owner/repo/pulls/42/update-branch" && r.Method == "PUT":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == "PATCH":
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	mock := &mockApprovalPersister{
+		execByTask: map[string]string{"GH-10": "exec-1"},
+		execStatus: map[string]string{"exec-1": "running"},
+	}
+	c.memoryStore = mock
+
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+
+	ctx := context.Background()
+	if err := c.ProcessPR(ctx, 42, nil); err != nil {
+		t.Fatalf("ProcessPR error: %v", err)
+	}
+
+	pr, _ := c.GetPRState(42)
+	if pr.Stage != StageFailed {
+		t.Fatalf("Stage = %s, want %s (dirty PR should fail immediately)", pr.Stage, StageFailed)
+	}
+	if !prClosed {
+		t.Error("conflicting PR should have been closed")
+	}
+
+	if got := mock.execStatus["exec-1"]; got != "failed" {
+		t.Errorf("execution row status = %q, want %q (StageFailed must finalize a running row)", got, "failed")
+	}
+}
+
+// TestController_RecordExecutionEvent_StageFailed_RespectsTerminalRow verifies
+// the GH-4620 finalize is CAS-guarded: an execution row already at a terminal
+// status (e.g. "completed" from another writer) must not be clobbered by the
+// StageFailed transition's finalize.
+func TestController_RecordExecutionEvent_StageFailed_RespectsTerminalRow(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	mock := &mockApprovalPersister{
+		execByTask: map[string]string{"GH-11": "exec-2"},
+		execStatus: map[string]string{"exec-2": "completed"},
+	}
+	c.memoryStore = mock
+
+	prState := &PRState{PRNumber: 43, IssueNumber: 11}
+	c.recordExecutionEvent(prState, memory.StageFailed, "pr #43: pr_created -> failed")
+
+	if got := mock.execStatus["exec-2"]; got != "completed" {
+		t.Errorf("execution row status = %q, want %q (terminal row must not be overwritten)", got, "completed")
+	}
+	if len(mock.statusUpdateCalls) != 1 {
+		t.Fatalf("expected 1 UpdateExecutionStatusIfNotTerminal call, got %d", len(mock.statusUpdateCalls))
+	}
+}
+
 // errApprovalPersister is a mock that returns a configurable error for both methods.
 type errApprovalPersister struct {
 	requestIDErr error
@@ -9120,6 +9246,10 @@ func (m *errApprovalPersister) RecordExecutionEvent(_ string, _ memory.Stage, _ 
 }
 
 func (m *errApprovalPersister) HasExecutionEventStage(_ string, _ memory.Stage) (bool, error) {
+	return false, nil
+}
+
+func (m *errApprovalPersister) UpdateExecutionStatusIfNotTerminal(_, _ string, _ ...string) (bool, error) {
 	return false, nil
 }
 
