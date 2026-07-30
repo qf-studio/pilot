@@ -91,6 +91,127 @@ func (g *GitOperations) CreateOrResetBranch(ctx context.Context, branchName stri
 	return nil
 }
 
+// CreateOrResetBranchFromOrigin fetches origin/<baseBranch> (best-effort,
+// via resolveGuardBaseRef) and force-creates/resets branchName directly from
+// the resolved ref via `git checkout -B <branchName> <baseRef>`. Falls back
+// to the local <baseBranch> ref when origin isn't reachable (offline, no
+// "origin" remote configured — some test fixtures), preserving behavior in
+// that environment.
+//
+// This unconditionally discards any commits an existing branchName already
+// carried, so it is only safe to use where a pre-existing branch cannot yet
+// hold real work — e.g. the decomposed-parent branch step, which runs before
+// any subtask executes. Callers where a task branch may already carry
+// legitimate in-progress commits from an earlier attempt (the common
+// single-task execution path) must use EnsureBranchFromOrigin instead, which
+// only recreates the branch when it is actually stale.
+func (g *GitOperations) CreateOrResetBranchFromOrigin(ctx context.Context, branchName, baseBranch string) (string, error) {
+	baseRef := g.resolveGuardBaseRef(ctx, baseBranch)
+
+	cmd := exec.CommandContext(ctx, "git", "checkout", "-B", branchName, baseRef)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to create/reset branch %s from %s: %w: %s", branchName, baseRef, err, output)
+	}
+	return baseRef, nil
+}
+
+// EnsureBranchFromOrigin fetches origin/<baseBranch> (best-effort, via
+// resolveGuardBaseRef) and ensures branchName exists, cut from that resolved
+// ref:
+//
+//   - branchName doesn't exist locally yet: created directly from baseRef.
+//   - branchName exists but is behind baseRef (stale — e.g. left over from a
+//     prior, now-superseded run, GH-912): deleted and recreated from baseRef.
+//   - branchName exists and is NOT behind baseRef (it may carry legitimate
+//     work-in-progress commits from an earlier attempt on this same clone):
+//     switched to as-is, preserving those commits.
+//
+// GH-4594: direct-mode (non-worktree) task branches used to be cut via
+// SwitchToDefaultBranchAndPull/SwitchToBranchAndPull (checkout the LOCAL base
+// branch, then `git pull` — a merge) followed by CreateBranch (checkout -b
+// with no explicit start point, i.e. from whatever HEAD the pull left
+// behind) — and, on the stale-branch path, CommitsBehindMain's own fresh
+// `git fetch` was discarded immediately afterward because the recreate step
+// (CreateBranch) still branched off that same ambient HEAD instead of the
+// ref CommitsBehindMain had just resolved. Pull failure is also silently
+// swallowed (non-fatal, to support offline use), so any fetch hiccup left
+// the branch-doesn't-exist-yet path cutting from stale local state too. This
+// method fixes both: baseRef is resolved once up front from a real fetch,
+// and every branch-creating code path below is given that ref explicitly —
+// never ambient HEAD.
+//
+// Returns the base ref actually used, and whether the branch was freshly
+// (re)created from it (false when an existing non-stale branch was merely
+// switched to).
+func (g *GitOperations) EnsureBranchFromOrigin(ctx context.Context, branchName, baseBranch string) (baseRef string, created bool, err error) {
+	baseRef = g.resolveGuardBaseRef(ctx, baseBranch)
+
+	if !g.branchExists(ctx, branchName) {
+		if createErr := g.checkoutNewBranchFrom(ctx, branchName, baseRef); createErr != nil {
+			return baseRef, false, fmt.Errorf("failed to create branch %s from %s: %w", branchName, baseRef, createErr)
+		}
+		return baseRef, true, nil
+	}
+
+	stale, staleErr := g.branchIsBehind(ctx, branchName, baseRef)
+	if staleErr != nil {
+		// Fail open on the staleness check itself (mirrors CommitsBehindMain's
+		// prior non-fatal logging): fall through to switching to the existing
+		// branch as-is rather than risking discarding unverified work.
+		stale = false
+	}
+
+	if !stale {
+		if switchErr := g.SwitchBranch(ctx, branchName); switchErr != nil {
+			return baseRef, false, fmt.Errorf("failed to switch to existing branch %s: %w", branchName, switchErr)
+		}
+		return baseRef, false, nil
+	}
+
+	if delErr := g.DeleteBranch(ctx, branchName); delErr != nil {
+		return baseRef, false, fmt.Errorf("failed to delete stale branch %s: %w", branchName, delErr)
+	}
+	if createErr := g.checkoutNewBranchFrom(ctx, branchName, baseRef); createErr != nil {
+		return baseRef, false, fmt.Errorf("failed to recreate stale branch %s from %s: %w", branchName, baseRef, createErr)
+	}
+	return baseRef, true, nil
+}
+
+// checkoutNewBranchFrom runs `git checkout -b <branchName> <startPoint>`.
+// Assumes branchName does not already exist locally (callers are
+// responsible for that precondition — EnsureBranchFromOrigin only calls this
+// after confirming absence or deleting a stale branch).
+func (g *GitOperations) checkoutNewBranchFrom(ctx context.Context, branchName, startPoint string) error {
+	cmd := exec.CommandContext(ctx, "git", "checkout", "-b", branchName, startPoint)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, output)
+	}
+	return nil
+}
+
+// branchIsBehind reports whether branchName is missing any commits that
+// baseRef has — i.e. `git rev-list --count <branchName>..<baseRef>` > 0.
+// This only detects "behind"; a branch that has both unique commits AND is
+// missing baseRef commits (diverged) is also reported stale here, matching
+// CommitsBehindMain's prior GH-912 semantics.
+func (g *GitOperations) branchIsBehind(ctx context.Context, branchName, baseRef string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", branchName+".."+baseRef)
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("failed to count commits behind: %w", err)
+	}
+	var count int
+	if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &count); scanErr != nil {
+		return false, fmt.Errorf("failed to parse behind count %q: %w", strings.TrimSpace(string(output)), scanErr)
+	}
+	return count > 0, nil
+}
+
 // SwitchBranch switches to an existing branch
 func (g *GitOperations) SwitchBranch(ctx context.Context, branchName string) error {
 	cmd := exec.CommandContext(ctx, "git", "checkout", branchName)
@@ -974,6 +1095,46 @@ func (g *GitOperations) GetCurrentCommitSHA(ctx context.Context) (string, error)
 		return "", fmt.Errorf("failed to get current commit SHA: %w", err)
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+// ResetHardToCommit discards every change made since sha — committed or
+// uncommitted, tracked or untracked — restoring the working tree to exactly
+// that commit's state.
+//
+// GH-4594: direct-mode (non-worktree) quality-gate retries re-invoked Claude
+// Code in place, on top of whatever the previous (rejected) attempt left
+// behind. Since that attempt's edits were never undone, the retry's new
+// edits landed on top of the old ones instead of a clean slate — the
+// "leftover ` M version.go` observed x3" symptom from the incident this
+// fixes: three retries, three stacked partial edits to the same file, none
+// of them ever fully applied or cleanly discarded. Worktree mode doesn't
+// need this: each execution already gets an isolated copy created fresh
+// from a commit.
+//
+// Untracked paths matching defaultExcludeDirs/defaultExcludeGlobs (Navigator
+// scaffold, lock files, build artifacts) are preserved via `git clean`'s -e
+// excludes — the same allowlist Commit() and checkGitClean() already use to
+// decide what isn't really a project change.
+func (g *GitOperations) ResetHardToCommit(ctx context.Context, sha string) error {
+	resetCmd := exec.CommandContext(ctx, "git", "reset", "--hard", sha)
+	resetCmd.Dir = g.projectPath
+	if output, err := resetCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to reset to %s: %w: %s", sha, err, output)
+	}
+
+	cleanArgs := []string{"clean", "-fd"}
+	for _, dir := range defaultExcludeDirs {
+		cleanArgs = append(cleanArgs, "-e", dir)
+	}
+	for _, glob := range defaultExcludeGlobs {
+		cleanArgs = append(cleanArgs, "-e", glob)
+	}
+	cleanCmd := exec.CommandContext(ctx, "git", cleanArgs...)
+	cleanCmd.Dir = g.projectPath
+	if output, err := cleanCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to clean untracked files after reset to %s: %w: %s", sha, err, output)
+	}
+	return nil
 }
 
 // GetDiff returns the diff between the base branch and HEAD.

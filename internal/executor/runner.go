@@ -2012,7 +2012,7 @@ func (r *Runner) recordEpicTerminalEvent(executionID string, result *ExecutionRe
 // executeWithOptions is the internal implementation that allows controlling worktree creation.
 // When allowWorktree is false, it skips worktree creation even if configured.
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
-func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (*ExecutionResult, error) {
+func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (outResult *ExecutionResult, outErr error) {
 	start := time.Now()
 	defer func() {
 		// GH-4240: canary executions are still fully logged, just excluded
@@ -2662,66 +2662,96 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// When using worktree, CreateWorktreeWithBranch already created the branch
 	useWorktree := r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit
 	if task.Branch != "" && !task.DirectCommit && !useWorktree {
-		r.reportProgress(task.ID, "Branching", 3, "Switching to default branch...")
+		r.reportProgress(task.ID, "Branching", 3, "Fetching base branch...")
 
-		// GH-279: Always switch to default branch and pull latest before creating new branch.
-		// This prevents new branches from forking off previous pilot branches instead of main.
-		// GH-836: Hard fail if we can't switch - continuing from wrong branch causes corrupted PRs.
 		// GH-2290: Honor task.BaseBranch (sourced from project.default_branch / branch_from) so
-		// `main → dev → feature` workflows branch off dev rather than git's HEAD.
-		var defaultBranch string
-		var err error
-		if task.BaseBranch != "" {
-			defaultBranch, err = git.SwitchToBranchAndPull(ctx, task.BaseBranch)
-		} else {
-			defaultBranch, err = git.SwitchToDefaultBranchAndPull(ctx)
+		// `main → dev → feature` workflows branch off dev rather than the repo's configured default.
+		baseBranch := task.BaseBranch
+		if baseBranch == "" {
+			var branchErr error
+			baseBranch, branchErr = git.GetDefaultBranch(ctx)
+			if branchErr != nil || baseBranch == "" {
+				baseBranch = "main"
+			}
 		}
+
+		// GH-4594: cut the task branch directly from a freshly fetched
+		// origin/<baseBranch> (falling back to the local ref only when origin
+		// isn't reachable) instead of checking out the local base branch and
+		// `git pull`-merging it. Pull failure was silently swallowed, so a
+		// fetch hiccup on the shared daemon clone left the branch cut from
+		// stale local HEAD — and even the old stale-branch recreate path
+		// (GH-912) branched off that same stale ambient HEAD instead of the
+		// ref it had just checked freshness against. EnsureBranchFromOrigin
+		// still preserves an existing, non-stale branch's commits (e.g.
+		// legitimate work already committed by an earlier attempt on this
+		// clone) rather than resetting it unconditionally.
+		// GH-836: Hard fail if we can't create the branch - continuing from the wrong branch causes corrupted PRs.
+		baseRef, created, err := git.EnsureBranchFromOrigin(ctx, task.Branch, baseBranch)
 		if err != nil {
-			return nil, fmt.Errorf("branch switch failed, aborting execution: failed to switch to default branch: %w", err)
+			return nil, fmt.Errorf("branch creation failed, aborting execution: %w", err)
 		}
-		r.reportProgress(task.ID, "Branching", 5, fmt.Sprintf("On %s, creating %s...", defaultBranch, task.Branch))
-
-		if err := git.CreateBranch(ctx, task.Branch); err != nil {
-			// Branch already exists - check if it's stale (GH-912)
-			behindCount, behindErr := git.CommitsBehindMain(ctx, task.Branch)
-			if behindErr != nil {
-				log.Warn("Failed to check if branch is behind main",
-					slog.String("branch", task.Branch),
-					slog.Any("error", behindErr),
-				)
-			}
-
-			if behindCount > 0 {
-				// Branch is stale - delete and recreate from main
-				log.Info("Stale branch detected, recreating from main",
-					slog.String("branch", task.Branch),
-					slog.Int("commits_behind", behindCount),
-				)
-				r.reportProgress(task.ID, "Branching", 6, fmt.Sprintf("Stale branch %s (%d behind), recreating...", task.Branch, behindCount))
-
-				if delErr := git.DeleteBranch(ctx, task.Branch); delErr != nil {
-					log.Warn("Failed to delete stale branch",
-						slog.String("branch", task.Branch),
-						slog.Any("error", delErr),
-					)
-				}
-				// Create fresh branch from main
-				if createErr := git.CreateBranch(ctx, task.Branch); createErr != nil {
-					return nil, fmt.Errorf("failed to recreate branch after stale detection: %w", createErr)
-				}
-				r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Recreated fresh branch %s", task.Branch))
-			} else {
-				// Branch exists and is not stale - switch to it
-				if switchErr := git.SwitchBranch(ctx, task.Branch); switchErr != nil {
-					return nil, fmt.Errorf("failed to create/switch branch: %w", err)
-				}
-				r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Switched to existing branch %s", task.Branch))
-			}
-		} else {
-			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Created branch %s", task.Branch))
+		if created {
+			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Created branch %s from %s", task.Branch, baseRef))
 			r.saveLogEntry(task.LogExecutionID(), "info", "Branch created: "+task.Branch)
+		} else {
+			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Switched to existing branch %s", task.Branch))
 		}
 	}
+
+	// GH-4594: capture the pre-attempt commit SHA now — before Claude's first
+	// invocation touches the tree — so a later quality-gate retry can hard-reset
+	// the direct-mode clone back to this exact point instead of stacking its
+	// edits on top of a previous (rejected) attempt's leftovers. Worktree mode
+	// already gets an isolated, freshly-created copy per execution, so no reset
+	// baseline is needed there (preAttemptSHA stays empty and the retry loop's
+	// reset is a no-op).
+	var preAttemptSHA string
+	if !useWorktree {
+		if sha, shaErr := git.GetCurrentCommitSHA(ctx); shaErr == nil {
+			preAttemptSHA = sha
+		} else {
+			log.Warn("Failed to capture pre-attempt commit SHA", slog.Any("error", shaErr))
+		}
+	}
+
+	// GH-4594: on a terminal failure (no more quality-gate retries left, or
+	// any other failure path below), discard any uncommitted dirt the failed
+	// attempt left behind in the direct-mode clone so the *next* dispatch on
+	// this same project's shared (non-worktree) clone doesn't wedge on the
+	// git_clean preflight check. Deliberately resets to "HEAD" — not
+	// preAttemptSHA — so it only discards uncommitted changes and never
+	// rewinds commits: both the quality-gate retry loop's kept last-attempt
+	// commit and GH-4517's auto-preserved WIP commit are legitimate committed
+	// work a human may need to review, and must survive this cleanup. Only
+	// genuinely leftover, never-committed dirt (partial fixes, scratch files
+	// Claude wrote before erroring out, etc.) gets discarded here. Worktree
+	// mode doesn't need this: preAttemptSHA stays empty there and the whole
+	// worktree is discarded by cleanupWorktree regardless of outcome. Uses a
+	// fresh context (not ctx, which is frequently already Done() here — this
+	// cleanup runs precisely when the attempt failed via timeout) with its
+	// own short deadline so the cleanup isn't skipped for the most common
+	// failure cause.
+	defer func() {
+		if useWorktree || preAttemptSHA == "" {
+			return
+		}
+		if outResult != nil && outResult.Success {
+			return
+		}
+		resetCtx, resetCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer resetCancel()
+		if resetErr := git.ResetHardToCommit(resetCtx, "HEAD"); resetErr != nil {
+			log.Warn("Failed to discard uncommitted dirt after failed execution",
+				slog.String("task_id", task.ID),
+				slog.Any("error", resetErr),
+			)
+		} else {
+			log.Info("Discarded uncommitted dirt after failed direct-mode execution",
+				slog.String("task_id", task.ID),
+			)
+		}
+	}()
 
 	// GH-994: Create task documentation if Navigator is present
 	agentPath := filepath.Join(executionPath, ".agent")
@@ -3983,6 +4013,28 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						},
 						Timestamp: time.Now(),
 					})
+
+					// GH-4594: hard-reset the direct-mode clone to the pre-attempt
+					// baseline before re-invoking Claude, so this retry starts from a
+					// clean state instead of stacking its edits onto the previous
+					// (rejected) attempt's leftovers. preAttemptSHA is only set for
+					// direct-mode (non-worktree) execution — worktree mode is already
+					// isolated and this is a no-op there.
+					if preAttemptSHA != "" {
+						if resetErr := git.ResetHardToCommit(ctx, preAttemptSHA); resetErr != nil {
+							log.Warn("Failed to reset clone to pre-attempt state before quality-gate retry",
+								slog.String("task_id", task.ID),
+								slog.Int("retry_attempt", retryAttempt+1),
+								slog.Any("error", resetErr),
+							)
+						} else {
+							log.Info("Reset clone to pre-attempt state before quality-gate retry",
+								slog.String("task_id", task.ID),
+								slog.Int("retry_attempt", retryAttempt+1),
+								slog.String("sha", preAttemptSHA),
+							)
+						}
+					}
 
 					// Build retry prompt with feedback
 					retryPrompt := r.buildRetryPrompt(task, outcome.RetryFeedback, retryAttempt+1)
