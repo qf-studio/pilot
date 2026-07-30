@@ -8,11 +8,39 @@ import (
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
-// SpecCommentMarker is embedded in the first-strike comment to enable
-// idempotency checks. MUST stay byte-identical to the legacy in-tree marker
-// (internal/adapters/github/spec_validator.go) so a strike recorded by one
-// path is visible to the other during the M7 transition.
+// SpecCommentMarker is the legacy (pre-fingerprint) form of the marker
+// comment, kept around so tests and any historical comments that predate
+// GH-4632 are still recognized as markers (see FindSpecCommentMarkerFingerprint).
 const SpecCommentMarker = "<!-- pilot-spec-incomplete -->"
+
+// specCommentMarkerRe matches a spec-incomplete marker comment and, when
+// present, captures the sha256 fingerprint of the issue body at the time the
+// marker was posted (GH-4632). Markers written before the fingerprint was
+// introduced match with an empty capture group and are treated as
+// stale/legacy by callers.
+var specCommentMarkerRe = regexp.MustCompile(`<!--\s*pilot-spec-incomplete(?:\s+sha256=([0-9a-f]{64}))?\s*-->`)
+
+// BuildSpecCommentMarker renders the marker comment for a first-strike
+// comment, embedding a sha256 fingerprint of the issue body. A later guard
+// pass can then tell a genuine repeat failure (same body, still thin) from a
+// body that was edited since the last strike, without needing any state
+// outside the comment itself.
+func BuildSpecCommentMarker(bodyFingerprint string) string {
+	return fmt.Sprintf("<!-- pilot-spec-incomplete sha256=%s -->", bodyFingerprint)
+}
+
+// FindSpecCommentMarkerFingerprint scans a comment body for the
+// pilot-spec-incomplete marker. ok is false when no marker is present at
+// all. When ok is true, an empty fingerprint means a legacy marker (posted
+// before fingerprints existed) — callers should treat that as stale and
+// equivalent to a first strike, not a confirmed repeat.
+func FindSpecCommentMarkerFingerprint(commentBody string) (fingerprint string, ok bool) {
+	m := specCommentMarkerRe.FindStringSubmatch(commentBody)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
 
 const specMinBodyLen = 100
 
