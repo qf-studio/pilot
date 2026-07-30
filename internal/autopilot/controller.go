@@ -47,6 +47,12 @@ type approvalPersister interface {
 	// idempotency check: whether executionID already carries a given stage
 	// (e.g. StageReleased), so a repeat pass never double-stamps the ladder.
 	HasExecutionEventStage(executionID string, stage memory.Stage) (bool, error)
+	// UpdateExecutionStatusIfNotTerminal is the CAS-guarded finalize
+	// (memory.Store.UpdateExecutionStatusIfNotTerminal) used by the
+	// StageFailed transition (GH-4620) to close out a non-terminal source
+	// execution row without racing/overwriting a writer that already moved
+	// it to a terminal status.
+	UpdateExecutionStatusIfNotTerminal(id, status string, errorMsg ...string) (applied bool, err error)
 }
 
 // projectBoardSyncer abstracts GitHub Projects V2 board status updates.
@@ -1456,6 +1462,21 @@ func (c *Controller) recordExecutionEvent(prState *PRState, stage memory.Stage, 
 	if err := c.memoryStore.RecordExecutionEvent(exec.ID, stage, detail); err != nil {
 		c.log.Warn("execution audit trail: failed to insert execution event",
 			"pr", prState.PRNumber, "execution_id", exec.ID, "stage", stage, "error", err)
+	}
+
+	// GH-4620: StageFailed is a terminal PR outcome, but the audit-trail
+	// insert above never finalizes executions.status — that left the source
+	// execution row orphaned as "running" until the 2h stale-running sweep
+	// evicted it (companion incident to #4619's takeover-path finalize).
+	// Merge already self-heals via SelfHealExecutionAfterMerge (selfHealTask);
+	// this is the failed-side counterpart. CAS-guarded so a row that already
+	// reached a terminal status (e.g. "completed" via a race with another
+	// writer) is left untouched.
+	if stage == memory.StageFailed {
+		if _, err := c.memoryStore.UpdateExecutionStatusIfNotTerminal(exec.ID, "failed", detail); err != nil {
+			c.log.Warn("execution audit trail: failed to finalize execution row on StageFailed",
+				"pr", prState.PRNumber, "execution_id", exec.ID, "error", err)
+		}
 	}
 }
 
