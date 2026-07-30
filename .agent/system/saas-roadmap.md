@@ -106,7 +106,7 @@ S0: 10 · S1: 3 · S2: ~9 (incl. ownership-transfer pre-step) · S3: ~6 · S4: ~
 
 ---
 
-**Last Updated**: 2026-07-29 night (v9.3 — **S3 wave 10/10 merged** incl. both auth email legs; local-stack mini-wave dispatched. Prior v9.2: console leg merged after 5-PR park cascade + box drain incident; v9.1: wave dispatched; v9.0: S2 exit met)
+**Last Updated**: 2026-07-30 morning (v9.5 — **overnight lead-watch: 6 issues shipped autonomously, dashboard renders on real stack, S3 product punch list DONE**. Prior v9.4: local stack live + first drift defect; v9.3: S3 wave 10/10 merged; v9.2: park cascade + drain incident; v9.1: wave dispatched; v9.0: S2 exit met)
 
 ## v8.8 (2026-07-26) — merge leg root-caused; SaaS unparked
 
@@ -391,3 +391,36 @@ environment" (cosmetic, renders a legacy field) → filed
   org-create 409 is swallowed. Exactly the drift class the local stack exists to catch; fix
   includes wire-fixture tests. **UI dev server currently runs http mode on :5173** against the
   live stack; mock mode = drop the env var.
+
+## v9.5 (2026-07-30 morning) — overnight lead-watch: S3 product punch list DONE, dashboard live on real stack
+
+Operator ran a 20-min lead-watch loop (founder AFK; full log:
+`.agent/.context-markers/lead-watch-2026-07-29.md`). Six issues dispatch→shipped in ~2.5h,
+then 30 quiet iterations (~22:30→08:09Z), zero stuck PRs:
+
+- **ui#19→PR#20** wire-shape fix (login → dashboard, no onboarding detour) — E2E browser-verified.
+- **ui#22→PR#23** readiness checklist = real contract (github+anthropic; Linear/Jira gone).
+- **ui#21 epic** (instance detail page, the missing S3 status-page leg): daemon decomposed;
+  leg #25→PR#28 parked DIRTY on a sibling's stricter `InstanceEventKind` union → operator
+  worktree-rebase + union-resolve + 2 fixture tokens fixed, merged manually; parent PR#29
+  self-merged; #26 auto-closed superseded **by the daemon itself** (TASK-401 machinery ✅).
+- **ui#30→PR#31 dashboard v1** (self-merged in 15 min) — placeholder dead.
+- **console#79** structured request log (off by default, on in local stack) — paid off same
+  hour: pinpointed the next defect as `GET (unmatched) 404`.
+- **console#81→PR#82** `GET /api/v1/credentials` presence-only (key/configured/last4) — the
+  dashboard's missing third call; write-only PUT design had no read path.
+
+**Drift-class scoreboard (one night): 4 defects** — #19 auth shapes · #22 requirement tokens ·
+#32 list envelopes (`{"connections":[]}` vs bare array) · #81 missing GET. All caught by
+operator browser+curl against the live stack; NONE by daemon gates (no docker in worktrees —
+its "real-stack AC" passes are fixture-only). Rule of thumb now proven: **operator real-stack
+verify gates UI merges**; candidate SOP pending founder nod.
+
+**Pipeline autonomy**: 5/7 PRs self-merged (3–15 min); manual merges only for the DIRTY rebase
+(re-adopt fix rides today's 14:00Z train) and the un-adopted #479-class earlier. **Ledger
+verified clean pre-train** (08:30Z): zero unfinalized executions — GH-25/26 stalls + GH-21
+fails from the epic window all finalized, no #4609 zombie risk. Note: GH-25's stalled run
+still created PR#28 → fresh evidence for #4609's finalize-on-stall-retry item.
+
+**Next**: founder staging inputs (domains · Stripe test keys · ACM validation) → staging
+deploys → S3 exit test. Brand/visual pass = founder taste call. 14:00Z train watch.
