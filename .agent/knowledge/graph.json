@@ -780,30 +780,30 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
-          "api",
-          "context",
-          "theory of mind",
-          "frontend",
-          "deployment",
+          "testing",
           "knowledge",
           "authentication",
-          "testing"
+          "api",
+          "frontend",
+          "context",
+          "theory of mind",
+          "deployment"
         ]
       },
       "TASK-407": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-407-dispatch-admission-claim.md",
         "title": "Atomic dispatch-admission claim \u2014 make duplicate execution structurally impossible",
-        "status": "blocked",
+        "status": "completed",
         "concepts": [
+          "simplification",
           "workflow",
-          "deployment",
+          "theory of mind",
           "knowledge",
           "context",
+          "deployment",
+          "database",
           "api",
-          "theory of mind",
-          "simplification",
-          "testing",
-          "database"
+          "testing"
         ]
       },
       "TASK-409": {
@@ -3601,6 +3601,82 @@
         ],
         "created": "2026-07-28",
         "last_validated": "2026-07-28"
+      },
+      "mem-162": {
+        "type": "decision",
+        "summary": "Claim location: dedicated `execution_claims` table - avoids migrating the wide `executions` schema; SQLite-serialized across processes; proven idiom (#4319)",
+        "path": "memories/decisions/mem-162.md",
+        "confidence": 0.95,
+        "concepts": [
+          "simplification",
+          "workflow",
+          "theory of mind",
+          "knowledge",
+          "context",
+          "deployment",
+          "database",
+          "api",
+          "testing"
+        ],
+        "created": "2026-07-30",
+        "last_validated": "2026-07-30"
+      },
+      "mem-163": {
+        "type": "decision",
+        "summary": "Retry semantics: generation column - permanent rows immune to crash windows; retries claim generation+1",
+        "path": "memories/decisions/mem-163.md",
+        "confidence": 0.95,
+        "concepts": [
+          "simplification",
+          "workflow",
+          "theory of mind",
+          "knowledge",
+          "context",
+          "deployment",
+          "database",
+          "api",
+          "testing"
+        ],
+        "created": "2026-07-30",
+        "last_validated": "2026-07-30"
+      },
+      "mem-164": {
+        "type": "decision",
+        "summary": "Key: (task, project, generation), canonicalized path - project scoping per #4297 lesson; generation prevents retry deadlock",
+        "path": "memories/decisions/mem-164.md",
+        "confidence": 0.95,
+        "concepts": [
+          "simplification",
+          "workflow",
+          "theory of mind",
+          "knowledge",
+          "context",
+          "deployment",
+          "database",
+          "api",
+          "testing"
+        ],
+        "created": "2026-07-30",
+        "last_validated": "2026-07-30"
+      },
+      "mem-165": {
+        "type": "decision",
+        "summary": "Seam: Begin - ALL entry points already funnel through it (nav-research verified); TASK-404 built it for exactly this kind of consolidation",
+        "path": "memories/decisions/mem-165.md",
+        "confidence": 0.95,
+        "concepts": [
+          "simplification",
+          "workflow",
+          "theory of mind",
+          "knowledge",
+          "context",
+          "deployment",
+          "database",
+          "api",
+          "testing"
+        ],
+        "created": "2026-07-30",
+        "last_validated": "2026-07-30"
       }
     }
   },
@@ -4884,6 +4960,26 @@
       "from": "TASK-426",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "mem-162",
+      "to": "TASK-407",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-163",
+      "to": "TASK-407",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-164",
+      "to": "TASK-407",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-165",
+      "to": "TASK-407",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -4974,7 +5070,11 @@
       "TASK-423",
       "TASK-424",
       "TASK-425",
-      "TASK-426"
+      "TASK-426",
+      "mem-162",
+      "mem-163",
+      "mem-164",
+      "mem-165"
     ],
     "deployment": [
       "TASK-386",
@@ -5041,7 +5141,11 @@
       "TASK-423",
       "TASK-424",
       "TASK-425",
-      "TASK-426"
+      "TASK-426",
+      "mem-162",
+      "mem-163",
+      "mem-164",
+      "mem-165"
     ],
     "authentication": [
       "TASK-386",
@@ -5141,7 +5245,11 @@
       "TASK-423",
       "TASK-424",
       "TASK-425",
-      "TASK-426"
+      "TASK-426",
+      "mem-162",
+      "mem-163",
+      "mem-164",
+      "mem-165"
     ],
     "api": [
       "TASK-386",
@@ -5181,7 +5289,11 @@
       "TASK-421",
       "TASK-422",
       "TASK-423",
-      "TASK-424"
+      "TASK-424",
+      "mem-162",
+      "mem-163",
+      "mem-164",
+      "mem-165"
     ],
     "context": [
       "TASK-386",
@@ -5232,7 +5344,11 @@
       "TASK-419",
       "TASK-420",
       "TASK-421",
-      "TASK-426"
+      "TASK-426",
+      "mem-162",
+      "mem-163",
+      "mem-164",
+      "mem-165"
     ],
     "markers": [
       "TASK-387",
@@ -5278,7 +5394,11 @@
       "TASK-413",
       "TASK-414",
       "TASK-415",
-      "TASK-417"
+      "TASK-417",
+      "mem-162",
+      "mem-163",
+      "mem-164",
+      "mem-165"
     ],
     "workflow": [
       "TASK-387",
@@ -5324,11 +5444,19 @@
       "TASK-416",
       "TASK-417",
       "TASK-418",
-      "TASK-419"
+      "TASK-419",
+      "mem-162",
+      "mem-163",
+      "mem-164",
+      "mem-165"
     ],
     "simplification": [
       "TASK-387",
-      "TASK-407"
+      "TASK-407",
+      "mem-162",
+      "mem-163",
+      "mem-164",
+      "mem-165"
     ],
     "frontend": [
       "TASK-368",
@@ -5378,7 +5506,11 @@
       "TASK-417",
       "TASK-418",
       "TASK-419",
-      "TASK-416"
+      "TASK-416",
+      "mem-162",
+      "mem-163",
+      "mem-164",
+      "mem-165"
     ],
     "autopilot": [
       "mem-100",
@@ -5651,10 +5783,10 @@
       "mem-161"
     ]
   },
-  "last_updated": "2026-07-29T11:34:18.333364+00:00",
+  "last_updated": "2026-07-30T10:27:53.214044+00:00",
   "stats": {
-    "total_nodes": 314,
-    "total_edges": 256,
-    "memory_count": 192
+    "total_nodes": 318,
+    "total_edges": 260,
+    "memory_count": 196
   }
 }

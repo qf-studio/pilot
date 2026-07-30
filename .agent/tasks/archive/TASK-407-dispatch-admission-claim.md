@@ -1,6 +1,6 @@
 # TASK-407: Atomic dispatch-admission claim — make duplicate execution structurally impossible
 
-**Status**: ✅ SHIPPED 2026-07-16 (#4349 → #4361 execution_claims+generation / #4362 ErrClaimLost CLI funnel / #4363 all entry points routed + inventory test; live on daemon since 09:37Z restart, released in v2.241.0). **Proof pending**: epic-lifecycle canary green on `duplicate-pr` → then close #4265 and archive this doc. **Follow-up**: #4372 — poller retry path re-claims generation 0 (once-failed tasks blocked from retry; workaround = delete stale `execution_claims` row; fix needs next daemon restart).
+**Status**: ✅ SHIPPED 2026-07-16 (#4349 → #4361 execution_claims+generation / #4362 ErrClaimLost CLI funnel / #4363 all entry points routed + inventory test; live on daemon since 09:37Z restart, released in v2.241.0). **Proof COMPLETE 2026-07-30**: `duplicate-pr` green in every scheduled canary run since 07-24 — the last 4 failures were `child-count`-only, a different defect root-caused same day as the GH-4536 takeover race (→ #4619). #4265 closed with the proof, doc archived. **Follow-up**: #4372 closed.
 **Created**: 2026-07-16
 **Assignee**: Pilot
 
