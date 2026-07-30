@@ -2310,11 +2310,25 @@ func (r *Runner) reconcileSelfOwnedTakeover(ctx context.Context, taskID, project
 // Returns (nil, nil) when rows exist for the task but none is terminal yet
 // (still worth polling), and (nil, sql.ErrNoRows) when no other row exists
 // at all (nothing to wait for).
+//
+// GH-4619: rows are filtered through filterOutTakeoverBookkeepingStalls
+// before the scan below, so a GH-4536 takeover's force-stalled dead-end
+// claim (reclaimSelfOwnedQueuedChild, dispatcher.go) is invisible here — it
+// is administrative bookkeeping to release a claim generation, not a
+// genuine outcome, and must never be surfaced as the child's terminal
+// status regardless of whether the takeover's own replacement execution row
+// is visible in this particular query (it is excluded via selfExecID when
+// this call is itself reconciling that replacement's own synchronous
+// result). A row that is NOT the exact takeover marker — including any
+// other "stalled" row — is unaffected, preserving GH-4381 semantics
+// (an older genuine terminal row still wins over a newer non-running
+// duplicate).
 func (r *Runner) findTerminalChildExecution(taskID, projectPath, selfExecID string) (*memory.Execution, error) {
 	rows, err := r.logStore.ListExecutionsByTaskIDExcluding(taskID, projectPath, selfExecID)
 	if err != nil {
 		return nil, err
 	}
+	rows = filterOutTakeoverBookkeepingStalls(rows)
 	if len(rows) == 0 {
 		return nil, sql.ErrNoRows
 	}
@@ -2324,6 +2338,38 @@ func (r *Runner) findTerminalChildExecution(taskID, projectPath, selfExecID stri
 		}
 	}
 	return nil, nil
+}
+
+// isSelfOwnedTakeoverBookkeepingStall reports whether row is a "stalled" row
+// written purely as GH-4536/TASK-419 takeover bookkeeping
+// (reclaimSelfOwnedQueuedChild, dispatcher.go force-stalling a dead-end
+// queued claim to release its generation) rather than a genuine execution
+// outcome. Recognized by matching row.Error against the exact reason text
+// reclaimSelfOwnedQueuedChild stamps — the same exact-reason-match idiom
+// escalateStalledTask already uses (dispatcher.go, GH-4502) to distinguish
+// an administrative marker from a real status transition, since Status
+// alone ("stalled") can't tell the two apart.
+func isSelfOwnedTakeoverBookkeepingStall(row *memory.Execution) bool {
+	return row != nil && row.Status == string(ExecStatusStalled) && row.Error == selfOwnedTakeoverForceStallReason
+}
+
+// filterOutTakeoverBookkeepingStalls drops every row
+// isSelfOwnedTakeoverBookkeepingStall flags, preserving the input's
+// created_at DESC order. GH-4619: findTerminalChildExecution and
+// findChildExecutionState must treat a takeover's force-stalled original
+// claim as if it were never written — not merely "not terminal yet", which
+// would still let it block reconcileChildOutcome from falling back to a
+// synchronous result it already has (sql.ErrNoRows) when the takeover's own
+// replacement row is the caller's excluded selfExecID and no other row
+// exists to consult.
+func filterOutTakeoverBookkeepingStalls(rows []*memory.Execution) []*memory.Execution {
+	filtered := rows[:0]
+	for _, row := range rows {
+		if !isSelfOwnedTakeoverBookkeepingStall(row) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
 }
 
 // findChildExecutionState is findTerminalChildExecution's sibling for the
@@ -2347,11 +2393,21 @@ func (r *Runner) findTerminalChildExecution(taskID, projectPath, selfExecID stri
 // sql.ErrNoRows) when no other row exists at all (nothing to wait for);
 // (nil, false, nil, nil) when rows exist but the newest is still "queued";
 // (nil, true, startedAt, nil) when the newest is "running".
+//
+// GH-4619: rows are filtered through filterOutTakeoverBookkeepingStalls
+// before classification, same as findTerminalChildExecution — a queued
+// child force-stalled purely to release its claim generation for a
+// GH-4536 takeover (reclaimSelfOwnedQueuedChild, dispatcher.go) is an
+// administrative marker, not a genuine child state, and must not be
+// reported as "still queued" (or, if scanned before a still-running
+// takeover row, be allowed to hide that the takeover is in fact
+// actively running).
 func (r *Runner) findChildExecutionState(taskID, projectPath, selfExecID string) (terminal *memory.Execution, running bool, startedAt *time.Time, err error) {
 	rows, err := r.logStore.ListExecutionsByTaskIDExcluding(taskID, projectPath, selfExecID)
 	if err != nil {
 		return nil, false, nil, err
 	}
+	rows = filterOutTakeoverBookkeepingStalls(rows)
 	if len(rows) == 0 {
 		return nil, false, nil, sql.ErrNoRows
 	}
@@ -2360,8 +2416,7 @@ func (r *Runner) findChildExecutionState(taskID, projectPath, selfExecID string)
 			return row, false, nil, nil
 		}
 	}
-	newest := rows[0]
-	if newest.Status == string(ExecStatusRunning) {
+	if newest := rows[0]; newest.Status == string(ExecStatusRunning) {
 		return nil, true, newest.StartedAt, nil
 	}
 	return nil, false, nil, nil
@@ -2850,6 +2905,21 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 				fmt.Sprintf("sub-issue %s claim lost to another dispatch channel", issueRef))
 
 			result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, "", nil, nil, true, subTask)
+
+			// GH-4619: a GH-4536 takeover (reconcileChildOutcome ->
+			// reconcileSelfOwnedTakeover) stamps its own replacement
+			// execution's ID onto subTask.ExecutionID via
+			// ExecutionLifecycle.Begin (lifecycle.go) — subTask is the same
+			// pointer threaded all the way down, so this call site observes
+			// it once the reconcile above returns. Without re-deriving
+			// subExecID here, it stays "" (its value on the ErrClaimLost
+			// branch above) and every finalizeSubIssueExecution call below
+			// silently no-ops (epic.go's execID=="" guard), leaving the
+			// takeover's execution row to never reach a terminal status
+			// outside the 2h orphan-eviction sweep.
+			if subTask.ExecutionID != "" {
+				subExecID = subTask.ExecutionID
+			}
 		} else {
 			if err != nil {
 				r.log.Warn("Failed to insert sub-issue execution row",

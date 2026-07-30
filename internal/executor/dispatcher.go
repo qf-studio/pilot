@@ -821,6 +821,17 @@ func projectWorkerIdentity(ctx context.Context) (string, bool) {
 	return v, ok
 }
 
+// selfOwnedTakeoverForceStallReason is the exact Error text
+// reclaimSelfOwnedQueuedChild stamps on a queued child's dead-end claim when
+// force-stalling it purely to release the claim generation for a GH-4536
+// takeover (below) — not a genuine execution failure. Exported as a package
+// constant (rather than an inline literal) so epic.go's child-outcome
+// lookups (GH-4619) can recognize this exact administrative marker and
+// exclude it from being treated as a genuine terminal outcome, the same
+// exact-reason-match idiom escalateStalledTask already uses to distinguish
+// "already escalated" from "fresh stall" (GH-4502).
+const selfOwnedTakeoverForceStallReason = "GH-4536 (TASK-419): force-stalled for takeover — this Runner's own ProjectWorker is the only goroutine that could ever run this queued child"
+
 // reclaimSelfOwnedQueuedChild takes over a queued sub-issue execution that
 // only the caller's own ProjectWorker could ever run (GH-4536/TASK-419): the
 // blocked worker IS the sole goroutine serializing subTask.ProjectPath
@@ -856,7 +867,7 @@ func (d *Dispatcher) reclaimSelfOwnedQueuedChild(subTask *Task) (execID string, 
 		return "", false, fmt.Errorf("reclaimSelfOwnedQueuedChild: execution lookup failed: %w", lookupErr)
 	}
 	if existing != nil && !isTerminalExecutionStatus(existing.Status) {
-		reason := "GH-4536 (TASK-419): force-stalled for takeover — this Runner's own ProjectWorker is the only goroutine that could ever run this queued child"
+		reason := selfOwnedTakeoverForceStallReason
 		applied, casErr := d.store.UpdateExecutionStatusIfNotTerminal(existing.ID, string(ExecStatusStalled), reason)
 		if casErr != nil {
 			return "", false, fmt.Errorf("reclaimSelfOwnedQueuedChild: force-stall failed: %w", casErr)
