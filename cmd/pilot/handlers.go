@@ -742,6 +742,10 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	// re-dispatch of a closed/merged parent (GH-201 OAuth dispatch loop).
 	issueNum, _ := strconv.Atoi(ev.IssueID)
 	var issueState, memberID string
+	// GH-4631: default to the poll-tick snapshot; overwritten below with the
+	// fresh GET body when the fetch succeeds, so the spec-quality gate
+	// validates the current issue body rather than a stale list-snapshot.
+	specBody := ev.Body
 	var specClient *githubSDK.Client
 	if repoOwner != "" && repoName != "" {
 		if ghToken, _ := resolveGitHubToken(cfg); ghToken != "" {
@@ -749,6 +753,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 			if realIssue := fetchGithubIssueForSDKTask(ctx, specClient, repoOwner, repoName, issueNum, taskID); realIssue != nil {
 				issueState = realIssue.State
 				memberID = resolveGitHubMemberIDByLogin(realIssue.User.Login, realIssue.User.Email)
+				specBody = realIssue.Body
 			}
 		}
 	}
@@ -762,7 +767,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		for _, l := range ev.Labels {
 			specLabels = append(specLabels, githubSDK.Label{Name: l})
 		}
-		specIssue := &githubSDK.Issue{Number: issueNum, Title: title, Body: ev.Body, Labels: specLabels}
+		specIssue := &githubSDK.Issue{Number: issueNum, Title: title, Body: specBody, Labels: specLabels}
 		parentResolver := func(parentNum int) (*githubSDK.Issue, error) {
 			return specClient.GetIssue(ctx, repoOwner, repoName, parentNum)
 		}
