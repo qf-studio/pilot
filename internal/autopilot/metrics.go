@@ -414,6 +414,27 @@ func (m *Metrics) HydratePRsFailedLifetime(n int64) {
 	m.PRsFailedLifetime += n
 }
 
+// HydrateCircuitBreakerTrips sets a monotonic floor — max(recount,
+// last_served) — on the circuit-breaker trip counter from the last periodic
+// autopilot_metrics snapshot persisted before this restart (GH-4390).
+// pilot_circuit_breaker_trips_total has no append-only per-event ledger to
+// recount from (RecordCircuitBreakerTrip only ever increments an in-memory
+// value), so "recount" here is always 0 and the floor reduces to
+// last_served: a fresh Metrics starts at 0, and this raises it to the last
+// value Prometheus actually scraped pre-restart, so a restart can only hold
+// the exposed counter steady or grow it — never re-serve Prometheus a value
+// below what it already observed. That's the exact shape of counter-reset
+// misbehavior this closes: increase()/rate() treat any nonzero-but-lower
+// value as a reset and replay the whole new value as fabricated growth
+// (GH-4511 hit this same failure mode for pilot_prs_merged_total).
+func (m *Metrics) HydrateCircuitBreakerTrips(lastServed int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lastServed > m.CircuitBreakerTrips {
+		m.CircuitBreakerTrips = lastServed
+	}
+}
+
 // --- Gauge updates ---
 
 // UpdateActivePRs recalculates active PR counts by stage from a snapshot.

@@ -701,6 +701,8 @@ type Runner struct {
 	enableRecording        bool                                                            // Whether to record executions
 	alertProcessor         AlertEventProcessor                                             // Optional alert processor for event emission
 	alertProcessorWarnOnce sync.Once                                                       // GH-3734: log the first dropped alert event only, not every one
+	mergeMetrics           MergeMetricsRecorder                                            // Optional recorder for externally-detected PR merges (GH-4390)
+	mergeMetricsWarnOnce   sync.Once                                                       // Log the first dropped merge-metric event only, not every one
 	webhooks               *webhooks.Manager                                               // Optional webhook manager for event delivery
 	qualityCheckerFactory  QualityCheckerFactory                                           // Optional factory for creating quality checkers
 	modelRouter            *ModelRouter                                                    // Model and timeout routing based on complexity
@@ -1102,6 +1104,14 @@ func (r *Runner) CloseWorktreePool() {
 // The processor interface is satisfied by alerts.Engine.
 func (r *Runner) SetAlertProcessor(processor AlertEventProcessor) {
 	r.alertProcessor = processor
+}
+
+// SetMergeMetricsRecorder sets the recorder for externally-detected PR merges
+// (self-heal / pre-execute short-circuit paths — see MergeMetricsRecorder
+// doc comment). The recorder interface is satisfied by autopilot.Controller
+// and autopilot.MultiControllerMergeRecorder (GH-4390).
+func (r *Runner) SetMergeMetricsRecorder(recorder MergeMetricsRecorder) {
+	r.mergeMetrics = recorder
 }
 
 // SetWebhookManager sets the webhook manager for delivering task lifecycle events.
@@ -5968,6 +5978,32 @@ func (r *Runner) emitAlertEvent(event AlertEvent) {
 // once logic that already lives here.
 func (r *Runner) EmitAlertEvent(event AlertEvent) {
 	r.emitAlertEvent(event)
+}
+
+// recordExternalMerge records a merge discovered outside the autopilot
+// controller's own merge flow (self-heal / pre-execute short-circuit paths —
+// see MergeMetricsRecorder). Nil-safe on both the Runner and its recorder so
+// callers (Dispatcher, ProjectWorker) don't need their own guards; a PR URL
+// that doesn't parse to a number is silently skipped rather than recording a
+// bogus PR 0 (GH-4390).
+func (r *Runner) recordExternalMerge(projectPath, prURL string) {
+	if r == nil {
+		return
+	}
+	if r.mergeMetrics == nil {
+		r.mergeMetricsWarnOnce.Do(func() {
+			r.log.Warn("Merge metrics recorder not configured, pilot_prs_merged_total will undercount self-heal/short-circuit merges",
+				slog.String("pr_url", prURL))
+		})
+		return
+	}
+	prNumber := parsePRNumberFromURL(prURL)
+	if prNumber <= 0 {
+		r.log.Warn("Could not parse PR number from merged URL, skipping merge-metric record",
+			slog.String("pr_url", prURL))
+		return
+	}
+	r.mergeMetrics.RecordExternalMerge(projectPath, prNumber)
 }
 
 // dispatchWebhook sends a webhook event if webhook manager is configured

@@ -309,6 +309,10 @@ func (d *Dispatcher) reconcileOrphanedExecutions() int {
 						slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID), slog.String("pr_url", mergedURL))
 					d.recordExecutionEvent(exec.ID, memory.StageCompleted,
 						fmt.Sprintf("boot orphan healed to completed after restart (merged PR: %s, GH-4392)", mergedURL))
+					// GH-4390: this heal is a confirmed GitHub merge that never
+					// passed through the controller's own handleMerging/scan —
+					// without this, pilot_prs_merged_total misses it entirely.
+					d.runner.recordExternalMerge(exec.ProjectPath, mergedURL)
 				}
 				continue
 			}
@@ -537,6 +541,10 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 			} else {
 				d.recordExecutionEvent(exec.ID, memory.StageCompleted,
 					fmt.Sprintf("stale_running healed to completed after restart (merged PR: %s)", mergedURL))
+				// GH-4390: confirmed GitHub merge that never passed through the
+				// controller's own handleMerging/scan — record it so
+				// pilot_prs_merged_total doesn't miss it.
+				d.runner.recordExternalMerge(exec.ProjectPath, mergedURL)
 			}
 			continue
 		}
@@ -2558,6 +2566,10 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 					w.log.Error("Failed to mark pre-execute merged-PR short-circuit completed", slog.Any("error", err))
 				}
 				w.recordExecutionEvent(exec.ID, memory.StageCompleted, "pre-execute merged-PR short-circuit: "+mergedURL)
+				// GH-4390: confirmed GitHub merge that never passed through the
+				// controller's own handleMerging/scan — record it so
+				// pilot_prs_merged_total doesn't miss it.
+				w.runner.recordExternalMerge(exec.ProjectPath, mergedURL)
 				w.runner.EmitProgress(exec.TaskID, "Completed", 100, "work already merged: "+mergedURL)
 				w.currentTaskID.Store("")
 				continue

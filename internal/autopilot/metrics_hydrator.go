@@ -162,24 +162,43 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 		metrics.RecordApprovalWaitDuration(d)
 	}
 
+	// GH-4390: pilot_circuit_breaker_trips_total has no append-only per-event
+	// ledger (RecordCircuitBreakerTrip only ever increments an in-memory
+	// value), so unlike the ledger-backed counters above it can't be fully
+	// recounted from scratch. The periodic autopilot_metrics snapshot
+	// (SaveAutopilotMetrics) is the only durable record of it, and its
+	// "latest row" only covers up to the last snapshot write, not all the way
+	// to the actual restart — using it as the sole baseline would silently
+	// under-report the gap between that write and the restart. So this does
+	// NOT set the counter from the snapshot directly; it only floors it
+	// (max(0, last_served) since there's no recount to take the max with),
+	// which can never regress the exposed value below what Prometheus already
+	// scraped pre-restart. See HydrateCircuitBreakerTrips's doc comment for
+	// why a floor is safe here where a full baseline assignment (GH-4511's
+	// pre-fix approach) was not.
+	if latestSnapshot, err := store.LatestAutopilotMetrics(); err != nil {
+		return fmt.Errorf("hydrate metrics from store: latest autopilot metrics snapshot: %w", err)
+	} else if latestSnapshot != nil {
+		metrics.HydrateCircuitBreakerTrips(int64(latestSnapshot.CircuitBreakerTrips))
+	}
+
 	// The remaining counters are intentionally NOT hydrated here — they have no
 	// durable per-event source to hydrate from (unlike execution_events, which
-	// is an append-only ledger keyed off executions.id) and reset to zero on
-	// every restart by design:
+	// is an append-only ledger keyed off executions.id) and no periodic
+	// snapshot column to floor against either (unlike CircuitBreakerTrips
+	// above), so they reset to zero on every restart by design:
 	//   - pilot_prs_conflicting_total (RecordPRConflicting): no execution_events
 	//     stage exists for "conflicting" — handleMergeConflict does not log to
 	//     the ledger, only to the in-memory counter (GH-4069).
-	//   - pilot_circuit_breaker_trips_total, pilot_api_errors_total,
-	//     pilot_label_cleanups_total, pilot_approval_persist_misses_total,
-	//     pilot_poller_skipped_total, pilot_poller_dispatched_total,
-	//     pilot_poller_deferred_scope_overlap_total, pilot_panics_total: pure
-	//     in-memory operational/diagnostic counters with no matching table or
-	//     ledger row anywhere in the store. The periodic autopilot_metrics
-	//     snapshot table (SaveAutopilotMetrics) records point-in-time values of
-	//     these but is not append-only across restarts — its "latest row"
-	//     reflects the session since the previous restart, not lifetime, so
-	//     using it as a hydration baseline would silently drop everything
-	//     between the last snapshot write and the actual restart. Treated as
-	//     reset-on-restart by design; see FEATURE-MATRIX.md.
+	//   - pilot_api_errors_total, pilot_label_cleanups_total,
+	//     pilot_approval_persist_misses_total, pilot_poller_skipped_total,
+	//     pilot_poller_dispatched_total, pilot_poller_deferred_scope_overlap_total,
+	//     pilot_panics_total: pure in-memory operational/diagnostic counters
+	//     with no matching table or ledger row anywhere in the store, not even
+	//     the periodic autopilot_metrics snapshot (which only persists
+	//     circuit_breaker_trips and api_errors_total's point-in-time count,
+	//     not a per-endpoint breakdown matching APIErrors' map shape — see
+	//     AutopilotMetricsRow). Treated as reset-on-restart by design; see
+	//     FEATURE-MATRIX.md.
 	return nil
 }
