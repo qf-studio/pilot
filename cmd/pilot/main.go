@@ -2708,7 +2708,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				})
 
 				if len(autopilotControllers) > 0 && !dashboardMode {
-					fmt.Printf("● autopilot enabled · %s environment (%d repos)\n", cfg.Orchestrator.Autopilot.Environment, len(autopilotControllers))
+					// GH-4611: use EnvironmentName() (same resolution path as the
+					// "autopilot enabled" structured log above) rather than the
+					// raw legacy Environment field, so the banner never shows a
+					// stale/unresolved value when default_environment is set in
+					// config with no --env flag.
+					fmt.Printf("● autopilot enabled · %s environment (%d repos)\n", cfg.Orchestrator.Autopilot.EnvironmentName(), len(autopilotControllers))
 				}
 
 				// Start metrics alerter for default controller (GH-728). The
@@ -3472,7 +3477,12 @@ func (s storeExecutionSaver) SaveDeclinedExecution(taskID, projectPath, status, 
 func applyDashboardBannerMeta(model *dashboard.Model, cfg *config.Config, cmd *cobra.Command) {
 	envName := ""
 	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil {
-		envName = string(cfg.Orchestrator.Autopilot.Environment)
+		// GH-4611: use EnvironmentName() (same resolution path as the
+		// "autopilot enabled" structured log and startup banner) rather than
+		// the raw legacy Environment field, so the dashboard banner never
+		// shows a stale value when default_environment is set in config
+		// with no --env flag.
+		envName = cfg.Orchestrator.Autopilot.EnvironmentName()
 	}
 
 	modelStack := ""

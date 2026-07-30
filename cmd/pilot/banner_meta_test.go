@@ -105,6 +105,27 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 			notBanner:  []string{"daemon"},
 			notLegend:  []string{"gh", "tg", "slack"},
 		},
+		{
+			// GH-4611: default_environment set in config with no --env
+			// override must resolve through EnvironmentName() (same path as
+			// the "autopilot enabled" structured log), not the stale legacy
+			// Environment field. Before the fix, the banner rendered the
+			// legacy field's zero value ("") instead of "hosted".
+			name: "default_environment with no --env override — banner shows resolved env",
+			cfg: &config.Config{
+				Orchestrator: &config.OrchestratorConfig{
+					Autopilot: &autopilot.Config{
+						DefaultEnvironment: "hosted",
+						Environments: map[string]*autopilot.EnvironmentConfig{
+							"hosted": {Branch: "main"},
+						},
+					},
+				},
+				Adapters: &config.AdaptersConfig{},
+			},
+			wantBanner: []string{"hosted"},
+			notBanner:  []string{"stage"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -136,5 +157,48 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestApplyDashboardBannerMeta_ExplicitEnvOverride verifies GH-4611's
+// single-source-of-truth requirement: with an explicit --env override
+// (SetActiveEnvironment, as the CLI flag handler calls at main.go:430) and a
+// conflicting default_environment in config, both the dashboard banner
+// (applyDashboardBannerMeta, via EnvironmentName()) and the structured
+// "autopilot enabled" log line (which also calls EnvironmentName() directly
+// at main.go:2369) must report the overridden environment, not the config
+// default.
+func TestApplyDashboardBannerMeta_ExplicitEnvOverride(t *testing.T) {
+	autopilotCfg := &autopilot.Config{
+		DefaultEnvironment: "hosted",
+		Environments: map[string]*autopilot.EnvironmentConfig{
+			"hosted": {Branch: "main"},
+		},
+	}
+	if err := autopilotCfg.SetActiveEnvironment("stage"); err != nil {
+		t.Fatalf("SetActiveEnvironment(stage): %v", err)
+	}
+
+	cfg := &config.Config{
+		Orchestrator: &config.OrchestratorConfig{Autopilot: autopilotCfg},
+		Adapters:     &config.AdaptersConfig{},
+	}
+
+	model := dashboard.NewModel("9.9.9")
+	applyDashboardBannerMeta(&model, cfg, nil)
+	banner := model.RenderBannerForTest()
+
+	if !strings.Contains(banner, "stage") {
+		t.Errorf("banner missing %q (--env override)\noutput:\n%s", "stage", banner)
+	}
+	if strings.Contains(banner, "hosted") {
+		t.Errorf("banner unexpectedly contains %q (stale default_environment)\noutput:\n%s", "hosted", banner)
+	}
+
+	// The structured "autopilot enabled" log line at main.go:2369 uses the
+	// same EnvironmentName() call directly — assert it agrees with the
+	// banner so both surfaces stay in sync.
+	if got := cfg.Orchestrator.Autopilot.EnvironmentName(); got != "stage" {
+		t.Errorf("EnvironmentName() = %q, want %q (must match banner)", got, "stage")
 	}
 }
