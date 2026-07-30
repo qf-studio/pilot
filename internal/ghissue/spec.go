@@ -65,10 +65,6 @@ type SpecValidationResult struct {
 // ValidateSpec checks whether the issue body is sufficiently specified for
 // dispatch. parentResolver, if non-nil, is called to fetch a parent issue by
 // number when evaluating decomposer-generated sub-issues.
-//
-// SDK-typed port of internal/adapters/github.ValidateSpec (M7 4d.3); the
-// in-tree copy serves the legacy handler until the adapter package retires.
-// Rule changes must land in BOTH until then.
 func ValidateSpec(issue *github.Issue, parentResolver func(int) (*github.Issue, error)) SpecValidationResult {
 	// Opt-out: pilot-skip-spec-check label bypasses all rules.
 	for _, l := range issue.Labels {
