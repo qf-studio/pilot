@@ -59,24 +59,27 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 	// to checkout the branch again fails because it's locked by the active worktree.
 	inWorktreeMode := executionPath != parentTask.ProjectPath
 	if parentTask.Branch != "" && !inWorktreeMode {
-		r.reportProgress(parentTask.ID, "Branching", 1, "Switching to default branch...")
+		r.reportProgress(parentTask.ID, "Branching", 1, "Fetching base branch...")
 
-		// GH-279: Always switch to default branch and pull latest before creating new branch.
-		// This prevents new branches from forking off previous pilot branches instead of main.
-		// GH-836: Hard fail if we can't switch - continuing from wrong branch causes corrupted PRs.
-		defaultBranch, err := git.SwitchToDefaultBranchAndPull(ctx)
+		baseBranch := parentTask.BaseBranch
+		if baseBranch == "" {
+			var branchErr error
+			baseBranch, branchErr = git.GetDefaultBranch(ctx)
+			if branchErr != nil || baseBranch == "" {
+				baseBranch = "main"
+			}
+		}
+
+		// GH-4594: cut directly from a freshly fetched origin/<baseBranch>
+		// instead of checking out the local base branch and `git pull`-merging
+		// it — see CreateOrResetBranchFromOrigin's doc comment. -B still
+		// force-resets the branch if worktree mode already created it (GH-1235).
+		// GH-836: Hard fail if we can't create the branch - continuing from the wrong branch causes corrupted PRs.
+		baseRef, err := git.CreateOrResetBranchFromOrigin(ctx, parentTask.Branch, baseBranch)
 		if err != nil {
-			return nil, fmt.Errorf("branch switch failed, aborting execution: failed to switch to default branch: %w", err)
+			return nil, fmt.Errorf("branch creation failed, aborting execution: %w", err)
 		}
-		r.reportProgress(parentTask.ID, "Branching", 2, fmt.Sprintf("On %s, creating %s...", defaultBranch, parentTask.Branch))
-
-		// GH-1235: Use CreateOrResetBranch (-B flag) instead of CreateBranch (-b flag)
-		// because worktree mode may have already created this branch. The -B flag
-		// handles both cases: creates if missing, resets if exists.
-		if err := git.CreateOrResetBranch(ctx, parentTask.Branch); err != nil {
-			return nil, fmt.Errorf("failed to create/reset branch: %w", err)
-		}
-		r.reportProgress(parentTask.ID, "Branching", 5, fmt.Sprintf("Branch %s ready", parentTask.Branch))
+		r.reportProgress(parentTask.ID, "Branching", 5, fmt.Sprintf("Branch %s ready (from %s)", parentTask.Branch, baseRef))
 	} else if parentTask.Branch != "" && inWorktreeMode {
 		r.reportProgress(parentTask.ID, "Branching", 5, fmt.Sprintf("Branch %s already checked out in worktree", parentTask.Branch))
 	}

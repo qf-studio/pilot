@@ -2662,64 +2662,40 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// When using worktree, CreateWorktreeWithBranch already created the branch
 	useWorktree := r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit
 	if task.Branch != "" && !task.DirectCommit && !useWorktree {
-		r.reportProgress(task.ID, "Branching", 3, "Switching to default branch...")
+		r.reportProgress(task.ID, "Branching", 3, "Fetching base branch...")
 
-		// GH-279: Always switch to default branch and pull latest before creating new branch.
-		// This prevents new branches from forking off previous pilot branches instead of main.
-		// GH-836: Hard fail if we can't switch - continuing from wrong branch causes corrupted PRs.
 		// GH-2290: Honor task.BaseBranch (sourced from project.default_branch / branch_from) so
-		// `main → dev → feature` workflows branch off dev rather than git's HEAD.
-		var defaultBranch string
-		var err error
-		if task.BaseBranch != "" {
-			defaultBranch, err = git.SwitchToBranchAndPull(ctx, task.BaseBranch)
-		} else {
-			defaultBranch, err = git.SwitchToDefaultBranchAndPull(ctx)
+		// `main → dev → feature` workflows branch off dev rather than the repo's configured default.
+		baseBranch := task.BaseBranch
+		if baseBranch == "" {
+			var branchErr error
+			baseBranch, branchErr = git.GetDefaultBranch(ctx)
+			if branchErr != nil || baseBranch == "" {
+				baseBranch = "main"
+			}
 		}
+
+		// GH-4594: cut the task branch directly from a freshly fetched
+		// origin/<baseBranch> (falling back to the local ref only when origin
+		// isn't reachable) instead of checking out the local base branch and
+		// `git pull`-merging it. Pull failure was silently swallowed, so a
+		// fetch hiccup on the shared daemon clone left the branch cut from
+		// stale local HEAD — and even the old stale-branch recreate path
+		// (GH-912) branched off that same stale ambient HEAD instead of the
+		// ref it had just checked freshness against. EnsureBranchFromOrigin
+		// still preserves an existing, non-stale branch's commits (e.g.
+		// legitimate work already committed by an earlier attempt on this
+		// clone) rather than resetting it unconditionally.
+		// GH-836: Hard fail if we can't create the branch - continuing from the wrong branch causes corrupted PRs.
+		baseRef, created, err := git.EnsureBranchFromOrigin(ctx, task.Branch, baseBranch)
 		if err != nil {
-			return nil, fmt.Errorf("branch switch failed, aborting execution: failed to switch to default branch: %w", err)
+			return nil, fmt.Errorf("branch creation failed, aborting execution: %w", err)
 		}
-		r.reportProgress(task.ID, "Branching", 5, fmt.Sprintf("On %s, creating %s...", defaultBranch, task.Branch))
-
-		if err := git.CreateBranch(ctx, task.Branch); err != nil {
-			// Branch already exists - check if it's stale (GH-912)
-			behindCount, behindErr := git.CommitsBehindMain(ctx, task.Branch)
-			if behindErr != nil {
-				log.Warn("Failed to check if branch is behind main",
-					slog.String("branch", task.Branch),
-					slog.Any("error", behindErr),
-				)
-			}
-
-			if behindCount > 0 {
-				// Branch is stale - delete and recreate from main
-				log.Info("Stale branch detected, recreating from main",
-					slog.String("branch", task.Branch),
-					slog.Int("commits_behind", behindCount),
-				)
-				r.reportProgress(task.ID, "Branching", 6, fmt.Sprintf("Stale branch %s (%d behind), recreating...", task.Branch, behindCount))
-
-				if delErr := git.DeleteBranch(ctx, task.Branch); delErr != nil {
-					log.Warn("Failed to delete stale branch",
-						slog.String("branch", task.Branch),
-						slog.Any("error", delErr),
-					)
-				}
-				// Create fresh branch from main
-				if createErr := git.CreateBranch(ctx, task.Branch); createErr != nil {
-					return nil, fmt.Errorf("failed to recreate branch after stale detection: %w", createErr)
-				}
-				r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Recreated fresh branch %s", task.Branch))
-			} else {
-				// Branch exists and is not stale - switch to it
-				if switchErr := git.SwitchBranch(ctx, task.Branch); switchErr != nil {
-					return nil, fmt.Errorf("failed to create/switch branch: %w", err)
-				}
-				r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Switched to existing branch %s", task.Branch))
-			}
-		} else {
-			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Created branch %s", task.Branch))
+		if created {
+			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Created branch %s from %s", task.Branch, baseRef))
 			r.saveLogEntry(task.LogExecutionID(), "info", "Branch created: "+task.Branch)
+		} else {
+			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Switched to existing branch %s", task.Branch))
 		}
 	}
 
