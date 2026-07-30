@@ -2466,6 +2466,20 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 	}
 
+	// GH-4609: wire the Dispatcher's live-worker liveness signal (and the
+	// store, for its execution_event heartbeat fallback) into the monitor so
+	// ReconcileDeadOwners can finalize a dead-owner active-registry entry —
+	// no live worker holding it, execution row not progressing — before it
+	// blocks self-upgrade drain forever (see monitor.GetRunningTaskIDs,
+	// consumed as upgrade.TaskChecker below via NewHotUpgrader). monitor is
+	// only non-nil in --dashboard mode (see above).
+	if monitor != nil && dispatcher != nil {
+		monitor.SetLiveWorkerChecker(dispatcher)
+		if store != nil {
+			monitor.SetExecutionStore(store)
+		}
+	}
+
 	// GH-4412: wire the always-on Dispatcher liveness signal into every
 	// autopilot controller, unconditionally (unlike SetMonitor above, which
 	// only runs in --dashboard mode). Without this, the orphan-running sweep's
