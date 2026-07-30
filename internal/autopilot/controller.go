@@ -478,6 +478,15 @@ type Controller struct {
 	// alertedMissingReleases (GH-3991).
 	alertedStaleScopes map[string]bool
 
+	// scopeDeferLogAt records, per scope key, the last time
+	// tryStartScopeRelease logged one of its "deferring scope release" INFO
+	// lines, guarded by mu. A scope stuck deferring (member PR mid-pipeline,
+	// anchor PR already tracked, fresh persisted releasing row) logs on every
+	// epicParentTicker tick — for a scope parked mid-flight for an extended
+	// period that floods the log with an identical line every ~30s. Throttled
+	// to at most once per scopeDeferLogThrottle per scope (GH-4643).
+	scopeDeferLogAt map[string]time.Time
+
 	// pilotLabel is the trigger label reconcileLaneStarvation searches open
 	// issues for (default github.LabelPilot = "pilot", overridable via
 	// WithPilotLabel to match a non-default adapters.github.pilot_label).
@@ -636,6 +645,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		log:                     slog.Default().With("component", "autopilot"),
 		alertedMissingReleases:  make(map[string]bool),
 		alertedStaleScopes:      make(map[string]bool),
+		scopeDeferLogAt:         make(map[string]time.Time),
 		alertedPersistFailures:  make(map[int]bool),
 		persistFailedPRs:        make(map[int]time.Time),
 		alertedApprovalFailures: make(map[int]bool),
@@ -3431,6 +3441,15 @@ func (c *Controller) Start(ctx context.Context) {
 	c.startScheduleRelease(ctx)
 }
 
+// postMergeCINoWorkflowGrace bounds how long handlePostMergeCI waits before
+// probing (via CIMonitor.HasAnyCIConfigured) whether a carrier's SHA carries
+// any CI signal at all (GH-4643). Long enough for GitHub's check-runs/
+// commit-status APIs to settle for a commit that just landed (mirrors the 60s
+// default CIChecksConfig.DiscoveryGracePeriod auto mode already uses for the
+// same purpose); short enough that a genuinely workflow-less repo's carrier
+// is never meaningfully held up waiting for a check that will never appear.
+const postMergeCINoWorkflowGrace = 90 * time.Second
+
 // handlePostMergeCI monitors deployment/post-merge checks (non-blocking).
 // Each tick calls CheckCI once and either advances the stage or returns to wait
 // for the next tick, mirroring the pattern used by handleWaitingCI.
@@ -3451,33 +3470,58 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		prState.PostMergeCIStartedAt = time.Now()
 	}
 
-	// Enforce timeout using same logic as handleWaitingCI.
-	ciTimeout := c.config.CIWaitTimeout
-	envCITimeout := c.config.ResolvedEnvOrDefault().CITimeout
-	if envCITimeout > 0 && (ciTimeout == 0 || envCITimeout < ciTimeout) {
-		ciTimeout = envCITimeout
-	}
-	if time.Since(prState.PostMergeCIStartedAt) > ciTimeout {
-		c.log.Warn("post-merge CI timeout", "pr", prState.PRNumber, "waited", time.Since(prState.PostMergeCIStartedAt))
-		if prState.ScopeKey != "" {
-			// GH-3990: re-queue the scope for a fresh carrier attempt instead of
-			// leaving this one wedged at StageFailed forever — drain it now so the
-			// anchor PR slot frees for the retry.
-			c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI timeout after %v", ciTimeout))
-			c.removePR(prState.PRNumber)
-			return nil
+	mainSHA := prState.PostMergeSHA
+
+	// GH-4643: before ever risking the 30m timeout below, probe once (after a
+	// short grace period) whether this SHA has any CI signal at all. A repo
+	// with no push-main workflow — and a required-checks allowlist naming a
+	// check it will never post — otherwise polls CIPending until the timeout
+	// fires, every single carrier attempt, forever. Detecting the absence up
+	// front and treating post-merge CI as satisfied (status = CISuccess, same
+	// as a real green check) sidesteps the timeout entirely.
+	var status CIStatus
+	if !prState.PostMergeCINoWorkflowChecked && time.Since(prState.PostMergeCIStartedAt) >= postMergeCINoWorkflowGrace {
+		prState.PostMergeCINoWorkflowChecked = true
+		hasCI, probeErr := c.ciMonitor.HasAnyCIConfigured(ctx, mainSHA)
+		if probeErr != nil {
+			c.log.Warn("post-merge CI no-workflow probe failed, falling back to normal polling",
+				"pr", prState.PRNumber, "sha", ShortSHA(mainSHA), "error", probeErr)
+		} else if !hasCI {
+			c.log.Info("no post-merge CI configured for repo, treating post-merge CI as satisfied",
+				"pr", prState.PRNumber, "sha", ShortSHA(mainSHA))
+			status = CISuccess
 		}
-		prState.Stage = StageFailed
-		prState.Error = fmt.Sprintf("post-merge CI timeout after %v", ciTimeout)
-		return nil
 	}
 
-	mainSHA := prState.PostMergeSHA
-	status, err := c.ciMonitor.CheckCI(ctx, mainSHA)
-	if err != nil {
-		// Transient API error — log and retry next tick without failing the PR.
-		c.log.Warn("post-merge CI status check failed", "pr", prState.PRNumber, "sha", ShortSHA(mainSHA), "error", err)
-		return nil
+	if status == "" {
+		// Enforce timeout using same logic as handleWaitingCI.
+		ciTimeout := c.config.CIWaitTimeout
+		envCITimeout := c.config.ResolvedEnvOrDefault().CITimeout
+		if envCITimeout > 0 && (ciTimeout == 0 || envCITimeout < ciTimeout) {
+			ciTimeout = envCITimeout
+		}
+		if time.Since(prState.PostMergeCIStartedAt) > ciTimeout {
+			c.log.Warn("post-merge CI timeout", "pr", prState.PRNumber, "waited", time.Since(prState.PostMergeCIStartedAt))
+			if prState.ScopeKey != "" {
+				// GH-3990: re-queue the scope for a fresh carrier attempt instead of
+				// leaving this one wedged at StageFailed forever — drain it now so the
+				// anchor PR slot frees for the retry.
+				c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI timeout after %v", ciTimeout))
+				c.removePR(prState.PRNumber)
+				return nil
+			}
+			prState.Stage = StageFailed
+			prState.Error = fmt.Sprintf("post-merge CI timeout after %v", ciTimeout)
+			return nil
+		}
+
+		var err error
+		status, err = c.ciMonitor.CheckCI(ctx, mainSHA)
+		if err != nil {
+			// Transient API error — log and retry next tick without failing the PR.
+			c.log.Warn("post-merge CI status check failed", "pr", prState.PRNumber, "sha", ShortSHA(mainSHA), "error", err)
+			return nil
+		}
 	}
 
 	prState.CIStatus = status

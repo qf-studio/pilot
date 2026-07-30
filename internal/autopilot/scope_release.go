@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/alerts"
@@ -28,6 +29,24 @@ var closesIssueRegex = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|res
 // scope as 'pending' so the next startPendingScopeReleases sweep registers a
 // fresh carrier (GH-3990).
 const maxScopeReleaseAttempts = 5
+
+// maxScopeReleaseTimeoutAttempts caps consecutive "post-merge CI timeout"
+// carrier failures for one scope before it is parked instead of re-queued
+// (GH-4643). This is deliberately separate from maxScopeReleaseAttempts:
+// ScopeRelease.TimeoutAttempts is never reset by recoverFailedScopeReleases's
+// SHA-advance resurrection the way Attempts is, so it's what actually breaks
+// the loop for a structurally-unresolvable timeout (a repo with no post-merge
+// CI configured at all, but a required-checks allowlist naming a check that
+// will never post) — every ordinary merge to main was otherwise handing a
+// fresh 5-attempt budget to a wait that can never succeed.
+const maxScopeReleaseTimeoutAttempts = 3
+
+// postMergeCITimeoutReasonSubstr is the substring handleScopeReleaseFailure
+// matches against reason to classify a failure as a post-merge CI timeout
+// (see controller.go's handlePostMergeCI, the sole producer of this reason
+// string) rather than any other carrier failure (CI red, handleReleasing
+// escalation, etc).
+const postMergeCITimeoutReasonSubstr = "post-merge CI timeout"
 
 // enqueueScopeRelease durably records that scopeKey's members (mergedPRs) are
 // ready to release as one carrier once startPendingScopeReleases claims the
@@ -155,7 +174,9 @@ func (c *Controller) tryStartScopeRelease(row *ScopeRelease) {
 		return
 	}
 	if c.memberPRsStillActive(row.MemberPRs) {
-		c.log.Info("deferring scope release: a member PR is still mid-pipeline", "scope", row.ScopeKey)
+		if c.shouldLogScopeDefer(row.ScopeKey) {
+			c.log.Info("deferring scope release: a member PR is still mid-pipeline", "scope", row.ScopeKey)
+		}
 		return
 	}
 
@@ -166,7 +187,9 @@ func (c *Controller) tryStartScopeRelease(row *ScopeRelease) {
 	_, tracked := c.activePRs[anchorPR]
 	c.mu.RUnlock()
 	if tracked {
-		c.log.Info("deferring scope release: anchor PR already tracked", "scope", row.ScopeKey, "anchor_pr", anchorPR)
+		if c.shouldLogScopeDefer(row.ScopeKey) {
+			c.log.Info("deferring scope release: anchor PR already tracked", "scope", row.ScopeKey, "anchor_pr", anchorPR)
+		}
 		return
 	}
 	if age, found, err := c.stateStore.PersistedReleasingAge(repo, anchorPR); err != nil {
@@ -174,8 +197,10 @@ func (c *Controller) tryStartScopeRelease(row *ScopeRelease) {
 			"scope", row.ScopeKey, "anchor_pr", anchorPR, "error", err)
 		return
 	} else if found && age < releasingStaleThreshold {
-		c.log.Info("deferring scope release: anchor PR has a fresh persisted releasing row",
-			"scope", row.ScopeKey, "anchor_pr", anchorPR)
+		if c.shouldLogScopeDefer(row.ScopeKey) {
+			c.log.Info("deferring scope release: anchor PR has a fresh persisted releasing row",
+				"scope", row.ScopeKey, "anchor_pr", anchorPR)
+		}
 		return
 	}
 
@@ -209,6 +234,33 @@ func (c *Controller) tryStartScopeRelease(row *ScopeRelease) {
 	prState.mu.Unlock()
 
 	c.log.Info("registered scope release carrier", "scope", row.ScopeKey, "anchor_pr", anchorPR, "members", row.MemberPRs)
+}
+
+// scopeDeferLogThrottle bounds how often tryStartScopeRelease's "deferring
+// scope release" INFO lines repeat for the same scope key (GH-4643). Every
+// deferral reason it guards (member PR mid-pipeline, anchor PR tracked, fresh
+// persisted releasing row) can legitimately persist across many consecutive
+// epicParentTicker ticks, so without a throttle a single stuck scope floods
+// the log with an identical line roughly every tick interval.
+const scopeDeferLogThrottle = 30 * time.Minute
+
+// shouldLogScopeDefer reports whether tryStartScopeRelease should emit its
+// next "deferring scope release" INFO line for scopeKey, and records the
+// attempt — at most once per scopeDeferLogThrottle per scope (GH-4643).
+// Mirrors the guarded-map-on-Controller pattern used by
+// alertedMissingReleases/alertedStaleScopes, just for log throttling instead
+// of alert dedup.
+func (c *Controller) shouldLogScopeDefer(scopeKey string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.scopeDeferLogAt == nil {
+		c.scopeDeferLogAt = make(map[string]time.Time)
+	}
+	if last, ok := c.scopeDeferLogAt[scopeKey]; ok && time.Since(last) < scopeDeferLogThrottle {
+		return false
+	}
+	c.scopeDeferLogAt[scopeKey] = time.Now()
+	return true
 }
 
 // scopeKeyHasLiveCarrier reports whether any tracked PRState currently carries
@@ -358,9 +410,15 @@ func (c *Controller) markScopeReleaseDone(prState *PRState, tag string) {
 // release row: increments attempts and re-queues it as 'pending' for a fresh
 // carrier, or — once attempts exceeds maxScopeReleaseAttempts — marks the
 // scope 'failed' and fires a scope_release_failed alert so a human can
-// intervene. No-op when prState is not a scope carrier or no state store is
-// wired. Callers remain responsible for draining the carrier PRState itself
-// (removePR) so the anchor PR slot frees for the next attempt (GH-3990).
+// intervene. Separately (GH-4643), consecutive "post-merge CI timeout"
+// failures are tracked via TimeoutAttempts; once that reaches
+// maxScopeReleaseTimeoutAttempts the scope is parked instead — a distinct
+// terminal state that recoverFailedScopeReleases's SHA-advance resurrection
+// never revisits, breaking the loop for a repo with no post-merge CI
+// configured at all. No-op when prState is not a scope carrier or no state
+// store is wired. Callers remain responsible for draining the carrier
+// PRState itself (removePR) so the anchor PR slot frees for the next attempt
+// (GH-3990).
 func (c *Controller) handleScopeReleaseFailure(ctx context.Context, prState *PRState, reason string) {
 	_ = ctx
 	if prState.ScopeKey == "" || c.stateStore == nil {
@@ -371,13 +429,34 @@ func (c *Controller) handleScopeReleaseFailure(ctx context.Context, prState *PRS
 		c.log.Warn("handleScopeReleaseFailure: failed to re-queue scope release", "scope", prState.ScopeKey, "error", err)
 		return
 	}
+
+	isTimeout := strings.Contains(reason, postMergeCITimeoutReasonSubstr)
+	timeoutAttempts, err := c.stateStore.UpdateScopeReleaseTimeoutAttempts(repo, prState.ScopeKey, isTimeout)
+	if err != nil {
+		c.log.Warn("handleScopeReleaseFailure: failed to update timeout attempts", "scope", prState.ScopeKey, "error", err)
+	}
+
 	row, err := c.stateStore.GetScopeRelease(repo, prState.ScopeKey)
 	if err != nil || row == nil {
 		c.log.Warn("handleScopeReleaseFailure: failed to read back scope release row", "scope", prState.ScopeKey, "error", err)
 		return
 	}
+	if row.State == "parked" {
+		// Already parked by a prior call — MarkScopeReleasePending's terminal
+		// guard above already left the row untouched. Without this check a
+		// zombie carrier still ticking against an already-parked scope would
+		// re-fire scope_release_parked on every failure instead of exactly
+		// once (GH-4643).
+		return
+	}
 	c.log.Warn("scope release carrier failed",
-		"scope", prState.ScopeKey, "pr", prState.PRNumber, "attempts", row.Attempts, "reason", reason)
+		"scope", prState.ScopeKey, "pr", prState.PRNumber, "attempts", row.Attempts,
+		"timeout_attempts", timeoutAttempts, "reason", reason)
+
+	if isTimeout && timeoutAttempts >= maxScopeReleaseTimeoutAttempts {
+		c.parkScopeReleaseAfterTimeouts(repo, prState.ScopeKey, timeoutAttempts, reason)
+		return
+	}
 
 	if row.Attempts <= maxScopeReleaseAttempts {
 		return
@@ -390,17 +469,44 @@ func (c *Controller) handleScopeReleaseFailure(ctx context.Context, prState *PRS
 
 	msg := fmt.Sprintf("scope release %s failed after %d attempts: %s — manual intervention required",
 		prState.ScopeKey, row.Attempts, reason)
-	if c.alertsEngine == nil {
-		c.log.Error("scope_release_failed alert not delivered: SetAlertsEngine was never called", "scope", prState.ScopeKey)
-	} else {
-		c.alertsEngine.ProcessEvent(alerts.Event{
-			Type:      alerts.EventType("scope_release_failed"),
-			Error:     msg,
-			Timestamp: time.Now(),
-			Metadata: map[string]string{
-				"repo":  repo,
-				"scope": prState.ScopeKey,
-			},
-		})
+	c.fireScopeReleaseAlert("scope_release_failed", repo, prState.ScopeKey, msg)
+}
+
+// parkScopeReleaseAfterTimeouts marks a scope-release row terminal-parked
+// after maxScopeReleaseTimeoutAttempts consecutive post-merge CI timeouts and
+// fires a scope_release_parked alert (GH-4643). Split out from
+// handleScopeReleaseFailure so the timeout-specific park path and the
+// generic attempts-cap failure path stay readable as two separate branches.
+func (c *Controller) parkScopeReleaseAfterTimeouts(repo, scopeKey string, timeoutAttempts int, reason string) {
+	if err := c.stateStore.MarkScopeReleaseParked(repo, scopeKey); err != nil {
+		c.log.Warn("handleScopeReleaseFailure: failed to mark scope release parked", "scope", scopeKey, "error", err)
+		return
 	}
+	c.log.Warn("scope release carrier parked after repeated post-merge CI timeouts",
+		"scope", scopeKey, "timeout_attempts", timeoutAttempts)
+
+	msg := fmt.Sprintf(
+		"scope release %s parked after %d consecutive post-merge CI timeouts (%s) — this repo likely has no post-merge CI configured; add a push-to-main workflow, or drop the unreachable required check from this repo's CI config, then re-enqueue the scope manually",
+		scopeKey, timeoutAttempts, reason,
+	)
+	c.fireScopeReleaseAlert("scope_release_parked", repo, scopeKey, msg)
+}
+
+// fireScopeReleaseAlert sends a scope-release lifecycle alert, or logs at
+// Error level if no alerts engine is wired — shared by both the terminal-
+// failed and terminal-parked paths in handleScopeReleaseFailure (GH-4643).
+func (c *Controller) fireScopeReleaseAlert(eventType, repo, scopeKey, msg string) {
+	if c.alertsEngine == nil {
+		c.log.Error(eventType+" alert not delivered: SetAlertsEngine was never called", "scope", scopeKey)
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventType(eventType),
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo":  repo,
+			"scope": scopeKey,
+		},
+	})
 }

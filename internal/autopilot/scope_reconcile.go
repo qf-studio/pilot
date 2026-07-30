@@ -52,7 +52,7 @@ func (c *Controller) reconcileLabelScopes(ctx context.Context) {
 	}
 
 	repo := c.repoKey()
-	terminal, err := c.stateStore.ListScopeReleases(repo, "done", "failed")
+	terminal, err := c.stateStore.ListScopeReleases(repo, "done", "failed", "parked")
 	if err != nil {
 		c.log.Warn("reconcileLabelScopes: failed to list terminal scope rows", slog.Any("error", err))
 		terminal = nil

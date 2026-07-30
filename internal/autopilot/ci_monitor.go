@@ -526,6 +526,34 @@ func (m *CIMonitor) CheckCI(ctx context.Context, sha string) (CIStatus, error) {
 	return status, nil
 }
 
+// HasAnyCIConfigured reports whether sha carries any CI signal at all —
+// GitHub Actions check-runs or legacy commit statuses — regardless of the
+// required-checks allowlist or discovery Mode. GH-4643: a post-merge scope-
+// release carrier waiting in StagePostMergeCI needs to distinguish "no CI is
+// configured for this repo at all" (the wait can never resolve) from "CI is
+// configured but the specific required check hasn't reported yet" (a normal
+// wait that must still time out as usual). checkAutoDiscoveredRuns already
+// has a grace-period-then-combined-status fallback for auto mode with no
+// Required allowlist, but checkRequiredChecks (a non-empty Required
+// allowlist) has no such fallback — a required check name a workflow-less
+// repo will never post left checkStatus reporting CIPending forever, which is
+// what let scope-release carriers (auth-service #476/#446/#443/#439,
+// studio-sdk #104) retry every ~30m and hold their scope indefinitely.
+func (m *CIMonitor) HasAnyCIConfigured(ctx context.Context, sha string) (bool, error) {
+	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	if err != nil {
+		return false, err
+	}
+	if checkRuns.TotalCount > 0 {
+		return true, nil
+	}
+	combined, err := m.ghClient.GetCombinedStatus(ctx, m.owner, m.repo, sha)
+	if err != nil {
+		return false, err
+	}
+	return combined.TotalCount > 0, nil
+}
+
 // GetCIStatus returns the current overall CI status for a SHA.
 // This is useful for point-in-time status checks without waiting.
 // Its sole production caller (verifyCIBeforeMerge) only runs after the PR

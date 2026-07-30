@@ -187,6 +187,14 @@ func (s *StateStore) migrate() error {
 		// eligible for re-adoption, or reset an already-spent re-adoption budget.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN rebase_hold_active INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN readopt_count INTEGER NOT NULL DEFAULT 0`,
+		// GH-4643: a distinct, non-resettable-by-SHA-advance counter for
+		// consecutive "post-merge CI timeout" carrier failures. Unlike
+		// attempts (reset to 0 by recoverFailedScopeReleases whenever main
+		// advances), this counter is what lets a structurally-unresolvable
+		// timeout (a workflow-less repo with a required-checks allowlist
+		// naming a check that will never post) get parked instead of
+		// retrying forever.
+		`ALTER TABLE autopilot_scope_release ADD COLUMN timeout_attempts INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, m := range migrations {
@@ -1029,8 +1037,15 @@ type ScopeRelease struct {
 	// LastFailedSHA is the main-HEAD SHA this scope last failed a carrier
 	// against (GH-4331). Empty until the first genuine carrier failure.
 	LastFailedSHA string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// TimeoutAttempts counts consecutive "post-merge CI timeout" carrier
+	// failures (GH-4643). Unlike Attempts, this is never reset by
+	// recoverFailedScopeReleases's SHA-advance resurrection — it resets only
+	// when a non-timeout failure reason is recorded, so a structurally-
+	// unresolvable timeout accumulates toward the park threshold across
+	// resurrections instead of getting a fresh budget on every main advance.
+	TimeoutAttempts int
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // encodeIntCSV renders a sorted []int as a comma-separated string for storage
@@ -1155,7 +1170,7 @@ func (s *StateStore) GetSpawnedFixIssue(repo, dedupKey string) (int, error) {
 // if not found.
 func (s *StateStore) GetScopeRelease(repo, scopeKey string) (*ScopeRelease, error) {
 	row := s.db.QueryRow(`
-		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, last_failed_sha, created_at, updated_at
+		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, last_failed_sha, timeout_attempts, created_at, updated_at
 		FROM autopilot_scope_release WHERE repo = ? AND scope_key = ?
 	`, repo, scopeKey)
 	sr, err := scanScopeRelease(row.Scan)
@@ -1182,7 +1197,7 @@ func (s *StateStore) ListScopeReleases(repo string, states ...string) ([]*ScopeR
 		args = append(args, st)
 	}
 	query := fmt.Sprintf(`
-		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, last_failed_sha, created_at, updated_at
+		SELECT repo, scope_key, scope_title, member_prs, anchor_pr, state, final_sha, tag, attempts, last_failed_sha, timeout_attempts, created_at, updated_at
 		FROM autopilot_scope_release WHERE repo = ? AND state IN (%s)
 	`, strings.Join(placeholders, ", "))
 	rows, err := s.db.Query(query, args...)
@@ -1231,12 +1246,15 @@ func (s *StateStore) MarkScopeReleaseDone(repo, scopeKey, tag, finalSHA string) 
 // failed->pending->failed forever every tick, inflating attempts far past
 // maxScopeReleaseAttempts. Recovery for a genuinely stuck 'failed' row is
 // ResetScopeReleaseForRetry, called only once main has moved past
-// LastFailedSHA.
+// LastFailedSHA. GH-4643: 'parked' rows are excluded on the same terms — a
+// parked scope is never resurrected by SHA-advance recovery, only by manual
+// intervention, so an in-flight zombie carrier for it must not bounce it back
+// to pending either.
 func (s *StateStore) MarkScopeReleasePending(repo, scopeKey string, incrementAttempts bool, failedSHA string) error {
-	q := `UPDATE autopilot_scope_release SET state = 'pending', updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ? AND state NOT IN ('failed', 'done')`
+	q := `UPDATE autopilot_scope_release SET state = 'pending', updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ? AND state NOT IN ('failed', 'done', 'parked')`
 	args := []interface{}{repo, scopeKey}
 	if incrementAttempts {
-		q = `UPDATE autopilot_scope_release SET state = 'pending', attempts = attempts + 1, last_failed_sha = CASE WHEN ? = '' THEN last_failed_sha ELSE ? END, updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ? AND state NOT IN ('failed', 'done')`
+		q = `UPDATE autopilot_scope_release SET state = 'pending', attempts = attempts + 1, last_failed_sha = CASE WHEN ? = '' THEN last_failed_sha ELSE ? END, updated_at = CURRENT_TIMESTAMP WHERE repo = ? AND scope_key = ? AND state NOT IN ('failed', 'done', 'parked')`
 		args = []interface{}{failedSHA, failedSHA, repo, scopeKey}
 	}
 	_, err := s.db.Exec(q, args...)
@@ -1251,6 +1269,52 @@ func (s *StateStore) MarkScopeReleaseFailed(repo, scopeKey string) error {
 		WHERE repo = ? AND scope_key = ?
 	`, repo, scopeKey)
 	return err
+}
+
+// MarkScopeReleaseParked marks a scope-release row terminal-parked (GH-4643):
+// distinct from 'failed' specifically so recoverFailedScopeReleases — which
+// only ever lists state='failed' rows — never resurrects it. Reached after
+// maxScopeReleaseTimeoutAttempts consecutive "post-merge CI timeout"
+// failures, the signature of a repo with no post-merge CI configured at all
+// (a required-checks allowlist naming a check that will never post), where
+// resurrecting on every main-branch advance just re-times-out forever.
+func (s *StateStore) MarkScopeReleaseParked(repo, scopeKey string) error {
+	_, err := s.db.Exec(`
+		UPDATE autopilot_scope_release SET state = 'parked', updated_at = CURRENT_TIMESTAMP
+		WHERE repo = ? AND scope_key = ?
+	`, repo, scopeKey)
+	return err
+}
+
+// UpdateScopeReleaseTimeoutAttempts bumps (isTimeout=true) or resets to zero
+// (isTimeout=false) a scope-release row's timeout_attempts counter and
+// returns the resulting value (GH-4643). Guarded by the same terminal-state
+// exclusion as MarkScopeReleasePending so a row already resolved terminal
+// between the caller's MarkScopeReleasePending call and this one is left
+// untouched. Returns 0, nil if the row doesn't exist or is terminal (no
+// change made) rather than erroring — callers treat that as "nothing to cap
+// against yet".
+func (s *StateStore) UpdateScopeReleaseTimeoutAttempts(repo, scopeKey string, isTimeout bool) (int, error) {
+	set := "timeout_attempts = 0"
+	if isTimeout {
+		set = "timeout_attempts = timeout_attempts + 1"
+	}
+	q := fmt.Sprintf(`
+		UPDATE autopilot_scope_release SET %s, updated_at = CURRENT_TIMESTAMP
+		WHERE repo = ? AND scope_key = ? AND state NOT IN ('failed', 'done', 'parked')
+	`, set)
+	if _, err := s.db.Exec(q, repo, scopeKey); err != nil {
+		return 0, err
+	}
+
+	var count int
+	err := s.db.QueryRow(`
+		SELECT timeout_attempts FROM autopilot_scope_release WHERE repo = ? AND scope_key = ?
+	`, repo, scopeKey).Scan(&count)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return count, err
 }
 
 // ResetScopeReleaseForRetry resurrects a terminal 'failed' scope-release row
@@ -1307,7 +1371,7 @@ func scanScopeRelease(scan func(dest ...interface{}) error) (*ScopeRelease, erro
 	var createdAt, updatedAt sql.NullTime
 	err := scan(
 		&sr.Repo, &sr.ScopeKey, &sr.ScopeTitle, &memberCSV, &sr.AnchorPR,
-		&sr.State, &sr.FinalSHA, &sr.Tag, &sr.Attempts, &sr.LastFailedSHA, &createdAt, &updatedAt,
+		&sr.State, &sr.FinalSHA, &sr.Tag, &sr.Attempts, &sr.LastFailedSHA, &sr.TimeoutAttempts, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return nil, err
