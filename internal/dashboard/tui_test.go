@@ -241,15 +241,22 @@ func TestRenderTaskCard_ShowsQueueDepth(t *testing.T) {
 	m.metricsCard.Succeeded = 8
 	m.metricsCard.Failed = 2
 
-	// Simulate 2 active tasks in queue (pending/running)
+	// Simulate 2 active tasks in queue (pending/running) alongside terminal
+	// tasks retained since daemon start (GH-4617: Monitor never evicts
+	// completed/failed/no-op tasks, so m.tasks accumulates lifetime history).
+	// The card value must count only the active ones (2), not len(m.tasks) (5).
 	m.tasks = []TaskDisplay{
-		{ID: "1", Title: "Task A", Status: "running"},
-		{ID: "2", Title: "Task B", Status: "pending"},
+		{ID: "1", Title: "Task A", Status: QueueStatusRunning},
+		{ID: "2", Title: "Task B", Status: QueueStatusPending},
+		{ID: "3", Title: "Task C", Status: QueueStatusDone},
+		{ID: "4", Title: "Task D", Status: QueueStatusFailed},
+		{ID: "5", Title: "Task E", Status: QueueStatusNoOp},
 	}
 
 	output := m.renderTaskCard(cardWidth)
 
 	// queue card value must show current queue depth (2), not lifetime total (10)
+	// and not len(m.tasks) (5, once terminal tasks are included in the fixture)
 	if !strings.Contains(output, "queue") {
 		t.Error("output missing queue title")
 	}
@@ -260,6 +267,11 @@ func TestRenderTaskCard_ShowsQueueDepth(t *testing.T) {
 	// Lifetime total "10" should NOT appear as the main value
 	if strings.Contains(output, "10") {
 		t.Error("queue card should not show lifetime total (10)")
+	}
+	// len(m.tasks) is 5 (2 active + 3 terminal); the pre-fix implementation
+	// rendered this as the value instead of the active count.
+	if strings.Contains(output, "5") {
+		t.Error("queue card should not show len(m.tasks) (5), only active task count")
 	}
 	// Succeeded/failed detail line should still be present
 	if !strings.Contains(output, "✓ 8") {
