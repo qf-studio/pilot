@@ -414,7 +414,10 @@ then 30 quiet iterations (~22:30→08:09Z), zero stuck PRs:
 #32 list envelopes (`{"connections":[]}` vs bare array) · #81 missing GET. All caught by
 operator browser+curl against the live stack; NONE by daemon gates (no docker in worktrees —
 its "real-stack AC" passes are fixture-only). Rule of thumb now proven: **operator real-stack
-verify gates UI merges**; candidate SOP pending founder nod.
+verify gates UI merges** — **SOP ADOPTED 2026-07-30** (founder nod):
+`sops/quality/real-stack-verify-gates-ui-merges.md`. Defect #5 same class filed same day:
+ui#34 (reload bounces authenticated session to /login — guard runs at router install, before
+session bootstrap; mock adapter can't reproduce by construction).
 
 **Pipeline autonomy**: 5/7 PRs self-merged (3–15 min); manual merges only for the DIRTY rebase
 (re-adopt fix rides today's 14:00Z train) and the un-adopted #479-class earlier. **Ledger
