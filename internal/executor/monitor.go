@@ -47,10 +47,29 @@ type TaskState struct {
 	ProjectName string // Short project name for display (GH-2167)
 }
 
+// LiveWorkerChecker reports which task IDs a live executor worker is
+// currently processing right now — the same "is a live worker actually
+// holding this task" signal *Dispatcher.GetRunningTaskIDs already exposes to
+// the autopilot orphan-running sweep (GH-4412). ReconcileDeadOwners (GH-4609)
+// uses it to tell a genuinely in-flight task apart from a Monitor entry whose
+// owning executor process is gone.
+type LiveWorkerChecker interface {
+	GetRunningTaskIDs() []string
+}
+
 // Monitor tracks task execution progress
 type Monitor struct {
 	tasks map[string]*TaskState
 	mu    sync.RWMutex
+
+	// liveWorkers and execStore back ReconcileDeadOwners (GH-4609): the
+	// live-worker liveness signal and the execution-row heartbeat fallback
+	// used to detect an active-registry entry whose owning executor process
+	// is gone. Both nil by default — ReconcileDeadOwners is then a no-op,
+	// preserving today's behavior for any caller that never wires one (e.g.
+	// tests) — until SetLiveWorkerChecker/SetExecutionStore are called.
+	liveWorkers LiveWorkerChecker
+	execStore   *memory.Store
 }
 
 // NewMonitor creates a new task monitor
@@ -250,6 +269,29 @@ func terminalMonitorStatus(dbStatus string) (TaskStatus, bool) {
 	}
 }
 
+// SetLiveWorkerChecker wires the live-worker liveness signal ReconcileDeadOwners
+// (GH-4609) uses to detect a Monitor entry whose owning executor process is
+// gone. In production this is *executor.Dispatcher, wired once the Dispatcher
+// exists (see cmd/pilot/main.go). Optional — nil keeps ReconcileDeadOwners a
+// no-op, matching today's behavior for any caller that never wires one.
+func (m *Monitor) SetLiveWorkerChecker(c LiveWorkerChecker) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.liveWorkers = c
+}
+
+// SetExecutionStore wires the store ReconcileDeadOwners (GH-4609) queries for
+// a dead-owner candidate's execution_event heartbeat before finalizing it —
+// the "or its execution row has progressed within N minutes" fallback that
+// protects a task caught in the narrow race between Monitor.Start and the
+// live-worker checker registering it. Optional — nil skips the fallback
+// check (a dead-owner candidate is finalized on the liveness signal alone).
+func (m *Monitor) SetExecutionStore(store *memory.Store) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.execStore = store
+}
+
 // SetProjectInfo sets the project path and name for a task (GH-2167).
 func (m *Monitor) SetProjectInfo(taskID, projectPath, projectName string) {
 	m.mu.Lock()
@@ -372,6 +414,47 @@ func (m *Monitor) Stall(taskID, reason string) {
 	}
 }
 
+// ReleasePriorAttempt finalizes taskID's active-registry entry as stalled if
+// it is still showing a non-terminal status (Running/Queued/Pending) — the
+// stalled->retry seam GH-4609 subtask 2 requires: the moment a fresh
+// generation is granted for a task whose prior claim stalled
+// (Dispatcher.beginWithGenerationRetry's priorClaimWasStalled branch), the
+// prior attempt's entry must be released/finished right there, rather than
+// leaving it to eventually age past deadOwnerGracePeriod/
+// deadOwnerHeartbeatWindow and get swept up by the next drain-time
+// ReconcileDeadOwners call (subtask 1's backstop, which exists for the
+// general dead-owner case but can take up to deadOwnerHeartbeatWindow to
+// fire). Without this, a retry granted while the prior attempt's own Stall()
+// call hasn't landed yet (or never lands, e.g. an externally killed worker
+// process) leaves the SAME map entry straddling two generations — the
+// dashboard/drain count would keep reading the superseded attempt's stale
+// Running/Queued status until the backstop eventually catches up, instead of
+// the retried task being counted exactly once, under its fresh generation.
+//
+// A no-op when the entry is missing or already terminal (including the
+// common case where the prior attempt's own Stall() already ran) — this only
+// forces the transition when it hasn't happened yet.
+func (m *Monitor) ReleasePriorAttempt(taskID, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, ok := m.tasks[taskID]
+	if !ok {
+		return
+	}
+	switch state.Status {
+	case StatusRunning, StatusQueued, StatusPending:
+	default:
+		return
+	}
+
+	now := time.Now()
+	state.Status = StatusStalled
+	state.CompletedAt = &now
+	state.Phase = "Stalled"
+	state.Error = reason
+}
+
 // Cancel marks a task as cancelled
 func (m *Monitor) Cancel(taskID string) {
 	m.mu.Lock()
@@ -456,7 +539,14 @@ func (m *Monitor) Count() int {
 
 // GetRunningTaskIDs returns IDs of currently running or queued tasks.
 // Implements upgrade.TaskChecker interface for graceful drain during hot upgrade.
+//
+// GH-4609: reconciles dead-owner entries first, so a StatusRunning entry
+// whose owning executor process is gone is finalized as failed and excluded
+// from the result instead of blocking a caller (e.g. self-upgrade drain)
+// forever. See ReconcileDeadOwners.
 func (m *Monitor) GetRunningTaskIDs() []string {
+	m.ReconcileDeadOwners()
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -468,6 +558,125 @@ func (m *Monitor) GetRunningTaskIDs() []string {
 	}
 	return ids
 }
+
+// deadOwnerGracePeriod protects a task Monitor.Start just marked running from
+// being reconciled as a dead owner before its worker has had a chance to
+// register with the wired LiveWorkerChecker — Start() and the Dispatcher's
+// own "processing" flag are not set atomically with each other. GH-4609.
+const deadOwnerGracePeriod = 30 * time.Second
+
+// deadOwnerHeartbeatWindow bounds how recently a dead-owner candidate's
+// execution row must have logged an execution_event to still count as
+// "progressing" despite having no live worker. Mirrors the orphan-running
+// sweep's heartbeat check (autopilot/controller.go's
+// orphanRunningHeartbeatWindow), but deliberately skips that sweep's 120m
+// floor (minOrphanRunningThreshold) — a stuck drain blocks every queued task
+// in the daemon, not just one execution row, so this reconciliation needs to
+// resolve much sooner. GH-4609.
+const deadOwnerHeartbeatWindow = 10 * time.Minute
+
+// ReconcileDeadOwners finalizes any Monitor entry still showing StatusRunning
+// whose owning executor process is gone, so it stops blocking self-upgrade
+// drain forever — the GH-72 stalled-retry incident (GH-4609): the retry
+// produced a PR and left no worker process alive, but the in-memory active
+// registry kept counting the original entry, so drain looped
+// "1 tasks still active" every 5 minutes indefinitely.
+//
+// A "dead owner" is a StatusRunning entry that is (a) absent from the wired
+// LiveWorkerChecker's current set — no live worker holds it right now — and
+// (b) has logged no execution_event heartbeat within deadOwnerHeartbeatWindow.
+// Both conditions must hold before an entry is finalized: (a) alone can
+// misfire in the race between Monitor.Start and the live-worker checker
+// registering the task (deadOwnerGracePeriod also guards this), and (b) alone
+// can't distinguish a dead task from one legitimately mid-tool-call with no
+// heartbeat yet (GH-4412).
+//
+// No-op (fail-open) when no LiveWorkerChecker is wired via
+// SetLiveWorkerChecker — call sites that never wire one (tests, and any
+// Monitor not driven by the polling-mode daemon) keep today's behavior
+// exactly.
+func (m *Monitor) ReconcileDeadOwners() {
+	m.mu.RLock()
+	liveWorkers := m.liveWorkers
+	execStore := m.execStore
+	m.mu.RUnlock()
+
+	if liveWorkers == nil {
+		return
+	}
+
+	live := make(map[string]bool)
+	for _, id := range liveWorkers.GetRunningTaskIDs() {
+		live[id] = true
+	}
+
+	type candidate struct {
+		id          string
+		projectPath string
+	}
+	var candidates []candidate
+	now := time.Now()
+
+	m.mu.RLock()
+	for id, state := range m.tasks {
+		if state.Status != StatusRunning || live[id] {
+			continue
+		}
+		if state.StartedAt != nil && now.Sub(*state.StartedAt) < deadOwnerGracePeriod {
+			continue
+		}
+		candidates = append(candidates, candidate{id: id, projectPath: state.ProjectPath})
+	}
+	m.mu.RUnlock()
+
+	for _, c := range candidates {
+		if execStore != nil && executionRecentlyProgressed(execStore, c.id, c.projectPath) {
+			continue
+		}
+
+		m.mu.Lock()
+		if state, ok := m.tasks[c.id]; ok && state.Status == StatusRunning {
+			completedAt := time.Now()
+			state.Status = StatusFailed
+			state.CompletedAt = &completedAt
+			state.Phase = "Failed"
+			state.Error = "reconciled: dead-owner active-registry entry (no live executor process, execution row not progressing) — GH-4609"
+		}
+		m.mu.Unlock()
+	}
+}
+
+// executionRecentlyProgressed reports whether taskID's most recent execution
+// row has logged an execution_event within deadOwnerHeartbeatWindow — the
+// corroborating "still making progress" signal ReconcileDeadOwners checks
+// before finalizing a candidate with no live worker. Fails open (treats as
+// progressing) on any store error so a store hiccup can never wrongly
+// finalize a possibly-live task; a clean "no execution row at all" is treated
+// as not progressing.
+func executionRecentlyProgressed(store *memory.Store, taskID, projectPath string) bool {
+	exec, err := store.GetLatestExecutionByTaskID(taskID, projectPath)
+	if err != nil {
+		return !errors.Is(err, sql.ErrNoRows)
+	}
+
+	events, err := store.ListExecutionEvents(exec.ID)
+	if err != nil {
+		return true
+	}
+	if len(events) == 0 {
+		return false
+	}
+	return time.Since(events[len(events)-1].OccurredAt) < deadOwnerHeartbeatWindow
+}
+
+// ErrDrainTimeout is the sentinel wrapped into WaitForTasks' timeout error so
+// callers (e.g. cmd/pilot's self-upgrade loop) can distinguish "still-active
+// tasks blocked the drain" from other TaskChecker failures via errors.Is,
+// without parsing the message. GH-4609: the self-upgrade alert path needs
+// this to gate on consecutive drain-timeout occurrences specifically,
+// leaving other upgrade failures (bad download, unwritable binary dir, ...)
+// alerting immediately as before.
+var ErrDrainTimeout = errors.New("drain timeout")
 
 // WaitForTasks polls until all running/queued tasks complete or context expires.
 // Implements upgrade.TaskChecker interface for graceful drain during hot upgrade.
@@ -486,7 +695,7 @@ func (m *Monitor) WaitForTasks(ctx context.Context, timeout time.Duration) error
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("drain timeout: %d tasks still active: %v", len(ids), ids)
+			return fmt.Errorf("%w: %d tasks still active: %v", ErrDrainTimeout, len(ids), ids)
 		case <-ticker.C:
 			// continue polling
 		}

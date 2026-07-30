@@ -3837,6 +3837,65 @@ func TestDispatcher_BeginWithGenerationRetry_StallDropsDoNotCountTowardHardCap(t
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_StallRetryReleasesPriorMonitorEntry
+// is the GH-4609 subtask 2 acceptance test: granting a retry for a stalled
+// claim must release/finish the prior attempt's in-memory active-registry
+// (Monitor) entry itself, rather than depending solely on runner.go's own
+// Stall() call having already landed. Simulates the GH-72 incident shape —
+// the executions row reads "stalled" (the watchdog's own detection ran) but
+// the Monitor entry was never transitioned off StatusRunning (e.g. the
+// worker process died before reaching monitor.Stall()) — and asserts the
+// stalled->retry path finalizes it anyway, so the retried task is counted
+// once under its fresh generation instead of leaving a zombie Running entry
+// that would otherwise block drain until the periodic ReconcileDeadOwners
+// backstop (subtask 1) eventually catches up.
+func TestDispatcher_BeginWithGenerationRetry_StallRetryReleasesPriorMonitorEntry(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-72", ProjectPath: "/pilot-console"}
+	runner := NewRunner()
+	monitor := NewMonitor()
+	runner.SetMonitor(monitor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath}
+
+	if _, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning); err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	// The executions row reflects the genuine stall the watchdog detected...
+	markLatestClaimedExecution(t, store, task.ID, task.ProjectPath, "stalled")
+
+	// ...but the Monitor entry never got moved off Running — the exact GH-72
+	// zombie shape (worker process gone before its own monitor.Stall() call).
+	monitor.Register(task.ID, "Zombie task", "")
+	monitor.Start(task.ID)
+
+	execID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if execID == "" {
+		t.Fatal("expected the stalled claim to be granted a retry")
+	}
+
+	state, ok := monitor.Get(task.ID)
+	if !ok {
+		t.Fatal("GH-72 missing from monitor after stall-retry")
+	}
+	if state.Status == StatusRunning || state.Status == StatusQueued {
+		t.Errorf("expected prior attempt's monitor entry released (not Running/Queued), got %s", state.Status)
+	}
+
+	ids := monitor.GetRunningTaskIDs()
+	for _, id := range ids {
+		if id == task.ID {
+			t.Fatalf("expected GH-72's prior entry excluded from drain-blocking set, got %v", ids)
+		}
+	}
+}
+
 // TestDispatcher_BeginWithGenerationRetry_StallCapEscalatesWithDistinctReason
 // is the GH-4502 stall-cap acceptance test: unlike the operator-cancel carve
 // out, stall-kills must NOT bypass accounting entirely — until the

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -431,6 +432,247 @@ func TestMonitorWaitForTasksTimeout(t *testing.T) {
 	err := monitor.WaitForTasks(ctx, 100*time.Millisecond)
 	if err == nil {
 		t.Fatal("WaitForTasks should timeout")
+	}
+	// GH-4609: the self-upgrade alert path (cmd/pilot's drainTimeoutAlertGate)
+	// needs to distinguish a drain-timeout from any other TaskChecker
+	// failure via errors.Is, not by parsing the message.
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Errorf("WaitForTasks timeout error should wrap ErrDrainTimeout, got: %v", err)
+	}
+}
+
+// fakeLiveWorkerChecker is a test double for LiveWorkerChecker (GH-4609).
+type fakeLiveWorkerChecker struct {
+	ids []string
+}
+
+func (f *fakeLiveWorkerChecker) GetRunningTaskIDs() []string {
+	return f.ids
+}
+
+// pastStart backdates taskID's StartedAt beyond deadOwnerGracePeriod so
+// ReconcileDeadOwners tests aren't gated by the just-started grace window.
+// White-box (package executor): reaches into Monitor's internal map directly.
+func pastStart(t *testing.T, m *Monitor, taskID string) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	past := time.Now().Add(-time.Hour)
+	if state, ok := m.tasks[taskID]; ok {
+		state.StartedAt = &past
+	}
+}
+
+// GH-4609 acceptance: a dead-owner active-registry entry (no live executor
+// process, execution row not progressing) does not block self-upgrade drain
+// forever — it is finalized as failed and excluded from the drain-blocking
+// set. Reproduces the GH-72 stalled-retry incident: the in-memory registry
+// kept counting a task whose worker process was long gone.
+func TestMonitorReconcileDeadOwners_ExcludedFromDrain(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-72", "Zombie task", "")
+	m.Start("GH-72")
+	m.SetLiveWorkerChecker(&fakeLiveWorkerChecker{}) // no live worker holds anything
+	pastStart(t, m, "GH-72")
+
+	ids := m.GetRunningTaskIDs()
+	if len(ids) != 0 {
+		t.Fatalf("Expected dead-owner entry excluded from drain-blocking set, got %v", ids)
+	}
+
+	state, ok := m.Get("GH-72")
+	if !ok {
+		t.Fatal("GH-72 missing after reconciliation")
+	}
+	if state.Status != StatusFailed {
+		t.Errorf("Status = %s, want %s (dead-owner entry must be finalized as failed)", state.Status, StatusFailed)
+	}
+}
+
+// A task a live worker is currently holding must never be reconciled away,
+// regardless of how long ago it started.
+func TestMonitorReconcileDeadOwners_LiveWorkerNotFinalized(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-73", "Live task", "")
+	m.Start("GH-73")
+	m.SetLiveWorkerChecker(&fakeLiveWorkerChecker{ids: []string{"GH-73"}})
+	pastStart(t, m, "GH-73")
+
+	ids := m.GetRunningTaskIDs()
+	if len(ids) != 1 || ids[0] != "GH-73" {
+		t.Fatalf("Expected live-worker task to remain drain-blocking, got %v", ids)
+	}
+	state, _ := m.Get("GH-73")
+	if state.Status != StatusRunning {
+		t.Errorf("Status = %s, want %s (live worker must not be reconciled away)", state.Status, StatusRunning)
+	}
+}
+
+// deadOwnerGracePeriod protects a task Monitor.Start just marked running from
+// being reconciled before its worker has had a chance to register with the
+// live-worker checker.
+func TestMonitorReconcileDeadOwners_GracePeriodProtectsRecentStart(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-74", "Freshly started task", "")
+	m.Start("GH-74") // StartedAt = now, well inside deadOwnerGracePeriod
+	m.SetLiveWorkerChecker(&fakeLiveWorkerChecker{})
+
+	ids := m.GetRunningTaskIDs()
+	if len(ids) != 1 || ids[0] != "GH-74" {
+		t.Fatalf("Expected freshly started task protected by grace period, got %v", ids)
+	}
+}
+
+// A recent execution_event heartbeat protects a no-live-worker candidate from
+// finalization — the fallback signal for the narrow race between
+// Monitor.Start and the live-worker checker registering the task.
+func TestMonitorReconcileDeadOwners_RecentHeartbeatProtectsCandidate(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "e1", TaskID: "GH-75", ProjectPath: "/p", Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.RecordExecutionEvent("e1", memory.StageRunning, "heartbeat"); err != nil {
+		t.Fatalf("RecordExecutionEvent: %v", err)
+	}
+
+	m := NewMonitor()
+	m.Register("GH-75", "Task 75", "")
+	m.SetProjectInfo("GH-75", "/p", "proj")
+	m.Start("GH-75")
+	m.SetLiveWorkerChecker(&fakeLiveWorkerChecker{}) // no live worker
+	m.SetExecutionStore(store)
+	pastStart(t, m, "GH-75")
+
+	ids := m.GetRunningTaskIDs()
+	if len(ids) != 1 || ids[0] != "GH-75" {
+		t.Fatalf("Expected recent heartbeat to protect candidate from finalization, got %v", ids)
+	}
+	state, _ := m.Get("GH-75")
+	if state.Status != StatusRunning {
+		t.Errorf("Status = %s, want %s (recent heartbeat must protect from dead-owner finalization)", state.Status, StatusRunning)
+	}
+}
+
+// No heartbeat at all (and no live worker) is exactly the GH-72 zombie
+// shape — the candidate must be finalized as failed.
+func TestMonitorReconcileDeadOwners_NoHeartbeatFinalizes(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "e1", TaskID: "GH-76", ProjectPath: "/p", Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	// No execution_events recorded -- "not progressing".
+
+	m := NewMonitor()
+	m.Register("GH-76", "Task 76", "")
+	m.SetProjectInfo("GH-76", "/p", "proj")
+	m.Start("GH-76")
+	m.SetLiveWorkerChecker(&fakeLiveWorkerChecker{})
+	m.SetExecutionStore(store)
+	pastStart(t, m, "GH-76")
+
+	ids := m.GetRunningTaskIDs()
+	if len(ids) != 0 {
+		t.Fatalf("Expected dead-owner with no heartbeat excluded from drain, got %v", ids)
+	}
+	state, _ := m.Get("GH-76")
+	if state.Status != StatusFailed {
+		t.Errorf("Status = %s, want %s", state.Status, StatusFailed)
+	}
+}
+
+// End-to-end acceptance: WaitForTasks is the method upgrade.TaskChecker calls
+// to block self-upgrade drain (GracefulUpgrader.PerformUpgrade /
+// HotUpgrader.PerformHotUpgrade). A dead-owner entry must let it resolve
+// promptly instead of timing out — the literal GH-72 incident symptom
+// ("drain timeout: 1 tasks still active: [GH-72]" looping every 5 minutes).
+func TestMonitorWaitForTasks_DeadOwnerDoesNotBlockDrain(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-72", "Zombie task", "")
+	m.Start("GH-72")
+	m.SetLiveWorkerChecker(&fakeLiveWorkerChecker{})
+	pastStart(t, m, "GH-72")
+
+	ctx := context.Background()
+	if err := m.WaitForTasks(ctx, 5*time.Second); err != nil {
+		t.Fatalf("WaitForTasks should resolve promptly once the dead-owner entry is reconciled, got: %v", err)
+	}
+}
+
+// TestMonitorReleasePriorAttempt_FinalizesNonTerminalEntry is the GH-4609
+// subtask 2 Monitor-level acceptance test: a still-Running (or Queued/
+// Pending) entry must be finalized to Stalled so a granted stall-retry never
+// leaves the prior attempt's active-registry entry looking like it's still
+// in flight.
+func TestMonitorReleasePriorAttempt_FinalizesNonTerminalEntry(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-72", "Zombie task", "")
+	m.Start("GH-72")
+
+	m.ReleasePriorAttempt("GH-72", "stall-retry: superseded by generation 1")
+
+	state, ok := m.Get("GH-72")
+	if !ok {
+		t.Fatal("GH-72 missing after ReleasePriorAttempt")
+	}
+	if state.Status != StatusStalled {
+		t.Errorf("Status = %s, want %s", state.Status, StatusStalled)
+	}
+	if state.Error != "stall-retry: superseded by generation 1" {
+		t.Errorf("Error = %q, want the release reason recorded", state.Error)
+	}
+	if state.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set once the entry is finalized")
+	}
+}
+
+// A terminal entry (the common case: runner.go's own Stall() already ran)
+// must be left untouched — ReleasePriorAttempt only forces the transition
+// when it hasn't already happened.
+func TestMonitorReleasePriorAttempt_TerminalEntryUntouched(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-73", "Already stalled task", "")
+	m.Start("GH-73")
+	m.Stall("GH-73", "session stalled: no agent event for >10m")
+
+	m.ReleasePriorAttempt("GH-73", "stall-retry: superseded by generation 1")
+
+	state, _ := m.Get("GH-73")
+	if state.Error != "session stalled: no agent event for >10m" {
+		t.Errorf("expected the original Stall() reason preserved, got %q", state.Error)
+	}
+}
+
+// A completed entry must never be reclassified as stalled by a later
+// stall-retry decision for a different, unrelated generation.
+func TestMonitorReleasePriorAttempt_CompletedEntryUntouched(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-74", "Completed task", "")
+	m.Start("GH-74")
+	m.Complete("GH-74", "https://github.com/org/repo/pull/1")
+
+	m.ReleasePriorAttempt("GH-74", "stall-retry: superseded by generation 1")
+
+	state, _ := m.Get("GH-74")
+	if state.Status != StatusCompleted {
+		t.Errorf("Status = %s, want %s (completed entry must not be overwritten)", state.Status, StatusCompleted)
+	}
+}
+
+// An unregistered task ID is a no-op — nothing to release.
+func TestMonitorReleasePriorAttempt_UnknownTaskIsNoOp(t *testing.T) {
+	m := NewMonitor()
+	m.ReleasePriorAttempt("GH-does-not-exist", "reason")
+
+	if _, ok := m.Get("GH-does-not-exist"); ok {
+		t.Fatal("expected no entry to be created for an unknown task ID")
 	}
 }
 
