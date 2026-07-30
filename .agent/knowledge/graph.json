@@ -1038,6 +1038,18 @@
           "context",
           "deployment"
         ]
+      },
+      "TASK-427": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-427-sdk-poller-fresh-fetch-discarded.md",
+        "title": "Task 427 Sdk Poller Fresh Fetch Discarded",
+        "status": "dispatched",
+        "concepts": [
+          "deployment",
+          "workflow",
+          "testing",
+          "api",
+          "context"
+        ]
       }
     },
     "memories": {
@@ -3677,6 +3689,34 @@
         ],
         "created": "2026-07-30",
         "last_validated": "2026-07-30"
+      },
+      "confirm-before-destructive-act-fresh-reads": {
+        "type": "pattern",
+        "summary": "Never take a destructive/escalating action from ONE read of an eventually-consistent source \u2014 require N consecutive confirming FRESH reads within a grace window, reset the counter on any contradicting read, and take one final fresh read immediately before acting.",
+        "file": ".agent/knowledge/memories/patterns/confirm-before-destructive-act-fresh-reads.md",
+        "created": "2026-07-30",
+        "last_validated": "2026-07-30"
+      },
+      "epic-waiter-misreads-takeover-stalled-row": {
+        "type": "pitfall",
+        "summary": "The epic child-outcome lookup returns the first TERMINAL execution row it finds, so a GH-4536 force-stalled-for-takeover row (bookkeeping, not a real stall) reads as child failure while the takeover run is actively executing \u2014 epic fails and re-implements the child's scope.",
+        "file": ".agent/knowledge/memories/pitfalls/epic-waiter-misreads-takeover-stalled-row.md",
+        "created": "2026-07-30",
+        "last_validated": "2026-07-30"
+      },
+      "fresh-get-body-discarded-list-snapshot-validated": {
+        "type": "pitfall",
+        "summary": "Both the SDK poller and Pilot's issue handler fetch a fresh GetIssue before dispatch/validation but discard its Body, validating the stale list-snapshot body instead \u2014 an issue edited seconds before a poll tick gets judged on its pre-edit content.",
+        "file": ".agent/knowledge/memories/pitfalls/fresh-get-body-discarded-list-snapshot-validated.md",
+        "created": "2026-07-30",
+        "last_validated": "2026-07-30"
+      },
+      "takeover-execution-never-finalized-stale-subexecid": {
+        "type": "pitfall",
+        "summary": "After ErrClaimLost\u2192takeover, the epic loop's local subExecID is empty, so every finalizeSubIssueExecution call silently no-ops \u2014 takeover execution rows stay `running` forever and only the 2h orphan sweep closes them, even when the run shipped a PR.",
+        "file": ".agent/knowledge/memories/pitfalls/takeover-execution-never-finalized-stale-subexecid.md",
+        "created": "2026-07-30",
+        "last_validated": "2026-07-30"
       }
     }
   },
@@ -4980,6 +5020,16 @@
       "from": "mem-165",
       "to": "TASK-407",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-427",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-427",
+      "to": "workflow",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -5145,7 +5195,8 @@
       "mem-162",
       "mem-163",
       "mem-164",
-      "mem-165"
+      "mem-165",
+      "TASK-427"
     ],
     "authentication": [
       "TASK-386",
@@ -5249,7 +5300,8 @@
       "mem-162",
       "mem-163",
       "mem-164",
-      "mem-165"
+      "mem-165",
+      "TASK-427"
     ],
     "api": [
       "TASK-386",
@@ -5293,7 +5345,8 @@
       "mem-162",
       "mem-163",
       "mem-164",
-      "mem-165"
+      "mem-165",
+      "TASK-427"
     ],
     "context": [
       "TASK-386",
@@ -5348,7 +5401,8 @@
       "mem-162",
       "mem-163",
       "mem-164",
-      "mem-165"
+      "mem-165",
+      "TASK-427"
     ],
     "markers": [
       "TASK-387",
@@ -5448,7 +5502,8 @@
       "mem-162",
       "mem-163",
       "mem-164",
-      "mem-165"
+      "mem-165",
+      "TASK-427"
     ],
     "simplification": [
       "TASK-387",
@@ -5783,10 +5838,10 @@
       "mem-161"
     ]
   },
-  "last_updated": "2026-07-30T10:27:53.214044+00:00",
+  "last_updated": "2026-07-30T13:21:28.813669+00:00",
   "stats": {
-    "total_nodes": 318,
-    "total_edges": 260,
+    "total_nodes": 319,
+    "total_edges": 262,
     "memory_count": 196
   }
 }

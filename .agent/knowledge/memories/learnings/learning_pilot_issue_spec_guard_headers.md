@@ -4,7 +4,7 @@ description: Filing a pilot-labeled GitHub issue without one of the ValidateSpec
 type: learning
 ---
 
-When you `gh issue create --label pilot ...`, Pilot's intake **spec-guard** (`internal/adapters/github/spec_validator.go` `ValidateSpec`, applied via `cmd/pilot/spec_guard.go applySpecGuard`) validates the body **before** dispatch. It is a **two-strike** gate:
+When you `gh issue create --label pilot ...`, Pilot's intake **spec-guard** (`internal/ghissue/spec.go` `ValidateSpec`, applied via `cmd/pilot/spec_guard_sdk.go applySpecGuardSDK`; the legacy in-tree twin `internal/adapters/github/spec_validator.go` was deleted in #4178) validates the body **before** dispatch. It is a **two-strike** gate:
 1. First poll with a failing body → adds `pilot-spec-incomplete` + posts a marker comment (`<!-- pilot-spec-incomplete -->`).
 2. Next poll (marker present, still failing) → escalates to `pilot-blocked`.
 
@@ -26,4 +26,8 @@ The third one bit a whole batch (TASK-335..340 / #3326-3331, 2026-05-31): bodies
 ```
 `## Context`, `## Approach`, `## Acceptance`, `## Implementation`, `## Background`, `## Design`, `## Refs` all pass; at least one is required.
 
-**Recovery if already blocked:** edit the body to add a recognized header, then remove BOTH `pilot-spec-incomplete` and `pilot-blocked` (`gh issue edit N --remove-label ...`). The marker comment is inert once the body validates (the guard only fires on invalid bodies). Escape hatch: the `pilot-skip-spec-check` label bypasses validation entirely — use sparingly, prefer fixing the body. Related: [[learning_flaky_briefs_generator_test]].
+**Recovery if already blocked:** edit the body to add a recognized header, then remove BOTH `pilot-spec-incomplete` and `pilot-blocked` (`gh issue edit N --remove-label ...`).
+
+⚠️ **The marker comment is NOT inert** (corrected 2026-07-30, #4498 incident): it is permanent strike memory — `applySpecGuardSDK` treats "marker exists anywhere in history" as strike one, forever. Combined with the poller validating the stale **list-snapshot body** (fresh `GetIssue` reads are fetched but their `.Body` discarded — pilot#4624 / studio-sdk#105), a re-dispatch seconds after your body edit can judge the OLD body → instant **silent** `pilot-blocked` (second-strike path posts no comment). The 24h stale-label cleanup then removes the label and the loop repeats daily. If your fixed issue re-blocks with no new comment, that's this class: just remove `pilot-blocked` again once the edit is a few minutes old — the next poll reads fresh. Fixed properly under #4624 (fingerprinted marker + fresh-body threading + escalation comment).
+
+Escape hatch: the `pilot-skip-spec-check` label bypasses validation entirely — use sparingly, prefer fixing the body. Related: [[learning_flaky_briefs_generator_test]].
