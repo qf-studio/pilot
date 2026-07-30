@@ -472,3 +472,39 @@ func TestUpdateActivePRsReset(t *testing.T) {
 		t.Errorf("waiting_ci should be 0 after reset, got %d", snap.ActivePRsByStage[StageWaitingCI])
 	}
 }
+
+// TestHydrateCircuitBreakerTrips_MaxClamp pins GH-4390: hydration is a
+// monotonic floor (max(current, lastServed)), never a blind assignment or
+// add — it can raise the counter but never lower it below whatever value it
+// already holds.
+func TestHydrateCircuitBreakerTrips_MaxClamp(t *testing.T) {
+	m := NewMetrics()
+
+	// A lower/equal lastServed than the current value (0) must not change it.
+	m.HydrateCircuitBreakerTrips(0)
+	if got := m.Snapshot().CircuitBreakerTrips; got != 0 {
+		t.Fatalf("CircuitBreakerTrips after hydrating 0 onto 0 = %d, want 0", got)
+	}
+
+	// A higher lastServed raises the counter to that floor.
+	m.HydrateCircuitBreakerTrips(190)
+	if got := m.Snapshot().CircuitBreakerTrips; got != 190 {
+		t.Fatalf("CircuitBreakerTrips after hydrating 190 = %d, want 190", got)
+	}
+
+	// A subsequent hydration call with a LOWER value than what's already
+	// live (e.g. a stale/short-lag snapshot read after live trips already
+	// pushed the counter higher) must not regress it — this is the exact
+	// "counter re-served lower after restart" shape GH-4390 exists to
+	// prevent.
+	m.HydrateCircuitBreakerTrips(100)
+	if got := m.Snapshot().CircuitBreakerTrips; got != 190 {
+		t.Errorf("CircuitBreakerTrips after hydrating a lower value (100) onto 190 = %d, want 190 (never regress)", got)
+	}
+
+	// Live increments on top of the floor still work normally.
+	m.RecordCircuitBreakerTrip()
+	if got := m.Snapshot().CircuitBreakerTrips; got != 191 {
+		t.Errorf("CircuitBreakerTrips after live record on top of hydrated floor = %d, want 191", got)
+	}
+}

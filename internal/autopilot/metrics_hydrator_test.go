@@ -566,6 +566,88 @@ func TestHydrateFromStore_CIRunCounters(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_CircuitBreakerTripsNeverRegressesAcrossRestart pins
+// GH-4390's acceptance criterion "hydrated counters never serve a value
+// lower than the last-served value across a simulated restart". Session 1
+// records some trips and persists a periodic snapshot (as the live
+// metrics_persister does); a restart must hydrate the fresh Metrics up to at
+// least that snapshot value instead of leaving it at 0, and live recording
+// on top must add rather than replace.
+func TestHydrateFromStore_CircuitBreakerTripsNeverRegressesAcrossRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// --- Session 1 (pre-restart): 5 trips occur, then a periodic snapshot
+	// persists that value (mirrors metrics_persister.go's periodic save).
+	session1 := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, session1); err != nil {
+		t.Fatalf("HydrateFromStore (session 1): %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		session1.RecordCircuitBreakerTrip()
+	}
+	preRestart := session1.Snapshot()
+	if preRestart.CircuitBreakerTrips != 5 {
+		t.Fatalf("pre-restart CircuitBreakerTrips = %d, want 5", preRestart.CircuitBreakerTrips)
+	}
+	if err := store.SaveAutopilotMetrics(&memory.AutopilotMetricsRow{
+		SnapshotAt:          time.Now(),
+		CircuitBreakerTrips: int(preRestart.CircuitBreakerTrips),
+	}); err != nil {
+		t.Fatalf("SaveAutopilotMetrics: %v", err)
+	}
+
+	// --- Restart: fresh Metrics, re-hydrated from the same store.
+	session2 := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, session2); err != nil {
+		t.Fatalf("HydrateFromStore (session 2): %v", err)
+	}
+	postRestart := session2.Snapshot()
+
+	// The core GH-4390 assertion: post-restart must be >= the pre-restart
+	// high-water mark, not reset to 0 — a fresh 0 would make increase()/
+	// rate() replay every subsequent live trip as if the counter had never
+	// seen the pre-restart 5, silently losing them from the lifetime view.
+	if postRestart.CircuitBreakerTrips < preRestart.CircuitBreakerTrips {
+		t.Errorf("post-restart CircuitBreakerTrips = %d, want >= pre-restart %d",
+			postRestart.CircuitBreakerTrips, preRestart.CircuitBreakerTrips)
+	}
+	if postRestart.CircuitBreakerTrips != 5 {
+		t.Errorf("post-restart CircuitBreakerTrips = %d, want 5 (floored to last-served snapshot)", postRestart.CircuitBreakerTrips)
+	}
+
+	// Live recording on top of the hydrated floor adds, does not replace.
+	session2.RecordCircuitBreakerTrip()
+	if got := session2.Snapshot().CircuitBreakerTrips; got != 6 {
+		t.Errorf("CircuitBreakerTrips after live record post-restart = %d, want 6 (floor 5 + live 1)", got)
+	}
+}
+
+// TestHydrateFromStore_CircuitBreakerTripsNoSnapshotStartsAtZero verifies a
+// fresh store (no periodic snapshot ever persisted, e.g. first boot) leaves
+// the counter at 0 rather than erroring or panicking — LatestAutopilotMetrics
+// returns (nil, nil) and HydrateCircuitBreakerTrips must handle that.
+func TestHydrateFromStore_CircuitBreakerTripsNoSnapshotStartsAtZero(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	metrics := NewMetrics()
+	if err := HydrateFromStore(context.Background(), store, metrics); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	if got := metrics.Snapshot().CircuitBreakerTrips; got != 0 {
+		t.Errorf("CircuitBreakerTrips with no persisted snapshot = %d, want 0", got)
+	}
+}
+
 // TestHydrateFromStore_NilStoreIsNoop verifies hydration is a no-op (not an
 // error) when no store is configured, matching how other optional
 // store-backed features degrade in this codebase.

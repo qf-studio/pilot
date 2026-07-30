@@ -10024,6 +10024,85 @@ func TestController_RecordMergeSuccess_Idempotency(t *testing.T) {
 	}
 }
 
+// TestController_RecordExternalMerge_DedupesAcrossPaths pins GH-4390's
+// acceptance criterion "double-increment impossible for the same PR": a PR
+// observed merged via the controller's own flow (handleMerging/scan, which
+// calls recordMergeSuccess directly) and then again via the executor's
+// self-heal path (RecordExternalMerge, GH-4390) must only count once —
+// RecordExternalMerge routes through the same recordedMerges dedup guard.
+func TestController_RecordExternalMerge_DedupesAcrossPaths(t *testing.T) {
+	c := NewController(DefaultConfig(), nil, nil, "owner", "repo")
+
+	c.recordMergeSuccess(&PRState{PRNumber: 42})
+	c.RecordExternalMerge("", 42) // same PR, observed via the executor self-heal path
+
+	snap := c.metrics.Snapshot()
+	if snap.PRsMerged != 1 {
+		t.Errorf("PRsMerged = %d after controller merge + external-merge observation of the same PR, want 1", snap.PRsMerged)
+	}
+
+	// The reverse order — external-merge observed first — must also dedupe.
+	c.RecordExternalMerge("", 43)
+	c.recordMergeSuccess(&PRState{PRNumber: 43})
+	snap2 := c.metrics.Snapshot()
+	if snap2.PRsMerged != 2 {
+		t.Errorf("PRsMerged = %d after external-merge + controller merge of the same PR, want 2 (1 from PR 42 + 1 from PR 43)", snap2.PRsMerged)
+	}
+}
+
+// TestController_RecordExternalMerge_ProjectPathScoping verifies
+// RecordExternalMerge only records when the given projectPath matches this
+// controller's own WithProjectPath scope — the guard MultiControllerMergeRecorder
+// relies on to fan a merge out to every controller without double-counting
+// across repos (GH-4390).
+func TestController_RecordExternalMerge_ProjectPathScoping(t *testing.T) {
+	c := NewController(DefaultConfig(), nil, nil, "owner", "repo", WithProjectPath("/project-a"))
+
+	c.RecordExternalMerge("/project-b", 100)
+	if got := c.metrics.Snapshot().PRsMerged; got != 0 {
+		t.Errorf("PRsMerged = %d after RecordExternalMerge with a non-matching projectPath, want 0", got)
+	}
+
+	c.RecordExternalMerge("/project-a", 100)
+	if got := c.metrics.Snapshot().PRsMerged; got != 1 {
+		t.Errorf("PRsMerged = %d after RecordExternalMerge with the matching projectPath, want 1", got)
+	}
+}
+
+// TestController_RecordExternalMerge_UnscopedAcceptsAny verifies a controller
+// with no WithProjectPath (projectPath == "", e.g. single-controller test/dev
+// setups) records regardless of the given projectPath, matching the
+// single-controller-implies-single-owner assumption used elsewhere in this
+// file (GH-4390).
+func TestController_RecordExternalMerge_UnscopedAcceptsAny(t *testing.T) {
+	c := NewController(DefaultConfig(), nil, nil, "owner", "repo")
+
+	c.RecordExternalMerge("/any/project", 200)
+	if got := c.metrics.Snapshot().PRsMerged; got != 1 {
+		t.Errorf("PRsMerged = %d after RecordExternalMerge on an unscoped controller, want 1", got)
+	}
+}
+
+// TestMultiControllerMergeRecorder_RoutesToOwningController is the GH-4390
+// multi-repo counterpart to TestController_RecordExternalMerge_ProjectPathScoping:
+// fanning a merge out to every controller (as SetMergeMetricsRecorder wires
+// in polling mode) must land on exactly the controller that owns the given
+// projectPath, not every controller.
+func TestMultiControllerMergeRecorder_RoutesToOwningController(t *testing.T) {
+	c1 := NewController(DefaultConfig(), nil, nil, "owner", "repo1", WithProjectPath("/project-1"))
+	c2 := NewController(DefaultConfig(), nil, nil, "owner", "repo2", WithProjectPath("/project-2"))
+
+	recorder := NewMultiControllerMergeRecorder(c1, c2)
+	recorder.RecordExternalMerge("/project-2", 55)
+
+	if got := c1.metrics.Snapshot().PRsMerged; got != 0 {
+		t.Errorf("c1 PRsMerged = %d, want 0 (merge belongs to /project-2)", got)
+	}
+	if got := c2.metrics.Snapshot().PRsMerged; got != 1 {
+		t.Errorf("c2 PRsMerged = %d, want 1 (merge belongs to /project-2)", got)
+	}
+}
+
 // TestGetMainBranchSHA_RespectsResolvedEnv asserts that getMainBranchSHA reads
 // the branch name from c.config.ResolvedEnv().Branch instead of the previously
 // hardcoded "main" literal. TASK-291: prevents the regression where develop /

@@ -5029,6 +5029,31 @@ func (c *Controller) recordMergeSuccess(prState *PRState) {
 	}
 }
 
+// RecordExternalMerge implements executor.MergeMetricsRecorder — it lets the
+// executor package (self-heal / pre-execute short-circuit paths that detect
+// a task's branch was already merged on GitHub, outside handleMerging/
+// ScanRecentlyMergedPRsWithWindow) record the merge on this controller
+// without importing autopilot directly (GH-4390). Routes through the same
+// recordMergeSuccess dedup guard as every other merge-marking path, so a PR
+// already recorded via the controller's own scan/handleMerging is never
+// double-counted.
+//
+// No-ops when this controller doesn't own projectPath (multi-repo
+// deployments route through MultiControllerMergeRecorder, which calls this
+// on every controller and relies on this scoping check to land on exactly
+// one). An unscoped controller (projectPath == "", e.g. single-controller
+// test/dev setups without WithProjectPath) always accepts, matching the
+// single-controller-implies-single-owner assumption elsewhere in this file.
+func (c *Controller) RecordExternalMerge(projectPath string, prNumber int) {
+	if c == nil || prNumber <= 0 {
+		return
+	}
+	if c.projectPath != "" && c.projectPath != projectPath {
+		return
+	}
+	c.recordMergeSuccess(&PRState{PRNumber: prNumber})
+}
+
 // GetLastProgressAt returns the timestamp of the last PR state transition.
 // Used by MetricsAlerter for deadlock detection (GH-849).
 func (c *Controller) GetLastProgressAt() time.Time {
@@ -6499,4 +6524,27 @@ func (w *MultiControllerStateWriter) SetApprovalDecision(ctx context.Context, re
 		}
 	}
 	return nil
+}
+
+// MultiControllerMergeRecorder fans an externally-detected merge (see
+// executor.MergeMetricsRecorder) out to every controller in a multi-repo
+// deployment. Each Controller.RecordExternalMerge call no-ops unless its own
+// projectPath matches, so exactly one controller — the one that owns the
+// executor-supplied projectPath — actually records the merge (GH-4390).
+type MultiControllerMergeRecorder struct {
+	controllers []*Controller
+}
+
+// NewMultiControllerMergeRecorder creates a recorder that delegates
+// RecordExternalMerge to every controller, relying on each controller's own
+// projectPath scoping (RecordExternalMerge) to land on exactly one.
+func NewMultiControllerMergeRecorder(controllers ...*Controller) *MultiControllerMergeRecorder {
+	return &MultiControllerMergeRecorder{controllers: controllers}
+}
+
+// RecordExternalMerge implements executor.MergeMetricsRecorder.
+func (m *MultiControllerMergeRecorder) RecordExternalMerge(projectPath string, prNumber int) {
+	for _, c := range m.controllers {
+		c.RecordExternalMerge(projectPath, prNumber)
+	}
 }

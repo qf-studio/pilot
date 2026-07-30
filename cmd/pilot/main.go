@@ -996,6 +996,11 @@ Examples:
 				// GH-2855: wire token/cost/execution counters into executor
 				if gwRunner != nil {
 					gwRunner.SetMetricsRecorder(gwAutopilotController.Metrics())
+					// GH-4390: wire self-heal/pre-execute short-circuit merges into
+					// pilot_prs_merged_total via the same controller the scan/
+					// handleMerging paths use, so all merge-marking paths share one
+					// counted-exactly-once chokepoint.
+					gwRunner.SetMergeMetricsRecorder(gwAutopilotController)
 				}
 				// GH-4041: restore Prometheus counter baselines from the store's
 				// lifetime execution history before p.Start() below brings up the
@@ -2065,6 +2070,18 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			gwServer.SetAutopilotProvider(&autopilotProviderAdapter{controller: autopilotController})
 			// GH-2855: wire token/cost/execution counters into executor
 			runner.SetMetricsRecorder(autopilotController.Metrics())
+			// GH-4390: wire self-heal/pre-execute short-circuit merges into
+			// pilot_prs_merged_total. Fans out to every controller (not just
+			// the default) since self-heal can fire for any project's tasks
+			// — each controller's own projectPath scoping
+			// (Controller.RecordExternalMerge) ensures exactly one actually
+			// records, matching the approval-routing shape used for
+			// MultiControllerStateWriter above.
+			var mergeRecorderControllers []*autopilot.Controller
+			for _, c := range autopilotControllers {
+				mergeRecorderControllers = append(mergeRecorderControllers, c)
+			}
+			runner.SetMergeMetricsRecorder(autopilot.NewMultiControllerMergeRecorder(mergeRecorderControllers...))
 			// GH-4041: restore Prometheus counter baselines from the store's
 			// lifetime execution history before the /metrics handler starts
 			// serving scrapes below, so external dashboards don't observe a
