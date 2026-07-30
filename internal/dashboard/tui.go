@@ -1948,7 +1948,10 @@ func nonFailureSuffix(c MetricsCardData) string {
 }
 
 // renderTaskCard renders the queue stat card with the given card width.
-// Value shows current queue depth (pending + running), not lifetime totals.
+// Value counts only active m.tasks entries (queued/pending/running), not
+// terminal ones — len(m.tasks) is wrong because Monitor never evicts
+// completed/failed/no-op tasks, so it grows with lifetime totals since
+// daemon start instead of reflecting current queue depth (GH-4617).
 // TASK-358: "failed" counts genuine failures only. Non-failure terminal
 // outcomes (no-op / infra / …) are shown as a muted suffix so the numbers
 // reconcile and a no-op is no longer miscounted as a failure. Only append the
@@ -1957,7 +1960,14 @@ func nonFailureSuffix(c MetricsCardData) string {
 // row seen on v2.166.10).
 func (m Model) renderTaskCard(cw int) string {
 	ciw := cw - 4
-	value := boldLabelStyle.Render(fmt.Sprintf("%d", len(m.tasks)))
+	activeCount := 0
+	for _, t := range m.tasks {
+		switch t.Status {
+		case QueueStatusQueued, QueueStatusPending, QueueStatusRunning:
+			activeCount++
+		}
+	}
+	value := boldLabelStyle.Render(fmt.Sprintf("%d", activeCount))
 	detail := statusCompletedStyle.Render(fmt.Sprintf("✓ %d", m.metricsCard.Succeeded)) +
 		"  " + statusFailedStyle.Render(fmt.Sprintf("✗ %d", m.metricsCard.Failed))
 	if suffix := nonFailureSuffix(m.metricsCard); suffix != "" {
