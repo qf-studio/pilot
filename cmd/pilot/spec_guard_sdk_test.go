@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -102,8 +103,19 @@ func TestApplySpecGuardSDK_SecondStrikeEscalates(t *testing.T) {
 	if len(f.labelsAdded) != 1 || f.labelsAdded[0] != githubSDK.LabelBlocked {
 		t.Errorf("labels added = %v, want [%s]", f.labelsAdded, githubSDK.LabelBlocked)
 	}
-	if len(f.commentsAdded) != 0 {
-		t.Errorf("second strike must not post another comment; got %d", len(f.commentsAdded))
+	if len(f.commentsAdded) != 1 {
+		t.Fatalf("second strike must post an escalation comment; got %d", len(f.commentsAdded))
+	}
+	escalation := f.commentsAdded[0]
+	if !strings.Contains(escalation, ghissue.SpecCommentMarker) {
+		t.Error("escalation comment missing marker")
+	}
+	if !strings.Contains(escalation, "body too short") {
+		t.Error("escalation comment missing current FailureReasons")
+	}
+	wantBodyLen := fmt.Sprintf("body length: %d chars", len(issue.Body))
+	if !strings.Contains(escalation, wantBodyLen) {
+		t.Errorf("escalation comment missing observed body length %q; comment = %q", wantBodyLen, escalation)
 	}
 }
 
