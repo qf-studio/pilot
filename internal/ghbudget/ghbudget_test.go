@@ -2,8 +2,10 @@ package ghbudget
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -18,6 +20,28 @@ func headerWithRateLimit(remaining, limit int) http.Header {
 	h.Set("X-RateLimit-Limit", strconv.Itoa(limit))
 	h.Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
 	return h
+}
+
+func headerWithRateLimitAndReset(remaining, limit int, resetAt time.Time) http.Header {
+	h := headerWithRateLimit(remaining, limit)
+	h.Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+	return h
+}
+
+// githubHostClient returns an http.Client whose requests to
+// "http://api.github.com/..." are actually dialed to server's real listener
+// address, regardless of the requested host. RoundTripper's cache is scoped
+// to req.URL.Host == "api.github.com" (GH-4498), so tests exercising that
+// path need a request that legitimately carries that host without a real
+// DNS entry for it.
+func githubHostClient(server *httptest.Server, rt *RoundTripper) *http.Client {
+	serverAddr := server.Listener.Addr().String()
+	rt.Next = &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, serverAddr)
+		},
+	}
+	return &http.Client{Transport: rt}
 }
 
 // TestTracker_Allow_PriorityGating is table-driven per the GH-4391
@@ -145,10 +169,10 @@ func TestRoundTripper_ConditionalGET_SecondScanCosts304Only(t *testing.T) {
 	defer server.Close()
 
 	tr := &RoundTripper{Tracker: NewTracker(DefaultFloorPct, nil)}
-	client := &http.Client{Transport: tr}
+	client := githubHostClient(server, tr)
 
 	for i := 0; i < 2; i++ {
-		resp, err := client.Get(server.URL + "/repos/owner/repo/pulls?state=closed")
+		resp, err := client.Get("http://api.github.com/repos/owner/repo/pulls?state=closed")
 		if err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
@@ -254,11 +278,11 @@ func TestRoundTripper_DistinctURLsCachedIndependently(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &http.Client{Transport: &RoundTripper{Tracker: NewTracker(DefaultFloorPct, nil)}}
+	client := githubHostClient(server, &RoundTripper{Tracker: NewTracker(DefaultFloorPct, nil)})
 
 	for round := 0; round < 2; round++ {
 		for _, page := range []string{"1", "2"} {
-			resp, err := client.Get(server.URL + "?page=" + page)
+			resp, err := client.Get("http://api.github.com/?page=" + page)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -271,5 +295,117 @@ func TestRoundTripper_DistinctURLsCachedIndependently(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&page2Calls); got != 1 {
 		t.Errorf("page 2: expected 1 full response across 2 rounds, got %d", got)
+	}
+}
+
+// TestRoundTripper_HostScoped is the GH-4498 acceptance test: the
+// conditional-GET cache must engage only for req.URL.Host ==
+// "api.github.com". A non-GitHub ETag'd GET sharing the same transport (only
+// latent today — in-process non-GitHub traffic is POST/websocket, but
+// fragile since http.DefaultTransport is shared process-wide) must never be
+// conditionalized or have a cache-backed response synthesized for it.
+func TestRoundTripper_HostScoped(t *testing.T) {
+	const etag = `"same-etag"`
+
+	tests := []struct {
+		name          string
+		useGitHubHost bool
+		wantFullCalls int32 // real (non-304) responses the origin sees across 2 identical GETs
+	}{
+		{"api.github.com: second call is a free conditional hit", true, 1},
+		{"non-GitHub host: cache never engages, every call is full", false, 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var fullCalls int32
+			var sawConditionalHeader bool
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("If-None-Match") == etag {
+					sawConditionalHeader = true
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+				atomic.AddInt32(&fullCalls, 1)
+				w.Header().Set("ETag", etag)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("body"))
+			}))
+			defer server.Close()
+
+			rt := &RoundTripper{Tracker: NewTracker(DefaultFloorPct, nil)}
+			var client *http.Client
+			url := server.URL
+			if tt.useGitHubHost {
+				client = githubHostClient(server, rt)
+				url = "http://api.github.com/repos/owner/repo"
+			} else {
+				client = &http.Client{Transport: rt}
+			}
+
+			for i := 0; i < 2; i++ {
+				resp, err := client.Get(url)
+				if err != nil {
+					t.Fatalf("call %d: %v", i, err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("call %d: caller must never see a raw 304, got status %d", i, resp.StatusCode)
+				}
+				_ = resp.Body.Close()
+			}
+
+			if got := atomic.LoadInt32(&fullCalls); got != tt.wantFullCalls {
+				t.Errorf("origin saw %d full (non-304) calls, want %d", got, tt.wantFullCalls)
+			}
+			if tt.useGitHubHost && !sawConditionalHeader {
+				t.Error("expected the second api.github.com call to carry If-None-Match")
+			}
+			if !tt.useGitHubHost && sawConditionalHeader {
+				t.Error("non-GitHub host must never send If-None-Match — caching must not engage for it")
+			}
+		})
+	}
+}
+
+// TestRoundTripper_CacheBoundedOnResetRollover is the GH-4498 acceptance
+// test for eviction: per-SHA check-run URLs are unique per commit, so
+// without eviction the cache map grows forever. This proves that once the
+// wall clock passes the Tracker's tracked ResetAt (the GitHub rate-limit
+// window rolling over), the entire cache is dropped regardless of how many
+// entries had accumulated — the map cannot grow past one window's worth.
+func TestRoundTripper_CacheBoundedOnResetRollover(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	tr := NewTracker(DefaultFloorPct, nil)
+	rt := &RoundTripper{Tracker: tr, now: func() time.Time { return fixedNow }}
+
+	// Seed a tracked rate-limit window resetting one hour out, and seed the
+	// cache as if many distinct per-SHA check-run URLs had accumulated.
+	tr.Observe(headerWithRateLimitAndReset(4000, 5000, fixedNow.Add(time.Hour)))
+	rt.mu.Lock()
+	rt.cache = map[string]cacheEntry{
+		"https://api.github.com/repos/o/r/commits/sha1/check-runs": {etag: `"a"`},
+		"https://api.github.com/repos/o/r/commits/sha2/check-runs": {etag: `"b"`},
+		"https://api.github.com/repos/o/r/commits/sha3/check-runs": {etag: `"c"`},
+	}
+	rt.mu.Unlock()
+
+	// Still inside the same window: the cache must survive untouched.
+	rt.evictIfWindowRolledOver()
+	rt.mu.Lock()
+	gotBefore := len(rt.cache)
+	rt.mu.Unlock()
+	if gotBefore != 3 {
+		t.Fatalf("cache evicted before ResetAt passed: len=%d, want 3", gotBefore)
+	}
+
+	// Advance past the tracked ResetAt (a window rollover) and check again.
+	fixedNow = fixedNow.Add(2 * time.Hour)
+	rt.evictIfWindowRolledOver()
+	rt.mu.Lock()
+	gotAfter := len(rt.cache)
+	rt.mu.Unlock()
+	if gotAfter != 0 {
+		t.Fatalf("cache should be fully evicted after ResetAt rollover, got %d entries, want 0", gotAfter)
 	}
 }

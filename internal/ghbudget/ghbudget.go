@@ -197,6 +197,15 @@ type cacheEntry struct {
 	body       []byte
 }
 
+// githubAPIHost is the only host the conditional-GET cache engages for.
+// http.DefaultTransport (which RoundTripper wraps) is shared process-wide, so
+// without this scope any other ETag'd GET routed through the default
+// transport would be cached and synthesized too — latent today since
+// in-process non-GitHub traffic is POST/websocket, but fragile. Observe is
+// unaffected: it already no-ops for responses without rate-limit headers, so
+// it stays host-agnostic.
+const githubAPIHost = "api.github.com"
+
 // RoundTripper wraps an http.RoundTripper, feeding every response's
 // rate-limit headers to a Tracker and transparently caching GET responses by
 // ETag so a repeat request for an unchanged resource costs a 304 — which
@@ -206,14 +215,25 @@ type cacheEntry struct {
 // understand conditional requests (both of Pilot's GitHub clients included)
 // need no changes.
 //
-// Only GET requests are cached. Non-GET requests, and GET responses without
-// an ETag, pass straight through (still observed for rate-limit headers).
+// Only GET requests to githubAPIHost are cached. Non-GET requests, requests
+// to any other host, and GET responses without an ETag pass straight through
+// (still observed for rate-limit headers if present).
+//
+// The cache is bounded by discarding the whole map whenever the Tracker's
+// tracked ResetAt rolls over (GH-4498): per-SHA check-run URLs are unique per
+// commit, so an unbounded map would grow forever without this. Piggybacking
+// on the Tracker's already-hourly rate-limit window reset avoids needing a
+// second eviction policy (e.g. LRU) alongside it.
 type RoundTripper struct {
 	// Next is the underlying transport. A nil Next uses http.DefaultTransport.
 	Next http.RoundTripper
 	// Tracker receives rate-limit headers from every observed response. Must
 	// be non-nil.
 	Tracker *Tracker
+
+	// now returns the current time; overridable in tests. A nil now uses
+	// time.Now.
+	now func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
@@ -226,7 +246,9 @@ func (rt *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 		next = http.DefaultTransport
 	}
 
-	cacheable := req.Method == http.MethodGet
+	rt.evictIfWindowRolledOver()
+
+	cacheable := req.Method == http.MethodGet && req.URL.Host == githubAPIHost
 	var cacheKey string
 	var cached cacheEntry
 	var haveCached bool
@@ -284,6 +306,35 @@ func (rt *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+// evictIfWindowRolledOver drops the whole cache once the wall clock passes
+// the Tracker's tracked ResetAt, bounding the cache to at most one GitHub
+// rate-limit window's worth of entries instead of growing forever (GH-4498).
+// A zero ResetAt (no observation yet) or a nil Tracker is a no-op — there's
+// nothing to bound against yet.
+//
+// This is checked on every RoundTrip rather than on a timer: it's a cheap
+// mutex + snapshot check, and the very next real response's Observe() call
+// refreshes ResetAt to the new window's value, so the map only clears once
+// per rollover rather than on every call after expiry.
+func (rt *RoundTripper) evictIfWindowRolledOver() {
+	if rt.Tracker == nil {
+		return
+	}
+	resetAt := rt.Tracker.Snapshot().ResetAt
+	if resetAt.IsZero() {
+		return
+	}
+	now := time.Now
+	if rt.now != nil {
+		now = rt.now
+	}
+	if !now().Before(resetAt) {
+		rt.mu.Lock()
+		rt.cache = nil
+		rt.mu.Unlock()
+	}
 }
 
 // synthesizeResponse builds a 200 response from a cached entry, refreshing
