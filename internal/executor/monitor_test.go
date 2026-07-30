@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -431,6 +432,12 @@ func TestMonitorWaitForTasksTimeout(t *testing.T) {
 	err := monitor.WaitForTasks(ctx, 100*time.Millisecond)
 	if err == nil {
 		t.Fatal("WaitForTasks should timeout")
+	}
+	// GH-4609: the self-upgrade alert path (cmd/pilot's drainTimeoutAlertGate)
+	// needs to distinguish a drain-timeout from any other TaskChecker
+	// failure via errors.Is, not by parsing the message.
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Errorf("WaitForTasks timeout error should wrap ErrDrainTimeout, got: %v", err)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/upgrade"
 )
 
@@ -50,6 +52,38 @@ func reportUpgradeFailure(alertsEngine *alerts.Engine, currentVersion, targetVer
 		},
 		Timestamp: time.Now(),
 	})
+}
+
+// drainTimeoutAlertGate gates self-upgrade alerting so a drain-timeout
+// failure (executor.ErrDrainTimeout) only pages an operator starting on the
+// second consecutive occurrence (GH-4609): a single drain timeout can be a
+// legitimately long-running task crossing the wait window, which usually
+// clears on the next automatic retry a few minutes later — alerting on that
+// first occurrence would just be noise. Two in a row means the drain is
+// genuinely stuck, the pattern behind the GH-72 incident this closes: a
+// zombie active-registry entry looped "drain timeout" every 5 minutes for
+// ~55 minutes with no alert ever firing. Any other upgrade failure (bad
+// download, unwritable binary dir, restart failure, ...) is not naturally
+// transient the same way, so it keeps alerting immediately and resets the
+// streak — unchanged from GH-4468.
+type drainTimeoutAlertGate struct {
+	mu     sync.Mutex
+	streak int
+}
+
+// observe records the outcome of one self-upgrade attempt (nil err on
+// success) and reports whether reportUpgradeFailure should fire for it.
+func (g *drainTimeoutAlertGate) observe(err error) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if err == nil || !errors.Is(err, executor.ErrDrainTimeout) {
+		g.streak = 0
+		return err != nil
+	}
+
+	g.streak++
+	return g.streak >= 2
 }
 
 // confirmPromptTimeout bounds how long the upgrade confirmation prompt waits

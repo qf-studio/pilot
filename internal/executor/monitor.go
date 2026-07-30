@@ -669,6 +669,15 @@ func executionRecentlyProgressed(store *memory.Store, taskID, projectPath string
 	return time.Since(events[len(events)-1].OccurredAt) < deadOwnerHeartbeatWindow
 }
 
+// ErrDrainTimeout is the sentinel wrapped into WaitForTasks' timeout error so
+// callers (e.g. cmd/pilot's self-upgrade loop) can distinguish "still-active
+// tasks blocked the drain" from other TaskChecker failures via errors.Is,
+// without parsing the message. GH-4609: the self-upgrade alert path needs
+// this to gate on consecutive drain-timeout occurrences specifically,
+// leaving other upgrade failures (bad download, unwritable binary dir, ...)
+// alerting immediately as before.
+var ErrDrainTimeout = errors.New("drain timeout")
+
 // WaitForTasks polls until all running/queued tasks complete or context expires.
 // Implements upgrade.TaskChecker interface for graceful drain during hot upgrade.
 func (m *Monitor) WaitForTasks(ctx context.Context, timeout time.Duration) error {
@@ -686,7 +695,7 @@ func (m *Monitor) WaitForTasks(ctx context.Context, timeout time.Duration) error
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("drain timeout: %d tasks still active: %v", len(ids), ids)
+			return fmt.Errorf("%w: %d tasks still active: %v", ErrDrainTimeout, len(ids), ids)
 		case <-ticker.C:
 			// continue polling
 		}

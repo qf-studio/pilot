@@ -3114,6 +3114,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 		// Set up hot upgrade goroutine - listens for upgrade requests from 'u' key press
 		// The channel is created above and passed to the dashboard model
+		//
+		// GH-4609: drainAlertGate tracks consecutive drain-timeout failures
+		// across retries of this loop (versionChecker re-fires OnUpdate every
+		// DefaultCheckInterval while an update stays available) so the alert
+		// below only pages an operator starting on the second consecutive
+		// drain timeout instead of every 5-minute retry.
+		drainAlertGate := &drainTimeoutAlertGate{}
 		go func() {
 			for {
 				select {
@@ -3153,8 +3160,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
 						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
-						reportUpgradeFailure(alertsEngine, version, info.Latest, err)
+						if drainAlertGate.observe(err) {
+							reportUpgradeFailure(alertsEngine, version, info.Latest, err)
+						} else {
+							slog.Warn("self-upgrade drain timeout — retrying next check, not alerting yet (1st consecutive occurrence)",
+								slog.String("current_version", version),
+								slog.String("target_version", info.Latest),
+								slog.Any("error", err),
+							)
+						}
 					} else {
+						drainAlertGate.observe(nil)
 						// On Unix, process is replaced and this line is never reached.
 						// On Windows, hot restart is not supported — binary is installed
 						// but process continues. Notify user to restart manually.
