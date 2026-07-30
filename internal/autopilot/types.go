@@ -1109,6 +1109,14 @@ type PRState struct {
 	// between held and waiting_ci forever — it eventually stays parked for a
 	// human. Never reset (lifetime counter for the PR). Persisted.
 	ReadoptCount int
+	// PostMergeCINoWorkflowChecked is true once handlePostMergeCI has probed
+	// (via CIMonitor.HasAnyCIConfigured) whether this carrier's SHA has any
+	// CI signal at all (GH-4643). Set exactly once — regardless of the
+	// probe's outcome — so a workflow-less repo isn't re-probed on every
+	// ~30s tick for the entire post-merge CI wait. In-memory only: a restart
+	// simply re-probes once more after another postMergeCINoWorkflowGrace
+	// wait, which is harmless.
+	PostMergeCINoWorkflowChecked bool
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -1119,48 +1127,49 @@ type PRState struct {
 // trip go vet copylocks.
 func (ps *PRState) snapshot() *PRState {
 	cp := &PRState{
-		PRNumber:                ps.PRNumber,
-		PRURL:                   ps.PRURL,
-		IssueNumber:             ps.IssueNumber,
-		BranchName:              ps.BranchName,
-		HeadSHA:                 ps.HeadSHA,
-		Stage:                   ps.Stage,
-		CIStatus:                ps.CIStatus,
-		LastChecked:             ps.LastChecked,
-		CIWaitStartedAt:         ps.CIWaitStartedAt,
-		MergeAttempts:           ps.MergeAttempts,
-		RebaseAttempts:          ps.RebaseAttempts,
-		Error:                   ps.Error,
-		CreatedAt:               ps.CreatedAt,
-		ReleaseVersion:          ps.ReleaseVersion,
-		ReleaseBumpType:         ps.ReleaseBumpType,
-		ConsecutiveAPIFailures:  ps.ConsecutiveAPIFailures,
-		NotFoundCount:           ps.NotFoundCount,
-		ClosedReadCount:         ps.ClosedReadCount,
-		PersistFailureCount:     ps.PersistFailureCount,
-		EnvironmentName:         ps.EnvironmentName,
-		PRTitle:                 ps.PRTitle,
-		TargetBranch:            ps.TargetBranch,
-		IssueNodeID:             ps.IssueNodeID,
-		MergeNotificationPosted: ps.MergeNotificationPosted,
-		ApprovalRequestID:       ps.ApprovalRequestID,
-		ApprovalDecision:        ps.ApprovalDecision,
-		ApprovalRequestedAt:     ps.ApprovalRequestedAt,
-		PostMergeSHA:            ps.PostMergeSHA,
-		PostMergeCIStartedAt:    ps.PostMergeCIStartedAt,
-		ReleasingAttempts:       ps.ReleasingAttempts,
-		ReleasingFirstAt:        ps.ReleasingFirstAt,
-		EscalationReason:        ps.EscalationReason,
-		Parked:                  ps.Parked,
-		TerminalLabel:           ps.TerminalLabel,
-		ScopeKey:                ps.ScopeKey,
-		ScopeTitle:              ps.ScopeTitle,
-		ConflictRecorded:        ps.ConflictRecorded,
-		MergeFollowupPosted:     ps.MergeFollowupPosted,
-		InfraRerunCount:         ps.InfraRerunCount,
-		InfraRerunSHA:           ps.InfraRerunSHA,
-		RebaseHoldActive:        ps.RebaseHoldActive,
-		ReadoptCount:            ps.ReadoptCount,
+		PRNumber:                     ps.PRNumber,
+		PRURL:                        ps.PRURL,
+		IssueNumber:                  ps.IssueNumber,
+		BranchName:                   ps.BranchName,
+		HeadSHA:                      ps.HeadSHA,
+		Stage:                        ps.Stage,
+		CIStatus:                     ps.CIStatus,
+		LastChecked:                  ps.LastChecked,
+		CIWaitStartedAt:              ps.CIWaitStartedAt,
+		MergeAttempts:                ps.MergeAttempts,
+		RebaseAttempts:               ps.RebaseAttempts,
+		Error:                        ps.Error,
+		CreatedAt:                    ps.CreatedAt,
+		ReleaseVersion:               ps.ReleaseVersion,
+		ReleaseBumpType:              ps.ReleaseBumpType,
+		ConsecutiveAPIFailures:       ps.ConsecutiveAPIFailures,
+		NotFoundCount:                ps.NotFoundCount,
+		ClosedReadCount:              ps.ClosedReadCount,
+		PersistFailureCount:          ps.PersistFailureCount,
+		EnvironmentName:              ps.EnvironmentName,
+		PRTitle:                      ps.PRTitle,
+		TargetBranch:                 ps.TargetBranch,
+		IssueNodeID:                  ps.IssueNodeID,
+		MergeNotificationPosted:      ps.MergeNotificationPosted,
+		ApprovalRequestID:            ps.ApprovalRequestID,
+		ApprovalDecision:             ps.ApprovalDecision,
+		ApprovalRequestedAt:          ps.ApprovalRequestedAt,
+		PostMergeSHA:                 ps.PostMergeSHA,
+		PostMergeCIStartedAt:         ps.PostMergeCIStartedAt,
+		ReleasingAttempts:            ps.ReleasingAttempts,
+		ReleasingFirstAt:             ps.ReleasingFirstAt,
+		EscalationReason:             ps.EscalationReason,
+		Parked:                       ps.Parked,
+		TerminalLabel:                ps.TerminalLabel,
+		ScopeKey:                     ps.ScopeKey,
+		ScopeTitle:                   ps.ScopeTitle,
+		ConflictRecorded:             ps.ConflictRecorded,
+		MergeFollowupPosted:          ps.MergeFollowupPosted,
+		InfraRerunCount:              ps.InfraRerunCount,
+		InfraRerunSHA:                ps.InfraRerunSHA,
+		RebaseHoldActive:             ps.RebaseHoldActive,
+		ReadoptCount:                 ps.ReadoptCount,
+		PostMergeCINoWorkflowChecked: ps.PostMergeCINoWorkflowChecked,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.
