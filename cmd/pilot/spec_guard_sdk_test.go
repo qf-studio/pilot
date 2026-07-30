@@ -80,17 +80,19 @@ func TestApplySpecGuardSDK_FirstStrike(t *testing.T) {
 	if len(f.labelsAdded) != 1 || f.labelsAdded[0] != githubSDK.LabelSpecIncomplete {
 		t.Errorf("labels added = %v, want [%s]", f.labelsAdded, githubSDK.LabelSpecIncomplete)
 	}
-	if len(f.commentsAdded) != 1 || !strings.Contains(f.commentsAdded[0], ghissue.SpecCommentMarker) {
-		t.Errorf("first-strike comment missing marker; comments = %d", len(f.commentsAdded))
+	wantFingerprint := specBodyFingerprint(issue.Body)
+	if len(f.commentsAdded) != 1 || !strings.Contains(f.commentsAdded[0], ghissue.BuildSpecCommentMarker(wantFingerprint)) {
+		t.Errorf("first-strike comment missing fingerprinted marker; comments = %v", f.commentsAdded)
 	}
 }
 
 func TestApplySpecGuardSDK_SecondStrikeEscalates(t *testing.T) {
-	f := newSpecGuardFake("earlier strike\n" + ghissue.SpecCommentMarker + "\ndetails")
+	issue := &githubSDK.Issue{Number: 7, Title: "still thin", Body: "still too thin"}
+	fingerprint := specBodyFingerprint(issue.Body)
+	f := newSpecGuardFake("earlier strike\n" + ghissue.BuildSpecCommentMarker(fingerprint) + "\ndetails")
 	defer f.server.Close()
 
 	client := githubSDK.NewClientWithBaseURL(testutil.FakeGitHubToken, f.server.URL)
-	issue := &githubSDK.Issue{Number: 7, Title: "still thin", Body: "still too thin"}
 
 	skipped := applySpecGuardSDK(context.Background(), client, "o", "r", issue, []string{"body too short"})
 	if !skipped {
@@ -104,6 +106,60 @@ func TestApplySpecGuardSDK_SecondStrikeEscalates(t *testing.T) {
 	}
 	if len(f.commentsAdded) != 0 {
 		t.Errorf("second strike must not post another comment; got %d", len(f.commentsAdded))
+	}
+}
+
+// TestApplySpecGuardSDK_BodyChangedResetsToFirstStrike covers GH-4632: if the
+// issue body was edited since the last strike, the fingerprint in the marker
+// comment no longer matches. That must be treated as a fresh first strike
+// (fresh comment with the new reasons), not an escalation to pilot-blocked.
+func TestApplySpecGuardSDK_BodyChangedResetsToFirstStrike(t *testing.T) {
+	staleFingerprint := specBodyFingerprint("the old, since-edited body")
+	f := newSpecGuardFake("earlier strike\n" + ghissue.BuildSpecCommentMarker(staleFingerprint) + "\ndetails")
+	defer f.server.Close()
+
+	client := githubSDK.NewClientWithBaseURL(testutil.FakeGitHubToken, f.server.URL)
+	issue := &githubSDK.Issue{Number: 7, Title: "edited", Body: "the new body, still too thin though"}
+
+	skipped := applySpecGuardSDK(context.Background(), client, "o", "r", issue, []string{"body too short"})
+	if !skipped {
+		t.Fatal("guard must skip dispatch on a body-changed reset")
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.labelsAdded) != 1 || f.labelsAdded[0] != githubSDK.LabelSpecIncomplete {
+		t.Errorf("labels added = %v, want [%s] (must not escalate to blocked)", f.labelsAdded, githubSDK.LabelSpecIncomplete)
+	}
+	wantFingerprint := specBodyFingerprint(issue.Body)
+	if len(f.commentsAdded) != 1 || !strings.Contains(f.commentsAdded[0], ghissue.BuildSpecCommentMarker(wantFingerprint)) {
+		t.Errorf("expected a fresh first-strike comment with the new body's fingerprint; comments = %v", f.commentsAdded)
+	}
+}
+
+// TestApplySpecGuardSDK_LegacyMarkerTreatedAsFirstStrike covers GH-4632:
+// markers posted before fingerprints existed carry no sha256 and must be
+// treated as stale, i.e. equivalent to a first strike rather than a
+// confirmed repeat.
+func TestApplySpecGuardSDK_LegacyMarkerTreatedAsFirstStrike(t *testing.T) {
+	f := newSpecGuardFake("earlier strike\n" + ghissue.SpecCommentMarker + "\ndetails")
+	defer f.server.Close()
+
+	client := githubSDK.NewClientWithBaseURL(testutil.FakeGitHubToken, f.server.URL)
+	issue := &githubSDK.Issue{Number: 7, Title: "still thin", Body: "still too thin"}
+
+	skipped := applySpecGuardSDK(context.Background(), client, "o", "r", issue, []string{"body too short"})
+	if !skipped {
+		t.Fatal("guard must skip dispatch on a legacy-marker first strike")
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.labelsAdded) != 1 || f.labelsAdded[0] != githubSDK.LabelSpecIncomplete {
+		t.Errorf("labels added = %v, want [%s] (legacy marker must not escalate)", f.labelsAdded, githubSDK.LabelSpecIncomplete)
+	}
+	if len(f.commentsAdded) != 1 {
+		t.Errorf("expected a fresh first-strike comment; got %d", len(f.commentsAdded))
 	}
 }
 
