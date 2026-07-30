@@ -599,6 +599,76 @@ func TestMonitorWaitForTasks_DeadOwnerDoesNotBlockDrain(t *testing.T) {
 	}
 }
 
+// TestMonitorReleasePriorAttempt_FinalizesNonTerminalEntry is the GH-4609
+// subtask 2 Monitor-level acceptance test: a still-Running (or Queued/
+// Pending) entry must be finalized to Stalled so a granted stall-retry never
+// leaves the prior attempt's active-registry entry looking like it's still
+// in flight.
+func TestMonitorReleasePriorAttempt_FinalizesNonTerminalEntry(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-72", "Zombie task", "")
+	m.Start("GH-72")
+
+	m.ReleasePriorAttempt("GH-72", "stall-retry: superseded by generation 1")
+
+	state, ok := m.Get("GH-72")
+	if !ok {
+		t.Fatal("GH-72 missing after ReleasePriorAttempt")
+	}
+	if state.Status != StatusStalled {
+		t.Errorf("Status = %s, want %s", state.Status, StatusStalled)
+	}
+	if state.Error != "stall-retry: superseded by generation 1" {
+		t.Errorf("Error = %q, want the release reason recorded", state.Error)
+	}
+	if state.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set once the entry is finalized")
+	}
+}
+
+// A terminal entry (the common case: runner.go's own Stall() already ran)
+// must be left untouched — ReleasePriorAttempt only forces the transition
+// when it hasn't already happened.
+func TestMonitorReleasePriorAttempt_TerminalEntryUntouched(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-73", "Already stalled task", "")
+	m.Start("GH-73")
+	m.Stall("GH-73", "session stalled: no agent event for >10m")
+
+	m.ReleasePriorAttempt("GH-73", "stall-retry: superseded by generation 1")
+
+	state, _ := m.Get("GH-73")
+	if state.Error != "session stalled: no agent event for >10m" {
+		t.Errorf("expected the original Stall() reason preserved, got %q", state.Error)
+	}
+}
+
+// A completed entry must never be reclassified as stalled by a later
+// stall-retry decision for a different, unrelated generation.
+func TestMonitorReleasePriorAttempt_CompletedEntryUntouched(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-74", "Completed task", "")
+	m.Start("GH-74")
+	m.Complete("GH-74", "https://github.com/org/repo/pull/1")
+
+	m.ReleasePriorAttempt("GH-74", "stall-retry: superseded by generation 1")
+
+	state, _ := m.Get("GH-74")
+	if state.Status != StatusCompleted {
+		t.Errorf("Status = %s, want %s (completed entry must not be overwritten)", state.Status, StatusCompleted)
+	}
+}
+
+// An unregistered task ID is a no-op — nothing to release.
+func TestMonitorReleasePriorAttempt_UnknownTaskIsNoOp(t *testing.T) {
+	m := NewMonitor()
+	m.ReleasePriorAttempt("GH-does-not-exist", "reason")
+
+	if _, ok := m.Get("GH-does-not-exist"); ok {
+		t.Fatal("expected no entry to be created for an unknown task ID")
+	}
+}
+
 func TestTaskStatusConstants(t *testing.T) {
 	tests := []struct {
 		status   TaskStatus

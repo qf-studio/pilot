@@ -1603,6 +1603,20 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 					slog.String("project", task.ProjectPath),
 					slog.Any("error", setErr))
 			}
+			// GH-4609 subtask 2: a fresh generation was just granted for this
+			// stalled claim — finalize the PRIOR attempt's active-registry
+			// (Monitor) entry right here instead of leaving it to age into
+			// ReconcileDeadOwners' drain-time backstop. Normally runner.go's
+			// own Stall() call already did this when the watchdog fired; this
+			// is a no-op in that case (ReleasePriorAttempt only touches a
+			// still-non-terminal entry) and only matters when that call
+			// hasn't landed (or never will — e.g. the worker process died
+			// before reaching it), so the retried task is counted exactly
+			// once, under the new generation, not still under the superseded
+			// one.
+			if d.runner != nil && d.runner.monitor != nil {
+				d.runner.monitor.ReleasePriorAttempt(task.ID, fmt.Sprintf("stall-retry: superseded by generation %d", gen))
+			}
 			d.log.Info("dispatch re-pick: prior claim was stall-killed — claiming next generation without counting toward repick hard cap",
 				slog.String("task_id", task.ID),
 				slog.String("project", task.ProjectPath),

@@ -414,6 +414,47 @@ func (m *Monitor) Stall(taskID, reason string) {
 	}
 }
 
+// ReleasePriorAttempt finalizes taskID's active-registry entry as stalled if
+// it is still showing a non-terminal status (Running/Queued/Pending) — the
+// stalled->retry seam GH-4609 subtask 2 requires: the moment a fresh
+// generation is granted for a task whose prior claim stalled
+// (Dispatcher.beginWithGenerationRetry's priorClaimWasStalled branch), the
+// prior attempt's entry must be released/finished right there, rather than
+// leaving it to eventually age past deadOwnerGracePeriod/
+// deadOwnerHeartbeatWindow and get swept up by the next drain-time
+// ReconcileDeadOwners call (subtask 1's backstop, which exists for the
+// general dead-owner case but can take up to deadOwnerHeartbeatWindow to
+// fire). Without this, a retry granted while the prior attempt's own Stall()
+// call hasn't landed yet (or never lands, e.g. an externally killed worker
+// process) leaves the SAME map entry straddling two generations — the
+// dashboard/drain count would keep reading the superseded attempt's stale
+// Running/Queued status until the backstop eventually catches up, instead of
+// the retried task being counted exactly once, under its fresh generation.
+//
+// A no-op when the entry is missing or already terminal (including the
+// common case where the prior attempt's own Stall() already ran) — this only
+// forces the transition when it hasn't happened yet.
+func (m *Monitor) ReleasePriorAttempt(taskID, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, ok := m.tasks[taskID]
+	if !ok {
+		return
+	}
+	switch state.Status {
+	case StatusRunning, StatusQueued, StatusPending:
+	default:
+		return
+	}
+
+	now := time.Now()
+	state.Status = StatusStalled
+	state.CompletedAt = &now
+	state.Phase = "Stalled"
+	state.Error = reason
+}
+
 // Cancel marks a task as cancelled
 func (m *Monitor) Cancel(taskID string) {
 	m.mu.Lock()
