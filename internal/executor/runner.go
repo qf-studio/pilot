@@ -2699,6 +2699,22 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 
+	// GH-4594: capture the pre-attempt commit SHA now — before Claude's first
+	// invocation touches the tree — so a later quality-gate retry can hard-reset
+	// the direct-mode clone back to this exact point instead of stacking its
+	// edits on top of a previous (rejected) attempt's leftovers. Worktree mode
+	// already gets an isolated, freshly-created copy per execution, so no reset
+	// baseline is needed there (preAttemptSHA stays empty and the retry loop's
+	// reset is a no-op).
+	var preAttemptSHA string
+	if !useWorktree {
+		if sha, shaErr := git.GetCurrentCommitSHA(ctx); shaErr == nil {
+			preAttemptSHA = sha
+		} else {
+			log.Warn("Failed to capture pre-attempt commit SHA", slog.Any("error", shaErr))
+		}
+	}
+
 	// GH-994: Create task documentation if Navigator is present
 	agentPath := filepath.Join(executionPath, ".agent")
 	if _, err := os.Stat(agentPath); err == nil {
@@ -3959,6 +3975,28 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						},
 						Timestamp: time.Now(),
 					})
+
+					// GH-4594: hard-reset the direct-mode clone to the pre-attempt
+					// baseline before re-invoking Claude, so this retry starts from a
+					// clean state instead of stacking its edits onto the previous
+					// (rejected) attempt's leftovers. preAttemptSHA is only set for
+					// direct-mode (non-worktree) execution — worktree mode is already
+					// isolated and this is a no-op there.
+					if preAttemptSHA != "" {
+						if resetErr := git.ResetHardToCommit(ctx, preAttemptSHA); resetErr != nil {
+							log.Warn("Failed to reset clone to pre-attempt state before quality-gate retry",
+								slog.String("task_id", task.ID),
+								slog.Int("retry_attempt", retryAttempt+1),
+								slog.Any("error", resetErr),
+							)
+						} else {
+							log.Info("Reset clone to pre-attempt state before quality-gate retry",
+								slog.String("task_id", task.ID),
+								slog.Int("retry_attempt", retryAttempt+1),
+								slog.String("sha", preAttemptSHA),
+							)
+						}
+					}
 
 					// Build retry prompt with feedback
 					retryPrompt := r.buildRetryPrompt(task, outcome.RetryFeedback, retryAttempt+1)

@@ -1097,6 +1097,46 @@ func (g *GitOperations) GetCurrentCommitSHA(ctx context.Context) (string, error)
 	return strings.TrimSpace(string(output)), nil
 }
 
+// ResetHardToCommit discards every change made since sha — committed or
+// uncommitted, tracked or untracked — restoring the working tree to exactly
+// that commit's state.
+//
+// GH-4594: direct-mode (non-worktree) quality-gate retries re-invoked Claude
+// Code in place, on top of whatever the previous (rejected) attempt left
+// behind. Since that attempt's edits were never undone, the retry's new
+// edits landed on top of the old ones instead of a clean slate — the
+// "leftover ` M version.go` observed x3" symptom from the incident this
+// fixes: three retries, three stacked partial edits to the same file, none
+// of them ever fully applied or cleanly discarded. Worktree mode doesn't
+// need this: each execution already gets an isolated copy created fresh
+// from a commit.
+//
+// Untracked paths matching defaultExcludeDirs/defaultExcludeGlobs (Navigator
+// scaffold, lock files, build artifacts) are preserved via `git clean`'s -e
+// excludes — the same allowlist Commit() and checkGitClean() already use to
+// decide what isn't really a project change.
+func (g *GitOperations) ResetHardToCommit(ctx context.Context, sha string) error {
+	resetCmd := exec.CommandContext(ctx, "git", "reset", "--hard", sha)
+	resetCmd.Dir = g.projectPath
+	if output, err := resetCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to reset to %s: %w: %s", sha, err, output)
+	}
+
+	cleanArgs := []string{"clean", "-fd"}
+	for _, dir := range defaultExcludeDirs {
+		cleanArgs = append(cleanArgs, "-e", dir)
+	}
+	for _, glob := range defaultExcludeGlobs {
+		cleanArgs = append(cleanArgs, "-e", glob)
+	}
+	cleanCmd := exec.CommandContext(ctx, "git", cleanArgs...)
+	cleanCmd.Dir = g.projectPath
+	if output, err := cleanCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to clean untracked files after reset to %s: %w: %s", sha, err, output)
+	}
+	return nil
+}
+
 // GetDiff returns the diff between the base branch and HEAD.
 // Uses three-dot notation (base...HEAD) to show changes on the current branch.
 func (g *GitOperations) GetDiff(ctx context.Context, baseBranch string) (string, error) {
