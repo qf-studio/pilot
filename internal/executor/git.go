@@ -327,14 +327,14 @@ func (g *GitOperations) loadMemoryGraph() (*memoryGraphDoc, error) {
 
 // loadMemoryGraphAtRef reads and parses graph.json as it existed at ref
 // (e.g. baseBranch), independent of whatever the current working tree/HEAD
-// holds. This matters for EnforceMemoryDocDeletionGuard: strikes 1-2 of the
+// holds. This matters for both EnforceMemoryDocDeletionGuard (the veto leg)
+// and graphIndexedMemoryNodes (the restore leg, GH-4581): strikes 1-2 of the
 // TASK-410 series deleted a memory doc AND its graph.json node in the same
-// commit, so checking indexed-status against HEAD's graph.json (as
-// graphIndexedMemoryNodes does for the restore pass) sees no dangling
-// reference and misses it entirely. Checking against baseBranch's graph.json
-// instead answers the question that actually matters: was this doc part of
-// the curated knowledge graph before this branch touched it? Returns
-// (nil, nil) when graph.json didn't exist at ref.
+// commit, so checking indexed-status against HEAD's graph.json sees no
+// dangling reference and misses it entirely. Checking against baseBranch's
+// graph.json instead answers the question that actually matters: was this
+// doc part of the curated knowledge graph before this branch touched it?
+// Returns (nil, nil) when graph.json didn't exist at ref.
 func (g *GitOperations) loadMemoryGraphAtRef(ctx context.Context, ref string) (*memoryGraphDoc, error) {
 	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+graphJSONRelPath)
 	cmd.Dir = g.projectPath
@@ -607,16 +607,31 @@ func (g *GitOperations) deletedMemoryDocs(ctx context.Context, baseRef string) (
 	return docs, nil
 }
 
-// graphIndexedMemoryNodes reads .agent/knowledge/graph.json and returns a map
-// from repo-relative memory doc path to the graph node id that references it,
-// covering both the "file"/"memory_file" (root-relative) and legacy "path"
-// (relative to .agent/knowledge/) key shapes. Unlike indexedMemoryPaths, this
-// does NOT require the file to exist on disk: GH-4398's restore guard runs
-// precisely when the file is missing (deleted), so an on-disk existence check
-// would always fail the case it exists to catch. Returns (nil, nil) when
-// graph.json is absent — no drift gate to protect.
-func (g *GitOperations) graphIndexedMemoryNodes() (map[string]string, error) {
-	graph, err := g.loadMemoryGraph()
+// graphIndexedMemoryNodes reads .agent/knowledge/graph.json AT baseRef (not
+// the working tree's current/HEAD copy) and returns a map from repo-relative
+// memory doc path to the graph node id that references it, covering both the
+// "file"/"memory_file" (root-relative) and legacy "path" (relative to
+// .agent/knowledge/) key shapes. Unlike indexedMemoryPaths, this does NOT
+// require the file to exist on disk: GH-4398's restore guard runs precisely
+// when the file is missing (deleted), so an on-disk existence check would
+// always fail the case it exists to catch. Returns (nil, nil) when
+// graph.json is absent at baseRef — no drift gate to protect.
+//
+// GH-4581 (8th occurrence of the TASK-410 phantom-deletion class): this used
+// to read graph.json via loadMemoryGraph() — the working tree's current/HEAD
+// copy — exactly the shape loadMemoryGraphAtRef's doc comment already warned
+// against: strikes 1-2 (GH-4484, GH-4489) deleted a memory doc AND its
+// graph.json node in the same commit, so a HEAD-relative read sees no
+// dangling reference and the restore leg silently found nothing to restore.
+// EnforceMemoryDocDeletionGuard (the veto leg) was fixed to read baseRef's
+// graph.json for exactly this reason, but this restore leg — which runs
+// BEFORE the veto leg and would have made the veto moot by restoring the
+// file — was never given the same fix, so it kept missing precisely the
+// deletions the veto leg still (correctly) hard-blocks pointer dispatch on.
+// Reading baseRef here closes that gap: the restore leg now sees the same
+// graph the veto leg does.
+func (g *GitOperations) graphIndexedMemoryNodes(ctx context.Context, baseRef string) (map[string]string, error) {
+	graph, err := g.loadMemoryGraphAtRef(ctx, baseRef)
 	if err != nil || graph == nil {
 		return nil, err
 	}
@@ -671,7 +686,7 @@ func (g *GitOperations) RestoreDeletedIndexedMemoryDocs(ctx context.Context, bas
 		return nil, err
 	}
 
-	nodes, err := g.graphIndexedMemoryNodes()
+	nodes, err := g.graphIndexedMemoryNodes(ctx, baseRef)
 	if err != nil || len(nodes) == 0 {
 		return nil, err
 	}
