@@ -17,11 +17,13 @@ import (
 )
 
 type specGuardFake struct {
-	server        *httptest.Server
-	mu            sync.Mutex
-	existing      []string // comment bodies returned by ListIssueComments
-	labelsAdded   []string
-	commentsAdded []string
+	server           *httptest.Server
+	mu               sync.Mutex
+	existing         []string // comment bodies returned by ListIssueComments
+	labelsAdded      []string
+	commentsAdded    []string
+	freshIssueBody   string // JSON body returned for the single-issue GET (GH-4634 re-fetch)
+	freshIssueStatus int    // HTTP status for the single-issue GET; 0 means default 200
 }
 
 func newSpecGuardFake(existingComments ...string) *specGuardFake {
@@ -56,6 +58,20 @@ func newSpecGuardFake(existingComments ...string) *specGuardFake {
 			f.commentsAdded = append(f.commentsAdded, body.Body)
 			f.mu.Unlock()
 			_, _ = w.Write([]byte(`{"id":1}`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/issues/") && !strings.HasSuffix(r.URL.Path, "/comments"):
+			// GH-4634: single-issue GET, used both for the fresh re-fetch
+			// before escalating and for parentResolver lookups.
+			f.mu.Lock()
+			status, body := f.freshIssueStatus, f.freshIssueBody
+			f.mu.Unlock()
+			if status != 0 && status != http.StatusOK {
+				w.WriteHeader(status)
+				return
+			}
+			if body == "" {
+				body = "{}"
+			}
+			_, _ = w.Write([]byte(body))
 		default:
 			_, _ = w.Write([]byte("{}"))
 		}
@@ -106,6 +122,67 @@ func TestApplySpecGuardSDK_SecondStrikeEscalates(t *testing.T) {
 	}
 	if len(f.commentsAdded) != 0 {
 		t.Errorf("second strike must not post another comment; got %d", len(f.commentsAdded))
+	}
+}
+
+// TestApplySpecGuardSDK_SecondStrikeAbortsWhenBodyNowPasses covers GH-4634:
+// immediately before escalating to pilot-blocked, the guard re-fetches the
+// issue fresh and re-runs ValidateSpec. If the body now passes (edited
+// between the first strike and this poll tick, but the in-memory snapshot
+// still carries the old fingerprint), the strike must be aborted instead of
+// escalating.
+func TestApplySpecGuardSDK_SecondStrikeAbortsWhenBodyNowPasses(t *testing.T) {
+	issue := &githubSDK.Issue{Number: 7, Title: "still thin", Body: "still too thin"}
+	fingerprint := specBodyFingerprint(issue.Body)
+	f := newSpecGuardFake("earlier strike\n" + ghissue.BuildSpecCommentMarker(fingerprint) + "\ndetails")
+	defer f.server.Close()
+
+	goodBody := "## Context\n\nThis body is now long enough and has a structural section header, so it should pass spec validation on the fresh re-read.\n\n## Acceptance\n\n- [ ] done"
+	freshJSON, err := json.Marshal(githubSDK.Issue{Number: 7, Body: goodBody})
+	if err != nil {
+		t.Fatalf("marshal fresh issue: %v", err)
+	}
+	f.freshIssueBody = string(freshJSON)
+
+	client := githubSDK.NewClientWithBaseURL(testutil.FakeGitHubToken, f.server.URL)
+
+	skipped := applySpecGuardSDK(context.Background(), client, "o", "r", issue, []string{"body too short"})
+	if !skipped {
+		t.Fatal("guard must still skip dispatch this round")
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.labelsAdded) != 0 {
+		t.Errorf("labels added = %v, want none (strike must be aborted)", f.labelsAdded)
+	}
+	if len(f.commentsAdded) != 0 {
+		t.Errorf("comments added = %v, want none (strike must be aborted)", f.commentsAdded)
+	}
+}
+
+// TestApplySpecGuardSDK_SecondStrikeAbortsOnFreshFetchError covers GH-4634:
+// if the fresh re-fetch immediately before escalating fails, the guard must
+// not escalate on stale data — it aborts the strike rather than trusting the
+// earlier in-memory snapshot.
+func TestApplySpecGuardSDK_SecondStrikeAbortsOnFreshFetchError(t *testing.T) {
+	issue := &githubSDK.Issue{Number: 7, Title: "still thin", Body: "still too thin"}
+	fingerprint := specBodyFingerprint(issue.Body)
+	f := newSpecGuardFake("earlier strike\n" + ghissue.BuildSpecCommentMarker(fingerprint) + "\ndetails")
+	defer f.server.Close()
+	f.freshIssueStatus = http.StatusInternalServerError
+
+	client := githubSDK.NewClientWithBaseURL(testutil.FakeGitHubToken, f.server.URL)
+
+	skipped := applySpecGuardSDK(context.Background(), client, "o", "r", issue, []string{"body too short"})
+	if !skipped {
+		t.Fatal("guard must still skip dispatch this round")
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.labelsAdded) != 0 {
+		t.Errorf("labels added = %v, want none (strike must be aborted on fetch error)", f.labelsAdded)
 	}
 }
 

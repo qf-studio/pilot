@@ -65,8 +65,29 @@ func applySpecGuardSDK(ctx context.Context, client *githubSDK.Client, owner, rep
 		slog.Warn("spec-guard(sdk): first strike — issue body too thin, dispatch skipped",
 			slog.Int("issue", issue.Number), slog.Any("reasons", reasons))
 	} else {
-		// Second strike: same body fingerprint as the last strike — block
-		// the issue.
+		// Second strike: same body fingerprint as the last strike — before
+		// escalating to pilot-blocked, re-fetch the issue fresh and re-run
+		// ValidateSpec one more time immediately before acting. Mirrors the
+		// fresh-read-before-irreversible-action shape in
+		// finalizeExternalClose (internal/autopilot/controller.go, GH-4570 /
+		// #4572): a poll tick can lag a body edit that landed between the
+		// first strike and now, and trusting the stale in-memory snapshot
+		// here would block an issue the author already fixed.
+		freshIssue, err := client.GetIssue(ctx, owner, repo, issue.Number)
+		if err != nil {
+			slog.Warn("spec-guard(sdk): failed to re-fetch issue before escalating, aborting strike",
+				slog.Int("issue", issue.Number), slog.Any("error", err))
+			return true
+		}
+		parentResolver := func(parentNum int) (*githubSDK.Issue, error) {
+			return client.GetIssue(ctx, owner, repo, parentNum)
+		}
+		if specResult := ghissue.ValidateSpec(freshIssue, parentResolver); specResult.Valid || specResult.SkipReason != "" {
+			slog.Info("spec-guard(sdk): body now passes spec validation on fresh re-read, aborting second-strike escalation",
+				slog.Int("issue", issue.Number))
+			return true
+		}
+
 		if err := client.AddLabels(ctx, owner, repo, issue.Number, []string{githubSDK.LabelBlocked}); err != nil {
 			logGitHubAPIError("AddLabels[blocked,sdk]", owner, repo, issue.Number, err)
 		}
