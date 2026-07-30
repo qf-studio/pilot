@@ -65,14 +65,13 @@ func applySpecGuardSDK(ctx context.Context, client *githubSDK.Client, owner, rep
 		slog.Warn("spec-guard(sdk): first strike — issue body too thin, dispatch skipped",
 			slog.Int("issue", issue.Number), slog.Any("reasons", reasons))
 	} else {
-		// Second strike: same body fingerprint as the last strike — before
-		// escalating to pilot-blocked, re-fetch the issue fresh and re-run
-		// ValidateSpec one more time immediately before acting. Mirrors the
-		// fresh-read-before-irreversible-action shape in
+		// Second strike: same body fingerprint as the last strike. Before
+		// escalating, take one more fresh single-issue GET and re-validate —
+		// mirrors the confirm-before-destructive-act pattern in
 		// finalizeExternalClose (internal/autopilot/controller.go, GH-4570 /
-		// #4572): a poll tick can lag a body edit that landed between the
-		// first strike and now, and trusting the stale in-memory snapshot
-		// here would block an issue the author already fixed.
+		// #4572). A poll tick can lag a body edit that landed between the
+		// first strike and now (GH-4498), and trusting the stale in-memory
+		// snapshot here would block an issue the author already fixed.
 		freshIssue, err := client.GetIssue(ctx, owner, repo, issue.Number)
 		if err != nil {
 			slog.Warn("spec-guard(sdk): failed to re-fetch issue before escalating, aborting strike",
@@ -82,17 +81,30 @@ func applySpecGuardSDK(ctx context.Context, client *githubSDK.Client, owner, rep
 		parentResolver := func(parentNum int) (*githubSDK.Issue, error) {
 			return client.GetIssue(ctx, owner, repo, parentNum)
 		}
-		if specResult := ghissue.ValidateSpec(freshIssue, parentResolver); specResult.Valid || specResult.SkipReason != "" {
+		specResult := ghissue.ValidateSpec(freshIssue, parentResolver)
+		if specResult.Valid || specResult.SkipReason != "" {
 			slog.Info("spec-guard(sdk): body now passes spec validation on fresh re-read, aborting second-strike escalation",
 				slog.Int("issue", issue.Number))
 			return true
 		}
 
+		// Still failing on the fresh read: escalate. Post an escalation
+		// comment (mirrors the first-strike branch above) before blocking,
+		// so the block/unblock loop is visible on the issue thread instead
+		// of only a daemon-side slog.Warn. The marker embeds the fresh
+		// body's fingerprint (not the stale `fingerprint` computed from the
+		// in-memory snapshot above) so a later guard pass compares against
+		// what was actually judged here.
+		freshFingerprint := specBodyFingerprint(freshIssue.Body)
+		comment := buildSpecEscalationComment(specResult.FailureReasons, freshFingerprint, len(freshIssue.Body))
+		if _, err := client.AddComment(ctx, owner, repo, issue.Number, comment); err != nil {
+			logGitHubAPIError("AddComment[blocked,sdk]", owner, repo, issue.Number, err)
+		}
 		if err := client.AddLabels(ctx, owner, repo, issue.Number, []string{githubSDK.LabelBlocked}); err != nil {
 			logGitHubAPIError("AddLabels[blocked,sdk]", owner, repo, issue.Number, err)
 		}
 		slog.Warn("spec-guard(sdk): second strike — escalating to pilot-blocked",
-			slog.Int("issue", issue.Number))
+			slog.Int("issue", issue.Number), slog.Any("reasons", specResult.FailureReasons), slog.Int("body_len", len(freshIssue.Body)))
 	}
 
 	return true
@@ -124,5 +136,23 @@ func buildSpecIncompleteComment(reasons []string, bodyFingerprint string) string
 	fmt.Fprintf(&b, "```\n\n")
 	fmt.Fprintf(&b, "To retry: edit the issue body, then remove the `%s` label.\n", githubSDK.LabelSpecIncomplete)
 	fmt.Fprintf(&b, "If `%s` was also added, remove that too.\n", githubSDK.LabelBlocked)
+	return b.String()
+}
+
+// buildSpecEscalationComment renders the structured second-strike
+// (escalation) comment, mirroring buildSpecIncompleteComment above. It
+// carries the same fingerprinted marker so a later guard pass still finds
+// it when scanning comment history, plus the failure reasons and observed
+// body length from the fresh pre-escalation re-read, so the block/unblock
+// loop is visible on the issue thread instead of only a daemon-side log.
+func buildSpecEscalationComment(reasons []string, bodyFingerprint string, bodyLen int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", ghissue.BuildSpecCommentMarker(bodyFingerprint))
+	fmt.Fprintf(&b, "🚫 Pilot is escalating this issue to `%s`: the spec body is still too thin after an earlier warning (body length: %d chars).\n\n", githubSDK.LabelBlocked, bodyLen)
+	fmt.Fprintf(&b, "**What still fails:**\n")
+	for _, r := range reasons {
+		fmt.Fprintf(&b, "- %s\n", r)
+	}
+	fmt.Fprintf(&b, "\nTo retry: edit the issue body, then remove the `%s` label.\n", githubSDK.LabelBlocked)
 	return b.String()
 }
