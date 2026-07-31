@@ -1,6 +1,6 @@
 # fix(http): API error messages dropped — server envelope is `{"error": msg}`, httpClient reads `body.message`
 
-**Created**: 2026-07-31 · **Status**: 🚀 Dispatched to Pilot · **Last Updated**: 2026-07-31
+**Created**: 2026-07-31 · **Status**: ✅ Delivered (ui PR#39 merged 09:19Z, shipped 6 min after filing) + **SOP real-stack verified 2026-07-31**: invalid-key save renders the server's validation message verbatim · **Last Updated**: 2026-07-31
 **Repo**: `qf-studio/pilot-console-ui` · Drift-defect **#8** (envelope-mismatch class, same as GH-32)
 
 ## Problem
