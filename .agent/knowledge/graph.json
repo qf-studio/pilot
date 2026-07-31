@@ -1082,6 +1082,18 @@
           "testing",
           "api"
         ]
+      },
+      "TASK-431": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-431-required-checks-name-mismatch.md",
+        "title": "Task 431 Required Checks Name Mismatch",
+        "status": "unknown",
+        "concepts": [
+          "api",
+          "deployment",
+          "authentication",
+          "database",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -5082,6 +5094,11 @@
       "from": "TASK-430",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-431",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -5250,7 +5267,8 @@
       "mem-164",
       "mem-165",
       "TASK-427",
-      "TASK-429"
+      "TASK-429",
+      "TASK-431"
     ],
     "authentication": [
       "TASK-386",
@@ -5288,7 +5306,8 @@
       "TASK-420",
       "TASK-422",
       "TASK-423",
-      "TASK-428"
+      "TASK-428",
+      "TASK-431"
     ],
     "testing": [
       "TASK-386",
@@ -5359,7 +5378,8 @@
       "TASK-427",
       "TASK-428",
       "TASK-429",
-      "TASK-430"
+      "TASK-430",
+      "TASK-431"
     ],
     "api": [
       "TASK-386",
@@ -5407,7 +5427,8 @@
       "TASK-427",
       "TASK-428",
       "TASK-429",
-      "TASK-430"
+      "TASK-430",
+      "TASK-431"
     ],
     "context": [
       "TASK-386",
@@ -5513,7 +5534,8 @@
       "mem-162",
       "mem-163",
       "mem-164",
-      "mem-165"
+      "mem-165",
+      "TASK-431"
     ],
     "workflow": [
       "TASK-387",
@@ -5901,10 +5923,10 @@
       "mem-161"
     ]
   },
-  "last_updated": "2026-07-31T14:31:56.392392+00:00",
+  "last_updated": "2026-07-31T15:35:51.009415+00:00",
   "stats": {
-    "total_nodes": 326,
-    "total_edges": 266,
+    "total_nodes": 327,
+    "total_edges": 267,
     "memory_count": 200
   }
 }
