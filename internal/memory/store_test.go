@@ -2043,6 +2043,63 @@ func TestGetLifetimeTaskCounts(t *testing.T) {
 	}
 }
 
+// TestGetLifetimeTaskCounts_ExcludesCanarySameProject is GH-4650: the
+// `COALESCE(is_canary, 0) = 0` filter in GetLifetimeTaskCounts is exercised
+// in TestGetLifetimeTaskCounts only via a canary row on a *different*
+// project path, which the ProjectPath filter alone would already exclude.
+// This test seeds one is_canary=0 row and one is_canary=1 row on the SAME
+// project and asserts the canary row is dropped by the is_canary predicate
+// itself, not incidentally by project scoping — converting the filter from
+// dormant/dead code into asserted behavior (GH-4648 AC #3).
+func TestGetLifetimeTaskCounts_ExcludesCanarySameProject(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const project = "/project/same-canary"
+
+	if err := store.SaveExecution(&Execution{
+		ID:          "exec-sc-real",
+		TaskID:      "TASK-SC-REAL",
+		ProjectPath: project,
+		Status:      "completed",
+		IsCanary:    false,
+	}); err != nil {
+		t.Fatalf("SaveExecution real: %v", err)
+	}
+	if err := store.SaveExecution(&Execution{
+		ID:          "exec-sc-canary",
+		TaskID:      "TASK-SC-CANARY",
+		ProjectPath: project,
+		Status:      "completed",
+		IsCanary:    true,
+	}); err != nil {
+		t.Fatalf("SaveExecution canary: %v", err)
+	}
+
+	tc, err := store.GetLifetimeTaskCounts(project)
+	if err != nil {
+		t.Fatalf("GetLifetimeTaskCounts: %v", err)
+	}
+	if tc.Total != 1 {
+		t.Errorf("Total = %d, want 1 (is_canary=1 row must be excluded)", tc.Total)
+	}
+	if tc.Succeeded != 1 {
+		t.Errorf("Succeeded = %d, want 1", tc.Succeeded)
+	}
+
+	// Unfiltered (no project scoping) must also exclude the canary row.
+	tcAll, err := store.GetLifetimeTaskCounts("")
+	if err != nil {
+		t.Fatalf("GetLifetimeTaskCounts(all): %v", err)
+	}
+	if tcAll.Total != 1 {
+		t.Errorf("unfiltered Total = %d, want 1 (is_canary=1 row must be excluded)", tcAll.Total)
+	}
+}
+
 // TestGetIssueLevelCounts table-drives the TASK-392 dedupe-by-task_id query:
 // unique-issue attempt/ship counts must collapse multiple retry rows for the
 // same task_id into a single attempt, and only count it shipped if at least
