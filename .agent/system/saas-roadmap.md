@@ -106,7 +106,7 @@ S0: 10 · S1: 3 · S2: ~9 (incl. ownership-transfer pre-step) · S3: ~6 · S4: ~
 
 ---
 
-**Last Updated**: 2026-07-30 morning (v9.5 — **overnight lead-watch: 6 issues shipped autonomously, dashboard renders on real stack, S3 product punch list DONE**. Prior v9.4: local stack live + first drift defect; v9.3: S3 wave 10/10 merged; v9.2: park cascade + drain incident; v9.1: wave dispatched; v9.0: S2 exit met)
+**Last Updated**: 2026-07-31 evening (v9.7 — **S4-early board track dispatched**: console#85/#86 + ui#40/#41. Prior v9.6: first autonomous self-upgrade + release-train unblock; v9.5: overnight lead-watch, S3 punch list done; v9.4: local stack live; v9.3: S3 wave 10/10; v9.2: park cascade; v9.1: wave dispatched; v9.0: S2 exit met)
 
 ## v8.8 (2026-07-26) — merge leg root-caused; SaaS unparked
 
@@ -446,3 +446,25 @@ deploys → S3 exit test. Brand/visual pass = founder taste call. 14:00Z train w
   startup lint, stale-panel reconcile) merged; live on box at Mon 08-03 train.
 - #4643/#4644's park mechanism validated in production (bounded, converged); its diagnosis
   string was the misleading part — fixed by #4646.
+
+## v9.7 (2026-07-31 evening) — S4-early board track dispatched (C1/C2 + kanban UI ×2)
+
+- **S4-early decision resolved: dispatch**, ahead of the S3 exit gate per the S3 UI mock-first
+  precedent (no staging dependency). Four issues cut from sync-design §9; specs grounded
+  against each repo's origin/main by parallel research agents before authoring:
+  - console#85 **C1 board data model** — migration 0008 (boards/cards/card_links/link_shadows/
+    card_ops/sync_cursors/status_maps/sync_conflicts, incl. `status_maps_primary_uniq` partial
+    unique) + `internal/board` store (TASK-432)
+  - console#86 **C2 pure 3-way reconciler** — per-field LWW remote-wins, provider-state-space
+    status change detection, R1–R9 semantics table, `Store.CommitReconcile` single-tx commit;
+    package `internal/syncengine` (flat-package norm + stdlib `sync` shadow rationale) ·
+    Blocked by #85 (TASK-433)
+  - ui#40 **kanban board v1 mock-first** — 7 canonical columns, Needs You hero lane (first use
+    of `--color-needs-you`), native HTML5 DnD + keyboard "Move to…" fallback, ToastShelf
+    primitive, conflict snap-back with the verbatim remote-wins copy (TASK-434)
+  - ui#41 **drawer / activity feed / verbs** — optimistic card edits, parked-op retry,
+    create-in-tracker modal, approve/reject clearing needs-you · Blocked by #40 (TASK-435)
+- httpAdapter board methods deliberately 501-stubbed until C7 (console board API) exists —
+  wire fixtures are real-JSON-only by house rule, so mock-first is the honest posture.
+- Same evening: daemon accidentally stopped by operator (graceful TUI quit 17:14Z) — restarted
+  via SSM 17:16Z, verified v2.251.0 / queue 0 / train schedule intact (Mon 08-03 16:00 Berlin).
