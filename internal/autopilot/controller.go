@@ -1544,6 +1544,17 @@ func (c *Controller) RestoreState() (int, error) {
 			} else if row != nil && (row.State == "failed" || row.State == "done") {
 				c.log.Info("RestoreState: skipping rehydration of carrier for terminal scope release",
 					"pr", pr.PRNumber, "scope", pr.ScopeKey, "scope_state", row.State)
+				// GH-4646 (cosmetic follow-through): a skipped-rehydration row
+				// would otherwise never leave autopilot_pr_state — it's not
+				// re-added to activePRs here, so nothing will ever call
+				// removePR's DELETE for it, and it lingers in the dashboard's
+				// non-released panel indefinitely (observed: 439/443/446/476/
+				// 103/104). Its scope already resolved terminal, so the row
+				// carries no further information; reconcile it away now.
+				if err := c.stateStore.RemovePRState(c.repoKey(), pr.PRNumber); err != nil {
+					c.log.Warn("RestoreState: failed to reconcile stale terminal-scope PR state row",
+						"pr", pr.PRNumber, "scope", pr.ScopeKey, "error", err)
+				}
 				continue
 			}
 		}
@@ -2006,12 +2017,47 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 		if !prState.CIWaitStartedAt.IsZero() {
 			c.metrics.RecordCIWaitDuration(time.Since(prState.CIWaitStartedAt))
 		}
+	case CIConfigMismatch:
+		// GH-4646: required_checks/ci_checks.required names a check this repo's
+		// CI will never post — a config error, not a code failure. Fail the PR
+		// directly (StageFailed) rather than StageCIFailed, which would spawn a
+		// CI-fix issue chasing a phantom failure with no real logs to act on
+		// (exactly the misdiagnosis class this fix targets).
+		missing, discovered := c.requiredCheckMismatchDetail(sha)
+		c.log.Warn("CI required-checks config mismatch, failing PR without CI-fix cascade",
+			"pr", prState.PRNumber, "sha", ShortSHA(sha),
+			"missing_required_checks", missing, "discovered_checks", discovered)
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("CI required-checks config mismatch: required check(s) %v never posted on this SHA (discovered checks: %v) — fix required_checks/ci_checks.required, then retry (GH-4646)", missing, discovered)
 	case CIPending, CIRunning:
 		// Stay in StageWaitingCI, will be checked next poll cycle
 		c.log.Debug("CI still running", "pr", prState.PRNumber, "status", status)
 	}
 
 	return nil
+}
+
+// requiredCheckMismatchDetail computes, from sha's already-discovered check
+// names, which of the configured required checks never appeared. Used to
+// build a specific, honest message when checkStatus/checkRequiredChecks
+// reports CIConfigMismatch (GH-4646) — reuses CIMonitor.GetDiscoveredChecks
+// (already populated by the CheckCI call that produced the mismatch verdict)
+// rather than re-fetching check-runs.
+func (c *Controller) requiredCheckMismatchDetail(sha string) (missing, discovered []string) {
+	if c.ciMonitor == nil {
+		return nil, nil
+	}
+	discovered = c.ciMonitor.GetDiscoveredChecks(sha)
+	seen := make(map[string]bool, len(discovered))
+	for _, d := range discovered {
+		seen[d] = true
+	}
+	for _, r := range c.ciMonitor.RequiredChecks() {
+		if !seen[r] {
+			missing = append(missing, r)
+		}
+	}
+	return missing, discovered
 }
 
 // handleCIPassed proceeds to merge (with approval if required by environment config
@@ -3439,6 +3485,46 @@ func (c *Controller) Start(ctx context.Context) {
 	// GH-3993: start the on_schedule release-train cron (no-op unless
 	// resolvedRelease().ScheduleReleaseEnabled()).
 	c.startScheduleRelease(ctx)
+	// GH-4646: cheap, best-effort probe for a required_checks/ci_checks.required
+	// allowlist naming a check this repo's CI never posts — surfaces the same
+	// config-drift class checkRequiredChecks now detects mid-flight, but at
+	// startup instead of after a carrier burns its post-merge CI timeout budget.
+	c.lintRequiredChecksMismatch(ctx)
+}
+
+// lintRequiredChecksMismatch (GH-4646) warns loudly at controller start when
+// this project's effective required-checks allowlist names a check that
+// never appears among the latest main-branch SHA's discovered check-runs —
+// the misconfiguration class that left auth-service/studio-sdk's
+// release-train scopes stuck or parked (one repo 11 days without a release)
+// while checkRequiredChecks silently returned CIPending forever. Best-effort:
+// any failure to resolve the branch SHA or list its check-runs is logged at
+// Debug and swallowed rather than blocking startup — this is a diagnostic
+// aid, not a startup precondition.
+func (c *Controller) lintRequiredChecksMismatch(ctx context.Context) {
+	if c.ciMonitor == nil || len(c.ciMonitor.RequiredChecks()) == 0 {
+		return
+	}
+	sha, err := c.getMainBranchSHA(ctx)
+	if err != nil || sha == "" {
+		c.log.Debug("startup required-checks lint: failed to resolve main branch SHA, skipping", "owner", c.owner, "repo", c.repo, "error", err)
+		return
+	}
+	missing, discovered, mismatched, err := c.ciMonitor.ProbeRequiredCheckCoverage(ctx, sha)
+	if err != nil {
+		c.log.Debug("startup required-checks lint: probe failed, skipping", "owner", c.owner, "repo", c.repo, "sha", ShortSHA(sha), "error", err)
+		return
+	}
+	if !mismatched {
+		return
+	}
+	c.log.Warn("startup required-checks lint: required check(s) never appear among this repo's discovered CI checks — this required_checks/ci_checks.required allowlist can never be satisfied here (GH-4646)",
+		"owner", c.owner,
+		"repo", c.repo,
+		"sha", ShortSHA(sha),
+		"missing_required_checks", missing,
+		"discovered_checks", discovered,
+	)
 }
 
 // postMergeCINoWorkflowGrace bounds how long handlePostMergeCI waits before
@@ -3632,6 +3718,28 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		// forever.
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("post-merge CI failed at %s", ShortSHA(mainSHA))
+
+	case CIConfigMismatch:
+		// GH-4646: required_checks/ci_checks.required names a check this repo's
+		// CI will never post — the auth-service/studio-sdk RCA (18 release-train
+		// scopes stuck or parked, one 11 days without a release). This is a
+		// config error, not a code failure, so it must not spawn a CI-fix issue
+		// (there is nothing in the diff to fix) or burn the full post-merge CI
+		// timeout before anyone finds out — fail the carrier now with a reason
+		// that names the actual mismatch.
+		missing, discovered := c.requiredCheckMismatchDetail(mainSHA)
+		reason := fmt.Sprintf("post-merge CI required-checks config mismatch at %s: required check(s) %v never appear among this SHA's discovered checks %v (GH-4646)",
+			ShortSHA(mainSHA), missing, discovered)
+		c.log.Warn("post-merge CI required-checks config mismatch",
+			"pr", prState.PRNumber, "sha", ShortSHA(mainSHA),
+			"missing_required_checks", missing, "discovered_checks", discovered)
+		if prState.ScopeKey != "" {
+			c.handleScopeReleaseFailure(ctx, prState, reason)
+			c.removePR(prState.PRNumber)
+			return nil
+		}
+		prState.Stage = StageFailed
+		prState.Error = reason
 
 	default:
 		// CIPending or CIRunning — stay in StagePostMergeCI and wait for next tick.

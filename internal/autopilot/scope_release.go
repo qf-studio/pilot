@@ -454,7 +454,7 @@ func (c *Controller) handleScopeReleaseFailure(ctx context.Context, prState *PRS
 		"timeout_attempts", timeoutAttempts, "reason", reason)
 
 	if isTimeout && timeoutAttempts >= maxScopeReleaseTimeoutAttempts {
-		c.parkScopeReleaseAfterTimeouts(repo, prState.ScopeKey, timeoutAttempts, reason)
+		c.parkScopeReleaseAfterTimeouts(repo, prState.ScopeKey, prState.PostMergeSHA, timeoutAttempts, reason)
 		return
 	}
 
@@ -477,7 +477,14 @@ func (c *Controller) handleScopeReleaseFailure(ctx context.Context, prState *PRS
 // fires a scope_release_parked alert (GH-4643). Split out from
 // handleScopeReleaseFailure so the timeout-specific park path and the
 // generic attempts-cap failure path stay readable as two separate branches.
-func (c *Controller) parkScopeReleaseAfterTimeouts(repo, scopeKey string, timeoutAttempts int, reason string) {
+//
+// GH-4646: this message used to assert "this repo likely has no post-merge
+// CI configured" unconditionally — wrong for auth-service/studio-sdk, where
+// CI was very much running, just under check names required_checks didn't
+// name. sha lets it consult whatever the CI monitor already discovered for
+// this carrier's SHA, so an operator chasing the alert is pointed at the
+// actual config mismatch instead of a phantom missing workflow.
+func (c *Controller) parkScopeReleaseAfterTimeouts(repo, scopeKey, sha string, timeoutAttempts int, reason string) {
 	if err := c.stateStore.MarkScopeReleaseParked(repo, scopeKey); err != nil {
 		c.log.Warn("handleScopeReleaseFailure: failed to mark scope release parked", "scope", scopeKey, "error", err)
 		return
@@ -485,9 +492,19 @@ func (c *Controller) parkScopeReleaseAfterTimeouts(repo, scopeKey string, timeou
 	c.log.Warn("scope release carrier parked after repeated post-merge CI timeouts",
 		"scope", scopeKey, "timeout_attempts", timeoutAttempts)
 
+	detail := "this repo likely has no post-merge CI configured; add a push-to-main workflow, or drop the unreachable required check from this repo's CI config"
+	if c.ciMonitor != nil {
+		if discovered := c.ciMonitor.GetDiscoveredChecks(sha); len(discovered) > 0 {
+			detail = fmt.Sprintf(
+				"this repo IS running CI on this SHA (discovered checks: %v; required_checks/ci_checks.required: %v) — a required check name does not match any of them; fix the allowlist rather than assuming there's no workflow",
+				discovered, c.ciMonitor.RequiredChecks(),
+			)
+		}
+	}
+
 	msg := fmt.Sprintf(
-		"scope release %s parked after %d consecutive post-merge CI timeouts (%s) — this repo likely has no post-merge CI configured; add a push-to-main workflow, or drop the unreachable required check from this repo's CI config, then re-enqueue the scope manually",
-		scopeKey, timeoutAttempts, reason,
+		"scope release %s parked after %d consecutive post-merge CI timeouts (%s) — %s, then re-enqueue the scope manually",
+		scopeKey, timeoutAttempts, reason, detail,
 	)
 	c.fireScopeReleaseAlert("scope_release_parked", repo, scopeKey, msg)
 }

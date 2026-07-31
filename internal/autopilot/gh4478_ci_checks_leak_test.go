@@ -23,6 +23,15 @@ import (
 // names — a total name mismatch means aggregateStatus never observes
 // anything but the CIPending zero-value, no matter how green the actual
 // check-runs are.
+//
+// GH-4646: GH-4478 gave operators a way to fix this (WithCIChecksOverride)
+// but did nothing for a project that hasn't been overridden yet — that
+// project stayed silently stuck exactly as described above, which is what
+// later produced the auth-service/studio-sdk incident (18 release-train
+// scopes stuck or parked). checkRequiredChecks now detects this shape (every
+// discovered check-run terminal, a required name never seen) and fails loudly
+// with CIConfigMismatch instead of returning CIPending forever, so the first
+// assertion below now documents the fix, not the bug.
 func TestCIMonitor_MismatchedGlobalRequiredChecks_GH4478(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -56,8 +65,8 @@ func TestCIMonitor_MismatchedGlobalRequiredChecks_GH4478(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckCI() error = %v", err)
 	}
-	if status != CIPending {
-		t.Fatalf("CheckCI() = %s, want %s — demonstrates the bug: a global required_checks list with no matching check-run names must aggregate to pending (never success), even though every actual check-run on the SHA is green", status, CIPending)
+	if status != CIConfigMismatch {
+		t.Fatalf("CheckCI() = %s, want %s (GH-4646) — a global required_checks list with no matching check-run names, on a SHA whose actual check-runs are all green, is a config mismatch and must fail loudly rather than aggregate to pending forever", status, CIConfigMismatch)
 	}
 
 	// Now prove the fix: a per-project override with the correct check names
@@ -84,10 +93,13 @@ func TestCIMonitor_MismatchedGlobalRequiredChecks_GH4478(t *testing.T) {
 // controller): one for the default repo the global required_checks list is
 // tuned for, and one for a "pointer"-shaped repo whose check-run names never
 // match that list. Without WithCIChecksOverride, the pointer controller's PR
-// is stuck at waiting_ci forever despite green check-runs — reproducing the
-// live pointer#108 stall. With WithCIChecksOverride wired (the GH-4478 fix,
-// mirroring the WithReleaseOverride/ProjectReleaseConfig pattern), it
-// transitions to ci_passed within a single poll.
+// used to be stuck at waiting_ci forever despite green check-runs —
+// reproducing the live pointer#108 stall; GH-4646 changed that outcome to a
+// loud StageFailed instead (see the first sub-test below). With
+// WithCIChecksOverride wired (the GH-4478 fix, mirroring the
+// WithReleaseOverride/ProjectReleaseConfig pattern), it transitions to
+// ci_passed within a single poll — unaffected by GH-4646 since there's no
+// mismatch left to detect.
 func TestController_ProjectCIChecksOverride_GH4478(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -132,7 +144,7 @@ func TestController_ProjectCIChecksOverride_GH4478(t *testing.T) {
 		c.mu.Unlock()
 	}
 
-	t.Run("without override: stuck at waiting_ci despite all check-runs green", func(t *testing.T) {
+	t.Run("without override: fails loudly instead of hanging at waiting_ci (GH-4646)", func(t *testing.T) {
 		c := NewController(cfg, ghClient, nil, "qf-studio", "pointer")
 		newPointerControllerState(c)
 
@@ -141,8 +153,8 @@ func TestController_ProjectCIChecksOverride_GH4478(t *testing.T) {
 			t.Fatalf("ProcessPR error = %v", err)
 		}
 		pr, _ := c.GetPRState(108)
-		if pr.Stage != StageWaitingCI {
-			t.Fatalf("stage = %s, want %s (sanity: this sub-test documents the bug, not the fix)", pr.Stage, StageWaitingCI)
+		if pr.Stage != StageFailed {
+			t.Fatalf("stage = %s, want %s (GH-4646: a required_checks mismatch on an otherwise-green SHA must fail loudly, not hang at waiting_ci forever)", pr.Stage, StageFailed)
 		}
 	})
 
