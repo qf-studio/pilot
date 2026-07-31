@@ -6,6 +6,11 @@ type ProjectInfo struct {
 	Path          string
 	Navigator     bool
 	DefaultBranch string
+	// Canary mirrors config.ProjectConfig.Canary (GH-4240/GH-4648) so
+	// chat-triggered tasks (comms.Handler) can stamp Task.IsCanary at
+	// construction time the same way the poller handlers do via
+	// cmd/pilot/handler_common.go's handleIssueGeneric.
+	Canary bool
 }
 
 // GetName satisfies duck-typed interface used by CommandHandler.handleProjects.

@@ -480,10 +480,25 @@ type Task struct {
 	// execution_events FOREIGN KEY constraint on every stage write (GH-4032).
 	ParentExecutionID string
 	// IsCanary marks this task as belonging to a synthetic sandbox project
-	// (ProjectConfig.Canary, GH-4240). Set once at intake from the project
-	// config and threaded through the executions row so metrics/hydrators/
-	// dashboards can exclude it — the ledger (executions/execution_events/
-	// execution_logs) is written exactly the same regardless of this flag.
+	// (ProjectConfig.Canary, GH-4240). Threaded through the executions row so
+	// metrics/hydrators/dashboards can exclude it — the ledger
+	// (executions/execution_events/execution_logs) is written exactly the
+	// same regardless of this flag.
+	//
+	// Set at every fresh-intake construction site (GH-4648) by resolving the
+	// owning project's config — there is no single chokepoint. Each adapter/
+	// entrypoint that builds a brand-new Task from external input (issue,
+	// chat message, CLI flag) is responsible for stamping it:
+	//   - cmd/pilot/handler_common.go's handleIssueGeneric (all 7 SDK-adapter
+	//     poller handlers: GitHub/Linear/Jira/Asana/Plane/GitLab/AzureDevOps)
+	//   - internal/comms/handler.go (chat-triggered tasks: Telegram/Slack)
+	//   - cmd/pilot/interactive.go and cmd/pilot/commands.go (direct CLI
+	//     execution: `pilot task`, `pilot github run`, interactive prompt)
+	// Sites that instead derive a Task from an existing parent/execution
+	// (decomposed subtasks, epic sub-issues, dispatcher requeue/replay) must
+	// propagate the parent's IsCanary rather than re-resolving config, so a
+	// canary parent's descendants stay canary even if project config changes
+	// mid-run.
 	IsCanary bool
 }
 

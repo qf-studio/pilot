@@ -163,6 +163,14 @@ func interactiveNewTask(cfg *config.Config) error {
 		ProjectPath: projectPath,
 		Branch:      branchName,
 	}
+	// GH-4648: mirror handler_common.go's handleIssueGeneric — stamp the
+	// canary marker from the registered project config so this direct-execute
+	// CLI path doesn't leak a canary-sandbox run into live metrics.
+	// cfg.GetProject returns nil for an unregistered path (e.g. a bare cwd
+	// fallback), which correctly resolves to non-canary.
+	if proj := cfg.GetProject(projectPath); proj != nil {
+		task.IsCanary = proj.Canary
+	}
 
 	// GH-2286: use executor config from config.yaml instead of hardcoded defaults
 	backendCfg := cfg.Executor
