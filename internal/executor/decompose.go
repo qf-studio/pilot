@@ -439,6 +439,13 @@ func (d *TaskDecomposer) createSubtasks(parent *Task, parts []string, partType s
 			// "GH-4021-2"), which has no matching executions row and trips the
 			// execution_events FOREIGN KEY constraint on every stage write.
 			ParentExecutionID: parent.LogExecutionID(),
+			// GH-4648: inherit the canary marker from the parent, mirroring
+			// epic.go's sub-issue construction (GH-4240) — without this, every
+			// decomposed subtask of a canary-configured project's task landed
+			// is_canary=0 (the struct literal's zero value) even though the
+			// parent's own row correctly carried is_canary=1, leaking canary
+			// executions into every unscoped metrics/dashboard aggregate.
+			IsCanary: parent.IsCanary,
 		}
 
 		// Last subtask creates the PR

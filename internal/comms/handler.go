@@ -408,14 +408,16 @@ IMPORTANT: Be concise. Limit your exploration to 5-10 files max. Provide a brief
 If the question is too broad, ask for clarification instead of exploring everything.`, question)
 
 	taskID := fmt.Sprintf("Q-%d", time.Now().Unix())
+	questionProjectPath := h.getActiveProjectPath(contextID)
 	task := &executor.Task{
 		ID:          taskID,
 		Title:       "Question: " + TruncateText(question, 40),
 		Description: prompt,
-		ProjectPath: h.getActiveProjectPath(contextID),
+		ProjectPath: questionProjectPath,
 		LocalMode:   true,
 		CreatePR:    false,
 		Verbose:     false,
+		IsCanary:    h.isCanaryProject(questionProjectPath),
 	}
 
 	h.log.Debug("Answering question", slog.String("task_id", taskID), slog.String("context_id", contextID))
@@ -442,6 +444,7 @@ func (h *Handler) handleResearch(ctx context.Context, contextID, threadID, query
 	_ = h.messenger.SendText(ctx, contextID, "🔬 Researching...")
 
 	taskID := fmt.Sprintf("RES-%d", time.Now().Unix())
+	researchProjectPath := h.getActiveProjectPath(contextID)
 	task := &executor.Task{
 		ID:    taskID,
 		Title: "Research: " + TruncateText(query, 40),
@@ -454,9 +457,10 @@ Provide findings in a structured format with:
 - Recommendations
 
 DO NOT make any code changes. This is a read-only research task.`, query),
-		ProjectPath: h.getActiveProjectPath(contextID),
+		ProjectPath: researchProjectPath,
 		LocalMode:   true,
 		CreatePR:    false,
+		IsCanary:    h.isCanaryProject(researchProjectPath),
 	}
 
 	researchCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -487,6 +491,7 @@ func (h *Handler) handlePlanning(ctx context.Context, contextID, threadID, reque
 	_ = h.messenger.SendText(ctx, contextID, "📐 Drafting plan...")
 
 	taskID := fmt.Sprintf("PLAN-%d", time.Now().Unix())
+	planProjectPath := h.getActiveProjectPath(contextID)
 	task := &executor.Task{
 		ID:    taskID,
 		Title: "Plan: " + TruncateText(request, 40),
@@ -499,8 +504,9 @@ Explore the codebase and propose a detailed plan. Include:
 4. Potential risks or considerations
 
 DO NOT make any code changes. Only explore and plan.`, request),
-		ProjectPath: h.getActiveProjectPath(contextID),
+		ProjectPath: planProjectPath,
 		CreatePR:    false,
+		IsCanary:    h.isCanaryProject(planProjectPath),
 	}
 
 	planTimeout := 2 * time.Minute
@@ -581,6 +587,7 @@ func (h *Handler) handleChat(ctx context.Context, contextID, threadID, message s
 	_ = h.messenger.SendText(ctx, contextID, "💬 Thinking...")
 
 	taskID := fmt.Sprintf("CHAT-%d", time.Now().Unix())
+	chatProjectPath := h.getActiveProjectPath(contextID)
 	task := &executor.Task{
 		ID:    taskID,
 		Title: "Chat: " + TruncateText(message, 30),
@@ -591,10 +598,11 @@ Respond helpfully and conversationally. You can reference project knowledge but 
 
 Be concise - this is a chat conversation, not a report. Keep response under 500 words.
 
-User message: %s`, h.getActiveProjectPath(contextID), message),
-		ProjectPath: h.getActiveProjectPath(contextID),
+User message: %s`, chatProjectPath, message),
+		ProjectPath: chatProjectPath,
 		LocalMode:   true,
 		CreatePR:    false,
+		IsCanary:    h.isCanaryProject(chatProjectPath),
 	}
 
 	chatCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -776,17 +784,19 @@ func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, task
 
 	memberID := h.resolveMemberID(contextID)
 
+	execTaskProjectPath := h.getActiveProjectPath(contextID)
 	task := &executor.Task{
 		ID:          taskID,
 		Title:       TruncateText(description, 50),
 		Description: description,
-		ProjectPath: h.getActiveProjectPath(contextID),
+		ProjectPath: execTaskProjectPath,
 		Verbose:     false,
 		Branch:      branch,
 		BaseBranch:  baseBranch,
 		CreatePR:    createPR,
 		MemberID:    memberID,
 		ImagePath:   imagePath,
+		IsCanary:    h.isCanaryProject(execTaskProjectPath),
 	}
 
 	// Progress callback with throttling (named callback for parallel-safe execution)
@@ -847,6 +857,19 @@ func (h *Handler) getActiveProjectPath(contextID string) string {
 		return path
 	}
 	return h.projectPath
+}
+
+// isCanaryProject reports whether path belongs to a canary-configured
+// project (GH-4240/GH-4648), so chat-triggered Task construction can stamp
+// IsCanary at intake the same way cmd/pilot's handleIssueGeneric does for
+// the poller-driven adapters. An unregistered path (or a nil project
+// source) correctly resolves to non-canary.
+func (h *Handler) isCanaryProject(path string) bool {
+	if h.projects == nil {
+		return false
+	}
+	proj := h.projects.GetProjectByPath(path)
+	return proj != nil && proj.Canary
 }
 
 // SetActiveProject sets the active project for a context by name.

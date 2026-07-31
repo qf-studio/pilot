@@ -217,6 +217,58 @@ Add comprehensive tests for all changes.`,
 	}
 }
 
+// TestTaskDecomposer_SubtasksInheritParentIsCanary is a GH-4648 regression
+// test: createSubtasks previously omitted IsCanary from the subtask literal
+// entirely, so every decomposed subtask of a canary-configured project's
+// task landed is_canary=0 in the ledger (the struct's zero value) even
+// though the parent row correctly carried is_canary=1 — leaking canary
+// executions into every unscoped metrics/dashboard aggregate. epic.go's
+// sibling sub-issue construction already did this correctly (GH-4240); this
+// asserts createSubtasks now matches that posture for both a canary and a
+// non-canary parent (no false positives).
+func TestTaskDecomposer_SubtasksInheritParentIsCanary(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "complex",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 10,
+	}
+
+	description := `This task requires refactoring the entire authentication system with multiple changes.
+
+## Task 1: Update the user model
+
+Add new fields for MFA.
+
+## Task 2: Refactor the login endpoint
+
+Support the MFA flow.`
+
+	for _, canary := range []bool{true, false} {
+		decomposer := NewTaskDecomposer(config)
+		task := &Task{
+			ID:          "TEST-CANARY",
+			Title:       "Refactor authentication system",
+			Description: description,
+			ProjectPath: "/test/project",
+			IsCanary:    canary,
+		}
+
+		result := decomposer.Decompose(task)
+		if !result.Decomposed {
+			t.Fatalf("IsCanary=%v: expected task to be decomposed, reason: %s", canary, result.Reason)
+		}
+		if len(result.Subtasks) == 0 {
+			t.Fatalf("IsCanary=%v: expected at least one subtask", canary)
+		}
+		for i, subtask := range result.Subtasks {
+			if subtask.IsCanary != canary {
+				t.Errorf("IsCanary=%v: subtask %d IsCanary = %v, want %v (must inherit from parent)", canary, i, subtask.IsCanary, canary)
+			}
+		}
+	}
+}
+
 // TestTaskDecomposer_PlainBulletsFallBackToNoDecompose is a GH-4395
 // regression test: plain "- " bullets (no checkbox) are narrative structure,
 // not explicit work-item structure — #4390's incident timeline was written

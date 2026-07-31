@@ -46,6 +46,44 @@ func TestExecutionLifecycle_Begin_CreatesRowAndThreadsID(t *testing.T) {
 	}
 }
 
+// TestExecutionLifecycle_Begin_PersistsIsCanary is a GH-4648 regression test
+// for the intake-wire fix: a task built for a canary-configured project must
+// produce an execution row with is_canary=1 through the ExecutionLifecycle.Begin
+// chokepoint, and a non-canary project's task must land 0 — no false
+// positives. This is the write-side half of the GH-4240 canary isolation
+// mechanism; the read-side COALESCE(is_canary, 0) = 0 filters were dead code
+// until every fresh-intake Task construction site actually set this field.
+func TestExecutionLifecycle_Begin_PersistsIsCanary(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	canaryTask := &Task{ID: "GH-4648-canary", ProjectPath: "/canary-sandbox", IsCanary: true}
+	canaryExecID, err := NewExecutionLifecycle(store).Begin(canaryTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("Begin (canary) failed: %v", err)
+	}
+	canaryExec, err := store.GetExecution(canaryExecID)
+	if err != nil {
+		t.Fatalf("failed to load canary execution: %v", err)
+	}
+	if !canaryExec.IsCanary {
+		t.Error("expected canary task's execution row to have IsCanary=true, got false")
+	}
+
+	regularTask := &Task{ID: "GH-4648-regular", ProjectPath: "/normal-project", IsCanary: false}
+	regularExecID, err := NewExecutionLifecycle(store).Begin(regularTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("Begin (regular) failed: %v", err)
+	}
+	regularExec, err := store.GetExecution(regularExecID)
+	if err != nil {
+		t.Fatalf("failed to load regular execution: %v", err)
+	}
+	if regularExec.IsCanary {
+		t.Error("expected non-canary task's execution row to have IsCanary=false, got true (false positive)")
+	}
+}
+
 // TestExecutionLifecycle_Begin_NilStore_StillThreadsID mirrors the epic
 // sub-issue path's mem-026 tolerance: a nil store (or a failed save) must
 // never stop task.ExecutionID from being stamped, so downstream event

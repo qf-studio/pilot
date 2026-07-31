@@ -724,6 +724,16 @@ Examples:
 			// Apply team flag overrides (GH-635)
 			applyTeamOverrides(cfg, cmd, teamID, teamMember)
 
+			// GH-4648: mirror handler_common.go's handleIssueGeneric — stamp
+			// the canary marker from the registered project config, now that
+			// cfg is loaded, so this direct-execute CLI path doesn't leak a
+			// canary-sandbox run into live metrics. cfg.GetProject returns nil
+			// for an unregistered path (e.g. the cwd fallback above), which
+			// correctly resolves to non-canary.
+			if proj := cfg.GetProject(projectPath); proj != nil {
+				task.IsCanary = proj.Canary
+			}
+
 			// Create the executor runner with config (GH-956: enables worktree isolation, decomposer, model routing)
 			runner, runnerErr := executor.NewRunnerWithConfig(cfg.Executor)
 			if runnerErr != nil {
@@ -1304,6 +1314,15 @@ Examples:
 				Verbose:     verbose,
 				CreatePR:    true,
 				Labels:      extractGitHubLabelNames(issue), // GH-727: flow labels for complexity classifier
+			}
+			// GH-4648: mirror handler_common.go's handleIssueGeneric — stamp
+			// the canary marker from the registered project config so this
+			// direct-execute CLI path doesn't leak a canary-sandbox run into
+			// live metrics. cfg.GetProject returns nil for an unregistered
+			// path (e.g. the cwd fallback above), which correctly resolves to
+			// non-canary.
+			if proj := cfg.GetProject(projectPath); proj != nil {
+				task.IsCanary = proj.Canary
 			}
 
 			// Dry run mode
