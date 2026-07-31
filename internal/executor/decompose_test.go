@@ -217,6 +217,70 @@ Add comprehensive tests for all changes.`,
 	}
 }
 
+// TestTaskDecomposer_SubtasksInheritIsCanary is a GH-4649 regression test:
+// createSubtasks previously dropped IsCanary entirely, so a decomposed child
+// of a canary-configured parent silently reverted to is_canary=0 even though
+// epic.go's sub-issue construction (GH-4240) already got this right. Covers
+// AC #2(b) via the decompose.go propagation path (distinct from epic.go's
+// executeSubIssuesTracked path, covered elsewhere).
+func TestTaskDecomposer_SubtasksInheritIsCanary(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "medium",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 10,
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	description := `This task requires multiple coordinated changes:
+
+- [ ] First change
+- [ ] Second change
+- [ ] Third change`
+
+	canaryParent := &Task{
+		ID:          "TEST-CANARY",
+		Title:       "Canary parent task",
+		Description: description,
+		ProjectPath: "/test/canary-project",
+		IsCanary:    true,
+	}
+
+	result := decomposer.Decompose(canaryParent)
+	if !result.Decomposed {
+		t.Fatalf("expected canary parent task to be decomposed, reason: %s", result.Reason)
+	}
+	if len(result.Subtasks) == 0 {
+		t.Fatal("expected at least one subtask")
+	}
+	for i, subtask := range result.Subtasks {
+		if !subtask.IsCanary {
+			t.Errorf("subtask %d (%s): expected IsCanary=true to be inherited from canary parent, got false", i, subtask.ID)
+		}
+	}
+
+	nonCanaryParent := &Task{
+		ID:          "TEST-REGULAR",
+		Title:       "Regular parent task",
+		Description: description,
+		ProjectPath: "/test/regular-project",
+		IsCanary:    false,
+	}
+
+	result = decomposer.Decompose(nonCanaryParent)
+	if !result.Decomposed {
+		t.Fatalf("expected regular parent task to be decomposed, reason: %s", result.Reason)
+	}
+	if len(result.Subtasks) == 0 {
+		t.Fatal("expected at least one subtask")
+	}
+	for i, subtask := range result.Subtasks {
+		if subtask.IsCanary {
+			t.Errorf("subtask %d (%s): expected IsCanary=false for non-canary parent, got true", i, subtask.ID)
+		}
+	}
+}
+
 // TestTaskDecomposer_PlainBulletsFallBackToNoDecompose is a GH-4395
 // regression test: plain "- " bullets (no checkbox) are narrative structure,
 // not explicit work-item structure — #4390's incident timeline was written

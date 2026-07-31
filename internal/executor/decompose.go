@@ -432,6 +432,10 @@ func (d *TaskDecomposer) createSubtasks(parent *Task, parts []string, partType s
 			BaseBranch:  parent.BaseBranch,
 			CreatePR:    false, // Only final subtask creates PR
 			Verbose:     parent.Verbose,
+			// GH-4649: inherit the canary marker from the parent so a subtask
+			// of a synthetic sandbox run doesn't leak into metrics — mirrors
+			// epic.go's sub-issue construction (GH-4240).
+			IsCanary: parent.IsCanary,
 			// GH-4032: subtasks never get their own dispatcher-assigned executions
 			// row (they run inline inside the parent's single Execute() call), so
 			// borrow the parent's resolved execution ID for ledger writes. Without

@@ -8,27 +8,33 @@ import (
 // GH-4649 (sub-issue of GH-4648): regression coverage for the AC #2 (a/b/c)
 // invariant that Task.IsCanary — resolved upstream from ProjectConfig.Canary
 // at whichever fresh-intake site owns the task (outside internal/executor;
-// see this test file's package-level doc note below) — actually survives the
+// see runner.go's Task.IsCanary doc comment) — actually survives the
 // executor's own write chokepoints once it reaches them.
 //
 // Audit note (recorded here per GH-4649's PR-body requirement): every
 // Task{...} literal inside internal/executor is a PROPAGATION site, not a
 // fresh-intake one — there is no place in this package that originates a
-// brand-new Task from a GitHub/Linear/etc issue, so there is nothing to wire
-// here. The three literals and their classification:
+// brand-new Task from a GitHub/Linear/etc issue, so there is nothing to
+// *resolve* ProjectConfig.Canary against here. The three literals and their
+// classification:
 //   - epic.go:2849 (executeSubIssuesTracked's subTask) — propagation,
 //     inherits parent.IsCanary. Already correct; covered by (b) below.
 //   - dispatcher.go:2913 (buildTaskFromExecution) — propagation, restores
 //     exec.IsCanary after a queue round-trip. Already correct; covered by
 //     the pre-existing TestBuildTaskFromExecution_ThreadsExecutionUUID.
-//   - decompose.go:426 (createSubtasks) — propagation site named explicitly
-//     out-of-scope by GH-4649 ("leave decompose.go:~430 alone"); left
-//     untouched here to avoid conflicting with GH-4648's own PR.
+//   - decompose.go:426 (createSubtasks) — propagation site. UNLIKE the other
+//     two, this one was actually broken: it built the subtask Task{} literal
+//     without an IsCanary field at all, so a decomposed child of a canary
+//     parent silently reverted to is_canary=0. Fixed in this commit
+//     alongside this test file; see TestTaskDecomposer_SubtasksInheritIsCanary
+//     in decompose_test.go for the dedicated regression coverage.
 // The two "known fresh-build" line refs from the parent issue
 // (dispatcher.go:~2426, ~2301) do not correspond to Task{} construction at
 // all on this branch — 2426 is WorkerStatus{} (ProjectWorker.Status) and
 // 2301 is a synthesized memory.Execution{} for the decomposed-parent guard.
-// Neither builds a Task. No code change follows from this audit.
+// Neither builds a Task, so no wiring follows from those two specifically —
+// the real fresh-intake sites live outside internal/executor entirely (e.g.
+// cmd/pilot's adapter handlers), which is out of this sub-issue's fence.
 
 // TestExecutionLifecycle_Begin_CanaryTask_PersistsIsCanaryTrue covers AC #2(a):
 // a task built for a canary-configured project must produce an execution row

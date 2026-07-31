@@ -480,10 +480,21 @@ type Task struct {
 	// execution_events FOREIGN KEY constraint on every stage write (GH-4032).
 	ParentExecutionID string
 	// IsCanary marks this task as belonging to a synthetic sandbox project
-	// (ProjectConfig.Canary, GH-4240). Set once at intake from the project
-	// config and threaded through the executions row so metrics/hydrators/
-	// dashboards can exclude it — the ledger (executions/execution_events/
-	// execution_logs) is written exactly the same regardless of this flag.
+	// (ProjectConfig.Canary, GH-4240), threaded through the executions row so
+	// metrics/hydrators/dashboards can exclude it — the ledger
+	// (executions/execution_events/execution_logs) is written exactly the
+	// same regardless of this flag.
+	//
+	// There is no single intake chokepoint inside this package: every
+	// adapter/entry-point outside internal/executor that builds a brand-new
+	// Task from external input (issue, chat message, CLI flag) is
+	// responsible for resolving ProjectConfig.Canary and stamping it before
+	// handing the Task to the runner/dispatcher (GH-4648/GH-4649). Within
+	// this package, every Task{...} literal is a propagation site that
+	// copies IsCanary forward rather than re-resolving it: epic.go's
+	// sub-issue construction, decompose.go's createSubtasks (GH-4649 —
+	// previously dropped it, so decomposed children of a canary parent wrote
+	// is_canary=0), and dispatcher.go's buildTaskFromExecution restore.
 	IsCanary bool
 }
 
