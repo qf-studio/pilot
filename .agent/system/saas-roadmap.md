@@ -427,3 +427,22 @@ still created PR#28 → fresh evidence for #4609's finalize-on-stall-retry item.
 
 **Next**: founder staging inputs (domains · Stripe test keys · ACM validation) → staging
 deploys → S3 exit test. Brand/visual pass = founder taste call. 14:00Z train watch.
+
+## v9.6 (2026-07-31) — first autonomous self-upgrade; drift-defects #6–#8 shipped+verified; release-train unblock (auth 11 days)
+
+- **v2.251.0 = first fully autonomous self-upgrade** (07-31 train cut 14:11Z; daemon
+  downloaded → backed up → hot-restarted via exec → verified at 14:13Z, zero operator).
+- **Drift-defects #6/#7/#8 shipped and SOP-verified same day** (all found via the real-stack
+  credential flow): ui#36 silent save failure (PR#37) · console#83 env-gated postgres secrets
+  driver — local stack can now exercise the FULL credentials write path incl. live Anthropic
+  key validation (PR#84; driver e2e 9/9 vs real pg) · ui#38 error-envelope mismatch
+  (`{"error":…}` vs `body.message`, PR#39 shipped 6 min after filing). Task docs archived.
+- **Release-train incident RCA'd + resolved** (TASK-431 → #4646/PR#4647): global
+  `required_checks: [test, lint]` named checks that never post on auth-service (`lint`) /
+  studio-sdk (`test` vs `build-test`) → permanent CIPending → 18 scopes stuck/parked,
+  **auth-service 11 days unreleased**. Ops fix: per-project `ci_checks.required_checks: []`
+  (pointer idiom) + 18 superseded scopes → done + restart ⇒ **auth v0.68.0 + sdk v0.31.2**
+  cut within 2 ticks. Code fix (CIConfigMismatch terminal status, honest park message,
+  startup lint, stale-panel reconcile) merged; live on box at Mon 08-03 train.
+- #4643/#4644's park mechanism validated in production (bounded, converged); its diagnosis
+  string was the misleading part — fixed by #4646.
