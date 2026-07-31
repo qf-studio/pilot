@@ -1,6 +1,6 @@
 # fix(github-poller): pre-dispatch fresh GetIssue is discarded — dispatched issue keeps the stale list-snapshot body
 
-**Status**: 🚀 Dispatched to Pilot · **Created**: 2026-07-30 · **Last Updated**: 2026-07-30
+**Status**: ✅ Delivered (studio-sdk GH-105 → PR#106 merged 07-31, released in **v0.31.2**) · **Created**: 2026-07-30 · **Last Updated**: 2026-07-31
 **Target repo**: qf-studio/studio-sdk · SDK-side twin of qf-studio/pilot#4624
 
 ## Context
