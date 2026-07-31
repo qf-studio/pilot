@@ -885,6 +885,13 @@ const (
 	CISuccess CIStatus = "success"
 	// CIFailure indicates one or more CI checks have failed.
 	CIFailure CIStatus = "failure"
+	// CIConfigMismatch indicates a required-checks allowlist names a check
+	// that has never posted on the SHA even though every other discovered
+	// check-run on it has already reached a terminal state (GH-4646). Unlike
+	// CIPending, this state can never resolve on its own — the named check
+	// will never appear — so callers must treat it as terminal (fail loudly)
+	// rather than keep polling.
+	CIConfigMismatch CIStatus = "config_mismatch"
 )
 
 // BumpType represents semantic version bump types.

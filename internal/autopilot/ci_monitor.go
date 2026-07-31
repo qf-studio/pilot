@@ -177,7 +177,7 @@ func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (CIStatus, error)
 
 			m.log.Info("CI status", "sha", ShortSHA(sha), "status", status)
 
-			if status == CISuccess || status == CIFailure {
+			if status == CISuccess || status == CIFailure || status == CIConfigMismatch {
 				return status, nil
 			}
 		}
@@ -239,6 +239,16 @@ func (m *CIMonitor) checkStatus(ctx context.Context, sha string, skipGrace bool)
 
 // checkRequiredChecks aggregates status from only the checks named in
 // m.requiredChecks, ignoring every other check run on the SHA.
+//
+// GH-4646: a required name that never appears among the SHA's check-runs at
+// all stays CIPending forever in requiredStatus above — indistinguishable
+// from "hasn't reported yet" unless the aggregate is otherwise stuck pending
+// with nothing left executing. Once that's true, consult
+// requiredCheckMismatch to tell "genuinely still running" apart from
+// "required_checks/ci_checks.required names a check this repo's CI will
+// never post" (auth-service/studio-sdk's RCA: 18 release-train scopes stuck
+// or parked, one 11 days without a release) and fail loudly instead of
+// silently returning CIPending.
 func (m *CIMonitor) checkRequiredChecks(checkRuns *github.CheckRunsResponse) CIStatus {
 	requiredStatus := make(map[string]CIStatus)
 	for _, name := range m.requiredChecks {
@@ -251,7 +261,90 @@ func (m *CIMonitor) checkRequiredChecks(checkRuns *github.CheckRunsResponse) CIS
 		}
 	}
 
-	return m.aggregateStatus(requiredStatus)
+	status := m.aggregateStatus(requiredStatus)
+	if status != CIPending {
+		return status
+	}
+
+	if missing, discovered, mismatched := m.requiredCheckMismatch(checkRuns); mismatched {
+		m.log.Warn("required-checks config mismatch: required check(s) never posted on this SHA and every discovered check-run has already completed — this required_checks/ci_checks.required allowlist can never be satisfied on this repo (GH-4646)",
+			"owner", m.owner,
+			"repo", m.repo,
+			"missing_required_checks", missing,
+			"discovered_checks", discovered,
+		)
+		return CIConfigMismatch
+	}
+
+	return status
+}
+
+// requiredCheckMismatch reports whether any of m.requiredChecks never
+// appeared among checkRuns even though every run on the SHA has already
+// reached a terminal (completed) state. It deliberately scans ALL of
+// checkRuns for in-progress runs, not just the required ones — a slow,
+// unrelated check still executing means the SHA's CI hasn't finished
+// settling yet, so a required name that hasn't shown up cannot yet be
+// distinguished from "about to be reported by a check that's still queued".
+// Returns ok=false (never a mismatch) when checkRuns is empty: a SHA with
+// zero check-runs at all is the "no CI configured" class handled elsewhere
+// (HasAnyCIConfigured / the auto-discovery grace period), not a name
+// mismatch on an otherwise-live CI setup.
+func (m *CIMonitor) requiredCheckMismatch(checkRuns *github.CheckRunsResponse) (missing, discovered []string, ok bool) {
+	if len(checkRuns.CheckRuns) == 0 {
+		return nil, nil, false
+	}
+
+	seen := make(map[string]bool, len(checkRuns.CheckRuns))
+	for _, run := range checkRuns.CheckRuns {
+		discovered = append(discovered, run.Name)
+		seen[run.Name] = true
+		if run.Status != github.CheckRunCompleted {
+			// Something on this SHA is still executing — too early to call
+			// any required name "missing" for good.
+			return nil, discovered, false
+		}
+	}
+
+	for _, name := range m.requiredChecks {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	return missing, discovered, len(missing) > 0
+}
+
+// RequiredChecks returns the configured required-checks allowlist (empty
+// when none is configured). Used by startup lint (Controller.
+// lintRequiredChecksMismatch) and by the post-merge/scope-release failure
+// paths (GH-4646) to name the specific check(s) a park/failure message is
+// about, rather than a generic "no post-merge CI configured" guess.
+func (m *CIMonitor) RequiredChecks() []string {
+	return m.requiredChecks
+}
+
+// ProbeRequiredCheckCoverage performs a cheap, read-only required-checks
+// coverage check for sha: whether every name in m.requiredChecks has ever
+// appeared among sha's check-runs. It shares requiredCheckMismatch's
+// conservative "not while anything on the SHA is still executing" gate, so a
+// commit whose CI simply hasn't finished yet does not produce a false-
+// positive mismatch. Used by the GH-4646 startup lint to surface a
+// required_checks/ci_checks.required config drift immediately at controller
+// start, rather than after a scope-release carrier burns its post-merge CI
+// timeout budget discovering it mid-flight. ok reports whether a mismatch
+// was found; err is non-nil only on a GitHub API failure, in which case the
+// caller should skip the lint for this tick rather than treat it as a
+// mismatch.
+func (m *CIMonitor) ProbeRequiredCheckCoverage(ctx context.Context, sha string) (missing, discovered []string, ok bool, err error) {
+	if len(m.requiredChecks) == 0 {
+		return nil, nil, false, nil
+	}
+	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	missing, discovered, ok = m.requiredCheckMismatch(checkRuns)
+	return missing, discovered, ok, nil
 }
 
 // checkAllRuns returns aggregate status when no required checks are configured.

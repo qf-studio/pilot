@@ -745,10 +745,18 @@ func TestCIMonitor_WaitForCI_RequiredCheckNotFound(t *testing.T) {
 
 	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
 
-	// Should timeout because 'test' is pending (not found)
-	_, err := monitor.WaitForCI(context.Background(), "abc1234")
-	if err == nil {
-		t.Fatal("WaitForCI() should timeout when required check is missing")
+	// GH-4646: 'test' never appears and 'build' (the only check-run on this
+	// SHA) has already completed — a config mismatch, not a transient
+	// pending state. WaitForCI must return CIConfigMismatch immediately
+	// rather than silently polling CIPending until the timeout elapses (the
+	// auth-service/studio-sdk RCA: this exact shape held release-train
+	// scopes stuck for a full 30m per carrier attempt, indefinitely).
+	status, err := monitor.WaitForCI(context.Background(), "abc1234")
+	if err != nil {
+		t.Fatalf("WaitForCI() error = %v, want nil (must resolve immediately, not time out)", err)
+	}
+	if status != CIConfigMismatch {
+		t.Errorf("WaitForCI() status = %s, want %s", status, CIConfigMismatch)
 	}
 }
 
