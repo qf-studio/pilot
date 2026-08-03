@@ -1,5 +1,7 @@
 # feat(board): kanban board v1 — domain types, adapter methods, columns, drag, conflict snap-back (mock-first)
 
+**Status**: ✅ Delivered — ui#40 → [PR#42](https://github.com/qf-studio/pilot-console-ui/pull/42) merged 2026-08-01 07:15Z (operator approval 08-01). ⚠️ Mock-first: real-stack verify per SOP applies when C7 board API wires httpAdapter. Archived 2026-08-03.
+
 ## Context
 
 This is the first leg of the **S4 kanban board** — the screen this repo's design system was built for (the `--color-needs-you` token in `theme.css` is annotated "Board hero lane" since issue #1). It is built **mock-first**, exactly like the S3 screens: full UX against `mockAdapter`, with `httpAdapter` board methods stubbed until the console board API exists (a console-side issue, in flight separately). Do NOT read or clone sibling repos — every cross-repo fact you need is embedded below.

@@ -1,5 +1,7 @@
 # feat(board): card drawer, activity feed, parked-op retry, create-in-tracker, approve/reject (mock-first)
 
+**Status**: ✅ Delivered — ui#41 → [PR#43](https://github.com/qf-studio/pilot-console-ui/pull/43) merged 2026-08-01 14:24Z (auto after #40 unblock). ⚠️ Mock-first: real-stack verify per SOP applies when C7 board API wires httpAdapter. Archived 2026-08-03.
+
 ## Context
 
 Blocked by: #40

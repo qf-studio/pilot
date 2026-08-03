@@ -421,6 +421,36 @@
         "name": "Go-Build",
         "aliases": [],
         "domain": "general"
+      },
+      "cdk": {
+        "name": "Cdk",
+        "aliases": [],
+        "domain": "general"
+      },
+      "aws": {
+        "name": "Aws",
+        "aliases": [],
+        "domain": "general"
+      },
+      "cost-allocation": {
+        "name": "Cost-Allocation",
+        "aliases": [],
+        "domain": "general"
+      },
+      "tagging": {
+        "name": "Tagging",
+        "aliases": [],
+        "domain": "general"
+      },
+      "nat-gateway": {
+        "name": "Nat-Gateway",
+        "aliases": [],
+        "domain": "general"
+      },
+      "pilot-cloud-infra": {
+        "name": "Pilot-Cloud-Infra",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -780,14 +810,14 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
-          "testing",
-          "knowledge",
-          "authentication",
           "api",
+          "testing",
+          "deployment",
           "frontend",
-          "context",
+          "knowledge",
           "theory of mind",
-          "deployment"
+          "authentication",
+          "context"
         ]
       },
       "TASK-407": {
@@ -1088,11 +1118,80 @@
         "title": "Task 431 Required Checks Name Mismatch",
         "status": "unknown",
         "concepts": [
-          "deployment",
-          "testing",
-          "database",
           "api",
+          "testing",
+          "authentication",
+          "deployment",
+          "database"
+        ]
+      },
+      "TASK-432": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-432-console-c1-board-data-model.md",
+        "title": "Task 432 Console C1 Board Data Model",
+        "status": "completed",
+        "concepts": [
+          "theory of mind",
+          "testing",
+          "deployment",
+          "database",
+          "context",
+          "authentication",
+          "api"
+        ]
+      },
+      "TASK-433": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-433-console-c2-sync-reconciler.md",
+        "title": "Task 433 Console C2 Sync Reconciler",
+        "status": "completed",
+        "concepts": [
+          "context",
+          "theory of mind",
+          "workflow",
+          "testing",
+          "deployment",
           "authentication"
+        ]
+      },
+      "TASK-434": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-434-ui-kanban-board-v1.md",
+        "title": "Task 434 Ui Kanban Board V1",
+        "status": "completed",
+        "concepts": [
+          "context",
+          "testing",
+          "deployment",
+          "authentication",
+          "theory of mind",
+          "api",
+          "markers",
+          "frontend"
+        ]
+      },
+      "TASK-435": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-435-ui-kanban-drawer-feed.md",
+        "title": "Task 435 Ui Kanban Drawer Feed",
+        "status": "completed",
+        "concepts": [
+          "deployment",
+          "authentication",
+          "markers",
+          "context",
+          "api",
+          "testing",
+          "frontend"
+        ]
+      },
+      "TASK-436": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-436-is-canary-intake-wire.md",
+        "title": "Task 436 Is Canary Intake Wire",
+        "status": "unknown",
+        "concepts": [
+          "context",
+          "knowledge",
+          "markers",
+          "testing",
+          "api",
+          "deployment"
         ]
       }
     },
@@ -3761,6 +3860,22 @@
         "file": ".agent/knowledge/memories/pitfalls/takeover-execution-never-finalized-stale-subexecid.md",
         "created": "2026-07-30",
         "last_validated": "2026-07-30"
+      },
+      "cdk-untagged-estate-invisible-to-cost-view": {
+        "type": "pitfall",
+        "summary": "CDK never applies the account's Environment tag convention (only its own aws:cdk:* tags) \u2014 pilot-cloud-infra's 4 fleet stacks ran as 'No tag key' spend from the 07-24 deploy until the 07-31 cost audit; same audit: NatGateways=minAzCount(2) in fleetvpc.go contradicts the v1 single-NAT design (~$33/mo waste). Fix: Tags.of(app).Add('Environment','fleet') at app scope in main.go at SCAFFOLD time + synth unit tests asserting tag presence and NAT count (dispatched infra#26).",
+        "path": "memories/pitfalls/cdk-untagged-estate-invisible-to-cost-view.md",
+        "confidence": 0.95,
+        "concepts": [
+          "cdk",
+          "aws",
+          "cost-allocation",
+          "tagging",
+          "nat-gateway",
+          "pilot-cloud-infra"
+        ],
+        "created": "2026-07-31",
+        "last_validated": "2026-07-31"
       }
     }
   },
@@ -5099,6 +5214,41 @@
       "from": "TASK-431",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-432",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-433",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-433",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-434",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-435",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "cdk-untagged-estate-invisible-to-cost-view",
+      "to": "TASK-405",
+      "type": "learned-from"
+    },
+    {
+      "from": "TASK-436",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -5194,7 +5344,8 @@
       "mem-163",
       "mem-164",
       "mem-165",
-      "TASK-429"
+      "TASK-429",
+      "TASK-436"
     ],
     "deployment": [
       "TASK-386",
@@ -5268,7 +5419,12 @@
       "mem-165",
       "TASK-427",
       "TASK-429",
-      "TASK-431"
+      "TASK-431",
+      "TASK-432",
+      "TASK-433",
+      "TASK-434",
+      "TASK-435",
+      "TASK-436"
     ],
     "authentication": [
       "TASK-386",
@@ -5307,7 +5463,11 @@
       "TASK-422",
       "TASK-423",
       "TASK-428",
-      "TASK-431"
+      "TASK-431",
+      "TASK-432",
+      "TASK-433",
+      "TASK-434",
+      "TASK-435"
     ],
     "testing": [
       "TASK-386",
@@ -5379,7 +5539,12 @@
       "TASK-428",
       "TASK-429",
       "TASK-430",
-      "TASK-431"
+      "TASK-431",
+      "TASK-432",
+      "TASK-433",
+      "TASK-434",
+      "TASK-435",
+      "TASK-436"
     ],
     "api": [
       "TASK-386",
@@ -5428,7 +5593,11 @@
       "TASK-428",
       "TASK-429",
       "TASK-430",
-      "TASK-431"
+      "TASK-431",
+      "TASK-432",
+      "TASK-434",
+      "TASK-435",
+      "TASK-436"
     ],
     "context": [
       "TASK-386",
@@ -5484,7 +5653,12 @@
       "mem-163",
       "mem-164",
       "mem-165",
-      "TASK-427"
+      "TASK-427",
+      "TASK-432",
+      "TASK-433",
+      "TASK-434",
+      "TASK-435",
+      "TASK-436"
     ],
     "markers": [
       "TASK-387",
@@ -5495,7 +5669,10 @@
       "TASK-403",
       "TASK-409",
       "TASK-416",
-      "TASK-417"
+      "TASK-417",
+      "TASK-434",
+      "TASK-435",
+      "TASK-436"
     ],
     "database": [
       "TASK-387",
@@ -5535,7 +5712,8 @@
       "mem-163",
       "mem-164",
       "mem-165",
-      "TASK-431"
+      "TASK-431",
+      "TASK-432"
     ],
     "workflow": [
       "TASK-387",
@@ -5587,7 +5765,8 @@
       "mem-164",
       "mem-165",
       "TASK-427",
-      "TASK-429"
+      "TASK-429",
+      "TASK-433"
     ],
     "simplification": [
       "TASK-387",
@@ -5622,7 +5801,9 @@
       "TASK-405",
       "TASK-415",
       "TASK-416",
-      "TASK-428"
+      "TASK-428",
+      "TASK-434",
+      "TASK-435"
     ],
     "theory of mind": [
       "TASK-394",
@@ -5650,7 +5831,10 @@
       "mem-162",
       "mem-163",
       "mem-164",
-      "mem-165"
+      "mem-165",
+      "TASK-432",
+      "TASK-433",
+      "TASK-434"
     ],
     "autopilot": [
       "mem-100",
@@ -5877,7 +6061,8 @@
       "cdk-merged-not-deployed-rots"
     ],
     "aws": [
-      "cdk-merged-not-deployed-rots"
+      "cdk-merged-not-deployed-rots",
+      "cdk-untagged-estate-invisible-to-cost-view"
     ],
     "health": [
       "ready-gate-couples-credential-validity"
@@ -5921,12 +6106,27 @@
     ],
     "go-build": [
       "mem-161"
+    ],
+    "cdk": [
+      "cdk-untagged-estate-invisible-to-cost-view"
+    ],
+    "cost-allocation": [
+      "cdk-untagged-estate-invisible-to-cost-view"
+    ],
+    "tagging": [
+      "cdk-untagged-estate-invisible-to-cost-view"
+    ],
+    "nat-gateway": [
+      "cdk-untagged-estate-invisible-to-cost-view"
+    ],
+    "pilot-cloud-infra": [
+      "cdk-untagged-estate-invisible-to-cost-view"
     ]
   },
-  "last_updated": "2026-07-31T16:32:58.482495+00:00",
+  "last_updated": "2026-08-03T08:09:40.884975+00:00",
   "stats": {
-    "total_nodes": 327,
-    "total_edges": 267,
-    "memory_count": 200
+    "total_nodes": 339,
+    "total_edges": 274,
+    "memory_count": 201
   }
 }

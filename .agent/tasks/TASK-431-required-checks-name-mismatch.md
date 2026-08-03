@@ -1,6 +1,6 @@
 # fix(autopilot): required_checks naming a check that never posts on a repo → permanent CI pending — detect the mismatch and fail loudly (GH-4643 misdiagnosis class)
 
-**Created**: 2026-07-31 · **Status**: ✅ Delivered (PR #4647 merged 16:12Z — all 4 mandates + StageFailed routing to avoid bogus CI-fix spawn; 264-line test file) · **Live on box**: next self-upgrade train (Mon 2026-08-03 16:00 Berlin) — stale panel rows + startup lint activate then · **Last Updated**: 2026-07-31
+**Created**: 2026-07-31 · **Status**: ✅ Delivered (PR #4647 merged 16:12Z — all 4 mandates + StageFailed routing to avoid bogus CI-fix spawn; 264-line test file) · **Live on box**: v2.251.1 carries it (board 08-03 08:04Z) — ⚠️ VERIFY LEG OPEN: panel still shows stale `failed` rows (console PR#70, canary 87/90/94) that the stale-panel reconcile should clear/flag; check after the Mon 08-03 16:00 Berlin train restart, then archive this doc · **Last Updated**: 2026-08-03
 **Repo**: `qf-studio/pilot`
 **Pilot issue**: https://github.com/qf-studio/pilot/issues/4646
 

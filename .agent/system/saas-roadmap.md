@@ -468,3 +468,29 @@ deploys → S3 exit test. Brand/visual pass = founder taste call. 14:00Z train w
   wire fixtures are real-JSON-only by house rule, so mock-first is the honest posture.
 - Same evening: daemon accidentally stopped by operator (graceful TUI quit 17:14Z) — restarted
   via SSM 17:16Z, verified v2.251.0 / queue 0 / train schedule intact (Mon 08-03 16:00 Berlin).
+
+## v9.8 (2026-08-03) — S4-early board track fully merged; CDK cost-audit fix; canary-metrics hygiene wave
+
+- **All four S4-early board issues merged 2026-08-01** after operator approvals (07:14Z):
+  console#85→PR#87 (C1 data model, 07:15Z) · ui#40→PR#42 (kanban v1, 07:15Z) · then the
+  blocked-by chain fired autonomously: console#86→PR#88 (C2 reconciler, 14:24Z) ·
+  ui#41→PR#43 (drawer/feed/verbs, 14:24Z). TASK-432–435 archived. **Next S4 legs not yet
+  cut**: C3 ingest workers, C4 outbound op workers, C5 status-map seeding, C7 board API
+  (which un-stubs the ui httpAdapter 501s and triggers the real-stack-verify SOP for the
+  mock-first board screens).
+- **07-31 AWS cost audit (operator)** — untagged-cost block since 07-24 traced to the fleet
+  bring-up: CDK applies no `Environment` tag (only `aws:cdk:*`), so all 4 fleet stacks were
+  invisible to the cost view; plus `NatGateways: minAzCount(2)` in fleetvpc.go contradicted
+  the v1 single-NAT design (§5, ~$33/mo waste). infra#26→**PR#27 merged 07-31 18:08Z**
+  (app-scope `Environment=fleet` + NAT→1, synth tag/count tests). **Operator `cdk deploy`
+  pending** — tag change no-interruption; NAT delete = brief egress blip in one AZ (time
+  around canary tenant i-0decbc0dcf225cf18). Pitfall memory
+  `cdk-untagged-estate-invisible-to-cost-view`; issue→merged ~2h, fully hands-off.
+- **Canary-metrics hygiene wave (pilot repo, 07-31 evening)**: #4648 is_canary intake wire
+  (TASK-436) → PR#4652 merged · #4650 exclusion test → PR#4651 merged · shipped in
+  **v2.251.1** (box live on it per 08-03 board, self-upgrade exec — uptime spans upgrade).
+  **Open**: #4649 fresh-intake-sites follow-up → PR#4653 stuck (autopilot stage `failed`,
+  CI pending) — investigate before TASK-436 archives.
+- Board panel still shows pre-#4647 stale `failed` rows (console PR#70, canary 87/90/94) —
+  expect the #4647 stale-panel reconcile + startup lint to clear/flag them; verify after the
+  Mon 08-03 16:00 Berlin train restart.

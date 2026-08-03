@@ -1,5 +1,7 @@
 # feat(board): C1 — board data model: migration 0008 (cards/links/shadows/ops/cursors/status-maps/conflicts) + internal/board store
 
+**Status**: ✅ Delivered — console#85 → [PR#87](https://github.com/qf-studio/pilot-console/pull/87) merged 2026-08-01 07:15Z (operator approval 08-01). Archived 2026-08-03.
+
 ## Context
 
 pilot-console is growing the S4 **mixed-tracker kanban sync engine**: one customer board materializing cards from N tracker connections (GitHub / Linear / Jira in v1), with field-level bidirectional sync. This issue is **C1, the data layer** — one migration plus a typed store. The reconciler (C2), ingest/outbound workers (C3/C4), status-map seeding (C5), and board API (C7) are separate follow-up issues that build on this store — do NOT implement any of them here (scope fence below).

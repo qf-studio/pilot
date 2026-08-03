@@ -1,5 +1,7 @@
 # feat(syncengine): C2 — pure 3-way reconciler (per-field LWW, remote-wins) + transactional commit
 
+**Status**: ✅ Delivered — console#86 → [PR#88](https://github.com/qf-studio/pilot-console/pull/88) merged 2026-08-01 14:24Z (auto after #85 unblock). Archived 2026-08-03.
+
 ## Context
 
 Blocked by: #85
