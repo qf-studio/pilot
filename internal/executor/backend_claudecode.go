@@ -669,6 +669,13 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	lastEventAt.Store(time.Now().UnixNano())
 
 	// Heartbeat monitor goroutine
+	// GH-4668: a silent stdout stream alone is not evidence of a hang — the
+	// stream-json protocol emits nothing while a local tool (e.g. `make
+	// test`) runs, which routinely exceeds the 5m heartbeat window on this
+	// repo. hbMonitor checks process-group liveness (descendant PIDs and/or
+	// advancing CPU time) before killing; a genuinely idle, silent group is
+	// still killed exactly as before.
+	hbMonitor := newHeartbeatMonitor(b.heartbeatTimeout, opts.WatchdogTimeout, probeProcessLiveness)
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
 	defer cancelHeartbeat()
 	logging.SafeGo("executor-backend-claudecode", func() {
@@ -683,39 +690,66 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 			case <-ticker.C:
 				lastNano := lastEventAt.Load()
 				lastTime := time.Unix(0, lastNano)
-				age := time.Since(lastTime)
-				if age > b.heartbeatTimeout {
-					b.log.Warn("Heartbeat timeout detected, killing hung process",
-						slog.Int("pid", cmd.Process.Pid),
-						slog.Duration("last_event_age", age),
-						slog.Duration("timeout", b.heartbeatTimeout),
-					)
+				now := time.Now()
+				decision, descendants, cpuDelta, logGrace, reason, probeErr := hbMonitor.evaluate(now, startTime, lastTime, cmd.Process.Pid)
 
-					// Invoke callback if provided
-					if opts.HeartbeatCallback != nil {
-						opts.HeartbeatCallback(cmd.Process.Pid, age)
+				switch decision {
+				case heartbeatNoAction:
+					continue
+				case heartbeatGrace:
+					if logGrace {
+						b.log.Info("heartbeat grace: local tool execution in flight",
+							slog.Int("pid", cmd.Process.Pid),
+							slog.Duration("last_event_age", now.Sub(lastTime)),
+							slog.Int("descendants", descendants),
+							slog.Uint64("cpu_delta_ticks", cpuDelta),
+						)
 					}
-
-					// Kill the hung process
-					// GH-4503: signal the whole process group, not just the
-					// tracked PID, so backgrounded grandchildren die too.
-					if cmd.Process != nil {
-						if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
-							b.log.Error("Failed to kill hung process",
-								slog.Int("pid", cmd.Process.Pid),
-								slog.Any("error", err),
-							)
-						} else {
-							// GH-4412: mark self-inflicted so classification
-							// doesn't mislabel the resulting 137 as OOM.
-							heartbeatKilled.Store(true)
-							b.log.Info("Hung process killed successfully",
-								slog.Int("pid", cmd.Process.Pid),
-							)
-						}
-					}
-					return
+					continue
+				case heartbeatKill:
+					// fall through below
 				}
+
+				age := now.Sub(lastTime)
+				if probeErr != nil {
+					b.log.Warn("Heartbeat: process-liveness probe failed, killing toward safe default",
+						slog.Int("pid", cmd.Process.Pid),
+						slog.Any("error", probeErr),
+					)
+				}
+				b.log.Warn("Heartbeat timeout detected, killing hung process",
+					slog.Int("pid", cmd.Process.Pid),
+					slog.Duration("last_event_age", age),
+					slog.Duration("timeout", b.heartbeatTimeout),
+					slog.String("reason", string(reason)),
+					slog.Int("descendants", descendants),
+					slog.Uint64("cpu_delta_ticks", cpuDelta),
+				)
+
+				// Invoke callback if provided
+				if opts.HeartbeatCallback != nil {
+					opts.HeartbeatCallback(cmd.Process.Pid, age)
+				}
+
+				// Kill the hung process
+				// GH-4503: signal the whole process group, not just the
+				// tracked PID, so backgrounded grandchildren die too.
+				if cmd.Process != nil {
+					if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
+						b.log.Error("Failed to kill hung process",
+							slog.Int("pid", cmd.Process.Pid),
+							slog.Any("error", err),
+						)
+					} else {
+						// GH-4412: mark self-inflicted so classification
+						// doesn't mislabel the resulting 137 as OOM.
+						heartbeatKilled.Store(true)
+						b.log.Info("Hung process killed successfully",
+							slog.Int("pid", cmd.Process.Pid),
+						)
+					}
+				}
+				return
 			}
 		}
 	})
