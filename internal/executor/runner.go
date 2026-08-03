@@ -2350,7 +2350,34 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			// separate GitHub issues. Creating N sub-issues that all touch the same
 			// package causes merge conflicts because each sub-issue branches from main
 			// independently and redeclares shared types (e.g., the "pilot onboard" cascade).
-			if isSinglePackageScope(plan.Subtasks, task.Description) {
+			//
+			// GH-4663 (TASK-437/GH-4655): before honoring that collapse, check
+			// whether this task_id already has decomposed children recorded in
+			// the ledger. A retried decomposed parent that re-plans as
+			// "single-package" is a textbook collapse case — but collapsing
+			// unconditionally bypasses around CreateSubIssues/
+			// ErrSubIssuesAlreadyExist's dedup and recovery logic straight into
+			// a fresh direct implementation, racing its own still-running or
+			// already-failed child (the GH-4648/GH-4649 duplicate-PR
+			// incident). When any recorded child is non-terminal or failed
+			// (decomposedChildLedgerNonTerminal, GH-4659), refuse the collapse
+			// and fall into the multi-package branch below instead, which
+			// already routes through CreateSubIssues' recovery path.
+			var childLedgerNonTerminal bool
+			var childLedgerChildIDs []string
+			if r.logStore != nil {
+				var gateErr error
+				childLedgerNonTerminal, childLedgerChildIDs, gateErr = decomposedChildLedgerNonTerminal(r.logStore, task.ID, task.ProjectPath)
+				if gateErr != nil {
+					r.log.Warn("Child-ledger gate check failed ahead of single-package collapse, proceeding with normal classification",
+						slog.String("task_id", task.ID),
+						slog.Any("error", gateErr),
+					)
+					childLedgerNonTerminal = false
+				}
+			}
+
+			if isSinglePackageScope(plan.Subtasks, task.Description) && !childLedgerNonTerminal {
 				r.log.Info("Single-package scope detected, skipping epic decomposition — executing as single task",
 					slog.String("task_id", task.ID),
 					slog.Int("planned_subtasks", len(plan.Subtasks)),
@@ -2377,6 +2404,19 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 				// Fall through to normal execution below (past epic and decomposer blocks)
 			} else {
+				if childLedgerNonTerminal {
+					// GH-4663: the plan looked single-package, but children
+					// already exist for this task_id and aren't all terminal —
+					// refuse the collapse and go through CreateSubIssues below,
+					// which holds the only ErrSubIssuesAlreadyExist dedup/
+					// recovery check (recoverExistingSubIssues).
+					r.log.Info("Single-package scope collapse refused: non-terminal decomposed children recorded, routing through coordinator flow instead",
+						slog.String("task_id", task.ID),
+						slog.Any("child_ids", childLedgerChildIDs),
+					)
+					r.recordExecutionEvent(task.LogExecutionID(), memory.StageDecompositionSkipped,
+						fmt.Sprintf("single_package_scope collapse refused: task_id=%s has non-terminal decomposed children %v", task.ID, childLedgerChildIDs))
+				}
 				// Multi-package epic: safe to create separate GitHub issues
 
 				// GH-4536 (TASK-419): size the execution-phase ceiling from the
