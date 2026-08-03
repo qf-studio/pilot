@@ -4689,3 +4689,66 @@ func TestDecomposedChildLedgerNonTerminal(t *testing.T) {
 		}
 	})
 }
+
+// TestRunner_Execute_ChildLedgerGate_SkipsPlanning covers the GH-4660 wiring:
+// when decomposedChildLedgerNonTerminal (GH-4659) reports a non-terminal
+// decomposed child for this exact task_id, Execute must short-circuit
+// before DetectComplexity/epic planning ever runs — the backend must never
+// be invoked and the result must be a clear, non-successful terminal state
+// rather than a silent fall-through into direct re-implementation (the
+// GH-4648/GH-4649 duplicate-PR race).
+func TestRunner_Execute_ChildLedgerGate_SkipsPlanning(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	projectDir := t.TempDir()
+
+	parentExec := &memory.Execution{ID: "exec-gate-wire-parent", TaskID: "GH-7001", ProjectPath: projectDir, Status: "failed"}
+	if err := store.SaveExecution(parentExec); err != nil {
+		t.Fatalf("SaveExecution(parent): %v", err)
+	}
+	if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 1 children: #7002"); err != nil {
+		t.Fatalf("InsertExecutionEvent: %v", err)
+	}
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-GH-7002", TaskID: "GH-7002", ProjectPath: projectDir, Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution(child): %v", err)
+	}
+
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "should never run"}}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.SetLogStore(store)
+
+	task := &Task{
+		ID:          "GH-7001",
+		ExecutionID: parentExec.ID,
+		Title:       "Retry of a decomposed parent",
+		Description: "Should be gated before complexity detection and epic planning",
+		ProjectPath: projectDir,
+		LocalMode:   true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if result.Success {
+		t.Fatalf("Execute() succeeded, want a gated failure (Error=%q)", result.Error)
+	}
+	if !strings.Contains(result.Error, "GH-7002") {
+		t.Errorf("result.Error = %q, want it to mention the non-terminal child GH-7002", result.Error)
+	}
+
+	backend.mu.Lock()
+	execCount := backend.execCount
+	backend.mu.Unlock()
+	if execCount != 0 {
+		t.Errorf("backend.execCount = %d, want 0 — complexity detection/epic planning should have short-circuited before any backend call", execCount)
+	}
+}
