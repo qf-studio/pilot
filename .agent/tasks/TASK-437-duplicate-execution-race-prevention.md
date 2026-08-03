@@ -73,6 +73,13 @@ was closed. There is no `pilot task cancel` verb. Memories: [[pilot_issue_missin
 their PRs were open and unmerged. #4657's merged fix would then have auto-closed green,
 unlanded PR#4667 purely on "issue closed + conflicting" — no compare-before-close.
 
+**Cleanup self-inflicted one more**: the docs commit `69ea300b` contained the phrase
+`compare-before-close #4679`, which GitHub parsed as the closing keyword `close #4679` and
+auto-closed the just-filed issue. Reopened; memory written
+([[commit_message_hyphenated_close_keyword_autocloses_issues]]). Also closed PR#4676
+(GH-4665 regression test, +164 mergeable) — it pins behavior whose call site never landed;
+scope folded into #4677.
+
 ## Refs
 
 - Issues: **#4677** (single-PR re-file of the coordinator fix, supersedes #4655) · **#4656** (issue-state revalidation, now unblocked) · **#4657** ✅ merged PR#4658 · **#4668** (heartbeat liveness) · **#4669** (dead intent judge) · **#4670** (prompt scope + side-effect audit) · **#4671** (gh-guard shim) · **#4678** (operator cancel verb) · **#4679** (compare-before-close)
