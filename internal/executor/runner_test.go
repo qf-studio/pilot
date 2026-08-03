@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -4550,6 +4551,141 @@ func TestGhostSHAGuard(t *testing.T) {
 		}
 		if result.Error != "no new commit produced — worktree HEAD matches base branch parent" {
 			t.Errorf("non-LocalMode task: unexpected error %q", result.Error)
+		}
+	})
+}
+
+// TestDecomposedChildLedgerNonTerminal covers the GH-4659 check function:
+// given a decomposed parent's recorded children, does ANY child fall
+// outside childCompletionEvidence's terminal vocabulary (completed, no_op,
+// merged_pr)? This is the detection half of the GH-4655/TASK-437
+// duplicate-execution race fix — decomposedChildrenAllComplete only acts
+// when EVERY child is terminal, so a single failed/in-flight child needs
+// its own signal for the (separate) coordinator-resume routing to consume.
+func TestDecomposedChildLedgerNonTerminal(t *testing.T) {
+	const projectPath = "/project-child-ledger-gate"
+
+	t.Run("one child failed reports non-terminal", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		parentExec := &memory.Execution{ID: "exec-gate-parent-a", TaskID: "GH-6001", ProjectPath: projectPath, Status: "failed"}
+		if err := store.SaveExecution(parentExec); err != nil {
+			t.Fatalf("SaveExecution(parent): %v", err)
+		}
+		if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 2 children: #6002, #6003"); err != nil {
+			t.Fatalf("InsertExecutionEvent: %v", err)
+		}
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-GH-6002", TaskID: "GH-6002", ProjectPath: projectPath,
+			Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/6002",
+		}); err != nil {
+			t.Fatalf("SaveExecution(child1): %v", err)
+		}
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-GH-6003", TaskID: "GH-6003", ProjectPath: projectPath, Status: "failed", Error: "boom",
+		}); err != nil {
+			t.Fatalf("SaveExecution(child2): %v", err)
+		}
+
+		hasNonTerminal, childIDs, err := decomposedChildLedgerNonTerminal(store, "GH-6001", projectPath)
+		if err != nil {
+			t.Fatalf("decomposedChildLedgerNonTerminal: %v", err)
+		}
+		if !hasNonTerminal {
+			t.Error("expected hasNonTerminal=true when a decomposed child recorded a failed row")
+		}
+		if !reflect.DeepEqual(childIDs, []string{"GH-6002", "GH-6003"}) {
+			t.Errorf("childIDs = %v, want [GH-6002 GH-6003]", childIDs)
+		}
+	})
+
+	t.Run("one child still running reports non-terminal", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		parentExec := &memory.Execution{ID: "exec-gate-parent-b", TaskID: "GH-6011", ProjectPath: projectPath, Status: "failed"}
+		if err := store.SaveExecution(parentExec); err != nil {
+			t.Fatalf("SaveExecution(parent): %v", err)
+		}
+		if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 1 children: #6012"); err != nil {
+			t.Fatalf("InsertExecutionEvent: %v", err)
+		}
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-GH-6012", TaskID: "GH-6012", ProjectPath: projectPath, Status: "running",
+		}); err != nil {
+			t.Fatalf("SaveExecution(child): %v", err)
+		}
+
+		hasNonTerminal, _, err := decomposedChildLedgerNonTerminal(store, "GH-6011", projectPath)
+		if err != nil {
+			t.Fatalf("decomposedChildLedgerNonTerminal: %v", err)
+		}
+		if !hasNonTerminal {
+			t.Error("expected hasNonTerminal=true when a decomposed child is still in flight (no terminal row)")
+		}
+	})
+
+	t.Run("all children terminal (completed/no_op/merged_pr) reports false", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		parentExec := &memory.Execution{ID: "exec-gate-parent-c", TaskID: "GH-6021", ProjectPath: projectPath, Status: "failed"}
+		if err := store.SaveExecution(parentExec); err != nil {
+			t.Fatalf("SaveExecution(parent): %v", err)
+		}
+		if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 3 children: #6022, #6023, #6024"); err != nil {
+			t.Fatalf("InsertExecutionEvent: %v", err)
+		}
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-GH-6022", TaskID: "GH-6022", ProjectPath: projectPath,
+			Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/6022",
+		}); err != nil {
+			t.Fatalf("SaveExecution(child1): %v", err)
+		}
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-GH-6023", TaskID: "GH-6023", ProjectPath: projectPath, Status: "no_op",
+		}); err != nil {
+			t.Fatalf("SaveExecution(child2): %v", err)
+		}
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-GH-6024", TaskID: "GH-6024", ProjectPath: projectPath,
+			Status: "failed", PRUrl: "https://github.com/qf-studio/pilot/pull/6024",
+		}); err != nil {
+			t.Fatalf("SaveExecution(child3): %v", err)
+		}
+
+		hasNonTerminal, childIDs, err := decomposedChildLedgerNonTerminal(store, "GH-6021", projectPath)
+		if err != nil {
+			t.Fatalf("decomposedChildLedgerNonTerminal: %v", err)
+		}
+		if hasNonTerminal {
+			t.Error("expected hasNonTerminal=false when every child matches completed/no_op/merged_pr")
+		}
+		if len(childIDs) != 3 {
+			t.Errorf("expected 3 child IDs, got %v", childIDs)
+		}
+	})
+
+	t.Run("no decomposed event reports false with no children", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-gate-direct", TaskID: "GH-6031", ProjectPath: projectPath, Status: "running",
+		}); err != nil {
+			t.Fatalf("SaveExecution: %v", err)
+		}
+
+		hasNonTerminal, childIDs, err := decomposedChildLedgerNonTerminal(store, "GH-6031", projectPath)
+		if err != nil {
+			t.Fatalf("decomposedChildLedgerNonTerminal: %v", err)
+		}
+		if hasNonTerminal {
+			t.Error("expected hasNonTerminal=false for a task that never decomposed")
+		}
+		if len(childIDs) != 0 {
+			t.Errorf("expected no child IDs, got %v", childIDs)
 		}
 	})
 }
