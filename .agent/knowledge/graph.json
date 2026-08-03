@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-08-03",
+  "updated": "2026-08-03T15:58:00.000000+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3973,6 +3973,20 @@
           "ops"
         ],
         "created": "2026-08-03"
+      },
+      "config-env-expansion-eats-dollar-vars-in-commands": {
+        "type": "pitfall",
+        "summary": "config.yaml values are env-var-expanded at load \u2014 a shell $var inside a gate command is blanked before the shell runs, silently neutering the gate; only a load-time WARN hints at it. Use $-free forms (ls|xargs) and treat any 'WARN: config:' line as a blocker.",
+        "file": ".agent/knowledge/memories/pitfalls/config-env-expansion-eats-dollar-vars-in-commands.md",
+        "concepts": [
+          "config",
+          "quality-gates",
+          "env-expansion",
+          "silent-failure",
+          "onboarding"
+        ],
+        "confidence": 0.95,
+        "created": "2026-08-03"
       }
     }
   },
@@ -5376,6 +5390,11 @@
       "from": "TASK-440",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "config-env-expansion-eats-dollar-vars-in-commands",
+      "to": "workflow-yaml-requires-front-matter",
+      "type": "related"
     }
   ],
   "concept_index": {
@@ -6317,10 +6336,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-03T12:45:16.980805+00:00",
+  "last_updated": "2026-08-03T15:58:00.000000+00:00",
   "stats": {
-    "total_nodes": 346,
-    "total_edges": 280,
-    "memory_count": 204
+    "total_nodes": 347,
+    "total_edges": 281,
+    "memory_count": 205
   }
 }
