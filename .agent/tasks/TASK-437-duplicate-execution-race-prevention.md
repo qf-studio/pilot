@@ -22,11 +22,16 @@ Nav-research trace (91 tool calls, verified at `d959cfd6`): every admission/re-c
 2. **B — revalidate issue state at pickup and before PR creation** (blocked by A — shared files). Closed issue at pickup → finalize superseded, no Execute; PR-creation preflight refuses PRs for closed issues. This alone would have prevented PR#4653.
 3. **C — conflicting PR whose issue is closed → close the PR, don't escalate.** In `handleMergeConflict`, closed source issue short-circuits to PR close + terminal, no `needs-manual-rebase`/`pilot-needs-human` noise.
 
-## Open items (not dispatched)
+## Trigger diagnosis (2026-08-03, resolved → dispatched)
 
-- **Heartbeat SIGKILL cluster**: three infra kills in 45 min (18:10/18:39/18:54) on one issue family triggered the whole race — separate diagnosis needed (box-side; #4521 fixed the stdout-reader variant only).
-- **PR#4653 disposition**: still open/conflicting — operator decision (close manually now, or leave as live test case for issue C).
-- The ad-hoc LLM `gh` close of #4649: symptom of executor sessions holding broad `gh` powers; issue B makes the *system* own supersede-finalization, but a broader "what may an executor session do to sibling issues" policy question remains.
+- **Heartbeat SIGKILL root cause CONFIRMED from recordings**: both kills fired mid-`make test` — last stream event was `tool_use Bash "make test"` (TG-1785521443743 seq 6350; TG-1785523208156 seq 3346), then true silence >5m while tests ran on the loaded t3.xlarge → `last_event_age>5m0s` → SIGKILL 137. claude-code's stream is silent during local tool runs by design; `last_event_age` is the wrong liveness signal. → **#4668** (process-tree liveness check before kill). GH-4521 was the false-silence variant; this is true silence from a healthy child.
+- **Collateral finding — intent judge 100% dead since the 07-16 cutover**: 4,321 `context_deadline` subprocess kills (07-16 23:56 → 08-03 10:30, RSS ~250–270MB, every repo, zero successes), hidden by fail-open. → **#4669** (diagnose, restore-or-retire, mandatory failure-streak metric+alert).
+- Log window also confirmed the RCA's bypass branch live: gen-0 logged "Single-package scope detected, skipping epic decomposition — executing as single task, planned_subtasks=1" — the exact `isSinglePackageScope` collapse #4655 fences. Non-deterministic planning (gen-0 → 1 subtask, gen-1 → 2) is what flipped it into decomposition on retry.
+
+## Open items
+
+- **PR#4653**: ✅ CLOSED 2026-08-03 (comment links this record; branch `pilot/GH-4649` deleted).
+- **Executor session GitHub-powers policy** (the ad-hoc `gh` close of #4649): nav-research investigation in flight — findings land in this doc when complete.
 
 ## Refs
 
