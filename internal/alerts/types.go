@@ -63,6 +63,13 @@ const (
 	// times without ever completing — see repickLoopBreakerThreshold in
 	// cmd/pilot/repick_backoff.go, GH-4391's 4,233-cycle incident.
 	AlertTypeDispatchLoopBreaker AlertType = "dispatch_loop_breaker"
+
+	// GitHub side-effect (GH-4670): the executor's post-run audit found a
+	// GitHub issue in the task's own repo closed or reopened during the run
+	// window OTHER than the issue the session was dispatched to fix — the
+	// GH-4649 incident class (an executor session improvised `gh issue
+	// close` plus a label on a sibling issue mid-run).
+	AlertTypeGithubSideEffect AlertType = "github_sideeffect"
 )
 
 // Alert represents an alert event
@@ -407,6 +414,20 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when a task is dispatched-and-rejected 10+ consecutive times without ever completing",
+		},
+		// GitHub side-effect audit (GH-4670): the executor's post-run audit
+		// already did all the filtering (own-issue exclusion, window bounds)
+		// before emitting, so no Condition field is needed — mirrors
+		// release_missing and dispatch_loop_breaker.
+		{
+			Name:        "github_sideeffect",
+			Type:        AlertTypeGithubSideEffect,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when a session mutates a GitHub issue other than the one it was dispatched to fix",
 		},
 	}
 }

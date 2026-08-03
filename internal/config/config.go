@@ -577,6 +577,16 @@ func defaultAlertRules() []AlertRuleConfig {
 			Cooldown:    1 * time.Hour,
 			Description: "Alert on daemon health degradations (dead credentials, stale self-upgrade, etc.)",
 		},
+		{
+			Name:        "github_sideeffect",
+			Type:        "github_sideeffect",
+			Enabled:     true,
+			Condition:   AlertConditionConfig{},
+			Severity:    "warning",
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when a session mutates a GitHub issue other than the one it was dispatched to fix (GH-4670)",
+		},
 	}
 }
 

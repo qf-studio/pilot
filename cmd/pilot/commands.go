@@ -741,6 +741,8 @@ Examples:
 			}
 			// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
 			runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
+			// GH-4670: post-run GitHub side-effect audit — see GH-4649 incident.
+			runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 
 			// GH-962: Clean up orphaned worktree directories from previous crashed executions
 			if cfg.Executor != nil && cfg.Executor.UseWorktree {
@@ -1361,6 +1363,8 @@ Examples:
 			}
 			// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
 			runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
+			// GH-4670: post-run GitHub side-effect audit — see GH-4649 incident.
+			runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 
 			// GH-962: Clean up orphaned worktree directories from previous crashed executions
 			if cfg.Executor != nil && cfg.Executor.UseWorktree {

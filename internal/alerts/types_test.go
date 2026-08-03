@@ -68,6 +68,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeLaneStarvation: {"lane_starvation", true},
 		// Dispatch loop breaker (GH-4469)
 		AlertTypeDispatchLoopBreaker: {"dispatch_loop_breaker", true},
+		// GitHub side-effect audit (GH-4670)
+		AlertTypeGithubSideEffect: {"github_sideeffect", true},
 	}
 
 	if len(rules) != len(expectedRules) {

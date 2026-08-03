@@ -519,6 +519,12 @@ Examples:
 				// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
 				gwRunner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 
+				// GH-4670: post-run GitHub side-effect audit — detective backstop for
+				// the GH-4649 incident class (a session mutating a sibling issue
+				// mid-run). Safe to wire unconditionally: no-ops for non-GitHub tasks,
+				// fails open on search errors.
+				gwRunner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
+
 				// Set up quality gates on runner (GH-3716: resolved per-project,
 				// falling back to the global config, then auto-detection).
 				gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
@@ -1623,6 +1629,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 	// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
 	runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
+
+	// GH-4670: post-run GitHub side-effect audit — detective backstop for the
+	// GH-4649 incident class (a session mutating a sibling issue mid-run).
+	// auditGithubSideEffects no-ops for non-GitHub tasks and fails open on
+	// search errors, so this is safe to wire unconditionally.
+	runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 
 	// Set up quality gates (GH-207). GH-3716: resolved per-project, falling
 	// back to the global config, then auto-detection.
