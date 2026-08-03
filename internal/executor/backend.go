@@ -625,6 +625,13 @@ type IntentJudgeConfig struct {
 	// falls back to per-file truncation with a full file manifest (GH-4407).
 	// Default: 32000.
 	MaxDiffChars int `yaml:"max_diff_chars,omitempty"`
+
+	// Timeout is the maximum time to wait for the judge subprocess. GH-4669:
+	// raised default from 30s to 60s after live-box reproduction showed real
+	// (non-trivial diff) invocations baseline at 18.7-22.5s, leaving the old
+	// deadline almost no margin and causing a 17-day, 100%-failure fail-open
+	// streak. Default: "60s".
+	Timeout string `yaml:"timeout,omitempty"`
 }
 
 // DefaultIntentJudgeConfig returns default intent judge configuration.
@@ -634,6 +641,7 @@ func DefaultIntentJudgeConfig() *IntentJudgeConfig {
 		Enabled:      &enabled,
 		Model:        "claude-haiku-4-5-20251001",
 		MaxDiffChars: 32000,
+		Timeout:      "60s",
 	}
 }
 
@@ -655,6 +663,11 @@ type PreFlightJudgeConfig struct {
 	// and bills to the operator's subscription. Field retained for backwards-compatible YAML
 	// parsing; will be removed in a future major version.
 	APIKey string `yaml:"api_key,omitempty"`
+
+	// Timeout is the maximum time to wait for the judge subprocess. GH-4669:
+	// empty falls back to IntentJudge's raised 60s default (see
+	// IntentJudgeConfig.Timeout doc for the RCA behind the raise).
+	Timeout string `yaml:"timeout,omitempty"`
 }
 
 // MemoryInjectionConfig controls whether relevant knowledge-graph memories

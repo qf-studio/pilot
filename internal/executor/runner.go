@@ -991,9 +991,15 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 			if config.IntentJudge.MaxDiffChars > 0 {
 				runner.intentJudge.maxDiffChars = config.IntentJudge.MaxDiffChars
 			}
+			if config.IntentJudge.Timeout != "" {
+				if d, err := time.ParseDuration(config.IntentJudge.Timeout); err == nil {
+					runner.intentJudge.SetJudgeTimeout(d)
+				}
+			}
 			runner.log.Info("Intent judge initialized",
 				slog.String("model", runner.intentJudge.model),
 				slog.Int("max_diff_chars", runner.intentJudge.maxDiffChars),
+				slog.Duration("timeout", runner.intentJudge.judgeTimeout),
 			)
 		}
 	} else if config != nil && config.IntentJudge == nil {

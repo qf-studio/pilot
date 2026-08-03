@@ -87,7 +87,7 @@
 | Model routing | ✅ | executor | - | - | Haiku (trivial), Opus 4.6 (complex), Sonnet 4.6 (simple/medium) (v0.20.0) |
 | Effort routing | ✅ | executor | - | - | Map complexity to Claude thinking depth (v0.20.0) |
 | LLM intent classification | ✅ | adapters/telegram | - | - | Pattern-based intent detection for Telegram messages |
-| Intent judge (pipeline) | ✅ | executor | - | - | Wired into execution pipeline for task classification (v0.24.0) |
+| Intent judge (pipeline) | ✅ | executor | - | - | Wired into execution pipeline for task classification (v0.24.0). GH-4669: judge subprocess deadlines raised 30s/20s→60s/60s (config-overridable via `intent_judge.timeout`/`pre_flight_judge.timeout`) after live-box repro showed real invocations baselining at 18.7-22.5s, which had left near-zero margin and caused a 17-day, 100%-failure fail-open streak (4,321 kills) hidden by the SDK poller's fail-open path; `pilot_intent_judge_failures_total` (GH-4377) is now paired with an `intent_judge_failure_streak` alert rule that fires once a repo's consecutive judge failures hit 10, so a dead judge pages instead of failing silently. |
 | Research subagents | ✅ | executor | - | - | Haiku-powered parallel codebase exploration |
 | Drift detection | ✅ | executor | - | - | Collaboration alignment monitor with re-anchoring (v0.61.0) |
 | Workflow enforcement | ✅ | executor | - | - | Embedded autonomous execution instructions (v0.61.0) |

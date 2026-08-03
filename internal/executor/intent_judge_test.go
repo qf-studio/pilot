@@ -224,14 +224,44 @@ func TestNewIntentJudge_Defaults(t *testing.T) {
 	if judge.model != "claude-haiku-4-5-20251001" {
 		t.Errorf("unexpected model: %s", judge.model)
 	}
-	if judge.judgeTimeout != 30*1e9 {
+	// GH-4669: raised from 30s/20s after live-box reproduction showed real
+	// (non-trivial) invocations baseline at 18.7-22.5s — the old deadlines
+	// left near-zero margin and caused a 17-day, 100%-failure fail-open streak.
+	if judge.judgeTimeout != 60*time.Second {
 		t.Errorf("unexpected judgeTimeout: %v", judge.judgeTimeout)
 	}
-	if judge.preflightTimeout != 20*1e9 {
+	if judge.preflightTimeout != 60*time.Second {
 		t.Errorf("unexpected preflightTimeout: %v", judge.preflightTimeout)
 	}
 	if judge.cmdRunner == nil {
 		t.Error("expected non-nil cmdRunner")
+	}
+}
+
+// TestIntentJudge_SetTimeouts verifies the GH-4669 config-override setters:
+// positive durations apply, non-positive values are ignored (keeping the
+// constructor default) rather than silently zeroing the deadline.
+func TestIntentJudge_SetTimeouts(t *testing.T) {
+	judge := NewIntentJudge("")
+
+	judge.SetJudgeTimeout(90 * time.Second)
+	if judge.judgeTimeout != 90*time.Second {
+		t.Errorf("expected judgeTimeout override to apply, got %v", judge.judgeTimeout)
+	}
+
+	judge.SetPreflightTimeout(45 * time.Second)
+	if judge.preflightTimeout != 45*time.Second {
+		t.Errorf("expected preflightTimeout override to apply, got %v", judge.preflightTimeout)
+	}
+
+	judge.SetJudgeTimeout(0)
+	if judge.judgeTimeout != 90*time.Second {
+		t.Errorf("expected non-positive SetJudgeTimeout to be ignored, got %v", judge.judgeTimeout)
+	}
+
+	judge.SetPreflightTimeout(-1 * time.Second)
+	if judge.preflightTimeout != 45*time.Second {
+		t.Errorf("expected non-positive SetPreflightTimeout to be ignored, got %v", judge.preflightTimeout)
 	}
 }
 
