@@ -13,33 +13,45 @@ import (
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
-// TestController_HandleMergeConflict_SourceIssueClosed covers GH-4657/TASK-437:
-// a conflicting PR whose source issue is already closed — because a
-// sibling/parent run delivered the same scope first (PR#4653 was born
-// conflicting against already-closed issue #4649, whose scope had already
-// merged via PR#4652) — must be closed with an honest terminal state
-// instead of escalated for a rebase nobody should perform.
+// TestController_HandleMergeConflict_SourceIssueClosed covers GH-4657/TASK-437
+// and its GH-4696 reachability follow-up: a conflicting PR whose source issue
+// is already closed — because a sibling/parent run delivered the same scope
+// first (PR#4653 was born conflicting against already-closed issue #4649,
+// whose scope had already merged via PR#4652) — must be closed with an
+// honest terminal state instead of escalated for a rebase nobody should
+// perform. GH-4696 tightened this: "source issue closed" alone is not proof
+// this PR's own changes are on main, so closeConflictSourceIssueClosed now
+// verifies reachability (compare base=HeadSHA, head=mainSHA is "ahead" or
+// "identical") before closing, and fails safe (holds instead of closing)
+// when that check says the work isn't there yet, or when the check itself
+// errors.
 //
-// Table-driven across the three branches of the new issue-state check added
-// to handleMergeConflict: a closed source issue (new short-circuit), an open
-// source issue (today's rebase/escalate ladder, unchanged), and a GetIssue
-// API error (fail-open to today's ladder, since escalation is the safe
-// default when issue state can't be confirmed).
+// Table-driven across five branches of handleMergeConflict's issue-state +
+// reachability checks: a closed source issue whose work IS on main (new
+// short-circuit, AC2), an open source issue (today's rebase/escalate ladder,
+// unchanged), a GetIssue API error (fail-open to today's ladder), a closed
+// source issue whose work is NOT on main (GH-4696: hold instead of close),
+// and a closed source issue where the reachability check itself errors
+// (GH-4696: fail-safe, hold instead of close).
 //
 // Every case uses the same source-file (non-go.mod/go.sum) conflict fixture
 // as TestController_HandleMergeConflict_SourceFileConflictEscalatesInsteadOfClosing
-// so that, absent the GH-4657 short-circuit, the path always falls through
-// to escalateAndHold — making "open issue" and "GetIssue error" genuine
-// regression checks that today's escalation behavior is untouched.
+// so that, absent the GH-4657/GH-4696 short-circuit closing the PR, the path
+// always falls through to escalateAndHold — making "open issue" and
+// "GetIssue error" genuine regression checks that today's escalation
+// behavior is untouched.
 func TestController_HandleMergeConflict_SourceIssueClosed(t *testing.T) {
 	tests := []struct {
-		name           string
-		issueHandler   func(w http.ResponseWriter, r *http.Request)
-		wantPRClosed   bool
-		wantEscalation bool
+		name              string
+		issueHandler      func(w http.ResponseWriter, r *http.Request)
+		compareStatus     string // GitHub compare "status" for base=HeadSHA...head=mainSHA; "" defaults to "ahead" (work already on main)
+		reachabilityFails bool   // simulate the GetBranch/CompareStatus reachability check itself erroring
+		wantPRClosed      bool
+		wantEscalation    bool
+		wantCommentSubstr string // optional: substring the posted comment must contain
 	}{
 		{
-			name: "closed issue: PR closed honestly, no escalation",
+			name: "closed issue + work on main: PR closed honestly, no escalation",
 			issueHandler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(github.Issue{
@@ -48,6 +60,7 @@ func TestController_HandleMergeConflict_SourceIssueClosed(t *testing.T) {
 					Labels: []github.Label{{Name: github.LabelSuperseded}},
 				})
 			},
+			compareStatus:  "ahead",
 			wantPRClosed:   true,
 			wantEscalation: false,
 		},
@@ -67,6 +80,36 @@ func TestController_HandleMergeConflict_SourceIssueClosed(t *testing.T) {
 			},
 			wantPRClosed:   false,
 			wantEscalation: true,
+		},
+		{
+			name: "closed issue + work NOT on main (GH-4696): held open, escalated, comment names the situation",
+			issueHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(github.Issue{
+					Number: 4649,
+					State:  "closed",
+					Labels: []github.Label{{Name: github.LabelSuperseded}},
+				})
+			},
+			compareStatus:     "diverged",
+			wantPRClosed:      false,
+			wantEscalation:    true,
+			wantCommentSubstr: "not confirmed on the base branch",
+		},
+		{
+			name: "closed issue + reachability check errors (GH-4696): fail-safe, held open instead of closed",
+			issueHandler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(github.Issue{
+					Number: 4649,
+					State:  "closed",
+					Labels: []github.Label{{Name: github.LabelSuperseded}},
+				})
+			},
+			reachabilityFails: true,
+			wantPRClosed:      false,
+			wantEscalation:    true,
+			wantCommentSubstr: "could not be verified",
 		},
 	}
 
@@ -119,6 +162,29 @@ func TestController_HandleMergeConflict_SourceIssueClosed(t *testing.T) {
 					labelsAdded = append(labelsAdded, body["labels"]...)
 					w.WriteHeader(http.StatusOK)
 					_ = json.NewEncoder(w).Encode([]github.Label{})
+				case r.URL.Path == "/repos/owner/repo/branches/main" && r.Method == http.MethodGet:
+					// GH-4696: closeConflictSourceIssueClosed's reachability check
+					// fetches the base branch's SHA before comparing it to the PR's
+					// HeadSHA.
+					if tt.reachabilityFails {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(github.Branch{Name: "main", Commit: github.BranchCommit{SHA: "mainsha123"}})
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/compare/deadbeef...mainsha123") && r.Method == http.MethodGet:
+					// GH-4696: compare(base=HeadSHA, head=mainSHA) — "ahead"/"identical"
+					// means the PR's changes are already reachable from main.
+					if tt.reachabilityFails {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					status := tt.compareStatus
+					if status == "" {
+						status = "ahead"
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
 				default:
 					w.WriteHeader(http.StatusOK)
 					_, _ = w.Write([]byte("{}"))
@@ -176,6 +242,10 @@ func TestController_HandleMergeConflict_SourceIssueClosed(t *testing.T) {
 				if prState.TerminalLabel == github.LabelSuperseded {
 					t.Errorf("TerminalLabel must not be set to %q when the PR wasn't closed via the GH-4657 path", github.LabelSuperseded)
 				}
+			}
+
+			if tt.wantCommentSubstr != "" && !strings.Contains(prComment, tt.wantCommentSubstr) {
+				t.Errorf("comment = %q, want substring %q", prComment, tt.wantCommentSubstr)
 			}
 		})
 	}
