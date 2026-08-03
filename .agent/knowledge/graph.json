@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-08-03T15:58:00.000000+00:00",
+  "updated": "2026-08-03T18:05:00.000000+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3987,6 +3987,21 @@
         ],
         "confidence": 0.95,
         "created": "2026-08-03"
+      },
+      "poller-labels-removed-log-means-never-applied": {
+        "type": "pitfall",
+        "summary": "Poller log 'status labels removed' also fires when pilot-in-progress was NEVER applied. Root cause (GH-4687): since the 07-16 SDK cutover no live path applies pilot-in-progress on ANY repo \u2014 only the webhook-only legacy handler does; SDK dispatch chain has zero label ops, studio-sdk Notifier unwired dead code. Orphan recovery + pre-dispatch label guards structurally dead; no duplicate dispatch (hasCompletedExecution + execution_claims hold).",
+        "file": ".agent/knowledge/memories/pitfalls/poller-labels-removed-log-means-never-applied.md",
+        "concepts": [
+          "poller",
+          "labels",
+          "duplicate-dispatch",
+          "logging-noise",
+          "github-adapter",
+          "onboarding"
+        ],
+        "confidence": 0.9,
+        "created": "2026-08-03"
       }
     }
   },
@@ -5395,6 +5410,16 @@
       "from": "config-env-expansion-eats-dollar-vars-in-commands",
       "to": "workflow-yaml-requires-front-matter",
       "type": "related"
+    },
+    {
+      "from": "poller-labels-removed-log-means-never-applied",
+      "to": "config-env-expansion-eats-dollar-vars-in-commands",
+      "type": "related"
+    },
+    {
+      "from": "poller-labels-removed-log-means-never-applied",
+      "to": "TASK-437",
+      "type": "related"
     }
   ],
   "concept_index": {
@@ -6336,10 +6361,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-03T15:58:00.000000+00:00",
+  "last_updated": "2026-08-03T18:05:00.000000+00:00",
   "stats": {
-    "total_nodes": 347,
-    "total_edges": 281,
-    "memory_count": 205
+    "total_nodes": 348,
+    "total_edges": 283,
+    "memory_count": 206
   }
 }
