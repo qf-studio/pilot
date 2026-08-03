@@ -2800,6 +2800,14 @@ func HasTerminalCompletion(store *memory.Store, taskID, projectPath string) (boo
 // any child refs (malformed/legacy format) is logged at Warn and treated the
 // same as "never decomposed" — fail safe, falling through rather than
 // guessing.
+//
+// GH-4664: decomposedChildLedgerNonTerminal (runner.go, GH-4659) is a
+// separate gate added alongside this function, not a replacement for it —
+// it is the exact logical complement over the same per-child evidence
+// (childCompletionEvidence), so it never fires when every child recorded
+// here is already terminal. This function's finalize behavior for that case
+// is pinned by TestDecomposedChildrenAllCompleteUnaffectedByLedgerGate
+// (dispatcher_test.go).
 func decomposedChildrenAllComplete(store *memory.Store, taskID, projectPath string, log *slog.Logger) (allComplete bool, childIDs []string, evidence []string, err error) {
 	childIDs, found, err := store.GetDecomposedChildTaskIDs(taskID, projectPath)
 	if err != nil {

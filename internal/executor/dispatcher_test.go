@@ -1802,6 +1802,79 @@ func TestDecomposedChildrenAllComplete(t *testing.T) {
 	})
 }
 
+// TestDecomposedChildrenAllCompleteUnaffectedByLedgerGate is the GH-4664
+// regression lock for the GH-4655 gate cluster: decomposedChildLedgerNonTerminal
+// (GH-4659, runner.go) was added as a *new* signal alongside
+// decomposedChildrenAllComplete, not a replacement, and every call site this
+// function already served (processQueue's pickup guard, stale-running/queued
+// recovery, WaitForExecution's row-vanished resolution) must keep behaving
+// exactly as before once the gate is wired into the epic-mode decision
+// (GH-4660/GH-4661).
+//
+// Both functions share the same per-child evidence (childCompletionEvidence)
+// and are exact logical complements over it: decomposedChildrenAllComplete
+// is true iff every child is terminal, decomposedChildLedgerNonTerminal is
+// true iff any child is NOT terminal. This test pins that invariant on one
+// concrete all-terminal fixture spanning all three terminal reasons
+// (completed/no_op/merged_pr) — if either function's terminal-status
+// vocabulary ever drifts from the other's, this fails instead of silently
+// changing decomposedChildrenAllComplete's finalize behavior for existing
+// callers.
+func TestDecomposedChildrenAllCompleteUnaffectedByLedgerGate(t *testing.T) {
+	const projectPath = "/project-decomposed-guard-gate-invariant"
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	parentExec := &memory.Execution{ID: "exec-parent-gate-invariant", TaskID: "GH-5041", ProjectPath: projectPath, Status: "failed"}
+	if err := store.SaveExecution(parentExec); err != nil {
+		t.Fatalf("SaveExecution(parent): %v", err)
+	}
+	if err := store.InsertExecutionEvent(parentExec.ID, memory.StageDecomposed, "decomposed into 3 children: #5042, #5043, #5044"); err != nil {
+		t.Fatalf("InsertExecutionEvent: %v", err)
+	}
+	// One child of each terminal reason childCompletionEvidence recognizes.
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-GH-5042", TaskID: "GH-5042", ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/5042",
+	}); err != nil {
+		t.Fatalf("SaveExecution(child1): %v", err)
+	}
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-GH-5043", TaskID: "GH-5043", ProjectPath: projectPath, Status: "no_op",
+	}); err != nil {
+		t.Fatalf("SaveExecution(child2): %v", err)
+	}
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-GH-5044", TaskID: "GH-5044", ProjectPath: projectPath,
+		Status: "failed", PRUrl: "https://github.com/qf-studio/pilot/pull/5044",
+	}); err != nil {
+		t.Fatalf("SaveExecution(child3): %v", err)
+	}
+
+	allComplete, allCompleteChildIDs, evidence, err := decomposedChildrenAllComplete(store, "GH-5041", projectPath, slog.Default())
+	if err != nil {
+		t.Fatalf("decomposedChildrenAllComplete: %v", err)
+	}
+	if !allComplete {
+		t.Error("expected allComplete=true: existing finalize behavior must be unchanged when every recorded child is terminal")
+	}
+	if len(evidence) != 3 {
+		t.Errorf("expected per-child evidence for all 3 children, got %v", evidence)
+	}
+
+	hasNonTerminal, gateChildIDs, err := decomposedChildLedgerNonTerminal(store, "GH-5041", projectPath)
+	if err != nil {
+		t.Fatalf("decomposedChildLedgerNonTerminal: %v", err)
+	}
+	if hasNonTerminal {
+		t.Error("expected hasNonTerminal=false: the gate must not fire when decomposedChildrenAllComplete already reports every child terminal")
+	}
+	if !reflect.DeepEqual(allCompleteChildIDs, gateChildIDs) {
+		t.Errorf("child ID lists diverged between the two functions: decomposedChildrenAllComplete=%v decomposedChildLedgerNonTerminal=%v", allCompleteChildIDs, gateChildIDs)
+	}
+}
+
 // TestHasTerminalCompletion is the GH-4347 table test for the exported
 // "is this task done" definition shared by the SDK poller's
 // ExecutionChecker (cmd/pilot/main.go's terminalCompletionChecker) and
