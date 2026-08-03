@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
@@ -320,7 +322,7 @@ func TestJudgeFailureCause_PlainErrorDefaultsToOther(t *testing.T) {
 // a metric" acceptance criterion.
 func TestSdkPreFlightJudge_JudgeIssue_RecordsFailureMetric(t *testing.T) {
 	metrics := autopilot.NewMetrics()
-	sp := sdkPreFlightJudge{
+	sp := &sdkPreFlightJudge{
 		judge:   executor.NewIntentJudge("/nonexistent/gh-4377-claude-binary"),
 		metrics: metrics,
 	}
@@ -338,13 +340,137 @@ func TestSdkPreFlightJudge_JudgeIssue_RecordsFailureMetric(t *testing.T) {
 // TestSdkPreFlightJudge_JudgeIssue_NilMetricsSafe verifies a repo with no
 // autopilot controller (nil metrics) doesn't panic on judge failure.
 func TestSdkPreFlightJudge_JudgeIssue_NilMetricsSafe(t *testing.T) {
-	sp := sdkPreFlightJudge{
+	sp := &sdkPreFlightJudge{
 		judge:   executor.NewIntentJudge("/nonexistent/gh-4377-claude-binary"),
 		metrics: nil,
 	}
 
 	if _, err := sp.JudgeIssue(context.Background(), "title", "body", ""); err == nil {
 		t.Fatal("expected error for a nonexistent claude binary")
+	}
+}
+
+// TestSdkPreFlightJudge_JudgeIssue_TimeoutIncrementsMetricOnce drives a real
+// subprocess (not a mock) that outlives its preflight deadline, confirming
+// the GH-4669 acceptance criterion directly: the timeout path both (a)
+// increments pilot_intent_judge_failures_total with cause=context_deadline,
+// and (b) fails open exactly once for a single JudgeIssue call — no internal
+// retry loop inflates the failure count for one dispatch.
+func TestSdkPreFlightJudge_JudgeIssue_TimeoutIncrementsMetricOnce(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available on this system")
+	}
+
+	dir := t.TempDir()
+	scriptPath := dir + "/slow-claude.sh"
+	// Ignores all args (title/body/model/flags) and just outlives any
+	// reasonable preflight deadline, forcing a real context-deadline kill.
+	// Uses `exec` so sleep replaces the shell in-place (single PID) — without
+	// it, killing the shell leaves an orphaned sleep holding the stdout pipe
+	// open, and Wait() blocks on pipe EOF for the full 5s regardless of the
+	// context deadline.
+	script := "#!/bin/sh\nexec sleep 5\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write test script: %v", err)
+	}
+
+	judge := executor.NewIntentJudge(scriptPath)
+	judge.SetPreflightTimeout(50 * time.Millisecond)
+
+	metrics := autopilot.NewMetrics()
+	sp := &sdkPreFlightJudge{judge: judge, metrics: metrics}
+
+	if _, err := sp.JudgeIssue(context.Background(), "title", "body", ""); err == nil {
+		t.Fatal("expected error from a subprocess killed by context deadline")
+	}
+
+	snap := metrics.Snapshot()
+	if snap.IntentJudgeFailures["context_deadline"] != 1 {
+		t.Errorf("expected exactly 1 context_deadline judge failure recorded, got: %+v", snap.IntentJudgeFailures)
+	}
+	if sp.consecutiveFailures != 1 {
+		t.Errorf("expected consecutiveFailures=1 after a single dispatch's timeout, got %d", sp.consecutiveFailures)
+	}
+}
+
+// --- GH-4669: fail-open observability (streak alert + no retry storm) ---
+
+// TestSdkPreFlightJudge_FiresStreakAlertExactlyOnceAtThreshold drives
+// judgeFailureStreakAlertThreshold consecutive failures through JudgeIssue
+// and confirms exactly one alerts.EventTypeIntentJudgeFailureStreak event is
+// emitted, at the failure that makes the streak equal to the threshold —
+// not before, and not fired again on further failures past it (no retry
+// storm).
+func TestSdkPreFlightJudge_FiresStreakAlertExactlyOnceAtThreshold(t *testing.T) {
+	config := &alerts.AlertConfig{
+		Enabled: true,
+		Channels: []alerts.ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []alerts.AlertRule{
+			{
+				Name:     "intent_judge_failure_streak",
+				Type:     alerts.AlertTypeIntentJudgeFailureStreak,
+				Enabled:  true,
+				Severity: alerts.SeverityCritical,
+				Channels: []string{"test-channel"},
+				Cooldown: 0,
+			},
+		},
+	}
+	mockCh := newMockAlertChannel("test-channel")
+	dispatcher := alerts.NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := alerts.NewEngine(config, alerts.WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	sp := &sdkPreFlightJudge{
+		judge:        executor.NewIntentJudge("/nonexistent/gh-4669-claude-binary"),
+		alertsEngine: engine,
+		repoFullName: "qf-studio/pilot",
+	}
+
+	// Drive one more failure than the threshold to confirm no retry storm:
+	// the alert must fire exactly once, at the threshold-th failure.
+	for i := 0; i < judgeFailureStreakAlertThreshold+2; i++ {
+		if _, err := sp.JudgeIssue(context.Background(), "title", "body", ""); err == nil {
+			t.Fatal("expected error for a nonexistent claude binary")
+		}
+	}
+
+	waitForMockAlerts(t, mockCh, 1, 2*time.Second)
+	got := mockCh.getAlerts()
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 streak alert (no retry storm), got %d", len(got))
+	}
+	if got[0].Type != alerts.AlertTypeIntentJudgeFailureStreak {
+		t.Errorf("expected alert type %s, got %s", alerts.AlertTypeIntentJudgeFailureStreak, got[0].Type)
+	}
+}
+
+// TestSdkPreFlightJudge_SuccessResetsStreak verifies a successful JudgeIssue
+// call resets the consecutive-failure counter, so failures before and after
+// an intervening success don't compound toward the alert threshold.
+func TestSdkPreFlightJudge_SuccessResetsStreak(t *testing.T) {
+	sp := &sdkPreFlightJudge{
+		judge: executor.NewIntentJudge("/nonexistent/gh-4669-claude-binary"),
+	}
+
+	for i := 0; i < judgeFailureStreakAlertThreshold-1; i++ {
+		if _, err := sp.JudgeIssue(context.Background(), "title", "body", ""); err == nil {
+			t.Fatal("expected error for a nonexistent claude binary")
+		}
+	}
+	if sp.consecutiveFailures != judgeFailureStreakAlertThreshold-1 {
+		t.Fatalf("expected streak of %d, got %d", judgeFailureStreakAlertThreshold-1, sp.consecutiveFailures)
+	}
+
+	sp.recordSuccess()
+	if sp.consecutiveFailures != 0 {
+		t.Fatalf("expected streak reset to 0 after success, got %d", sp.consecutiveFailures)
 	}
 }
 

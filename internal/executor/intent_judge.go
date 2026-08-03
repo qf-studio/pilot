@@ -43,6 +43,19 @@ type IntentJudge struct {
 
 // NewIntentJudge creates a new IntentJudge that calls Claude Code subprocess.
 // claudeCmd defaults to "claude" when empty.
+//
+// GH-4669 RCA: on the production box (post 2026-07-16 AWS cutover) the judge
+// subprocess failed open on effectively every real (non-trivial) invocation
+// for 17 days — 4,321 consecutive context_deadline kills, all silently
+// absorbed by the SDK poller's fail-open path. Live reproduction on the box
+// with realistic prompt sizes (5.8KB-27KB, matching real issue bodies/diffs)
+// showed baseline `claude` CLI subprocess latency of ~18.7-22.5s, leaving the
+// old 20s preflightTimeout / 30s judgeTimeout almost no margin. Contention,
+// env/model-routing leakage, ctx-deadline propagation from a shorter parent
+// context, and stale binary resolution were all ruled out empirically. The
+// timeouts below are raised to give real headroom over that measured
+// baseline; both default to 60s (overridable via IntentJudgeConfig.Timeout /
+// PreFlightJudgeConfig.Timeout).
 func NewIntentJudge(claudeCmd string) *IntentJudge {
 	if claudeCmd == "" {
 		claudeCmd = "claude"
@@ -50,13 +63,29 @@ func NewIntentJudge(claudeCmd string) *IntentJudge {
 	j := &IntentJudge{
 		claudeCmd:        claudeCmd,
 		model:            "claude-haiku-4-5-20251001",
-		judgeTimeout:     30 * time.Second,
-		preflightTimeout: 20 * time.Second,
+		judgeTimeout:     60 * time.Second,
+		preflightTimeout: 60 * time.Second,
 		maxDiffChars:     maxDiffCharsDefault,
 		log:              slog.Default(),
 	}
 	j.cmdRunner = j.defaultCmdRunner
 	return j
+}
+
+// SetJudgeTimeout overrides the post-hoc Judge() subprocess deadline. Values
+// <= 0 are ignored (keeps the constructor default). GH-4669.
+func (j *IntentJudge) SetJudgeTimeout(d time.Duration) {
+	if d > 0 {
+		j.judgeTimeout = d
+	}
+}
+
+// SetPreflightTimeout overrides the pre-flight JudgeIssue() subprocess
+// deadline. Values <= 0 are ignored (keeps the constructor default). GH-4669.
+func (j *IntentJudge) SetPreflightTimeout(d time.Duration) {
+	if d > 0 {
+		j.preflightTimeout = d
+	}
 }
 
 // judgeRSSSampleInterval controls how often the judge subprocess's RSS is

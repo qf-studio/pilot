@@ -162,6 +162,15 @@ const (
 	// than the issue the session was dispatched to fix — the GH-4649
 	// incident class. Metadata carries repo, issue, state, and task_issue.
 	EventTypeGithubSideEffect EventType = "github_sideeffect"
+
+	// Intent judge failure streak events (GH-4669): fired exactly once by
+	// the pre-flight judge wrapper (cmd/pilot/poller_github.go,
+	// sdkPreFlightJudge.JudgeIssue) when its own consecutive-failure counter
+	// reaches judgeFailureStreakAlertThreshold — the fail-open path that
+	// hid a 17-day, 100%-failure incident (4,321 context_deadline kills)
+	// until it was caught while diagnosing GH-4648. Metadata carries repo
+	// and consecutive_failures.
+	EventTypeIntentJudgeFailureStreak EventType = "intent_judge_failure_streak"
 )
 
 const (
@@ -421,6 +430,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleEvalRegression(ctx, event)
 	case EventTypeGithubSideEffect:
 		e.handleGithubSideEffect(ctx, event)
+	case EventTypeIntentJudgeFailureStreak:
+		e.handleIntentJudgeFailureStreak(ctx, event)
 	}
 }
 
@@ -686,6 +697,26 @@ func (e *Engine) handleDispatchLoopBreaker(ctx context.Context, event Event) {
 		if rule.Type == AlertTypeDispatchLoopBreaker && e.shouldFire(rule) {
 			message := fmt.Sprintf("Task %s has been dispatched-and-rejected %s consecutive times without completing — stopping until operator action or backoff expiry",
 				event.TaskID, event.Metadata["consecutive_drops"])
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+}
+
+// handleIntentJudgeFailureStreak fires AlertTypeIntentJudgeFailureStreak
+// rules when the intent judge's consecutive fail-open streak reaches the
+// caller's threshold (GH-4669). The caller (sdkPreFlightJudge.JudgeIssue,
+// cmd/pilot/poller_github.go) already computed and gated on the exact
+// threshold before emitting this event — mirroring handleDispatchLoopBreaker
+// — so no Condition-based counting happens here.
+func (e *Engine) handleIntentJudgeFailureStreak(ctx context.Context, event Event) {
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if rule.Type == AlertTypeIntentJudgeFailureStreak && e.shouldFire(rule) {
+			message := fmt.Sprintf("Pre-flight intent judge for %s has failed open %s consecutive times — judge is not producing verdicts",
+				event.Metadata["repo"], event.Metadata["consecutive_failures"])
 			alert := e.createAlert(rule, event, message)
 			e.fireAlert(ctx, rule, alert)
 		}

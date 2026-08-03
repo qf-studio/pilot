@@ -1538,6 +1538,108 @@ func TestHandleDispatchLoopBreaker(t *testing.T) {
 	})
 }
 
+// TestHandleIntentJudgeFailureStreak covers the GH-4669 intent-judge
+// failure-streak rule: the emitting side (sdkPreFlightJudge.JudgeIssue,
+// cmd/pilot/poller_github.go) does its own threshold counting (fires exactly
+// once, at consecutive failures == judgeFailureStreakAlertThreshold), so this
+// test only needs to verify the event turns into exactly one alert carrying
+// the repo and consecutive-failures metadata — mirroring
+// TestHandleDispatchLoopBreaker above.
+func TestHandleIntentJudgeFailureStreak(t *testing.T) {
+	t.Run("fires with repo and consecutive_failures metadata", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "intent_judge_failure_streak",
+					Type:     AlertTypeIntentJudgeFailureStreak,
+					Enabled:  true,
+					Severity: SeverityCritical,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type: EventTypeIntentJudgeFailureStreak,
+			Metadata: map[string]string{
+				"repo":                 "qf-studio/pilot",
+				"consecutive_failures": "10",
+			},
+			Timestamp: time.Now(),
+		})
+
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].Type != AlertTypeIntentJudgeFailureStreak {
+			t.Errorf("expected alert type %s, got %s", AlertTypeIntentJudgeFailureStreak, alerts[0].Type)
+		}
+		if !strings.Contains(alerts[0].Message, "qf-studio/pilot") || !strings.Contains(alerts[0].Message, "10") {
+			t.Errorf("expected alert message to mention the repo and consecutive-failure count, got %q", alerts[0].Message)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "intent_judge_failure_streak",
+					Type:     AlertTypeIntentJudgeFailureStreak,
+					Enabled:  false,
+					Severity: SeverityCritical,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type: EventTypeIntentJudgeFailureStreak,
+			Metadata: map[string]string{
+				"repo":                 "qf-studio/pilot",
+				"consecutive_failures": "10",
+			},
+			Timestamp: time.Now(),
+		})
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+}
+
 // TestHandleLaneStarvation covers the GH-4454 lane-starvation rule: the
 // emitting side (autopilot.Controller.reconcileLaneStarvation) does no
 // threshold filtering of its own and sends the raw streak on every starved

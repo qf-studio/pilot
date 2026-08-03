@@ -70,6 +70,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeDispatchLoopBreaker: {"dispatch_loop_breaker", true},
 		// GitHub side-effect audit (GH-4670)
 		AlertTypeGithubSideEffect: {"github_sideeffect", true},
+		// Intent judge failure streak (GH-4669)
+		AlertTypeIntentJudgeFailureStreak: {"intent_judge_failure_streak", true},
 	}
 
 	if len(rules) != len(expectedRules) {

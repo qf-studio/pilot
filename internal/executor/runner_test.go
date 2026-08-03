@@ -2301,6 +2301,62 @@ func TestNewRunnerWithConfig_IntentJudgeDefaultMaxDiffChars(t *testing.T) {
 	}
 }
 
+// Test that IntentJudgeConfig.Timeout flows into the wired IntentJudge's
+// judgeTimeout (GH-4669: the raised-default fix needs a config override path
+// too, so an operator can tune it without a binary rebuild).
+func TestNewRunnerWithConfig_IntentJudgeTimeout(t *testing.T) {
+	enabled := true
+	config := &BackendConfig{
+		Type: "claude-code",
+		ClaudeCode: &ClaudeCodeConfig{
+			Command: "sh",
+		},
+		IntentJudge: &IntentJudgeConfig{
+			Enabled: &enabled,
+			Timeout: "90s",
+		},
+	}
+
+	runner, err := NewRunnerWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewRunnerWithConfig failed: %v", err)
+	}
+	if runner.intentJudge == nil {
+		t.Fatal("expected intent judge to be wired")
+	}
+	if runner.intentJudge.judgeTimeout != 90*time.Second {
+		t.Errorf("judgeTimeout = %v, want 90s", runner.intentJudge.judgeTimeout)
+	}
+}
+
+// Test that an unset Timeout falls back to the raised 60s default rather
+// than the pre-GH-4669 30s, which live-box reproduction showed leaves
+// near-zero margin over real subprocess latency.
+func TestNewRunnerWithConfig_IntentJudgeDefaultTimeout(t *testing.T) {
+	enabled := true
+	config := &BackendConfig{
+		Type: "claude-code",
+		ClaudeCode: &ClaudeCodeConfig{
+			Command: "sh",
+		},
+		IntentJudge: &IntentJudgeConfig{
+			Enabled: &enabled,
+			// Timeout left empty - NewIntentJudge should apply the 60s default.
+		},
+	}
+
+	runner, err := NewRunnerWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewRunnerWithConfig failed: %v", err)
+	}
+	if runner.intentJudge == nil {
+		t.Fatal("expected intent judge to be wired")
+	}
+	if runner.intentJudge.judgeTimeout != 60*time.Second {
+		t.Errorf("judgeTimeout = %v, want default 60s", runner.intentJudge.judgeTimeout)
+	}
+}
+
 // Test ExtractRepoName function (GH-386)
 func TestExtractRepoName(t *testing.T) {
 	tests := []struct {

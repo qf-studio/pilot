@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
@@ -80,29 +81,80 @@ func verifySDKGithubToken(ctx context.Context, client *githubSDK.Client, tokenSo
 	return true
 }
 
+// judgeFailureStreakAlertThreshold mirrors repickLoopBreakerThreshold
+// (cmd/pilot/repick_backoff.go): the number of consecutive pre-flight judge
+// failures (fail-open) after which sdkPreFlightJudge.JudgeIssue fires
+// alerts.EventTypeIntentJudgeFailureStreak exactly once (GH-4669). This is
+// the "observable fail-open" requirement — without it, a dead judge silently
+// fails open forever, which is exactly what hid the 17-day, 4,321-invocation
+// incident this issue is named after.
+const judgeFailureStreakAlertThreshold = 10
+
 // sdkPreFlightJudge adapts *executor.IntentJudge to sdkcore.PreFlightJudger,
-// returning the SDK's core.Verdict.
+// returning the SDK's core.Verdict. Pointer receiver (GH-4669) so
+// consecutiveFailures can be mutated across calls from the SDK poller's
+// per-repo goroutine.
 type sdkPreFlightJudge struct {
 	judge *executor.IntentJudge
 	// metrics records judge subprocess failures by cause (GH-4377); nil-safe
 	// (a repo with no autopilot controller just skips the metric).
 	metrics *autopilot.Metrics
+	// alertsEngine fires EventTypeIntentJudgeFailureStreak; nil-safe.
+	alertsEngine *alerts.Engine
+	// repoFullName identifies the repo in the fired alert's metadata.
+	repoFullName string
+
+	mu                  sync.Mutex
+	consecutiveFailures int
 }
 
-func (s sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoContext string) (sdkcore.Verdict, error) {
+func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoContext string) (sdkcore.Verdict, error) {
 	v, err := s.judge.JudgeIssue(ctx, title, body, repoContext)
 	if err != nil {
 		if s.metrics != nil {
 			s.metrics.RecordIntentJudgeFailure(judgeFailureCause(err))
 		}
+		s.recordFailure()
 		return sdkcore.Verdict{}, err
 	}
+	s.recordSuccess()
 	return sdkcore.Verdict{
 		Accepted:   !v.IsRejection(),
 		Decision:   string(v.Decision),
 		Reason:     v.Reason,
 		Confidence: v.Confidence,
 	}, nil
+}
+
+// recordFailure increments the consecutive-failure streak and fires exactly
+// one alert when it reaches judgeFailureStreakAlertThreshold — an equality
+// check (not >=), so a judge that never recovers pages once, not on every
+// poll cycle thereafter (GH-4669, mirroring fireLoopBreakerAlert's pattern in
+// cmd/pilot/handler_common.go).
+func (s *sdkPreFlightJudge) recordFailure() {
+	s.mu.Lock()
+	s.consecutiveFailures++
+	consecutive := s.consecutiveFailures
+	s.mu.Unlock()
+
+	if consecutive == judgeFailureStreakAlertThreshold && s.alertsEngine != nil {
+		s.alertsEngine.ProcessEvent(alerts.Event{
+			Type: alerts.EventTypeIntentJudgeFailureStreak,
+			Metadata: map[string]string{
+				"repo":                 s.repoFullName,
+				"consecutive_failures": strconv.Itoa(consecutive),
+			},
+			Timestamp: time.Now(),
+		})
+	}
+}
+
+// recordSuccess resets the streak so a transient blip doesn't compound
+// toward the alert threshold across unrelated failures.
+func (s *sdkPreFlightJudge) recordSuccess() {
+	s.mu.Lock()
+	s.consecutiveFailures = 0
+	s.mu.Unlock()
 }
 
 // judgeFailureCause extracts the GH-4377 diagnostic cause (context_deadline,
@@ -383,7 +435,19 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 			if controller != nil {
 				judgeMetrics = controller.Metrics()
 			}
-			pollerDeps.PreFlightJudge = sdkPreFlightJudge{judge: executor.NewIntentJudge(claudeCmd), metrics: judgeMetrics}
+			preflightJudge := executor.NewIntentJudge(claudeCmd)
+			// GH-4669: allow overriding the raised 60s default from config.
+			if deps.Cfg.Executor.PreFlightJudge.Timeout != "" {
+				if d, err := time.ParseDuration(deps.Cfg.Executor.PreFlightJudge.Timeout); err == nil {
+					preflightJudge.SetPreflightTimeout(d)
+				}
+			}
+			pollerDeps.PreFlightJudge = &sdkPreFlightJudge{
+				judge:        preflightJudge,
+				metrics:      judgeMetrics,
+				alertsEngine: deps.AlertsEngine,
+				repoFullName: target.repoFullName,
+			}
 			if deps.Store != nil {
 				pollerDeps.ExecutionSaver = storeExecutionSaver{store: deps.Store}
 			}

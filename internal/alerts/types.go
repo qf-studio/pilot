@@ -70,6 +70,13 @@ const (
 	// GH-4649 incident class (an executor session improvised `gh issue
 	// close` plus a label on a sibling issue mid-run).
 	AlertTypeGithubSideEffect AlertType = "github_sideeffect"
+
+	// Intent judge failure streak (GH-4669): the pre-flight/post-hoc intent
+	// judge subprocess has failed (fail-open) N consecutive times in a row —
+	// the class of incident that hid a 17-day, 100%, 4,321-invocation
+	// failure streak (all context_deadline exceeded) behind a silent
+	// fail-open, discovered only while diagnosing GH-4648.
+	AlertTypeIntentJudgeFailureStreak AlertType = "intent_judge_failure_streak"
 )
 
 // Alert represents an alert event
@@ -428,6 +435,23 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when a session mutates a GitHub issue other than the one it was dispatched to fix",
+		},
+		// Intent judge failure streak (GH-4669): caller (sdkPreFlightJudge.
+		// JudgeIssue) does its own threshold counting and fires the event
+		// exactly once per streak (at consecutive failures ==
+		// judgeFailureStreakAlertThreshold), so no Condition field is needed
+		// here — mirrors dispatch_loop_breaker and github_sideeffect. Severity
+		// is Critical because this is the exact incident class (17-day, 100%
+		// fail-open, silently hidden) the rule exists to page on.
+		{
+			Name:        "intent_judge_failure_streak",
+			Type:        AlertTypeIntentJudgeFailureStreak,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when the pre-flight intent judge fails open N+ consecutive times without producing a verdict",
 		},
 	}
 }
