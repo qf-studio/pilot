@@ -5146,3 +5146,75 @@ func TestUpdateExecutionTitle(t *testing.T) {
 		})
 	}
 }
+
+// TestHasTerminalCompletion_CountsCanceledRow is the GH-4678 regression test
+// for HasTerminalCompletion's new "canceled" branch: an operator-cancelled
+// execution must count as done — the same "never re-dispatch" signal a
+// genuine completion or a no_op already provides — so the SDK poller's
+// pre-dispatch gate and the dispatcher's own hasTerminalSuccessLedger guard
+// both suppress re-dispatch for it (AC3). Deliberately does NOT require an
+// empty error column, unlike the no_op branch: Cancel always records the
+// operator's reason there.
+func TestHasTerminalCompletion_CountsCanceledRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-4678-HTC", "/project-htc"
+
+	done, err := store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (before any row): %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false before any execution row exists")
+	}
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-canceled", TaskID: taskID, ProjectPath: projectPath,
+		Status: "canceled", Error: "operator: duplicate ticket",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	done, err = store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (after cancel): %v", err)
+	}
+	if !done {
+		t.Error("expected done=true once a canceled row exists, even with a non-empty error/reason")
+	}
+}
+
+// TestUpdateExecutionStatusIfNotTerminal_RejectsWhenAlreadyCanceled is the
+// GH-4678 CAS-guard regression test: once Cancel writes status='canceled',
+// the CAS guard (terminalExecutionStatuses) must reject any later write
+// that would silently resurrect the row to a non-terminal status — the same
+// protection every other terminal status already gets (GH-4423).
+func TestUpdateExecutionStatusIfNotTerminal_RejectsWhenAlreadyCanceled(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "cas-canceled", TaskID: "GH-4678-CAS", ProjectPath: "/proj", Status: "canceled", Error: "operator cancel"})
+
+	applied, err := store.UpdateExecutionStatusIfNotTerminal("cas-canceled", "queued")
+	if err != nil {
+		t.Fatalf("UpdateExecutionStatusIfNotTerminal: %v", err)
+	}
+	if applied {
+		t.Error("expected applied=false — a canceled row must never be resurrected to a non-terminal status")
+	}
+
+	exec, err := store.GetExecution("cas-canceled")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "canceled" {
+		t.Errorf("expected status to remain 'canceled', got %q", exec.Status)
+	}
+}

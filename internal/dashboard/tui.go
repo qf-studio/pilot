@@ -2659,6 +2659,11 @@ func statusIconStyle(status string) (string, lipgloss.Style) {
 		// default glyph — cancelled is a real, muted terminal outcome (see
 		// mutedOutcomes in stage_strip.go), not an unaccounted-for row.
 		return "○", statusPendingStyle
+	case "canceled":
+		// GH-4678: the live single-L operator-cancel status (`pilot task
+		// cancel`). Same treatment as "cancelled" above — a real, muted
+		// terminal outcome, not an unaccounted-for row.
+		return "○", statusPendingStyle
 	case "running":
 		return "●", statusRunningStyle
 	case "pending":

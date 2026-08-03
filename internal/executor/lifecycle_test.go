@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // TestExecutionLifecycle_Begin_CreatesRowAndThreadsID verifies Begin creates
@@ -602,4 +604,144 @@ func TestExecutionLifecycle_NilStore_MethodsAreNoOps(t *testing.T) {
 	if outcome.Status != "" {
 		t.Errorf("expected zero-value outcome from nil-store Finish, got: %+v", outcome)
 	}
+
+	if _, err := lifecycle.Cancel("some-task", "/tmp/project", "reason"); !errors.Is(err, ErrExecutionNotFound) {
+		t.Errorf("expected nil-store Cancel to report ErrExecutionNotFound, got: %v", err)
+	}
+}
+
+// TestExecutionLifecycle_Cancel is the GH-4678 acceptance test for `pilot
+// task cancel`'s chokepoint: a real terminal cancel verb, distinct from the
+// "stalled" recovery signal a GH-4655 operator mistakenly hand-wrote instead.
+func TestExecutionLifecycle_Cancel(t *testing.T) {
+	t.Run("queued row: cancels cleanly, records reason, journals StageCanceled", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4678-Q", ProjectPath: "/project-q"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+
+		exec, err := NewExecutionLifecycle(store).Cancel(task.ID, task.ProjectPath, "operator: duplicate ticket")
+		if err != nil {
+			t.Fatalf("Cancel failed: %v", err)
+		}
+		if exec.Status != string(ExecStatusCanceled) {
+			t.Errorf("expected returned status %q, got %q", ExecStatusCanceled, exec.Status)
+		}
+		if exec.Error != "operator: duplicate ticket" {
+			t.Errorf("expected returned reason recorded, got %q", exec.Error)
+		}
+
+		persisted, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		if persisted.Status != string(ExecStatusCanceled) {
+			t.Errorf("expected persisted status %q, got %q", ExecStatusCanceled, persisted.Status)
+		}
+		if persisted.Error != "operator: duplicate ticket" {
+			t.Errorf("expected persisted reason, got %q", persisted.Error)
+		}
+
+		events, err := store.ListExecutionEvents(execID)
+		if err != nil {
+			t.Fatalf("ListExecutionEvents: %v", err)
+		}
+		found := false
+		for _, e := range events {
+			if e.Stage == memory.StageCanceled {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected a StageCanceled execution_events row, got events: %+v", events)
+		}
+
+		if !IsTerminalStatus(persisted.Status) {
+			t.Error("expected IsTerminalStatus(canceled) to be true")
+		}
+	})
+
+	t.Run("empty reason gets a default message instead of a blank error column", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4678-DEFAULT-REASON", ProjectPath: "/project-default"}
+		if _, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued); err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+
+		exec, err := NewExecutionLifecycle(store).Cancel(task.ID, task.ProjectPath, "")
+		if err != nil {
+			t.Fatalf("Cancel failed: %v", err)
+		}
+		if exec.Error == "" {
+			t.Error("expected a non-empty default reason when the caller supplied none")
+		}
+	})
+
+	t.Run("running row: refuses, names the execution ID, does not mutate the row", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4678-RUNNING", ProjectPath: "/project-running"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+
+		exec, err := NewExecutionLifecycle(store).Cancel(task.ID, task.ProjectPath, "trying to stop it")
+		if !errors.Is(err, ErrExecutionRunning) {
+			t.Fatalf("expected ErrExecutionRunning, got: %v", err)
+		}
+		if exec == nil || exec.ID != execID {
+			t.Fatalf("expected the running execution returned so the caller can report its ID, got: %+v", exec)
+		}
+
+		persisted, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		if persisted.Status != string(ExecStatusRunning) {
+			t.Errorf("expected row to remain 'running' (v1 refuses rather than mutating), got %q", persisted.Status)
+		}
+	})
+
+	t.Run("already-terminal row: reports ErrExecutionAlreadyTerminal, clean no-op", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4678-TERMINAL", ProjectPath: "/project-terminal"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+		if _, err := store.MarkExecutionCompletedIfNotTerminal(execID, "https://github.com/qf-studio/pilot/pull/1", "deadbeef", 1000); err != nil {
+			t.Fatalf("setup complete: %v", err)
+		}
+
+		exec, err := NewExecutionLifecycle(store).Cancel(task.ID, task.ProjectPath, "too late")
+		if !errors.Is(err, ErrExecutionAlreadyTerminal) {
+			t.Fatalf("expected ErrExecutionAlreadyTerminal, got: %v", err)
+		}
+		if exec == nil || exec.Status != "completed" {
+			t.Fatalf("expected the already-terminal execution returned unchanged, got: %+v", exec)
+		}
+	})
+
+	t.Run("no execution at all: clean ErrExecutionNotFound no-op", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		exec, err := NewExecutionLifecycle(store).Cancel("GH-4678-NONE", "/project-none", "n/a")
+		if !errors.Is(err, ErrExecutionNotFound) {
+			t.Fatalf("expected ErrExecutionNotFound, got: %v", err)
+		}
+		if exec != nil {
+			t.Errorf("expected nil execution for a not-found cancel, got: %+v", exec)
+		}
+	})
 }

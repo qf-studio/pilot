@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -1050,6 +1051,8 @@ Examples:
 	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
 
+	cmd.AddCommand(newTaskCancelCmd())
+
 	return cmd
 }
 
@@ -1095,6 +1098,110 @@ func claimLostCLIError(taskID string, saveErr error) error {
 func recordCLITaskFinish(store *memory.Store, execID string, execErr error, result *executor.ExecutionResult, duration time.Duration) error {
 	_, err := executor.NewExecutionLifecycle(store).Finish(execID, result, execErr, duration)
 	return err
+}
+
+// newTaskCancelCmd implements `pilot task cancel <task-id>` (GH-4678): a real
+// terminal cancel verb, routed through executor.ExecutionLifecycle.Cancel
+// (see its doc comment for full semantics). This closes the gap GH-4655
+// exposed — an operator hand-writing status='stalled' as a workaround, which
+// the dispatcher instead reads as a "dead owner, retry me" recovery signal
+// and keeps re-arming with fresh generations exempt from the repick hard
+// cap, forever.
+func newTaskCancelCmd() *cobra.Command {
+	var projectPath string
+	var reason string
+
+	cmd := &cobra.Command{
+		Use:   "cancel <task-id>",
+		Short: "Cancel a task so it is never re-picked",
+		Long: `Cancel marks a task's latest execution row terminal (status=canceled) so
+the dispatcher never grants it a fresh generation and the poller never
+re-dispatches it.
+
+This is NOT the same as the "stalled" status: stalled means "the owning
+process died, retry this" and is deliberately re-armed with a fresh
+generation. Hand-writing status='stalled' to try to stop a task (the GH-4655
+incident) does the opposite of canceling it — use this command instead.
+
+If the task's latest execution is currently RUNNING, cancel refuses rather
+than killing the backend process (v1: no PID/handle is tracked anywhere to
+safely stop one) — it prints the execution ID so you can investigate/stop it
+manually.
+
+Examples:
+  pilot task cancel TASK-12345
+  pilot task cancel TASK-12345 --reason "duplicate of TASK-12300"
+  pilot task cancel TASK-12345 --project /path/to/project`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			taskID := args[0]
+
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			if projectPath == "" {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("failed to resolve current directory: %w", err)
+				}
+				projectPath = cwd
+			}
+
+			store, err := memory.NewStore(daemonLockDir(cfg))
+			if err != nil {
+				return fmt.Errorf("failed to open memory store: %w", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			return runTaskCancelCLI(store, taskID, projectPath, reason, os.Stdout)
+		},
+	}
+
+	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: current directory)")
+	cmd.Flags().StringVar(&reason, "reason", "", "Operator reason recorded on the cancelled execution")
+
+	return cmd
+}
+
+// runTaskCancelCLI is the testable core of `pilot task cancel`, factored out
+// of newTaskCancelCmd's RunE the same way recordCLITaskStart/recordCLITaskFinish
+// are (cli_task_execution_test.go) so it can be exercised directly against a
+// real memory.Store without cobra/config plumbing.
+//
+// Every branch prints a message to out describing what happened (AC1: "prints
+// what it did"). Only the not-found and already-terminal branches return a
+// nil error — those are the "clean no-op with a useful message" regression
+// criterion; the running-refusal branch returns a non-nil error (distinct
+// exit code) since cancel did NOT take effect there.
+func runTaskCancelCLI(store *memory.Store, taskID, projectPath, reason string, out io.Writer) error {
+	exec, err := executor.NewExecutionLifecycle(store).Cancel(taskID, projectPath, reason)
+	switch {
+	case errors.Is(err, executor.ErrExecutionNotFound):
+		_, _ = fmt.Fprintf(out, "No execution found for task %s in %s — nothing to cancel.\n", taskID, projectPath)
+		return nil
+	case errors.Is(err, executor.ErrExecutionRunning):
+		_, _ = fmt.Fprintf(out, "Task %s is currently RUNNING (execution %s) — refusing to cancel.\n", taskID, exec.ID)
+		_, _ = fmt.Fprintln(out, "Cancel does not stop a running process in this version. Locate/stop it manually (or wait for it to finish), then retry.")
+		return err
+	case errors.Is(err, executor.ErrExecutionAlreadyTerminal):
+		_, _ = fmt.Fprintf(out, "Task %s's latest execution (%s) is already terminal (status=%s) — nothing to cancel.\n", taskID, exec.ID, exec.Status)
+		return nil
+	case err != nil:
+		return fmt.Errorf("failed to cancel task %s: %w", taskID, err)
+	}
+
+	_, _ = fmt.Fprintf(out, "Cancelled task %s (execution %s).\n", taskID, exec.ID)
+	if reason != "" {
+		_, _ = fmt.Fprintf(out, "Reason: %s\n", reason)
+	}
+	_, _ = fmt.Fprintln(out, "This task will not be re-picked by the dispatcher or poller unless its issue is reopened/relabeled.")
+	return nil
 }
 
 // killExistingTelegramBot finds and kills any running pilot process with Telegram enabled
