@@ -1,6 +1,6 @@
 # TASK-437: GH-4648/4649 duplicate-execution race — incident record + prevention cluster
 
-**Created**: 2026-08-03 · **Status**: 🚀 3 prevention issues dispatched (numbers in Refs) · **Last Updated**: 2026-08-03
+**Created**: 2026-08-03 · **Status**: 🚀 7 issues open (#4656 #4668 #4669 #4670 #4671 #4677 #4678 #4679); #4657 ✅ merged · **Last Updated**: 2026-08-03
 
 ## Incident (2026-07-31, all UTC, project startups/pilot)
 
@@ -38,9 +38,45 @@ Nav-research trace (91 tool calls, verified at `d959cfd6`): every admission/re-c
   - **⚠️ Live-verified: `qf-studio/pilot` main has NO branch protection** (`GET /branches/main/protection` → 404) — a session could push to main directly; only advisory CLAUDE.md text prevents it. NOTE: enabling protection interacts with autopilot auto-merge + required_checks (TASK-431 class) — operator decision, not a casual toggle.
   - Containment DISPATCHED 2026-08-03 (founder "go"): **#4670** (prompt-level scope rule + post-run GitHub side-effect audit — advisory + detective) · **#4671** (gh-guard shim: PATH-interposed `pilot gh-guard`, Go argv policy, deny sibling/cross-repo mutations, fail-closed for writes — preventive). Option (4) (drop `--dangerously-skip-permissions` for settings deny rules) deliberately not taken now. **Branch protection on main** → TASK-405 founder-decision list item 7 (decide alongside #4671 delivery).
 
+## Second incident: the fix cluster fragmented itself (2026-08-03)
+
+**#4655 was dispatched without `no-decompose`** (authoring miss — the four console/ui issues
+filed the same day DID carry it). It fragmented into 7 sequential children (#4659–#4665), all
+editing the same ~40-line region of `runner.go`'s epic decision block, each branching from a
+different view of `main`:
+
+| Child | PR | Outcome |
+|---|---|---|
+| #4659 gate function | #4666 | ✅ merged — **on main but called by nothing** (inert, not half-broken) |
+| #4660 insert gate call | #4667 | +290, all checks green, **CONFLICTING** |
+| #4661 route to coordinator | #4672 | +726/−12 across **10 files incl. unrelated `gh3938_test.go`/`gh4405_test.go`**, CONFLICTING, zero checks |
+| #4663 isSinglePackageScope | #4674 | +170, green, mergeable |
+| #4664 finalize behavior | #4675 | +81, green, mergeable |
+| #4662 planning-fallback | — | heartbeat SIGKILL mid-`go test` (the #4668 bug) |
+| #4665 regression test | — | canceled mid-run |
+
+~1,270 lines for a ~150-line change. **Resolution**: all 4 PRs closed + branches deleted,
+all children closed `not planned`, parent #4655 closed, whole fix re-filed as **#4677**
+(`no-decompose`). Merging the mergeable subset was rejected: the gate's call site lived in
+the CONFLICTING #4667, so it would have landed a half-wired intermediate state no reviewer
+validated as a whole — the exact failure mode this cluster exists to prevent.
+
+**Cancellation was harder than it should be** (→ #4678): closing an issue does not stop
+queued/running executions (#4656's gap), and marking rows `stalled` is read by the dispatcher
+as *"dead owner, retry me"* — `dispatch re-pick: prior claim was stall-killed — claiming next
+generation without counting toward repick hard cap` — so each stall spun a new generation
+(#4655 reached gen-3). The poller also re-dispatched #4655 at 12:03:31Z, 8 min after the issue
+was closed. There is no `pilot task cancel` verb. Memories: [[pilot_issue_missing_no_decompose_fragments_single_fix]],
+[[pilot_stalled_status_is_retry_not_cancel]].
+
+**Near-miss caught in passing** (→ #4679): #4660/#4661 were closed by the epic flow while
+their PRs were open and unmerged. #4657's merged fix would then have auto-closed green,
+unlanded PR#4667 purely on "issue closed + conflicting" — no compare-before-close.
+
 ## Refs
 
-- Issues: A = https://github.com/qf-studio/pilot/issues/4655 · B = https://github.com/qf-studio/pilot/issues/4656 (blocked by #4655) · C = https://github.com/qf-studio/pilot/issues/4657 (independent, autopilot-only)
+- Issues: **#4677** (single-PR re-file of the coordinator fix, supersedes #4655) · **#4656** (issue-state revalidation, now unblocked) · **#4657** ✅ merged PR#4658 · **#4668** (heartbeat liveness) · **#4669** (dead intent judge) · **#4670** (prompt scope + side-effect audit) · **#4671** (gh-guard shim) · **#4678** (operator cancel verb) · **#4679** (compare-before-close)
+- Closed in cleanup: #4655 + children #4659–#4665; PRs #4667/#4672/#4674/#4675 (branches deleted); #4666 merged and retained
 - Trace source: nav-research report 2026-08-03 (this doc summarizes it; file:line refs verified at `d959cfd6`).
 - Prior art: TASK-401 (#4216 decomposed-children guard — the narrow case), GH-724 (conflict-before-CI check), GH-4646/PR#4647 (terminal-status pattern to mirror), TASK-431 (incident-record precedent).
 - Related: TASK-436 (the feature whose dispatch triggered this incident; its main leg shipped via #4648→PR#4652, released v2.251.1).
