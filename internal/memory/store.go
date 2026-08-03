@@ -953,6 +953,14 @@ const (
 	StageNoOp             Stage = "no_op"
 	StageSkipped          Stage = "skipped"
 	StageStalled          Stage = "stalled"
+	// StageSuperseded records that an execution was finalized without running
+	// (pickup-time) or without opening a PR (pre-PR-create) because its
+	// GitHub issue was found closed — GH-4656, closing the 2026-07-31
+	// GH-4649 incident window (a retry finished after its issue had already
+	// been closed as superseded by a sibling/parent run and opened PR#4653
+	// against the closed issue anyway). Detail carries the observed issue
+	// state and whether a pilot-superseded label was present.
+	StageSuperseded Stage = "superseded"
 	// StageResearchPhase records the parallel-research phase's duration and
 	// token spend once per direct-path execution (GH-4129). Detail is a JSON
 	// object: {"duration_ms","total_tokens","findings"}.

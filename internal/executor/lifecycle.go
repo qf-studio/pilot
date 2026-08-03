@@ -41,6 +41,14 @@ const (
 	ExecStatusSkipped     Status = "skipped"
 	ExecStatusDeclined    Status = "declined"
 	ExecStatusDecomposed  Status = "decomposed"
+	// ExecStatusSuperseded marks an execution finalized without running (or
+	// without opening a PR) because its GitHub issue was found closed by the
+	// GH-4656 pickup-time / PR-creation preflight guards — the issue's scope
+	// was already delivered by another run (sibling/parent) before this one
+	// reached the gate. Distinct from ExecStatusSkipped (which covers other
+	// pre-dispatch admission declines): superseded specifically means "another
+	// run already shipped this."
+	ExecStatusSuperseded Status = "superseded"
 )
 
 // ExecutionLifecycle is the single chokepoint for creating and transitioning

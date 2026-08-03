@@ -18,6 +18,7 @@ var executionStatusVocabulary = map[string]bool{
 	"queued": true, "pending": true, "running": true,
 	"completed": true, "failed": true, "cancelled": true, "declined": true,
 	"no_op": true, "rate_limited": true, "skipped": true, "stalled": true, "infra": true,
+	"superseded": true,
 }
 
 // terminalStatusInventoryAllowFiles lists the source files permitted to
