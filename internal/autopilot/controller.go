@@ -4557,6 +4557,26 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 		prState.ConflictRecorded = true
 	}
 
+	// GH-4657/TASK-437: a conflicting PR whose source issue is already closed
+	// means a sibling/parent run delivered the same scope first (the
+	// PR#4653/#4649 duplicate-execution race is the motivating incident) —
+	// rebasing would just re-resolve a conflict against work already on
+	// main. Check this BEFORE any rebase attempt so the closed-issue case
+	// never reaches escalateAndHold's needs-manual-rebase/pilot-needs-human
+	// ask for a rebase nobody should perform.
+	if prState.IssueNumber > 0 {
+		issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+		if err != nil {
+			// Fail-open: an unknown issue state must never block the existing
+			// rebase/escalate ladder — escalation is the safe default when
+			// GitHub state can't be confirmed.
+			c.log.Warn("handleMergeConflict: failed to fetch issue state, falling through to rebase ladder",
+				"pr", prState.PRNumber, "issue", prState.IssueNumber, "error", err)
+		} else if strings.EqualFold(issue.State, github.StateClosed) {
+			return c.closeConflictSourceIssueClosed(ctx, prState, issue)
+		}
+	}
+
 	// Try GitHub auto-update first (merge-from-base, not true rebase)
 	err := c.ghClient.UpdatePullRequestBranch(ctx, c.owner, c.repo, prState.PRNumber)
 	if err == nil {
@@ -4710,6 +4730,48 @@ func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, pr
 	prState.Stage = StageWaitingCI // mechanical resolution triggers new CI
 	prState.HeadSHA = ""           // force refresh on next tick
 	return true, nil
+}
+
+// closeConflictSourceIssueClosed handles the GH-4657 case where
+// handleMergeConflict discovers the PR's source issue is already closed —
+// almost always because a sibling/parent execution delivered the same scope
+// first (TASK-437's PR#4653/#4649 duplicate-execution race is the
+// motivating incident: #4649 was closed pilot-superseded while a sibling
+// run's PR#4652 for the same scope had already merged, so #4649's own PR
+// (#4653) was born conflicting against work already on main). Resolving
+// that conflict would just recreate merged work, so the honest action is
+// closing the PR with a terminal stage — not escalateAndHold's
+// needs-manual-rebase/pilot-needs-human ask for a rebase nobody should
+// perform. Unlike closeAndReexecute, this never re-adds the pilot label or
+// removes pilot-in-progress: the issue is already closed, so there is
+// nothing to re-dispatch.
+func (c *Controller) closeConflictSourceIssueClosed(ctx context.Context, prState *PRState, issue *github.Issue) error {
+	reason := fmt.Sprintf("source issue #%d is closed", prState.IssueNumber)
+	comment := fmt.Sprintf(
+		"Source issue #%d is closed — closing this PR instead of attempting a rebase. Resolving this merge conflict would duplicate work already merged to main.",
+		prState.IssueNumber,
+	)
+	if github.HasLabel(issue, github.LabelSuperseded) {
+		comment += fmt.Sprintf("\n\nThe issue carries `%s`: it was closed because another run already delivered this scope.", github.LabelSuperseded)
+	}
+
+	c.log.Info("handleMergeConflict: source issue closed, closing PR instead of escalating",
+		"pr", prState.PRNumber, "issue", prState.IssueNumber, "issue_state", issue.State)
+
+	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+		c.log.Warn("failed to comment on conflicting PR before close", "pr", prState.PRNumber, "error", err)
+	}
+	if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+		c.log.Warn("failed to close conflicting PR", "pr", prState.PRNumber, "error", err)
+	}
+
+	prState.Stage = StageFailed
+	prState.Error = reason
+	// GH-3806: tell notifyExternalClose (which runs once this close is
+	// observed on GitHub) not to mark the already-closed issue
+	// pilot-retry-ready — there is nothing to retry.
+	prState.TerminalLabel = github.LabelSuperseded
+	return nil
 }
 
 // closeAndReexecute is the fallback rung of handleMergeConflict: comment on
