@@ -2034,6 +2034,52 @@ func (r *Runner) recordEpicTerminalEvent(executionID string, result *ExecutionRe
 	}
 }
 
+// decomposedChildLedgerNonTerminal reports whether taskID has a recorded
+// StageDecomposed ledger event (Store.GetDecomposedChildTaskIDs) AND at
+// least one parsed child is non-terminal (still in flight) or failed —
+// anything childCompletionEvidence (dispatcher.go:2842-2858) would NOT tag
+// "completed", "no_op", or "merged_pr". It reuses that same terminal-status
+// vocabulary rather than defining a new one, so a child counts as terminal
+// here exactly when decomposedChildrenAllComplete's per-child loop would
+// treat it as done.
+//
+// GH-4655/GH-4659: this is the check half of the GH-4648/GH-4649
+// duplicate-execution race fix (TASK-437) — a decomposed parent's retry
+// must resume coordination rather than re-implement once ANY child is
+// recorded, not only when every child has already shipped
+// (decomposedChildrenAllComplete is all-or-nothing and silently falls
+// through when a child failed). Deliberately scoped to the check alone:
+// wiring this into the epic-mode decision ahead of DetectComplexity
+// (~runner.go:2224) and routing into the recoverExistingSubIssues
+// coordinator flow are separate sibling issues (GH-4660/GH-4661); this
+// function adds no new tables, config, or helper abstractions beyond
+// itself.
+//
+// Returns false with no children if taskID never decomposed, or if the
+// StageDecomposed detail string didn't parse into any child refs
+// (malformed/legacy format) — fail safe, matching
+// decomposedChildrenAllComplete's own fallback rather than guessing.
+func decomposedChildLedgerNonTerminal(store *memory.Store, taskID, projectPath string) (hasNonTerminal bool, childIDs []string, err error) {
+	childIDs, found, err := store.GetDecomposedChildTaskIDs(taskID, projectPath)
+	if err != nil {
+		return false, nil, err
+	}
+	if !found || len(childIDs) == 0 {
+		return false, childIDs, nil
+	}
+
+	for _, childID := range childIDs {
+		_, complete, cErr := childCompletionEvidence(store, childID, projectPath)
+		if cErr != nil {
+			return false, childIDs, cErr
+		}
+		if !complete {
+			return true, childIDs, nil
+		}
+	}
+	return false, childIDs, nil
+}
+
 // executeWithOptions is the internal implementation that allows controlling worktree creation.
 // When allowWorktree is false, it skips worktree creation even if configured.
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
