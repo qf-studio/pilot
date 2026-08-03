@@ -43,7 +43,7 @@ func TestExecuteSubIssues_LedgerRowPerChild(t *testing.T) {
 	runner := newTestRunnerWithExecFunc(execFn)
 	runner.logStore = store
 
-	childStates, _, err := runner.executeSubIssuesTracked(context.Background(), parent, issues, parent.ProjectPath, "")
+	childStates, _, err := runner.executeSubIssuesTracked(context.Background(), parent, issues, parent.ProjectPath, "", false)
 	if err != nil {
 		t.Fatalf("executeSubIssuesTracked returned error: %v", err)
 	}

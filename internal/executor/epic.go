@@ -2497,7 +2497,7 @@ func (r *Runner) resolveChildTerminalOutcome(row *memory.Execution, result *Exec
 // as their ProjectPath so they can create their own branches from the real repo.
 // executionPath is still used for gh CLI commands (issue comments) that need worktree context.
 func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string, repoPath string) error {
-	_, _, err := r.executeSubIssuesTracked(ctx, parent, issues, executionPath, repoPath)
+	_, _, err := r.executeSubIssuesTracked(ctx, parent, issues, executionPath, repoPath, false)
 	return err
 }
 
@@ -2723,7 +2723,19 @@ func (r *Runner) sweepEpicChildrenOnAbort(task *Task, failureReason string) {
 // mirrors the TASK-320 B2 tolerance already applied to the in-process decomposer
 // (runner_decompose.go isNoOpResult). Any other child failure still aborts the
 // whole epic, unchanged from ExecuteSubIssues' prior behavior.
-func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string, repoPath string) ([]string, *ExecutionResult, error) {
+//
+// generationRetry (GH-4655/GH-4661): when true, each child's execution claim
+// is attempted through r.childGenerationRetryFn (wired to
+// Dispatcher.beginWithGenerationRetry) instead of a plain generation-0
+// Begin. This is what lets a decomposed parent's coordinator-resume path
+// re-dispatch a FAILED child at generation+1 rather than losing the Begin()
+// race against its own dead generation-0 claim forever (documented gap
+// below). A live/in-flight child still routes into the existing
+// ErrClaimLost branch, which polls via reconcileChildOutcome until the
+// owner's outcome is known — the "wait on any in-flight children" half of
+// the coordinator-resume contract. Every other caller passes false,
+// preserving today's plain-Begin behavior unchanged.
+func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string, repoPath string, generationRetry bool) ([]string, *ExecutionResult, error) {
 	metrics := &ExecutionResult{}
 	if len(issues) == 0 {
 		return nil, metrics, fmt.Errorf("no sub-issues to execute")
@@ -2885,10 +2897,30 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// loses (ErrClaimLost) — the backend is never invoked a second time
 		// for an already-failed child, so there is no unthrottled retry here
 		// to throttle. See TestExecuteSubIssues_RepickDoesNotBypassBackoff.
-		// If this loop ever grows its own generation+1 retry, it must route
-		// through the same shared repick_backoff store beginWithGenerationRetry
-		// uses instead of re-implementing a second, driftable copy.
-		subExecID, err := NewExecutionLifecycle(r.logStore).Begin(subTask, ExecStatusRunning)
+		// GH-4655/GH-4661: this loop DID grow its own generation+1 retry —
+		// the coordinator-resume path passes generationRetry=true and routes
+		// the claim through r.childGenerationRetryFn, the shared wrapper
+		// around beginWithGenerationRetry/repick_backoff, exactly as this
+		// comment previously required rather than re-implementing a second,
+		// driftable copy here. Every other caller still passes
+		// generationRetry=false and keeps claiming generation 0 only.
+		var subExecID string
+		var err error
+		if generationRetry && r.childGenerationRetryFn != nil {
+			var ok bool
+			subExecID, ok, err = r.childGenerationRetryFn(subTask)
+			if err == nil && !ok {
+				// No fresh generation warranted — either another channel
+				// still owns a LIVE claim (wait for it) or the task is
+				// already terminally done (nothing to retry). Both funnel
+				// into the same ErrClaimLost branch below, which polls
+				// reconcileChildOutcome for the real outcome instead of
+				// re-invoking the backend.
+				err = ErrClaimLost
+			}
+		} else {
+			subExecID, err = NewExecutionLifecycle(r.logStore).Begin(subTask, ExecStatusRunning)
+		}
 
 		var result *ExecutionResult
 		if errors.Is(err, ErrClaimLost) {
@@ -3156,4 +3188,147 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 	)
 
 	return childStates, metrics, nil
+}
+
+// resumeDecomposedCoordinator is the routing target for the decomposed
+// child-ledger gate (GH-4655/GH-4660, decomposedChildLedgerNonTerminal in
+// runner.go): once the gate has determined task is a decomposed parent with
+// at least one non-terminal or failed recorded child, this resumes the run
+// as coordinator instead of falling through to complexity classification and
+// epic re-planning — the GH-4648/GH-4649 duplicate-PR race this gate exists
+// to prevent.
+//
+// It reuses the exact recovery flow CreateSubIssues' ErrSubIssuesAlreadyExist
+// branch already relies on (runner.go's "Sub-issues already exist, attempting
+// recovery" block): recoverExistingSubIssues reconstructs every GitHub issue
+// whose body names task as parent, allChildrenDone decides whether the epic
+// is already finished, and executeSubIssuesTracked drives whatever remains
+// open. The one difference from that block is generationRetry=true: a FAILED
+// child gets re-dispatched at generation+1 via r.childGenerationRetryFn
+// (Dispatcher.beginWithGenerationRetry) instead of losing the Begin() race
+// against its own dead generation-0 claim forever, and a genuinely in-flight
+// child is waited on via the existing ErrClaimLost→reconcileChildOutcome poll
+// — never re-invoked, never raced.
+func (r *Runner) resumeDecomposedCoordinator(ctx context.Context, task *Task, executionPath string, start time.Time) (*ExecutionResult, error) {
+	recover := r.recoverSubIssuesFn
+	if recover == nil {
+		recover = recoverExistingSubIssues
+	}
+	recovered, _ := recover(ctx, executionPath, task.ID)
+	if len(recovered) == 0 {
+		// The ledger says children exist, but gh can't find any matching
+		// sub-issue (deleted, cross-repo drift, transient gh CLI failure).
+		// Resuming coordination requires knowing what to re-dispatch or wait
+		// on — fail loud rather than silently falling through to direct
+		// re-implementation, which is exactly the race this gate exists to
+		// prevent.
+		failMsg := fmt.Sprintf("child-ledger gate triggered for %s but recoverExistingSubIssues found no matching sub-issues — cannot resume coordination", task.ID)
+		r.log.Error("Coordinator resume: no recovered sub-issues", slog.String("task_id", task.ID))
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, failMsg)
+		return &ExecutionResult{
+			TaskID:   task.ID,
+			Success:  false,
+			Error:    failMsg,
+			Duration: time.Since(start),
+			IsEpic:   true,
+		}, nil
+	}
+
+	if allChildrenDone(recovered) {
+		r.log.Info("Coordinator resume: all recovered sub-issues are done, treating epic as complete",
+			slog.String("task_id", task.ID),
+			slog.Int("recovered_count", len(recovered)),
+		)
+		r.reportProgress(task.ID, "Complete", 100, "All sub-issues already completed")
+		recoveredSummary := formatDecomposedChildrenSummary(recovered)
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageDecomposed, recoveredSummary)
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageCompleted, recoveredSummary)
+		return &ExecutionResult{
+			TaskID:    task.ID,
+			Success:   true,
+			Output:    fmt.Sprintf("Epic already completed: %s", recoveredSummary),
+			Duration:  time.Since(start),
+			IsEpic:    true,
+			ModelName: r.fallbackModelName(),
+		}, nil
+	}
+
+	// Filter to open children — mirrors the CreateSubIssues recovery block's
+	// own filter. A closed-but-not-ledger-complete child (rare: manually
+	// closed without a matching completion signal) has nothing left to
+	// redispatch or wait on, so fall back to the full recovered set rather
+	// than dropping it silently.
+	var pending []CreatedIssue
+	for _, iss := range recovered {
+		if strings.ToLower(iss.State) == "open" {
+			pending = append(pending, iss)
+		}
+	}
+	if len(pending) == 0 {
+		pending = recovered
+	}
+
+	r.log.Info("Coordinator resume: re-dispatching/waiting on recovered sub-issues",
+		slog.String("task_id", task.ID),
+		slog.Int("pending_count", len(pending)),
+	)
+	r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Resuming coordinator: %d sub-issue(s)...", len(pending)))
+
+	// Scale the timeout to the actual pending count, same rationale as the
+	// multi-package epic branch above (GH-4536/TASK-419): each child gets a
+	// full complex-task budget, derived fresh from ctx rather than any
+	// already-expired parent deadline.
+	perSubIssueTimeout := r.modelRouter.GetTimeoutForComplexity(ComplexityComplex)
+	coordinatorTimeout := perSubIssueTimeout * time.Duration(len(pending))
+	if coordinatorTimeout < perSubIssueTimeout {
+		coordinatorTimeout = perSubIssueTimeout // overflow/empty guard
+	}
+	coordCtx, coordCancel := context.WithTimeout(ctx, coordinatorTimeout)
+	defer coordCancel()
+
+	childStates, childMetrics, err := r.executeSubIssuesTracked(coordCtx, task, pending, executionPath, task.ProjectPath, true)
+	if err != nil {
+		execErr := fmt.Sprintf("coordinator-resume sub-issue execution failed: %v", err)
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(execErr, 200))
+		return &ExecutionResult{
+			TaskID:   task.ID,
+			Success:  false,
+			Error:    execErr,
+			Duration: time.Since(start),
+			IsEpic:   true,
+		}, nil
+	}
+
+	epicResult := &ExecutionResult{
+		TaskID:    task.ID,
+		Success:   true,
+		Output:    fmt.Sprintf("Epic completed: %s", formatDecomposedChildrenSummary(pending)),
+		Duration:  time.Since(start),
+		IsEpic:    true,
+		ModelName: r.fallbackModelName(),
+	}
+	if childMetrics != nil {
+		epicResult.TokensInput = childMetrics.TokensInput
+		epicResult.TokensOutput = childMetrics.TokensOutput
+		epicResult.TokensTotal = childMetrics.TokensTotal
+		epicResult.CacheCreationInputTokens = childMetrics.CacheCreationInputTokens
+		epicResult.CacheReadInputTokens = childMetrics.CacheReadInputTokens
+		epicResult.ResearchTokens = childMetrics.ResearchTokens
+		epicResult.FilesChanged = childMetrics.FilesChanged
+		epicResult.LinesAdded = childMetrics.LinesAdded
+		epicResult.LinesRemoved = childMetrics.LinesRemoved
+		epicResult.EstimatedCostUSD = childMetrics.EstimatedCostUSD
+		if childMetrics.ModelName != "" {
+			epicResult.ModelName = childMetrics.ModelName
+		}
+	}
+
+	if task.CreatePR && task.Branch != "" {
+		r.finalizeEpicBranchPR(coordCtx, task, NewGitOperations(executionPath), epicResult, childStates)
+	} else {
+		r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
+	}
+	classifyZeroDeliveryEpicCompletion(epicResult)
+	r.recordEpicTerminalEvent(task.LogExecutionID(), epicResult)
+	return epicResult, nil
 }

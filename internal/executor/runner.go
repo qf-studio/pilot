@@ -813,6 +813,20 @@ type Runner struct {
 	// which case a detected self-owned deadlock fails the sub-issue instead
 	// of hanging.
 	reclaimSelfOwnedQueuedChildFn func(subTask *Task) (execID string, ok bool, err error)
+	// childGenerationRetryFn lets executeSubIssuesTracked (epic.go, GH-4661)
+	// claim a fresh generation for a decomposed child whose prior claim is
+	// dead due to failure, instead of losing the claim at generation 0
+	// forever (the gap documented at epic.go's GH-4394 subtask 4 comment).
+	// Wired by NewDispatcher to a thin wrapper around
+	// Dispatcher.beginWithGenerationRetry. Deliberately does NOT reuse
+	// reclaimSelfOwnedQueuedChildFn's force-stall step above: a coordinator
+	// resuming a decomposed parent (GH-4655/GH-4661) must WAIT for a
+	// genuinely live child, never force-stall it — only a truly dead
+	// (terminal-but-not-done) claim should be granted a new generation.
+	// Only consulted when executeSubIssuesTracked's generationRetry
+	// parameter is true; nil falls back to the plain generation-0 Begin
+	// (today's behavior), same nil-guard shape as reclaimSelfOwnedQueuedChildFn.
+	childGenerationRetryFn func(subTask *Task) (execID string, ok bool, err error)
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
@@ -832,6 +846,15 @@ func (r *Runner) SetRepoAllowlist(allow RepoAllowlist) {
 // implementation detail.
 func (r *Runner) setReclaimSelfOwnedQueuedChildFn(fn func(subTask *Task) (execID string, ok bool, err error)) {
 	r.reclaimSelfOwnedQueuedChildFn = fn
+}
+
+// setChildGenerationRetryFn wires the generation+1 retry mechanism used by
+// executeSubIssuesTracked's coordinator-resume path (GH-4655/GH-4661) to
+// re-dispatch a failed decomposed child instead of losing its claim
+// forever at generation 0. Called by NewDispatcher; unexported since only
+// the Dispatcher constructor should set it.
+func (r *Runner) setChildGenerationRetryFn(fn func(subTask *Task) (execID string, ok bool, err error)) {
+	r.childGenerationRetryFn = fn
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -2277,12 +2300,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// decomposedChildLedgerNonTerminal (GH-4659) is the missing per-child
 	// signal that fires as soon as ANY recorded child isn't terminal.
 	//
-	// Routing a gated run into the recoverExistingSubIssues coordinator
-	// flow (re-dispatching failed children generation+1, waiting on
-	// in-flight ones) is wired in the sibling issue GH-4661 — deliberately
-	// scoped separately so this gate lands as one reviewable seam. Until
-	// GH-4661 lands, a gated run fails loudly here instead of silently
-	// falling through to direct re-implementation.
+	// GH-4661: a gated run routes into resumeDecomposedCoordinator, which
+	// resumes the recoverExistingSubIssues coordinator flow (re-dispatching
+	// failed children at generation+1 via r.childGenerationRetryFn, waiting
+	// on in-flight ones) instead of falling through to direct
+	// re-implementation.
 	var childLedgerNonTerminal bool
 	var childLedgerChildIDs []string
 	if r.logStore != nil {
@@ -2297,18 +2319,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 	if childLedgerNonTerminal {
-		r.log.Info("Decomposed child-ledger gate triggered: skipping complexity detection and epic planning",
+		r.log.Info("Decomposed child-ledger gate triggered: resuming as coordinator instead of re-planning",
 			slog.String("task_id", task.ID),
 			slog.Any("child_ids", childLedgerChildIDs),
 		)
-		r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed,
-			fmt.Sprintf("child-ledger gate: task_id=%s has non-terminal decomposed children %v — coordinator-resume routing pending (GH-4661)", task.ID, childLedgerChildIDs))
-		return &ExecutionResult{
-			TaskID:   task.ID,
-			Success:  false,
-			Error:    fmt.Sprintf("decomposed parent has non-terminal children %v; coordinator-resume routing not yet wired (GH-4661)", childLedgerChildIDs),
-			Duration: time.Since(start),
-		}, nil
+		return r.resumeDecomposedCoordinator(ctx, task, executionPath, start)
 	}
 
 	// Detect complexity for routing decisions
@@ -2614,7 +2629,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// one whose deliverables shipped entirely via child sub-issue PRs.
 				// GH-3938: childMetrics carries the real tokens/files/cost every child
 				// actually burned, rolled up onto the epic-parent's own result below.
-				childStates, childMetrics, err := r.executeSubIssuesTracked(epicCtx, task, issues, executionPath, task.ProjectPath)
+				childStates, childMetrics, err := r.executeSubIssuesTracked(epicCtx, task, issues, executionPath, task.ProjectPath, false)
 				if err != nil {
 					execErr := fmt.Sprintf("sub-issue execution failed: %v", err)
 					r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(execErr, 200))

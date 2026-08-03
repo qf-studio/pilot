@@ -4693,10 +4693,14 @@ func TestDecomposedChildLedgerNonTerminal(t *testing.T) {
 // TestRunner_Execute_ChildLedgerGate_SkipsPlanning covers the GH-4660 wiring:
 // when decomposedChildLedgerNonTerminal (GH-4659) reports a non-terminal
 // decomposed child for this exact task_id, Execute must short-circuit
-// before DetectComplexity/epic planning ever runs — the backend must never
-// be invoked and the result must be a clear, non-successful terminal state
-// rather than a silent fall-through into direct re-implementation (the
-// GH-4648/GH-4649 duplicate-PR race).
+// before DetectComplexity/epic planning ever runs and route into
+// resumeDecomposedCoordinator (GH-4661) instead. This case exercises the
+// coordinator's own fail-fast branch (recoverExistingSubIssues finds no
+// matching sub-issue for the parent) — recoverSubIssuesFn is injected so the
+// test never shells out to the real gh CLI. The parent's own backend must
+// never be invoked either way: coordinator-resume never re-implements the
+// parent's spec directly (the GH-4648/GH-4649 duplicate-PR race this gate
+// exists to prevent).
 func TestRunner_Execute_ChildLedgerGate_SkipsPlanning(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -4721,6 +4725,12 @@ func TestRunner_Execute_ChildLedgerGate_SkipsPlanning(t *testing.T) {
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
 	runner.SetLogStore(store)
+	// No real sub-issues exist for this synthetic parent — inject the
+	// recovery function so resumeDecomposedCoordinator's fail-fast branch
+	// fires deterministically instead of shelling out to gh.
+	runner.recoverSubIssuesFn = func(_ context.Context, _ string, _ string) ([]CreatedIssue, error) {
+		return nil, nil
+	}
 
 	task := &Task{
 		ID:          "GH-7001",
@@ -4741,14 +4751,14 @@ func TestRunner_Execute_ChildLedgerGate_SkipsPlanning(t *testing.T) {
 	if result.Success {
 		t.Fatalf("Execute() succeeded, want a gated failure (Error=%q)", result.Error)
 	}
-	if !strings.Contains(result.Error, "GH-7002") {
-		t.Errorf("result.Error = %q, want it to mention the non-terminal child GH-7002", result.Error)
+	if !strings.Contains(result.Error, "GH-7001") || !strings.Contains(result.Error, "cannot resume coordination") {
+		t.Errorf("result.Error = %q, want it to report the coordinator-resume failure for GH-7001", result.Error)
 	}
 
 	backend.mu.Lock()
 	execCount := backend.execCount
 	backend.mu.Unlock()
 	if execCount != 0 {
-		t.Errorf("backend.execCount = %d, want 0 — complexity detection/epic planning should have short-circuited before any backend call", execCount)
+		t.Errorf("backend.execCount = %d, want 0 — the parent must never re-implement directly, coordinator-resume found nothing to redispatch", execCount)
 	}
 }

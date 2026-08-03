@@ -343,7 +343,7 @@ func TestExecuteSubIssuesTracked_PostsDecomposedChildrenComment(t *testing.T) {
 	}
 	parent := &Task{ID: "GH-3938PARENT", ProjectPath: t.TempDir()}
 
-	_, metrics, err := runner.executeSubIssuesTracked(context.Background(), parent, issues, "", "")
+	_, metrics, err := runner.executeSubIssuesTracked(context.Background(), parent, issues, "", "", false)
 	if err != nil {
 		t.Fatalf("executeSubIssuesTracked failed: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestGH3938_ExistingCloseGuardsUnchanged(t *testing.T) {
 		}
 		parent := &Task{ID: "GH-8888", ProjectPath: t.TempDir()}
 
-		_, metrics, err := runner.executeSubIssuesTracked(context.Background(), parent, issues, "", t.TempDir())
+		_, metrics, err := runner.executeSubIssuesTracked(context.Background(), parent, issues, "", t.TempDir(), false)
 		if err == nil {
 			t.Fatal("expected the work-loss guard to return an error, got nil")
 		}

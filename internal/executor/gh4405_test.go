@@ -140,7 +140,7 @@ exit 0
 			Subtask: PlannedSubtask{Title: "part 1", Description: "do part 1"}},
 	}
 
-	if _, _, err := r.executeSubIssuesTracked(context.Background(), parent, issues, projectPath, projectPath); err != nil {
+	if _, _, err := r.executeSubIssuesTracked(context.Background(), parent, issues, projectPath, projectPath, false); err != nil {
 		t.Fatalf("executeSubIssuesTracked returned unexpected error: %v", err)
 	}
 

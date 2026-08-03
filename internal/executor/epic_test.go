@@ -2598,7 +2598,7 @@ func TestExecuteSubIssuesTracked_TouchesParentProgressPerChild(t *testing.T) {
 			Subtask: PlannedSubtask{Title: "part 2", Description: "do part 2"}},
 	}
 
-	_, _, err := r.executeSubIssuesTracked(context.Background(), parent, issues, "/test/project", "/test/project")
+	_, _, err := r.executeSubIssuesTracked(context.Background(), parent, issues, "/test/project", "/test/project", false)
 	if err != nil {
 		t.Fatalf("executeSubIssuesTracked returned unexpected error: %v", err)
 	}

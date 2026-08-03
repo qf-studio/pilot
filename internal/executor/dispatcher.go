@@ -149,6 +149,10 @@ func NewDispatcher(store *memory.Store, runner *Runner, config *DispatcherConfig
 	// used by tests exercising Dispatcher in isolation.
 	if runner != nil {
 		runner.setReclaimSelfOwnedQueuedChildFn(d.reclaimSelfOwnedQueuedChild)
+		// GH-4655/GH-4661: wire the generation+1 retry mechanism so a
+		// decomposed parent resuming as coordinator can re-dispatch a failed
+		// child instead of losing its claim forever at generation 0.
+		runner.setChildGenerationRetryFn(d.childGenerationRetry)
 	}
 
 	return d
@@ -905,6 +909,33 @@ func (d *Dispatcher) reclaimSelfOwnedQueuedChild(subTask *Task) (execID string, 
 	newExecID, beginErr := d.beginWithGenerationRetry(subTask, ExecStatusRunning)
 	if beginErr != nil {
 		return "", false, fmt.Errorf("reclaimSelfOwnedQueuedChild: beginWithGenerationRetry failed: %w", beginErr)
+	}
+	if newExecID == "" {
+		return "", false, nil
+	}
+	return newExecID, true, nil
+}
+
+// childGenerationRetry wraps beginWithGenerationRetry for
+// executeSubIssuesTracked's coordinator-resume path (GH-4655/GH-4661): a
+// decomposed parent's retry pickup re-discovering its own recorded children
+// must re-dispatch a FAILED one at generation+1 rather than losing the
+// Begin() race against its own dead generation-0 claim forever (the gap
+// epic.go's sub-issue loop has documented since GH-4394 subtask 4).
+//
+// Unlike reclaimSelfOwnedQueuedChild above, this performs no force-stall
+// step: that mechanism exists for a structurally-deadlocked queued child
+// (this Runner's own worker is the only goroutine that could ever run it),
+// where forcing termination is safe because nothing else is actually
+// executing it. Here the prior claim may be genuinely live (another
+// dispatch channel is mid-execution) — beginWithGenerationRetry's own
+// nextRetryGeneration check already declines the retry in that case
+// (returns "", nil), which this method surfaces as ok=false so the caller
+// waits on/polls the live owner instead of dispatching a duplicate run.
+func (d *Dispatcher) childGenerationRetry(subTask *Task) (execID string, ok bool, err error) {
+	newExecID, beginErr := d.beginWithGenerationRetry(subTask, ExecStatusRunning)
+	if beginErr != nil {
+		return "", false, fmt.Errorf("childGenerationRetry: beginWithGenerationRetry failed: %w", beginErr)
 	}
 	if newExecID == "" {
 		return "", false, nil
