@@ -2266,6 +2266,51 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 
+	// GH-4655/GH-4660 (TASK-437): consult the decomposed child-ledger gate
+	// before any complexity classification or epic planning. A retry of an
+	// already-decomposed parent must resume coordination — not re-derive
+	// epic-ness and potentially re-plan/re-implement the whole spec
+	// directly, racing its own still-running or already-failed child (the
+	// GH-4648/GH-4649 duplicate-PR incident). The pickup-time guard
+	// (decomposedChildrenAllComplete, dispatcher.go:2803) is all-or-nothing
+	// and silently falls through here when a child hasn't shipped yet;
+	// decomposedChildLedgerNonTerminal (GH-4659) is the missing per-child
+	// signal that fires as soon as ANY recorded child isn't terminal.
+	//
+	// Routing a gated run into the recoverExistingSubIssues coordinator
+	// flow (re-dispatching failed children generation+1, waiting on
+	// in-flight ones) is wired in the sibling issue GH-4661 — deliberately
+	// scoped separately so this gate lands as one reviewable seam. Until
+	// GH-4661 lands, a gated run fails loudly here instead of silently
+	// falling through to direct re-implementation.
+	var childLedgerNonTerminal bool
+	var childLedgerChildIDs []string
+	if r.logStore != nil {
+		var gateErr error
+		childLedgerNonTerminal, childLedgerChildIDs, gateErr = decomposedChildLedgerNonTerminal(r.logStore, task.ID, task.ProjectPath)
+		if gateErr != nil {
+			r.log.Warn("Decomposed child-ledger gate check failed, proceeding with normal classification",
+				slog.String("task_id", task.ID),
+				slog.Any("error", gateErr),
+			)
+			childLedgerNonTerminal = false
+		}
+	}
+	if childLedgerNonTerminal {
+		r.log.Info("Decomposed child-ledger gate triggered: skipping complexity detection and epic planning",
+			slog.String("task_id", task.ID),
+			slog.Any("child_ids", childLedgerChildIDs),
+		)
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed,
+			fmt.Sprintf("child-ledger gate: task_id=%s has non-terminal decomposed children %v — coordinator-resume routing pending (GH-4661)", task.ID, childLedgerChildIDs))
+		return &ExecutionResult{
+			TaskID:   task.ID,
+			Success:  false,
+			Error:    fmt.Sprintf("decomposed parent has non-terminal children %v; coordinator-resume routing not yet wired (GH-4661)", childLedgerChildIDs),
+			Duration: time.Since(start),
+		}, nil
+	}
+
 	// Detect complexity for routing decisions
 	complexity := DetectComplexity(task)
 
