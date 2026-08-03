@@ -1014,6 +1014,15 @@ const (
 	// (B8), 2026-07-23 — 44 minutes of completed, test-passing work destroyed
 	// before this backstop existed.
 	StageWorkPreserved Stage = "work_preserved"
+	// StageGithubSideEffect records a GH-4670 post-run audit hit: a GitHub
+	// issue in the task's own repo was closed or reopened during the run
+	// window OTHER than the issue the session was dispatched to fix — the
+	// GH-4649 incident class (an executor session improvised `gh issue
+	// close` + a label on a SIBLING issue mid-run). Detail is a JSON object:
+	// {"repo","number","title","state","url","task_issue","run_start_at"}.
+	// Detective only — no auto-revert; paired with an alert-engine warning
+	// (executor/sideeffect_audit.go) for a human operator to judge.
+	StageGithubSideEffect Stage = "executor.github_sideeffect"
 )
 
 // Event represents a single stage-transition record for an execution.

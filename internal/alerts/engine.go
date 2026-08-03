@@ -155,6 +155,13 @@ const (
 	// (10) — regardless of whether the rejections were backoff gates or
 	// genuine failures. Metadata carries task_id and consecutive_drops.
 	EventTypeDispatchLoopBreaker EventType = "dispatch_loop_breaker"
+
+	// GitHub side-effect events (GH-4670): fired by the executor's post-run
+	// audit (executor.auditGithubSideEffects) when a GitHub issue in the
+	// task's own repo was closed or reopened during the run window OTHER
+	// than the issue the session was dispatched to fix — the GH-4649
+	// incident class. Metadata carries repo, issue, state, and task_issue.
+	EventTypeGithubSideEffect EventType = "github_sideeffect"
 )
 
 const (
@@ -412,6 +419,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleEscalation(ctx, event)
 	case EventTypeEvalRegression:
 		e.handleEvalRegression(ctx, event)
+	case EventTypeGithubSideEffect:
+		e.handleGithubSideEffect(ctx, event)
 	}
 }
 
@@ -604,6 +613,26 @@ func (e *Engine) handleReleaseMissing(ctx context.Context, event Event) {
 		if rule.Type == AlertTypeReleaseMissing && e.shouldFire(rule) {
 			message := fmt.Sprintf("Release missing for %s: expected tag %s after PR #%s was merged",
 				event.Metadata["repo"], event.Metadata["tag"], event.Metadata["pr"])
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+}
+
+// handleGithubSideEffect fires AlertTypeGithubSideEffect rules when the
+// executor's post-run audit (GH-4670) finds a sibling GitHub issue closed or
+// reopened during a session's run window — the GH-4649 incident class.
+// Detection-only, same severity channel as task_failed; no Condition-based
+// counting, mirroring handleReleaseMissing — the executor-side audit already
+// did all the filtering (own-issue exclusion, window bounds) before emitting.
+func (e *Engine) handleGithubSideEffect(ctx context.Context, event Event) {
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if rule.Type == AlertTypeGithubSideEffect && e.shouldFire(rule) {
+			message := fmt.Sprintf("Session dispatched for %s#%s mutated sibling issue #%s (%s)",
+				event.Metadata["repo"], event.Metadata["task_issue"], event.Metadata["issue"], event.Metadata["state"])
 			alert := e.createAlert(rule, event, message)
 			e.fireAlert(ctx, rule, alert)
 		}

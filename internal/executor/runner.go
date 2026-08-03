@@ -813,6 +813,10 @@ type Runner struct {
 	// which case a detected self-owned deadlock fails the sub-issue instead
 	// of hanging.
 	reclaimSelfOwnedQueuedChildFn func(subTask *Task) (execID string, ok bool, err error)
+	// GH-4670: post-run GitHub side-effect audit searcher. nil disables the
+	// audit (auditGithubSideEffects becomes a no-op) — set via
+	// SetGithubSideEffectSearcher (sideeffect_audit.go).
+	githubSideEffectSearcher GithubSideEffectSearcher
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
@@ -3589,6 +3593,13 @@ retrySucceeded:
 	// GH-4517: also auto-preserves any uncommitted worktree changes it finds
 	// before the caller's deferred worktree cleanup can delete them.
 	r.applyGhostSHAGuardWithPreserve(ctx, task, result, executionPath, log)
+
+	// GH-4670: post-run GitHub side-effect audit — detective backstop for the
+	// GH-4649 incident class. Runs regardless of result.Success (a session
+	// that failed its actual task could still have mutated a sibling issue)
+	// as long as a searcher is wired and the task is GitHub-sourced; no-ops
+	// and makes zero GitHub calls otherwise.
+	r.auditGithubSideEffects(ctx, task, start)
 
 	// Fill in additional metrics from state
 	result.FilesChanged = state.filesWrite

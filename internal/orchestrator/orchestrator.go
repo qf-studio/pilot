@@ -80,6 +80,10 @@ func NewOrchestrator(config *Config, notifier *slack.Notifier) (*Orchestrator, e
 		cancel()
 		return nil, fmt.Errorf("failed to create runner: %w", runnerErr)
 	}
+	// GH-4670: wire the default gh-CLI-backed post-run GitHub side-effect
+	// audit. auditGithubSideEffects itself no-ops for non-GitHub tasks and
+	// fails open on search errors, so this is safe to wire unconditionally.
+	runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 
 	o := &Orchestrator{
 		config:    config,

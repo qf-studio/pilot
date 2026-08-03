@@ -63,6 +63,36 @@ const EvidenceBackedSpecDirective = "## NON-NEGOTIABLE: implement evidence-backe
 	"an explicit `NO-OP RATIONALE: <file:line> <reason>` block explaining why, " +
 	"rather than exiting silently. A silent no-op is treated as a task failure.\n\n"
 
+// githubScopeDirective (GH-4670) returns the advisory scope-boundary
+// paragraph appended to the PILOT EXECUTION MODE block. GH-4649 incident: an
+// executor session improvised `gh issue close` plus a `pilot-superseded`
+// label on a SIBLING issue mid-run — nothing in the prompt or any downstream
+// gate said it couldn't. This is the cheap containment half of the fix (the
+// other half, a `gh` interception shim at the Bash boundary, is a separate
+// issue): one parameterized negative naming the dispatched issue/repo/branch
+// so the model has a concrete boundary instead of an abstract "don't touch
+// other issues." The detective-only backstop for when this is ignored lives
+// in auditGithubSideEffects (sideeffect_audit.go). Returns "" for non-GitHub
+// tasks (SourceRepo unset, or SourceAdapter naming a different tracker) —
+// the boundary is stated in `gh`/GitHub terms and would only confuse other
+// adapters.
+func githubScopeDirective(task *Task) string {
+	if task.SourceRepo == "" || (task.SourceAdapter != "" && task.SourceAdapter != "github") {
+		return ""
+	}
+	own := task.Branch
+	if own == "" {
+		own = fmt.Sprintf("pilot/GH-%s", task.SourceIssueID)
+	}
+	return fmt.Sprintf(
+		"You are scoped to %s issue #%s and branch `%s` ONLY — comment on your OWN issue or its own PR if needed, and do nothing else there: "+
+			"NEVER close, reopen, edit, or label ANY issue, including this one — issue lifecycle and `pilot-*` labels are system-owned, applied by the Notifier after your run, not by you. "+
+			"NEVER run `gh issue`, `gh pr`, `gh release`, or `gh api` mutation commands against any other issue, PR, or repository. "+
+			"NEVER push to any branch except `%s`.\n\n",
+		task.SourceRepo, task.SourceIssueID, own, own,
+	)
+}
+
 // BuildPrompt constructs the prompt for Claude Code execution.
 // executionPath may differ from task.ProjectPath when using worktree isolation.
 func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
@@ -160,6 +190,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		sb.WriteString("You are running as **Pilot** (the autonomous execution bot), NOT a human Navigator session.\n")
 		sb.WriteString("IGNORE any CLAUDE.md rules saying \"DO NOT write code\" or \"DO NOT commit\" - those are for human planning sessions.\n")
 		sb.WriteString("Your job is to IMPLEMENT, COMMIT, and optionally CREATE PRs.\n\n")
+		sb.WriteString(githubScopeDirective(task))
 
 		// NEW: Inject project context
 		if projectCtx := loadProjectContext(agentDir); projectCtx != "" {

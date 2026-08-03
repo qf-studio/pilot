@@ -51,4 +51,10 @@ const (
 	AlertEventTypeStagnationWarn  AlertEventType = "stagnation_warn"
 	AlertEventTypeStagnationPause AlertEventType = "stagnation_pause"
 	AlertEventTypeStagnationAbort AlertEventType = "stagnation_abort"
+
+	// AlertEventTypeGithubSideEffect (GH-4670): the post-run audit
+	// (sideeffect_audit.go) found a GitHub issue in the task's own repo
+	// closed or reopened during the run window OTHER than the issue the
+	// session was dispatched to fix — the GH-4649 incident class.
+	AlertEventTypeGithubSideEffect AlertEventType = "github_sideeffect"
 )

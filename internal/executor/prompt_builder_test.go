@@ -573,6 +573,85 @@ func TestBuildPromptContainsEvidenceBackedSpecDirective(t *testing.T) {
 	}
 }
 
+// GH-4670: the PILOT EXECUTION MODE block must scope the session to its own
+// dispatched issue/repo/branch and explicitly forbid GitHub mutations against
+// any other issue/PR/repo — the GH-4649 incident class (an executor session
+// improvised `gh issue close` + a label on a SIBLING issue mid-run).
+func TestBuildPromptContainsGithubScopeDirective(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "pilot-test-github-scope")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	agentDir := filepath.Join(tempDir, ".agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("Failed to create .agent dir: %v", err)
+	}
+
+	runner := NewRunner()
+	task := &Task{
+		ID:            "GH-4670",
+		Title:         "scope executor sessions to their own issue",
+		Description:   "add a prompt-level scope rule and a post-run audit",
+		ProjectPath:   tempDir,
+		Branch:        "pilot/GH-4670",
+		SourceRepo:    "qf-studio/pilot",
+		SourceIssueID: "4670",
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	for _, want := range []string{
+		"qf-studio/pilot issue #4670",
+		"pilot/GH-4670",
+		"NEVER close, reopen, edit, or label ANY issue",
+		"pilot-*",
+		"gh issue",
+		"gh pr",
+		"gh release",
+		"gh api",
+		"NEVER push to any branch except",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("BuildPrompt should contain %q (GH-4670 scope directive), got:\n%s", want, prompt)
+		}
+	}
+}
+
+// GH-4670: non-GitHub tasks (no SourceRepo, or a different SourceAdapter)
+// must not get the GitHub-specific scope paragraph — it would name a `gh`
+// boundary that makes no sense for Linear/Jira-sourced tasks.
+func TestBuildPromptOmitsGithubScopeDirectiveForNonGithubTask(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "pilot-test-github-scope-omit")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	agentDir := filepath.Join(tempDir, ".agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("Failed to create .agent dir: %v", err)
+	}
+
+	runner := NewRunner()
+	task := &Task{
+		ID:            "LIN-42",
+		Title:         "linear-sourced task",
+		Description:   "no github scope directive expected",
+		ProjectPath:   tempDir,
+		Branch:        "pilot/LIN-42",
+		SourceAdapter: "linear",
+		SourceIssueID: "LIN-42",
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	if strings.Contains(prompt, "NEVER close, reopen, edit, or label ANY issue") {
+		t.Errorf("BuildPrompt should NOT contain the GitHub scope directive for a non-GitHub task, got:\n%s", prompt)
+	}
+}
+
 func TestBuildSelfReviewPromptContainsLintCheck(t *testing.T) {
 	runner := NewRunner()
 	task := &Task{

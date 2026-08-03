@@ -1273,6 +1273,170 @@ func TestHandleReleaseMissing(t *testing.T) {
 	})
 }
 
+// TestHandleGithubSideEffect covers the fire, disabled, and cooldown paths
+// for AlertTypeGithubSideEffect (GH-4670) — mirroring TestHandleReleaseMissing
+// above.
+func TestHandleGithubSideEffect(t *testing.T) {
+	t.Run("fires with repo/issue/state/task_issue metadata", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "github_sideeffect",
+					Type:     AlertTypeGithubSideEffect,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type: EventTypeGithubSideEffect,
+			Metadata: map[string]string{
+				"repo":       "qf-studio/pilot",
+				"issue":      "4649",
+				"state":      "closed",
+				"task_issue": "4670",
+			},
+			Timestamp: time.Now(),
+		})
+
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].Type != AlertTypeGithubSideEffect {
+			t.Errorf("expected alert type %s, got %s", AlertTypeGithubSideEffect, alerts[0].Type)
+		}
+		if !strings.Contains(alerts[0].Message, "qf-studio/pilot") ||
+			!strings.Contains(alerts[0].Message, "4649") ||
+			!strings.Contains(alerts[0].Message, "4670") {
+			t.Errorf("expected alert message to mention repo/issue/task_issue, got %q", alerts[0].Message)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "github_sideeffect",
+					Type:     AlertTypeGithubSideEffect,
+					Enabled:  false, // Disabled
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type: EventTypeGithubSideEffect,
+			Metadata: map[string]string{
+				"repo":       "qf-studio/pilot",
+				"issue":      "4649",
+				"state":      "closed",
+				"task_issue": "4670",
+			},
+			Timestamp: time.Now(),
+		})
+
+		engine.flushForTest()
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+
+	t.Run("cooldown suppresses repeat fires", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "github_sideeffect",
+					Type:     AlertTypeGithubSideEffect,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 30 * time.Minute,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		firstEvent := Event{
+			Type: EventTypeGithubSideEffect,
+			Metadata: map[string]string{
+				"repo":       "qf-studio/pilot",
+				"issue":      "4649",
+				"state":      "closed",
+				"task_issue": "4670",
+			},
+			Timestamp: time.Now(),
+		}
+		engine.ProcessEvent(firstEvent)
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		// Second event within the cooldown window should be suppressed.
+		engine.ProcessEvent(Event{
+			Type: EventTypeGithubSideEffect,
+			Metadata: map[string]string{
+				"repo":       "qf-studio/pilot",
+				"issue":      "9001",
+				"state":      "closed",
+				"task_issue": "4670",
+			},
+			Timestamp: time.Now(),
+		})
+		engine.flushForTest()
+
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Errorf("expected 1 alert (second suppressed by cooldown), got %d", len(alerts))
+		}
+	})
+}
+
 // TestHandleDispatchLoopBreaker covers the GH-4469 loop-breaker rule: the
 // emitting side (handleIssueGeneric, cmd/pilot/handler_common.go) does its
 // own threshold counting (fires exactly once, at consecutive drop == 10) and
