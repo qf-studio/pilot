@@ -23,6 +23,9 @@ func NewBackend(config *BackendConfig) (Backend, error) {
 		b.SetProviderEnv(config.APIBaseURL, config.APIAuthToken, config.DefaultModel)
 		// GH-3028: wire RSS telemetry + optional memory cap.
 		b.SetSubprocessLimits(config.SubprocessLimits)
+		// GH-4671: gh-guard shim, default-on. Resolves the real gh binary
+		// once here (daemon startup), not per-execution from the child's PATH.
+		b.SetGHGuard(config.ClaudeCode.GHGuardEnabled())
 		return b, nil
 
 	case BackendTypeOpenCode:

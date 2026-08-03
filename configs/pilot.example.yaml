@@ -379,6 +379,20 @@ executor:
   #   grace_period: 30s           # Grace period before killing
   #   commit_partial_work: true   # Save partial progress before abort
 
+  # Claude Code backend settings
+  # claude_code:
+  #   gh CLI guard shim (GH-4671) - intercepts the Claude Code subprocess's
+  #   `gh` CLI calls at the Bash boundary. Allowlists read-only commands
+  #   (issue/pr/run view|list, pr checks/diff, gh api GET, auth status) plus
+  #   mutations against the task's own issue/PR/branch (pr create from the
+  #   task branch, issue/pr comment on the task's own issue or PR); denies
+  #   everything else (closing/editing/labeling other issues, any -R/--repo
+  #   outside the task's repo, gh api non-GET, release/repo/secret/workflow
+  #   mutations). Containment for the GH-4649 incident, where an executor
+  #   session improvised `gh issue close` on a sibling issue mid-run.
+  #   Enabled by default; set to false only for debugging.
+  #   gh_guard: true
+
 # Approval workflow settings
 # Pilot can require human approval before executing tasks, merging PRs, or retrying failures.
 # approval:

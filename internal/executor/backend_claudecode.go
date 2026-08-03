@@ -357,6 +357,14 @@ type ClaudeCodeBackend struct {
 
 	// subprocessLimits configures RSS telemetry and optional RLIMIT_AS cap. GH-3028.
 	subprocessLimits *SubprocessLimitsConfig
+
+	// GH-4671: gh-guard shim. ghGuardEnabled mirrors config; ghRealPath is
+	// the real gh binary's absolute path, resolved once in SetGHGuard (at
+	// daemon startup, via NewBackend) rather than from each child's own
+	// PATH. Empty ghRealPath (gh not found on the host) silently disables
+	// shimming per-execution — see setupGHGuardShim.
+	ghGuardEnabled bool
+	ghRealPath     string
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend.
@@ -377,6 +385,31 @@ func NewClaudeCodeBackend(config *ClaudeCodeConfig) *ClaudeCodeBackend {
 // SetHeartbeatTimeout sets a custom heartbeat timeout for this backend.
 func (b *ClaudeCodeBackend) SetHeartbeatTimeout(d time.Duration) {
 	b.heartbeatTimeout = d
+}
+
+// SetGHGuard enables or disables the GH-4671 gh-guard shim. When enabling,
+// resolves the real gh binary's absolute path once via exec.LookPath — the
+// "resolved at daemon start, not from the child's PATH" requirement (GH-4671
+// acceptance criterion 2). If gh isn't found on the host, the shim is
+// silently skipped per-execution (setupGHGuardShim): a host without gh
+// installed at all behaves identically with the guard on or off, since the
+// Claude Code subprocess couldn't have called gh either way.
+func (b *ClaudeCodeBackend) SetGHGuard(enabled bool) {
+	b.ghGuardEnabled = enabled
+	if !enabled {
+		b.ghRealPath = ""
+		return
+	}
+	path, err := exec.LookPath("gh")
+	if err != nil {
+		b.log.Warn("gh_guard_enabled_but_gh_not_found",
+			slog.String("error", err.Error()),
+		)
+		b.ghRealPath = ""
+		return
+	}
+	b.ghRealPath = path
+	b.log.Info("gh_guard_enabled", slog.String("real_gh", path))
 }
 
 // SetSubprocessLimits configures RSS telemetry and optional memory cap for the
@@ -600,6 +633,20 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	// cgroup v2 memory.max cap applied after cmd.Start().
 	if nodeOpts := nodeOptionsEnv(os.Getenv("NODE_OPTIONS"), b.subprocessLimits); nodeOpts != "" {
 		env = append(env, "NODE_OPTIONS="+nodeOpts)
+	}
+
+	// GH-4671: gh-guard shim. Prepending the shim dir to PATH (appended
+	// after os.Environ(), same last-write-wins convention as ANTHROPIC_*/
+	// NODE_OPTIONS above) makes the shimmed `gh` resolve before the real
+	// one for every gh invocation the Bash tool makes.
+	shimDir, shimCleanup, shimErr := b.setupGHGuardShim(opts)
+	defer shimCleanup()
+	if shimErr != nil {
+		b.log.Warn("gh_guard_shim_setup_failed", slog.String("error", shimErr.Error()))
+	}
+	if shimDir != "" {
+		env = append(env, "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		env = append(env, b.ghGuardEnv(opts)...)
 	}
 	cmd.Env = env
 

@@ -86,6 +86,17 @@ type ExecuteOptions struct {
 	// MCPConfigPath is passed to the subprocess via --mcp-config. When empty,
 	// no MCP servers are loaded (avoiding tool-definition token bloat). GH-2432.
 	MCPConfigPath string
+
+	// GHGuardIssue, GHGuardRepo, and GHGuardBranch identify this task to the
+	// gh-guard shim (GH-4671): the bare issue number, "owner/repo", and the
+	// task's own branch, injected into the subprocess as
+	// PILOT_TASK_ISSUE/REPO/BRANCH so the shim can allow gh operations
+	// against the task's own artifacts while denying everything else. Empty
+	// values degrade the guard to fail-closed for mutations (see
+	// internal/executor/ghguard) rather than disabling it.
+	GHGuardIssue  string
+	GHGuardRepo   string
+	GHGuardBranch string
 }
 
 // BackendEvent represents a streaming event from the backend.
@@ -749,6 +760,25 @@ type ClaudeCodeConfig struct {
 	// When empty, the subprocess does NOT load any MCP servers — drastically
 	// reducing tool-definition tokens replayed on every turn. GH-2432.
 	MCPConfigPath string `yaml:"mcp_config_path,omitempty"`
+
+	// GHGuard enables the gh-guard shim (GH-4671): PATH-shims the `gh` CLI
+	// inside the Claude Code subprocess so it can only run read-only gh
+	// commands and mutations against the task's own issue/PR/branch, denying
+	// everything else (sibling-issue edits, cross-repo mutations). Default
+	// true when nil — see GHGuardEnabled. Containment for the GH-4649
+	// incident (an executor session closed a sibling issue mid-run).
+	GHGuard *bool `yaml:"gh_guard,omitempty"`
+}
+
+// GHGuardEnabled reports whether the gh-guard shim should be wired for this
+// config. Defaults to true (nil == enabled) — GH-4671 ships enabled by
+// default, matching the *bool+omitempty tri-state pattern used elsewhere in
+// this struct family (see AutoCreatePR, DetectEphemeral in BackendConfig).
+func (c *ClaudeCodeConfig) GHGuardEnabled() bool {
+	if c == nil || c.GHGuard == nil {
+		return true
+	}
+	return *c.GHGuard
 }
 
 // PlanningConfig controls the model and behavior for epic planning subprocesses.

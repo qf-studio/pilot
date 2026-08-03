@@ -3271,6 +3271,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		WatchdogTimeout: watchdogTimeout,
 		AllowedTools:    allowedTools,
 		MCPConfigPath:   mcpConfigPath,
+		GHGuardIssue:    task.GHIssueRef(), // GH-4671
+		GHGuardRepo:     task.SourceRepo,
+		GHGuardBranch:   task.Branch,
 		WatchdogCallback: func(pid int, watchdogDuration time.Duration) {
 			log.Warn("Watchdog killed subprocess",
 				slog.Int("pid", pid),
@@ -3622,6 +3625,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							WatchdogTimeout: 2 * retryTimeout,
 							AllowedTools:    smartAllowed,
 							MCPConfigPath:   smartMCP,
+							GHGuardIssue:    task.GHIssueRef(), // GH-4671
+							GHGuardRepo:     task.SourceRepo,
+							GHGuardBranch:   task.Branch,
 							EventHandler: func(event BackendEvent) {
 								if recorder != nil {
 									_ = recorder.RecordEvent(event.Raw)
@@ -3810,6 +3816,13 @@ retrySucceeded:
 	// and makes zero GitHub calls otherwise.
 	r.auditGithubSideEffects(ctx, task, start)
 
+	// GH-4671: gh-guard journal ingestion — the preventive counterpart to
+	// the GH-4670 audit above. Any gh call the guard shim blocked during
+	// this run (backend_claudecode.go's setupGHGuardShim) was journaled to
+	// disk by the shim subprocess; pick it up now and surface it the same
+	// way GH-4670 surfaces a sibling-issue mutation it merely detected.
+	r.ingestGHGuardJournal(task)
+
 	// Fill in additional metrics from state
 	result.FilesChanged = state.filesWrite
 	result.CacheCreationInputTokens = state.cacheCreationInputTokens
@@ -3986,6 +3999,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					WatchdogTimeout: watchdogTimeout,
 					AllowedTools:    noopRetryAllowed,
 					MCPConfigPath:   noopRetryMCP,
+					GHGuardIssue:    task.GHIssueRef(), // GH-4671
+					GHGuardRepo:     task.SourceRepo,
+					GHGuardBranch:   task.Branch,
 					EventHandler: func(event BackendEvent) {
 						// Track tokens from retry
 						state.tokensInput += event.TokensInput
@@ -4346,6 +4362,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						Effort:        selectedEffort,
 						AllowedTools:  feedbackAllowed,
 						MCPConfigPath: feedbackMCP,
+						GHGuardIssue:  task.GHIssueRef(), // GH-4671
+						GHGuardRepo:   task.SourceRepo,
+						GHGuardBranch: task.Branch,
 						EventHandler: func(event BackendEvent) {
 							if recorder != nil {
 								if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
@@ -4628,6 +4647,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						Effort:        selectedEffort,
 						AllowedTools:  intentAllowed,
 						MCPConfigPath: intentMCP,
+						GHGuardIssue:  task.GHIssueRef(), // GH-4671
+						GHGuardRepo:   task.SourceRepo,
+						GHGuardBranch: task.Branch,
 						EventHandler: func(event BackendEvent) {
 							state.tokensInput += event.TokensInput
 							state.tokensOutput += event.TokensOutput
@@ -5458,6 +5480,9 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 		ResumeSessionID: resumeSessionID,
 		AllowedTools:    reviewAllowed,
 		MCPConfigPath:   reviewMCP,
+		GHGuardIssue:    task.GHIssueRef(), // GH-4671
+		GHGuardRepo:     task.SourceRepo,
+		GHGuardBranch:   task.Branch,
 		EventHandler: func(event BackendEvent) {
 			// Track tokens from self-review
 			state.tokensInput += event.TokensInput

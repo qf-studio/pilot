@@ -229,6 +229,7 @@ func main() {
 		newOnboardCmd(),
 		newBackendCmd(),
 		newEvalCmd(),
+		newGHGuardCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
