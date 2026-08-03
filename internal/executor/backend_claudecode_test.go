@@ -654,6 +654,60 @@ func TestClaudeCodeBackendHeartbeatTimeout(t *testing.T) {
 	}
 }
 
+// TestEffectiveHeartbeatTimeoutWithFloor covers GH-4691: opts.HeartbeatFloor
+// (computed by the runner via effortAwareHeartbeatFloor for high-effort/
+// heavy-complexity lanes) must raise the effective heartbeat timeout above
+// the backend's own configured/default value, but never lower it — and the
+// returned source string must reflect which one won, so a kill log line is
+// diagnosable without cross-referencing the runner's decision separately.
+func TestEffectiveHeartbeatTimeoutWithFloor(t *testing.T) {
+	tests := []struct {
+		name        string
+		base        time.Duration
+		floor       time.Duration
+		wantTimeout time.Duration
+		wantSource  string
+	}{
+		{
+			name:        "zero floor: base (config) wins unchanged",
+			base:        5 * time.Minute,
+			floor:       0,
+			wantTimeout: 5 * time.Minute,
+			wantSource:  "config",
+		},
+		{
+			name:        "floor below base: base (config) wins",
+			base:        5 * time.Minute,
+			floor:       3 * time.Minute,
+			wantTimeout: 5 * time.Minute,
+			wantSource:  "config",
+		},
+		{
+			name:        "floor above base (GH-4691 epic/high-effort case): floor wins",
+			base:        DefaultHeartbeatTimeout, // 5m
+			floor:       10 * time.Minute,        // highEffortStallFloor
+			wantTimeout: 10 * time.Minute,
+			wantSource:  "effort_floor",
+		},
+		{
+			name:        "floor exactly equal to base: base wins (not >, so no stacking noise)",
+			base:        10 * time.Minute,
+			floor:       10 * time.Minute,
+			wantTimeout: 10 * time.Minute,
+			wantSource:  "config",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotTimeout, gotSource := effectiveHeartbeatTimeout(tt.base, tt.floor)
+			if gotTimeout != tt.wantTimeout || gotSource != tt.wantSource {
+				t.Errorf("effectiveHeartbeatTimeout(%v, %v) = (%v, %q), want (%v, %q)",
+					tt.base, tt.floor, gotTimeout, gotSource, tt.wantTimeout, tt.wantSource)
+			}
+		})
+	}
+}
+
 func TestBackendFactoryHeartbeatTimeout(t *testing.T) {
 	// Factory should wire heartbeat timeout from BackendConfig
 	config := &BackendConfig{

@@ -74,6 +74,21 @@ type ExecuteOptions struct {
 	// When set (> 0), a watchdog goroutine will kill the process after this duration.
 	WatchdogTimeout time.Duration
 
+	// HeartbeatFloor raises the backend's hard heartbeat timeout for this
+	// call when it exceeds the backend's own configured/default value —
+	// the backend must apply max(its own heartbeatTimeout, HeartbeatFloor).
+	// Zero means no floor (backend default applies unchanged).
+	//
+	// GH-4691: the hard heartbeat (backend_claudecode.go) SIGKILLs on a flat,
+	// backend-construction-time timeout with zero per-task awareness, so it
+	// always fired before the effort-aware stall watchdog's higher floor
+	// (watchdog.go's effortAwareStallTimeout) could apply for high-effort/
+	// heavy-complexity (complex/epic) lanes. The runner computes this via
+	// effortAwareHeartbeatFloor using the same effort/complexity signal as
+	// the stall watchdog, so both mechanisms agree on how long a legitimately
+	// silent high-effort/epic turn is tolerated.
+	HeartbeatFloor time.Duration
+
 	// WatchdogCallback is invoked when the watchdog kills a subprocess.
 	// The callback receives the process PID and the watchdog timeout duration.
 	// Called BEFORE the process is killed, allowing for alert emission.

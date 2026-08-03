@@ -2,8 +2,31 @@
 title: Heartbeat Monitor Killing Healthy Runs During Long Local Tool Calls
 created: 2026-08-03
 status: active
-related: GH-4668, GH-4648, GH-4649, GH-4521, GH-4401, TASK-437
+related: GH-4668, GH-4648, GH-4649, GH-4521, GH-4401, TASK-437, GH-4691, GH-4501, GH-4679
 ---
+
+## GH-4691 addendum: a second silent class, and a coordination gap
+
+GH-4668/this SOP fixed the *local-tool-execution* silent class (liveness
+grace via process-group probing). It did **not** fix a second, distinct
+silent class documented separately at `runner.go` (GH-4501): high-effort/
+epic turns with long **in-process, network-bound** stretches — no forked
+child, no advancing CPU ticks (I/O-wait doesn't register as utime/stime), so
+`probeProcessLiveness` correctly reports "idle" and the heartbeat kills a
+session that was never hung. GH-4679 (epic, 17m40s in) was killed this way
+post-GH-4668.
+
+The deeper bug: **two uncoordinated silent-stdout detectors** exist —
+this heartbeat (flat `DefaultHeartbeatTimeout = 5m`, backend-construction-time
+only, zero per-task awareness) and the effort-aware stall watchdog
+(`watchdog.go`, `highEffortStallFloor = 10m` for high-effort/heavy-complexity
+lanes). The hard heartbeat always fired first (5m < 10m), so the softer
+watchdog's tolerance never applied. GH-4691 gave the heartbeat the same
+effort-aware floor via `ExecuteOptions.HeartbeatFloor` /
+`effortAwareHeartbeatFloor()` (watchdog.go) so both mechanisms agree — but
+this is a parity patch, not a unification. If a third instance of this class
+surfaces, unify the two detectors into one source of truth rather than
+patching a third floor.
 
 # Heartbeat Monitor Killing Healthy Runs During Long Local Tool Calls
 

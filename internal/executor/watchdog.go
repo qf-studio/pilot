@@ -21,21 +21,44 @@ const minStallWatchdogInterval = time.Second
 const highEffortStallFloor = 10 * time.Minute
 
 // effortAwareStallTimeout raises configured to highEffortStallFloor for
-// high-effort or complex-lane executions, unless configured (an explicit
-// stall_timeout_ms) is already higher — an explicit config value always wins
-// when it's the larger of the two. When configured <= 0 (stall detection
-// disabled via a negative StallTimeoutMs), it is returned unchanged so the
-// watchdog stays off for every lane. GH-4501.
+// high-effort or heavy-complexity (complex/epic) executions, unless
+// configured (an explicit stall_timeout_ms) is already higher — an explicit
+// config value always wins when it's the larger of the two. When configured
+// <= 0 (stall detection disabled via a negative StallTimeoutMs), it is
+// returned unchanged so the watchdog stays off for every lane. GH-4501.
+//
+// GH-4691: was `complexity == ComplexityComplex`, silently excluding
+// ComplexityEpic — epic runs are at least as likely as complex ones to have
+// long silent-stdout stretches, so they must get the same floor.
+// Complexity.IsHeavy() covers both.
 func effortAwareStallTimeout(configured time.Duration, effort string, complexity Complexity) time.Duration {
 	if configured <= 0 {
 		return configured
 	}
-	if effort == "high" || complexity == ComplexityComplex {
+	if effort == "high" || complexity.IsHeavy() {
 		if configured < highEffortStallFloor {
 			return highEffortStallFloor
 		}
 	}
 	return configured
+}
+
+// effortAwareHeartbeatFloor derives the minimum hard-heartbeat timeout for
+// high-effort or heavy-complexity (complex/epic) executions, using the same
+// highEffortStallFloor threshold as effortAwareStallTimeout (GH-4691).
+//
+// This is intentionally independent of the *configured* stall timeout (and
+// thus of whether stall detection is enabled at all): the hard heartbeat in
+// backend_claudecode.go is a separate kill path from the stall watchdog
+// above, and must not fire before the stall watchdog's own effort-aware
+// floor would — regardless of whether that watchdog happens to be disabled
+// for this run. Returns 0 (no floor) for lanes that don't qualify, letting
+// the backend's default/configured heartbeat timeout stand unchanged.
+func effortAwareHeartbeatFloor(effort string, complexity Complexity) time.Duration {
+	if effort == "high" || complexity.IsHeavy() {
+		return highEffortStallFloor
+	}
+	return 0
 }
 
 // watchdogTickInterval derives the watchdog poll interval from stallTimeout so a

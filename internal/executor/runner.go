@@ -3233,6 +3233,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// partial-message streaming fix. An explicit stall_timeout_ms config value
 	// higher than the floor still wins.
 	stallTimeout := effortAwareStallTimeout(r.effectiveStallTimeout(), selectedEffort, complexity)
+	// GH-4691: the hard heartbeat in the backend (backend_claudecode.go) has
+	// its own, uncoordinated flat timeout that otherwise always fires before
+	// this stall watchdog's own effort-aware floor could apply. Compute the
+	// same floor here and pass it through on every backend.Execute call in
+	// this function (initial + retries) so both mechanisms agree.
+	heartbeatFloor := effortAwareHeartbeatFloor(selectedEffort, complexity)
 	var stallExecutionCtx context.Context
 	var stallCancel context.CancelFunc
 	if stallTimeout > 0 {
@@ -3269,6 +3275,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		MaxTurns:        workflowMaxTurns, // TASK-304: per-repo .pilot/workflow.yaml override
 		FromPR:          task.FromPR,      // GH-1267: session resumption from PR context
 		WatchdogTimeout: watchdogTimeout,
+		HeartbeatFloor:  heartbeatFloor, // GH-4691
 		AllowedTools:    allowedTools,
 		MCPConfigPath:   mcpConfigPath,
 		WatchdogCallback: func(pid int, watchdogDuration time.Duration) {
@@ -3620,6 +3627,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							Model:           selectedModel,
 							Effort:          selectedEffort,
 							WatchdogTimeout: 2 * retryTimeout,
+							HeartbeatFloor:  heartbeatFloor, // GH-4691
 							AllowedTools:    smartAllowed,
 							MCPConfigPath:   smartMCP,
 							EventHandler: func(event BackendEvent) {
@@ -3984,6 +3992,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					Model:           selectedModel,
 					Effort:          selectedEffort,
 					WatchdogTimeout: watchdogTimeout,
+					HeartbeatFloor:  heartbeatFloor, // GH-4691
 					AllowedTools:    noopRetryAllowed,
 					MCPConfigPath:   noopRetryMCP,
 					EventHandler: func(event BackendEvent) {
@@ -4338,14 +4347,15 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					// Re-invoke backend with retry prompt
 					feedbackAllowed, feedbackMCP := r.executionToolOptions()
 					retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
-						Prompt:        retryPrompt,
-						TaskID:        task.ID,
-						ProjectPath:   executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
-						Verbose:       task.Verbose,
-						Model:         selectedModel,
-						Effort:        selectedEffort,
-						AllowedTools:  feedbackAllowed,
-						MCPConfigPath: feedbackMCP,
+						Prompt:         retryPrompt,
+						TaskID:         task.ID,
+						ProjectPath:    executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
+						Verbose:        task.Verbose,
+						Model:          selectedModel,
+						Effort:         selectedEffort,
+						HeartbeatFloor: heartbeatFloor, // GH-4691
+						AllowedTools:   feedbackAllowed,
+						MCPConfigPath:  feedbackMCP,
 						EventHandler: func(event BackendEvent) {
 							if recorder != nil {
 								if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
@@ -4620,14 +4630,15 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 					intentAllowed, intentMCP := r.executionToolOptions()
 					_, retryErr := r.backend.Execute(ctx, ExecuteOptions{
-						Prompt:        retryPrompt,
-						TaskID:        task.ID,
-						ProjectPath:   executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
-						Verbose:       task.Verbose,
-						Model:         selectedModel,
-						Effort:        selectedEffort,
-						AllowedTools:  intentAllowed,
-						MCPConfigPath: intentMCP,
+						Prompt:         retryPrompt,
+						TaskID:         task.ID,
+						ProjectPath:    executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
+						Verbose:        task.Verbose,
+						Model:          selectedModel,
+						Effort:         selectedEffort,
+						HeartbeatFloor: heartbeatFloor, // GH-4691
+						AllowedTools:   intentAllowed,
+						MCPConfigPath:  intentMCP,
 						EventHandler: func(event BackendEvent) {
 							state.tokensInput += event.TokensInput
 							state.tokensOutput += event.TokensOutput
@@ -5456,6 +5467,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 		Model:           selectedModel,
 		Effort:          selectedEffort,
 		ResumeSessionID: resumeSessionID,
+		HeartbeatFloor:  effortAwareHeartbeatFloor(selectedEffort, complexity), // GH-4691
 		AllowedTools:    reviewAllowed,
 		MCPConfigPath:   reviewMCP,
 		EventHandler: func(event BackendEvent) {
