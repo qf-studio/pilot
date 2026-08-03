@@ -76,6 +76,7 @@ Break-even ≈ 2 customers at $199/mo. No tier below ~$99/mo until v2 scale-to-z
 4. **Dogfood tenant #0 from Phase 0**: yes, non-negotiable
 5. **auth-service single-replica session-listing gap**: accept until first outage or 20 tenants
 6. **Models**: adopt architecture doc §5 as written (no picker, BYOK-only)
+7. **Branch protection on `qf-studio/pilot` main** (added 2026-08-03, TASK-437): currently NONE (live-verified — executor sessions could push to main; only advisory CLAUDE.md text prevents it). Any design must be autopilot-compatible (auto-merge + required checks; mind the TASK-431 check-name-mismatch class). Recommended: decide alongside #4671 (gh-guard shim) delivery — if the shim ships and holds, protection is defense-in-depth (required check `test` + autopilot bypass), not urgent; if shim slips, protection first.
 
 ## Next actions
 
