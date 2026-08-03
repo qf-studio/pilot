@@ -29,15 +29,28 @@ again") have no representation in the status vocabulary at all — hence #4678.
 **How to apply.**
 
 - Do NOT mark rows `stalled` to cancel work. It is a recovery signal and will loop.
-- Until `pilot task cancel` exists (#4678), stopping a task takes BOTH: close the issue
-  (stops fresh poller dispatch) AND stall the queued row, then **verify settlement** by
-  re-reading `execution_claims` — expect one more generation to appear before it stops.
-  Budget for it and re-check rather than assuming the first stall worked.
+- **Update (2026-08-03, #4678 shipped): use `pilot task cancel <task-id> [--project <path>]
+  [--reason "..."]` instead.** It writes a NEW terminal status, `canceled` (single-L —
+  distinct from the older, confirmed-dead `cancelled` double-L value store.go's
+  terminal-status list keeps only for historical defensiveness), through the
+  `ExecutionLifecycle.Cancel` chokepoint. A `canceled` row is never re-picked
+  (`nextRetryGeneration` treats it as terminal-and-done, no generation+1, no
+  hard-cap exemption) and `HasTerminalCompletion` counts it as done, so the poller's
+  "unmarking for retry" path leaves it alone too. If the task's latest execution is
+  currently RUNNING, cancel refuses (names the execution id) rather than killing the
+  backend process — v1, no PID/handle is tracked to do that safely yet.
+- The BOTH-close-and-stall workaround below is now only relevant for a task from
+  BEFORE #4678 shipped, or in an environment running an older binary. Prefer
+  `pilot task cancel` whenever it's available. Old workaround: close the issue
+  (stops fresh poller dispatch) AND stall the queued row, then **verify settlement**
+  by re-reading `execution_claims` — expect one more generation to appear before it
+  stops. Budget for it and re-check rather than assuming the first stall worked.
 - Closing a GitHub issue alone does NOT stop queued or running executions: nothing
-  revalidates issue state at pickup or before PR creation (#4656).
-- There is no CLI cancel verb: `pilot` has no `cancel`/`abort`/`kill` subcommand
-  (verified 2026-08-03 against `pilot --help`).
+  revalidates issue state at pickup or before PR creation (#4656) — `pilot task cancel`
+  doesn't change that either; still close the issue too so the poller doesn't keep
+  finding it as a candidate at all.
 
 Related: [[pilot_issue_missing_no_decompose_fragments_single_fix]] ·
-`.agent/tasks/TASK-437-duplicate-execution-race-prevention.md` · #4678 (cancel verb) ·
-#4656 (issue-state revalidation) · `.claude/skills/pilot-aws` troubleshooting table
+`.agent/tasks/TASK-437-duplicate-execution-race-prevention.md` · #4678 (cancel verb,
+shipped) · #4656 (issue-state revalidation) · `.claude/skills/pilot-aws` troubleshooting
+table

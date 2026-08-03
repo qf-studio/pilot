@@ -97,6 +97,13 @@ func displayStatus(execStatus string) string {
 // label freezes at whatever rung the row last reached (typically "running")
 // and HISTORY renders a task cancelled hours ago as still running — the
 // GH-4531 ghost row captured 2026-07-24 22:17:07Z that motivated this task.
+//
+// canceled (GH-4678): the live single-L cancel status written by
+// `pilot task cancel` / executor.ExecutionLifecycle.Cancel. It DOES journal
+// a StageCanceled execution_events row, unlike the dead double-L value above
+// — but it's listed here anyway so the label always reads the deliberate
+// outcome even for a row cancelled before any event exists (e.g. a queued
+// row that never reached "running").
 var mutedOutcomes = map[string]bool{
 	"skipped":            true,
 	"no_op":              true,
@@ -105,6 +112,7 @@ var mutedOutcomes = map[string]bool{
 	"infra":              true,
 	"declined-preflight": true,
 	"cancelled":          true,
+	"canceled":           true,
 }
 
 // stageStripCleanTerminalEvents are execution_events that close out a run

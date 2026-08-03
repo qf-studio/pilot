@@ -1,11 +1,13 @@
 package executor
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -49,7 +51,43 @@ const (
 	// pre-dispatch admission declines): superseded specifically means "another
 	// run already shipped this."
 	ExecStatusSuperseded Status = "superseded"
+	// ExecStatusCanceled marks an execution an operator deliberately
+	// terminated via `pilot task cancel` (GH-4678) — a real cancel verb,
+	// distinct from ExecStatusStalled (a "dead owner, please retry" recovery
+	// signal that the dispatcher deliberately re-picks) and from the
+	// unrelated, confirmed-dead "cancelled" (double-L) value store.go's
+	// terminalExecutionStatuses keeps only for historical defensiveness.
+	// Spelled with a single L specifically to avoid ever colliding with that
+	// dead value: "canceled" is the ONLY spelling any current code writes.
+	// Terminal forever — the dispatcher's nextRetryGeneration never grants a
+	// fresh generation for a row in this status, and it counts as done for
+	// HasTerminalCompletion, so the poller never re-dispatches the task_id
+	// (GH-4655 was cancel-by-abusing-"stalled", which does the opposite:
+	// grants fresh generations exempt from the repick hard cap forever).
+	ExecStatusCanceled Status = "canceled"
 )
+
+// ErrExecutionNotFound is returned by Cancel when taskID has no execution
+// row at all in projectPath — nothing to cancel. Distinct from
+// memory.ErrExecutionNotFound (RecordExecutionEvent's missing-parent-row
+// signal); this one is scoped to Cancel's own lookup.
+var ErrExecutionNotFound = errors.New("no execution found for task")
+
+// ErrExecutionAlreadyTerminal is returned by Cancel when the task's latest
+// execution row is already in a terminal status (including a prior cancel)
+// — cancelling it again would be a no-op write racing the CAS guard for no
+// benefit, so Cancel reports this instead of attempting the write.
+var ErrExecutionAlreadyTerminal = errors.New("execution already in a terminal state")
+
+// ErrExecutionRunning is returned by Cancel when the task's latest execution
+// row is currently "running". GH-4678 v1 refuses rather than killing the
+// backend process: no PID (or equivalent handle) is tracked anywhere in the
+// executions table or in-memory Monitor state for a running row, so there is
+// no safe handle here to signal/kill. The error carries the execution ID so
+// the caller can act (e.g. locate and kill the process manually, or wait for
+// it to finish) — "stop it cleanly" is left for future work once a PID/
+// cancellation-context is threaded through the runner.
+var ErrExecutionRunning = errors.New("execution is currently running")
 
 // ExecutionLifecycle is the single chokepoint for creating and transitioning
 // executions-table rows (GH-4243). Before this type, every production path
@@ -313,6 +351,81 @@ func (l *ExecutionLifecycle) LatestExecution(taskID, projectPath string) (*memor
 	if err != nil {
 		return nil, nil
 	}
+	return exec, nil
+}
+
+// Cancel implements `pilot task cancel` (GH-4678): the real terminal cancel
+// verb that GH-4655 exposed the lack of. Before this, the only documented
+// workaround was writing status='stalled' directly — but "stalled" means
+// "dead owner, retry me" to nextRetryGeneration, so that workaround kept
+// granting the task fresh generations exempt from the repick hard cap
+// forever instead of stopping it.
+//
+// Cancel looks up taskID's latest execution row in projectPath and:
+//   - returns ErrExecutionNotFound if there is no row at all,
+//   - returns ErrExecutionRunning (naming the execution ID) if the row is
+//     currently "running" — v1 refuses rather than killing the backend
+//     process, since no PID/handle is tracked anywhere for a running row
+//     (see ErrExecutionRunning's doc comment),
+//   - returns ErrExecutionAlreadyTerminal if the row is already terminal
+//     (completed, failed, canceled, ...) — nothing left to cancel,
+//   - otherwise (queued, or any other non-terminal, non-running status)
+//     writes ExecStatusCanceled via the same CAS-guarded store path every
+//     other terminal transition in this file uses, records the reason in
+//     the error column, and journals a StageCanceled execution_events row so
+//     `pilot trace` shows the cancel just like any other terminal outcome.
+//
+// This makes the cancel terminal in every place that matters without any
+// call site needing to know the mechanism:
+//   - the dispatcher's nextRetryGeneration carve-out refuses generation+1
+//     for a canceled row (AC2),
+//   - memory.HasTerminalCompletion now counts a canceled row as done, so the
+//     SDK poller's pre-dispatch gate and the dispatcher's own
+//     hasTerminalSuccessLedger guard both suppress re-dispatch (AC3),
+//   - the CAS guard (store.go's terminalExecutionStatuses) now includes
+//     "canceled", so nothing can silently resurrect the row afterward.
+func (l *ExecutionLifecycle) Cancel(taskID, projectPath, reason string) (*memory.Execution, error) {
+	if l.store == nil {
+		return nil, ErrExecutionNotFound
+	}
+
+	exec, err := l.store.GetLatestExecutionByTaskID(taskID, projectPath)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrExecutionNotFound
+		}
+		return nil, fmt.Errorf("failed to look up execution for %s: %w", taskID, err)
+	}
+
+	switch {
+	case exec.Status == string(ExecStatusRunning):
+		return exec, fmt.Errorf("%w: execution %s", ErrExecutionRunning, exec.ID)
+	case IsTerminalStatus(exec.Status):
+		return exec, fmt.Errorf("%w: execution %s is already %q", ErrExecutionAlreadyTerminal, exec.ID, exec.Status)
+	}
+
+	reasonMsg := reason
+	if reasonMsg == "" {
+		reasonMsg = "canceled via pilot task cancel"
+	}
+
+	if applied, err := l.store.UpdateExecutionStatusIfNotTerminal(exec.ID, string(ExecStatusCanceled), reasonMsg); err != nil {
+		return nil, fmt.Errorf("failed to cancel execution %s: %w", exec.ID, err)
+	} else if !applied {
+		// Lost a race against another terminal write landing between the
+		// lookup above and this write (e.g. the run finished concurrently) —
+		// the row has its own true terminal status now; report that instead
+		// of claiming the cancel took effect.
+		return exec, fmt.Errorf("%w: execution %s reached a terminal state concurrently", ErrExecutionAlreadyTerminal, exec.ID)
+	}
+
+	if err := l.store.RecordExecutionEvent(exec.ID, memory.StageCanceled, reasonMsg); err != nil {
+		logging.WithComponent("executor.lifecycle").Warn("failed to record cancel execution event",
+			"execution_id", exec.ID, "task_id", taskID, "error", err)
+	}
+
+	exec.Status = string(ExecStatusCanceled)
+	exec.Error = reasonMsg
 	return exec, nil
 }
 

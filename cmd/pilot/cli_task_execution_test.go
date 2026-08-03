@@ -14,6 +14,7 @@ package main
 // them directly against a real (temp-file) SQLite store.
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"testing"
@@ -225,4 +226,100 @@ func TestRecordCLITaskFinish_UnsuccessfulResult(t *testing.T) {
 	if exec.Error != result.Error {
 		t.Errorf("expected error %q, got %q", result.Error, exec.Error)
 	}
+}
+
+// TestRunTaskCancelCLI covers `pilot task cancel`'s testable core (GH-4678)
+// across the four outcome branches the acceptance criteria call for:
+// success, refuse-while-running, clean no-op on an already-terminal row, and
+// clean no-op when there's nothing to cancel at all.
+func TestRunTaskCancelCLI(t *testing.T) {
+	t.Run("queued task: cancels and reports success", func(t *testing.T) {
+		store := newCLITaskTestStore(t)
+		task := &executor.Task{ID: "TASK-CANCEL-1", ProjectPath: "/tmp/project"}
+		if _, err := recordCLITaskStart(store, task); err != nil {
+			t.Fatalf("recordCLITaskStart: %v", err)
+		}
+		// recordCLITaskStart begins ExecStatusRunning; cancel a queued-style
+		// task instead so this exercises the ordinary "not yet picked up" path.
+		task2 := &executor.Task{ID: "TASK-CANCEL-1B", ProjectPath: "/tmp/project"}
+		if _, err := executor.NewExecutionLifecycle(store).Begin(task2, executor.ExecStatusQueued); err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+
+		var out bytes.Buffer
+		err := runTaskCancelCLI(store, task2.ID, task2.ProjectPath, "operator: duplicate", &out)
+		if err != nil {
+			t.Fatalf("runTaskCancelCLI: %v", err)
+		}
+		if !bytes.Contains(out.Bytes(), []byte("Cancelled task "+task2.ID)) {
+			t.Errorf("expected success message naming the task, got: %s", out.String())
+		}
+		if !bytes.Contains(out.Bytes(), []byte("operator: duplicate")) {
+			t.Errorf("expected reason echoed in output, got: %s", out.String())
+		}
+
+		exec, err := executor.NewExecutionLifecycle(store).LatestExecution(task2.ID, task2.ProjectPath)
+		if err != nil || exec == nil {
+			t.Fatalf("LatestExecution: exec=%v err=%v", exec, err)
+		}
+		if exec.Status != string(executor.ExecStatusCanceled) {
+			t.Errorf("expected status %q, got %q", executor.ExecStatusCanceled, exec.Status)
+		}
+	})
+
+	t.Run("running task: refuses, names the execution, returns non-nil error", func(t *testing.T) {
+		store := newCLITaskTestStore(t)
+		task := &executor.Task{ID: "TASK-CANCEL-2", ProjectPath: "/tmp/project"}
+		execID, err := recordCLITaskStart(store, task) // begins as ExecStatusRunning
+		if err != nil {
+			t.Fatalf("recordCLITaskStart: %v", err)
+		}
+
+		var out bytes.Buffer
+		err = runTaskCancelCLI(store, task.ID, task.ProjectPath, "", &out)
+		if !errors.Is(err, executor.ErrExecutionRunning) {
+			t.Fatalf("expected ErrExecutionRunning, got: %v", err)
+		}
+		if !bytes.Contains(out.Bytes(), []byte(execID)) {
+			t.Errorf("expected the running execution ID %q named in output, got: %s", execID, out.String())
+		}
+		if !bytes.Contains(out.Bytes(), []byte("RUNNING")) {
+			t.Errorf("expected a clear RUNNING refusal message, got: %s", out.String())
+		}
+	})
+
+	t.Run("already-terminal task: clean no-op, nil error", func(t *testing.T) {
+		store := newCLITaskTestStore(t)
+		task := &executor.Task{ID: "TASK-CANCEL-3", ProjectPath: "/tmp/project"}
+		execID, err := recordCLITaskStart(store, task)
+		if err != nil {
+			t.Fatalf("recordCLITaskStart: %v", err)
+		}
+		result := &executor.ExecutionResult{TaskID: task.ID, Success: true, PRUrl: "https://github.com/qf-studio/pilot/pull/1"}
+		if err := recordCLITaskFinish(store, execID, nil, result, time.Second); err != nil {
+			t.Fatalf("recordCLITaskFinish: %v", err)
+		}
+
+		var out bytes.Buffer
+		err = runTaskCancelCLI(store, task.ID, task.ProjectPath, "too late", &out)
+		if err != nil {
+			t.Fatalf("expected a clean nil-error no-op for an already-terminal task, got: %v", err)
+		}
+		if !bytes.Contains(out.Bytes(), []byte("already terminal")) {
+			t.Errorf("expected a useful 'already terminal' message, got: %s", out.String())
+		}
+	})
+
+	t.Run("no execution at all: clean no-op, nil error, useful message", func(t *testing.T) {
+		store := newCLITaskTestStore(t)
+
+		var out bytes.Buffer
+		err := runTaskCancelCLI(store, "TASK-DOES-NOT-EXIST", "/tmp/project", "", &out)
+		if err != nil {
+			t.Fatalf("expected a clean nil-error no-op when there's nothing to cancel, got: %v", err)
+		}
+		if !bytes.Contains(out.Bytes(), []byte("nothing to cancel")) {
+			t.Errorf("expected a useful 'nothing to cancel' message, got: %s", out.String())
+		}
+	})
 }

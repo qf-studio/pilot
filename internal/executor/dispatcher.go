@@ -45,6 +45,10 @@ var terminalExecutionStatuses = map[string]bool{
 	"completed": true, "failed": true, "cancelled": true, "declined": true,
 	"no_op": true, "rate_limited": true, "skipped": true, "stalled": true, "infra": true,
 	"superseded": true,
+	// "canceled" (single-L, GH-4678): the live operator-cancel value written
+	// by ExecutionLifecycle.Cancel. Distinct from the dead "cancelled"
+	// (double-L) above — see ExecStatusCanceled's doc comment.
+	"canceled": true,
 }
 
 // isTerminalExecutionStatus reports whether status is one of
@@ -1403,8 +1407,16 @@ func (d *Dispatcher) priorClaimWasEscalatedForOperatorAttention(taskID, projectP
 //     silently.
 //   - the claimed execution is terminal (dead — the owning run finished) AND
 //     the task is already "done" per HasTerminalCompletion (a genuine
-//     deliverable, or a no_op with no error): retry=false — preserves
-//     GH-4350's invariant that a no_op'd task must never be re-armed.
+//     deliverable, a no_op with no error, or an operator cancel): retry=false
+//     — preserves GH-4350's invariant that a no_op'd task must never be
+//     re-armed, and its GH-4678 extension that a canceled task must never be
+//     re-armed either. isTerminalExecutionStatus already counts "canceled" as
+//     terminal (so this reaches the done-check at all instead of the live-
+//     owner branch below), and HasTerminalCompletion counts any "canceled"
+//     row as done regardless of its error text (a cancel reason is expected
+//     there, unlike the no_op case) — together that's enough for a canceled
+//     row to always land on this branch, with no separate carve-out needed:
+//     no generation+1, no repick-hard-cap exemption, ever (AC2/GH-4678).
 //   - the claimed execution is terminal but the task is NOT yet done (e.g.
 //     failed, stalled): retry=true, generation = claimed generation + 1.
 func (d *Dispatcher) nextRetryGeneration(taskID, projectPath string) (generation int, retry bool, err error) {

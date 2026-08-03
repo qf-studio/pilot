@@ -4768,6 +4768,78 @@ func TestNextRetryGeneration_DanglingClaimFallsThroughToDoneCheck(t *testing.T) 
 	})
 }
 
+// TestNextRetryGeneration_CanceledVsStalled is the GH-4678 claim-admission
+// matrix regression test (AC2/AC5): an operator-canceled execution must never
+// be handed a fresh generation — no re-pick, ever, across repeated poll
+// cycles — while a stalled execution (the legitimate "dead owner, retry me"
+// recovery signal) must keep retrying exactly as before. The two are tested
+// side by side deliberately: GH-4655 was an operator mistaking one status for
+// the other (hand-writing 'stalled' to try to cancel a task, which the
+// dispatcher instead re-armed forever).
+func TestNextRetryGeneration_CanceledVsStalled(t *testing.T) {
+	t.Run("canceled: never retries, generation stays 0, across repeated poll cycles", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4678-CANCELED", ProjectPath: "/project-canceled"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+		if _, err := NewExecutionLifecycle(store).Cancel(task.ID, task.ProjectPath, "test cancel"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		for i := 0; i < 5; i++ {
+			gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+			if err != nil {
+				t.Fatalf("nextRetryGeneration (cycle %d): %v", i, err)
+			}
+			if retry {
+				t.Fatalf("cycle %d: expected retry=false for a canceled execution, got retry=true (generation %d)", i, gen)
+			}
+			if gen != 0 {
+				t.Errorf("cycle %d: expected generation 0 (no growth) for a canceled execution, got %d", i, gen)
+			}
+		}
+
+		exec, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		if exec.Status != "canceled" {
+			t.Fatalf("expected status 'canceled', got %q", exec.Status)
+		}
+	})
+
+	t.Run("stalled: still retries at generation+1, unchanged (regression guard)", func(t *testing.T) {
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4678-STALLED", ProjectPath: "/project-stalled"}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+		if _, err := store.UpdateExecutionStatusIfNotTerminal(execID, "stalled", "dead owner"); err != nil {
+			t.Fatalf("setup stall: %v", err)
+		}
+
+		dispatcher := NewDispatcher(store, NewRunner(), nil)
+		gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+		if err != nil {
+			t.Fatalf("nextRetryGeneration: %v", err)
+		}
+		if !retry {
+			t.Fatalf("expected retry=true for a stalled execution (unchanged recovery semantics), got retry=false")
+		}
+		if gen != 1 {
+			t.Errorf("expected generation 1, got %d", gen)
+		}
+	})
+}
+
 // TestStore_GetQueuedProjectPaths verifies the distinct-project query backing
 // restart adoption: only queued/pending rows count, duplicates collapse, and
 // completed/running rows are excluded. GH-3732.

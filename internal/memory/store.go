@@ -1031,6 +1031,12 @@ const (
 	// Detective only — no auto-revert; paired with an alert-engine warning
 	// (executor/sideeffect_audit.go) for a human operator to judge.
 	StageGithubSideEffect Stage = "executor.github_sideeffect"
+	// StageCanceled records that an operator ran `pilot task cancel`
+	// (GH-4678) against this execution — a deliberate terminal decision,
+	// distinct from StageStalled (dead-owner recovery signal, retry-worthy)
+	// and StageFailed (an unplanned outcome). Detail carries the operator's
+	// reason string. See executor.ExecutionLifecycle.Cancel.
+	StageCanceled Stage = "canceled"
 )
 
 // Event represents a single stage-transition record for an execution.
@@ -1171,9 +1177,13 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 // HasTerminalCompletion reports whether taskID has ANY row in projectPath
 // that is terminal in the sense that no further dispatch is warranted:
 // either a genuine HasCompletedExecution row (completed with a commit/PR
-// deliverable), or a no_op row with no error ("nothing to change" is itself
+// deliverable), a no_op row with no error ("nothing to change" is itself
 // a legitimate completion — the same definition childCompletionEvidence
-// uses in internal/executor/dispatcher.go for decomposed-child evidence).
+// uses in internal/executor/dispatcher.go for decomposed-child evidence),
+// or a canceled row (GH-4678: an operator ran `pilot task cancel` — that is
+// a deliberate, permanent "stop dispatching this" decision, not a failure to
+// retry; unlike the no_op branch this one does NOT require an empty error,
+// since Cancel always records the operator's reason in the error column).
 //
 // GH-4347: deliberately an ANY-row check, unlike childCompletionEvidence's
 // no_op fallback (which inspects only GetLatestExecutionByTaskID's most
@@ -1195,8 +1205,10 @@ func (s *Store) HasTerminalCompletion(taskID, projectPath string) (bool, error) 
 	var count int
 	err = s.db.QueryRow(`
 		SELECT COUNT(*) FROM executions
-		WHERE task_id = ? AND project_path = ? AND status = 'no_op'
-			AND (error IS NULL OR error = '')
+		WHERE task_id = ? AND project_path = ? AND (
+			(status = 'no_op' AND (error IS NULL OR error = ''))
+			OR status = 'canceled'
+		)
 	`, taskID, projectPath).Scan(&count)
 	if err != nil {
 		return false, err
@@ -1996,17 +2008,25 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 // so a terminal row can never be silently clobbered by a second terminal
 // write racing in after the first one landed.
 //
-// GH-4243 dead-API audit: "cancelled" is confirmed dead as a write value —
-// no production call site ever passes it to UpdateExecutionStatus,
-// MarkExecutionCompleted, or Begin/Transition/Finish (executor.Status has
-// no ExecStatusCancelled constant). It's kept in this terminal-state list
-// only defensively — matching monitor.go's separate in-memory TaskStatus
-// enum, which does have a StatusCancelled, and matching dispatcher.go's
-// WaitForExecution terminal-status switch, which reads "cancelled" as a
-// possible historical/manually-written value. Not removed since dropping
-// it would silently stop setting completed_at on that historical value.
+// GH-4243 dead-API audit: "cancelled" (double-L) is confirmed dead as a
+// write value — no production call site ever passes it to
+// UpdateExecutionStatus, MarkExecutionCompleted, or Begin/Transition/Finish
+// (executor.Status has no ExecStatusCancelled constant). It's kept in this
+// terminal-state list only defensively — matching monitor.go's separate
+// in-memory TaskStatus enum, which does have a StatusCancelled, and matching
+// dispatcher.go's WaitForExecution terminal-status switch, which reads
+// "cancelled" as a possible historical/manually-written value. Not removed
+// since dropping it would silently stop setting completed_at on that
+// historical value.
+//
+// GH-4678: "canceled" (single-L) is the LIVE operator-cancel value written
+// by executor.ExecutionLifecycle.Cancel (pilot task cancel). Deliberately
+// spelled differently from the dead "cancelled" above so the two never
+// collide — "canceled" means "operator terminated this on purpose, never
+// re-pick", the opposite intent of "cancelled"'s historical retry-worthy
+// connotation.
 var terminalExecutionStatuses = []string{
-	"completed", "failed", "cancelled", "declined", "stalled", "no_op", "rate_limited", "infra", "skipped",
+	"completed", "failed", "cancelled", "canceled", "declined", "stalled", "no_op", "rate_limited", "infra", "skipped",
 }
 
 func isTerminalExecutionStatus(status string) bool {

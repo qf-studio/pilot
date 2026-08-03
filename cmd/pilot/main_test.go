@@ -77,6 +77,42 @@ func TestTaskCommandFlags(t *testing.T) {
 	}
 }
 
+// TestTaskCancelCommandFlags verifies the `pilot task cancel` subcommand
+// (GH-4678) is registered under `pilot task` and exposes the expected flags.
+func TestTaskCancelCommandFlags(t *testing.T) {
+	taskCmd := newTaskCmd()
+
+	var cancelCmd *cobra.Command
+	for _, c := range taskCmd.Commands() {
+		if c.Name() == "cancel" {
+			cancelCmd = c
+			break
+		}
+	}
+	if cancelCmd == nil {
+		t.Fatal("expected `pilot task` to register a `cancel` subcommand")
+	}
+
+	expectedFlags := []struct {
+		name      string
+		shorthand string
+	}{
+		{"project", "p"},
+		{"reason", ""},
+	}
+
+	for _, ef := range expectedFlags {
+		flag := cancelCmd.Flags().Lookup(ef.name)
+		if flag == nil {
+			t.Errorf("missing flag: --%s", ef.name)
+			continue
+		}
+		if ef.shorthand != "" && flag.Shorthand != ef.shorthand {
+			t.Errorf("flag --%s: expected shorthand -%s, got -%s", ef.name, ef.shorthand, flag.Shorthand)
+		}
+	}
+}
+
 // TestGitHubRunCommandFlags verifies all expected flags exist on the github run command
 func TestGitHubRunCommandFlags(t *testing.T) {
 	cmd := newGitHubRunCmd()
