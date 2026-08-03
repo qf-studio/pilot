@@ -31,7 +31,12 @@ Nav-research trace (91 tool calls, verified at `d959cfd6`): every admission/re-c
 ## Open items
 
 - **PR#4653**: ✅ CLOSED 2026-08-03 (comment links this record; branch `pilot/GH-4649` deleted).
-- **Executor session GitHub-powers policy** (the ad-hoc `gh` close of #4649): nav-research investigation in flight — findings land in this doc when complete.
+- **Executor session GitHub-powers policy** — nav-research complete 2026-08-03 (verified at `c5208a87`):
+  - Child spawns with `--dangerously-skip-permissions` on ALL three arg branches (`backend_claudecode.go:489/502/513`), inherits full daemon env incl. `GITHUB_TOKEN` (`:575` — `append(os.Environ(), "PILOT_EXECUTOR=1")`, nothing stripped), Bash in default allowedTools with no subcommand filter (`backend.go:758-760`). The shared classic PAT spans all owners (`sops/config/github-token-architecture.md`).
+  - **Zero prompt-level scope constraints**: `ExecutorPromptHeader` / PILOT EXECUTION MODE / workflow instructions say nothing about sibling issues, labels, or PR scope. `repo_guardrail.go`'s `ValidateTargetRepo` (GH-3027) guards only Pilot's own Go `gh issue create` calls — the LLM's Bash `gh` path has NO interception point.
+  - **Zero post-run GitHub side-effect audit**: gates check build/diff/git state only; a session closing/labeling sibling issues is invisible to every check.
+  - **⚠️ Live-verified: `qf-studio/pilot` main has NO branch protection** (`GET /branches/main/protection` → 404) — a session could push to main directly; only advisory CLAUDE.md text prevents it. NOTE: enabling protection interacts with autopilot auto-merge + required_checks (TASK-431 class) — operator decision, not a casual toggle.
+  - Containment options (effort-ranked): (1) prompt-line negative "only act on your own issue #N" — trivial, advisory; (2) post-run side-effect audit extending `getPostExecutionSummary` (runner.go:6195-6245) — moderate, detective; (3) `gh` shim/PATH wrapper allowlisting subcommand+issue — the ValidateTargetRepo pattern for the Bash path; (4) drop `--dangerously-skip-permissions` for settings.json deny rules — large, touches every spawn path. **Pending founder decision on posture.**
 
 ## Refs
 
