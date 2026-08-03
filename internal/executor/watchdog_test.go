@@ -278,6 +278,22 @@ func TestEffortAwareStallTimeout(t *testing.T) {
 			want:       highEffortStallFloor,
 		},
 		{
+			// GH-4691: epic was silently excluded before Complexity.IsHeavy()
+			// replaced the ComplexityComplex-only check.
+			name:       "epic-lane raises 3m default to the 10m floor",
+			configured: 3 * time.Minute,
+			effort:     "medium",
+			complexity: ComplexityEpic,
+			want:       highEffortStallFloor,
+		},
+		{
+			name:       "simple lane, low effort: unchanged at 3m",
+			configured: 3 * time.Minute,
+			effort:     "low",
+			complexity: ComplexitySimple,
+			want:       3 * time.Minute,
+		},
+		{
 			name:       "explicit config already above the floor wins",
 			configured: 15 * time.Minute,
 			effort:     "high",
@@ -312,6 +328,68 @@ func TestEffortAwareStallTimeout(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("effortAwareStallTimeout(%v, %q, %q) = %v, want %v",
 					tt.configured, tt.effort, tt.complexity, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEffortAwareHeartbeatFloor covers GH-4691: the hard heartbeat's floor
+// must apply to high-effort and heavy-complexity (complex, epic) lanes —
+// mirroring effortAwareStallTimeout's own effort/complexity gate — and must
+// NOT depend on any configured stall-timeout value (unlike
+// effortAwareStallTimeout, there is no "configured" input here at all).
+func TestEffortAwareHeartbeatFloor(t *testing.T) {
+	tests := []struct {
+		name       string
+		effort     string
+		complexity Complexity
+		want       time.Duration
+	}{
+		{
+			name:       "simple lane, low effort: no floor",
+			effort:     "low",
+			complexity: ComplexitySimple,
+			want:       0,
+		},
+		{
+			name:       "medium lane, medium effort: no floor",
+			effort:     "medium",
+			complexity: ComplexityMedium,
+			want:       0,
+		},
+		{
+			name:       "high effort raises the floor regardless of complexity",
+			effort:     "high",
+			complexity: ComplexityMedium,
+			want:       highEffortStallFloor,
+		},
+		{
+			name:       "complex-lane raises the floor",
+			effort:     "medium",
+			complexity: ComplexityComplex,
+			want:       highEffortStallFloor,
+		},
+		{
+			// The GH-4679 incident lane: epic complexity must get the same
+			// floor as complex — this was the confirmed secondary defect.
+			name:       "epic-lane raises the floor",
+			effort:     "medium",
+			complexity: ComplexityEpic,
+			want:       highEffortStallFloor,
+		},
+		{
+			name:       "high effort and epic: still just the floor (no stacking)",
+			effort:     "high",
+			complexity: ComplexityEpic,
+			want:       highEffortStallFloor,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := effortAwareHeartbeatFloor(tt.effort, tt.complexity)
+			if got != tt.want {
+				t.Errorf("effortAwareHeartbeatFloor(%q, %q) = %v, want %v",
+					tt.effort, tt.complexity, got, tt.want)
 			}
 		})
 	}
