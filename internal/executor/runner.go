@@ -285,6 +285,8 @@ func TerminalStatus(result *ExecutionResult) string {
 		return "infra"
 	case "skipped":
 		return "skipped"
+	case "superseded":
+		return "superseded"
 	}
 	for _, c := range outcomeClassifiers {
 		if containsAny(result.Error, c.signatures) {
@@ -628,9 +630,12 @@ type ExecutionResult struct {
 	// DeclinedReason is the human-readable reason Claude provided for the decline.
 	DeclinedReason string
 	// Outcome is a fine-grained terminal classification ("declined", "no_op",
-	// "no_commits", "stalled", "budget_exceeded") used by the dispatcher to pick
-	// the persisted execution status instead of collapsing every !Success result
-	// into "failed". Empty means "classify from Success/Declined/Error". TASK-358.
+	// "no_commits", "stalled", "budget_exceeded", "superseded") used by the
+	// dispatcher to pick the persisted execution status instead of collapsing
+	// every !Success result into "failed". Empty means "classify from
+	// Success/Declined/Error". TASK-358. "superseded" (GH-4656): the
+	// PR-creation preflight found the task's GitHub issue already closed —
+	// another run delivered this scope first.
 	Outcome string
 	// PeakRSSMB is the peak subprocess RSS in MiB collected by the RSS sampler. GH-3028.
 	// Zero on non-Linux/darwin platforms or when the sampler had no data.
@@ -755,6 +760,13 @@ type Runner struct {
 	// which legacy handlers still mutate per-event.
 	prCreators   map[string]PRCreator
 	prCreatorsMu sync.RWMutex
+	// GH-4656: issueStateCheckers holds startup-registered per-repo GitHub
+	// issue-state checkers keyed "adapter:owner/repo" — same key shape and
+	// registration timing as prCreators, populated alongside RegisterPRCreator
+	// (see issue_state.go). Used by fetchIssueState for the pickup-time and
+	// PR-creation preflight guards.
+	issueStateCheckers   map[string]IssueStateChecker
+	issueStateCheckersMu sync.RWMutex
 	// GH-2211: SubIssueLinker for native GitHub sub-issue API linking
 	subIssueLinker SubIssueLinker // Optional linker for native GitHub parent→child wiring
 	// GH-1599: Execution log store for milestone entries
@@ -1995,6 +2007,47 @@ func (r *Runner) adoptOpenBranchPR(ctx context.Context, git *GitOperations, task
 	if recorder != nil {
 		recorder.SetPRUrl(openURL)
 	}
+	return true
+}
+
+// checkIssueSupersededBeforePR is the GH-4656 PR-creation preflight: it
+// refetches the task's live GitHub issue state immediately before opening a
+// PR and, if the issue is already closed, refuses to create the PR. Runs
+// AFTER push/adoptOpenBranchPR (mirroring adoptOpenBranchPR's own ordering
+// note) so it sits directly on the critical path the 2026-07-31 incident
+// exploited: PR#4653 was opened at 19:58 against an issue that had already
+// been closed as superseded by a sibling/parent's PR at 19:43. Fails open on
+// any lookup error — pipeline availability outranks the guard (acceptance
+// #4) — and is a no-op for non-GitHub-sourced tasks (SourceAdapter set to
+// anything other than "" or "github").
+//
+// Returns true when the PR must not be opened (result has already been
+// populated with the superseded outcome); false when the caller should
+// proceed to normal PR creation.
+func (r *Runner) checkIssueSupersededBeforePR(ctx context.Context, task *Task, result *ExecutionResult) bool {
+	if task.SourceAdapter != "" && task.SourceAdapter != "github" {
+		return false
+	}
+	state, ghErr := fetchIssueState(ctx, r, task, task.ProjectPath)
+	if ghErr != nil {
+		r.log.Warn("Failed to revalidate issue state before PR creation; proceeding (fail-open)",
+			slog.String("task_id", task.ID),
+			slog.Any("error", ghErr))
+		return false
+	}
+	if !state.Closed {
+		return false
+	}
+	detail := fmt.Sprintf("issue closed before PR creation (superseded_label=%t, labels=%v)", state.HasLabel(labelPilotSuperseded), state.Labels)
+	r.log.Info("Task's issue closed before PR creation; refusing to open PR",
+		slog.String("task_id", task.ID),
+		slog.Any("labels", state.Labels),
+	)
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StageSuperseded, detail)
+	result.Success = false
+	result.Outcome = "superseded"
+	result.Error = detail
+	r.reportProgress(task.ID, "Superseded", 100, detail)
 	return true
 }
 
@@ -4675,6 +4728,14 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// duplicate PR. Runs after push so the branch is guaranteed to exist on
 			// the remote for the gh CLI lookup.
 			if r.adoptOpenBranchPR(ctx, git, task, result, recorder) {
+				return result, nil
+			}
+
+			// GH-4656: PR-creation preflight — refuses to open a PR if the
+			// task's GitHub issue has already been closed (see
+			// checkIssueSupersededBeforePR doc for the incident this closes).
+			// The branch remains pushed; only PR creation is refused.
+			if r.checkIssueSupersededBeforePR(ctx, task, result) {
 				return result, nil
 			}
 

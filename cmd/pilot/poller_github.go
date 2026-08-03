@@ -452,6 +452,10 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	// back to gh CLI for any github task without a registered creator.
 	if deps.Runner != nil {
 		deps.Runner.RegisterPRCreator("github:"+target.repoFullName, sdkshim.NewGitHubPRCreator(sdkClient, repoOwner, repoName))
+		// GH-4656: register the same repo's issue-state checker alongside its
+		// PR creator, on the same sdkClient — in-process, ghbudget-visible
+		// reads for the pickup-time and PR-creation preflight guards.
+		deps.Runner.RegisterIssueStateChecker("github:"+target.repoFullName, sdkshim.NewGitHubIssueStateChecker(sdkClient))
 	}
 
 	githubPoller := githubSDK.New(sdkCfg).NewPoller(pollerDeps)

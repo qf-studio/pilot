@@ -44,6 +44,7 @@ var ErrDispatchGated = errors.New("dispatch gated: pre-dispatch admission check 
 var terminalExecutionStatuses = map[string]bool{
 	"completed": true, "failed": true, "cancelled": true, "declined": true,
 	"no_op": true, "rate_limited": true, "skipped": true, "stalled": true, "infra": true,
+	"superseded": true,
 }
 
 // isTerminalExecutionStatus reports whether status is one of
@@ -2550,6 +2551,43 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// gates see the same labels the dispatch-time Decompose() saw.
 		task := buildTaskFromExecution(exec)
 
+		// GH-4656: revalidate the issue's live GitHub state at pickup time.
+		// Closes the 2026-07-31 GH-4649 incident window: a retry's claim was
+		// admitted legitimately at 18:57, sat queued behind this serial
+		// worker, and physically reached this line at ~19:33 — by which time
+		// its scope had merged via a sibling's PR and its issue had been
+		// closed as superseded at 19:43. Every pickup-time guard above this
+		// point is task_id-local (this task's own ledger rows); this is the
+		// first one that asks GitHub itself. Fails open on any lookup error
+		// (adapter mismatch, unparseable issue number, unresolved repo,
+		// transient GitHub error) — pipeline availability outranks the guard
+		// (acceptance #4).
+		if task.SourceAdapter == "" || task.SourceAdapter == "github" {
+			if state, ghErr := fetchIssueState(ctx, w.runner, task, exec.ProjectPath); ghErr != nil {
+				w.log.Warn("Failed to revalidate issue state before pickup; proceeding (fail-open)",
+					slog.String("execution_id", exec.ID),
+					slog.String("task_id", exec.TaskID),
+					slog.Any("error", ghErr))
+			} else if state.Closed {
+				detail := fmt.Sprintf("issue closed before pickup (superseded_label=%t, labels=%v)", state.HasLabel(labelPilotSuperseded), state.Labels)
+				w.log.Info("Task's issue closed before pickup; superseding without execution",
+					slog.String("execution_id", exec.ID),
+					slog.String("task_id", exec.TaskID),
+					slog.Any("labels", state.Labels),
+				)
+				// GH-4259: record the event before Finish persists the terminal
+				// status, so a poller can never observe the terminal row before
+				// the matching event exists.
+				w.recordExecutionEvent(exec.ID, memory.StageSuperseded, detail)
+				if _, finErr := w.lifecycle.Finish(exec.ID, nil, nil, 0, ExecStatusSuperseded); finErr != nil {
+					w.log.Error("Failed to finalize superseded execution", slog.String("execution_id", exec.ID), slog.Any("error", finErr))
+				}
+				w.runner.EmitProgress(exec.TaskID, "Superseded", 100, detail)
+				w.currentTaskID.Store("")
+				continue
+			}
+		}
+
 		// GH-4141 Phase 3: pre-execute merged-PR short-circuit. A queued task
 		// whose branch already has a merged PR (e.g. a poller-retry duplicate of
 		// a sub-issue the epic already shipped) must not re-invoke the backend
@@ -2899,6 +2937,8 @@ func dispatchTerminalStage(status string) (memory.Stage, bool) {
 		return memory.StageSkipped, true
 	case "infra":
 		return memory.StageFailed, true
+	case "superseded":
+		return memory.StageSuperseded, true
 	default:
 		return "", false
 	}
@@ -2948,6 +2988,8 @@ func terminalPhaseLabel(status string) string {
 		return "Stalled"
 	case "declined":
 		return "Declined"
+	case "superseded":
+		return "Superseded"
 	default:
 		return "Failed"
 	}
