@@ -4732,20 +4732,69 @@ func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, pr
 	return true, nil
 }
 
+// checkPRWorkOnMain reports whether prState.HeadSHA's changes are already
+// present on the repo's base branch. GH-4696: the GH-4657 closed-issue
+// short-circuit below assumed "source issue closed" always means "a sibling
+// delivered this scope and it's already on main" — but a closed issue can
+// also mean the issue was closed for an unrelated reason (e.g. manually, or
+// mis-labeled pilot-superseded) while this PR's own commits never landed.
+// Closing in that case would silently discard real work.
+//
+// Uses the same base...head reachability convention as guardReleaseSHAReachable
+// (GH-4519 above): compare(base=HeadSHA, head=mainSHA) is "ahead" when
+// mainSHA contains HeadSHA as an ancestor, and "identical" when they're the
+// same commit — either means HeadSHA's changes are already on main. This is
+// the single cheap way to distinguish "already merged" from "still only on
+// the PR branch" without walking full commit lists.
+func (c *Controller) checkPRWorkOnMain(ctx context.Context, prState *PRState) (bool, error) {
+	mainBranchName := c.resolveMainBranchName()
+	branch, err := c.ghClient.GetBranch(ctx, c.owner, c.repo, mainBranchName)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch %s branch: %w", mainBranchName, err)
+	}
+	mainSHA := branch.SHA()
+
+	status, err := c.ghClient.CompareStatus(ctx, c.owner, c.repo, prState.HeadSHA, mainSHA)
+	if err != nil {
+		return false, fmt.Errorf("compare status failed: %w", err)
+	}
+	return status == "ahead" || status == "identical", nil
+}
+
 // closeConflictSourceIssueClosed handles the GH-4657 case where
 // handleMergeConflict discovers the PR's source issue is already closed —
 // almost always because a sibling/parent execution delivered the same scope
 // first (TASK-437's PR#4653/#4649 duplicate-execution race is the
 // motivating incident: #4649 was closed pilot-superseded while a sibling
-// run's PR#4652 for the same scope had already merged, so #4649's own PR
-// (#4653) was born conflicting against work already on main). Resolving
-// that conflict would just recreate merged work, so the honest action is
-// closing the PR with a terminal stage — not escalateAndHold's
+// run's PR#4652 for the same scope had already merged, so #4653 (this PR's
+// own predecessor) was born conflicting against work already on main).
+// Resolving that conflict would just recreate merged work, so the honest
+// action is closing the PR with a terminal stage — not escalateAndHold's
 // needs-manual-rebase/pilot-needs-human ask for a rebase nobody should
 // perform. Unlike closeAndReexecute, this never re-adds the pilot label or
 // removes pilot-in-progress: the issue is already closed, so there is
 // nothing to re-dispatch.
+//
+// GH-4696: "source issue is closed" alone is not proof the PR's own changes
+// are on main — verify reachability (checkPRWorkOnMain) before closing.
+// If the changes are NOT confirmed on main (either because the compare says
+// so, or because the check itself failed), fail safe by NOT closing: hold
+// the PR via escalateAndHold instead, so a human decides whether to land it
+// or close it. Closing is the irrecoverable side of this decision, so any
+// uncertainty must resolve toward not closing.
 func (c *Controller) closeConflictSourceIssueClosed(ctx context.Context, prState *PRState, issue *github.Issue) error {
+	onMain, err := c.checkPRWorkOnMain(ctx, prState)
+	if err != nil {
+		c.log.Warn("handleMergeConflict: reachability check failed, failing safe by not closing",
+			"pr", prState.PRNumber, "issue", prState.IssueNumber, "error", err)
+		return c.holdClosedIssueWorkNotOnMain(ctx, prState, fmt.Sprintf("this PR's changes could not be verified as already on the base branch (%v)", err))
+	}
+	if !onMain {
+		c.log.Warn("handleMergeConflict: source issue closed but PR's changes are not on main — escalating instead of closing",
+			"pr", prState.PRNumber, "issue", prState.IssueNumber)
+		return c.holdClosedIssueWorkNotOnMain(ctx, prState, "this PR's changes are not confirmed on the base branch")
+	}
+
 	reason := fmt.Sprintf("source issue #%d is closed", prState.IssueNumber)
 	comment := fmt.Sprintf(
 		"Source issue #%d is closed — closing this PR instead of attempting a rebase. Resolving this merge conflict would duplicate work already merged to main.",
@@ -4771,6 +4820,24 @@ func (c *Controller) closeConflictSourceIssueClosed(ctx context.Context, prState
 	// observed on GitHub) not to mark the already-closed issue
 	// pilot-retry-ready — there is nothing to retry.
 	prState.TerminalLabel = github.LabelSuperseded
+	return nil
+}
+
+// holdClosedIssueWorkNotOnMain is the GH-4696 fail-safe rung of
+// closeConflictSourceIssueClosed: the source issue is closed, but this PR's
+// changes are not confirmed to already be on main (either the reachability
+// check said so, or the check itself errored). Closing here would risk
+// discarding unmerged work, so hold the PR with the same escalation labels
+// the other handleMergeConflict rungs use (GH-4459) and post a comment
+// naming the exact situation (the situation argument) for a human to
+// resolve.
+func (c *Controller) holdClosedIssueWorkNotOnMain(ctx context.Context, prState *PRState, situation string) error {
+	comment := fmt.Sprintf(
+		"Source issue #%d is closed, but %s — closing it here would risk discarding unmerged work. This needs a human decision: land it or close it.",
+		prState.IssueNumber, situation,
+	)
+	reason := fmt.Sprintf("source issue #%d is closed but %s", prState.IssueNumber, situation)
+	c.escalateAndHold(ctx, prState, reason, []string{"needs-manual-rebase"}, comment)
 	return nil
 }
 
