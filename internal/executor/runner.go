@@ -2143,6 +2143,130 @@ func decomposedChildLedgerNonTerminal(store *memory.Store, taskID, projectPath s
 	return false, childIDs, nil
 }
 
+// resumeDecomposedParent is the coordinator-resume path a decomposed parent
+// MUST take once decomposedChildLedgerNonTerminal shows recorded children
+// with at least one non-terminal/failed — it must never re-derive epic mode
+// from scratch and re-implement its own scope (GH-4648/GH-4649, TASK-437
+// prevention item A). It is the single call site both bypass branches in
+// executeWithOptions (planning-failure fallback, isSinglePackageScope
+// collapse) are pre-empted by: the caller checks the child ledger BEFORE
+// DetectComplexity/PlanEpic ever run, so neither bypass is reachable when
+// children are on record.
+//
+// It hydrates the children via the same recoverExistingSubIssues helper (or
+// r.recoverSubIssuesFn override) the ErrSubIssuesAlreadyExist recovery
+// branch below uses, then either finalizes the epic as complete (every
+// child terminal) or resumes execution of the still-open ones — which
+// includes a previously-failed child still sitting open on GitHub. That
+// resumed run flows through executeSubIssuesTracked's existing sub-issue
+// Begin()/ErrClaimLost/reconcileChildOutcome machinery, the only place that
+// grants a failed child a fresh generation (reclaimSelfOwnedQueuedChildFn ->
+// beginWithGenerationRetry) — no new retry/claim logic is added here.
+func (r *Runner) resumeDecomposedParent(ctx context.Context, task *Task, executionPath string, childIDs []string, start time.Time) (*ExecutionResult, error) {
+	r.log.Info("Resuming decomposed-parent coordinator instead of re-classifying",
+		slog.String("task_id", task.ID),
+		slog.Any("children", childIDs),
+	)
+	r.reportProgress(task.ID, "Resuming", 10, fmt.Sprintf("Resuming coordination for %d recorded children...", len(childIDs)))
+
+	recoverTimeout := r.modelRouter.GetTimeoutForComplexity(ComplexityComplex) * time.Duration(len(childIDs))
+	if recoverTimeout <= 0 {
+		recoverTimeout = r.modelRouter.GetTimeoutForComplexity(ComplexityComplex)
+	}
+	recoverCtx, recoverCancel := context.WithTimeout(ctx, recoverTimeout)
+	defer recoverCancel()
+
+	recover := r.recoverSubIssuesFn
+	if recover == nil {
+		recover = recoverExistingSubIssues
+	}
+	recovered, err := recover(recoverCtx, executionPath, task.ID)
+	if err != nil || len(recovered) == 0 {
+		// The ledger says children were recorded but recovery couldn't
+		// hydrate them (gh CLI hiccup, non-GitHub adapter, ...). Fail loud
+		// rather than falling through to direct execution — that fallthrough
+		// is exactly the race this function exists to close.
+		failMsg := fmt.Sprintf("decomposed parent has recorded children (%s) but recovery found none: %v", strings.Join(childIDs, ", "), err)
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(failMsg, 200))
+		return &ExecutionResult{TaskID: task.ID, Success: false, Error: failMsg, Duration: time.Since(start), IsEpic: true}, nil
+	}
+
+	if allChildrenDone(recovered) {
+		r.log.Info("resumeDecomposedParent: all recorded children already terminal, treating epic as complete",
+			slog.String("task_id", task.ID),
+			slog.Int("child_count", len(recovered)),
+		)
+		summary := formatDecomposedChildrenSummary(recovered)
+		r.reportProgress(task.ID, "Complete", 100, "All sub-issues already completed")
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageDecomposed, summary)
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageCompleted, summary)
+		return &ExecutionResult{
+			TaskID:    task.ID,
+			Success:   true,
+			Output:    fmt.Sprintf("Epic already completed: %s", summary),
+			Duration:  time.Since(start),
+			IsEpic:    true,
+			ModelName: r.fallbackModelName(),
+		}, nil
+	}
+
+	var open []CreatedIssue
+	for _, iss := range recovered {
+		if strings.ToLower(iss.State) == "open" {
+			open = append(open, iss)
+		}
+	}
+	if len(open) == 0 {
+		failMsg := fmt.Sprintf("decomposed parent's recorded children (%s) are all closed but none evidenced completion", strings.Join(childIDs, ", "))
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(failMsg, 200))
+		return &ExecutionResult{TaskID: task.ID, Success: false, Error: failMsg, Duration: time.Since(start), IsEpic: true}, nil
+	}
+
+	r.log.Info("resumeDecomposedParent: resuming execution of open recorded children (includes any previously-failed child)",
+		slog.String("task_id", task.ID),
+		slog.Int("open_count", len(open)),
+	)
+	childStates, childMetrics, execErr := r.executeSubIssuesTracked(recoverCtx, task, open, executionPath, task.ProjectPath)
+	if execErr != nil {
+		execErrMsg := fmt.Sprintf("sub-issue execution failed: %v", execErr)
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(execErrMsg, 200))
+		return &ExecutionResult{TaskID: task.ID, Success: false, Error: execErrMsg, Duration: time.Since(start), IsEpic: true}, nil
+	}
+
+	epicResult := &ExecutionResult{
+		TaskID:    task.ID,
+		Success:   true,
+		Output:    fmt.Sprintf("Epic completed: %s", formatDecomposedChildrenSummary(open)),
+		Duration:  time.Since(start),
+		IsEpic:    true,
+		ModelName: r.fallbackModelName(),
+	}
+	if childMetrics != nil {
+		epicResult.TokensInput = childMetrics.TokensInput
+		epicResult.TokensOutput = childMetrics.TokensOutput
+		epicResult.TokensTotal = childMetrics.TokensTotal
+		epicResult.CacheCreationInputTokens = childMetrics.CacheCreationInputTokens
+		epicResult.CacheReadInputTokens = childMetrics.CacheReadInputTokens
+		epicResult.ResearchTokens = childMetrics.ResearchTokens
+		epicResult.FilesChanged = childMetrics.FilesChanged
+		epicResult.LinesAdded = childMetrics.LinesAdded
+		epicResult.LinesRemoved = childMetrics.LinesRemoved
+		epicResult.EstimatedCostUSD = childMetrics.EstimatedCostUSD
+		if childMetrics.ModelName != "" {
+			epicResult.ModelName = childMetrics.ModelName
+		}
+	}
+
+	if task.CreatePR && task.Branch != "" {
+		r.finalizeEpicBranchPR(recoverCtx, task, NewGitOperations(executionPath), epicResult, childStates)
+	} else {
+		r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
+	}
+	classifyZeroDeliveryEpicCompletion(epicResult)
+	r.recordEpicTerminalEvent(task.LogExecutionID(), epicResult)
+	return epicResult, nil
+}
+
 // executeWithOptions is the internal implementation that allows controlling worktree creation.
 // When allowWorktree is false, it skips worktree creation even if configured.
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
@@ -2326,6 +2450,32 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		if err := r.maybeInitNavigator(executionPath); err != nil {
 			r.log.Warn("Navigator auto-init failed", slog.Any("error", err))
 			// Continue without Navigator - graceful degradation
+		}
+	}
+
+	// GH-4677 (TASK-437 prevention item A): a decomposed parent's retry must
+	// resume coordination, never re-derive epic mode from scratch and
+	// re-implement its own scope. Consult the child ledger unconditionally,
+	// BEFORE complexity detection or any planning call —
+	// decomposedChildrenAllComplete (dispatcher.go, checked at pickup) only
+	// short-circuits when EVERY child is terminal; a FAILED child falls
+	// through to here, and nothing previously stopped a fresh
+	// DetectComplexity/PlanEpic re-derivation from taking over and racing its
+	// own still-alive child into a duplicate PR (the GH-4648/GH-4649
+	// incident, TASK-437). Placing this ahead of DetectComplexity closes both
+	// bypass branches below (planning-failure fallback, isSinglePackageScope
+	// collapse) by making them structurally unreachable whenever children are
+	// on record — a decomposed parent must be unable to produce code of its
+	// own.
+	if r.logStore != nil {
+		hasNonTerminal, childIDs, ledgerErr := decomposedChildLedgerNonTerminal(r.logStore, task.ID, task.ProjectPath)
+		if ledgerErr != nil {
+			r.log.Warn("decomposed-parent child ledger check failed; proceeding with normal epic classification",
+				slog.String("task_id", task.ID),
+				slog.Any("error", ledgerErr),
+			)
+		} else if hasNonTerminal {
+			return r.resumeDecomposedParent(ctx, task, executionPath, childIDs, start)
 		}
 	}
 
