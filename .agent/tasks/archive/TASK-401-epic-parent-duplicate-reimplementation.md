@@ -77,14 +77,17 @@ completed executions — don't re-run it as a fresh top-level task."
 
 ## Acceptance criteria
 
-- [ ] A 1-subtask epic plan executes directly; zero child issues created (test).
-- [ ] Epic parent finalize creates its PR with an auto-prefixed conventional
-  title; the GH-4211 title shape passes (test with a raw non-conventional title).
-- [ ] Re-poll of an open parent whose ledger shows `decomposed` + all children
+- [x] A 1-subtask epic plan executes directly; zero child issues created (test) — shipped via #4221.
+- [x] Epic parent finalize creates its PR with an auto-prefixed conventional
+  title; the GH-4211 title shape passes (test with a raw non-conventional title) — shipped via #4221.
+- [x] Re-poll of an open parent whose ledger shows `decomposed` + all children
   completed does NOT produce a fresh implementation run (table test over the
-  guard; include children-incomplete → normal path case).
-- [ ] Fail-loud logging on the new guard's skip decision.
-- [ ] `go test -race ./internal/executor/... ./internal/memory/... ./cmd/pilot/...` green;
+  guard; include children-incomplete → normal path case) — `TestProcessQueue_CrossTaskIDGuard`
+  (internal/executor/dispatcher_test.go), 3-case table: all-complete skip,
+  one-incomplete falls through, none-completed falls through.
+- [x] Fail-loud logging on the new guard's skip decision — `slog.Warn` in
+  `ProjectWorker.processQueue` (dispatcher.go), logs task_id + full child list + evidence PR URL.
+- [x] `go test -race ./internal/executor/... ./internal/memory/... ./cmd/pilot/...` green;
   full `go test -race ./...` green (stress gate — no new API calls in poll cycle, mem-048).
 
 ## Verify

@@ -1,6 +1,6 @@
 # TASK-393: Pilot Throughput Acceleration
 
-**Status**: 🚀 **M3 BASELINE WINDOW OPEN 2026-07-13 09:38 UTC → ~2026-07-20** (daemon PID 11530 on `6e60eb4b`; pre-window histogram snapshot: time_to_pr n=93 / queue_wait n=104 / approval_wait n=31 — see roadmap M3 row). Phase 1 ✅ SHIPPED 2026-07-09 ([#4127](https://github.com/qf-studio/pilot/issues/4127) → #4128–#4131, PRs [#4133](https://github.com/qf-studio/pilot/pull/4133)/[#4136](https://github.com/qf-studio/pilot/pull/4136)/[#4137](https://github.com/qf-studio/pilot/pull/4137)/[#4138](https://github.com/qf-studio/pilot/pull/4138)). Phases 2–5 gated on window close + decisions D1/D2. (Earlier reconciler false-positive on #4127 parent: fixed by TASK-395 / PR #4147, merged 2026-07-10.)
+**Status**: 🟡 **Phase 1 shipped; phases 2–5 STALLED.** The M3 baseline window (opened 2026-07-13 09:38 UTC, closed ~07-20) **was never harvested** — no post-window histogram analysis exists, and every later phase is gated on it. Reviving this track means either harvesting what the box still holds (`time_to_pr`/`queue_wait`/`approval_wait`, pre-window snapshot n=93/104/31) or opening a fresh window. Note phase 3 (N-concurrent per repo via a `ProjectWorker` pool) is now **also** a reliability lever: the pool is the sole serialization point, which is why the pilot repo's queue saturates while sibling repos idle (observed 08-03). · **Last Updated**: 2026-08-03
 **Created**: 2026-07-09
 **Assignee**: Manual (Navigator plan → dispatch phases to Pilot as separate issues)
 
