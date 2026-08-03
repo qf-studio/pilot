@@ -559,6 +559,36 @@ func (m *Monitor) GetRunningTaskIDs() []string {
 	return ids
 }
 
+// GetActiveRunningTaskIDs returns IDs of tasks that are currently RUNNING —
+// unlike GetRunningTaskIDs, queued tasks are excluded. GH-4683: a self-upgrade
+// drain that waits on GetRunningTaskIDs also waits on the queue, and nothing
+// stops the dispatcher from admitting new queued work while the drain is in
+// progress — on a busy box (pollers/retries keep enqueueing) the queue never
+// empties and the drain times out no matter how long the window is (the
+// v2.252.0 rollout incident: 2 x 30-minute timeouts against a queue that
+// never dropped below ~5). Pair this with Dispatcher.PauseAdmission, which
+// stops new admission for the duration of the wait, so "currently running"
+// is actually bounded by the existing timeout instead of chasing a moving
+// target.
+//
+// GetRunningTaskIDs deliberately keeps its broader running-or-queued
+// semantics for its other caller (the orphan-running sweep's exclusion set,
+// TASK-399/GH-4209) — that usage is unaffected by this addition.
+func (m *Monitor) GetActiveRunningTaskIDs() []string {
+	m.ReconcileDeadOwners()
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var ids []string
+	for _, state := range m.tasks {
+		if state.Status == StatusRunning {
+			ids = append(ids, state.ID)
+		}
+	}
+	return ids
+}
+
 // deadOwnerGracePeriod protects a task Monitor.Start just marked running from
 // being reconciled as a dead owner before its worker has had a chance to
 // register with the wired LiveWorkerChecker — Start() and the Dispatcher's
@@ -696,6 +726,34 @@ func (m *Monitor) WaitForTasks(ctx context.Context, timeout time.Duration) error
 			return ctx.Err()
 		case <-deadline:
 			return fmt.Errorf("%w: %d tasks still active: %v", ErrDrainTimeout, len(ids), ids)
+		case <-ticker.C:
+			// continue polling
+		}
+	}
+}
+
+// WaitForRunningTasks polls until all currently RUNNING tasks complete or
+// context/timeout expires — unlike WaitForTasks, queued tasks never count
+// against this wait, so a saturated (or continuously replenished) queue can
+// no longer block it. GH-4683: pair with Dispatcher.PauseAdmission so no new
+// task starts running during the wait; the timeout then genuinely bounds
+// "how long can whatever is already running take", not queue depth.
+func (m *Monitor) WaitForRunningTasks(ctx context.Context, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		ids := m.GetActiveRunningTaskIDs()
+		if len(ids) == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("%w: %d running task(s) still in flight (queue depth no longer blocks the drain): %v", ErrDrainTimeout, len(ids), ids)
 		case <-ticker.C:
 			// continue polling
 		}

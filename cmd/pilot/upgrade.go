@@ -54,6 +54,30 @@ func reportUpgradeFailure(alertsEngine *alerts.Engine, currentVersion, targetVer
 	})
 }
 
+// runningOnlyTaskChecker adapts *executor.Monitor to upgrade.TaskChecker,
+// counting only tasks that are actually RUNNING right now — never queued
+// ones. GH-4683: passing the Monitor directly made PerformHotUpgrade's drain
+// wait for queued work too (Monitor.GetRunningTaskIDs/WaitForTasks
+// deliberately include StatusQueued for their other caller, the
+// orphan-running sweep's exclusion set — see monitor.go). Nothing stopped
+// the dispatcher from admitting new queued work during the drain, so on a
+// busy box the queue never emptied and the drain timed out twice during the
+// v2.252.0 rollout incident. This adapter is paired with a
+// Dispatcher.PauseAdmission()/ResumeAdmission() call around the drain (see
+// runPollingMode's hot-upgrade goroutine) so only currently-running work is
+// ever waited on.
+type runningOnlyTaskChecker struct {
+	monitor *executor.Monitor
+}
+
+func (c *runningOnlyTaskChecker) GetRunningTaskIDs() []string {
+	return c.monitor.GetActiveRunningTaskIDs()
+}
+
+func (c *runningOnlyTaskChecker) WaitForTasks(ctx context.Context, timeout time.Duration) error {
+	return c.monitor.WaitForRunningTasks(ctx, timeout)
+}
+
 // drainTimeoutAlertGate gates self-upgrade alerting so a drain-timeout
 // failure (executor.ErrDrainTimeout) only pages an operator starting on the
 // second consecutive occurrence (GH-4609): a single drain timeout can be a

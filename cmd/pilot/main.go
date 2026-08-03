@@ -3167,13 +3167,27 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 						continue
 					}
 
-					// Drain pollers — stop accepting new issues before upgrade
-					program.Send(dashboard.AddLog("◌ draining pollers — no new issues will be accepted")())
+					// GH-4683: pause admission before draining — the dispatcher
+					// stops starting any NEW execution (queued rows stay
+					// queued; pollers may keep enqueueing), so the drain below
+					// only has to wait out tasks already running. Resumed on
+					// every path out of this attempt except a successful Unix
+					// exec-restart, where the whole process is replaced and
+					// nothing after PerformHotUpgrade runs anyway.
+					if dispatcher != nil {
+						dispatcher.PauseAdmission()
+					}
+					program.Send(dashboard.AddLog("◌ pausing task admission — queued work waits, running tasks finish normally")())
 
-					// Perform hot upgrade with monitor as TaskChecker
-					// Monitor tracks running/queued tasks; upgrade waits for them to finish
-					hotUpgrader, err := upgrade.NewHotUpgrader(version, monitor)
+					// Perform hot upgrade with a running-only TaskChecker
+					// (GH-4683): the drain waits solely for tasks the Monitor
+					// currently shows as RUNNING, never queued ones — see
+					// runningOnlyTaskChecker.
+					hotUpgrader, err := upgrade.NewHotUpgrader(version, &runningOnlyTaskChecker{monitor: monitor})
 					if err != nil {
+						if dispatcher != nil {
+							dispatcher.ResumeAdmission()
+						}
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
 						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
 						continue
@@ -3192,6 +3206,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					}
 
 					if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
+						if dispatcher != nil {
+							dispatcher.ResumeAdmission()
+						}
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
 						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
 						if drainAlertGate.observe(err) {
@@ -3204,10 +3221,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							)
 						}
 					} else {
+						// On Unix, process is replaced via exec and this line is
+						// never reached, so ResumeAdmission below is moot — a
+						// brand new process starts unpaused. On Windows, hot
+						// restart is not supported: the OLD process keeps
+						// running (the new binary is only installed on disk),
+						// so admission must resume here or the daemon would stay
+						// paused indefinitely until a manual restart. GH-4683.
+						if dispatcher != nil {
+							dispatcher.ResumeAdmission()
+						}
 						drainAlertGate.observe(nil)
-						// On Unix, process is replaced and this line is never reached.
-						// On Windows, hot restart is not supported — binary is installed
-						// but process continues. Notify user to restart manually.
 						program.Send(dashboard.NotifyUpgradeComplete(true, "")())
 						program.Send(dashboard.AddLog("✓ upgrade installed — restart pilot to apply")())
 					}

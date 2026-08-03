@@ -441,6 +441,67 @@ func TestMonitorWaitForTasksTimeout(t *testing.T) {
 	}
 }
 
+// TestMonitorGetActiveRunningTaskIDs verifies GH-4683's running-only variant
+// excludes queued tasks that GetRunningTaskIDs deliberately includes.
+func TestMonitorGetActiveRunningTaskIDs(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Register("task-2", "Task 2", "")
+	monitor.Register("task-3", "Task 3", "")
+
+	monitor.Queue("task-1")
+	monitor.Start("task-2")
+	// task-3 stays pending
+
+	ids := monitor.GetActiveRunningTaskIDs()
+	if len(ids) != 1 {
+		t.Fatalf("Expected 1 running task, got %d: %v", len(ids), ids)
+	}
+	if ids[0] != "task-2" {
+		t.Errorf("Expected running task-2, got %v", ids)
+	}
+}
+
+// TestMonitorWaitForRunningTasks_IgnoresQueuedTasks is the GH-4683
+// regression: a queued task alongside a running one must not block the
+// running-only wait, unlike WaitForTasks (which does wait on it — see
+// TestMonitorGetRunningTaskIDs).
+func TestMonitorWaitForRunningTasks_IgnoresQueuedTasks(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("running-task", "Running", "")
+	monitor.Register("queued-task", "Queued", "")
+
+	monitor.Start("running-task")
+	monitor.Queue("queued-task")
+	// queued-task is never completed/dequeued during this test.
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		monitor.Complete("running-task", "")
+	}()
+
+	ctx := context.Background()
+	if err := monitor.WaitForRunningTasks(ctx, 5*time.Second); err != nil {
+		t.Fatalf("WaitForRunningTasks should succeed once the running task completes, regardless of the still-queued task, got: %v", err)
+	}
+}
+
+func TestMonitorWaitForRunningTasksTimeout(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Start("task-1")
+	// Never complete task-1
+
+	ctx := context.Background()
+	err := monitor.WaitForRunningTasks(ctx, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("WaitForRunningTasks should timeout")
+	}
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Errorf("WaitForRunningTasks timeout error should wrap ErrDrainTimeout, got: %v", err)
+	}
+}
+
 // fakeLiveWorkerChecker is a test double for LiveWorkerChecker (GH-4609).
 type fakeLiveWorkerChecker struct {
 	ids []string

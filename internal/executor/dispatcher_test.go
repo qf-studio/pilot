@@ -2112,6 +2112,124 @@ func TestQueueTask_ConcurrentDuplicate_DispatchesOnce(t *testing.T) {
 	}
 }
 
+// releasableBackend blocks Execute until release is closed (or ctx is
+// cancelled), then returns success. Unlike blockingBackend (which never
+// returns until the whole dispatcher context is cancelled), this lets a test
+// choose exactly when a single in-flight task completes — needed to assert
+// that admission-pause only gates the NEXT pickup, not a task already
+// running. GH-4683.
+type releasableBackend struct {
+	release chan struct{}
+}
+
+func (b *releasableBackend) Name() string      { return "mock-releasable" }
+func (b *releasableBackend) IsAvailable() bool { return true }
+func (b *releasableBackend) Execute(ctx context.Context, _ ExecuteOptions) (*BackendResult, error) {
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return &BackendResult{Success: true, Output: "releasable success"}, nil
+}
+
+// waitForExecStatus polls until execID's stored status equals want or
+// timeout elapses.
+func waitForExecStatus(t *testing.T, store *memory.Store, execID, want string, timeout time.Duration) *memory.Execution {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		exec, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("failed to get execution: %v", err)
+		}
+		if exec.Status == want {
+			return exec
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("execution %s did not reach status %q within %v (last status: %s)", execID, want, timeout, exec.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestDispatcher_PauseAdmission_BlocksNewPickupButNotRunningTask is the
+// GH-4683 regression test for the self-upgrade drain deadlock: while
+// admission is paused, a task that is already running keeps running to
+// completion, but a second task queued for the very same project must stay
+// queued — never picked up — until ResumeAdmission is called.
+func TestDispatcher_PauseAdmission_BlocksNewPickupButNotRunningTask(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	release := make(chan struct{})
+	runner := NewRunnerWithBackend(&releasableBackend{release: release})
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	dispatcher := NewDispatcher(store, runner, nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	const projectPath = "/tmp/pilot-gh4683-test-project"
+	ctx := context.Background()
+
+	taskA := &Task{ID: "GH-9001", Title: "Task A", ProjectPath: projectPath}
+	execIDA, err := dispatcher.QueueTask(ctx, taskA)
+	if err != nil {
+		t.Fatalf("failed to queue task A: %v", err)
+	}
+
+	// Wait for the worker to pick up task A — it will now block inside
+	// Execute until release is closed.
+	waitForExecStatus(t, store, execIDA, "running", 2*time.Second)
+
+	// Pause admission (what the self-upgrade drain does before waiting).
+	dispatcher.PauseAdmission()
+	if !dispatcher.IsAdmissionPaused() {
+		t.Fatal("expected IsAdmissionPaused to report true after PauseAdmission")
+	}
+
+	taskB := &Task{ID: "GH-9002", Title: "Task B", ProjectPath: projectPath}
+	execIDB, err := dispatcher.QueueTask(ctx, taskB)
+	if err != nil {
+		t.Fatalf("failed to queue task B: %v", err)
+	}
+
+	// Give the worker a beat in case a bug lets it wrongly pick up task B
+	// while task A is still running.
+	time.Sleep(150 * time.Millisecond)
+	if exec, gErr := store.GetExecution(execIDB); gErr != nil {
+		t.Fatalf("failed to get execution B: %v", gErr)
+	} else if exec.Status != "queued" {
+		t.Fatalf("expected task B to remain queued while task A is running, got status %q", exec.Status)
+	}
+
+	// Let task A finish.
+	close(release)
+	waitForExecStatus(t, store, execIDA, "completed", 2*time.Second)
+
+	// Admission is still paused — task B must stay queued even though the
+	// worker is now idle (this is the exact deadlock-avoidance behavior: the
+	// worker's loop returns instead of picking up the next queued row).
+	time.Sleep(150 * time.Millisecond)
+	if exec, gErr := store.GetExecution(execIDB); gErr != nil {
+		t.Fatalf("failed to get execution B: %v", gErr)
+	} else if exec.Status != "queued" {
+		t.Fatalf("expected task B to remain queued while admission is paused, got status %q", exec.Status)
+	}
+
+	// Resume admission — task B should now be picked up and complete
+	// (releasableBackend returns immediately once release is closed).
+	dispatcher.ResumeAdmission()
+	if dispatcher.IsAdmissionPaused() {
+		t.Fatal("expected IsAdmissionPaused to report false after ResumeAdmission")
+	}
+	waitForExecStatus(t, store, execIDB, "completed", 2*time.Second)
+}
+
 // TestProcessQueue_CrossTaskIDGuard_MalformedDetailFallsThrough covers the
 // GH-4227 case (iv) at the processQueue call site specifically: a
 // StageDecomposed event whose detail string has no parseable child refs must
