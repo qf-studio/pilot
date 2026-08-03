@@ -1,6 +1,6 @@
 # fix(executor): wire ProjectConfig.Canary → Task.IsCanary at intake — GH-4240's canary exclusion is a no-op (is_canary=0 on every row)
 
-**Status**: 🟡 Main leg delivered, follow-up PR stuck — #4648 → PR#4652 merged 07-31 (intake wire) + #4650 → PR#4651 merged (exclusion test); released in **v2.251.1**. Follow-up #4649 (fresh-intake sites) → **PR#4653 OPEN, autopilot stage `failed`, CI pending** as of 08-03 08:04Z board — needs investigation before this doc archives. · **Last Updated**: 2026-08-03
+**Status**: 🟢 Feature delivered — #4648 → PR#4652 merged 07-31 (intake wire) + #4650 → PR#4651 merged (exclusion test); released in **v2.251.1**. PR#4653 investigated 08-03: duplicate of #4652 from a decomposed-parent/child retry race — full RCA + 3 prevention issues (#4655/#4656/#4657) in **TASK-437**; PR#4653 close = operator action. This doc can archive once #4653 is closed. · **Last Updated**: 2026-08-03
 
 ## Context
 
