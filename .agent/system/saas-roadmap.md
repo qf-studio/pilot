@@ -469,6 +469,30 @@ deploys → S3 exit test. Brand/visual pass = founder taste call. 14:00Z train w
 - Same evening: daemon accidentally stopped by operator (graceful TUI quit 17:14Z) — restarted
   via SSM 17:16Z, verified v2.251.0 / queue 0 / train schedule intact (Mon 08-03 16:00 Berlin).
 
+## v9.8 (2026-08-03) — S4 board legs C7/C3/C4 dispatched; SDK sync contract confirmed live
+
+- **First S4 wave shipped 08-01**: console#85→PR#87 (C1 data model) · console#86→PR#88 (C2
+  reconciler) · ui#40→PR#42 (kanban v1) · ui#41→PR#43 (drawer/feed/verbs). TASK-432–435 archived.
+- **Second wave dispatched 08-03** (TASK-438/439/440), chained to serialize main.go/config.go:
+  **console#89 C7 board API** (routes, drag=status op, version-conflict 409 carrying the current
+  card, idem-key helper, label-hygiene guard; un-stubs the UI's 501'd httpAdapter) →
+  **console#90 C3 ingest** (delta poll + 2× overlap, 6h sweep, orphan detect, feeds
+  ReconcileAndCommit) → **console#91 C4 outbound** (claim/FIFO-per-card, compare-before-write,
+  shadow-then-applied ordering, park/retry).
+- **studio-sdk sync contract VERIFIED LIVE** (`acee519` / tag `v0.31.2`, public module): `core.SyncCapable`
+  = SyncSource+SyncWriter, implemented by GitHub `*SyncClient`, Linear `*SyncAdapter`, Jira
+  `*SyncClient`; `sdk/util/retry` with typed RateLimitError/AuthError. Design-doc PR numbers were
+  wrong (actual: #87–#100), substance all present. Gaps folded into the specs rather than
+  rediscovered: **Linear has NO retry adoption and no typed errors** · `FieldPatch` keys differ
+  (Linear `description` not `body`, hard-errors on unknown keys; GitHub/Jira silently ignore) ·
+  **priority writable on Linear only** · `projectID`/`NativeID` mean different things per provider ·
+  Linear `ListUpdatedSince` is `gte` so callers MUST dedupe at the watermark ·
+  `IssueSnapshot.Deleted` never set (orphans = absence from a full sweep) · **Jira's comment
+  idem-scan is unpaginated** (double-post risk — journal, upstream follow-up).
+- Sequenced deliberately behind the pilot-repo reliability cluster: console/UI ProjectWorkers are
+  idle while pilot's queue is saturated, and workers serialize **per project**, so this wave runs
+  in parallel at zero queue cost.
+
 ## v9.8 (2026-08-03) — S4-early board track fully merged; CDK cost-audit fix; canary-metrics hygiene wave
 
 - **All four S4-early board issues merged 2026-08-01** after operator approvals (07:14Z):

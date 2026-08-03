@@ -1205,6 +1205,50 @@
           "deployment",
           "authentication"
         ]
+      },
+      "TASK-438": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-438-console-c7-board-api.md",
+        "title": "Task 438 Console C7 Board Api",
+        "status": "unknown",
+        "concepts": [
+          "testing",
+          "api",
+          "context",
+          "database",
+          "deployment",
+          "authentication"
+        ]
+      },
+      "TASK-439": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-439-console-c3-ingest-workers.md",
+        "title": "Task 439 Console C3 Ingest Workers",
+        "status": "unknown",
+        "concepts": [
+          "testing",
+          "database",
+          "api",
+          "context",
+          "authentication",
+          "deployment",
+          "workflow",
+          "theory of mind"
+        ]
+      },
+      "TASK-440": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-440-console-c4-outbound-op-worker.md",
+        "title": "Task 440 Console C4 Outbound Op Worker",
+        "status": "unknown",
+        "concepts": [
+          "context",
+          "database",
+          "api",
+          "workflow",
+          "testing",
+          "markers",
+          "authentication",
+          "deployment",
+          "theory of mind"
+        ]
       }
     },
     "memories": {
@@ -5307,6 +5351,31 @@
       "from": "TASK-437",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-438",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-439",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-439",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-440",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-440",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -5485,7 +5554,10 @@
       "TASK-434",
       "TASK-435",
       "TASK-436",
-      "TASK-437"
+      "TASK-437",
+      "TASK-438",
+      "TASK-439",
+      "TASK-440"
     ],
     "authentication": [
       "TASK-386",
@@ -5529,7 +5601,10 @@
       "TASK-433",
       "TASK-434",
       "TASK-435",
-      "TASK-437"
+      "TASK-437",
+      "TASK-438",
+      "TASK-439",
+      "TASK-440"
     ],
     "testing": [
       "TASK-386",
@@ -5607,7 +5682,10 @@
       "TASK-434",
       "TASK-435",
       "TASK-436",
-      "TASK-437"
+      "TASK-437",
+      "TASK-438",
+      "TASK-439",
+      "TASK-440"
     ],
     "api": [
       "TASK-386",
@@ -5661,7 +5739,10 @@
       "TASK-434",
       "TASK-435",
       "TASK-436",
-      "TASK-437"
+      "TASK-437",
+      "TASK-438",
+      "TASK-439",
+      "TASK-440"
     ],
     "context": [
       "TASK-386",
@@ -5723,7 +5804,10 @@
       "TASK-434",
       "TASK-435",
       "TASK-436",
-      "TASK-437"
+      "TASK-437",
+      "TASK-438",
+      "TASK-439",
+      "TASK-440"
     ],
     "markers": [
       "TASK-387",
@@ -5737,7 +5821,8 @@
       "TASK-417",
       "TASK-434",
       "TASK-435",
-      "TASK-436"
+      "TASK-436",
+      "TASK-440"
     ],
     "database": [
       "TASK-387",
@@ -5778,7 +5863,10 @@
       "mem-164",
       "mem-165",
       "TASK-431",
-      "TASK-432"
+      "TASK-432",
+      "TASK-438",
+      "TASK-439",
+      "TASK-440"
     ],
     "workflow": [
       "TASK-387",
@@ -5831,7 +5919,9 @@
       "mem-165",
       "TASK-427",
       "TASK-429",
-      "TASK-433"
+      "TASK-433",
+      "TASK-439",
+      "TASK-440"
     ],
     "simplification": [
       "TASK-387",
@@ -5900,7 +5990,9 @@
       "TASK-432",
       "TASK-433",
       "TASK-434",
-      "TASK-437"
+      "TASK-437",
+      "TASK-439",
+      "TASK-440"
     ],
     "autopilot": [
       "mem-100",
@@ -6225,10 +6317,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-03T12:17:42.518871+00:00",
+  "last_updated": "2026-08-03T12:45:16.980805+00:00",
   "stats": {
-    "total_nodes": 343,
-    "total_edges": 275,
+    "total_nodes": 346,
+    "total_edges": 280,
     "memory_count": 204
   }
 }
