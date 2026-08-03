@@ -777,6 +777,33 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		}
 	}
 
+	// GH-4687: apply pilot-in-progress at the start of work on the SDK-dispatch
+	// path. Since the 2026-07-16 SDK-poller cutover this was the only dispatch
+	// path with zero label operations — the legacy webhook-only handler
+	// (internal/pilot/pilot.go:1191) was the sole producer — which permanently
+	// disabled recoverOrphanedIssues (studio-sdk poller.go:350-380, cannot find
+	// in-flight issues by label after a restart) and made the pilot-in-progress
+	// removal at controller.go:3014 a silent no-op on every poller-dispatched
+	// issue. studio-sdk's Notifier.NotifyTaskStarted is already tested and
+	// auto-creates the label via AddLabels if the repo doesn't have it yet.
+	// Mirrors the non-fatal (WARN-only) pattern at pilot.go:1191-1195 and
+	// controller.go:3011-3015 — labeling must never block dispatch.
+	if specClient != nil {
+		pilotLabel := ""
+		if cfg.Adapters != nil && cfg.Adapters.GitHub != nil {
+			pilotLabel = cfg.Adapters.GitHub.PilotLabel
+		}
+		if pilotLabel == "" {
+			pilotLabel = "pilot"
+		}
+		if err := notifyTaskStartedSDK(ctx, specClient, pilotLabel, repoOwner, repoName, issueNum, taskID); err != nil {
+			logging.WithComponent("github").Warn("Failed to notify task started (SDK path)",
+				slog.String("task_id", taskID),
+				slog.Int("issue", issueNum),
+				slog.Any("error", err))
+		}
+	}
+
 	task := &executor.Task{
 		ID:                 taskID,
 		Title:              title,
@@ -851,6 +878,15 @@ func fetchGithubIssueForSDKTask(ctx context.Context, client *githubSDK.Client, o
 		return nil
 	}
 	return issue
+}
+
+// notifyTaskStartedSDK applies the pilot-in-progress label and posts the
+// task-started comment via studio-sdk's tested Notifier (GH-4687). Extracted
+// so the SDK-dispatch label wiring can be unit tested directly against a
+// mock GitHub server — handleGithubIssueEventSDK itself resolves a real
+// token/repo and can't be exercised end-to-end in a unit test.
+func notifyTaskStartedSDK(ctx context.Context, client *githubSDK.Client, pilotLabel, owner, repo string, issueNum int, taskID string) error {
+	return githubSDK.NewNotifier(client, pilotLabel).NotifyTaskStarted(ctx, owner, repo, issueNum, taskID)
 }
 
 // githubIssueURL builds the HTML URL for a GitHub issue. It prefers the resolved
