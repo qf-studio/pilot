@@ -470,6 +470,7 @@
 | Shell completion | ✅ | main | `pilot completion` | - | bash/zsh/fish |
 | Zip archive support | ✅ | upgrade | - | - | Windows self-upgrade handles .zip archives |
 | Self-upgrade writability preflight | ✅ | upgrade | - | - | Upgrade() probes binary dir before downloading; typed ErrBinaryNotWritable (dir+uid+hint); ERROR log + service_unhealthy alert on auto-upgrade failure; download progress logging throttled to ≥1s/10% steps (GH-4468) |
+| Self-upgrade drain: pause admission, wait only for running | ✅ | executor/upgrade | - | - | Dispatcher.PauseAdmission/ResumeAdmission stop new pickups (queued rows survive restart untouched) while Monitor.GetActivelyRunningTaskIDs/WaitForTasks drain only actively-running executions, not queued+running — fixes v2.252.0 rollout drain timing out twice against a dispatcher-refilled queue (GH-4683) |
 | Pipeline hardening | ✅ | executor | - | - | 4 correctness checks: constants, parity, coverage, dropped features (v1.10.0, GH-1321) |
 | Pre-commit hooks | ✅ | - | `make install-hooks` | - | Git hooks for secret scanning + lint |
 | Qwen Code bug fixes | ✅ | executor | `--backend qwen` | - | 5x pricing correction, CLI version check, session_not_found handling (v1.9.2, GH-1316) |
@@ -497,8 +498,8 @@
 | Autopilot | 39 | 0 | 0 | 0 |
 | Epic Management | 6 | 0 | 0 | 0 |
 | Test Coverage | 9 | 0 | 0 | 0 |
-| Self-Management | 10 | 0 | 0 | 0 |
-| **Total** | **316** | **0** | **0** | **0** |
+| Self-Management | 11 | 0 | 0 | 0 |
+| **Total** | **317** | **0** | **0** | **0** |
 
 ---
 

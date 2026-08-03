@@ -123,6 +123,14 @@ type Dispatcher struct {
 	// so serializing it dispatcher-wide does not bottleneck actual task
 	// execution, which is unaffected by this lock.
 	dispatchMu sync.Mutex
+
+	// admissionPaused, while true, stops every ProjectWorker from picking up
+	// the NEXT queued task — but never interrupts a task already running.
+	// GH-4683: a self-upgrade drain sets this for the duration of its
+	// attempt so a saturated queue (pollers keep enqueuing retries) can
+	// never block the drain; QueueTask keeps accepting and persisting new
+	// rows exactly as before, they simply sit queued until ResumeAdmission.
+	admissionPaused atomic.Bool
 }
 
 // NewDispatcher creates a new task dispatcher.
@@ -2111,6 +2119,40 @@ func (d *Dispatcher) queueBlockInfo(projectPath string) (blockedBy string, posit
 	return status.CurrentTaskID, status.QueuedCount, true
 }
 
+// PauseAdmission stops every current and future ProjectWorker from picking
+// up new queued work. Already-running executions are unaffected — only the
+// NEXT pickup is blocked. Call ResumeAdmission to restore normal admission.
+// GH-4683: lets self-upgrade pause the dispatcher for the duration of its
+// drain instead of racing pollers that keep refilling the queue.
+func (d *Dispatcher) PauseAdmission() {
+	d.admissionPaused.Store(true)
+}
+
+// ResumeAdmission restores normal admission after a paused window (e.g. a
+// self-upgrade attempt that failed or timed out) and re-signals every
+// worker so anything queued during the pause is picked up immediately
+// instead of waiting for the next external Signal. GH-4683.
+func (d *Dispatcher) ResumeAdmission() {
+	d.admissionPaused.Store(false)
+
+	d.mu.RLock()
+	workers := make([]*ProjectWorker, 0, len(d.workers))
+	for _, w := range d.workers {
+		workers = append(workers, w)
+	}
+	d.mu.RUnlock()
+
+	for _, w := range workers {
+		w.Signal()
+	}
+}
+
+// AdmissionPaused reports whether the dispatcher is currently refusing to
+// start new executions. GH-4683.
+func (d *Dispatcher) AdmissionPaused() bool {
+	return d.admissionPaused.Load()
+}
+
 // ensureWorker creates a worker for the project if it doesn't exist and starts it.
 func (d *Dispatcher) ensureWorker(projectPath string) {
 	d.mu.Lock()
@@ -2124,6 +2166,7 @@ func (d *Dispatcher) ensureWorker(projectPath string) {
 
 	// Create new worker
 	worker := NewProjectWorker(projectPath, d.store, d.runner, d.log)
+	worker.setAdmissionGate(&d.admissionPaused)
 	d.workers[projectPath] = worker
 
 	// Start worker in background
@@ -2355,6 +2398,20 @@ type ProjectWorker struct {
 	currentTaskID atomic.Value // stores string
 	stopCh        chan struct{}
 	mu            sync.Mutex
+
+	// admissionPaused is shared with the owning Dispatcher (GH-4683); nil
+	// when not wired via setAdmissionGate (e.g. tests constructing a
+	// ProjectWorker directly), which preserves today's always-admit
+	// behavior for those call sites.
+	admissionPaused *atomic.Bool
+}
+
+// setAdmissionGate wires the shared pause flag a Dispatcher uses to stop
+// this worker from picking up new queued work during a self-upgrade drain
+// (GH-4683). Called once from ensureWorker before the worker's goroutine
+// starts.
+func (w *ProjectWorker) setAdmissionGate(paused *atomic.Bool) {
+	w.admissionPaused = paused
 }
 
 // NewProjectWorker creates a new project worker.
@@ -2447,6 +2504,16 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		case <-w.stopCh:
 			return
 		default:
+		}
+
+		// GH-4683: while admission is paused (self-upgrade draining running
+		// executions), never pick up the NEXT queued task. This check runs
+		// before fetching a new row, so a task already mid-execution when
+		// the pause began is left completely alone — it runs to completion
+		// like normal. Queued rows stay queued in the store untouched;
+		// ResumeAdmission signals this worker again once the pause lifts.
+		if w.admissionPaused != nil && w.admissionPaused.Load() {
+			return
 		}
 
 		// Get next queued task for THIS project

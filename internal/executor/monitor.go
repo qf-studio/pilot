@@ -559,6 +559,34 @@ func (m *Monitor) GetRunningTaskIDs() []string {
 	return ids
 }
 
+// GetActivelyRunningTaskIDs returns IDs of tasks that are actually RUNNING
+// right now — unlike GetRunningTaskIDs above, queued tasks are never
+// included. GH-4683: self-upgrade drain previously waited for
+// GetRunningTaskIDs' running+queued set, so a saturated queue that the
+// dispatcher kept refilling mid-drain (pollers re-queuing retries) could
+// never empty and the drain timed out even though every actual worker was
+// idle. A queued task has not started executing anything — it survives the
+// restart untouched and resumes on the new binary — so it must not block a
+// drain the way a running task legitimately does. GetRunningTaskIDs keeps
+// its existing running+queued contract unchanged: it also backs the
+// orphan-running sweep's exclusion set (TaskMonitor interface), a different
+// "is this task ID live in the daemon's memory at all" contract that this
+// method does not touch.
+func (m *Monitor) GetActivelyRunningTaskIDs() []string {
+	m.ReconcileDeadOwners()
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var ids []string
+	for _, state := range m.tasks {
+		if state.Status == StatusRunning {
+			ids = append(ids, state.ID)
+		}
+	}
+	return ids
+}
+
 // deadOwnerGracePeriod protects a task Monitor.Start just marked running from
 // being reconciled as a dead owner before its worker has had a chance to
 // register with the wired LiveWorkerChecker — Start() and the Dispatcher's
@@ -678,15 +706,22 @@ func executionRecentlyProgressed(store *memory.Store, taskID, projectPath string
 // alerting immediately as before.
 var ErrDrainTimeout = errors.New("drain timeout")
 
-// WaitForTasks polls until all running/queued tasks complete or context expires.
-// Implements upgrade.TaskChecker interface for graceful drain during hot upgrade.
+// WaitForTasks polls until every ACTIVELY RUNNING task completes or context
+// expires. Implements upgrade.TaskChecker interface for graceful drain
+// during hot upgrade.
+//
+// GH-4683: deliberately polls GetActivelyRunningTaskIDs, not
+// GetRunningTaskIDs — a self-upgrade drain must wait only for work already
+// in flight. Queued tasks (however many the dispatcher's admission-paused
+// queue is holding) can never block this loop; they stay queued across the
+// restart and resume on the new binary.
 func (m *Monitor) WaitForTasks(ctx context.Context, timeout time.Duration) error {
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
-		ids := m.GetRunningTaskIDs()
+		ids := m.GetActivelyRunningTaskIDs()
 		if len(ids) == 0 {
 			return nil
 		}
@@ -695,7 +730,7 @@ func (m *Monitor) WaitForTasks(ctx context.Context, timeout time.Duration) error
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("%w: %d tasks still active: %v", ErrDrainTimeout, len(ids), ids)
+			return fmt.Errorf("%w: waiting on %d running task(s): %v", ErrDrainTimeout, len(ids), ids)
 		case <-ticker.C:
 			// continue polling
 		}

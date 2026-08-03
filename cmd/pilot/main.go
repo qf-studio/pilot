@@ -3170,47 +3170,66 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					// Drain pollers — stop accepting new issues before upgrade
 					program.Send(dashboard.AddLog("◌ draining pollers — no new issues will be accepted")())
 
-					// Perform hot upgrade with monitor as TaskChecker
-					// Monitor tracks running/queued tasks; upgrade waits for them to finish
-					hotUpgrader, err := upgrade.NewHotUpgrader(version, monitor)
-					if err != nil {
-						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
-						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
-						continue
-					}
-
-					upgradeCfg := &upgrade.HotUpgradeConfig{
-						WaitForTasks: true,
-						TaskTimeout:  30 * time.Minute,
-						OnProgress: func(pct int, msg string) {
-							program.Send(dashboard.NotifyUpgradeProgress(pct, msg)())
-						},
-						FlushSession: func() error {
-							// Future: flush session state to SQLite here
-							return nil
-						},
-					}
-
-					if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
-						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
-						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
-						if drainAlertGate.observe(err) {
-							reportUpgradeFailure(alertsEngine, version, info.Latest, err)
-						} else {
-							slog.Warn("self-upgrade drain timeout — retrying next check, not alerting yet (1st consecutive occurrence)",
-								slog.String("current_version", version),
-								slog.String("target_version", info.Latest),
-								slog.Any("error", err),
-							)
+					// GH-4683: pause the dispatcher's admission of new queued
+					// work for the duration of this attempt — the drain below
+					// only waits on ACTIVELY RUNNING executions, so a
+					// saturated/refilling queue must never be able to block
+					// it. Resumed on every return path via defer; on a
+					// successful Unix hot-restart the process image is
+					// replaced (RestartWithNewBinary) before this defer would
+					// ever run, which is harmless — the new process starts
+					// with its own fresh, unpaused Dispatcher.
+					func() {
+						if dispatcher != nil {
+							dispatcher.PauseAdmission()
+							defer dispatcher.ResumeAdmission()
 						}
-					} else {
-						drainAlertGate.observe(nil)
-						// On Unix, process is replaced and this line is never reached.
-						// On Windows, hot restart is not supported — binary is installed
-						// but process continues. Notify user to restart manually.
-						program.Send(dashboard.NotifyUpgradeComplete(true, "")())
-						program.Send(dashboard.AddLog("✓ upgrade installed — restart pilot to apply")())
-					}
+
+						// Perform hot upgrade with a running-only TaskChecker.
+						// monitorRunningTaskChecker (GH-4683) waits only for
+						// executions the Monitor considers actively RUNNING —
+						// queued work survives the restart untouched and
+						// resumes once ResumeAdmission fires.
+						hotUpgrader, err := upgrade.NewHotUpgrader(version, monitorRunningTaskChecker{monitor: monitor})
+						if err != nil {
+							program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
+							program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
+							return
+						}
+
+						upgradeCfg := &upgrade.HotUpgradeConfig{
+							WaitForTasks: true,
+							TaskTimeout:  30 * time.Minute,
+							OnProgress: func(pct int, msg string) {
+								program.Send(dashboard.NotifyUpgradeProgress(pct, msg)())
+							},
+							FlushSession: func() error {
+								// Future: flush session state to SQLite here
+								return nil
+							},
+						}
+
+						if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
+							program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
+							program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
+							if drainAlertGate.observe(err) {
+								reportUpgradeFailure(alertsEngine, version, info.Latest, err)
+							} else {
+								slog.Warn("self-upgrade drain timeout — retrying next check, not alerting yet (1st consecutive occurrence)",
+									slog.String("current_version", version),
+									slog.String("target_version", info.Latest),
+									slog.Any("error", err),
+								)
+							}
+						} else {
+							drainAlertGate.observe(nil)
+							// On Unix, process is replaced and this line is never reached.
+							// On Windows, hot restart is not supported — binary is installed
+							// but process continues. Notify user to restart manually.
+							program.Send(dashboard.NotifyUpgradeComplete(true, "")())
+							program.Send(dashboard.AddLog("✓ upgrade installed — restart pilot to apply")())
+						}
+					}()
 				}
 			}
 		}()

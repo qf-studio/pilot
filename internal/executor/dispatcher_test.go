@@ -5459,3 +5459,140 @@ func TestDispatcher_QueueDecomposedTask_ClaimLostDropsSilently(t *testing.T) {
 		t.Errorf("expected winning execution to belong to %q, got %q", parent.ID, exec.TaskID)
 	}
 }
+
+// TestDispatcher_PauseAdmission_QueuedTasksStayQueuedUntilResumed is the
+// GH-4683 dispatcher-level acceptance test for the self-upgrade drain fix:
+// PauseAdmission must stop a worker from picking up newly queued rows even
+// though it is completely idle, and ResumeAdmission must release them again.
+// Uses syntheticDispatchBackend (always succeeds instantly) specifically so
+// that any erroneous pickup during the paused window would show up
+// immediately as a "completed" row — there's no other way for these rows to
+// leave "queued" in this test.
+func TestDispatcher_PauseAdmission_QueuedTasksStayQueuedUntilResumed(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunnerWithBackend(syntheticDispatchBackend{})
+	runner.skipPreflightChecks = true
+	runner.SetLogStore(store)
+	runner.SetRecordingEnabled(false)
+
+	dispatcher := NewDispatcher(store, runner, nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	dispatcher.PauseAdmission()
+	if !dispatcher.AdmissionPaused() {
+		t.Fatal("expected AdmissionPaused() to be true immediately after PauseAdmission()")
+	}
+
+	projectPath := t.TempDir()
+	var execIDs []string
+	for i := 0; i < 3; i++ {
+		task := &Task{
+			ID:          fmt.Sprintf("GH-PAUSE-%d", i),
+			Title:       "Queued during admission pause",
+			Description: "GH-4683 admission pause coverage",
+			ProjectPath: projectPath,
+		}
+		execID, err := dispatcher.QueueTask(context.Background(), task)
+		if err != nil {
+			t.Fatalf("failed to queue task %d: %v", i, err)
+		}
+		execIDs = append(execIDs, execID)
+	}
+
+	// Give the (idle, would-otherwise-pick-up-instantly) worker every chance
+	// to wrongly drain the queue before asserting nothing moved.
+	time.Sleep(200 * time.Millisecond)
+	for i, execID := range execIDs {
+		exec, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("failed to get execution %d: %v", i, err)
+		}
+		if exec.Status != "queued" {
+			t.Errorf("task %d: expected status to remain 'queued' while admission is paused, got %q", i, exec.Status)
+		}
+	}
+
+	dispatcher.ResumeAdmission()
+	if dispatcher.AdmissionPaused() {
+		t.Fatal("expected AdmissionPaused() to be false after ResumeAdmission()")
+	}
+
+	for i, execID := range execIDs {
+		exec := waitForTerminalStatus(t, store, execID, 10*time.Second)
+		if exec.Status != "completed" {
+			t.Errorf("task %d: expected status completed after resume, got %q (error: %s)", i, exec.Status, exec.Error)
+		}
+	}
+}
+
+// TestDispatcher_PauseAdmission_RunningTaskUnaffected is the GH-4683
+// companion test: PauseAdmission must never interrupt a task that is
+// already running when the pause begins — the drain it backs only waits
+// for such in-flight work, so the task must be left completely alone
+// (still reported as running, its row still "running" in the store) for as
+// long as the pause is held.
+func TestDispatcher_PauseAdmission_RunningTaskUnaffected(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunnerWithBackend(&blockingBackend{})
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	dispatcher := NewDispatcher(store, runner, nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	task := &Task{
+		ID:          "GH-PAUSE-RUNNING",
+		Title:       "Running when admission pauses",
+		Description: "GH-4683 admission pause coverage",
+		ProjectPath: t.TempDir(),
+	}
+	execID, err := dispatcher.QueueTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("failed to queue task: %v", err)
+	}
+
+	// Wait for the worker to pick it up and start blocking in Execute.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		exec, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("failed to get execution: %v", err)
+		}
+		if exec.Status == "running" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task never reached status running (last status: %s)", exec.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	dispatcher.PauseAdmission()
+	defer dispatcher.ResumeAdmission()
+
+	// The already-running task must be completely unaffected by the pause:
+	// still running, still reported live.
+	time.Sleep(200 * time.Millisecond)
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if exec.Status != "running" {
+		t.Errorf("expected running task to be unaffected by PauseAdmission, got status %q", exec.Status)
+	}
+
+	ids := dispatcher.GetRunningTaskIDs()
+	if len(ids) != 1 || ids[0] != task.ID {
+		t.Errorf("expected running task %q still reported live during admission pause, got %v", task.ID, ids)
+	}
+}

@@ -22,6 +22,34 @@ import (
 	"github.com/qf-studio/pilot/internal/upgrade"
 )
 
+// monitorRunningTaskChecker adapts *executor.Monitor to upgrade.TaskChecker
+// using only ACTIVELY RUNNING executions — never queued ones (GH-4683).
+//
+// executor.Monitor.GetRunningTaskIDs (its TaskMonitor-facing method, used by
+// the orphan-running sweep's exclusion set) intentionally still returns
+// running+queued task IDs — a different contract entirely ("is this task ID
+// live in the daemon's memory in any way"). Reusing that method as-is here
+// would resurrect the exact bug this issue fixes: a saturated, dispatcher-
+// refilled queue blocking self-upgrade's drain forever. This adapter routes
+// the upgrade path through Monitor.GetActivelyRunningTaskIDs instead, so a
+// queued task can never count against the drain — it stays queued across
+// the restart and resumes on the new binary once admission is unpaused.
+type monitorRunningTaskChecker struct {
+	monitor *executor.Monitor
+}
+
+// GetRunningTaskIDs implements upgrade.TaskChecker, returning only tasks the
+// Monitor considers actively running (see monitorRunningTaskChecker's doc).
+func (m monitorRunningTaskChecker) GetRunningTaskIDs() []string {
+	return m.monitor.GetActivelyRunningTaskIDs()
+}
+
+// WaitForTasks implements upgrade.TaskChecker by delegating straight to the
+// Monitor, whose WaitForTasks already polls the running-only set (GH-4683).
+func (m monitorRunningTaskChecker) WaitForTasks(ctx context.Context, timeout time.Duration) error {
+	return m.monitor.WaitForTasks(ctx, timeout)
+}
+
 // reportUpgradeFailure makes a self-upgrade failure loud (GH-4468): before
 // this, the auto-upgrade path only logged progress at INFO and a failure
 // left no ERROR line and no alert — an operator found out from the TUI hours

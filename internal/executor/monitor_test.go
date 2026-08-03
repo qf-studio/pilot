@@ -404,6 +404,75 @@ func TestMonitorGetRunningTaskIDs(t *testing.T) {
 	}
 }
 
+// GH-4683 acceptance: GetActivelyRunningTaskIDs must exclude queued tasks —
+// only a task that has actually started executing can block a self-upgrade
+// drain. GetRunningTaskIDs (the pre-existing method) keeps its own
+// running+queued contract unchanged for the orphan-sweep exclusion set.
+func TestMonitorGetActivelyRunningTaskIDs_ExcludesQueued(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Register("task-2", "Task 2", "")
+	monitor.Register("task-3", "Task 3", "")
+
+	monitor.Queue("task-1")
+	monitor.Start("task-2")
+	// task-3 stays pending
+
+	ids := monitor.GetActivelyRunningTaskIDs()
+	if len(ids) != 1 || ids[0] != "task-2" {
+		t.Fatalf("Expected only running task-2, got %v", ids)
+	}
+}
+
+// GH-4683 acceptance: a queue full of queued-but-not-started tasks must
+// never block WaitForTasks — this is the literal fix for the v2.252.0
+// self-upgrade incident (drain waited on running+queued while the
+// dispatcher kept refilling the queue, timing out twice against a queue
+// that never dropped below ~5).
+func TestMonitorWaitForTasks_QueuedTasksDoNotBlockDrain(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Register("task-2", "Task 2", "")
+	monitor.Register("task-3", "Task 3", "")
+	monitor.Queue("task-1")
+	monitor.Queue("task-2")
+	monitor.Queue("task-3")
+
+	ctx := context.Background()
+	if err := monitor.WaitForTasks(ctx, 100*time.Millisecond); err != nil {
+		t.Fatalf("WaitForTasks should not block on queued-only tasks, got: %v", err)
+	}
+}
+
+// GH-4683 acceptance: with a mix of one running task and several queued
+// tasks, the drain must resolve once the running task completes — it must
+// not wait on the queued ones at all.
+func TestMonitorWaitForTasks_RunningPlusQueued_ResolvesWhenRunningCompletes(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("running-task", "Running", "")
+	monitor.Register("queued-1", "Queued 1", "")
+	monitor.Register("queued-2", "Queued 2", "")
+	monitor.Register("queued-3", "Queued 3", "")
+	monitor.Register("queued-4", "Queued 4", "")
+	monitor.Register("queued-5", "Queued 5", "")
+	monitor.Start("running-task")
+	monitor.Queue("queued-1")
+	monitor.Queue("queued-2")
+	monitor.Queue("queued-3")
+	monitor.Queue("queued-4")
+	monitor.Queue("queued-5")
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		monitor.Complete("running-task", "")
+	}()
+
+	ctx := context.Background()
+	if err := monitor.WaitForTasks(ctx, 5*time.Second); err != nil {
+		t.Fatalf("WaitForTasks should resolve once the running task completes, got: %v", err)
+	}
+}
+
 func TestMonitorWaitForTasks(t *testing.T) {
 	monitor := NewMonitor()
 	monitor.Register("task-1", "Task 1", "")
