@@ -668,6 +668,20 @@ type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSH
 // to enforce sequential ordering: sub-issue N+1 only starts after sub-issue N is merged.
 type SubIssueMergeWaitFn func(ctx context.Context, prNumber int) error
 
+// SubIssuePRState is the merge state of a sub-issue's PR, as queried
+// immediately before the child issue would be closed (GH-4697). State is
+// GitHub's own vocabulary ("OPEN", "MERGED", "CLOSED") from `gh pr view
+// --json state`.
+type SubIssuePRState struct {
+	State  string
+	Merged bool
+}
+
+// SubIssuePRStateFn queries the current state of a sub-issue's PR by number.
+// Optional override on Runner for testing; production default shells out to
+// `gh pr view` (GH-4697).
+type SubIssuePRStateFn func(ctx context.Context, projectPath string, prNumber int) (*SubIssuePRState, error)
+
 // SubIssuePollerSkipFn is called with each newly-created GitHub sub-issue number and the
 // owner/repo it was created in so the poller for that repo marks it as already-processed
 // and does not re-dispatch it (GH-3240). The repo scopes the mark so a sub-issue number
@@ -733,6 +747,7 @@ type Runner struct {
 	tokenLimitCheck        TokenLimitCallback                                              // Optional per-task token/duration limit check (GH-539)
 	onSubIssuePRCreated    SubIssuePRCallback                                              // Optional callback when a sub-issue PR is created (GH-596)
 	subIssueMergeWait      SubIssueMergeWaitFn                                             // Optional fn to block between sub-issues until PR is merged (GH-2178)
+	subIssuePRStateCheck   SubIssuePRStateFn                                               // Optional override for querying a sub-issue PR's state before close (GH-4697); nil uses the gh CLI default
 	subIssuePollerSkip     SubIssuePollerSkipFn                                            // GH-3240: marks sub-issues in poller so they aren't re-dispatched
 	intentJudge            *IntentJudge                                                    // Optional intent judge for diff-vs-ticket alignment (GH-624)
 	teamChecker            TeamChecker                                                     // Optional team RBAC checker (GH-633)
