@@ -34,7 +34,7 @@ dispatch-correctness gap. Sized S–M below.
 |---|---|---|---|---|---|---|
 | Linear | label (`pilot-in-progress`, SDK-managed) | Yes | No | **Yes** (GH-4717, `poller_linear.go`) | none | — |
 | Jira | label (SDK-managed) **+** native workflow-status transition | Yes (label only) | No | **Yes** (GH-4718, `poller_jira.go`) | none | — |
-| Asana | tag (`pilot-in-progress`, SDK-managed) | Yes | No | **Yes** (GH-4719, `poller_asana.go`) | none | — |
+| Asana | tag (`pilot-in-progress`, SDK-managed) | Yes | No | No (GH-4719 filed, not yet merged to main as of this edit) | comment-only | S |
 | Plane | label (SDK-managed) **+** native issue-state transition | Yes (label; state via `startedStateIDs`) | No | **Yes** (GH-2132, `poller_plane.go:58`) | none | — |
 | GitLab | label (SDK-managed) | Yes | No | **Yes** (GH-4720, `poller_gitlab.go`) | none | — |
 | AzureDevOps | tag (SDK-managed) | Yes | No | No | comment-only | S |
@@ -229,8 +229,8 @@ dispatch-correctness gap. Sized S–M below.
 
 ## Recommended fix shape, in general (mirrors GH-4692 / GH-2132)
 
-For the one remaining gap (AzureDevOps — Linear closed by GH-4717, Jira by GH-4718, Asana by
-GH-4719, GitLab by GH-4720):
+For the remaining gaps (Asana, AzureDevOps — Linear closed by GH-4717, Jira by GH-4718, GitLab by
+GH-4720; Asana's fix (GH-4719) is filed but not yet merged into main as of this edit):
 
 1. Construct the adapter's SDK-native `Notifier` (`{adapter}SDK.NewNotifier(client, ...)`) once
    inside that adapter's `*PollerRegistration().CreateAndStart` closure in `cmd/pilot/poller_*.go`
