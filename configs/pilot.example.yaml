@@ -379,6 +379,18 @@ executor:
   #   grace_period: 30s           # Grace period before killing
   #   commit_partial_work: true   # Save partial progress before abort
 
+  # Claude Code backend-specific settings (executor.type: "claude-code")
+  # claude_code:
+  #   gh_guard: true              # gh-guard shim (GH-4671) - default true, no need to set explicitly.
+  #                                # Intercepts every `gh` CLI call the Claude Code subprocess makes:
+  #                                # reads and the session's own PR/issue are always allowed; issue/PR
+  #                                # lifecycle mutations (close/reopen/edit/lock/delete), cross-issue or
+  #                                # cross-repo targeting, and other GitHub-state-mutating commands
+  #                                # (release/repo/secret/variable/workflow) are always denied. Denials
+  #                                # are journaled and surfaced as gh_guard_denied alerts. Set to false
+  #                                # only if the guard blocks a legitimate `gh` usage pattern it doesn't
+  #                                # yet recognize — prefer filing that as a policy gap over disabling.
+
 # Approval workflow settings
 # Pilot can require human approval before executing tasks, merging PRs, or retrying failures.
 # approval:

@@ -57,4 +57,11 @@ const (
 	// closed or reopened during the run window OTHER than the issue the
 	// session was dispatched to fix — the GH-4649 incident class.
 	AlertEventTypeGithubSideEffect AlertEventType = "github_sideeffect"
+
+	// AlertEventTypeGhGuardDenied (GH-4671): the gh-guard shim refused a
+	// `gh` invocation during the run — the preventive counterpart to
+	// AlertEventTypeGithubSideEffect: a call that never reached GitHub
+	// because it was blocked at the Bash tool boundary, rather than one
+	// detected after the fact.
+	AlertEventTypeGhGuardDenied AlertEventType = "gh_guard_denied"
 )
