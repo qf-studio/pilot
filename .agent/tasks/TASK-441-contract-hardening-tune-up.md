@@ -1,6 +1,6 @@
 # TASK-441: Contract hardening tune-up — seams, dead-man signals, tripwires
 
-**Status**: 🚀 Legs 1–3 **MERGED** 2026-08-04 (PR#4711/#4712/#4713) · legs 4–5 dispatched same day (#4715/#4716) · L3 audit verdict: no GH-4692-class bug in any of the 6 (SDK pollers label internally, structural); 5 comment-gap fixes filed #4717–#4721 (Linear/Jira/Asana/GitLab/ADO; Plane already fixed via GH-2132; Jira also closes dead `Transitions` config) · leg 7 = #4671 **MERGED** (PR#4704) · leg 6 low-urgency uncut · leg 8 last, after 4–5 land
+**Status**: 🏁 **Legs 1–5 + 7 ALL MERGED 2026-08-04** — one dispatch-to-merge day per wave. L1 PR#4711 · L2 PR#4712 (`DeadManTracker`) · L3 PR#4713 (audit: no GH-4692-class bug in any of the 6 — SDK pollers label internally) · L4 PR#4722 (`LivenessPolicy`, zero literals left in detectors) · L5 PR#4724 (Finish tripwire sweep, 4 checks, post-Persist, recover()-guarded) · L7 PR#4704. L3 follow-ups all merged: Linear #4723 · Jira #4725 · GitLab #4728 · ADO #4729 · Asana #4730 (1 lint retry: PR#4726 closed → autopilot fix loop → #4730; dangling fix-issue #4727 closed manually). **L8 dispatched #4731** (ARCHITECTURE.md refresh). Remaining: L8 merge · L6 low-urgency uncut · operator kill-drill after next release train activates the code on the box (daemon still on v2.253.0)
 **Created**: 2026-08-04
 **Assignee**: Pilot (legs dispatched via nav-pilot after review)
 
