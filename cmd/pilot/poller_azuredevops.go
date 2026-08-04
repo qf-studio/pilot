@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"time"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
@@ -46,8 +47,35 @@ func azuredevopsPollerRegistration() PollerRegistration {
 				},
 			}
 
+			// Separate client + notifier for the start comment (GH-4721).
+			// The SDK poller (studio-sdk/sdk/integrations/azuredevops/poller.go)
+			// already applies the in-progress tag internally before dispatch —
+			// no GH-4692-class bug here — but nothing ever posts a "Pilot
+			// started" comment to the work item. Mirrors poller_gitlab.go's
+			// client-construction pattern and poller_plane.go's closure wiring.
+			adoClient := azuredevopsSDK.NewClientWithConfig(sdkCfg)
+			adoNotifier := azuredevopsSDK.NewNotifier(adoClient, pilotTag)
+
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
+					// GH-4721: notify Azure DevOps the task has started — posts
+					// a "Pilot started" comment on the work item. Failure is
+					// WARN-logged only; a notify failure must never abort
+					// dispatch. Note NotifyTaskStarted also re-applies the
+					// in-progress tag (additive/idempotent — the SDK poller's
+					// own tag mechanism above is untouched).
+					if workItemID, convErr := strconv.Atoi(ev.IssueID); convErr != nil {
+						logging.WithComponent("azuredevops").Warn("Failed to notify task started",
+							slog.String("issue_id", ev.IssueID),
+							slog.Any("error", convErr),
+						)
+					} else if err := adoNotifier.NotifyTaskStarted(issueCtx, workItemID, ev.SequenceID); err != nil {
+						logging.WithComponent("azuredevops").Warn("Failed to notify task started",
+							slog.String("issue_id", ev.IssueID),
+							slog.Any("error", err),
+						)
+					}
+
 					return handleAzureDevOpsIssueWithResult(issueCtx, deps.Cfg, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 				}),
 			}
