@@ -34,7 +34,7 @@ dispatch-correctness gap. Sized S–M below.
 |---|---|---|---|---|---|---|
 | Linear | label (`pilot-in-progress`, SDK-managed) | Yes | No | **Yes** (GH-4717, `poller_linear.go`) | none | — |
 | Jira | label (SDK-managed) **+** native workflow-status transition | Yes (label only) | No | **Yes** (GH-4718, `poller_jira.go`) | none | — |
-| Asana | tag (`pilot-in-progress`, SDK-managed) | Yes | No | No (GH-4719 filed, not yet merged to main as of this edit) | comment-only | S |
+| Asana | tag (`pilot-in-progress`, SDK-managed) | Yes | No | **Yes** (GH-4719, `poller_asana.go`) | none | — |
 | Plane | label (SDK-managed) **+** native issue-state transition | Yes (label; state via `startedStateIDs`) | No | **Yes** (GH-2132, `poller_plane.go:58`) | none | — |
 | GitLab | label (SDK-managed) | Yes | No | **Yes** (GH-4720, `poller_gitlab.go`) | none | — |
 | AzureDevOps | tag (SDK-managed) | Yes | No | No | comment-only | S |
@@ -118,7 +118,7 @@ dispatch-correctness gap. Sized S–M below.
   (three-way table test: label-only success / transition-failure-then-comment-success /
   comment-failure), plus the wiring-order source-inspection test.
 
-### Asana — `handleAsanaIssueWithResult` (`cmd/pilot/handlers.go:254`)
+### Asana — `handleAsanaIssueWithResult` (`cmd/pilot/handlers.go:254`) — **fixed, GH-4719**
 
 - **Status mechanism**: tag only (`pilot-in-progress`, SDK-managed via `TagInProgress`,
   `studio-sdk/sdk/integrations/asana/poller.go:18`). Asana has no native "in progress" status
@@ -127,17 +127,23 @@ dispatch-correctness gap. Sized S–M below.
 - **Poller auto-tags**: `poller.go:297-298` — `processIssueAsync` calls
   `p.client.AddTag(ctx, task.GID, p.inProgressTagGID)` unconditionally before `p.onIssue`.
   `recoverOrphanedTasks` (`poller.go:198-…`) is tag-driven and correct.
-- **Handler wiring**: `handleAsanaIssueWithResult` never calls `NotifyTaskStarted`.
-  `poller_asana.go`'s closure (`:46-48`) calls the handler directly, no pre-dispatch step.
-- **Notifier surfaces available but unused**: `internal/adapters/asana/notifier.go:28` (in-tree,
-  comment-only, unit-tested but dead in production) and
-  `studio-sdk/sdk/integrations/asana/notifier.go:32` (SDK-native, same signature as the
+- **Notifier surfaces available but unused (pre-fix)**: `internal/adapters/asana/notifier.go:28`
+  (in-tree, comment-only, unit-tested but dead in production — remains dead, not used by the fix)
+  and `studio-sdk/sdk/integrations/asana/notifier.go:32` (SDK-native, same signature as the
   `planeSDK`/`githubSDK` ones already wired elsewhere).
-- **Gap**: no start comment posts to the Asana task.
-- **Fix shape (S)**: same pattern as Linear — construct `asanaSDK.NewNotifier(asanaClient,
-  pilotTag)` once in `asanaPollerRegistration().CreateAndStart`, call `NotifyTaskStarted(issueCtx,
-  ev.IssueID, ev.SequenceID)` before `handleAsanaIssueWithResult(...)`, WARN-log on error. Test:
-  httptest fake + wiring-order test, mirroring GH-4692's pattern.
+- **Gap (closed)**: no start comment posted to the Asana task at dispatch time. Fixed by GH-4719:
+  `asanaPollerRegistration().CreateAndStart` (`cmd/pilot/poller_asana.go`) now builds a
+  single-purpose `asanaSDK.NewClient(deps.Cfg.Adapters.Asana.AccessToken,
+  deps.Cfg.Adapters.Asana.WorkspaceID)` (mirroring `poller_jira.go`'s pattern —
+  `handleAsanaIssueWithResult` takes no client param, so this client exists solely to back the
+  notifier) wrapped in `asanaSDK.NewNotifier(asanaClient, pilotTag)`, and the
+  `sdkcore.IssueHandlerFunc` closure calls `notifier.NotifyTaskStarted(issueCtx, ev.IssueID,
+  ev.SequenceID)` before `handleAsanaIssueWithResult(...)`, WARN-logging (non-fatal) on error.
+  Additive only — does not touch the poller's own unconditional pre-dispatch tagging at
+  `poller.go:297-298`. Tests: `cmd/pilot/asana_sdk_notify_started_test.go` (httptest fake over the
+  `/stories` comment-POST endpoint, plus two source-inspection wiring tests — one for
+  call-ordering, one confirming the SDK-native notifier is used rather than
+  `internal/adapters/asana/notifier.go`).
 
 ### Plane — `handlePlaneIssueWithResult` (`cmd/pilot/handlers.go:381`) — **no gap, already fixed**
 
@@ -229,8 +235,8 @@ dispatch-correctness gap. Sized S–M below.
 
 ## Recommended fix shape, in general (mirrors GH-4692 / GH-2132)
 
-For the remaining gaps (Asana, AzureDevOps — Linear closed by GH-4717, Jira by GH-4718, GitLab by
-GH-4720; Asana's fix (GH-4719) is filed but not yet merged into main as of this edit):
+For the remaining gap (AzureDevOps — Linear closed by GH-4717, Jira by GH-4718, GitLab by GH-4720,
+Asana by GH-4719):
 
 1. Construct the adapter's SDK-native `Notifier` (`{adapter}SDK.NewNotifier(client, ...)`) once
    inside that adapter's `*PollerRegistration().CreateAndStart` closure in `cmd/pilot/poller_*.go`
@@ -258,4 +264,5 @@ GH-4720; Asana's fix (GH-4719) is filed but not yet merged into main as of this 
 
 Estimated total: 3×S + 1×M across four remaining PRs (one per adapter, matching the existing
 one-PR-per-adapter granularity of GH-4692/GH-2132), no shared blocking dependency between them.
-Linear (S) shipped as GH-4717.
+Linear (S) shipped as GH-4717, Jira (M) as GH-4718, GitLab (S) as GH-4720, Asana (S) as GH-4719.
+Only AzureDevOps (S) remains.
