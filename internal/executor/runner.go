@@ -4592,7 +4592,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			wg.Add(1)
 			logging.SafeGo("executor-runner", func() {
 				defer wg.Done()
-				if err := r.runSelfReview(ctx, task, state); err != nil {
+				if err := r.runSelfReview(ctx, task, executionPath, state); err != nil {
 					selfReviewErr = err
 				}
 			})
@@ -5432,7 +5432,7 @@ func (r *Runner) IsRunning(taskID string) bool {
 // runSelfReview executes a self-review phase where Claude examines its changes.
 // This catches issues like unwired config, undefined methods, or incomplete implementations.
 // Returns nil if review passes or is skipped, error only for critical failures.
-func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressState) error {
+func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath string, state *progressState) error {
 	// Skip self-review if disabled in config
 	if r.config != nil && r.config.SkipSelfReview {
 		r.log.Debug("Self-review skipped (disabled in config)", slog.String("task_id", task.ID))
@@ -5477,7 +5477,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 	result, err := r.backend.Execute(reviewCtx, ExecuteOptions{
 		Prompt:          reviewPrompt,
 		TaskID:          task.ID,
-		ProjectPath:     task.ProjectPath,
+		ProjectPath:     executionPath, // GH-4702: review the worktree, not the daemon's repo root
 		Verbose:         task.Verbose,
 		Model:           selectedModel,
 		Effort:          selectedEffort,
