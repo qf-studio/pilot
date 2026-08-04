@@ -1931,6 +1931,39 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 	return nil
 }
 
+// getSubIssuePRState queries a sub-issue's PR state before the child issue is
+// closed (GH-4697). Uses r.subIssuePRStateCheck if wired (tests), otherwise
+// shells out to `gh pr view --json state`. State is one of GitHub's own
+// values: "OPEN", "MERGED", "CLOSED" — never derived from `mergedAt`, which
+// can read null on an already-merged squash-merge PR (see
+// .agent/sops/integrations/cascade-detection-forensics.md, "Ghost merge").
+func (r *Runner) getSubIssuePRState(ctx context.Context, projectPath string, prNumber int) (*SubIssuePRState, error) {
+	if r.subIssuePRStateCheck != nil {
+		return r.subIssuePRStateCheck(ctx, projectPath, prNumber)
+	}
+	if r.dryRun {
+		// dry-run never makes real gh calls, and CloseIssueWithComment already
+		// no-ops the close itself — report a terminal state so this check
+		// can't be the thing that changes dry-run behavior.
+		return &SubIssuePRState{State: "MERGED", Merged: true}, nil
+	}
+
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber), "--json", "state", "--jq", ".state")
+	if projectPath != "" {
+		cmd.Dir = projectPath
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query PR #%d state: %w (stderr: %s)", prNumber, err, stderr.String())
+	}
+
+	state := strings.ToUpper(strings.TrimSpace(string(out)))
+	return &SubIssuePRState{State: state, Merged: state == "MERGED"}, nil
+}
+
 // childTerminalStateOrder fixes the iteration order summarizeChildTerminalStates
 // renders its per-state counts in, so the summary text is deterministic despite
 // being built from a map.
@@ -3129,7 +3162,41 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		if result.PRUrl != "" {
 			closeComment = fmt.Sprintf("✅ Completed as part of %s\nPR: %s", parent.ID, result.PRUrl)
 		}
-		if err := r.CloseIssueWithComment(ctx, projectPath, issueRef, closeComment); err != nil {
+
+		// GH-4697: a child that reports Success with a PR is not necessarily
+		// *merged* — this close previously fired unconditionally, seconds after
+		// PR creation, regardless of PR state. That is exactly how #4660/#4661
+		// were closed while their PRs (#4667/#4672) were still open+unmerged
+		// (TASK-437: #4660 closed 10:28:44Z, 3s after PR #4667 opened 10:28:41Z
+		// and 97 minutes before that PR itself closed unmerged at 12:05:06Z).
+		// Query the PR's real state before closing; an OPEN, not-yet-merged PR
+		// blocks the close so the issue stays open until the PR resolves
+		// (merged → close normally; closed-unmerged → also safe to close, the
+		// PR is already terminal and won't reopen).
+		skipClose := false
+		if result.PRUrl != "" {
+			if prNum := parsePRNumberFromURL(result.PRUrl); prNum > 0 {
+				state, stateErr := r.getSubIssuePRState(ctx, subTaskRepoPath, prNum)
+				switch {
+				case stateErr != nil:
+					// Fail safe: can't confirm the PR is done, so don't close
+					// blind — leaving the issue open is recoverable, an
+					// erroneous close is not.
+					r.log.Warn("could not determine sub-issue PR state before close; leaving issue open",
+						"parent_id", parent.ID, "sub_issue", issueRef, "pr_number", prNum, "pr_url", result.PRUrl, "error", stateErr)
+					skipClose = true
+				case state.State == "OPEN":
+					r.log.Warn("sub-issue PR still open and unmerged; deferring child-issue close",
+						"parent_id", parent.ID, "sub_issue", issueRef, "pr_number", prNum, "pr_url", result.PRUrl)
+					skipClose = true
+				}
+			}
+		}
+
+		if skipClose {
+			_ = r.UpdateIssueProgress(ctx, projectPath, issueRef,
+				fmt.Sprintf("⏳ Work delivered via %s but PR is still open — issue stays open until it merges.", result.PRUrl))
+		} else if err := r.CloseIssueWithComment(ctx, projectPath, issueRef, closeComment); err != nil {
 			r.log.Warn("Failed to close sub-issue", "issue", issueRef, "error", err)
 			// Non-fatal, continue
 		}
