@@ -104,6 +104,16 @@ func displayStatus(execStatus string) string {
 // — but it's listed here anyway so the label always reads the deliberate
 // outcome even for a row cancelled before any event exists (e.g. a queued
 // row that never reached "running").
+//
+// superseded (GH-4701): an operator's deliberate cleanup, not a pipeline
+// failure — either a sibling/duplicate execution already delivered the same
+// scope (GH-4656's dispatcher/PR-preflight guards write this status before
+// any work starts or a PR opens), or a human closed the issue outright as
+// not-planned (notifyExternalClose's supersededClose classification).
+// Without this entry the row freezes at whatever ladder rung it last
+// reached and renders `✗ pr_created` / `✗ ci_passed` — indistinguishable
+// from a genuine failure (the 2026-08-03 #4655 cluster: #4660-#4665 closed
+// en masse and re-filed as #4677 rendered as 6 of 43 rows misread this way).
 var mutedOutcomes = map[string]bool{
 	"skipped":            true,
 	"no_op":              true,
@@ -113,6 +123,7 @@ var mutedOutcomes = map[string]bool{
 	"declined-preflight": true,
 	"cancelled":          true,
 	"canceled":           true,
+	"superseded":         true,
 }
 
 // stageStripCleanTerminalEvents are execution_events that close out a run

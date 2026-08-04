@@ -3979,6 +3979,161 @@ func TestTerminateNonTerminalExecution_NewerRowShields(t *testing.T) {
 	}
 }
 
+// TestReclassifyCompletionAsSuperseded covers GH-4701: ReclassifyCompletionAsFailed's
+// sibling for a close notifyExternalClose can prove was deliberate operator
+// cleanup (issue closed not-planned, or already tagged pilot-superseded)
+// rather than a genuine failure — the row must land on "superseded", not
+// "failed", so HISTORY renders it muted instead of as a pipeline ✗.
+func TestReclassifyCompletionAsSuperseded(t *testing.T) {
+	tests := []struct {
+		name            string
+		row             Execution
+		taskID          string
+		projectPath     string
+		wantStatusAfter string
+	}{
+		{
+			name: "completed with PR closed as superseded - reclassified to superseded, not failed",
+			row: Execution{
+				ID: "exec-superseded", TaskID: "GH-4701", ProjectPath: "/project",
+				Status: "completed", PRUrl: "https://github.com/o/r/pull/4701",
+			},
+			taskID:          "GH-4701",
+			projectPath:     "/project",
+			wantStatusAfter: "superseded",
+		},
+		{
+			name: "different task ID - untouched",
+			row: Execution{
+				ID: "exec-other-task", TaskID: "GH-999", ProjectPath: "/project",
+				Status: "completed", PRUrl: "https://github.com/o/r/pull/1",
+			},
+			taskID:          "GH-4701", // reclassify call targets a different task
+			projectPath:     "/project",
+			wantStatusAfter: "completed",
+		},
+		{
+			name: "different project path - untouched (cross-repo isolation)",
+			row: Execution{
+				ID: "exec-other-project", TaskID: "GH-4701", ProjectPath: "/other-project",
+				Status: "completed", PRUrl: "https://github.com/o/r/pull/2",
+			},
+			taskID:          "GH-4701",
+			projectPath:     "/project", // reclassify call scoped to a different project
+			wantStatusAfter: "completed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			if err := store.SaveExecution(&tt.row); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			if err := store.ReclassifyCompletionAsSuperseded(tt.taskID, tt.projectPath, "source issue closed as not-planned"); err != nil {
+				t.Fatalf("ReclassifyCompletionAsSuperseded: %v", err)
+			}
+
+			got, err := store.GetExecution(tt.row.ID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != tt.wantStatusAfter {
+				t.Errorf("status after reclassify = %q, want %q", got.Status, tt.wantStatusAfter)
+			}
+		})
+	}
+}
+
+// TestTerminateNonTerminalExecutionAsSuperseded covers GH-4701:
+// TerminateNonTerminalExecution's sibling for the same deliberate-close case
+// — a still-running/queued/pending row must land on "superseded", not
+// "failed".
+func TestTerminateNonTerminalExecutionAsSuperseded(t *testing.T) {
+	tests := []struct {
+		name            string
+		row             Execution
+		taskID          string
+		projectPath     string
+		wantStatusAfter string
+	}{
+		{
+			name: "running row - terminated to superseded",
+			row: Execution{
+				ID: "exec-running", TaskID: "GH-4701", ProjectPath: "/project",
+				Status: "running",
+			},
+			taskID:          "GH-4701",
+			projectPath:     "/project",
+			wantStatusAfter: "superseded",
+		},
+		{
+			name: "queued row - terminated to superseded",
+			row: Execution{
+				ID: "exec-queued", TaskID: "GH-4701", ProjectPath: "/project",
+				Status: "queued",
+			},
+			taskID:          "GH-4701",
+			projectPath:     "/project",
+			wantStatusAfter: "superseded",
+		},
+		{
+			name: "completed row - untouched (ReclassifyCompletionAsSuperseded's job, not this method's)",
+			row: Execution{
+				ID: "exec-completed", TaskID: "GH-4701", ProjectPath: "/project",
+				Status: "completed", PRUrl: "https://github.com/o/r/pull/1",
+			},
+			taskID:          "GH-4701",
+			projectPath:     "/project",
+			wantStatusAfter: "completed",
+		},
+		{
+			name: "different task ID - untouched",
+			row: Execution{
+				ID: "exec-other-task", TaskID: "GH-999", ProjectPath: "/project",
+				Status: "running",
+			},
+			taskID:          "GH-4701", // terminate call targets a different task
+			projectPath:     "/project",
+			wantStatusAfter: "running",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			if err := store.SaveExecution(&tt.row); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			if err := store.TerminateNonTerminalExecutionAsSuperseded(tt.taskID, tt.projectPath, "source issue closed as not-planned"); err != nil {
+				t.Fatalf("TerminateNonTerminalExecutionAsSuperseded: %v", err)
+			}
+
+			got, err := store.GetExecution(tt.row.ID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != tt.wantStatusAfter {
+				t.Errorf("status after terminate = %q, want %q", got.Status, tt.wantStatusAfter)
+			}
+		})
+	}
+}
+
 func TestGetLifetimeTokens_ExcludesZeroTokenRows(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)

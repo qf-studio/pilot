@@ -192,6 +192,14 @@ type EvalStore interface {
 	// externally can never leave a non-terminal row behind that resurrects as
 	// a stuck running dashboard card on the next restart. GH-4499.
 	TerminateNonTerminalExecution(taskID, projectPath, reason string) error
+	// ReclassifyCompletionAsSuperseded is ReclassifyCompletionAsFailed's
+	// sibling for a close notifyExternalClose can prove was deliberate
+	// operator cleanup (issue closed not-planned, or already tagged
+	// pilot-superseded) rather than a genuine failure. GH-4701.
+	ReclassifyCompletionAsSuperseded(taskID, projectPath, reason string) error
+	// TerminateNonTerminalExecutionAsSuperseded is TerminateNonTerminalExecution's
+	// sibling for the same GH-4701 deliberate-close case.
+	TerminateNonTerminalExecutionAsSuperseded(taskID, projectPath, reason string) error
 	// SelfHealExecutionByPRURL is the pr_url-keyed fallback self-heal used when
 	// a merged PR's issue number can't be resolved from branch or body markers
 	// at all. TASK-399/GH-4209.
@@ -6645,14 +6653,34 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		reason = "closed without merging (no reason recorded)"
 	}
 
+	// GH-4701: prState.TerminalLabel already says pilot-superseded when an
+	// earlier stage (e.g. closeConflictSourceIssueClosed) proved a
+	// sibling/duplicate execution delivered this issue's scope first — that
+	// is deliberate operator/execution-invalidation cleanup, not a genuine
+	// pipeline failure, so it must not collapse into "failed" below. Without
+	// this split the row freezes at whatever ladder rung it last reached and
+	// HISTORY renders it as a pipeline ✗ (the 2026-08-03 #4655 cluster:
+	// #4660-#4665 closed en masse and re-filed as #4677 rendered this way).
+	supersededClose := prState.TerminalLabel == github.LabelSuperseded
+
 	// GH-3818/D10: reclassify any "completed" execution row for this issue to
 	// "failed" now that we know its PR was discarded — otherwise HasCompletedExecution
 	// keeps trusting the stale row and the poller re-marks the issue pilot-done on
 	// every subsequent poll even though nothing shipped. A later merge heals this
 	// back to "completed" via SelfHealExecutionAfterMerge.
+	//
+	// GH-4701: unless supersededClose says this was deliberate operator
+	// cleanup, not a failure — then the row is reclassified to "superseded"
+	// instead, so HISTORY renders it muted rather than as a pipeline ✗.
 	if c.evalStore != nil && prState.IssueNumber > 0 {
 		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
-		if err := c.evalStore.ReclassifyCompletionAsFailed(taskID, c.projectPath, reason); err != nil {
+		var err error
+		if supersededClose {
+			err = c.evalStore.ReclassifyCompletionAsSuperseded(taskID, c.projectPath, reason)
+		} else {
+			err = c.evalStore.ReclassifyCompletionAsFailed(taskID, c.projectPath, reason)
+		}
+		if err != nil {
 			c.log.Warn("failed to reclassify completed execution after PR close",
 				"task_id", taskID, "pr", prState.PRNumber, "error", err)
 		}
@@ -6666,10 +6694,16 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 	// non-terminal forever, HydrateFromStore re-seeds it into the Monitor as
 	// a running card on the next restart, and Monitor.ReconcileWithStore
 	// (GH-4490) can't rescue it because the reconciler trusts the executions
-	// row as source of truth.
+	// row as source of truth. GH-4701: same supersededClose split as above.
 	if c.evalStore != nil && prState.IssueNumber > 0 {
 		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
-		if err := c.evalStore.TerminateNonTerminalExecution(taskID, c.projectPath, reason); err != nil {
+		var err error
+		if supersededClose {
+			err = c.evalStore.TerminateNonTerminalExecutionAsSuperseded(taskID, c.projectPath, reason)
+		} else {
+			err = c.evalStore.TerminateNonTerminalExecution(taskID, c.projectPath, reason)
+		}
+		if err != nil {
 			c.log.Warn("failed to terminate non-terminal execution after PR close",
 				"task_id", taskID, "pr", prState.PRNumber, "error", err)
 		}

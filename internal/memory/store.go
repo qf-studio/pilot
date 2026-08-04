@@ -1376,6 +1376,30 @@ func (s *Store) ReclassifyCompletionAsFailed(taskID, projectPath, reason string)
 	})
 }
 
+// ReclassifyCompletionAsSuperseded is ReclassifyCompletionAsFailed's sibling
+// for the GH-4701 case: a completed execution row whose PR was closed
+// because an operator deliberately closed the issue as not-planned (or a
+// prior stage already tagged the close pilot-superseded — e.g. a
+// sibling/duplicate execution delivered the same scope first), not because
+// anything actually failed. Demoting to "failed" here would render the row
+// as a pipeline failure in HISTORY (the 2026-08-03 #4655 cluster: 6 of 43
+// rows misread that way); "superseded" is a muted, distinct outcome instead
+// (see internal/dashboard/stage_strip.go's mutedOutcomes).
+func (s *Store) ReclassifyCompletionAsSuperseded(taskID, projectPath, reason string) error {
+	return s.withRetry("ReclassifyCompletionAsSuperseded", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'superseded',
+				error = ?,
+				completed_at = CURRENT_TIMESTAMP
+			WHERE task_id = ? AND (? = '' OR project_path = ?) AND status = 'completed'
+				AND (error IS NULL OR error = '')
+				AND (commit_sha != '' OR pr_url != '')
+		`, reason, taskID, projectPath, projectPath)
+		return err
+	})
+}
+
 // TerminateNonTerminalExecution flips the latest execution row for taskID
 // (same created_at DESC, rowid DESC selection as GetExecutionStatusByTaskID)
 // to status='failed' when it is still queued/pending/running. GH-4499: covers
@@ -1398,6 +1422,27 @@ func (s *Store) TerminateNonTerminalExecution(taskID, projectPath, reason string
 		_, err := s.db.Exec(`
 			UPDATE executions
 			SET status = 'failed',
+				error = ?,
+				completed_at = CURRENT_TIMESTAMP
+			WHERE id = (
+				SELECT id FROM executions
+				WHERE task_id = ? AND (? = '' OR project_path = ?)
+				ORDER BY created_at DESC, rowid DESC
+				LIMIT 1
+			) AND status IN ('queued', 'pending', 'running')
+		`, reason, taskID, projectPath, projectPath)
+		return err
+	})
+}
+
+// TerminateNonTerminalExecutionAsSuperseded is TerminateNonTerminalExecution's
+// sibling for the GH-4701 case: see ReclassifyCompletionAsSuperseded's doc
+// comment for when this applies over the "failed" variant.
+func (s *Store) TerminateNonTerminalExecutionAsSuperseded(taskID, projectPath, reason string) error {
+	return s.withRetry("TerminateNonTerminalExecutionAsSuperseded", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'superseded',
 				error = ?,
 				completed_at = CURRENT_TIMESTAMP
 			WHERE id = (

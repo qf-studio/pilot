@@ -5612,6 +5612,11 @@ type mockEvalStore struct {
 	updateStatus []updateStatusCall
 	reclassified []reclassifyCall
 	terminated   []terminateCall
+	// GH-4701: separate call logs for the superseded-close siblings so tests
+	// can assert which variant fired without disturbing the failed-path
+	// assertions above.
+	reclassifiedSuperseded []reclassifyCall
+	terminatedSuperseded   []terminateCall
 	// execStatusByTaskID configures GetExecutionStatusByTaskID responses keyed by
 	// task ID (e.g. "GH-11"). Missing keys return sql.ErrNoRows, matching a real
 	// store's behavior when no execution row exists for that task.
@@ -5689,6 +5694,18 @@ func (m *mockEvalStore) ReclassifyCompletionAsFailed(taskID, projectPath, reason
 // TerminateNonTerminalExecution records the call for assertions. GH-4499.
 func (m *mockEvalStore) TerminateNonTerminalExecution(taskID, projectPath, reason string) error {
 	m.terminated = append(m.terminated, terminateCall{TaskID: taskID, ProjectPath: projectPath, Reason: reason})
+	return nil
+}
+
+// ReclassifyCompletionAsSuperseded records the call for assertions. GH-4701.
+func (m *mockEvalStore) ReclassifyCompletionAsSuperseded(taskID, projectPath, reason string) error {
+	m.reclassifiedSuperseded = append(m.reclassifiedSuperseded, reclassifyCall{TaskID: taskID, ProjectPath: projectPath, Reason: reason})
+	return nil
+}
+
+// TerminateNonTerminalExecutionAsSuperseded records the call for assertions. GH-4701.
+func (m *mockEvalStore) TerminateNonTerminalExecutionAsSuperseded(taskID, projectPath, reason string) error {
+	m.terminatedSuperseded = append(m.terminatedSuperseded, terminateCall{TaskID: taskID, ProjectPath: projectPath, Reason: reason})
 	return nil
 }
 
@@ -7149,6 +7166,85 @@ func TestNotifyExternalClose_TerminatesNonTerminalExecution(t *testing.T) {
 				}
 			} else if len(evalMock.terminated) != 0 {
 				t.Errorf("expected no terminate calls, got %+v", evalMock.terminated)
+			}
+		})
+	}
+}
+
+// TestNotifyExternalClose_SupersededCloseRoutesToSupersededVariants covers
+// GH-4701: when prState.TerminalLabel already says pilot-superseded (e.g.
+// closeConflictSourceIssueClosed proved a sibling/duplicate execution
+// delivered this issue's scope first), notifyExternalClose must route both
+// the reclassify and terminate calls to their "AsSuperseded" siblings
+// instead of the plain "failed" variants — otherwise HISTORY renders
+// deliberate operator cleanup as a pipeline ✗ (the 2026-08-03 #4655 cluster
+// that motivated this task).
+func TestNotifyExternalClose_SupersededCloseRoutesToSupersededVariants(t *testing.T) {
+	tests := []struct {
+		name           string
+		terminalLabel  string
+		wantSuperseded bool
+	}{
+		{
+			name:           "TerminalLabel pilot-superseded - routes to superseded variants",
+			terminalLabel:  github.LabelSuperseded,
+			wantSuperseded: true,
+		},
+		{
+			name:           "TerminalLabel empty - routes to plain failed variants",
+			terminalLabel:  "",
+			wantSuperseded: false,
+		},
+		{
+			name:           "TerminalLabel pilot-failed - routes to plain failed variants",
+			terminalLabel:  github.LabelFailed,
+			wantSuperseded: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[]"))
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+			evalMock := &mockEvalStore{}
+			c.SetEvalStore(evalMock)
+
+			prState := &PRState{PRNumber: 42, IssueNumber: 4701, Error: "source issue #4701 is closed", TerminalLabel: tt.terminalLabel}
+			c.notifyExternalClose(context.Background(), prState)
+
+			if tt.wantSuperseded {
+				if len(evalMock.reclassifiedSuperseded) != 1 {
+					t.Errorf("reclassifiedSuperseded calls = %d, want 1: %+v", len(evalMock.reclassifiedSuperseded), evalMock.reclassifiedSuperseded)
+				}
+				if len(evalMock.terminatedSuperseded) != 1 {
+					t.Errorf("terminatedSuperseded calls = %d, want 1: %+v", len(evalMock.terminatedSuperseded), evalMock.terminatedSuperseded)
+				}
+				if len(evalMock.reclassified) != 0 {
+					t.Errorf("expected no plain reclassify calls, got %+v", evalMock.reclassified)
+				}
+				if len(evalMock.terminated) != 0 {
+					t.Errorf("expected no plain terminate calls, got %+v", evalMock.terminated)
+				}
+			} else {
+				if len(evalMock.reclassified) != 1 {
+					t.Errorf("reclassified calls = %d, want 1: %+v", len(evalMock.reclassified), evalMock.reclassified)
+				}
+				if len(evalMock.terminated) != 1 {
+					t.Errorf("terminated calls = %d, want 1: %+v", len(evalMock.terminated), evalMock.terminated)
+				}
+				if len(evalMock.reclassifiedSuperseded) != 0 {
+					t.Errorf("expected no superseded reclassify calls, got %+v", evalMock.reclassifiedSuperseded)
+				}
+				if len(evalMock.terminatedSuperseded) != 0 {
+					t.Errorf("expected no superseded terminate calls, got %+v", evalMock.terminatedSuperseded)
+				}
 			}
 		})
 	}
