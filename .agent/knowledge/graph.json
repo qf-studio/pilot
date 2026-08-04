@@ -1255,14 +1255,15 @@
         "title": "Contract hardening tune-up \u2014 seams, dead-man signals, tripwires",
         "status": "dispatched",
         "concepts": [
-          "deployment",
-          "api",
           "knowledge",
-          "theory of mind",
           "context",
-          "skills",
+          "workflow",
+          "theory of mind",
+          "api",
           "database",
-          "testing"
+          "testing",
+          "skills",
+          "deployment"
         ]
       }
     },
@@ -5478,6 +5479,11 @@
       "from": "TASK-441",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-441",
+      "to": "workflow",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6030,7 +6036,8 @@
       "TASK-429",
       "TASK-433",
       "TASK-439",
-      "TASK-440"
+      "TASK-440",
+      "TASK-441"
     ],
     "simplification": [
       "TASK-387",
@@ -6427,10 +6434,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-04T12:37:48.506052+00:00",
+  "last_updated": "2026-08-04T20:06:20.930191+00:00",
   "stats": {
     "total_nodes": 351,
-    "total_edges": 286,
+    "total_edges": 287,
     "memory_count": 208
   }
 }
