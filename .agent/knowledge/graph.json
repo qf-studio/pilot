@@ -1249,6 +1249,21 @@
           "deployment",
           "theory of mind"
         ]
+      },
+      "TASK-441": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-441-contract-hardening-tune-up.md",
+        "title": "Contract hardening tune-up \u2014 seams, dead-man signals, tripwires",
+        "status": "dispatched",
+        "concepts": [
+          "deployment",
+          "api",
+          "knowledge",
+          "theory of mind",
+          "context",
+          "skills",
+          "database",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -5458,6 +5473,11 @@
       "from": "runselfreview-runs-in-repo-root-phantom-reimplementation",
       "to": "TASK-437",
       "type": "related"
+    },
+    {
+      "from": "TASK-441",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -5496,7 +5516,8 @@
     "skills": [
       "TASK-386",
       "TASK-387",
-      "TASK-420"
+      "TASK-420",
+      "TASK-441"
     ],
     "knowledge": [
       "TASK-386",
@@ -5556,7 +5577,8 @@
       "mem-165",
       "TASK-429",
       "TASK-436",
-      "TASK-437"
+      "TASK-437",
+      "TASK-441"
     ],
     "deployment": [
       "TASK-386",
@@ -5639,7 +5661,8 @@
       "TASK-437",
       "TASK-438",
       "TASK-439",
-      "TASK-440"
+      "TASK-440",
+      "TASK-441"
     ],
     "authentication": [
       "TASK-386",
@@ -5767,7 +5790,8 @@
       "TASK-437",
       "TASK-438",
       "TASK-439",
-      "TASK-440"
+      "TASK-440",
+      "TASK-441"
     ],
     "api": [
       "TASK-386",
@@ -5824,7 +5848,8 @@
       "TASK-437",
       "TASK-438",
       "TASK-439",
-      "TASK-440"
+      "TASK-440",
+      "TASK-441"
     ],
     "context": [
       "TASK-386",
@@ -5889,7 +5914,8 @@
       "TASK-437",
       "TASK-438",
       "TASK-439",
-      "TASK-440"
+      "TASK-440",
+      "TASK-441"
     ],
     "markers": [
       "TASK-387",
@@ -5948,7 +5974,8 @@
       "TASK-432",
       "TASK-438",
       "TASK-439",
-      "TASK-440"
+      "TASK-440",
+      "TASK-441"
     ],
     "workflow": [
       "TASK-387",
@@ -6074,7 +6101,8 @@
       "TASK-434",
       "TASK-437",
       "TASK-439",
-      "TASK-440"
+      "TASK-440",
+      "TASK-441"
     ],
     "autopilot": [
       "mem-100",
@@ -6399,10 +6427,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-04T09:40:00.000000+00:00",
+  "last_updated": "2026-08-04T12:37:48.506052+00:00",
   "stats": {
-    "total_nodes": 350,
-    "total_edges": 285,
+    "total_nodes": 351,
+    "total_edges": 286,
     "memory_count": 208
   }
 }
