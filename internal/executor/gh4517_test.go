@@ -210,18 +210,23 @@ func TestApplyGhostSHAGuardWithPreserve_RecordsExecutionEvent(t *testing.T) {
 // B8): the model edits files on disk and reports success, but never runs
 // `git commit`. Used to exercise the runner's other no-op classification
 // site — the GH-916 "no commits after retry" path in Execute — end to end.
+// It records the ProjectPath from each call — GH-4708 (TASK-441 L1): a mock
+// whose Execute discards its arguments certifies nothing about the seam it
+// stands in for.
 type mockDirtyBackend struct {
-	mu        sync.Mutex
-	dir       string
-	execCount int
+	mu             sync.Mutex
+	dir            string
+	execCount      int
+	gotProjectPath string
 }
 
 func (m *mockDirtyBackend) Name() string      { return "mock-dirty" }
 func (m *mockDirtyBackend) IsAvailable() bool { return true }
-func (m *mockDirtyBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+func (m *mockDirtyBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.execCount++
+	m.gotProjectPath = opts.ProjectPath
 	content := fmt.Sprintf("package x // attempt %d\n", m.execCount)
 	if err := os.WriteFile(filepath.Join(m.dir, "implementation.go"), []byte(content), 0o644); err != nil {
 		return nil, err
@@ -284,8 +289,12 @@ func TestRunner_DirtyWorktreeAfterNoCommitRetry_AutoPreserved(t *testing.T) {
 
 	backend.mu.Lock()
 	count := backend.execCount
+	gotProjectPath := backend.gotProjectPath
 	backend.mu.Unlock()
 	if count != 2 {
 		t.Errorf("expected backend called 2 times (initial + retry), got %d", count)
+	}
+	if gotProjectPath != dir {
+		t.Errorf("backend received ProjectPath %q, want %q", gotProjectPath, dir)
 	}
 }

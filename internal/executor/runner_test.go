@@ -3992,6 +3992,9 @@ func TestExecuteWithOptions_EmptyModelNameLogsWarn(t *testing.T) {
 	if result.ModelName == "" {
 		t.Fatal("expected fallbackModelName() to populate ModelName")
 	}
+	if got := backend.lastProjectPath(); got != dir {
+		t.Errorf("backend received ProjectPath %q, want %q", got, dir)
+	}
 
 	logOutput := buf.String()
 	if !strings.Contains(logOutput, "Telemetry produced no model name") {
@@ -4002,20 +4005,32 @@ func TestExecuteWithOptions_EmptyModelNameLogsWarn(t *testing.T) {
 	}
 }
 
-// mockFixedBackend returns a fixed BackendResult for every Execute call and tracks count.
+// mockFixedBackend returns a fixed BackendResult for every Execute call and
+// tracks count. It also records the ProjectPath each call received — GH-4708
+// (TASK-441 L1): a mock whose Execute discards every argument certifies
+// nothing about what crossed the seam (the recurrence class behind
+// GH-4702/#4706/#4707's undetected runSelfReview bug).
 type mockFixedBackend struct {
-	mu        sync.Mutex
-	result    *BackendResult
-	execCount int
+	mu             sync.Mutex
+	result         *BackendResult
+	execCount      int
+	gotProjectPath string
 }
 
 func (m *mockFixedBackend) Name() string      { return "mock-fixed" }
 func (m *mockFixedBackend) IsAvailable() bool { return true }
-func (m *mockFixedBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+func (m *mockFixedBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.execCount++
+	m.gotProjectPath = opts.ProjectPath
 	return m.result, nil
+}
+
+func (m *mockFixedBackend) lastProjectPath() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gotProjectPath
 }
 
 // setupPRGuardRepo creates a temp git repo with an initial commit on main and
@@ -4105,6 +4120,9 @@ func TestRunner_PRCreate_EmptyBranch_TriggersRetry(t *testing.T) {
 	if count != 2 {
 		t.Errorf("Expected backend called 2 times (initial + retry), got %d", count)
 	}
+	if got := backend.lastProjectPath(); got != dir {
+		t.Errorf("backend received ProjectPath %q, want %q", got, dir)
+	}
 }
 
 // TestRunner_PRCreate_HasCommits_ProceedsToCreate verifies the GH-2743 guard
@@ -4167,6 +4185,9 @@ func TestRunner_PRCreate_HasCommits_ProceedsToCreate(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "recovery_ref=refs/pilot-recovery/GH-9998") {
 		t.Errorf("Expected recovery_ref in error, got: %q", result.Error)
+	}
+	if got := backend.lastProjectPath(); got != dir {
+		t.Errorf("backend received ProjectPath %q, want %q", got, dir)
 	}
 
 	// The recovery ref must actually exist in the repo and resolve to a commit,
@@ -4249,23 +4270,34 @@ func TestParseDeclinedReason(t *testing.T) {
 }
 
 // mockSequentialBackend returns different results per call index. GH-2777.
+// It records the ProjectPath from every call — GH-4708 (TASK-441 L1): a mock
+// whose Execute discards its arguments certifies nothing about the seam it
+// stands in for.
 type mockSequentialBackend struct {
-	mu      sync.Mutex
-	results []*BackendResult
-	idx     int
+	mu              sync.Mutex
+	results         []*BackendResult
+	idx             int
+	gotProjectPaths []string
 }
 
 func (m *mockSequentialBackend) Name() string      { return "mock-sequential" }
 func (m *mockSequentialBackend) IsAvailable() bool { return true }
-func (m *mockSequentialBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+func (m *mockSequentialBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.gotProjectPaths = append(m.gotProjectPaths, opts.ProjectPath)
 	if m.idx >= len(m.results) {
 		return m.results[len(m.results)-1], nil
 	}
 	r := m.results[m.idx]
 	m.idx++
 	return r, nil
+}
+
+func (m *mockSequentialBackend) projectPaths() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.gotProjectPaths...)
 }
 
 // TestRunner_DECLINED_Path verifies that when the retry result contains a
@@ -4318,6 +4350,11 @@ func TestRunner_DECLINED_Path(t *testing.T) {
 	if strings.HasPrefix(result.Error, "no_changes:") {
 		t.Errorf("Declined task should not have no_changes error, got: %q", result.Error)
 	}
+	for i, got := range backend.projectPaths() {
+		if got != dir {
+			t.Errorf("call %d: backend received ProjectPath %q, want %q", i, got, dir)
+		}
+	}
 }
 
 // TestRunner_NoChanges_NoDecline verifies that when the retry response contains
@@ -4360,6 +4397,11 @@ func TestRunner_NoChanges_NoDecline(t *testing.T) {
 	}
 	if !strings.HasPrefix(result.Error, "no_changes:") {
 		t.Errorf("Expected no_changes error, got: %q", result.Error)
+	}
+	for i, got := range backend.projectPaths() {
+		if got != dir {
+			t.Errorf("call %d: backend received ProjectPath %q, want %q", i, got, dir)
+		}
 	}
 }
 
@@ -4531,6 +4573,10 @@ func TestMetricsRecorder_CalledOncePerExecution(t *testing.T) {
 	} else if rec.durationCalls[0] <= 0 {
 		t.Errorf("RecordExecutionDuration got %v, want positive duration", rec.durationCalls[0])
 	}
+
+	if got := backend.lastProjectPath(); got != dir {
+		t.Errorf("backend received ProjectPath %q, want %q", got, dir)
+	}
 }
 
 // TestMetricsRecorder_SkipsCanaryTask covers GH-4240: a task carrying the
@@ -4597,6 +4643,13 @@ func TestMetricsRecorder_SkipsCanaryTask(t *testing.T) {
 	}
 	if len(rec.durationCalls) != 0 {
 		t.Errorf("RecordExecutionDuration called %d times for canary task, want 0", len(rec.durationCalls))
+	}
+
+	// The canary exclusion applies to metrics recording only — the backend
+	// must still have executed against the real ProjectPath, not been
+	// silently skipped or redirected.
+	if got := backend.lastProjectPath(); got != dir {
+		t.Errorf("backend received ProjectPath %q, want %q", got, dir)
 	}
 }
 

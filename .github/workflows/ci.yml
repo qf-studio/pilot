@@ -19,6 +19,15 @@ jobs:
       - name: Check for realistic secret patterns in tests
         run: ./scripts/check-secret-patterns.sh
 
+  mock-contracts:
+    name: Check Argument-Discarding Mocks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for argument-discarding Backend.Execute mocks
+        run: ./scripts/check-mocks.sh
+
   graph-check:
     name: Knowledge Graph Drift Gate
     runs-on: ubuntu-latest

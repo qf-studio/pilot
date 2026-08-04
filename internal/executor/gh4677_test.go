@@ -17,18 +17,24 @@ import (
 // Used to prove a decomposed parent's retry never reaches direct
 // implementation of its own scope (GH-4648/GH-4649, TASK-437 item A) — if
 // the pre-planning ledger gate in executeWithOptions were bypassed, this
-// backend would be invoked for the parent's own task.
+// backend would be invoked for the parent's own task. It also records the
+// ProjectPath from each call — GH-4708 (TASK-441 L1): a mock whose Execute
+// discards its arguments certifies nothing about the seam it stands in for,
+// so if the gate ever regresses and this backend does get invoked, the
+// recorded path is available rather than silently discarded.
 type gh4677CountingBackend struct {
-	mu        sync.Mutex
-	execCount int
+	mu             sync.Mutex
+	execCount      int
+	gotProjectPath string
 }
 
 func (b *gh4677CountingBackend) Name() string      { return "gh4677-counting" }
 func (b *gh4677CountingBackend) IsAvailable() bool { return true }
-func (b *gh4677CountingBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+func (b *gh4677CountingBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.execCount++
+	b.gotProjectPath = opts.ProjectPath
 	return &BackendResult{Success: true}, nil
 }
 
