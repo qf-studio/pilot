@@ -91,21 +91,24 @@ func verifySDKGithubToken(ctx context.Context, client *githubSDK.Client, tokenSo
 const judgeFailureStreakAlertThreshold = 10
 
 // sdkPreFlightJudge adapts *executor.IntentJudge to sdkcore.PreFlightJudger,
-// returning the SDK's core.Verdict. Pointer receiver (GH-4669) so
-// consecutiveFailures can be mutated across calls from the SDK poller's
-// per-repo goroutine.
+// returning the SDK's core.Verdict. Pointer receiver (GH-4669) so its
+// alerts.DeadManTracker (TASK-441 L2, GH-4709 — the intent-judge streak
+// counter generalized into a reusable primitive) can be mutated across calls
+// from the SDK poller's per-repo goroutine.
 type sdkPreFlightJudge struct {
 	judge *executor.IntentJudge
 	// metrics records judge subprocess failures by cause (GH-4377); nil-safe
 	// (a repo with no autopilot controller just skips the metric).
 	metrics *autopilot.Metrics
-	// alertsEngine fires EventTypeIntentJudgeFailureStreak; nil-safe.
+	// alertsEngine backs trackerFor's registration; nil-safe (see
+	// alerts.Engine.RegisterDeadManTracker).
 	alertsEngine *alerts.Engine
-	// repoFullName identifies the repo in the fired alert's metadata.
+	// repoFullName identifies the repo in the fired alert's metadata, and
+	// scopes this judge's tracker name so per-repo streaks don't share state.
 	repoFullName string
 
-	mu                  sync.Mutex
-	consecutiveFailures int
+	trackerOnce sync.Once
+	tracker     *alerts.DeadManTracker
 }
 
 func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoContext string) (sdkcore.Verdict, error) {
@@ -114,10 +117,10 @@ func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoCon
 		if s.metrics != nil {
 			s.metrics.RecordIntentJudgeFailure(judgeFailureCause(err))
 		}
-		s.recordFailure()
+		s.trackerFor().RecordFailure(map[string]string{"repo": s.repoFullName})
 		return sdkcore.Verdict{}, err
 	}
-	s.recordSuccess()
+	s.trackerFor().RecordSuccess()
 	return sdkcore.Verdict{
 		Accepted:   !v.IsRejection(),
 		Decision:   string(v.Decision),
@@ -126,35 +129,30 @@ func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoCon
 	}, nil
 }
 
-// recordFailure increments the consecutive-failure streak and fires exactly
-// one alert when it reaches judgeFailureStreakAlertThreshold — an equality
-// check (not >=), so a judge that never recovers pages once, not on every
-// poll cycle thereafter (GH-4669, mirroring fireLoopBreakerAlert's pattern in
-// cmd/pilot/handler_common.go).
-func (s *sdkPreFlightJudge) recordFailure() {
-	s.mu.Lock()
-	s.consecutiveFailures++
-	consecutive := s.consecutiveFailures
-	s.mu.Unlock()
-
-	if consecutive == judgeFailureStreakAlertThreshold && s.alertsEngine != nil {
-		s.alertsEngine.ProcessEvent(alerts.Event{
-			Type: alerts.EventTypeIntentJudgeFailureStreak,
-			Metadata: map[string]string{
-				"repo":                 s.repoFullName,
-				"consecutive_failures": strconv.Itoa(consecutive),
-			},
-			Timestamp: time.Now(),
-		})
-	}
-}
-
-// recordSuccess resets the streak so a transient blip doesn't compound
-// toward the alert threshold across unrelated failures.
-func (s *sdkPreFlightJudge) recordSuccess() {
-	s.mu.Lock()
-	s.consecutiveFailures = 0
-	s.mu.Unlock()
+// trackerFor lazily registers this judge's alerts.DeadManTracker against
+// s.alertsEngine (TASK-441 L2, GH-4709) — RegisterDeadManTracker is
+// nil-receiver-safe (a nil *alerts.Engine, e.g. a repo with no alerts
+// engine wired, returns a standalone unregistered tracker: counting still
+// works, alert delivery no-ops), so this method never needs its own nil
+// guard. Registered lazily (sync.Once) rather than in the struct literal
+// because repoFullName must already be set to scope the tracker name.
+// WithDeadManEventType keeps the threshold alert routed through the
+// pre-existing, ops-watched EventTypeIntentJudgeFailureStreak /
+// handleIntentJudgeFailureStreak pair (GH-4669's original alert contract)
+// rather than switching to the new generic EventTypeDeadManStreak /
+// handleDeadManStreak path — same alert type, threshold, and message text
+// as before this migration.
+func (s *sdkPreFlightJudge) trackerFor() *alerts.DeadManTracker {
+	s.trackerOnce.Do(func() {
+		s.tracker = s.alertsEngine.RegisterDeadManTracker(
+			"intent_judge:"+s.repoFullName,
+			alerts.AlertTypeIntentJudgeFailureStreak,
+			judgeFailureStreakAlertThreshold,
+			alerts.DefaultDeadManWindow,
+			alerts.WithDeadManEventType(alerts.EventTypeIntentJudgeFailureStreak),
+		)
+	})
+	return s.tracker
 }
 
 // judgeFailureCause extracts the GH-4377 diagnostic cause (context_deadline,
@@ -336,6 +334,25 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	}
 	repoOwner, repoName := repoParts[0], repoParts[1]
 	repoLog := log.With(slog.String("repo", target.repoFullName))
+
+	// TASK-441 L2 (GH-4709): register the self-review dead-man tracker here
+	// (deps.AlertsEngine is in scope), even though the actual
+	// attempt/success/failure recording happens in runSelfReview
+	// (internal/executor/runner.go), which relays through the
+	// AlertEventTypeDeadMan{Attempt,Success,Failure} events — runner.go
+	// cannot import internal/alerts directly. Registration name matches
+	// executor.SelfReviewDeadManTrackerName exactly so the relay resolves
+	// to this tracker. RegisterDeadManTracker memoizes by name, so calling
+	// this once per repo poller start (this function runs per repo) is
+	// safe — every call after the first returns the same shared tracker.
+	// Guards the GH-4702 incident class (self-review silently dead for
+	// months).
+	deps.AlertsEngine.RegisterDeadManTracker(
+		executor.SelfReviewDeadManTrackerName,
+		alerts.AlertTypeSelfReviewFailureStreak,
+		alerts.DefaultDeadManFailureThreshold,
+		alerts.DefaultDeadManWindow,
+	)
 
 	// Determine interval (shared adapter polling config; projects have no per-repo interval).
 	interval := 30 * time.Second

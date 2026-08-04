@@ -64,6 +64,12 @@ type Engine struct {
 	// short-lived CLI callers (pilot alerts test, eval regression alerts)
 	// skip wiring a store for a code path they never meaningfully exercise.
 	lifecycle *executor.ExecutionLifecycle
+
+	// deadManTrackers holds every registered DeadManTracker (TASK-441 L2,
+	// GH-4709), keyed by name — memoized by RegisterDeadManTracker so
+	// repeated registration (e.g. a per-repo wrapper rebuilt each poll
+	// cycle) shares one set of counters instead of resetting them.
+	deadManTrackers map[string]*DeadManTracker
 }
 
 // minOrphanEvictionThreshold floors evaluateStuckTasks' orphan-eviction window
@@ -432,6 +438,14 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleGithubSideEffect(ctx, event)
 	case EventTypeIntentJudgeFailureStreak:
 		e.handleIntentJudgeFailureStreak(ctx, event)
+	case EventTypeDeadManAttempt:
+		e.handleDeadManAttempt(event)
+	case EventTypeDeadManSuccess:
+		e.handleDeadManSuccess(event)
+	case EventTypeDeadManFailure:
+		e.handleDeadManFailure(event)
+	case EventTypeDeadManStreak:
+		e.handleDeadManStreak(ctx, event)
 	}
 }
 

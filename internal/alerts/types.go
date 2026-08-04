@@ -77,6 +77,15 @@ const (
 	// failure streak (all context_deadline exceeded) behind a silent
 	// fail-open, discovered only while diagnosing GH-4648.
 	AlertTypeIntentJudgeFailureStreak AlertType = "intent_judge_failure_streak"
+
+	// Dead-man tracker generic streak alerts (TASK-441 L2, GH-4709):
+	// registrations that route through the generic DeadManTracker path
+	// (handleDeadManStreak) rather than a pre-existing dedicated handler.
+	// Label-lifecycle: the post-GH-4692 notifyTaskStartedSDK path has gone
+	// silent for 19 days (GH-4687) with zero errors surfaced. Self-review:
+	// runSelfReview has gone silent for months (GH-4702) the same way.
+	AlertTypeLabelLifecycleFailureStreak AlertType = "label_lifecycle_failure_streak"
+	AlertTypeSelfReviewFailureStreak     AlertType = "self_review_failure_streak"
 )
 
 // Alert represents an alert event
@@ -452,6 +461,35 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when the pre-flight intent judge fails open N+ consecutive times without producing a verdict",
+		},
+		// Label-lifecycle dead-man tracker (TASK-441 L2, GH-4709): the
+		// post-GH-4692 notifyTaskStartedSDK path records its own
+		// threshold count via DeadManTracker.RecordFailure before
+		// emitting, so no Condition field is needed here — mirrors
+		// intent_judge_failure_streak. Severity is Critical: this is
+		// the GH-4687 incident class (19-day silent death).
+		{
+			Name:        "label_lifecycle_failure_streak",
+			Type:        AlertTypeLabelLifecycleFailureStreak,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when the label-lifecycle notifier fails N+ consecutive times without a success",
+		},
+		// Self-review dead-man tracker (TASK-441 L2, GH-4709): same shape
+		// as label_lifecycle_failure_streak, guarding the GH-4702
+		// incident class (months-long silent death).
+		{
+			Name:        "self_review_failure_streak",
+			Type:        AlertTypeSelfReviewFailureStreak,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when post-run self-review fails N+ consecutive times without a success",
 		},
 	}
 }

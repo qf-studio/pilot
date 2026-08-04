@@ -796,11 +796,28 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		if pilotLabel == "" {
 			pilotLabel = "pilot"
 		}
+		// TASK-441 L2 (GH-4709): dead-man tracker for this path — the exact
+		// seam that went silent for 19 days (GH-4687) with zero errors
+		// surfaced, because nothing called it at all. RecordAttempt fires
+		// regardless of outcome, so a future "wired to nothing" regression
+		// (zero attempts despite issues flowing) is detectable the same way
+		// zero attempts already are (Stale) instead of hiding behind an
+		// error-only counter.
+		labelTracker := alertsEngine.RegisterDeadManTracker(
+			labelLifecycleDeadManTrackerName,
+			alerts.AlertTypeLabelLifecycleFailureStreak,
+			alerts.DefaultDeadManFailureThreshold,
+			alerts.DefaultDeadManWindow,
+		)
+		labelTracker.RecordAttempt()
 		if err := notifyTaskStartedSDK(ctx, specClient, pilotLabel, repoOwner, repoName, issueNum, taskID); err != nil {
+			labelTracker.RecordFailure(map[string]string{"repo": repoOwner + "/" + repoName})
 			logging.WithComponent("github").Warn("Failed to notify task started (SDK path)",
 				slog.String("task_id", taskID),
 				slog.Int("issue", issueNum),
 				slog.Any("error", err))
+		} else {
+			labelTracker.RecordSuccess()
 		}
 	}
 
@@ -879,6 +896,12 @@ func fetchGithubIssueForSDKTask(ctx context.Context, client *githubSDK.Client, o
 	}
 	return issue
 }
+
+// labelLifecycleDeadManTrackerName is the alerts.DeadManTracker registration
+// name (TASK-441 L2, GH-4709) for the notifyTaskStartedSDK call site above —
+// global (not per-repo) since the GH-4687 incident it guards was the whole
+// label-lifecycle path going silent, not a single repo's.
+const labelLifecycleDeadManTrackerName = "label_lifecycle"
 
 // notifyTaskStartedSDK applies the pilot-in-progress label and posts the
 // task-started comment via studio-sdk's tested Notifier (GH-4687). Extracted
