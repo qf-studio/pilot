@@ -47,8 +47,39 @@ func jiraPollerRegistration() PollerRegistration {
 			sdkCfg.Transitions.InProgress = deps.Cfg.Adapters.Jira.Transitions.InProgress
 			sdkCfg.Transitions.Done = deps.Cfg.Adapters.Jira.Transitions.Done
 
+			// Separate client + notifier for the start comment / native
+			// workflow transition (GH-4718). sdkCfg.Transitions is plumbed
+			// above but never read by the SDK poller package itself — the
+			// only consumer is jiraSDK.NewNotifier, so without constructing
+			// it here the config field was dead wiring (notify-started audit).
+			jiraClient := jiraSDK.NewClient(
+				deps.Cfg.Adapters.Jira.BaseURL,
+				deps.Cfg.Adapters.Jira.Username,
+				deps.Cfg.Adapters.Jira.APIToken,
+				deps.Cfg.Adapters.Jira.Platform,
+			)
+			notifier := jiraSDK.NewNotifier(
+				jiraClient,
+				deps.Cfg.Adapters.Jira.Transitions.InProgress,
+				deps.Cfg.Adapters.Jira.Transitions.Done,
+			)
+
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
+					// GH-4718: notify Jira the task has started — posts a
+					// "Pilot started" comment and, when transitions.in_progress
+					// is configured, transitions the issue's native workflow
+					// status (the board column, distinct from the SDK-managed
+					// pilot-in-progress label). Mirrors GH-4717's Linear
+					// wiring. Failure is WARN-logged only — a notify failure
+					// must never abort dispatch.
+					if err := notifier.NotifyTaskStarted(issueCtx, ev.IssueID, ev.SequenceID); err != nil {
+						logging.WithComponent("jira").Warn("Failed to notify task started",
+							slog.String("issue_id", ev.IssueID),
+							slog.Any("error", err),
+						)
+					}
+
 					return handleJiraSDKIssueWithResult(issueCtx, deps.Cfg, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 				}),
 			}
