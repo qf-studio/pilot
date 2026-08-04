@@ -3257,13 +3257,24 @@ func TestRunner_recordExecutionEvent_WritesEvent(t *testing.T) {
 
 // mockSelfReviewBackend implements Backend for self-review tests.
 type mockSelfReviewBackend struct {
-	output string
+	mu       sync.Mutex
+	output   string
+	lastOpts ExecuteOptions
 }
 
 func (m *mockSelfReviewBackend) Name() string      { return "mock" }
 func (m *mockSelfReviewBackend) IsAvailable() bool { return true }
-func (m *mockSelfReviewBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+func (m *mockSelfReviewBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	m.mu.Lock()
+	m.lastOpts = opts
+	m.mu.Unlock()
 	return &BackendResult{Success: true, Output: m.output}, nil
+}
+
+func (m *mockSelfReviewBackend) lastExecuteOptions() ExecuteOptions {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastOpts
 }
 
 // mockSelfReviewExtractor implements SelfReviewExtractor for testing.
@@ -3336,7 +3347,7 @@ func TestRunSelfReview_ExtractsPatterns(t *testing.T) {
 	}
 	state := &progressState{}
 
-	err := runner.runSelfReview(context.Background(), task, state)
+	err := runner.runSelfReview(context.Background(), task, task.ProjectPath, state)
 	if err != nil {
 		t.Fatalf("runSelfReview returned error: %v", err)
 	}
@@ -3374,7 +3385,7 @@ func TestRunSelfReview_SkipsExtractionWhenNoExtractor(t *testing.T) {
 	}
 	state := &progressState{}
 
-	err := runner.runSelfReview(context.Background(), task, state)
+	err := runner.runSelfReview(context.Background(), task, task.ProjectPath, state)
 	if err != nil {
 		t.Fatalf("runSelfReview returned error: %v", err)
 	}
@@ -3398,7 +3409,7 @@ func TestRunSelfReview_SkipsExtractionWhenEmptyOutput(t *testing.T) {
 	}
 	state := &progressState{}
 
-	err := runner.runSelfReview(context.Background(), task, state)
+	err := runner.runSelfReview(context.Background(), task, task.ProjectPath, state)
 	if err != nil {
 		t.Fatalf("runSelfReview returned error: %v", err)
 	}
@@ -3437,7 +3448,7 @@ func TestRunSelfReview_SkipsSaveWhenNoPatternsExtracted(t *testing.T) {
 	}
 	state := &progressState{}
 
-	err := runner.runSelfReview(context.Background(), task, state)
+	err := runner.runSelfReview(context.Background(), task, task.ProjectPath, state)
 	if err != nil {
 		t.Fatalf("runSelfReview returned error: %v", err)
 	}
@@ -3450,6 +3461,47 @@ func TestRunSelfReview_SkipsSaveWhenNoPatternsExtracted(t *testing.T) {
 	}
 	if extractor.saveCalls != 0 {
 		t.Errorf("expected 0 save calls when no patterns extracted, got %d", extractor.saveCalls)
+	}
+}
+
+// TestRunSelfReview_RunsInWorktree is the GH-4702 regression guard.
+//
+// Before the fix runSelfReview always passed ProjectPath: task.ProjectPath —
+// the daemon's repo root — even when worktree isolation was active, so the
+// review's `git diff --cached` saw nothing and its own instructions to "FIX
+// the issue" if the diff looked empty caused it to re-derive the spec and
+// stage a phantom reimplementation into the shared root (the 2026-08-04
+// orphan-staged-GH-4659-helper incident). This is the third recurrence of the
+// TASK-323/GH-3577 class; runSelfReview was missed by both prior fixes. With
+// the fix, self-review runs in executionPath (the worktree), not
+// task.ProjectPath.
+func TestRunSelfReview_RunsInWorktree(t *testing.T) {
+	backend := &mockSelfReviewBackend{output: "REVIEW_PASSED"}
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+
+	worktreePath := t.TempDir()
+	task := &Task{
+		ID:          "GH-4702",
+		Title:       "Add complex feature with multiple components",
+		Description: "Implement a complex multi-step feature requiring significant changes",
+		ProjectPath: t.TempDir(), // simulates the daemon's shared repo root
+	}
+	state := &progressState{}
+
+	// executionPath (worktreePath) is deliberately different from
+	// task.ProjectPath to simulate worktree isolation being active.
+	err := runner.runSelfReview(context.Background(), task, worktreePath, state)
+	if err != nil {
+		t.Fatalf("runSelfReview returned error: %v", err)
+	}
+
+	got := backend.lastExecuteOptions().ProjectPath
+	if got != worktreePath {
+		t.Errorf("self-review ProjectPath = %q, want worktree path %q", got, worktreePath)
+	}
+	if got == task.ProjectPath {
+		t.Errorf("self-review ran in task.ProjectPath %q; it must run in the worktree", task.ProjectPath)
 	}
 }
 
