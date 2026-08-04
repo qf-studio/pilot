@@ -66,7 +66,7 @@ func stripLeadingDoubleDash(args []string) []string {
 // reads") — only erroring if even that search comes up empty.
 func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "gh-guard: no gh subcommand given")
+		_, _ = fmt.Fprintln(stderr, "gh-guard: no gh subcommand given")
 		return 2
 	}
 
@@ -87,7 +87,7 @@ func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdo
 		// up later, never a reason to change the deny decision itself.
 		_ = ghguard.AppendJournal(journalPath, entry)
 
-		fmt.Fprintf(stderr, "gh-guard: denied `gh %s`\nreason: %s\n%s\n",
+		_, _ = fmt.Fprintf(stderr, "gh-guard: denied `gh %s`\nreason: %s\n%s\n",
 			ghguard.FormatArgsForLog(args), decision.Reason, decision.Allowed)
 		return 1
 	}
@@ -96,7 +96,7 @@ func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdo
 	if realGh == "" {
 		fallback, err := ghguard.ResolveFallbackGh(getenv(ghguard.EnvShimDir))
 		if err != nil {
-			fmt.Fprintf(stderr, "gh-guard: allowed but no gh binary available to run: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "gh-guard: allowed but no gh binary available to run: %v\n", err)
 			return 1
 		}
 		realGh = fallback
@@ -111,7 +111,7 @@ func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdo
 		if isExitError(err, &exitErr) {
 			return exitErr.ExitCode()
 		}
-		fmt.Fprintf(stderr, "gh-guard: failed to run %s: %v\n", realGh, err)
+		_, _ = fmt.Fprintf(stderr, "gh-guard: failed to run %s: %v\n", realGh, err)
 		return 1
 	}
 	return 0

@@ -131,8 +131,8 @@ func TestRunGhGuard_AllowFallsBackWhenRealGhUnset(t *testing.T) {
 	writeFakeGh(t, realDir, recordPath)
 
 	oldPath := os.Getenv("PATH")
-	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
-	os.Setenv("PATH", shimDir+string(os.PathListSeparator)+realDir)
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+	_ = os.Setenv("PATH", shimDir+string(os.PathListSeparator)+realDir)
 
 	env := envLookup(map[string]string{
 		"PILOT_TASK_ISSUE":        "123",

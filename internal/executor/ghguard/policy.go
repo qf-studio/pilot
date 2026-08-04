@@ -484,7 +484,7 @@ func AppendJournal(path string, entry JournalEntry) error {
 	if err != nil {
 		return fmt.Errorf("ghguard: open journal: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	line, err := json.Marshal(entry)
 	if err != nil {
@@ -511,7 +511,7 @@ func ReadJournal(path string) ([]JournalEntry, error) {
 		}
 		return nil, fmt.Errorf("ghguard: open journal: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var entries []JournalEntry
 	scanner := bufio.NewScanner(f)

@@ -243,8 +243,8 @@ func TestResolveFallbackGh_ExcludesShimDir(t *testing.T) {
 	writeExecutable(t, filepath.Join(realDir, "gh"), "#!/bin/sh\necho real\n")
 
 	oldPath := os.Getenv("PATH")
-	defer os.Setenv("PATH", oldPath)
-	os.Setenv("PATH", shimDir+string(os.PathListSeparator)+realDir)
+	defer func() { _ = os.Setenv("PATH", oldPath) }()
+	_ = os.Setenv("PATH", shimDir+string(os.PathListSeparator)+realDir)
 
 	got, err := ResolveFallbackGh(shimDir)
 	if err != nil {
