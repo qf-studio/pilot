@@ -1037,6 +1037,16 @@ const (
 	// and StageFailed (an unplanned outcome). Detail carries the operator's
 	// reason string. See executor.ExecutionLifecycle.Cancel.
 	StageCanceled Stage = "canceled"
+	// StageGhGuardDenied records a GH-4671 gh-guard shim denial: the
+	// executor session attempted a `gh` CLI call (via its Bash tool) that
+	// the policy in executor/ghguard rejected before it reached GitHub —
+	// the preventive counterpart to StageGithubSideEffect, which can only
+	// see a bad call after the fact. Detail is a JSON object:
+	// {"args","reason","task_issue","task_repo"}. Paired with an
+	// alert-engine warning (AlertEventTypeGhGuardDenied) for a human
+	// operator to judge whether the attempted call indicates a prompt/task
+	// problem worth investigating.
+	StageGhGuardDenied Stage = "executor.gh_guard_denied"
 )
 
 // Event represents a single stage-transition record for an execution.

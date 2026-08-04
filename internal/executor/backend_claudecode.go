@@ -357,6 +357,16 @@ type ClaudeCodeBackend struct {
 
 	// subprocessLimits configures RSS telemetry and optional RLIMIT_AS cap. GH-3028.
 	subprocessLimits *SubprocessLimitsConfig
+
+	// ghGuardEnabled/ghGuardRealGh configure the gh-guard shim (GH-4671).
+	// ghGuardRealGh is the absolute path to the real `gh` binary, resolved
+	// once at daemon start (backend_factory.go) — never re-resolved per
+	// spawn, so the shim can never accidentally find itself. When
+	// ghGuardRealGh is empty (gh not found on the daemon's own PATH at
+	// startup), the shim is not installed and execution proceeds
+	// unguarded — logged once as a WARN (see SetGhGuard).
+	ghGuardEnabled bool
+	ghGuardRealGh  string
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend.
@@ -433,6 +443,16 @@ func (b *ClaudeCodeBackend) SetProviderEnv(baseURL, authToken, model string) {
 	b.apiBaseURL = baseURL
 	b.apiAuthToken = authToken
 	b.defaultModel = model
+}
+
+// SetGhGuard configures the gh-guard shim (GH-4671) for this backend.
+// realGh must be an absolute path resolved once at daemon start
+// (backend_factory.go); if empty, the shim is skipped for every spawn
+// regardless of enabled (nothing to exec on allow) and a single WARN is
+// logged the first time a spawn would have installed it.
+func (b *ClaudeCodeBackend) SetGhGuard(enabled bool, realGh string) {
+	b.ghGuardEnabled = enabled
+	b.ghGuardRealGh = realGh
 }
 
 // Name returns the backend identifier.
@@ -615,6 +635,30 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	if nodeOpts := nodeOptionsEnv(os.Getenv("NODE_OPTIONS"), b.subprocessLimits); nodeOpts != "" {
 		env = append(env, "NODE_OPTIONS="+nodeOpts)
 	}
+
+	// GH-4671: install the gh-guard shim ahead of the real `gh` on the
+	// subprocess PATH. Preventive half of the GH-4649 containment pair —
+	// intercepts every `gh` call the session makes at the Bash tool
+	// boundary, before it reaches GitHub, rather than only detecting a bad
+	// call after the fact (GH-4670). Skipped only on explicit opt-out
+	// (claude_code.gh_guard: false); a missing real-gh resolution at daemon
+	// start does NOT skip installation — the shim still blocks mutations
+	// via its own PATH fallback search (see ghguard_spawn.go).
+	var ghGuardJournalPath string
+	if b.ghGuardEnabled {
+		shimDir, journalPath, ghGuardCleanup, shimErr := setupGhGuardShim(b.ghGuardRealGh)
+		if shimErr != nil {
+			b.log.Warn("gh-guard shim setup failed; proceeding without gh-guard for this execution",
+				slog.Any("error", shimErr),
+			)
+		} else {
+			defer ghGuardCleanup()
+			env = prependPathEnv(env, shimDir)
+			env = append(env, ghGuardTaskEnv(opts, b.ghGuardRealGh, shimDir, journalPath)...)
+			ghGuardJournalPath = journalPath
+		}
+	}
+
 	cmd.Env = env
 
 	b.log.Debug("Starting Claude Code",
@@ -1022,6 +1066,17 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				slog.Int("final_rss_mb", rssSample.FinalMB),
 			)
 		}
+	}
+
+	// GH-4671: pick up any gh-guard denials journaled during this run,
+	// regardless of how the subprocess itself exited — a denied `gh` call
+	// is evidence about the run's behavior independent of its final success/
+	// failure classification below.
+	if denials := readGhGuardJournal(ghGuardJournalPath); len(denials) > 0 {
+		result.GhGuardDenials = denials
+		b.log.Warn("gh-guard denied gh invocation(s) during execution",
+			slog.Int("count", len(denials)),
+		)
 	}
 
 	if err != nil {
