@@ -3247,24 +3247,23 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		stallDone               = make(chan struct{})
 	)
 	lastEventAt.Store(time.Now().UnixNano())
-	// GH-4501: high-effort/complex-lane turns can still produce several
-	// minutes of silent stdout even with --include-partial-messages (e.g. an
-	// extended non-tool reasoning stretch with no content_block_delta at all),
-	// so raise the floor for those lanes as defense-in-depth alongside the
-	// partial-message streaming fix. An explicit stall_timeout_ms config value
-	// higher than the floor still wins.
-	stallTimeout := effortAwareStallTimeout(r.effectiveStallTimeout(), selectedEffort, complexity)
-	// GH-4691: the hard heartbeat in the backend (backend_claudecode.go) has
-	// its own, uncoordinated flat timeout that otherwise always fires before
-	// this stall watchdog's own effort-aware floor could apply. Compute the
-	// same floor here and pass it through on every backend.Execute call in
-	// this function (initial + retries) so both mechanisms agree.
-	heartbeatFloor := effortAwareHeartbeatFloor(selectedEffort, complexity)
+	// GH-4501/GH-4691/GH-4715: high-effort/complex-lane turns can still
+	// produce several minutes of silent stdout even with
+	// --include-partial-messages (e.g. an extended non-tool reasoning
+	// stretch with no content_block_delta at all), so both the stall
+	// watchdog's soft-stall timeout and the backend's hard-heartbeat kill
+	// need a raised floor for those lanes. policy resolves both from the
+	// same effort/complexity signal exactly once here, and is passed
+	// through on every backend.Execute call in this function (initial +
+	// retries) so the two mechanisms can never drift apart. An explicit
+	// stall_timeout_ms config value higher than the floor still wins.
+	policy := ResolveLivenessPolicy(r.effectiveStallTimeout(), selectedEffort, complexity)
+	stallTimeout := policy.StallTimeout
 	var stallExecutionCtx context.Context
 	var stallCancel context.CancelFunc
-	if stallTimeout > 0 {
+	if policy.StallTimeout > 0 {
 		stallExecutionCtx, stallCancel = context.WithCancel(ctx)
-		go r.runStallWatchdog(task.ID, &lastEventAt, &stallDetectedFlag, &inFlightBackgroundTasks, stallTimeout, stallDone, stallCancel)
+		go r.runStallWatchdog(task.ID, &lastEventAt, &stallDetectedFlag, &inFlightBackgroundTasks, policy, stallDone, stallCancel)
 	} else {
 		stallExecutionCtx = ctx
 		stallCancel = func() {}
@@ -3295,7 +3294,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		MaxTurns:        workflowMaxTurns, // TASK-304: per-repo .pilot/workflow.yaml override
 		FromPR:          task.FromPR,      // GH-1267: session resumption from PR context
 		WatchdogTimeout: watchdogTimeout,
-		HeartbeatFloor:  heartbeatFloor, // GH-4691
+		LivenessPolicy:  policy, // GH-4691/GH-4715
 		AllowedTools:    allowedTools,
 		MCPConfigPath:   mcpConfigPath,
 		SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
@@ -3650,7 +3649,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							Model:           selectedModel,
 							Effort:          selectedEffort,
 							WatchdogTimeout: 2 * retryTimeout,
-							HeartbeatFloor:  heartbeatFloor, // GH-4691
+							LivenessPolicy:  policy, // GH-4691/GH-4715
 							AllowedTools:    smartAllowed,
 							MCPConfigPath:   smartMCP,
 							SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
@@ -4018,7 +4017,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					Model:           selectedModel,
 					Effort:          selectedEffort,
 					WatchdogTimeout: watchdogTimeout,
-					HeartbeatFloor:  heartbeatFloor, // GH-4691
+					LivenessPolicy:  policy, // GH-4691/GH-4715
 					AllowedTools:    noopRetryAllowed,
 					MCPConfigPath:   noopRetryMCP,
 					SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
@@ -4382,7 +4381,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						Verbose:        task.Verbose,
 						Model:          selectedModel,
 						Effort:         selectedEffort,
-						HeartbeatFloor: heartbeatFloor, // GH-4691
+						LivenessPolicy: policy, // GH-4691/GH-4715
 						AllowedTools:   feedbackAllowed,
 						MCPConfigPath:  feedbackMCP,
 						SourceRepo:     task.SourceRepo,    // GH-4671: gh-guard task identity
@@ -4668,7 +4667,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						Verbose:        task.Verbose,
 						Model:          selectedModel,
 						Effort:         selectedEffort,
-						HeartbeatFloor: heartbeatFloor, // GH-4691
+						LivenessPolicy: policy, // GH-4691/GH-4715
 						AllowedTools:   intentAllowed,
 						MCPConfigPath:  intentMCP,
 						SourceRepo:     task.SourceRepo,    // GH-4671: gh-guard task identity
@@ -5509,6 +5508,11 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 		Timestamp: time.Now(),
 	})
 
+	// GH-4715: resolved once here (self-review runs no stall watchdog of its
+	// own, but still needs the same effort-aware hard-heartbeat floor as the
+	// main implementation phase).
+	reviewPolicy := ResolveLivenessPolicy(r.effectiveStallTimeout(), selectedEffort, complexity)
+
 	reviewAllowed, reviewMCP := r.executionToolOptions()
 	result, err := r.backendExecute(reviewCtx, task, executionPath, ExecuteOptions{
 		Prompt:          reviewPrompt,
@@ -5517,7 +5521,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 		Model:           selectedModel,
 		Effort:          selectedEffort,
 		ResumeSessionID: resumeSessionID,
-		HeartbeatFloor:  effortAwareHeartbeatFloor(selectedEffort, complexity), // GH-4691
+		LivenessPolicy:  reviewPolicy, // GH-4691/GH-4715
 		AllowedTools:    reviewAllowed,
 		MCPConfigPath:   reviewMCP,
 		SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity

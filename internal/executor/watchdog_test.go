@@ -50,7 +50,7 @@ func TestStallWatchdog_FiresOnIdle(t *testing.T) {
 	stallTimeout := 5 * time.Second
 
 	var inFlight atomic.Int64
-	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, LivenessPolicy{StallTimeout: stallTimeout, StallWatchdogInterval: watchdogTickInterval(stallTimeout)}, done, cancel)
 
 	// The watchdog ticks every 30s by default — too slow for a unit test.
 	// Instead, simulate a stale lastEventAt (already set above) and wait for
@@ -101,7 +101,7 @@ func TestStallWatchdog_SurvivesLiveSession(t *testing.T) {
 	stallTimeout := 200 * time.Millisecond
 
 	var inFlight atomic.Int64
-	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, LivenessPolicy{StallTimeout: stallTimeout, StallWatchdogInterval: watchdogTickInterval(stallTimeout)}, done, cancel)
 
 	// Simulate periodic events keeping the watchdog alive.
 	// The watchdog interval is 30s in production; in the test we close done
@@ -154,7 +154,7 @@ func TestStallWatchdog_SuspendsWhileBackgroundTaskInFlight(t *testing.T) {
 
 	stallTimeout := 50 * time.Millisecond
 
-	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, LivenessPolicy{StallTimeout: stallTimeout, StallWatchdogInterval: watchdogTickInterval(stallTimeout)}, done, cancel)
 
 	// Let several ticks elapse — well past stallTimeout — while the
 	// background task remains in flight.
@@ -192,7 +192,7 @@ func TestStallWatchdog_FiresAfterBackgroundTaskCompletes(t *testing.T) {
 
 	stallTimeout := 50 * time.Millisecond
 
-	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, LivenessPolicy{StallTimeout: stallTimeout, StallWatchdogInterval: watchdogTickInterval(stallTimeout)}, done, cancel)
 
 	// Task is still running: watchdog must not fire yet.
 	time.Sleep(3 * stallTimeout)
@@ -418,7 +418,7 @@ func TestStallWatchdog_PartialDeltasSurviveGapBetweenCompleteEvents(t *testing.T
 	start := time.Now()
 	lastEventAt.Store(start.UnixNano())
 
-	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, func() {})
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, LivenessPolicy{StallTimeout: stallTimeout, StallWatchdogInterval: watchdogTickInterval(stallTimeout)}, done, func() {})
 
 	// Simulate partial-delta lines arriving every 150ms (well under
 	// stallTimeout) for 900ms — spanning a gap between "complete" events far
@@ -462,7 +462,7 @@ func TestStallWatchdog_NoPartialDeltasFiresOnGenuineSilence(t *testing.T) {
 	defer cancel()
 
 	stallTimeout := 50 * time.Millisecond
-	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, stallTimeout, done, cancel)
+	go r.runStallWatchdog("test-task", &lastEventAt, &stallDetected, &inFlight, LivenessPolicy{StallTimeout: stallTimeout, StallWatchdogInterval: watchdogTickInterval(stallTimeout)}, done, cancel)
 
 	select {
 	case <-ctx.Done():

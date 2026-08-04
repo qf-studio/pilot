@@ -2,10 +2,10 @@
 title: Heartbeat Monitor Killing Healthy Runs During Long Local Tool Calls
 created: 2026-08-03
 status: active
-related: GH-4668, GH-4648, GH-4649, GH-4521, GH-4401, TASK-437, GH-4691, GH-4501, GH-4679
+related: GH-4668, GH-4648, GH-4649, GH-4521, GH-4401, TASK-437, GH-4691, GH-4501, GH-4679, GH-4695, GH-4715
 ---
 
-## GH-4691 addendum: a second silent class, and a coordination gap
+## GH-4691/GH-4695/GH-4715: a second silent class, a coordination gap, and its fix
 
 GH-4668/this SOP fixed the *local-tool-execution* silent class (liveness
 grace via process-group probing). It did **not** fix a second, distinct
@@ -16,17 +16,21 @@ child, no advancing CPU ticks (I/O-wait doesn't register as utime/stime), so
 session that was never hung. GH-4679 (epic, 17m40s in) was killed this way
 post-GH-4668.
 
-The deeper bug: **two uncoordinated silent-stdout detectors** exist —
-this heartbeat (flat `DefaultHeartbeatTimeout = 5m`, backend-construction-time
+The deeper bug: **two uncoordinated silent-stdout detectors** existed — this
+heartbeat (flat `DefaultHeartbeatTimeout = 5m`, backend-construction-time
 only, zero per-task awareness) and the effort-aware stall watchdog
 (`watchdog.go`, `highEffortStallFloor = 10m` for high-effort/heavy-complexity
 lanes). The hard heartbeat always fired first (5m < 10m), so the softer
 watchdog's tolerance never applied. GH-4691 gave the heartbeat the same
-effort-aware floor via `ExecuteOptions.HeartbeatFloor` /
-`effortAwareHeartbeatFloor()` (watchdog.go) so both mechanisms agree — but
-this is a parity patch, not a unification. If a third instance of this class
-surfaces, unify the two detectors into one source of truth rather than
-patching a third floor.
+effort-aware floor via `ExecuteOptions.HeartbeatFloor` — a parity patch, not
+a unification — and GH-4695 had to hand-resync the two constants after they
+drifted again. GH-4715 removed the drift vector structurally: both
+`heartbeat_monitor.go`/`backend_claudecode.go` and `watchdog.go` now read a
+single `LivenessPolicy` (`internal/executor/liveness_policy.go`), resolved
+once per task via `ResolveLivenessPolicy` and threaded through
+`ExecuteOptions.LivenessPolicy` — neither detector file owns a
+silence-threshold constant anymore, so a future tuning PR that touches one
+lane's threshold updates both by construction.
 
 # Heartbeat Monitor Killing Healthy Runs During Long Local Tool Calls
 

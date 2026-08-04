@@ -76,20 +76,22 @@ type ExecuteOptions struct {
 	// When set (> 0), a watchdog goroutine will kill the process after this duration.
 	WatchdogTimeout time.Duration
 
-	// HeartbeatFloor raises the backend's hard heartbeat timeout for this
-	// call when it exceeds the backend's own configured/default value —
-	// the backend must apply max(its own heartbeatTimeout, HeartbeatFloor).
-	// Zero means no floor (backend default applies unchanged).
+	// LivenessPolicy carries the task's resolved stdout-silence thresholds
+	// (LivenessPolicy.HeartbeatFloor raises the backend's hard heartbeat
+	// timeout for this call when it exceeds the backend's own configured/
+	// default value — the backend must apply max(its own heartbeatTimeout,
+	// LivenessPolicy.HeartbeatFloor); the zero value means no floor).
 	//
 	// GH-4691: the hard heartbeat (backend_claudecode.go) SIGKILLs on a flat,
 	// backend-construction-time timeout with zero per-task awareness, so it
 	// always fired before the effort-aware stall watchdog's higher floor
-	// (watchdog.go's effortAwareStallTimeout) could apply for high-effort/
-	// heavy-complexity (complex/epic) lanes. The runner computes this via
-	// effortAwareHeartbeatFloor using the same effort/complexity signal as
-	// the stall watchdog, so both mechanisms agree on how long a legitimately
-	// silent high-effort/epic turn is tolerated.
-	HeartbeatFloor time.Duration
+	// could apply for high-effort/heavy-complexity (complex/epic) lanes.
+	// GH-4715: the runner resolves ONE LivenessPolicy per task
+	// (ResolveLivenessPolicy, liveness_policy.go) from the same
+	// effort/complexity signal used by the stall watchdog, and threads it
+	// through here, so both mechanisms read the identical instance instead
+	// of two independently-tuned constants.
+	LivenessPolicy LivenessPolicy
 
 	// WatchdogCallback is invoked when the watchdog kills a subprocess.
 	// The callback receives the process PID and the watchdog timeout duration.

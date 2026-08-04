@@ -389,13 +389,14 @@ func (b *ClaudeCodeBackend) SetHeartbeatTimeout(d time.Duration) {
 	b.heartbeatTimeout = d
 }
 
-// effectiveHeartbeatTimeout applies opts.HeartbeatFloor (GH-4691) on top of
-// the backend's own configured/default heartbeat timeout: the larger of the
-// two wins, so a per-call floor (set by the runner for high-effort/heavy-
-// complexity lanes via effortAwareHeartbeatFloor) can only raise the
-// timeout, never lower it below the backend's own configured value. The
-// returned source string ("config" or "effort_floor") is logged alongside
-// the kill so the effective timeout is diagnosable from one line.
+// effectiveHeartbeatTimeout applies opts.LivenessPolicy.HeartbeatFloor
+// (GH-4691/GH-4715) on top of the backend's own configured/default
+// heartbeat timeout: the larger of the two wins, so a per-task floor
+// (resolved once by the runner via ResolveLivenessPolicy for high-effort/
+// heavy-complexity lanes) can only raise the timeout, never lower it below
+// the backend's own configured value. The returned source string ("config"
+// or "effort_floor") is logged alongside the kill so the effective timeout
+// is diagnosable from one line.
 func effectiveHeartbeatTimeout(base, floor time.Duration) (timeout time.Duration, source string) {
 	if floor > base {
 		return floor, "effort_floor"
@@ -734,13 +735,14 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	// advancing CPU time) before killing; a genuinely idle, silent group is
 	// still killed exactly as before.
 	//
-	// GH-4691: opts.HeartbeatFloor (set by the runner via
-	// effortAwareHeartbeatFloor for high-effort/heavy-complexity lanes) can
-	// raise the effective timeout above the backend's flat
-	// default/configured value — the hard heartbeat must never fire before
-	// the stall watchdog's own effort-aware floor would. timeoutSource is
-	// logged on kill so the effective timeout is diagnosable from one line.
-	heartbeatTimeout, timeoutSource := effectiveHeartbeatTimeout(b.heartbeatTimeout, opts.HeartbeatFloor)
+	// GH-4691/GH-4715: opts.LivenessPolicy.HeartbeatFloor (resolved once per
+	// task by the runner via ResolveLivenessPolicy, from the same
+	// effort/complexity signal used by the stall watchdog) can raise the
+	// effective timeout above the backend's flat default/configured value —
+	// the hard heartbeat must never fire before the stall watchdog's own
+	// effort-aware floor would. timeoutSource is logged on kill so the
+	// effective timeout is diagnosable from one line.
+	heartbeatTimeout, timeoutSource := effectiveHeartbeatTimeout(b.heartbeatTimeout, opts.LivenessPolicy.HeartbeatFloor)
 	hbMonitor := newHeartbeatMonitor(heartbeatTimeout, opts.WatchdogTimeout, probeProcessLiveness)
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
 	defer cancelHeartbeat()
