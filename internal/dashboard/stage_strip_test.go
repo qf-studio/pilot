@@ -416,6 +416,32 @@ func TestStageInfoForExecution_MutedOutcomesTable(t *testing.T) {
 			events: []*memory.Event{evt(memory.StageRunning)},
 			want:   StageInfo{Reached: 2, Label: "cancelled", Failed: false, Known: true, Muted: true},
 		},
+		{
+			// GH-4701: an operator's deliberate not-planned close (or a
+			// sibling/duplicate execution already delivering this issue's
+			// scope, GH-4656) is not a pipeline failure — the row must
+			// render muted "superseded", not the blank/unknown meter a
+			// zero-event row would otherwise get.
+			status: "superseded",
+			events: nil,
+			want:   StageInfo{Reached: 0, Label: "superseded", Failed: false, Known: true, Muted: true},
+		},
+		{
+			// Same outcome, but with the realistic #4655-cluster shape: the
+			// run had already reached pr_created before the operator closed
+			// the issue. The muted-outcome override must still win over the
+			// running-max reducer's frozen "pr_created" label — without it
+			// this row renders "✗ pr_created", indistinguishable from a
+			// genuine failure.
+			status: "superseded",
+			events: []*memory.Event{
+				evt(memory.StageSpecValidated),
+				evt(memory.StageRunning),
+				evt(memory.StageCommit),
+				evt(memory.StagePRCreated),
+			},
+			want: StageInfo{Reached: 4, Label: "superseded", Failed: false, Known: true, Muted: true},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.status, func(t *testing.T) {
@@ -479,4 +505,71 @@ func TestResolveHistoryStatus_SharedByAllCallSites(t *testing.T) {
 			t.Error("expected cancelled outcome to be muted, matching other terminal-without-ladder-rung statuses")
 		}
 	})
+}
+
+// TestResolveHistoryStatus_SupersededNotRenderedAsFailure is the GH-4701
+// regression test: an issue an operator closes as not-planned / superseded
+// (or a sibling/duplicate execution that already delivered the same scope,
+// GH-4656) must render a distinct muted "superseded" row, not "✗ <rung>" —
+// indistinguishable from a genuine pipeline failure (the 2026-08-03 #4655
+// cluster: #4660-#4665 closed en masse and re-filed as #4677 rendered as 6
+// of 43 HISTORY rows misread this way). Table-driven per the three cases
+// called out in the acceptance criteria: a superseded row, a genuine
+// ci_failed row (unchanged ✗ rendering), and a legacy row with no events
+// (unchanged Known=false — no stage evidence must never be fabricated into
+// either outcome).
+func TestResolveHistoryStatus_SupersededNotRenderedAsFailure(t *testing.T) {
+	tests := []struct {
+		name       string
+		execStatus string
+		events     []*memory.Event
+		want       HistoryStatus
+	}{
+		{
+			name:       "superseded row renders muted, not a failure",
+			execStatus: "superseded",
+			events: []*memory.Event{
+				evt(memory.StageSpecValidated),
+				evt(memory.StageRunning),
+				evt(memory.StageCommit),
+				evt(memory.StagePRCreated),
+			},
+			want: HistoryStatus{
+				Status: "superseded",
+				Stage:  StageInfo{Reached: 4, Label: "superseded", Failed: false, Known: true, Muted: true},
+			},
+		},
+		{
+			name:       "genuine ci_failed row keeps the unmuted failure rendering",
+			execStatus: "failed",
+			events:     []*memory.Event{evt(memory.StageCIFailed)},
+			want: HistoryStatus{
+				Status: "failed",
+				Stage:  StageInfo{Reached: 4, Label: "ci_failed", Failed: true, Known: true, Muted: false},
+			},
+		},
+		{
+			name:       "legacy row with no events stays unknown, not fabricated into a failure or superseded",
+			execStatus: "completed",
+			events:     nil,
+			want: HistoryStatus{
+				Status: "success",
+				Stage:  StageInfo{},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveHistoryStatus(tt.execStatus, tt.events)
+			if got != tt.want {
+				t.Errorf("resolveHistoryStatus(%q, %v) = %+v, want %+v", tt.execStatus, tt.events, got, tt.want)
+			}
+			if tt.execStatus == "superseded" && (got.Stage.Failed || !got.Stage.Muted) {
+				t.Errorf("superseded row must render muted and non-failed: got %+v", got.Stage)
+			}
+			if tt.execStatus == "failed" && (!got.Stage.Failed || got.Stage.Muted) {
+				t.Errorf("genuine failure row must keep the unmuted ✗ rendering: got %+v", got.Stage)
+			}
+		})
+	}
 }
