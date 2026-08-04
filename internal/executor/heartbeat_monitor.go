@@ -23,11 +23,6 @@ type processLivenessSnapshot struct {
 // inject a fake to drive deterministic scenarios without real subprocesses.
 type processLivenessProbe func(pgid int) (processLivenessSnapshot, error)
 
-// heartbeatGraceLogInterval bounds how often the "heartbeat grace" INFO line
-// repeats while a long local tool keeps the stream silent — without this, a
-// 10-minute `make test` run would log once per HeartbeatCheckInterval tick.
-const heartbeatGraceLogInterval = 2 * time.Minute
-
 // heartbeatDecision is the outcome of one heartbeat tick evaluation.
 type heartbeatDecision int
 

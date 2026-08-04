@@ -654,9 +654,10 @@ func TestClaudeCodeBackendHeartbeatTimeout(t *testing.T) {
 	}
 }
 
-// TestEffectiveHeartbeatTimeoutWithFloor covers GH-4691: opts.HeartbeatFloor
-// (computed by the runner via effortAwareHeartbeatFloor for high-effort/
-// heavy-complexity lanes) must raise the effective heartbeat timeout above
+// TestEffectiveHeartbeatTimeoutWithFloor covers GH-4691/GH-4715:
+// opts.LivenessPolicy.HeartbeatFloor (resolved by the runner via
+// ResolveLivenessPolicy for high-effort/heavy-complexity lanes) must raise
+// the effective heartbeat timeout above
 // the backend's own configured/default value, but never lower it — and the
 // returned source string must reflect which one won, so a kill log line is
 // diagnosable without cross-referencing the runner's decision separately.
