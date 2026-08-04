@@ -2435,10 +2435,24 @@ type ProjectWorker struct {
 
 // NewProjectWorker creates a new project worker.
 func NewProjectWorker(projectPath string, store *memory.Store, runner *Runner, log *slog.Logger) *ProjectWorker {
+	lifecycle := NewExecutionLifecycle(store)
+	if runner != nil {
+		// TASK-441 L5 (GH-4716): propagate the runner's alert processor into
+		// this worker's own ExecutionLifecycle so the finish-tripwire
+		// sweep's dead-man relay (Persist -> runFinishTripwireSweep) reaches
+		// the same alerts engine runSelfReview/decompose alerts already do.
+		// Safe to snapshot here rather than at each Persist/Finish call:
+		// every production caller wires Runner.SetAlertProcessor at daemon
+		// startup (cmd/pilot/main.go's runPollingMode,
+		// internal/pilot/pilot.go's initAlerts) before any ProjectWorker is
+		// ever constructed — workers are created lazily, on-demand, once
+		// tasks start flowing.
+		lifecycle.SetAlertProcessor(runner.AlertProcessor())
+	}
 	return &ProjectWorker{
 		projectPath: projectPath,
 		store:       store,
-		lifecycle:   NewExecutionLifecycle(store),
+		lifecycle:   lifecycle,
 		runner:      runner,
 		log:         log.With(slog.String("project", projectPath)),
 		signal:      make(chan struct{}, 1), // Buffered to avoid blocking

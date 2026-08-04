@@ -1164,6 +1164,18 @@ func (r *Runner) SetAlertProcessor(processor AlertEventProcessor) {
 	r.alertProcessor = processor
 }
 
+// AlertProcessor returns the runner's configured alert processor (nil if
+// none is wired). TASK-441 L5 (GH-4716): lets a caller that constructs its
+// own *ExecutionLifecycle outside the runner (dispatcher.go's ProjectWorker,
+// epic.go's sub-issue finalizers) propagate the same processor into
+// ExecutionLifecycle.SetAlertProcessor, so the finish-tripwire sweep's
+// dead-man relay reaches the same alerts engine runSelfReview/decompose
+// alerts already do — one processor, wired once at daemon startup, reused by
+// every terminal-write call site instead of each guessing its own.
+func (r *Runner) AlertProcessor() AlertEventProcessor {
+	return r.alertProcessor
+}
+
 // SetMergeMetricsRecorder sets the recorder for externally-detected PR merges
 // (self-heal / pre-execute short-circuit paths — see MergeMetricsRecorder
 // doc comment). The recorder interface is satisfied by autopilot.Controller
