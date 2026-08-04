@@ -32,7 +32,7 @@ dispatch-correctness gap. Sized S–M below.
 
 | Adapter | Status mechanism(s) | Poller auto-labels on dispatch? | GH-4692-class (label/dedup) gap? | Notify-started comment wired? | Gap | Size |
 |---|---|---|---|---|---|---|
-| Linear | label (`pilot-in-progress`, SDK-managed) | Yes | No | No | comment-only | S |
+| Linear | label (`pilot-in-progress`, SDK-managed) | Yes | No | **Yes** (GH-4717, `poller_linear.go`) | none | — |
 | Jira | label (SDK-managed) **+** native workflow-status transition | Yes (label only) | No | No | comment + status transition | M |
 | Asana | tag (`pilot-in-progress`, SDK-managed) | Yes | No | No | comment-only | S |
 | Plane | label (SDK-managed) **+** native issue-state transition | Yes (label; state via `startedStateIDs`) | No | **Yes** (GH-2132, `poller_plane.go:58`) | none | — |
@@ -41,7 +41,7 @@ dispatch-correctness gap. Sized S–M below.
 
 ## Per-adapter detail
 
-### Linear — `handleLinearIssueWithResult` (`cmd/pilot/handlers.go:124`)
+### Linear — `handleLinearIssueWithResult` (`cmd/pilot/handlers.go:124`) — **fixed, GH-4717**
 
 - **Status mechanism**: label only. `linear.Config.TriggerLabel`/workspace `PilotLabel`
   (`cmd/pilot/poller_linear.go:33-45`) drives an SDK-internal `pilot-in-progress` label.
@@ -60,17 +60,17 @@ dispatch-correctness gap. Sized S–M below.
   (SDK-native, same shape as the `planeSDK.NewNotifier` GH-2132 used) — both dead with respect to
   being invoked from `cmd/pilot`, confirmed via `grep -rn "NotifyTaskStarted(ctx" cmd/`, which
   only matches `handlers.go:889` (the GH-4692 GitHub path).
-- **Gap**: no "Pilot started working on this issue" comment ever posts to the Linear issue.
-  Label-driven orphan recovery and dashboard status are unaffected.
-- **Fix shape (S)**: mirror `poller_plane.go:56-63` — construct
-  `linearSDK.NewNotifier(linearClient)` once per workspace inside
-  `linearPollerRegistration().CreateAndStart`, call `NotifyTaskStarted(issueCtx, ev.IssueID,
-  ev.SequenceID)` before `handleLinearIssueWithResult(...)`, WARN-log (non-fatal) on error. Test:
-  httptest fake covering the comment POST + a source-inspection "wiring order" test
-  (`TestLinearHandlerSDK_NotifyTaskStartedWired`-shaped), mirroring
-  `cmd/pilot/github_sdk_notify_started_test.go`'s two-test pattern. Per-workspace multiplicity
-  (Linear supports multiple workspaces, `GetWorkspaces()`) means the notifier must be built
-  per-workspace client, not once globally — check `sdkWorkspaces` loop at `poller_linear.go:32-51`.
+- **Gap (closed)**: no "Pilot started working on this issue" comment ever posted to the Linear
+  issue. Fixed by GH-4717: `linearPollerRegistration().CreateAndStart`
+  (`cmd/pilot/poller_linear.go`) now builds one `linearSDK.NewNotifier(linearSDK.NewClient(ws.APIKey))`
+  per workspace, keyed by team ID, inside the existing `sdkWorkspaces` loop, and the
+  `sdkcore.IssueHandlerFunc` closure calls `notifier.NotifyTaskStarted(issueCtx, ev.IssueID,
+  ev.SequenceID)` (selecting the workspace notifier via `ev.ProjectID`, which the SDK's
+  `toIssueEvent` populates with the issue's Linear team ID) before
+  `handleLinearIssueWithResult(...)`, WARN-logging (non-fatal) on error. Tests:
+  `cmd/pilot/linear_sdk_notify_started_test.go` (httptest fake over the `commentCreate` mutation +
+  two source-inspection wiring tests). Label-driven orphan recovery and dashboard status were
+  already unaffected by this gap.
 
 ### Jira — `handleJiraSDKIssueWithResult` (`cmd/pilot/handlers.go:192`)
 
@@ -222,7 +222,7 @@ dispatch-correctness gap. Sized S–M below.
 
 ## Recommended fix shape, in general (mirrors GH-4692 / GH-2132)
 
-For each of the five real gaps (Linear, Jira, Asana, GitLab, AzureDevOps):
+For each of the remaining four gaps (Jira, Asana, GitLab, AzureDevOps — Linear closed by GH-4717):
 
 1. Construct the adapter's SDK-native `Notifier` (`{adapter}SDK.NewNotifier(client, ...)`) once
    inside that adapter's `*PollerRegistration().CreateAndStart` closure in `cmd/pilot/poller_*.go`
@@ -248,5 +248,6 @@ For each of the five real gaps (Linear, Jira, Asana, GitLab, AzureDevOps):
    `processIssueAsync`/`processWorkItemAsync` already manages structurally. No recommendation in
    this doc touches that mechanism.
 
-Estimated total: 4×S + 1×M across five PRs (one per adapter, matching the existing one-PR-per-
-adapter granularity of GH-4692/GH-2132), no shared blocking dependency between them.
+Estimated total: 3×S + 1×M across four remaining PRs (one per adapter, matching the existing
+one-PR-per-adapter granularity of GH-4692/GH-2132), no shared blocking dependency between them.
+Linear (S) shipped as GH-4717.
