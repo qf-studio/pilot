@@ -33,10 +33,10 @@ dispatch-correctness gap. Sized S–M below.
 | Adapter | Status mechanism(s) | Poller auto-labels on dispatch? | GH-4692-class (label/dedup) gap? | Notify-started comment wired? | Gap | Size |
 |---|---|---|---|---|---|---|
 | Linear | label (`pilot-in-progress`, SDK-managed) | Yes | No | **Yes** (GH-4717, `poller_linear.go`) | none | — |
-| Jira | label (SDK-managed) **+** native workflow-status transition | Yes (label only) | No | No | comment + status transition | M |
-| Asana | tag (`pilot-in-progress`, SDK-managed) | Yes | No | No | comment-only | S |
+| Jira | label (SDK-managed) **+** native workflow-status transition | Yes (label only) | No | **Yes** (GH-4718, `poller_jira.go`) | none | — |
+| Asana | tag (`pilot-in-progress`, SDK-managed) | Yes | No | No (GH-4719 filed, not yet merged to main as of this edit) | comment-only | S |
 | Plane | label (SDK-managed) **+** native issue-state transition | Yes (label; state via `startedStateIDs`) | No | **Yes** (GH-2132, `poller_plane.go:58`) | none | — |
-| GitLab | label (SDK-managed) | Yes | No | No | comment-only | S |
+| GitLab | label (SDK-managed) | Yes | No | **Yes** (GH-4720, `poller_gitlab.go`) | none | — |
 | AzureDevOps | tag (SDK-managed) | Yes | No | No | comment-only | S |
 
 ## Per-adapter detail
@@ -157,7 +157,7 @@ dispatch-correctness gap. Sized S–M below.
   `NotifyTaskFailed` are not called for Plane or any of the other five — see "Adjacent, explicitly
   out of scope" below.)
 
-### GitLab — `handleGitlabIssueWithResult` (`cmd/pilot/handlers.go:507`)
+### GitLab — `handleGitlabIssueWithResult` (`cmd/pilot/handlers.go:507`) — **fixed, GH-4720**
 
 - **Status mechanism**: label only (`pilot-in-progress`, SDK-managed,
   `studio-sdk/sdk/integrations/gitlab/poller.go:18`).
@@ -173,14 +173,21 @@ dispatch-correctness gap. Sized S–M below.
 - **Notifier surfaces available but unused**: `internal/adapters/gitlab/notifier.go:24` (in-tree,
   comment **+ redundant label add**, since the poller already labels — unit-tested, dead in
   production) and `studio-sdk/sdk/integrations/gitlab/notifier.go:24` (SDK-native).
-- **Gap**: no start comment/note posts to the GitLab issue at dispatch time (the first note the
-  issue gets today is the post-execution success/failure note already wired at
-  `handlers.go:570-617`).
-- **Fix shape (S)**: construct `gitlabSDK.NewNotifier(gitlabClient, pilotLabel)` in
-  `gitlabPollerRegistration().CreateAndStart` (the `gitlabClient` is already constructed there at
-  `poller_gitlab.go:48-60` — just needs a notifier wrapping it), call
-  `NotifyTaskStarted(issueCtx, iid, ev.SequenceID)` before `handleGitlabIssueWithResult(...)`,
-  WARN-log on error. Test: httptest fake + wiring-order test.
+- **Gap (closed)**: no start comment/note posted to the GitLab issue at dispatch time (the first
+  note the issue got before this fix was the post-execution success/failure note already wired at
+  `handlers.go:570-617`). Fixed by GH-4720: `gitlabPollerRegistration().CreateAndStart`
+  (`cmd/pilot/poller_gitlab.go`) now builds `gitlabNotifier := gitlabSDK.NewNotifier(gitlabClient,
+  pilotLabel)` from the client already constructed there (`:48-60`), and the
+  `sdkcore.IssueHandlerFunc` closure calls `gitlabNotifier.NotifyTaskStarted(issueCtx, iid,
+  ev.SequenceID)` (IID parsed from `ev.IssueID` via `strconv.Atoi`, mirroring
+  `handlers.go:569,743`) before `handleGitlabIssueWithResult(...)`, WARN-logging (non-fatal) on
+  error — including the `strconv.Atoi` parse-failure path. `NotifyTaskStarted`'s own
+  `AddIssueLabels` call is additive/idempotent (the client merges label sets, `client.go:187-213`),
+  so it does not conflict with or replace the poller's own unconditional pre-dispatch labeling at
+  `poller.go:520`. Tests: `cmd/pilot/gitlab_sdk_notify_started_test.go` (httptest fake over the
+  label GET/PUT + note POST endpoints, plus two source-inspection wiring tests — one for
+  call-ordering, one confirming the SDK-native notifier is used rather than
+  `internal/adapters/gitlab/notifier.go`).
 
 ### AzureDevOps — `handleAzureDevOpsIssueWithResult` (`cmd/pilot/handlers.go:624`)
 
@@ -222,7 +229,8 @@ dispatch-correctness gap. Sized S–M below.
 
 ## Recommended fix shape, in general (mirrors GH-4692 / GH-2132)
 
-For each of the remaining four gaps (Jira, Asana, GitLab, AzureDevOps — Linear closed by GH-4717):
+For the remaining gaps (Asana, AzureDevOps — Linear closed by GH-4717, Jira by GH-4718, GitLab by
+GH-4720; Asana's fix (GH-4719) is filed but not yet merged into main as of this edit):
 
 1. Construct the adapter's SDK-native `Notifier` (`{adapter}SDK.NewNotifier(client, ...)`) once
    inside that adapter's `*PollerRegistration().CreateAndStart` closure in `cmd/pilot/poller_*.go`

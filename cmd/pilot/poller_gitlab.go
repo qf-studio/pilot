@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"time"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
@@ -59,8 +60,30 @@ func gitlabPollerRegistration() PollerRegistration {
 				)
 			}
 
+			// GH-4720: SDK-native notifier for the "Pilot started" note.
+			// Additive only — the poller already guarantees LabelInProgress
+			// internally (poller.go:520); NotifyTaskStarted's own label add
+			// is idempotent (AddIssueLabels merges), so this does not
+			// duplicate or replace the SDK-managed label mechanism.
+			gitlabNotifier := gitlabSDK.NewNotifier(gitlabClient, pilotLabel)
+
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
+					// GH-4720: Notify task started (start note on the issue).
+					if iid, err := strconv.Atoi(ev.IssueID); err == nil {
+						if err := gitlabNotifier.NotifyTaskStarted(issueCtx, iid, ev.SequenceID); err != nil {
+							logging.WithComponent("gitlab").Warn("Failed to notify task started",
+								slog.String("issue_id", ev.IssueID),
+								slog.Any("error", err),
+							)
+						}
+					} else {
+						logging.WithComponent("gitlab").Warn("Failed to notify task started",
+							slog.String("issue_id", ev.IssueID),
+							slog.Any("error", err),
+						)
+					}
+
 					return handleGitlabIssueWithResult(issueCtx, deps.Cfg, gitlabClient, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 				}),
 			}
