@@ -3,6 +3,8 @@ package executor
 import (
 	"context"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/executor/ghguard"
 )
 
 // Backend defines the interface for AI execution backends.
@@ -101,6 +103,20 @@ type ExecuteOptions struct {
 	// MCPConfigPath is passed to the subprocess via --mcp-config. When empty,
 	// no MCP servers are loaded (avoiding tool-definition token bloat). GH-2432.
 	MCPConfigPath string
+
+	// SourceRepo is "owner/repo" for the task's source repo. Threaded through
+	// to the backend so it can set PILOT_TASK_REPO on the subprocess env for
+	// the gh-guard shim (GH-4671) — the Backend interface only sees
+	// ExecuteOptions, never the Task itself.
+	SourceRepo string
+
+	// SourceIssueID is the task's source issue number (as a string, no "#").
+	// Sets PILOT_TASK_ISSUE for gh-guard (GH-4671).
+	SourceIssueID string
+
+	// Branch is the task's working branch (the PR head once one exists).
+	// Sets PILOT_TASK_BRANCH for gh-guard (GH-4671).
+	Branch string
 }
 
 // BackendEvent represents a streaming event from the backend.
@@ -283,6 +299,16 @@ type BackendResult struct {
 
 	// FinalRSSMB is the RSS at subprocess exit. GH-3028.
 	FinalRSSMB int
+
+	// GhGuardDenials is the set of `gh` invocations the gh-guard shim (GH-4671)
+	// refused during this execution, read back from the per-execution guard
+	// journal after the subprocess exits. Empty when gh-guard is disabled, no
+	// denial occurred, or the journal was empty/unreadable (fails open — see
+	// ghguard_spawn.go). The Runner turns each entry into an execution_events
+	// row and an alert, mirroring the GH-4670 side-effect audit's evidence
+	// trail for the case that audit cannot see: a call that never reached
+	// GitHub because gh-guard blocked it first.
+	GhGuardDenials []ghguard.JournalEntry
 }
 
 // BackendConfig contains configuration for executor backends.
@@ -764,6 +790,31 @@ type ClaudeCodeConfig struct {
 	// When empty, the subprocess does NOT load any MCP servers — drastically
 	// reducing tool-definition tokens replayed on every turn. GH-2432.
 	MCPConfigPath string `yaml:"mcp_config_path,omitempty"`
+
+	// GhGuard enables the gh-guard shim (GH-4671): a per-execution `gh` CLI
+	// interceptor prepended onto the subprocess PATH that classifies every
+	// `gh` invocation against a data-driven allowlist (reads and the
+	// session's own PR/issue always allowed; issue/PR lifecycle mutations,
+	// cross-issue targeting, and other-repo targeting always denied) before
+	// exec-ing the real `gh`. This is the durable/preventive half of the
+	// GH-4649 containment pair — the detective half (GH-4670) can only
+	// report a bad `gh` call after it already reached GitHub.
+	// Default: true. Escape hatch for environments where the shim causes
+	// friction (e.g. `gh` used in ways this guard doesn't yet recognize);
+	// use GhGuardEnabled() to read, which treats unset as enabled.
+	GhGuard *bool `yaml:"gh_guard,omitempty"`
+}
+
+// GhGuardEnabled reports whether the gh-guard shim (GH-4671) should be
+// wired onto Claude Code subprocess spawns. Defaults to true (unset or nil
+// config means enabled) — mirrors the GetBoolPtrValue tri-state pattern
+// used elsewhere in this package (see hooks.go) so a config author must
+// explicitly opt out rather than the guard silently going dark.
+func (c *ClaudeCodeConfig) GhGuardEnabled() bool {
+	if c == nil {
+		return true
+	}
+	return GetBoolPtrValue(c.GhGuard, true)
 }
 
 // PlanningConfig controls the model and behavior for epic planning subprocesses.

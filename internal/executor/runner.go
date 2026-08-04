@@ -3293,6 +3293,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		HeartbeatFloor:  heartbeatFloor, // GH-4691
 		AllowedTools:    allowedTools,
 		MCPConfigPath:   mcpConfigPath,
+		SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
+		SourceIssueID:   task.SourceIssueID, // GH-4671
+		Branch:          task.Branch,        // GH-4671
 		WatchdogCallback: func(pid int, watchdogDuration time.Duration) {
 			log.Warn("Watchdog killed subprocess",
 				slog.Int("pid", pid),
@@ -3343,6 +3346,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			r.processBackendEvent(task.ID, event, state)
 		},
 	})
+	r.ingestGhGuardDenials(task, backendResult) // GH-4671
 
 	// Stop stall watchdog and release stall context resources.
 	close(stallDone)
@@ -3645,6 +3649,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							HeartbeatFloor:  heartbeatFloor, // GH-4691
 							AllowedTools:    smartAllowed,
 							MCPConfigPath:   smartMCP,
+							SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
+							SourceIssueID:   task.SourceIssueID, // GH-4671
+							Branch:          task.Branch,        // GH-4671
 							EventHandler: func(event BackendEvent) {
 								if recorder != nil {
 									_ = recorder.RecordEvent(event.Raw)
@@ -3653,6 +3660,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							},
 						})
 						retryCancel()
+						r.ingestGhGuardDenials(task, retryResult) // GH-4671
 
 						if retryErr == nil && retryResult != nil && retryResult.Success {
 							// Retry succeeded! Update backendResult and continue
@@ -4010,6 +4018,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					HeartbeatFloor:  heartbeatFloor, // GH-4691
 					AllowedTools:    noopRetryAllowed,
 					MCPConfigPath:   noopRetryMCP,
+					SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
+					SourceIssueID:   task.SourceIssueID, // GH-4671
+					Branch:          task.Branch,        // GH-4671
 					EventHandler: func(event BackendEvent) {
 						// Track tokens from retry
 						state.tokensInput += event.TokensInput
@@ -4027,6 +4038,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						}
 					},
 				})
+				r.ingestGhGuardDenials(task, retryResult) // GH-4671
 
 				// Update result with retry tokens
 				if retryResult != nil {
@@ -4371,6 +4383,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						HeartbeatFloor: heartbeatFloor, // GH-4691
 						AllowedTools:   feedbackAllowed,
 						MCPConfigPath:  feedbackMCP,
+						SourceRepo:     task.SourceRepo,    // GH-4671: gh-guard task identity
+						SourceIssueID:  task.SourceIssueID, // GH-4671
+						Branch:         task.Branch,        // GH-4671
 						EventHandler: func(event BackendEvent) {
 							if recorder != nil {
 								if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
@@ -4380,6 +4395,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							r.processBackendEvent(task.ID, event, state)
 						},
 					})
+					r.ingestGhGuardDenials(task, retryResult) // GH-4671
 
 					if retryErr != nil {
 						result.Success = false
@@ -4644,7 +4660,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					)
 
 					intentAllowed, intentMCP := r.executionToolOptions()
-					_, retryErr := r.backend.Execute(ctx, ExecuteOptions{
+					intentRetryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
 						Prompt:         retryPrompt,
 						TaskID:         task.ID,
 						ProjectPath:    executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
@@ -4654,6 +4670,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						HeartbeatFloor: heartbeatFloor, // GH-4691
 						AllowedTools:   intentAllowed,
 						MCPConfigPath:  intentMCP,
+						SourceRepo:     task.SourceRepo,    // GH-4671: gh-guard task identity
+						SourceIssueID:  task.SourceIssueID, // GH-4671
+						Branch:         task.Branch,        // GH-4671
 						EventHandler: func(event BackendEvent) {
 							state.tokensInput += event.TokensInput
 							state.tokensOutput += event.TokensOutput
@@ -4664,6 +4683,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							}
 						},
 					})
+					r.ingestGhGuardDenials(task, intentRetryResult) // GH-4671
 
 					if retryErr == nil {
 						// Update result tokens
@@ -5485,6 +5505,9 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 		HeartbeatFloor:  effortAwareHeartbeatFloor(selectedEffort, complexity), // GH-4691
 		AllowedTools:    reviewAllowed,
 		MCPConfigPath:   reviewMCP,
+		SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
+		SourceIssueID:   task.SourceIssueID, // GH-4671
+		Branch:          task.Branch,        // GH-4671
 		EventHandler: func(event BackendEvent) {
 			// Track tokens from self-review
 			state.tokensInput += event.TokensInput
@@ -5497,6 +5520,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 			}
 		},
 	})
+	r.ingestGhGuardDenials(task, result) // GH-4671
 
 	if err != nil {
 		// Self-review failure is not fatal - log and continue

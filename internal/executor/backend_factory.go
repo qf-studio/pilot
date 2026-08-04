@@ -2,6 +2,8 @@ package executor
 
 import (
 	"fmt"
+	"log/slog"
+	"os/exec"
 )
 
 // NewBackend creates a Backend instance based on configuration.
@@ -23,6 +25,33 @@ func NewBackend(config *BackendConfig) (Backend, error) {
 		b.SetProviderEnv(config.APIBaseURL, config.APIAuthToken, config.DefaultModel)
 		// GH-3028: wire RSS telemetry + optional memory cap.
 		b.SetSubprocessLimits(config.SubprocessLimits)
+		// GH-4671: resolve the real `gh` binary exactly once, here, at
+		// daemon/backend construction time — never per-spawn, so the
+		// gh-guard shim (which is itself named `gh` and prepended onto the
+		// subprocess PATH) can never be found by this lookup and recurse
+		// into itself.
+		ghGuardEnabled := config.ClaudeCode.GhGuardEnabled()
+		realGh, ghErr := exec.LookPath("gh")
+		if ghErr != nil {
+			realGh = ""
+		}
+		b.SetGhGuard(ghGuardEnabled, realGh)
+		if ghGuardEnabled {
+			if realGh == "" {
+				slog.Warn("gh-guard enabled but no gh binary found on PATH at startup; mutations still blocked via fallback PATH search",
+					slog.String("component", "executor.backend_factory"),
+				)
+			} else {
+				slog.Info("gh-guard enabled for Claude Code subprocess spawns",
+					slog.String("component", "executor.backend_factory"),
+					slog.String("real_gh", realGh),
+				)
+			}
+		} else {
+			slog.Warn("gh-guard disabled via claude_code.gh_guard: false; gh CLI calls are unrestricted",
+				slog.String("component", "executor.backend_factory"),
+			)
+		}
 		return b, nil
 
 	case BackendTypeOpenCode:
