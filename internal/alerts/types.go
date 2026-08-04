@@ -86,6 +86,17 @@ const (
 	// runSelfReview has gone silent for months (GH-4702) the same way.
 	AlertTypeLabelLifecycleFailureStreak AlertType = "label_lifecycle_failure_streak"
 	AlertTypeSelfReviewFailureStreak     AlertType = "self_review_failure_streak"
+
+	// AlertTypeFinishTripwireFailureStreak (TASK-441 L5, GH-4716) is the
+	// shared alert type behind all four finish-tripwire dead-man trackers
+	// (executor.FinishTripwireTrackerNames) registered on
+	// ExecutionLifecycle.Persist's post-terminal invariant sweep —
+	// root-clean, label lifecycle, decomposed-children-terminal, and
+	// worktree-pruned/no-commits-without-PR. One AlertType covers all four
+	// since each tracker still counts and streaks independently
+	// (DeadManTracker instances are per-name); this only selects which rule
+	// fires when any one of them reaches its threshold.
+	AlertTypeFinishTripwireFailureStreak AlertType = "finish_tripwire_failure_streak"
 )
 
 // Alert represents an alert event
@@ -490,6 +501,25 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when post-run self-review fails N+ consecutive times without a success",
+		},
+		// Finish-tripwire dead-man trackers (TASK-441 L5, GH-4716): each of
+		// the four post-terminal invariant checks (root-clean, label
+		// lifecycle, decomposed-children-terminal, worktree-pruned) does its
+		// own threshold counting via DeadManTracker.RecordFailure before
+		// emitting, so no Condition field is needed here — mirrors
+		// label_lifecycle_failure_streak/self_review_failure_streak. Severity
+		// is Critical: these guard the exact three pitfall classes (phantom
+		// root reimplementation, silently-dead label wiring, epic-discard)
+		// that motivated the whole TASK-441 contract-hardening effort.
+		{
+			Name:        "finish_tripwire_failure_streak",
+			Type:        AlertTypeFinishTripwireFailureStreak,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when a post-task invariant sweep check fails N+ consecutive times without a success",
 		},
 	}
 }

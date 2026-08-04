@@ -2476,6 +2476,31 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			logging.WithComponent("start").Info("alerts engine started",
 				slog.Int("channels", len(alertsDispatcher.ListChannels())),
 			)
+
+			// GH-4716: this is the polling-mode daemon's only alert engine —
+			// wire runner's AlertEventProcessor here, or every executor-side
+			// emitAlertEvent call (self-review/decompose/ghguard/sideeffect
+			// dead-man trackers, and now the TASK-441 L5 finish-tripwire
+			// sweep below) silently drops its events for the entire life of
+			// this process. Previously nothing called
+			// runner.SetAlertProcessor on this code path at all — the
+			// dead-man trackers registered against deps.AlertsEngine in
+			// startGithubSDKPollerForRepo (poller_github.go) were counting
+			// correctly but had no wired processor to receive attempts from,
+			// so they could never actually fire. internal/pilot/pilot.go's
+			// initAlerts wires the equivalent orchestrator/webhook-mode path
+			// (pilot.New) the same way; this is polling mode's counterpart.
+			alertProcessor := alerts.NewEngineAdapter(alertsEngine)
+			runner.SetAlertProcessor(alertProcessor)
+			alertsEngine.WireLifecycleAlertProcessor(alertProcessor)
+
+			// TASK-441 L5 (GH-4716): register the four finish-tripwire
+			// dead-man trackers once at startup, mirroring the self-review/
+			// label-lifecycle registrations (L2, GH-4709) in
+			// poller_github.go.
+			for _, name := range executor.FinishTripwireTrackerNames {
+				alertsEngine.RegisterDeadManTracker(name, alerts.AlertTypeFinishTripwireFailureStreak, alerts.DefaultDeadManFailureThreshold, alerts.DefaultDeadManWindow)
+			}
 		}
 	}
 

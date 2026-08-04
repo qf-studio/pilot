@@ -133,11 +133,20 @@ own out-of-scope note.
 ### Leg 5: Post-task invariant tripwire sweep on `Finish`
 **Goal**: the catch-all — a *new* call site reintroducing any past class gets caught on
 first fire, not months later.
-- [ ] Optional post-`Persist` hook in `ExecutionLifecycle.Finish` (terminal paths):
+- [x] Optional post-`Persist` hook in `ExecutionLifecycle.Finish` (terminal paths):
       (a) root-clean — no staged/unstaged diff in `task.ProjectPath`; (b) label
       lifecycle completed; (c) decomposed children all terminal; (d) worktree pruned +
-      no commits-without-PR (epic-discard pitfall).
-- [ ] Log-and-alert only (never block); each check feeds a Leg 2 tracker.
+      no commits-without-PR (epic-discard pitfall). PR#4716 (2026-08-04).
+- [x] Log-and-alert only (never block); each check feeds a Leg 2 tracker
+      (`finish_tripwire_{root_clean,label_lifecycle,children_terminal,worktree}`,
+      new `AlertTypeFinishTripwireFailureStreak`). Sweep panics/errors recovered,
+      never propagate past `Persist`.
+- Byproduct fix: `runPollingMode` (`cmd/pilot/main.go`, the actual
+  `pilot start --telegram --github` entrypoint) never called
+  `runner.SetAlertProcessor` — every executor-side alert relay (Leg 2's trackers
+  included) was silently dead in production polling mode. Wired there and in
+  `internal/pilot/pilot.go`'s `initAlerts` (webhook-only mode); all 4 new
+  trackers registered at both sites.
 
 **Files**: `internal/executor/lifecycle.go` (+ small check helpers)
 

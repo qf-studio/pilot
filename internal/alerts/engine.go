@@ -235,6 +235,24 @@ func WithExecutionLifecycle(lifecycle *executor.ExecutionLifecycle) EngineOption
 	}
 }
 
+// WireLifecycleAlertProcessor propagates processor into the
+// ExecutionLifecycle passed via WithExecutionLifecycle at construction time
+// (TASK-441 L5, GH-4716), so that lifecycle's own terminal writes (the
+// stuck-task evictor's stall Finish, engine.go's evictStalledTasks) run the
+// finish-tripwire sweep with somewhere to relay dead-man attempt/success/
+// failure signals — the same processor Engine itself is normally wrapped in
+// via NewEngineAdapter. Must be called after the adapter exists, which is
+// necessarily after NewEngine returns (see initAlerts/runPollingMode call
+// sites) — a chicken-and-egg WithExecutionLifecycle can't resolve at
+// construction time. No-op if no lifecycle was wired at construction (e.g. a
+// caller that never passed WithExecutionLifecycle).
+func (e *Engine) WireLifecycleAlertProcessor(processor executor.AlertEventProcessor) {
+	if e == nil || e.lifecycle == nil {
+		return
+	}
+	e.lifecycle.SetAlertProcessor(processor)
+}
+
 // NewEngine creates a new alerting engine
 func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 	e := &Engine{

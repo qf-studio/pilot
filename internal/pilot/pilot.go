@@ -1571,6 +1571,19 @@ func (p *Pilot) initAlerts(cfg *config.Config) {
 	// Wire alerts engine to executor via adapter
 	adapter := alerts.NewEngineAdapter(p.alertEngine)
 	p.orchestrator.SetAlertProcessor(adapter)
+	// GH-4716: also cover the stuck-task evictor's own terminal writes (the
+	// ExecutionLifecycle passed via WithExecutionLifecycle above) — without
+	// this, its Finish call has an alertProcessor of nil and the TASK-441 L5
+	// finish-tripwire sweep it triggers has nowhere to relay dead-man
+	// signals, even though every other terminal path in this mode does.
+	p.alertEngine.WireLifecycleAlertProcessor(adapter)
+
+	// TASK-441 L5 (GH-4716): register the four finish-tripwire dead-man
+	// trackers once at startup, mirroring the self-review/label-lifecycle
+	// registrations (L2, GH-4709) elsewhere.
+	for _, name := range executor.FinishTripwireTrackerNames {
+		p.alertEngine.RegisterDeadManTracker(name, alerts.AlertTypeFinishTripwireFailureStreak, alerts.DefaultDeadManFailureThreshold, alerts.DefaultDeadManWindow)
+	}
 
 	log.Info("Alerts engine initialized",
 		slog.Int("rules", len(alertCfg.Rules)),

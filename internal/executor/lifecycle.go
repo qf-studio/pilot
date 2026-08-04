@@ -101,6 +101,14 @@ var ErrExecutionRunning = errors.New("execution is currently running")
 // that can't skip a step.
 type ExecutionLifecycle struct {
 	store *memory.Store
+
+	// alertProcessor relays the TASK-441 L5 (GH-4716) finish-tripwire sweep's
+	// dead-man attempt/success/failure signals across the executor/alerts
+	// package boundary — nil until a caller opts in via SetAlertProcessor. A
+	// nil processor is not an error: the sweep still runs and logs
+	// violations, it just has nowhere to forward DeadManTracker counts (see
+	// runFinishTripwireSweep/emitTripwireResult in finish_tripwires.go).
+	alertProcessor AlertEventProcessor
 }
 
 // NewExecutionLifecycle wraps store. A nil store makes every method a no-op
@@ -110,6 +118,18 @@ type ExecutionLifecycle struct {
 // dispatcher/epic/CLI call sites — callers don't need their own nil check.
 func NewExecutionLifecycle(store *memory.Store) *ExecutionLifecycle {
 	return &ExecutionLifecycle{store: store}
+}
+
+// SetAlertProcessor wires an AlertEventProcessor into this lifecycle instance
+// (TASK-441 L5, GH-4716), mirroring Runner.SetAlertProcessor. ExecutionLifecycle
+// is constructed fresh at multiple production call sites (dispatcher.go's
+// ProjectWorker, epic.go's sub-issue finalizers) rather than being a
+// singleton, so each construction site sets this explicitly from
+// Runner.AlertProcessor() once the runner's own processor is wired — see
+// each call site's comment for why. Safe to leave unset: Persist's sweep
+// hook treats a nil processor the same as "no alerts engine configured".
+func (l *ExecutionLifecycle) SetAlertProcessor(processor AlertEventProcessor) {
+	l.alertProcessor = processor
 }
 
 // Begin claims (task.ID, task.ProjectPath, generation) and, on winning,
@@ -316,6 +336,17 @@ func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, resul
 			statusErr = metricsErr
 		}
 	}
+
+	// TASK-441 L5 (GH-4716): post-terminal invariant tripwire sweep. Persist
+	// is the universal terminal-status write (Finish is just
+	// Classify-then-Persist, and Transition never reaches here — see its own
+	// doc comment) so hooking it here, rather than only in Finish, covers
+	// every production terminal-write call site without callers needing to
+	// remember a second step. Log-and-alert only: runFinishTripwireSweep
+	// recovers its own panics and never returns an error, so it can never
+	// change statusErr or block a caller that's already committed to this
+	// write.
+	runFinishTripwireSweep(l.store, l.alertProcessor, execID)
 
 	return statusErr
 }

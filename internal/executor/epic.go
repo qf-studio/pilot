@@ -2564,7 +2564,14 @@ func (r *Runner) finalizeSubIssueExecution(execID, status string, result *Execut
 	if r.logStore == nil || execID == "" {
 		return
 	}
-	if _, err := NewExecutionLifecycle(r.logStore).Finish(execID, result, nil, time.Since(startedAt), Status(status)); err != nil {
+	// TASK-441 L5 (GH-4716): propagate the runner's alert processor so the
+	// finish-tripwire sweep this Finish triggers (via Persist) can relay its
+	// dead-man attempt/success/failure signals — see NewProjectWorker's
+	// identical wiring comment (dispatcher.go) for why this is safe to set
+	// once per construction rather than per call.
+	lifecycle := NewExecutionLifecycle(r.logStore)
+	lifecycle.SetAlertProcessor(r.AlertProcessor())
+	if _, err := lifecycle.Finish(execID, result, nil, time.Since(startedAt), Status(status)); err != nil {
 		r.log.Warn("Failed to persist sub-issue execution outcome", "execution_id", execID, "status", status, "error", err)
 	}
 }
@@ -2657,6 +2664,7 @@ func (r *Runner) sweepStalledEpicChildren(parentID, projectPath string, childTas
 		return
 	}
 	lifecycle := NewExecutionLifecycle(r.logStore)
+	lifecycle.SetAlertProcessor(r.AlertProcessor()) // TASK-441 L5 (GH-4716): see finalizeSubIssueExecution's identical comment
 	reason := fmt.Sprintf("parent epic %s aborted: %s", parentID, parentFailureReason)
 	for _, childID := range childTaskIDs {
 		if childID == "" {

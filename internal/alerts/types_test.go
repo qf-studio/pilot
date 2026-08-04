@@ -75,6 +75,8 @@ func TestDefaultRules(t *testing.T) {
 		// Dead-man tracker generic streak alerts (TASK-441 L2, GH-4709)
 		AlertTypeLabelLifecycleFailureStreak: {"label_lifecycle_failure_streak", true},
 		AlertTypeSelfReviewFailureStreak:     {"self_review_failure_streak", true},
+		// Finish tripwire sweep failure streak (TASK-441 L5, GH-4716)
+		AlertTypeFinishTripwireFailureStreak: {"finish_tripwire_failure_streak", true},
 	}
 
 	if len(rules) != len(expectedRules) {
