@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-08-03T18:05:00.000000+00:00",
+  "updated": "2026-08-04T09:40:00.000000+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -4002,6 +4002,34 @@
         ],
         "confidence": 0.9,
         "created": "2026-08-03"
+      },
+      "runselfreview-runs-in-repo-root-phantom-reimplementation": {
+        "type": "pitfall",
+        "summary": "runSelfReview (runner.go:5223) spawns its subprocess in the daemon repo ROOT (task.ProjectPath) not the worktree (executionPath) \u2014 empty root diff + the prompt's FIX-missing-changes rule makes it re-implement the task's spec and stage a phantom copy in the shared root. 3rd recurrence of the TASK-323/GH-3577 class; fix GH-4702, chokepoint GH-4703. Dirty box root before rebuild = check STAGED changes, stash pathspec-limited.",
+        "file": ".agent/knowledge/memories/pitfalls/runselfreview-runs-in-repo-root-phantom-reimplementation.md",
+        "concepts": [
+          "worktree",
+          "self-review",
+          "executor",
+          "isolation",
+          "git"
+        ],
+        "confidence": 0.85,
+        "created": "2026-08-04"
+      },
+      "localmode-tasks-never-get-worktree-qdocs-in-root": {
+        "type": "pitfall",
+        "summary": "LocalMode/Q&A tasks (Branch=='') never get a worktree (runner.go:2162 gate needs non-empty Branch) \u2014 they run in the shared root and CreateTaskDoc writes untracked q-<epoch>.md into <root>/.agent/tasks/. Intentional root scope for read-only tasks; the doc side-effects are the defect. GH-4703's guard must keep this exception.",
+        "file": ".agent/knowledge/memories/pitfalls/localmode-tasks-never-get-worktree-qdocs-in-root.md",
+        "concepts": [
+          "worktree",
+          "localmode",
+          "comms",
+          "task-doc",
+          "executor"
+        ],
+        "confidence": 0.85,
+        "created": "2026-08-04"
       }
     }
   },
@@ -5420,6 +5448,16 @@
       "from": "poller-labels-removed-log-means-never-applied",
       "to": "TASK-437",
       "type": "related"
+    },
+    {
+      "from": "runselfreview-runs-in-repo-root-phantom-reimplementation",
+      "to": "localmode-tasks-never-get-worktree-qdocs-in-root",
+      "type": "related"
+    },
+    {
+      "from": "runselfreview-runs-in-repo-root-phantom-reimplementation",
+      "to": "TASK-437",
+      "type": "related"
     }
   ],
   "concept_index": {
@@ -6361,10 +6399,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-03T18:05:00.000000+00:00",
+  "last_updated": "2026-08-04T09:40:00.000000+00:00",
   "stats": {
-    "total_nodes": 348,
-    "total_edges": 283,
-    "memory_count": 206
+    "total_nodes": 350,
+    "total_edges": 285,
+    "memory_count": 208
   }
 }
