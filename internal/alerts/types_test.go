@@ -72,6 +72,9 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeGithubSideEffect: {"github_sideeffect", true},
 		// Intent judge failure streak (GH-4669)
 		AlertTypeIntentJudgeFailureStreak: {"intent_judge_failure_streak", true},
+		// Dead-man tracker generic streak alerts (TASK-441 L2, GH-4709)
+		AlertTypeLabelLifecycleFailureStreak: {"label_lifecycle_failure_streak", true},
+		AlertTypeSelfReviewFailureStreak:     {"self_review_failure_streak", true},
 	}
 
 	if len(rules) != len(expectedRules) {

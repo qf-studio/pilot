@@ -388,8 +388,8 @@ func TestSdkPreFlightJudge_JudgeIssue_TimeoutIncrementsMetricOnce(t *testing.T) 
 	if snap.IntentJudgeFailures["context_deadline"] != 1 {
 		t.Errorf("expected exactly 1 context_deadline judge failure recorded, got: %+v", snap.IntentJudgeFailures)
 	}
-	if sp.consecutiveFailures != 1 {
-		t.Errorf("expected consecutiveFailures=1 after a single dispatch's timeout, got %d", sp.consecutiveFailures)
+	if got := sp.trackerFor().ConsecutiveFailures(); got != 1 {
+		t.Errorf("expected consecutiveFailures=1 after a single dispatch's timeout, got %d", got)
 	}
 }
 
@@ -464,13 +464,13 @@ func TestSdkPreFlightJudge_SuccessResetsStreak(t *testing.T) {
 			t.Fatal("expected error for a nonexistent claude binary")
 		}
 	}
-	if sp.consecutiveFailures != judgeFailureStreakAlertThreshold-1 {
-		t.Fatalf("expected streak of %d, got %d", judgeFailureStreakAlertThreshold-1, sp.consecutiveFailures)
+	if got := sp.trackerFor().ConsecutiveFailures(); got != judgeFailureStreakAlertThreshold-1 {
+		t.Fatalf("expected streak of %d, got %d", judgeFailureStreakAlertThreshold-1, got)
 	}
 
-	sp.recordSuccess()
-	if sp.consecutiveFailures != 0 {
-		t.Fatalf("expected streak reset to 0 after success, got %d", sp.consecutiveFailures)
+	sp.trackerFor().RecordSuccess()
+	if got := sp.trackerFor().ConsecutiveFailures(); got != 0 {
+		t.Fatalf("expected streak reset to 0 after success, got %d", got)
 	}
 }
 

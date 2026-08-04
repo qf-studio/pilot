@@ -5494,6 +5494,21 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 		}
 	}
 
+	// TASK-441 L2 (GH-4709): record the attempt right before the actual
+	// self-review invocation — not before the config/complexity skip checks
+	// above, which are legitimate "we chose not to run" decisions, not the
+	// "wired to nothing" failure this dead-man tracker exists to catch
+	// (GH-4702: self-review silently dead for months). Relayed through
+	// AlertEventTypeDeadManAttempt since this package cannot import
+	// internal/alerts directly; the tracker itself is registered in
+	// cmd/pilot/poller_github.go under executor.SelfReviewDeadManTrackerName.
+	r.emitAlertEvent(AlertEvent{
+		Type:      AlertEventTypeDeadManAttempt,
+		TaskID:    task.ID,
+		Metadata:  map[string]string{"tracker": SelfReviewDeadManTrackerName},
+		Timestamp: time.Now(),
+	})
+
 	reviewAllowed, reviewMCP := r.executionToolOptions()
 	result, err := r.backendExecute(reviewCtx, task, executionPath, ExecuteOptions{
 		Prompt:          reviewPrompt,
@@ -5528,8 +5543,21 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 			slog.String("task_id", task.ID),
 			slog.Any("error", err),
 		)
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeDeadManFailure,
+			TaskID:    task.ID,
+			Error:     err.Error(),
+			Metadata:  map[string]string{"tracker": SelfReviewDeadManTrackerName},
+			Timestamp: time.Now(),
+		})
 		return nil
 	}
+	r.emitAlertEvent(AlertEvent{
+		Type:      AlertEventTypeDeadManSuccess,
+		TaskID:    task.ID,
+		Metadata:  map[string]string{"tracker": SelfReviewDeadManTrackerName},
+		Timestamp: time.Now(),
+	})
 
 	// Check if review found and fixed issues
 	if strings.Contains(result.Output, "REVIEW_FIXED:") {
