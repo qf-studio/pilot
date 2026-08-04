@@ -42,8 +42,26 @@ func asanaPollerRegistration() PollerRegistration {
 				},
 			}
 
+			// Separate client for notifier calls (adapter creates its own internally).
+			asanaClient := asanaSDK.NewClient(deps.Cfg.Adapters.Asana.AccessToken, deps.Cfg.Adapters.Asana.WorkspaceID)
+			asanaNotifier := asanaSDK.NewNotifier(asanaClient, pilotTag)
+
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
+					// GH-4719: notify Asana the task has started, mirroring
+					// GH-2132's Plane wiring (poller_plane.go). The SDK poller
+					// already applies the pilot-in-progress tag internally
+					// (studio-sdk/sdk/integrations/asana/poller.go); this only
+					// adds the missing "Pilot started" comment. Failure is
+					// WARN-logged only — a comment failure must never abort
+					// dispatch.
+					if err := asanaNotifier.NotifyTaskStarted(issueCtx, ev.IssueID, ev.SequenceID); err != nil {
+						logging.WithComponent("asana").Warn("Failed to notify task started",
+							slog.String("task_gid", ev.IssueID),
+							slog.Any("error", err),
+						)
+					}
+
 					return handleAsanaIssueWithResult(issueCtx, deps.Cfg, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 				}),
 			}

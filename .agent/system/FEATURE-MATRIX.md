@@ -150,6 +150,7 @@
 | GitHub comments | ✅ | adapters/github | - | - | PR/issue updates |
 | Rich PR comments | ✅ | main | - | - | Execution metrics (duration, tokens, cost, model) in PR comments (v0.24.1) |
 | Outbound webhooks | ✅ | webhooks | `pilot webhooks` | `webhooks` | Dispatches task.started/completed/failed/progress events |
+| Asana SDK "Pilot started" comment | ✅ | cmd/pilot (poller_asana.go) | - | - | Wire SDK-native `asanaSDK.Notifier.NotifyTaskStarted` at dispatch, before `handleAsanaIssueWithResult`; WARN-only on failure (v2.253.x, GH-4719, notify-started audit) |
 | Adapter state transitions | ✅ | adapters | - | - | Move Linear/Jira/Asana issues to Done on success (v1.19.0, GH-1396) |
 | Environment context in notifications | ✅ | main | - | - | Env name included in Slack/Telegram PR notifications (v1.60.2, GH-1643) |
 | Messenger refactor | ✅ | adapters | - | - | Shared Handler with TelegramMessenger/SlackMessenger (v2.25.0) |
