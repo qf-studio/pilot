@@ -1,6 +1,10 @@
 # Pilot Architecture
 
-**Last Updated:** 2026-05-26 (v2.151.0)
+**Last Updated:** 2026-08-04 (v2.253.0) — TASK-441 Leg 8 refresh. Previous revision
+(2026-05-26/2026-03-04) had drifted: 4 of its 6 documented DB tables were fictional
+(`task_queue`, `processed`, `milestones`, `board_state` never existed; see
+"Database Schema" below), and 9 packages that now exist on disk went undocumented.
+This revision was written against source, not against the prior doc.
 
 ## System Overview
 
@@ -106,6 +110,15 @@ Pilot is a Go-based autonomous AI development platform that:
 └───────────────────────────────────────────────────────────────┘
 ```
 
+**Real stage vocabulary** (`PRStage`, `internal/autopilot/types.go:830-854`, persisted
+in `autopilot_pr_state` — frozen table, see "Database Schema"): `pr_created`,
+`waiting_ci`, `ci_passed`, `ci_failed`, `awaiting_approval`, `merging`, `merged`,
+`post_merge_ci`, `releasing`, `review_requested`, `failed` — 11 stages. `AllPRStages()`
+(`types.go`) enumerates all of them so the Prometheus exporter can emit zero-values for
+absent stages, working around Prometheus's 5-min lookback holding stale non-zero
+values. The diagram above is illustrative, not exhaustive — it predates
+`awaiting_approval`, `releasing`, and `review_requested`.
+
 ### Environment Config System (v1.59.0+)
 
 ```
@@ -151,7 +164,7 @@ Pilot supports multiple AI execution backends:
 | `config` | YAML configuration loading | `config.go`, `schema.go` | v0.1 |
 | `memory` | SQLite + knowledge graph | `store.go`, `graph.go`, `patterns.go` | v0.1 |
 | `logging` | Structured slog logging | `logger.go` | v0.1 |
-| `alerts` | Event-based alerting | `engine.go`, `dispatcher.go` | v0.1 |
+| `alerts` | Event-based alerting + dead-man liveness tracking | `engine.go`, `dispatcher.go`, `deadman.go` | v0.1 (`DeadManTracker` added TASK-441 L2, PR#4712) |
 | `quality` | Quality gates (test/lint) | `executor.go`, `gates.go` | v0.1 |
 | `dashboard` | Bubbletea TUI | `tui.go` | v0.1 |
 | `gateway` | HTTP + WebSocket server | `server.go`, `router.go` | v0.1 |
@@ -191,6 +204,89 @@ Pilot supports multiple AI execution backends:
 | `webhooks` | Outbound webhook triggers | Implemented |
 | `health` | K8s health probes | Implemented |
 | `testutil` | Safe test token constants | Test-only |
+
+**9 packages undocumented as of the prior (2026-03-04) audit, added here (2026-08-04):**
+
+| Package | Purpose | Key File |
+|---------|---------|----------|
+| `adapterhealth` | Panic recovery + bounded restart-with-backoff for adapter goroutines (GH-4314) | `adapterhealth.go:52` (`Registry`) |
+| `comms` | Shared communication handler/contract logic used across adapter implementations | `handler.go`, `types.go` |
+| `ghbudget` | Tracks the shared GitHub primary rate-limit budget; gates low-priority background GitHub API consumers under low headroom (GH-4391) | `ghbudget.go` |
+| `ghissue` | GitHub issue-creation policy (conventional-commit title validation + repo allowlist) atop the studio-sdk github client; ported from `adapters/github/issue_create.go` (M7 4d.1) | `create.go` |
+| `intent` | Anthropic-API-backed conversational intent classifier with a `ConversationStore` (per-chat message history, TTL-bounded); classifies free-text chat messages (e.g. Telegram) into structured intents | `classifier.go`, `conversation.go`, `intent.go` |
+| `llm` | Generic LLM HTTP client | `client.go` |
+| `singleton` | OS-level advisory flock single-instance guard for the daemon, adapter-agnostic (GH-4311) | `lock.go` |
+| `text` | Leaf text-primitive utilities with zero internal deps, importable by any adapter without import cycles | `sanitize.go` |
+| `wiring` | Test harnesses mirroring `cmd/pilot/main.go`'s two init paths (polling/gateway mode), validating `Runner` wiring consistency | `harness.go` |
+
+**Naming trap:** `internal/intent` (above) classifies chat messages, and is unrelated to
+`IntentJudge` (`internal/executor/intent_judge.go:31`, config `IntentJudgeConfig` at
+`internal/executor/backend.go:659`), which judges whether an *execution's* final output
+actually satisfies the dispatched task's intent. Same word, two different seams — do
+not conflate them when searching the codebase or writing tasks that touch either.
+
+**gh-guard** (GH-4671/PR#4704, TASK-441 L7) is not a package, it's a CLI-subcommand +
+policy pair: `cmd/pilot/ghguard.go` (hidden `pilot gh-guard` subcommand, byte-exact argv
+passthrough — the exec target a per-execution PATH shim re-execs `gh` calls into) and
+`internal/executor/ghguard/policy.go` (pure allow/deny policy core, `Classify`
+function). Spawn-side wiring in `internal/executor/ghguard_spawn.go` (creates the shim
+dir, sets `PILOT_TASK_ISSUE`/`PILOT_TASK_REPO`/`PILOT_TASK_BRANCH`/`PILOT_GH_REAL`) and
+`ghguard_audit.go`. Intercepts executor-issued `gh` CLI calls at the Bash-tool boundary
+— the durable/preventive half of the GH-4649 containment pair (GH-4670 is the detective
+half, a post-run audit). Mirrors the precedent of `RepoAllowlist`/`ValidateTargetRepo`
+in `internal/executor/repo_guardrail.go` (GH-3027/TASK-286).
+
+## studio-sdk Boundary
+
+Pilot depends on `github.com/qf-studio/studio-sdk` (`go.mod:11`, no `replace`
+directive — no local module override), which owns the tracker-integration code that
+used to live in `internal/adapters/*`. A local checkout is sometimes referenced in docs
+at `/var/lib/pilot/repos/startups/studio-sdk` (see `.agent/system/
+notify-started-adapter-audit.md:8`), but this repo consumes it as a pinned module, not
+a path dependency.
+
+**What lives in `sdk/core` (studio-sdk, frozen surface):**
+- The adapter-agnostic poller registry and dispatch machinery.
+- `sdkcore.IssueHandlerFunc` — the callback shape every adapter's poller closure
+  implements.
+- Per-integration packages (`sdk/integrations/{linear,jira,asana,gitlab,azuredevops,
+  plane,github,discord}`) each own their tracker's HTTP client, poller loop
+  (`processIssueAsync`/`processWorkItemAsync`), and a `Notifier` type
+  (`NotifyTaskStarted`, etc.).
+- **`api.golden`** (`sdk/core/api.golden`, inside studio-sdk itself — not vendored into
+  this repo) is a golden-file snapshot locking `sdk/core`'s exported declaration
+  surface only. Integration packages and `sdk/util` are explicitly *not* frozen by it.
+  Referenced from this repo's planning docs at `.agent/tasks/TASK-441-
+  contract-hardening-tune-up.md:70` and the `saas-*` design docs — treat any PR that
+  would change `sdk/core`'s public API as requiring explicit sign-off (see "External
+  Contract Freeze" below).
+
+**What lives pilot-side (`cmd/pilot/`, this repo):**
+- `PollerDeps` (`cmd/pilot/poller_registry.go:21-48`) — the shared-infra struct every
+  adapter poller registration closes over: `*config.Config`, `ProjectPath`,
+  `*executor.Dispatcher`, `*executor.Runner`, `*executor.Monitor`, `*tea.Program`
+  (dashboard), `*alerts.Engine`, `*budget.Enforcer`, `*memory.Store`,
+  `*autopilot.Controller`, per-repo `AutopilotControllers`, `GitHubPollers`,
+  `AdapterHealth`.
+- The registry (`cmd/pilot/poller_registry.go:61-71`) that constructs and starts each
+  adapter's poller: `poller_linear.go`, `poller_jira.go`, `poller_asana.go`,
+  `poller_azuredevops.go`, `poller_plane.go`, `poller_discord.go`, `poller_gitlab.go`,
+  `poller_github.go` (8 registered SDK pollers; Telegram and Slack use a separate
+  long-polling/Socket-Mode mechanism, not this registry).
+- Per-adapter `*PollerRegistration().CreateAndStart` closures — where the notify-started
+  wiring for TASK-441 L3 landed (Linear #4717, Jira #4718, Asana #4719, GitLab #4720,
+  AzureDevOps #4721/PR#4729; see `.agent/system/notify-started-adapter-audit.md`).
+
+**The structural fact that mattered for GH-4692 and TASK-441 L3:** the six non-GitHub
+SDK pollers (`linear`, `jira`, `asana`, `plane`, `gitlab`, `azuredevops`) each apply
+their own in-progress label/tag **internally**, inside `processIssueAsync`/
+`processWorkItemAsync`, unconditionally, before invoking the pilot-supplied handler
+callback — a structural guarantee GitHub's poller never had (it performs zero label
+operations internally, which is why the pilot-side handler had to do it, and why that
+handler's original omission was the actual GH-4692 bug). This means the six siblings
+were never at dispatch-dedup/orphan-recovery risk; what was missing on 5 of the 6 was
+purely the human-facing "Pilot started" comment/note, not a correctness gap — see the
+audit doc for the full per-adapter breakdown.
 
 ## Dashboard Systems
 
@@ -484,78 +580,118 @@ alerts:
 
 ## Database Schema (SQLite)
 
-```sql
--- Task executions
-CREATE TABLE executions (
-    id TEXT PRIMARY KEY,
-    task_id TEXT,
-    project_path TEXT,
-    status TEXT,
-    started_at DATETIME,
-    completed_at DATETIME,
-    duration_ms INTEGER,
-    output TEXT,
-    error TEXT,
-    commit_sha TEXT,
-    pr_url TEXT,
-    model TEXT,
-    tokens_input INTEGER,
-    tokens_output INTEGER
-);
+**Schema-of-record: `internal/memory/store.go`** (`migrate()`, `store.go:98`). Do not
+hand-copy `CREATE TABLE` bodies into this doc — they drift (see the note above: 4 of
+the 6 tables previously listed here — `task_queue`, `processed`, `milestones`,
+`board_state` — never existed). Read the source for exact columns.
 
--- Cross-project patterns (learning system)
-CREATE TABLE cross_patterns (
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    description TEXT,
-    type TEXT,  -- "pattern" or "anti_pattern"
-    scope TEXT,
-    confidence REAL,
-    occurrences INTEGER,
-    is_anti_pattern BOOLEAN,
-    first_seen DATETIME,
-    last_seen DATETIME
-);
+Three files own the daemon's SQLite schema. Direct enumeration of every
+`CREATE TABLE IF NOT EXISTS` (2026-08-04 audit) found **30 live tables**, not the "34"
+this leg's ticket assumed — see the note at the end of this section.
 
--- Task queue (per-project dispatch)
-CREATE TABLE task_queue (
-    id TEXT PRIMARY KEY,
-    project_path TEXT,
-    task_json TEXT,
-    status TEXT,
-    created_at DATETIME,
-    started_at DATETIME,
-    completed_at DATETIME
-);
+**`internal/memory/store.go` (19 tables):** `executions` (:100, main execution ledger —
+**frozen external contract**, see below), `patterns` (:113), `projects` (:123),
+`cross_patterns` (:131, cross-project pattern learning), `pattern_projects` (:145,
+pattern↔project join), `pattern_feedback` (:155), `usage_events` (:208), `sessions`
+(:226), `autopilot_metrics` (:239), `brief_history` (:261), `execution_logs` (:271),
+`model_outcomes` (:280), `pattern_performance` (:292), `eval_tasks` (:306),
+`eval_results` (:324), `approval_pending` (:341), `execution_events` (:374, per-execution
+stage timeline, FK → `executions` — **frozen**), `execution_claims` (:402, TASK-407/
+GH-4349 atomic dispatch-admission claim — **frozen**), `repick_backoff` (:423, GH-4394
+persisted repick cooldown).
 
--- Processed store (dedup across restarts)
-CREATE TABLE processed (
-    id TEXT PRIMARY KEY,
-    adapter TEXT,
-    external_id TEXT,
-    processed_at DATETIME,
-    UNIQUE(adapter, external_id)
-);
+**`internal/memory/knowledge.go` (1 table):** `memories` (:58) — knowledge-graph entries.
 
--- Execution milestones (dashboard log)
-CREATE TABLE milestones (
-    id TEXT PRIMARY KEY,
-    execution_id TEXT,
-    phase TEXT,
-    timestamp DATETIME,
-    duration_ms INTEGER,
-    metadata TEXT
-);
+**`internal/teams/store.go` (4 tables):** `teams` (:30), `team_members` (:37),
+`team_audit_log` (:49), `project_access` (:61).
 
--- GitHub Projects V2 board state
-CREATE TABLE board_state (
-    id TEXT PRIMARY KEY,
-    project_number INTEGER,
-    issue_number INTEGER,
-    column_name TEXT,
-    updated_at DATETIME
-);
-```
+**`internal/autopilot/state_store.go` (6 live tables):** `autopilot_pr_state` (:54, PR
+lifecycle/stage state — **frozen**, see "Autopilot Stage Vocabulary" below),
+`autopilot_metadata` (:75), `autopilot_pr_failures` (:80), `adapter_processed` (:90,
+GH-1838 generic multi-adapter dispatch guard, replaced 7 per-adapter tables),
+`autopilot_scope_release` (:122, GH-3990 epic/label scope-release carrier tracking —
+**frozen**), `autopilot_spawned_fixes` (:159, GH-4307 dedup claim for autogenerated fix
+issues). Three additional tables in this file (`adapter_processed_gh3819` :292,
+`autopilot_pr_state_gh3903` :426, `autopilot_pr_failures_gh3903` :499) are transient
+rename targets used mid-migration during primary-key rebuilds — not steady-state
+schema, excluded from the count above.
+
+**Not in this schema:** `instance_events` (named in this leg's ticket alongside the
+tables above) does not exist anywhere in `internal/memory` or `internal/autopilot`.
+It belongs to the separate SaaS/cloud console design (`.agent/system/
+saas-fleet-design.md`, `saas-roadmap.md`) — a different codebase area with its own
+PostgreSQL schema (`cloud/migrations/001_initial_schema.sql`: `users`, `organizations`,
+`memberships`, `projects`, `invitations`, `audit_logs`, `integrations`, `executions`,
+`usage_records`, `subscriptions`, `api_keys`, `sessions`) — not part of the daemon's
+SQLite store this section documents. Recorded here rather than silently included,
+since fabricating a table is exactly the kind of drift this refresh exists to remove.
+
+**Load-bearing / frozen tables** (external contract freeze list applies — see below):
+`executions`, `execution_claims`, `execution_events`, `autopilot_pr_state`,
+`autopilot_scope_release`.
+
+## External Contract Freeze
+
+A running list of surfaces that other systems (console, dashboards, self-upgrade,
+tenant configs, cross-repo protocol) depend on by shape or name. Changing any of these
+without explicit operator sign-off breaks a consumer outside this repo. Reproduced from
+`.agent/tasks/TASK-441-contract-hardening-tune-up.md` (constraint on every leg of that
+task) so it's discoverable from the architecture doc, not just a task file:
+
+- studio-sdk `sdk/core` public API (`api.golden`; console C3/C4 consume `SyncCapable`)
+- `pilot-*` label vocabulary (`internal/adapters/github/types.go:99-122` — cross-repo
+  protocol, console board sync depends on it)
+- Prometheus metric names (`internal/gateway/prometheus.go` ↔ grafterm dashboards)
+- Release artifact naming `pilot-{os}-{arch}.tar.gz`
+  (`internal/upgrade/upgrade.go:369` — self-upgrade fetches by name)
+- `~/.pilot/config.yaml` schema (tenant configrender)
+- `executions` / `execution_claims` / `execution_events` DB schema (pilot-board-remote,
+  TUI, trace) — see "Database Schema" above for the load-bearing table list, which
+  additionally includes `autopilot_pr_state` and `autopilot_scope_release`
+- gateway REST + `/ws/dashboard` + webhook paths (`internal/gateway/server.go:219-253`)
+- Telegram command surface
+
+## TASK-441 Seam Infrastructure (2026-08-04)
+
+A week of production incidents in 2026-08 shared one shape: wiring bugs wearing a
+green test suite (intent judge dead 17 days behind a fail-open path; `pilot-in-progress`
+never applied since the 07-16 SDK cutover because the tested `Notifier` was wired to
+nothing; `runSelfReview` executing in the repo root for the 3rd time via a
+mock that discarded `ExecuteOptions`). TASK-441 generalized the point-fixes so the next
+seam break is loud within an hour instead of silent for weeks:
+
+- **`make check-mocks`** (Leg 1, PR#4711) — `Makefile:133`, runs `scripts/
+  check-mocks.sh`. CI-fails on argument-discarding `Backend.Execute` mocks in
+  `*_test.go` (the `Execute(_ context.Context, _ ExecuteOptions)` pattern that hid the
+  self-review root-directory bug). Recommends the recording-mock pattern in
+  `internal/executor/backend_execute_guard_test.go`'s `guardRecordingBackend`.
+- **`alerts.DeadManTracker`** (Leg 2, PR#4712) — `internal/alerts/deadman.go:70`. A
+  reusable liveness primitive: any seam registers via `RegisterDeadManTracker` with a
+  threshold; the tracker counts attempts *and* successes separately (not just absence
+  of errors — "removed" logs fire on never-applied, not just failed-then-removed) and
+  fires its `AlertType` once when the consecutive-failure streak reaches threshold.
+- **Notify-started adapter audit** (Leg 3, PR#4713) — `.agent/system/
+  notify-started-adapter-audit.md`. See "studio-sdk Boundary" above for the finding.
+- **`LivenessPolicy`** (Leg 4, PR#4722) — `internal/executor/liveness_policy.go:56`,
+  resolved via `ResolveLivenessPolicy` (line 79). Single source for the stdout-silence
+  thresholds (`StallTimeout`, `StallWatchdogInterval`, `HeartbeatFloor`) that
+  `heartbeat_monitor.go` (hard SIGKILL) and `watchdog.go` (soft-stall context-cancel)
+  both read — GH-4695 had to hand-resync these after they drifted independently, and
+  GH-4691 flagged the recurrence risk. Merges the *policy*, not the *enforcement*: the
+  two detectors keep their distinct kill semantics.
+- **`ExecutionLifecycle` post-terminal tripwire sweep** (Leg 5, PR#4724) —
+  `internal/executor/lifecycle.go:349`, `runFinishTripwireSweep(l.store,
+  l.alertProcessor, execID)`, called from `Persist` (`lifecycle.go:297`), which both
+  `Finish` and any direct Classify-then-Persist caller route through — so it covers
+  every production terminal-write call site, not just `Finish`. Checks: root-clean (no
+  staged/unstaged diff in the task's project path), label lifecycle completed,
+  decomposed children all terminal, worktree pruned with no commits-without-PR.
+  Log-and-alert only, panics recovered — never blocks or changes the write it's
+  piggybacking on.
+- **gh-guard shim** (Leg 7, PR#4704, GH-4671) — see "Package Architecture" above.
+
+Legs 6 (narrow autopilot GitHub client interface) and 8 (this doc) round out the task;
+see `.agent/tasks/TASK-441-contract-hardening-tune-up.md` for full status.
 
 ## Test Coverage
 
@@ -643,11 +779,14 @@ git tag v2.X.Y && git push origin v2.X.Y  # GoReleaser CI handles rest
 | v2.25.0 | Pattern learning, auto-rebase, Discord | 2026-02-25 |
 | v2.30.0 | Common adapter registry, board sync | 2026-02-26 |
 | v2.53.0 | Merged PR guard, CI error patterns | 2026-02-28 |
-| v2.56.0 | Current (this doc) | 2026-03-04 |
+| v2.56.0 | Previous arch doc revision | 2026-03-04 |
+| v2.253.0 | TASK-441 seam hardening (dead-man tracking, LivenessPolicy, tripwire sweep, gh-guard); this doc refreshed against source | 2026-08-04 |
 
 ## Appendix: Full Package Audit
 
-**Last Audit:** 2026-03-04
+**Last Audit:** 2026-08-04 (previous audit 2026-03-04 predated the 9 rows marked
+"added 2026-08-04" below — they existed on disk and were undocumented, not newly
+created by this refresh).
 
 | Package | Exists | Imported | Wired | Tests | Status |
 |---------|--------|----------|-------|-------|--------|
@@ -661,35 +800,47 @@ git tag v2.X.Y && git push origin v2.X.Y  # GoReleaser CI handles rest
 | adapters/azuredevops | ✅ | ✅ | ✅ | ✅ | ✅ |
 | adapters/discord | ✅ | ✅ | ✅ | ✅ | ✅ |
 | adapters/plane | ✅ | ✅ | ✅ | ✅ | ✅ |
+| adapterhealth *(added 2026-08-04)* | ✅ | ✅ | ✅ | ✅ | ✅ |
 | alerts | ✅ | ✅ | ✅ | ✅ | ✅ |
 | approval | ✅ | ✅ | ✅ | ✅ | ✅ |
 | autopilot | ✅ | ✅ | ✅ | ✅ | ✅ |
 | banner | ✅ | ✅ | ✅ | ❌ | ✅ |
 | briefs | ✅ | ✅ | ✅ | ✅ | ✅ |
 | budget | ✅ | ✅ | ✅ | ✅ | ✅ |
+| comms *(added 2026-08-04)* | ✅ | ✅ | ✅ | ✅ | ✅ |
 | config | ✅ | ✅ | ✅ | ✅ | ✅ |
 | dashboard | ✅ | ✅ | ✅ | ❌ | ✅ |
 | executor | ✅ | ✅ | ✅ | ✅ | ✅ |
 | gateway | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ghbudget *(added 2026-08-04)* | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ghissue *(added 2026-08-04)* | ✅ | ✅ | ✅ | ✅ | ✅ |
 | health | ✅ | ✅ | ✅ | ❌ | ✅ |
+| intent *(added 2026-08-04)* | ✅ | ✅ | ✅ | ✅ | ✅ |
+| llm *(added 2026-08-04)* | ✅ | ✅ | ✅ | ✅ | ✅ |
 | logging | ✅ | ✅ | ✅ | ✅ | ✅ |
 | memory | ✅ | ✅ | ✅ | ✅ | ✅ |
 | orchestrator | ✅ | ✅ | ✅ | ✅ | ✅ |
 | pilot | ✅ | ✅ | ✅ | ❌ | ✅ |
 | quality | ✅ | ✅ | ✅ | ✅ | ✅ |
 | replay | ✅ | ✅ | ✅ | ✅ | ✅ |
+| singleton *(added 2026-08-04)* | ✅ | ✅ | ✅ | ✅ | ✅ |
 | teams | ✅ | ✅ | ✅ | ✅ | ✅ |
 | testutil | ✅ | ✅ | ❌ | ❌ | ✅ |
+| text *(added 2026-08-04)* | ✅ | ✅ | ✅ | ✅ | ✅ |
 | transcription | ✅ | ✅ | ❌ | ❌ | ✅ |
 | tunnel | ✅ | ✅ | ✅ | ✅ | ✅ |
 | upgrade | ✅ | ✅ | ✅ | ✅ | ✅ |
 | webhooks | ✅ | ✅ | ✅ | ✅ | ✅ |
+| wiring *(added 2026-08-04)* | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 **Summary:**
-- 34 packages total
+- 43 packages total (34 from the 2026-03-04 audit + 9 undocumented-but-existing
+  packages surfaced by this refresh)
 - 100% exist and are imported
-- 100% wired in main.go
-- 85% have test files
+- 100% wired in main.go (`wiring` package's own harness tests validate this)
+- ~86% have test files (6 without: `banner`, `dashboard`, `health`, `pilot`, `testutil`,
+  `transcription` — `testutil` is also unwired by design, it's fake-token constants
+  consumed only from `*_test.go` files, not a runtime-wired subsystem)
 - 100% of tested packages pass
 
 ---
