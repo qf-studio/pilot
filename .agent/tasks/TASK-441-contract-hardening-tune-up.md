@@ -1,6 +1,6 @@
 # TASK-441: Contract hardening tune-up — seams, dead-man signals, tripwires
 
-**Status**: 🚀 Legs 1–3 dispatched to Pilot 2026-08-04 (#4708/#4709/#4710); legs 4–5 cut after they land; leg 7 = #4671 (in queue); leg 8 last
+**Status**: 🚀 Legs 1–3 **MERGED** 2026-08-04 (PR#4711/#4712/#4713) · legs 4–5 dispatched same day (#4715/#4716) · L3 audit verdict: no GH-4692-class bug in any of the 6 (SDK pollers label internally, structural); 5 comment-gap fixes filed #4717–#4721 (Linear/Jira/Asana/GitLab/ADO; Plane already fixed via GH-2132; Jira also closes dead `Transitions` config) · leg 7 = #4671 **MERGED** (PR#4704) · leg 6 low-urgency uncut · leg 8 last, after 4–5 land
 **Created**: 2026-08-04
 **Assignee**: Pilot (legs dispatched via nav-pilot after review)
 
@@ -201,8 +201,9 @@ make check-mocks   # (name TBD) — must fail on a planted all-underscore mock
 ## Done
 
 - [ ] Legs 1–5 merged and live on the box; kill-drill alert observed end-to-end
-- [ ] Leg 3 audit doc committed; per-adapter issues filed or ruled out with evidence
-- [ ] GH-4671 merged (Leg 7)
+- [x] Leg 3 audit doc committed; per-adapter issues filed or ruled out with evidence
+      (2026-08-04: no GH-4692-class bug ruled for all 6; comment-gap fixes #4717–#4721)
+- [x] GH-4671 merged (Leg 7) — PR#4704, 2026-08-04
 - [ ] ARCHITECTURE.md refreshed and dated (Leg 8)
 - [ ] Zero regressions on the frozen contract list (grep-diff on metric names, label
       vocabulary, artifact names, REST paths against this doc)
@@ -211,8 +212,15 @@ make check-mocks   # (name TBD) — must fail on a planted all-underscore mock
 
 ## Refs
 
-- Pilot issues (dispatched 2026-08-04): Leg 1 https://github.com/qf-studio/pilot/issues/4708 ·
-  Leg 2 https://github.com/qf-studio/pilot/issues/4709 · Leg 3 https://github.com/qf-studio/pilot/issues/4710
+- Pilot issues (dispatched 2026-08-04): Leg 1 #4708→PR#4711 · Leg 2 #4709→PR#4712
+  (`alerts.DeadManTracker`) · Leg 3 #4710→PR#4713 (audit doc
+  `.agent/system/notify-started-adapter-audit.md`) — all merged same day
+- Legs 4–5 dispatched 2026-08-04: Leg 4 https://github.com/qf-studio/pilot/issues/4715 ·
+  Leg 5 https://github.com/qf-studio/pilot/issues/4716
+- L3 follow-up fixes (filed 2026-08-04, one PR per adapter, independent): Linear #4717 ·
+  Jira #4718 (M; + dead `Transitions` config) · Asana #4719 · GitLab #4720 · ADO #4721
+- Adjacent, unscoped (flagged by audit, Navigator to scope separately if desired):
+  `NotifyTaskCompleted`/`NotifyTaskFailed` unwired for ALL adapters incl. GitHub
 - nav-research seam assessment 2026-08-04 (this doc's ground truth; agent report in
   session transcript)
 - Incident cluster: TASK-437 · GH-4669/4687/4691/4702/4703/4685/4692/4695/4706/4707
