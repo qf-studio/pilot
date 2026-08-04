@@ -12,6 +12,16 @@
 - [ ] Tests pass: `go test ./...`
 - [ ] Linter passes: `make lint`
 - [ ] No new warnings introduced
+- [ ] No argument-discarding mocks: `make check-mocks`. Test doubles that
+      stand in for an execution boundary (e.g. `Backend.Execute`) must
+      record the arguments they receive and the test must assert on them
+      (at minimum `ProjectPath` for `Backend.Execute`) — a mock whose
+      signature is `Execute(_ context.Context, _ ExecuteOptions)` certifies
+      nothing about the call. See
+      `internal/executor/backend_execute_guard_test.go`'s
+      `guardRecordingBackend` for the pattern. Exec boundaries (spawning
+      `claude`/`gh`) must stay stubbed in tests, never invoked for real —
+      see the `learn_test_suite_live_fire_ghost_issues` postmortem.
 
 ### CLI Flag Changes
 If PR adds/modifies CLI flags:
@@ -62,6 +72,9 @@ make test
 
 # Lint
 make lint
+
+# Argument-discarding mocks
+make check-mocks
 ```
 
 ## Before Approving

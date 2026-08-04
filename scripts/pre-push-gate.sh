@@ -119,15 +119,26 @@ else
 fi
 echo ""
 
-# 5. KNOWLEDGE GRAPH
-echo -e "${BLUE}[5/6] Knowledge Graph${NC}"
+# 5. MOCKS
+echo -e "${BLUE}[5/7] Argument-Discarding Mocks${NC}"
+if [ -x "$SCRIPT_DIR/check-mocks.sh" ]; then
+    if ! run_check "check-mocks" "$SCRIPT_DIR/check-mocks.sh"; then
+        FAILURES=$((FAILURES + 1))
+    fi
+else
+    echo -e "  [check-mocks] ${YELLOW}skipped (script not found)${NC}"
+fi
+echo ""
+
+# 6. KNOWLEDGE GRAPH
+echo -e "${BLUE}[6/7] Knowledge Graph${NC}"
 if ! run_check "check-graph" "python3 $SCRIPT_DIR/check-graph.py"; then
     FAILURES=$((FAILURES + 1))
 fi
 echo ""
 
-# 6. INTEGRATION
-echo -e "${BLUE}[6/6] Integration${NC}"
+# 7. INTEGRATION
+echo -e "${BLUE}[7/7] Integration${NC}"
 if [ -x "$SCRIPT_DIR/check-integration.sh" ]; then
     if ! run_check "integration" "$SCRIPT_DIR/check-integration.sh"; then
         FAILURES=$((FAILURES + 1))
