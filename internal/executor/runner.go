@@ -721,6 +721,12 @@ type SubIssueLinker interface {
 // progress tracking, PR creation, and execution recording. Runner is safe for
 // concurrent use and tracks all running tasks for cancellation support.
 type Runner struct {
+	// backend is the AI execution backend. GH-4703: do not call
+	// r.backend.Execute(...) directly outside of backendExecute
+	// (backend_execute_guard.go) — that wrapper is the single chokepoint
+	// that assigns ExecuteOptions.ProjectPath and guards against it
+	// silently collapsing to task.ProjectPath when worktree isolation was
+	// expected. A direct r.backend.Execute call bypasses that guard.
 	backend                Backend // AI execution backend
 	config                 *BackendConfig
 	onProgress             ProgressCallback
@@ -3280,10 +3286,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	watchdogTimeout := 2 * timeout
 	allowedTools, mcpConfigPath := r.executionToolOptions()
-	backendResult, err := r.backend.Execute(stallExecutionCtx, ExecuteOptions{
+	backendResult, err := r.backendExecute(stallExecutionCtx, task, executionPath, ExecuteOptions{
 		Prompt:          prompt,
 		TaskID:          task.ID,
-		ProjectPath:     executionPath, // Use worktree path if active
 		Verbose:         task.Verbose,
 		Model:           selectedModel,
 		Effort:          selectedEffort,
@@ -3634,10 +3639,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						r.reportProgress(task.ID, "Re-executing", 55, fmt.Sprintf("Retry attempt %d with %v timeout...", state.smartRetryAttempt, retryTimeout))
 
 						smartAllowed, smartMCP := r.executionToolOptions()
-						retryResult, retryErr := r.backend.Execute(retryCtx, ExecuteOptions{
+						retryResult, retryErr := r.backendExecute(retryCtx, task, executionPath, ExecuteOptions{
 							Prompt:          prompt,
 							TaskID:          task.ID,
-							ProjectPath:     executionPath, // TASK-323: retry in the worktree, not the user's real repo
 							Verbose:         task.Verbose,
 							Model:           selectedModel,
 							Effort:          selectedEffort,
@@ -3999,10 +4003,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 				// Execute retry
 				noopRetryAllowed, noopRetryMCP := r.executionToolOptions()
-				retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
+				retryResult, retryErr := r.backendExecute(ctx, task, executionPath, ExecuteOptions{
 					Prompt:          retryPrompt,
 					TaskID:          task.ID,
-					ProjectPath:     executionPath, // TASK-323: retry in the worktree so CountNewCommits can see its commits
 					Verbose:         task.Verbose,
 					Model:           selectedModel,
 					Effort:          selectedEffort,
@@ -4361,10 +4364,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 					// Re-invoke backend with retry prompt
 					feedbackAllowed, feedbackMCP := r.executionToolOptions()
-					retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
+					retryResult, retryErr := r.backendExecute(ctx, task, executionPath, ExecuteOptions{
 						Prompt:         retryPrompt,
 						TaskID:         task.ID,
-						ProjectPath:    executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
 						Verbose:        task.Verbose,
 						Model:          selectedModel,
 						Effort:         selectedEffort,
@@ -4644,10 +4646,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					)
 
 					intentAllowed, intentMCP := r.executionToolOptions()
-					_, retryErr := r.backend.Execute(ctx, ExecuteOptions{
+					_, retryErr := r.backendExecute(ctx, task, executionPath, ExecuteOptions{
 						Prompt:         retryPrompt,
 						TaskID:         task.ID,
-						ProjectPath:    executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
 						Verbose:        task.Verbose,
 						Model:          selectedModel,
 						Effort:         selectedEffort,
@@ -5474,10 +5475,9 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 	}
 
 	reviewAllowed, reviewMCP := r.executionToolOptions()
-	result, err := r.backend.Execute(reviewCtx, ExecuteOptions{
+	result, err := r.backendExecute(reviewCtx, task, executionPath, ExecuteOptions{
 		Prompt:          reviewPrompt,
 		TaskID:          task.ID,
-		ProjectPath:     executionPath, // GH-4702: review the worktree, not the daemon's repo root
 		Verbose:         task.Verbose,
 		Model:           selectedModel,
 		Effort:          selectedEffort,
