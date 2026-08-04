@@ -42,8 +42,33 @@ func asanaPollerRegistration() PollerRegistration {
 				},
 			}
 
+			// GH-4719: SDK-native client + notifier for the "Pilot started"
+			// comment (mirrors poller_jira.go's single-purpose client
+			// construction — handleAsanaIssueWithResult takes no client
+			// param, so this client exists solely to back the notifier).
+			// Additive only — the poller already guarantees the pilotTag
+			// tag internally (poller.go:297-298); this does not touch that
+			// mechanism.
+			asanaClient := asanaSDK.NewClient(
+				deps.Cfg.Adapters.Asana.AccessToken,
+				deps.Cfg.Adapters.Asana.WorkspaceID,
+			)
+			notifier := asanaSDK.NewNotifier(asanaClient, pilotTag)
+
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
+					// GH-4719: notify Asana the task has started — posts a
+					// "Pilot started" comment on the task. Mirrors GH-4718's
+					// Jira wiring / GH-2132's Plane wiring. Failure is
+					// WARN-logged only — a notify failure must never abort
+					// dispatch.
+					if err := notifier.NotifyTaskStarted(issueCtx, ev.IssueID, ev.SequenceID); err != nil {
+						logging.WithComponent("asana").Warn("Failed to notify task started",
+							slog.String("issue_id", ev.IssueID),
+							slog.Any("error", err),
+						)
+					}
+
 					return handleAsanaIssueWithResult(issueCtx, deps.Cfg, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 				}),
 			}
