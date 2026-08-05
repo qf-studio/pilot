@@ -810,14 +810,14 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
-          "testing",
-          "authentication",
-          "api",
-          "theory of mind",
-          "knowledge",
           "context",
+          "knowledge",
+          "theory of mind",
+          "testing",
+          "deployment",
           "frontend",
-          "deployment"
+          "api",
+          "authentication"
         ]
       },
       "TASK-407": {
@@ -1263,6 +1263,100 @@
           "theory of mind",
           "deployment",
           "knowledge",
+          "context"
+        ]
+      },
+      "TASK-442": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-442-console-c5-statusmap.md",
+        "title": "Task 442 Console C5 Statusmap",
+        "status": "unknown",
+        "concepts": [
+          "authentication",
+          "theory of mind",
+          "deployment",
+          "workflow",
+          "context",
+          "database",
+          "testing",
+          "api"
+        ]
+      },
+      "TASK-443": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-443-console-c6-rate-budgeter.md",
+        "title": "Task 443 Console C6 Rate Budgeter",
+        "status": "unknown",
+        "concepts": [
+          "authentication",
+          "testing",
+          "api",
+          "theory of mind",
+          "frontend",
+          "context",
+          "deployment",
+          "workflow"
+        ]
+      },
+      "TASK-444": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-444-console-c8-dispatch-verb.md",
+        "title": "Task 444 Console C8 Dispatch Verb",
+        "status": "unknown",
+        "concepts": [
+          "context",
+          "deployment",
+          "authentication",
+          "testing",
+          "api"
+        ]
+      },
+      "TASK-445": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-445-console-c9-sync-metrics.md",
+        "title": "Task 445 Console C9 Sync Metrics",
+        "status": "unknown",
+        "concepts": [
+          "testing",
+          "knowledge",
+          "context",
+          "authentication",
+          "deployment",
+          "api"
+        ]
+      },
+      "TASK-446": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-446-ui-board-httpadapter-unstub.md",
+        "title": "Task 446 Ui Board Httpadapter Unstub",
+        "status": "unknown",
+        "concepts": [
+          "authentication",
+          "context",
+          "api",
+          "testing",
+          "frontend",
+          "deployment"
+        ]
+      },
+      "TASK-447": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-447-ui-statusmap-editor.md",
+        "title": "Task 447 Ui Statusmap Editor",
+        "status": "unknown",
+        "concepts": [
+          "context",
+          "theory of mind",
+          "testing",
+          "deployment",
+          "api",
+          "frontend"
+        ]
+      },
+      "TASK-448": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-448-metrics-30d-window.md",
+        "title": "Task 448 Metrics 30D Window",
+        "status": "unknown",
+        "concepts": [
+          "deployment",
+          "knowledge",
+          "testing",
+          "workflow",
+          "api",
           "context"
         ]
       }
@@ -5604,6 +5698,56 @@
       "from": "mem-170",
       "to": "TASK-441",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-442",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-443",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-443",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-444",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-445",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-442",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-446",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-447",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-448",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-448",
+      "to": "workflow",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -5714,7 +5858,9 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-445",
+      "TASK-448"
     ],
     "deployment": [
       "TASK-386",
@@ -5803,7 +5949,14 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-442",
+      "TASK-443",
+      "TASK-444",
+      "TASK-445",
+      "TASK-446",
+      "TASK-447",
+      "TASK-448"
     ],
     "authentication": [
       "TASK-386",
@@ -5850,7 +6003,12 @@
       "TASK-437",
       "TASK-438",
       "TASK-439",
-      "TASK-440"
+      "TASK-440",
+      "TASK-442",
+      "TASK-443",
+      "TASK-444",
+      "TASK-445",
+      "TASK-446"
     ],
     "testing": [
       "TASK-386",
@@ -5937,7 +6095,14 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-442",
+      "TASK-443",
+      "TASK-444",
+      "TASK-445",
+      "TASK-446",
+      "TASK-447",
+      "TASK-448"
     ],
     "api": [
       "TASK-386",
@@ -6000,7 +6165,14 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-442",
+      "TASK-443",
+      "TASK-444",
+      "TASK-445",
+      "TASK-446",
+      "TASK-447",
+      "TASK-448"
     ],
     "context": [
       "TASK-386",
@@ -6071,7 +6243,14 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-442",
+      "TASK-443",
+      "TASK-444",
+      "TASK-445",
+      "TASK-446",
+      "TASK-447",
+      "TASK-448"
     ],
     "markers": [
       "TASK-387",
@@ -6136,7 +6315,8 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-442"
     ],
     "workflow": [
       "TASK-387",
@@ -6197,7 +6377,10 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-443",
+      "TASK-442",
+      "TASK-448"
     ],
     "simplification": [
       "TASK-387",
@@ -6234,7 +6417,10 @@
       "TASK-416",
       "TASK-428",
       "TASK-434",
-      "TASK-435"
+      "TASK-435",
+      "TASK-443",
+      "TASK-446",
+      "TASK-447"
     ],
     "theory of mind": [
       "TASK-394",
@@ -6274,7 +6460,10 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-442",
+      "TASK-443",
+      "TASK-447"
     ],
     "autopilot": [
       "mem-100",
@@ -6599,10 +6788,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-05T08:06:40.275646+00:00",
+  "last_updated": "2026-08-05T11:30:43.275251+00:00",
   "stats": {
-    "total_nodes": 356,
-    "total_edges": 292,
+    "total_nodes": 363,
+    "total_edges": 302,
     "memory_count": 213
   }
 }
