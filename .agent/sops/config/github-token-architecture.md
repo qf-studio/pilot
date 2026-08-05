@@ -1,8 +1,42 @@
 # SOP: GitHub token architecture for Pilot (multi-project)
 
 **Category:** config
-**Created:** 2026-05-29
+**Created:** 2026-05-29 · **Updated:** 2026-08-05 (post-AWS-cutover reality)
 **Applies to:** local Pilot runs against multiple GitHub repos + the pilot-repo CI
+
+## ⚠️ 2026-08-05 update — what the AWS daemon ACTUALLY uses (supersedes the table below for production)
+
+Verified live on the founder box (i-0e0c1ca34e7b561f9):
+
+- **The daemon does NOT use any PAT.** `start-pilot.sh` does
+  `export GITHUB_TOKEN=$(gh auth token …)` — the daemon rides the box's
+  **gh CLI OAuth token** (`gho_…`, account alekspetrov, scopes
+  `gist project read:org repo workflow`, no scheduled expiry, never listed on
+  the PAT pages). Git pushes use the same credential via
+  `gh auth git-credential` helper.
+- **`adapters.github.token` is an EMPTY string** in both the box config and
+  the laptop's frozen archive config — the code falls back to env
+  `GITHUB_TOKEN`, which the wrapper fills from gh.
+- **`pilot-local` (the classic PAT below) has been unused since the 2026-07-16
+  cutover.** Every PAT on the tokens page can expire without anything
+  breaking. Regenerating/revoking it affects nothing in production.
+- **Single point of failure:** one OAuth grant on one box. `gh auth logout`
+  there (or GitHub revoking the session) kills all pollers, PR creation, and
+  pushes at once. Durable fix = GitHub App installation token
+  (`system/project/project_github_org_plan.md`, also solves the shared
+  5000/hr user pool, #4391).
+- **Still-live separate tokens:** the two Actions secrets below
+  (`PILOT_DOCS_PAT`, `HOMEBREW_TAP_GITHUB_TOKEN`) — those DO expire
+  (fine-grained PATs hard-expire) and break docs-chaining / brew-tap pushes
+  when they do. Check them when rotating anything.
+- Diagnosis discipline that found this: test each candidate token with
+  `curl -s -D- -o /dev/null -H "Authorization: Bearer $TOK" https://api.github.com/user`
+  printing only HTTP status + `x-oauth-scopes` + `github-authentication-token-expiration`;
+  print only prefix (`ghp_`/`gho_`/`$(gh`) + length when identifying values.
+  Beware: grepping daemon logs for `401` false-positives on worktree path numbers.
+
+The sections below describe the LOCAL-era (pre-cutover) architecture and
+remain correct for laptop-local CLI/dev runs.
 
 ## Problem this prevents
 
