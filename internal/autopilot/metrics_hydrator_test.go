@@ -3,6 +3,7 @@ package autopilot
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -1125,4 +1126,44 @@ func TestStartWindowStatsRefresher_RefreshesOnTicker(t *testing.T) {
 func TestStartWindowStatsRefresher_NilStoreIsNoop(t *testing.T) {
 	stop := StartWindowStatsRefresher(context.Background(), nil, NewMetrics(), 30, time.Millisecond)
 	stop() // must not panic
+}
+
+// TestHydrateWindowStats_ZeroOrNegativeWindowDaysClamps pins GH-4738's
+// defensive fallback: a caller passing windowDays <= 0 (e.g. a config path
+// that skipped the config.DefaultDashboardStatsWindowDays fallback) must not
+// silently query since=now() — which would report window="0d" with all-zero
+// values even though the store has data — but instead clamp to
+// defaultStatsWindowDays, matching the TUI/gateway dashboard fallbacks.
+func TestHydrateWindowStats_ZeroOrNegativeWindowDaysClamps(t *testing.T) {
+	for _, windowDays := range []int{0, -5} {
+		t.Run(fmt.Sprintf("windowDays=%d", windowDays), func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := memory.NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			if err := store.SaveExecution(&memory.Execution{
+				ID: "clamp-1", TaskID: "TASK-1", ProjectPath: "/p", Status: "completed",
+				CreatedAt: time.Now().UTC(), EstimatedCostUSD: 2.00,
+			}); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			metrics := NewMetrics()
+			if err := HydrateWindowStats(store, metrics, windowDays); err != nil {
+				t.Fatalf("HydrateWindowStats: %v", err)
+			}
+
+			snap := metrics.Snapshot()
+			if snap.WindowDays != defaultStatsWindowDays {
+				t.Errorf("WindowDays = %d, want clamped default %d", snap.WindowDays, defaultStatsWindowDays)
+			}
+			const epsilon = 0.0001
+			if got, want := snap.WindowCostUSD, 2.00; got < want-epsilon || got > want+epsilon {
+				t.Errorf("WindowCostUSD = %.4f, want %.4f (clamp must still query a real window, not since=now())", got, want)
+			}
+		})
+	}
 }

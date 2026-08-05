@@ -188,3 +188,64 @@ func TestAggregateMetrics_EmptySourcesZeroSnapshot(t *testing.T) {
 		t.Errorf("expected all-zero snapshot for empty aggregate, got %+v", snap)
 	}
 }
+
+// TestAggregateMetrics_PropagatesWindowStatsFromOwningController pins
+// GH-4738: pilot_window_* (GH-4735) is seeded on exactly one controller (the
+// default — see HydrateWindowStats call sites in cmd/pilot/main.go), same
+// ownership pattern as the lifetime baselines pinned by
+// TestAggregateMetrics_SumsCountersAcrossControllers above. Before the fix,
+// AggregateMetrics.Snapshot never read WindowDays/Window* off any source at
+// all, so this always reported the zero value regardless of what
+// SetWindowStats seeded on the owning controller — exactly the box symptom
+// (window="0d", value 0, despite a clean hydration and no logged error).
+func TestAggregateMetrics_PropagatesWindowStatsFromOwningController(t *testing.T) {
+	defaultMetrics := NewMetrics()
+	otherMetrics := NewMetrics() // e.g. a per-project controller; never seeded with window stats
+
+	defaultMetrics.SetWindowStats(30, 12.5, 2.5, 0.8, 0.75)
+
+	agg := NewAggregateMetrics(defaultMetrics, otherMetrics)
+	snap := agg.Snapshot()
+
+	if snap.WindowDays != 30 {
+		t.Errorf("WindowDays = %d, want 30 (must propagate from the owning controller, not stay at the aggregate's zero value)", snap.WindowDays)
+	}
+	const epsilon = 0.0001
+	if got, want := snap.WindowCostUSD, 12.5; got < want-epsilon || got > want+epsilon {
+		t.Errorf("WindowCostUSD = %.4f, want %.4f", got, want)
+	}
+	if got, want := snap.WindowCostPerDeliveredUSD, 2.5; got < want-epsilon || got > want+epsilon {
+		t.Errorf("WindowCostPerDeliveredUSD = %.4f, want %.4f", got, want)
+	}
+	if got, want := snap.WindowDeliveryRate, 0.8; got < want-epsilon || got > want+epsilon {
+		t.Errorf("WindowDeliveryRate = %.4f, want %.4f", got, want)
+	}
+	if got, want := snap.WindowAttemptSuccessRate, 0.75; got < want-epsilon || got > want+epsilon {
+		t.Errorf("WindowAttemptSuccessRate = %.4f, want %.4f", got, want)
+	}
+}
+
+// TestAggregateMetrics_WindowStatsNotSummedAcrossControllers guards the
+// "verbatim, not summed" half of the GH-4738 fix: WindowDeliveryRate and
+// WindowAttemptSuccessRate are already-computed rates in [0,1] — if two
+// sources both somehow carried a seeded window (not expected in production,
+// but the aggregation logic must not assume it), summing them would produce
+// a nonsensical rate above 1. The first non-zero WindowDays source must win
+// outright, matching the "owned by exactly one controller" contract.
+func TestAggregateMetrics_WindowStatsNotSummedAcrossControllers(t *testing.T) {
+	m1 := NewMetrics()
+	m2 := NewMetrics()
+
+	m1.SetWindowStats(30, 10.0, 5.0, 0.9, 0.9)
+	m2.SetWindowStats(30, 999.0, 999.0, 0.9, 0.9) // must be ignored — m1 already won
+
+	agg := NewAggregateMetrics(m1, m2)
+	snap := agg.Snapshot()
+
+	if snap.WindowCostUSD != 10.0 {
+		t.Errorf("WindowCostUSD = %.4f, want 10.0 (first seeded source wins, not summed to 1009.0)", snap.WindowCostUSD)
+	}
+	if snap.WindowDeliveryRate > 1.0 {
+		t.Errorf("WindowDeliveryRate = %.4f, must never exceed 1.0", snap.WindowDeliveryRate)
+	}
+}

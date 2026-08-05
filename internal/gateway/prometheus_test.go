@@ -10,6 +10,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // mockMetricsSource implements MetricsSource for testing.
@@ -339,6 +340,82 @@ func TestPrometheusExporter_CIRunsCounter(t *testing.T) {
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("Output missing expected string: %q\nGot:\n%s", want, output)
+		}
+	}
+}
+
+// TestPrometheusExporter_WindowStatsSurviveComposedDaemonWiring is GH-4738's
+// regression test. It reproduces the box symptom — pilot_window_* serving
+// window="0d" value 0 despite a clean seed and no logged error — by wiring
+// the exact same pieces cmd/pilot/main.go's runPollingMode composes at boot,
+// instead of testing HydrateWindowStats or AggregateMetrics in isolation
+// (both of those unit tests were green while production served zeros, which
+// is the gap this test closes):
+//
+//  1. A real store with an execution in the window.
+//  2. autopilot.HydrateWindowStats seeds the DEFAULT controller's *Metrics
+//     only (main.go never seeds any other project controller's Metrics).
+//  3. A second, unrelated per-project *Metrics never gets window-seeded —
+//     mirrors autopilotControllers always containing more than just the
+//     default in a multi-project config.
+//  4. Both are wrapped in autopilot.NewAggregateMetrics, exactly as
+//     autopilotMetricsAggregate is built in main.go.
+//  5. gwServer.SetMetricsSource(aggregate) is exactly what wires the
+//     aggregate into this package's PrometheusExporter.
+//
+// Before the GH-4738 fix, step 4's aggregate silently dropped the seeded
+// values from step 2, so this test's WritePrometheus output would show
+// window="0d" 0 despite the store holding real data.
+func TestPrometheusExporter_WindowStatsSurviveComposedDaemonWiring(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "gh4738-1", TaskID: "TASK-1", ProjectPath: "/p", Status: "completed",
+		CreatedAt: time.Now().UTC(), EstimatedCostUSD: 4.0,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	// Step 2: seed only the default controller's Metrics, as main.go does.
+	defaultMetrics := autopilot.NewMetrics()
+	if err := autopilot.HydrateWindowStats(store, defaultMetrics, 30); err != nil {
+		t.Fatalf("HydrateWindowStats: %v", err)
+	}
+
+	// Step 3: a second controller's Metrics that never gets window-seeded.
+	projectMetrics := autopilot.NewMetrics()
+
+	// Step 4: the same aggregate main.go builds from fleetMetrics.
+	aggregate := autopilot.NewAggregateMetrics(defaultMetrics, projectMetrics)
+
+	// Step 5: the same wiring SetMetricsSource performs.
+	srv := NewServer(&Config{Host: "127.0.0.1", Port: 0})
+	srv.SetMetricsSource(aggregate)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	srv.handleMetrics(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+
+	if strings.Contains(body, `pilot_window_cost_usd{window="0d"}`) {
+		t.Errorf("regression: pilot_window_cost_usd served window=\"0d\" through the composed daemon wiring:\n%s", body)
+	}
+	for _, want := range []string{
+		`pilot_window_cost_usd{window="30d"} 4`,
+		`pilot_window_delivery_rate{window="30d"} 1`,
+		`pilot_window_attempt_success_rate{window="30d"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected composed daemon wiring output to contain %q\ngot:\n%s", want, body)
 		}
 	}
 }

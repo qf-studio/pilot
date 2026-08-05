@@ -32,6 +32,13 @@ type SnapshotSource interface {
 // owned by exactly one controller — the default, see the HydrateFromStore
 // call site in main.go — so summing the other (zero-valued for these
 // fields) controllers alongside it does not double-count.
+//
+// GH-4735/GH-4738: the rolling-window gauges (WindowDays, WindowCostUSD,
+// WindowCostPerDeliveredUSD, WindowDeliveryRate, WindowAttemptSuccessRate)
+// are likewise owned by exactly one controller, but are taken verbatim from
+// that source (first WindowDays > 0 wins) rather than summed — two of them
+// are pre-computed rates that summing would corrupt even in the degenerate
+// single-owner case.
 type AggregateMetrics struct {
 	sources []*Metrics
 }
@@ -83,6 +90,29 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		agg.PRsMergedLifetime += s.PRsMergedLifetime
 		agg.PRsFailedLifetime += s.PRsFailedLifetime
 		agg.PRsConflicting += s.PRsConflicting
+
+		// GH-4738: WindowDays/Window* (GH-4735) are, like the lifetime
+		// baselines above, seeded on exactly one controller — the default,
+		// see the HydrateWindowStats/StartWindowStatsRefresher call sites in
+		// cmd/pilot/main.go — so every other source's WindowDays stays 0.
+		// Unlike the lifetime baselines, two of these fields
+		// (WindowDeliveryRate, WindowAttemptSuccessRate) are already-computed
+		// rates in [0,1], so summing them across sources would be wrong even
+		// though only one source is ever non-zero in practice; take the
+		// whole group verbatim from the first source with WindowDays > 0
+		// instead. Before this fix, the aggregate never touched these five
+		// fields at all — they stayed at MetricsSnapshot's zero value
+		// regardless of what HydrateWindowStats seeded on the owning
+		// controller — so every daemon path that reads the aggregate (i.e.
+		// every real deployment via SetMetricsSource(autopilotMetricsAggregate))
+		// served pilot_window_*{window="0d"} 0 no matter what the store held.
+		if agg.WindowDays == 0 && s.WindowDays > 0 {
+			agg.WindowDays = s.WindowDays
+			agg.WindowCostUSD = s.WindowCostUSD
+			agg.WindowCostPerDeliveredUSD = s.WindowCostPerDeliveredUSD
+			agg.WindowDeliveryRate = s.WindowDeliveryRate
+			agg.WindowAttemptSuccessRate = s.WindowAttemptSuccessRate
+		}
 		for k, v := range s.CIRuns {
 			agg.CIRuns[k] += v
 		}
