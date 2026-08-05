@@ -469,6 +469,34 @@ deploys → S3 exit test. Brand/visual pass = founder taste call. 14:00Z train w
 - Same evening: daemon accidentally stopped by operator (graceful TUI quit 17:14Z) — restarted
   via SSM 17:16Z, verified v2.251.0 / queue 0 / train schedule intact (Mon 08-03 16:00 Berlin).
 
+## v9.9 (2026-08-05) — S4 wave 3 dispatched: C5/C6/C8/C9 chained quartet
+
+- **Wave 2 fully merged** (C7→PR#92 · C3→PR#93 · C4→PR#94, all one-day dispatch-to-merge); board is
+  live end-to-end EXCEPT `status_maps` is always empty — outbound `resolveProviderState` has **no
+  fallback**, so every `queued` drag's status op parks immediately. C5 is the unblock.
+- **Wave 3 dispatched 08-05** (TASK-442–445), chained no-decompose to serialize
+  `main.go`/`config.go`/worker packages: **console#95 C5** (status-map auto-seed: static GitHub
+  taxonomy + observation-fill for Linear/Jira from ingested `State`/`StateGroup`, first-observed-wins,
+  never overwrite; + CRUD API `GET/PUT/DELETE /api/v1/board/statusmaps/{tracker}`) → **#96 C6**
+  (`internal/syncthrottle` budgeter shared by both workers: per-connection 70/30 read/write token
+  buckets, write-borrows-read preemption, adaptive cooldown capped 10m; 2 new env knobs
+  `PILOT_CONSOLE_SYNC_BUDGET_{RPM,COOLDOWN_MAX}`) → **#97 C8** (dispatch verb
+  `POST .../cards/{id}/dispatch`: create-in-tracker for unlinked cards via the writer factory's
+  hitherto-discarded projectID return, version-check-before-CreateIssue double-click guard,
+  crash-repair = re-dispatch of queued-unlinked; + `GET .../cards/{id}/execution` join endpoint) →
+  **#98 C9** (`prometheus/client_golang` sanctioned, private registry, `/metrics` gated on
+  `cfg.APIToken` bearer; the 4 design-doc instruments `sync_lag_seconds` / `card_ops_pending` /
+  `sync_conflicts_total` / `orphaned_links`).
+- **Spec ground truth re-verified before authoring** (2 research agents): console `f1658e3`,
+  studio-sdk `acee519`/v0.31.2. Sharpest SDK facts folded into the specs: **no exported taxonomy
+  enumerator** (Linear workflow-states + GitHub project-options queries are unexported → seeding is
+  static+observed, SDK export deferred) · **`UpdateFields` label writes are replace-the-set on all 3
+  providers** (additive AddLabel only on concrete clients — C7's guard already compensates) ·
+  **Linear has zero typed errors/retry** (budgeter uses substring heuristic for Linear cooldown
+  only) · `IssueDraft.Priority` dropped by GitHub/Jira CreateIssue; Jira type hardcoded `Task` ·
+  no client exposes remaining-quota headers (budgeter = local pacing + reactive cooldown, not
+  quota tracking).
+
 ## v9.8 (2026-08-03) — S4 board legs C7/C3/C4 dispatched; SDK sync contract confirmed live
 
 - **First S4 wave shipped 08-01**: console#85→PR#87 (C1 data model) · console#86→PR#88 (C2
