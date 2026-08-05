@@ -1,6 +1,6 @@
 # TASK-441: Contract hardening tune-up — seams, dead-man signals, tripwires
 
-**Status**: 🏁 **Legs 1–5 + 7 ALL MERGED 2026-08-04** — one dispatch-to-merge day per wave. L1 PR#4711 · L2 PR#4712 (`DeadManTracker`) · L3 PR#4713 (audit: no GH-4692-class bug in any of the 6 — SDK pollers label internally) · L4 PR#4722 (`LivenessPolicy`, zero literals left in detectors) · L5 PR#4724 (Finish tripwire sweep, 4 checks, post-Persist, recover()-guarded) · L7 PR#4704. L3 follow-ups all merged: Linear #4723 · Jira #4725 · GitLab #4728 · ADO #4729 · Asana #4730 (1 lint retry: PR#4726 closed → autopilot fix loop → #4730; dangling fix-issue #4727 closed manually). **L8 dispatched #4731** (ARCHITECTURE.md refresh). Remaining: L8 merge · L6 low-urgency uncut · operator kill-drill after next release train activates the code on the box (daemon still on v2.253.0)
+**Status**: 🏁 **Legs 1–5 + 7 ALL MERGED 2026-08-04** — one dispatch-to-merge day per wave. L1 PR#4711 · L2 PR#4712 (`DeadManTracker`) · L3 PR#4713 (audit: no GH-4692-class bug in any of the 6 — SDK pollers label internally) · L4 PR#4722 (`LivenessPolicy`, zero literals left in detectors) · L5 PR#4724 (Finish tripwire sweep, 4 checks, post-Persist, recover()-guarded) · L7 PR#4704. L3 follow-ups all merged: Linear #4723 · Jira #4725 · GitLab #4728 · ADO #4729 · Asana #4730 (1 lint retry: PR#4726 closed → autopilot fix loop → #4730; dangling fix-issue #4727 closed manually). **L8 MERGED** same evening (#4731→PR#4732 — `.agent/system/ARCHITECTURE.md` dated 08-04; Pilot's own audit corrected the table count to **30 live tables** across 3 stores, not the assessment's "34"; convergence doc superseded with pointer). **L6 dispatched 08-05 #4733** (IssueLabeler narrow interface — the final leg). Remaining: L6 merge · **operator kill-drill** once the first post-08-04 train lands on the box (still v2.253.0) — procedure written: `.agent/sops/operations/task441-kill-drill.md`
 **Created**: 2026-08-04
 **Assignee**: Pilot (legs dispatched via nav-pilot after review)
 
@@ -60,7 +60,8 @@ bypasses the seam; 4 argument-discarding mocks remain (`runner_test.go` ×3,
 - [ ] Post-task tripwire sweep runs on every terminal `Finish`; violations alert,
       never block.
 - [ ] Zero changes to any frozen external contract (list below).
-- [ ] ARCHITECTURE.md describes the system that exists (34 tables, studio-sdk boundary,
+- [x] ARCHITECTURE.md describes the system that exists (30 live tables per PR#4732's
+      audit — the "34" here was the assessment's overcount; studio-sdk boundary,
       all packages), dated 2026-08.
 
 ---
@@ -213,7 +214,7 @@ make check-mocks   # (name TBD) — must fail on a planted all-underscore mock
 - [x] Leg 3 audit doc committed; per-adapter issues filed or ruled out with evidence
       (2026-08-04: no GH-4692-class bug ruled for all 6; comment-gap fixes #4717–#4721)
 - [x] GH-4671 merged (Leg 7) — PR#4704, 2026-08-04
-- [ ] ARCHITECTURE.md refreshed and dated (Leg 8)
+- [x] ARCHITECTURE.md refreshed and dated (Leg 8) — PR#4732, 2026-08-04
 - [ ] Zero regressions on the frozen contract list (grep-diff on metric names, label
       vocabulary, artifact names, REST paths against this doc)
 
