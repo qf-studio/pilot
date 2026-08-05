@@ -476,7 +476,7 @@ func (c *Controller) reconcileEpicParent(ctx context.Context, parentNum int) {
 	if strings.EqualFold(issue.State, "closed") {
 		c.log.Debug("reconcileEpicParents: parent already closed, skipping veto/escalation", slog.Int("parent", parentNum))
 		c.clearEpicCloseVeto(ctx, parentNum)
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, parentNum, github.LabelNeedsClarification); err != nil {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, parentNum, github.LabelNeedsClarification); err != nil {
 			if !isNotFoundError(err) {
 				c.log.Warn("reconcileEpicParents: failed to remove stale needs-clarification label",
 					slog.Int("parent", parentNum), slog.Any("error", err))
@@ -718,7 +718,7 @@ func (c *Controller) clearEpicCloseVeto(ctx context.Context, parentNum int) {
 	c.mu.Unlock()
 
 	if ok && st.escalated {
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, parentNum, github.LabelNeedsClarification); err != nil {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, parentNum, github.LabelNeedsClarification); err != nil {
 			c.log.Warn("clearEpicCloseVeto: failed to remove needs-clarification label",
 				slog.Int("parent", parentNum), slog.Any("error", err))
 		}
@@ -736,7 +736,7 @@ func (c *Controller) escalateEpicCloseVeto(ctx context.Context, parentNum int, v
 		slog.Int("parent", parentNum), slog.Int("child", veto.Child), slog.String("veto_reason", veto.Reason),
 		slog.Int("attempts", epicCloseVetoBreakerThreshold))
 
-	if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, parentNum, []string{github.LabelNeedsClarification}); err != nil {
+	if err := c.labeler.AddLabels(ctx, c.owner, c.repo, parentNum, []string{github.LabelNeedsClarification}); err != nil {
 		c.log.Warn("escalateEpicCloseVeto: failed to add needs-clarification label",
 			slog.Int("parent", parentNum), slog.Any("error", err))
 	}
