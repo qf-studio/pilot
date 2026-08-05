@@ -7,8 +7,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 )
+
+// defaultStatsWindowDays mirrors config.DefaultDashboardStatsWindowDays
+// (GH-4735). This package cannot import internal/config directly — config
+// imports autopilot (for autopilot.Config), so importing back would create a
+// cycle — so the value is kept in sync by hand, the same fallback pattern
+// already used by internal/gateway/dashboard.go's defaultDashboardStatsWindowDays
+// and internal/dashboard/tui.go's defaultStatsWindowDays.
+const defaultStatsWindowDays = 30
 
 // HydrateFromStore restores Prometheus counter baselines from the store's
 // lifetime execution history into metrics, so external dashboards match
@@ -217,12 +226,34 @@ func HydrateWindowStats(store *memory.Store, metrics *Metrics, windowDays int) e
 	if store == nil || metrics == nil {
 		return nil
 	}
+	// GH-4738: defensive clamp — a caller passing windowDays <= 0 (e.g. a
+	// zero-value from a config path that skipped the
+	// config.DefaultDashboardStatsWindowDays fallback) must not silently
+	// query since=now() and seed an all-zero window; fall back to the same
+	// default the TUI/gateway dashboard paths already use in this situation
+	// (defaultDashboardStatsWindowDays / defaultStatsWindowDays there).
+	if windowDays <= 0 {
+		windowDays = defaultStatsWindowDays
+	}
 	since := time.Now().AddDate(0, 0, -windowDays)
 	ws, err := store.GetWindowedStats("", since)
 	if err != nil {
 		return fmt.Errorf("hydrate window stats: %w", err)
 	}
 	metrics.SetWindowStats(windowDays, ws.TotalCostUSD, ws.CostPerDelivered, ws.DeliveryRate, ws.AttemptSuccessRate)
+	// GH-4738: log the seeded values at INFO (not just on failure) so
+	// operators can grep daemon.log to confirm the pilot_window_* gauges
+	// actually got a non-zero seed on this boot — the prior silent-success
+	// path is exactly how a downstream aggregation bug (the gauges reaching
+	// the exporter as window="0d"/0 despite a clean seed here) went
+	// unnoticed for a full release.
+	logging.WithComponent("autopilot").Info("window stats seeded",
+		slog.Int("window_days", windowDays),
+		slog.Float64("window_cost_usd", ws.TotalCostUSD),
+		slog.Float64("window_cost_per_delivered_usd", ws.CostPerDelivered),
+		slog.Float64("window_delivery_rate", ws.DeliveryRate),
+		slog.Float64("window_attempt_success_rate", ws.AttemptSuccessRate),
+	)
 	return nil
 }
 
@@ -250,7 +281,14 @@ func StartWindowStatsRefresher(ctx context.Context, store *memory.Store, metrics
 			select {
 			case <-ticker.C:
 				if err := HydrateWindowStats(store, metrics, windowDays); err != nil {
-					slog.Warn("window stats refresh failed", slog.Any("error", err))
+					// GH-4738: route through the component logger, not bare
+					// slog.Warn — outside dashboard mode (which redirects
+					// slog's process-global default via
+					// logging.RedirectToFile), a bare slog call bypasses the
+					// configured Output/Format from logging.Init entirely
+					// and lands on the package-init stdout handler instead
+					// of daemon.log.
+					logging.WithComponent("autopilot").Warn("window stats refresh failed", slog.Any("error", err))
 				}
 			case <-ctx.Done():
 				return
