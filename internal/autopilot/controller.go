@@ -28,6 +28,20 @@ type alertSink interface {
 	ProcessEvent(alerts.Event)
 }
 
+// IssueLabeler is the minimal GitHub client surface the controller needs for
+// the pilot-* label lifecycle (TASK-441 Leg 6): applying and removing labels
+// on issues/PRs. The pilot-* label vocabulary is a frozen cross-repo
+// contract (internal/adapters/github/types.go:99-122 — console board sync
+// depends on it) and the 08-03 incident class was label wiring breaking
+// silently, so narrowing "what can touch labels" to these two methods turns
+// that dependency into a compile-time fact instead of a grep across the
+// full ~61-method client. Satisfied implicitly by *github.Client; no
+// adapter changes required.
+type IssueLabeler interface {
+	AddLabels(ctx context.Context, owner, repo string, number int, labels []string) error
+	RemoveLabel(ctx context.Context, owner, repo string, number int, label string) error
+}
+
 // approvalPersister is the subset of memory.Store used for approval persistence
 // and execution-event audit-trail writes in the executions / execution_events
 // tables. GH-3847: PR stage transitions are recorded here so the audit trail
@@ -364,6 +378,7 @@ func WithRateBudget(b *ghbudget.Tracker) ControllerOption {
 type Controller struct {
 	config           *Config
 	ghClient         *github.Client
+	labeler          IssueLabeler // TASK-441 L6: narrow label-lifecycle seam over ghClient (AddLabels/RemoveLabel only)
 	approvalMgr      *approval.Manager
 	ciMonitor        *CIMonitor
 	autoMerger       *AutoMerger
@@ -642,6 +657,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	c := &Controller{
 		config:                  cfg,
 		ghClient:                ghClient,
+		labeler:                 ghClient,
 		approvalMgr:             approvalMgr,
 		owner:                   owner,
 		repo:                    repo,
@@ -2740,7 +2756,7 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		// guards every later tick; alertApprovalMisconfigOnce's {PR, reason}
 		// map additionally dedupes across fresh cycles where Parked resets.
 		if prState.IssueNumber > 0 {
-			if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{labelParkedAwaitingApproval}); err != nil {
+			if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{labelParkedAwaitingApproval}); err != nil {
 				c.log.Warn("failed to apply parked-awaiting-approval label", "issue", prState.IssueNumber, "pr", prState.PRNumber, "error", err)
 			}
 		}
@@ -3016,14 +3032,14 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		if c.onIssueDone != nil {
 			c.onIssueDone(prState.IssueNumber)
 		}
-		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
+		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
 			c.log.Warn("failed to add pilot-done label after merge", "issue", prState.IssueNumber, "error", err)
 		}
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
 			c.log.Warn("failed to remove pilot-in-progress label after merge", "issue", prState.IssueNumber, "error", err)
 		}
 		// GH-1302: Clean up stale pilot-failed label from prior failed attempt
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
 			// 404 is expected if label doesn't exist - silently ignore
 			c.log.Debug("pilot-failed label cleanup", "issue", prState.IssueNumber, "error", err)
 		}
@@ -3417,14 +3433,14 @@ func (c *Controller) closeParentNow(ctx context.Context, parentNum int, mergedPR
 	c.log.Info("closeParentNow: all sub-issues done, closing parent", slog.Int("parent", parentNum))
 
 	// Label cleanup: add pilot-done, remove stale labels.
-	if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, parentNum, []string{"pilot-done"}); err != nil {
+	if err := c.labeler.AddLabels(ctx, c.owner, c.repo, parentNum, []string{"pilot-done"}); err != nil {
 		c.log.Warn("closeParentNow: failed to add pilot-done label", slog.Int("parent", parentNum), slog.Any("error", err))
 	}
 	// GH-4006: also clear a needs-clarification label left by an earlier
 	// escalateEpicCloseVeto pass whose veto later resolved — harmless if it
 	// was never applied (RemoveLabel on an absent label is a no-op).
 	for _, stale := range []string{"pilot-failed", "pilot-in-progress", "pilot-blocked", github.LabelNeedsClarification} {
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, parentNum, stale); err != nil {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, parentNum, stale); err != nil {
 			c.log.Warn("closeParentNow: failed to remove label", slog.String("label", stale), slog.Int("parent", parentNum), slog.Any("error", err))
 		}
 	}
@@ -4872,15 +4888,15 @@ func (c *Controller) closeAndReexecute(ctx context.Context, prState *PRState, cl
 	// GH-3139/TASK-301: issue must remain OPEN with pilot label so the poller
 	// can re-dispatch. Do NOT close the issue or add pilot-done here.
 	if prState.IssueNumber > 0 {
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
 			c.log.Warn("failed to remove in-progress label", "issue", prState.IssueNumber, "error", err)
 		}
 		// Re-add pilot label so poller can pick up the issue on the next cycle.
-		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelPilot}); err != nil {
+		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelPilot}); err != nil {
 			c.log.Warn("failed to re-add pilot label on conflict", "issue", prState.IssueNumber, "error", err)
 		}
 		// Guard: remove pilot-done if somehow present — prevents ghost-close.
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelDone); err != nil {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelDone); err != nil {
 			c.log.Debug("pilot-done cleanup on conflict (may not exist)", "issue", prState.IssueNumber, "error", err)
 		}
 	}
@@ -4930,7 +4946,7 @@ func (c *Controller) escalateAndHold(ctx context.Context, prState *PRState, reas
 
 	if prState.IssueNumber > 0 {
 		allLabels := append([]string{labelNeedsHuman}, labels...)
-		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, allLabels); err != nil {
+		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, allLabels); err != nil {
 			c.log.Warn("escalateAndHold: failed to add labels", "issue", prState.IssueNumber, "pr", prState.PRNumber, "labels", allLabels, "error", err)
 		}
 	}
@@ -6356,15 +6372,15 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		// GH-1486: Close associated issue and add pilot-done label on external merge
 		if prState.IssueNumber > 0 {
 			// Add pilot-done label
-			if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
+			if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
 				c.log.Warn("failed to add pilot-done label after external merge", "issue", prState.IssueNumber, "error", err)
 			}
 			// Remove pilot-in-progress label
-			if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
+			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
 				c.log.Debug("pilot-in-progress label cleanup on external merge", "issue", prState.IssueNumber, "error", err)
 			}
 			// Remove pilot-failed label (cleanup from prior failed attempt)
-			if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
+			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
 				c.log.Debug("pilot-failed label cleanup on external merge", "issue", prState.IssueNumber, "error", err)
 			}
 			// GH-4021: same stale-label cleanup as the polled-merge path.
@@ -6578,7 +6594,7 @@ func (c *Controller) getBotLogin(ctx context.Context) string {
 // task_failed alert.
 func (c *Controller) clearRetryLabels(ctx context.Context, issueNumber int) {
 	for _, label := range []string{github.LabelRetryReady, github.LabelRetry1, github.LabelRetry2, github.LabelRetryExhausted} {
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, issueNumber, label); err != nil {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, issueNumber, label); err != nil {
 			// 404 is expected when the label was never set - silently ignore.
 			c.log.Debug("retry label cleanup", "issue", issueNumber, "label", label, "error", err)
 		}
@@ -6792,16 +6808,16 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 			nextSteps = "This issue will not be retried automatically under its own number — see the reason above for what happens next."
 		}
 
-		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{issueLabel}); err != nil {
+		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{issueLabel}); err != nil {
 			c.log.Warn("failed to set issue label on PR close", "issue", prState.IssueNumber, "label", issueLabel, "error", err)
 		}
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
 			c.log.Warn("failed to remove pilot-in-progress label", "issue", prState.IssueNumber, "error", err)
 		}
 		if issueLabel != github.LabelFailed {
 			// Remove stale pilot-failed label (GH-1302 gap) — only when we're not
 			// the ones setting it above.
-			if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
+			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
 				c.log.Debug("failed to remove pilot-failed (may not exist)", "issue", prState.IssueNumber, "error", err)
 			}
 		}
