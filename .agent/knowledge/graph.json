@@ -1253,17 +1253,17 @@
       "TASK-441": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-441-contract-hardening-tune-up.md",
         "title": "Contract hardening tune-up \u2014 seams, dead-man signals, tripwires",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
-          "knowledge",
-          "context",
-          "workflow",
-          "theory of mind",
-          "api",
-          "database",
           "testing",
           "skills",
-          "deployment"
+          "workflow",
+          "api",
+          "database",
+          "theory of mind",
+          "deployment",
+          "knowledge",
+          "context"
         ]
       }
     },
@@ -4046,6 +4046,101 @@
         ],
         "confidence": 0.85,
         "created": "2026-08-04"
+      },
+      "mem-166": {
+        "type": "decision",
+        "summary": "Mock rule enforcement: grep CI check + checklist - Ships today, zero tooling investment; plugin later if evasion appears",
+        "path": "memories/decisions/mem-166.md",
+        "confidence": 0.95,
+        "concepts": [
+          "theory of mind",
+          "database",
+          "workflow",
+          "api",
+          "context",
+          "knowledge",
+          "testing",
+          "deployment",
+          "skills"
+        ],
+        "created": "2026-08-05",
+        "last_validated": "2026-08-05"
+      },
+      "mem-167": {
+        "type": "decision",
+        "summary": "Dead-man home: alerts engine extension - Engine already has streak state + dispatch channels; smallest diff",
+        "path": "memories/decisions/mem-167.md",
+        "confidence": 0.95,
+        "concepts": [
+          "theory of mind",
+          "database",
+          "workflow",
+          "api",
+          "context",
+          "knowledge",
+          "testing",
+          "deployment",
+          "skills"
+        ],
+        "created": "2026-08-05",
+        "last_validated": "2026-08-05"
+      },
+      "mem-168": {
+        "type": "decision",
+        "summary": "Tripwire location: `ExecutionLifecycle.Finish` - TASK-404 made it the universal terminal transition; catches every path incl. future ones",
+        "path": "memories/decisions/mem-168.md",
+        "confidence": 0.95,
+        "concepts": [
+          "theory of mind",
+          "database",
+          "workflow",
+          "api",
+          "context",
+          "knowledge",
+          "testing",
+          "deployment",
+          "skills"
+        ],
+        "created": "2026-08-05",
+        "last_validated": "2026-08-05"
+      },
+      "mem-169": {
+        "type": "decision",
+        "summary": "Silence policy: one `LivenessPolicy`, two enforcers - Merging enforcement changes kill semantics (risk); merging *policy* kills drift",
+        "path": "memories/decisions/mem-169.md",
+        "confidence": 0.95,
+        "concepts": [
+          "theory of mind",
+          "database",
+          "workflow",
+          "api",
+          "context",
+          "knowledge",
+          "testing",
+          "deployment",
+          "skills"
+        ],
+        "created": "2026-08-05",
+        "last_validated": "2026-08-05"
+      },
+      "mem-170": {
+        "type": "decision",
+        "summary": "Leg order: 1\u21922\u21923 first, 8 last - Class-coverage per token; doc refresh before code lands = rework",
+        "path": "memories/decisions/mem-170.md",
+        "confidence": 0.95,
+        "concepts": [
+          "theory of mind",
+          "database",
+          "workflow",
+          "api",
+          "context",
+          "knowledge",
+          "testing",
+          "deployment",
+          "skills"
+        ],
+        "created": "2026-08-05",
+        "last_validated": "2026-08-05"
       }
     }
   },
@@ -5484,6 +5579,31 @@
       "from": "TASK-441",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "mem-166",
+      "to": "TASK-441",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-167",
+      "to": "TASK-441",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-168",
+      "to": "TASK-441",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-169",
+      "to": "TASK-441",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-170",
+      "to": "TASK-441",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -5523,7 +5643,12 @@
       "TASK-386",
       "TASK-387",
       "TASK-420",
-      "TASK-441"
+      "TASK-441",
+      "mem-166",
+      "mem-167",
+      "mem-168",
+      "mem-169",
+      "mem-170"
     ],
     "knowledge": [
       "TASK-386",
@@ -5584,7 +5709,12 @@
       "TASK-429",
       "TASK-436",
       "TASK-437",
-      "TASK-441"
+      "TASK-441",
+      "mem-166",
+      "mem-167",
+      "mem-168",
+      "mem-169",
+      "mem-170"
     ],
     "deployment": [
       "TASK-386",
@@ -5668,7 +5798,12 @@
       "TASK-438",
       "TASK-439",
       "TASK-440",
-      "TASK-441"
+      "TASK-441",
+      "mem-166",
+      "mem-167",
+      "mem-168",
+      "mem-169",
+      "mem-170"
     ],
     "authentication": [
       "TASK-386",
@@ -5797,7 +5932,12 @@
       "TASK-438",
       "TASK-439",
       "TASK-440",
-      "TASK-441"
+      "TASK-441",
+      "mem-166",
+      "mem-167",
+      "mem-168",
+      "mem-169",
+      "mem-170"
     ],
     "api": [
       "TASK-386",
@@ -5855,7 +5995,12 @@
       "TASK-438",
       "TASK-439",
       "TASK-440",
-      "TASK-441"
+      "TASK-441",
+      "mem-166",
+      "mem-167",
+      "mem-168",
+      "mem-169",
+      "mem-170"
     ],
     "context": [
       "TASK-386",
@@ -5921,7 +6066,12 @@
       "TASK-438",
       "TASK-439",
       "TASK-440",
-      "TASK-441"
+      "TASK-441",
+      "mem-166",
+      "mem-167",
+      "mem-168",
+      "mem-169",
+      "mem-170"
     ],
     "markers": [
       "TASK-387",
@@ -5981,7 +6131,12 @@
       "TASK-438",
       "TASK-439",
       "TASK-440",
-      "TASK-441"
+      "TASK-441",
+      "mem-166",
+      "mem-167",
+      "mem-168",
+      "mem-169",
+      "mem-170"
     ],
     "workflow": [
       "TASK-387",
@@ -6037,7 +6192,12 @@
       "TASK-433",
       "TASK-439",
       "TASK-440",
-      "TASK-441"
+      "TASK-441",
+      "mem-166",
+      "mem-167",
+      "mem-168",
+      "mem-169",
+      "mem-170"
     ],
     "simplification": [
       "TASK-387",
@@ -6109,7 +6269,12 @@
       "TASK-437",
       "TASK-439",
       "TASK-440",
-      "TASK-441"
+      "TASK-441",
+      "mem-166",
+      "mem-167",
+      "mem-168",
+      "mem-169",
+      "mem-170"
     ],
     "autopilot": [
       "mem-100",
@@ -6434,10 +6599,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-04T20:06:20.930191+00:00",
+  "last_updated": "2026-08-05T08:06:40.275646+00:00",
   "stats": {
-    "total_nodes": 351,
-    "total_edges": 287,
-    "memory_count": 208
+    "total_nodes": 356,
+    "total_edges": 292,
+    "memory_count": 213
   }
 }

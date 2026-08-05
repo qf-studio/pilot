@@ -1,6 +1,6 @@
 # TASK-441: Contract hardening tune-up — seams, dead-man signals, tripwires
 
-**Status**: 🏁 **Legs 1–5 + 7 ALL MERGED 2026-08-04** — one dispatch-to-merge day per wave. L1 PR#4711 · L2 PR#4712 (`DeadManTracker`) · L3 PR#4713 (audit: no GH-4692-class bug in any of the 6 — SDK pollers label internally) · L4 PR#4722 (`LivenessPolicy`, zero literals left in detectors) · L5 PR#4724 (Finish tripwire sweep, 4 checks, post-Persist, recover()-guarded) · L7 PR#4704. L3 follow-ups all merged: Linear #4723 · Jira #4725 · GitLab #4728 · ADO #4729 · Asana #4730 (1 lint retry: PR#4726 closed → autopilot fix loop → #4730; dangling fix-issue #4727 closed manually). **L8 MERGED** same evening (#4731→PR#4732 — `.agent/system/ARCHITECTURE.md` dated 08-04; Pilot's own audit corrected the table count to **30 live tables** across 3 stores, not the assessment's "34"; convergence doc superseded with pointer). **L6 dispatched 08-05 #4733** (IssueLabeler narrow interface — the final leg). Remaining: L6 merge · **operator kill-drill** once the first post-08-04 train lands on the box (still v2.253.0) — procedure written: `.agent/sops/operations/task441-kill-drill.md`
+**Status**: 🏁 **Legs 1–5 + 7 ALL MERGED 2026-08-04** — one dispatch-to-merge day per wave. L1 PR#4711 · L2 PR#4712 (`DeadManTracker`) · L3 PR#4713 (audit: no GH-4692-class bug in any of the 6 — SDK pollers label internally) · L4 PR#4722 (`LivenessPolicy`, zero literals left in detectors) · L5 PR#4724 (Finish tripwire sweep, 4 checks, post-Persist, recover()-guarded) · L7 PR#4704. L3 follow-ups all merged: Linear #4723 · Jira #4725 · GitLab #4728 · ADO #4729 · Asana #4730 (1 lint retry: PR#4726 closed → autopilot fix loop → #4730; dangling fix-issue #4727 closed manually). **L8 MERGED** same evening (#4731→PR#4732 — `.agent/system/ARCHITECTURE.md` dated 08-04; Pilot's own audit corrected the table count to **30 live tables** across 3 stores, not the assessment's "34"; convergence doc superseded with pointer). **L6 MERGED 08-05** (#4733→PR#4734, +36/−20, autopilot-only, 2-method `IssueLabeler`). **ALL 8 LEGS MERGED — code complete.** Frozen-contract grep-diff verified 08-05 (label vocab · metric names · artifact naming · REST paths — zero changes across the full span). Sole remaining item: **operator kill-drill** per `.agent/sops/operations/task441-kill-drill.md`, runnable once the first post-08-04 train lands on the box (still v2.253.0) → then archive
 **Created**: 2026-08-04
 **Assignee**: Pilot (legs dispatched via nav-pilot after review)
 
@@ -55,11 +55,14 @@ bypasses the seam; 4 argument-discarding mocks remain (`runner_test.go` ×3,
 
 - [ ] A seam that silently stops working (zero successes while attempts flow, or
       attempts stop while tasks flow) raises an alert within 1 hour — verified by
-      killing one subsystem in a test and observing the alert.
-- [ ] No `*_test.go` mock discards all arguments of a seam method (CI-enforced).
-- [ ] Post-task tripwire sweep runs on every terminal `Finish`; violations alert,
-      never block.
-- [ ] Zero changes to any frozen external contract (list below).
+      killing one subsystem in a test and observing the alert. *(code merged; drill
+      pending train — `.agent/sops/operations/task441-kill-drill.md`)*
+- [x] No `*_test.go` mock discards all arguments of a seam method (CI-enforced) —
+      `make check-mocks`, PR#4711.
+- [x] Post-task tripwire sweep runs on every terminal `Finish`; violations alert,
+      never block — PR#4724, recover()-guarded post-Persist hook.
+- [x] Zero changes to any frozen external contract (list below) — grep-diff over
+      label vocab / metric names / artifact naming / REST paths, verified 08-05.
 - [x] ARCHITECTURE.md describes the system that exists (30 live tables per PR#4732's
       audit — the "34" here was the assessment's overcount; studio-sdk boundary,
       all packages), dated 2026-08.
