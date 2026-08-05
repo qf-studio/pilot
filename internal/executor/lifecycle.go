@@ -1,9 +1,11 @@
 package executor
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -348,7 +350,109 @@ func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, resul
 	// write.
 	runFinishTripwireSweep(l.store, l.alertProcessor, execID)
 
+	// GH-4740: strip the GitHub pilot-in-progress marker whenever this
+	// terminal write leaves no deliverable behind. Persist is the same
+	// universal chokepoint the tripwire sweep above relies on — every
+	// production terminal-status write reaches here, including the
+	// dispatcher's ProjectWorker loop (a genuine execution failure),
+	// alerts.Engine's stuck-task tripwire eviction (a hard-killed/wedged
+	// child that never returns control to the normal teardown path), and
+	// epic.go's sub-issue finalizer — so hooking it here, rather than only
+	// in the SDK-dispatch handler that applies the label at start
+	// (handlers.go's notifyTaskStartedSDK), is the only way a SIGKILLed
+	// child can't skip the strip.
+	l.stripInProgressLabelOnTerminalFailure(execID, outcome.Status)
+
 	return statusErr
+}
+
+// requiresInProgressLabelStrip reports whether status is a terminal outcome
+// that leaves no deliverable behind — the set GH-4740's acceptance criteria
+// names explicitly. ExecStatusCompleted is deliberately excluded: a PR
+// exists, and pilot-in-progress is kept on purpose until the PR merges
+// (autopilot's controller.go strips it then, see RemoveLabel call sites
+// there). ExecStatusSuperseded/ExecStatusDecomposed are excluded too —
+// superseded means the issue was already found closed at pickup time
+// (nothing left to re-pick), and decomposed means this row's own work moved
+// to child rows that carry their own label lifecycle.
+//
+// A switch (not a map literal) deliberately avoids growing a second
+// execution-status classification map outside dispatcher.go's
+// terminalExecutionStatuses (see terminal_status_inventory_test.go's guard
+// against exactly that, mem-154 pitfall class).
+func requiresInProgressLabelStrip(status Status) bool {
+	switch status {
+	case ExecStatusFailed, ExecStatusStalled, ExecStatusRateLimited, ExecStatusInfra,
+		ExecStatusNoOp, ExecStatusDeclined, ExecStatusSkipped, ExecStatusCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+// stripInProgressLabelOnTerminalFailure removes the pilot-in-progress marker
+// from execID's GitHub issue when the terminal outcome left no deliverable
+// behind (GH-4740). Evidence: console#98 failed at 14:41:05Z and sat with
+// pilot-in-progress still on the OPEN issue for 1.5h+ — the poller treats
+// that marker as "still in-flight" and never re-picks the issue even though
+// the `pilot` trigger label remains present, inert behind it. An operator
+// had to strip the label by hand before the poller picked it back up.
+//
+// Best-effort and GitHub-only, mirroring the adapter guard every other
+// GitHub-issue side channel in this package already uses (surfaceStalledIssue
+// in dispatcher.go, ghAddLabels in title_rejection.go): a strip failure must
+// never invalidate the store-side status write Persist already committed
+// above — that write is the durable source of truth regardless of whether
+// this side channel succeeds.
+func (l *ExecutionLifecycle) stripInProgressLabelOnTerminalFailure(execID string, status Status) {
+	if !requiresInProgressLabelStrip(status) {
+		return
+	}
+	if l.store == nil || execID == "" {
+		return
+	}
+
+	exec, err := l.store.GetExecution(execID)
+	if err != nil || exec == nil {
+		return
+	}
+	// Require an exact "github" match rather than "anything but a known
+	// non-GitHub adapter" — most CLI-driven and hand-constructed executions
+	// (including the bulk of this package's own tests) leave
+	// TaskSourceAdapter empty, and an empty adapter has no GitHub issue to
+	// edit. Mirrors checkLabelLifecycle's TaskSourceAdapter == "" skip
+	// (finish_tripwires.go) rather than runner.go's "!= '' && != 'github'"
+	// routing check, which exists to pick an adapter PRCreator and would
+	// wrongly let an empty adapter through here.
+	if exec.TaskSourceAdapter != "github" {
+		return
+	}
+
+	issueNum := strings.TrimPrefix(exec.TaskID, "GH-")
+	if exec.TaskSourceIssueID != "" {
+		issueNum = exec.TaskSourceIssueID
+	}
+	var parsed int
+	if _, sErr := fmt.Sscanf(issueNum, "%d", &parsed); sErr != nil || parsed <= 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	log := logging.WithComponent("executor.lifecycle")
+	if err := ghEditLabels(ctx, exec.ProjectPath, issueNum, nil, []string{"pilot-in-progress"}); err != nil {
+		// GH-4692 lesson (studio-sdk's "labels removed" log line fired on
+		// labels that were never applied at all): log this failure loudly —
+		// Error, not Warn — because a silent miss here is exactly the class
+		// of bug GH-4740 was filed for: the issue stays stuck behind an
+		// inert marker with no visible signal that anything went wrong.
+		log.Error("failed to strip pilot-in-progress label after terminal execution — issue may stay stuck behind the marker",
+			"execution_id", execID, "task_id", exec.TaskID, "issue", parsed, "status", string(status), "error", err)
+		return
+	}
+	log.Info("stripped pilot-in-progress label after terminal execution",
+		"execution_id", execID, "task_id", exec.TaskID, "issue", parsed, "status", string(status))
 }
 
 // Finish terminates execID in one call: Classify followed by Persist.
