@@ -71,7 +71,7 @@ Sequencing: budgeter (pure, clock-injected, fully tested) → outbound integrati
 
 ## Refs
 
-- **Status**: 🚀 Dispatched to Pilot 2026-08-05 · Pilot issue: https://github.com/qf-studio/pilot-console/issues/96 (labels: pilot, no-decompose; gated on #95)
+- **Status**: ✅ **MERGED 2026-08-05 ~11:4xZ** — PR https://github.com/qf-studio/pilot-console/pull/100 (CI green, Navigator-reviewed: budgeter semantics exact incl. borrow asymmetry + cooldown cap, both worker integrations gate every page/op, 18 tests). Chain: #97 (C8) unblocked.
 - Depends on: console#87–#94 (merged) · console#95 C5 statusmap leg (chained ahead of this issue)
 - Canonical design: `qf-studio/pilot` `.agent/system/saas-kanban-sync-design.md` §7 (rate-limit failure mode: token bucket 70/30, write preemption, 10m adaptive cap) — embedded above
 - Console facts verified 2026-08-05 at `f1658e3`; SDK facts at `studio-sdk` `acee519` / v0.31.2

@@ -116,7 +116,7 @@ Sequencing: Wire types + fixtures → read methods (cards/ops/activity) → muta
 
 ## Refs
 
-- **Status**: 🚀 Dispatched to Pilot 2026-08-05 · Pilot issue: https://github.com/qf-studio/pilot-console-ui/issues/44 (labels: pilot, no-decompose; head of the UI wave chain #44→#45)
+- **Status**: ✅ **MERGED 2026-08-05 ~11:4xZ** — PR https://github.com/qf-studio/pilot-console-ui/pull/46 (CI green, Navigator-reviewed: all 7 backed methods + Wire types, 409/412 translation with null-link fallback, honest 501s for the 3 unbacked stubs, drawer resilience, 30s polling with in-flight skip + auth-loss stop). Chain: ui#45 unblocked. **Operator follow-up open**: real-stack fixture verify per fixtures README.
 - Console wire facts verified 2026-08-05 at `pilot-console` `b98873e` (C7 merged PR#92 + C5 merged PR#99); UI facts at `pilot-console-ui` `6c04455`
 - The stub-site comment at `httpAdapter.ts:303-307` pre-specifies this exact approach (envelope + `WireBoardCard` + hand translation) — follow it
 - Canonical design: `qf-studio/pilot` `.agent/system/saas-kanban-sync-design.md` §5 (status vocab), §6 (dispatch requires a link — why createInTracker waits for C8)
