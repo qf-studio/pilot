@@ -14,6 +14,7 @@ import (
 type mockDashboardStore struct {
 	lifetimeTokens *memory.LifetimeTokens
 	taskCounts     *memory.LifetimeTaskCounts
+	windowedStats  memory.WindowedStats
 	dailyMetrics   []*memory.DailyMetrics
 	executions     []*memory.Execution
 	queuedTasks    []*memory.Execution
@@ -21,9 +22,11 @@ type mockDashboardStore struct {
 	logEntries     []*memory.LogEntry
 
 	// Capture last projectPath arg passed to each scoped method.
-	gotTokensPath     string
-	gotTaskCountsPath string
-	gotExecsPaths     []string // appended on each GetRecentExecutions call
+	gotTokensPath         string
+	gotTaskCountsPath     string
+	gotWindowedStatsPath  string
+	gotWindowedStatsSince time.Time
+	gotExecsPaths         []string // appended on each GetRecentExecutions call
 }
 
 func (m *mockDashboardStore) GetLifetimeTokens(projectPath string) (*memory.LifetimeTokens, error) {
@@ -34,6 +37,12 @@ func (m *mockDashboardStore) GetLifetimeTokens(projectPath string) (*memory.Life
 func (m *mockDashboardStore) GetLifetimeTaskCounts(projectPath string) (*memory.LifetimeTaskCounts, error) {
 	m.gotTaskCountsPath = projectPath
 	return m.taskCounts, nil
+}
+
+func (m *mockDashboardStore) GetWindowedStats(projectPath string, since time.Time) (memory.WindowedStats, error) {
+	m.gotWindowedStatsPath = projectPath
+	m.gotWindowedStatsSince = since
+	return m.windowedStats, nil
 }
 
 func (m *mockDashboardStore) GetDailyMetrics(_ memory.MetricsQuery) ([]*memory.DailyMetrics, error) {
@@ -86,6 +95,14 @@ func TestHandleDashboardMetrics(t *testing.T) {
 					Succeeded: 8,
 					Failed:    2,
 				},
+				windowedStats: memory.WindowedStats{
+					TotalCostUSD:       0.10,
+					CostPerDelivered:   0.05,
+					IssuesAttempted:    3,
+					IssuesDelivered:    2,
+					DeliveryRate:       2.0 / 3.0,
+					AttemptSuccessRate: 0.8,
+				},
 			},
 			expectedStatus: http.StatusOK,
 			checkBody: func(t *testing.T, body []byte) {
@@ -107,6 +124,25 @@ func TestHandleDashboardMetrics(t *testing.T) {
 				}
 				if len(resp.TokenSparkline) != 7 {
 					t.Errorf("expected 7 sparkline entries, got %d", len(resp.TokenSparkline))
+				}
+				// GH-4735: window block carries the rolling-window headline numbers.
+				if resp.Window.Days != defaultDashboardStatsWindowDays {
+					t.Errorf("expected Window.Days=%d, got %d", defaultDashboardStatsWindowDays, resp.Window.Days)
+				}
+				if resp.Window.TotalCostUSD != 0.10 {
+					t.Errorf("expected Window.TotalCostUSD=0.10, got %f", resp.Window.TotalCostUSD)
+				}
+				if resp.Window.CostPerDeliveredUSD != 0.05 {
+					t.Errorf("expected Window.CostPerDeliveredUSD=0.05, got %f", resp.Window.CostPerDeliveredUSD)
+				}
+				if resp.Window.IssuesAttempted != 3 {
+					t.Errorf("expected Window.IssuesAttempted=3, got %d", resp.Window.IssuesAttempted)
+				}
+				if resp.Window.IssuesDelivered != 2 {
+					t.Errorf("expected Window.IssuesDelivered=2, got %d", resp.Window.IssuesDelivered)
+				}
+				if resp.Window.AttemptSuccessRate != 0.8 {
+					t.Errorf("expected Window.AttemptSuccessRate=0.8, got %f", resp.Window.AttemptSuccessRate)
 				}
 			},
 		},

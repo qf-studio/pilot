@@ -80,29 +80,30 @@ type AdapterHealthSource interface {
 // from external services (Linear, GitHub, Jira, Asana), and exposes REST APIs for status
 // and task management. Server is safe for concurrent use.
 type Server struct {
-	config                 *Config
-	auth                   *Authenticator
-	sessions               *SessionManager
-	router                 *Router
-	upgrader               websocket.Upgrader
-	server                 *http.Server
-	mu                     sync.RWMutex
-	running                bool
-	customHandlers         map[string]http.Handler
-	githubWebhookSecret    string             // Secret for GitHub webhook signature validation
-	linearWebhookPublicKey ed25519.PublicKey  // Ed25519 public key for Linear webhook signature validation (TASK-295). Nil = verification disabled.
-	dashboardFS            fs.FS              // Embedded React frontend (nil if not embedded)
-	readinessCheckers      []ReadinessChecker
-	liveness               *livenessState
-	prometheusExporter     *PrometheusExporter
-	alertsSource           AlertMetricsSource
-	autopilotProvider      AutopilotProvider
-	adapterHealthSource    AdapterHealthSource
-	dashboardStore         DashboardStore
-	dashboardProjectPath   string          // Project path filter for dashboard metrics/queue/history APIs ("" = all projects)
-	logStreamStore         LogStreamStore
-	gitGraphPath           string          // Project path for git graph API (defaults to ".")
-	gitGraphFetcher        GitGraphFetcher // Injected to avoid import cycle with internal/dashboard
+	config                   *Config
+	auth                     *Authenticator
+	sessions                 *SessionManager
+	router                   *Router
+	upgrader                 websocket.Upgrader
+	server                   *http.Server
+	mu                       sync.RWMutex
+	running                  bool
+	customHandlers           map[string]http.Handler
+	githubWebhookSecret      string            // Secret for GitHub webhook signature validation
+	linearWebhookPublicKey   ed25519.PublicKey // Ed25519 public key for Linear webhook signature validation (TASK-295). Nil = verification disabled.
+	dashboardFS              fs.FS             // Embedded React frontend (nil if not embedded)
+	readinessCheckers        []ReadinessChecker
+	liveness                 *livenessState
+	prometheusExporter       *PrometheusExporter
+	alertsSource             AlertMetricsSource
+	autopilotProvider        AutopilotProvider
+	adapterHealthSource      AdapterHealthSource
+	dashboardStore           DashboardStore
+	dashboardProjectPath     string // Project path filter for dashboard metrics/queue/history APIs ("" = all projects)
+	dashboardStatsWindowDays int    // GH-4735: rolling window (days) for windowed cost/success stats; 0 = use default
+	logStreamStore           LogStreamStore
+	gitGraphPath             string          // Project path for git graph API (defaults to ".")
+	gitGraphFetcher          GitGraphFetcher // Injected to avoid import cycle with internal/dashboard
 }
 
 // Config holds gateway server configuration including network binding options.

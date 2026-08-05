@@ -327,6 +327,30 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		writeGaugeLabeled(w, "pilot_issues_attempted_by_model_total", float64(count), "model", model)
 	}
 
+	// pilot_window_* (GH-4735): rolling-window headline cost/success gauges.
+	// windowLabel carries the same day-count used to compute snap.Window* on
+	// every one of the 4 gauges below, so they're always self-consistent even
+	// if the configured window changes between refreshes. Values are refreshed
+	// on a periodic ticker (StartWindowStatsRefresher), not per-scrape — see
+	// that function's doc comment.
+	windowLabel := fmt.Sprintf("%dd", snap.WindowDays)
+
+	writeHelp(w, "pilot_window_cost_usd", "Total execution cost (USD) in the rolling window, canary-excluded, all executions including retries. Refreshed periodically (see window label for length), not per-scrape")
+	writeType(w, "pilot_window_cost_usd", "gauge")
+	writeGaugeLabeled(w, "pilot_window_cost_usd", snap.WindowCostUSD, "window", windowLabel)
+
+	writeHelp(w, "pilot_window_cost_per_delivered_usd", "Rolling-window cost per delivered issue (window cost / distinct issues with a completed execution in the window); 0 when no issues delivered")
+	writeType(w, "pilot_window_cost_per_delivered_usd", "gauge")
+	writeGaugeLabeled(w, "pilot_window_cost_per_delivered_usd", snap.WindowCostPerDeliveredUSD, "window", windowLabel)
+
+	writeHelp(w, "pilot_window_delivery_rate", "Rolling-window delivery rate (0-1): distinct issues delivered / distinct issues attempted in the window, canary-excluded; 0 when no issues attempted")
+	writeType(w, "pilot_window_delivery_rate", "gauge")
+	writeGaugeLabeled(w, "pilot_window_delivery_rate", snap.WindowDeliveryRate, "window", windowLabel)
+
+	writeHelp(w, "pilot_window_attempt_success_rate", "Rolling-window per-attempt success rate (0-1): completed / (completed + failed) executions in the window. Neutral statuses (no_op, infra, skipped, declined, stalled, rate_limited) are excluded from both numerator and denominator; 0 when no completed/failed attempts")
+	writeType(w, "pilot_window_attempt_success_rate", "gauge")
+	writeGaugeLabeled(w, "pilot_window_attempt_success_rate", snap.WindowAttemptSuccessRate, "window", windowLabel)
+
 	// --- Histograms ---
 
 	// pilot_pr_time_to_merge_seconds

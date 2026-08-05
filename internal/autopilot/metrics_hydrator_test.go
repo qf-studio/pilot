@@ -1001,3 +1001,128 @@ func TestHydrateFromStore_ThroughputHistogramsExcludeCanary(t *testing.T) {
 		t.Errorf("PRTimeToMerge = %v, want 0 (canary row must be excluded)", hist.PRTimeToMerge)
 	}
 }
+
+// TestHydrateWindowStats_SeedsGaugesFromStore is GH-4735: HydrateWindowStats
+// must populate the pilot_window_* gauge fields on Metrics from a single
+// GetWindowedStats query, scoped fleet-wide ("") regardless of the
+// executions' individual project paths.
+func TestHydrateWindowStats_SeedsGaugesFromStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "ws-hydrate-1", TaskID: "TASK-1", ProjectPath: "/p1", Status: "completed",
+		CreatedAt: now, EstimatedCostUSD: 1.00,
+	}); err != nil {
+		t.Fatalf("SaveExecution 1: %v", err)
+	}
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "ws-hydrate-2", TaskID: "TASK-2", ProjectPath: "/p2", Status: "failed",
+		CreatedAt: now, EstimatedCostUSD: 0.50,
+	}); err != nil {
+		t.Fatalf("SaveExecution 2: %v", err)
+	}
+	// Outside the 30-day window: must not affect the hydrated gauges.
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "ws-hydrate-old", TaskID: "TASK-3", ProjectPath: "/p1", Status: "completed",
+		CreatedAt: now.AddDate(0, 0, -60), EstimatedCostUSD: 100.00,
+	}); err != nil {
+		t.Fatalf("SaveExecution old: %v", err)
+	}
+
+	metrics := NewMetrics()
+	if err := HydrateWindowStats(store, metrics, 30); err != nil {
+		t.Fatalf("HydrateWindowStats: %v", err)
+	}
+
+	snap := metrics.Snapshot()
+	const epsilon = 0.0001
+	if snap.WindowDays != 30 {
+		t.Errorf("WindowDays = %d, want 30", snap.WindowDays)
+	}
+	if got, want := snap.WindowCostUSD, 1.50; got < want-epsilon || got > want+epsilon {
+		t.Errorf("WindowCostUSD = %.4f, want %.4f (60-day-old row must be excluded, both projects included)", got, want)
+	}
+	if got, want := snap.WindowCostPerDeliveredUSD, 1.50; got < want-epsilon || got > want+epsilon {
+		t.Errorf("WindowCostPerDeliveredUSD = %.4f, want %.4f (1 delivered issue)", got, want)
+	}
+	if got, want := snap.WindowDeliveryRate, 0.5; got < want-epsilon || got > want+epsilon {
+		t.Errorf("WindowDeliveryRate = %.4f, want %.4f (1 delivered / 2 attempted)", got, want)
+	}
+	if got, want := snap.WindowAttemptSuccessRate, 0.5; got < want-epsilon || got > want+epsilon {
+		t.Errorf("WindowAttemptSuccessRate = %.4f, want %.4f (1 completed / (1 completed + 1 failed))", got, want)
+	}
+}
+
+// TestHydrateWindowStats_NilStoreIsNoop mirrors
+// TestHydrateFromStore_NilStoreIsNoop for the window-stats hydrator.
+func TestHydrateWindowStats_NilStoreIsNoop(t *testing.T) {
+	metrics := NewMetrics()
+	if err := HydrateWindowStats(nil, metrics, 30); err != nil {
+		t.Fatalf("HydrateWindowStats with nil store: %v", err)
+	}
+	snap := metrics.Snapshot()
+	if snap.WindowDays != 0 {
+		t.Errorf("WindowDays = %d, want 0 (no hydration with nil store)", snap.WindowDays)
+	}
+}
+
+// TestStartWindowStatsRefresher_RefreshesOnTicker is GH-4735: the background
+// refresher must re-run HydrateWindowStats on each tick so the gauges pick up
+// executions saved after the initial synchronous hydration, and the returned
+// stop function must be safe to call multiple times.
+func TestStartWindowStatsRefresher_RefreshesOnTicker(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	metrics := NewMetrics()
+	if err := HydrateWindowStats(store, metrics, 30); err != nil {
+		t.Fatalf("initial HydrateWindowStats: %v", err)
+	}
+	if got := metrics.Snapshot().WindowCostUSD; got != 0 {
+		t.Fatalf("WindowCostUSD before seeding = %.4f, want 0", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop := StartWindowStatsRefresher(ctx, store, metrics, 30, 10*time.Millisecond)
+	defer stop()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "ws-refresh-1", TaskID: "TASK-1", ProjectPath: "/p", Status: "completed",
+		CreatedAt: time.Now().UTC(), EstimatedCostUSD: 3.25,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := metrics.Snapshot().WindowCostUSD; got >= 3.25 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := metrics.Snapshot().WindowCostUSD; got < 3.25 {
+		t.Fatalf("WindowCostUSD after refresh = %.4f, want >= 3.25 (ticker must pick up the new execution)", got)
+	}
+
+	// stop must be idempotent (sync.OnceFunc-backed).
+	stop()
+}
+
+// TestStartWindowStatsRefresher_NilStoreIsNoop asserts the refresher returns
+// a harmless no-op stop function rather than panicking when store/metrics
+// are nil, mirroring the nil-guard on HydrateWindowStats itself.
+func TestStartWindowStatsRefresher_NilStoreIsNoop(t *testing.T) {
+	stop := StartWindowStatsRefresher(context.Background(), nil, NewMetrics(), 30, time.Millisecond)
+	stop() // must not panic
+}

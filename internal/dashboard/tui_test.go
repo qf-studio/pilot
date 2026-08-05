@@ -168,6 +168,10 @@ func TestRenderMetricsCards(t *testing.T) {
 	if !strings.Contains(output, "queue") {
 		t.Error("output missing queue card")
 	}
+	// GH-4735: cost card detail line carries the rolling window length.
+	if !strings.Contains(output, "30d") {
+		t.Errorf("output missing windowed cost detail (%q): %s", "30d", output)
+	}
 }
 
 func TestRenderMetricsCards_ZeroState(t *testing.T) {
@@ -345,7 +349,10 @@ func TestHydrateFromStore_LifetimeTokens(t *testing.T) {
 	// Create model — simulates a fresh restart (new session, empty token usage)
 	m := NewModelWithStore("test", store)
 
-	// Metrics card should reflect lifetime totals from executions, not session (zero)
+	// Metrics card should reflect lifetime token totals from executions, not
+	// session (zero). TotalCostUSD is GH-4735-windowed (rolling 30d default),
+	// but all rows above default to CreatedAt=now, so they fall inside the
+	// window and the value matches the lifetime sum.
 	wantInput := 60000
 	wantOutput := 30000
 	wantTotal := 90000
@@ -362,6 +369,65 @@ func TestHydrateFromStore_LifetimeTokens(t *testing.T) {
 	}
 	if math.Abs(m.metricsCard.TotalCostUSD-wantCost) > 0.001 {
 		t.Errorf("TotalCostUSD = %.4f, want %.4f", m.metricsCard.TotalCostUSD, wantCost)
+	}
+}
+
+// TestHydrateFromStore_WindowedStatsExcludeOldRows is the GH-4735 regression:
+// hydrateFromStore's cost/task-count headline numbers must be windowed
+// (rolling m.statsWindowDays), not lifetime — an execution older than the
+// window must not contribute to TotalCostUSD/TotalTasks even though it still
+// counts toward GetLifetimeTokens.
+func TestHydrateFromStore_WindowedStatsExcludeOldRows(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-window-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	oldTime := time.Now().AddDate(0, 0, -60)
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-old", TaskID: "TASK-OLD", ProjectPath: "/test",
+		Status: "completed", CreatedAt: oldTime,
+	}); err != nil {
+		t.Fatalf("SaveExecution exec-old: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&memory.ExecutionMetrics{
+		ExecutionID: "exec-old", TokensInput: 1000, TokensOutput: 500,
+		TokensTotal: 1500, EstimatedCostUSD: 5.00,
+	}); err != nil {
+		t.Fatalf("SaveExecutionMetrics exec-old: %v", err)
+	}
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-new", TaskID: "TASK-NEW", ProjectPath: "/test", Status: "completed",
+	}); err != nil {
+		t.Fatalf("SaveExecution exec-new: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&memory.ExecutionMetrics{
+		ExecutionID: "exec-new", TokensInput: 100, TokensOutput: 50,
+		TokensTotal: 150, EstimatedCostUSD: 0.25,
+	}); err != nil {
+		t.Fatalf("SaveExecutionMetrics exec-new: %v", err)
+	}
+
+	m := NewModelWithStore("test", store)
+
+	// TotalTokens is lifetime — both rows count.
+	if want := 1650; m.metricsCard.TotalTokens != want {
+		t.Errorf("TotalTokens = %d, want %d (lifetime, both rows)", m.metricsCard.TotalTokens, want)
+	}
+	// TotalCostUSD/TotalTasks are windowed (default 30d) — only exec-new counts.
+	if want := 0.25; math.Abs(m.metricsCard.TotalCostUSD-want) > 0.001 {
+		t.Errorf("TotalCostUSD = %.4f, want %.4f (windowed, excludes 60d-old row)", m.metricsCard.TotalCostUSD, want)
+	}
+	if want := 1; m.metricsCard.TotalTasks != want {
+		t.Errorf("TotalTasks = %d, want %d (windowed, excludes 60d-old row)", m.metricsCard.TotalTasks, want)
 	}
 }
 
@@ -1683,7 +1749,7 @@ func TestStoreRefreshCmd_QueriesDB(t *testing.T) {
 	}
 
 	// Run the refresh command
-	cmd := storeRefreshCmd(store, "")
+	cmd := storeRefreshCmd(store, "", defaultStatsWindowDays)
 	rawMsg := cmd()
 	msg, ok := rawMsg.(storeRefreshMsg)
 	if !ok {
@@ -1712,7 +1778,7 @@ func TestStoreRefreshCmd_QueriesDB(t *testing.T) {
 		t.Fatalf("DELETE: %v", err)
 	}
 
-	cmd = storeRefreshCmd(store, "")
+	cmd = storeRefreshCmd(store, "", defaultStatsWindowDays)
 	rawMsg = cmd()
 	msg = rawMsg.(storeRefreshMsg)
 
@@ -1754,7 +1820,7 @@ func TestStoreRefreshCmd_ProjectFilter(t *testing.T) {
 	}
 
 	// Scoped to alpha — should see only exec-a
-	cmd := storeRefreshCmd(store, "/projects/alpha")
+	cmd := storeRefreshCmd(store, "/projects/alpha", defaultStatsWindowDays)
 	msg, ok := cmd().(storeRefreshMsg)
 	if !ok {
 		t.Fatalf("expected storeRefreshMsg")
@@ -1770,7 +1836,7 @@ func TestStoreRefreshCmd_ProjectFilter(t *testing.T) {
 	}
 
 	// Unscoped — should see both
-	cmd = storeRefreshCmd(store, "")
+	cmd = storeRefreshCmd(store, "", defaultStatsWindowDays)
 	msg, ok = cmd().(storeRefreshMsg)
 	if !ok {
 		t.Fatalf("expected storeRefreshMsg")

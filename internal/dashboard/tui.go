@@ -31,6 +31,11 @@ const (
 )
 
 // MetricsCardData holds aggregated metrics for the dashboard metrics cards.
+// GH-4735: TotalCostUSD/CostPerTask and the TotalTasks/Succeeded/Failed/…
+// breakdown are sourced from Store.GetWindowedStats (a rolling window, see
+// WindowDays) rather than lifetime aggregates — only the token/cache fields
+// remain lifetime-sourced (Store.GetLifetimeTokens). Lifetime history is not
+// deleted, only these headline surfaces are windowed.
 type MetricsCardData struct {
 	TotalTokens, InputTokens, OutputTokens  int
 	CacheReadTokens, CacheWriteTokens       int
@@ -38,13 +43,23 @@ type MetricsCardData struct {
 	TotalTasks, Succeeded, Failed, Declined int
 	// TASK-358: non-failure terminal outcomes, split out of "failed".
 	NoOp, Stalled, RateLimited, Infra, Skipped int
-	TokenHistory                               []int64   // 7 days, fresh (input+output)
-	CachedTokenHistory                         []int64   // 7 days, cache read+write
-	CostHistory                                []float64 // 7 days
-	TaskHistory                                []int     // 7 days
-	SuccessHistory                             []int     // 7 days
-	FailedHistory                              []int     // 7 days
+	// WindowDays is the rolling window (days) TotalCostUSD/CostPerTask and the
+	// task breakdown above were computed over (GH-4735). Zero means the card
+	// hasn't been populated from a windowed query yet.
+	WindowDays         int
+	TokenHistory       []int64   // 7 days, fresh (input+output)
+	CachedTokenHistory []int64   // 7 days, cache read+write
+	CostHistory        []float64 // 7 days
+	TaskHistory        []int     // 7 days
+	SuccessHistory     []int     // 7 days
+	FailedHistory      []int     // 7 days
 }
+
+// defaultStatsWindowDays is the fallback rolling window (days) used for
+// windowed cost/success stats when a Model's statsWindowDays is unset (e.g.
+// a bare Model{} literal in tests). Mirrors config.DashboardConfig's default
+// (GH-4735).
+const defaultStatsWindowDays = 30
 
 // Styles (muted terminal aesthetic)
 var (
@@ -509,6 +524,11 @@ type Model struct {
 	defaultProjectPath string // Fallback project path from config (GH-2167)
 	metricsScopePath   string // Project path used to filter store/metrics queries (GH-3531)
 	gitProjectName     string // Current project name shown in git panel title (GH-2167)
+	// statsWindowDays is the rolling window (days) for windowed cost/success
+	// stats (GH-4735), set from config.DashboardConfig.StatsWindowDays via
+	// SetStatsWindowDays. 0 means unset — effectiveStatsWindowDays() falls
+	// back to defaultStatsWindowDays.
+	statsWindowDays int
 
 	// Spatial grid navigation (TASK-399): focus tracks the spatially-selected
 	// panel; zoomed opens it full-screen. See grid.go/panels.go/zoomlist.go.
@@ -589,17 +609,18 @@ type storeRefreshMsg struct {
 // NewModel creates a new dashboard model
 func NewModel(version string) Model {
 	return Model{
-		tasks:          []TaskDisplay{},
-		logs:           []string{},
-		showLogs:       true,
-		showBanner:     true,
-		completedTasks: []CompletedTask{},
-		costPerMToken:  3.0,
-		autopilotPanel: NewAutopilotPanel(nil), // Disabled by default
-		version:        version,
-		focus:          panelQueue,
-		gitGraphMode:   GitGraphVisible,
-		browserOpener:  openBrowser,
+		tasks:           []TaskDisplay{},
+		logs:            []string{},
+		showLogs:        true,
+		showBanner:      true,
+		completedTasks:  []CompletedTask{},
+		costPerMToken:   3.0,
+		autopilotPanel:  NewAutopilotPanel(nil), // Disabled by default
+		version:         version,
+		focus:           panelQueue,
+		gitGraphMode:    GitGraphVisible,
+		browserOpener:   openBrowser,
+		statsWindowDays: defaultStatsWindowDays,
 	}
 }
 
@@ -607,18 +628,19 @@ func NewModel(version string) Model {
 // Hydrates token usage and task history from the store on startup.
 func NewModelWithStore(version string, store *memory.Store) Model {
 	m := Model{
-		tasks:          []TaskDisplay{},
-		logs:           []string{},
-		showLogs:       true,
-		showBanner:     true,
-		completedTasks: []CompletedTask{},
-		costPerMToken:  3.0,
-		autopilotPanel: NewAutopilotPanel(nil),
-		version:        version,
-		store:          store,
-		focus:          panelQueue,
-		gitGraphMode:   GitGraphVisible,
-		browserOpener:  openBrowser,
+		tasks:           []TaskDisplay{},
+		logs:            []string{},
+		showLogs:        true,
+		showBanner:      true,
+		completedTasks:  []CompletedTask{},
+		costPerMToken:   3.0,
+		autopilotPanel:  NewAutopilotPanel(nil),
+		version:         version,
+		store:           store,
+		focus:           panelQueue,
+		gitGraphMode:    GitGraphVisible,
+		browserOpener:   openBrowser,
+		statsWindowDays: defaultStatsWindowDays,
 	}
 	m.hydrateFromStore()
 	return m
@@ -627,35 +649,37 @@ func NewModelWithStore(version string, store *memory.Store) Model {
 // NewModelWithAutopilot creates a dashboard model with autopilot integration.
 func NewModelWithAutopilot(version string, controller *autopilot.Controller) Model {
 	return Model{
-		tasks:          []TaskDisplay{},
-		logs:           []string{},
-		showLogs:       true,
-		showBanner:     true,
-		completedTasks: []CompletedTask{},
-		costPerMToken:  3.0,
-		autopilotPanel: NewAutopilotPanel(controller),
-		version:        version,
-		focus:          panelQueue,
-		gitGraphMode:   GitGraphVisible,
-		browserOpener:  openBrowser,
+		tasks:           []TaskDisplay{},
+		logs:            []string{},
+		showLogs:        true,
+		showBanner:      true,
+		completedTasks:  []CompletedTask{},
+		costPerMToken:   3.0,
+		autopilotPanel:  NewAutopilotPanel(controller),
+		version:         version,
+		focus:           panelQueue,
+		gitGraphMode:    GitGraphVisible,
+		browserOpener:   openBrowser,
+		statsWindowDays: defaultStatsWindowDays,
 	}
 }
 
 // NewModelWithStoreAndAutopilot creates a fully-featured dashboard model.
 func NewModelWithStoreAndAutopilot(version string, store *memory.Store, controller *autopilot.Controller) Model {
 	m := Model{
-		tasks:          []TaskDisplay{},
-		logs:           []string{},
-		showLogs:       true,
-		showBanner:     true,
-		completedTasks: []CompletedTask{},
-		costPerMToken:  3.0,
-		autopilotPanel: NewAutopilotPanel(controller),
-		version:        version,
-		store:          store,
-		focus:          panelQueue,
-		gitGraphMode:   GitGraphVisible,
-		browserOpener:  openBrowser,
+		tasks:           []TaskDisplay{},
+		logs:            []string{},
+		showLogs:        true,
+		showBanner:      true,
+		completedTasks:  []CompletedTask{},
+		costPerMToken:   3.0,
+		autopilotPanel:  NewAutopilotPanel(controller),
+		version:         version,
+		store:           store,
+		focus:           panelQueue,
+		gitGraphMode:    GitGraphVisible,
+		browserOpener:   openBrowser,
+		statsWindowDays: defaultStatsWindowDays,
 	}
 	m.hydrateFromStore()
 	return m
@@ -705,7 +729,7 @@ func (m *Model) hydrateFromStore() {
 		return
 	}
 
-	// Initialize metrics card from lifetime execution data (survives restarts).
+	// Token/cache totals remain lifetime-sourced (survives restarts, not windowed).
 	// Session tokens only track the current process; executions table has the real totals.
 	lifetime, err := m.store.GetLifetimeTokens(m.metricsScopePath)
 	if err != nil {
@@ -716,24 +740,29 @@ func (m *Model) hydrateFromStore() {
 		m.metricsCard.OutputTokens = int(lifetime.OutputTokens)
 		m.metricsCard.CacheReadTokens = int(lifetime.CacheReadTokens)
 		m.metricsCard.CacheWriteTokens = int(lifetime.CacheWriteTokens)
-		m.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
 	}
 
-	// Initialize task counts from lifetime data (survives restarts).
-	// Previous code sampled from GetRecentExecutions(20), showing only last 20 results.
-	taskCounts, err := m.store.GetLifetimeTaskCounts(m.metricsScopePath)
+	// GH-4735: cost and task-count headline numbers are windowed (rolling
+	// m.statsWindowDays) rather than lifetime — lifetime history is not
+	// deleted, only these cards are windowed. Both the cost card and the
+	// 9-way task breakdown come from this single GetWindowedStats call.
+	since := time.Now().AddDate(0, 0, -m.effectiveStatsWindowDays())
+	ws, err := m.store.GetWindowedStats(m.metricsScopePath, since)
 	if err != nil {
-		slog.Warn("failed to load lifetime task counts", slog.Any("error", err))
+		slog.Warn("failed to load windowed stats", slog.Any("error", err))
 	} else {
-		m.metricsCard.TotalTasks = taskCounts.Total
-		m.metricsCard.Succeeded = taskCounts.Succeeded
-		m.metricsCard.Failed = taskCounts.Failed
-		m.metricsCard.Declined = taskCounts.Declined
-		m.metricsCard.NoOp = taskCounts.NoOp
-		m.metricsCard.Stalled = taskCounts.Stalled
-		m.metricsCard.RateLimited = taskCounts.RateLimited
-		m.metricsCard.Infra = taskCounts.Infra
-		m.metricsCard.Skipped = taskCounts.Skipped
+		m.metricsCard.TotalCostUSD = ws.TotalCostUSD
+		m.metricsCard.CostPerTask = ws.CostPerDelivered
+		m.metricsCard.WindowDays = m.effectiveStatsWindowDays()
+		m.metricsCard.TotalTasks = ws.AttemptTotal
+		m.metricsCard.Succeeded = ws.AttemptCompleted
+		m.metricsCard.Failed = ws.AttemptFailed
+		m.metricsCard.Declined = ws.AttemptDeclined
+		m.metricsCard.NoOp = ws.AttemptNoOp
+		m.metricsCard.Stalled = ws.AttemptStalled
+		m.metricsCard.RateLimited = ws.AttemptRateLimited
+		m.metricsCard.Infra = ws.AttemptInfra
+		m.metricsCard.Skipped = ws.AttemptSkipped
 	}
 
 	// Populate history panel from the 5 most recent DISTINCT tasks. A single task
@@ -766,11 +795,6 @@ func (m *Model) hydrateFromStore() {
 			Stage:       hs.Stage,
 			PRUrl:       exec.PRUrl,
 		})
-	}
-
-	// Compute cost per task
-	if m.metricsCard.TotalTasks > 0 {
-		m.metricsCard.CostPerTask = m.metricsCard.TotalCostUSD / float64(m.metricsCard.TotalTasks)
 	}
 
 	// Load sparkline history
@@ -898,19 +922,20 @@ func (m *Model) loadMetricsHistory() {
 // NewModelWithOptions creates a dashboard model with all options including upgrade support.
 func NewModelWithOptions(version string, store *memory.Store, controller *autopilot.Controller, upgradeCh chan<- struct{}) Model {
 	m := Model{
-		tasks:          []TaskDisplay{},
-		logs:           []string{},
-		showLogs:       true,
-		showBanner:     true,
-		completedTasks: []CompletedTask{},
-		costPerMToken:  3.0,
-		autopilotPanel: NewAutopilotPanel(controller),
-		version:        version,
-		store:          store,
-		upgradeCh:      upgradeCh,
-		focus:          panelQueue,
-		gitGraphMode:   GitGraphVisible,
-		browserOpener:  openBrowser,
+		tasks:           []TaskDisplay{},
+		logs:            []string{},
+		showLogs:        true,
+		showBanner:      true,
+		completedTasks:  []CompletedTask{},
+		costPerMToken:   3.0,
+		autopilotPanel:  NewAutopilotPanel(controller),
+		version:         version,
+		store:           store,
+		upgradeCh:       upgradeCh,
+		focus:           panelQueue,
+		gitGraphMode:    GitGraphVisible,
+		browserOpener:   openBrowser,
+		statsWindowDays: defaultStatsWindowDays,
 	}
 	m.hydrateFromStore()
 	return m
@@ -935,6 +960,25 @@ func (m *Model) SetProjectPath(path string) {
 // Defaults to the value passed to SetProjectPath when not set explicitly.
 func (m *Model) SetMetricsScopePath(path string) {
 	m.metricsScopePath = path
+}
+
+// SetStatsWindowDays sets the rolling window (days) used for windowed
+// cost/success stats (GH-4735), sourced from config.DashboardConfig.StatsWindowDays.
+// Called post-construction like SetProjectPath/SetMetricsScopePath, so the
+// initial hydrateFromStore() during construction uses defaultStatsWindowDays
+// until the next periodic refresh — this mirrors the existing accepted
+// imprecision for metricsScopePath.
+func (m *Model) SetStatsWindowDays(days int) {
+	m.statsWindowDays = days
+}
+
+// effectiveStatsWindowDays returns m.statsWindowDays, falling back to
+// defaultStatsWindowDays when unset (e.g. a bare Model{} literal in tests).
+func (m *Model) effectiveStatsWindowDays() int {
+	if m.statsWindowDays <= 0 {
+		return defaultStatsWindowDays
+	}
+	return m.statsWindowDays
 }
 
 // RenderBannerForTest exposes renderBanner for cross-package tests
@@ -1068,7 +1112,7 @@ const splashFramesTotal = 10
 
 // storeRefreshCmd queries SQLite for current execution state (GH-2248).
 // Runs asynchronously so the TUI never blocks on DB I/O.
-func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
+func storeRefreshCmd(store *memory.Store, projectPath string, windowDays int) tea.Cmd {
 	return func() tea.Msg {
 		msg := storeRefreshMsg{}
 
@@ -1112,26 +1156,30 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 			msg.metricsCard.OutputTokens = int(lifetime.OutputTokens)
 			msg.metricsCard.CacheReadTokens = int(lifetime.CacheReadTokens)
 			msg.metricsCard.CacheWriteTokens = int(lifetime.CacheWriteTokens)
-			msg.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
 		}
 
-		taskCounts, err := store.GetLifetimeTaskCounts(projectPath)
+		// GH-4735: cost and task-count headline numbers are windowed (rolling
+		// windowDays) rather than lifetime — matches hydrateFromStore. This
+		// periodic refresh (every 5th tick) is what corrects the optimistic
+		// in-session increments applied by updateTokensMsg/addCompletedTaskMsg
+		// back to the true windowed values.
+		since := time.Now().AddDate(0, 0, -windowDays)
+		ws, err := store.GetWindowedStats(projectPath, since)
 		if err != nil {
-			slog.Warn("store refresh: failed to load task counts", slog.Any("error", err))
+			slog.Warn("store refresh: failed to load windowed stats", slog.Any("error", err))
 		} else {
-			msg.metricsCard.TotalTasks = taskCounts.Total
-			msg.metricsCard.Succeeded = taskCounts.Succeeded
-			msg.metricsCard.Failed = taskCounts.Failed
-			msg.metricsCard.Declined = taskCounts.Declined
-			msg.metricsCard.NoOp = taskCounts.NoOp
-			msg.metricsCard.Stalled = taskCounts.Stalled
-			msg.metricsCard.RateLimited = taskCounts.RateLimited
-			msg.metricsCard.Infra = taskCounts.Infra
-			msg.metricsCard.Skipped = taskCounts.Skipped
-		}
-
-		if msg.metricsCard.TotalTasks > 0 {
-			msg.metricsCard.CostPerTask = msg.metricsCard.TotalCostUSD / float64(msg.metricsCard.TotalTasks)
+			msg.metricsCard.TotalCostUSD = ws.TotalCostUSD
+			msg.metricsCard.CostPerTask = ws.CostPerDelivered
+			msg.metricsCard.WindowDays = windowDays
+			msg.metricsCard.TotalTasks = ws.AttemptTotal
+			msg.metricsCard.Succeeded = ws.AttemptCompleted
+			msg.metricsCard.Failed = ws.AttemptFailed
+			msg.metricsCard.Declined = ws.AttemptDeclined
+			msg.metricsCard.NoOp = ws.AttemptNoOp
+			msg.metricsCard.Stalled = ws.AttemptStalled
+			msg.metricsCard.RateLimited = ws.AttemptRateLimited
+			msg.metricsCard.Infra = ws.AttemptInfra
+			msg.metricsCard.Skipped = ws.AttemptSkipped
 		}
 
 		return msg
@@ -1158,7 +1206,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// GH-2248: Re-sync history and metrics from SQLite every 5 seconds
 		// so external DB changes (orphan cleanup, manual edits) are reflected.
 		if m.store != nil && m.dbSyncTick%5 == 0 {
-			return m, tea.Batch(tickCmd(), storeRefreshCmd(m.store, m.metricsScopePath))
+			return m, tea.Batch(tickCmd(), storeRefreshCmd(m.store, m.metricsScopePath, m.effectiveStatsWindowDays()))
 		}
 		return m, tickCmd()
 
@@ -1205,6 +1253,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case updateTokensMsg:
+		// GH-4735: this optimistically increments the (now windowed)
+		// TotalCostUSD/CostPerTask for immediate in-session feedback. It is
+		// not window-aware — it just adds today's delta — so it can drift
+		// from the true windowed value until the next every-5th-tick
+		// storeRefreshCmd re-query converges it back to GetWindowedStats.
 		// Calculate delta and persist to session
 		inputDelta := msg.InputTokens - m.tokenUsage.InputTokens
 		outputDelta := msg.OutputTokens - m.tokenUsage.OutputTokens
@@ -1233,6 +1286,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.completedTasks = append(m.completedTasks, CompletedTask(msg))
 		m.completedTasks = lastNDistinctByTask(m.completedTasks, 5)
 
+		// GH-4735: like updateTokensMsg, this optimistically bumps the
+		// (windowed) task counters for immediate feedback; it is corrected
+		// by the next periodic storeRefreshCmd re-query against
+		// GetWindowedStats, same convergence pattern as TotalCostUSD above.
 		// Update metrics card task counters
 		m.metricsCard.TotalTasks++
 		if CompletedTask(msg).Status == "success" {
@@ -1913,8 +1970,14 @@ func (m Model) renderTokenCard(cw int) string {
 
 // renderCostCard renders the cumulative-cost stat card with 7-day cost trend.
 func (m Model) renderCostCard(cw int) string {
+	// GH-4735: cost card is windowed (rolling m.statsWindowDays) — value is
+	// window TotalCostUSD, detail is $/delivered-issue over the same window.
+	windowDays := m.metricsCard.WindowDays
+	if windowDays <= 0 {
+		windowDays = m.effectiveStatsWindowDays()
+	}
 	value := costStyle.Render(fmt.Sprintf("$%.2f", m.metricsCard.TotalCostUSD))
-	detail := dimStyle.Render(fmt.Sprintf("~$%.2f/task", m.metricsCard.CostPerTask))
+	detail := dimStyle.Render(fmt.Sprintf("~$%.2f/issue · %dd", m.metricsCard.CostPerTask, windowDays))
 	return buildStatCard("cost", value, detail, m.metricsCard.CostHistory, gromTheme.Success, cw)
 }
 

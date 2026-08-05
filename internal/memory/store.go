@@ -3633,6 +3633,10 @@ type LifetimeTokens struct {
 // Rows with zero tokens (dispatcher queue rows, early-failure rows) are excluded so they
 // don't dilute per-task averages.
 // If projectPath is non-empty, only executions for that project are counted.
+// GH-4735: canary sandbox executions are excluded, matching every other
+// lifetime aggregate (GetLifetimeTaskCounts, GetIssueLevelCounts, etc.) —
+// this was the only lifetime aggregate the GH-4240/TASK-436 canary-filter
+// wave missed.
 func (s *Store) GetLifetimeTokens(projectPath string) (*LifetimeTokens, error) {
 	q := `
 		SELECT
@@ -3643,7 +3647,7 @@ func (s *Store) GetLifetimeTokens(projectPath string) (*LifetimeTokens, error) {
 			COALESCE(SUM(tokens_cache_write), 0),
 			COALESCE(SUM(estimated_cost_usd), 0)
 		FROM executions
-		WHERE tokens_total > 0`
+		WHERE tokens_total > 0 AND COALESCE(is_canary, 0) = 0`
 	var row *sql.Row
 	if projectPath != "" {
 		row = s.db.QueryRow(q+` AND project_path = ?`, projectPath)
@@ -3712,6 +3716,101 @@ func (s *Store) GetLifetimeTaskCounts(projectPath string) (*LifetimeTaskCounts, 
 		return nil, fmt.Errorf("failed to get lifetime task counts: %w", err)
 	}
 	return &tc, nil
+}
+
+// WindowedStats holds cost/success stats over a rolling time window
+// (GH-4735), replacing the lifetime-flavored headline numbers that blend
+// model eras. All fields are computed from a single population — every
+// execution row with created_at >= since, COALESCE(is_canary, 0) = 0, and
+// (if projectPath is non-empty) project_path = projectPath — so unlike
+// GetLifetimeTokens/GetLifetimeTaskCounts (mismatched populations: one
+// filters tokens_total, the other doesn't) there is no cross-aggregate
+// population drift.
+//
+// "Issue" below means one distinct (task_id, project_path) pair, deduped
+// across retry attempts (mirrors IssueLevelCounts). IssuesAttempted counts
+// distinct issues having >= 1 execution with status IN ('completed',
+// 'failed') in the window — this is a deliberate simplification: an issue
+// whose only window activity is a neutral terminal status (no_op, infra,
+// skipped, declined, stalled, rate_limited) counts nowhere (not attempted,
+// not delivered), since none of those outcomes represent a real attempt at
+// shipping. TotalCostUSD sums estimated_cost_usd across ALL executions in
+// the window regardless of status — a failed retry that burned tokens is
+// real spend and must not be dropped from the cost total.
+type WindowedStats struct {
+	WindowDays int
+
+	TotalCostUSD     float64 // SUM(estimated_cost_usd), all executions in window (canary-excluded)
+	IssuesAttempted  int     // distinct issues with >= 1 completed-or-failed execution in window
+	IssuesDelivered  int     // distinct issues with >= 1 completed execution in window
+	CostPerDelivered float64 // TotalCostUSD / IssuesDelivered, 0 when IssuesDelivered == 0
+
+	AttemptCompleted   int     // executions with status = 'completed' in window
+	AttemptFailed      int     // executions with status = 'failed' in window
+	AttemptSuccessRate float64 // AttemptCompleted / (AttemptCompleted + AttemptFailed), 0 when both are 0
+	DeliveryRate       float64 // IssuesDelivered / IssuesAttempted, 0 when IssuesAttempted == 0
+
+	// AttemptTotal and the neutral-status buckets below give the TUI queue
+	// card's windowed 9-way breakdown (mirrors LifetimeTaskCounts), computed
+	// in the same query/population as everything above. These are per-attempt
+	// row counts, not deduped-by-issue like IssuesAttempted/IssuesDelivered.
+	AttemptTotal       int // all executions in window (canary-excluded), any status
+	AttemptDeclined    int
+	AttemptNoOp        int
+	AttemptStalled     int
+	AttemptRateLimited int
+	AttemptInfra       int
+	AttemptSkipped     int
+}
+
+// GetWindowedStats returns cost/success stats for executions with
+// created_at >= since. If projectPath is non-empty, only executions for
+// that project are counted. See WindowedStats for the exact population and
+// neutral-status handling. GH-4735: replaces lifetime headline numbers,
+// which blend model eras and mismatch aggregate populations.
+func (s *Store) GetWindowedStats(projectPath string, since time.Time) (WindowedStats, error) {
+	const cols = `
+		SELECT
+			COALESCE(SUM(estimated_cost_usd), 0),
+			COUNT(DISTINCT CASE WHEN status IN ('completed', 'failed') THEN task_id || '|' || project_path END),
+			COUNT(DISTINCT CASE WHEN status = 'completed' THEN task_id || '|' || project_path END),
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'no_op' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'stalled' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'infra' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0)
+		FROM executions
+		WHERE created_at >= ? AND COALESCE(is_canary, 0) = 0`
+
+	var row *sql.Row
+	if projectPath != "" {
+		row = s.db.QueryRow(cols+` AND project_path = ?`, since, projectPath)
+	} else {
+		row = s.db.QueryRow(cols, since)
+	}
+
+	var ws WindowedStats
+	if err := row.Scan(&ws.TotalCostUSD, &ws.IssuesAttempted, &ws.IssuesDelivered, &ws.AttemptTotal,
+		&ws.AttemptCompleted, &ws.AttemptFailed, &ws.AttemptDeclined, &ws.AttemptNoOp,
+		&ws.AttemptStalled, &ws.AttemptRateLimited, &ws.AttemptInfra, &ws.AttemptSkipped); err != nil {
+		return WindowedStats{}, fmt.Errorf("failed to get windowed stats: %w", err)
+	}
+
+	if ws.IssuesDelivered > 0 {
+		ws.CostPerDelivered = ws.TotalCostUSD / float64(ws.IssuesDelivered)
+	}
+	if ws.IssuesAttempted > 0 {
+		ws.DeliveryRate = float64(ws.IssuesDelivered) / float64(ws.IssuesAttempted)
+	}
+	if attemptTotal := ws.AttemptCompleted + ws.AttemptFailed; attemptTotal > 0 {
+		ws.AttemptSuccessRate = float64(ws.AttemptCompleted) / float64(attemptTotal)
+	}
+
+	return ws, nil
 }
 
 // IssueLevelCounts holds unique-issue outcome counts, deduped by task_id

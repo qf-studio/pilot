@@ -550,6 +550,62 @@ func TestConfig_Validate_BudgetBounds(t *testing.T) {
 	}
 }
 
+// GH-4735: Validate dashboard.stats_window_days >= 1.
+func TestConfig_Validate_DashboardStatsWindowDays(t *testing.T) {
+	tests := []struct {
+		name      string
+		dashboard *DashboardConfig
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:      "nil dashboard config is valid",
+			dashboard: nil,
+			wantErr:   false,
+		},
+		{
+			name:      "default window (30) is valid",
+			dashboard: &DashboardConfig{StatsWindowDays: 30},
+			wantErr:   false,
+		},
+		{
+			name:      "minimum window (1) is valid",
+			dashboard: &DashboardConfig{StatsWindowDays: 1},
+			wantErr:   false,
+		},
+		{
+			name:      "zero window is invalid",
+			dashboard: &DashboardConfig{StatsWindowDays: 0},
+			wantErr:   true,
+			errSubstr: "dashboard.stats_window_days must be >= 1",
+		},
+		{
+			name:      "negative window is invalid",
+			dashboard: &DashboardConfig{StatsWindowDays: -5},
+			wantErr:   true,
+			errSubstr: "dashboard.stats_window_days must be >= 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Dashboard = tt.dashboard
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
+				} else if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // GH-3930: Validate release.publish enum at the global, per-environment, and
 // per-project overlay levels.
 func TestConfig_Validate_ReleasePublish(t *testing.T) {
