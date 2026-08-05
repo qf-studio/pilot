@@ -487,6 +487,18 @@ deploys → S3 exit test. Brand/visual pass = founder taste call. 14:00Z train w
   **#98 C9** (`prometheus/client_golang` sanctioned, private registry, `/metrics` gated on
   `cfg.APIToken` bearer; the 4 design-doc instruments `sync_lag_seconds` / `card_ops_pending` /
   `sync_conflicts_total` / `orphaned_links`).
+- **Same-day execution**: console#95 (C5) dispatch→PR#99→**MERGED 10:19Z** (23 min to PR, CI green,
+  Navigator-reviewed against all 8 ACs; nit journaled in archived TASK-442: duplicate canonical in a
+  PUT payload 500s not 400s). #96 (C6) picked up 10:20:43Z. **UI wave dispatched 10:5xZ in the idle
+  pilot-console-ui lane** (runs in parallel — workers serialize per project): **ui#44** (TASK-446,
+  httpAdapter un-stub — only 7 of 10 stubs have merged backing; `listCardComments` (no read model),
+  `createInTracker` (C8 in flight), `decideCard` (C14) stay 501 with honest messages; wire DTOs
+  embedded verbatim from console `b98873e`, incl. the two shape traps: POST comment returns
+  `{"status":"queued"}` not a comment, POST retry returns `{"status":"pending"}` not an op; + 409→
+  BoardConflictError / 412→CardUnlinkedError translation, drawer resilience, 30s board polling) →
+  **ui#45** (TASK-447, status-map editor: inline ConnectionsView panel, 7 fixed rows, primary as a
+  derived radio-group per shared providerState so the 409 is unconstructible from the UI, GitHub
+  restore-defaults seed, mock validation parity).
 - **Spec ground truth re-verified before authoring** (2 research agents): console `f1658e3`,
   studio-sdk `acee519`/v0.31.2. Sharpest SDK facts folded into the specs: **no exported taxonomy
   enumerator** (Linear workflow-states + GitHub project-options queries are unexported → seeding is

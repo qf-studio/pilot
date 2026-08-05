@@ -94,7 +94,7 @@ Sequencing: rules package (pure, tested) → store methods → ingest hook → C
 
 ## Refs
 
-- **Status**: 🚀 Dispatched to Pilot 2026-08-05 · Pilot issue: https://github.com/qf-studio/pilot-console/issues/95 (labels: pilot, no-decompose; head of the wave-3 chain #95→#96→#97→#98)
+- **Status**: ✅ **MERGED 2026-08-05 10:19Z** — PR https://github.com/qf-studio/pilot-console/pull/99 (dispatch→PR 23 min, CI green, reviewed by Navigator against all 8 ACs, squash-merged). Follow-up nit (non-blocking, unfiled): duplicate `canonicalStatus` within a PUT payload hits the PK constraint → 500; a pre-validation loop would make it 400. Chain: #96 (C6) picked up 10:20:43Z.
 - Depends on (merged): console#87 (C1) · #88 (C2) · #92 (C7) · #93 (C3) · #94 (C4)
 - Canonical design: `qf-studio/pilot` `.agent/system/saas-kanban-sync-design.md` §5 (status mapping, seed rules) — embedded above
 - SDK facts verified 2026-08-05 at `studio-sdk` `acee519` / tag `v0.31.2`; console facts at `pilot-console` `f1658e3`
