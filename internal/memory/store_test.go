@@ -1920,6 +1920,74 @@ func TestGetLifetimeTokens(t *testing.T) {
 	}
 }
 
+// TestGetLifetimeTokens_ExcludesCanarySameProject is GH-4735: GetLifetimeTokens
+// was the only lifetime aggregate missing the `COALESCE(is_canary, 0) = 0`
+// filter (GH-4240/TASK-436 wave). Mirrors
+// TestGetLifetimeTaskCounts_ExcludesCanarySameProject — seeds one real and
+// one canary row on the SAME project so the assertion exercises the
+// is_canary predicate itself, not incidental project-path scoping.
+func TestGetLifetimeTokens_ExcludesCanarySameProject(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const project = "/project/same-canary-tokens"
+
+	if err := store.SaveExecution(&Execution{
+		ID:          "exec-ltc-real",
+		TaskID:      "TASK-LTC-REAL",
+		ProjectPath: project,
+		Status:      "completed",
+		IsCanary:    false,
+	}); err != nil {
+		t.Fatalf("SaveExecution real: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&ExecutionMetrics{
+		ExecutionID: "exec-ltc-real", TokensTotal: 4000, EstimatedCostUSD: 0.30,
+	}); err != nil {
+		t.Fatalf("SaveExecutionMetrics real: %v", err)
+	}
+
+	if err := store.SaveExecution(&Execution{
+		ID:          "exec-ltc-canary",
+		TaskID:      "TASK-LTC-CANARY",
+		ProjectPath: project,
+		Status:      "completed",
+		IsCanary:    true,
+	}); err != nil {
+		t.Fatalf("SaveExecution canary: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&ExecutionMetrics{
+		ExecutionID: "exec-ltc-canary", TokensTotal: 9000, EstimatedCostUSD: 5.00,
+	}); err != nil {
+		t.Fatalf("SaveExecutionMetrics canary: %v", err)
+	}
+
+	lt, err := store.GetLifetimeTokens(project)
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens: %v", err)
+	}
+	if lt.TotalTokens != 4000 {
+		t.Errorf("scoped TotalTokens = %d, want 4000 (is_canary=1 row must be excluded)", lt.TotalTokens)
+	}
+	if lt.TotalCostUSD != 0.30 {
+		t.Errorf("scoped TotalCostUSD = %.4f, want 0.3000 (is_canary=1 row must be excluded)", lt.TotalCostUSD)
+	}
+
+	ltAll, err := store.GetLifetimeTokens("")
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens(all): %v", err)
+	}
+	if ltAll.TotalTokens != 4000 {
+		t.Errorf("unfiltered TotalTokens = %d, want 4000 (is_canary=1 row must be excluded)", ltAll.TotalTokens)
+	}
+	if ltAll.TotalCostUSD != 0.30 {
+		t.Errorf("unfiltered TotalCostUSD = %.4f, want 0.3000 (is_canary=1 row must be excluded)", ltAll.TotalCostUSD)
+	}
+}
+
 func TestGetLifetimeTokens_CacheFields(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -2097,6 +2165,237 @@ func TestGetLifetimeTaskCounts_ExcludesCanarySameProject(t *testing.T) {
 	}
 	if tcAll.Total != 1 {
 		t.Errorf("unfiltered Total = %d, want 1 (is_canary=1 row must be excluded)", tcAll.Total)
+	}
+}
+
+// TestGetWindowedStats_InsideVsOutsideWindow is GH-4735: a row just inside the
+// window boundary must count, a row before it must not.
+func TestGetWindowedStats_InsideVsOutsideWindow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	since := now.AddDate(0, 0, -30)
+
+	if err := store.SaveExecution(&Execution{
+		ID: "ws-in", TaskID: "T-IN", ProjectPath: "/p", Status: "completed",
+		CreatedAt: since.Add(time.Hour), EstimatedCostUSD: 1.00,
+	}); err != nil {
+		t.Fatalf("SaveExecution in-window: %v", err)
+	}
+	if err := store.SaveExecution(&Execution{
+		ID: "ws-out", TaskID: "T-OUT", ProjectPath: "/p", Status: "completed",
+		CreatedAt: since.Add(-time.Hour), EstimatedCostUSD: 100.00,
+	}); err != nil {
+		t.Fatalf("SaveExecution out-of-window: %v", err)
+	}
+
+	ws, err := store.GetWindowedStats("", since)
+	if err != nil {
+		t.Fatalf("GetWindowedStats: %v", err)
+	}
+	if ws.TotalCostUSD != 1.00 {
+		t.Errorf("TotalCostUSD = %.2f, want 1.00 (out-of-window row must be excluded)", ws.TotalCostUSD)
+	}
+	if ws.IssuesDelivered != 1 {
+		t.Errorf("IssuesDelivered = %d, want 1", ws.IssuesDelivered)
+	}
+	if ws.AttemptTotal != 1 {
+		t.Errorf("AttemptTotal = %d, want 1", ws.AttemptTotal)
+	}
+}
+
+// TestGetWindowedStats_ExcludesCanary is GH-4735: canary rows must not enter
+// any aggregate, even when they fall inside the window.
+func TestGetWindowedStats_ExcludesCanary(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	since := time.Now().UTC().AddDate(0, 0, -30)
+
+	if err := store.SaveExecution(&Execution{
+		ID: "ws-real", TaskID: "T-REAL", ProjectPath: "/p", Status: "completed",
+		CreatedAt: since.Add(time.Hour), EstimatedCostUSD: 2.00,
+	}); err != nil {
+		t.Fatalf("SaveExecution real: %v", err)
+	}
+	if err := store.SaveExecution(&Execution{
+		ID: "ws-canary", TaskID: "T-CANARY", ProjectPath: "/p", Status: "completed",
+		CreatedAt: since.Add(time.Hour), EstimatedCostUSD: 50.00, IsCanary: true,
+	}); err != nil {
+		t.Fatalf("SaveExecution canary: %v", err)
+	}
+
+	ws, err := store.GetWindowedStats("", since)
+	if err != nil {
+		t.Fatalf("GetWindowedStats: %v", err)
+	}
+	if ws.TotalCostUSD != 2.00 {
+		t.Errorf("TotalCostUSD = %.2f, want 2.00 (canary row must be excluded)", ws.TotalCostUSD)
+	}
+	if ws.IssuesDelivered != 1 {
+		t.Errorf("IssuesDelivered = %d, want 1 (canary row must be excluded)", ws.IssuesDelivered)
+	}
+}
+
+// TestGetWindowedStats_RetryCostSummedIssueCountsOnce is GH-4735: a task
+// retried twice before shipping must sum all three rows' cost into
+// TotalCostUSD (a failed retry that burned tokens is real spend) while
+// counting as exactly one delivered issue.
+func TestGetWindowedStats_RetryCostSummedIssueCountsOnce(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	since := time.Now().UTC().AddDate(0, 0, -30)
+	inWindow := since.Add(time.Hour)
+
+	execs := []*Execution{
+		{ID: "retry-1", TaskID: "T-RETRY", ProjectPath: "/p", Status: "failed", CreatedAt: inWindow, EstimatedCostUSD: 0.50},
+		{ID: "retry-2", TaskID: "T-RETRY", ProjectPath: "/p", Status: "failed", CreatedAt: inWindow, EstimatedCostUSD: 0.75},
+		{ID: "retry-3", TaskID: "T-RETRY", ProjectPath: "/p", Status: "completed", CreatedAt: inWindow, EstimatedCostUSD: 1.25},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.ID, err)
+		}
+	}
+
+	ws, err := store.GetWindowedStats("", since)
+	if err != nil {
+		t.Fatalf("GetWindowedStats: %v", err)
+	}
+	if ws.TotalCostUSD != 2.50 {
+		t.Errorf("TotalCostUSD = %.2f, want 2.50 (all 3 retry rows must be summed)", ws.TotalCostUSD)
+	}
+	if ws.IssuesAttempted != 1 {
+		t.Errorf("IssuesAttempted = %d, want 1 (retries dedupe to one issue)", ws.IssuesAttempted)
+	}
+	if ws.IssuesDelivered != 1 {
+		t.Errorf("IssuesDelivered = %d, want 1", ws.IssuesDelivered)
+	}
+	if ws.CostPerDelivered != 2.50 {
+		t.Errorf("CostPerDelivered = %.2f, want 2.50", ws.CostPerDelivered)
+	}
+	if ws.AttemptCompleted != 1 || ws.AttemptFailed != 2 {
+		t.Errorf("AttemptCompleted=%d AttemptFailed=%d, want 1/2", ws.AttemptCompleted, ws.AttemptFailed)
+	}
+}
+
+// TestGetWindowedStats_NeutralStatusExcluded is GH-4735: an issue whose only
+// window activity is a neutral terminal status (no_op here) must not be
+// counted in IssuesAttempted, IssuesDelivered, or AttemptSuccessRate's
+// denominator.
+func TestGetWindowedStats_NeutralStatusExcluded(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	since := time.Now().UTC().AddDate(0, 0, -30)
+	inWindow := since.Add(time.Hour)
+
+	if err := store.SaveExecution(&Execution{
+		ID: "neutral-noop", TaskID: "T-NOOP", ProjectPath: "/p", Status: "no_op", CreatedAt: inWindow,
+	}); err != nil {
+		t.Fatalf("SaveExecution no_op: %v", err)
+	}
+	if err := store.SaveExecution(&Execution{
+		ID: "neutral-real", TaskID: "T-REAL2", ProjectPath: "/p", Status: "completed", CreatedAt: inWindow, EstimatedCostUSD: 1.00,
+	}); err != nil {
+		t.Fatalf("SaveExecution completed: %v", err)
+	}
+
+	ws, err := store.GetWindowedStats("", since)
+	if err != nil {
+		t.Fatalf("GetWindowedStats: %v", err)
+	}
+	if ws.IssuesAttempted != 1 {
+		t.Errorf("IssuesAttempted = %d, want 1 (no_op-only issue counts nowhere)", ws.IssuesAttempted)
+	}
+	if ws.IssuesDelivered != 1 {
+		t.Errorf("IssuesDelivered = %d, want 1", ws.IssuesDelivered)
+	}
+	if ws.AttemptNoOp != 1 {
+		t.Errorf("AttemptNoOp = %d, want 1", ws.AttemptNoOp)
+	}
+	if ws.AttemptSuccessRate != 1.0 {
+		t.Errorf("AttemptSuccessRate = %.2f, want 1.00 (no_op excluded from denominator)", ws.AttemptSuccessRate)
+	}
+	// AttemptTotal counts every row regardless of status, unlike IssuesAttempted.
+	if ws.AttemptTotal != 2 {
+		t.Errorf("AttemptTotal = %d, want 2", ws.AttemptTotal)
+	}
+}
+
+// TestGetWindowedStats_ProjectFilter is GH-4735: project scoping must apply
+// identically to every aggregate, matching GetLifetimeTaskCounts's pattern.
+func TestGetWindowedStats_ProjectFilter(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	since := time.Now().UTC().AddDate(0, 0, -30)
+	inWindow := since.Add(time.Hour)
+
+	if err := store.SaveExecution(&Execution{
+		ID: "pf-a", TaskID: "T-A", ProjectPath: "/project-a", Status: "completed", CreatedAt: inWindow, EstimatedCostUSD: 1.00,
+	}); err != nil {
+		t.Fatalf("SaveExecution a: %v", err)
+	}
+	if err := store.SaveExecution(&Execution{
+		ID: "pf-b", TaskID: "T-B", ProjectPath: "/project-b", Status: "completed", CreatedAt: inWindow, EstimatedCostUSD: 9.00,
+	}); err != nil {
+		t.Fatalf("SaveExecution b: %v", err)
+	}
+
+	ws, err := store.GetWindowedStats("/project-a", since)
+	if err != nil {
+		t.Fatalf("GetWindowedStats: %v", err)
+	}
+	if ws.TotalCostUSD != 1.00 {
+		t.Errorf("TotalCostUSD = %.2f, want 1.00 (project filter must exclude /project-b)", ws.TotalCostUSD)
+	}
+	if ws.IssuesDelivered != 1 {
+		t.Errorf("IssuesDelivered = %d, want 1", ws.IssuesDelivered)
+	}
+}
+
+// TestGetWindowedStats_EmptyWindowZeroRates is GH-4735: an empty window must
+// return zero rates with no division panic.
+func TestGetWindowedStats_EmptyWindowZeroRates(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ws, err := store.GetWindowedStats("", time.Now().UTC().AddDate(0, 0, -30))
+	if err != nil {
+		t.Fatalf("GetWindowedStats: %v", err)
+	}
+	if ws.TotalCostUSD != 0 || ws.IssuesAttempted != 0 || ws.IssuesDelivered != 0 {
+		t.Errorf("empty window: want all zeros, got %+v", ws)
+	}
+	if ws.CostPerDelivered != 0 {
+		t.Errorf("CostPerDelivered = %.2f, want 0", ws.CostPerDelivered)
+	}
+	if ws.DeliveryRate != 0 {
+		t.Errorf("DeliveryRate = %.2f, want 0", ws.DeliveryRate)
+	}
+	if ws.AttemptSuccessRate != 0 {
+		t.Errorf("AttemptSuccessRate = %.2f, want 0", ws.AttemptSuccessRate)
 	}
 }
 

@@ -156,6 +156,18 @@ type Metrics struct {
 
 	// Maximum samples to keep for histograms
 	maxSamples int
+
+	// GH-4735: rolling-window headline cost/success numbers backing the
+	// pilot_window_* gauges. Unlike the lifetime gauges above (hydrated once
+	// at boot, then bumped incrementally on every live event), these are
+	// wholesale-overwritten by SetWindowStats on a periodic ticker
+	// (HydrateWindowStats/StartWindowStatsRefresher) — the underlying
+	// GetWindowedStats query is too expensive to run per-scrape or per-event.
+	WindowDays                int
+	WindowCostUSD             float64
+	WindowCostPerDeliveredUSD float64
+	WindowDeliveryRate        float64
+	WindowAttemptSuccessRate  float64
 }
 
 // NewMetrics creates a new Metrics instance.
@@ -414,6 +426,21 @@ func (m *Metrics) HydratePRsFailedLifetime(n int64) {
 	m.PRsFailedLifetime += n
 }
 
+// SetWindowStats overwrites the GH-4735 rolling-window cost/success gauges
+// from a fresh GetWindowedStats query. Unlike the Hydrate* methods above,
+// this is a plain assignment, not additive — each call replaces the
+// previous window snapshot outright, since the source query is already an
+// absolute point-in-time aggregate (not a per-event delta to accumulate).
+func (m *Metrics) SetWindowStats(days int, totalCostUSD, costPerDelivered, deliveryRate, attemptSuccessRate float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.WindowDays = days
+	m.WindowCostUSD = totalCostUSD
+	m.WindowCostPerDeliveredUSD = costPerDelivered
+	m.WindowDeliveryRate = deliveryRate
+	m.WindowAttemptSuccessRate = attemptSuccessRate
+}
+
 // HydrateCircuitBreakerTrips sets a monotonic floor — max(recount,
 // last_served) — on the circuit-breaker trip counter from the last periodic
 // autopilot_metrics snapshot persisted before this restart (GH-4390).
@@ -607,6 +634,11 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		AvgCIWaitDuration:             avgDuration(m.CIWaitDurations),
 		AvgExecutionDuration:          avgDuration(m.ExecutionDurations),
 		APIErrorRate:                  m.apiErrorRate(),
+		WindowDays:                    m.WindowDays,
+		WindowCostUSD:                 m.WindowCostUSD,
+		WindowCostPerDeliveredUSD:     m.WindowCostPerDeliveredUSD,
+		WindowDeliveryRate:            m.WindowDeliveryRate,
+		WindowAttemptSuccessRate:      m.WindowAttemptSuccessRate,
 		SnapshotAt:                    time.Now(),
 	}
 
@@ -709,6 +741,14 @@ type MetricsSnapshot struct {
 	AvgCIWaitDuration     time.Duration
 	AvgExecutionDuration  time.Duration
 	APIErrorRate          float64 // errors per minute (5m window)
+
+	// GH-4735: rolling-window headline cost/success numbers (see
+	// Metrics.SetWindowStats doc comment for the refresh semantics).
+	WindowDays                int
+	WindowCostUSD             float64
+	WindowCostPerDeliveredUSD float64
+	WindowDeliveryRate        float64
+	WindowAttemptSuccessRate  float64
 
 	SnapshotAt time.Time
 }

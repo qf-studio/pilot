@@ -3,6 +3,9 @@ package autopilot
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -201,4 +204,60 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 	//     AutopilotMetricsRow). Treated as reset-on-restart by design; see
 	//     FEATURE-MATRIX.md.
 	return nil
+}
+
+// HydrateWindowStats seeds the GH-4735 rolling-window cost/success gauges
+// (pilot_window_*) from a single GetWindowedStats query, scoped to all
+// projects ("") to match the fleet-wide scope of every other counter this
+// package hydrates. Kept separate from HydrateFromStore above because it
+// depends on windowDays — a config value, not a store-derived baseline —
+// and is refreshed periodically afterward (see StartWindowStatsRefresher),
+// unlike the one-shot lifetime baselines HydrateFromStore seeds.
+func HydrateWindowStats(store *memory.Store, metrics *Metrics, windowDays int) error {
+	if store == nil || metrics == nil {
+		return nil
+	}
+	since := time.Now().AddDate(0, 0, -windowDays)
+	ws, err := store.GetWindowedStats("", since)
+	if err != nil {
+		return fmt.Errorf("hydrate window stats: %w", err)
+	}
+	metrics.SetWindowStats(windowDays, ws.TotalCostUSD, ws.CostPerDelivered, ws.DeliveryRate, ws.AttemptSuccessRate)
+	return nil
+}
+
+// StartWindowStatsRefresher launches a background goroutine that
+// periodically re-runs HydrateWindowStats so the pilot_window_* gauges stay
+// within `interval` of fresh (GH-4735) — GetWindowedStats aggregates the
+// whole window on every call, too expensive to run per-scrape, so gauges
+// are refreshed on this ticker and read fresh (not recomputed) by
+// WritePrometheus instead. Returns a stop function the caller must invoke
+// during shutdown to release the ticker goroutine; safe to call multiple
+// times. Callers should call HydrateWindowStats once synchronously before
+// this so gauges aren't zero between boot and the first tick.
+func StartWindowStatsRefresher(ctx context.Context, store *memory.Store, metrics *Metrics, windowDays int, interval time.Duration) (stop func()) {
+	if store == nil || metrics == nil {
+		return func() {}
+	}
+	ticker := time.NewTicker(interval)
+	done := make(chan struct{})
+	stopOnce := sync.OnceFunc(func() {
+		close(done)
+	})
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := HydrateWindowStats(store, metrics, windowDays); err != nil {
+					slog.Warn("window stats refresh failed", slog.Any("error", err))
+				}
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			}
+		}
+	}()
+	return stopOnce
 }

@@ -360,10 +360,21 @@ func (c *Config) FindProjectByPath(path string) *ProjectConfig {
 	return nil
 }
 
+// DefaultDashboardStatsWindowDays is DashboardConfig.StatsWindowDays' default
+// (GH-4735), exported so callers with a nil *DashboardConfig (or that build
+// gauges/refreshers before config is loaded) can fall back to the same value
+// DefaultConfig() sets, instead of duplicating the literal.
+const DefaultDashboardStatsWindowDays = 30
+
 // DashboardConfig holds settings for the terminal UI dashboard.
 type DashboardConfig struct {
 	RefreshInterval int  `yaml:"refresh_interval"`
 	ShowLogs        bool `yaml:"show_logs"`
+	// StatsWindowDays sets the rolling window (in days) used for the headline
+	// cost/success numbers (TUI cards, dashboard JSON, Prometheus gauges).
+	// GH-4735: lifetime aggregates blend model eras and are misleading;
+	// history is not deleted, only the headline surfaces are windowed.
+	StatsWindowDays int `yaml:"stats_window_days"`
 }
 
 // AlertsConfig holds configuration for the alerting system including
@@ -482,6 +493,7 @@ func DefaultConfig() *Config {
 		Dashboard: &DashboardConfig{
 			RefreshInterval: 1000,
 			ShowLogs:        true,
+			StatsWindowDays: DefaultDashboardStatsWindowDays,
 		},
 		Alerts: &AlertsConfig{
 			Enabled:  false,
@@ -1004,6 +1016,11 @@ func (c *Config) Validate() error {
 	// Validate budget daily_limit > 0 when budget is enabled
 	if c.Budget != nil && c.Budget.Enabled && c.Budget.DailyLimit <= 0 {
 		return fmt.Errorf("budget.daily_limit must be > 0 when budget is enabled, got %g", c.Budget.DailyLimit)
+	}
+
+	// GH-4735: Validate dashboard.stats_window_days >= 1
+	if c.Dashboard != nil && c.Dashboard.StatsWindowDays < 1 {
+		return fmt.Errorf("dashboard.stats_window_days must be >= 1, got %d", c.Dashboard.StatsWindowDays)
 	}
 
 	return nil

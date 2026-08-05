@@ -836,6 +836,9 @@ Examples:
 					}
 					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
 					model.SetProjectPath(projectPath)
+					if cfg.Dashboard != nil {
+						model.SetStatsWindowDays(cfg.Dashboard.StatsWindowDays)
+					}
 					applyDashboardBannerMeta(&model, cfg, cmd)
 					model.EnableSplash(resolvedConfigPath())
 					gwProgram = tea.NewProgram(model,
@@ -1018,6 +1021,19 @@ Examples:
 					if hydrateErr := autopilot.HydrateFromStore(context.Background(), gwStore, gwAutopilotController.Metrics()); hydrateErr != nil {
 						return fmt.Errorf("failed to hydrate metrics from store: %w", hydrateErr)
 					}
+					// GH-4735: seed pilot_window_* immediately (non-fatal —
+					// unlike the lifetime baselines above, a failed window
+					// query just means those 4 gauges start at zero until
+					// the refresher's first tick, not a stale/reset-looking
+					// dashboard), then keep them fresh on a ticker.
+					windowDays := config.DefaultDashboardStatsWindowDays
+					if cfg.Dashboard != nil {
+						windowDays = cfg.Dashboard.StatsWindowDays
+					}
+					if hydrateErr := autopilot.HydrateWindowStats(gwStore, gwAutopilotController.Metrics(), windowDays); hydrateErr != nil {
+						logging.WithComponent("start").Warn("failed to seed window stats", slog.Any("error", hydrateErr))
+					}
+					autopilot.StartWindowStatsRefresher(context.Background(), gwStore, gwAutopilotController.Metrics(), windowDays, 5*time.Minute)
 				}
 			}
 			// TASK-332: Wire alert metrics into the Prometheus exporter
@@ -1041,6 +1057,9 @@ Examples:
 				p.Gateway().SetLogStreamStore(gwStore)
 			}
 			p.Gateway().SetDashboardProjectPath(scopedProjectPath(dashboardScope, projectPath))
+			if cfg.Dashboard != nil {
+				p.Gateway().SetDashboardStatsWindowDays(cfg.Dashboard.StatsWindowDays)
+			}
 
 			// GH-1633: Wire git graph fetcher to gateway so /api/v1/gitgraph returns live git data
 			p.Gateway().SetGitGraphFetcher(func(path string, limit int) interface{} {
@@ -2107,6 +2126,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				if hydrateErr := autopilot.HydrateFromStore(ctx, store, autopilotController.Metrics()); hydrateErr != nil {
 					return fmt.Errorf("failed to hydrate metrics from store: %w", hydrateErr)
 				}
+				// GH-4735: seed pilot_window_* immediately (non-fatal), then
+				// keep it fresh on a ticker — same reasoning as the gateway-
+				// mode call site above.
+				windowDays := config.DefaultDashboardStatsWindowDays
+				if cfg.Dashboard != nil {
+					windowDays = cfg.Dashboard.StatsWindowDays
+				}
+				if hydrateErr := autopilot.HydrateWindowStats(store, autopilotController.Metrics(), windowDays); hydrateErr != nil {
+					logging.WithComponent("start").Warn("failed to seed window stats", slog.Any("error", hydrateErr))
+				}
+				autopilot.StartWindowStatsRefresher(ctx, store, autopilotController.Metrics(), windowDays, 5*time.Minute)
 			}
 		}
 		if len(fleetMetrics) > 0 {
@@ -2139,6 +2169,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			gwServer.SetLogStreamStore(store)
 		}
 		gwServer.SetDashboardProjectPath(projectPath)
+		if cfg.Dashboard != nil {
+			gwServer.SetDashboardStatsWindowDays(cfg.Dashboard.StatsWindowDays)
+		}
 		gwServer.SetGitGraphFetcher(func(path string, limit int) interface{} {
 			return dashboard.FetchGitGraph(path, limit)
 		})
@@ -2186,6 +2219,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		model.SetProjectPath(projectPath)
+		if cfg.Dashboard != nil {
+			model.SetStatsWindowDays(cfg.Dashboard.StatsWindowDays)
+		}
 		applyDashboardBannerMeta(&model, cfg, cmd)
 		model.EnableSplash(resolvedConfigPath())
 		program = tea.NewProgram(model,

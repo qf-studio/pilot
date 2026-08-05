@@ -20,12 +20,17 @@ type GitGraphFetcher func(projectPath string, limit int) interface{}
 type DashboardStore interface {
 	GetLifetimeTokens(projectPath string) (*memory.LifetimeTokens, error)
 	GetLifetimeTaskCounts(projectPath string) (*memory.LifetimeTaskCounts, error)
+	GetWindowedStats(projectPath string, since time.Time) (memory.WindowedStats, error)
 	GetDailyMetrics(query memory.MetricsQuery) ([]*memory.DailyMetrics, error)
 	GetRecentExecutions(limit int, projectPath string) ([]*memory.Execution, error)
 	GetQueuedTasks(limit int) ([]*memory.Execution, error)
 	GetActiveExecutions() ([]*memory.Execution, error)
 	GetRecentLogs(limit int) ([]*memory.LogEntry, error)
 }
+
+// defaultDashboardStatsWindowDays mirrors config.DashboardConfig's default
+// (GH-4735), used when Server.dashboardStatsWindowDays is unset (0).
+const defaultDashboardStatsWindowDays = 30
 
 // SetDashboardStore configures the store used by dashboard API endpoints.
 func (s *Server) SetDashboardStore(store DashboardStore) {
@@ -42,6 +47,16 @@ func (s *Server) SetDashboardProjectPath(path string) {
 	s.dashboardProjectPath = path
 }
 
+// SetDashboardStatsWindowDays sets the rolling window (days) used for the
+// dashboard metrics endpoint's windowed cost/success numbers (GH-4735),
+// sourced from config.DashboardConfig.StatsWindowDays. Pass <= 0 to fall
+// back to defaultDashboardStatsWindowDays.
+func (s *Server) SetDashboardStatsWindowDays(days int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dashboardStatsWindowDays = days
+}
+
 // --- JSON response types (mirrors desktop/types.go) ---
 
 type dashboardMetricsResponse struct {
@@ -55,6 +70,22 @@ type dashboardMetricsResponse struct {
 	TokenSparkline []int64   `json:"tokenSparkline"`
 	CostSparkline  []float64 `json:"costSparkline"`
 	QueueSparkline []int     `json:"queueSparkline"`
+	// Window carries the GH-4735 rolling-window headline numbers. Lifetime
+	// fields above are kept unchanged for desktop app back-compat.
+	Window dashboardWindowResponse `json:"window"`
+}
+
+// dashboardWindowResponse is the GH-4735 rolling-window cost/success block
+// (see MetricsCardData/WindowedStats for the underlying semantics: canary
+// executions excluded, neutral statuses excluded from AttemptSuccessRate).
+type dashboardWindowResponse struct {
+	Days                int     `json:"days"`
+	TotalCostUSD        float64 `json:"totalCostUsd"`
+	CostPerDeliveredUSD float64 `json:"costPerDeliveredUsd"`
+	IssuesAttempted     int     `json:"issuesAttempted"`
+	IssuesDelivered     int     `json:"issuesDelivered"`
+	DeliveryRate        float64 `json:"deliveryRate"`
+	AttemptSuccessRate  float64 `json:"attemptSuccessRate"`
 }
 
 type queueTaskResponse struct {
@@ -98,11 +129,16 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 	s.mu.RLock()
 	store := s.dashboardStore
 	projectPath := s.dashboardProjectPath
+	windowDays := s.dashboardStatsWindowDays
 	s.mu.RUnlock()
 
 	if store == nil {
 		http.Error(w, "dashboard store not configured", http.StatusServiceUnavailable)
 		return
+	}
+
+	if windowDays <= 0 {
+		windowDays = defaultDashboardStatsWindowDays
 	}
 
 	lt, err := store.GetLifetimeTokens(projectPath)
@@ -113,6 +149,12 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 	tc, err := store.GetLifetimeTaskCounts(projectPath)
 	if err != nil {
 		tc = &memory.LifetimeTaskCounts{}
+	}
+
+	since := time.Now().AddDate(0, 0, -windowDays)
+	ws, err := store.GetWindowedStats(projectPath, since)
+	if err != nil {
+		ws = memory.WindowedStats{}
 	}
 
 	now := time.Now().UTC()
@@ -151,6 +193,15 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 		TokenSparkline: tokenSparkline,
 		CostSparkline:  costSparkline,
 		QueueSparkline: queueSparkline,
+		Window: dashboardWindowResponse{
+			Days:                windowDays,
+			TotalCostUSD:        ws.TotalCostUSD,
+			CostPerDeliveredUSD: ws.CostPerDelivered,
+			IssuesAttempted:     ws.IssuesAttempted,
+			IssuesDelivered:     ws.IssuesDelivered,
+			DeliveryRate:        ws.DeliveryRate,
+			AttemptSuccessRate:  ws.AttemptSuccessRate,
+		},
 	}
 
 	writeJSON(w, resp)

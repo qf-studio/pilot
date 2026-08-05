@@ -189,7 +189,7 @@ func TestStoreRefreshCmd_DedupsRetriesAcrossFiveDistinctTasks(t *testing.T) {
 		}
 	}
 
-	msg, ok := storeRefreshCmd(store, projectPath)().(storeRefreshMsg)
+	msg, ok := storeRefreshCmd(store, projectPath, defaultStatsWindowDays)().(storeRefreshMsg)
 	if !ok {
 		t.Fatalf("storeRefreshCmd returned unexpected message type")
 	}

@@ -134,6 +134,9 @@ func TestDefaultConfig(t *testing.T) {
 		if config.Dashboard.ShowLogs != true {
 			t.Error("Dashboard.ShowLogs should be true by default")
 		}
+		if config.Dashboard.StatsWindowDays != 30 {
+			t.Errorf("Dashboard.StatsWindowDays = %d, want %d", config.Dashboard.StatsWindowDays, 30)
+		}
 	})
 
 	t.Run("Alerts", func(t *testing.T) {
@@ -286,6 +289,7 @@ default_project: "test-project"
 dashboard:
   refresh_interval: 500
   show_logs: false
+  stats_window_days: 7
 `
 		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 			t.Fatalf("Failed to write test config: %v", err)
@@ -328,6 +332,9 @@ dashboard:
 		}
 		if config.Dashboard.RefreshInterval != 500 {
 			t.Errorf("Dashboard.RefreshInterval = %d, want %d", config.Dashboard.RefreshInterval, 500)
+		}
+		if config.Dashboard.StatsWindowDays != 7 {
+			t.Errorf("Dashboard.StatsWindowDays = %d, want %d", config.Dashboard.StatsWindowDays, 7)
 		}
 		if config.Dashboard.ShowLogs != false {
 			t.Error("Dashboard.ShowLogs should be false")
