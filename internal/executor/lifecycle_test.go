@@ -2,6 +2,9 @@ package executor
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -744,4 +747,130 @@ func TestExecutionLifecycle_Cancel(t *testing.T) {
 			t.Errorf("expected nil execution for a not-found cancel, got: %+v", exec)
 		}
 	})
+}
+
+// setupFakeGHForLifecycleTest installs a fake `gh` binary at the front of
+// PATH (mirroring dispatcher_test.go's TestDispatcher_StallTaskAfterRepickHardCap_*
+// pattern) that appends its argv to a log file instead of touching GitHub, and
+// returns that log file's path so the test can assert on the exact CLI
+// invocation.
+func setupFakeGHForLifecycleTest(t *testing.T) (logFile string) {
+	t.Helper()
+	fakeBin := t.TempDir()
+	logFile = filepath.Join(t.TempDir(), "gh-calls.log")
+	script := filepath.Join(fakeBin, "gh")
+	content := "#!/bin/sh\n" + `echo "$@" >> "` + logFile + `"` + "\nexit 0\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	return logFile
+}
+
+// TestExecutionLifecycle_Finish_FailedGitHubTask_StripsInProgressLabel is the
+// GH-4740 regression test: a failed execution against a GitHub-sourced task
+// must strip pilot-in-progress from the issue through the same Persist
+// chokepoint every terminal write (including a hard-killed executor's
+// tripwire/Finish path) goes through — not just the happy-path teardown.
+// Evidence this guards against: console#98 failed 14:41:05Z and sat with
+// pilot-in-progress on the OPEN issue for 1.5h+, inert behind the still-present
+// `pilot` trigger label, until an operator stripped it by hand.
+func TestExecutionLifecycle_Finish_FailedGitHubTask_StripsInProgressLabel(t *testing.T) {
+	logFile := setupFakeGHForLifecycleTest(t)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{
+		ID:            "GH-4740",
+		ProjectPath:   t.TempDir(),
+		SourceAdapter: "github",
+		SourceIssueID: "4740",
+	}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	result := &ExecutionResult{TaskID: task.ID, Success: false, Error: "unknown: exit status 1"}
+	outcome, err := lifecycle.Finish(execID, result, errors.New("unknown: exit status 1"), 42*time.Second)
+	if err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+	if outcome.Status != ExecStatusFailed {
+		t.Fatalf("expected outcome status %q, got %q", ExecStatusFailed, outcome.Status)
+	}
+
+	logBytes, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("expected gh CLI to be invoked to strip pilot-in-progress, but log file missing: %v", err)
+	}
+	calls := string(logBytes)
+	if !strings.Contains(calls, "issue edit 4740") {
+		t.Errorf("expected a label edit on issue 4740, got calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "--remove-label pilot-in-progress") {
+		t.Errorf("expected pilot-in-progress to be removed, got calls:\n%s", calls)
+	}
+}
+
+// TestExecutionLifecycle_Finish_NonGitHubTask_SkipsInProgressStrip mirrors
+// TestDispatcher_StallTaskAfterRepickHardCap_NonGitHubTaskSkipsGHCLI: a failed
+// execution for a non-GitHub-sourced task (or a CLI-driven task with no
+// source adapter at all) has no GitHub issue to edit, so Finish must not
+// shell out to `gh`.
+func TestExecutionLifecycle_Finish_NonGitHubTask_SkipsInProgressStrip(t *testing.T) {
+	logFile := setupFakeGHForLifecycleTest(t)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GL-4740", ProjectPath: t.TempDir(), SourceAdapter: "gitlab", SourceIssueID: "4740"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	if _, err := lifecycle.Finish(execID, &ExecutionResult{TaskID: task.ID, Success: false, Error: "boom"}, errors.New("boom"), time.Second); err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+
+	if _, err := os.ReadFile(logFile); err == nil {
+		t.Error("expected no gh CLI invocation for a non-GitHub task")
+	}
+}
+
+// TestExecutionLifecycle_Finish_Completed_DoesNotStripInProgressLabel verifies
+// a successful/completed execution does NOT strip pilot-in-progress: a PR
+// exists at that point, and the label is deliberately kept until the PR
+// merges (autopilot's post-merge RemoveLabel path), per GH-4740's acceptance
+// criteria that scoped the strip to terminal outcomes leaving no deliverable
+// behind.
+func TestExecutionLifecycle_Finish_Completed_DoesNotStripInProgressLabel(t *testing.T) {
+	logFile := setupFakeGHForLifecycleTest(t)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-4740-OK", ProjectPath: t.TempDir(), SourceAdapter: "github", SourceIssueID: "9999"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	result := &ExecutionResult{TaskID: task.ID, Success: true, PRUrl: "https://github.com/qf-studio/pilot/pull/1", CommitSHA: "deadbeef"}
+	outcome, err := lifecycle.Finish(execID, result, nil, time.Second)
+	if err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+	if outcome.Status != ExecStatusCompleted {
+		t.Fatalf("expected outcome status %q, got %q", ExecStatusCompleted, outcome.Status)
+	}
+
+	if _, err := os.ReadFile(logFile); err == nil {
+		t.Error("expected no gh CLI invocation for a completed execution")
+	}
 }
