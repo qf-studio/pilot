@@ -1412,6 +1412,58 @@
           "authentication",
           "context"
         ]
+      },
+      "TASK-453": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-453-prepush-docs-fastpath.md",
+        "title": "Task 453 Prepush Docs Fastpath",
+        "status": "unknown",
+        "concepts": [
+          "theory of mind",
+          "knowledge",
+          "context",
+          "markers",
+          "testing",
+          "deployment"
+        ]
+      },
+      "TASK-454": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-454-approval-channel-routing-fidelity.md",
+        "title": "Task 454 Approval Channel Routing Fidelity",
+        "status": "unknown",
+        "concepts": [
+          "context",
+          "knowledge",
+          "api",
+          "theory of mind",
+          "deployment",
+          "testing"
+        ]
+      },
+      "TASK-455": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-455-approval-project-identity.md",
+        "title": "Task 455 Approval Project Identity",
+        "status": "unknown",
+        "concepts": [
+          "workflow",
+          "testing",
+          "deployment",
+          "knowledge",
+          "api",
+          "database",
+          "context"
+        ]
+      },
+      "TASK-456": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-456-project-approval-override.md",
+        "title": "Task 456 Project Approval Override",
+        "status": "unknown",
+        "concepts": [
+          "api",
+          "deployment",
+          "testing",
+          "context",
+          "workflow"
+        ]
       }
     },
     "memories": {
@@ -5826,6 +5878,36 @@
       "from": "TASK-449",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "TASK-453",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-454",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-455",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-455",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-456",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-456",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -5940,7 +6022,10 @@
       "TASK-445",
       "TASK-448",
       "TASK-449",
-      "TASK-450"
+      "TASK-450",
+      "TASK-453",
+      "TASK-454",
+      "TASK-455"
     ],
     "deployment": [
       "TASK-386",
@@ -6040,7 +6125,11 @@
       "TASK-449",
       "TASK-450",
       "TASK-451",
-      "TASK-452"
+      "TASK-452",
+      "TASK-453",
+      "TASK-454",
+      "TASK-455",
+      "TASK-456"
     ],
     "authentication": [
       "TASK-386",
@@ -6194,7 +6283,11 @@
       "TASK-449",
       "TASK-450",
       "TASK-451",
-      "TASK-452"
+      "TASK-452",
+      "TASK-453",
+      "TASK-454",
+      "TASK-455",
+      "TASK-456"
     ],
     "api": [
       "TASK-386",
@@ -6268,7 +6361,10 @@
       "TASK-449",
       "TASK-450",
       "TASK-451",
-      "TASK-452"
+      "TASK-452",
+      "TASK-454",
+      "TASK-455",
+      "TASK-456"
     ],
     "context": [
       "TASK-386",
@@ -6350,7 +6446,11 @@
       "TASK-449",
       "TASK-450",
       "TASK-451",
-      "TASK-452"
+      "TASK-452",
+      "TASK-453",
+      "TASK-454",
+      "TASK-455",
+      "TASK-456"
     ],
     "markers": [
       "TASK-387",
@@ -6366,7 +6466,8 @@
       "TASK-435",
       "TASK-436",
       "TASK-440",
-      "TASK-449"
+      "TASK-449",
+      "TASK-453"
     ],
     "database": [
       "TASK-387",
@@ -6418,7 +6519,8 @@
       "mem-169",
       "mem-170",
       "TASK-442",
-      "TASK-452"
+      "TASK-452",
+      "TASK-455"
     ],
     "workflow": [
       "TASK-387",
@@ -6483,7 +6585,9 @@
       "TASK-443",
       "TASK-442",
       "TASK-448",
-      "TASK-449"
+      "TASK-449",
+      "TASK-455",
+      "TASK-456"
     ],
     "simplification": [
       "TASK-387",
@@ -6566,7 +6670,9 @@
       "mem-170",
       "TASK-442",
       "TASK-443",
-      "TASK-447"
+      "TASK-447",
+      "TASK-453",
+      "TASK-454"
     ],
     "autopilot": [
       "mem-100",
@@ -6891,10 +6997,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-06T12:54:25.620088+00:00",
+  "last_updated": "2026-08-06T16:41:58.580465+00:00",
   "stats": {
-    "total_nodes": 367,
-    "total_edges": 307,
+    "total_nodes": 371,
+    "total_edges": 313,
     "memory_count": 213
   }
 }
