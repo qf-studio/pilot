@@ -1464,6 +1464,30 @@
           "context",
           "workflow"
         ]
+      },
+      "TASK-457": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-457-structural-infra-classification.md",
+        "title": "Task 457 Structural Infra Classification",
+        "status": "unknown",
+        "concepts": [
+          "deployment",
+          "testing",
+          "api",
+          "context",
+          "workflow"
+        ]
+      },
+      "TASK-458": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-458-platform-outage-breaker.md",
+        "title": "Task 458 Platform Outage Breaker",
+        "status": "unknown",
+        "concepts": [
+          "context",
+          "markers",
+          "testing",
+          "deployment",
+          "api"
+        ]
       }
     },
     "memories": {
@@ -5908,6 +5932,21 @@
       "from": "TASK-456",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-457",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-457",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-458",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6129,7 +6168,9 @@
       "TASK-453",
       "TASK-454",
       "TASK-455",
-      "TASK-456"
+      "TASK-456",
+      "TASK-457",
+      "TASK-458"
     ],
     "authentication": [
       "TASK-386",
@@ -6287,7 +6328,9 @@
       "TASK-453",
       "TASK-454",
       "TASK-455",
-      "TASK-456"
+      "TASK-456",
+      "TASK-457",
+      "TASK-458"
     ],
     "api": [
       "TASK-386",
@@ -6364,7 +6407,9 @@
       "TASK-452",
       "TASK-454",
       "TASK-455",
-      "TASK-456"
+      "TASK-456",
+      "TASK-457",
+      "TASK-458"
     ],
     "context": [
       "TASK-386",
@@ -6450,7 +6495,9 @@
       "TASK-453",
       "TASK-454",
       "TASK-455",
-      "TASK-456"
+      "TASK-456",
+      "TASK-457",
+      "TASK-458"
     ],
     "markers": [
       "TASK-387",
@@ -6467,7 +6514,8 @@
       "TASK-436",
       "TASK-440",
       "TASK-449",
-      "TASK-453"
+      "TASK-453",
+      "TASK-458"
     ],
     "database": [
       "TASK-387",
@@ -6587,7 +6635,8 @@
       "TASK-448",
       "TASK-449",
       "TASK-455",
-      "TASK-456"
+      "TASK-456",
+      "TASK-457"
     ],
     "simplification": [
       "TASK-387",
@@ -6997,10 +7046,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-06T16:41:58.580465+00:00",
+  "last_updated": "2026-08-06T18:45:30.746296+00:00",
   "stats": {
-    "total_nodes": 371,
-    "total_edges": 313,
+    "total_nodes": 373,
+    "total_edges": 316,
     "memory_count": 213
   }
 }

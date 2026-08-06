@@ -44,7 +44,7 @@ The selective option is nearly free once this track lands: a sensitive-path pred
 
 ## Backlog (filed nowhere yet — pull from here)
 
-- **Infra-CI failure classification** (2026-08-06 GitHub outage incident): autopilot reads "Set up job / Service Unavailable" action-download failures as real CI failures — closed correct PR#4770, burned a GH-4756 attempt, escalated GH-4771 to `pilot-needs-human`. Detect infra-level failure (zero steps executed / githubstatus indicator) → hold-and-retry instead of close/escalate. H-track class (sibling of H6 canary misattribution).
+- ~~Infra-CI failure classification~~ → **DISPATCHED 2026-08-06**: [pilot#4779](https://github.com/qf-studio/pilot/issues/4779) (TASK-457, structural classification + never-close-on-zero-evidence invariant) and [pilot#4780](https://github.com/qf-studio/pilot/issues/4780) (TASK-458, platform-outage breaker: cross-PR correlation → suppress destructive actions + pause admission → self-resume). Root cause found: TASK-418's infra classifier already existed but matches **four hardcoded log substrings** (`failure_class.go:71-74`) — the outage's prose matched none, so it fell through to the fail-safe `FailureClassCode` and ran the destructive path. Also found: `cancelled`/`timed_out` conclusions trigger `CIFailure` but are excluded from every evidence-gathering filter → zero evidence → defaults to code failure (outage amplifier).
 
 - Sensitive-path escalation predicate (auth/credentials/approval/gateway-mutating paths → escalate), per-project pattern list on the B3 override struct.
 - Per-project *destinations* (distinct chat_id / Slack channel per project) — needs a real `Destination` field on `Request` + persistence; the `Approvers[0]` hack is a tarpit.
