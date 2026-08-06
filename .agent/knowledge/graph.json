@@ -1359,6 +1359,45 @@
           "api",
           "context"
         ]
+      },
+      "TASK-449": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-449-c14-pilot-approval-endpoint.md",
+        "title": "Task 449 C14 Pilot Approval Endpoint",
+        "status": "unknown",
+        "concepts": [
+          "knowledge",
+          "deployment",
+          "context",
+          "testing",
+          "markers",
+          "authentication",
+          "api"
+        ]
+      },
+      "TASK-450": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-450-execution-events-endpoint.md",
+        "title": "Task 450 Execution Events Endpoint",
+        "status": "unknown",
+        "concepts": [
+          "testing",
+          "authentication",
+          "context",
+          "knowledge",
+          "api",
+          "deployment"
+        ]
+      },
+      "TASK-451": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-451-c15-tenant-labels-alarms.md",
+        "title": "Task 451 C15 Tenant Labels Alarms",
+        "status": "unknown",
+        "concepts": [
+          "deployment",
+          "api",
+          "context",
+          "testing",
+          "authentication"
+        ]
       }
     },
     "memories": {
@@ -5748,6 +5787,21 @@
       "from": "TASK-448",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "TASK-449",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-450",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-451",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -5860,7 +5914,9 @@
       "mem-169",
       "mem-170",
       "TASK-445",
-      "TASK-448"
+      "TASK-448",
+      "TASK-449",
+      "TASK-450"
     ],
     "deployment": [
       "TASK-386",
@@ -5956,7 +6012,10 @@
       "TASK-445",
       "TASK-446",
       "TASK-447",
-      "TASK-448"
+      "TASK-448",
+      "TASK-449",
+      "TASK-450",
+      "TASK-451"
     ],
     "authentication": [
       "TASK-386",
@@ -6008,7 +6067,10 @@
       "TASK-443",
       "TASK-444",
       "TASK-445",
-      "TASK-446"
+      "TASK-446",
+      "TASK-449",
+      "TASK-450",
+      "TASK-451"
     ],
     "testing": [
       "TASK-386",
@@ -6102,7 +6164,10 @@
       "TASK-445",
       "TASK-446",
       "TASK-447",
-      "TASK-448"
+      "TASK-448",
+      "TASK-449",
+      "TASK-450",
+      "TASK-451"
     ],
     "api": [
       "TASK-386",
@@ -6172,7 +6237,10 @@
       "TASK-445",
       "TASK-446",
       "TASK-447",
-      "TASK-448"
+      "TASK-448",
+      "TASK-449",
+      "TASK-450",
+      "TASK-451"
     ],
     "context": [
       "TASK-386",
@@ -6250,7 +6318,10 @@
       "TASK-445",
       "TASK-446",
       "TASK-447",
-      "TASK-448"
+      "TASK-448",
+      "TASK-449",
+      "TASK-450",
+      "TASK-451"
     ],
     "markers": [
       "TASK-387",
@@ -6265,7 +6336,8 @@
       "TASK-434",
       "TASK-435",
       "TASK-436",
-      "TASK-440"
+      "TASK-440",
+      "TASK-449"
     ],
     "database": [
       "TASK-387",
@@ -6788,10 +6860,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-05T11:30:43.275251+00:00",
+  "last_updated": "2026-08-06T11:23:46.430299+00:00",
   "stats": {
-    "total_nodes": 363,
-    "total_edges": 302,
+    "total_nodes": 366,
+    "total_edges": 305,
     "memory_count": 213
   }
 }
