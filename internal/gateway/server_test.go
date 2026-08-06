@@ -1254,6 +1254,104 @@ func TestNewServerWithAuth_NilAuth(t *testing.T) {
 	}
 }
 
+// --- GH-4756: NewServerFromConfig is the production decision point used by
+// both internal/pilot (gateway mode) and cmd/pilot (polling mode) to decide
+// whether /api/v1 gets the bearer-auth middleware. Composed here against a
+// real listening server + real mux (not unit-level field checks) so the
+// production wiring path itself is proven, on both a read route and the
+// state-mutating decision route flagged by PR#4752's review.
+
+func TestNewServerFromConfig_EmptyToken_NoAuth(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 19096}
+	// Empty token — including the "claude-code" default type with no token
+	// set — must reproduce today's no-middleware behavior exactly.
+	authConfig := &AuthConfig{Type: AuthTypeClaudeCode}
+	server := NewServerFromConfig(config, authConfig)
+
+	if server.auth != nil {
+		t.Fatal("NewServerFromConfig with empty token should not enable auth middleware")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = server.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:19096/api/v1/status", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/status: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (no auth configured)", resp.StatusCode)
+	}
+}
+
+func TestNewServerFromConfig_WithToken_EnforcesAuth(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 19097}
+	authConfig := &AuthConfig{Type: AuthTypeAPIToken, Token: "from-config-token"}
+	server := NewServerFromConfig(config, authConfig)
+
+	if server.auth == nil {
+		t.Fatal("NewServerFromConfig with non-empty token should enable auth middleware")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = server.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	baseURL := "http://127.0.0.1:19097"
+
+	// Read route: 401 without bearer, 200 with the configured bearer.
+	getNoAuth, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/status", nil)
+	resp, err := client.Do(getNoAuth)
+	if err != nil {
+		t.Fatalf("GET /api/v1/status (no auth): %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("GET /api/v1/status no-auth status = %d, want 401", resp.StatusCode)
+	}
+
+	getAuth, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/status", nil)
+	getAuth.Header.Set("Authorization", "Bearer from-config-token")
+	resp2, err := client.Do(getAuth)
+	if err != nil {
+		t.Fatalf("GET /api/v1/status (auth): %v", err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("GET /api/v1/status auth status = %d, want 200", resp2.StatusCode)
+	}
+
+	// Decision route (the state-mutating endpoint PR#4752 review flagged):
+	// 401 without bearer, and the bearer check passes (non-401) with it.
+	postNoAuth, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/approvals/req-1/decision", strings.NewReader(`{}`))
+	respPost, err := client.Do(postNoAuth)
+	if err != nil {
+		t.Fatalf("POST decision (no auth): %v", err)
+	}
+	_ = respPost.Body.Close()
+	if respPost.StatusCode != http.StatusUnauthorized {
+		t.Errorf("POST decision no-auth status = %d, want 401", respPost.StatusCode)
+	}
+
+	postAuth, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/approvals/req-1/decision", strings.NewReader(`{}`))
+	postAuth.Header.Set("Authorization", "Bearer from-config-token")
+	respPost2, err := client.Do(postAuth)
+	if err != nil {
+		t.Fatalf("POST decision (auth): %v", err)
+	}
+	_ = respPost2.Body.Close()
+	if respPost2.StatusCode == http.StatusUnauthorized {
+		t.Errorf("POST decision with valid bearer got 401, auth middleware should have passed it through")
+	}
+}
+
 func TestAPIEndpointsRequireAuth(t *testing.T) {
 	config := &Config{Host: "127.0.0.1", Port: 19092}
 	authConfig := &AuthConfig{

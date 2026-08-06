@@ -155,6 +155,24 @@ func NewServer(config *Config) *Server {
 	return NewServerWithAuth(config, nil)
 }
 
+// NewServerFromConfig is the single production decision point for whether
+// the gateway enforces bearer auth on /api/v1: both daemon entrypoints
+// (gateway mode in internal/pilot, polling mode in cmd/pilot) call this
+// instead of choosing between NewServer/NewServerWithAuth themselves, so the
+// two stay in sync (GH-4756 — GH-4738 taught us divergent call sites are how
+// a middleware wiring gap ships).
+//
+// Auth is enabled only when authConfig carries a non-empty token; an empty
+// token (the zero value, e.g. an unset top-level `auth:` block or a
+// "claude-code" type with no token) reproduces today's behavior exactly —
+// no middleware on /api/v1, relying solely on the default loopback bind.
+func NewServerFromConfig(config *Config, authConfig *AuthConfig) *Server {
+	if authConfig != nil && authConfig.Token != "" {
+		return NewServerWithAuth(config, authConfig)
+	}
+	return NewServer(config)
+}
+
 // NewServerWithAuth creates a new gateway server with the given configuration
 // and authentication config. Protected API routes will require authentication.
 func NewServerWithAuth(config *Config, authConfig *AuthConfig) *Server {

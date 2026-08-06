@@ -9,9 +9,14 @@ gateway:
   port: 9090
 
 # Authentication
+# GH-4756: when type is "api-token" and token is non-empty, the gateway
+# enforces bearer auth on /api/v1 (read routes + the approval-decision
+# route). Required for any non-loopback bind (host != 127.0.0.1) — the
+# default "claude-code" type with no token reproduces today's behavior
+# (no auth middleware), relying solely on the loopback bind for safety.
 auth:
-  type: "claude-code"  # "claude-code" (local) or "api-token" (remote)
-  # token: "sk-ant-..."  # Required if type is "api-token"
+  type: "claude-code"  # "claude-code" (local, no bearer auth) or "api-token" (remote, bearer auth)
+  # token: "${PILOT_GATEWAY_TOKEN}"  # Required if type is "api-token"
   # ANTHROPIC_API_KEY env var enables Claude API features (Haiku subtask parsing, etc.)
 
 # Conversational Bot (GH-3665+)
