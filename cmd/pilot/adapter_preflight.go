@@ -47,7 +47,12 @@ func buildAdapterVerifiers(cfg *config.Config) []verify.Verifiable {
 	}
 	if a.GitHub != nil && a.GitHub.Enabled {
 		if token, source := resolveGitHubToken(cfg); token != "" {
-			verifiers = append(verifiers, github.NewVerifier(github.NewClient(token), string(source)))
+			// GH-4747: registerAdapterReadiness wires this verifier into
+			// /ready and calls it repeatedly for the daemon's lifetime — a
+			// client built from a static token would keep re-checking the
+			// boot-time credential and start reporting false-unready 401s
+			// once an App-auth installation token rotates.
+			verifiers = append(verifiers, github.NewVerifier(newGitHubClient(cfg), string(source)))
 		}
 	}
 	if a.Linear != nil && a.Linear.Enabled {
