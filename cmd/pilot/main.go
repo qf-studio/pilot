@@ -605,6 +605,11 @@ Examples:
 			var gwAlertsEngine *alerts.Engine
 			var gwTgApprovalHandler *approval.TelegramHandler
 			var gwSlackApprovalHandler *approval.SlackHandler
+			// GH-4748: hoisted so it's still in scope after the needsPollingInfra
+			// block closes, where it's wired into p.Gateway().SetDecisionRecorder
+			// (nil when needsPollingInfra is false — mirrors gwAutopilotController
+			// et al. above, all hoisted for the same reason).
+			var approvalMgr *approval.Manager
 
 			if needsPollingInfra {
 				// Create shared runner with config (GH-956: enables worktree isolation)
@@ -692,7 +697,7 @@ Examples:
 				}
 
 				// Create approval manager for autopilot
-				approvalMgr := approval.NewManager(cfg.Approval)
+				approvalMgr = approval.NewManager(cfg.Approval)
 
 				// Register Telegram approval handler if enabled
 				if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
@@ -1155,6 +1160,19 @@ Examples:
 			if gwStore != nil {
 				p.Gateway().SetDashboardStore(gwStore)
 				p.Gateway().SetLogStreamStore(gwStore)
+			}
+			// GH-4748: wire the same DecisionRecorder (approvalMgr) that
+			// Telegram/Slack use via WithDecisionRecorder above, so
+			// POST /api/v1/approvals/{requestId}/decision persists through the
+			// identical Manager.RecordDecision seam in gateway mode. Guard nil:
+			// approvalMgr is only non-nil when needsPollingInfra was true: a bare
+			// SetDecisionRecorder(approvalMgr) call would store a non-nil
+			// approval.DecisionRecorder interface wrapping a nil *approval.Manager
+			// (Go's typed-nil-in-interface trap), which the handler's own
+			// `recorder == nil` check can't catch and RecordDecision would then
+			// panic on a nil receiver.
+			if approvalMgr != nil {
+				p.Gateway().SetDecisionRecorder(approvalMgr)
 			}
 			p.Gateway().SetDashboardProjectPath(scopedProjectPath(dashboardScope, projectPath))
 			if cfg.Dashboard != nil {
@@ -2294,6 +2312,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			gwServer.SetDashboardStore(store)
 			gwServer.SetLogStreamStore(store)
 		}
+		// GH-4748: wire the same DecisionRecorder (approvalMgr) that
+		// Telegram/Slack use via WithDecisionRecorder above, so
+		// POST /api/v1/approvals/{requestId}/decision persists through the
+		// identical Manager.RecordDecision seam in polling mode too (the
+		// GH-4738 lesson: wire both gateway-mode and polling-mode paths).
+		gwServer.SetDecisionRecorder(approvalMgr)
 		gwServer.SetDashboardProjectPath(projectPath)
 		if cfg.Dashboard != nil {
 			gwServer.SetDashboardStatsWindowDays(cfg.Dashboard.StatsWindowDays)

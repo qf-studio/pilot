@@ -26,6 +26,12 @@ type DashboardStore interface {
 	GetQueuedTasks(limit int) ([]*memory.Execution, error)
 	GetActiveExecutions() ([]*memory.Execution, error)
 	GetRecentLogs(limit int) ([]*memory.LogEntry, error)
+	// Approval reads/cleanup (GH-4748 / C14 pilot leg). *memory.Store satisfies
+	// these directly; they piggyback on DashboardStore rather than a separate
+	// interface since every wiring site that has a store already sets one.
+	LoadPendingApprovals() ([]*memory.PendingApproval, error)
+	GetExecutionByApprovalRequestID(requestID string) (*memory.Execution, error)
+	DeletePendingApproval(id string) error
 }
 
 // defaultDashboardStatsWindowDays mirrors config.DashboardConfig's default

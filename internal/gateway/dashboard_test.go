@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,14 @@ type mockDashboardStore struct {
 	gotWindowedStatsPath  string
 	gotWindowedStatsSince time.Time
 	gotExecsPaths         []string // appended on each GetRecentExecutions call
+
+	// Approvals API test hooks (GH-4748).
+	pendingApprovals         []*memory.PendingApproval
+	execByApprovalReqID      map[string]*memory.Execution
+	loadPendingApprovalsErr  error
+	getExecByApprovalErr     error
+	deletePendingApprovalErr error
+	deletedApprovalIDs       []string // appended on each DeletePendingApproval call
 }
 
 func (m *mockDashboardStore) GetLifetimeTokens(projectPath string) (*memory.LifetimeTokens, error) {
@@ -64,6 +73,29 @@ func (m *mockDashboardStore) GetActiveExecutions() ([]*memory.Execution, error) 
 
 func (m *mockDashboardStore) GetRecentLogs(_ int) ([]*memory.LogEntry, error) {
 	return m.logEntries, nil
+}
+
+func (m *mockDashboardStore) LoadPendingApprovals() ([]*memory.PendingApproval, error) {
+	if m.loadPendingApprovalsErr != nil {
+		return nil, m.loadPendingApprovalsErr
+	}
+	return m.pendingApprovals, nil
+}
+
+func (m *mockDashboardStore) GetExecutionByApprovalRequestID(requestID string) (*memory.Execution, error) {
+	if m.getExecByApprovalErr != nil {
+		return nil, m.getExecByApprovalErr
+	}
+	exec, ok := m.execByApprovalReqID[requestID]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return exec, nil
+}
+
+func (m *mockDashboardStore) DeletePendingApproval(id string) error {
+	m.deletedApprovalIDs = append(m.deletedApprovalIDs, id)
+	return m.deletePendingApprovalErr
 }
 
 func newTestServerWithDashboard(store DashboardStore) *Server {

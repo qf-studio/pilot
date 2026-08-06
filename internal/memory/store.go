@@ -1528,6 +1528,20 @@ func (s *Store) SetApprovalRequestID(ctx context.Context, taskID, requestID stri
 	})
 }
 
+// GetExecutionByApprovalRequestID returns the execution row whose approval_request_id
+// matches requestID (populated by SetApprovalRequestID after SubmitApprovalRequest
+// succeeds). Used by the gateway approvals API (GH-4748) to join a pending
+// approval_pending row to its execution/PR context. Returns sql.ErrNoRows if
+// requestID is empty (the column defaults to ” for every non-approval execution,
+// so an empty requestID must never be allowed to match) or no execution matches.
+func (s *Store) GetExecutionByApprovalRequestID(requestID string) (*Execution, error) {
+	if requestID == "" {
+		return nil, sql.ErrNoRows
+	}
+	row := s.db.QueryRow(`SELECT `+executionDetailColumns+` FROM executions WHERE approval_request_id = ? ORDER BY created_at DESC LIMIT 1`, requestID)
+	return scanExecutionDetail(row)
+}
+
 // GetRecentExecutions returns the most recent executions ordered by creation time.
 // The limit parameter specifies the maximum number of executions to return.
 // If projectPath is non-empty, only executions for that project are returned.
