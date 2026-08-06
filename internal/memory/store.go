@@ -1930,11 +1930,19 @@ func (s *Store) ResolveOrphanedRunningExecution(id, prURL string) error {
 
 // GetBriefMetrics calculates aggregate metrics for a time period including
 // task counts, success rates, average duration, and PR creation statistics.
+//
+// GH-4742: the canary tenant is excluded from every aggregate below (see
+// GetWindowedStats/GetLifetimeTaskCounts for the same COALESCE(is_canary, 0)
+// = 0 predicate), and SuccessRate is computed over completed+failed only —
+// queued/running rows and neutral terminals (no_op, skipped, declined,
+// stalled, rate_limited, infra, superseded, decomposed, canceled) are
+// excluded from the rate denominator. TotalTasks remains COUNT(*) as a
+// volume stat and is NOT the SuccessRate denominator.
 func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
 	var result BriefMetricsData
 
 	var args []interface{}
-	whereClause := "WHERE created_at >= ? AND created_at < ?"
+	whereClause := "WHERE created_at >= ? AND created_at < ? AND COALESCE(is_canary, 0) = 0"
 	args = append(args, query.Start, query.End)
 
 	if len(query.Projects) > 0 {
@@ -1966,8 +1974,8 @@ func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
 		return nil, fmt.Errorf("failed to get metrics: %w", err)
 	}
 
-	if result.TotalTasks > 0 {
-		result.SuccessRate = float64(result.CompletedCount) / float64(result.TotalTasks)
+	if attempted := result.CompletedCount + result.FailedCount; attempted > 0 {
+		result.SuccessRate = float64(result.CompletedCount) / float64(attempted)
 	}
 
 	return &result, nil
@@ -1975,9 +1983,17 @@ func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
 
 // BriefMetricsData holds aggregate metrics calculated from execution data.
 type BriefMetricsData struct {
-	TotalTasks       int
-	CompletedCount   int
-	FailedCount      int
+	// TotalTasks is COUNT(*) over the canary-excluded period population — a
+	// volume stat. It includes queued/running rows and neutral terminals and
+	// is NOT the SuccessRate denominator (see SuccessRate).
+	TotalTasks     int
+	CompletedCount int
+	FailedCount    int
+	// SuccessRate is CompletedCount / (CompletedCount + FailedCount): the
+	// GH-4735 attempt-success rate. In-flight (queued/running) rows and
+	// neutral terminals (no_op, skipped, declined, stalled, rate_limited,
+	// infra, superseded, decomposed, canceled) are excluded from both the
+	// numerator and denominator.
 	SuccessRate      float64
 	AvgDurationMs    int64
 	PRsCreated       int

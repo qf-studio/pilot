@@ -1710,6 +1710,61 @@ func TestGetBriefMetrics(t *testing.T) {
 	}
 }
 
+// TestGetBriefMetrics_SuccessRateExcludesInFlightNeutralAndCanary is GH-4742:
+// SuccessRate must be completed / (completed + failed) — in-flight (running)
+// rows and neutral terminals (e.g. no_op) are excluded from both the
+// numerator and denominator — and every aggregate must exclude canary rows,
+// matching the GH-4735 population rules applied elsewhere (GetWindowedStats,
+// GetLifetimeTaskCounts).
+func TestGetBriefMetrics_SuccessRateExcludesInFlightNeutralAndCanary(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	start := time.Now().Add(-24 * time.Hour)
+	end := time.Now().Add(24 * time.Hour)
+	inPeriod := time.Now()
+
+	execs := []*Execution{
+		{ID: "bm-completed", TaskID: "T-COMPLETED", ProjectPath: "/p", Status: "completed", CreatedAt: inPeriod, EstimatedCostUSD: 1.00},
+		{ID: "bm-failed", TaskID: "T-FAILED", ProjectPath: "/p", Status: "failed", CreatedAt: inPeriod, EstimatedCostUSD: 1.00},
+		{ID: "bm-running", TaskID: "T-RUNNING", ProjectPath: "/p", Status: "running", CreatedAt: inPeriod, EstimatedCostUSD: 1.00},
+		{ID: "bm-noop", TaskID: "T-NOOP", ProjectPath: "/p", Status: "no_op", CreatedAt: inPeriod, EstimatedCostUSD: 1.00},
+		{ID: "bm-canary", TaskID: "T-CANARY", ProjectPath: "/p", Status: "completed", CreatedAt: inPeriod, EstimatedCostUSD: 100.00, TokensTotal: 9000, IsCanary: true},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.ID, err)
+		}
+	}
+
+	metrics, err := store.GetBriefMetrics(BriefQuery{Start: start, End: end})
+	if err != nil {
+		t.Fatalf("GetBriefMetrics failed: %v", err)
+	}
+
+	if metrics.SuccessRate != 0.5 {
+		t.Errorf("SuccessRate = %v, want 0.5 (completed / (completed+failed), in-flight/neutral/canary excluded)", metrics.SuccessRate)
+	}
+	if metrics.TotalTasks != 4 {
+		t.Errorf("TotalTasks = %d, want 4 (canary row excluded, count is a volume stat over completed+failed+running+no_op)", metrics.TotalTasks)
+	}
+	if metrics.CompletedCount != 1 {
+		t.Errorf("CompletedCount = %d, want 1 (canary completed row must be excluded)", metrics.CompletedCount)
+	}
+	if metrics.FailedCount != 1 {
+		t.Errorf("FailedCount = %d, want 1", metrics.FailedCount)
+	}
+	if metrics.EstimatedCostUSD != 4.00 {
+		t.Errorf("EstimatedCostUSD = %.2f, want 4.00 (canary row's cost must be excluded)", metrics.EstimatedCostUSD)
+	}
+	if metrics.TotalTokensUsed != 0 {
+		t.Errorf("TotalTokensUsed = %d, want 0 (canary row's tokens must be excluded)", metrics.TotalTokensUsed)
+	}
+}
+
 func TestProjectSettings(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()
