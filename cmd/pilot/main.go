@@ -599,6 +599,17 @@ Examples:
 				pilotOpts = append(pilotOpts, pilot.WithDashboardFS(dashboardFS))
 			}
 
+			// GH-4755: webhook-mode Pilot's GitHub client was built once from
+			// github.NewClient(cfg.Adapters.GitHub.Token) inside pilot.New and
+			// held for the daemon's lifetime — bypassing the per-request
+			// token-resolution chain (App auth / env / gh-CLI fallback,
+			// GH-4747) that every polling-mode client already goes through via
+			// newGitHubClient. Pass the same kind of client in via an option so
+			// webhook mode re-resolves (and invalidates on 401) identically.
+			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
+				pilotOpts = append(pilotOpts, pilot.WithGitHubClient(newGitHubClient(cfg)))
+			}
+
 			// GH-392: Create shared infrastructure for polling adapters in gateway mode
 			// This allows GitHub polling to work alongside Linear/Jira webhooks
 			telegramFlagSet := cmd.Flags().Changed("telegram")
