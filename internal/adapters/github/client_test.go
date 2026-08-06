@@ -2658,7 +2658,7 @@ func TestExecuteGraphQL(t *testing.T) {
 			statusCode:  http.StatusUnauthorized,
 			response:    `{"message":"Bad credentials"}`,
 			wantErr:     true,
-			errContains: "graphql API error (status 401)",
+			errContains: "API error (status 401)",
 		},
 		{
 			name:       "nil result ignores data",
