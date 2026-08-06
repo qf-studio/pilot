@@ -880,7 +880,7 @@ func (g *GitOperations) CreatePR(ctx context.Context, title, body, baseBranch st
 		args = append(args, "--head", headBranch)
 	}
 
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	cmd.Dir = g.projectPath
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
@@ -926,12 +926,12 @@ func extractPRURL(text string) string {
 // dependency CreatePR already relies on — so the executor needs no github.Client
 // wiring (the merge-detection API lives only on *github.Client).
 func (g *GitOperations) FindMergedPRByBranch(ctx context.Context, branch string) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "pr", "list",
 		"--head", branch,
 		"--state", "merged",
 		"--json", "url",
 		"--limit", "1",
-	)
+	))
 	cmd.Dir = g.projectPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -945,12 +945,12 @@ func (g *GitOperations) FindMergedPRByBranch(ctx context.Context, branch string)
 // already-open PR from a prior/retried dispatch of the same branch instead of
 // racing gh CLI into a duplicate PR.
 func (g *GitOperations) FindOpenPRByBranch(ctx context.Context, branch string) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "pr", "list",
 		"--head", branch,
 		"--state", "open",
 		"--json", "url",
 		"--limit", "1",
-	)
+	))
 	cmd.Dir = g.projectPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {

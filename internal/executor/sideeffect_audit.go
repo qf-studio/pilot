@@ -87,7 +87,7 @@ func (ghCLISideEffectSearcher) SearchClosedOrReopenedSince(ctx context.Context, 
 		"--updated", ">=" + since.UTC().Format(time.RFC3339),
 		"--json", "number,title,state,url",
 	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 

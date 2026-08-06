@@ -89,7 +89,7 @@ func (ghCLIIssueStateChecker) GetIssueState(ctx context.Context, owner, repo str
 		"--repo", owner + "/" + repo,
 		"--json", "state,labels",
 	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
