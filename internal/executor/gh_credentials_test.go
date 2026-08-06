@@ -41,7 +41,7 @@ func TestWithGhCredentials_InstallsGitHubTokenEnv(t *testing.T) {
 	withGhCredentials(context.Background(), cmd)
 
 	if cmd.Env == nil {
-		t.Fatal("cmd.Env is nil, want GITHUB_TOKEN set")
+		t.Fatal("cmd.Env is nil, want GITHUB_TOKEN/GH_TOKEN set")
 	}
 	env := map[string]string{}
 	for _, kv := range cmd.Env {
@@ -51,6 +51,38 @@ func TestWithGhCredentials_InstallsGitHubTokenEnv(t *testing.T) {
 	}
 	if env["GITHUB_TOKEN"] != testutil.FakeGitHubToken {
 		t.Errorf("GITHUB_TOKEN = %q, want %q", env["GITHUB_TOKEN"], testutil.FakeGitHubToken)
+	}
+	// GH-4753: gh CLI resolves GH_TOKEN with higher precedence than
+	// GITHUB_TOKEN, so both must be set to the minted token or the App
+	// cutover is silently ineffective.
+	if env["GH_TOKEN"] != testutil.FakeGitHubToken {
+		t.Errorf("GH_TOKEN = %q, want %q", env["GH_TOKEN"], testutil.FakeGitHubToken)
+	}
+}
+
+// TestWithGhCredentials_OverridesAmbientGhToken verifies that an ambient
+// GH_TOKEN/GITHUB_TOKEN already present in the daemon's environment (e.g. an
+// OAuth PAT exported in the shell) is overridden by the minted App token
+// (GH-4753). cmd.Env inherits os.Environ() and appends the provider's token
+// after it, so os/exec's documented last-value-wins behavior for duplicate
+// keys is what makes this safe — this test pins that behavior against
+// regression instead of just asserting it in a comment.
+func TestWithGhCredentials_OverridesAmbientGhToken(t *testing.T) {
+	resetGhCredentialProvider(t)
+	t.Setenv("GH_TOKEN", "ambient-gh-token-should-be-overridden")
+	t.Setenv("GITHUB_TOKEN", "ambient-github-token-should-be-overridden")
+	SetGhCredentialProvider(func(ctx context.Context) (string, error) {
+		return testutil.FakeGitHubToken, nil
+	})
+
+	cmd := exec.CommandContext(context.Background(), "gh", "issue", "view", "1")
+	withGhCredentials(context.Background(), cmd)
+
+	if got := envValue(cmd.Env, "GH_TOKEN"); got != testutil.FakeGitHubToken {
+		t.Errorf("GH_TOKEN = %q, want %q (ambient value must be overridden by minted token)", got, testutil.FakeGitHubToken)
+	}
+	if got := envValue(cmd.Env, "GITHUB_TOKEN"); got != testutil.FakeGitHubToken {
+		t.Errorf("GITHUB_TOKEN = %q, want %q (ambient value must be overridden by minted token)", got, testutil.FakeGitHubToken)
 	}
 }
 
@@ -105,6 +137,74 @@ func TestWithGhCredentials_EmptyTokenFallsBackToAmbientEnv(t *testing.T) {
 
 	if cmd.Env != nil {
 		t.Errorf("cmd.Env = %v, want nil (empty token should degrade to ambient environment)", cmd.Env)
+	}
+}
+
+// resetGhMintFailureState clears the package-level mint-failure dedup state
+// so tests don't leak into each other (GH-4753).
+func resetGhMintFailureState(t *testing.T) {
+	t.Helper()
+	ghMintFailureMu.Lock()
+	ghMintFailureLast = ""
+	ghMintFailureMu.Unlock()
+	t.Cleanup(func() {
+		ghMintFailureMu.Lock()
+		ghMintFailureLast = ""
+		ghMintFailureMu.Unlock()
+	})
+}
+
+// TestLogGhMintFailure_DedupsByReason verifies the ERROR log fires on state
+// change (a new/different failure reason) but not on a repeat of the same
+// reason — the non-spammy behavior GH-4753 requires so a persistent mint
+// failure doesn't flood logs on every `gh` CLI invocation.
+func TestLogGhMintFailure_DedupsByReason(t *testing.T) {
+	resetGhMintFailureState(t)
+
+	logGhMintFailure(errors.New("mint failed: 401"))
+	if got := ghMintFailureLast; got != "mint failed: 401" {
+		t.Fatalf("ghMintFailureLast = %q, want %q after first failure", got, "mint failed: 401")
+	}
+
+	// Same reason again — dedup state must not change (this is the
+	// non-spammy guarantee; the log call itself is idempotent to invoke).
+	logGhMintFailure(errors.New("mint failed: 401"))
+	if got := ghMintFailureLast; got != "mint failed: 401" {
+		t.Fatalf("ghMintFailureLast = %q, want unchanged %q on repeat failure", got, "mint failed: 401")
+	}
+
+	// Different reason — state must change, i.e. this failure logs again.
+	logGhMintFailure(errors.New("mint failed: installation suspended"))
+	if got := ghMintFailureLast; got != "mint failed: installation suspended" {
+		t.Fatalf("ghMintFailureLast = %q, want %q after distinct failure", got, "mint failed: installation suspended")
+	}
+}
+
+// TestWithGhCredentials_ResetsMintFailureStateOnSuccess verifies a
+// subsequent successful mint clears the dedup state, so if the same failure
+// reason recurs later it logs again instead of staying silently deduped
+// forever.
+func TestWithGhCredentials_ResetsMintFailureStateOnSuccess(t *testing.T) {
+	resetGhCredentialProvider(t)
+	resetGhMintFailureState(t)
+
+	failing := true
+	SetGhCredentialProvider(func(ctx context.Context) (string, error) {
+		if failing {
+			return "", errors.New("mint failed: 401")
+		}
+		return testutil.FakeGitHubToken, nil
+	})
+
+	withGhCredentials(context.Background(), exec.CommandContext(context.Background(), "gh", "issue", "view", "1"))
+	if got := ghMintFailureLast; got != "mint failed: 401" {
+		t.Fatalf("ghMintFailureLast = %q, want %q after failure", got, "mint failed: 401")
+	}
+
+	failing = false
+	withGhCredentials(context.Background(), exec.CommandContext(context.Background(), "gh", "issue", "view", "1"))
+	if got := ghMintFailureLast; got != "" {
+		t.Fatalf("ghMintFailureLast = %q, want empty after a successful mint", got)
 	}
 }
 
