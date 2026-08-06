@@ -438,7 +438,10 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	if os.Getenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS") == "1" {
 		logging.WithComponent("pilot").Warn("PILOT_ALLOW_UNSIGNED_WEBHOOKS=1 — webhook signature verification DISABLED across all adapters; never use this in production")
 	}
-	p.gateway = gateway.NewServer(gatewayCfg)
+	// GH-4756: NewServerWithAuth wires bearer auth onto /api/v1 whenever
+	// cfg.Auth.Token is set (nil auth config = identical to NewServer, so an
+	// unconfigured token is fully backwards compatible).
+	p.gateway = gateway.NewServerWithAuth(gatewayCfg, cfg.GatewayAuthConfig())
 
 	// Register webhook handlers
 	if p.linearMultiWH != nil {

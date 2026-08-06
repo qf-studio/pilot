@@ -901,6 +901,35 @@ func validateReleaseTriggerFields(pathPrefix, trigger, schedule, timezone string
 	return nil
 }
 
+// GatewayAuthConfig returns the *gateway.AuthConfig to pass to
+// gateway.NewServerWithAuth when constructing the gateway server, or nil
+// when no auth token is configured.
+//
+// GH-4756: both production construction sites (gateway mode —
+// internal/pilot.New — and polling mode — cmd/pilot runPollingMode) must
+// build the server via gateway.NewServerWithAuth(gatewayCfg,
+// cfg.GatewayAuthConfig()) rather than gateway.NewServer. A nil return
+// (c.Auth == nil or c.Auth.Token == "") makes NewServerWithAuth behave
+// identically to NewServer — auth.Middleware becomes a no-op — so an
+// unconfigured token is fully backwards compatible with prior behavior.
+//
+// When a token is set, the returned config always forces
+// gateway.AuthTypeAPIToken (bearer-token compare) regardless of
+// c.Auth.Type: the hosted console proxy (pilot-console
+// internal/proxy/proxy.go) sends "Authorization: Bearer <token>", and the
+// alternate AuthTypeClaudeCode dispatch ignores the Token field entirely
+// (it only checks the request's source address) — silently defeating a
+// configured token is exactly the gap this closes.
+func (c *Config) GatewayAuthConfig() *gateway.AuthConfig {
+	if c.Auth == nil || c.Auth.Token == "" {
+		return nil
+	}
+	return &gateway.AuthConfig{
+		Type:  gateway.AuthTypeAPIToken,
+		Token: c.Auth.Token,
+	}
+}
+
 // Validate checks the configuration for errors and returns an error if invalid.
 // It validates required fields, port ranges, authentication settings, and routing config.
 func (c *Config) Validate() error {
