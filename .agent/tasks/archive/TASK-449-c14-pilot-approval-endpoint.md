@@ -33,3 +33,4 @@ No console/UI changes (console leg is a separate follow-up gated on this merging
 - Research pass 2026-08-06 (marker `2026-08-05_wave3-...md` § 08-06 session)
 
 - **Dispatched**: https://github.com/qf-studio/pilot/issues/4748
+- **Shipped**: PR#4752 merged 2026-08-06 12:38Z. Post-merge review: SQL/indexing/race-vs-executor clean; 17 gateway + 3 store tests. Follow-ups filed: pilot#4756 (gateway auth never enabled in production wiring — first mutating endpoint on an unauthenticated surface; blocks non-loopback exposure), pilot#4757 (TOCTOU double-decide + unlinked-request 500-forever trap). API-surface traps recorded in TASK-452 (console leg, console#109): response echoes `approve/reject` while DB persists `approved/rejected`; `decidedAt` is gateway clock, not DB timestamp.

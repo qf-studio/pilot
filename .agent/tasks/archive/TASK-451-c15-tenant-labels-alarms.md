@@ -31,3 +31,4 @@ No new instruments · no Alertmanager/deployment infra (operator concern) · no 
 - Research pass 2026-08-06: OrgID availability at all call sites
 
 - **Dispatched**: https://github.com/qf-studio/pilot-console/issues/107
+- **Shipped**: console PR#108 merged 2026-08-06 11:41Z. Post-merge review clean on cardinality (org UUID coarser than connection — no series multiplication), registration, PromQL validity. One should-fix follow-up filed: console#110 (stale gauge series never deleted → the sustained-nonzero alerts page forever after connection offboarding; + job matchers on example exprs).
