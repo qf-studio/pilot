@@ -99,11 +99,47 @@ func resolveExecutionMode(mode string) executionMode {
 type githubTokenSource string
 
 const (
+	githubTokenSourceApp    githubTokenSource = "github app (adapters.github.app)"
 	githubTokenSourceConfig githubTokenSource = "config (adapters.github.token)"
 	githubTokenSourceEnv    githubTokenSource = "env (GITHUB_TOKEN)"
 	githubTokenSourceGhCLI  githubTokenSource = "gh CLI (gh auth token)"
 	githubTokenSourceNone   githubTokenSource = "none"
 )
+
+// ghAppTokenSourceCache memoizes the *github.TokenSource built from
+// adapters.github.app — constructing it re-reads and re-parses the PEM
+// private key, and TokenSource already owns its own mint/refresh cache, so
+// building it once per process (like ghCLITokenCache below) avoids both the
+// wasted work and defeats-the-cache bug of rebuilding on every call.
+type ghAppTokenSourceCache struct {
+	once   sync.Once
+	source *github.TokenSource
+	err    error
+}
+
+func (c *ghAppTokenSourceCache) get(appCfg *github.AppConfig) (*github.TokenSource, error) {
+	c.once.Do(func() {
+		c.source, c.err = github.NewTokenSource(appCfg)
+	})
+	return c.source, c.err
+}
+
+var ghAppTokenCache = &ghAppTokenSourceCache{}
+
+// mintGitHubAppToken mints (or returns the cached, proactively-refreshed)
+// GitHub App installation token for appCfg. Shared by resolveGitHubToken
+// (API client construction) and the git credential provider installed on
+// the executor for pilot worktree push/fetch (GH-4743) — both paths mint
+// through this exact same TokenSource cache, so there is one chokepoint for
+// "get me a currently-valid installation token", not two independent ones
+// that could drift or double-mint.
+func mintGitHubAppToken(ctx context.Context, appCfg *github.AppConfig) (string, error) {
+	source, err := ghAppTokenCache.get(appCfg)
+	if err != nil {
+		return "", err
+	}
+	return source.Token(ctx)
+}
 
 // ghCLITokenCache memoizes the `gh auth token` fallback lookup for the process
 // lifetime — it forks a subprocess, and the credential can't change mid-run.
@@ -129,11 +165,35 @@ func (c *ghCLITokenCache) resolve() (string, bool) {
 var ghTokenCache = &ghCLITokenCache{}
 
 // resolveGitHubToken resolves the GitHub token with precedence:
+// adapters.github.app (GitHub App installation token, GH-4743) →
 // adapters.github.token config → GITHUB_TOKEN env → `gh auth token` CLI
 // fallback (GH-3718). It consolidates the pattern previously duplicated
 // across five call-sites in this file. The returned source lets callers log
 // which credential a startup 401 came from.
+//
+// GH-4743: App auth is preferred when configured — it kills the ec2-user
+// gh-CLI OAuth single point of failure and moves off the shared per-user
+// 5000/hr rate pool onto a per-installation one. On mint failure it logs
+// loudly and falls through to the legacy chain (config token → GITHUB_TOKEN
+// env → gh CLI) rather than failing the caller outright, so a transient
+// GitHub outage or an expired App key doesn't take the whole daemon down
+// when a GITHUB_TOKEN fallback is available.
 func resolveGitHubToken(cfg *config.Config) (string, githubTokenSource) {
+	if cfg != nil && cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.App != nil {
+		appCfg := cfg.Adapters.GitHub.App
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		tok, err := mintGitHubAppToken(ctx, appCfg)
+		cancel()
+		if err == nil && tok != "" {
+			return tok, githubTokenSourceApp
+		}
+		logging.WithComponent("github-auth").Error(
+			"github app installation token mint failed — falling back to GITHUB_TOKEN",
+			slog.Int64("app_id", appCfg.AppID),
+			slog.Int64("installation_id", appCfg.InstallationID),
+			slog.Any("error", err),
+		)
+	}
 	if cfg != nil && cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Token != "" {
 		return cfg.Adapters.GitHub.Token, githubTokenSourceConfig
 	}
@@ -1625,6 +1685,19 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 	rateBudgetTracker := ghbudget.NewTracker(rateBudgetFloorPct, logging.WithComponent("ghbudget"))
 	http.DefaultTransport = &ghbudget.RoundTripper{Next: http.DefaultTransport, Tracker: rateBudgetTracker}
+
+	// GH-4743: when GitHub App auth is configured, wire pilot worktree git
+	// push/fetch to authenticate with the same minted installation token as
+	// the API clients above, instead of the ambient GITHUB_TOKEN env / gh
+	// CLI credential helper — the SPOF this ticket kills. No-op (nil
+	// provider) when App auth isn't configured, so git commands keep using
+	// the ambient environment exactly as before the cutover.
+	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.App != nil {
+		appCfg := cfg.Adapters.GitHub.App
+		executor.SetGitCredentialProvider(func(ctx context.Context) (string, error) {
+			return mintGitHubAppToken(ctx, appCfg)
+		})
+	}
 
 	// Check Telegram config if enabled
 	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled

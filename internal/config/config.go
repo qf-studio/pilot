@@ -1023,6 +1023,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("dashboard.stats_window_days must be >= 1, got %d", c.Dashboard.StatsWindowDays)
 	}
 
+	// GH-4743: Validate adapters.github.app eagerly — a partial GitHub App
+	// block (e.g. app_id set but private_key_path omitted) must fail at
+	// Load() time naming the missing field.
+	if c.Adapters != nil && c.Adapters.GitHub != nil {
+		if err := c.Adapters.GitHub.App.Validate(); err != nil {
+			return fmt.Errorf("adapters.github.app: %w", err)
+		}
+	}
+
 	return nil
 }
 

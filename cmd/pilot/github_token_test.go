@@ -22,6 +22,8 @@ func resetGitHubTokenTestState(t *testing.T) {
 	_ = os.Unsetenv("GITHUB_TOKEN")
 	origCache := ghTokenCache
 	ghTokenCache = &ghCLITokenCache{}
+	origAppCache := ghAppTokenCache
+	ghAppTokenCache = &ghAppTokenSourceCache{}
 	origRunner := ghRunner
 	t.Cleanup(func() {
 		if hadEnv {
@@ -30,6 +32,7 @@ func resetGitHubTokenTestState(t *testing.T) {
 			_ = os.Unsetenv("GITHUB_TOKEN")
 		}
 		ghTokenCache = origCache
+		ghAppTokenCache = origAppCache
 		ghRunner = origRunner
 	})
 }
@@ -130,6 +133,67 @@ func TestResolveGitHubToken_Precedence(t *testing.T) {
 			t.Errorf("source = %q, want %q", source, githubTokenSourceNone)
 		}
 	})
+}
+
+// TestResolveGitHubToken_AppAuth_MintFailureFallsBack verifies GH-4743
+// acceptance: a configured adapters.github.app that fails to mint (here, an
+// unreadable private key — a stand-in for any mint failure, since
+// TokenSource construction and the HTTP mint call share this same error
+// path back to resolveGitHubToken) falls through to the legacy
+// config/env/gh-CLI chain rather than returning no token at all. The
+// mint/refresh/success path itself is exercised against a fake tokens
+// endpoint in internal/adapters/github/apptoken_test.go — this test only
+// covers the resolveGitHubToken wiring and fallback behavior.
+func TestResolveGitHubToken_AppAuth_MintFailureFallsBack(t *testing.T) {
+	resetGitHubTokenTestState(t)
+
+	cfg := &config.Config{Adapters: &config.AdaptersConfig{
+		GitHub: &github.Config{
+			Enabled: true,
+			Token:   "config-token",
+			App: &github.AppConfig{
+				AppID:          123456,
+				InstallationID: 78901234,
+				PrivateKeyPath: "/nonexistent/github-app.pem",
+			},
+		},
+	}}
+
+	tok, source := resolveGitHubToken(cfg)
+	if tok != "config-token" {
+		t.Errorf("token = %q, want config-token (fallback after App mint failure)", tok)
+	}
+	if source != githubTokenSourceConfig {
+		t.Errorf("source = %q, want %q", source, githubTokenSourceConfig)
+	}
+}
+
+// TestResolveGitHubToken_AppAuth_MintFailureFallsBackToNone verifies that
+// when App auth fails and no config/env/gh-CLI token is available either,
+// resolveGitHubToken degrades to githubTokenSourceNone rather than panicking
+// or returning a stale/empty-but-truthy source.
+func TestResolveGitHubToken_AppAuth_MintFailureFallsBackToNone(t *testing.T) {
+	resetGitHubTokenTestState(t)
+	ghRunner = fakeGhRunner(t, false, "", "", nil)
+
+	cfg := &config.Config{Adapters: &config.AdaptersConfig{
+		GitHub: &github.Config{
+			Enabled: true,
+			App: &github.AppConfig{
+				AppID:          123456,
+				InstallationID: 78901234,
+				PrivateKeyPath: "/nonexistent/github-app.pem",
+			},
+		},
+	}}
+
+	tok, source := resolveGitHubToken(cfg)
+	if tok != "" {
+		t.Errorf("token = %q, want empty", tok)
+	}
+	if source != githubTokenSourceNone {
+		t.Errorf("source = %q, want %q", source, githubTokenSourceNone)
+	}
 }
 
 // recordingChannel is a minimal alerts.Channel that records delivered alerts.

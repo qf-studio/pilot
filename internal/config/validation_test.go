@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/executor"
@@ -918,6 +919,65 @@ func TestConfig_Validate_ReleaseTrigger(t *testing.T) {
 				if err == nil {
 					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
 				} else if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// GH-4743: adapters.github.app is validated eagerly at Config.Validate()
+// time — a partial block must fail naming the missing field, not surface as
+// a confusing mint failure later at runtime.
+func TestConfig_Validate_GitHubApp(t *testing.T) {
+	tests := []struct {
+		name      string
+		app       *github.AppConfig
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "nil app block is allowed (opt-in)",
+			app:  nil,
+		},
+		{
+			name: "valid app block",
+			app: &github.AppConfig{
+				AppID:          123456,
+				InstallationID: 78901234,
+				PrivateKeyPath: "/etc/pilot/github-app.pem",
+			},
+		},
+		{
+			name:      "missing private_key_path",
+			app:       &github.AppConfig{AppID: 123456, InstallationID: 78901234},
+			wantErr:   true,
+			errSubstr: "private_key_path",
+		},
+		{
+			name:      "missing app_id",
+			app:       &github.AppConfig{InstallationID: 78901234, PrivateKeyPath: "/etc/pilot/github-app.pem"},
+			wantErr:   true,
+			errSubstr: "app_id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Adapters = &AdaptersConfig{GitHub: &github.Config{App: tt.app}}
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errSubstr)
+				}
+				if !strings.Contains(err.Error(), "adapters.github.app") {
+					t.Errorf("expected error to be prefixed with %q, got %q", "adapters.github.app", err.Error())
+				}
+				if !strings.Contains(err.Error(), tt.errSubstr) {
 					t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
 				}
 			} else if err != nil {

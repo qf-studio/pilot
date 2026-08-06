@@ -1,0 +1,217 @@
+package github
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// testAppPrivateKeyPath generates a throwaway RSA key, PEM-encodes it (PKCS1,
+// matching GitHub's App private-key download format), writes it to a temp
+// file, and returns the path. A real PEM is needed to exercise the actual
+// RSA parsing/signing code path — there's no meaningful "fake constant" for
+// a key, unlike a bearer token string.
+func testAppPrivateKeyPath(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating test RSA key: %v", err)
+	}
+	der := x509.MarshalPKCS1PrivateKey(key)
+	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}
+	path := filepath.Join(t.TempDir(), "test-github-app.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatalf("writing test private key: %v", err)
+	}
+	return path
+}
+
+func testAppConfig(t *testing.T) *AppConfig {
+	return &AppConfig{
+		AppID:          123456,
+		InstallationID: 78901234,
+		PrivateKeyPath: testAppPrivateKeyPath(t),
+	}
+}
+
+func TestNewTokenSource_MissingKeyFile(t *testing.T) {
+	cfg := &AppConfig{AppID: 1, InstallationID: 2, PrivateKeyPath: "/nonexistent/path/key.pem"}
+	_, err := NewTokenSource(cfg)
+	if err == nil {
+		t.Fatal("NewTokenSource() = nil error, want error naming the unreadable path")
+	}
+	if !strings.Contains(err.Error(), cfg.PrivateKeyPath) {
+		t.Errorf("error %q does not name the private key path %q", err.Error(), cfg.PrivateKeyPath)
+	}
+}
+
+func TestNewTokenSource_InvalidPEM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-key.pem")
+	if err := os.WriteFile(path, []byte("this is not a PEM file"), 0o600); err != nil {
+		t.Fatalf("writing bogus key file: %v", err)
+	}
+	cfg := &AppConfig{AppID: 1, InstallationID: 2, PrivateKeyPath: path}
+	_, err := NewTokenSource(cfg)
+	if err == nil {
+		t.Fatal("NewTokenSource() = nil error, want error for invalid PEM")
+	}
+}
+
+func TestNewTokenSource_InvalidAppConfig(t *testing.T) {
+	cfg := &AppConfig{} // missing everything
+	_, err := NewTokenSource(cfg)
+	if err == nil {
+		t.Fatal("NewTokenSource() = nil error, want validation error")
+	}
+	if !strings.Contains(err.Error(), "app_id") {
+		t.Errorf("error %q does not name app_id as the first missing field", err.Error())
+	}
+}
+
+// fakeTokenServer stands in for GitHub's
+// POST /app/installations/{id}/access_tokens endpoint.
+func fakeTokenServer(t *testing.T, expiresIn time.Duration, mintCount *int64) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			t.Errorf("request missing Bearer auth header, got %q", auth)
+		}
+		jwt := strings.TrimPrefix(auth, "Bearer ")
+		parts := strings.Split(jwt, ".")
+		if len(parts) != 3 {
+			t.Errorf("app JWT does not look like a JWT (want 3 dot-separated segments): %q", jwt)
+		}
+
+		atomic.AddInt64(mintCount, 1)
+		resp := mintResponse{
+			// Deliberately not a realistic-looking secret pattern —
+			// see internal/testutil/tokens.go conventions.
+			Token:     fmt.Sprintf("test-installation-token-%d", atomic.LoadInt64(mintCount)),
+			ExpiresAt: time.Now().Add(expiresIn),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+func TestTokenSource_Token_MintsAndCaches(t *testing.T) {
+	var mintCount int64
+	server := fakeTokenServer(t, time.Hour, &mintCount)
+	defer server.Close()
+
+	ts, err := NewTokenSourceWithBaseURL(testAppConfig(t), server.URL)
+	if err != nil {
+		t.Fatalf("NewTokenSourceWithBaseURL() error = %v", err)
+	}
+
+	ctx := context.Background()
+	tok1, err := ts.Token(ctx)
+	if err != nil {
+		t.Fatalf("Token() error = %v", err)
+	}
+	if tok1 == "" {
+		t.Fatal("Token() returned empty token")
+	}
+
+	tok2, err := ts.Token(ctx)
+	if err != nil {
+		t.Fatalf("second Token() error = %v", err)
+	}
+	if tok2 != tok1 {
+		t.Errorf("second Token() = %q, want cached %q", tok2, tok1)
+	}
+	if got := atomic.LoadInt64(&mintCount); got != 1 {
+		t.Errorf("mint endpoint hit %d times, want 1 (second call should use the cache)", got)
+	}
+}
+
+func TestTokenSource_Token_RefreshesNearExpiry(t *testing.T) {
+	var mintCount int64
+	// Expires in under the 5-minute refresh margin, so every Token() call
+	// should re-mint rather than serve a soon-to-expire cached token.
+	server := fakeTokenServer(t, 2*time.Minute, &mintCount)
+	defer server.Close()
+
+	ts, err := NewTokenSourceWithBaseURL(testAppConfig(t), server.URL)
+	if err != nil {
+		t.Fatalf("NewTokenSourceWithBaseURL() error = %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := ts.Token(ctx); err != nil {
+		t.Fatalf("first Token() error = %v", err)
+	}
+	if _, err := ts.Token(ctx); err != nil {
+		t.Fatalf("second Token() error = %v", err)
+	}
+	if got := atomic.LoadInt64(&mintCount); got != 2 {
+		t.Errorf("mint endpoint hit %d times, want 2 (both calls within the refresh margin should re-mint)", got)
+	}
+}
+
+func TestTokenSource_Token_MintFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	defer server.Close()
+
+	ts, err := NewTokenSourceWithBaseURL(testAppConfig(t), server.URL)
+	if err != nil {
+		t.Fatalf("NewTokenSourceWithBaseURL() error = %v", err)
+	}
+
+	_, err = ts.Token(context.Background())
+	if err == nil {
+		t.Fatal("Token() = nil error, want error from a 401 mint response")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error %q does not surface the mint HTTP status", err.Error())
+	}
+}
+
+func TestSignAppJWT(t *testing.T) {
+	ts, err := NewTokenSource(testAppConfig(t))
+	if err != nil {
+		t.Fatalf("NewTokenSource() error = %v", err)
+	}
+
+	jwt, err := ts.signAppJWT()
+	if err != nil {
+		t.Fatalf("signAppJWT() error = %v", err)
+	}
+	parts := strings.Split(jwt, ".")
+	if len(parts) != 3 {
+		t.Fatalf("signAppJWT() = %q, want 3 dot-separated segments", jwt)
+	}
+
+	claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decoding JWT claims segment: %v", err)
+	}
+	var claims map[string]int64
+	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
+		t.Fatalf("unmarshaling JWT claims: %v", err)
+	}
+	if claims["iss"] != ts.appID {
+		t.Errorf("JWT iss = %d, want %d", claims["iss"], ts.appID)
+	}
+	if claims["exp"] <= claims["iat"] {
+		t.Errorf("JWT exp (%d) not after iat (%d)", claims["exp"], claims["iat"])
+	}
+}

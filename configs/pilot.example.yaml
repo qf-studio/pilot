@@ -80,6 +80,22 @@ adapters:
   github:
     enabled: false
     token: "${GITHUB_TOKEN}"
+    # GitHub App installation-token auth (GH-4743) — preferred over the
+    # token/GITHUB_TOKEN fallback above. Kills the gh-CLI-OAuth single point
+    # of failure and gets the installation its own rate pool instead of
+    # sharing the daemon's 5000/hr with every interactive session (#4391).
+    # When set, the daemon mints a short-lived installation access token
+    # (JWT -> POST /app/installations/{id}/access_tokens), caches it, and
+    # refreshes proactively before the ~1h expiry. Used for both the GitHub
+    # API client and git push/fetch credentials on pilot worktrees. On mint
+    # failure it logs loudly and falls back to `token`/`GITHUB_TOKEN` above.
+    # All three fields are required together — a partial block fails fast
+    # at startup naming the missing field. See
+    # .agent/sops/config/github-token-architecture.md for the full writeup.
+    # app:
+    #   app_id: 123456                  # GitHub App ID (App settings page)
+    #   installation_id: 78901234       # Installation ID for this org/repo
+    #   private_key_path: "/etc/pilot/github-app.pem"  # App's PEM private key
     repo: "owner/repo"                 # Repository to poll
     pilot_label: "pilot"               # Issues with this label are picked up
     # use_sdk_poller: false            # Opt into the studio-sdk GitHub issue poller. Full

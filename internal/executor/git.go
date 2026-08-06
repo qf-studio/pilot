@@ -572,6 +572,7 @@ func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch
 func (g *GitOperations) resolveGuardBaseRef(ctx context.Context, baseBranch string) string {
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
 	fetchCmd.Dir = g.projectPath
+	withGitCredentials(ctx, fetchCmd)
 	_ = fetchCmd.Run() // best-effort; fall back to whatever origin/<base> already resolves to (or local base)
 
 	verifyCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "-q", "origin/"+baseBranch)
@@ -840,6 +841,7 @@ func taskExplicitlyTargetsMemoryFiles(task *Task) bool {
 func (g *GitOperations) Push(ctx context.Context, branchName string) error {
 	cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", branchName)
 	cmd.Dir = g.projectPath
+	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to push: %w: %s", err, output)
@@ -1047,6 +1049,7 @@ func (g *GitOperations) PushToMain(ctx context.Context) error {
 	}
 	cmd := exec.CommandContext(ctx, "git", "push", "origin", defaultBranch)
 	cmd.Dir = g.projectPath
+	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to push to %s: %w: %s", defaultBranch, err, output)
@@ -1093,6 +1096,7 @@ func (g *GitOperations) CountNewCommits(ctx context.Context, baseBranch string) 
 func (g *GitOperations) CountNewCommitsAgainstOrigin(ctx context.Context, baseBranch string) (int, error) {
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
 	fetchCmd.Dir = g.projectPath
+	withGitCredentials(ctx, fetchCmd)
 	_ = fetchCmd.Run() // best-effort; fall back to the existing tracking ref on failure
 
 	if count, err := g.CountNewCommits(ctx, "origin/"+baseBranch); err == nil {
@@ -1168,6 +1172,7 @@ func (g *GitOperations) GetDiff(ctx context.Context, baseBranch string) (string,
 func (g *GitOperations) Pull(ctx context.Context, branch string) error {
 	cmd := exec.CommandContext(ctx, "git", "pull", "origin", branch)
 	cmd.Dir = g.projectPath
+	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to pull %s: %w: %s", branch, err, output)
@@ -1223,6 +1228,7 @@ func (g *GitOperations) CommitsBehindMain(ctx context.Context, branchName string
 	// First fetch to ensure we have latest remote state
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin")
 	fetchCmd.Dir = g.projectPath
+	withGitCredentials(ctx, fetchCmd)
 	_ = fetchCmd.Run() // Ignore fetch errors - might be offline
 
 	// Get default branch
@@ -1328,6 +1334,7 @@ func (g *GitOperations) GetDiffStats(ctx context.Context, baseBranch string) (Gi
 func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName string) bool {
 	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--heads", "origin", branchName)
 	cmd.Dir = g.projectPath
+	withGitCredentials(ctx, cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return false

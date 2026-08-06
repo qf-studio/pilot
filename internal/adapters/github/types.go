@@ -1,6 +1,9 @@
 package github
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Config holds GitHub adapter configuration
 type Config struct {
@@ -15,6 +18,42 @@ type Config struct {
 	ProjectBoard      *ProjectBoardConfig      `yaml:"project_board"`       // GitHub Projects V2 board sync
 	Approval          *ApprovalConfig          `yaml:"approval"`            // GitHub PR-review approval handler
 	UseSDKPoller      bool                     `yaml:"use_sdk_poller"`      // Opt into the studio-sdk GitHub poller (deprecated, GH-4171)
+	// App configures GitHub App installation-token auth (GH-4743). When set
+	// (and complete — see AppConfig.Validate), the daemon mints its own
+	// per-installation token instead of riding the ec2-user gh-CLI OAuth
+	// grant (GITHUB_TOKEN), killing the single-point-of-failure and moving
+	// off the shared per-user 5000/hr rate pool onto a per-installation one.
+	App *AppConfig `yaml:"app"`
+}
+
+// AppConfig holds GitHub App installation-token auth settings (GH-4743).
+// When non-nil, all three fields are required — see Validate.
+type AppConfig struct {
+	AppID          int64  `yaml:"app_id"`           // GitHub App ID (numeric, from the App's settings page)
+	InstallationID int64  `yaml:"installation_id"`  // Installation ID for the org/repos the App is installed on
+	PrivateKeyPath string `yaml:"private_key_path"` // Path to the App's PEM private key file
+}
+
+// Validate checks that a configured App block has all required fields set.
+// A nil receiver (App auth not configured at all) is valid — this only
+// rejects a *partial* block, e.g. app_id set but private_key_path omitted,
+// so a typo'd config fails eagerly at Load() time naming the missing field
+// instead of surfacing as an opaque mint failure on the daemon's first
+// GitHub API call.
+func (c *AppConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.AppID <= 0 {
+		return fmt.Errorf("app_id is required and must be > 0")
+	}
+	if c.InstallationID <= 0 {
+		return fmt.Errorf("installation_id is required and must be > 0")
+	}
+	if c.PrivateKeyPath == "" {
+		return fmt.Errorf("private_key_path is required")
+	}
+	return nil
 }
 
 // PollingConfig holds GitHub polling settings
