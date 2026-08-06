@@ -232,14 +232,38 @@ func githubTokenFunc(cfg *config.Config) github.TokenFunc {
 	}
 }
 
+// invalidateGitHubAppToken returns a callback that discards the cached
+// GitHub App installation token, if App auth is configured, so the next
+// resolveGitHubToken call re-mints instead of replaying a token GitHub has
+// already revoked (GH-4754: a 401 on an App-minted token means the App
+// private key rotated or the installation was suspended/reinstalled — the
+// old token is dead regardless of what TokenSource's cached expiresAt
+// says). Returns nil when App auth isn't configured for cfg — there is
+// nothing App-sourced to invalidate, and a 401 in that case came from a
+// different credential entirely (config/env/gh-CLI), which this ticket
+// doesn't change the handling of.
+func invalidateGitHubAppToken(cfg *config.Config) func() {
+	if cfg == nil || cfg.Adapters == nil || cfg.Adapters.GitHub == nil || cfg.Adapters.GitHub.App == nil {
+		return nil
+	}
+	appCfg := cfg.Adapters.GitHub.App
+	return func() {
+		if source, err := ghAppTokenCache.get(appCfg); err == nil {
+			source.Invalidate()
+		}
+	}
+}
+
 // newGitHubClient builds an in-tree GitHub client whose token is re-resolved
-// on every request via githubTokenFunc (GH-4747). Use this instead of
+// on every request via githubTokenFunc (GH-4747) and whose cached App token
+// is invalidated on a 401 so the automatic single retry re-mints instead of
+// replaying a revoked token (GH-4754). Use this instead of
 // github.NewClient(token) for anything held past the call that constructs
 // it — a client built once from a static string keeps that string forever,
 // which is exactly the bug this ticket fixes for the daemon's long-lived
 // clients.
 func newGitHubClient(cfg *config.Config) *github.Client {
-	return github.NewClientWithTokenFunc(githubTokenFunc(cfg))
+	return github.NewClientWithTokenFuncAndInvalidate(githubTokenFunc(cfg), invalidateGitHubAppToken(cfg))
 }
 
 // validateGitHubToken makes one authenticated API call to confirm the

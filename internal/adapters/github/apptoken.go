@@ -12,10 +12,13 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 const (
@@ -34,6 +37,20 @@ const (
 	// documented guidance, to tolerate clock drift between this host and
 	// GitHub's servers.
 	appJWTClockSkew = 60 * time.Second
+
+	// mintRetryBackoff is how long TokenSource waits after a failed mint
+	// attempt before allowing another network call. Callers arriving within
+	// this window of a failure are answered immediately from the cached
+	// error instead of each dialing GitHub and paying the mint HTTP timeout
+	// (GH-4754 acceptance #3: mint-outage serialization collapsed
+	// process-wide GitHub throughput to ~4 req/min when every caller queued
+	// behind TokenSource.mu and each paid up to the 15s mint timeout).
+	mintRetryBackoff = 10 * time.Second
+
+	// mintFailureLogInterval throttles mint-failure log lines so a sustained
+	// outage produces one line per interval instead of one per caller
+	// (GH-4754 acceptance #3: "ERROR logs rate-limited").
+	mintFailureLogInterval = 60 * time.Second
 )
 
 // TokenSource mints, caches, and proactively refreshes a GitHub App
@@ -49,6 +66,26 @@ type TokenSource struct {
 	mu        sync.Mutex
 	token     string
 	expiresAt time.Time
+
+	// mint-outage coordination (GH-4754): inFlight lets concurrent callers
+	// share a single in-progress mint HTTP call instead of each dialing
+	// GitHub; lastMintErr/lastMintAt implement the post-failure backoff so a
+	// caller arriving shortly after a failure is answered from the cached
+	// error rather than paying the mint timeout again; lastLogAt throttles
+	// the mint-failure log line to at most one per mintFailureLogInterval.
+	inFlight    *mintCall
+	lastMintErr error
+	lastMintAt  time.Time
+	lastLogAt   time.Time
+}
+
+// mintCall represents one in-flight (or just-completed) mint HTTP call
+// shared by every TokenSource.Token caller that arrives while it is running.
+type mintCall struct {
+	done      chan struct{}
+	token     string
+	expiresAt time.Time
+	err       error
 }
 
 // NewTokenSource builds a TokenSource from an AppConfig, reading and parsing
@@ -117,21 +154,124 @@ func parseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 // installationTokenRefreshMargin of expiring. Never logs the token or the
 // signing JWT — callers must do the same (GH-4743: zero token material in
 // logs/argv).
+//
+// GH-4754: a mint failure while the cached token is still within the
+// refresh margin (but not yet actually expired) serves the still-valid
+// cached token with a WARN log instead of erroring — an error here used to
+// make resolveGitHubToken silently fail over to a different credential
+// identity (config PAT/env/gh-CLI) on every request during a transient mint
+// blip, flapping between rate pools and actor identities. A mint failure
+// with nothing valid cached (empty, or actually past expiresAt) still
+// returns the error.
 func (ts *TokenSource) Token(ctx context.Context) (string, error) {
 	ts.mu.Lock()
-	defer ts.mu.Unlock()
-
 	if ts.token != "" && time.Until(ts.expiresAt) > installationTokenRefreshMargin {
-		return ts.token, nil
+		tok := ts.token
+		ts.mu.Unlock()
+		return tok, nil
 	}
+	stillValid := ts.token != "" && time.Until(ts.expiresAt) > 0
+	cachedToken := ts.token
+	cachedExpiresAt := ts.expiresAt
+	ts.mu.Unlock()
+
+	token, expiresAt, err := ts.mintOnce(ctx)
+	if err == nil {
+		ts.mu.Lock()
+		ts.token = token
+		ts.expiresAt = expiresAt
+		ts.mu.Unlock()
+		return token, nil
+	}
+
+	if ts.shouldLog() {
+		log := logging.WithComponent("github-auth").With(
+			slog.Int64("app_id", ts.appID),
+			slog.Int64("installation_id", ts.installationID),
+			slog.Any("error", err),
+		)
+		if stillValid {
+			log.Warn("github app installation token refresh failed within the refresh margin — serving cached token",
+				slog.Time("cached_expires_at", cachedExpiresAt))
+		} else {
+			log.Error("github app installation token mint failed")
+		}
+	}
+
+	if stillValid {
+		return cachedToken, nil
+	}
+	return "", err
+}
+
+// shouldLog reports whether a mint-failure log line should be emitted now,
+// throttling to at most one per mintFailureLogInterval so a sustained outage
+// (or many concurrent callers each hitting a fresh Token() failure) doesn't
+// flood the log with one line per caller (GH-4754 acceptance #3).
+func (ts *TokenSource) shouldLog() bool {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if time.Since(ts.lastLogAt) < mintFailureLogInterval {
+		return false
+	}
+	ts.lastLogAt = time.Now()
+	return true
+}
+
+// Invalidate discards the cached token so the next Token() call re-mints
+// unconditionally, regardless of the cached expiry. Callers use this when
+// GitHub answers a request with 401 even though TokenSource still considers
+// the token valid — evidence GitHub revoked it early (App private-key
+// rotation, installation suspend/reinstall). Without this, Token() would
+// keep serving the revoked token verbatim until its cached expiresAt, up to
+// ~55 minutes of hard 401s (GH-4754 acceptance #1).
+func (ts *TokenSource) Invalidate() {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.token = ""
+	ts.expiresAt = time.Time{}
+}
+
+// mintOnce performs a single-flight mint: concurrent callers arriving while
+// a mint HTTP call is already in progress share its result instead of each
+// dialing GitHub, and a caller arriving within mintRetryBackoff of the last
+// completed *failure* is answered immediately from that cached error
+// without making a network call at all. Together these keep a mint outage
+// from serializing every GitHub request behind repeated 15s mint timeouts
+// (GH-4754 acceptance #3).
+func (ts *TokenSource) mintOnce(ctx context.Context) (string, time.Time, error) {
+	ts.mu.Lock()
+	if ts.inFlight != nil {
+		call := ts.inFlight
+		ts.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.token, call.expiresAt, call.err
+		case <-ctx.Done():
+			return "", time.Time{}, ctx.Err()
+		}
+	}
+	if ts.lastMintErr != nil && time.Since(ts.lastMintAt) < mintRetryBackoff {
+		err := ts.lastMintErr
+		ts.mu.Unlock()
+		return "", time.Time{}, err
+	}
+	call := &mintCall{done: make(chan struct{})}
+	ts.inFlight = call
+	ts.mu.Unlock()
 
 	token, expiresAt, err := ts.mint(ctx)
-	if err != nil {
-		return "", err
-	}
-	ts.token = token
-	ts.expiresAt = expiresAt
-	return token, nil
+
+	ts.mu.Lock()
+	ts.inFlight = nil
+	ts.lastMintAt = time.Now()
+	ts.lastMintErr = err
+	ts.mu.Unlock()
+
+	call.token, call.expiresAt, call.err = token, expiresAt, err
+	close(call.done)
+
+	return token, expiresAt, err
 }
 
 // mintResponse is the body of POST /app/installations/{id}/access_tokens.
