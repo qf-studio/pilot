@@ -2,9 +2,10 @@
 # Pre-push validation gate for Pilot
 # Runs all checks before allowing a push: build, lint, test, secrets, integration
 #
-# Full gate: ~230-290s (dominated by `go test -short -race ./...`). Pushes
-# whose diff touches no *.go/go.mod/go.sum path (docs-only) take a fast path
-# instead — only check-secrets + check-graph run, target <10s. The pre-push
+# Full gate: 224-287s measured (dominated by `go test -short -race ./...`;
+# see GH-4771 issue body for the per-step breakdown). Pushes whose diff
+# touches no *.go/go.mod/go.sum path (docs-only) take a fast path instead —
+# only check-secrets + check-graph run, target <10s. The pre-push
 # git hook (installed via install-hooks.sh) decides this using
 # scripts/pre-push-classify.sh and sets PILOT_GATE_DOCS_ONLY=1 accordingly.
 # `make gate` always runs the full gate (no stdin to classify from). See
