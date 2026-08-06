@@ -130,3 +130,48 @@ func TestApprovalDecision_EmptyRequestID_NoRows(t *testing.T) {
 		t.Errorf("expected sql.ErrNoRows for empty requestID, got %v", err)
 	}
 }
+
+func TestGetExecutionByApprovalRequestID_Found(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	const execID = "exec-by-req-1"
+	const reqID = "req-by-exec-1"
+	seedExecution(t, s, execID, reqID)
+
+	exec, err := s.GetExecutionByApprovalRequestID(reqID)
+	if err != nil {
+		t.Fatalf("GetExecutionByApprovalRequestID: %v", err)
+	}
+	if exec.ID != execID {
+		t.Errorf("ID: got %q, want %q", exec.ID, execID)
+	}
+	if exec.ApprovalRequestID != reqID {
+		t.Errorf("ApprovalRequestID: got %q, want %q", exec.ApprovalRequestID, reqID)
+	}
+	if exec.ProjectPath != "/tmp/test-proj" {
+		t.Errorf("ProjectPath: got %q, want /tmp/test-proj", exec.ProjectPath)
+	}
+}
+
+func TestGetExecutionByApprovalRequestID_NotFound(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	if _, err := s.GetExecutionByApprovalRequestID("no-such-request"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows, got %v", err)
+	}
+}
+
+func TestGetExecutionByApprovalRequestID_EmptyRequestID(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Every non-approval execution defaults approval_request_id to '' — an
+	// empty requestID must never match one of those rows.
+	seedExecution(t, s, "exec-empty-req", "")
+
+	if _, err := s.GetExecutionByApprovalRequestID(""); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows for empty requestID, got %v", err)
+	}
+}

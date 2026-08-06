@@ -17,6 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
+	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/logging"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -102,8 +103,9 @@ type Server struct {
 	dashboardProjectPath     string // Project path filter for dashboard metrics/queue/history APIs ("" = all projects)
 	dashboardStatsWindowDays int    // GH-4735: rolling window (days) for windowed cost/success stats; 0 = use default
 	logStreamStore           LogStreamStore
-	gitGraphPath             string          // Project path for git graph API (defaults to ".")
-	gitGraphFetcher          GitGraphFetcher // Injected to avoid import cycle with internal/dashboard
+	gitGraphPath             string                    // Project path for git graph API (defaults to ".")
+	gitGraphFetcher          GitGraphFetcher           // Injected to avoid import cycle with internal/dashboard
+	decisionRecorder         approval.DecisionRecorder // GH-4748: backs POST /api/v1/approvals/{requestId}/decision
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -236,6 +238,8 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("/api/v1/history", s.handleDashboardHistory)
 	apiMux.HandleFunc("/api/v1/logs", s.handleDashboardLogs)
 	apiMux.HandleFunc("/api/v1/gitgraph", s.handleGitGraph)
+	apiMux.HandleFunc("GET /api/v1/approvals", s.handleApprovals)
+	apiMux.HandleFunc("POST /api/v1/approvals/{requestId}/decision", s.handleApprovalDecision)
 
 	// Apply auth middleware to API routes
 	if s.auth != nil {
