@@ -630,7 +630,7 @@ func TestApprovalsAPI_ComposedViaNewServerFromConfig(t *testing.T) {
 		t.Fatalf("InsertPendingApproval: %v", err)
 	}
 
-	config := &Config{Host: "127.0.0.1", Port: 19095}
+	config := &Config{Host: "127.0.0.1", Port: 19096}
 	authConfig := &AuthConfig{Type: AuthTypeAPIToken, Token: "gh-4756-composed-secret"}
 	// This is the production entry point (GH-4756): gateway mode
 	// (internal/pilot/pilot.go) and polling mode (cmd/pilot/main.go) both
@@ -645,7 +645,7 @@ func TestApprovalsAPI_ComposedViaNewServerFromConfig(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	baseURL := "http://127.0.0.1:19095"
+	baseURL := "http://127.0.0.1:19096"
 
 	// 1. Auth rejected without a bearer token, on both the read route and
 	// the decision route.
