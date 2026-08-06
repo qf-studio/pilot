@@ -2,24 +2,88 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/dashboard"
 )
 
+// newGitGraphFixtureRepo creates a hermetic git repository in a t.TempDir(),
+// seeded with a deterministic commit/branch topology — including a merge —
+// so TestGetGitGraph_* exercise `--graph` connector lines without depending
+// on the real working repo's history or network access (GH-4758).
+func newGitGraphFixtureRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Fixture",
+			"GIT_AUTHOR_EMAIL=fixture@example.com",
+			"GIT_COMMITTER_NAME=Fixture",
+			"GIT_COMMITTER_EMAIL=fixture@example.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	writeCommit := func(name, msg string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(msg+"\n"), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		runGit("add", name)
+		runGit("commit", "-q", "-m", msg)
+	}
+
+	runGit("init", "-q", "-b", "main")
+	writeCommit("a.txt", "initial commit")
+
+	runGit("checkout", "-q", "-b", "feature")
+	writeCommit("b.txt", "feature commit")
+
+	runGit("checkout", "-q", "main")
+	writeCommit("c.txt", "main commit")
+
+	runGit("merge", "--no-ff", "-q", "-m", "Merge branch 'feature'", "feature")
+
+	return dir
+}
+
+// configureFixtureProject isolates HOME to a fresh temp dir and writes a
+// ~/.pilot/config.yaml whose sole project points at repoPath, so
+// App.GetGitGraph (which resolves cfg.Projects[0].Path — see app.go) reads
+// the same hermetic fixture repo as a direct dashboard.FetchGitGraph call.
+func configureFixtureProject(t *testing.T, repoPath string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfgDir := filepath.Join(home, ".pilot")
+	if err := os.MkdirAll(cfgDir, 0700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	yamlContent := fmt.Sprintf("projects:\n  - name: fixture\n    path: %q\n", repoPath)
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(yamlContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
 // TestGetGitGraph_DefaultLimit verifies that passing limit=0 falls back to 100
 // and that the returned GitGraphData mirrors dashboard.GitGraphState fields.
 func TestGetGitGraph_DefaultLimit(t *testing.T) {
-	// Isolate from the real user config (~/.pilot/config.yaml), whose first
-	// configured project may point at a different repo entirely — App.GetGitGraph
-	// would then diff against that repo instead of ".".
-	t.Setenv("HOME", t.TempDir())
+	repoPath := newGitGraphFixtureRepo(t)
+	configureFixtureProject(t, repoPath)
 
-	// Use "." as project path (current dir is inside a git repo during tests).
-	state := dashboard.FetchGitGraph(".", 100)
+	state := dashboard.FetchGitGraph(repoPath, 100)
 	if state == nil {
 		t.Skip("git not available in test environment")
 	}
@@ -37,11 +101,10 @@ func TestGetGitGraph_DefaultLimit(t *testing.T) {
 
 // TestGetGitGraph_LinesMapping verifies each GitGraphLine field is copied correctly.
 func TestGetGitGraph_LinesMapping(t *testing.T) {
-	// See TestGetGitGraph_DefaultLimit: isolate from the real user config so
-	// App.GetGitGraph resolves the same project path (".") as this test does.
-	t.Setenv("HOME", t.TempDir())
+	repoPath := newGitGraphFixtureRepo(t)
+	configureFixtureProject(t, repoPath)
 
-	state := dashboard.FetchGitGraph(".", 5)
+	state := dashboard.FetchGitGraph(repoPath, 5)
 	if state == nil || len(state.Lines) == 0 {
 		t.Skip("no git commits available in test environment")
 	}
