@@ -13,13 +13,14 @@ import (
 type mockPRStateWriter struct {
 	mu    sync.Mutex
 	calls []struct{ requestID, decision, by string }
+	err   error // returned by SetApprovalDecision, if non-nil
 }
 
 func (w *mockPRStateWriter) SetApprovalDecision(_ context.Context, requestID, decision, by string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.calls = append(w.calls, struct{ requestID, decision, by string }{requestID, decision, by})
-	return nil
+	return w.err
 }
 
 func (w *mockPRStateWriter) getCalls() []struct{ requestID, decision, by string } {
@@ -512,6 +513,22 @@ func TestManager_RecordDecision_PersistsViaWriter(t *testing.T) {
 	}
 	if calls[0].by != "user123" {
 		t.Errorf("expected user123, got %s", calls[0].by)
+	}
+}
+
+// TestManager_RecordDecision_PropagatesWriterError verifies RecordDecision
+// wraps (rather than swallows) an error from the state writer, so a typed
+// sentinel like memory.ErrApprovalAlreadyDecided survives errors.Is() all
+// the way up to the HTTP handler (GH-4757).
+func TestManager_RecordDecision_PropagatesWriterError(t *testing.T) {
+	m := NewManager(nil)
+	sentinel := errors.New("already decided sentinel")
+	writer := &mockPRStateWriter{err: sentinel}
+	m.WithStateWriter(writer)
+
+	err := m.RecordDecision(context.Background(), "req-conflict", DecisionApproved, "user123")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected wrapped sentinel error, got %v", err)
 	}
 }
 

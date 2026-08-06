@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -173,5 +174,96 @@ func TestGetExecutionByApprovalRequestID_EmptyRequestID(t *testing.T) {
 
 	if _, err := s.GetExecutionByApprovalRequestID(""); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("expected sql.ErrNoRows for empty requestID, got %v", err)
+	}
+}
+
+// TestSetApprovalDecision_AlreadyDecided_Guard verifies the atomic
+// `AND approval_decision = ''` guard: a second decision on an
+// already-decided row must not overwrite the first, and must return the
+// typed ErrApprovalAlreadyDecided rather than sql.ErrNoRows (GH-4757).
+func TestSetApprovalDecision_AlreadyDecided_Guard(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	const execID = "exec-guard-1"
+	const reqID = "req-guard-1"
+	seedExecution(t, s, execID, reqID)
+
+	if err := s.SetApprovalDecision(context.Background(), reqID, "approved", "alice"); err != nil {
+		t.Fatalf("first SetApprovalDecision: %v", err)
+	}
+
+	err := s.SetApprovalDecision(context.Background(), reqID, "rejected", "mallory")
+	if !errors.Is(err, ErrApprovalAlreadyDecided) {
+		t.Fatalf("second SetApprovalDecision: got %v, want ErrApprovalAlreadyDecided", err)
+	}
+
+	exec, getErr := s.GetExecution(execID)
+	if getErr != nil {
+		t.Fatalf("GetExecution: %v", getErr)
+	}
+	if exec.ApprovalDecision != "approved" {
+		t.Errorf("ApprovalDecision flipped: got %q, want %q (first writer must win)", exec.ApprovalDecision, "approved")
+	}
+	if exec.ApprovalDecisionBy != "alice" {
+		t.Errorf("ApprovalDecisionBy flipped: got %q, want %q", exec.ApprovalDecisionBy, "alice")
+	}
+}
+
+// TestSetApprovalDecision_ConcurrentRace verifies that of two goroutines
+// racing to decide the same request, exactly one succeeds and the other gets
+// ErrApprovalAlreadyDecided — and the persisted decision matches whichever
+// one actually won, never a blend or a silent overwrite (GH-4757 acceptance
+// criterion 1).
+func TestSetApprovalDecision_ConcurrentRace(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	const execID = "exec-race-1"
+	const reqID = "req-race-1"
+	seedExecution(t, s, execID, reqID)
+
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	deciders := []string{"approved", "rejected"}
+	by := []string{"alice", "bob"}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = s.SetApprovalDecision(context.Background(), reqID, deciders[idx], by[idx])
+		}(i)
+	}
+	wg.Wait()
+
+	var nilCount, alreadyDecidedCount int
+	for _, err := range results {
+		switch {
+		case err == nil:
+			nilCount++
+		case errors.Is(err, ErrApprovalAlreadyDecided):
+			alreadyDecidedCount++
+		default:
+			t.Fatalf("unexpected error from racing SetApprovalDecision: %v", err)
+		}
+	}
+	if nilCount != 1 || alreadyDecidedCount != 1 {
+		t.Fatalf("got %d winners and %d already-decided, want exactly 1 and 1", nilCount, alreadyDecidedCount)
+	}
+
+	exec, err := s.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	// The recorded decision must match exactly one of the two racing writes
+	// — never empty, never a mix of the two.
+	if exec.ApprovalDecision != "approved" && exec.ApprovalDecision != "rejected" {
+		t.Fatalf("ApprovalDecision = %q, want either approved or rejected", exec.ApprovalDecision)
+	}
+	if results[0] == nil && exec.ApprovalDecision != "approved" {
+		t.Errorf("goroutine 0 won but recorded decision is %q, want approved", exec.ApprovalDecision)
+	}
+	if results[1] == nil && exec.ApprovalDecision != "rejected" {
+		t.Errorf("goroutine 1 won but recorded decision is %q, want rejected", exec.ApprovalDecision)
 	}
 }

@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -126,6 +128,19 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 // Also deletes the persisted approval_pending row, mirroring the channel handlers'
 // own decision path (they own that store via WithStore(); Manager does not), so a
 // later Rehydrate() doesn't re-notify a request already decided over HTTP.
+//
+// Decision integrity (GH-4757 / PR#4752 review): Store.SetApprovalDecision now
+// guards its UPDATE atomically (AND approval_decision = ''), so two racing
+// decisions — two concurrent POSTs, or a POST racing a Telegram/Slack button
+// tap — can never both win. The loser's RecordDecision call returns
+// memory.ErrApprovalAlreadyDecided; this handler turns that into 409 rather
+// than silently overwriting the winner's decision (both used to get 200).
+// A pending row with no execution linkage (SetApprovalRequestID is
+// best-effort — see memory.Store.SetApprovalRequestID) makes RecordDecision
+// return sql.ErrNoRows; that is aligned with Telegram/Slack channel semantics
+// (they treat this as warn-only and still resolve the request — see
+// internal/approval/telegram.go:507, slack.go:391) instead of the previous
+// 500 that left the pending row undecidable forever over HTTP.
 func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) {
 	requestID := r.PathValue("requestId")
 	if requestID == "" {
@@ -186,7 +201,31 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 	}
 
 	now := time.Now()
-	if err := recorder.RecordDecision(r.Context(), requestID, decision, body.By); err != nil {
+	recErr := recorder.RecordDecision(r.Context(), requestID, decision, body.By)
+	switch {
+	case recErr == nil:
+		// Recorded successfully — fall through to cleanup + 200 below.
+	case errors.Is(recErr, memory.ErrApprovalAlreadyDecided):
+		// Lost the race: the atomic guard in Store.SetApprovalDecision
+		// rejected this write because another decider (a concurrent POST, or
+		// a Telegram/Slack button tap) already recorded a decision first —
+		// the recorded value never flips. Clean up the now-stale pending row
+		// (idempotent if the winner already did) and report the conflict.
+		if delErr := store.DeletePendingApproval(requestID); delErr != nil {
+			logging.WithComponent("gateway").Warn("failed to delete persisted approval after losing decision race",
+				slog.String("request_id", requestID), slog.Any("error", delErr))
+		}
+		http.Error(w, "approval already decided", http.StatusConflict)
+		return
+	case errors.Is(recErr, sql.ErrNoRows):
+		// Unlinked request: no execution row carries this approval_request_id
+		// (SetApprovalRequestID never landed the linkage), so there is
+		// nothing to persist a decision onto. Warn and still resolve the
+		// request — matching how Telegram/Slack treat this exact failure —
+		// rather than 500ing forever with no channel button left to clear it.
+		logging.WithComponent("gateway").Warn("HTTP decision on unlinked approval request — resolving without execution persistence",
+			slog.String("request_id", requestID), slog.String("decision", body.Decision), slog.String("by", body.By))
+	default:
 		http.Error(w, "failed to record decision", http.StatusInternalServerError)
 		return
 	}
