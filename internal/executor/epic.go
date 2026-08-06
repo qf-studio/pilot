@@ -834,7 +834,7 @@ func queryParentDoneViaGitHub(taskID, dir string) bool {
 		return false
 	}
 	args := []string{"issue", "view", issueNum, "--json", "state,labels"}
-	cmd := exec.Command("gh", args...)
+	cmd := withGhCredentials(context.Background(), exec.Command("gh", args...))
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -1038,7 +1038,7 @@ func queryRecentSubIssues(ctx context.Context, dir, parentID string) (bool, erro
 		"--json", "number",
 		"--limit", "3",
 	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -1066,7 +1066,7 @@ func recoverExistingSubIssues(ctx context.Context, dir, parentID string) ([]Crea
 		"--json", "number,url,state,title,body",
 		"--limit", "50",
 	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -1666,7 +1666,7 @@ func (r *Runner) runGHIssueCreateWithRetry(ctx context.Context, args []string, e
 
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		cmd := exec.CommandContext(ctx, "gh", args...)
+		cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 		if executionPath != "" {
 			cmd.Dir = executionPath
 		}
@@ -1882,7 +1882,7 @@ func (r *Runner) UpdateIssueProgress(ctx context.Context, projectPath string, is
 	}
 
 	args := []string{"issue", "comment", issueID, "--body", message}
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	if projectPath != "" {
 		cmd.Dir = projectPath
 	}
@@ -1905,7 +1905,7 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 	}
 
 	// Idempotency: check if issue is already closed before attempting close.
-	stateCmd := exec.CommandContext(ctx, "gh", "issue", "view", issueID, "--json", "state", "--jq", ".state")
+	stateCmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "issue", "view", issueID, "--json", "state", "--jq", ".state"))
 	if projectPath != "" {
 		stateCmd.Dir = projectPath
 	}
@@ -1917,7 +1917,7 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 	}
 
 	args := []string{"issue", "close", issueID, "--comment", comment}
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	if projectPath != "" {
 		cmd.Dir = projectPath
 	}
@@ -1948,7 +1948,7 @@ func (r *Runner) getSubIssuePRState(ctx context.Context, projectPath string, prN
 		return &SubIssuePRState{State: "MERGED", Merged: true}, nil
 	}
 
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber), "--json", "state", "--jq", ".state")
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber), "--json", "state", "--jq", ".state"))
 	if projectPath != "" {
 		cmd.Dir = projectPath
 	}

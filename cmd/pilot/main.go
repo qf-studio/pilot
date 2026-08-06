@@ -1692,9 +1692,19 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// CLI credential helper — the SPOF this ticket kills. No-op (nil
 	// provider) when App auth isn't configured, so git commands keep using
 	// the ambient environment exactly as before the cutover.
+	// GH-4746: same cutover, closing the matching gap for `gh` CLI
+	// subprocesses (PR creation, issue comments, label ops) — the daemon's
+	// highest-volume writes, previously left riding the ambient
+	// GITHUB_TOKEN/gh-CLI login even with App auth configured. Both
+	// providers mint through the same mintGitHubAppToken/TokenSource cache,
+	// so git and gh always agree on the current token. No-op (nil provider)
+	// when App auth isn't configured, matching the git provider above.
 	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.App != nil {
 		appCfg := cfg.Adapters.GitHub.App
 		executor.SetGitCredentialProvider(func(ctx context.Context) (string, error) {
+			return mintGitHubAppToken(ctx, appCfg)
+		})
+		executor.SetGhCredentialProvider(func(ctx context.Context) (string, error) {
 			return mintGitHubAppToken(ctx, appCfg)
 		})
 	}

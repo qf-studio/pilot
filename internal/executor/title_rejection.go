@@ -225,7 +225,7 @@ func (r *Runner) postTitleRejectionEscalation(ctx context.Context, task *Task) e
 }
 
 func ghIssueComment(ctx context.Context, dir, issueID, body string) error {
-	cmd := exec.CommandContext(ctx, "gh", "issue", "comment", issueID, "--body", body)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "issue", "comment", issueID, "--body", body))
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -264,7 +264,7 @@ func ghEditLabels(ctx context.Context, dir, issueID string, addLabels, removeLab
 	for _, l := range removeLabels {
 		args = append(args, "--remove-label", l)
 	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -294,7 +294,7 @@ func ghEnsureLabels(ctx context.Context, dir string, labels []string) {
 			continue
 		}
 		seen[l] = true
-		cmd := exec.CommandContext(ctx, "gh", "label", "create", l, "--color", pilotLabelColor, "--force")
+		cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "label", "create", l, "--color", pilotLabelColor, "--force"))
 		if dir != "" {
 			cmd.Dir = dir
 		}
