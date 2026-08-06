@@ -35,7 +35,16 @@ Ordering: `A` independent · `B1 → B3 → B5` · `B2` early (console#109 consu
 
 The selective option is nearly free once this track lands: a sensitive-path predicate is a 4th `escalateReason` in the existing chain, and per-project `require_approval` (B3) gives per-project strictness. Full-flip evaluation belongs after console#109's Needs-You lane is live (dashboard approvals with readable context — the 07-13 lesson: approval without review context is theater). Until then, post-merge review remains the operating mode **by open call, not decision**.
 
+## Post-merge review follow-ups (filed 2026-08-06 evening)
+
+- [pilot#4777](https://github.com/qf-studio/pilot/issues/4777) — PR#4767's atomic guard is dead code in production wiring: Controller state writer swallows typed errors, PRState application unguarded. **Blocks trusting HTTP double-decide semantics** (console decision proxy relies on the 409).
+- [pilot#4778](https://github.com/qf-studio/pilot/issues/4778) — in-tree static-token clients (merge-waiter/cleaner) + webhook-mode startup token validation.
+- [sdk#107](https://github.com/qf-studio/studio-sdk/issues/107) — SDK TokenFunc API. **App-cutover status corrected**: prereqs are NOT done — polling-mode SDK pollers (`poller_github.go:228,478`) + PR-review handler (`main.go:2328`) hold static boot tokens; under App auth they 401 ~1h after start. Cutover blockers now: sdk#107 → pilot wiring leg (author after sdk release) → operator App provisioning → `GH_TOKEN` box-env check (pilot#4753's precedence finding, merged).
+- Recurring lesson (2× this week — PR#4752 auth test, PR#4767 composed test): **tests asserting configurations production never wires**. Candidate memory/pattern entry + review-checklist item.
+
 ## Backlog (filed nowhere yet — pull from here)
+
+- **Infra-CI failure classification** (2026-08-06 GitHub outage incident): autopilot reads "Set up job / Service Unavailable" action-download failures as real CI failures — closed correct PR#4770, burned a GH-4756 attempt, escalated GH-4771 to `pilot-needs-human`. Detect infra-level failure (zero steps executed / githubstatus indicator) → hold-and-retry instead of close/escalate. H-track class (sibling of H6 canary misattribution).
 
 - Sensitive-path escalation predicate (auth/credentials/approval/gateway-mutating paths → escalate), per-project pattern list on the B3 override struct.
 - Per-project *destinations* (distinct chat_id / Slack channel per project) — needs a real `Destination` field on `Request` + persistence; the `Approvers[0]` hack is a tarpit.
