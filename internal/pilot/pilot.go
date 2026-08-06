@@ -184,6 +184,21 @@ func WithDashboardFS(fsys fs.FS) Option {
 	}
 }
 
+// WithGitHubClient overrides the GitHub client New would otherwise build
+// internally from a static cfg.Adapters.GitHub.Token (GH-4755). Webhook-mode
+// Pilot held that static client for the daemon's lifetime, bypassing the
+// per-request token-resolution chain (GitHub App auth / env / gh-CLI
+// fallback, plus 401-triggered re-mint) that cmd/pilot's newGitHubClient
+// already gives every polling-mode client (GH-4747/GH-4754). Passing a
+// client built the same way in here means webhook mode's githubWH/
+// githubNotify resolve tokens identically instead of freezing the boot-time
+// value. Must be applied before New's GitHub adapter init block runs.
+func WithGitHubClient(client *github.Client) Option {
+	return func(p *Pilot) {
+		p.githubClient = client
+	}
+}
+
 // New creates a new Pilot instance
 func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -193,6 +208,17 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		ctx:         ctx,
 		cancel:      cancel,
 		linearTasks: make(map[string]linearTaskInfo),
+	}
+
+	// GH-4755: apply functional options before any adapter init block runs
+	// (not just before return, as previously) so WithGitHubClient can supply
+	// a per-request-resolving client before the GitHub adapter block below
+	// decides whether it needs to build its own static fallback. The other
+	// options (WithDashboardFS, WithTeamsService, WithTelegramHandler, ...)
+	// only set fields consumed later in New or by callers after it returns,
+	// so applying them this early changes nothing for them.
+	for _, opt := range opts {
+		opt(p)
 	}
 
 	// Initialize memory store
@@ -341,7 +367,14 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 
 	// Initialize GitHub adapter if enabled
 	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
-		p.githubClient = github.NewClient(cfg.Adapters.GitHub.Token)
+		// GH-4755: WithGitHubClient (applied above, before this block) already
+		// supplies a client whose token resolves per-request through the same
+		// chain as polling mode. Only fall back to a static
+		// github.NewClient(token) — frozen at construction time — when no
+		// caller passed one in (e.g. direct pilot.New callers in tests).
+		if p.githubClient == nil {
+			p.githubClient = github.NewClient(cfg.Adapters.GitHub.Token)
+		}
 		p.githubWH = github.NewWebhookHandler(
 			p.githubClient,
 			cfg.Adapters.GitHub.WebhookSecret,
@@ -588,10 +621,8 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			slog.String("path", "/webhooks/slack/interactions"))
 	}
 
-	// Apply functional options (GH-349)
-	for _, opt := range opts {
-		opt(p)
-	}
+	// Functional options were already applied at the top of New (GH-4755),
+	// before the adapter init blocks above ran.
 
 	// Set embedded dashboard frontend on gateway if available (GH-1612)
 	if p.dashboardFS != nil {
