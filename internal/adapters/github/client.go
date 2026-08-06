@@ -118,37 +118,85 @@ func isTolerable(errType string) bool {
 	return errType == "NOT_FOUND" || errType == "FORBIDDEN"
 }
 
+// TokenFunc resolves the GitHub API token to use for a single request. It is
+// called on every request (not cached by Client) so a long-lived Client
+// picks up a rotated credential — e.g. a GitHub App installation token
+// refreshed by github.TokenSource — without being rebuilt (GH-4747).
+// Implementations should do their own caching/memoization when resolution
+// isn't free; resolveGitHubToken's App-auth branch, for example, mints
+// through a TokenSource that only hits the network within a few minutes of
+// actual expiry, so calling it on every request costs a mutex check, not a
+// network round trip.
+type TokenFunc func(ctx context.Context) (string, error)
+
+// StaticToken wraps a fixed token string in a TokenFunc. Used by NewClient/
+// NewClientWithBaseURL so callers with nothing to rotate (App auth inactive)
+// get byte-identical behavior to the pre-GH-4747 static-token Client.
+func StaticToken(token string) TokenFunc {
+	return func(ctx context.Context) (string, error) {
+		return token, nil
+	}
+}
+
 // Client is a GitHub API client
 type Client struct {
-	token      string
+	tokenFunc  TokenFunc
 	httpClient *http.Client
 	baseURL    string       // For testing - defaults to githubAPIURL
 	retryOpts  RetryOptions // Retry config for doRequest; overridable in tests
 }
 
-// NewClient creates a new GitHub client
+// NewClient creates a new GitHub client with a fixed token, resolved once at
+// construction and reused for the client's lifetime. For a client that must
+// survive longer than the token's validity (e.g. an hourly-rotating GitHub
+// App installation token), use NewClientWithTokenFunc instead.
 func NewClient(token string) *Client {
+	return newClient(StaticToken(token), githubAPIURL, DefaultRetryOptions())
+}
+
+// NewClientWithBaseURL creates a new GitHub client with a custom base URL (for testing).
+// Retry is disabled by default so unit tests fail fast; set client.retryOpts to enable.
+func NewClientWithBaseURL(token, baseURL string) *Client {
+	return newClient(StaticToken(token), baseURL, RetryOptions{MaxRetries: 0})
+}
+
+// NewClientWithTokenFunc creates a GitHub client that resolves its token via
+// fn on every request instead of capturing one fixed value at construction
+// time (GH-4747). Use this for any client held beyond a single call —
+// pollers, PR/issue clients, autopilot's step-log client — so a refreshed
+// GitHub App installation token propagates without rebuilding the client.
+func NewClientWithTokenFunc(fn TokenFunc) *Client {
+	return newClient(fn, githubAPIURL, DefaultRetryOptions())
+}
+
+// NewClientWithTokenFuncAndBaseURL is NewClientWithTokenFunc with a custom
+// base URL, for pointing tests at a fake server. Retry is disabled by
+// default, matching NewClientWithBaseURL.
+func NewClientWithTokenFuncAndBaseURL(fn TokenFunc, baseURL string) *Client {
+	return newClient(fn, baseURL, RetryOptions{MaxRetries: 0})
+}
+
+func newClient(fn TokenFunc, baseURL string, retryOpts RetryOptions) *Client {
 	return &Client{
-		token:     token,
-		baseURL:   githubAPIURL,
-		retryOpts: DefaultRetryOptions(),
+		tokenFunc: fn,
+		baseURL:   baseURL,
+		retryOpts: retryOpts,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
 }
 
-// NewClientWithBaseURL creates a new GitHub client with a custom base URL (for testing).
-// Retry is disabled by default so unit tests fail fast; set client.retryOpts to enable.
-func NewClientWithBaseURL(token, baseURL string) *Client {
-	return &Client{
-		token:     token,
-		baseURL:   baseURL,
-		retryOpts: RetryOptions{MaxRetries: 0},
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+// resolveToken calls the client's TokenFunc. Extracted so every request path
+// (REST, GraphQL, the raw job-logs request) resolves the token identically
+// and none of them can drift into caching a value themselves — the whole
+// point of GH-4747 is that no request holds onto a token past its own call.
+func (c *Client) resolveToken(ctx context.Context) (string, error) {
+	token, err := c.tokenFunc(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve github token: %w", err)
 	}
+	return token, nil
 }
 
 // Issue represents a GitHub issue
@@ -228,8 +276,12 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 			return fmt.Errorf("failed to create request: %w", err)
 		}
 
+		token, err := c.resolveToken(ctx)
+		if err != nil {
+			return err
+		}
 		req.Header.Set("Accept", "application/vnd.github+json")
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -779,8 +831,12 @@ func (c *Client) GetJobLogs(ctx context.Context, owner, repo string, jobID int64
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
+	token, err := c.resolveToken(ctx)
+	if err != nil {
+		return "", err
+	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
 	resp, err := c.httpClient.Do(req)
@@ -990,7 +1046,11 @@ func (c *Client) executeGraphQLCore(ctx context.Context, query string, variables
 		if err != nil {
 			return fmt.Errorf("create graphql request: %w", err)
 		}
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		token, err := c.resolveToken(ctx)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := c.httpClient.Do(req)

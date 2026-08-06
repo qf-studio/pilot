@@ -206,6 +206,42 @@ func resolveGitHubToken(cfg *config.Config) (string, githubTokenSource) {
 	return "", githubTokenSourceNone
 }
 
+// errNoGitHubTokenResolved is returned by the TokenFunc built from
+// githubTokenFunc when resolveGitHubToken comes up empty (e.g. an App
+// installation token mint failed and no fallback credential is configured).
+// Surfacing it as a request error keeps a would-be-401 from silently
+// carrying an empty Authorization header.
+var errNoGitHubTokenResolved = errors.New("no github token resolved (adapters.github.app / adapters.github.token / GITHUB_TOKEN / gh auth token all empty)")
+
+// githubTokenFunc adapts resolveGitHubToken into a github.TokenFunc so a
+// long-lived in-tree GitHub client (autopilot's step-log client, a poll-loop
+// approval handler, the /ready readiness verifier, ...) resolves the current
+// token on every request instead of freezing the boot-time value (GH-4747).
+// resolveGitHubToken's App-auth branch already mints through
+// ghAppTokenCache's proactively-refreshing TokenSource, so calling it again
+// per request is cheap — a cache hit, not a fresh mint — and this is the one
+// place that bridges cmd/pilot's token-resolution chokepoint to the client
+// package's construction-time source, so callers don't each reimplement it.
+func githubTokenFunc(cfg *config.Config) github.TokenFunc {
+	return func(ctx context.Context) (string, error) {
+		token, _ := resolveGitHubToken(cfg)
+		if token == "" {
+			return "", errNoGitHubTokenResolved
+		}
+		return token, nil
+	}
+}
+
+// newGitHubClient builds an in-tree GitHub client whose token is re-resolved
+// on every request via githubTokenFunc (GH-4747). Use this instead of
+// github.NewClient(token) for anything held past the call that constructs
+// it — a client built once from a static string keeps that string forever,
+// which is exactly the bug this ticket fixes for the daemon's long-lived
+// clients.
+func newGitHubClient(cfg *config.Config) *github.Client {
+	return github.NewClientWithTokenFunc(githubTokenFunc(cfg))
+}
+
 // validateGitHubToken makes one authenticated API call to confirm the
 // resolved token actually works. A dead/expired token otherwise fails
 // silently on every subsequent poll (live incident 2026-06-30) — this makes
@@ -714,7 +750,11 @@ Examples:
 					if ghToken != "" && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
 						parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 						if len(parts) == 2 {
-							ghClient := github.NewClient(ghToken)
+							// GH-4747: ghClient is held by the approval handler's poll
+							// loop and by autopilot's step-log client for the daemon's
+							// lifetime — built from the token source, not the one-off
+							// ghToken string, so an App-auth refresh propagates.
+							ghClient := newGitHubClient(cfg)
 
 							// Register GitHub approval handler if enabled
 							if cfg.Adapters.GitHub.Approval != nil && cfg.Adapters.GitHub.Approval.Enabled {
@@ -1826,7 +1866,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			)
 		}
 		if ghToken != "" {
-			ghClient := github.NewClient(ghToken)
+			// GH-4747: built from the token source (not the one-off ghToken
+			// string) — ghClient is held by the approval handler's poll loop
+			// and autopilot's step-log client for the daemon's lifetime.
+			ghClient := newGitHubClient(cfg)
 			// M7 4d.1: autopilot consumes the studio-sdk client; ghClient (in-tree)
 			// stays for the approval handler and legacy paths until later phases.
 			apGHClient := githubSDK.NewClient(ghToken)
@@ -2364,7 +2407,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		if ghToken != "" {
 			repoParts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 			if len(repoParts) == 2 {
-				ghIssueClient := github.NewClient(ghToken)
+				// GH-4747: commsIssueCreator is held by comms.Handler for the
+				// daemon's lifetime, so build from the token source rather
+				// than the one-off ghToken string.
+				ghIssueClient := newGitHubClient(cfg)
 				commsIssueCreator = github.NewIssueCreator(
 					ghIssueClient,
 					github.AllowAllIssueRepos(),
