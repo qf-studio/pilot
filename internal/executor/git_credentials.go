@@ -3,10 +3,13 @@ package executor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // GitTokenProvider returns a currently-valid GitHub token to authenticate
@@ -54,23 +57,56 @@ func withGitCredentials(ctx context.Context, cmd *exec.Cmd) *exec.Cmd {
 	}
 	token, err := provider(ctx)
 	if err != nil || token == "" {
-		// Mint failure is already logged loudly by the provider (see
-		// mintGitHubAppToken / resolveGitHubToken in cmd/pilot); falling
-		// back to the ambient environment here lets a transient mint
-		// failure degrade to the pre-GH-4743 behavior instead of breaking
-		// every push/fetch outright.
+		// GH-4753: the provider closure installed in cmd/pilot calls
+		// mintGitHubAppToken directly, bypassing resolveGitHubToken — the
+		// only site that used to log mint failures loudly — so without this
+		// call a mint failure here degraded silently to the ambient
+		// GITHUB_TOKEN env/gh-CLI credential helper, indefinitely, with no
+		// signal. logGitMintFailure logs at ERROR on state change (not
+		// per-call) so a persistent failure doesn't flood logs on every git
+		// push/fetch while still alerting loudly the moment it starts.
+		logGitMintFailure(err)
 		return cmd
 	}
 	askpass, askpassErr := gitAskpassHelperPath()
 	if askpassErr != nil {
 		return cmd
 	}
+	gitMintFailureMu.Lock()
+	gitMintFailureLast = ""
+	gitMintFailureMu.Unlock()
 	cmd.Env = append(os.Environ(),
 		"GIT_ASKPASS="+askpass,
 		"PILOT_GIT_TOKEN="+token,
 		"GIT_TERMINAL_PROMPT=0",
 	)
 	return cmd
+}
+
+var (
+	gitMintFailureMu   sync.Mutex
+	gitMintFailureLast string
+)
+
+// logGitMintFailure logs a git credential mint failure at ERROR, once per
+// distinct failure reason (GH-4753) — see the comment in withGitCredentials
+// for why this call site, and not resolveGitHubToken, is the only place a
+// mint failure on this leg gets logged at all.
+func logGitMintFailure(err error) {
+	reason := "empty token"
+	if err != nil {
+		reason = err.Error()
+	}
+	gitMintFailureMu.Lock()
+	defer gitMintFailureMu.Unlock()
+	if gitMintFailureLast == reason {
+		return
+	}
+	gitMintFailureLast = reason
+	logging.WithComponent("github-auth").Error(
+		"github app installation token mint failed for git push/fetch — falling back to ambient GITHUB_TOKEN env/gh-CLI credential helper",
+		slog.String("reason", reason),
+	)
 }
 
 // gitAskpassScript is the content of the GIT_ASKPASS helper. It contains no

@@ -87,6 +87,71 @@ func TestWithGitCredentials_EmptyTokenFallsBackToAmbientEnv(t *testing.T) {
 	}
 }
 
+// resetGitMintFailureState clears the package-level mint-failure dedup
+// state so tests don't leak into each other (GH-4753).
+func resetGitMintFailureState(t *testing.T) {
+	t.Helper()
+	gitMintFailureMu.Lock()
+	gitMintFailureLast = ""
+	gitMintFailureMu.Unlock()
+	t.Cleanup(func() {
+		gitMintFailureMu.Lock()
+		gitMintFailureLast = ""
+		gitMintFailureMu.Unlock()
+	})
+}
+
+// TestLogGitMintFailure_DedupsByReason verifies the ERROR log fires on state
+// change (a new/different failure reason) but not on a repeat of the same
+// reason — the non-spammy behavior GH-4753 requires so a persistent mint
+// failure doesn't flood logs on every git push/fetch.
+func TestLogGitMintFailure_DedupsByReason(t *testing.T) {
+	resetGitMintFailureState(t)
+
+	logGitMintFailure(errors.New("mint failed: 401"))
+	if got := gitMintFailureLast; got != "mint failed: 401" {
+		t.Fatalf("gitMintFailureLast = %q, want %q after first failure", got, "mint failed: 401")
+	}
+
+	logGitMintFailure(errors.New("mint failed: 401"))
+	if got := gitMintFailureLast; got != "mint failed: 401" {
+		t.Fatalf("gitMintFailureLast = %q, want unchanged %q on repeat failure", got, "mint failed: 401")
+	}
+
+	logGitMintFailure(errors.New("mint failed: installation suspended"))
+	if got := gitMintFailureLast; got != "mint failed: installation suspended" {
+		t.Fatalf("gitMintFailureLast = %q, want %q after distinct failure", got, "mint failed: installation suspended")
+	}
+}
+
+// TestWithGitCredentials_ResetsMintFailureStateOnSuccess verifies a
+// subsequent successful mint clears the dedup state, so if the same failure
+// reason recurs later it logs again instead of staying silently deduped
+// forever.
+func TestWithGitCredentials_ResetsMintFailureStateOnSuccess(t *testing.T) {
+	resetGitCredentialProvider(t)
+	resetGitMintFailureState(t)
+
+	failing := true
+	SetGitCredentialProvider(func(ctx context.Context) (string, error) {
+		if failing {
+			return "", errors.New("mint failed: 401")
+		}
+		return testutil.FakeGitHubToken, nil
+	})
+
+	withGitCredentials(context.Background(), exec.CommandContext(context.Background(), "git", "fetch"))
+	if got := gitMintFailureLast; got != "mint failed: 401" {
+		t.Fatalf("gitMintFailureLast = %q, want %q after failure", got, "mint failed: 401")
+	}
+
+	failing = false
+	withGitCredentials(context.Background(), exec.CommandContext(context.Background(), "git", "fetch"))
+	if got := gitMintFailureLast; got != "" {
+		t.Fatalf("gitMintFailureLast = %q, want empty after a successful mint", got)
+	}
+}
+
 func TestGitAskpassHelperPath_ScriptContainsNoSecret(t *testing.T) {
 	path, err := gitAskpassHelperPath()
 	if err != nil {
