@@ -240,6 +240,8 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("/api/v1/gitgraph", s.handleGitGraph)
 	apiMux.HandleFunc("GET /api/v1/approvals", s.handleApprovals)
 	apiMux.HandleFunc("POST /api/v1/approvals/{requestId}/decision", s.handleApprovalDecision)
+	apiMux.HandleFunc("GET /api/v1/executions/{id}/events", s.handleExecutionEvents)
+	apiMux.HandleFunc("GET /api/v1/tasks/{taskId}/events", s.handleTaskEvents)
 
 	// Apply auth middleware to API routes
 	if s.auth != nil {
