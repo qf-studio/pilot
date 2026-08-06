@@ -592,6 +592,111 @@ func TestApprovalsAPI_Composed(t *testing.T) {
 	}
 }
 
+// TestApprovalsAPI_ComposedViaNewServerFromConfig proves GH-4756's actual
+// production wiring path: internal/pilot (gateway mode) and cmd/pilot
+// (polling mode) both construct the gateway.Server through
+// NewServerFromConfig(gatewayCfg, cfg.Auth), not NewServerWithAuth directly.
+// A configured token must 401 both a read route (GET /api/v1/approvals) and
+// the state-mutating decision route (POST .../decision) without a bearer,
+// and 200 with the correct one — the GH-4738 lesson applied to auth: prove
+// the wiring at the same call the production code path uses.
+func TestApprovalsAPI_ComposedViaNewServerFromConfig(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	mgr := approval.NewManager(approval.DefaultConfig()).WithStateWriter(store)
+
+	const execID = "exec-composed-2"
+	const reqID = "req-composed-2"
+	if err := store.SaveExecution(&memory.Execution{
+		ID:                execID,
+		TaskID:            "GH-4756",
+		ProjectPath:       "/tmp/composed-proj-2",
+		Status:            "running",
+		ApprovalRequestID: reqID,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.InsertPendingApproval(&memory.PendingApproval{
+		ID:        reqID,
+		TaskID:    "GH-4756",
+		Stage:     "pre_merge",
+		Title:     "Composed test approval via NewServerFromConfig",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("InsertPendingApproval: %v", err)
+	}
+
+	config := &Config{Host: "127.0.0.1", Port: 19095}
+	authConfig := &AuthConfig{Type: AuthTypeAPIToken, Token: "gh-4756-composed-secret"}
+	// This is the production entry point (GH-4756): gateway mode
+	// (internal/pilot/pilot.go) and polling mode (cmd/pilot/main.go) both
+	// call NewServerFromConfig(gatewayCfg, cfg.Auth) instead of NewServer.
+	server := NewServerFromConfig(config, authConfig)
+	server.SetDashboardStore(store)
+	server.SetDecisionRecorder(mgr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = server.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	baseURL := "http://127.0.0.1:19095"
+
+	// 1. Auth rejected without a bearer token, on both the read route and
+	// the decision route.
+	getReq, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/approvals", nil)
+	getResp, err := client.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET (no auth): %v", err)
+	}
+	_ = getResp.Body.Close()
+	if getResp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("GET no-auth status = %d, want 401", getResp.StatusCode)
+	}
+
+	postReq, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/approvals/"+reqID+"/decision",
+		bytes.NewBufferString(`{"decision":"approve","by":"alice"}`))
+	postResp, err := client.Do(postReq)
+	if err != nil {
+		t.Fatalf("POST (no auth): %v", err)
+	}
+	_ = postResp.Body.Close()
+	if postResp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("POST no-auth status = %d, want 401", postResp.StatusCode)
+	}
+
+	// 2. GET with a valid bearer token succeeds.
+	getReq2, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/approvals", nil)
+	getReq2.Header.Set("Authorization", "Bearer gh-4756-composed-secret")
+	getResp2, err := client.Do(getReq2)
+	if err != nil {
+		t.Fatalf("GET (auth): %v", err)
+	}
+	_ = getResp2.Body.Close()
+	if getResp2.StatusCode != http.StatusOK {
+		t.Fatalf("GET auth status = %d, want 200", getResp2.StatusCode)
+	}
+
+	// 3. POST (decision route) with a valid bearer token succeeds.
+	postReq2, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/approvals/"+reqID+"/decision",
+		bytes.NewBufferString(`{"decision":"approve","by":"alice"}`))
+	postReq2.Header.Set("Authorization", "Bearer gh-4756-composed-secret")
+	postReq2.Header.Set("Content-Type", "application/json")
+	postResp2, err := client.Do(postReq2)
+	if err != nil {
+		t.Fatalf("POST (auth): %v", err)
+	}
+	_ = postResp2.Body.Close()
+	if postResp2.StatusCode != http.StatusOK {
+		t.Fatalf("POST auth status = %d, want 200", postResp2.StatusCode)
+	}
+}
+
 // --- small test helpers ------------------------------------------------
 
 // newTestResponseRecorder avoids importing net/http/httptest just for a

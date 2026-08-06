@@ -471,7 +471,10 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	if os.Getenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS") == "1" {
 		logging.WithComponent("pilot").Warn("PILOT_ALLOW_UNSIGNED_WEBHOOKS=1 — webhook signature verification DISABLED across all adapters; never use this in production")
 	}
-	p.gateway = gateway.NewServer(gatewayCfg)
+	// GH-4756: enforce bearer auth on /api/v1 when cfg.Auth carries a
+	// non-empty token (e.g. the console-hosted path's PILOT_GATEWAY_TOKEN).
+	// Empty token preserves prior behavior exactly (no auth middleware).
+	p.gateway = gateway.NewServerFromConfig(gatewayCfg, cfg.Auth)
 
 	// Register webhook handlers
 	if p.linearMultiWH != nil {

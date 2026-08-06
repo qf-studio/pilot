@@ -2274,7 +2274,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 	autopilotMetricsAggregate := autopilot.NewAggregateMetrics(fleetMetrics...)
 	if !noGateway && cfg.Gateway != nil {
-		gwServer = gateway.NewServer(cfg.Gateway)
+		// GH-4756: enforce bearer auth on /api/v1 when cfg.Auth carries a
+		// non-empty token (e.g. the console-hosted path's
+		// PILOT_GATEWAY_TOKEN). Empty token preserves prior behavior
+		// exactly (no auth middleware).
+		gwServer = gateway.NewServerFromConfig(cfg.Gateway, cfg.Auth)
 		gwServer.SetAdapterHealthSource(&adapterHealthProviderAdapter{registry: adapterHealthRegistry})
 
 		if autopilotController != nil {

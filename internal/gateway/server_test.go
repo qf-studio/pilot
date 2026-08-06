@@ -1254,6 +1254,50 @@ func TestNewServerWithAuth_NilAuth(t *testing.T) {
 	}
 }
 
+// TestNewServerFromConfig_EmptyToken_NoAuth covers GH-4756 acceptance #2:
+// an empty/nil token must preserve today's behavior exactly (no auth
+// middleware wired), regardless of what AuthType is set.
+func TestNewServerFromConfig_EmptyToken_NoAuth(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 9090}
+
+	cases := []struct {
+		name string
+		auth *AuthConfig
+	}{
+		{name: "nil auth config", auth: nil},
+		{name: "non-nil auth config with empty token", auth: &AuthConfig{Type: AuthTypeAPIToken, Token: ""}},
+		{name: "default claude-code type with empty token", auth: &AuthConfig{Type: AuthTypeClaudeCode}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewServerFromConfig(config, tc.auth)
+			if server == nil {
+				t.Fatal("NewServerFromConfig returned nil")
+			}
+			if server.auth != nil {
+				t.Error("Server auth should be nil when token is empty — must match NewServer's no-auth behavior")
+			}
+		})
+	}
+}
+
+// TestNewServerFromConfig_NonEmptyToken_EnforcesAuth covers GH-4756
+// acceptance #1: a non-empty token must route through NewServerWithAuth so
+// /api/v1 is protected, at the same construction call production callers use.
+func TestNewServerFromConfig_NonEmptyToken_EnforcesAuth(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 9090}
+	authConfig := &AuthConfig{Type: AuthTypeAPIToken, Token: "gh-4756-token"}
+
+	server := NewServerFromConfig(config, authConfig)
+	if server == nil {
+		t.Fatal("NewServerFromConfig returned nil")
+	}
+	if server.auth == nil {
+		t.Error("Server auth should be non-nil when a token is configured")
+	}
+}
+
 func TestAPIEndpointsRequireAuth(t *testing.T) {
 	config := &Config{Host: "127.0.0.1", Port: 19092}
 	authConfig := &AuthConfig{

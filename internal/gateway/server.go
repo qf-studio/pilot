@@ -155,6 +155,26 @@ func NewServer(config *Config) *Server {
 	return NewServerWithAuth(config, nil)
 }
 
+// NewServerFromConfig creates a gateway server, wiring bearer auth onto
+// /api/v1 only when authConfig carries a non-empty token (GH-4756). This is
+// the single decision point production callers (gateway mode:
+// internal/pilot/pilot.go, polling mode: cmd/pilot/main.go) must use instead
+// of calling NewServer directly — GH-4738 lesson: a config field that isn't
+// wired at every construction site is silently ignored, so route both
+// through here rather than duplicating the empty-token check.
+//
+// Empty/nil token preserves today's behavior exactly: no auth middleware,
+// relying on the default 127.0.0.1 bind (internal/config/config.go
+// DefaultConfig). A non-empty token enforces the existing bearer-token
+// Authenticator on every /api/v1 route, matching what the pilot-console
+// proxy already sends via PILOT_GATEWAY_TOKEN.
+func NewServerFromConfig(config *Config, authConfig *AuthConfig) *Server {
+	if authConfig == nil || authConfig.Token == "" {
+		return NewServer(config)
+	}
+	return NewServerWithAuth(config, authConfig)
+}
+
 // NewServerWithAuth creates a new gateway server with the given configuration
 // and authentication config. Protected API routes will require authentication.
 func NewServerWithAuth(config *Config, authConfig *AuthConfig) *Server {
