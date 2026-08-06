@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -386,6 +387,74 @@ func TestHandleApprovalDecision_RecordDecisionError_500(t *testing.T) {
 	// Cleanup must not run if the recorder itself failed.
 	if len(store.deletedApprovalIDs) != 0 {
 		t.Errorf("DeletePendingApproval should not run after a RecordDecision error, got %v", store.deletedApprovalIDs)
+	}
+}
+
+// TestHandleApprovalDecision_RaceLoss_409 simulates the loser of a decision
+// race: the request is still listed pending (findPendingApproval succeeds),
+// but by the time RecordDecision runs, Store.SetApprovalDecision's atomic
+// guard has already rejected the write because another decider won first.
+// The handler must surface 409 (not the previous last-writer-wins 200) and
+// still clean up the now-stale pending row (GH-4757 acceptance criterion 1).
+func TestHandleApprovalDecision_RaceLoss_409(t *testing.T) {
+	now := time.Now()
+	store := &mockDashboardStore{
+		pendingApprovals: []*memory.PendingApproval{
+			{ID: "req-race", TaskID: "GH-10", CreatedAt: now, ExpiresAt: now.Add(time.Hour)},
+		},
+	}
+	rec := &fakeDecisionRecorder{err: memory.ErrApprovalAlreadyDecided}
+	s := decisionServer(store, rec)
+
+	body := bytes.NewBufferString(`{"decision":"approve","by":"alice"}`)
+	req := httpTestRequestWithPathValue(t, http.MethodPost, "/api/v1/approvals/req-race/decision", body, "requestId", "req-race")
+	w := newTestResponseRecorder()
+	s.handleApprovalDecision(w, req)
+
+	if w.status != http.StatusConflict {
+		t.Errorf("status = %d, want 409 (body=%s)", w.status, w.body.String())
+	}
+	if len(store.deletedApprovalIDs) != 1 || store.deletedApprovalIDs[0] != "req-race" {
+		t.Errorf("DeletePendingApproval calls = %v, want [req-race] (stale pending row must still be cleaned up)", store.deletedApprovalIDs)
+	}
+}
+
+// TestHandleApprovalDecision_UnlinkedRequest_ResolvesInsteadOf500 covers the
+// second integrity gap: a pending row with no execution linkage (
+// SetApprovalRequestID never ran) makes Store.SetApprovalDecision return
+// sql.ErrNoRows. The handler must align with Telegram/Slack channel
+// semantics — warn-log and still resolve the request — instead of the
+// previous 500 that left the row undecidable forever over HTTP
+// (GH-4757 acceptance criterion 2).
+func TestHandleApprovalDecision_UnlinkedRequest_ResolvesInsteadOf500(t *testing.T) {
+	now := time.Now()
+	store := &mockDashboardStore{
+		pendingApprovals: []*memory.PendingApproval{
+			{ID: "req-unlinked", TaskID: "GH-11", CreatedAt: now, ExpiresAt: now.Add(time.Hour)},
+		},
+		// No execByApprovalReqID entry for "req-unlinked" — mirrors GET
+		// listing it with executionId: null.
+	}
+	rec := &fakeDecisionRecorder{err: sql.ErrNoRows}
+	s := decisionServer(store, rec)
+
+	body := bytes.NewBufferString(`{"decision":"reject","by":"bob"}`)
+	req := httpTestRequestWithPathValue(t, http.MethodPost, "/api/v1/approvals/req-unlinked/decision", body, "requestId", "req-unlinked")
+	w := newTestResponseRecorder()
+	s.handleApprovalDecision(w, req)
+
+	if w.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.status, w.body.String())
+	}
+	if len(store.deletedApprovalIDs) != 1 || store.deletedApprovalIDs[0] != "req-unlinked" {
+		t.Errorf("DeletePendingApproval calls = %v, want [req-unlinked]", store.deletedApprovalIDs)
+	}
+	var resp decisionResponseBody
+	if err := json.Unmarshal(w.body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.RequestID != "req-unlinked" || resp.Decision != "reject" || resp.By != "bob" {
+		t.Errorf("unexpected response body: %+v", resp)
 	}
 }
 

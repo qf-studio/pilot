@@ -1466,9 +1466,23 @@ func (s *Store) TerminateNonTerminalExecutionAsSuperseded(taskID, projectPath, r
 	})
 }
 
+// ErrApprovalAlreadyDecided is returned by SetApprovalDecision when the
+// execution row linked to requestID already carries a non-empty
+// approval_decision. Distinguished from sql.ErrNoRows (no linked row at
+// all — an unlinked/unknown request) so callers can tell "already decided"
+// (409) apart from "nothing to decide" (GH-4757 / PR#4752 review).
+var ErrApprovalAlreadyDecided = errors.New("approval already decided")
+
 // SetApprovalDecision records an approval decision on the execution linked to requestID.
 // It sets approval_decision, approval_decision_at, and approval_decision_by on the row
-// whose approval_request_id matches. Returns sql.ErrNoRows if no matching row is found.
+// whose approval_request_id matches. The UPDATE is guarded by
+// `AND approval_decision = ''` so two racing callers (e.g. a POST racing a
+// Telegram/Slack button tap, or two concurrent POSTs) can never both win: only
+// the first writer's UPDATE matches a row, the second affects zero rows and
+// gets ErrApprovalAlreadyDecided rather than silently overwriting the first
+// decision (GH-4757 / PR#4752 review — previously unguarded, last writer won).
+// Returns sql.ErrNoRows if no row is linked to requestID at all (unlinked
+// request — SetApprovalRequestID is best-effort and may never have run).
 func (s *Store) SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error {
 	if requestID == "" {
 		return sql.ErrNoRows
@@ -1479,7 +1493,7 @@ func (s *Store) SetApprovalDecision(ctx context.Context, requestID string, decis
 			SET approval_decision    = ?,
 			    approval_decision_at = CURRENT_TIMESTAMP,
 			    approval_decision_by = ?
-			WHERE approval_request_id = ?
+			WHERE approval_request_id = ? AND COALESCE(approval_decision, '') = ''
 		`, decision, by, requestID)
 		if err != nil {
 			return fmt.Errorf("SetApprovalDecision: %w", err)
@@ -1488,10 +1502,29 @@ func (s *Store) SetApprovalDecision(ctx context.Context, requestID string, decis
 		if err != nil {
 			return fmt.Errorf("SetApprovalDecision rows affected: %w", err)
 		}
-		if rows == 0 {
-			return sql.ErrNoRows
+		if rows > 0 {
+			return nil
 		}
-		return nil
+
+		// Zero rows: either no row is linked to requestID (unlinked request),
+		// or a row is linked but the guard just rejected it because it's
+		// already decided. Distinguish with a follow-up read.
+		var existingDecision string
+		checkErr := s.db.QueryRowContext(ctx, `
+			SELECT COALESCE(approval_decision, '') FROM executions
+			WHERE approval_request_id = ?
+			ORDER BY created_at DESC LIMIT 1
+		`, requestID).Scan(&existingDecision)
+		if checkErr != nil {
+			if errors.Is(checkErr, sql.ErrNoRows) {
+				return sql.ErrNoRows
+			}
+			return fmt.Errorf("SetApprovalDecision existence check: %w", checkErr)
+		}
+		if existingDecision != "" {
+			return ErrApprovalAlreadyDecided
+		}
+		return sql.ErrNoRows
 	})
 }
 
