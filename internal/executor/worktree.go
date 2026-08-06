@@ -240,6 +240,7 @@ func (m *WorktreeManager) createPooledWorktree(ctx context.Context, index int) (
 	// Fetch latest origin/main to ensure fresh base
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
 	fetchCmd.Dir = m.repoPath
+	withGitCredentials(ctx, fetchCmd)
 	_, _ = fetchCmd.CombinedOutput() // Non-fatal if this fails
 
 	// Create worktree in detached HEAD state at origin/main
@@ -336,6 +337,7 @@ func (m *WorktreeManager) preparePooledWorktree(ctx context.Context, wt *PooledW
 	// Fetch latest to ensure we have fresh refs
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
 	fetchCmd.Dir = wt.Path
+	withGitCredentials(ctx, fetchCmd)
 	_, _ = fetchCmd.CombinedOutput() // Non-fatal
 
 	// Clean any leftover files from previous task
@@ -547,6 +549,7 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 	// from stale local main. This avoids conflicts when local main diverges from origin.
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
 	fetchCmd.Dir = m.repoPath
+	withGitCredentials(ctx, fetchCmd)
 	if output, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
 		slog.Warn("Failed to fetch origin/main before worktree creation",
 			slog.Any("error", fetchErr),
@@ -729,6 +732,7 @@ func (m *WorktreeManager) VerifyRemoteAccess(ctx context.Context, worktreePath s
 	// Verify we can ls-remote (lightweight check without fetching)
 	lsCmd := exec.CommandContext(ctx, "git", "ls-remote", "--exit-code", "origin", "HEAD")
 	lsCmd.Dir = worktreePath
+	withGitCredentials(ctx, lsCmd)
 	if lsOutput, lsErr := lsCmd.CombinedOutput(); lsErr != nil {
 		return fmt.Errorf("cannot reach remote 'origin': %w: %s", lsErr, lsOutput)
 	}

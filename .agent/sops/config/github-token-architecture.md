@@ -25,6 +25,25 @@ Verified live on the founder box (i-0e0c1ca34e7b561f9):
   pushes at once. Durable fix = GitHub App installation token
   (`system/project/project_github_org_plan.md`, also solves the shared
   5000/hr user pool, #4391).
+- **GH-4743 ships the durable fix as an opt-in config block** —
+  `adapters.github.app { app_id, installation_id, private_key_path }` (see
+  `configs/pilot.example.yaml`). When set, `resolveGitHubToken` in
+  `cmd/pilot/main.go` mints+caches a ~1h installation token
+  (`internal/adapters/github/apptoken.go`) ahead of the `token`/`GITHUB_TOKEN`
+  fallback, and the same token authenticates git push/fetch on pilot
+  worktrees via a `GIT_ASKPASS` helper (`internal/executor/git_credentials.go`)
+  — never the URL, argv, or a log line. **Not yet done as of GH-4743:**
+  turning this on for the box (that cutover is an operator action, not part
+  of the PR) — the box still runs on gh-CLI OAuth per the section above until
+  someone provisions the App and flips the config. Two known scope
+  boundaries left for follow-up tickets: (1) `gh` CLI subprocess calls
+  (PR creation, issue comments, etc.) still ride the ambient
+  `GITHUB_TOKEN`/gh-CLI login, not the minted App token — only raw `git`
+  HTTPS operations were wired; (2) GitHub SDK clients built once at daemon
+  startup don't hot-rotate mid-process if the App token refreshes — each
+  fresh `resolveGitHubToken` call gets the current token, but a long-lived
+  client holding an old client instance won't, mitigated today only by the
+  daemon's frequent restarts, not a designed rotation.
 - **Still-live separate tokens:** the two Actions secrets below
   (`PILOT_DOCS_PAT`, `HOMEBREW_TAP_GITHUB_TOKEN`) — those DO expire
   (fine-grained PATs hard-expire) and break docs-chaining / brew-tap pushes
