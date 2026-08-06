@@ -36,6 +36,15 @@ type mockDashboardStore struct {
 	getExecByApprovalErr     error
 	deletePendingApprovalErr error
 	deletedApprovalIDs       []string // appended on each DeletePendingApproval call
+
+	// Execution-events API test hooks (GH-4749).
+	execByID                map[string]*memory.Execution
+	getExecutionErr         error
+	execsForTask            []*memory.Execution // returned as-is by ListExecutionsForTask
+	listExecsForTaskErr     error
+	gotListExecsForTaskArgs []string // "taskID|projectPath" appended on each call
+	eventsByExecutionID     map[string][]*memory.Event
+	listExecutionEventsErr  error
 }
 
 func (m *mockDashboardStore) GetLifetimeTokens(projectPath string) (*memory.LifetimeTokens, error) {
@@ -96,6 +105,32 @@ func (m *mockDashboardStore) GetExecutionByApprovalRequestID(requestID string) (
 func (m *mockDashboardStore) DeletePendingApproval(id string) error {
 	m.deletedApprovalIDs = append(m.deletedApprovalIDs, id)
 	return m.deletePendingApprovalErr
+}
+
+func (m *mockDashboardStore) GetExecution(id string) (*memory.Execution, error) {
+	if m.getExecutionErr != nil {
+		return nil, m.getExecutionErr
+	}
+	exec, ok := m.execByID[id]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return exec, nil
+}
+
+func (m *mockDashboardStore) ListExecutionsForTask(taskID, projectPath string) ([]*memory.Execution, error) {
+	m.gotListExecsForTaskArgs = append(m.gotListExecsForTaskArgs, taskID+"|"+projectPath)
+	if m.listExecsForTaskErr != nil {
+		return nil, m.listExecsForTaskErr
+	}
+	return m.execsForTask, nil
+}
+
+func (m *mockDashboardStore) ListExecutionEvents(executionID string) ([]*memory.Event, error) {
+	if m.listExecutionEventsErr != nil {
+		return nil, m.listExecutionEventsErr
+	}
+	return m.eventsByExecutionID[executionID], nil
 }
 
 func newTestServerWithDashboard(store DashboardStore) *Server {

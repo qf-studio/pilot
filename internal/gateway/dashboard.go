@@ -32,6 +32,13 @@ type DashboardStore interface {
 	LoadPendingApprovals() ([]*memory.PendingApproval, error)
 	GetExecutionByApprovalRequestID(requestID string) (*memory.Execution, error)
 	DeletePendingApproval(id string) error
+	// Execution-events read surface (GH-4749 / S4 pilot leg). GetExecution and
+	// ListExecutionsForTask back the two routes' execution lookups (single-row
+	// and newest-of-task respectively); ListExecutionEvents returns the
+	// stage-transition timeline for a resolved execution ID.
+	GetExecution(id string) (*memory.Execution, error)
+	ListExecutionsForTask(taskID, projectPath string) ([]*memory.Execution, error)
+	ListExecutionEvents(executionID string) ([]*memory.Event, error)
 }
 
 // defaultDashboardStatsWindowDays mirrors config.DashboardConfig's default
