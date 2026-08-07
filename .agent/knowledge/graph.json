@@ -1482,12 +1482,12 @@
         "title": "Task 458 Platform Outage Breaker",
         "status": "unknown",
         "concepts": [
+          "frontend",
           "deployment",
           "testing",
           "api",
-          "markers",
           "context",
-          "frontend"
+          "markers"
         ]
       },
       "TASK-459": {
@@ -7122,7 +7122,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-08T06:30:00+00:00",
+  "last_updated": "2026-08-07T22:22:38.795572+00:00",
   "stats": {
     "total_nodes": 378,
     "total_edges": 317,
