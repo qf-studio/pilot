@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -205,5 +206,112 @@ func TestReDriveBreakerHeldPRs_MultiplePRs(t *testing.T) {
 		if pr.BreakerReadoptCount != 1 {
 			t.Errorf("pr %d BreakerReadoptCount = %d, want 1", pr.PRNumber, pr.BreakerReadoptCount)
 		}
+	}
+}
+
+// TestController_RestoreState_RehydratesBreakerHeldPR covers GH-4807
+// acceptance criterion 1: a PR parked via a platform-outage breaker hold
+// (StageFailed + BreakerHoldActive) must survive a daemon restart. Before
+// the fix, RestoreState's unconditional `pr.Stage == StageFailed` skip
+// dropped every held PR — breaker_hold_active/breaker_readopt_count
+// persisted in SQLite, but the row never re-entered a fresh controller's
+// activePRs, so ReDriveBreakerHeldPRs (which only scans activePRs) could
+// never revive it. This test saves a held PR directly to the store,
+// constructs a FRESH controller over that same store (simulating the
+// restart), calls RestoreState, then closes the breaker via the monitor
+// path (EvaluateClose + ReDriveBreakerHeldPRs, mirroring
+// startPlatformBreakerMonitor) and asserts the PR re-enters StageWaitingCI.
+func TestController_RestoreState_RehydratesBreakerHeldPR(t *testing.T) {
+	store := newTestStateStore(t)
+
+	held := &PRState{
+		PRNumber:          120,
+		PRURL:             "https://github.com/owner/repo/pull/120",
+		IssueNumber:       120,
+		BranchName:        "pilot/GH-120",
+		HeadSHA:           "sha-restart-held",
+		Stage:             StageFailed,
+		Error:             "platform-outage breaker open — holding PR",
+		BreakerHoldActive: true,
+	}
+	if err := store.SavePRState("owner/repo", held); err != nil {
+		t.Fatalf("SavePRState failed: %v", err)
+	}
+
+	// A PR held at StageFailed for an UNRELATED reason (no BreakerHoldActive)
+	// must still be skipped by RestoreState — only the breaker-hold exception
+	// widens the rehydration filter.
+	plainFailed := &PRState{
+		PRNumber:    121,
+		PRURL:       "https://github.com/owner/repo/pull/121",
+		IssueNumber: 121,
+		BranchName:  "pilot/GH-121",
+		HeadSHA:     "sha-plain-failed",
+		Stage:       StageFailed,
+		Error:       "fix-issue cascade exhausted",
+	}
+	if err := store.SavePRState("owner/repo", plainFailed); err != nil {
+		t.Fatalf("SavePRState failed: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	// Fresh controller over the SAME store — simulates the daemon restart.
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL)
+	breaker := NewPlatformBreaker(3, 15*time.Minute, 20*time.Minute, nil)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo", WithPlatformBreaker(breaker))
+	c.SetStateStore(store)
+
+	if _, err := c.RestoreState(); err != nil {
+		t.Fatalf("RestoreState failed: %v", err)
+	}
+
+	restoredHeld, ok := c.GetPRState(120)
+	if !ok {
+		t.Fatal("breaker-held PR 120 was not rehydrated into activePRs — RestoreState still strands it across a restart")
+	}
+	if restoredHeld.Stage != StageFailed || !restoredHeld.BreakerHoldActive {
+		t.Errorf("rehydrated PR 120: Stage=%v BreakerHoldActive=%v, want StageFailed/true", restoredHeld.Stage, restoredHeld.BreakerHoldActive)
+	}
+
+	if _, ok := c.GetPRState(121); ok {
+		t.Error("PR 121 (plain StageFailed, no BreakerHoldActive) should NOT be rehydrated — the skip still applies for ordinary terminal failures")
+	}
+
+	// Open the breaker for real (3 distinct correlated PRs), then close it
+	// via the monitor path: EvaluateClose (time-based, mirrors
+	// startPlatformBreakerMonitor's own call) followed by
+	// ReDriveBreakerHeldPRs.
+	breaker.Observe(1, "owner/repo", FailureClassInfra)
+	breaker.Observe(2, "owner/repo", FailureClassInfra)
+	opened := breaker.Observe(3, "owner/repo", FailureClassInfra)
+	if !opened.Open {
+		t.Fatal("test setup: breaker should be open after 3 correlated observations")
+	}
+
+	breaker.mu.Lock()
+	breaker.lastInfraAt = breaker.lastInfraAt.Add(-30 * time.Minute) // force past the quiet period
+	breaker.mu.Unlock()
+
+	closeResult := breaker.EvaluateClose()
+	if !closeResult.JustClosed {
+		t.Fatal("test setup: breaker should have closed via the time-based quiet-period check")
+	}
+
+	c.ReDriveBreakerHeldPRs(context.Background())
+
+	revived, ok := c.GetPRState(120)
+	if !ok {
+		t.Fatal("PR 120 disappeared from activePRs after re-drive")
+	}
+	if revived.Stage != StageWaitingCI {
+		t.Errorf("PR 120 Stage after re-drive = %v, want StageWaitingCI", revived.Stage)
+	}
+	if revived.BreakerHoldActive {
+		t.Error("PR 120 BreakerHoldActive should be cleared after re-drive")
 	}
 }

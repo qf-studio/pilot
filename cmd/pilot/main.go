@@ -1625,16 +1625,22 @@ const selfUpgradeAdmissionPauseOwner = "self-upgrade"
 // nothing failing anywhere would otherwise never close and its parked PRs
 // would never re-drive. EvaluateClose applies the identical check standalone.
 //
-// The OPEN transition needs no monitor tick: it's always detected
-// synchronously inside whichever controller's handleCIFailed call correlates
-// it (alertPlatformBreakerTransition pauses admission and fires the alert
-// immediately). This monitor only ever fires the CLOSE alert, resumes
-// admission (if pauseAdmissionEnabled), and re-drives every controller's
-// breaker-held PRs — deliberately NOT duplicating alertPlatformBreakerTransition
-// so the close alert fires exactly once fleet-wide (not once per controller),
-// matching the "exactly one alert on close" acceptance criterion from part 1.
-// A nil breaker or empty interval makes this a no-op; dispatcher may be nil
-// (admission pause simply skipped) since Dispatcher itself is optional.
+// GH-4807: the OPEN transition still needs no monitor tick — it's always
+// detected synchronously inside whichever controller's handleCIFailed call
+// correlates it (alertPlatformBreakerTransition pauses admission and fires
+// the alert immediately). But a CLOSE can *also* happen synchronously that
+// same way: any CI-failure observation landing after the quiet deadline
+// closes the breaker inside Observe itself, and alertPlatformBreakerTransition
+// resumes admission and fires the close alert for it right there. That path
+// has no access to the fleet-wide `controllers` map (Controller only knows
+// its own activePRs), so it never re-drives held PRs — they stayed parked
+// until this monitor's own EvaluateClose happened to fire, or the re-adopt
+// cap, or a later episode that closed via this monitor's path instead. This
+// loop now tracks the breaker's open/closed state across ticks (dropping the
+// old `if !breaker.IsOpen() { continue }` pre-check) so it notices an
+// Observe-path close within one probe_interval and re-drives for it too —
+// without re-alerting, since alertPlatformBreakerTransition already fired
+// the close alert exactly once for that transition.
 func startPlatformBreakerMonitor(ctx context.Context, breaker *autopilot.PlatformBreaker, dispatcher *executor.Dispatcher, controllers map[string]*autopilot.Controller, alertsEngine *alerts.Engine, pauseAdmissionEnabled bool, interval time.Duration, log *slog.Logger) {
 	if breaker == nil {
 		return
@@ -1648,47 +1654,84 @@ func startPlatformBreakerMonitor(ctx context.Context, breaker *autopilot.Platfor
 	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
+		wasOpen := breaker.IsOpen()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !breaker.IsOpen() {
-					continue
-				}
-				result := breaker.EvaluateClose()
-				if !result.JustClosed {
-					continue
-				}
-				log.Info("platform-outage breaker closed during a quiet spell (no CI activity to trigger Observe) — re-driving held PRs",
-					"correlated_prs", result.CorrelatedPRs)
-
-				if dispatcher != nil && pauseAdmissionEnabled {
-					dispatcher.ResumeAdmissionFor(autopilot.PlatformBreakerAdmissionPauseOwner)
-				}
-
-				for _, ctrl := range controllers {
-					ctrl.ReDriveBreakerHeldPRs(ctx)
-				}
-
-				if alertsEngine == nil {
-					log.Error("platform breaker close alert not delivered: alertsEngine is nil")
-					continue
-				}
-				alertsEngine.ProcessEvent(alerts.Event{
-					Type: alerts.EventType("platform_breaker_close"),
-					Error: fmt.Sprintf(
-						"Platform-outage breaker CLOSED: quiet period elapsed with no new infra/unknown-class CI failure (detected by the periodic monitor during a quiet spell — nothing was failing anywhere to trigger this via a live CI check). Normal CI-failure handling has resumed. PRs held during the outage: %s",
-						strings.Join(result.CorrelatedPRs, ", "),
-					),
-					Timestamp: time.Now(),
-					Metadata: map[string]string{
-						"prs": strings.Join(result.CorrelatedPRs, ","),
-					},
-				})
+				wasOpen = platformBreakerMonitorTick(ctx, breaker, dispatcher, controllers, alertsEngine, pauseAdmissionEnabled, wasOpen, log)
 			}
 		}
 	}()
+}
+
+// platformBreakerMonitorTick runs one evaluation of the platform-outage
+// breaker's close condition, extracted out of startPlatformBreakerMonitor's
+// ticker loop so it can be driven directly (and deterministically) by tests
+// instead of waiting on a real time.Ticker. wasOpen is the breaker's open
+// state as observed on the PREVIOUS tick (or at monitor start); the return
+// value is the state observed at the end of THIS tick, meant to be threaded
+// back in as wasOpen on the next call.
+func platformBreakerMonitorTick(ctx context.Context, breaker *autopilot.PlatformBreaker, dispatcher *executor.Dispatcher, controllers map[string]*autopilot.Controller, alertsEngine *alerts.Engine, pauseAdmissionEnabled bool, wasOpen bool, log *slog.Logger) bool {
+	var result autopilot.PlatformBreakerResult
+	if wasOpen {
+		// Only worth the time-based check while we last saw the breaker
+		// open — a no-op otherwise (mirrors the old IsOpen() pre-check for
+		// the never-opened-yet case).
+		result = breaker.EvaluateClose()
+	}
+	nowOpen := breaker.IsOpen()
+	// GH-4807: wasOpen but no longer, and THIS tick's EvaluateClose didn't
+	// cause it (JustClosed false) — the only other way that happens is an
+	// Observe-path close between ticks.
+	observePathClose := wasOpen && !nowOpen && !result.JustClosed
+
+	if !result.JustClosed && !observePathClose {
+		return nowOpen
+	}
+
+	if observePathClose {
+		log.Info("platform-outage breaker closed via an Observe-path CI-failure evaluation (caught on next monitor tick) — re-driving held PRs; close alert already fired at the transition")
+	} else {
+		log.Info("platform-outage breaker closed during a quiet spell (no CI activity to trigger Observe) — re-driving held PRs",
+			"correlated_prs", result.CorrelatedPRs)
+	}
+
+	if dispatcher != nil && pauseAdmissionEnabled {
+		// Idempotent no-op if alertPlatformBreakerTransition already resumed
+		// admission for the Observe-path case (ResumeAdmissionFor deletes a
+		// possibly-absent owner key) — see Dispatcher.ResumeAdmissionFor.
+		dispatcher.ResumeAdmissionFor(autopilot.PlatformBreakerAdmissionPauseOwner)
+	}
+
+	for _, ctrl := range controllers {
+		ctrl.ReDriveBreakerHeldPRs(ctx)
+	}
+
+	if !result.JustClosed {
+		// Observe-path close: alertPlatformBreakerTransition already fired
+		// the close alert exactly once for this transition — do not
+		// duplicate it here.
+		return nowOpen
+	}
+
+	if alertsEngine == nil {
+		log.Error("platform breaker close alert not delivered: alertsEngine is nil")
+		return nowOpen
+	}
+	alertsEngine.ProcessEvent(alerts.Event{
+		Type: alerts.EventType("platform_breaker_close"),
+		Error: fmt.Sprintf(
+			"Platform-outage breaker CLOSED: quiet period elapsed with no new infra/unknown-class CI failure (detected by the periodic monitor during a quiet spell — nothing was failing anywhere to trigger this via a live CI check). Normal CI-failure handling has resumed. PRs held during the outage: %s",
+			strings.Join(result.CorrelatedPRs, ", "),
+		),
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"prs": strings.Join(result.CorrelatedPRs, ","),
+		},
+	})
+	return nowOpen
 }
 
 // startQueueDepthRefresh launches a background loop that periodically calls
