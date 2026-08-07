@@ -129,6 +129,12 @@ cat > "$HOOKS_DIR/pre-push" << 'EOF'
 #!/bin/bash
 # Pre-push hook - runs full validation gate before push
 # This ensures CI will pass on first attempt
+#
+# Docs-only pushes skip the Go steps (build/lint/test/mocks/integration) via
+# a fast path: we read the <local_ref> <local_sha> <remote_ref> <remote_sha>
+# lines git feeds this hook on stdin, classify them with
+# scripts/pre-push-classify.sh, and tell pre-push-gate.sh which mode to run.
+# See .agent/sops/quality/pre-push-gate.md.
 
 set -e
 
@@ -136,6 +142,7 @@ set -e
 HOOK_DIR="$(dirname "$0")"
 PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
 GATE_SCRIPT="$PROJECT_ROOT/scripts/pre-push-gate.sh"
+CLASSIFY_SCRIPT="$PROJECT_ROOT/scripts/pre-push-classify.sh"
 
 # Check if gate script exists
 if [ ! -x "$GATE_SCRIPT" ]; then
@@ -143,6 +150,19 @@ if [ ! -x "$GATE_SCRIPT" ]; then
     echo "   Run 'make install-hooks' to reinstall"
     exit 0  # Allow push if script missing (don't block on missing script)
 fi
+
+# Buffer the ref updates git provides on stdin — the gate script itself
+# doesn't read stdin, so this is only consumed by the classifier below.
+REF_UPDATES="$(cat)"
+
+PILOT_GATE_DOCS_ONLY=0
+if [ -x "$CLASSIFY_SCRIPT" ]; then
+    CLASSIFICATION="$(cd "$PROJECT_ROOT" && printf '%s\n' "$REF_UPDATES" | "$CLASSIFY_SCRIPT")"
+    if [ "$CLASSIFICATION" = "docs-only" ]; then
+        PILOT_GATE_DOCS_ONLY=1
+    fi
+fi
+export PILOT_GATE_DOCS_ONLY
 
 echo ""
 echo "🚦 Running pre-push validation gate..."
@@ -179,5 +199,7 @@ echo ""
 echo "Hooks installed:"
 echo "  • pre-commit: Checks for realistic secrets in test files + knowledge-graph drift"
 echo "  • pre-push:   Runs full validation gate (build, lint, test, secrets, knowledge-graph)"
+echo "                Docs-only pushes (no *.go/go.mod/go.sum in the diff) use a fast path"
+echo "                (check-secrets + check-graph only) — see .agent/sops/quality/pre-push-gate.md"
 echo ""
 echo "Use '--no-verify' to bypass hooks (not recommended)."

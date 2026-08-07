@@ -1,7 +1,15 @@
 #!/bin/bash
 # Pre-push validation gate for Pilot
 # Runs all checks before allowing a push: build, lint, test, secrets, integration
-# Target: <30 seconds for fast feedback
+#
+# Full gate: 224-287s measured (dominated by `go test -short -race ./...`;
+# see GH-4771 issue body for the per-step breakdown). Pushes whose diff
+# touches no *.go/go.mod/go.sum path (docs-only) take a fast path instead —
+# only check-secrets + check-graph run, target <10s. The pre-push
+# git hook (installed via install-hooks.sh) decides this using
+# scripts/pre-push-classify.sh and sets PILOT_GATE_DOCS_ONLY=1 accordingly.
+# `make gate` always runs the full gate (no stdin to classify from). See
+# .agent/sops/quality/pre-push-gate.md.
 
 set -e
 
@@ -82,15 +90,65 @@ run_check_warn() {
     fi
 }
 
+# Docs-only fast path: the pre-push hook classifies the push (via
+# scripts/pre-push-classify.sh, fed git's stdin ref updates) and exports
+# PILOT_GATE_DOCS_ONLY=1 when the diff touches no *.go/go.mod/go.sum path.
+# `make gate` never sets this, so a manual invocation always runs the full
+# gate below. Only check-secrets + check-graph run here — see the "Must
+# always run" rule in .agent/sops/quality/pre-push-gate.md.
+if [ "${PILOT_GATE_DOCS_ONLY:-0}" = "1" ]; then
+    echo -e "${YELLOW}⚡ Docs-only push detected — fast path engaged${NC}"
+    echo "   Skipping:  build, lint, test (short), mocks, integration"
+    echo "   Reason:    diff contains no *.go / go.mod / go.sum paths"
+    echo "   Running:   check-secrets, check-graph (always run regardless of diff)"
+    echo ""
+
+    echo -e "${BLUE}[1/2] Secret Patterns${NC}"
+    if [ -x "$SCRIPT_DIR/check-secret-patterns.sh" ]; then
+        if ! run_check "check-secrets" "$SCRIPT_DIR/check-secret-patterns.sh"; then
+            FAILURES=$((FAILURES + 1))
+        fi
+    else
+        echo -e "  [check-secrets] ${YELLOW}skipped (script not found)${NC}"
+    fi
+    echo ""
+
+    echo -e "${BLUE}[2/2] Knowledge Graph${NC}"
+    if ! run_check "check-graph" "python3 $SCRIPT_DIR/check-graph.py"; then
+        FAILURES=$((FAILURES + 1))
+    fi
+    echo ""
+
+    GATE_END=$(date +%s)
+    GATE_DURATION=$((GATE_END - GATE_START))
+
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    if [ $FAILURES -eq 0 ]; then
+        echo -e "${GREEN}  GATE PASSED (fast path)${NC} (${GATE_DURATION}s)"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        exit 0
+    else
+        echo -e "${RED}  GATE FAILED (fast path)${NC} (${GATE_DURATION}s)"
+        echo -e "  ${RED}$FAILURES check(s) failed${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo "Fix the issues above before pushing."
+        echo "To bypass (not recommended): git push --no-verify"
+        echo ""
+        exit 1
+    fi
+fi
+
 # 1. BUILD
-echo -e "${BLUE}[1/6] Build${NC}"
+echo -e "${BLUE}[1/7] Build${NC}"
 if ! run_check "go build" "go build -o /dev/null ./cmd/pilot"; then
     FAILURES=$((FAILURES + 1))
 fi
 echo ""
 
 # 2. LINT
-echo -e "${BLUE}[2/6] Lint${NC}"
+echo -e "${BLUE}[2/7] Lint${NC}"
 if command -v golangci-lint >/dev/null 2>&1; then
     if ! run_check "golangci-lint" "golangci-lint run --timeout 60s"; then
         FAILURES=$((FAILURES + 1))
@@ -102,14 +160,14 @@ fi
 echo ""
 
 # 3. TEST (short mode for speed)
-echo -e "${BLUE}[3/6] Test (short)${NC}"
+echo -e "${BLUE}[3/7] Test (short)${NC}"
 if ! run_check "go test -short" "go test -short -race ./..."; then
     FAILURES=$((FAILURES + 1))
 fi
 echo ""
 
 # 4. SECRETS
-echo -e "${BLUE}[4/6] Secret Patterns${NC}"
+echo -e "${BLUE}[4/7] Secret Patterns${NC}"
 if [ -x "$SCRIPT_DIR/check-secret-patterns.sh" ]; then
     if ! run_check "check-secrets" "$SCRIPT_DIR/check-secret-patterns.sh"; then
         FAILURES=$((FAILURES + 1))

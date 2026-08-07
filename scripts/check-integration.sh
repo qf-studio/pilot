@@ -178,6 +178,28 @@ done
 echo -e "  ${GREEN}✓${NC} No obvious test race patterns"
 echo ""
 
+# 6. Check the pre-push gate's docs-only fast-path classifier (GH-4771)
+echo "Checking pre-push fast-path classifier..."
+
+FASTPATH_TEST="$SCRIPT_DIR/test-prepush-fastpath.sh"
+if [ -x "$FASTPATH_TEST" ]; then
+    FASTPATH_LOG="$(mktemp)"
+    if "$FASTPATH_TEST" > "$FASTPATH_LOG" 2>&1; then
+        echo -e "  ${GREEN}✓${NC} pre-push-classify.sh fast-path cases pass"
+    else
+        echo -e "  ${RED}✗${NC} pre-push-classify.sh fast-path test failed:"
+        tail -20 "$FASTPATH_LOG" | while read -r line; do
+            echo "      $line"
+        done
+        ERRORS=$((ERRORS + 1))
+    fi
+    rm -f "$FASTPATH_LOG"
+else
+    echo -e "  ${YELLOW}⚠${NC} $FASTPATH_TEST not found or not executable, skipping"
+    WARNINGS=$((WARNINGS + 1))
+fi
+echo ""
+
 # Summary
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
