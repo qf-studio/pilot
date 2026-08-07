@@ -112,9 +112,14 @@ func TestClassifyPRFailure_TableDriven(t *testing.T) {
 		want   FailureClass
 	}{
 		{
-			name:   "no failed checks is code",
+			// GH-4779: zero gathered evidence must never fall back to
+			// FailureClassCode — that's the exact gap that let the
+			// 2026-08-06 outage close a correct PR (#4770) with nothing to
+			// point at. FailureClassUnknown routes callers to the
+			// non-destructive escalate-and-hold path instead.
+			name:   "no failed checks is unknown (zero evidence)",
 			checks: nil,
-			want:   FailureClassCode,
+			want:   FailureClassUnknown,
 		},
 		{
 			name: "all checks infra",
@@ -292,6 +297,115 @@ func TestClassifyPRFailure_JobsNeverStarted_TableDriven(t *testing.T) {
 			}
 			if got.IsInfra() != (tt.want != FailureClassCode) {
 				t.Errorf("IsInfra() = %v inconsistent with want %q", got.IsInfra(), tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifyCheckFailureFull_StructuralSignals is GH-4779's core regression
+// suite: structural, non-prose signals must classify infra even when the log
+// text matches none of TASK-418's four hardcoded signatures — the exact gap
+// that let the 2026-08-06 GitHub Actions outage misclassify PR #4770 as a
+// code failure.
+func TestClassifyCheckFailureFull_StructuralSignals(t *testing.T) {
+	tests := []struct {
+		name       string
+		chk        FailedCheckLog
+		wantClass  FailureClass
+		wantSignal classificationSignal
+	}{
+		{
+			// The 2026-08-06 incident's exact shape: the failing step is
+			// GitHub's own synthetic "Set up job", the log prose is
+			// "Failed to resolve action download info. Error: Service
+			// Unavailable" (none of TASK-418's four signatures), and the
+			// conclusion is the ordinary "failure" — not one of the newer
+			// startup_failure/stale conclusions. Structural step-name
+			// evidence alone must be enough.
+			name: "2026-08-06 outage replay: synthetic Set up job step, unrecognized prose, conclusion failure",
+			chk: FailedCheckLog{
+				CheckName:       "build",
+				JobID:           1,
+				Conclusion:      "failure",
+				FailingStepName: "Set up job",
+				// StepsCount=1 (only the synthetic "Set up job" step ever
+				// ran) deliberately keeps this fixture out of
+				// isJobsNeverStartedInfra's StepsCount==0 billing-refusal
+				// check — that shape is for jobs with an empty step array
+				// altogether. This incident's job got as far as GitHub's own
+				// synthetic step and died there, which is exactly the
+				// broader isStructuralInfra RepoStepsExecuted==0 signal.
+				StepsKnown:        true,
+				StepsCount:        1,
+				RepoStepsExecuted: 0,
+				Logs:              "##[error]Failed to resolve action download info. Error: Service Unavailable",
+			},
+			wantClass:  FailureClassInfra,
+			wantSignal: signalStructural,
+		},
+		{
+			name: "zero repo-defined steps executed, failing step unresolved",
+			chk: FailedCheckLog{
+				CheckName:         "test",
+				JobID:             2,
+				Conclusion:        "failure",
+				StepsKnown:        true,
+				StepsCount:        2, // both synthetic ("Set up job", "Complete job"); no repo step ran
+				RepoStepsExecuted: 0,
+				Logs:              "some unrecognized runner-provisioning error",
+			},
+			wantClass:  FailureClassInfra,
+			wantSignal: signalStructural,
+		},
+		{
+			name: "conclusion startup_failure with no useful logs",
+			chk: FailedCheckLog{
+				CheckName:  "lint",
+				JobID:      3,
+				Conclusion: conclusionStartupFailure,
+			},
+			wantClass:  FailureClassInfra,
+			wantSignal: signalStructural,
+		},
+		{
+			name: "conclusion stale with no useful logs",
+			chk: FailedCheckLog{
+				CheckName:  "e2e",
+				JobID:      4,
+				Conclusion: conclusionStale,
+			},
+			wantClass:  FailureClassInfra,
+			wantSignal: signalStructural,
+		},
+		{
+			// A repo-defined step actually ran and executed steps are
+			// non-zero, so a structural signal must not fire even though
+			// the conclusion is "failure" and the log is unrecognized —
+			// falls through to the fail-safe prose default of code.
+			name: "repo steps executed, unrecognized log, conclusion failure classifies code",
+			chk: FailedCheckLog{
+				CheckName:         "test",
+				JobID:             5,
+				Conclusion:        "failure",
+				FailingStepName:   "go test ./...",
+				StepsKnown:        true,
+				StepsCount:        4,
+				RepoStepsExecuted: 3,
+				Logs:              "--- FAIL: TestSomething\nassertion failed",
+			},
+			wantClass:  FailureClassCode,
+			wantSignal: signalNone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotClass, gotSignal := classifyCheckFailureFull(tt.chk)
+			if gotClass != tt.wantClass {
+				t.Errorf("classifyCheckFailureFull() class = %q, want %q", gotClass, tt.wantClass)
+			}
+			if gotSignal != tt.wantSignal {
+				t.Errorf("classifyCheckFailureFull() signal = %q, want %q", gotSignal, tt.wantSignal)
 			}
 		})
 	}

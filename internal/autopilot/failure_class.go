@@ -32,6 +32,19 @@ const (
 	// can name billing specifically instead of folding it into the generic
 	// runner-infra count.
 	FailureClassInfraBilling FailureClass = "infra_billing"
+	// FailureClassUnknown is GH-4779's zero-evidence guard: classifyPRFailure
+	// returns this — never FailureClassCode — when the CI aggregate already
+	// reported CIFailure but per-check evidence gathering came back with
+	// nothing to classify (the check-runs list API call itself failed, or no
+	// in-scope check run's conclusion actually matched what the aggregate
+	// used to decide CIFailure). This used to silently default to
+	// FailureClassCode, which is how the 2026-08-06 GitHub Actions outage
+	// closed a correct PR (#4770) on logs autopilot never actually looked
+	// at. FailureClassCode must require positive evidence of a genuine
+	// repo-code failure; FailureClassUnknown is the honest "we don't know"
+	// verdict, and callers must route it to a non-destructive hold
+	// (escalateAndHold), never ClosePullRequest or a spawned fix issue.
+	FailureClassUnknown FailureClass = "unknown"
 )
 
 // IsInfra reports whether c is any infra-family classification — safe to
@@ -119,46 +132,157 @@ func isJobsNeverStartedInfra(chk FailedCheckLog) bool {
 	return chk.StepsKnown && chk.StepsCount == 0
 }
 
-// classifyCheckFailureFull is classifyCheckFailure extended with GH-4591's
-// jobs-never-started billing-refusal shape, which classifyCheckFailure alone
-// cannot see since it only has the (empty) job log to work from.
+// conclusionStartupFailure and conclusionStale are GitHub Actions check-run
+// conclusions absent from studio-sdk's Conclusion* constants (studio-sdk
+// vendors only success/failure/neutral/cancelled/timed_out/action_required/
+// skipped as of this writing — GH-4779) — declared here as local literals
+// per the task's scope fence rather than blocking on an SDK release. Both
+// are GitHub-side signals, never a genuine code failure:
+//   - startup_failure: the job failed to even start (workflow/runner
+//     provisioning problem on GitHub's side) — no repo code ever ran.
+//   - stale: GitHub gave up trying to get a final status update for the
+//     check run (e.g. a runner or webhook delivery died mid-run) and marked
+//     it stale rather than leave it pending forever.
+const (
+	conclusionStartupFailure = "startup_failure"
+	conclusionStale          = "stale"
+)
+
+// syntheticStepNames are the setup/teardown steps GitHub Actions injects
+// into every job's step list, bracketing the repo-defined steps a workflow
+// actually specifies (GH-4779). A job whose failing step is one of these
+// died during GitHub's own provisioning/teardown — it never reached any
+// step the repo defines, regardless of what the log prose says.
+var syntheticStepNames = map[string]bool{
+	"set up job":    true,
+	"set up runner": true,
+	"complete job":  true,
+}
+
+// isSyntheticStepName reports whether name is one of GitHub's synthetic
+// setup/teardown step names, case-insensitively. An empty name (failing step
+// unresolved, e.g. no StepLogClient configured) is never synthetic.
+func isSyntheticStepName(name string) bool {
+	return syntheticStepNames[strings.ToLower(strings.TrimSpace(name))]
+}
+
+// isStructuralInfra reports whether chk carries a structural fact —
+// independent of log wording — that definitively marks it as CI
+// infrastructure trouble rather than a genuine code failure (GH-4779,
+// evaluated in classifyCheckFailureFull before any prose-signature
+// matching):
+//  1. the failing step GitHub actually resolved is one of its own synthetic
+//     setup/teardown steps (FailingStepName), or
+//  2. the job's step breakdown is known and zero repo-defined
+//     (non-synthetic) steps ever executed — broader than
+//     isJobsNeverStartedInfra's raw StepsCount==0 check, which only catches
+//     a job with an empty step array altogether; this also catches a job
+//     that got as far as GitHub's synthetic "Set up job" step and then died
+//     before reaching anything the workflow itself defines, or
+//  3. the check run's own top-level conclusion is startup_failure or stale
+//     — GitHub-only outcomes that never represent a repo-code failure.
 //
-// A real compiler/lint annotation in the log is checked first and, if
-// present, wins outright — exactly like classifyCheckFailure's own
-// realAnnotationRe override — because it is definitive proof the job
-// actually started and ran far enough to hit real source code, regardless of
-// what StepsCount/AnnotationText happen to report (e.g. an incomplete jobs-
-// API response). Only once that's ruled out does the billing-refusal check
-// run: a job that never started is unambiguously not-code regardless of what
-// an empty/near-empty log happens to contain otherwise.
-func classifyCheckFailureFull(chk FailedCheckLog) FailureClass {
+// This is the fix for the 2026-08-06 GitHub Actions outage (pilot#4779):
+// TASK-418's four hardcoded log-prose signatures matched none of that
+// incident's wording ("resolve action download info" / "Service
+// Unavailable"), but the job's failing step was GitHub's own synthetic "Set
+// up job" — a structural fact no amount of new prose signatures can keep up
+// with across future incidents.
+func isStructuralInfra(chk FailedCheckLog) bool {
+	if isSyntheticStepName(chk.FailingStepName) {
+		return true
+	}
+	if chk.StepsKnown && chk.RepoStepsExecuted == 0 {
+		return true
+	}
+	if chk.Conclusion == conclusionStartupFailure || chk.Conclusion == conclusionStale {
+		return true
+	}
+	return false
+}
+
+// classificationSignal names which detection tier produced a
+// classifyCheckFailureFull verdict (GH-4779) — logged by handleCIFailed so a
+// future incident is diagnosable from logs alone without re-deriving the
+// decision by hand.
+type classificationSignal string
+
+const (
+	signalRealAnnotation classificationSignal = "real_annotation" // definitive code evidence, wins outright
+	signalBilling        classificationSignal = "billing"         // GH-4591 jobs-never-started shape
+	signalStructural     classificationSignal = "structural"      // GH-4779 synthetic step / zero repo steps / startup_failure|stale
+	signalProse          classificationSignal = "prose"           // TASK-418's legacy hardcoded log signatures
+	signalNone           classificationSignal = "none"            // no positive signal either way; fail-safe code
+)
+
+// classifyCheckFailureFull is classifyCheckFailure extended with GH-4591's
+// jobs-never-started billing-refusal shape and GH-4779's structural signals,
+// which classifyCheckFailure alone cannot see since it only has the (often
+// empty, for these shapes) job log to work from. Also returns which signal
+// tier produced the verdict, purely for diagnostic logging.
+//
+// Evaluation order:
+//  1. A real compiler/lint annotation in the log wins outright — definitive
+//     proof the job actually started and ran far enough to hit real source
+//     code, regardless of what any other signal reports (e.g. an
+//     incomplete/stale jobs-API response reading StepsCount/RepoStepsExecuted
+//     as 0). This mirrors classifyCheckFailure's own realAnnotationRe
+//     override.
+//  2. GH-4591's billing-refusal shape (isJobsNeverStartedInfra) — checked
+//     ahead of the more general structural signals below so a genuine
+//     billing refusal keeps reporting the specific FailureClassInfraBilling
+//     rather than being swallowed by the generic zero-repo-steps signal,
+//     which would also match it.
+//  3. GH-4779's structural signals (isStructuralInfra) — synthetic failing
+//     step, zero repo-defined steps executed, or a startup_failure/stale
+//     conclusion. None of these depend on log wording.
+//  4. classifyCheckFailure's legacy log-prose signature matching, as the
+//     last resort fallback.
+func classifyCheckFailureFull(chk FailedCheckLog) (FailureClass, classificationSignal) {
 	if realAnnotationRe.MatchString(chk.Logs) {
-		return classifyCheckFailure(chk.Logs)
+		return classifyCheckFailure(chk.Logs), signalRealAnnotation
 	}
 	if isJobsNeverStartedInfra(chk) {
-		return FailureClassInfraBilling
+		return FailureClassInfraBilling, signalBilling
 	}
-	return classifyCheckFailure(chk.Logs)
+	if isStructuralInfra(chk) {
+		return FailureClassInfra, signalStructural
+	}
+	class := classifyCheckFailure(chk.Logs)
+	if class == FailureClassInfra {
+		return class, signalProse
+	}
+	return class, signalNone
 }
 
 // classifyPRFailure aggregates classifyCheckFailureFull across every scoped
-// failed check on a SHA (GH-4533, extended by GH-4591): an infra-family
-// classification (FailureClassInfra or FailureClassInfraBilling) only when
-// there is at least one failed check and every single one of them
-// classifies infra-family; FailureClassCode otherwise — covering zero failed
-// checks, a pure code failure, and a mix of infra and code failures across
-// different checks. Fail-safe by construction: a mixed signal never allows
-// an auto-retry. When every check is infra-family and at least one is
-// specifically a billing refusal, the aggregate reports
-// FailureClassInfraBilling (the more actionable, specific signal) rather
-// than the generic FailureClassInfra.
+// failed check on a SHA (GH-4533, extended by GH-4591 and GH-4779): an
+// infra-family classification (FailureClassInfra or FailureClassInfraBilling)
+// only when there is at least one failed check and every single one of them
+// classifies infra-family; FailureClassCode when at least one check is a
+// genuine code failure — a mixed signal never allows an auto-retry, fail-safe
+// by construction.
+//
+// FailureClassUnknown (GH-4779) is the zero-evidence case: no failed checks
+// were gathered at all, even though the caller only reaches classifyPRFailure
+// after CI's own aggregate status already reported CIFailure. That gap means
+// evidence gathering itself came back empty — the check-runs list API call
+// failed, or no in-scope check run's conclusion matched what the aggregate
+// used to decide CIFailure — not that CI actually passed. Returning
+// FailureClassCode here (the pre-GH-4779 behavior) let a PR be closed and a
+// fix issue spawned with literally nothing to point at; FailureClassUnknown
+// forces callers onto the non-destructive escalate-and-hold path instead.
+//
+// When every check is infra-family and at least one is specifically a
+// billing refusal, the aggregate reports FailureClassInfraBilling (the more
+// actionable, specific signal) rather than the generic FailureClassInfra.
 func classifyPRFailure(checks []FailedCheckLog) FailureClass {
 	if len(checks) == 0 {
-		return FailureClassCode
+		return FailureClassUnknown
 	}
 	sawBilling := false
 	for _, chk := range checks {
-		class := classifyCheckFailureFull(chk)
+		class, _ := classifyCheckFailureFull(chk)
 		if !class.IsInfra() {
 			return FailureClassCode
 		}

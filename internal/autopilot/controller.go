@@ -2227,11 +2227,38 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	// exhaustion) folded into prState.Error if this falls through anyway.
 	perCheckLogs := c.ciMonitor.GetFailedCheckLogsByCheck(ctx, prState.HeadSHA)
 	failureClass := classifyPRFailure(perCheckLogs)
+	c.logCIFailureClassification(prState, perCheckLogs, failureClass)
 	if failureClass == FailureClassInfraBilling {
 		c.alertBillingRefusalOnce(perCheckLogs)
 	}
 	infraNote, retried := c.maybeRetryInfraFailure(ctx, prState, perCheckLogs, failureClass)
 	if retried {
+		return nil
+	}
+
+	// GH-4779 THE INVARIANT: a CIFailure aggregate with zero gathered
+	// evidence must never fall through to the destructive fix-issue/close
+	// path below. classifyPRFailure only returns FailureClassUnknown when
+	// perCheckLogs came back empty despite CI's own aggregate status already
+	// being CIFailure to reach handleCIFailed at all — the check-runs list
+	// API call itself failed, or no in-scope check run actually carried a
+	// CIFailure-mapped conclusion. maybeRetryInfraFailure above already gave
+	// this the same infra-rerun chance as a classified infra failure (its
+	// gate now also admits FailureClassUnknown); reaching here means that
+	// path found nothing to rerun (there is no job ID to resolve when there
+	// is no evidence), so hold for a human instead of closing a PR autopilot
+	// never actually looked at.
+	if failureClass == FailureClassUnknown {
+		failedChecks, err := c.ciMonitor.GetFailedChecks(ctx, prState.HeadSHA)
+		if err != nil {
+			c.log.Warn("failed to get failed checks for zero-evidence escalation", "pr", prState.PRNumber, "error", err)
+		}
+		comment := fmt.Sprintf("CI reported failure, but no evidence could be gathered from any check run to classify it — holding this PR for manual review instead of closing it blind.%s %s",
+			infraNote, ciFailedChecksSummary(failedChecks))
+		c.escalateAndHold(ctx, prState, "CI failure with zero gathered evidence", []string{labelNeedsHuman}, comment)
+		c.metrics.RecordPRFailed()
+		c.metrics.RecordPRFailedClass(failureClass)
+		c.recordCIFailVerdict(failureClass)
 		return nil
 	}
 
@@ -2442,8 +2469,17 @@ const maxInfraRerunBudget = 2
 // through to the fix-issue path. When retried is false, note carries an
 // optional human-readable reason (currently only set on budget exhaustion)
 // to fold into the eventual prState.Error.
+//
+// GH-4779: the gate also admits FailureClassUnknown (zero gathered
+// evidence), giving it the same infra-rerun chance an actual infra
+// classification gets, on the same budget (scope fence: no change to the
+// budget or its semantics). In practice this is a no-op for Unknown —
+// classifyPRFailure only returns it when checks is empty, so
+// rerunInfraFailures below has no job IDs to resolve and falls through with
+// retried=false — but it costs nothing to try, and it means a future signal
+// that lets Unknown carry partial evidence doesn't need this gate revisited.
 func (c *Controller) maybeRetryInfraFailure(ctx context.Context, prState *PRState, checks []FailedCheckLog, class FailureClass) (note string, retried bool) {
-	if !class.IsInfra() || c.stepLogClient == nil {
+	if (!class.IsInfra() && class != FailureClassUnknown) || c.stepLogClient == nil {
 		return "", false
 	}
 
@@ -2512,18 +2548,47 @@ func (c *Controller) rerunInfraFailures(ctx context.Context, prState *PRState, c
 }
 
 // recordCIFailVerdict records the terminal CI-run verdict metric for a
-// non-retried failure (GH-4533): "fail" preserves the pre-GH-4533 meaning
-// for genuine code failures and any other non-infra fallthrough (e.g. a
-// mixed infra+code signal across checks), while "infra_fail" is reserved for
-// the budget-exhausted infra path so dashboards can distinguish "gave up
-// retrying a flaky runner" from "an actual code failure" without CIRuns
-// ["fail"] silently absorbing both.
+// non-retried failure (GH-4533, extended GH-4779): "fail" preserves the
+// pre-GH-4533 meaning for genuine code failures and any other non-infra
+// fallthrough (e.g. a mixed infra+code signal across checks), "infra_fail" is
+// reserved for the budget-exhausted infra path so dashboards can distinguish
+// "gave up retrying a flaky runner" from "an actual code failure" without
+// CIRuns["fail"] silently absorbing both, and "unknown_evidence" is reserved
+// for the zero-evidence escalate-and-hold path so it never gets folded into
+// "fail" either — a CI failure autopilot never actually looked at is a
+// different diagnosable condition than a genuine code failure.
 func (c *Controller) recordCIFailVerdict(class FailureClass) {
-	if class.IsInfra() {
+	switch {
+	case class == FailureClassUnknown:
+		c.metrics.RecordCIRun("unknown_evidence")
+	case class.IsInfra():
 		c.metrics.RecordCIRun("infra_fail")
+	default:
+		c.metrics.RecordCIRun("fail")
+	}
+}
+
+// logCIFailureClassification logs, per gathered failed check, which
+// classification signal fired and the resulting class (GH-4779) — in
+// addition to the single aggregate verdict already folded into
+// prState.Error/metrics elsewhere, so a future incident whose log prose
+// doesn't match any known signature is still diagnosable from logs alone,
+// without re-deriving classifyCheckFailureFull's decision by hand.
+func (c *Controller) logCIFailureClassification(prState *PRState, checks []FailedCheckLog, aggregate FailureClass) {
+	if len(checks) == 0 {
+		c.log.Warn("CI failure classification: zero evidence gathered",
+			"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA), "class", aggregate)
 		return
 	}
-	c.metrics.RecordCIRun("fail")
+	for _, chk := range checks {
+		class, signal := classifyCheckFailureFull(chk)
+		c.log.Info("CI failure classification",
+			"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA),
+			"check", chk.CheckName, "conclusion", chk.Conclusion,
+			"failing_step", chk.FailingStepName, "class", class, "signal", signal,
+			"aggregate", aggregate,
+		)
+	}
 }
 
 // handleReviewRequested processes a PR that received "changes requested" review feedback.

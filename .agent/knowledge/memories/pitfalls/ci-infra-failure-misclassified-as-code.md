@@ -61,6 +61,20 @@ repick counter — which hit the hard cap (5) and put GH-4526 into
    → [#4531](https://github.com/qf-studio/pilot/issues/4531) — classify from
    job logs, bounded `rerun-failed-jobs` (2 per head SHA), `failure_class`
    dimension on CI/PR-failure metrics so outages stop polluting baselines.
+5. **2026-08-06 recurrence:** TASK-418's classifier was still four hardcoded
+   log-prose substrings — a GitHub Actions outage with new wording ("Failed
+   to resolve action download info. Error: Service Unavailable") matched
+   none of them and closed a correct PR (#4770) again. GH-4779 replaced
+   prose-first classification with structural signals evaluated *before* any
+   log text is read (synthetic-step name, zero repo-defined steps executed,
+   `startup_failure`/`stale` conclusion — see `isStructuralInfra` in
+   `internal/autopilot/failure_class.go`), and closed the companion gap where
+   `classifyPRFailure(nil)` used to fall back to `FailureClassCode`: zero
+   gathered evidence now classifies `FailureClassUnknown` and routes to
+   `escalateAndHold`, never `ClosePullRequest`. New outage prose can no
+   longer cause a blind close — only a genuinely unrecognized *and*
+   structurally-ambiguous shape falls through to the (still prose-based)
+   fail-safe default of code.
 
 Related: [[claim-lost-drops-count-toward-hard-cap]] and
 [[hard-cap-rearm-in-memory-gate]] (same class: non-code failures consuming an
