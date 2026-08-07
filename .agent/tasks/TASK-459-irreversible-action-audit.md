@@ -1,6 +1,6 @@
 # TASK-459: Irreversible-action audit — destructive sites require typed verdicts with positive evidence
 
-**Status**: 🚧 Phase 1 dispatched 2026-08-07 → [#4796](https://github.com/qf-studio/pilot/issues/4796) (`no-decompose`); Phases 2–4 gated on it, Phase 5 needs a scope call
+**Status**: ✅ Phase 1 complete 2026-08-07 → [#4796](https://github.com/qf-studio/pilot/issues/4796) (`no-decompose`): inventory + `Verdict` contract landed, no behaviour changed. Phases 2–4 unblocked; Phase 5 still needs a scope call
 **Created**: 2026-08-07
 **Assignee**: Pilot (multi-leg; dispatch one leg at a time)
 
@@ -39,8 +39,8 @@ Point fixes already shipped (#4787 structural classification + `FailureClassUnkn
 
 ## Acceptance Criteria
 
-- [ ] A written inventory exists of every irreversible action site in the daemon, each classified by reversibility and by the evidence it currently consumes.
-- [ ] A typed `Verdict` contract exists: class + evidence + source + scope. Constructing one without evidence is impossible or explicitly marked `Unknown`.
+- [x] A written inventory exists of every irreversible action site in the daemon, each classified by reversibility and by the evidence it currently consumes.
+- [x] A typed `Verdict` contract exists: class + evidence + source + scope. Constructing one without evidence is impossible or explicitly marked `Unknown`.
 - [ ] `Unknown` (or evidence-free) verdicts cannot authorize a destructive action anywhere — enforced by the type system and/or a CI check, not by convention.
 - [ ] Every site that derives the same external fact twice (status vocabularies) reads from one shared table, with a parity test that fails on drift.
 - [ ] No subsystem infers failure from a missing side-effect when a recorded status exists.
@@ -57,10 +57,10 @@ Legs are sized per the #4780 lesson (one subsystem + its tests per `no-decompose
 **Goal**: Know every destructive site and define the contract before changing behaviour.
 
 **Tasks**:
-- [ ] Enumerate irreversible/costly sites: `ClosePullRequest`, branch deletion, `CreateFailureIssue`, retry/repick counter increments, terminal label writes, merge, cancel/supersede writes, `escalateAndHold` (semi — non-destructive but operator-costly).
-- [ ] For each: current evidence consumed, reversibility tier, blast radius, and whether its signal is authoritative or decorative under the active `required_checks` config.
-- [ ] Define the `Verdict` type and its construction rules; decide its home package.
-- [ ] Write the inventory to `.agent/system/irreversible-actions.md` as the reference table.
+- [x] Enumerate irreversible/costly sites: `ClosePullRequest`, branch deletion, `CreateFailureIssue`, retry/repick counter increments, terminal label writes, merge, cancel/supersede writes, `escalateAndHold` (semi — non-destructive but operator-costly).
+- [x] For each: current evidence consumed, reversibility tier, blast radius, and whether its signal is authoritative or decorative under the active `required_checks` config.
+- [x] Define the `Verdict` type and its construction rules; decide its home package. (Extends `internal/autopilot/failure_class.go`, per the biased default — no non-autopilot consumer forced a new package.)
+- [x] Write the inventory to `.agent/system/irreversible-actions.md` as the reference table.
 
 **Files**: `.agent/system/irreversible-actions.md` (new) · `internal/autopilot/failure_class.go` (contract likely extends this) · new package if the contract outgrows it.
 
@@ -137,7 +137,7 @@ make gate
 
 ## Done
 
-- [ ] `.agent/system/irreversible-actions.md` lists every destructive site with its evidence contract.
+- [x] `.agent/system/irreversible-actions.md` lists every destructive site with its evidence contract.
 - [ ] Destructive call sites take a `Verdict`; evidence-free verdicts cannot reach them (compile-time or gate-enforced).
 - [ ] Parity test fails when status mapping and evidence gathering disagree.
 - [ ] `check-destructive-calls.sh` green in the pre-push gate and CI.
@@ -158,5 +158,7 @@ make gate
 ## Notes
 
 Dispatch order: Phase 1 first (its inventory is the input to everything else), then Phase 2, then 3, then 4. Phase 5 needs a scope call before it is written up.
+
+**Phase 1 complete** (2026-08-07, #4796): `.agent/system/irreversible-actions.md` inventories 9 site families (`ClosePullRequest`, branch delete, `CreateFailureIssue`, retry/repick counters, terminal labels, merge, ledger cancel/supersede writes, `escalateAndHold`, plus cross-cutting findings) with file:line, reversibility tier, blast radius, evidence shape, and `required_checks` authoritative/decorative status per site. `Verdict` (`internal/autopilot/failure_class.go`) extends the existing `FailureClass` vocabulary rather than a new package — unexported fields, `NewVerdict`/`NewUnknownVerdict` constructors, evidence-free construction always downgrades to `FailureClassUnknown` regardless of requested class. Table-driven tests cover the downgrade rule for every destructive class, evidence retention, and scope/source round-tripping. No call site migrated; no behaviour changed — `make build`/`make test`/`make lint` all green. Two inventory items flagged as not fully traced in this pass for Phase 2/3 pickup: `SetApprovalDecision`'s CAS arbitration mechanics, and the `handleReleasing` release-pipeline retry/escalation ladder (controller.go ~4196-4615).
 
 **Last Updated**: 2026-08-07

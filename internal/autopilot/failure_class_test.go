@@ -410,3 +410,159 @@ func TestClassifyCheckFailureFull_StructuralSignals(t *testing.T) {
 		})
 	}
 }
+
+// TestNewVerdict_ConstructionRules is the TASK-459 Phase 1 contract test:
+// an evidence-free construction path must always yield FailureClassUnknown,
+// regardless of the class requested, and every destructive class survives
+// construction only when non-empty evidence is supplied. Scope and source
+// must round-trip unchanged in both cases.
+func TestNewVerdict_ConstructionRules(t *testing.T) {
+	tests := []struct {
+		name         string
+		class        FailureClass
+		evidence     string
+		source       string
+		scope        string
+		wantClass    FailureClass
+		wantEvidence string
+	}{
+		{
+			name:         "empty evidence downgrades FailureClassCode to Unknown",
+			class:        FailureClassCode,
+			evidence:     "",
+			source:       "classifyPRFailure",
+			scope:        "qf-studio/pilot",
+			wantClass:    FailureClassUnknown,
+			wantEvidence: "",
+		},
+		{
+			name:         "empty evidence downgrades FailureClassInfra to Unknown",
+			class:        FailureClassInfra,
+			evidence:     "",
+			source:       "classifyPRFailure",
+			scope:        "qf-studio/pilot",
+			wantClass:    FailureClassUnknown,
+			wantEvidence: "",
+		},
+		{
+			name:         "empty evidence downgrades FailureClassInfraBilling to Unknown",
+			class:        FailureClassInfraBilling,
+			evidence:     "",
+			source:       "classifyPRFailure",
+			scope:        "qf-studio/pilot",
+			wantClass:    FailureClassUnknown,
+			wantEvidence: "",
+		},
+		{
+			name:         "FailureClassCode with evidence is retained",
+			class:        FailureClassCode,
+			evidence:     "internal/autopilot/controller.go:1234:6: undefined: foo",
+			source:       "classifyCheckFailureFull",
+			scope:        "qf-studio/pilot",
+			wantClass:    FailureClassCode,
+			wantEvidence: "internal/autopilot/controller.go:1234:6: undefined: foo",
+		},
+		{
+			name:         "FailureClassInfra with evidence is retained",
+			class:        FailureClassInfra,
+			evidence:     "Failed to download action: 429 (Too Many Requests)",
+			source:       "classifyCheckFailureFull",
+			scope:        "qf-studio/pilot",
+			wantClass:    FailureClassInfra,
+			wantEvidence: "Failed to download action: 429 (Too Many Requests)",
+		},
+		{
+			name:         "FailureClassInfraBilling with evidence is retained",
+			class:        FailureClassInfraBilling,
+			evidence:     "spending limit reached",
+			source:       "isJobsNeverStartedInfra",
+			scope:        "qf-studio/pilot-canary-sandbox",
+			wantClass:    FailureClassInfraBilling,
+			wantEvidence: "spending limit reached",
+		},
+		{
+			name:         "explicit FailureClassUnknown with evidence keeps Unknown class but retains evidence text",
+			class:        FailureClassUnknown,
+			evidence:     "diagnostic note",
+			source:       "classifyPRFailure",
+			scope:        "qf-studio/pilot",
+			wantClass:    FailureClassUnknown,
+			wantEvidence: "diagnostic note",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := NewVerdict(tt.class, tt.evidence, tt.source, tt.scope)
+			if v.Class() != tt.wantClass {
+				t.Errorf("NewVerdict().Class() = %q, want %q", v.Class(), tt.wantClass)
+			}
+			if v.Evidence() != tt.wantEvidence {
+				t.Errorf("NewVerdict().Evidence() = %q, want %q", v.Evidence(), tt.wantEvidence)
+			}
+			if v.Source() != tt.source {
+				t.Errorf("NewVerdict().Source() = %q, want %q", v.Source(), tt.source)
+			}
+			if v.Scope() != tt.scope {
+				t.Errorf("NewVerdict().Scope() = %q, want %q", v.Scope(), tt.scope)
+			}
+		})
+	}
+}
+
+// TestNewUnknownVerdict always yields FailureClassUnknown with empty
+// evidence, regardless of caller input — there is no evidence to pass, by
+// construction, since this constructor exists precisely for the
+// zero-gathered-evidence case (GH-4779). Scope and source still round-trip.
+func TestNewUnknownVerdict(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		scope  string
+	}{
+		{name: "typical scope", source: "classifyPRFailure", scope: "qf-studio/pilot"},
+		{name: "different project scope", source: "checkRequiredChecks", scope: "qf-studio/pilot-canary-sandbox"},
+		{name: "empty source and scope still yields Unknown", source: "", scope: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := NewUnknownVerdict(tt.source, tt.scope)
+			if v.Class() != FailureClassUnknown {
+				t.Errorf("NewUnknownVerdict().Class() = %q, want %q", v.Class(), FailureClassUnknown)
+			}
+			if v.Evidence() != "" {
+				t.Errorf("NewUnknownVerdict().Evidence() = %q, want empty", v.Evidence())
+			}
+			if v.Source() != tt.source {
+				t.Errorf("NewUnknownVerdict().Source() = %q, want %q", v.Source(), tt.source)
+			}
+			if v.Scope() != tt.scope {
+				t.Errorf("NewUnknownVerdict().Scope() = %q, want %q", v.Scope(), tt.scope)
+			}
+		})
+	}
+}
+
+// TestVerdict_EvidenceFreeNeverAuthorizesDestructiveClass is the explicit
+// regression test for the TASK-459 invariant stated on the Verdict doc
+// comment: sweeping every non-Unknown FailureClass value through NewVerdict
+// with empty evidence must always yield Unknown, never the requested
+// destructive class. This is the single test that would fail first if a
+// future edit accidentally let a destructive class slip through without
+// evidence.
+func TestVerdict_EvidenceFreeNeverAuthorizesDestructiveClass(t *testing.T) {
+	destructiveClasses := []FailureClass{FailureClassCode, FailureClassInfra, FailureClassInfraBilling}
+	for _, class := range destructiveClasses {
+		t.Run(string(class), func(t *testing.T) {
+			v := NewVerdict(class, "", "test-source", "test-scope")
+			if v.Class() != FailureClassUnknown {
+				t.Errorf("NewVerdict(%q, \"\", ...).Class() = %q, want %q (evidence-free must never authorize a destructive class)",
+					class, v.Class(), FailureClassUnknown)
+			}
+			if v.Evidence() != "" {
+				t.Errorf("NewVerdict(%q, \"\", ...).Evidence() = %q, want empty", class, v.Evidence())
+			}
+		})
+	}
+}

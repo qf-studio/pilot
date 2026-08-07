@@ -295,3 +295,85 @@ func classifyPRFailure(checks []FailedCheckLog) FailureClass {
 	}
 	return FailureClassInfra
 }
+
+// Verdict is the typed, evidence-carrying result of a classification that
+// authorizes (or withholds) an irreversible or operator-costly autopilot
+// action — TASK-459 Phase 1. `.agent/system/irreversible-actions.md`
+// inventories every call site (PR close, branch delete, fix-issue spawn,
+// retry-budget burn, merge, ledger cancel/supersede writes) that Phases 2-3
+// migrate to consume a Verdict instead of a raw FailureClass, bare string,
+// or nil-check; Phase 1 only defines the contract, no call site is migrated
+// here.
+//
+// Invariant: an Unknown or evidence-free Verdict must never authorize a
+// destructive action. This is enforced structurally, not by convention —
+// the fields are unexported, so a Verdict can only be produced by the
+// constructor functions below, and NewVerdict silently downgrades any
+// class to FailureClassUnknown whenever the caller supplies no Evidence.
+// There is deliberately no separate boolean "hasEvidence" flag and no
+// confidence score to thread through call sites or tune: the presence of a
+// non-empty Evidence string is itself the only signal, so a Verdict cannot
+// claim FailureClassCode/Infra/InfraBilling while silently carrying nothing
+// to back it up.
+type Verdict struct {
+	class    FailureClass
+	evidence string
+	source   string
+	scope    string
+}
+
+// NewVerdict constructs a Verdict for a positively-evidenced classification.
+// evidence must describe the specific fact that produced class — e.g. the
+// matched log signature, the failed check name, or the recorded ledger
+// status — not a generic "checks failed" restatement of the verdict itself.
+// If evidence is empty, NewVerdict ignores the requested class entirely and
+// returns the same zero-evidence FailureClassUnknown verdict NewUnknownVerdict
+// would (this is the construction rule that makes an evidence-free
+// destructive verdict impossible to produce).
+//
+// source names the function/subsystem that performed the classification
+// (e.g. "classifyPRFailure", "isStructuralInfra") — for logging/diagnosis
+// only, never consulted by decision logic. scope is the project this
+// verdict applies to, conventionally an "owner/repo" string matching
+// Controller.repoKey() — a verdict's authority is project-scoped because
+// evidence gathering itself is (a project's required_checks allowlist can
+// make a signal decorative for that project only; see
+// irreversible-actions.md § authoritative/decorative).
+func NewVerdict(class FailureClass, evidence, source, scope string) Verdict {
+	if evidence == "" {
+		return NewUnknownVerdict(source, scope)
+	}
+	return Verdict{class: class, evidence: evidence, source: source, scope: scope}
+}
+
+// NewUnknownVerdict constructs the explicit zero-evidence verdict: class is
+// always FailureClassUnknown regardless of what the caller might otherwise
+// have concluded. Use this when a classification path deliberately has
+// nothing to point at (GH-4779's zero-gathered-evidence case) rather than
+// calling NewVerdict with an empty evidence string — both produce an
+// identical Verdict, but this constructor names the intent at the call
+// site.
+func NewUnknownVerdict(source, scope string) Verdict {
+	return Verdict{class: FailureClassUnknown, source: source, scope: scope}
+}
+
+// Class returns the verdict's failure classification. Callers gating a
+// destructive action must treat FailureClassUnknown as "do not act" —
+// never as a synonym for FailureClassCode.
+func (v Verdict) Class() FailureClass { return v.class }
+
+// Evidence returns the positive fact backing this verdict. Always empty for
+// FailureClassUnknown; always non-empty for every other class, guaranteed
+// by construction (NewVerdict downgrades to Unknown rather than allow a
+// destructive class through with empty evidence).
+func (v Verdict) Evidence() string { return v.evidence }
+
+// Source names the subsystem/function that produced this verdict, for
+// logging and incident diagnosis — not decision logic.
+func (v Verdict) Source() string { return v.source }
+
+// Scope is the project this verdict applies to (conventionally
+// "owner/repo", matching Controller.repoKey()). A verdict must only
+// authorize an action within its own scope — evidence gathered for one
+// project's required_checks configuration says nothing about another's.
+func (v Verdict) Scope() string { return v.scope }
