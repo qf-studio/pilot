@@ -153,6 +153,12 @@ type Config struct {
 	// FailureResetTimeout is how long after the last failure before the per-PR counter resets.
 	// Default: 30 minutes.
 	FailureResetTimeout time.Duration `yaml:"failure_reset_timeout"`
+	// PlatformBreaker configures the GH-4791 cross-PR platform-outage
+	// correlation breaker (TASK-458 part 1) — a signal the per-PR circuit
+	// breaker above cannot see by construction, since it is deliberately
+	// scoped to one PR at a time. nil (the DefaultConfig default) disables
+	// it entirely.
+	PlatformBreaker *PlatformBreakerConfig `yaml:"platform_breaker"`
 	// MaxMergesPerHour limits merge rate to prevent runaway automation.
 	MaxMergesPerHour int `yaml:"max_merges_per_hour"`
 	// MaxMergeAttempts is the hard cap on non-conflict merge retries before the PR
@@ -248,6 +254,48 @@ type TestEvidenceConfig struct {
 	// MaxSkipRatio is the skipped/(run+skipped) fraction above which the gate
 	// escalates even though some tests ran. Zero/unset falls back to 0.5.
 	MaxSkipRatio float64 `yaml:"max_skip_ratio"`
+}
+
+// PlatformBreakerConfig configures GH-4791's cross-PR platform-outage
+// correlation breaker (TASK-458 part 1): while Enabled, a burst of
+// infra-or-unknown-class CI failures (see FailureClass.IsInfra and
+// FailureClassUnknown) across MinCorrelatedPRs distinct PRs within
+// CorrelationWindow opens the breaker, suppressing every irreversible
+// action in the CI-failure path (ClosePullRequest, fix-issue creation,
+// escalateAndHold) until QuietPeriod elapses with no further infra/unknown-
+// class failure. The affected PRs simply stay parked at their current stage
+// and are re-examined on a later tick — polling, board sync, gauges, and
+// running executions all continue untouched.
+//
+// nil (the DefaultConfig default) disables the breaker entirely:
+// Controller.platformBreaker stays nil and PlatformBreaker.Observe's nil
+// receiver makes every call a no-op, byte-identical to pre-GH-4791
+// behavior. Static at boot, like every other autopilot.Config toggle
+// (Config.Reload has zero callers) — a restart to change thresholds is
+// acceptable and consistent.
+//
+// This is a separate, additive signal from the per-PR circuit breaker
+// (MaxFailures/FailureResetTimeout above), which is deliberately scoped to
+// one PR at a time and cannot see the correlation this exists to catch —
+// see PlatformBreaker's doc comment in platform_breaker.go for the full
+// incident writeup.
+type PlatformBreakerConfig struct {
+	// Enabled controls whether the breaker is active. Default off.
+	Enabled bool `yaml:"enabled"`
+	// MinCorrelatedPRs is the number of distinct PRs that must observe an
+	// infra-or-unknown-class CI failure within CorrelationWindow before the
+	// breaker opens. Zero/unset falls back to
+	// DefaultPlatformBreakerMinCorrelatedPRs (3).
+	MinCorrelatedPRs int `yaml:"min_correlated_prs"`
+	// CorrelationWindow is how far back distinct-PR observations count
+	// toward MinCorrelatedPRs. Zero/unset falls back to
+	// DefaultPlatformBreakerCorrelationWindow (15m).
+	CorrelationWindow time.Duration `yaml:"correlation_window"`
+	// QuietPeriod is how long the breaker must observe no new
+	// infra-or-unknown-class CI failure before it closes again — simple
+	// time-based recovery only (part 2 adds a corroborating external status
+	// probe). Zero/unset falls back to DefaultPlatformBreakerQuietPeriod (20m).
+	QuietPeriod time.Duration `yaml:"quiet_period"`
 }
 
 // ReviewFeedbackConfig holds configuration for handling PR review change requests.

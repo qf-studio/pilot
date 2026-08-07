@@ -389,6 +389,22 @@ func WithRateBudget(b *ghbudget.Tracker) ControllerOption {
 	}
 }
 
+// WithPlatformBreaker wires the shared, process-wide platform-outage
+// correlation breaker (GH-4791, TASK-458 part 1). All controllers in a
+// multi-repo daemon share ONE breaker — an outage correlated across
+// unrelated PRs is not scoped to a single repo, so callers should construct
+// a single *PlatformBreaker in main.go (only when
+// autopilot.Config.PlatformBreaker.Enabled) and pass it to every
+// NewController call, mirroring WithRateBudget. Nil (the default) disables
+// the breaker entirely: handleCIFailed's suppression check is a no-op via
+// PlatformBreaker.Observe's nil-safe receiver, matching pre-GH-4791
+// behavior byte-for-byte.
+func WithPlatformBreaker(b *PlatformBreaker) ControllerOption {
+	return func(c *Controller) {
+		c.platformBreaker = b
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -684,6 +700,13 @@ type Controller struct {
 	// log would spam) once per skipped call instead of once per episode.
 	// Cleared the moment a gated call observes the floor has cleared.
 	budgetFloorSkipped bool
+
+	// platformBreaker is the shared, process-wide cross-PR platform-outage
+	// correlation breaker wired via WithPlatformBreaker (GH-4791). Nil =
+	// disabled (handleCIFailed's suppression check is a no-op, matching
+	// pre-GH-4791 behavior); PlatformBreaker.Observe is nil-safe so no
+	// separate nil check is needed at call sites.
+	platformBreaker *PlatformBreaker
 }
 
 // NewController creates an autopilot controller with all required components.
@@ -1316,6 +1339,48 @@ func (c *Controller) resetBillingRefusalAlert() {
 	c.mu.Lock()
 	c.alertedBillingRefusal = false
 	c.mu.Unlock()
+}
+
+// alertPlatformBreakerTransition fires the GH-4791 platform-outage-breaker
+// open/close alerts. Unlike alertBillingRefusalOnce and the other
+// alert-once helpers above, no separate per-controller dedup guard is
+// needed here: r comes from PlatformBreaker.Observe, whose own mutex
+// guarantees at most one caller across every controller sharing the
+// (process-wide) breaker ever sees JustOpened/JustClosed true for a given
+// episode — so it is always safe for that one caller to alert
+// unconditionally. A no-op when r reports neither transition.
+func (c *Controller) alertPlatformBreakerTransition(r PlatformBreakerResult) {
+	if !r.JustOpened && !r.JustClosed {
+		return
+	}
+
+	eventType := alerts.EventType("platform_breaker_open")
+	msg := fmt.Sprintf(
+		"Platform-outage breaker OPENED: %d correlated infra/unknown-class CI failures across distinct PRs within the correlation window — suspected GitHub platform outage, not independent regressions. Destructive CI-failure actions (close PR, spawn fix issue, escalate-and-hold) are suppressed for every PR until the breaker closes. Correlated PRs: %s",
+		len(r.CorrelatedPRs), strings.Join(r.CorrelatedPRs, ", "),
+	)
+	if r.JustClosed {
+		eventType = alerts.EventType("platform_breaker_close")
+		msg = fmt.Sprintf(
+			"Platform-outage breaker CLOSED: quiet period elapsed with no new infra/unknown-class CI failure. Normal CI-failure handling has resumed. PRs held during the outage: %s",
+			strings.Join(r.CorrelatedPRs, ", "),
+		)
+	}
+
+	if c.alertsEngine == nil {
+		c.log.Error("platform breaker transition alert not delivered: SetAlertsEngine was never called",
+			"just_opened", r.JustOpened, "just_closed", r.JustClosed, "correlated_prs", r.CorrelatedPRs)
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      eventType,
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo": c.repoKey(),
+			"prs":  strings.Join(r.CorrelatedPRs, ","),
+		},
+	})
 }
 
 // approvalFailedCommentMarker is embedded in the PR comment so
@@ -2293,11 +2358,34 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	perCheckLogs := c.ciMonitor.GetFailedCheckLogsByCheck(ctx, prState.HeadSHA)
 	failureClass := classifyPRFailure(perCheckLogs)
 	c.logCIFailureClassification(prState, perCheckLogs, failureClass)
+
+	// GH-4791: record this observation for cross-PR platform-outage
+	// correlation before anything else — even PRs that end up auto-retried
+	// below (maybeRetryInfraFailure) or otherwise short-circuited still feed
+	// the correlation signal.
+	platformBreakerResult := c.platformBreaker.Observe(prState.PRNumber, c.repoKey(), failureClass)
+	c.metrics.SetPlatformBreakerOpen(platformBreakerResult.Open)
+	c.alertPlatformBreakerTransition(platformBreakerResult)
+
 	if failureClass == FailureClassInfraBilling {
 		c.alertBillingRefusalOnce(perCheckLogs)
 	}
 	infraNote, retried := c.maybeRetryInfraFailure(ctx, prState, perCheckLogs, failureClass)
 	if retried {
+		return nil
+	}
+
+	// GH-4791: while the platform-outage breaker is open, every irreversible
+	// action below (escalateAndHold, fix-issue creation, ClosePullRequest) is
+	// suppressed — a correlated burst of infra/unknown-class failures across
+	// distinct PRs means CI signal is not trustworthy right now, regardless of
+	// what this specific PR's own classification says. The PR stays parked at
+	// StageCIFailed and is re-examined on a later tick once the breaker closes
+	// (see PlatformBreaker.Observe's time-based close).
+	if platformBreakerResult.Open {
+		c.metrics.RecordPlatformBreakerTrip()
+		c.log.Warn("platform-outage breaker open — holding PR instead of taking destructive CI-failure action",
+			"pr", prState.PRNumber, "class", failureClass)
 		return nil
 	}
 
