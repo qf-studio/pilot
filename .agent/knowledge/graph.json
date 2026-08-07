@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-08-07T18:20:00+00:00",
+  "updated": "2026-08-08T06:30:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -4067,7 +4067,7 @@
       },
       "mem-161": {
         "type": "pitfall",
-        "summary": "core.bare=true in shared .git/config makes git status fatal in root AND all linked worktrees; go -buildvcs runs git status, so build/lint/test fail with 'error obtaining VCS status: exit status 128'. Check 'git config --show-origin --get-all core.bare' before debugging individual tools. Fix: git config core.bare false. Also: TestResolveMemoryDBPath (/var symlink) + newTestStartCmd orphan check are known pre-existing macOS gate noise \u2014 reproduce on clean main; CI is the arbiter.",
+        "summary": "core.bare=true in shared .git/config makes git status fatal in root AND all linked worktrees; go -buildvcs runs git status, so build/lint/test fail with 'error obtaining VCS status: exit status 128'. Check 'git config --show-origin --get-all core.bare' before debugging individual tools. Fix: git config core.bare false. Also: TestResolveMemoryDBPath (/var symlink) + newTestStartCmd orphan check are known pre-existing macOS gate noise \u2014 reproduce on clean main; CI is the arbiter. UPDATE 2026-08-08: the same poisoning event also wrote user.name='Test User'/user.email=test@example.com into .git/config \u2014 silent 10 days, 69 misattributed commits on main (2026-07-29\u219208-07). After any .git/config incident, audit the WHOLE file, not just the key that broke.",
         "path": "memories/pitfalls/core-bare-true-poisons-status-and-vcs-stamping.md",
         "confidence": 0.8,
         "concepts": [
@@ -7122,7 +7122,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-07T18:49:15.572032+00:00",
+  "last_updated": "2026-08-08T06:30:00+00:00",
   "stats": {
     "total_nodes": 378,
     "total_edges": 317,
