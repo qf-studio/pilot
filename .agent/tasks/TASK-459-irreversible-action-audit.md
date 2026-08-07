@@ -1,6 +1,6 @@
 # TASK-459: Irreversible-action audit — destructive sites require typed verdicts with positive evidence
 
-**Status**: 🚧 Planned (not yet dispatched)
+**Status**: 🚧 Phase 1 dispatched 2026-08-07 → [#4796](https://github.com/qf-studio/pilot/issues/4796) (`no-decompose`); Phases 2–4 gated on it, Phase 5 needs a scope call
 **Created**: 2026-08-07
 **Assignee**: Pilot (multi-leg; dispatch one leg at a time)
 
@@ -146,6 +146,7 @@ make gate
 
 ## Refs
 
+- Phase 1 issue: https://github.com/qf-studio/pilot/issues/4796 (dispatched 2026-08-07)
 - Incident: 2026-08-06 GitHub Actions outage (~9.5h) and 08-07 recovery — marker `2026-08-06_outage-pause-approval-wave-dispatched.md`
 - Instances already fixed/in flight: #4787 (structural classification + `Unknown`), #4790 (check-run dedupe), #4791/#4792 (breaker), #4794 (superseded ≠ failed)
 - Prior art: `.agent/tasks/archive/TASK-418-ci-infra-failure-classification.md`, `.agent/tasks/archive/TASK-421-repick-counter-counts-non-failures.md`, `.agent/tasks/archive/TASK-441-contract-hardening-tune-up.md` (grep-gate precedent)
