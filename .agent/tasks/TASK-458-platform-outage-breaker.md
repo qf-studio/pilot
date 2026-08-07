@@ -39,4 +39,6 @@ No change to the per-PR circuit breaker · no change to rate-limit cooldown or g
 - Sibling: TASK-457 (structural classification — provides this task's input signal)
 - H-track sibling class: H6 canary-failure misattribution (`.agent/system/saas-roadmap.md`)
 
-- **Dispatched**: https://github.com/qf-studio/pilot/issues/4780
+- **Dispatched**: https://github.com/qf-studio/pilot/issues/4780 — timed out twice at 1h; split into #4791 (part 1) + #4792 (part 2, gated on part 1 merging)
+- **Part 1**: #4791 → PR#4797 (2026-08-07, reviewed pre-merge). One confirmed defect → follow-up **#4798**: the two new metrics fields never reach `AggregateMetrics.Snapshot()` (GH-4738 recurrence — `/metrics` serves 0 in production). Suppression/alerts themselves correct.
+- **Part 2 note** (commented on #4792): breaker close is evaluated lazily inside `Observe` only — held-PR re-drive needs a periodic close evaluator (hang it off the status-probe ticker), not just `Observe` calls.
