@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -9425,6 +9426,12 @@ func TestController_ApprovalPersistMiss_RequestID(t *testing.T) {
 
 // TestController_ApprovalPersistMiss_Decision verifies that a sql.ErrNoRows from
 // SetApprovalDecision increments the decision miss counter via Controller.SetApprovalDecision.
+//
+// GH-4777: previously Controller.SetApprovalDecision swallowed this error and
+// returned nil — dead-code-ing the gateway's unlinked-request (still-200)
+// branch in production. It must now propagate sql.ErrNoRows so it survives
+// errors.Is() up through Manager.RecordDecision to the gateway handler, which
+// is the layer that actually decides to warn-and-resolve rather than fail.
 func TestController_ApprovalPersistMiss_Decision(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	c := NewController(DefaultConfig(), ghClient, approval.NewManager(nil), "owner", "repo")
@@ -9439,8 +9446,9 @@ func TestController_ApprovalPersistMiss_Decision(t *testing.T) {
 	c.mu.Unlock()
 
 	ctx := context.Background()
-	if err := c.SetApprovalDecision(ctx, "req-decision-miss", "approved", "bot"); err != nil {
-		t.Fatalf("SetApprovalDecision: %v", err)
+	err := c.SetApprovalDecision(ctx, "req-decision-miss", "approved", "bot")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("SetApprovalDecision: got %v, want sql.ErrNoRows", err)
 	}
 
 	snap := c.metrics.Snapshot()

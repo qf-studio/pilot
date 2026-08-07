@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -533,17 +534,32 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	// nothing is left waiting on pending.ResponseCh — the common case after a
 	// daemon restart, where Rehydrate reconstructs this entry with a fresh
 	// channel but no goroutine to read it (GH-3825).
+	//
+	// GH-4777: a tap can lose the race to a concurrent HTTP POST (or the
+	// other channel) — RecordDecision then returns memory.ErrApprovalAlreadyDecided.
+	// The tapper must see "already decided", not a success card claiming
+	// their tap won when it didn't (PR#4767 review).
+	raceLost := false
 	if h.recorder != nil {
 		if err := h.recorder.RecordDecision(ctx, requestID, decision, username); err != nil {
-			h.log.Warn("failed to record approval decision", slog.String("request_id", requestID), slog.Any("error", err))
+			if errors.Is(err, memory.ErrApprovalAlreadyDecided) {
+				raceLost = true
+				h.log.Info("approval decision race lost — another decider already recorded",
+					slog.String("request_id", requestID), slog.String("user", username))
+			} else {
+				h.log.Warn("failed to record approval decision", slog.String("request_id", requestID), slog.Any("error", err))
+			}
 		}
 	}
 
 	// Answer callback
 	var answerText string
-	if decision == DecisionApproved {
+	switch {
+	case raceLost:
+		answerText = "Already decided"
+	case decision == DecisionApproved:
 		answerText = "Approved!"
-	} else {
+	default:
 		answerText = "Rejected"
 	}
 	if err := h.client.AnswerCallback(ctx, callbackID, answerText); err != nil {
@@ -555,12 +571,15 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	// the edit fails (or there is no live message to edit), so a recorded
 	// decision is never left with zero user feedback (GH-4164).
 	text := h.formatResponseMessage(pending.Request, decision, username)
+	if raceLost {
+		text = h.formatAlreadyDecidedMessage(pending.Request)
+	}
 	h.deliverResponseCard(ctx, pending.ChatID, pending.MessageID, text)
 
 	// Track the approved decision's chat/message so a later merge (autopilot
 	// calling NotifyMerged) can post a follow-up in the same chat. Only
-	// approved decisions ever reach a merge.
-	if decision == DecisionApproved {
+	// approved decisions that actually won the race ever reach a merge.
+	if decision == DecisionApproved && !raceLost {
 		h.mu.Lock()
 		h.resolved[requestID] = &telegramResolved{
 			Request:   pending.Request,
@@ -748,6 +767,14 @@ func (h *TelegramHandler) formatRehydratedMessage(req *Request) string {
 // formatCancelledMessage formats the message when request is cancelled
 func (h *TelegramHandler) formatCancelledMessage(req *Request) string {
 	return fmt.Sprintf("⏹ CANCELLED\n\nTask: %s\n%s\n\nApproval request was cancelled.", req.TaskID, req.Title)
+}
+
+// formatAlreadyDecidedMessage formats the message shown to a tapper who lost
+// the decision race (GH-4777) — another decider (a concurrent HTTP POST, or
+// the same request answered through a different channel) already recorded
+// the outcome first, so this tap must not claim success.
+func (h *TelegramHandler) formatAlreadyDecidedMessage(req *Request) string {
+	return fmt.Sprintf("⚠️ ALREADY DECIDED\n\nTask: %s\n%s\n\nSomeone else already recorded a decision for this request.", req.TaskID, req.Title)
 }
 
 // formatExpiredMessage formats the message when a request expires unanswered.

@@ -2867,6 +2867,18 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 // PRState whose ApprovalRequestID matches and records the decision, then persists
 // via stateStore. Called by the approval.Manager's background goroutine when a
 // handler fires (e.g. Telegram button tap).
+//
+// GH-4777 (PR#4767 review): two callers can race for the same requestID — a
+// concurrent HTTP POST and a Telegram/Slack tap, or two concurrent POSTs.
+// memoryStore.SetApprovalDecision's atomic `AND approval_decision = ''` guard
+// is the arbiter: exactly one caller's write can ever return nil. The
+// actionable layer (pr.ApprovalDecision, what autopilot's ProcessPR loop
+// reads) is applied ONLY after that arbitration succeeds, so a race loser can
+// never flip PRState after the winner already advanced the stage — and the
+// loser's typed error (memory.ErrApprovalAlreadyDecided or sql.ErrNoRows) is
+// now returned instead of swallowed, so it survives errors.Is() all the way
+// up through Manager.RecordDecision to the gateway's 409 and the channel
+// handlers' race-loss branch.
 func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error {
 	if requestID == "" {
 		return nil
@@ -2889,31 +2901,63 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 			pr.mu.Unlock()
 			continue
 		}
+		if pr.ApprovalDecision != "" {
+			// In-memory fast path for a no-store controller (see below): the
+			// pr.mu hold serializes concurrent callers for this PR, so a
+			// decision already applied means an earlier caller already won.
+			pr.mu.Unlock()
+			return memory.ErrApprovalAlreadyDecided
+		}
+		prNumber := pr.PRNumber
+		issueNumber := pr.IssueNumber
+
+		if c.memoryStore == nil {
+			// No backing store to arbitrate a race (e.g. some test wiring) —
+			// the pr.mu hold across this branch is the only guard, sufficient
+			// since it's the same in-process PRState object.
+			pr.ApprovalDecision = decision
+			if c.stateStore != nil {
+				_ = c.stateStore.SavePRState(c.repoKey(), pr)
+			}
+			pr.mu.Unlock()
+			c.log.Info("approval decision applied to PR state (no memory store)",
+				"pr", prNumber, "request_id", requestID,
+				"decision", decision, "by", by)
+			return nil
+		}
+		pr.mu.Unlock()
+
+		// memoryStore persistence is keyed by requestID, not by the live PRState
+		// fields, so it is safe (and required, for the atomic guard) to run it
+		// outside prState.mu.
+		merr := c.memoryStore.SetApprovalDecision(ctx, requestID, decision, by)
+		if merr != nil {
+			taskIDStr := fmt.Sprintf("GH-%d", issueNumber)
+			switch {
+			case errors.Is(merr, memory.ErrApprovalAlreadyDecided):
+				c.log.Warn("approval decision race lost — another decider already recorded",
+					"pr", prNumber, "task_id", taskIDStr, "request_id", requestID,
+					"op", "SetApprovalDecision", "decision", decision)
+			case errors.Is(merr, sql.ErrNoRows):
+				c.log.Warn("failed to persist approval decision to executions (no matching row)",
+					"pr", prNumber, "task_id", taskIDStr, "request_id", requestID,
+					"op", "SetApprovalDecision", "decision", decision, "error", merr)
+				c.metrics.RecordApprovalPersistMiss("decision")
+			default:
+				c.log.Warn("failed to persist approval decision to executions",
+					"pr", prNumber, "task_id", taskIDStr, "request_id", requestID,
+					"op", "SetApprovalDecision", "decision", decision, "error", merr)
+			}
+			return merr
+		}
+
+		pr.mu.Lock()
 		pr.ApprovalDecision = decision
 		if c.stateStore != nil {
 			_ = c.stateStore.SavePRState(c.repoKey(), pr)
 		}
-		prNumber := pr.PRNumber
-		issueNumber := pr.IssueNumber
 		pr.mu.Unlock()
 
-		// memoryStore persistence is keyed by requestID, not by the live PRState
-		// fields, so it is safe (and preferable) to run it outside prState.mu.
-		if c.memoryStore != nil {
-			if merr := c.memoryStore.SetApprovalDecision(ctx, requestID, decision, by); merr != nil {
-				taskIDStr := fmt.Sprintf("GH-%d", issueNumber)
-				if errors.Is(merr, sql.ErrNoRows) {
-					c.log.Warn("failed to persist approval decision to executions (no matching row)",
-						"pr", prNumber, "task_id", taskIDStr, "request_id", requestID,
-						"op", "SetApprovalDecision", "decision", decision, "error", merr)
-					c.metrics.RecordApprovalPersistMiss("decision")
-				} else {
-					c.log.Warn("failed to persist approval decision to executions",
-						"pr", prNumber, "task_id", taskIDStr, "request_id", requestID,
-						"op", "SetApprovalDecision", "decision", decision, "error", merr)
-				}
-			}
-		}
 		c.log.Info("approval decision applied to PR state",
 			"pr", prNumber, "request_id", requestID,
 			"decision", decision, "by", by)
@@ -6852,6 +6896,11 @@ func NewMultiControllerStateWriter(controllers ...*Controller) *MultiControllerS
 }
 
 // SetApprovalDecision implements approval.PRStateWriter by trying each controller.
+// GH-4777: Controller.SetApprovalDecision now returns the typed store error
+// (memory.ErrApprovalAlreadyDecided, sql.ErrNoRows) instead of swallowing it,
+// so the first controller that actually owns requestID's PR — success or
+// error — stops the loop here; a controller that doesn't own it always
+// returns nil ("not found"), so trying the next one is still safe.
 func (w *MultiControllerStateWriter) SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error {
 	for _, c := range w.controllers {
 		if err := c.SetApprovalDecision(ctx, requestID, decision, by); err != nil {
