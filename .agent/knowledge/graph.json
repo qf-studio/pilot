@@ -1488,6 +1488,19 @@
           "deployment",
           "api"
         ]
+      },
+      "TASK-459": {
+        "path": ".agent/tasks/TASK-459-irreversible-action-audit.md",
+        "title": "Irreversible-action audit \u2014 destructive sites require typed verdicts with positive evidence",
+        "status": "in-progress",
+        "concepts": [
+          "deployment",
+          "api",
+          "testing",
+          "authentication",
+          "markers",
+          "context"
+        ]
       }
     },
     "memories": {
@@ -5947,6 +5960,11 @@
       "from": "TASK-458",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-459",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6170,7 +6188,8 @@
       "TASK-455",
       "TASK-456",
       "TASK-457",
-      "TASK-458"
+      "TASK-458",
+      "TASK-459"
     ],
     "authentication": [
       "TASK-386",
@@ -6226,7 +6245,8 @@
       "TASK-449",
       "TASK-450",
       "TASK-451",
-      "TASK-452"
+      "TASK-452",
+      "TASK-459"
     ],
     "testing": [
       "TASK-386",
@@ -6330,7 +6350,8 @@
       "TASK-455",
       "TASK-456",
       "TASK-457",
-      "TASK-458"
+      "TASK-458",
+      "TASK-459"
     ],
     "api": [
       "TASK-386",
@@ -6409,7 +6430,8 @@
       "TASK-455",
       "TASK-456",
       "TASK-457",
-      "TASK-458"
+      "TASK-458",
+      "TASK-459"
     ],
     "context": [
       "TASK-386",
@@ -6497,7 +6519,8 @@
       "TASK-455",
       "TASK-456",
       "TASK-457",
-      "TASK-458"
+      "TASK-458",
+      "TASK-459"
     ],
     "markers": [
       "TASK-387",
@@ -6515,7 +6538,8 @@
       "TASK-440",
       "TASK-449",
       "TASK-453",
-      "TASK-458"
+      "TASK-458",
+      "TASK-459"
     ],
     "database": [
       "TASK-387",
@@ -7046,10 +7070,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-06T18:45:30.746296+00:00",
+  "last_updated": "2026-08-07T17:17:56.156663+00:00",
   "stats": {
-    "total_nodes": 373,
-    "total_edges": 316,
+    "total_nodes": 374,
+    "total_edges": 317,
     "memory_count": 213
   }
 }
