@@ -11,7 +11,11 @@ gateway:
 # Authentication
 auth:
   type: "claude-code"  # "claude-code" (local) or "api-token" (remote)
-  # token: "sk-ant-..."  # Required if type is "api-token"
+  # token: "${PILOT_GATEWAY_TOKEN}"  # Required if type is "api-token"; ${ENV_VAR} is expanded on load.
+  # A non-empty api-token here enforces bearer auth (`Authorization: Bearer <token>`)
+  # on every /api/v1/* route (GH-4784) — required once the gateway binds beyond
+  # loopback (e.g. a reverse proxy). Leaving type "claude-code" or token empty
+  # keeps /api/v1 open, matching pre-GH-4784 behavior.
   # ANTHROPIC_API_KEY env var enables Claude API features (Haiku subtask parsing, etc.)
 
 # Conversational Bot (GH-3665+)
