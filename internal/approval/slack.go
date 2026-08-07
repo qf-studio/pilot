@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -411,16 +412,35 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 	// nothing is left waiting on pending.ResponseCh — the common case after a
 	// daemon restart, where Rehydrate reconstructs this entry with a fresh
 	// channel but no goroutine to read it (GH-4411, mirrors GH-3825).
+	//
+	// GH-4777: a click can lose the race to a concurrent HTTP POST (or the
+	// other channel) — RecordDecision then returns memory.ErrApprovalAlreadyDecided.
+	// The clicker must see "already decided", not a success card claiming
+	// their click won when it didn't (PR#4767 review).
+	raceLost := false
 	if h.recorder != nil {
 		if err := h.recorder.RecordDecision(ctx, requestID, decision, username); err != nil {
-			h.log.Warn("failed to record approval decision", slog.String("request_id", requestID), slog.Any("error", err))
+			if errors.Is(err, memory.ErrApprovalAlreadyDecided) {
+				raceLost = true
+				h.log.Info("approval decision race lost — another decider already recorded",
+					slog.String("request_id", requestID), slog.String("user", username))
+			} else {
+				h.log.Warn("failed to record approval decision", slog.String("request_id", requestID), slog.Any("error", err))
+			}
 		}
 	}
 
 	// Update message to show result
 	if pending.TS != "" {
-		blocks := h.buildResponseBlocks(pending.Request, decision, username)
-		text := h.formatResponseText(pending.Request, decision, username)
+		var blocks []interface{}
+		var text string
+		if raceLost {
+			blocks = h.buildAlreadyDecidedBlocks(pending.Request)
+			text = h.formatAlreadyDecidedText(pending.Request)
+		} else {
+			blocks = h.buildResponseBlocks(pending.Request, decision, username)
+			text = h.formatResponseText(pending.Request, decision, username)
+		}
 		if err := h.client.UpdateInteractiveMessage(ctx, pending.Channel, pending.TS, blocks, text); err != nil {
 			h.log.Warn("Failed to update response message", slog.Any("error", err))
 		}
@@ -591,6 +611,30 @@ func (h *SlackHandler) buildCancelledBlocks(req *Request) []interface{} {
 			},
 		},
 	}
+}
+
+// buildAlreadyDecidedBlocks creates Slack blocks for a click that lost the
+// decision race (GH-4777) — another decider (a concurrent HTTP POST, or the
+// same request answered through a different channel) already recorded the
+// outcome first.
+func (h *SlackHandler) buildAlreadyDecidedBlocks(req *Request) []interface{} {
+	text := fmt.Sprintf("⚠️ *ALREADY DECIDED*\n\n*Task:* `%s`\n*Title:* %s\n\n_Someone else already recorded a decision for this request._",
+		req.TaskID, req.Title)
+
+	return []interface{}{
+		SlackSectionBlock{
+			Type: "section",
+			Text: &SlackTextObject{
+				Type: "mrkdwn",
+				Text: text,
+			},
+		},
+	}
+}
+
+// formatAlreadyDecidedText creates fallback text for the already-decided race-loss message.
+func (h *SlackHandler) formatAlreadyDecidedText(req *Request) string {
+	return fmt.Sprintf("Task %s already decided by someone else", req.TaskID)
 }
 
 // buildExpiredBlocks creates Slack blocks for an expired request.

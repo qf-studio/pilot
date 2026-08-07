@@ -416,10 +416,18 @@ func (m *Manager) NotifyMerged(ctx context.Context, requestID, shortSHA string) 
 // It persists the decision via the state writer (if configured) and cancels
 // any background goroutine waiting on this request. Safe to call from
 // handler callbacks (e.g. Telegram button taps).
+//
+// GH-4777: waiter cleanup (the pending-map delete + CancelFn below) must run
+// even when the writer rejects the decision (e.g. memory.ErrApprovalAlreadyDecided
+// from a lost race) — the writer error is still returned to the caller, but a
+// race LOSER must not leave its channel button armed or its background
+// goroutine alive just because the write itself failed. Previously this
+// early-returned on writer error, before cleanup ever ran (PR#4767 review).
 func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision Decision, by string) error {
+	var writerErr error
 	if m.stateWriter != nil {
 		if err := m.stateWriter.SetApprovalDecision(ctx, requestID, string(decision), by); err != nil {
-			return fmt.Errorf("record decision: %w", err)
+			writerErr = fmt.Errorf("record decision: %w", err)
 		}
 	}
 
@@ -433,11 +441,19 @@ func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision
 	if exists {
 		// Cancel the background goroutine waiting on the handler response.
 		pr.CancelFn()
-		m.log.Info("approval decision recorded",
-			slog.String("request_id", requestID),
-			slog.String("decision", string(decision)),
-			slog.String("by", by))
+		if writerErr != nil {
+			m.log.Info("approval decision race lost — waiter cleaned up without applying decision",
+				slog.String("request_id", requestID),
+				slog.String("decision", string(decision)),
+				slog.String("by", by),
+				slog.Any("error", writerErr))
+		} else {
+			m.log.Info("approval decision recorded",
+				slog.String("request_id", requestID),
+				slog.String("decision", string(decision)),
+				slog.String("by", by))
+		}
 	}
 
-	return nil
+	return writerErr
 }

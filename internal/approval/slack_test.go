@@ -13,6 +13,18 @@ type mockSlackClient struct {
 	lastMessage *SlackInteractiveMessage
 	response    *SlackPostMessageResponse
 	updateError error
+
+	// updateCalls records every UpdateInteractiveMessage invocation so tests
+	// can assert on the text/blocks a race-loss vs. a real decision produces
+	// (GH-4777).
+	updateCalls []mockSlackUpdateCall
+}
+
+type mockSlackUpdateCall struct {
+	Channel string
+	TS      string
+	Blocks  []interface{}
+	Text    string
 }
 
 func (m *mockSlackClient) PostInteractiveMessage(ctx context.Context, msg *SlackInteractiveMessage) (*SlackPostMessageResponse, error) {
@@ -28,6 +40,7 @@ func (m *mockSlackClient) PostInteractiveMessage(ctx context.Context, msg *Slack
 }
 
 func (m *mockSlackClient) UpdateInteractiveMessage(ctx context.Context, channel, ts string, blocks []interface{}, text string) error {
+	m.updateCalls = append(m.updateCalls, mockSlackUpdateCall{Channel: channel, TS: ts, Blocks: blocks, Text: text})
 	return m.updateError
 }
 
@@ -644,6 +657,40 @@ func TestSlackHandler_PruneExpired_RemovesExpiredAndDeletesFromStore(t *testing.
 		}
 	case <-time.After(time.Second):
 		t.Error("timeout waiting for response channel to resolve")
+	}
+}
+
+// TestSlackHandler_HandleInteraction_RaceLoss_ShowsAlreadyDecided is the
+// GH-4777 regression test (PR#4767 review, item 4): a click that loses the
+// decision race — RecordDecision returns memory.ErrApprovalAlreadyDecided
+// because another decider (a concurrent HTTP POST, or the same request
+// answered via Telegram) already recorded the outcome first — must update
+// the message with an "already decided" card, never a success card claiming
+// this click's decision won.
+func TestSlackHandler_HandleInteraction_RaceLoss_ShowsAlreadyDecided(t *testing.T) {
+	client := &mockSlackClient{}
+	recorder := &mockDecisionRecorder{err: memory.ErrApprovalAlreadyDecided}
+	handler := NewSlackHandler(client, "#approvals").WithDecisionRecorder(recorder)
+
+	req := &Request{ID: "req-race-loss", TaskID: "T-Race", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-race-loss", "U1", "loser", "")
+	if !handled {
+		t.Fatal("expected interaction to still be handled on a lost race")
+	}
+
+	if len(client.updateCalls) != 1 {
+		t.Fatalf("expected 1 message update, got %d", len(client.updateCalls))
+	}
+	got := client.updateCalls[0]
+	if !containsString(got.Text, "already decided") {
+		t.Errorf("update text = %q, want it to mention already decided", got.Text)
+	}
+	if containsString(got.Text, "approved") {
+		t.Errorf("update text = %q, must not claim the race-losing decision was applied", got.Text)
 	}
 }
 

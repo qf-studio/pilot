@@ -1560,6 +1560,58 @@ func TestTelegramHandler_HandleCallback_RecorderErrorIsNonFatal(t *testing.T) {
 	}
 }
 
+// TestTelegramHandler_HandleCallback_RaceLoss_ShowsAlreadyDecided is the
+// GH-4777 regression test (PR#4767 review, item 4): a tap that loses the
+// decision race — RecordDecision returns memory.ErrApprovalAlreadyDecided
+// because another decider (a concurrent HTTP POST, or the same request
+// answered via Slack) already recorded the outcome first — must answer
+// "already decided" and edit the message accordingly, never a success card
+// claiming this tap's decision won.
+func TestTelegramHandler_HandleCallback_RaceLoss_ShowsAlreadyDecided(t *testing.T) {
+	client := &mockTelegramClient{}
+	recorder := &mockDecisionRecorder{err: memory.ErrApprovalAlreadyDecided}
+	handler := NewTelegramHandler(client, "chat123").WithDecisionRecorder(recorder)
+
+	req := &Request{ID: "req-race-loss", TaskID: "T-Race", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb-race", "approve:req-race-loss", "u1", "loser")
+	if !handled {
+		t.Fatal("expected callback to still be handled on a lost race")
+	}
+
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 {
+		t.Fatalf("expected 1 answered callback, got %d", len(cbs))
+	}
+	if cbs[0].Text != "Already decided" {
+		t.Errorf("answer text = %q, want %q", cbs[0].Text, "Already decided")
+	}
+
+	edited := client.getEditedMessages()
+	if len(edited) != 1 {
+		t.Fatalf("expected 1 edited message, got %d", len(edited))
+	}
+	if !containsString(edited[0].Text, "ALREADY DECIDED") {
+		t.Errorf("edited message = %q, want it to mention ALREADY DECIDED", edited[0].Text)
+	}
+	if containsString(edited[0].Text, "APPROVED") {
+		t.Errorf("edited message = %q, must not claim the race-losing decision was applied", edited[0].Text)
+	}
+
+	// A race loser must never register a merge-follow-up target, even though
+	// its own decision was "approved" — only the winner's decision reaches a
+	// merge.
+	handler.mu.RLock()
+	_, resolved := handler.resolved["req-race-loss"]
+	handler.mu.RUnlock()
+	if resolved {
+		t.Error("race-losing decision must not be tracked in resolved (no merge follow-up for a loser)")
+	}
+}
+
 // containsString is a helper to check if a string contains a substring
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

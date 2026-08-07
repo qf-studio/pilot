@@ -607,6 +607,64 @@ func TestManager_RecordDecision_NoWriter_NoError(t *testing.T) {
 	}
 }
 
+// TestManager_RecordDecision_CleansUpPendingOnWriterError is the GH-4777
+// regression test for the "waiter cleanup skipped on error" bug (PR#4767
+// review, item 3): RecordDecision used to early-return on a writer error
+// (e.g. memory.ErrApprovalAlreadyDecided from a lost race) before ever
+// reaching the pending-map delete + CancelFn — leaving a race loser's channel
+// button armed and its background timeout goroutine alive. Cleanup must run
+// exactly once regardless of whether the write succeeded.
+func TestManager_RecordDecision_CleansUpPendingOnWriterError(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 10 * time.Second
+
+	m := NewManager(config)
+	sentinel := errors.New("already decided sentinel")
+	writer := &mockPRStateWriter{err: sentinel}
+	m.WithStateWriter(writer)
+
+	handler := &mockHandler{name: "test"} // never responds
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:        "race-loser-1",
+		TaskID:    "TASK-07",
+		Stage:     StagePreExecution,
+		CreatedAt: time.Now(),
+	}
+	_, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond) // let the background goroutine start
+
+	pending := m.GetPendingRequests()
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending before RecordDecision, got %d", len(pending))
+	}
+
+	recErr := m.RecordDecision(context.Background(), req.ID, DecisionApproved, "loser")
+	if !errors.Is(recErr, sentinel) {
+		t.Fatalf("expected wrapped sentinel error, got %v", recErr)
+	}
+
+	// Cleanup must have happened despite the writer error.
+	pending = m.GetPendingRequests()
+	if len(pending) != 0 {
+		t.Errorf("expected 0 pending after RecordDecision (cleanup must run on error too), got %d", len(pending))
+	}
+
+	// Cleanup must be idempotent — a second call for the same requestID (e.g.
+	// a retried callback) must not panic or double-cancel.
+	recErr2 := m.RecordDecision(context.Background(), req.ID, DecisionApproved, "loser-retry")
+	if !errors.Is(recErr2, sentinel) {
+		t.Fatalf("expected wrapped sentinel error on retry, got %v", recErr2)
+	}
+}
+
 func TestManager_RecordDecision_CancelsPendingRequest(t *testing.T) {
 	config := DefaultConfig()
 	config.Enabled = true
