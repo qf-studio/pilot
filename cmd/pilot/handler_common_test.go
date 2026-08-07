@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	osexec "os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
 
 	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
 	"github.com/qf-studio/pilot/internal/adapters/github"
@@ -1006,4 +1009,303 @@ func TestHandleIssueGeneric_NilEnforcer(t *testing.T) {
 	}()
 
 	_, _ = handleIssueGeneric(context.Background(), deps, info, task)
+}
+
+// --- GH-4794: superseded/canceled executions must not be reported as
+// failures — the poller's post-execution classification must treat the
+// status vocabulary (executor.IsTerminalByDesignStatus) as the source of
+// truth rather than inferring failure from "no PR produced" ---
+
+// TestClassifyWaitedExecution_StatusVocabulary is the acceptance-criterion-1
+// regression test: classifyWaitedExecution (the step-6 classification
+// handleIssueGeneric applies to a terminal execution row) must distinguish
+// superseded/canceled (terminal-by-design, not a failure) from a genuine
+// "failed" status, and must leave "completed" behavior unchanged.
+func TestClassifyWaitedExecution_StatusVocabulary(t *testing.T) {
+	tests := []struct {
+		name             string
+		exec             *memory.Execution
+		wantErr          bool
+		wantTermByDesign bool
+		wantSuccess      bool
+	}{
+		{
+			name:             "superseded is terminal-by-design, not a failure",
+			exec:             &memory.Execution{TaskID: "GH-1", Status: "superseded"},
+			wantErr:          false,
+			wantTermByDesign: true,
+			wantSuccess:      false,
+		},
+		{
+			name:             "canceled is terminal-by-design, not a failure",
+			exec:             &memory.Execution{TaskID: "GH-1", Status: "canceled"},
+			wantErr:          false,
+			wantTermByDesign: true,
+			wantSuccess:      false,
+		},
+		{
+			name:             "failed is a genuine failure (regression guard)",
+			exec:             &memory.Execution{TaskID: "GH-1", Status: "failed", Error: "boom"},
+			wantErr:          true,
+			wantTermByDesign: false,
+		},
+		{
+			name:             "completed is unaffected",
+			exec:             &memory.Execution{TaskID: "GH-1", Status: "completed", PRUrl: "https://github.com/org/repo/pull/1"},
+			wantErr:          false,
+			wantTermByDesign: false,
+			wantSuccess:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err, terminalByDesign := classifyWaitedExecution(tt.exec.TaskID, tt.exec)
+
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("classifyWaitedExecution() err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if terminalByDesign != tt.wantTermByDesign {
+				t.Errorf("terminalByDesign = %v, want %v", terminalByDesign, tt.wantTermByDesign)
+			}
+			if tt.wantErr {
+				if result != nil {
+					t.Errorf("expected nil result for a genuine failure, got %+v", result)
+				}
+				return
+			}
+			if result == nil {
+				t.Fatal("expected non-nil result for a non-failed status")
+			}
+			if result.Success != tt.wantSuccess {
+				t.Errorf("result.Success = %v, want %v", result.Success, tt.wantSuccess)
+			}
+		})
+	}
+}
+
+// TestClassifyResultAlert_TerminalByDesign_SuppressesFailureAlert is the
+// acceptance-criterion-1/3 regression test for the alert side: a
+// terminal-by-design result (superseded/canceled) must produce no alert at
+// all — neither TaskFailed nor TaskCompleted — while a genuine failure
+// (terminalByDesign=false) still produces TaskFailed unchanged, and a hard
+// execErr always produces TaskFailed regardless of terminalByDesign.
+func TestClassifyResultAlert_TerminalByDesign_SuppressesFailureAlert(t *testing.T) {
+	t.Run("superseded result: no alert", func(t *testing.T) {
+		result := &executor.ExecutionResult{TaskID: "GH-1", Success: false}
+		ev := classifyResultAlert("GH-1", "t", "/proj", nil, result, true)
+		if ev != nil {
+			t.Errorf("expected no alert for a terminal-by-design (superseded) result, got %+v", ev)
+		}
+	})
+
+	t.Run("canceled result: no alert", func(t *testing.T) {
+		result := &executor.ExecutionResult{TaskID: "GH-1", Success: false}
+		ev := classifyResultAlert("GH-1", "t", "/proj", nil, result, true)
+		if ev != nil {
+			t.Errorf("expected no alert for a terminal-by-design (canceled) result, got %+v", ev)
+		}
+	})
+
+	t.Run("genuine failure result: TaskFailed alert unchanged", func(t *testing.T) {
+		result := &executor.ExecutionResult{TaskID: "GH-1", Success: false, Error: "boom"}
+		ev := classifyResultAlert("GH-1", "t", "/proj", nil, result, false)
+		if ev == nil {
+			t.Fatal("expected a TaskFailed alert for a genuine (non-terminal-by-design) failure")
+		}
+		if ev.Type != alerts.EventTypeTaskFailed {
+			t.Errorf("expected EventTypeTaskFailed, got %v", ev.Type)
+		}
+		if ev.Error != "boom" {
+			t.Errorf("expected alert error %q, got %q", "boom", ev.Error)
+		}
+	})
+
+	t.Run("hard execErr: TaskFailed alert fires regardless of terminalByDesign", func(t *testing.T) {
+		ev := classifyResultAlert("GH-1", "t", "/proj", errors.New("queue failure"), nil, true)
+		if ev == nil {
+			t.Fatal("expected a TaskFailed alert for a hard dispatch/wait error")
+		}
+		if ev.Type != alerts.EventTypeTaskFailed {
+			t.Errorf("expected EventTypeTaskFailed, got %v", ev.Type)
+		}
+	})
+
+	t.Run("completed result: TaskCompleted alert unchanged", func(t *testing.T) {
+		result := &executor.ExecutionResult{TaskID: "GH-1", Success: true, PRUrl: "https://github.com/org/repo/pull/1"}
+		ev := classifyResultAlert("GH-1", "t", "/proj", nil, result, false)
+		if ev == nil {
+			t.Fatal("expected a TaskCompleted alert for a genuine success")
+		}
+		if ev.Type != alerts.EventTypeTaskCompleted {
+			t.Errorf("expected EventTypeTaskCompleted, got %v", ev.Type)
+		}
+	})
+}
+
+// TestHandlerResult_IsTerminalByDesign mirrors TestHandlerResult_IsDispatchGated
+// (poller_github_test.go) for the new GH-4794 field/method pair.
+func TestHandlerResult_IsTerminalByDesign(t *testing.T) {
+	terminal := &HandlerResult{TerminalByDesign: true}
+	if !terminal.IsTerminalByDesign() {
+		t.Error("expected IsTerminalByDesign() = true when TerminalByDesign is set")
+	}
+
+	notTerminal := &HandlerResult{TerminalByDesign: false}
+	if notTerminal.IsTerminalByDesign() {
+		t.Error("expected IsTerminalByDesign() = false when TerminalByDesign is unset")
+	}
+
+	var nilHR *HandlerResult
+	if nilHR.IsTerminalByDesign() {
+		t.Error("expected IsTerminalByDesign() = false for a nil HandlerResult")
+	}
+}
+
+// TestSDKTranslation_TerminalByDesign_DoesNotMislabelAsFailed drives the
+// exact Success translation formulas handlers.go now uses for github/gitlab
+// (`hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign()`) and
+// azuredevops (`hr.Success || hr.IsTerminalByDesign()`) against a manufactured
+// terminal-by-design HandlerResult — mirroring
+// TestGithubSDKTranslation_LiveClaimStillRunning_DoesNotMislabelAsFailed's
+// approach of testing the translation formula directly since the real
+// handlers can't be driven end-to-end without live network/token access.
+// Success=false here would trip the vendored poller's "failed without PR,
+// unmarking for retry" branch on a closed/canceled issue (GH-4794's actual
+// incident).
+func TestSDKTranslation_TerminalByDesign_DoesNotMislabelAsFailed(t *testing.T) {
+	hr := &HandlerResult{Success: false, TerminalByDesign: true}
+
+	githubGitlabSuccess := hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign()
+	if !githubGitlabSuccess {
+		t.Error("expected Success=true for a terminal-by-design result via the github/gitlab translation formula")
+	}
+
+	azureDevOpsSuccess := hr.Success || hr.IsTerminalByDesign()
+	if !azureDevOpsSuccess {
+		t.Error("expected Success=true for a terminal-by-design result via the azuredevops translation formula")
+	}
+}
+
+// fakeClosedIssueChecker reports every issue as closed with the
+// pilot-superseded label — used to drive the REAL dispatcher pickup-time
+// revalidation guard (GH-4656, dispatcher.go) into its supersede branch
+// without a live GitHub call.
+type fakeClosedIssueChecker struct{}
+
+func (fakeClosedIssueChecker) GetIssueState(_ context.Context, _, _ string, _ int) (executor.IssueState, error) {
+	return executor.IssueState{Closed: true, Labels: []string{"pilot-superseded"}}, nil
+}
+
+// TestHandleIssueGeneric_SupersededExecution_EndToEnd is the
+// acceptance-criterion-3 end-to-end regression test for GH-4794: drives the
+// REAL dispatcher (its actual GH-4656 pickup-time revalidation guard, not a
+// stub) for an issue that's closed before pickup, through handleIssueGeneric,
+// with a real AlertsEngine wired up. Confirms the whole pipeline —
+// dispatcher -> classifyWaitedExecution -> classifyResultAlert ->
+// HandlerResult.TerminalByDesign — agrees end to end: no TaskFailed alert
+// fires, and the sdkcore.IssueResult.Success translation formula (verbatim
+// from handlers.go) reports success, so the vendored poller's "failed
+// without PR, unmarking for retry" branch never fires for this closed issue.
+func TestHandleIssueGeneric_SupersededExecution_EndToEnd(t *testing.T) {
+	if _, err := osexec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir, err := os.MkdirTemp("", "pilot-gh4794-superseded-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := osexec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@pilot.local")
+	runGit("config", "user.name", "Pilot Test")
+	runGit("remote", "add", "origin", "https://github.com/gh4794-org/gh4794-repo.git")
+	if err := os.WriteFile(dir+"/README.md", []byte("# t\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "initial")
+
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	runner := executor.NewRunner()
+	runner.RegisterIssueStateChecker("github:gh4794-org/gh4794-repo", fakeClosedIssueChecker{})
+
+	d := executor.NewDispatcher(store, runner, nil)
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(d.Stop)
+
+	config := &alerts.AlertConfig{
+		Enabled: true,
+		Channels: []alerts.ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []alerts.AlertRule{
+			{
+				Name:     "task_failed",
+				Type:     alerts.AlertTypeTaskFailed,
+				Enabled:  true,
+				Severity: alerts.SeverityWarning,
+				Channels: []string{"test-channel"},
+				Cooldown: 0,
+			},
+		},
+	}
+	testCh := &testAlertChannel{}
+	alertDispatcher := alerts.NewDispatcher(config)
+	alertDispatcher.RegisterChannel(testCh)
+	engine := alerts.NewEngine(config, alerts.WithDispatcher(alertDispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := engine.Start(ctx); err != nil {
+		t.Fatalf("engine.Start: %v", err)
+	}
+
+	taskID := "GH-84001"
+	deps := HandlerDeps{Dispatcher: d, Monitor: executor.NewMonitor(), ProjectPath: dir, AlertsEngine: engine}
+	info := IssueInfo{TaskID: taskID, Title: "superseded e2e", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "superseded e2e", Branch: "pilot/" + taskID, ProjectPath: dir, CreatePR: true}
+
+	hr, hErr := handleIssueGeneric(ctx, deps, info, task)
+	if hErr != nil {
+		t.Fatalf("expected nil error for a superseded execution, got: %v", hErr)
+	}
+	if !hr.IsTerminalByDesign() {
+		t.Error("expected hr.IsTerminalByDesign() = true for an issue closed before pickup")
+	}
+	if hr.Error != nil {
+		t.Errorf("expected nil hr.Error, got: %v", hr.Error)
+	}
+
+	// Give the async AlertsEngine.ProcessEvent a moment to settle before
+	// asserting nothing was dispatched.
+	time.Sleep(150 * time.Millisecond)
+	if got := testCh.count(); got != 0 {
+		t.Errorf("expected 0 alerts for a superseded execution (false operator alert, GH-4794), got %d", got)
+	}
+
+	// This is the exact formula handleGithubIssueEventSDK / handleGitlabIssueWithResult
+	// (cmd/pilot/handlers.go) use to build the sdkcore.IssueResult handed back to the poller.
+	issueResult := &sdkcore.IssueResult{
+		Success: hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign(),
+	}
+	if !issueResult.Success {
+		t.Error("expected translated Success=true for a superseded execution — false would trip " +
+			"the vendored poller's 'failed without PR, unmarking for retry' branch on a closed issue")
+	}
 }

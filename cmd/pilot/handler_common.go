@@ -21,6 +21,7 @@ import (
 	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // IssueInfo holds adapter-agnostic issue metadata passed to handleIssueGeneric.
@@ -45,6 +46,10 @@ type HandlerResult struct {
 	// Result carries the raw execution result for adapters that need rich metrics
 	// (e.g., GitHub uses it for the rich PR comment with token/cost/file stats).
 	Result *executor.ExecutionResult
+	// TerminalByDesign marks an execution that finished in a terminal-by-design
+	// status (superseded or canceled, see executor.IsTerminalByDesignStatus) —
+	// deliberately not carried out rather than genuinely failed (GH-4794).
+	TerminalByDesign bool
 }
 
 // IsDispatchGated reports whether this result's Error is (or wraps)
@@ -61,6 +66,17 @@ type HandlerResult struct {
 // that's actively being worked.
 func (hr *HandlerResult) IsDispatchGated() bool {
 	return hr != nil && errors.Is(hr.Error, executor.ErrDispatchGated)
+}
+
+// IsTerminalByDesign reports whether this execution finished in a
+// terminal-by-design status (superseded or canceled) rather than a genuine
+// completion or failure (GH-4794). Callers translating a HandlerResult into
+// a vendored-SDK sdkcore.IssueResult must consult this alongside
+// IsDispatchGated before forwarding Success=false with no PR/MR — and must
+// not emit a failure report/alert for it — since the work was deliberately
+// not carried out (issue closed, or operator-canceled), not botched.
+func (hr *HandlerResult) IsTerminalByDesign() bool {
+	return hr != nil && hr.TerminalByDesign
 }
 
 // HandlerDeps groups the shared infrastructure parameters every handler requires.
@@ -251,6 +267,11 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// side effects in steps 7-9, which intentionally treat this path as
 	// "nothing to wait for" rather than a failure.
 	var gatedDrop bool
+	// terminalByDesign marks an execution that finished superseded/canceled
+	// (GH-4794) — set below once WaitForExecution returns a terminal row —
+	// so steps 8/10 can suppress the false failure report/alert without
+	// touching the genuine-failure path.
+	var terminalByDesign bool
 
 	if deps.Dispatcher != nil {
 		execID, qErr := deps.Dispatcher.QueueTask(ctx, task)
@@ -330,18 +351,8 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			exec, waitErr := deps.Dispatcher.WaitForExecution(ctx, execID, time.Second)
 			if waitErr != nil {
 				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
-			} else if exec.Status == "failed" {
-				execErr = fmt.Errorf("execution failed: %s", execFailureMsg(exec.Error))
 			} else {
-				result = &executor.ExecutionResult{
-					TaskID:    task.ID,
-					Success:   exec.Status == "completed",
-					Output:    exec.Output,
-					Error:     exec.Error,
-					PRUrl:     exec.PRUrl,
-					CommitSHA: exec.CommitSHA,
-					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
-				}
+				result, execErr, terminalByDesign = classifyWaitedExecution(task.ID, exec)
 			}
 		}
 	} else {
@@ -363,40 +374,8 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 
 	// 8. Emit task completed/failed alert
 	if deps.AlertsEngine != nil {
-		if execErr != nil {
-			deps.AlertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: title,
-				Project:   projectPath,
-				Error:     execErr.Error(),
-				Timestamp: time.Now(),
-			})
-		} else if result != nil && result.Success {
-			metadata := map[string]string{}
-			if result.PRUrl != "" {
-				metadata["pr_url"] = result.PRUrl
-			}
-			if result.Duration > 0 {
-				metadata["duration"] = result.Duration.String()
-			}
-			deps.AlertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskCompleted,
-				TaskID:    taskID,
-				TaskTitle: title,
-				Project:   projectPath,
-				Metadata:  metadata,
-				Timestamp: time.Now(),
-			})
-		} else if result != nil {
-			deps.AlertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: title,
-				Project:   projectPath,
-				Error:     result.Error,
-				Timestamp: time.Now(),
-			})
+		if ev := classifyResultAlert(taskID, title, projectPath, execErr, result, terminalByDesign); ev != nil {
+			deps.AlertsEngine.ProcessEvent(*ev)
 		}
 	}
 
@@ -421,10 +400,11 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 		hrErr = executor.ErrDispatchGated
 	}
 	hr := &HandlerResult{
-		Success:    execErr == nil && result != nil && result.Success,
-		BranchName: task.Branch,
-		Error:      hrErr,
-		Result:     result,
+		Success:          execErr == nil && result != nil && result.Success,
+		BranchName:       task.Branch,
+		Error:            hrErr,
+		Result:           result,
+		TerminalByDesign: terminalByDesign,
 	}
 	if result != nil {
 		if result.PRUrl != "" {
@@ -501,4 +481,84 @@ func execFailureMsg(execError string) string {
 		return "executor reported failure without providing an error message"
 	}
 	return execError
+}
+
+// classifyWaitedExecution turns a terminal execution row (as returned by
+// Dispatcher.WaitForExecution) into the (result, err, terminalByDesign)
+// triple handleIssueGeneric needs. GH-4794: a superseded or canceled
+// execution is the success path for "this work is no longer wanted" — it
+// must be reported as neither a completion nor a genuine failure, so callers
+// can suppress the failure alert/report and the vendored-SDK "no PR,
+// unmarking for retry" branch without touching the real-failure path
+// (exec.Status == "failed" is untouched below).
+func classifyWaitedExecution(taskID string, exec *memory.Execution) (result *executor.ExecutionResult, execErr error, terminalByDesign bool) {
+	if exec.Status == "failed" {
+		return nil, fmt.Errorf("execution failed: %s", execFailureMsg(exec.Error)), false
+	}
+	result = &executor.ExecutionResult{
+		TaskID:    taskID,
+		Success:   exec.Status == "completed",
+		Output:    exec.Output,
+		Error:     exec.Error,
+		PRUrl:     exec.PRUrl,
+		CommitSHA: exec.CommitSHA,
+		Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
+	}
+	return result, nil, executor.IsTerminalByDesignStatus(exec.Status)
+}
+
+// classifyResultAlert decides which alerts.Event (if any) handleIssueGeneric's
+// step 8 should emit for a finished dispatch/execute attempt, given the
+// classification classifyWaitedExecution (or the direct-execute Runner path)
+// produced. Returns nil when no alert should fire.
+//
+// GH-4794: a terminal-by-design execution (superseded or canceled) is the
+// success path for "this work is no longer wanted" — it must not produce a
+// TaskFailed alert (it isn't a failure) or a TaskCompleted one (no PR/commit
+// exists), so the terminalByDesign case falls through to nil. A hard
+// execErr (queue/wait failure) always pages regardless of terminalByDesign,
+// since that's a pipeline failure, not a classified execution status.
+func classifyResultAlert(taskID, title, projectPath string, execErr error, result *executor.ExecutionResult, terminalByDesign bool) *alerts.Event {
+	now := time.Now()
+	switch {
+	case execErr != nil:
+		return &alerts.Event{
+			Type:      alerts.EventTypeTaskFailed,
+			TaskID:    taskID,
+			TaskTitle: title,
+			Project:   projectPath,
+			Error:     execErr.Error(),
+			Timestamp: now,
+		}
+	case result != nil && result.Success:
+		metadata := map[string]string{}
+		if result.PRUrl != "" {
+			metadata["pr_url"] = result.PRUrl
+		}
+		if result.Duration > 0 {
+			metadata["duration"] = result.Duration.String()
+		}
+		return &alerts.Event{
+			Type:      alerts.EventTypeTaskCompleted,
+			TaskID:    taskID,
+			TaskTitle: title,
+			Project:   projectPath,
+			Metadata:  metadata,
+			Timestamp: now,
+		}
+	case result != nil && !terminalByDesign:
+		// GH-4794: a superseded/canceled execution is the success path for
+		// "this work is no longer wanted", not a failure — don't page an
+		// operator for it.
+		return &alerts.Event{
+			Type:      alerts.EventTypeTaskFailed,
+			TaskID:    taskID,
+			TaskTitle: title,
+			Project:   projectPath,
+			Error:     result.Error,
+			Timestamp: now,
+		}
+	default:
+		return nil
+	}
 }

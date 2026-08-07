@@ -885,6 +885,149 @@ func TestCleaner_Cleanup_ClosedInProgressWithActiveExecutionSkipped(t *testing.T
 	}
 }
 
+// GH-4794: pilot-retry-ready label on externally-closed issues should be
+// cleaned up immediately (a superseded/canceled execution can leave this
+// label on an issue that closed out from under it), and the callback should
+// fire so callers can clear related poller/queue state.
+func TestCleaner_Cleanup_ClosedRetryReadyIssueCleaned(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	closedIssues := []*Issue{
+		{
+			Number:    4794,
+			Title:     "Externally closed issue with stray retry label",
+			Labels:    []Label{{Name: LabelRetryReady}},
+			State:     StateClosed,
+			UpdatedAt: time.Now(), // recent — threshold must be ignored for closed
+		},
+	}
+
+	var (
+		mu              sync.Mutex
+		removeLabelHit  bool
+		sawStateClosed  bool
+		commentOnClosed bool
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			state := r.URL.Query().Get("state")
+			if state == "closed" {
+				sawStateClosed = true
+				_ = json.NewEncoder(w).Encode(closedIssues)
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]*Issue{})
+			return
+		}
+
+		if r.Method == http.MethodDelete && r.URL.Path == "/repos/owner/repo/issues/4794/labels/"+LabelRetryReady {
+			removeLabelHit = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/4794/comments" {
+			commentOnClosed = true
+			_ = json.NewEncoder(w).Encode(&Comment{ID: 1})
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	var callbackIssue int
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:   true,
+		Interval:  30 * time.Minute,
+		Threshold: 1 * time.Hour,
+	}, WithOnRetryReadyCleaned(func(n int) { callbackIssue = n }))
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !sawStateClosed {
+		t.Error("expected ListIssues to be called with state=closed")
+	}
+	if !removeLabelHit {
+		t.Error("RemoveLabel should have been called for closed retry-ready issue")
+	}
+	if commentOnClosed {
+		t.Error("AddComment must NOT be called for closed-issue cleanup (silent)")
+	}
+	if callbackIssue != 4794 {
+		t.Errorf("OnRetryReadyCleaned callback issue = %d, want 4794", callbackIssue)
+	}
+}
+
+// GH-4794: active executions for closed issues must NOT have the
+// pilot-retry-ready label stripped while the task is still running in-memory
+// (mirrors the pilot-in-progress protection for GH-2354).
+func TestCleaner_Cleanup_ClosedRetryReadyWithActiveExecutionSkipped(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-4795",
+		TaskID:      "GH-4795",
+		ProjectPath: "/test/project",
+		Status:      "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	closedIssues := []*Issue{
+		{Number: 4795, Title: "Closed but still running", Labels: []Label{{Name: LabelRetryReady}}, State: StateClosed, UpdatedAt: time.Now()},
+	}
+
+	removeLabelHit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			if r.URL.Query().Get("state") == "closed" {
+				_ = json.NewEncoder(w).Encode(closedIssues)
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]*Issue{})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			removeLabelHit = true
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	callbackFired := false
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
+	}, WithOnRetryReadyCleaned(func(int) { callbackFired = true }))
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	if removeLabelHit {
+		t.Error("RemoveLabel must NOT be called for closed issue with active execution")
+	}
+	if callbackFired {
+		t.Error("OnRetryReadyCleaned must NOT fire for closed issue with active execution")
+	}
+}
+
 // TestCleaner_StartupRecover_StuckIssueUnlabeled verifies that an open issue
 // carrying pilot-in-progress with no live execution row gets its label stripped.
 func TestCleaner_StartupRecover_StuckIssueUnlabeled(t *testing.T) {

@@ -57,6 +57,29 @@ func isTerminalExecutionStatus(status string) bool {
 	return terminalExecutionStatuses[status]
 }
 
+// terminalByDesignExecutionStatuses is the subset of terminalExecutionStatuses
+// that represent an execution deliberately not carried out — the work was
+// correctly declined/abandoned, not botched — as opposed to a genuine
+// failure. GH-4794: a superseded execution (issue closed before/during
+// pickup, see the pickup-time and pre-PR revalidation guards below) or a
+// canceled one (operator-initiated via `pilot task cancel`) is the success
+// path for "this work is no longer wanted", not a failure. Post-execution
+// classification (cmd/pilot/handler_common.go's handleIssueGeneric and the
+// per-adapter translations in cmd/pilot/handlers.go) consults this so these
+// statuses never produce a failure report/alert or trigger a vendored-SDK
+// poller's "no PR, unmarking for retry" branch.
+var terminalByDesignExecutionStatuses = map[string]bool{
+	string(ExecStatusSuperseded): true,
+	string(ExecStatusCanceled):   true,
+}
+
+// IsTerminalByDesignStatus reports whether status is a terminal-by-design
+// non-failure (superseded or canceled) rather than a genuine completion or
+// failure.
+func IsTerminalByDesignStatus(status string) bool {
+	return terminalByDesignExecutionStatuses[status]
+}
+
 // DispatcherConfig configures the task dispatcher behavior.
 type DispatcherConfig struct {
 	// StaleTaskDuration is a backwards-compat alias for StaleRunningThreshold.

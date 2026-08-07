@@ -557,7 +557,7 @@ func handleGitlabIssueWithResult(ctx context.Context, cfg *config.Config, client
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success || hr.IsDispatchGated(), // GH-4587: an admission-gate decline is not a genuine failure
+		Success:    hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
@@ -606,7 +606,9 @@ func handleGitlabIssueWithResult(ctx context.Context, cfg *config.Config, client
 				)
 			}
 		}
-	} else if hr.Result != nil {
+	} else if hr.Result != nil && !hr.IsTerminalByDesign() {
+		// GH-4794: a superseded/canceled execution is the success path for
+		// "this work is no longer wanted" — don't post a failure note for it.
 		note := fmt.Sprintf("❌ Pilot execution failed\n\nError: %s\nDuration: %s", hr.Result.Error, hr.Result.Duration)
 		if _, err := client.AddIssueNote(ctx, issueIID, note); err != nil {
 			logging.WithComponent("gitlab").Warn("Failed to add failure note",
@@ -670,7 +672,7 @@ func handleAzureDevOpsIssueWithResult(ctx context.Context, cfg *config.Config, e
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success,
+		Success:    hr.Success || hr.IsTerminalByDesign(), // GH-4794: a superseded/canceled execution is not a genuine failure
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
@@ -868,7 +870,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success || hr.IsDispatchGated(), // GH-4587: an admission-gate decline is not a genuine failure
+		Success:    hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
