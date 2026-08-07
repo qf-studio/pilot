@@ -42,6 +42,26 @@ The selective option is nearly free once this track lands: a sensitive-path pred
 - [sdk#107](https://github.com/qf-studio/studio-sdk/issues/107) — SDK TokenFunc API. **App-cutover status corrected**: prereqs are NOT done — polling-mode SDK pollers (`poller_github.go:228,478`) + PR-review handler (`main.go:2328`) hold static boot tokens; under App auth they 401 ~1h after start. Cutover blockers now: sdk#107 → pilot wiring leg (author after sdk release) → operator App provisioning → `GH_TOKEN` box-env check (pilot#4753's precedence finding, merged).
 - Recurring lesson (2× this week — PR#4752 auth test, PR#4767 composed test): **tests asserting configurations production never wires**. Candidate memory/pattern entry + review-checklist item.
 
+## Outage recovery + hardening (2026-08-07)
+
+GitHub Actions incident resolved 02:04Z 08-07 (~9.5h). Recovery executed: daemon restarted
+10:43Z on v2.255.0, queue resumed, PR#4776 (gate fast path) merged 10:49Z, `pilot-needs-human`
+cleared from GH-4771, `make install-hooks` run on the laptop (fast path now live locally).
+
+Outage artifacts cleaned: fix-issues **#4766/#4769/#4775** closed (all auto-generated from
+`Set up job` infra failures — GH-4756 burned three PR generations: #4765→#4768→#4770, each
+closed on a false signal, each spawning a junk fix issue). GH-4756 re-dispatched fresh.
+
+**New defect found during recovery — [pilot#4781](https://github.com/qf-studio/pilot/issues/4781)**:
+CI aggregation counts **superseded check-runs**. Restoring PR#4770's branch produced a fresh
+passing run, but autopilot aggregated it together with the outage-era failed run for the same
+SHA (the "CI checks discovered" log line listed every check name twice), read failure, and
+re-closed the PR + deleted the branch within 90 seconds of the reopen. **Any re-run-based
+recovery is unreliable until this is fixed** — it is independent of the outage class and was
+the reason the resurrection attempt failed. Note PR#4776's rerun DID work, because
+`gh run rerun --failed` updates check-runs in the same workflow run rather than creating a
+second one.
+
 ## Backlog (filed nowhere yet — pull from here)
 
 - ~~Infra-CI failure classification~~ → **DISPATCHED 2026-08-06**: [pilot#4779](https://github.com/qf-studio/pilot/issues/4779) (TASK-457, structural classification + never-close-on-zero-evidence invariant) and [pilot#4780](https://github.com/qf-studio/pilot/issues/4780) (TASK-458, platform-outage breaker: cross-PR correlation → suppress destructive actions + pause admission → self-resume). Root cause found: TASK-418's infra classifier already existed but matches **four hardcoded log substrings** (`failure_class.go:71-74`) — the outage's prose matched none, so it fell through to the fail-safe `FailureClassCode` and ran the destructive path. Also found: `cancelled`/`timed_out` conclusions trigger `CIFailure` but are excluded from every evidence-gathering filter → zero evidence → defaults to code failure (outage amplifier).
