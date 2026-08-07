@@ -88,6 +88,7 @@ Legs are sized per the #4780 lesson (one subsystem + its tests per `no-decompose
 
 **Tasks**:
 - [ ] Shared table for "what counts as a failed check" consumed by both status mapping and evidence gathering; parity test fails on divergence (the #4790 fix generalized).
+- [ ] Second parity target (PR#4795 post-merge review, 2026-08-07): approval-channel vocabulary has **three** implementations — the unexported alias table in `internal/approval/channel.go`, `validApprovalSourceValues` in `internal/config/config.go`, and the `sourceRegistered` switch in `internal/health/health.go`. Export one table, consume it from all three, parity test. Fold in the one-line fix for explicit `approval_source: ""` project overlays: validation documents empty as "inherits env/global" but `NewController` copies the pointer verbatim → `PreferredChannel: ""` → `defaultChannelName` routes to telegram instead of the resolved source (add `!= ""` guard in the resolution block + test).
 - [ ] `scripts/check-destructive-calls.sh` + gate step: destructive APIs may only be called from gated helpers.
 - [ ] SOP `.agent/sops/quality/irreversible-actions.md`.
 
