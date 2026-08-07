@@ -116,10 +116,14 @@ func TestSlackHandler_SendApprovalRequest(t *testing.T) {
 // TestSlackHandler_SendApprovalRequest_RehydrateDestinationParity is the
 // GH-4772 regression test for bug (b): SendApprovalRequest must post to the
 // same destination that Rehydrate would resolve to for the same request
-// after a restart. Before the fix, SendApprovalRequest always used the
-// handler's configured default channel while Rehydrate honored
-// req.Approvers[0], so a per-request approver override took effect only on
-// rehydrate, silently retargeting the message after a daemon restart.
+// after a restart — whatever the current resolution policy is. Before
+// GH-4772, SendApprovalRequest always used the handler's configured default
+// channel while Rehydrate honored req.Approvers[0], so the two disagreed.
+//
+// GH-4808 changed the policy itself to channel-first (a configured channel
+// always wins over Approvers[0]), so with both a channel and an approver
+// override set, both send and rehydrate must land on the configured
+// channel — not the approver DM as under the old policy.
 func TestSlackHandler_SendApprovalRequest_RehydrateDestinationParity(t *testing.T) {
 	sendClient := &mockSlackClient{}
 	store := newMockPendingStore()
@@ -162,8 +166,189 @@ func TestSlackHandler_SendApprovalRequest_RehydrateDestinationParity(t *testing.
 	if sentChannel != pending.Channel {
 		t.Errorf("destination parity broken: SendApprovalRequest used %q, Rehydrate resolved %q", sentChannel, pending.Channel)
 	}
-	if pending.Channel != "#override-channel" {
-		t.Errorf("expected both to honor the approver override, got %q", pending.Channel)
+	if pending.Channel != "#default-approvals" {
+		t.Errorf("expected both to honor the channel-first policy (GH-4808), got %q", pending.Channel)
+	}
+}
+
+// TestSlackHandler_SendApprovalRequest_RehydrateDestinationParity_ApproverOnly
+// is the approver-only counterpart: with no configured channel, both
+// SendApprovalRequest and Rehydrate must agree on the DM fallback to
+// Approvers[0].
+func TestSlackHandler_SendApprovalRequest_RehydrateDestinationParity_ApproverOnly(t *testing.T) {
+	sendClient := &mockSlackClient{}
+	store := newMockPendingStore()
+	sendHandler := NewSlackHandler(sendClient, "").WithStore(store)
+
+	req := &Request{
+		ID:               "parity-2",
+		TaskID:           "TASK-02",
+		Stage:            StagePreMerge,
+		Title:            "Test PR",
+		Approvers:        []string{"U0DMUSER"},
+		PreferredChannel: "slack",
+		CreatedAt:        time.Now(),
+		ExpiresAt:        time.Now().Add(time.Hour),
+	}
+
+	if _, err := sendHandler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("SendApprovalRequest: unexpected error: %v", err)
+	}
+	sentChannel := sendClient.lastMessage.Channel
+
+	rehydrateClient := &mockSlackClient{}
+	rehydrateHandler := NewSlackHandler(rehydrateClient, "").WithStore(store)
+	if err := rehydrateHandler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate: unexpected error: %v", err)
+	}
+
+	rehydrateHandler.mu.RLock()
+	pending, ok := rehydrateHandler.pending["parity-2"]
+	rehydrateHandler.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected request to be rehydrated")
+	}
+
+	if sentChannel != pending.Channel {
+		t.Errorf("destination parity broken: SendApprovalRequest used %q, Rehydrate resolved %q", sentChannel, pending.Channel)
+	}
+	if pending.Channel != "U0DMUSER" {
+		t.Errorf("expected both to fall back to the approver DM when no channel is configured, got %q", pending.Channel)
+	}
+}
+
+// TestSlackHandler_ResolveChannel_DestinationTable is the GH-4808 acceptance
+// #1/#5 table test: channel-first destination policy across every
+// combination of configured channel and Approvers[0].
+func TestSlackHandler_ResolveChannel_DestinationTable(t *testing.T) {
+	tests := []struct {
+		name      string
+		channel   string
+		approvers []string
+		want      string
+	}{
+		{"channel and approver: channel wins", "#approvals", []string{"U123"}, "#approvals"},
+		{"approver only: DM", "", []string{"U123"}, "U123"},
+		{"channel only: channel", "#approvals", nil, "#approvals"},
+		{"neither: handler default (empty)", "", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewSlackHandler(&mockSlackClient{}, tt.channel)
+			req := &Request{ID: "dest-1", Approvers: tt.approvers}
+			if got := handler.resolveChannel(req); got != tt.want {
+				t.Errorf("resolveChannel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSlackHandler_SendApprovalRequest_MentionsApproverInChannel is GH-4808
+// acceptance #2: when Approvers[0] is set and the destination is a channel
+// (not a DM), the message text @-mentions the approver so it notifies
+// instead of scrolling by unseen.
+func TestSlackHandler_SendApprovalRequest_MentionsApproverInChannel(t *testing.T) {
+	client := &mockSlackClient{}
+	handler := NewSlackHandler(client, "#approvals")
+
+	req := &Request{
+		ID:        "mention-1",
+		TaskID:    "TASK-01",
+		Stage:     StagePreMerge,
+		Title:     "Test PR",
+		Approvers: []string{"U0APPROVER"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.lastMessage == nil {
+		t.Fatal("expected message to be sent")
+	}
+	if client.lastMessage.Channel != "#approvals" {
+		t.Fatalf("expected channel destination, got %q", client.lastMessage.Channel)
+	}
+	if !containsString(client.lastMessage.Text, "<@U0APPROVER>") {
+		t.Errorf("fallback text = %q, want it to mention <@U0APPROVER>", client.lastMessage.Text)
+	}
+	section, ok := client.lastMessage.Blocks[0].(SlackSectionBlock)
+	if !ok {
+		t.Fatalf("expected first block to be a SlackSectionBlock, got %T", client.lastMessage.Blocks[0])
+	}
+	if !containsString(section.Text.Text, "<@U0APPROVER>") {
+		t.Errorf("block text = %q, want it to mention <@U0APPROVER>", section.Text.Text)
+	}
+}
+
+// TestSlackHandler_SendApprovalRequest_NoMentionWhenDM verifies that a
+// request routed to a DM (no channel configured) does not also carry a
+// self-mention of the same approver it's already DM'ing.
+func TestSlackHandler_SendApprovalRequest_NoMentionWhenDM(t *testing.T) {
+	client := &mockSlackClient{}
+	handler := NewSlackHandler(client, "")
+
+	req := &Request{
+		ID:        "no-mention-1",
+		TaskID:    "TASK-01",
+		Stage:     StagePreMerge,
+		Title:     "Test PR",
+		Approvers: []string{"U0APPROVER"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.lastMessage.Channel != "U0APPROVER" {
+		t.Fatalf("expected DM destination, got %q", client.lastMessage.Channel)
+	}
+	if containsString(client.lastMessage.Text, "<@U0APPROVER>") {
+		t.Errorf("fallback text = %q, should not self-mention in a DM", client.lastMessage.Text)
+	}
+}
+
+// TestSlackHandler_PendingRow_UnaffectedByPolicyChange is GH-4808 acceptance
+// #3: a pending row created under the old DM-first policy (Channel stored on
+// the in-memory pending entry at post time) must keep updating in that same
+// DM after the channel-first policy change — UpdateInteractiveMessage uses
+// the per-row stored Channel, never resolveChannel(req) recomputed, so a
+// live message is never re-homed out from under itself.
+func TestSlackHandler_PendingRow_UnaffectedByPolicyChange(t *testing.T) {
+	client := &mockSlackClient{}
+	// Handler now has a configured channel (channel-first policy would pick
+	// this for a NEW request), but this pending row simulates one posted
+	// under the old policy/version, before the channel was configured (or
+	// while it favored the approver) — its stored Channel is the DM.
+	handler := NewSlackHandler(client, "#approvals")
+
+	req := &Request{
+		ID:        "legacy-dm-1",
+		TaskID:    "TASK-01",
+		Stage:     StagePreMerge,
+		Title:     "Legacy DM pending",
+		Approvers: []string{"U0LEGACYDM"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	handler.mu.Lock()
+	handler.pending[req.ID] = &slackPending{
+		Request:    req,
+		TS:         "1111.2222",
+		Channel:    "U0LEGACYDM", // the DM this message actually lives in
+		ResponseCh: make(chan *Response, 1),
+	}
+	handler.mu.Unlock()
+
+	if err := handler.CancelRequest(context.Background(), req.ID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(client.updateCalls) != 1 {
+		t.Fatalf("expected 1 message update, got %d", len(client.updateCalls))
+	}
+	if got := client.updateCalls[0].Channel; got != "U0LEGACYDM" {
+		t.Errorf("update went to %q, want the original stored DM %q (no re-homing)", got, "U0LEGACYDM")
 	}
 }
 

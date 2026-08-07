@@ -300,6 +300,82 @@ func TestManager_SubmitApprovalRequest_NonBlocking(t *testing.T) {
 	}
 }
 
+// TestManager_SubmitApprovalRequest_LogsResolvedDestination is the GH-4808
+// acceptance #4 regression test: the "async approval request submitted" log
+// line must carry the handler's resolved destination (not just the handler
+// name), so "where did the ask go" is answerable from daemon.log alone
+// without Slack-side message search (the PR#4806 incident this task fixes).
+func TestManager_SubmitApprovalRequest_LogsResolvedDestination(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+	logger, buf := newCapturingLogger()
+	m.log = logger
+
+	slackHandler := NewSlackHandler(&mockSlackClient{}, "#approvals")
+	m.RegisterHandler(slackHandler)
+
+	req := &Request{
+		ID:               "async-dest-1",
+		TaskID:           "TASK-01",
+		Stage:            StagePreExecution,
+		Title:            "Test task",
+		Approvers:        []string{"U0APPROVER"},
+		CreatedAt:        time.Now(),
+		PreferredChannel: "slack",
+	}
+
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logs := buf.String()
+	if !containsString(logs, "async approval request submitted") {
+		t.Fatalf("expected submit log line, got: %s", logs)
+	}
+	if !containsString(logs, "destination=#approvals") {
+		t.Errorf("expected log line to carry destination=#approvals, got: %s", logs)
+	}
+}
+
+// TestManager_SubmitApprovalRequest_LogsEmptyDestinationForNonDescribingHandler
+// verifies handlers that don't implement destinationDescriber (e.g. the
+// plain mockHandler used elsewhere in this file) still produce a valid log
+// line — the destination field is simply empty rather than the log line
+// failing or panicking.
+func TestManager_SubmitApprovalRequest_LogsEmptyDestinationForNonDescribingHandler(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+	logger, buf := newCapturingLogger()
+	m.log = logger
+
+	handler := &mockHandler{name: "test"}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:        "async-dest-2",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		CreatedAt: time.Now(),
+	}
+
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !containsString(buf.String(), "destination=\"\"") {
+		t.Errorf("expected empty destination field for a non-describing handler, got: %s", buf.String())
+	}
+}
+
 // TestManager_SubmitApprovalRequest_PreferredChannelRouting verifies that a
 // request with PreferredChannel set is routed to that handler even when
 // multiple handlers are registered — never to whichever handler happens to
