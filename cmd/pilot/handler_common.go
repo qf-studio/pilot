@@ -79,6 +79,22 @@ func (hr *HandlerResult) IsTerminalByDesign() bool {
 	return hr != nil && hr.TerminalByDesign
 }
 
+// EffectiveSuccess reports whether this result should be translated as
+// Success=true on the vendored-SDK sdkcore.IssueResult every adapter handler
+// builds from a HandlerResult. A genuine hr.Success obviously counts, but so
+// does IsDispatchGated() (GH-4587: an admission-gate decline — already
+// active, repick backoff, terminal re-check, claim-lost drop — is not a
+// failed execution) and IsTerminalByDesign() (GH-4794: a superseded/canceled
+// execution is the success path for "this work is no longer wanted"). All
+// seven adapter handlers (github, gitlab, azuredevops, linear, jira, asana,
+// plane) must use this single formula rather than inlining the three-term
+// OR — GH-4801 found four of the seven still building Success: hr.Success
+// bare, and azuredevops missing the GH-4587 term entirely, after PR#4800
+// only fixed github/gitlab/azuredevops's IsTerminalByDesign gap.
+func (hr *HandlerResult) EffectiveSuccess() bool {
+	return hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign()
+}
+
 // HandlerDeps groups the shared infrastructure parameters every handler requires.
 type HandlerDeps struct {
 	Cfg          *config.Config

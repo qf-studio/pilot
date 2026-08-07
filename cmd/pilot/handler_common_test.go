@@ -1162,11 +1162,13 @@ func TestHandlerResult_IsTerminalByDesign(t *testing.T) {
 	}
 }
 
-// TestSDKTranslation_TerminalByDesign_DoesNotMislabelAsFailed drives the
-// exact Success translation formulas handlers.go now uses for github/gitlab
-// (`hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign()`) and
-// azuredevops (`hr.Success || hr.IsTerminalByDesign()`) against a manufactured
-// terminal-by-design HandlerResult — mirroring
+// TestSDKTranslation_TerminalByDesign_DoesNotMislabelAsFailed drives
+// HandlerResult.EffectiveSuccess() — the single shared formula all seven
+// adapter handlers (github, gitlab, azuredevops, linear, jira, asana, plane)
+// now use to build sdkcore.IssueResult.Success (GH-4801; previously
+// linear/jira/asana/plane built it bare from hr.Success, and azuredevops
+// omitted the GH-4587 IsDispatchGated() term) — against a manufactured
+// terminal-by-design HandlerResult, mirroring
 // TestGithubSDKTranslation_LiveClaimStillRunning_DoesNotMislabelAsFailed's
 // approach of testing the translation formula directly since the real
 // handlers can't be driven end-to-end without live network/token access.
@@ -1175,15 +1177,52 @@ func TestHandlerResult_IsTerminalByDesign(t *testing.T) {
 // incident).
 func TestSDKTranslation_TerminalByDesign_DoesNotMislabelAsFailed(t *testing.T) {
 	hr := &HandlerResult{Success: false, TerminalByDesign: true}
+	if !hr.EffectiveSuccess() {
+		t.Error("expected EffectiveSuccess() = true for a terminal-by-design result")
+	}
+}
 
-	githubGitlabSuccess := hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign()
-	if !githubGitlabSuccess {
-		t.Error("expected Success=true for a terminal-by-design result via the github/gitlab translation formula")
+// TestHandlerResult_EffectiveSuccess_Table covers the four cases the shared
+// GH-4801 helper must classify: a plain successful execution, a GH-4587
+// dispatch-gated admission decline, and a GH-4794 terminal-by-design
+// (superseded/canceled) execution must all report EffectiveSuccess() ==
+// true, while a genuine failure (Success=false, no gating/terminal reason)
+// must report false — the case that legitimately should trip the vendored
+// poller's "failed without PR, unmarking for retry" branch.
+func TestHandlerResult_EffectiveSuccess_Table(t *testing.T) {
+	tests := []struct {
+		name string
+		hr   *HandlerResult
+		want bool
+	}{
+		{
+			name: "plain success",
+			hr:   &HandlerResult{Success: true},
+			want: true,
+		},
+		{
+			name: "dispatch-gated admission decline (GH-4587)",
+			hr:   &HandlerResult{Success: false, Error: executor.ErrDispatchGated},
+			want: true,
+		},
+		{
+			name: "terminal-by-design: superseded/canceled (GH-4794)",
+			hr:   &HandlerResult{Success: false, TerminalByDesign: true},
+			want: true,
+		},
+		{
+			name: "genuine failure",
+			hr:   &HandlerResult{Success: false, Error: errors.New("execution failed: boom")},
+			want: false,
+		},
 	}
 
-	azureDevOpsSuccess := hr.Success || hr.IsTerminalByDesign()
-	if !azureDevOpsSuccess {
-		t.Error("expected Success=true for a terminal-by-design result via the azuredevops translation formula")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.hr.EffectiveSuccess(); got != tt.want {
+				t.Errorf("EffectiveSuccess() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1299,10 +1338,11 @@ func TestHandleIssueGeneric_SupersededExecution_EndToEnd(t *testing.T) {
 		t.Errorf("expected 0 alerts for a superseded execution (false operator alert, GH-4794), got %d", got)
 	}
 
-	// This is the exact formula handleGithubIssueEventSDK / handleGitlabIssueWithResult
-	// (cmd/pilot/handlers.go) use to build the sdkcore.IssueResult handed back to the poller.
+	// This is the exact formula every adapter handler in cmd/pilot/handlers.go
+	// (github, gitlab, azuredevops, linear, jira, asana, plane) uses to build
+	// the sdkcore.IssueResult handed back to the poller (GH-4801).
 	issueResult := &sdkcore.IssueResult{
-		Success: hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign(),
+		Success: hr.EffectiveSuccess(),
 	}
 	if !issueResult.Success {
 		t.Error("expected translated Success=true for a superseded execution — false would trip " +
