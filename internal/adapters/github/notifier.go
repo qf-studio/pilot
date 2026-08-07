@@ -20,6 +20,14 @@ func NewNotifier(client *Client, pilotLabel string) *Notifier {
 	}
 }
 
+// Client returns the GitHub client this notifier was constructed with.
+// GH-4778: exposed so callers (and regression tests) can pin which client
+// instance a Notifier is actually holding, rather than only checking the
+// value initially passed to the constructor that built it.
+func (n *Notifier) Client() *Client {
+	return n.client
+}
+
 // NotifyTaskStarted posts a comment and adds in-progress label
 func (n *Notifier) NotifyTaskStarted(ctx context.Context, owner, repo string, issueNum int, taskID string) error {
 	// Add in-progress label

@@ -60,6 +60,14 @@ func (h *WebhookHandler) OnIssue(callback func(context.Context, *Issue, *Reposit
 	h.onIssue = callback
 }
 
+// Client returns the GitHub client this handler was constructed with.
+// GH-4778: exposed so callers (and regression tests) can pin which client
+// instance a WebhookHandler is actually holding, rather than only checking
+// the value initially passed to the constructor that built it.
+func (h *WebhookHandler) Client() *Client {
+	return h.client
+}
+
 // OnPRReview sets the callback for when a PR review event is received
 func (h *WebhookHandler) OnPRReview(callback PRReviewCallback) {
 	h.onPRReview = callback

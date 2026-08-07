@@ -607,7 +607,20 @@ Examples:
 			// newGitHubClient. Pass the same kind of client in via an option so
 			// webhook mode re-resolves (and invalidates on 401) identically.
 			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
-				pilotOpts = append(pilotOpts, pilot.WithGitHubClient(newGitHubClient(cfg)))
+				gwGithubClient := newGitHubClient(cfg)
+				pilotOpts = append(pilotOpts, pilot.WithGitHubClient(gwGithubClient))
+
+				// GH-4778: runPollingMode has always validated its GitHub token at
+				// startup (validateGitHubToken, GH-3769 preflight below) so a dead
+				// App key surfaces as a loud 401 log line before the first poll.
+				// Gateway/webhook mode built its client the same way but never ran
+				// this check, so a dead key here failed silently on the first
+				// inbound webhook instead. gwAlertsEngine isn't constructed yet at
+				// this point in gateway-mode setup (it's built further down, only
+				// inside the needsPollingInfra branch), so alerting isn't wired
+				// here — the loud startup log is what this closes.
+				_, gwTokenSource := resolveGitHubToken(cfg)
+				validateGitHubToken(context.Background(), gwGithubClient, gwTokenSource, nil)
 			}
 
 			// GH-392: Create shared infrastructure for polling adapters in gateway mode
@@ -2860,7 +2873,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		token, tokenSource := resolveGitHubToken(cfg)
 
 		if token != "" {
-			client := github.NewClient(token)
+			// GH-4778: use newGitHubClient(cfg) instead of github.NewClient(token) —
+			// this client is held past construction by the merge-waiter (daemon-lifetime
+			// merge-wait callback) and the stale-label cleaner (periodic loop), so a
+			// static token here would freeze and 401 after App-token rotation (GH-4755).
+			client := newGitHubClient(cfg)
 			validateGitHubToken(context.Background(), client, tokenSource, alertsEngine)
 			interval := cfg.Adapters.GitHub.Polling.Interval
 			if interval == 0 {
