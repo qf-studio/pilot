@@ -97,18 +97,67 @@ func (h *SlackHandler) Name() string {
 	return "slack"
 }
 
-// resolveChannel picks the Slack destination for req: the first approver
-// when it's set, otherwise the handler's own configured channel. This is
-// the single place that rule lives — SendApprovalRequest and Rehydrate both
-// call it, so the first send and any post-restart rehydrate never disagree
-// on where a given request's message lives (GH-4772; before this fix,
-// SendApprovalRequest used h.channel unconditionally while Rehydrate
-// honored Approvers[0]).
+// resolveChannel picks the Slack destination for req: the handler's own
+// configured channel when one is set, falling back to the first approver
+// (a DM) only when no channel is configured. This is channel-first —
+// before GH-4808, resolveChannel preferred Approvers[0] unconditionally, so
+// any request with an approver landed in an unwatched Pilot-bot DM even
+// though `adapters.slack.approval.channel` was configured, making that
+// config dead and the ask effectively invisible to the operator (incident:
+// PR#4806 sat in awaiting_approval ~50 minutes while the operator searched
+// the wrong places). This is the single place that rule lives —
+// SendApprovalRequest and Rehydrate both call it, so the first send and any
+// post-restart rehydrate never disagree on where a given request's message
+// lives (GH-4772).
 func (h *SlackHandler) resolveChannel(req *Request) string {
+	if h.channel != "" {
+		return h.channel
+	}
 	if len(req.Approvers) > 0 && req.Approvers[0] != "" {
 		return req.Approvers[0]
 	}
 	return h.channel
+}
+
+// destinationIsChannel reports whether resolveChannel(req) will land on the
+// handler's configured channel (as opposed to a DM fallback to
+// Approvers[0]) — i.e. the channel-first branch of resolveChannel fired.
+func (h *SlackHandler) destinationIsChannel() bool {
+	return h.channel != ""
+}
+
+// mentionPrefix returns a Slack `<@U…> ` mention prefix when the message is
+// headed to a channel (not a DM) and an approver is configured — so the ask
+// notifies the intended approver instead of scrolling by unseen in a
+// channel they don't watch closely (GH-4808 acceptance #2). Returns "" when
+// the destination is already a DM to the approver (redundant self-mention)
+// or when no approver is set.
+func (h *SlackHandler) mentionPrefix(req *Request) string {
+	if !h.destinationIsChannel() {
+		return ""
+	}
+	if len(req.Approvers) == 0 || req.Approvers[0] == "" {
+		return ""
+	}
+	return fmt.Sprintf("<@%s> ", req.Approvers[0])
+}
+
+// ResolvedDestination returns a human-readable description of where
+// resolveChannel(req) sends this request — the channel name/ID, or
+// "dm:<target>" when it falls back to a DM. Used only for logging (the
+// "async approval request submitted" line), so "where did the ask go" is
+// answerable from daemon.log alone without Slack-side message search
+// (GH-4808 acceptance #4). Implements the approval package's optional
+// destinationDescriber interface consumed by Manager.
+func (h *SlackHandler) ResolvedDestination(req *Request) string {
+	dest := h.resolveChannel(req)
+	if dest == "" {
+		return ""
+	}
+	if h.destinationIsChannel() {
+		return dest
+	}
+	return "dm:" + dest
 }
 
 // WithStore attaches a persistence store so pending approvals survive restarts.
@@ -488,8 +537,8 @@ func (h *SlackHandler) buildApprovalBlocks(req *Request) []interface{} {
 	}
 
 	// Header section
-	headerText := fmt.Sprintf("%s *%s*\n\n*Task:* `%s`\n*Title:* %s",
-		icon, stageLabel, req.TaskID, req.Title)
+	headerText := fmt.Sprintf("%s%s *%s*\n\n*Task:* `%s`\n*Title:* %s",
+		h.mentionPrefix(req), icon, stageLabel, req.TaskID, req.Title)
 
 	if req.Description != "" {
 		headerText += fmt.Sprintf("\n\n%s", truncateForSlack(req.Description, 500))
@@ -660,7 +709,7 @@ func (h *SlackHandler) formatExpiredText(req *Request) string {
 
 // formatFallbackText creates fallback text for notifications
 func (h *SlackHandler) formatFallbackText(req *Request) string {
-	return fmt.Sprintf("Approval required for task %s: %s", req.TaskID, req.Title)
+	return fmt.Sprintf("%sApproval required for task %s: %s", h.mentionPrefix(req), req.TaskID, req.Title)
 }
 
 // formatResponseText creates fallback text for response messages

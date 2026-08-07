@@ -29,6 +29,29 @@ type MergeNotifier interface {
 	NotifyMerged(ctx context.Context, requestID, shortSHA string) error
 }
 
+// destinationDescriber is implemented by handlers that can report the
+// resolved human-readable destination for a request (channel name/ID or DM
+// target) — for logging only, not routing. Currently only SlackHandler
+// implements it; handlers that don't are logged with just their Name()
+// (unchanged behavior). GH-4808: without this, the "async approval request
+// submitted" log line recorded only the handler name ("channel=slack"), so
+// diagnosing "where did the ask go" required Slack-side message search
+// instead of reading daemon.log.
+type destinationDescriber interface {
+	ResolvedDestination(req *Request) string
+}
+
+// resolvedDestination returns handler's resolved destination for req when it
+// implements destinationDescriber, otherwise "" (the caller's log line still
+// carries handler.Name()).
+func resolvedDestination(handler Handler, req *Request) string {
+	dd, ok := handler.(destinationDescriber)
+	if !ok {
+		return ""
+	}
+	return dd.ResolvedDestination(req)
+}
+
 // pendingRequest tracks an active approval request
 type pendingRequest struct {
 	Request    *Request
@@ -356,6 +379,7 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 		slog.String("request_id", req.ID),
 		slog.String("task_id", req.TaskID),
 		slog.String("channel", handler.Name()),
+		slog.String("destination", resolvedDestination(handler, req)),
 		slog.Duration("timeout", timeout))
 
 	return req.ID, nil
