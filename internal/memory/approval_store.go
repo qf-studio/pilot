@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -98,17 +99,76 @@ func (s *Store) LoadPendingApprovals() ([]*PendingApproval, error) {
 	return out, rows.Err()
 }
 
-// PrunePendingApprovals deletes all approvals whose expires_at is before `cutoff`.
-// Returns the number of rows deleted.
-func (s *Store) PrunePendingApprovals(cutoff time.Time) (int64, error) {
+// PrunePendingApprovals deletes approvals whose expires_at is before
+// `cutoff` AND whose preferred_channel is one of `channels`. Channel-scoped
+// (GH-4772) so a handler's expiry sweep only ever deletes/decides rows it
+// owns — e.g. a Slack sweep must never delete a Telegram-dispatched row's
+// expiry before Telegram's own sweep gets to it. Callers pass "" in
+// `channels` to include legacy rows with no preferred_channel set. Returns
+// 0, nil for an empty `channels` (nothing to scope to, not "everything").
+func (s *Store) PrunePendingApprovals(cutoff time.Time, channels []string) (int64, error) {
+	if len(channels) == 0 {
+		return 0, nil
+	}
+	placeholders := make([]string, len(channels))
+	args := make([]interface{}, 0, len(channels)+1)
+	args = append(args, cutoff)
+	for i, c := range channels {
+		placeholders[i] = "?"
+		args = append(args, c)
+	}
+	query := fmt.Sprintf(
+		`DELETE FROM approval_pending WHERE expires_at < ? AND preferred_channel IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
 	var result sql.Result
 	err := s.withRetry("PrunePendingApprovals", func() error {
 		var execErr error
-		result, execErr = s.db.Exec(`DELETE FROM approval_pending WHERE expires_at < ?`, cutoff)
+		result, execErr = s.db.Exec(query, args...)
 		return execErr
 	})
 	if err != nil {
 		return 0, fmt.Errorf("PrunePendingApprovals: %w", err)
+	}
+	return result.RowsAffected()
+}
+
+// PrunePendingApprovalsOutside deletes approvals whose expires_at is before
+// `cutoff` AND whose preferred_channel is NOT one of `knownChannels`. This
+// is the documented fallback for rows whose channel matches no registered
+// handler (a channel that was removed from config, a typo, etc.) — without
+// it such a row is never scoped to any handler's PrunePendingApprovals call
+// and becomes unprunable (GH-4772 acceptance 4). Callers should route this
+// through exactly one handler (the default legacy claimant) to avoid
+// multiple handlers racing to sweep the same orphaned rows; a full
+// Manager-level orphan sweep is roadmap leg B4. Returns 0, nil for an empty
+// `knownChannels` (matches "outside everything known", which is nothing to
+// exclude — same delete-all-expired shape as the pre-GH-4772 behavior).
+func (s *Store) PrunePendingApprovalsOutside(cutoff time.Time, knownChannels []string) (int64, error) {
+	var query string
+	args := make([]interface{}, 0, len(knownChannels)+1)
+	args = append(args, cutoff)
+	if len(knownChannels) == 0 {
+		query = `DELETE FROM approval_pending WHERE expires_at < ?`
+	} else {
+		placeholders := make([]string, len(knownChannels))
+		for i, c := range knownChannels {
+			placeholders[i] = "?"
+			args = append(args, c)
+		}
+		query = fmt.Sprintf(
+			`DELETE FROM approval_pending WHERE expires_at < ? AND preferred_channel NOT IN (%s)`,
+			strings.Join(placeholders, ","),
+		)
+	}
+	var result sql.Result
+	err := s.withRetry("PrunePendingApprovalsOutside", func() error {
+		var execErr error
+		result, execErr = s.db.Exec(query, args...)
+		return execErr
+	})
+	if err != nil {
+		return 0, fmt.Errorf("PrunePendingApprovalsOutside: %w", err)
 	}
 	return result.RowsAffected()
 }

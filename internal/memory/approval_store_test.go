@@ -163,7 +163,7 @@ func TestPrunePendingApprovals(t *testing.T) {
 		t.Fatalf("insert active: %v", err)
 	}
 
-	deleted, err := s.PrunePendingApprovals(now)
+	deleted, err := s.PrunePendingApprovals(now, []string{""})
 	if err != nil {
 		t.Fatalf("PrunePendingApprovals: %v", err)
 	}
@@ -193,12 +193,131 @@ func TestPrunePendingApprovals_NoneExpired(t *testing.T) {
 		Title: "t", CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	})
 
-	deleted, err := s.PrunePendingApprovals(now.Add(-time.Minute))
+	deleted, err := s.PrunePendingApprovals(now.Add(-time.Minute), []string{""})
 	if err != nil {
 		t.Fatalf("PrunePendingApprovals: %v", err)
 	}
 	if deleted != 0 {
 		t.Errorf("expected 0 rows deleted, got %d", deleted)
+	}
+}
+
+// TestPrunePendingApprovals_ChannelScoped is the GH-4772 regression test:
+// PrunePendingApprovals must only delete expired rows whose preferred_channel
+// is in the caller's `channels` list — a Slack-scoped sweep must never touch
+// an expired Telegram row (and vice versa), because the owning handler still
+// needs to edit its message / record a timeout decision for it.
+func TestPrunePendingApprovals_ChannelScoped(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	past := now.Add(-2 * time.Hour)
+
+	for _, row := range []*PendingApproval{
+		{ID: "tg-exp", TaskID: "GH-700", Stage: "pre_merge", Title: "t", PreferredChannel: "telegram", CreatedAt: past, ExpiresAt: past.Add(time.Hour)},
+		{ID: "slack-exp", TaskID: "GH-701", Stage: "pre_merge", Title: "t", PreferredChannel: "slack", CreatedAt: past, ExpiresAt: past.Add(time.Hour)},
+		{ID: "legacy-exp", TaskID: "GH-702", Stage: "pre_merge", Title: "t", PreferredChannel: "", CreatedAt: past, ExpiresAt: past.Add(time.Hour)},
+	} {
+		if err := s.InsertPendingApproval(row); err != nil {
+			t.Fatalf("insert %s: %v", row.ID, err)
+		}
+	}
+
+	// A Slack-scoped sweep must only remove the slack row.
+	deleted, err := s.PrunePendingApprovals(now, []string{"slack"})
+	if err != nil {
+		t.Fatalf("PrunePendingApprovals: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected 1 row deleted by slack-scoped sweep, got %d", deleted)
+	}
+
+	all, err := s.LoadPendingApprovals()
+	if err != nil {
+		t.Fatalf("LoadPendingApprovals: %v", err)
+	}
+	remaining := make(map[string]bool, len(all))
+	for _, a := range all {
+		remaining[a.ID] = true
+	}
+	if !remaining["tg-exp"] {
+		t.Error("expected telegram row to survive a slack-scoped sweep")
+	}
+	if !remaining["legacy-exp"] {
+		t.Error("expected legacy (empty-channel) row to survive a slack-scoped sweep")
+	}
+	if remaining["slack-exp"] {
+		t.Error("expected slack row to be deleted by a slack-scoped sweep")
+	}
+
+	// A telegram+legacy-scoped sweep (the default channel's own scope)
+	// should then clean up both remaining rows.
+	deleted, err = s.PrunePendingApprovals(now, []string{"telegram", ""})
+	if err != nil {
+		t.Fatalf("PrunePendingApprovals: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("expected 2 rows deleted by telegram+legacy-scoped sweep, got %d", deleted)
+	}
+}
+
+// TestPrunePendingApprovals_EmptyChannelsIsNoop verifies the documented
+// "nothing to scope to" semantics: an empty channels slice deletes nothing,
+// rather than falling back to unscoped delete-everything.
+func TestPrunePendingApprovals_EmptyChannelsIsNoop(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	past := now.Add(-2 * time.Hour)
+	_ = s.InsertPendingApproval(&PendingApproval{
+		ID: "exp-noop", TaskID: "GH-703", Stage: "pre_merge", Title: "t",
+		PreferredChannel: "telegram", CreatedAt: past, ExpiresAt: past.Add(time.Hour),
+	})
+
+	deleted, err := s.PrunePendingApprovals(now, nil)
+	if err != nil {
+		t.Fatalf("PrunePendingApprovals: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 rows deleted with empty channels, got %d", deleted)
+	}
+}
+
+// TestPrunePendingApprovalsOutside_SweepsOrphanChannels is the GH-4772
+// fallback test: a row whose preferred_channel matches none of the known
+// handler names must still be prunable once expired.
+func TestPrunePendingApprovalsOutside_SweepsOrphanChannels(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	past := now.Add(-2 * time.Hour)
+
+	for _, row := range []*PendingApproval{
+		{ID: "orphan-exp", TaskID: "GH-704", Stage: "pre_merge", Title: "t", PreferredChannel: "unknown-channel", CreatedAt: past, ExpiresAt: past.Add(time.Hour)},
+		{ID: "tg-exp2", TaskID: "GH-705", Stage: "pre_merge", Title: "t", PreferredChannel: "telegram", CreatedAt: past, ExpiresAt: past.Add(time.Hour)},
+	} {
+		if err := s.InsertPendingApproval(row); err != nil {
+			t.Fatalf("insert %s: %v", row.ID, err)
+		}
+	}
+
+	deleted, err := s.PrunePendingApprovalsOutside(now, []string{"telegram", "slack", "github", "github-review"})
+	if err != nil {
+		t.Fatalf("PrunePendingApprovalsOutside: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected 1 orphaned row deleted, got %d", deleted)
+	}
+
+	all, err := s.LoadPendingApprovals()
+	if err != nil {
+		t.Fatalf("LoadPendingApprovals: %v", err)
+	}
+	if len(all) != 1 || all[0].ID != "tg-exp2" {
+		t.Errorf("expected only the known-channel row to remain, got %+v", all)
 	}
 }
 

@@ -377,6 +377,73 @@ func TestManager_SubmitApprovalRequest_PreferredChannelMissing_FailsExplicitly(t
 	}
 }
 
+// TestManager_SubmitApprovalRequest_GitHubReviewAlias verifies the GH-4772
+// fix: a request configured with PreferredChannel "github-review" (the
+// autopilot.ApprovalSourceGitHubReview config value,
+// internal/autopilot/types.go:36) resolves to the handler registered as
+// "github" (GitHubHandler.Name()) instead of hitting the preferredMissing
+// hard error just because the two names don't literally match.
+func TestManager_SubmitApprovalRequest_GitHubReviewAlias(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+
+	github := &mockHandler{name: "github"}
+	m.RegisterHandler(github)
+
+	req := &Request{
+		ID:               "async-alias-1",
+		TaskID:           "TASK-01",
+		Stage:            StagePreExecution,
+		Title:            "Test task",
+		CreatedAt:        time.Now(),
+		PreferredChannel: "github-review",
+	}
+
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(github.sentReqs) != 1 {
+		t.Errorf("expected 1 request sent to the github handler via the github-review alias, got %d", len(github.sentReqs))
+	}
+}
+
+// TestManager_SubmitApprovalRequest_UnresolvableChannelStillHardErrors
+// verifies GH-4380 semantics are preserved after adding the github-review
+// alias: a channel name that's still unresolvable after normalization must
+// still fail loudly, never silently fall back to another registered handler.
+func TestManager_SubmitApprovalRequest_UnresolvableChannelStillHardErrors(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+
+	telegram := &mockHandler{name: "telegram"}
+	m.RegisterHandler(telegram)
+
+	req := &Request{
+		ID:               "async-alias-missing-1",
+		TaskID:           "TASK-01",
+		Stage:            StagePreExecution,
+		Title:            "Test task",
+		CreatedAt:        time.Now(),
+		PreferredChannel: "github-review",
+	}
+
+	_, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected an error when the aliased channel's target handler isn't registered, got nil")
+	}
+	if len(telegram.sentReqs) != 0 {
+		t.Errorf("expected no silent fallback to telegram handler, got %d requests", len(telegram.sentReqs))
+	}
+}
+
 // TestManager_SubmitApprovalRequest_NoPreferredChannel_FallsBackToFirstAvailable
 // preserves the pre-existing behavior for requests that don't specify a
 // PreferredChannel at all (e.g. legacy callers) — the fail-fast behavior only

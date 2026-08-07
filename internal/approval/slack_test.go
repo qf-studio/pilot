@@ -100,6 +100,60 @@ func TestSlackHandler_SendApprovalRequest(t *testing.T) {
 	}
 }
 
+// TestSlackHandler_SendApprovalRequest_RehydrateDestinationParity is the
+// GH-4772 regression test for bug (b): SendApprovalRequest must post to the
+// same destination that Rehydrate would resolve to for the same request
+// after a restart. Before the fix, SendApprovalRequest always used the
+// handler's configured default channel while Rehydrate honored
+// req.Approvers[0], so a per-request approver override took effect only on
+// rehydrate, silently retargeting the message after a daemon restart.
+func TestSlackHandler_SendApprovalRequest_RehydrateDestinationParity(t *testing.T) {
+	sendClient := &mockSlackClient{}
+	store := newMockPendingStore()
+	sendHandler := NewSlackHandler(sendClient, "#default-approvals").WithStore(store)
+
+	req := &Request{
+		ID:               "parity-1",
+		TaskID:           "TASK-01",
+		Stage:            StagePreMerge,
+		Title:            "Test PR",
+		Approvers:        []string{"#override-channel"},
+		PreferredChannel: "slack",
+		CreatedAt:        time.Now(),
+		ExpiresAt:        time.Now().Add(time.Hour),
+	}
+
+	if _, err := sendHandler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("SendApprovalRequest: unexpected error: %v", err)
+	}
+	if sendClient.lastMessage == nil {
+		t.Fatal("expected message to be sent")
+	}
+	sentChannel := sendClient.lastMessage.Channel
+
+	// Simulate a restart: a fresh handler (same configured default channel)
+	// rehydrating the row that was just persisted by SendApprovalRequest.
+	rehydrateClient := &mockSlackClient{}
+	rehydrateHandler := NewSlackHandler(rehydrateClient, "#default-approvals").WithStore(store)
+	if err := rehydrateHandler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate: unexpected error: %v", err)
+	}
+
+	rehydrateHandler.mu.RLock()
+	pending, ok := rehydrateHandler.pending["parity-1"]
+	rehydrateHandler.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected request to be rehydrated")
+	}
+
+	if sentChannel != pending.Channel {
+		t.Errorf("destination parity broken: SendApprovalRequest used %q, Rehydrate resolved %q", sentChannel, pending.Channel)
+	}
+	if pending.Channel != "#override-channel" {
+		t.Errorf("expected both to honor the approver override, got %q", pending.Channel)
+	}
+}
+
 func TestSlackHandler_HandleInteraction_Approve(t *testing.T) {
 	client := &mockSlackClient{}
 	handler := NewSlackHandler(client, "#approvals")
@@ -355,11 +409,11 @@ func TestSlackHandler_Rehydrate_RestoresNonExpired(t *testing.T) {
 	past := time.Now().Add(-time.Hour)
 	_ = store.InsertPendingApproval(&memory.PendingApproval{
 		ID: "live", TaskID: "T-live", Stage: "pre_merge",
-		Title: "Live", CreatedAt: time.Now(), ExpiresAt: future,
+		Title: "Live", PreferredChannel: "slack", CreatedAt: time.Now(), ExpiresAt: future,
 	})
 	_ = store.InsertPendingApproval(&memory.PendingApproval{
 		ID: "dead", TaskID: "T-dead", Stage: "pre_merge",
-		Title: "Dead", CreatedAt: time.Now(), ExpiresAt: past,
+		Title: "Dead", PreferredChannel: "slack", CreatedAt: time.Now(), ExpiresAt: past,
 	})
 
 	handler := NewSlackHandler(client, "#approvals").WithStore(store)
@@ -383,6 +437,49 @@ func TestSlackHandler_Rehydrate_RestoresNonExpired(t *testing.T) {
 	}
 }
 
+// TestSlackHandler_Rehydrate_SkipsOtherChannelRows is the GH-4772 regression
+// test: Rehydrate must not process (or delete) a row dispatched to another
+// channel — even an expired one, which the owning handler's own sweep still
+// needs to see so it can edit its message / record the timeout decision.
+func TestSlackHandler_Rehydrate_SkipsOtherChannelRows(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+
+	future := time.Now().Add(time.Hour)
+	past := time.Now().Add(-time.Hour)
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "tg-live", TaskID: "T-tg-live", Stage: "pre_merge",
+		Title: "Telegram live", PreferredChannel: "telegram", CreatedAt: time.Now(), ExpiresAt: future,
+	})
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "tg-dead", TaskID: "T-tg-dead", Stage: "pre_merge",
+		Title: "Telegram dead", PreferredChannel: "telegram", CreatedAt: time.Now(), ExpiresAt: past,
+	})
+
+	handler := NewSlackHandler(client, "#approvals").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handler.mu.RLock()
+	_, gotLive := handler.pending["tg-live"]
+	_, gotDead := handler.pending["tg-dead"]
+	handler.mu.RUnlock()
+
+	if gotLive {
+		t.Error("expected slack Rehydrate to skip a telegram-owned row")
+	}
+	if gotDead {
+		t.Error("expected slack Rehydrate to skip a telegram-owned row")
+	}
+	if store.get("tg-live") == nil {
+		t.Error("expected telegram-owned live row to survive slack's Rehydrate untouched")
+	}
+	if store.get("tg-dead") == nil {
+		t.Error("expected slack Rehydrate to NOT delete an expired telegram-owned row — that's telegram's own sweep's job")
+	}
+}
+
 func TestSlackHandler_Rehydrate_NoStore(t *testing.T) {
 	client := &mockSlackClient{}
 	handler := NewSlackHandler(client, "#approvals")
@@ -402,12 +499,19 @@ func TestSlackHandler_Rehydrate_HonorsOldButtonRequestID(t *testing.T) {
 	store := newMockPendingStore()
 	_ = store.InsertPendingApproval(&memory.PendingApproval{
 		ID: "rehy-int", TaskID: "T-R", Stage: "pre_merge",
-		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+		Title: "Rehydrated", PreferredChannel: "slack", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 	})
 
 	handler := NewSlackHandler(client, "#approvals").WithStore(store)
 	if err := handler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	handler.mu.RLock()
+	_, gotPending := handler.pending["rehy-int"]
+	handler.mu.RUnlock()
+	if !gotPending {
+		t.Fatal("expected row to actually be rehydrated into pending before testing the button click")
 	}
 
 	// Simulate a click on the pre-restart message — its button value still
@@ -452,7 +556,7 @@ func TestSlackHandler_Rehydrate_InteractionRecordsDecisionDirectly(t *testing.T)
 	recorder := &mockDecisionRecorder{}
 	_ = store.InsertPendingApproval(&memory.PendingApproval{
 		ID: "rehy-rec", TaskID: "T-R2", Stage: "pre_merge",
-		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+		Title: "Rehydrated", PreferredChannel: "slack", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 	})
 
 	handler := NewSlackHandler(client, "#approvals").WithStore(store).WithDecisionRecorder(recorder)
