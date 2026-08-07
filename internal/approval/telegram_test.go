@@ -1306,6 +1306,31 @@ func TestTelegramHandler_WithStore_PersistOnSend(t *testing.T) {
 	}
 }
 
+// TestTelegramHandler_WithStore_PersistsProject is the GH-4773 round-trip
+// regression test: SendApprovalRequest must copy req.Project onto the
+// persisted memory.PendingApproval row.
+func TestTelegramHandler_WithStore_PersistsProject(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	req := &Request{
+		ID: "persist-project-1", TaskID: "T-1", Stage: StagePreMerge,
+		Title: "Test", Project: "/home/user/projects/pilot", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	row := store.get("persist-project-1")
+	if row == nil {
+		t.Fatal("expected row to be stored")
+	}
+	if row.Project != "/home/user/projects/pilot" {
+		t.Errorf("row.Project = %q, want /home/user/projects/pilot", row.Project)
+	}
+}
+
 func TestTelegramHandler_WithStore_DeleteOnCallback(t *testing.T) {
 	client := &mockTelegramClient{}
 	store := newMockPendingStore()

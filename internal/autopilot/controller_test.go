@@ -8916,6 +8916,49 @@ func TestController_SubmitAsyncApprovalRequest_SetsReleasePlan(t *testing.T) {
 	}
 }
 
+// TestController_SubmitAsyncApprovalRequest_SetsProject is the GH-4773
+// regression test: submitAsyncApprovalRequest must populate the outbound
+// approval.Request's Project field from the controller's own c.projectPath
+// (set via WithProjectPath), canonicalized the same way memory.Store keys
+// its own scoping (the #4297 lesson) — so the persisted approval_pending row
+// carries project identity even though the approval package itself never
+// computes a project path.
+func TestController_SubmitAsyncApprovalRequest_SetsProject(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvProd
+
+	mgr := asyncApprovalManager()
+	handler := &mockCapturingApprovalHandler{}
+	mgr.RegisterHandler(handler)
+
+	c := NewController(cfg, ghClient, mgr, "owner", "repo", WithProjectPath("/proj/pilot"))
+
+	c.mu.Lock()
+	c.activePRs[42] = &PRState{
+		PRNumber:    42,
+		PRURL:       "https://github.com/owner/repo/pull/42",
+		PRTitle:     "feat: something",
+		IssueNumber: 10,
+		Stage:       StageAwaitApproval,
+	}
+	c.mu.Unlock()
+
+	if err := c.ProcessPR(context.Background(), 42, nil); err != nil {
+		t.Fatalf("tick error: %v", err)
+	}
+
+	if len(handler.sent) != 1 {
+		t.Fatalf("expected 1 approval request sent, got %d", len(handler.sent))
+	}
+	// "/proj/pilot" doesn't exist on the test filesystem, so
+	// CanonicalizeProjectPath falls back to filepath.Clean (EvalSymlinks
+	// fails) — the canonicalized form here is just the cleaned input.
+	if got, want := handler.sent[0].Project, memory.CanonicalizeProjectPath("/proj/pilot"); got != want {
+		t.Errorf("Project = %q, want %q", got, want)
+	}
+}
+
 // TestController_AwaitApproval_StaysInStageUntilDecision verifies that the
 // non-blocking handleAwaitApproval submits a request on the first tick and
 // stays in StageAwaitApproval until a decision is recorded.

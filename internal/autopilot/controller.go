@@ -2785,6 +2785,10 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		// Manager.SubmitApprovalRequest always fell through to whichever
 		// handler happened to win Go's map iteration order.
 		PreferredChannel: string(c.config.EffectiveApprovalSource()),
+		// GH-4773: canonicalize c.projectPath the same way the store keys its
+		// own scoping (the #4297 cross-project collision lesson) so the
+		// persisted row and any later scoped lookup agree on the same string.
+		Project: memory.CanonicalizeProjectPath(c.projectPath),
 	}
 
 	requestID, err := c.approvalMgr.SubmitApprovalRequest(ctx, req)

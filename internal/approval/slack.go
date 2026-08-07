@@ -169,6 +169,7 @@ func (h *SlackHandler) Rehydrate(ctx context.Context) error {
 			Metadata:         row.Metadata,
 			Approvers:        row.Approvers,
 			PreferredChannel: row.PreferredChannel,
+			Project:          row.Project,
 			CreatedAt:        row.CreatedAt,
 			ExpiresAt:        row.ExpiresAt,
 		}
@@ -293,6 +294,7 @@ func (h *SlackHandler) SendApprovalRequest(ctx context.Context, req *Request) (<
 			Metadata:         req.Metadata,
 			Approvers:        req.Approvers,
 			PreferredChannel: req.PreferredChannel,
+			Project:          req.Project,
 			CreatedAt:        req.CreatedAt,
 			ExpiresAt:        req.ExpiresAt,
 		}

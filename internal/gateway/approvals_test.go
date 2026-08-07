@@ -154,6 +154,99 @@ func TestHandleApprovals_ProjectScoped_ExcludesUnjoinable(t *testing.T) {
 	}
 }
 
+// TestHandleApprovals_ProjectScoped_UnjoinableRowIncludedViaProjectColumn is
+// the GH-4773 regression test for the PR#4752 finding: a row with no
+// execution linkage (join misses) must still be included under project
+// scoping when its own `project` column matches the scope, instead of being
+// dropped entirely.
+func TestHandleApprovals_ProjectScoped_UnjoinableRowIncludedViaProjectColumn(t *testing.T) {
+	now := time.Now()
+	store := &mockDashboardStore{
+		pendingApprovals: []*memory.PendingApproval{
+			{ID: "req-attributed", TaskID: "GH-6", Project: "/tmp/proj-a", CreatedAt: now, ExpiresAt: now.Add(time.Hour)},
+		},
+	}
+	s := newTestServerWithDashboard(store)
+	s.dashboardProjectPath = "/tmp/proj-a"
+
+	req := httpTestRequest(t, http.MethodGet, "/api/v1/approvals", nil)
+	w := newTestResponseRecorder()
+	s.handleApprovals(w, req)
+
+	var got []approvalResponse
+	if err := json.Unmarshal(w.body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 1 || got[0].RequestID != "req-attributed" {
+		t.Fatalf("got = %+v, want only req-attributed (included via project column)", got)
+	}
+	if got[0].Project == nil || *got[0].Project != "/tmp/proj-a" {
+		t.Errorf("Project = %v, want /tmp/proj-a", got[0].Project)
+	}
+	if got[0].ExecutionID != nil {
+		t.Errorf("ExecutionID = %v, want nil (no execution linkage)", got[0].ExecutionID)
+	}
+}
+
+// TestHandleApprovals_ProjectScoped_ProjectColumnMismatchExcluded verifies a
+// row whose own project column names a different project than the scope is
+// still excluded, even with no execution linkage to contradict it.
+func TestHandleApprovals_ProjectScoped_ProjectColumnMismatchExcluded(t *testing.T) {
+	now := time.Now()
+	store := &mockDashboardStore{
+		pendingApprovals: []*memory.PendingApproval{
+			{ID: "req-other", TaskID: "GH-7", Project: "/tmp/proj-b", CreatedAt: now, ExpiresAt: now.Add(time.Hour)},
+		},
+	}
+	s := newTestServerWithDashboard(store)
+	s.dashboardProjectPath = "/tmp/proj-a"
+
+	req := httpTestRequest(t, http.MethodGet, "/api/v1/approvals", nil)
+	w := newTestResponseRecorder()
+	s.handleApprovals(w, req)
+
+	var got []approvalResponse
+	if err := json.Unmarshal(w.body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("len(got) = %d, want 0 (project column names a different project)", len(got))
+	}
+}
+
+// TestHandleApprovals_UnscopedMode_EmitsProjectField verifies the GET
+// response carries the new `project` JSON field (from approval_pending's own
+// column) even when the gateway is not project-scoped.
+func TestHandleApprovals_UnscopedMode_EmitsProjectField(t *testing.T) {
+	now := time.Now()
+	store := &mockDashboardStore{
+		pendingApprovals: []*memory.PendingApproval{
+			{ID: "req-1", TaskID: "GH-1", Project: "/tmp/proj-a", CreatedAt: now, ExpiresAt: now.Add(time.Hour)},
+			{ID: "req-2", TaskID: "GH-2", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, // legacy, no project
+		},
+	}
+	s := newTestServerWithDashboard(store)
+
+	req := httpTestRequest(t, http.MethodGet, "/api/v1/approvals", nil)
+	w := newTestResponseRecorder()
+	s.handleApprovals(w, req)
+
+	var got []approvalResponse
+	if err := json.Unmarshal(w.body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	byID := make(map[string]approvalResponse, len(got))
+	for _, r := range got {
+		byID[r.RequestID] = r
+	}
+	if p := byID["req-1"].Project; p == nil || *p != "/tmp/proj-a" {
+		t.Errorf("req-1.Project = %v, want /tmp/proj-a", p)
+	}
+	if p := byID["req-2"].Project; p != nil {
+		t.Errorf("req-2.Project = %v, want nil (legacy row)", p)
+	}
+}
+
 func TestHandleApprovals_StoreNil_503(t *testing.T) {
 	s := NewServer(&Config{Host: "127.0.0.1", Port: 0})
 
