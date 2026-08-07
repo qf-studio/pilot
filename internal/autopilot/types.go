@@ -296,6 +296,33 @@ type PlatformBreakerConfig struct {
 	// time-based recovery only (part 2 adds a corroborating external status
 	// probe). Zero/unset falls back to DefaultPlatformBreakerQuietPeriod (20m).
 	QuietPeriod time.Duration `yaml:"quiet_period"`
+	// ProbeInterval is how often, while the breaker is open, the periodic
+	// monitor (GH-4792, TASK-458 part 2) re-checks githubstatus.com and
+	// re-evaluates the time-based close condition. Also the trigger interval
+	// for the advisory corroboration probe fired just before the breaker
+	// opens. Zero/unset falls back to DefaultPlatformBreakerProbeInterval
+	// (5m). The probe result is advisory only — see ProbeGitHubStatus's doc
+	// comment — it never gates open/close.
+	ProbeInterval time.Duration `yaml:"probe_interval"`
+	// PauseAdmission controls whether new executor dispatch is paused while
+	// the breaker is open (GH-4792): stops burning executor spend on work
+	// that cannot pass CI during a platform outage. Nil/unset defaults to
+	// true (matching the *bool-inherits-true convention used elsewhere in
+	// this package, e.g. ProjectApprovalOverride.RequireApproval); an
+	// explicit `pause_admission: false` opts out while leaving the rest of
+	// the breaker (suppression, merge-hold, re-drive) active.
+	PauseAdmission *bool `yaml:"pause_admission,omitempty"`
+}
+
+// PauseAdmissionEnabled resolves cfg's PauseAdmission with its default-true
+// semantics (nil/unset -> true). cfg may be nil (treated as disabled
+// elsewhere; this helper is only meaningful when the breaker itself is
+// enabled).
+func (cfg *PlatformBreakerConfig) PauseAdmissionEnabled() bool {
+	if cfg == nil || cfg.PauseAdmission == nil {
+		return true
+	}
+	return *cfg.PauseAdmission
 }
 
 // ReviewFeedbackConfig holds configuration for handling PR review change requests.
@@ -1195,6 +1222,24 @@ type PRState struct {
 	// simply re-probes once more after another postMergeCINoWorkflowGrace
 	// wait, which is harmless.
 	PostMergeCINoWorkflowChecked bool
+	// BreakerHoldActive is true while this PR is parked at StageFailed
+	// specifically because handleCIFailed found the platform-outage breaker
+	// (GH-4791/GH-4792, TASK-458) open — CI signal was not trustworthy, so
+	// the destructive action that failure would otherwise have taken
+	// (fix-issue creation, escalateAndHold, ClosePullRequest) was suppressed
+	// and this PR parked instead. Mirrors RebaseHoldActive's narrowing role:
+	// StageFailed has many unrelated causes, so ReDriveBreakerHeldPRs scans
+	// for this specific flag rather than every StageFailed PR. Cleared once
+	// re-drive fires. Persisted so the hold survives a daemon restart.
+	BreakerHoldActive bool
+	// BreakerReadoptCount tracks how many times ReDriveBreakerHeldPRs
+	// (GH-4792) has revived this PR from a breaker hold back to
+	// StageWaitingCI after the breaker closed. Capped at
+	// maxBreakerReadoptAttempts so a PR whose underlying failure keeps
+	// re-triggering the breaker can't ping-pong between held and waiting_ci
+	// forever — it eventually stays parked for a human. Never reset
+	// (lifetime counter for the PR). Persisted.
+	BreakerReadoptCount int
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -1248,6 +1293,8 @@ func (ps *PRState) snapshot() *PRState {
 		RebaseHoldActive:             ps.RebaseHoldActive,
 		ReadoptCount:                 ps.ReadoptCount,
 		PostMergeCINoWorkflowChecked: ps.PostMergeCINoWorkflowChecked,
+		BreakerHoldActive:            ps.BreakerHoldActive,
+		BreakerReadoptCount:          ps.BreakerReadoptCount,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.

@@ -168,6 +168,22 @@ type Dispatcher struct {
 	// Shared by pointer with every ProjectWorker (see ensureWorker) so one
 	// Dispatcher-level flag gates every project's queue.
 	admissionPaused *atomic.Bool
+
+	// admissionPauseMu guards admissionPauseOwners below. Separate from mu
+	// (which guards workers) — pause/resume never needs to be atomic with
+	// worker-map mutation, and keeping it separate avoids coupling this
+	// GH-4792 addition to mu's existing lock-ordering rules.
+	admissionPauseMu sync.Mutex
+	// admissionPauseOwners tracks which callers currently hold admission
+	// paused. GH-4792: PauseAdmission originally had exactly one caller (the
+	// GH-4683 self-upgrade drain) sharing one bool; the platform-outage
+	// breaker is a second, independent pauser. Reference-counting by owner
+	// key (not by call count) means admission only truly resumes once every
+	// owner that paused it has released — one owner's ResumeAdmissionFor can
+	// never undo another owner's still-active pause. admissionPaused above
+	// mirrors len(admissionPauseOwners) > 0 so ProjectWorker.processQueue's
+	// hot-path check stays a lock-free atomic load.
+	admissionPauseOwners map[string]bool
 }
 
 // NewDispatcher creates a new task dispatcher.
@@ -2291,6 +2307,12 @@ func (d *Dispatcher) QueuedOrRunningCount(projectPath string) int {
 	return count
 }
 
+// admissionPauseDefaultOwner is the owner key used by the zero-arg
+// PauseAdmission/ResumeAdmission convenience wrappers, preserving their
+// pre-GH-4792 single-owner behavior for callers (and tests) that don't need
+// owner tracking.
+const admissionPauseDefaultOwner = "default"
+
 // PauseAdmission stops every project worker (existing and future — the flag
 // is read by ensureWorker's freshly-created workers too) from picking up a
 // new queued task. Tasks already running when this is called are unaffected
@@ -2299,16 +2321,62 @@ func (d *Dispatcher) QueuedOrRunningCount(projectPath string) int {
 // self-upgrade drain to call before waiting for in-flight work, so the wait
 // only has to outlast tasks already running instead of racing a queue the
 // dispatcher keeps refilling.
+//
+// Convenience wrapper around PauseAdmissionFor(admissionPauseDefaultOwner)
+// — prefer PauseAdmissionFor directly when another owner may also pause
+// admission concurrently (see admissionPauseOwners).
 func (d *Dispatcher) PauseAdmission() {
-	d.admissionPaused.Store(true)
-	d.log.Info("dispatcher admission paused")
+	d.PauseAdmissionFor(admissionPauseDefaultOwner)
 }
 
 // ResumeAdmission re-enables queue pickup and signals every currently
 // registered worker so any task queued during the pause is picked up right
 // away rather than waiting for the next unrelated Signal() call. GH-4683.
+//
+// Convenience wrapper around ResumeAdmissionFor(admissionPauseDefaultOwner).
 func (d *Dispatcher) ResumeAdmission() {
-	d.admissionPaused.Store(false)
+	d.ResumeAdmissionFor(admissionPauseDefaultOwner)
+}
+
+// PauseAdmissionFor pauses admission on behalf of owner. GH-4792: reference-
+// counted by owner key so two independent pausers (the GH-4683 self-upgrade
+// drain and the platform-outage breaker) can each hold admission paused
+// without fighting over one bool — admission stays paused until every owner
+// that called PauseAdmissionFor has called ResumeAdmissionFor. Calling this
+// again for an owner that's already paused is a harmless no-op re-assertion.
+func (d *Dispatcher) PauseAdmissionFor(owner string) {
+	d.admissionPauseMu.Lock()
+	if d.admissionPauseOwners == nil {
+		d.admissionPauseOwners = make(map[string]bool)
+	}
+	alreadyPaused := len(d.admissionPauseOwners) > 0
+	d.admissionPauseOwners[owner] = true
+	d.admissionPaused.Store(true)
+	d.admissionPauseMu.Unlock()
+
+	if alreadyPaused {
+		d.log.Debug("dispatcher admission pause re-asserted", "owner", owner)
+		return
+	}
+	d.log.Info("dispatcher admission paused", "owner", owner)
+}
+
+// ResumeAdmissionFor releases owner's admission pause. Admission only
+// actually resumes (and workers are signaled) once no owner has an active
+// pause — see admissionPauseOwners.
+func (d *Dispatcher) ResumeAdmissionFor(owner string) {
+	d.admissionPauseMu.Lock()
+	delete(d.admissionPauseOwners, owner)
+	stillPaused := len(d.admissionPauseOwners) > 0
+	if !stillPaused {
+		d.admissionPaused.Store(false)
+	}
+	d.admissionPauseMu.Unlock()
+
+	if stillPaused {
+		d.log.Info("dispatcher admission pause released by owner, still paused by another owner", "owner", owner)
+		return
+	}
 	d.log.Info("dispatcher admission resumed")
 
 	d.mu.RLock()
@@ -2323,7 +2391,8 @@ func (d *Dispatcher) ResumeAdmission() {
 	}
 }
 
-// IsAdmissionPaused reports whether new task admission is currently paused.
+// IsAdmissionPaused reports whether new task admission is currently paused
+// (by any owner).
 func (d *Dispatcher) IsAdmissionPaused() bool {
 	return d.admissionPaused.Load()
 }
