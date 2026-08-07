@@ -576,20 +576,70 @@ func (m *CIMonitor) aggregateStatus(statuses map[string]CIStatus) CIStatus {
 	return CISuccess
 }
 
+// ciFailureConclusions is every GitHub check-run conclusion mapCheckStatus
+// treats as CIFailure (GH-4779). mapCheckStatus and the evidence-gathering
+// functions below (GetFailedChecks, GetFailedCheckLogs,
+// GetFailedCheckLogsByCheck, GetFailedCheckExcerpts) all read this single
+// table via isCIFailureConclusion instead of separately hardcoding
+// "conclusion != failure" — that drift is exactly what amplified the
+// 2026-08-06 outage: mapCheckStatus already treated cancelled/timed_out as
+// CIFailure, but every evidence-gathering function only ever matched the
+// literal "failure" string, so a bulk cancelled/timed_out outage produced an
+// aggregate CIFailure with zero gathered evidence, and classifyPRFailure
+// defaulted the resulting empty check list to a destructive classification.
+// Documented per-conclusion:
+//   - failure: the job ran and a step failed — the common case.
+//   - cancelled: the run was aborted (manually, or cascade-cancelled by a
+//     failing sibling) before completing normally.
+//   - timed_out: the job hit a configured time limit.
+//   - startup_failure: the job failed to even start (GH-4779) — GitHub-side,
+//     never a code failure.
+//   - stale: GitHub gave up tracking the check run's status (GH-4779) —
+//     GitHub-side, never a code failure.
+//   - action_required: GitHub is waiting on a human (e.g. first-time
+//     contributor workflow approval) — not a code failure, but also not
+//     something a CIPending wait will ever resolve on its own; routed into
+//     evidence gathering/classification like any other failure so it lands
+//     on the non-destructive escalate-and-hold path (FailureClassUnknown,
+//     since no job ever ran to produce evidence) rather than blocking
+//     forever.
+var ciFailureConclusions = map[string]bool{
+	github.ConclusionFailure:        true,
+	github.ConclusionCancelled:      true,
+	github.ConclusionTimedOut:       true,
+	conclusionStartupFailure:        true,
+	conclusionStale:                 true,
+	github.ConclusionActionRequired: true,
+}
+
+// isCIFailureConclusion reports whether conclusion is one mapCheckStatus
+// treats as CIFailure — the single source of truth shared with the
+// evidence-gathering functions (GH-4779; see ciFailureConclusions).
+func isCIFailureConclusion(conclusion string) bool {
+	return ciFailureConclusions[conclusion]
+}
+
 // mapCheckStatus maps GitHub check status to CIStatus.
 func (m *CIMonitor) mapCheckStatus(status, conclusion string) CIStatus {
 	switch status {
 	case github.CheckRunQueued, github.CheckRunInProgress:
 		return CIRunning
 	case github.CheckRunCompleted:
-		switch conclusion {
-		case github.ConclusionSuccess:
+		switch {
+		case conclusion == github.ConclusionSuccess:
 			return CISuccess
-		case github.ConclusionFailure, github.ConclusionCancelled, github.ConclusionTimedOut:
-			return CIFailure
-		case github.ConclusionSkipped, github.ConclusionNeutral:
+		case conclusion == github.ConclusionSkipped || conclusion == github.ConclusionNeutral:
 			// Skipped/neutral checks don't block
 			return CISuccess
+		case isCIFailureConclusion(conclusion):
+			// GH-4779: covers failure/cancelled/timed_out plus
+			// startup_failure/stale/action_required — see
+			// ciFailureConclusions for the documented reasoning behind each.
+			// None of these fall through to CIPending: a completed check
+			// with one of these conclusions will never change on its own,
+			// so waiting forever is worse than routing it into
+			// classifyPRFailure/escalateAndHold.
+			return CIFailure
 		default:
 			return CIPending
 		}
@@ -671,7 +721,7 @@ func (m *CIMonitor) GetFailedChecks(ctx context.Context, sha string) ([]string, 
 
 	var failed []string
 	for _, run := range checkRuns.CheckRuns {
-		if run.Conclusion != github.ConclusionFailure {
+		if !isCIFailureConclusion(run.Conclusion) {
 			continue
 		}
 		if !m.isScopedCheck(run.Name) {
@@ -713,7 +763,7 @@ func (m *CIMonitor) GetFailedCheckLogs(ctx context.Context, sha string, maxLen i
 
 	var combined strings.Builder
 	for _, run := range checkRuns.CheckRuns {
-		if run.Conclusion != github.ConclusionFailure {
+		if !isCIFailureConclusion(run.Conclusion) {
 			continue
 		}
 		if !m.isScopedCheck(run.Name) {
@@ -775,6 +825,27 @@ type FailedCheckLog struct {
 	// zero steps".
 	StepsKnown bool
 	StepsCount int
+	// FailingStepName is the name of the step resolveFailingStep actually
+	// resolved as the job's failing step, or "" when unresolved (GH-4779) —
+	// structural classification signal 1: a job whose failing step is one of
+	// GitHub's own synthetic setup/teardown steps (isSyntheticStepName) never
+	// reached any repo-defined code, regardless of what the log prose says.
+	// Only populated when StepsKnown.
+	FailingStepName string
+	// RepoStepsExecuted is the count of non-synthetic (repo-defined) steps
+	// GitHub recorded an outcome for (GH-4779 structural classification
+	// signal 2, see repoStepsExecuted) — 0 alongside StepsKnown means the job
+	// died during GitHub's own setup/teardown before running any of the
+	// workflow's own steps, even if StepsCount itself is non-zero (synthetic
+	// steps still populate the raw array). Only meaningful when StepsKnown.
+	RepoStepsExecuted int
+	// Conclusion is the check run's own top-level GitHub conclusion (e.g.
+	// "cancelled", "startup_failure", "stale") — GH-4779 structural
+	// classification signal 3: startup_failure/stale are never genuine code
+	// failures regardless of log content, since GitHub emits them when the
+	// job died for reasons outside the workflow's own steps. Always
+	// populated from the ListCheckRuns response — no extra API call.
+	Conclusion string
 }
 
 // GetFailedCheckLogsByCheck fetches raw job logs for each failed, in-scope
@@ -798,7 +869,7 @@ func (m *CIMonitor) GetFailedCheckLogsByCheck(ctx context.Context, sha string) [
 
 	var results []FailedCheckLog
 	for _, run := range checkRuns.CheckRuns {
-		if run.Conclusion != github.ConclusionFailure {
+		if !isCIFailureConclusion(run.Conclusion) {
 			continue
 		}
 		if !m.isScopedCheck(run.Name) {
@@ -814,7 +885,7 @@ func (m *CIMonitor) GetFailedCheckLogsByCheck(ctx context.Context, sha string) [
 			)
 		}
 
-		entry := FailedCheckLog{CheckName: run.Name, JobID: run.ID, Logs: logs}
+		entry := FailedCheckLog{CheckName: run.Name, JobID: run.ID, Logs: logs, Conclusion: run.Conclusion}
 		if run.Output != nil {
 			entry.AnnotationText = strings.TrimSpace(run.Output.Summary + "\n" + run.Output.Text)
 		}
@@ -825,6 +896,10 @@ func (m *CIMonitor) GetFailedCheckLogsByCheck(ctx context.Context, sha string) [
 			} else {
 				entry.StepsKnown = true
 				entry.StepsCount = len(job.Steps)
+				entry.RepoStepsExecuted = repoStepsExecuted(job.Steps)
+				if step, found := resolveFailingStep(job.Steps); found {
+					entry.FailingStepName = step.Name
+				}
 			}
 		}
 		results = append(results, entry)
@@ -854,7 +929,7 @@ func (m *CIMonitor) GetFailedCheckExcerpts(ctx context.Context, sha string) stri
 
 	var excerpts []FailingStepExcerpt
 	for _, run := range checkRuns.CheckRuns {
-		if run.Conclusion != github.ConclusionFailure {
+		if !isCIFailureConclusion(run.Conclusion) {
 			continue
 		}
 		if !m.isScopedCheck(run.Name) {

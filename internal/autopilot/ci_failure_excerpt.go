@@ -71,6 +71,29 @@ func resolveFailingStep(steps []ghadapter.JobStep) (ghadapter.JobStep, bool) {
 	return ghadapter.JobStep{}, false
 }
 
+// repoStepsExecuted returns the count of non-synthetic (repo-defined) steps
+// in steps that GitHub actually recorded an outcome for (non-empty
+// Conclusion) — GH-4779 structural signal: a job that died during GitHub's
+// own setup/teardown (isSyntheticStepName) before reaching any step the
+// workflow itself defines has this at 0, even when the raw step array is
+// non-empty (synthetic entries still populate it). Kept independent from
+// resolveFailingStep above — a step-name match on the failing step is
+// stronger evidence (the failing step is known), while this count also
+// catches a hard runner death with no single step-level conclusion recorded
+// at all.
+func repoStepsExecuted(steps []ghadapter.JobStep) int {
+	n := 0
+	for _, s := range steps {
+		if isSyntheticStepName(s.Name) {
+			continue
+		}
+		if s.Conclusion != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // sliceLogByStepWindow returns the lines of jobLog whose leading timestamp
 // falls within [step.StartedAt, step.CompletedAt]. This slices a job's
 // combined raw log down to one step's output without depending on GitHub

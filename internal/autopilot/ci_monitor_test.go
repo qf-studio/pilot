@@ -392,6 +392,23 @@ func TestCIMonitor_GetFailedChecks(t *testing.T) {
 			wantFailed: nil,
 			wantErr:    false,
 		},
+		{
+			// GH-4779 acceptance criterion #6: a cancelled-conclusion check
+			// (mapCheckStatus's completed-cancelled case has always been
+			// CIFailure) must still be gathered as evidence here — this is
+			// the parity the evidence-filter fix guarantees, so a PR whose
+			// only failed check was cancelled (e.g. GitHub aborted a sibling
+			// job after another one in the same run failed) never falls
+			// through to the zero-evidence FailureClassUnknown path for want
+			// of a filter that simply forgot about "cancelled".
+			name: "cancelled conclusion is gathered as evidence",
+			checkRuns: []github.CheckRun{
+				{Name: "build", Conclusion: github.ConclusionSuccess},
+				{Name: "integration", Conclusion: github.ConclusionCancelled},
+			},
+			wantFailed: []string{"integration"},
+			wantErr:    false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -535,6 +552,14 @@ func TestCIMonitor_MapCheckStatus(t *testing.T) {
 		{"completed timed_out", github.CheckRunCompleted, github.ConclusionTimedOut, CIFailure},
 		{"completed skipped", github.CheckRunCompleted, github.ConclusionSkipped, CISuccess},
 		{"completed neutral", github.CheckRunCompleted, github.ConclusionNeutral, CISuccess},
+		// GH-4779: startup_failure/stale (studio-sdk doesn't vendor these
+		// yet, hence the local literals) and action_required must all be
+		// explicit CIFailure cases, not fall through to the CIPending
+		// default — a job that never started or went stale is a completed
+		// failure, not something still in flight.
+		{"completed startup_failure", github.CheckRunCompleted, conclusionStartupFailure, CIFailure},
+		{"completed stale", github.CheckRunCompleted, conclusionStale, CIFailure},
+		{"completed action_required", github.CheckRunCompleted, github.ConclusionActionRequired, CIFailure},
 		{"completed unknown", github.CheckRunCompleted, "unknown", CIPending},
 		{"unknown status", "unknown", "", CIPending},
 	}
@@ -548,6 +573,42 @@ func TestCIMonitor_MapCheckStatus(t *testing.T) {
 			got := monitor.mapCheckStatus(tt.status, tt.conclusion)
 			if got != tt.want {
 				t.Errorf("mapCheckStatus(%s, %s) = %s, want %s", tt.status, tt.conclusion, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCIMonitor_MapCheckStatus_FailureConclusionParity is GH-4779's explicit
+// anti-drift guard for acceptance criterion #3: every conclusion that
+// mapCheckStatus treats as a completed CIFailure must also be a conclusion
+// the evidence-gathering functions (GetFailedChecks, GetFailedCheckLogsByCheck,
+// GetFailedCheckExcerpts) collect via isCIFailureConclusion — both sides now
+// read the same ciFailureConclusions table, so this test would catch any
+// future edit that updates one without the other.
+func TestCIMonitor_MapCheckStatus_FailureConclusionParity(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	allConclusions := []string{
+		github.ConclusionSuccess,
+		github.ConclusionFailure,
+		github.ConclusionCancelled,
+		github.ConclusionTimedOut,
+		github.ConclusionSkipped,
+		github.ConclusionNeutral,
+		github.ConclusionActionRequired,
+		conclusionStartupFailure,
+		conclusionStale,
+	}
+
+	for _, conclusion := range allConclusions {
+		t.Run(conclusion, func(t *testing.T) {
+			mappedFailure := monitor.mapCheckStatus(github.CheckRunCompleted, conclusion) == CIFailure
+			gatheredAsEvidence := isCIFailureConclusion(conclusion)
+			if mappedFailure != gatheredAsEvidence {
+				t.Errorf("conclusion %q: mapCheckStatus treats as CIFailure=%v but isCIFailureConclusion=%v — the two must agree or evidence gathering can silently miss a check the aggregate already counted as failed",
+					conclusion, mappedFailure, gatheredAsEvidence)
 			}
 		})
 	}
@@ -1882,6 +1943,46 @@ func TestCIMonitor_GetFailedCheckLogsByCheck(t *testing.T) {
 		}
 		if results[0].CheckName != "lint" {
 			t.Errorf("CheckName = %q, want lint", results[0].CheckName)
+		}
+	})
+
+	// GH-4779 acceptance criterion #6: a cancelled-conclusion check must
+	// still produce a non-empty evidence entry (with Conclusion populated),
+	// not be silently dropped by the same stale-filter bug the structural
+	// fix targets — cancelled is one of mapCheckStatus's CIFailure
+	// conclusions.
+	t.Run("cancelled conclusion is gathered with Conclusion populated", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/owner/repo/commits/abc123/check-runs":
+				resp := github.CheckRunsResponse{
+					TotalCount: 1,
+					CheckRuns: []github.CheckRun{
+						{ID: 100, Name: "integration", Status: "completed", Conclusion: "cancelled"},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/repos/owner/repo/actions/jobs/100/logs":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("a sibling job in this run failed, so GitHub cancelled this one"))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+		results := monitor.GetFailedCheckLogsByCheck(context.Background(), "abc123")
+
+		if len(results) != 1 {
+			t.Fatalf("len(results) = %d, want 1 (cancelled conclusion must be gathered as evidence)", len(results))
+		}
+		if results[0].Conclusion != "cancelled" {
+			t.Errorf("Conclusion = %q, want %q", results[0].Conclusion, "cancelled")
 		}
 	})
 }

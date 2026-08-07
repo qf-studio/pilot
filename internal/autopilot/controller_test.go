@@ -2887,6 +2887,205 @@ func TestHandleCIFailed_InfraFailure_BudgetResetOnNewSHA(t *testing.T) {
 	}
 }
 
+// TestHandleCIFailed_StructuralOutageReplay_AutoRetries replays the
+// 2026-08-06 GitHub Actions outage (pilot#4779) end-to-end through
+// handleCIFailed: every job died at GitHub's own synthetic "Set up job" step
+// with log prose ("Failed to resolve action download info. Error: Service
+// Unavailable") that matches none of TASK-418's four hardcoded infra
+// signatures, and the check-run conclusion is the ordinary "failure" — not
+// one of the newer startup_failure/stale conclusions. Before GH-4779 this
+// fell through to classifyCheckFailure's prose fallback and classified code,
+// which is exactly what closed the real PR #4770. The structural signal
+// (isStructuralInfra: RepoStepsExecuted==0) must classify infra and
+// auto-retry instead.
+func TestHandleCIFailed_StructuralOutageReplay_AutoRetries(t *testing.T) {
+	rerunCalled := false
+	issueCreated := false
+	prClosed := false
+
+	const outageLog = `##[error]Failed to resolve action download info. Error: Service Unavailable`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/outagesha1/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{ID: 200, Name: "build", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/200/logs":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(outageLog))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/200":
+			w.WriteHeader(http.StatusOK)
+			// The job died during GitHub's own synthetic "Set up job" step —
+			// no repo-defined step ever ran.
+			_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{
+				ID: 200, RunID: 600, Name: "build", Status: "completed",
+				Steps: []ghadapter.JobStep{
+					{Name: "Set up job", Status: "completed", Conclusion: "failure", Number: 1},
+				},
+			})
+		case r.URL.Path == "/repos/owner/repo/actions/runs/600/rerun-failed-jobs" && r.Method == http.MethodPost:
+			rerunCalled = true
+			w.WriteHeader(http.StatusCreated)
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 950}))
+		case r.URL.Path == "/repos/owner/repo/pulls/60" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+
+	prState := &PRState{
+		PRNumber: 60,
+		HeadSHA:  "outagesha1",
+		Stage:    StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if !rerunCalled {
+		t.Error("expected RerunFailedJobs to be called for the structurally-classified outage")
+	}
+	if issueCreated {
+		t.Error("no fix issue should be created for a structural-infra outage with retry budget remaining")
+	}
+	if prClosed {
+		t.Error("PR must not be closed on a structural-infra auto-retry")
+	}
+	if prState.Stage != StageWaitingCI {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageWaitingCI)
+	}
+
+	snap := c.metrics.Snapshot()
+	if got := snap.CIRuns["infra_retry"]; got != 1 {
+		t.Errorf("CIRuns[infra_retry] = %d, want 1", got)
+	}
+	if got := snap.CIRuns["fail"]; got != 0 {
+		t.Errorf("CIRuns[fail] = %d, want 0 (not a terminal fail)", got)
+	}
+}
+
+// TestHandleCIFailed_ZeroEvidence_EscalatesInsteadOfClosing covers GH-4779's
+// THE INVARIANT: CI's own aggregate reported CIFailure (that's the only way
+// handleCIFailed is reached), but evidence gathering came back with nothing
+// — the check-runs list is empty. This is precisely the gap that let the
+// pre-GH-4779 fail-unsafe default (classifyPRFailure(nil) == FailureClassCode)
+// close a PR and spawn a fix issue with nothing to point at. handleCIFailed
+// must classify FailureClassUnknown and route to escalateAndHold: never
+// ClosePullRequest, never a spawned fix issue, never a self-close marker.
+func TestHandleCIFailed_ZeroEvidence_EscalatesInsteadOfClosing(t *testing.T) {
+	issueCreated := false
+	prClosed := false
+	branchDeleted := false
+	var labelsAdded []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/zeroevidence1/check-runs":
+			// No check runs at all — the classic shape of a check-runs list
+			// call that raced GitHub's own status propagation, or otherwise
+			// returned nothing despite CI's aggregate already reporting
+			// failure.
+			resp := github.CheckRunsResponse{TotalCount: 0, CheckRuns: []github.CheckRun{}}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 951}))
+		case r.URL.Path == "/repos/owner/repo/pulls/61" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/git/refs/heads/") && r.Method == http.MethodDelete:
+			branchDeleted = true
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/labels") && r.Method == http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			labelsAdded = append(labelsAdded, body["labels"]...)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:    61,
+		IssueNumber: 32,
+		HeadSHA:     "zeroevidence1",
+		Stage:       StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if issueCreated {
+		t.Error("no fix issue should be spawned when there is zero evidence to point it at")
+	}
+	if prClosed {
+		t.Error("PR must NOT be closed on zero gathered evidence — THE INVARIANT (GH-4779)")
+	}
+	if branchDeleted {
+		t.Error("branch must NOT be deleted when the PR is held via escalateAndHold")
+	}
+	if c.consumeSelfClosedMarker(61) {
+		t.Error("escalateAndHold must never stamp a self-close marker — the PR was never closed")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	if prState.Error != "CI failure with zero gathered evidence" {
+		t.Errorf("Error = %q, want %q", prState.Error, "CI failure with zero gathered evidence")
+	}
+	found := false
+	for _, l := range labelsAdded {
+		if l == labelNeedsHuman {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pilot-needs-human label on the issue, got labels: %v", labelsAdded)
+	}
+
+	snap := c.metrics.Snapshot()
+	if got := snap.CIRuns["unknown_evidence"]; got != 1 {
+		t.Errorf("CIRuns[unknown_evidence] = %d, want 1", got)
+	}
+	if got := snap.PRFailureClasses["unknown"]; got != 1 {
+		t.Errorf("PRFailureClasses[unknown] = %d, want 1", got)
+	}
+}
+
 // TestHandleCIFailed_RealCodeFailure_StillHitsFixIssuePath is a regression
 // guard (GH-4533): a genuine code failure (real errcheck annotation in the
 // job log) must be unaffected by the new classify-first path — still
@@ -10472,6 +10671,14 @@ func TestController_handleCIFailed_BoardSync_IterationLimit(t *testing.T) {
 				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/issues/"):
 					// Return an issue body with iteration counter at the limit.
 					_, _ = fmt.Fprintf(w, `{"number":10,"body":"<!-- autopilot-meta iteration:%d -->"}`, 3)
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/check-runs"):
+					// GH-4779: a genuine code failure, so classifyPRFailure sees positive
+					// evidence (FailureClassCode) rather than short-circuiting into the
+					// zero-evidence escalateAndHold path — this test exercises the
+					// iteration-limit board sync, not the zero-evidence guard.
+					_, _ = fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":200,"name":"test","status":"completed","conclusion":"failure"}]}`)
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/actions/jobs/200/logs"):
+					_, _ = w.Write([]byte("--- FAIL: TestSomething\nassertion failed: expected true, got false"))
 				case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/pulls/"):
 					w.WriteHeader(http.StatusNoContent)
 				default:
@@ -10537,7 +10744,13 @@ func TestController_handleCIFailed_BoardSync_Regression_NormalPath(t *testing.T)
 		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/check-runs"):
 			_, _ = w.Write([]byte(`[]`))
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/check-runs"):
-			_, _ = fmt.Fprintf(w, `{"check_runs":[]}`)
+			// GH-4779: a genuine code failure, so classifyPRFailure sees positive
+			// evidence (FailureClassCode) rather than short-circuiting into the
+			// zero-evidence escalateAndHold path — this test exercises the normal
+			// CI-fail board sync, not the zero-evidence guard.
+			_, _ = fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":300,"name":"test","status":"completed","conclusion":"failure"}]}`)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/actions/jobs/300/logs"):
+			_, _ = w.Write([]byte("--- FAIL: TestSomething\nassertion failed: expected true, got false"))
 		case r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/"):
