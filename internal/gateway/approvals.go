@@ -30,12 +30,16 @@ func (s *Server) SetDecisionRecorder(r approval.DecisionRecorder) {
 // PRNumber, and PRUrl are nullable: the approval_pending row (source of the pending
 // list) has no execution linkage until SetApprovalRequestID runs, and that call is
 // best-effort (see memory.Store.SetApprovalRequestID), so the join can legitimately
-// miss.
+// miss. Project (GH-4773) is distinct from ProjectPath: it comes directly off the
+// approval_pending row's own `project` column (the submitter's canonicalized project
+// path), not the executions join, so it's populated even when the join misses. Also
+// nullable — empty/pre-migration rows carry no project.
 type approvalResponse struct {
 	RequestID   string    `json:"requestId"`
 	ExecutionID *string   `json:"executionId"`
 	TaskID      string    `json:"taskId"`
 	ProjectPath *string   `json:"projectPath"`
+	Project     *string   `json:"project"`
 	PRNumber    *int      `json:"prNumber"`
 	PRUrl       *string   `json:"prUrl"`
 	RequestedAt time.Time `json:"requestedAt"`
@@ -78,6 +82,15 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GH-4773: canonicalize the scope filter the same way the row's own
+	// `project` column was canonicalized at submit time (memory.
+	// CanonicalizeProjectPath, the #4297 lesson), so the column comparison
+	// below is robust regardless of how dashboardProjectPath was sourced.
+	scopedProject := ""
+	if projectPath != "" {
+		scopedProject = memory.CanonicalizeProjectPath(projectPath)
+	}
+
 	now := time.Now()
 	out := make([]approvalResponse, 0, len(rows))
 	for _, row := range rows {
@@ -90,10 +103,18 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 			TaskID:      row.TaskID,
 			RequestedAt: row.CreatedAt,
 		}
+		if row.Project != "" {
+			proj := row.Project
+			resp.Project = &proj
+		}
 
 		exec, execErr := store.GetExecutionByApprovalRequestID(row.ID)
 		if execErr == nil && exec != nil {
-			if projectPath != "" && exec.ProjectPath != projectPath {
+			// GH-4773: prefer the row's own project column when it matches the
+			// scope — it's a direct, non-best-effort attribution — but fall
+			// back to the join-based check for legacy rows with no project
+			// column (row.Project == ""), preserving today's behavior exactly.
+			if projectPath != "" && exec.ProjectPath != projectPath && row.Project != scopedProject {
 				continue
 			}
 			execID := exec.ID
@@ -108,10 +129,15 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		} else if projectPath != "" {
-			// Can't attribute this request to the scoped project (no execution
-			// linkage yet, or the lookup failed) — exclude rather than leak a
-			// possibly cross-project pending approval.
-			continue
+			// No execution linkage. GH-4773: previously this always excluded
+			// the row (PR#4752 finding — scoped mode dropped it entirely).
+			// Now include it when the row's own project column matches the
+			// scope directly, since that attribution doesn't depend on the
+			// best-effort executions join. Legacy rows with no project column
+			// keep the prior exclude-on-unjoinable behavior.
+			if row.Project == "" || row.Project != scopedProject {
+				continue
+			}
 		}
 
 		out = append(out, resp)

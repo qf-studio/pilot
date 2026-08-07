@@ -42,6 +42,15 @@ type Request struct {
 	Approvers        []string               // Required approvers (user IDs, handles)
 	PreferredChannel string                 `json:",omitempty"` // Preferred approval channel (e.g., "telegram", "slack"); falls back to first-available only when unset. When set but not registered, SubmitApprovalRequest fails with a named error instead of silently picking another handler (GH-4380).
 
+	// Project is the canonicalized project path this request was submitted
+	// for (memory.CanonicalizeProjectPath — the #4297 cross-project collision
+	// lesson: scoping keys on canonicalized paths). Set by the caller
+	// (autopilot.Controller, which owns c.projectPath) at submit time; the
+	// approval package only carries it through to persistence. Empty for
+	// requests submitted with no project context (e.g. tests, single-project
+	// setups predating GH-4773). GH-4773.
+	Project string
+
 	// ReleasePlan is a human-readable, pre-rendered description of what happens
 	// after this request is approved (e.g. "Will release immediately after
 	// merge." or "Rides the next release train: 2026-07-11 16:00 CET."),

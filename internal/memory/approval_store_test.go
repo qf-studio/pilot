@@ -80,6 +80,97 @@ func TestInsertAndLoadPendingApproval(t *testing.T) {
 	}
 }
 
+// TestInsertAndLoadPendingApproval_Project is the GH-4773 round-trip
+// regression test: a row's Project column must survive insert -> load
+// unchanged, and a legacy row that never set Project must load back as "".
+func TestInsertAndLoadPendingApproval_Project(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	a := &PendingApproval{
+		ID:        "req-project",
+		TaskID:    "GH-700",
+		Stage:     "pre_merge",
+		Title:     "Approve merge",
+		Project:   "/home/user/projects/pilot",
+		CreatedAt: now,
+		ExpiresAt: now.Add(24 * time.Hour),
+	}
+	legacy := &PendingApproval{
+		ID:        "req-legacy",
+		TaskID:    "GH-701",
+		Stage:     "pre_merge",
+		Title:     "Approve merge (pre-GH-4773)",
+		CreatedAt: now,
+		ExpiresAt: now.Add(24 * time.Hour),
+	}
+	if err := s.InsertPendingApproval(a); err != nil {
+		t.Fatalf("InsertPendingApproval: %v", err)
+	}
+	if err := s.InsertPendingApproval(legacy); err != nil {
+		t.Fatalf("InsertPendingApproval (legacy): %v", err)
+	}
+
+	all, err := s.LoadPendingApprovals()
+	if err != nil {
+		t.Fatalf("LoadPendingApprovals: %v", err)
+	}
+	byID := make(map[string]*PendingApproval, len(all))
+	for _, row := range all {
+		byID[row.ID] = row
+	}
+
+	if got := byID["req-project"]; got == nil || got.Project != "/home/user/projects/pilot" {
+		t.Errorf("req-project.Project = %v, want /home/user/projects/pilot", got)
+	}
+	if got := byID["req-legacy"]; got == nil || got.Project != "" {
+		t.Errorf("req-legacy.Project = %q, want empty (no backfill)", got.Project)
+	}
+}
+
+// TestApprovalPendingProjectColumn_MigrationIdempotent verifies that
+// re-opening the store (which re-runs the full migrations list, including
+// the GH-4773 `ALTER TABLE approval_pending ADD COLUMN project`) against an
+// existing DB tolerates the already-added column and preserves rows written
+// before the reopen.
+func TestApprovalPendingProjectColumn_MigrationIdempotent(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-approval-migration-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store1, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore (first open): %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := store1.InsertPendingApproval(&PendingApproval{
+		ID: "pre-reopen", TaskID: "GH-702", Stage: "pre_merge", Title: "t",
+		Project: "/proj/a", CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("InsertPendingApproval: %v", err)
+	}
+	_ = store1.Close()
+
+	// Re-open: migration must run the ALTER TABLE statement idempotently
+	// (the runner tolerates "duplicate column" per store.go's migration loop).
+	store2, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore (second open, post-migration): %v", err)
+	}
+	defer func() { _ = store2.Close() }()
+
+	all, err := store2.LoadPendingApprovals()
+	if err != nil {
+		t.Fatalf("LoadPendingApprovals after reopen: %v", err)
+	}
+	if len(all) != 1 || all[0].Project != "/proj/a" {
+		t.Fatalf("post-reopen rows = %+v, want 1 row with Project=/proj/a", all)
+	}
+}
+
 func TestInsertPendingApproval_Upsert(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()

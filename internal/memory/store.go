@@ -451,6 +451,15 @@ func (s *Store) migrate() error {
 		// reasoning exactly but for a different prior-claim status. See
 		// Dispatcher.priorClaimWasInfra.
 		`ALTER TABLE repick_backoff ADD COLUMN infra_drops INTEGER NOT NULL DEFAULT 0`,
+		// GH-4773: project identity on approval records. The gateway approvals
+		// surface (PR#4752) attributed rows only via the best-effort
+		// executions.approval_request_id join and dropped unlinked rows
+		// entirely in project-scoped mode; persisting the submitter's
+		// canonicalized project path directly on the row lets scoped GET
+		// /api/v1/approvals include those rows without depending on the join.
+		// Empty-string default keeps pre-migration rows attributing via the
+		// join exactly as before (no backfill — they expire within 24h).
+		`ALTER TABLE approval_pending ADD COLUMN project TEXT DEFAULT ''`,
 	}
 
 	for _, migration := range migrations {
@@ -3035,6 +3044,16 @@ func canonicalizeProjectPath(projectPath string) string {
 		return resolved
 	}
 	return cleaned
+}
+
+// CanonicalizeProjectPath is the exported form of canonicalizeProjectPath,
+// for callers outside this package that need to key on the same
+// canonicalized project path this store uses internally — e.g.
+// approval.Request.Project, set by autopilot.Controller at approval-submit
+// time so the persisted row and this store's own scoping keys agree
+// (GH-4773).
+func CanonicalizeProjectPath(projectPath string) string {
+	return canonicalizeProjectPath(projectPath)
 }
 
 // ClaimExecution atomically claims (task_id, project_path, generation) for

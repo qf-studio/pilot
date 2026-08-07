@@ -22,6 +22,11 @@ type PendingApproval struct {
 	PreferredChannel string
 	CreatedAt        time.Time
 	ExpiresAt        time.Time
+
+	// Project is the canonicalized project path this request was submitted
+	// for (approval.Request.Project — GH-4773). Empty for pre-migration rows
+	// and requests submitted with no project context.
+	Project string
 }
 
 // InsertPendingApproval persists a new pending approval record.
@@ -45,8 +50,8 @@ func (s *Store) InsertPendingApproval(a *PendingApproval) error {
 	return s.withRetry("InsertPendingApproval", func() error {
 		_, err := s.db.Exec(`
 			INSERT INTO approval_pending
-				(id, task_id, stage, title, description, metadata, approvers, preferred_channel, created_at, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				(id, task_id, stage, title, description, metadata, approvers, preferred_channel, project, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				task_id           = excluded.task_id,
 				stage             = excluded.stage,
@@ -55,10 +60,11 @@ func (s *Store) InsertPendingApproval(a *PendingApproval) error {
 				metadata          = excluded.metadata,
 				approvers         = excluded.approvers,
 				preferred_channel = excluded.preferred_channel,
+				project           = excluded.project,
 				expires_at        = excluded.expires_at
 		`,
 			a.ID, a.TaskID, a.Stage, a.Title, a.Description,
-			string(metaJSON), string(approversJSON), a.PreferredChannel,
+			string(metaJSON), string(approversJSON), a.PreferredChannel, a.Project,
 			a.CreatedAt, a.ExpiresAt,
 		)
 		return err
@@ -79,6 +85,7 @@ func (s *Store) LoadPendingApprovals() ([]*PendingApproval, error) {
 		SELECT id, task_id, stage, title,
 			COALESCE(description, ''), COALESCE(metadata, ''),
 			COALESCE(approvers, ''), COALESCE(preferred_channel, ''),
+			COALESCE(project, ''),
 			created_at, expires_at
 		FROM approval_pending
 		ORDER BY created_at ASC
@@ -181,7 +188,7 @@ func scanPendingApproval(row interface {
 	var metaJSON, approversJSON string
 	if err := row.Scan(
 		&a.ID, &a.TaskID, &a.Stage, &a.Title, &a.Description,
-		&metaJSON, &approversJSON, &a.PreferredChannel,
+		&metaJSON, &approversJSON, &a.PreferredChannel, &a.Project,
 		&a.CreatedAt, &a.ExpiresAt,
 	); err != nil {
 		return nil, err
