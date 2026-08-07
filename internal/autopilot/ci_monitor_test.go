@@ -2094,6 +2094,348 @@ func TestCIMonitor_GetFailedCheckLogsByCheck_JobsNeverStarted(t *testing.T) {
 	})
 }
 
+// TestLatestCheckRunsByName is the unit test for the GH-4781 dedup helper:
+// a SHA carrying more than one check-run per name (a rerun/recovery workflow
+// creates a new check suite rather than replacing the old one) must collapse
+// to exactly one entry per name — the one with the highest check-run ID,
+// regardless of the order runs appear in the API response.
+func TestLatestCheckRunsByName(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []github.CheckRun
+		want []github.CheckRun
+	}{
+		{
+			name: "old failed attempt then new passing attempt for same name",
+			in: []github.CheckRun{
+				{ID: 100, Name: "test", Conclusion: github.ConclusionFailure},
+				{ID: 200, Name: "test", Conclusion: github.ConclusionSuccess},
+			},
+			want: []github.CheckRun{
+				{ID: 200, Name: "test", Conclusion: github.ConclusionSuccess},
+			},
+		},
+		{
+			name: "old passing attempt then new failing attempt for same name (reversed)",
+			in: []github.CheckRun{
+				{ID: 100, Name: "test", Conclusion: github.ConclusionSuccess},
+				{ID: 200, Name: "test", Conclusion: github.ConclusionFailure},
+			},
+			want: []github.CheckRun{
+				{ID: 200, Name: "test", Conclusion: github.ConclusionFailure},
+			},
+		},
+		{
+			name: "newest attempt appears first in the API response",
+			in: []github.CheckRun{
+				{ID: 200, Name: "test", Conclusion: github.ConclusionSuccess},
+				{ID: 100, Name: "test", Conclusion: github.ConclusionFailure},
+			},
+			want: []github.CheckRun{
+				{ID: 200, Name: "test", Conclusion: github.ConclusionSuccess},
+			},
+		},
+		{
+			name: "single attempt per name is unchanged",
+			in: []github.CheckRun{
+				{ID: 1, Name: "build", Conclusion: github.ConclusionSuccess},
+				{ID: 2, Name: "lint", Conclusion: github.ConclusionFailure},
+			},
+			want: []github.CheckRun{
+				{ID: 1, Name: "build", Conclusion: github.ConclusionSuccess},
+				{ID: 2, Name: "lint", Conclusion: github.ConclusionFailure},
+			},
+		},
+		{
+			name: "three attempts for one name keeps only the highest id",
+			in: []github.CheckRun{
+				{ID: 300, Name: "test", Conclusion: github.ConclusionFailure},
+				{ID: 100, Name: "test", Conclusion: github.ConclusionFailure},
+				{ID: 200, Name: "test", Conclusion: github.ConclusionSuccess},
+			},
+			want: []github.CheckRun{
+				{ID: 300, Name: "test", Conclusion: github.ConclusionFailure},
+			},
+		},
+		{
+			name: "empty input",
+			in:   []github.CheckRun{},
+			want: []github.CheckRun{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := latestCheckRunsByName(tt.in)
+			if len(got) != len(tt.want) {
+				t.Fatalf("latestCheckRunsByName() = %+v, want %+v", got, tt.want)
+			}
+			for i, run := range got {
+				if run.ID != tt.want[i].ID || run.Name != tt.want[i].Name || run.Conclusion != tt.want[i].Conclusion {
+					t.Errorf("latestCheckRunsByName()[%d] = %+v, want %+v", i, run, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestCIMonitor_CheckCI_DedupesSupersededCheckRuns is the GH-4781 regression
+// test: a SHA with an old (superseded) attempt and a new attempt for the
+// same check name must aggregate on the new attempt only, across every
+// status-aggregation mode (checkRequiredChecks, checkAutoDiscoveredRuns,
+// checkAllRuns). Reproduces the PR#4770 incident — an outage-era failed run
+// plus a fresh passing run for the same SHA must resolve to CISuccess, not
+// CIFailure on the stale attempt.
+func TestCIMonitor_CheckCI_DedupesSupersededCheckRuns(t *testing.T) {
+	type mode struct {
+		name      string
+		configure func(cfg *Config)
+		checkRuns func(oldConclusion, newConclusion string) []github.CheckRun
+	}
+
+	modes := []mode{
+		{
+			name: "checkRequiredChecks (required-checks allowlist)",
+			configure: func(cfg *Config) {
+				cfg.RequiredChecks = []string{"test"}
+				cfg.CIChecks = nil
+			},
+			checkRuns: func(oldC, newC string) []github.CheckRun {
+				return []github.CheckRun{
+					{ID: 100, Name: "test", Status: github.CheckRunCompleted, Conclusion: oldC},
+					{ID: 200, Name: "test", Status: github.CheckRunCompleted, Conclusion: newC},
+				}
+			},
+		},
+		{
+			name: "checkAutoDiscoveredRuns (auto mode, no required checks)",
+			configure: func(cfg *Config) {
+				cfg.RequiredChecks = nil
+				cfg.CIChecks = &CIChecksConfig{Mode: "auto", DiscoveryGracePeriod: 50 * time.Millisecond}
+			},
+			checkRuns: func(oldC, newC string) []github.CheckRun {
+				return []github.CheckRun{
+					{ID: 100, Name: "test", Status: github.CheckRunCompleted, Conclusion: oldC},
+					{ID: 200, Name: "test", Status: github.CheckRunCompleted, Conclusion: newC},
+				}
+			},
+		},
+		{
+			name: "checkAllRuns (manual mode, no required checks)",
+			configure: func(cfg *Config) {
+				cfg.RequiredChecks = nil
+				cfg.CIChecks = &CIChecksConfig{Mode: "manual"}
+			},
+			checkRuns: func(oldC, newC string) []github.CheckRun {
+				return []github.CheckRun{
+					{ID: 100, Name: "test", Status: github.CheckRunCompleted, Conclusion: oldC},
+					{ID: 200, Name: "test", Status: github.CheckRunCompleted, Conclusion: newC},
+				}
+			},
+		},
+	}
+
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			t.Run("old failure, new success -> CISuccess", func(t *testing.T) {
+				runs := m.checkRuns(github.ConclusionFailure, github.ConclusionSuccess)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					resp := github.CheckRunsResponse{TotalCount: len(runs), CheckRuns: runs}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+				defer server.Close()
+
+				ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+				cfg := DefaultConfig()
+				m.configure(cfg)
+				monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+				status, err := monitor.CheckCI(context.Background(), "abc1234")
+				if err != nil {
+					t.Fatalf("CheckCI() error = %v", err)
+				}
+				if status != CISuccess {
+					t.Errorf("CheckCI() with old failure + new success = %s, want %s (stale failure must not count)", status, CISuccess)
+				}
+			})
+
+			t.Run("old success, new failure -> CIFailure", func(t *testing.T) {
+				runs := m.checkRuns(github.ConclusionSuccess, github.ConclusionFailure)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					resp := github.CheckRunsResponse{TotalCount: len(runs), CheckRuns: runs}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
+				}))
+				defer server.Close()
+
+				ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+				cfg := DefaultConfig()
+				m.configure(cfg)
+				monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+				status, err := monitor.CheckCI(context.Background(), "abc1234")
+				if err != nil {
+					t.Fatalf("CheckCI() error = %v", err)
+				}
+				if status != CIFailure {
+					t.Errorf("CheckCI() with old success + new failure = %s, want %s (new attempt's failure must count)", status, CIFailure)
+				}
+			})
+		})
+	}
+}
+
+// TestCIMonitor_GetFailedChecks_DedupesSupersededAttempts verifies evidence
+// gathering agrees with status aggregation (GH-4781 acceptance #1): when the
+// latest attempt for a check name passed, GetFailedChecks must not report it
+// even though an older, superseded attempt for the same name failed; when
+// the latest attempt failed, it must be reported exactly once.
+func TestCIMonitor_GetFailedChecks_DedupesSupersededAttempts(t *testing.T) {
+	t.Run("old failure superseded by new success yields no evidence", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			resp := github.CheckRunsResponse{
+				TotalCount: 2,
+				CheckRuns: []github.CheckRun{
+					{ID: 100, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+					{ID: 200, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		monitor := NewCIMonitor(ghClient, "owner", "repo", DefaultConfig())
+
+		failed, err := monitor.GetFailedChecks(context.Background(), "abc1234")
+		if err != nil {
+			t.Fatalf("GetFailedChecks() error = %v", err)
+		}
+		if len(failed) != 0 {
+			t.Errorf("GetFailedChecks() = %v, want empty (stale failure must not be gathered as evidence)", failed)
+		}
+	})
+
+	t.Run("old success superseded by new failure yields the new attempt as evidence", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			resp := github.CheckRunsResponse{
+				TotalCount: 2,
+				CheckRuns: []github.CheckRun{
+					{ID: 100, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+					{ID: 200, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		monitor := NewCIMonitor(ghClient, "owner", "repo", DefaultConfig())
+
+		failed, err := monitor.GetFailedChecks(context.Background(), "abc1234")
+		if err != nil {
+			t.Fatalf("GetFailedChecks() error = %v", err)
+		}
+		if len(failed) != 1 || failed[0] != "test" {
+			t.Errorf("GetFailedChecks() = %v, want [test] exactly once", failed)
+		}
+	})
+}
+
+// TestCIMonitor_GetFailedCheckLogsByCheck_DedupesSupersededAttempts verifies
+// that per-check evidence gathering (GH-4533's classifier input) fetches
+// logs from the NEW attempt's job ID, not the stale one — and never returns
+// two entries for the same check name.
+func TestCIMonitor_GetFailedCheckLogsByCheck_DedupesSupersededAttempts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 2,
+				CheckRuns: []github.CheckRun{
+					{ID: 100, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+					{ID: 200, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/actions/jobs/100/logs":
+			// Stale attempt's log must never be consulted.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("stale outage-era log"))
+		case "/repos/owner/repo/actions/jobs/200/logs":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("fresh failure log"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	monitor := NewCIMonitor(ghClient, "owner", "repo", DefaultConfig())
+
+	results := monitor.GetFailedCheckLogsByCheck(context.Background(), "abc1234")
+
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1 (one entry per check name, not one per attempt)", len(results))
+	}
+	if results[0].JobID != 200 {
+		t.Errorf("results[0].JobID = %d, want 200 (the new attempt's job ID)", results[0].JobID)
+	}
+	if results[0].Logs != "fresh failure log" {
+		t.Errorf("results[0].Logs = %q, want the new attempt's log, not the stale one", results[0].Logs)
+	}
+}
+
+// TestCIMonitor_GetDiscoveredChecks_DedupesSupersededNames is the regression
+// test for the "CI checks discovered" log line (GH-4781 acceptance #3): a
+// duplicated name in that line was the tell that superseded check-runs were
+// still being aggregated. Once discovery goes through the dedup, a SHA
+// carrying two attempts of the same check name must record that name once.
+func TestCIMonitor_GetDiscoveredChecks_DedupesSupersededNames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := github.CheckRunsResponse{
+			TotalCount: 3,
+			CheckRuns: []github.CheckRun{
+				{ID: 100, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+				{ID: 101, Name: "lint", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{ID: 200, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+			},
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.RequiredChecks = nil
+	cfg.CIChecks = &CIChecksConfig{Mode: "auto", DiscoveryGracePeriod: 50 * time.Millisecond}
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	if _, err := monitor.CheckCI(context.Background(), "abc1234"); err != nil {
+		t.Fatalf("CheckCI() error = %v", err)
+	}
+
+	discovered := monitor.GetDiscoveredChecks("abc1234")
+	seen := make(map[string]int)
+	for _, name := range discovered {
+		seen[name]++
+	}
+	for name, count := range seen {
+		if count > 1 {
+			t.Errorf("discovered check %q reported %d times, want 1 (duplicate name is the GH-4781 tell)", name, count)
+		}
+	}
+	if len(discovered) != 2 {
+		t.Errorf("GetDiscoveredChecks() = %v, want 2 unique names (test, lint)", discovered)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
 }
