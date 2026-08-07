@@ -305,6 +305,29 @@ type ProjectCIChecksOverride struct {
 	CIChecks *CIChecksConfig `yaml:"ci_checks,omitempty"`
 }
 
+// ProjectApprovalOverride lets a per-project controller override the
+// resolved env/global RequireApproval gate and ApprovalSource channel
+// (GH-4774). Mirrors the ProjectReleaseConfig/ProjectCIChecksOverride overlay
+// pattern (GH-3930/GH-4478): without this, every controller shared the same
+// require_approval/approval_source resolved from Config.Environments /
+// Config.ApprovalSource, so a personal project could not route approval asks
+// to Telegram while a work project routes to Slack, and every project was
+// forced to the same gating strictness. Nil fields inherit the resolved
+// env/global value — both fields are pointers (rather than the bool-zero-value
+// / empty-string-inherits idiom ProjectReleaseConfig uses for some fields) so
+// an explicit `require_approval: false` override can be distinguished from
+// "not set" (a project intentionally disabling an env's require_approval:true
+// must not be indistinguishable from silently inheriting it).
+type ProjectApprovalOverride struct {
+	// RequireApproval overrides the resolved env RequireApproval
+	// (Config.ResolvedEnvOrDefault().RequireApproval) for this project. Nil
+	// inherits.
+	RequireApproval *bool `yaml:"require_approval,omitempty"`
+	// ApprovalSource overrides the resolved EffectiveApprovalSource for this
+	// project. Nil inherits.
+	ApprovalSource *ApprovalSource `yaml:"approval_source,omitempty"`
+}
+
 // defaultEnvironments returns built-in environment configs matching legacy behavior.
 func defaultEnvironments() map[string]*EnvironmentConfig {
 	return map[string]*EnvironmentConfig{

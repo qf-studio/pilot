@@ -845,8 +845,14 @@ Examples:
 							// executions.project_path) so merged work flips failed→completed.
 							gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectPath(projectPath))
 							// GH-3931: apply the per-project release overlay (GH-3930) when configured.
-							if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil && proj.Release != nil {
-								gwBoardOpts = append(gwBoardOpts, autopilot.WithReleaseOverride(proj.Release))
+							// GH-4774: apply the per-project approval overlay when configured.
+							if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil {
+								if proj.Release != nil {
+									gwBoardOpts = append(gwBoardOpts, autopilot.WithReleaseOverride(proj.Release))
+								}
+								if proj.Approval != nil {
+									gwBoardOpts = append(gwBoardOpts, autopilot.WithApprovalOverride(proj.Approval))
+								}
 							}
 							gwAutopilotController = autopilot.NewController(
 								cfg.Orchestrator.Autopilot,
@@ -2002,6 +2008,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 						if proj.CIChecks != nil {
 							ctrlOpts = append(ctrlOpts, autopilot.WithCIChecksOverride(proj.CIChecks))
 						}
+						// GH-4774: apply the per-project approval overlay when configured;
+						// nil is a no-op (inherits the resolved env/global RequireApproval
+						// gate and ApprovalSource channel).
+						if proj.Approval != nil {
+							ctrlOpts = append(ctrlOpts, autopilot.WithApprovalOverride(proj.Approval))
+						}
 					}
 					controller := autopilot.NewController(
 						cfg.Orchestrator.Autopilot,
@@ -2062,6 +2074,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				// the global CI-checks config was always the pre-existing behavior.
 				if proj.CIChecks != nil {
 					ctrlOpts = append(ctrlOpts, autopilot.WithCIChecksOverride(proj.CIChecks))
+				}
+				// GH-4774: apply the per-project approval overlay when configured;
+				// nil is a no-op (inherits the resolved env/global RequireApproval
+				// gate and ApprovalSource channel).
+				if proj.Approval != nil {
+					ctrlOpts = append(ctrlOpts, autopilot.WithApprovalOverride(proj.Approval))
 				}
 				controller := autopilot.NewController(
 					cfg.Orchestrator.Autopilot,

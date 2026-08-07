@@ -766,6 +766,83 @@ func TestConfig_Validate_ReleasePublish(t *testing.T) {
 	}
 }
 
+// GH-4774: Validate approval.approval_source enum on each project's approval
+// overlay.
+func TestConfig_Validate_ProjectApprovalSource(t *testing.T) {
+	tests := []struct {
+		name      string
+		buildCfg  func() *Config
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "nil approval overlay is valid",
+			buildCfg: func() *Config {
+				return baseValidConfig()
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid telegram approval_source overlay",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				source := autopilot.ApprovalSourceTelegram
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: &source}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid slack approval_source overlay",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				source := autopilot.ApprovalSourceSlack
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: &source}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid github-review alias approval_source overlay",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				source := autopilot.ApprovalSourceGitHubReview
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: &source}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid approval_source overlay",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				bogus := autopilot.ApprovalSource("bogus")
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: &bogus}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `projects[0].approval.approval_source must be "telegram", "slack", or "github-review"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.buildCfg()
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
+				} else if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // GH-3989: Validate release.trigger enum + schedule/schedule_timezone
 // parseability at the global, per-environment, and per-project overlay
 // levels — mirrors TestConfig_Validate_ReleasePublish's structure.

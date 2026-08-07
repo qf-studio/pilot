@@ -922,12 +922,12 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 
 	// Detect approval/env mismatch: an env has require_approval=true but the
 	// approval.pre_merge stage is disabled → every PR in that env deadlocks.
+	preMergeEnabled := cfg.Approval != nil &&
+		cfg.Approval.Enabled &&
+		cfg.Approval.PreMerge != nil &&
+		cfg.Approval.PreMerge.Enabled
 	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil &&
 		cfg.Orchestrator.Autopilot.Environments != nil {
-		preMergeEnabled := cfg.Approval != nil &&
-			cfg.Approval.Enabled &&
-			cfg.Approval.PreMerge != nil &&
-			cfg.Approval.PreMerge.Enabled
 		for envName, envCfg := range cfg.Orchestrator.Autopilot.Environments {
 			if envCfg != nil && envCfg.RequireApproval && !preMergeEnabled {
 				checks = append(checks, ConfigCheck{
@@ -938,6 +938,87 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 				})
 				break // one diagnostic per run is enough
 			}
+		}
+	}
+
+	// GH-4774: a project's approval overlay can independently require
+	// approval (even when its env doesn't) — same deadlock risk as the
+	// env-level check above, scoped per-project.
+	for _, p := range cfg.Projects {
+		if p == nil || p.Approval == nil || p.Approval.RequireApproval == nil || !*p.Approval.RequireApproval {
+			continue
+		}
+		if !preMergeEnabled {
+			checks = append(checks, ConfigCheck{
+				Name:    "approval-misconfig",
+				Status:  StatusError,
+				Message: fmt.Sprintf("project %q has approval.require_approval=true but approval.pre_merge.enabled=false → all PRs will deadlock until enabled or the override is removed", p.Name),
+				Fix:     "Set approval.enabled: true + approval.pre_merge.enabled: true + add an approver, or remove/set require_approval: false in the project's approval overlay",
+			})
+			break // one diagnostic per run is enough
+		}
+	}
+
+	// GH-4774: verify the resolved approval_source at each level (global,
+	// per-env, per-project override) maps to a channel this process would
+	// actually register a handler for. Before this, a typo'd or
+	// unconfigured approval_source silently fell through to whichever
+	// handler happened to win Go's map iteration order (or none) once a PR
+	// reached the approval stage — this surfaces it on `pilot doctor`
+	// instead. Registration conditions mirror runPollingMode in
+	// cmd/pilot/main.go; webhook mode registers Slack only, so this is a
+	// conservative approximation (it can under-report for webhook-mode
+	// Telegram/GitHub gaps) but still catches the common
+	// forgot-to-enable-the-adapter case.
+	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
+		telegramRegistered := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
+			(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled)
+		slackRegistered := cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" &&
+			cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled
+		githubRegistered := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Approval != nil && cfg.Adapters.GitHub.Approval.Enabled
+
+		sourceRegistered := func(source string) bool {
+			switch source {
+			case "", "telegram":
+				// defaultChannelName in internal/approval/channel.go claims an
+				// empty/unset preferred channel — mirror that default here.
+				return telegramRegistered
+			case "slack":
+				return slackRegistered
+			case "github-review":
+				return githubRegistered
+			default:
+				// Unknown values are already rejected by config validation.
+				return true
+			}
+		}
+
+		reported := make(map[string]bool)
+		reportUnregistered := func(pathPrefix, source string) {
+			if reported[pathPrefix] || sourceRegistered(source) {
+				return
+			}
+			reported[pathPrefix] = true
+			checks = append(checks, ConfigCheck{
+				Name:    "approval-source-unregistered",
+				Status:  StatusError,
+				Message: fmt.Sprintf("%s resolves to approval_source %q but no matching approval handler would be registered (adapter disabled, token missing, or its approval block isn't enabled) — approval requests on this path will be undeliverable", pathPrefix, source),
+				Fix:     "Enable and configure the adapter for this approval_source (adapters.telegram/slack/github + its approval block), or change approval_source to a channel you have configured",
+			})
+		}
+
+		reportUnregistered("orchestrator.autopilot.approval_source", string(cfg.Orchestrator.Autopilot.ApprovalSource))
+		for envName, envCfg := range cfg.Orchestrator.Autopilot.Environments {
+			if envCfg == nil || envCfg.ApprovalSource == "" {
+				continue
+			}
+			reportUnregistered(fmt.Sprintf("orchestrator.autopilot.environments[%s].approval_source", envName), string(envCfg.ApprovalSource))
+		}
+		for _, p := range cfg.Projects {
+			if p == nil || p.Approval == nil || p.Approval.ApprovalSource == nil {
+				continue
+			}
+			reportUnregistered(fmt.Sprintf("projects[%s].approval.approval_source", p.Name), string(*p.Approval.ApprovalSource))
 		}
 	}
 

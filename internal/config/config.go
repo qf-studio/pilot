@@ -274,6 +274,15 @@ type ProjectConfig struct {
 	// only flips CISuccess when a live run's name matches an allowlisted name).
 	// Unset fields inherit from the global config.
 	CIChecks *autopilot.ProjectCIChecksOverride `yaml:"ci_checks,omitempty"`
+	// Approval overlays the resolved env/global RequireApproval gate and
+	// ApprovalSource channel for this project (GH-4774). Without it, every
+	// project controller shares the single resolved
+	// Config.Orchestrator.Autopilot RequireApproval/ApprovalSource — fine for
+	// a single operator's default repo, but a multi-project setup (e.g. a
+	// personal project routed to Telegram alongside a work project routed to
+	// Slack, or projects with different gating strictness) needs independent
+	// resolution. Unset fields inherit from the resolved env/global config.
+	Approval *autopilot.ProjectApprovalOverride `yaml:"approval,omitempty"`
 	// Canary marks this project as a synthetic sandbox (e.g. the TASK-379 V8
 	// canary workflow) rather than real work (GH-4240). Executions dispatched
 	// for a canary project are still fully persisted and event-logged — the
@@ -874,6 +883,19 @@ var validReleaseTriggerValues = map[string]bool{
 	"on_schedule":    true,
 }
 
+// validApprovalSourceValues are the accepted values for a per-project
+// approval.approval_source overlay (GH-4774). Mirrors the alias table in
+// internal/approval/channel.go's knownChannelNames — "github-review" is the
+// config-facing alias for the "github" Handler.Name(), normalized at
+// dispatch time, so both the canonical and alias spellings are accepted
+// here rather than duplicating that unexported mapping.
+var validApprovalSourceValues = map[string]bool{
+	"":              true, // Empty inherits the resolved env/global source
+	"telegram":      true,
+	"slack":         true,
+	"github-review": true,
+}
+
 // validateReleaseTriggerFields validates the trigger enum and, when trigger
 // is "on_schedule", that schedule is present and parses as a robfig/cron/v3
 // standard (5-field: minute hour dom month dow) cron expression; when
@@ -1005,6 +1027,19 @@ func (c *Config) Validate() error {
 		projectPath := fmt.Sprintf("projects[%d].release", i)
 		if err := validateReleaseTriggerFields(projectPath, p.Release.Trigger, p.Release.Schedule, p.Release.ScheduleTimezone); err != nil {
 			return err
+		}
+	}
+
+	// GH-4774: Validate approval.approval_source on each project's approval
+	// overlay against the same channel names the approval package's
+	// normalizeChannelName/knownChannelNames alias table recognizes.
+	for i, p := range c.Projects {
+		if p == nil || p.Approval == nil || p.Approval.ApprovalSource == nil {
+			continue
+		}
+		source := string(*p.Approval.ApprovalSource)
+		if !validApprovalSourceValues[source] {
+			return fmt.Errorf("projects[%d].approval.approval_source must be \"telegram\", \"slack\", or \"github-review\", got %q", i, source)
 		}
 	}
 

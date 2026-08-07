@@ -1337,6 +1337,95 @@ func TestCheckConfig_ApprovalMisconfig_NotReported_WhenNoEnvRequiresApproval(t *
 }
 
 // ---------------------------------------------------------------------------
+// GH-4774: per-project approval overlay doctor checks
+// ---------------------------------------------------------------------------
+
+func TestCheckConfig_ApprovalMisconfig_Detected_ProjectOverride(t *testing.T) {
+	// env does NOT require approval, but a project's approval overlay does —
+	// with approval.pre_merge disabled, that project's PRs will deadlock.
+	requireApproval := true
+	cfg := config.DefaultConfig()
+	cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
+	cfg.Orchestrator.Autopilot.Environments = map[string]*autopilot.EnvironmentConfig{
+		"stage": {RequireApproval: false},
+	}
+	cfg.Projects = []*config.ProjectConfig{
+		{Name: "work-app", Approval: &autopilot.ProjectApprovalOverride{RequireApproval: &requireApproval}},
+	}
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = false
+	cfg.Approval = approvalCfg
+
+	checks := checkConfig(cfg)
+	found := false
+	for _, c := range checks {
+		if c.Name == "approval-misconfig" {
+			found = true
+			if c.Status != StatusError {
+				t.Errorf("approval-misconfig status = %v, want StatusError", c.Status)
+			}
+			if !strings.Contains(c.Message, "work-app") {
+				t.Errorf("approval-misconfig message should mention the project name, got: %s", c.Message)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected approval-misconfig check to appear in ConfigChecks for a project override")
+	}
+}
+
+func TestCheckConfig_ApprovalSourceUnregistered_Detected(t *testing.T) {
+	// Global approval_source is telegram, but no Telegram adapter/token is
+	// configured — the resolved source has no registered handler.
+	cfg := config.DefaultConfig()
+	cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
+	cfg.Orchestrator.Autopilot.Enabled = true
+	cfg.Orchestrator.Autopilot.ApprovalSource = autopilot.ApprovalSourceTelegram
+	cfg.Adapters.Telegram = nil
+
+	checks := checkConfig(cfg)
+	found := false
+	for _, c := range checks {
+		if c.Name == "approval-source-unregistered" {
+			found = true
+			if c.Status != StatusError {
+				t.Errorf("approval-source-unregistered status = %v, want StatusError", c.Status)
+			}
+			if !strings.Contains(c.Message, "telegram") {
+				t.Errorf("approval-source-unregistered message should mention the source, got: %s", c.Message)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected approval-source-unregistered check when approval_source has no registered handler")
+	}
+}
+
+func TestCheckConfig_ApprovalSourceUnregistered_NotReported_WhenRegistered(t *testing.T) {
+	slackSource := autopilot.ApprovalSourceSlack
+	cfg := config.DefaultConfig()
+	cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
+	cfg.Orchestrator.Autopilot.Enabled = true
+	cfg.Orchestrator.Autopilot.ApprovalSource = autopilot.ApprovalSourceTelegram
+	cfg.Adapters.Telegram = &telegram.Config{Enabled: true, BotToken: "test-bot-token"}
+	cfg.Projects = []*config.ProjectConfig{
+		{Name: "work-app", Approval: &autopilot.ProjectApprovalOverride{ApprovalSource: &slackSource}},
+	}
+	cfg.Adapters.Slack = &slack.Config{
+		Enabled:  true,
+		BotToken: "test-slack-bot-token",
+		Approval: &slack.ApprovalConfig{Enabled: true},
+	}
+
+	checks := checkConfig(cfg)
+	for _, c := range checks {
+		if c.Name == "approval-source-unregistered" {
+			t.Errorf("unexpected approval-source-unregistered check when both sources have registered handlers: %+v", c)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // GH-3826: Telegram approval-stranding checks
 // ---------------------------------------------------------------------------
 
