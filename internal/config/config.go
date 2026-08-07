@@ -1070,6 +1070,24 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// GatewayAuthConfig returns the *gateway.AuthConfig to enforce on the gateway's
+// /api/v1 routes, or nil when bearer auth should stay disabled.
+//
+// GH-4784: c.Auth is bound from YAML (`auth:`) and DefaultConfig seeds it with
+// AuthTypeClaudeCode so Validate's api-token check has something to inspect,
+// but that default must NOT itself start gatekeeping /api/v1 — only an
+// explicitly configured api-token with a non-empty token does. Production
+// construction sites (gateway mode in internal/pilot/pilot.go, polling mode
+// in cmd/pilot/main.go) MUST call this — and only this — to decide whether to
+// build via gateway.NewServerWithAuth, so an empty/default token reproduces
+// today's fully-open behavior (loopback bind is the only mitigant) exactly.
+func (c *Config) GatewayAuthConfig() *gateway.AuthConfig {
+	if c.Auth == nil || c.Auth.Type != gateway.AuthTypeAPIToken || c.Auth.Token == "" {
+		return nil
+	}
+	return c.Auth
+}
+
 // CheckDeprecations logs warnings for deprecated configuration fields.
 // Call this after loading configuration to inform users of deprecated settings.
 // Returns a slice of deprecation warnings for testing purposes.

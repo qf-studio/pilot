@@ -3681,6 +3681,19 @@
         "confidence": 0.95,
         "created": "2026-07-17"
       },
+      "unwired-config-field-validated-but-dead": {
+        "type": "pitfall",
+        "summary": "A config struct field with a Validate() check and a DefaultConfig() seed reads as already-wired, but proves nothing about runtime consumption: cfg.Auth had both since before PR#4752, yet neither production gateway-construction site (pilot.go gateway mode, main.go polling mode) ever passed it to NewServerWithAuth \u2014 both called NewServer(nil), so /api/v1 served zero auth regardless of config (GH-4784, 2026-08-07). Grep every production call site of the consuming constructor, not just the field's definition/validator/default.",
+        "file": ".agent/knowledge/memories/pitfalls/unwired-config-field-validated-but-dead.md",
+        "concepts": [
+          "gateway",
+          "auth",
+          "config-wiring",
+          "composed-test"
+        ],
+        "confidence": 0.95,
+        "created": "2026-08-07"
+      },
       "absolute-state-paths-bypass-cutover-shim": {
         "type": "pitfall",
         "summary": "Machine-cutover path shims must cover EVERY absolute path in config — the missed /Users/.../.pilot state path made the box daemon silently create a shadow ledger (split-brain, #4393, 2026-07-17). Verify daemon's open DB FD via /proc after any start on a new box.",
