@@ -249,3 +249,31 @@ func TestAggregateMetrics_WindowStatsNotSummedAcrossControllers(t *testing.T) {
 		t.Errorf("WindowDeliveryRate = %.4f, must never exceed 1.0", snap.WindowDeliveryRate)
 	}
 }
+
+// TestAggregateMetrics_PropagatesPlatformBreakerFromControllers pins GH-4798:
+// PlatformBreakerTrips/PlatformBreakerOpen (GH-4791) were added to
+// Metrics/MetricsSnapshot but AggregateMetrics.Snapshot — which copies
+// fields explicitly, field-by-field — was never updated to carry them
+// across. Every real deployment reads /metrics through the aggregate
+// (SetMetricsSource(autopilotMetricsAggregate), cmd/pilot/main.go), so both
+// series served 0 in production regardless of breaker state. Same bug shape
+// as GH-4738/PR#4739 in this same file.
+func TestAggregateMetrics_PropagatesPlatformBreakerFromControllers(t *testing.T) {
+	defaultMetrics := NewMetrics()
+	otherMetrics := NewMetrics()
+
+	// Only the non-default (e.g. per-project) controller observed a trip and
+	// the shared breaker open.
+	otherMetrics.RecordPlatformBreakerTrip()
+	otherMetrics.SetPlatformBreakerOpen(true)
+
+	agg := NewAggregateMetrics(defaultMetrics, otherMetrics)
+	snap := agg.Snapshot()
+
+	if snap.PlatformBreakerTrips != 1 {
+		t.Errorf("PlatformBreakerTrips = %d, want 1 (must sum across controllers, not stay at the aggregate's zero value)", snap.PlatformBreakerTrips)
+	}
+	if !snap.PlatformBreakerOpen {
+		t.Errorf("PlatformBreakerOpen = false, want true (must OR across controllers — any controller having last seen it open means open)")
+	}
+}

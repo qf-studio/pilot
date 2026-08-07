@@ -117,6 +117,14 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 			agg.CIRuns[k] += v
 		}
 		agg.CircuitBreakerTrips += s.CircuitBreakerTrips
+		// GH-4798: PlatformBreakerTrips/PlatformBreakerOpen (GH-4791) were
+		// added to Metrics/MetricsSnapshot but never copied here — same bug
+		// shape as GH-4738 above. Trips sum (each controller counts its own
+		// suppressed actions); Open is OR'd (each controller mirrors the
+		// shared process-wide breaker state as of its own most recent
+		// Observe, so any controller having last seen it open means open).
+		agg.PlatformBreakerTrips += s.PlatformBreakerTrips
+		agg.PlatformBreakerOpen = agg.PlatformBreakerOpen || s.PlatformBreakerOpen
 		for k, v := range s.APIErrors {
 			agg.APIErrors[k] += v
 		}
