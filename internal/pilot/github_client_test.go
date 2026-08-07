@@ -64,9 +64,12 @@ func newTestPilotConfig(t *testing.T, token string) *config.Config {
 // its lifetime — so an App-auth token rotation (or a 401) after that point
 // would never be picked up.
 func TestNew_WithGitHubClient_ResolvesTokenPerRequest(t *testing.T) {
+	var mu sync.Mutex
 	var gotAuth []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"number":1}`))
 	}))
@@ -90,6 +93,25 @@ func TestNew_WithGitHubClient_ResolvesTokenPerRequest(t *testing.T) {
 		t.Fatal("New must keep the client supplied via WithGitHubClient instead of building its own from cfg.Adapters.GitHub.Token")
 	}
 
+	// GH-4778: p.githubClient matching is necessary but not sufficient — the
+	// actual consumers that make requests are githubWH and githubNotify
+	// (wired at pilot.go:378-385). Pin that they captured the same injected
+	// client too, so a regression that moves option application back after
+	// adapter init (discarding the injected client for these two) is caught
+	// even though p.githubClient itself would still look correct.
+	if p.githubWH == nil {
+		t.Fatal("New must initialize githubWH when the GitHub adapter is enabled")
+	}
+	if p.githubWH.Client() != client {
+		t.Fatal("githubWH must hold the client supplied via WithGitHubClient, not a client built from cfg.Adapters.GitHub.Token")
+	}
+	if p.githubNotify == nil {
+		t.Fatal("New must initialize githubNotify when the GitHub adapter is enabled")
+	}
+	if p.githubNotify.Client() != client {
+		t.Fatal("githubNotify must hold the client supplied via WithGitHubClient, not a client built from cfg.Adapters.GitHub.Token")
+	}
+
 	if _, err := p.githubClient.GetIssue(context.Background(), "owner", "repo", 1); err != nil {
 		t.Fatalf("GetIssue (pre-rotation) failed: %v", err)
 	}
@@ -103,14 +125,18 @@ func TestNew_WithGitHubClient_ResolvesTokenPerRequest(t *testing.T) {
 		t.Fatalf("GetIssue (post-rotation) failed: %v", err)
 	}
 
-	if len(gotAuth) != 2 {
-		t.Fatalf("expected 2 requests, got %d", len(gotAuth))
+	mu.Lock()
+	gotAuthCopy := append([]string(nil), gotAuth...)
+	mu.Unlock()
+
+	if len(gotAuthCopy) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(gotAuthCopy))
 	}
-	if gotAuth[0] != "Bearer token-v1" {
-		t.Errorf("first request Authorization = %q, want %q", gotAuth[0], "Bearer token-v1")
+	if gotAuthCopy[0] != "Bearer token-v1" {
+		t.Errorf("first request Authorization = %q, want %q", gotAuthCopy[0], "Bearer token-v1")
 	}
-	if gotAuth[1] != "Bearer token-v2" {
-		t.Errorf("second request Authorization = %q (stale boot-time token), want %q — webhook-mode Pilot's client did not pick up the rotated token", gotAuth[1], "Bearer token-v2")
+	if gotAuthCopy[1] != "Bearer token-v2" {
+		t.Errorf("second request Authorization = %q (stale boot-time token), want %q — webhook-mode Pilot's client did not pick up the rotated token", gotAuthCopy[1], "Bearer token-v2")
 	}
 }
 
