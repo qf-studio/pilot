@@ -1608,6 +1608,89 @@ func startApprovalExpirySweep(ctx context.Context, handler expirablePendingHandl
 // the gauge close enough to real-time for alerting/dashboards (GH-4512).
 const queueDepthRefreshInterval = 30 * time.Second
 
+// selfUpgradeAdmissionPauseOwner is this daemon's Dispatcher.PauseAdmissionFor
+// / ResumeAdmissionFor owner key for the GH-4683 self-upgrade drain. The
+// platform-outage breaker (GH-4792) uses its own distinct owner key,
+// autopilot.PlatformBreakerAdmissionPauseOwner — defined in the autopilot
+// package (not here) since Controller.SetAdmissionPauser also needs it — so
+// one owner's resume never undoes the other's still-active pause. See
+// Dispatcher.admissionPauseOwners in internal/executor/dispatcher.go.
+const selfUpgradeAdmissionPauseOwner = "self-upgrade"
+
+// startPlatformBreakerMonitor runs a periodic tick (GH-4792, TASK-458 part 2)
+// that catches the platform-outage breaker's CLOSE transition during a quiet
+// spell with no CI activity anywhere to drive it via Observe — Observe's own
+// time-based close check (see PlatformBreaker.closeIfQuietLocked) only ever
+// runs as a side effect of a CI-failure observation, so a held episode with
+// nothing failing anywhere would otherwise never close and its parked PRs
+// would never re-drive. EvaluateClose applies the identical check standalone.
+//
+// The OPEN transition needs no monitor tick: it's always detected
+// synchronously inside whichever controller's handleCIFailed call correlates
+// it (alertPlatformBreakerTransition pauses admission and fires the alert
+// immediately). This monitor only ever fires the CLOSE alert, resumes
+// admission (if pauseAdmissionEnabled), and re-drives every controller's
+// breaker-held PRs — deliberately NOT duplicating alertPlatformBreakerTransition
+// so the close alert fires exactly once fleet-wide (not once per controller),
+// matching the "exactly one alert on close" acceptance criterion from part 1.
+// A nil breaker or empty interval makes this a no-op; dispatcher may be nil
+// (admission pause simply skipped) since Dispatcher itself is optional.
+func startPlatformBreakerMonitor(ctx context.Context, breaker *autopilot.PlatformBreaker, dispatcher *executor.Dispatcher, controllers map[string]*autopilot.Controller, alertsEngine *alerts.Engine, pauseAdmissionEnabled bool, interval time.Duration, log *slog.Logger) {
+	if breaker == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = autopilot.DefaultPlatformBreakerProbeInterval
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !breaker.IsOpen() {
+					continue
+				}
+				result := breaker.EvaluateClose()
+				if !result.JustClosed {
+					continue
+				}
+				log.Info("platform-outage breaker closed during a quiet spell (no CI activity to trigger Observe) — re-driving held PRs",
+					"correlated_prs", result.CorrelatedPRs)
+
+				if dispatcher != nil && pauseAdmissionEnabled {
+					dispatcher.ResumeAdmissionFor(autopilot.PlatformBreakerAdmissionPauseOwner)
+				}
+
+				for _, ctrl := range controllers {
+					ctrl.ReDriveBreakerHeldPRs(ctx)
+				}
+
+				if alertsEngine == nil {
+					log.Error("platform breaker close alert not delivered: alertsEngine is nil")
+					continue
+				}
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type: alerts.EventType("platform_breaker_close"),
+					Error: fmt.Sprintf(
+						"Platform-outage breaker CLOSED: quiet period elapsed with no new infra/unknown-class CI failure (detected by the periodic monitor during a quiet spell — nothing was failing anywhere to trigger this via a live CI check). Normal CI-failure handling has resumed. PRs held during the outage: %s",
+						strings.Join(result.CorrelatedPRs, ", "),
+					),
+					Timestamp: time.Now(),
+					Metadata: map[string]string{
+						"prs": strings.Join(result.CorrelatedPRs, ","),
+					},
+				})
+			}
+		}
+	}()
+}
+
 // startQueueDepthRefresh launches a background loop that periodically calls
 // autopilot.RefreshQueueDepth so pilot_queue_depth stays live on any daemon
 // serving metrics — not just when the interactive TUI dashboard's own 2s
@@ -1925,6 +2008,18 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// GH-929: Create autopilot controllers map (one per repo) if enabled
 	autopilotControllers := make(map[string]*autopilot.Controller)
 	var autopilotController *autopilot.Controller // Default controller for backwards compat
+	// GH-4792: hoisted so the part-2 wiring below (admission-pause +
+	// periodic probe/close monitor, constructed after dispatcher/alerts
+	// exist) can reach the same breaker instance every controller shares.
+	var platformBreaker *autopilot.PlatformBreaker
+	// platformBreakerPauseAdmissionEnabled and platformBreakerProbeInterval
+	// mirror pbCfg's resolved values (below) out to the part-2 wiring point,
+	// since pbCfg itself is scoped to the if-block that constructs
+	// platformBreaker. platformBreakerPauseAdmissionEnabled defaults false
+	// here (matches "breaker disabled" — never asserted) and is only ever
+	// set true inside that block, which only runs when pbCfg.Enabled.
+	var platformBreakerPauseAdmissionEnabled bool
+	var platformBreakerProbeInterval time.Duration
 	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
 		// Need GitHub client for autopilot
 		ghToken, _ := resolveGitHubToken(cfg)
@@ -1973,13 +2068,22 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// or Enabled false), in which case no option is added and
 			// Controller.platformBreaker stays nil — a byte-identical no-op.
 			if pbCfg := cfg.Orchestrator.Autopilot.PlatformBreaker; pbCfg != nil && pbCfg.Enabled {
-				platformBreaker := autopilot.NewPlatformBreaker(
+				platformBreaker = autopilot.NewPlatformBreaker(
 					pbCfg.MinCorrelatedPRs,
 					pbCfg.CorrelationWindow,
 					pbCfg.QuietPeriod,
 					logging.WithComponent("platform-breaker"),
 				)
 				autopilotSharedOpts = append(autopilotSharedOpts, autopilot.WithPlatformBreaker(platformBreaker))
+				// GH-4792 part 2: admission-pause opt-out and periodic
+				// probe/close-monitor interval, resolved here (config is in
+				// scope) and carried out to the wiring point below via the
+				// hoisted vars above.
+				platformBreakerPauseAdmissionEnabled = pbCfg.PauseAdmissionEnabled()
+				platformBreakerProbeInterval = pbCfg.ProbeInterval
+				if platformBreakerProbeInterval <= 0 {
+					platformBreakerProbeInterval = autopilot.DefaultPlatformBreakerProbeInterval
+				}
 			}
 			// GH-4454: every controller's lane-starvation reconciler needs the
 			// same trigger label the GitHub SDK poller watches for
@@ -3119,6 +3223,33 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					}
 				}
 
+				// GH-4792 (TASK-458 part 2): wire the shared Dispatcher into
+				// every controller as an AdmissionPauser so the OPEN
+				// transition (detected synchronously inside whichever
+				// controller's handleCIFailed call correlates the breaker
+				// open, see alertPlatformBreakerTransition) pauses new-work
+				// admission immediately — not on the periodic monitor's next
+				// tick, which only exists to catch the CLOSE transition
+				// during a quiet spell with no CI activity anywhere to
+				// trigger Observe. Admission pause itself is config-gated
+				// (platformBreakerPauseAdmissionEnabled, resolved from
+				// PlatformBreakerConfig.PauseAdmissionEnabled() above,
+				// default on) via one owner key
+				// (autopilot.PlatformBreakerAdmissionPauseOwner) distinct
+				// from the GH-4683 self-upgrade drain's, so neither resume
+				// undoes the other's still-active pause — but the monitor
+				// itself always runs when the breaker is enabled, since
+				// held-PR re-drive and the close alert are NOT gated by the
+				// admission-pause opt-out.
+				if platformBreaker != nil {
+					if dispatcher != nil && platformBreakerPauseAdmissionEnabled {
+						for _, ctrl := range autopilotControllers {
+							ctrl.SetAdmissionPauser(dispatcher)
+						}
+					}
+					startPlatformBreakerMonitor(ctx, platformBreaker, dispatcher, autopilotControllers, alertsEngine, platformBreakerPauseAdmissionEnabled, platformBreakerProbeInterval, logging.WithComponent("platform-breaker"))
+				}
+
 				// Wire sub-issue merge-wait so epic sub-issues block until their PR merges
 				// (GH-2179). GH-4234: wired unconditionally regardless of waitForMerge —
 				// it's cheap when unused, and the per-child decision now lives in the
@@ -3478,7 +3609,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					// exec-restart, where the whole process is replaced and
 					// nothing after PerformHotUpgrade runs anyway.
 					if dispatcher != nil {
-						dispatcher.PauseAdmission()
+						dispatcher.PauseAdmissionFor(selfUpgradeAdmissionPauseOwner)
 					}
 					program.Send(dashboard.AddLog("◌ pausing task admission — queued work waits, running tasks finish normally")())
 
@@ -3489,7 +3620,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					hotUpgrader, err := upgrade.NewHotUpgrader(version, &runningOnlyTaskChecker{monitor: monitor})
 					if err != nil {
 						if dispatcher != nil {
-							dispatcher.ResumeAdmission()
+							dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
 						}
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
 						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
@@ -3510,7 +3641,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 					if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
 						if dispatcher != nil {
-							dispatcher.ResumeAdmission()
+							dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
 						}
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
 						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
@@ -3532,7 +3663,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 						// so admission must resume here or the daemon would stay
 						// paused indefinitely until a manual restart. GH-4683.
 						if dispatcher != nil {
-							dispatcher.ResumeAdmission()
+							dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
 						}
 						drainAlertGate.observe(nil)
 						program.Send(dashboard.NotifyUpgradeComplete(true, "")())

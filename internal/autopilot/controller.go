@@ -707,6 +707,42 @@ type Controller struct {
 	// pre-GH-4791 behavior); PlatformBreaker.Observe is nil-safe so no
 	// separate nil check is needed at call sites.
 	platformBreaker *PlatformBreaker
+
+	// admissionPauser is the shared executor.Dispatcher wired via
+	// SetAdmissionPauser (GH-4792, TASK-458 part 2), narrowed to the
+	// AdmissionPauser interface to avoid internal/autopilot importing
+	// internal/executor. Nil (the default, and every existing test that
+	// doesn't call SetAdmissionPauser) skips admission pause/resume entirely
+	// — alertPlatformBreakerTransition's nil check makes this byte-identical
+	// to part-1 behavior when unset.
+	admissionPauser AdmissionPauser
+}
+
+// AdmissionPauser is the narrow seam Controller uses to pause/resume new-work
+// admission the moment the platform-outage breaker opens/closes (GH-4792).
+// Implemented by *executor.Dispatcher's PauseAdmissionFor/ResumeAdmissionFor;
+// declared here (not imported from internal/executor) since executor already
+// depends on autopilot for PR staging — importing back would cycle.
+type AdmissionPauser interface {
+	PauseAdmissionFor(owner string)
+	ResumeAdmissionFor(owner string)
+}
+
+// PlatformBreakerAdmissionPauseOwner is the Dispatcher.PauseAdmissionFor /
+// ResumeAdmissionFor owner key used for the platform-outage breaker (GH-4792)
+// — distinct from the GH-4683 self-upgrade drain's own owner key so one
+// owner's resume never undoes the other's still-active pause. See
+// Dispatcher.admissionPauseOwners in internal/executor/dispatcher.go.
+const PlatformBreakerAdmissionPauseOwner = "platform-breaker"
+
+// SetAdmissionPauser wires the shared Dispatcher into the controller so the
+// platform-outage breaker can pause/resume new-work admission the instant it
+// opens/closes (GH-4792), rather than waiting for the periodic breaker
+// monitor's next tick. Mirrors SetAlertsEngine's post-construction wiring
+// shape — main.go constructs the Dispatcher and every autopilot.Controller
+// independently, so this can't be a constructor argument.
+func (c *Controller) SetAdmissionPauser(p AdmissionPauser) {
+	c.admissionPauser = p
 }
 
 // NewController creates an autopilot controller with all required components.
@@ -1354,11 +1390,37 @@ func (c *Controller) alertPlatformBreakerTransition(r PlatformBreakerResult) {
 		return
 	}
 
+	// GH-4792: pause/resume Dispatcher admission the instant the breaker
+	// transitions, instead of waiting for the periodic monitor's next tick.
+	// Independent of alerting below (runs even if SetAlertsEngine was never
+	// called) and independent of the periodic monitor's own EvaluateClose
+	// path, which only needs to catch a close during a quiet spell with no
+	// CI activity to drive this Observe-fed path at all.
+	if c.admissionPauser != nil && c.config.PlatformBreaker.PauseAdmissionEnabled() {
+		switch {
+		case r.JustOpened:
+			c.admissionPauser.PauseAdmissionFor(PlatformBreakerAdmissionPauseOwner)
+		case r.JustClosed:
+			c.admissionPauser.ResumeAdmissionFor(PlatformBreakerAdmissionPauseOwner)
+		}
+	}
+
 	eventType := alerts.EventType("platform_breaker_open")
 	msg := fmt.Sprintf(
 		"Platform-outage breaker OPENED: %d correlated infra/unknown-class CI failures across distinct PRs within the correlation window — suspected GitHub platform outage, not independent regressions. Destructive CI-failure actions (close PR, spawn fix issue, escalate-and-hold) are suppressed for every PR until the breaker closes. Correlated PRs: %s",
 		len(r.CorrelatedPRs), strings.Join(r.CorrelatedPRs, ", "),
 	)
+	probeVerdict := PlatformProbeVerdict("")
+	if r.JustOpened {
+		// GH-4792 (TASK-458 part 2): advisory corroboration — never gates the
+		// breaker's own open decision (already made above), only enriches
+		// this one-shot alert. Synchronous here is acceptable: JustOpened is
+		// a rare, at-most-once-per-episode event (guarded by
+		// PlatformBreaker's own mutex), and ProbeGitHubStatus is bounded by
+		// its own 5s-per-request timeouts.
+		probeVerdict = ProbeGitHubStatus(c.log)
+		msg += fmt.Sprintf(" githubstatus.com corroboration: %s.", probeVerdict)
+	}
 	if r.JustClosed {
 		eventType = alerts.EventType("platform_breaker_close")
 		msg = fmt.Sprintf(
@@ -1372,14 +1434,18 @@ func (c *Controller) alertPlatformBreakerTransition(r PlatformBreakerResult) {
 			"just_opened", r.JustOpened, "just_closed", r.JustClosed, "correlated_prs", r.CorrelatedPRs)
 		return
 	}
+	metadata := map[string]string{
+		"repo": c.repoKey(),
+		"prs":  strings.Join(r.CorrelatedPRs, ","),
+	}
+	if probeVerdict != "" {
+		metadata["probe_verdict"] = string(probeVerdict)
+	}
 	c.alertsEngine.ProcessEvent(alerts.Event{
 		Type:      eventType,
 		Error:     msg,
 		Timestamp: time.Now(),
-		Metadata: map[string]string{
-			"repo": c.repoKey(),
-			"prs":  strings.Join(r.CorrelatedPRs, ","),
-		},
+		Metadata:  metadata,
 	})
 }
 
@@ -2375,17 +2441,27 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		return nil
 	}
 
-	// GH-4791: while the platform-outage breaker is open, every irreversible
-	// action below (escalateAndHold, fix-issue creation, ClosePullRequest) is
-	// suppressed — a correlated burst of infra/unknown-class failures across
-	// distinct PRs means CI signal is not trustworthy right now, regardless of
-	// what this specific PR's own classification says. The PR stays parked at
-	// StageCIFailed and is re-examined on a later tick once the breaker closes
-	// (see PlatformBreaker.Observe's time-based close).
+	// GH-4791/GH-4792: while the platform-outage breaker is open, every
+	// irreversible action below (escalateAndHold, fix-issue creation,
+	// ClosePullRequest) is suppressed — a correlated burst of infra/unknown-
+	// class failures across distinct PRs means CI signal is not trustworthy
+	// right now, regardless of what this specific PR's own classification
+	// says. GH-4792 (TASK-458 part 2): park at StageFailed with
+	// BreakerHoldActive instead of leaving the PR at StageCIFailed for
+	// continual per-tick reprocessing — re-observing this same still-failing
+	// PR every tick would keep refreshing PlatformBreaker's quiet-period
+	// clock and the breaker could never time-close on its own. Held PRs are
+	// re-driven back to StageWaitingCI by ReDriveBreakerHeldPRs once the
+	// breaker's periodic monitor observes it close (see EvaluateClose —
+	// close is evaluated on a timer, not just as an Observe side effect, so
+	// a held PR's own silence doesn't prevent the breaker from noticing the
+	// outage ended).
 	if platformBreakerResult.Open {
 		c.metrics.RecordPlatformBreakerTrip()
 		c.log.Warn("platform-outage breaker open — holding PR instead of taking destructive CI-failure action",
 			"pr", prState.PRNumber, "class", failureClass)
+		prState.BreakerHoldActive = true
+		prState.Stage = StageFailed
 		return nil
 	}
 
@@ -3209,6 +3285,21 @@ func (c *Controller) shouldDeferIssueClose(ctx context.Context, issueNum, prNum 
 }
 
 func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error {
+	// GH-4792 (TASK-458 part 2): suppress merges while the platform-outage
+	// breaker is open — CI signal itself is untrustworthy during a platform
+	// incident, so an already-green PR's success status cannot be trusted
+	// enough to merge on. Distinct from handleCIFailed's suppression (which
+	// parks the PR via BreakerHoldActive/StageFailed): a PR already at
+	// StageMerging simply stays there and is retried automatically on a
+	// later tick once the breaker closes — StageMerging isn't terminal, so
+	// no separate hold flag or re-drive step is needed here. Does not count
+	// against MergeAttempts/MaxMergeAttempts.
+	if c.platformBreaker.IsOpen() {
+		c.log.Warn("platform-outage breaker open — holding merge instead of trusting CI signal",
+			"pr", prState.PRNumber)
+		return nil
+	}
+
 	// GH-4477: re-validate CI live at the merge chokepoint instead of trusting
 	// the ci_status frozen by handleCIPassed/handleWaitingCI. Once a PR
 	// reaches StageAwaitApproval, ci_status is never touched again — a
@@ -5311,6 +5402,85 @@ func (c *Controller) reAdoptHeldRebasePR(ctx context.Context, prState *PRState, 
 			c.log.Warn("reAdoptHeldRebasePR: failed to post PR comment", "pr", prState.PRNumber, "error", err)
 		}
 	}
+}
+
+// maxBreakerReadoptAttempts caps how many times ReDriveBreakerHeldPRs
+// (GH-4792) may revive a single PR from a platform-outage breaker hold.
+// Mirrors maxReadoptAttempts's reasoning above: a PR whose own failure
+// happens to be what keeps re-opening the breaker shouldn't ping-pong
+// between held and waiting_ci forever — it eventually stays parked for a
+// human once the cap is hit.
+const maxBreakerReadoptAttempts = 2
+
+// ReDriveBreakerHeldPRs re-enters every PR this controller currently has
+// parked via a platform-outage breaker hold (BreakerHoldActive, see
+// handleCIFailed) back into StageWaitingCI for fresh CI. GH-4792 (TASK-458
+// part 2): mirrors reAdoptHeldRebasePR's revival shape (GH-4610), but the
+// trigger is different — a rebase hold is revived by polling for a per-PR
+// HeadSHA change inside processAllPRs's per-PR loop; a breaker hold has
+// nothing PR-specific to poll for (the PR itself hasn't changed, the
+// PLATFORM recovered), so this is instead called once, directly, by the
+// periodic breaker monitor whenever EvaluateClose reports JustClosed —
+// never from the per-PR poll loop, since a held PR sits at StageFailed
+// (terminal) and is not individually re-examined there.
+func (c *Controller) ReDriveBreakerHeldPRs(ctx context.Context) {
+	c.mu.RLock()
+	live := make([]*PRState, 0, len(c.activePRs))
+	for _, pr := range c.activePRs {
+		live = append(live, pr)
+	}
+	c.mu.RUnlock()
+
+	for _, prState := range live {
+		prState.mu.Lock()
+		c.redriveBreakerHeldPRLocked(ctx, prState)
+		prState.mu.Unlock()
+	}
+}
+
+// redriveBreakerHeldPRLocked does the actual re-drive for one PR. Must be
+// called with prState.mu held; a no-op for any PR not currently parked via
+// BreakerHoldActive.
+func (c *Controller) redriveBreakerHeldPRLocked(ctx context.Context, prState *PRState) {
+	if prState.Stage != StageFailed || !prState.BreakerHoldActive {
+		return
+	}
+	if prState.BreakerReadoptCount >= maxBreakerReadoptAttempts {
+		c.log.Warn("ReDriveBreakerHeldPRs: re-adoption cap reached, leaving PR parked for manual review",
+			"pr", prState.PRNumber, "issue", prState.IssueNumber,
+			"breaker_readopt_count", prState.BreakerReadoptCount, "max", maxBreakerReadoptAttempts,
+		)
+		return
+	}
+
+	prState.BreakerReadoptCount++
+	prState.BreakerHoldActive = false
+	prState.Stage = StageWaitingCI
+	prState.CIWaitStartedAt = time.Now()
+	prState.Error = ""
+
+	c.log.Info("ReDriveBreakerHeldPRs: platform-outage breaker closed, re-entering pipeline",
+		"pr", prState.PRNumber, "issue", prState.IssueNumber,
+		"breaker_readopt_count", prState.BreakerReadoptCount, "max", maxBreakerReadoptAttempts,
+	)
+
+	if prState.IssueNumber > 0 {
+		comment := fmt.Sprintf(
+			"🔄 **Re-adopted**: the platform-outage breaker closed — autopilot is re-entering this PR into the pipeline for fresh CI (re-adoption %d/%d).",
+			prState.BreakerReadoptCount, maxBreakerReadoptAttempts,
+		)
+		if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+			c.log.Warn("ReDriveBreakerHeldPRs: failed to post PR comment", "pr", prState.PRNumber, "error", err)
+		}
+	}
+
+	// Unlike reAdoptHeldRebasePR (whose caller always runs ProcessPR for the
+	// same PR immediately afterward in the same poll iteration, which
+	// persists on its way out), this is called from an independent periodic
+	// monitor with no guaranteed follow-up ProcessPR call before the next
+	// scheduled poll tick — persist explicitly so a crash right after close
+	// can't silently strand the PR at a stage its stored row disagrees with.
+	c.persistPRState(prState)
 }
 
 // removePR removes PR from tracking and cleans up the remote branch.

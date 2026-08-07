@@ -789,11 +789,25 @@ autopilot:
   # breaker shared by every controller (like the rate-limit budget
   # tracker), since an outage is not scoped to a single repo.
   # Default off.
+  #
+  # GH-4792 (TASK-458 part 2) adds, on top of part 1's correlation/suppression:
+  #   - an advisory githubstatus.com corroboration probe fired once per open
+  #     transition (never gates open/close — status pages lag reality)
+  #   - pausing new-work admission while open (pause_admission)
+  #   - suppressing merges of already-green PRs while open (CI signal is
+  #     untrustworthy during a platform incident)
+  #   - re-driving PRs the breaker parked back into StageWaitingCI once it
+  #     closes, up to a capped number of re-adoption attempts
   platform_breaker:
     enabled: false
     min_correlated_prs: 3   # distinct PRs observing infra/unknown failures to open the breaker
     correlation_window: 15m # how far back distinct-PR observations count toward the threshold
     quiet_period: 20m       # how long with no new infra/unknown failure before it closes again
+    probe_interval: 5m      # how often the periodic monitor re-checks close + re-drives held PRs
+                             # during a quiet spell with no CI activity anywhere to trigger it
+    pause_admission: true   # pause new-work admission (Dispatcher) while the breaker is open;
+                             # set false to keep dispatching new tasks even during a suspected
+                             # platform outage (merge suppression and PR-parking still apply)
 
 # Dashboard settings
 dashboard:

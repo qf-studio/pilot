@@ -2230,6 +2230,87 @@ func TestDispatcher_PauseAdmission_BlocksNewPickupButNotRunningTask(t *testing.T
 	waitForExecStatus(t, store, execIDB, "completed", 2*time.Second)
 }
 
+// TestDispatcher_PauseAdmissionFor_OwnerInterleaving_SelfUpgradeAndPlatformBreaker
+// is the GH-4792 regression test for the shared-owner safety requirement: the
+// GH-4683 self-upgrade drain and the GH-4792 platform-outage breaker both
+// call PauseAdmissionFor/ResumeAdmissionFor on the same Dispatcher with
+// distinct owner keys. One owner's resume must never undo the other's
+// still-active pause — admission only actually resumes once every owner that
+// paused it has also resumed it, regardless of interleaving order.
+func TestDispatcher_PauseAdmissionFor_OwnerInterleaving_SelfUpgradeAndPlatformBreaker(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	release := make(chan struct{})
+	runner := NewRunnerWithBackend(&releasableBackend{release: release})
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	dispatcher := NewDispatcher(store, runner, nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	const projectPath = "/tmp/pilot-gh4792-owner-interleave-project"
+	ctx := context.Background()
+	const selfUpgradeOwner = "self-upgrade"
+	const platformBreakerOwner = "platform-breaker"
+
+	taskA := &Task{ID: "GH-9101", Title: "Task A", ProjectPath: projectPath}
+	execIDA, err := dispatcher.QueueTask(ctx, taskA)
+	if err != nil {
+		t.Fatalf("failed to queue task A: %v", err)
+	}
+	waitForExecStatus(t, store, execIDA, "running", 2*time.Second)
+
+	// Both owners pause independently — mirrors a self-upgrade drain
+	// starting while the platform breaker is already open, or vice versa.
+	dispatcher.PauseAdmissionFor(selfUpgradeOwner)
+	dispatcher.PauseAdmissionFor(platformBreakerOwner)
+	if !dispatcher.IsAdmissionPaused() {
+		t.Fatal("expected IsAdmissionPaused to report true with two owners paused")
+	}
+
+	taskB := &Task{ID: "GH-9102", Title: "Task B", ProjectPath: projectPath}
+	execIDB, err := dispatcher.QueueTask(ctx, taskB)
+	if err != nil {
+		t.Fatalf("failed to queue task B: %v", err)
+	}
+
+	close(release)
+	waitForExecStatus(t, store, execIDA, "completed", 2*time.Second)
+
+	// One owner resumes — the OTHER owner (platform-breaker) still holds the
+	// pause, so admission must stay paused and task B must stay queued.
+	dispatcher.ResumeAdmissionFor(selfUpgradeOwner)
+	if !dispatcher.IsAdmissionPaused() {
+		t.Fatal("expected IsAdmissionPaused to still report true — platform-breaker owner has not resumed yet")
+	}
+	time.Sleep(150 * time.Millisecond)
+	if exec, gErr := store.GetExecution(execIDB); gErr != nil {
+		t.Fatalf("failed to get execution B: %v", gErr)
+	} else if exec.Status != "queued" {
+		t.Fatalf("expected task B to remain queued while platform-breaker owner still holds the pause, got status %q", exec.Status)
+	}
+
+	// Resuming the self-upgrade owner again (e.g. a second drain cycle
+	// re-asserting resume) must not error or double-release anything —
+	// idempotent no-op since it's no longer in the owner set.
+	dispatcher.ResumeAdmissionFor(selfUpgradeOwner)
+	if !dispatcher.IsAdmissionPaused() {
+		t.Fatal("expected IsAdmissionPaused to still report true after redundant self-upgrade resume")
+	}
+
+	// The last owner resumes — admission must now actually resume and the
+	// worker must pick up and complete task B.
+	dispatcher.ResumeAdmissionFor(platformBreakerOwner)
+	if dispatcher.IsAdmissionPaused() {
+		t.Fatal("expected IsAdmissionPaused to report false once every owner has resumed")
+	}
+	waitForExecStatus(t, store, execIDB, "completed", 2*time.Second)
+}
+
 // TestProcessQueue_CrossTaskIDGuard_MalformedDetailFallsThrough covers the
 // GH-4227 case (iv) at the processQueue call site specifically: a
 // StageDecomposed event whose detail string has no parseable child refs must

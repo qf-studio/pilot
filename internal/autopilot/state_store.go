@@ -187,6 +187,11 @@ func (s *StateStore) migrate() error {
 		// eligible for re-adoption, or reset an already-spent re-adoption budget.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN rebase_hold_active INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN readopt_count INTEGER NOT NULL DEFAULT 0`,
+		// GH-4792 (TASK-458 part 2): persist the platform-outage breaker hold
+		// flag and its re-adoption counter, mirroring rebase_hold_active/
+		// readopt_count above for the same restart-survival reason.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN breaker_hold_active INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN breaker_readopt_count INTEGER NOT NULL DEFAULT 0`,
 		// GH-4643: a distinct, non-resettable-by-SHA-advance counter for
 		// consecutive "post-merge CI timeout" carrier failures. Unlike
 		// attempts (reset to 0 by recoverFailedScopeReleases whenever main
@@ -456,6 +461,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			escalation_reason TEXT NOT NULL DEFAULT '',
 			rebase_hold_active INTEGER NOT NULL DEFAULT 0,
 			readopt_count INTEGER NOT NULL DEFAULT 0,
+			breaker_hold_active INTEGER NOT NULL DEFAULT 0,
+			breaker_readopt_count INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -470,7 +477,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason, rebase_hold_active, readopt_count
+			parked, escalation_reason, rebase_hold_active, readopt_count,
+			breaker_hold_active, breaker_readopt_count
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -480,7 +488,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason, rebase_hold_active, readopt_count
+			parked, escalation_reason, rebase_hold_active, readopt_count,
+			breaker_hold_active, breaker_readopt_count
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -625,8 +634,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason, rebase_hold_active, readopt_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			parked, escalation_reason, rebase_hold_active, readopt_count,
+			breaker_hold_active, breaker_readopt_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -656,7 +666,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			parked = excluded.parked,
 			escalation_reason = excluded.escalation_reason,
 			rebase_hold_active = excluded.rebase_hold_active,
-			readopt_count = excluded.readopt_count
+			readopt_count = excluded.readopt_count,
+			breaker_hold_active = excluded.breaker_hold_active,
+			breaker_readopt_count = excluded.breaker_readopt_count
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -667,6 +679,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.PostMergeSHA, nullTime(pr.PostMergeCIStartedAt), pr.RebaseAttempts, pr.ScopeKey,
 		pr.PRTitle, pr.MergeFollowupPosted, pr.InfraRerunCount, pr.InfraRerunSHA,
 		pr.Parked, pr.EscalationReason, pr.RebaseHoldActive, pr.ReadoptCount,
+		pr.BreakerHoldActive, pr.BreakerReadoptCount,
 	)
 	return err
 }
@@ -682,7 +695,8 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason, rebase_hold_active, readopt_count
+			parked, escalation_reason, rebase_hold_active, readopt_count,
+			breaker_hold_active, breaker_readopt_count
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -707,7 +721,8 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
-			parked, escalation_reason, rebase_hold_active, readopt_count
+			parked, escalation_reason, rebase_hold_active, readopt_count,
+			breaker_hold_active, breaker_readopt_count
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -730,6 +745,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
 			&pr.PRTitle, &pr.MergeFollowupPosted, &pr.InfraRerunCount, &pr.InfraRerunSHA,
 			&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
+			&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 		); err != nil {
 			return nil, err
 		}
@@ -986,6 +1002,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts, &pr.ScopeKey,
 		&pr.PRTitle, &pr.MergeFollowupPosted, &pr.InfraRerunCount, &pr.InfraRerunSHA,
 		&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
+		&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 	)
 	if err != nil {
 		return nil, err

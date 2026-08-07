@@ -35,6 +35,10 @@ const (
 	// DefaultPlatformBreakerQuietPeriod is how long the breaker must see no
 	// new infra/unknown-class CI failure before it closes again.
 	DefaultPlatformBreakerQuietPeriod = 20 * time.Minute
+	// DefaultPlatformBreakerProbeInterval (GH-4792, TASK-458 part 2) is how
+	// often the periodic monitor probes githubstatus.com and re-evaluates
+	// the time-based close condition while the breaker is open.
+	DefaultPlatformBreakerProbeInterval = 5 * time.Minute
 )
 
 // platformFailureObservation is one CI-failure observation relevant to
@@ -150,24 +154,12 @@ func (b *PlatformBreaker) Observe(pr int, repo string, class FailureClass) Platf
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	var result PlatformBreakerResult
-
 	// Time-based close check runs first, against state as of BEFORE this
 	// observation: an observation landing exactly at (or after) the quiet
 	// deadline must not itself count as "still quiet" and keep a stale
 	// episode open. If this observation is itself relevant, it is free to
 	// open a brand-new episode below in the same call.
-	if b.open && t.Sub(b.lastInfraAt) >= b.quietPeriod {
-		result.JustClosed = true
-		result.CorrelatedPRs = sortedKeys(b.correlated)
-		b.open = false
-		b.observations = nil
-		b.correlated = nil
-		b.log.Info("platform-outage breaker closed — quiet period elapsed with no new infra/unknown-class CI failure",
-			"quiet_period", b.quietPeriod,
-			"correlated_prs", result.CorrelatedPRs,
-		)
-	}
+	result := b.closeIfQuietLocked(t)
 
 	if relevant := class.IsInfra() || class == FailureClassUnknown; relevant {
 		key := platformBreakerKey(repo, pr)
@@ -214,6 +206,46 @@ func (b *PlatformBreaker) IsOpen() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.open
+}
+
+// EvaluateClose runs the same time-based close check Observe applies as a
+// side effect, standalone. GH-4792 (TASK-458 part 2): unlike Observe, this
+// is not gated behind a CI-failure event — the periodic breaker monitor
+// calls it on a timer so a held episode closes (and held PRs get re-driven)
+// even during a quiet spell with no CI activity anywhere to trigger Observe.
+// A nil receiver always reports closed with no transition.
+func (b *PlatformBreaker) EvaluateClose() PlatformBreakerResult {
+	if b == nil {
+		return PlatformBreakerResult{}
+	}
+	now := time.Now
+	if b.now != nil {
+		now = b.now
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	result := b.closeIfQuietLocked(now())
+	result.Open = b.open
+	return result
+}
+
+// closeIfQuietLocked applies the time-based close check against state as of
+// t and returns the (possibly just-closed) result with Open left for the
+// caller to set. Must be called with mu held.
+func (b *PlatformBreaker) closeIfQuietLocked(t time.Time) PlatformBreakerResult {
+	var result PlatformBreakerResult
+	if b.open && t.Sub(b.lastInfraAt) >= b.quietPeriod {
+		result.JustClosed = true
+		result.CorrelatedPRs = sortedKeys(b.correlated)
+		b.open = false
+		b.observations = nil
+		b.correlated = nil
+		b.log.Info("platform-outage breaker closed — quiet period elapsed with no new infra/unknown-class CI failure",
+			"quiet_period", b.quietPeriod,
+			"correlated_prs", result.CorrelatedPRs,
+		)
+	}
+	return result
 }
 
 // pruneLocked drops observations older than correlationWindow relative to
