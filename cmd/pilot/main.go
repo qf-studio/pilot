@@ -1966,6 +1966,21 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// pooled per authenticated user across every client/controller, so
 			// a single Tracker (not one per repo) is the correct scope.
 			autopilotSharedOpts = append(autopilotSharedOpts, autopilot.WithRateBudget(rateBudgetTracker))
+			// GH-4791: cross-PR platform-outage correlation breaker, shared
+			// across every controller like the rate-budget tracker above — an
+			// outage correlated across unrelated PRs is not scoped to a
+			// single repo. Disabled by default (Config.PlatformBreaker nil
+			// or Enabled false), in which case no option is added and
+			// Controller.platformBreaker stays nil — a byte-identical no-op.
+			if pbCfg := cfg.Orchestrator.Autopilot.PlatformBreaker; pbCfg != nil && pbCfg.Enabled {
+				platformBreaker := autopilot.NewPlatformBreaker(
+					pbCfg.MinCorrelatedPRs,
+					pbCfg.CorrelationWindow,
+					pbCfg.QuietPeriod,
+					logging.WithComponent("platform-breaker"),
+				)
+				autopilotSharedOpts = append(autopilotSharedOpts, autopilot.WithPlatformBreaker(platformBreaker))
+			}
 			// GH-4454: every controller's lane-starvation reconciler needs the
 			// same trigger label the GitHub SDK poller watches for
 			// (poller_github.go resolves this identically: ghCfg.PilotLabel,

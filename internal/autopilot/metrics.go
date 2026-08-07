@@ -64,6 +64,11 @@ type Metrics struct {
 	// classification the outcome was decided from.
 	PRFailureClasses    map[string]int64
 	CircuitBreakerTrips int64
+	// PlatformBreakerTrips counts handleCIFailed calls that suppressed a
+	// destructive action because the shared cross-PR platform-outage breaker
+	// (PlatformBreaker) was open — GH-4791. Distinct from CircuitBreakerTrips,
+	// which counts the per-PR breaker tripping.
+	PlatformBreakerTrips int64
 	// RateLimitFloorEngagements counts distinct episodes (not calls) where
 	// the shared GitHub rate-budget floor engaged and this controller
 	// skipped a PriorityBackground scan (merged-PR scan, orphan-PR sweep) —
@@ -115,6 +120,12 @@ type Metrics struct {
 	ActivePRsByStage map[PRStage]int
 	QueueDepth       int // issues with `pilot` label, no `pilot-in-progress`
 	FailedQueueDepth int // issues with `pilot-failed`
+
+	// PlatformBreakerOpen reports whether the shared cross-PR
+	// platform-outage breaker was open as of the most recent Observe call
+	// this controller made (GH-4791). Process-wide state mirrored per
+	// controller, like RateLimitFloorEngagements above.
+	PlatformBreakerOpen bool
 
 	// UnsourcedLabeledIssues is the GH-4488 board-sourcing audit gauge: repo
 	// → count of open pilot-labeled issues that project_board.source_enabled
@@ -310,6 +321,23 @@ func (m *Metrics) RecordCircuitBreakerTrip() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.CircuitBreakerTrips++
+}
+
+// RecordPlatformBreakerTrip increments the platform-outage breaker trip
+// counter — GH-4791. Called once per handleCIFailed call that suppressed a
+// destructive action because the shared PlatformBreaker was open.
+func (m *Metrics) RecordPlatformBreakerTrip() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PlatformBreakerTrips++
+}
+
+// SetPlatformBreakerOpen updates the platform-outage breaker state gauge —
+// GH-4791.
+func (m *Metrics) SetPlatformBreakerOpen(open bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PlatformBreakerOpen = open
 }
 
 // RecordRateLimitFloorEngaged increments the rate-limit budget-floor
@@ -607,6 +635,8 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		CIRuns:                        copyStringIntMap(m.CIRuns),
 		PRFailureClasses:              copyStringIntMap(m.PRFailureClasses),
 		CircuitBreakerTrips:           m.CircuitBreakerTrips,
+		PlatformBreakerTrips:          m.PlatformBreakerTrips,
+		PlatformBreakerOpen:           m.PlatformBreakerOpen,
 		RateLimitFloorEngagements:     m.RateLimitFloorEngagements,
 		APIErrors:                     copyStringIntMap(m.APIErrors),
 		LabelCleanups:                 copyStringIntMap(m.LabelCleanups),
@@ -695,6 +725,7 @@ type MetricsSnapshot struct {
 	CIRuns                    map[string]int64 // GH-4134: result → count (pass, fail)
 	PRFailureClasses          map[string]int64 // GH-4533/GH-4591: class → count (code, infra, infra_billing)
 	CircuitBreakerTrips       int64
+	PlatformBreakerTrips      int64 // GH-4791: destructive CI-failure actions suppressed by the shared platform-outage breaker
 	RateLimitFloorEngagements int64 // GH-4391: distinct floor-engagement episodes across this controller's background scans
 	APIErrors                 map[string]int64
 	LabelCleanups             map[string]int64
@@ -721,6 +752,11 @@ type MetricsSnapshot struct {
 	TotalActivePRs   int
 	QueueDepth       int
 	FailedQueueDepth int
+
+	// PlatformBreakerOpen reports whether the shared cross-PR
+	// platform-outage breaker was open as of this controller's most recent
+	// observation — GH-4791.
+	PlatformBreakerOpen bool
 
 	// UnsourcedLabeledIssues is the GH-4488 board-sourcing audit gauge: repo
 	// → count of open pilot-labeled issues not covered by board sourcing.

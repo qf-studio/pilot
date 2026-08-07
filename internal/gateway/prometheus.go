@@ -151,6 +151,24 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeType(w, "pilot_circuit_breaker_trips_total", "counter")
 	writeCounter(w, "pilot_circuit_breaker_trips_total", snap.CircuitBreakerTrips)
 
+	// pilot_platform_breaker_trips_total (GH-4791): destructive CI-failure
+	// actions suppressed because the shared cross-PR platform-outage breaker
+	// was open, distinct from the per-PR pilot_circuit_breaker_trips_total
+	// above.
+	writeHelp(w, "pilot_platform_breaker_trips_total", "Total destructive CI-failure actions suppressed by the shared platform-outage breaker")
+	writeType(w, "pilot_platform_breaker_trips_total", "counter")
+	writeCounter(w, "pilot_platform_breaker_trips_total", snap.PlatformBreakerTrips)
+
+	// pilot_platform_breaker_open (GH-4791): 1 while the shared platform-outage
+	// breaker is open (destructive CI-failure actions suppressed), 0 otherwise.
+	writeHelp(w, "pilot_platform_breaker_open", "Whether the shared platform-outage breaker is currently open (1) or closed (0)")
+	writeType(w, "pilot_platform_breaker_open", "gauge")
+	platformBreakerOpenValue := 0.0
+	if snap.PlatformBreakerOpen {
+		platformBreakerOpenValue = 1.0
+	}
+	writeGauge(w, "pilot_platform_breaker_open", platformBreakerOpenValue)
+
 	// pilot_rate_limit_floor_engaged_total (GH-4391): counts distinct
 	// episodes where the shared GitHub rate-limit budget dropped below the
 	// reserved floor and background scans (merged-PR scans, orphan-PR

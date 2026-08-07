@@ -774,6 +774,27 @@ autopilot:
     min_tests: 1        # escalate if fewer than this many tests ran
     max_skip_ratio: 0.5  # escalate if skipped/(run+skipped) exceeds this
 
+  # Cross-PR platform-outage breaker (GH-4791, TASK-458 part 1). The
+  # per-PR circuit breaker above is deliberately scoped to one PR at a
+  # time ("so one bad PR doesn't block others") and cannot see a
+  # platform-wide outage by construction — each affected PR looks like a
+  # normal individual failure. This breaker correlates CI-failure
+  # observations across PRs (and repos, when multiple are configured):
+  # when min_correlated_prs distinct PRs observe an infra-or-unknown-class
+  # CI failure within correlation_window, it opens and suppresses
+  # destructive CI-failure actions (auto-close, fix-issue creation,
+  # escalate-and-hold) — affected PRs simply stay parked and are
+  # re-examined on a later tick. It closes again after quiet_period
+  # elapses with no further infra/unknown-class failure. One process-wide
+  # breaker shared by every controller (like the rate-limit budget
+  # tracker), since an outage is not scoped to a single repo.
+  # Default off.
+  platform_breaker:
+    enabled: false
+    min_correlated_prs: 3   # distinct PRs observing infra/unknown failures to open the breaker
+    correlation_window: 15m # how far back distinct-PR observations count toward the threshold
+    quiet_period: 20m       # how long with no new infra/unknown failure before it closes again
+
 # Dashboard settings
 dashboard:
   refresh_interval: 1000     # ms
