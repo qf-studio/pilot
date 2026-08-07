@@ -1746,8 +1746,18 @@ func (c *Controller) RestoreState() (int, error) {
 
 	c.mu.Lock()
 	for _, pr := range states {
-		// Skip terminal states — they shouldn't be active
-		if pr.Stage == StageFailed {
+		// Skip terminal states — they shouldn't be active. Exception
+		// (GH-4807): a PR parked via a platform-outage breaker hold
+		// (BreakerHoldActive, see handleCIFailed / ReDriveBreakerHeldPRs) is
+		// not truly terminal — it's waiting for the breaker to close so it
+		// can be re-driven back into StageWaitingCI. Without this exception,
+		// a daemon restart mid-outage (the 2026-08-06 GitHub Actions outage
+		// restarted the daemon while PRs were held) permanently strands
+		// every held PR: breaker_hold_active survives in SQLite, but the row
+		// never re-enters c.activePRs, and ReDriveBreakerHeldPRs only scans
+		// c.activePRs — so the hold can never be released. Every other
+		// StageFailed row keeps the unconditional skip.
+		if pr.Stage == StageFailed && !pr.BreakerHoldActive {
 			continue
 		}
 		// GH-4331: a scope carrier whose scope-release row already resolved
