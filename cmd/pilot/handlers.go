@@ -177,7 +177,7 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdk
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	return &sdkcore.IssueResult{
-		Success:    hr.Success,
+		Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
@@ -238,7 +238,7 @@ func handleJiraSDKIssueWithResult(ctx context.Context, cfg *config.Config, ev sd
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success,
+		Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
@@ -300,7 +300,7 @@ func handleAsanaIssueWithResult(ctx context.Context, cfg *config.Config, ev sdkc
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success,
+		Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
@@ -436,7 +436,7 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success,
+		Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
@@ -476,7 +476,10 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 				)
 			}
 		}
-	} else if hr.Result != nil {
+	} else if hr.Result != nil && !hr.IsTerminalByDesign() {
+		// GH-4794/GH-4801: a superseded/canceled execution is the success path
+		// for "this work is no longer wanted" — don't post a failure comment
+		// on a closed/canceled work item for it (mirrors GitLab's gate below).
 		comment := fmt.Sprintf("<p>❌ Pilot execution failed:</p><pre>%s</pre>", hr.Result.Error)
 		if err := client.AddComment(ctx, workspaceSlug, projectID, issueID, comment); err != nil {
 			logging.WithComponent("plane").Warn("Failed to add failure comment",
@@ -557,7 +560,7 @@ func handleGitlabIssueWithResult(ctx context.Context, cfg *config.Config, client
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
+		Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
@@ -672,7 +675,12 @@ func handleAzureDevOpsIssueWithResult(ctx context.Context, cfg *config.Config, e
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success || hr.IsTerminalByDesign(), // GH-4794: a superseded/canceled execution is not a genuine failure
+		// GH-4801: azuredevops previously omitted the GH-4587 IsDispatchGated()
+		// term (PR#4800 only added IsTerminalByDesign() here) — git history
+		// shows GH-4587 was scoped to "GitHub/GitLab SDK translation sites"
+		// only, never a deliberate azuredevops exclusion, so unifying onto the
+		// shared helper is a genuine bug fix, not a behavior regression.
+		Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
@@ -870,7 +878,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	issueResult := &sdkcore.IssueResult{
-		Success:    hr.Success || hr.IsDispatchGated() || hr.IsTerminalByDesign(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
+		Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
