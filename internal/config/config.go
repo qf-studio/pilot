@@ -274,6 +274,15 @@ type ProjectConfig struct {
 	// only flips CISuccess when a live run's name matches an allowlisted name).
 	// Unset fields inherit from the global config.
 	CIChecks *autopilot.ProjectCIChecksOverride `yaml:"ci_checks,omitempty"`
+	// Approval overlays the global/environment require_approval gate and
+	// approval_source channel for this project (GH-4774). Without it, every
+	// project controller shares Config.Orchestrator.Autopilot's single
+	// env/global approval policy — fine when one team owns every project on
+	// the daemon, but a personal project alongside a work project may want
+	// merges gated differently and/or routed to a different approval channel
+	// (e.g. Telegram vs. Slack). Unset fields inherit from the
+	// env/global config.
+	Approval *autopilot.ProjectApprovalOverride `yaml:"approval,omitempty"`
 	// Canary marks this project as a synthetic sandbox (e.g. the TASK-379 V8
 	// canary workflow) rather than real work (GH-4240). Executions dispatched
 	// for a canary project are still fully persisted and event-logged — the
@@ -863,6 +872,19 @@ var validReleasePublishValues = map[string]bool{
 	"":         true, // Empty inherits the default (workflow)
 }
 
+// validApprovalSourceValues are the accepted values for a project's
+// approval.approval_source overlay (GH-4774). Mirrors the same three
+// channels EffectiveApprovalSource() recognizes at the global/env level
+// (internal/autopilot/types.go), including the "github-review" alias that
+// internal/approval/channel.go's normalizeChannelName maps onto the
+// GitHubHandler's registered "github" name (TASK-454/GH-4772).
+var validApprovalSourceValues = map[string]bool{
+	"":              true, // Empty inherits env/global
+	"telegram":      true,
+	"slack":         true,
+	"github-review": true,
+}
+
 // validReleaseTriggerValues are the accepted values for release.trigger,
 // checked at the global, per-environment, and per-project overlay levels
 // (GH-3989).
@@ -995,16 +1017,25 @@ func (c *Config) Validate() error {
 
 	// GH-3930: Validate release.publish enum on each project's release overlay.
 	// GH-3989: Validate release.trigger + schedule/schedule_timezone alongside.
+	// GH-4774: Validate approval.approval_source enum on each project's
+	// approval overlay, independently of whether a release overlay is set.
 	for i, p := range c.Projects {
-		if p == nil || p.Release == nil {
+		if p == nil {
 			continue
 		}
-		if !validReleasePublishValues[p.Release.Publish] {
-			return fmt.Errorf("projects[%d].release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", i, p.Release.Publish)
+		if p.Release != nil {
+			if !validReleasePublishValues[p.Release.Publish] {
+				return fmt.Errorf("projects[%d].release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", i, p.Release.Publish)
+			}
+			projectPath := fmt.Sprintf("projects[%d].release", i)
+			if err := validateReleaseTriggerFields(projectPath, p.Release.Trigger, p.Release.Schedule, p.Release.ScheduleTimezone); err != nil {
+				return err
+			}
 		}
-		projectPath := fmt.Sprintf("projects[%d].release", i)
-		if err := validateReleaseTriggerFields(projectPath, p.Release.Trigger, p.Release.Schedule, p.Release.ScheduleTimezone); err != nil {
-			return err
+		if p.Approval != nil {
+			if !validApprovalSourceValues[string(p.Approval.ApprovalSource)] {
+				return fmt.Errorf("projects[%d].approval.approval_source must be \"\", \"telegram\", \"slack\", or \"github-review\", got %q", i, p.Approval.ApprovalSource)
+			}
 		}
 	}
 

@@ -72,3 +72,20 @@ func projectBoardControllerOpts(apGHClient *githubSDK.Client, cfg *config.Config
 
 	return opts
 }
+
+// projectApprovalControllerOpts resolves repoFullName's projects[] entry
+// (GH-4774) and, if it sets an approval: overlay, returns the
+// WithApprovalOverride ControllerOption for it. Returns nil when the repo
+// isn't in projects[] or has no approval overlay — callers append the
+// (possibly empty) result to their option slice unconditionally, mirroring
+// projectBoardControllerOpts above. Shared by all three controller
+// construction sites in main.go (default repo, projects loop, gateway mode)
+// so gateway mode can no longer silently skip this overlay the way it used
+// to before GH-4774.
+func projectApprovalControllerOpts(cfg *config.Config, repoFullName string) []autopilot.ControllerOption {
+	proj := cfg.FindProjectByRepo(repoFullName)
+	if proj == nil || proj.Approval == nil {
+		return nil
+	}
+	return []autopilot.ControllerOption{autopilot.WithApprovalOverride(proj.Approval)}
+}

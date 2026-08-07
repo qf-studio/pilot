@@ -835,6 +835,13 @@ Examples:
 							if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil && proj.Release != nil {
 								gwBoardOpts = append(gwBoardOpts, autopilot.WithReleaseOverride(proj.Release))
 							}
+							// GH-4774: apply the per-project approval overlay (require_approval /
+							// approval_source) when configured; nil is a no-op (inherits
+							// env/global). This gateway-mode single-controller path previously
+							// skipped this overlay entirely (it also still skips the separate
+							// CIChecks overlay — tracked as its own backlog item, not folded in
+							// here).
+							gwBoardOpts = append(gwBoardOpts, projectApprovalControllerOpts(cfg, cfg.Adapters.GitHub.Repo)...)
 							gwAutopilotController = autopilot.NewController(
 								cfg.Orchestrator.Autopilot,
 								apGHClient,
@@ -1990,6 +1997,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							ctrlOpts = append(ctrlOpts, autopilot.WithCIChecksOverride(proj.CIChecks))
 						}
 					}
+					// GH-4774: apply the per-project approval overlay (require_approval /
+					// approval_source) when configured; nil is a no-op (inherits
+					// env/global).
+					ctrlOpts = append(ctrlOpts, projectApprovalControllerOpts(cfg, cfg.Adapters.GitHub.Repo)...)
 					controller := autopilot.NewController(
 						cfg.Orchestrator.Autopilot,
 						apGHClient,
@@ -2050,6 +2061,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				if proj.CIChecks != nil {
 					ctrlOpts = append(ctrlOpts, autopilot.WithCIChecksOverride(proj.CIChecks))
 				}
+				// GH-4774: apply the per-project approval overlay (require_approval /
+				// approval_source) when configured; nil is a no-op (inherits
+				// env/global) — unlike Release, there's no "opt-in" warning here
+				// since inheriting the shared approval policy was always the
+				// pre-existing behavior.
+				ctrlOpts = append(ctrlOpts, projectApprovalControllerOpts(cfg, repoFullName)...)
 				controller := autopilot.NewController(
 					cfg.Orchestrator.Autopilot,
 					apGHClient,

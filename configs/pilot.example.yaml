@@ -565,6 +565,30 @@ projects:
   #                     # (Homebrew tap). Repos with GoReleaser must stay workflow.
   #     tag_human_merges: true  # also tag this project's human-authored merges (GH-3928)
   #
+  # Per-project approval overlay (GH-4774) - overrides the env/global
+  # require_approval + approval_source above for this project only. Nil/unset
+  # fields inherit from the resolved env/global approval config, matching the
+  # release overlay's semantics. Motivating case: a personal project routes
+  # merge approval to Telegram while a work project on the same daemon routes
+  # to Slack, and/or gates merges more or less strictly than the shared
+  # environment default.
+  # - name: "personal-project"
+  #   path: "/path/to/personal-project"
+  #   github:
+  #     owner: "aleks"
+  #     repo: "personal-project"
+  #   approval:
+  #     require_approval: false   # merge without a human tap even if the env requires it
+  #     approval_source: "telegram"
+  # - name: "work-project"
+  #   path: "/path/to/work-project"
+  #   github:
+  #     owner: "qf-studio"
+  #     repo: "work-project"
+  #   approval:
+  #     require_approval: true
+  #     approval_source: "slack"  # telegram, slack, or github-review
+  #
   # on_schedule example (GH-3993): batch everything merged since the last tag
   # into one release train, cut every Friday at 21:00 in Europe/Berlin.
   # - name: some-product

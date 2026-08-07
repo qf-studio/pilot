@@ -22,6 +22,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/health/verify"
 	"github.com/qf-studio/pilot/internal/upgrade"
@@ -759,6 +760,45 @@ func TelegramApprovalStranding(cfg *config.Config) string {
 	return "approval channel telegram is send-only in this configuration — approvals will strand"
 }
 
+// normalizeApprovalChannelName maps an ApprovalSource config value onto the
+// approval.Handler name it will actually be looked up by. Duplicates
+// internal/approval/channel.go's unexported normalizeChannelName — that
+// package can't be imported here without an import cycle risk (health
+// intentionally stays a leaf consumer of config/autopilot), so the single
+// alias this project has ever needed ("github-review" -> "github", added for
+// TASK-454/GH-4772) is re-derived locally. Every other value already matches
+// its handler's Name() (telegram/slack), so it passes through unchanged.
+func normalizeApprovalChannelName(source autopilot.ApprovalSource) string {
+	if source == autopilot.ApprovalSourceGitHubReview {
+		return "github"
+	}
+	return string(source)
+}
+
+// registeredApprovalChannels reports which approval.Handler names will
+// actually be registered at boot, mirroring the exact conditions
+// cmd/pilot/main.go gates each handler's construction on (GH-4774). Kept in
+// sync manually — there is no single source of truth to derive this from
+// without exporting main.go's wiring, which is out of scope here.
+func registeredApprovalChannels(cfg *config.Config) map[string]bool {
+	registered := map[string]bool{}
+	if cfg == nil || cfg.Adapters == nil {
+		return registered
+	}
+	if tg := cfg.Adapters.Telegram; tg != nil && tg.Enabled && tg.BotToken != "" &&
+		(tg.Approval == nil || tg.Approval.Enabled) {
+		registered["telegram"] = true
+	}
+	if sl := cfg.Adapters.Slack; sl != nil && sl.Enabled && sl.BotToken != "" &&
+		sl.Approval != nil && sl.Approval.Enabled {
+		registered["slack"] = true
+	}
+	if gh := cfg.Adapters.GitHub; gh != nil && gh.Approval != nil && gh.Approval.Enabled {
+		registered["github"] = true
+	}
+	return registered
+}
+
 // checkConfig validates configuration
 func checkConfig(cfg *config.Config) []ConfigCheck {
 	checks := []ConfigCheck{}
@@ -937,6 +977,65 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 					Fix:     "Set approval.enabled: true + approval.pre_merge.enabled: true + add an approver, or set require_approval: false for the environment",
 				})
 				break // one diagnostic per run is enough
+			}
+		}
+	}
+
+	// GH-4774: same deadlock class as above, but for a project's own
+	// approval.require_approval override — ProjectApprovalOverride wins over
+	// the env default (see Controller.resolvedRequireApproval in
+	// internal/autopilot), so a project can force require_approval=true (and
+	// deadlock) even in an environment whose own require_approval is false,
+	// which the env-keyed loop above can't see.
+	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil {
+		preMergeEnabled := cfg.Approval != nil &&
+			cfg.Approval.Enabled &&
+			cfg.Approval.PreMerge != nil &&
+			cfg.Approval.PreMerge.Enabled
+		if !preMergeEnabled {
+			for _, p := range cfg.Projects {
+				if p == nil || p.Approval == nil || p.Approval.RequireApproval == nil || !*p.Approval.RequireApproval {
+					continue
+				}
+				checks = append(checks, ConfigCheck{
+					Name:    "approval-misconfig",
+					Status:  StatusError,
+					Message: fmt.Sprintf("project %q has approval.require_approval=true but approval.pre_merge.enabled=false → all its PRs will deadlock until enabled or the override is removed", p.Name),
+					Fix:     "Set approval.enabled: true + approval.pre_merge.enabled: true + add an approver, or remove/flip this project's approval.require_approval override",
+				})
+			}
+		}
+	}
+
+	// GH-4774: verify every effective approval_source (global/env default plus
+	// every project's own override) resolves to a handler that will actually
+	// be registered at boot. Without this, the failure mode only surfaces at
+	// runtime as approval.Manager.SubmitApprovalRequest's hard error (GH-4380)
+	// the first time a PR reaches StageAwaitApproval.
+	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil {
+		registered := registeredApprovalChannels(cfg)
+		apCfg := cfg.Orchestrator.Autopilot
+		defaultSource := normalizeApprovalChannelName(apCfg.EffectiveApprovalSource())
+		if !registered[defaultSource] {
+			checks = append(checks, ConfigCheck{
+				Name:    "approval-source-unregistered",
+				Status:  StatusError,
+				Message: fmt.Sprintf("approval_source resolves to %q but no handler for it will be registered at boot — approval requests will hard-fail once a PR reaches awaiting_approval", defaultSource),
+				Fix:     "Enable the matching adapter (adapters.telegram/slack.enabled + bot_token, or adapters.github.approval.enabled) or change approval_source",
+			})
+		}
+		for _, p := range cfg.Projects {
+			if p == nil || p.Approval == nil || p.Approval.ApprovalSource == "" {
+				continue
+			}
+			source := normalizeApprovalChannelName(p.Approval.ApprovalSource)
+			if !registered[source] {
+				checks = append(checks, ConfigCheck{
+					Name:    "approval-source-unregistered",
+					Status:  StatusError,
+					Message: fmt.Sprintf("project %q sets approval.approval_source: %q, which resolves to %q, but no handler for it will be registered at boot", p.Name, p.Approval.ApprovalSource, source),
+					Fix:     "Enable the matching adapter (adapters.telegram/slack.enabled + bot_token, or adapters.github.approval.enabled) for this project's approval_source, or change the override",
+				})
 			}
 		}
 	}

@@ -607,6 +607,100 @@ func TestConfig_Validate_DashboardStatsWindowDays(t *testing.T) {
 	}
 }
 
+// GH-4774: Validate approval.approval_source enum on a project's approval
+// overlay, independently of whether that project also sets a release
+// overlay (the two overlays used to share one loop that `continue`d whenever
+// Release was nil).
+func TestConfig_Validate_ProjectApprovalSource(t *testing.T) {
+	tests := []struct {
+		name      string
+		buildCfg  func() *Config
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "nil approval overlay is valid",
+			buildCfg: func() *Config {
+				return baseValidConfig()
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty approval_source inherits and is valid",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "telegram is valid",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: autopilot.ApprovalSourceTelegram}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "slack is valid",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: autopilot.ApprovalSourceSlack}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "github-review alias is valid (TASK-454/GH-4772)",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: autopilot.ApprovalSourceGitHubReview}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "unknown approval_source is rejected",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: "bogus"}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `projects[0].approval.approval_source must be "", "telegram", "slack", or "github-review"`,
+		},
+		{
+			name: "approval overlay validated even when no release overlay is set on the same project",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Projects[0].Release = nil
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: "bogus"}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `projects[0].approval.approval_source must be`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.buildCfg()
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
+				} else if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // GH-3930: Validate release.publish enum at the global, per-environment, and
 // per-project overlay levels.
 func TestConfig_Validate_ReleasePublish(t *testing.T) {

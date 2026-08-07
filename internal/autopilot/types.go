@@ -305,6 +305,35 @@ type ProjectCIChecksOverride struct {
 	CIChecks *CIChecksConfig `yaml:"ci_checks,omitempty"`
 }
 
+// ProjectApprovalOverride lets a per-project controller override the
+// env/global RequireApproval + ApprovalSource for merge-gate approval
+// requests (GH-4774). Nil fields inherit — resolution order is project
+// override > active environment (EnvironmentConfig.RequireApproval /
+// EffectiveApprovalSource) > global Config.ApprovalSource, mirroring the
+// ProjectCIChecksOverride/ProjectReleaseConfig overlay pattern. Motivating
+// case: a personal project should route approval asks to Telegram while a
+// work project on the same daemon routes to Slack, and/or gates merges more
+// or less strictly than the shared environment default.
+//
+// Unlike ProjectCIChecksOverride (folded into a shallow Config copy once at
+// CIMonitor construction), the two read sites this overlay feeds
+// (handleCIPassed's RequireApproval check and submitAsyncApprovalRequest's
+// PreferredChannel) are evaluated on every tick a PR sits in
+// StageAwaitApproval — so NewController resolves this overlay once into
+// plain Controller fields (resolvedRequireApproval/resolvedApprovalSource,
+// mirroring the resolvedReleaseCfg idiom) rather than leaving per-tick
+// callers to re-derive it from cfg + this overlay themselves.
+type ProjectApprovalOverride struct {
+	// RequireApproval overrides the active environment's RequireApproval for
+	// this project. Nil inherits.
+	RequireApproval *bool `yaml:"require_approval,omitempty"`
+
+	// ApprovalSource overrides EffectiveApprovalSource() for this project.
+	// Empty inherits. Accepts the same values as the global/env
+	// approval_source field (telegram, slack, github-review).
+	ApprovalSource ApprovalSource `yaml:"approval_source,omitempty"`
+}
+
 // defaultEnvironments returns built-in environment configs matching legacy behavior.
 func defaultEnvironments() map[string]*EnvironmentConfig {
 	return map[string]*EnvironmentConfig{
