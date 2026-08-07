@@ -359,6 +359,22 @@ func WithCIChecksOverride(o *ProjectCIChecksOverride) ControllerOption {
 	}
 }
 
+// WithApprovalOverride wires a per-project require_approval / approval_source
+// overlay (GH-4774) for this controller's repo. Nil is a no-op. Unlike
+// WithReleaseOverride/WithCIChecksOverride, the resolved values this overlay
+// feeds are consulted on EVERY tick (handleCIPassed's RequireApproval check,
+// submitAsyncApprovalRequest's PreferredChannel), not just once at
+// construction — NewController resolves the overlay once into
+// c.resolvedRequireApproval/c.resolvedApprovalSource so every later read is a
+// cheap field access rather than re-resolving cfg on the hot path. Must be
+// applied before NewController computes those fields — see the options loop
+// at the top of NewController.
+func WithApprovalOverride(o *ProjectApprovalOverride) ControllerOption {
+	return func(c *Controller) {
+		c.projectApproval = o
+	}
+}
+
 // WithRateBudget wires the shared, process-wide GitHub rate-limit budget
 // tracker (GH-4391). All controllers in a multi-repo daemon share ONE
 // tracker — GitHub's primary rate limit is pooled per authenticated user
@@ -467,6 +483,24 @@ type Controller struct {
 	// Config.RequiredChecks / Config.CIChecks, same as before this option
 	// existed. Applied once during NewController, before c.ciMonitor is built.
 	projectCIChecks *ProjectCIChecksOverride
+
+	// projectApproval is the per-project require_approval / approval_source
+	// overlay (GH-4774), wired via WithApprovalOverride. Nil = no
+	// project-level override. Applied once during NewController into
+	// resolvedRequireApproval/resolvedApprovalSource below — kept only for
+	// escalation-reason attribution (requireApprovalReason).
+	projectApproval *ProjectApprovalOverride
+
+	// resolvedRequireApproval and resolvedApprovalSource are the effective
+	// require_approval / approval_source values for this controller's repo:
+	// projectApproval (if set) overlaid on top of the resolved env/global
+	// Config values (GH-4774). Computed once in NewController and read on
+	// every tick by handleCIPassed and submitAsyncApprovalRequest, mirroring
+	// the resolvedReleaseCfg idiom — unlike CIChecks (consumed once at
+	// CIMonitor construction), approval gating is read per-tick, so these
+	// must be cached fields rather than re-derived from c.config each time.
+	resolvedRequireApproval bool
+	resolvedApprovalSource  ApprovalSource
 
 	// resolvedReleaseCfg is the effective release config computed once in
 	// NewController: env-scoped config wins over global, then projectRelease
@@ -694,6 +728,24 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	// poller_github.go's ghCfg.PilotLabel fallback.
 	if c.pilotLabel == "" {
 		c.pilotLabel = github.LabelPilot
+	}
+
+	// GH-4774: resolve the effective require_approval / approval_source once
+	// here — env/global wins by default, then the per-project overlay (if
+	// any) is applied on top. Read on every tick via c.resolvedRequireApproval
+	// / c.resolvedApprovalSource rather than re-deriving from cfg, so a
+	// restart-time config swap on the shared *Config object (cfg is the same
+	// pointer every controller in cmd/pilot/main.go is constructed with)
+	// cannot retroactively change what an already-running controller resolved.
+	c.resolvedRequireApproval = cfg.ResolvedEnvOrDefault().RequireApproval
+	c.resolvedApprovalSource = cfg.EffectiveApprovalSource()
+	if c.projectApproval != nil {
+		if c.projectApproval.RequireApproval != nil {
+			c.resolvedRequireApproval = *c.projectApproval.RequireApproval
+		}
+		if c.projectApproval.ApprovalSource != nil {
+			c.resolvedApprovalSource = *c.projectApproval.ApprovalSource
+		}
 	}
 
 	// GH-4478: apply the per-project CI-checks overlay (if any) on a shallow
@@ -1031,6 +1083,19 @@ func (c *Controller) repoKey() string {
 	return c.owner + "/" + c.repo
 }
 
+// requireApprovalReason names the source of a require_approval=true decision
+// for the EscalationReason field (GH-3569/GH-4774): this project's approval
+// override when it explicitly set RequireApproval, otherwise the resolved
+// env. Distinguishing the two matters because an operator debugging a parked
+// PR needs to know whether to look at the project's `approval:` block or the
+// shared `environments.*.require_approval` config.
+func (c *Controller) requireApprovalReason() string {
+	if c.projectApproval != nil && c.projectApproval.RequireApproval != nil {
+		return fmt.Sprintf("projects[%s].approval.require_approval=true", c.repoKey())
+	}
+	return fmt.Sprintf("environments.%s.require_approval=true", c.config.EnvironmentName())
+}
+
 // SetLearningLoop sets the learning loop for capturing PR review feedback.
 // When set, handleMerged will fetch reviews after merge and extract patterns.
 func (c *Controller) SetLearningLoop(loop *memory.LearningLoop) {
@@ -1289,7 +1354,7 @@ func (c *Controller) alertApprovalSubmitFailureOnce(ctx context.Context, prState
 
 	msg := fmt.Sprintf(
 		"PR #%d (%s) approval request could not be delivered via the configured channel (%s): %s — it will not merge until a human intervenes",
-		prState.PRNumber, c.repoKey(), c.config.EffectiveApprovalSource(), submitErr,
+		prState.PRNumber, c.repoKey(), c.resolvedApprovalSource, submitErr,
 	)
 	c.log.Error("approval submit failed", "pr", prState.PRNumber, "error", submitErr)
 
@@ -1306,13 +1371,13 @@ func (c *Controller) alertApprovalSubmitFailureOnce(ctx context.Context, prState
 			Metadata: map[string]string{
 				"repo":            c.repoKey(),
 				"pr":              strconv.Itoa(prState.PRNumber),
-				"approval_source": string(c.config.EffectiveApprovalSource()),
+				"approval_source": string(c.resolvedApprovalSource),
 			},
 		})
 	}
 
 	comment := fmt.Sprintf("%s\n🚨 **Approval request undeliverable**\n\n@%s %s\n\nCheck the approval channel config (`approval_source: %s`) — the adapter/handler for it may not be registered or reachable. This PR is stuck in `awaiting_approval` until it's fixed.",
-		approvalFailedCommentMarker, c.owner, msg, c.config.EffectiveApprovalSource())
+		approvalFailedCommentMarker, c.owner, msg, c.resolvedApprovalSource)
 	if _, cerr := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); cerr != nil {
 		c.log.Warn("failed to post approval-submit-failed PR comment", "pr", prState.PRNumber, "error", cerr)
 	}
@@ -2160,10 +2225,10 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		return nil
 	}
 
-	if c.config.ResolvedEnvOrDefault().RequireApproval {
+	if c.resolvedRequireApproval {
 		c.log.Info("awaiting approval before merge", "pr", prState.PRNumber)
 		prState.Stage = StageAwaitApproval
-		prState.EscalationReason = fmt.Sprintf("environments.%s.require_approval=true", c.config.EnvironmentName())
+		prState.EscalationReason = c.requireApprovalReason()
 
 		// Notify approval required
 		if c.notifier != nil {
@@ -2792,7 +2857,7 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		// defense-in-depth gate did the escalating — observed on PR #3559.
 		reason := prState.EscalationReason
 		if reason == "" {
-			reason = fmt.Sprintf("environments.%s.require_approval=true", c.config.EnvironmentName())
+			reason = c.requireApprovalReason()
 		}
 		// GH-4596: a gate demanding approval with no approval channel wired is a
 		// config gap, not a PR failure — nothing about the PR's code is wrong.
@@ -2849,7 +2914,7 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		// Before this, PreferredChannel was never set on this path, so
 		// Manager.SubmitApprovalRequest always fell through to whichever
 		// handler happened to win Go's map iteration order.
-		PreferredChannel: string(c.config.EffectiveApprovalSource()),
+		PreferredChannel: string(c.resolvedApprovalSource),
 		// GH-4773: canonicalize c.projectPath the same way the store keys its
 		// own scoping (the #4297 cross-project collision lesson) so the
 		// persisted row and any later scoped lookup agree on the same string.

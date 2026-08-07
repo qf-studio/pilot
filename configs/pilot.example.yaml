@@ -527,6 +527,17 @@ projects:
     #       command: "pnpm test"
     #       required: true
     #       timeout: 10m
+    # Per-project approval overlay (GH-4774) - overrides the resolved
+    # env/global `require_approval` gate and `approval_source` channel for
+    # this project only. Both fields are independently optional: an unset
+    # field inherits from the resolved env/global autopilot config. Useful
+    # when different projects need different gating strictness or should
+    # route approval requests to different people/channels — e.g. a personal
+    # project approved via Telegram alongside a work project approved via
+    # Slack, both sharing the same autopilot.environments block.
+    # approval:
+    #   require_approval: true   # gate merges on human approval for this project only
+    #   approval_source: "slack" # route approval asks here instead of the resolved env/global source
 
   # Per-project release overlay (GH-3926) - overrides autopilot.release above
   # for this project only. Overlay semantics: only the fields set here are
