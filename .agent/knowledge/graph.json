@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-08-04T09:40:00.000000+00:00",
+  "updated": "2026-08-07T17:55:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -73,7 +73,7 @@
       },
       "git-operations": {
         "label": "Git Operations",
-        "description": "Git command wrappers in executor \u2014 clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
+        "description": "Git command wrappers in executor — clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
         "related": [
           "executor"
         ],
@@ -133,7 +133,7 @@
       },
       "anthropic-api": {
         "label": "Anthropic API",
-        "description": "Direct Anthropic Messages API calls (x-api-key, max_tokens required) used by the bot module's llm.Client \u2014 distinct from the Claude Code subprocess the executor uses",
+        "description": "Direct Anthropic Messages API calls (x-api-key, max_tokens required) used by the bot module's llm.Client — distinct from the Claude Code subprocess the executor uses",
         "related": [
           "llm-integration",
           "claude-code-integration"
@@ -167,7 +167,7 @@
       },
       "doctor": {
         "label": "doctor",
-        "description": "pilot doctor health checks (internal/health) \u2014 presence-only today, target: live auth probes via Verifiable interface"
+        "description": "pilot doctor health checks (internal/health) — presence-only today, target: live auth probes via Verifiable interface"
       },
       "canary": {
         "label": "canary",
@@ -513,7 +513,7 @@
         "released": "v2.166.10-11"
       },
       "TASK-359": {
-        "title": "Daemon finalization hardening \u2014 Shapes A/B/C closure",
+        "title": "Daemon finalization hardening — Shapes A/B/C closure",
         "status": "planned",
         "priority": "P1",
         "file": ".agent/tasks/TASK-359-daemon-finalization-hardening.md",
@@ -558,7 +558,7 @@
         ],
         "created": "2026-07-05",
         "file": ".agent/tasks/archive/TASK-385-studio-sdk-v0260-github-surface.md",
-        "label": "studio-sdk v0.26.0 github poll/board/PR surface (studio-sdk#71) \u2014 unblocks M7 4b-4d",
+        "label": "studio-sdk v0.26.0 github poll/board/PR surface (studio-sdk#71) — unblocks M7 4b-4d",
         "priority": "P1",
         "status": "completed"
       },
@@ -603,7 +603,7 @@
       },
       "TASK-368": {
         "path": ".agent/tasks/TASK-368-m7-github-cutover-phase4.md",
-        "title": "M7 Phase 4 \u2014 GitHub adapter \u2192 studio-sdk cutover (MANUAL)",
+        "title": "M7 Phase 4 — GitHub adapter → studio-sdk cutover (MANUAL)",
         "status": "unknown",
         "concepts": [
           "frontend",
@@ -620,7 +620,7 @@
       },
       "TASK-390": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/grot-dashboard-redesign/.agent/tasks/TASK-390-grot-dashboard-redesign.md",
-        "title": "Dashboard TUI redesign \u2014 grot design system",
+        "title": "Dashboard TUI redesign — grot design system",
         "status": "unknown",
         "concepts": [
           "testing",
@@ -647,7 +647,7 @@
       },
       "TASK-394": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-394-epic-subissue-execution-ledger.md",
-        "title": "Epic Sub-Issue Execution Ledger \u2014 kill double-intake, FK failures, starved success metrics",
+        "title": "Epic Sub-Issue Execution Ledger — kill double-intake, FK failures, starved success metrics",
         "status": "completed",
         "concepts": [
           "testing",
@@ -662,7 +662,7 @@
       },
       "TASK-395": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-395-epic-reconcile-false-positives.md",
-        "title": "Epic reconcile shipped-check false positives \u2014 parent in own child set, post-close escalation, stale needs-clarification",
+        "title": "Epic reconcile shipped-check false positives — parent in own child set, post-close escalation, stale needs-clarification",
         "status": "in-progress",
         "concepts": [
           "markers",
@@ -676,7 +676,7 @@
       },
       "TASK-396": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-396-release-sha-propagation.md",
-        "title": "Release SHA propagation \u2014 unconditional HeadSHA\u2190PostMergeSHA copy-back in handleReleasing",
+        "title": "Release SHA propagation — unconditional HeadSHA←PostMergeSHA copy-back in handleReleasing",
         "status": "completed",
         "concepts": [
           "workflow",
@@ -690,7 +690,7 @@
       },
       "TASK-397": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-397-m7-close-out.md",
-        "title": "M7 close-out \u2014 final dead-code deletion + #3423 milestone closure",
+        "title": "M7 close-out — final dead-code deletion + #3423 milestone closure",
         "status": "unknown",
         "concepts": [
           "database",
@@ -703,7 +703,7 @@
       },
       "TASK-398": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-398-dashboard-grom-panel-navigation.md",
-        "title": "Dashboard grom-style panel navigation \u2014 spatial focus, zoom, fluid layout",
+        "title": "Dashboard grom-style panel navigation — spatial focus, zoom, fluid layout",
         "status": "completed",
         "concepts": [
           "api",
@@ -716,7 +716,7 @@
       },
       "TASK-399": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-399-dashboard-status-truthfulness.md",
-        "title": "Dashboard history shows shipped issues as running/failed \u2014 reconcile persisted execution status against terminal truth",
+        "title": "Dashboard history shows shipped issues as running/failed — reconcile persisted execution status against terminal truth",
         "status": "dispatched",
         "concepts": [
           "deployment",
@@ -765,7 +765,7 @@
       },
       "TASK-403": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-403-canary-lifecycle-scenarios.md",
-        "title": "Canary lifecycle scenarios \u2014 scenario abstraction, epic-flow canary, canary metrics isolation",
+        "title": "Canary lifecycle scenarios — scenario abstraction, epic-flow canary, canary metrics isolation",
         "status": "completed",
         "concepts": [
           "deployment",
@@ -779,7 +779,7 @@
       },
       "TASK-404": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-404-execution-lifecycle-chokepoint.md",
-        "title": "Execution lifecycle chokepoint \u2014 one API for create/transition, kill the FK-787 class permanently",
+        "title": "Execution lifecycle chokepoint — one API for create/transition, kill the FK-787 class permanently",
         "status": "completed",
         "concepts": [
           "context",
@@ -822,7 +822,7 @@
       },
       "TASK-407": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-407-dispatch-admission-claim.md",
-        "title": "Atomic dispatch-admission claim \u2014 make duplicate execution structurally impossible",
+        "title": "Atomic dispatch-admission claim — make duplicate execution structurally impossible",
         "status": "completed",
         "concepts": [
           "simplification",
@@ -838,7 +838,7 @@
       },
       "TASK-409": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-409-s6-lite-aws-cutover.md",
-        "title": "S6-lite \u2014 move the founder daemon to AWS (atomic cutover, TUI preserved)",
+        "title": "S6-lite — move the founder daemon to AWS (atomic cutover, TUI preserved)",
         "status": "completed",
         "concepts": [
           "workflow",
@@ -865,7 +865,7 @@
       },
       "TASK-411": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-411-nightly-ledger-backup-s3.md",
-        "title": "Nightly ledger backup to S3 \u2014 script + systemd units + restore SOP",
+        "title": "Nightly ledger backup to S3 — script + systemd units + restore SOP",
         "status": "unknown",
         "concepts": [
           "context",
@@ -889,7 +889,7 @@
       },
       "TASK-413": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-413-poller-respect-backoff-stop-dispatch-loop.md",
-        "title": "Poller must respect repick backoff \u2014 kill the 30s dispatch\u2192reject loop",
+        "title": "Poller must respect repick backoff — kill the 30s dispatch→reject loop",
         "status": "unknown",
         "concepts": [
           "knowledge",
@@ -962,7 +962,7 @@
       },
       "TASK-418": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-418-ci-infra-failure-classification.md",
-        "title": "CI infra-failure classification \u2014 retry transient GitHub outages instead of closing PRs",
+        "title": "CI infra-failure classification — retry transient GitHub outages instead of closing PRs",
         "status": "completed",
         "concepts": [
           "theory of mind",
@@ -975,7 +975,7 @@
       },
       "TASK-419": {
         "path": ".agent/tasks/archive/TASK-419-epic-subissue-claim-loss-deadlock.md",
-        "title": "Epic sub-issue claim-loss self-deadlock \u2014 the ProjectWorker waits forever for a child only it can run",
+        "title": "Epic sub-issue claim-loss self-deadlock — the ProjectWorker waits forever for a child only it can run",
         "status": "completed",
         "concepts": [
           "testing",
@@ -989,7 +989,7 @@
       },
       "TASK-420": {
         "path": ".agent/tasks/archive/TASK-420-dashboard-panel-truth-divergence.md",
-        "title": "Dashboard panels disagree about the same task \u2014 queue marks live work \"done\", history keeps dead work \"running\"",
+        "title": "Dashboard panels disagree about the same task — queue marks live work \"done\", history keeps dead work \"running\"",
         "status": "completed",
         "concepts": [
           "testing",
@@ -1003,7 +1003,7 @@
       },
       "TASK-421": {
         "path": ".agent/tasks/archive/TASK-421-repick-counter-counts-non-failures.md",
-        "title": "Repick hard cap counts non-failures \u2014 a task queued behind a long task is auto-blocked for waiting its turn",
+        "title": "Repick hard cap counts non-failures — a task queued behind a long task is auto-blocked for waiting its turn",
         "status": "completed",
         "concepts": [
           "deployment",
@@ -1039,7 +1039,7 @@
       },
       "TASK-424": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-424-memory-guards-origin-relative-base.md",
-        "title": "Memory-doc guards diff against stale local base ref \u2014 make all three legs origin-relative",
+        "title": "Memory-doc guards diff against stale local base ref — make all three legs origin-relative",
         "status": "unknown",
         "concepts": [
           "deployment",
@@ -1050,7 +1050,7 @@
       },
       "TASK-425": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-425-graph-drift-local-prevention.md",
-        "title": "Graph drift local prevention \u2014 check-graph in pre-commit/pre-push + `--fix` auto-index",
+        "title": "Graph drift local prevention — check-graph in pre-commit/pre-push + `--fix` auto-index",
         "status": "unknown",
         "concepts": [
           "knowledge",
@@ -1195,7 +1195,7 @@
       },
       "TASK-437": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-437-duplicate-execution-race-prevention.md",
-        "title": "GH-4648/4649 duplicate-execution race \u2014 incident record + prevention cluster",
+        "title": "GH-4648/4649 duplicate-execution race — incident record + prevention cluster",
         "status": "unknown",
         "concepts": [
           "context",
@@ -1252,7 +1252,7 @@
       },
       "TASK-441": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-441-contract-hardening-tune-up.md",
-        "title": "Contract hardening tune-up \u2014 seams, dead-man signals, tripwires",
+        "title": "Contract hardening tune-up — seams, dead-man signals, tripwires",
         "status": "completed",
         "concepts": [
           "testing",
@@ -1490,23 +1490,23 @@
         ]
       },
       "TASK-459": {
-        "path": ".agent/tasks/TASK-459-irreversible-action-audit.md",
-        "title": "Irreversible-action audit \u2014 destructive sites require typed verdicts with positive evidence",
-        "status": "in-progress",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-459-irreversible-action-audit.md",
+        "title": "Irreversible-action audit — destructive sites require typed verdicts with positive evidence",
+        "status": "dispatched",
         "concepts": [
-          "deployment",
           "api",
           "testing",
+          "context",
           "authentication",
-          "markers",
-          "context"
+          "deployment",
+          "markers"
         ]
       }
     },
     "memories": {
       "founder-priority-pointer-first-saas-parked": {
         "type": "learning",
-        "summary": "Founder directive 2026-07-17: deliver pointer first, then pilot reliability fixes; SaaS/platform work (TASK-405, auth-service) parked \u2014 do not push in reports/queue recommendations",
+        "summary": "Founder directive 2026-07-17: deliver pointer first, then pilot reliability fixes; SaaS/platform work (TASK-405, auth-service) parked — do not push in reports/queue recommendations",
         "file": ".agent/knowledge/memories/learnings/founder-priority-pointer-first-saas-parked.md",
         "concepts": [
           "priorities",
@@ -1520,7 +1520,7 @@
       },
       "nextretrygeneration-blind-to-dead-owner-nonterminal-claims": {
         "type": "pitfall",
-        "summary": "nextRetryGeneration reads a dead-owner claim on a non-terminal (queued/running) row as a live owner forever \u2014 root cause of the TASK-409 cutover's \"dispatch claim lost\" wedge; fixed by boot-time reconciliation of claimed non-terminal rows to stalled (GH-4392, 2026-07-17).",
+        "summary": "nextRetryGeneration reads a dead-owner claim on a non-terminal (queued/running) row as a live owner forever — root cause of the TASK-409 cutover's \"dispatch claim lost\" wedge; fixed by boot-time reconciliation of claimed non-terminal rows to stalled (GH-4392, 2026-07-17).",
         "file": ".agent/knowledge/memories/pitfalls/nextretrygeneration-blind-to-dead-owner-nonterminal-claims.md",
         "concepts": [
           "executor",
@@ -1535,7 +1535,7 @@
       },
       "timestamp-hardening-parse-then-compare-in-go": {
         "type": "pattern",
-        "summary": "For SQLite TEXT timestamp columns that can carry two on-disk layouts (pre/post a DSN format fix), scan into time.Time unfiltered and compare/sort in Go \u2014 never filter or ORDER BY the raw column in SQL, since lexicographic comparison across layouts doesn't track chronological order (GH-4392, 2026-07-17).",
+        "summary": "For SQLite TEXT timestamp columns that can carry two on-disk layouts (pre/post a DSN format fix), scan into time.Time unfiltered and compare/sort in Go — never filter or ORDER BY the raw column in SQL, since lexicographic comparison across layouts doesn't track chronological order (GH-4392, 2026-07-17).",
         "file": ".agent/knowledge/memories/patterns/timestamp-hardening-parse-then-compare-in-go.md",
         "concepts": [
           "sqlite",
@@ -1602,7 +1602,7 @@
       },
       "mem-006": {
         "type": "pattern",
-        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH\u2192PLAN\u2192IMPL\u2192VERIFY\u2192COMPLETE), and EXIT_SIGNAL for completion.",
+        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH→PLAN→IMPL→VERIFY→COMPLETE), and EXIT_SIGNAL for completion.",
         "concepts": [
           "executor",
           "navigator-integration"
@@ -1654,7 +1654,7 @@
       },
       "mem-011": {
         "type": "pitfall",
-        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure \u2014 reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
+        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure — reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
         "concepts": [
           "executor",
           "git-operations"
@@ -1740,7 +1740,7 @@
       },
       "mem-018": {
         "type": "learning",
-        "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output \u2014 recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
+        "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output — recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
         "concepts": [
           "claude-code-integration",
           "workflow-discipline"
@@ -1763,7 +1763,7 @@
       },
       "mem-020": {
         "type": "learning",
-        "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser \u2192 Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) \u2014 update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
+        "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser → Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) — update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
         "concepts": [
           "release",
           "autopilot"
@@ -1774,7 +1774,7 @@
       },
       "mem-021": {
         "type": "learning",
-        "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request \u2014 they loop to maxPages (N\u00d7pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
+        "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request — they loop to maxPages (N×pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
         "concepts": [
           "github-adapter",
           "testing"
@@ -1785,7 +1785,7 @@
       },
       "mem-022": {
         "type": "decision",
-        "summary": "Release pipeline is tag-only \u2014 goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
+        "summary": "Release pipeline is tag-only — goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
         "concepts": [
           "release"
         ],
@@ -1832,7 +1832,7 @@
       },
       "mem-026": {
         "type": "learning",
-        "summary": "The Pilot daemon's *finalization* path (push -> PR-create -> label) is the active reliability bottleneck \u2014 the *execution* path (Claude Code subprocess) is reliable. Studio-sdk extraction (PRs #28-#56, 2026-06-02/-03): 9/10 connectors shipped, but ~7/12 finalization runs needed manual recovery (Shape A stall-before-push), 2 hit a retry-race vs human recovery PRs (Shape B), 1 late-duplicate-PR (Shape C). The harness + review gates carried the outcome, not daemon finalization reliability. `no-decompose` label routes through the direct path (fatal error handling) instead of the epic path (warn-only) and was empirically reliable. Canonical fix: TASK-359 (3-layer plan: unified finalizeExecution MANUAL + 4 no-decompose Pilot issues for boundary fixes). RESOLUTION (2026-06-04): Shape A + C CLOSED & live-verified via TASK-359 Layer 1 (v2.166.16, studio-sdk #63/PR#64); Shape B (Layer 2b) + negative token-revoke shipped/unit-covered but not yet live-verified.",
+        "summary": "The Pilot daemon's *finalization* path (push -> PR-create -> label) is the active reliability bottleneck — the *execution* path (Claude Code subprocess) is reliable. Studio-sdk extraction (PRs #28-#56, 2026-06-02/-03): 9/10 connectors shipped, but ~7/12 finalization runs needed manual recovery (Shape A stall-before-push), 2 hit a retry-race vs human recovery PRs (Shape B), 1 late-duplicate-PR (Shape C). The harness + review gates carried the outcome, not daemon finalization reliability. `no-decompose` label routes through the direct path (fatal error handling) instead of the epic path (warn-only) and was empirically reliable. Canonical fix: TASK-359 (3-layer plan: unified finalizeExecution MANUAL + 4 no-decompose Pilot issues for boundary fixes). RESOLUTION (2026-06-04): Shape A + C CLOSED & live-verified via TASK-359 Layer 1 (v2.166.16, studio-sdk #63/PR#64); Shape B (Layer 2b) + negative token-revoke shipped/unit-covered but not yet live-verified.",
         "concepts": [
           "executor",
           "autopilot",
@@ -1857,7 +1857,7 @@
       },
       "mem-028": {
         "type": "learning",
-        "summary": "When grep for an alleged write API in internal/ returns zero, the root cause is external (config/another bot/GitHub workflow) \u2014 don't draft a Pilot fix",
+        "summary": "When grep for an alleged write API in internal/ returns zero, the root cause is external (config/another bot/GitHub workflow) — don't draft a Pilot fix",
         "concepts": [
           "workflow-discipline",
           "github-adapter"
@@ -1869,7 +1869,7 @@
       },
       "mem-029": {
         "type": "learning",
-        "summary": "For ad-hoc gh CLI writes to qf-studio (project board edits, etc.) use Pilot's PAT from ~/.pilot/config.yaml via GH_TOKEN env \u2014 OAuth refresh is silently blocked by SAML SSO",
+        "summary": "For ad-hoc gh CLI writes to qf-studio (project board edits, etc.) use Pilot's PAT from ~/.pilot/config.yaml via GH_TOKEN env — OAuth refresh is silently blocked by SAML SSO",
         "concepts": [
           "github-adapter",
           "doctor",
@@ -1882,7 +1882,7 @@
       },
       "mem-030": {
         "type": "pitfall",
-        "summary": "maybeCloseParentIssue trusted native sub-issue open-count alone; partial LinkSubIssue coverage makes count hit 0 while unlinked siblings are open \u2014 parent closes pilot-done with no PR-merge verification (GH-3513). Fixed PR #3527: native 0 must be confirmed by text search.",
+        "summary": "maybeCloseParentIssue trusted native sub-issue open-count alone; partial LinkSubIssue coverage makes count hit 0 while unlinked siblings are open — parent closes pilot-done with no PR-merge verification (GH-3513). Fixed PR #3527: native 0 must be confirmed by text search.",
         "concepts": [
           "autopilot",
           "epic-decomposition"
@@ -1894,7 +1894,7 @@
       },
       "mem-031": {
         "type": "pitfall",
-        "summary": "skipSupersededByParent superseded live children off parent.State==closed && pilot-done label \u2014 no merge verification; orphaned complete green PRs in GH-3513. Fixed PR #3527: open pilot/GH-N PR vetoes supersession.",
+        "summary": "skipSupersededByParent superseded live children off parent.State==closed && pilot-done label — no merge verification; orphaned complete green PRs in GH-3513. Fixed PR #3527: open pilot/GH-N PR vetoes supersession.",
         "concepts": [
           "autopilot",
           "poller",
@@ -1908,7 +1908,7 @@
       },
       "mem-032": {
         "type": "pitfall",
-        "summary": "inherited-spec:true children fetch the parent issue as their spec and re-implement the FULL feature \u2014 N redundant colliding PRs per epic (GH-3513). Fixed PR #3527 with a scope fence in subIssueBody(); sibling-branch PR base routing still unfixed.",
+        "summary": "inherited-spec:true children fetch the parent issue as their spec and re-implement the FULL feature — N redundant colliding PRs per epic (GH-3513). Fixed PR #3527 with a scope fence in subIssueBody(); sibling-branch PR base routing still unfixed.",
         "concepts": [
           "epic-decomposition",
           "executor"
@@ -1934,7 +1934,7 @@
       },
       "mem-034": {
         "type": "pitfall",
-        "summary": "Subprocess without cmd.Dir: getPostExecutionSummary ran git in the daemon's CWD and reported the wrong repo's HEAD as the commit SHA \u2014 ghost guard then killed real worker commits (TASK-320 false no-ops) or recorded wrong-repo completed SHAs (TASK-355). One bug, both incident families. Fix v2.186.2: worktree git harvest first, summary pinned to executionPath. Lesson: every executor exec.Command must set cmd.Dir; never ask an LLM for what git answers deterministically.",
+        "summary": "Subprocess without cmd.Dir: getPostExecutionSummary ran git in the daemon's CWD and reported the wrong repo's HEAD as the commit SHA — ghost guard then killed real worker commits (TASK-320 false no-ops) or recorded wrong-repo completed SHAs (TASK-355). One bug, both incident families. Fix v2.186.2: worktree git harvest first, summary pinned to executionPath. Lesson: every executor exec.Command must set cmd.Dir; never ask an LLM for what git answers deterministically.",
         "concepts": [
           "executor",
           "git-operations"
@@ -1946,7 +1946,7 @@
       },
       "mem-035": {
         "type": "learning",
-        "summary": "GH-201 'OAuth loop' ghost issues (#3562-64, #3576) were created by the TEST SUITE: TestCreateSubIssues_ProceedsWhenNoChildren drives CreateSubIssues past the dedup guard with fixture parent GH-201 and executionPath='' \u2014 createSubIssuesViaGitHub has no dryRun guard, so authed gh creates real issues; sibling tests spawn the real claude binary. Teammate/shared-PAT attribution was wrong: tests stamp the same autopilot-meta markers and bypass the DB (zero rows proves test path, not remote actor). Lessons: stub the exec boundary in tests; dryRun must guard every side-effecting path; verify the spawner not the signature. Fix: #3579.",
+        "summary": "GH-201 'OAuth loop' ghost issues (#3562-64, #3576) were created by the TEST SUITE: TestCreateSubIssues_ProceedsWhenNoChildren drives CreateSubIssues past the dedup guard with fixture parent GH-201 and executionPath='' — createSubIssuesViaGitHub has no dryRun guard, so authed gh creates real issues; sibling tests spawn the real claude binary. Teammate/shared-PAT attribution was wrong: tests stamp the same autopilot-meta markers and bypass the DB (zero rows proves test path, not remote actor). Lessons: stub the exec boundary in tests; dryRun must guard every side-effecting path; verify the spawner not the signature. Fix: #3579.",
         "concepts": [
           "executor",
           "testing",
@@ -1976,7 +1976,7 @@
       },
       "mem-037": {
         "type": "pitfall",
-        "summary": "Autopilot orphans the LAST epic child PRs: the epic's execution run owns child-PR merging, so children whose PRs are created late are left created-but-unmerged when the run ends. The standalone auto-merge loop won't reclaim them because their tracking issues are already CLOSED (it thinks the work is done) \u2014 so green/CLEAN child PRs sit with ZERO autopilot review/comment even under stage's require_approval:false + auto_merge:true + green test/lint. Epic stays OPEN+pilot-in-progress; any 'Blocked by: #<epic>' dependent is gated forever via poller hasPendingDependencies. Recover: merge the orphans in order yourself, then close the epic to release dependents. Late siblings often CONFLICT once one merges (same wiring) \u2014 close the conflicted PR and re-dispatch only its UNIQUE remainder vs updated main, don't hand-resolve in root. Observed 2026-06-26 epic #3665 (bot module): merged #3670/#3674 mid-run, orphaned #3678/#3679. TASK-359 finalization shape.",
+        "summary": "Autopilot orphans the LAST epic child PRs: the epic's execution run owns child-PR merging, so children whose PRs are created late are left created-but-unmerged when the run ends. The standalone auto-merge loop won't reclaim them because their tracking issues are already CLOSED (it thinks the work is done) — so green/CLEAN child PRs sit with ZERO autopilot review/comment even under stage's require_approval:false + auto_merge:true + green test/lint. Epic stays OPEN+pilot-in-progress; any 'Blocked by: #<epic>' dependent is gated forever via poller hasPendingDependencies. Recover: merge the orphans in order yourself, then close the epic to release dependents. Late siblings often CONFLICT once one merges (same wiring) — close the conflicted PR and re-dispatch only its UNIQUE remainder vs updated main, don't hand-resolve in root. Observed 2026-06-26 epic #3665 (bot module): merged #3670/#3674 mid-run, orphaned #3678/#3679. TASK-359 finalization shape.",
         "concepts": [
           "autopilot",
           "epic-decomposition",
@@ -1991,7 +1991,7 @@
       },
       "mem-038": {
         "type": "pattern",
-        "summary": "Bot module dual-path: fast conversational path (~1-2s, direct LLM via Responder) vs executor path (~15-30s, Claude Code worktree). Intents: greeting/chat/question/issue-intake \u2192 Responder; task/research/planning \u2192 executor. Fallback guarantee: Responder nil (bot disabled) \u2192 identical-to-before executor path. Rate limit via AllowMessage() before all dispatch. Voice seam: VoiceText merged into text when Text empty. Test-at-the-seam lesson: tests must cross adapter\u2192comms boundary (ref mem-036).",
+        "summary": "Bot module dual-path: fast conversational path (~1-2s, direct LLM via Responder) vs executor path (~15-30s, Claude Code worktree). Intents: greeting/chat/question/issue-intake → Responder; task/research/planning → executor. Fallback guarantee: Responder nil (bot disabled) → identical-to-before executor path. Rate limit via AllowMessage() before all dispatch. Voice seam: VoiceText merged into text when Text empty. Test-at-the-seam lesson: tests must cross adapter→comms boundary (ref mem-036).",
         "concepts": [
           "intent-routing",
           "executor",
@@ -2004,7 +2004,7 @@
       },
       "mem-039": {
         "type": "pitfall",
-        "summary": "Bot's direct LLM client (internal/llm/client.go) omitted required max_tokens and sent non-standard output_config{effort:low}, so every Anthropic Messages call 400'd ('max_tokens: Field required') and the bot replied 'Sorry, I couldn't process that.' Shipped GREEN because TestAnswer_RequestShape asserted output_config present and never checked max_tokens \u2014 the test encoded the bug. Diagnose request-shape bugs with curl (real key): code's request \u2192 400, +max_tokens/-output_config \u2192 200, in 2 calls. Fixed v2.200.1 (#3700): add max_tokens(2048), drop output_config, tests assert both. Lesson (again, see mem-036): assert the REQUIRED fields, not the optional ones.",
+        "summary": "Bot's direct LLM client (internal/llm/client.go) omitted required max_tokens and sent non-standard output_config{effort:low}, so every Anthropic Messages call 400'd ('max_tokens: Field required') and the bot replied 'Sorry, I couldn't process that.' Shipped GREEN because TestAnswer_RequestShape asserted output_config present and never checked max_tokens — the test encoded the bug. Diagnose request-shape bugs with curl (real key): code's request → 400, +max_tokens/-output_config → 200, in 2 calls. Fixed v2.200.1 (#3700): add max_tokens(2048), drop output_config, tests assert both. Lesson (again, see mem-036): assert the REQUIRED fields, not the optional ones.",
         "concepts": [
           "anthropic-api",
           "testing",
@@ -2019,7 +2019,7 @@
       },
       "mem-040": {
         "type": "pitfall",
-        "summary": "Daemon hot-upgrades to the latest GitHub RELEASE and re-execs (pid preserved \u2192 ps lstart looks unchanged while the on-disk binary swaps). A dev binary cp'd to ~/.local/bin/pilot reverts within ~20min to the last release. A fix merged to main is NOT in the running daemon until a release containing it is cut (autopilot shouldTriggerRelease gap). Observed 2026-06-26: 29MB dev fix at 12:32 reverted to 20.6MB v2.200.0 release by 12:52, bot kept failing. Durable fix: tag-driven release (mem-022) with the fix \u2192 pilot upgrade (prompts y/N) \u2192 restart. v2.200.1 held because it's the latest release. Confirm running binary via lsof txt + stat size + pilot version, not lstart alone.",
+        "summary": "Daemon hot-upgrades to the latest GitHub RELEASE and re-execs (pid preserved → ps lstart looks unchanged while the on-disk binary swaps). A dev binary cp'd to ~/.local/bin/pilot reverts within ~20min to the last release. A fix merged to main is NOT in the running daemon until a release containing it is cut (autopilot shouldTriggerRelease gap). Observed 2026-06-26: 29MB dev fix at 12:32 reverted to 20.6MB v2.200.0 release by 12:52, bot kept failing. Durable fix: tag-driven release (mem-022) with the fix → pilot upgrade (prompts y/N) → restart. v2.200.1 held because it's the latest release. Confirm running binary via lsof txt + stat size + pilot version, not lstart alone.",
         "concepts": [
           "hot-upgrade",
           "release",
@@ -2029,13 +2029,13 @@
         "confidence": 0.9,
         "severity": "medium",
         "created": "2026-06-26",
-        "incident": "2026-06-26: shipping the bot max_tokens fix \u2014 dev binary installs (12:32) auto-reverted to pre-fix v2.200.0 release (12:52); only cutting v2.200.1 and pilot-upgrading made the fix stick in the live daemon.",
+        "incident": "2026-06-26: shipping the bot max_tokens fix — dev binary installs (12:32) auto-reverted to pre-fix v2.200.0 release (12:52); only cutting v2.200.1 and pilot-upgrading made the fix stick in the live daemon.",
         "file": ".agent/knowledge/memories/pitfalls/bug_daemon_autoupgrade_reverts_dev_binary.md",
         "origin_task": "TASK-374"
       },
       "mem-041": {
         "type": "pitfall",
-        "summary": "LLM intent classifier was doubly broken so the bot misrouted open-ended input. (1) classifier.go sent output_config{effort} \u2192 Haiku 400 'does not support the effort parameter' \u2192 every Classify failed \u2192 silent regex fallback (same class as mem-039; a test asserted output_config present). (2) Prompt routed 'draw/outline/show' as code TASK \u2192 heavy executor + dangling tasks. Fixed v2.200.2 (#3703): drop output_config; add DELIVERABLE TEST (answer/diagram\u2192question/chat, change-code\u2192task, file-ticket\u2192issue_intake). Haiku now primary NL router, regex only guards /-commands. Validate classifier prompts via curl (TUI logs ungreppable). 8/8 live.",
+        "summary": "LLM intent classifier was doubly broken so the bot misrouted open-ended input. (1) classifier.go sent output_config{effort} → Haiku 400 'does not support the effort parameter' → every Classify failed → silent regex fallback (same class as mem-039; a test asserted output_config present). (2) Prompt routed 'draw/outline/show' as code TASK → heavy executor + dangling tasks. Fixed v2.200.2 (#3703): drop output_config; add DELIVERABLE TEST (answer/diagram→question/chat, change-code→task, file-ticket→issue_intake). Haiku now primary NL router, regex only guards /-commands. Validate classifier prompts via curl (TUI logs ungreppable). 8/8 live.",
         "concepts": [
           "intent-routing",
           "anthropic-api",
@@ -2050,7 +2050,7 @@
       },
       "mem-042": {
         "type": "pitfall",
-        "summary": "Bot answers/issues hit the WRONG repo via two traps. (1) Intake (comms.IssueCreator) resolves owner/repo from a SINGLE hardwired NewIssueCreator entry = cfg.Adapters.GitHub.Repo; resolveRepo falls to repos[0] for unmatched paths, so intake ALWAYS targets adapters.github.repo and /switch doesn't change it. (2) The per-context active project is in-memory and RESETS to default_project on every daemon restart, so Q&A answers about the wrong repo until re-/switch'd. Demo fix: point default_project AND adapters.github.repo at the same repo (+ project_board.enabled:false for label polling). Proper fix: NewIssueCreator entry per cfg.Projects + persist active project across restarts. Board-source repos also need intake\u2192board or label polling.",
+        "summary": "Bot answers/issues hit the WRONG repo via two traps. (1) Intake (comms.IssueCreator) resolves owner/repo from a SINGLE hardwired NewIssueCreator entry = cfg.Adapters.GitHub.Repo; resolveRepo falls to repos[0] for unmatched paths, so intake ALWAYS targets adapters.github.repo and /switch doesn't change it. (2) The per-context active project is in-memory and RESETS to default_project on every daemon restart, so Q&A answers about the wrong repo until re-/switch'd. Demo fix: point default_project AND adapters.github.repo at the same repo (+ project_board.enabled:false for label polling). Proper fix: NewIssueCreator entry per cfg.Projects + persist active project across restarts. Board-source repos also need intake→board or label polling.",
         "concepts": [
           "conversational-bot",
           "intent-routing",
@@ -2090,7 +2090,7 @@
         "confidence": 0.95,
         "severity": "high",
         "created": "2026-07-04",
-        "incident": "2026-07-03: daemon hot-upgraded to v2.201.2 at 12:50:23+02:00, then sat 7+ hours through v2.202.0-v2.207.0 with zero upgrade attempts (not failures \u2014 total silence) until a manual restart at 20:01.",
+        "incident": "2026-07-03: daemon hot-upgraded to v2.201.2 at 12:50:23+02:00, then sat 7+ hours through v2.202.0-v2.207.0 with zero upgrade attempts (not failures — total silence) until a manual restart at 20:01.",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_self_upgrade_requires_manual_keypress.md",
         "origin_task": "GH-3790-1"
       },
@@ -2110,7 +2110,7 @@
       },
       "mem-046": {
         "type": "pitfall",
-        "summary": "Autopilot's direct PR-close call sites (handleCIFailed iteration-limit/size-guard/main, handleReviewRequested iteration-limit/main) never posted a PR/issue comment or corrected issue labels \u2014 the only convergence point that could have was notifyExternalClose, whose pilot-done skip-guard (GH-2340) returned with zero comments when the issue already had pilot-done from an earlier, unrelated PR. Result: PR #3802 (fix for #3789) closed CI-red with zero explanation and #3789 kept pilot-done, making discarded work look shipped (TASK-382 D9). Fix (GH-3806): notifyExternalClose now always posts a PR comment (AddPRComment hits /issues/{prNumber}/comments, not /pulls/.../comments) + issue comment from prState.Error on every branch including both skip guards; close sites set prState.Error (specific reason) and new in-memory PRState.TerminalLabel (forces pilot-failed instead of pilot-retry-ready when terminal or superseded by a follow-up issue) instead of commenting inline.",
+        "summary": "Autopilot's direct PR-close call sites (handleCIFailed iteration-limit/size-guard/main, handleReviewRequested iteration-limit/main) never posted a PR/issue comment or corrected issue labels — the only convergence point that could have was notifyExternalClose, whose pilot-done skip-guard (GH-2340) returned with zero comments when the issue already had pilot-done from an earlier, unrelated PR. Result: PR #3802 (fix for #3789) closed CI-red with zero explanation and #3789 kept pilot-done, making discarded work look shipped (TASK-382 D9). Fix (GH-3806): notifyExternalClose now always posts a PR comment (AddPRComment hits /issues/{prNumber}/comments, not /pulls/.../comments) + issue comment from prState.Error on every branch including both skip guards; close sites set prState.Error (specific reason) and new in-memory PRState.TerminalLabel (forces pilot-failed instead of pilot-retry-ready when terminal or superseded by a follow-up issue) instead of commenting inline.",
         "concepts": [
           "autopilot"
         ],
@@ -2161,7 +2161,7 @@
       },
       "mem-050": {
         "type": "pattern",
-        "summary": "autopilot_pr_state rows are deleted on success; absence is not a wiring bug \u2014 executions table is the history",
+        "summary": "autopilot_pr_state rows are deleted on success; absence is not a wiring bug — executions table is the history",
         "file": ".agent/knowledge/memories/patterns/pattern_autopilot_pr_state_ephemeral.md",
         "concepts": [
           "autopilot"
@@ -2375,7 +2375,7 @@
       },
       "mem-066": {
         "type": "pitfall",
-        "summary": "Approval button taps silently dropped \u2014 send path worked, inbound dispatch never wired; partial-wiring class recurs",
+        "summary": "Approval button taps silently dropped — send path worked, inbound dispatch never wired; partial-wiring class recurs",
         "file": ".agent/knowledge/memories/pitfalls/bug_telegram_approval_callback_unwired.md",
         "concepts": [
           "autopilot",
@@ -2414,7 +2414,7 @@
       },
       "mem-069": {
         "type": "learning",
-        "summary": "Verify remote file state via gh api before authoring Pilot issues \u2014 stale local clone causes redundant issues",
+        "summary": "Verify remote file state via gh api before authoring Pilot issues — stale local clone causes redundant issues",
         "file": ".agent/knowledge/memories/learnings/feedback_check_remote_state.md",
         "concepts": [
           "workflow-discipline",
@@ -2452,7 +2452,7 @@
       },
       "mem-072": {
         "type": "learning",
-        "summary": "Org-level setting blocks Actions PR creation; GITHUB_TOKEN pushes do not chain workflows \u2014 diagnosis recipe",
+        "summary": "Org-level setting blocks Actions PR creation; GITHUB_TOKEN pushes do not chain workflows — diagnosis recipe",
         "file": ".agent/knowledge/memories/learnings/feedback_gh_actions_pr_create_perm.md",
         "concepts": [
           "release",
@@ -2503,7 +2503,7 @@
       },
       "mem-076": {
         "type": "learning",
-        "summary": "Stop hook requires StructuredOutput call with branch, commit, files, summary \u2014 binds every pilot-executor session",
+        "summary": "Stop hook requires StructuredOutput call with branch, commit, files, summary — binds every pilot-executor session",
         "file": ".agent/knowledge/memories/learnings/feedback_structured_output_hook.md",
         "concepts": [
           "executor",
@@ -2558,7 +2558,7 @@
       },
       "mem-080": {
         "type": "decision",
-        "summary": "Pilot is a Claude Code orchestration layer, not a replacement \u2014 infrastructure play for the Anthropic ecosystem",
+        "summary": "Pilot is a Claude Code orchestration layer, not a replacement — infrastructure play for the Anthropic ecosystem",
         "file": ".agent/knowledge/memories/decisions/strategy_pilot_positioning.md",
         "concepts": [
           "product-positioning",
@@ -2586,7 +2586,7 @@
       },
       "mem-082": {
         "type": "pitfall",
-        "summary": "Autopilot can be silently disabled at startup when a gate check fails without a log line \u2014 operators unaware execution is off",
+        "summary": "Autopilot can be silently disabled at startup when a gate check fails without a log line — operators unaware execution is off",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_silent_autopilot_gate_disable.md",
         "concepts": [
           "autopilot",
@@ -2614,7 +2614,7 @@
       },
       "mem-084": {
         "type": "pitfall",
-        "summary": "allChildrenDone() returned true for empty child set \u2014 vacuous truth tripped epic-complete exit with zero work done; require >=1 child",
+        "summary": "allChildrenDone() returned true for empty child set — vacuous truth tripped epic-complete exit with zero work done; require >=1 child",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_allchildrendone_vacuous_truth.md",
         "concepts": [
           "epic-decomposition",
@@ -2648,13 +2648,13 @@
         "confidence": 0.9,
         "created": "2026-07-06",
         "severity": "high",
-        "summary": "Extraction-era SDK ports go stale vs evolving in-tree code: SDK GetTagForSHA shipped bounded (20 tags) while in-tree moved to exhaustive pagination \u2014 would have stalled release draining. Caught by running the consumer test suite against the SDK client (TestHandleReleasing_ExhaustiveTagDrain). Before cutover: diff SDK methods against CURRENT in-tree source; typed-error/pagination/retry drift compiles fine and fails only behaviorally.",
+        "summary": "Extraction-era SDK ports go stale vs evolving in-tree code: SDK GetTagForSHA shipped bounded (20 tags) while in-tree moved to exhaustive pagination — would have stalled release draining. Caught by running the consumer test suite against the SDK client (TestHandleReleasing_ExhaustiveTagDrain). Before cutover: diff SDK methods against CURRENT in-tree source; typed-error/pagination/retry drift compiles fine and fails only behaviorally.",
         "type": "pitfall",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_sdk_ports_go_stale_vs_intree.md"
       },
       "mem-089": {
         "type": "pitfall",
-        "summary": "Epic parent's stuck-monitor entry freezes once sub-issue execution starts \u2014 false eviction on long sequential epics. executeSubIssuesTracked posted per-child progress to GitHub via UpdateIssueProgress, which never reaches the alerts engine, so the parent's taskLastProgress entry was touched once before the loop then frozen for the whole run. GH-4021: evicted with stuck_for=41m0s while sub-issue 2 was actively running. Fixed by calling r.reportProgress(parent.ID, ...) inside the loop per child (GH-4033, merged via 51fd3348).",
+        "summary": "Epic parent's stuck-monitor entry freezes once sub-issue execution starts — false eviction on long sequential epics. executeSubIssuesTracked posted per-child progress to GitHub via UpdateIssueProgress, which never reaches the alerts engine, so the parent's taskLastProgress entry was touched once before the loop then frozen for the whole run. GH-4021: evicted with stuck_for=41m0s while sub-issue 2 was actively running. Fixed by calling r.reportProgress(parent.ID, ...) inside the loop per child (GH-4033, merged via 51fd3348).",
         "path": "memories/pitfalls/mem-089.md",
         "confidence": 0.9,
         "concepts": [
@@ -2667,7 +2667,7 @@
       },
       "mem-090": {
         "type": "decision",
-        "summary": "Dashboard chrome delegates to grot pkg/tui (github.com/qf-studio/grot render + theme.Pilot) \u2014 one shared design system, imported not vendored (public v0.1.0, MIT, lipgloss-only). Glyph vocabulary replaces emoji on the TUI/daemon surface only; chat adapters + CLI subcommands untouched. Requires go >= 1.25. TASK-390.",
+        "summary": "Dashboard chrome delegates to grot pkg/tui (github.com/qf-studio/grot render + theme.Pilot) — one shared design system, imported not vendored (public v0.1.0, MIT, lipgloss-only). Glyph vocabulary replaces emoji on the TUI/daemon surface only; chat adapters + CLI subcommands untouched. Requires go >= 1.25. TASK-390.",
         "path": "memories/decisions/decision_grot_design_system.md",
         "confidence": 0.95,
         "concepts": [
@@ -2678,7 +2678,7 @@
       },
       "mem-091": {
         "type": "pattern",
-        "summary": "Duplicate 'completed' execution rows sharing one pr_url are SelfHealExecutionAfterMerge by design: on PR merge it flips EVERY non-success row (failed/no_op/stalled/rate_limited/infra/skipped) for the task_id to completed. Distinguish benign CI-retry (full events ending in failure, retry ~90s later) from restart-orphan (events just stop, hours-long lifespan). Dedup guard IsTaskQueued is innocent \u2014 first row was already terminal.",
+        "summary": "Duplicate 'completed' execution rows sharing one pr_url are SelfHealExecutionAfterMerge by design: on PR merge it flips EVERY non-success row (failed/no_op/stalled/rate_limited/infra/skipped) for the task_id to completed. Distinguish benign CI-retry (full events ending in failure, retry ~90s later) from restart-orphan (events just stop, hours-long lifespan). Dedup guard IsTaskQueued is innocent — first row was already terminal.",
         "path": "memories/patterns/pattern_selfheal_duplicate_completed_rows.md",
         "confidence": 0.9,
         "concepts": [
@@ -2737,7 +2737,7 @@
       },
       "mem-096": {
         "type": "decision",
-        "summary": "Lanes mechanism: extend `Complexity` \u2192 `Lane` - Tier routing already threaded end-to-end; lanes = bundling scattered knobs",
+        "summary": "Lanes mechanism: extend `Complexity` → `Lane` - Tier routing already threaded end-to-end; lanes = bundling scattered knobs",
         "path": "memories/decisions/mem-096.md",
         "confidence": 0.95,
         "concepts": [
@@ -2824,7 +2824,7 @@
       },
       "mem-101": {
         "type": "pitfall",
-        "summary": "ProjectWorker (dispatcher.go:843-899) is the sole per-repo serialization point; orchestrator.max_concurrent is neutralized (poller goroutines park in WaitForExecution). CI already decoupled \u2014 fixing ProjectWorker delivers concurrency + pipeline overlap. TASK-393 P3.",
+        "summary": "ProjectWorker (dispatcher.go:843-899) is the sole per-repo serialization point; orchestrator.max_concurrent is neutralized (poller goroutines park in WaitForExecution). CI already decoupled — fixing ProjectWorker delivers concurrency + pipeline overlap. TASK-393 P3.",
         "path": "memories/pitfalls/mem-101.md",
         "confidence": 0.9,
         "concepts": [
@@ -2838,7 +2838,7 @@
       },
       "mem-102": {
         "type": "pitfall",
-        "summary": "CreateWorktreeWithBranch (worktree.go:768-775) builds a fresh WorktreeManager (unshared createMu) per call \u2014 concurrent same-repo execution silently reintroduces the GH-1312 git worktree race. Shared-manager routing is TASK-393 P3.1 prerequisite.",
+        "summary": "CreateWorktreeWithBranch (worktree.go:768-775) builds a fresh WorktreeManager (unshared createMu) per call — concurrent same-repo execution silently reintroduces the GH-1312 git worktree race. Shared-manager routing is TASK-393 P3.1 prerequisite.",
         "path": "memories/pitfalls/mem-102.md",
         "confidence": 0.85,
         "concepts": [
@@ -2851,7 +2851,7 @@
       },
       "mem-103": {
         "type": "learning",
-        "summary": "Merge gate = handleCIPassed (controller.go:1212) + escalate-only scope_guard.go reasons (SizeFloor, ScopeDrift). require_ci (ReleaseConfig.RequireCI) gates the post-merge release train only \u2014 NOT the merge decision. Risk-score (TASK-393 P5) must extend scope_guard escalate-only.",
+        "summary": "Merge gate = handleCIPassed (controller.go:1212) + escalate-only scope_guard.go reasons (SizeFloor, ScopeDrift). require_ci (ReleaseConfig.RequireCI) gates the post-merge release train only — NOT the merge decision. Risk-score (TASK-393 P5) must extend scope_guard escalate-only.",
         "path": "memories/learnings/mem-103.md",
         "confidence": 0.85,
         "concepts": [
@@ -2898,7 +2898,7 @@
       },
       "mem-106": {
         "type": "decision",
-        "summary": "Lanes mechanism: extend `Complexity` \u2192 `Lane` - Tier routing already threaded end-to-end; lanes = bundling scattered knobs",
+        "summary": "Lanes mechanism: extend `Complexity` → `Lane` - Tier routing already threaded end-to-end; lanes = bundling scattered knobs",
         "path": "memories/decisions/mem-106.md",
         "confidence": 0.95,
         "concepts": [
@@ -2988,7 +2988,7 @@
       },
       "mem-112": {
         "type": "decision",
-        "summary": "Lanes mechanism: extend `Complexity` \u2192 `Lane` - Tier routing already threaded end-to-end; lanes = bundling scattered knobs",
+        "summary": "Lanes mechanism: extend `Complexity` → `Lane` - Tier routing already threaded end-to-end; lanes = bundling scattered knobs",
         "path": "memories/decisions/mem-112.md",
         "confidence": 0.95,
         "concepts": [
@@ -3183,7 +3183,7 @@
       },
       "mem-123": {
         "type": "pitfall",
-        "summary": "Release train (on_schedule) member resolution requires (#N) squash-title suffix \u2014 autopilot's auto-merger omits it, so trains over autopilot-merged commits skip forever ('no resolvable member PRs'). Cutover order: ship GH-4150 (#N suffix fix) FIRST, then flip trigger on_merge \u2192 on_schedule (schedule '0 16 * * 1-5', schedule_timezone Europe/Berlin); flipping first silently halts releases (merges held, train skips daily). Evidence: 8/9 commits in v2.236.4 lack (#N); v2.236.4 cut on-merge at 22:14 because config never followed the mem-104 train decision. Refs: internal/autopilot/scope_schedule.go resolveTrainMemberPRs, auto_merger.go commitTitle.",
+        "summary": "Release train (on_schedule) member resolution requires (#N) squash-title suffix — autopilot's auto-merger omits it, so trains over autopilot-merged commits skip forever ('no resolvable member PRs'). Cutover order: ship GH-4150 (#N suffix fix) FIRST, then flip trigger on_merge → on_schedule (schedule '0 16 * * 1-5', schedule_timezone Europe/Berlin); flipping first silently halts releases (merges held, train skips daily). Evidence: 8/9 commits in v2.236.4 lack (#N); v2.236.4 cut on-merge at 22:14 because config never followed the mem-104 train decision. Refs: internal/autopilot/scope_schedule.go resolveTrainMemberPRs, auto_merger.go commitTitle.",
         "path": "memories/pitfalls/mem-123.md",
         "confidence": 0.9,
         "concepts": [
@@ -3207,7 +3207,7 @@
       },
       "mem-125": {
         "type": "learning",
-        "summary": "Social-engineering campaign: fake 'patch .zip' comments on freshly-filed Pilot bugs \u2014 Pilot immune (executor never reads comments)",
+        "summary": "Social-engineering campaign: fake 'patch .zip' comments on freshly-filed Pilot bugs — Pilot immune (executor never reads comments)",
         "path": "memories/learnings/mem-090.md",
         "confidence": 0.95,
         "concepts": [
@@ -3405,7 +3405,7 @@
       },
       "mem-142": {
         "type": "pitfall",
-        "summary": "Dashboard/ledger stage strip can mark SHIPPED work as failed (\u2717 pr_created) \u2014 verify execution_events + GitHub before trusting it",
+        "summary": "Dashboard/ledger stage strip can mark SHIPPED work as failed (✗ pr_created) — verify execution_events + GitHub before trusting it",
         "path": "memories/pitfalls/mem-088.md",
         "confidence": 0.95,
         "concepts": [
@@ -3483,7 +3483,7 @@
       },
       "mem-148": {
         "type": "decision",
-        "summary": "Dashboard nav rework (TASK-398/#4199): port grom focusMove/Rect/zoom (~200 lines) into internal/dashboard/grid.go with attribution \u2014 don't promote to grot pkg (Widget iface is Prometheus-shaped; promote only at >=3 consumers). Ported source embedded in the issue spec because executor worktrees can't reach ../startups/grot.",
+        "summary": "Dashboard nav rework (TASK-398/#4199): port grom focusMove/Rect/zoom (~200 lines) into internal/dashboard/grid.go with attribution — don't promote to grot pkg (Widget iface is Prometheus-shaped; promote only at >=3 consumers). Ported source embedded in the issue spec because executor worktrees can't reach ../startups/grot.",
         "path": "memories/decisions/mem-148.md",
         "confidence": 0.9,
         "concepts": [
@@ -3513,7 +3513,7 @@
       },
       "mem-150": {
         "type": "pitfall",
-        "summary": "Dead-code audit: verify caller LIVENESS not just existence. SOP GH-4169 kept internal/adapters/github/poller.go as 'live' because callers existed \u2014 but all were test files; project_board.go had zero callers. Classify each caller production vs test-only before deciding a file is live.",
+        "summary": "Dead-code audit: verify caller LIVENESS not just existence. SOP GH-4169 kept internal/adapters/github/poller.go as 'live' because callers existed — but all were test files; project_board.go had zero callers. Classify each caller production vs test-only before deciding a file is live.",
         "path": "memories/pitfalls/mem-150.md",
         "confidence": 0.9,
         "concepts": [
@@ -3529,7 +3529,7 @@
       },
       "mem-151": {
         "type": "pitfall",
-        "summary": "Epic collapse to one sub-issue \u2192 scaffold-only under-delivery that passes CI green (TASK-398/#4199). Multi-phase epic auto-decomposed to a SINGLE inherited-spec sub-issue; executor built 3 helper files + tests (PR #4201 merged green) but never wired them into tui.go \u2014 helpers uncalled, zero reqs shipped, parent auto-closed (false completion). Detect via +N/-0 diff that never edits the target file; guard with Update/View integration-test ACs (fixed by TASK-399/#4203 \u2192 PR #4204).",
+        "summary": "Epic collapse to one sub-issue → scaffold-only under-delivery that passes CI green (TASK-398/#4199). Multi-phase epic auto-decomposed to a SINGLE inherited-spec sub-issue; executor built 3 helper files + tests (PR #4201 merged green) but never wired them into tui.go — helpers uncalled, zero reqs shipped, parent auto-closed (false completion). Detect via +N/-0 diff that never edits the target file; guard with Update/View integration-test ACs (fixed by TASK-399/#4203 → PR #4204).",
         "path": "memories/pitfalls/mem-151.md",
         "confidence": 0.9,
         "concepts": [
@@ -3544,7 +3544,7 @@
       },
       "mem-152": {
         "type": "learning",
-        "summary": "Status reports to user must be scannable grouped lists (done / failed+reset / needs-attention / watch), one line per item \u2014 never narrative prose. Direct user feedback 2026-07-13.",
+        "summary": "Status reports to user must be scannable grouped lists (done / failed+reset / needs-attention / watch), one line per item — never narrative prose. Direct user feedback 2026-07-13.",
         "path": "memories/learnings/mem-152.md",
         "concepts": [
           "user-preference",
@@ -3557,7 +3557,7 @@
       },
       "mem-153": {
         "type": "pitfall",
-        "summary": "modernc.org/sqlite writes bound time.Time params using Go's time.Time.String() format by default, which SQLite's date()/datetime() can't parse (returns NULL) and sorts inconsistently against DEFAULT CURRENT_TIMESTAMP columns; fix by opening the DB with ?_time_format=sqlite. Also: SaveExecution's INSERT omitted created_at, letting the DB default silently override caller-supplied timestamps \u2014 root cause of internal/briefs's flaky TestGeneratorGenerate.",
+        "summary": "modernc.org/sqlite writes bound time.Time params using Go's time.Time.String() format by default, which SQLite's date()/datetime() can't parse (returns NULL) and sorts inconsistently against DEFAULT CURRENT_TIMESTAMP columns; fix by opening the DB with ?_time_format=sqlite. Also: SaveExecution's INSERT omitted created_at, letting the DB default silently override caller-supplied timestamps — root cause of internal/briefs's flaky TestGeneratorGenerate.",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_sqlite_time_bind_default_format.md",
         "concepts": [
           "sqlite",
@@ -3570,7 +3570,7 @@
       },
       "mem-154": {
         "type": "pitfall",
-        "summary": "no_op is a legitimate terminal outcome (common for epic sub-issues) but was invisible to every 'is this task done' dispatch guard \u2014 Store.HasCompletedExecution requires status='completed' plus a deliverable, so the SDK poller's ExecutionChecker and dispatcher.go's hasTerminalSuccessLedger both re-treated no_op'd issues as fresh candidates forever (GH-4347: GH-82 dispatched 6x in one cycle). Fix: Store.HasTerminalCompletion ANY-row check ORing deliverable-completion with no_op-with-no-error; new admission gates must use executor.HasTerminalCompletion, not HasCompletedExecution directly.",
+        "summary": "no_op is a legitimate terminal outcome (common for epic sub-issues) but was invisible to every 'is this task done' dispatch guard — Store.HasCompletedExecution requires status='completed' plus a deliverable, so the SDK poller's ExecutionChecker and dispatcher.go's hasTerminalSuccessLedger both re-treated no_op'd issues as fresh candidates forever (GH-4347: GH-82 dispatched 6x in one cycle). Fix: Store.HasTerminalCompletion ANY-row check ORing deliverable-completion with no_op-with-no-error; new admission gates must use executor.HasTerminalCompletion, not HasCompletedExecution directly.",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_noop_terminal_state_invisible_to_dispatch_guards.md",
         "concepts": [
           "dispatcher",
@@ -3583,7 +3583,7 @@
       },
       "mem-155": {
         "type": "learning",
-        "summary": "Route SaaS-build work through Navigator skills (nav-task/nav-pilot/nav-graph), not manual gh/bash \u2014 founder preference 2026-07-15. Separately: broken nav-spike PreToolUse probe (ephemeral /tmp install wiped) hard-blocked Read tool everywhere; if Read breaks, check /tmp/nav-v7-spike hook files first.",
+        "summary": "Route SaaS-build work through Navigator skills (nav-task/nav-pilot/nav-graph), not manual gh/bash — founder preference 2026-07-15. Separately: broken nav-spike PreToolUse probe (ephemeral /tmp install wiped) hard-blocked Read tool everywhere; if Read breaks, check /tmp/nav-v7-spike hook files first.",
         "file": ".agent/knowledge/memories/learnings/mem-155.md",
         "concepts": [
           "navigator-integration",
@@ -3594,7 +3594,7 @@
       },
       "mem-156": {
         "type": "pitfall",
-        "summary": "Duplicate-execution class: leases and check-then-act guards are not claims \u2014 10 incidents/12 days, 7 dispatch entry points, 6 different dedup keys. Epic direct-exec (epic.go:2008) never consults IsTaskQueued; poller marks decay ~5min and are per-process; executions table has no uniqueness constraint. Every point fix was correct for its incident and irrelevant to the next; only an atomic claim at ExecutionLifecycle.Begin closes the class (TASK-407/#4349).",
+        "summary": "Duplicate-execution class: leases and check-then-act guards are not claims — 10 incidents/12 days, 7 dispatch entry points, 6 different dedup keys. Epic direct-exec (epic.go:2008) never consults IsTaskQueued; poller marks decay ~5min and are per-process; executions table has no uniqueness constraint. Every point fix was correct for its incident and irrelevant to the next; only an atomic claim at ExecutionLifecycle.Begin closes the class (TASK-407/#4349).",
         "file": ".agent/knowledge/memories/pitfalls/mem-156.md",
         "concepts": [
           "dispatcher",
@@ -3607,7 +3607,7 @@
       },
       "mem-157": {
         "type": "pattern",
-        "summary": "Atomic-claim idiom: INSERT OR IGNORE + RowsAffected()==1 on a composite-PK table \u2014 the only race-safe dedup in this codebase (template: ClaimSpawnedFix, state_store.go:1062, #4319). SQLite serializes across goroutines AND processes. Generalized in TASK-407: execution_claims(task_id,project_path,generation) PK; retries claim generation+1.",
+        "summary": "Atomic-claim idiom: INSERT OR IGNORE + RowsAffected()==1 on a composite-PK table — the only race-safe dedup in this codebase (template: ClaimSpawnedFix, state_store.go:1062, #4319). SQLite serializes across goroutines AND processes. Generalized in TASK-407: execution_claims(task_id,project_path,generation) PK; retries claim generation+1.",
         "file": ".agent/knowledge/memories/patterns/mem-157.md",
         "concepts": [
           "dispatcher",
@@ -3619,7 +3619,7 @@
       },
       "review-before-approval-ordering": {
         "type": "learning",
-        "summary": "On approval-gated repos, PR review verdicts must complete BEFORE surfacing the approval ask \u2014 approval races the review and merges land with known-findable blockers (2026-07-13 incident).",
+        "summary": "On approval-gated repos, PR review verdicts must complete BEFORE surfacing the approval ask — approval races the review and merges land with known-findable blockers (2026-07-13 incident).",
         "file": ".agent/knowledge/memories/learnings/review-before-approval-ordering.md",
         "concepts": [
           "autopilot",
@@ -3630,7 +3630,7 @@
       },
       "mem-158": {
         "type": "pitfall",
-        "summary": "An atomic claim's ErrClaimLost drop is only correct if callers distinguish a LIVE owner from a DEAD one \u2014 TASK-407 call sites all claimed at hardcoded generation 0 and dropped ANY ErrClaimLost, so a failed task's claim permanently blocked retry (GH-4372: poller dropped the same task every ~30s). Fix: Dispatcher.nextRetryGeneration classifies the occupied generation via Store.LatestClaimGeneration + execution status \u2014 live \u2192 drop, terminal-not-done \u2192 claim generation+1, terminal-done \u2192 drop (GH-4350 no_op invariant). Also: handleIssueGeneric only matched the wrapped ErrTaskAlreadyActive, missing QueueTask's nil-error+empty-execID silent-drop contract \u2192 WaitForExecution(\"\") sql.ErrNoRows error every poll tick.",
+        "summary": "An atomic claim's ErrClaimLost drop is only correct if callers distinguish a LIVE owner from a DEAD one — TASK-407 call sites all claimed at hardcoded generation 0 and dropped ANY ErrClaimLost, so a failed task's claim permanently blocked retry (GH-4372: poller dropped the same task every ~30s). Fix: Dispatcher.nextRetryGeneration classifies the occupied generation via Store.LatestClaimGeneration + execution status — live → drop, terminal-not-done → claim generation+1, terminal-done → drop (GH-4350 no_op invariant). Also: handleIssueGeneric only matched the wrapped ErrTaskAlreadyActive, missing QueueTask's nil-error+empty-execID silent-drop contract → WaitForExecution(\"\") sql.ErrNoRows error every poll tick.",
         "file": ".agent/knowledge/memories/pitfalls/mem-158.md",
         "concepts": [
           "dispatcher",
@@ -3659,7 +3659,7 @@
       },
       "github-user-aggregate-rate-pool": {
         "type": "pitfall",
-        "summary": "GitHub primary rate limit is per-USER across ALL tokens/sessions; /rate_limit shows a per-token view and misleads \u2014 daemon 403'd with a 'full' pool. Budget-aware client (GH-4391) + GitHub App auth are the fixes; every local agent shares the pool.",
+        "summary": "GitHub primary rate limit is per-USER across ALL tokens/sessions; /rate_limit shows a per-token view and misleads — daemon 403'd with a 'full' pool. Budget-aware client (GH-4391) + GitHub App auth are the fixes; every local agent shares the pool.",
         "file": ".agent/knowledge/memories/pitfalls/github-user-aggregate-rate-pool.md",
         "concepts": [
           "autopilot",
@@ -3683,7 +3683,7 @@
       },
       "absolute-state-paths-bypass-cutover-shim": {
         "type": "pitfall",
-        "summary": "Machine-cutover path shims must cover EVERY absolute path in config \u2014 the missed /Users/.../.pilot state path made the box daemon silently create a shadow ledger (split-brain, #4393, 2026-07-17). Verify daemon's open DB FD via /proc after any start on a new box.",
+        "summary": "Machine-cutover path shims must cover EVERY absolute path in config — the missed /Users/.../.pilot state path made the box daemon silently create a shadow ledger (split-brain, #4393, 2026-07-17). Verify daemon's open DB FD via /proc after any start on a new box.",
         "file": ".agent/knowledge/memories/pitfalls/absolute-state-paths-bypass-cutover-shim.md",
         "concepts": [
           "cutover",
@@ -3696,7 +3696,7 @@
       },
       "rlimit-as-breaks-node-subprocesses": {
         "type": "pitfall",
-        "summary": "RLIMIT_AS is not an RSS cap \u2014 4GB address-space limit breaks all Node/V8 HTTPS fetches with instant generic 'fetch failed' (#4401, 12h zero completions post-cutover). darwin no-op code detonates on first Linux run. Check /proc/<child>/limits early.",
+        "summary": "RLIMIT_AS is not an RSS cap — 4GB address-space limit breaks all Node/V8 HTTPS fetches with instant generic 'fetch failed' (#4401, 12h zero completions post-cutover). darwin no-op code detonates on first Linux run. Check /proc/<child>/limits early.",
         "file": ".agent/knowledge/memories/pitfalls/rlimit-as-breaks-node-subprocesses.md",
         "concepts": [
           "executor",
@@ -3709,7 +3709,7 @@
       },
       "bare-exit-137-mislabeled-oom": {
         "type": "pitfall",
-        "summary": "classifyClaudeCodeError labeled every unexplained exit 137/139 \"oom_killed\" with zero kernel evidence \u2014 heartbeat/watchdog self-kills and external SIGKILLs (e.g. the orphan-running sweep) got the same label as a real kernel OOM",
+        "summary": "classifyClaudeCodeError labeled every unexplained exit 137/139 \"oom_killed\" with zero kernel evidence — heartbeat/watchdog self-kills and external SIGKILLs (e.g. the orphan-running sweep) got the same label as a real kernel OOM",
         "file": ".agent/knowledge/memories/pitfalls/bare-exit-137-mislabeled-oom.md",
         "concepts": [
           "executor",
@@ -3726,7 +3726,7 @@
       },
       "reconcile-timeout-counts-queue-wait": {
         "type": "pitfall",
-        "summary": "reconcileChildOutcome's 5m ceiling was anchored to when the parent started polling, not to when the child actually started running \u2014 a child queued behind the busy single-lane ProjectWorker (TASK-393) burned the same budget meant for detecting a stuck execution, failing epics on busy projects structurally (GH-9/GH-26). Fixed by anchoring the deadline to the child's own started_at, applied only once the child is observed running.",
+        "summary": "reconcileChildOutcome's 5m ceiling was anchored to when the parent started polling, not to when the child actually started running — a child queued behind the busy single-lane ProjectWorker (TASK-393) burned the same budget meant for detecting a stuck execution, failing epics on busy projects structurally (GH-9/GH-26). Fixed by anchoring the deadline to the child's own started_at, applied only once the child is observed running.",
         "file": ".agent/knowledge/memories/pitfalls/bug_reconcile_timeout_counts_queue_wait.md",
         "concepts": [
           "executor",
@@ -3737,7 +3737,7 @@
       },
       "slack-approval-socket-mode-unroutable": {
         "type": "pitfall",
-        "summary": "Slack approval buttons unroutable on Socket Mode deployments \u2014 HandleInteraction wired only to HTTP interactivity webhook; 'No pending task to confirm' = misrouted click, not missing state (#4411/#4431)",
+        "summary": "Slack approval buttons unroutable on Socket Mode deployments — HandleInteraction wired only to HTTP interactivity webhook; 'No pending task to confirm' = misrouted click, not missing state (#4411/#4431)",
         "file": ".agent/knowledge/memories/pitfalls/slack-approval-socket-mode-unroutable.md",
         "concepts": [
           "slack",
@@ -3765,7 +3765,7 @@
       },
       "decomposer-narrative-bullets-as-subtask-boundaries": {
         "type": "pitfall",
-        "summary": "TaskDecomposer.analyzeAndSplit() matched any \"- \" bullet / numbered line as a subtask boundary, including narrative timeline prose in #4390's issue body \u2014 exploded into junk subtasks. Fixed by restricting analyzeAndSplit to checklists + \"## Task N\" headers only (GH-4395).",
+        "summary": "TaskDecomposer.analyzeAndSplit() matched any \"- \" bullet / numbered line as a subtask boundary, including narrative timeline prose in #4390's issue body — exploded into junk subtasks. Fixed by restricting analyzeAndSplit to checklists + \"## Task N\" headers only (GH-4395).",
         "file": ".agent/knowledge/memories/pitfalls/decomposer-narrative-bullets-as-subtask-boundaries.md",
         "concepts": [
           "executor",
@@ -3780,7 +3780,7 @@
       },
       "hard-cap-rearm-in-memory-gate": {
         "type": "pitfall",
-        "summary": "Re-arming a hard-cap-stalled task needs 4 clears (backoff row, stale gen-0 claim #4372, stalled executions row, wait out in-memory next_eligible) \u2014 DB deletes alone never dispatch; obsolete once #4455 binary deployed",
+        "summary": "Re-arming a hard-cap-stalled task needs 4 clears (backoff row, stale gen-0 claim #4372, stalled executions row, wait out in-memory next_eligible) — DB deletes alone never dispatch; obsolete once #4455 binary deployed",
         "file": ".agent/knowledge/memories/pitfalls/hard-cap-rearm-in-memory-gate.md",
         "concepts": [
           "dispatcher",
@@ -3790,7 +3790,7 @@
       },
       "alert-engine-counts-operator-cancels": {
         "type": "pitfall",
-        "summary": "consecutive_failures alert counts operator-cancelled rows as failures \u2014 surgery days fire false CRITICAL pages naming an innocent task (GH-4393 2026-07-18); exclude cancelled from the counter",
+        "summary": "consecutive_failures alert counts operator-cancelled rows as failures — surgery days fire false CRITICAL pages naming an innocent task (GH-4393 2026-07-18); exclude cancelled from the counter",
         "file": ".agent/knowledge/memories/pitfalls/alert-engine-counts-operator-cancels.md",
         "concepts": [
           "alerts",
@@ -3800,7 +3800,7 @@
       },
       "tui-subtask-ghost-rows": {
         "type": "pitfall",
-        "summary": "Internal subtasks (GH-N-i) stick at 'running 100%' in TUI forever \u2014 completion never closes the in-memory dashboard row and no ledger row reconciles it; restart clears; trust ledger",
+        "summary": "Internal subtasks (GH-N-i) stick at 'running 100%' in TUI forever — completion never closes the in-memory dashboard row and no ledger row reconciles it; restart clears; trust ledger",
         "file": ".agent/knowledge/memories/pitfalls/tui-subtask-ghost-rows.md",
         "concepts": [
           "dashboard",
@@ -3810,7 +3810,7 @@
       },
       "claim-lost-drops-count-toward-hard-cap": {
         "type": "pitfall",
-        "summary": "Duplicate poller re-picks generate claim-lost drops that count toward the repick hard cap \u2014 a QUEUED execution that never ran can be terminally stalled by its own duplicates (#4455 excluded restart churn and operator cancels, but not claim-lost)",
+        "summary": "Duplicate poller re-picks generate claim-lost drops that count toward the repick hard cap — a QUEUED execution that never ran can be terminally stalled by its own duplicates (#4455 excluded restart churn and operator cancels, but not claim-lost)",
         "file": ".agent/knowledge/memories/pitfalls/claim-lost-drops-count-toward-hard-cap.md",
         "concepts": [
           "poller",
@@ -3820,7 +3820,7 @@
       },
       "stall-status-reused-as-hold-marker": {
         "type": "pitfall",
-        "summary": "ExecStatusStalled is both the watchdog's genuine-kill outcome AND the dispatcher's own escalate-and-hold marker \u2014 carve-outs/idempotency checks keyed on Status alone get this backwards (GH-4502): hard-cap check must run before priorClaimWasStalled, and escalation idempotency must match exact reason text, not just status",
+        "summary": "ExecStatusStalled is both the watchdog's genuine-kill outcome AND the dispatcher's own escalate-and-hold marker — carve-outs/idempotency checks keyed on Status alone get this backwards (GH-4502): hard-cap check must run before priorClaimWasStalled, and escalation idempotency must match exact reason text, not just status",
         "file": ".agent/knowledge/memories/pitfalls/stall-status-reused-as-hold-marker.md",
         "concepts": [
           "dispatcher",
@@ -3830,7 +3830,7 @@
       },
       "global-required-checks-leak-across-projects": {
         "type": "pitfall",
-        "summary": "Global autopilot.required_checks/ci_checks allowlist is shared by every project controller; a repo whose check-run names differ polls waiting_ci forever with all checks green (qf-studio/pointer#108 repro) \u2014 fixed by per-project ProjectCIChecksOverride overlay (GH-4478)",
+        "summary": "Global autopilot.required_checks/ci_checks allowlist is shared by every project controller; a repo whose check-run names differ polls waiting_ci forever with all checks green (qf-studio/pointer#108 repro) — fixed by per-project ProjectCIChecksOverride overlay (GH-4478)",
         "file": ".agent/knowledge/memories/pitfalls/global-required-checks-leak-across-projects.md",
         "concepts": [
           "autopilot",
@@ -3840,7 +3840,7 @@
       },
       "go-caches-on-root-volume-fill-disk": {
         "type": "pitfall",
-        "summary": "Go build+module caches on the box's 30GB root volume filled the disk \u2014 SSM (commands AND sessions) fails with empty output while agent pings Online; reboot can't self-heal (cloud-init growpart hits ENOSPC); recovery = EBS detach-rescue via mgmt runner; GOCACHE/GOMODCACHE now live on the data volume",
+        "summary": "Go build+module caches on the box's 30GB root volume filled the disk — SSM (commands AND sessions) fails with empty output while agent pings Online; reboot can't self-heal (cloud-init growpart hits ENOSPC); recovery = EBS detach-rescue via mgmt runner; GOCACHE/GOMODCACHE now live on the data volume",
         "file": ".agent/knowledge/memories/pitfalls/go-caches-on-root-volume-fill-disk.md",
         "concepts": [
           "executor",
@@ -3868,7 +3868,7 @@
       },
       "require-approval-flip-doesnt-release-held-prs": {
         "type": "pitfall",
-        "summary": "Flipping environments.<env>.require_approval to false only affects PRs reaching handleCIPassed after restart \u2014 PRs already persisted at awaiting_approval rehydrate with their old ApprovalRequestID and silently wait out the 24h approval_timeout default action; sweep and manually merge (or clear ApprovalRequestID) after a flip (PR #4485, 2026-07-20)",
+        "summary": "Flipping environments.<env>.require_approval to false only affects PRs reaching handleCIPassed after restart — PRs already persisted at awaiting_approval rehydrate with their old ApprovalRequestID and silently wait out the 24h approval_timeout default action; sweep and manually merge (or clear ApprovalRequestID) after a flip (PR #4485, 2026-07-20)",
         "file": ".agent/knowledge/memories/pitfalls/require-approval-flip-doesnt-release-held-prs.md",
         "concepts": [
           "autopilot",
@@ -3878,7 +3878,7 @@
       },
       "approvals-off-stage-auto-merge": {
         "type": "decision",
-        "summary": "Founder 2026-07-20: stage.require_approval=false globally (all repos incl. pilot) \u2014 auto-merge on green CI; size-floor/scope-drift/test-evidence gates remain the human rails; made safe by #4487 (CI re-validation + approval rescind at merge chokepoint) landing first",
+        "summary": "Founder 2026-07-20: stage.require_approval=false globally (all repos incl. pilot) — auto-merge on green CI; size-floor/scope-drift/test-evidence gates remain the human rails; made safe by #4487 (CI re-validation + approval rescind at merge chokepoint) landing first",
         "file": ".agent/knowledge/memories/decisions/approvals-off-stage-auto-merge.md",
         "concepts": [
           "autopilot",
@@ -3888,7 +3888,7 @@
       },
       "board-sourced-repo-ignores-labeled-issues": {
         "type": "pitfall",
-        "summary": "source_enabled:true makes the project board REPLACE label discovery \u2014 pilot-labeled issues not on the board (or not in Todo) are silently invisible; poller silence \u2260 poller death; board cards stale after ship (sync lacks project scope). Fix: #4488",
+        "summary": "source_enabled:true makes the project board REPLACE label discovery — pilot-labeled issues not on the board (or not in Todo) are silently invisible; poller silence ≠ poller death; board cards stale after ship (sync lacks project scope). Fix: #4488",
         "file": ".agent/knowledge/memories/pitfalls/board-sourced-repo-ignores-labeled-issues.md",
         "concepts": [
           "sdk-poller",
@@ -3901,7 +3901,7 @@
       },
       "stream-reader-silent-exit-on-oversized-line": {
         "type": "pitfall",
-        "summary": "Executor stdout bufio.Scanner (1MB cap) exits silently on ErrTooLong for >1MB stream-json lines (base64 tool results) \u2014 heartbeat freezes, process group SIGKILLed 5m later, finished work destroyed (B8 gen-2; fixed #4519\u2192PR#4521, 2026-07-23).",
+        "summary": "Executor stdout bufio.Scanner (1MB cap) exits silently on ErrTooLong for >1MB stream-json lines (base64 tool results) — heartbeat freezes, process group SIGKILLed 5m later, finished work destroyed (B8 gen-2; fixed #4519→PR#4521, 2026-07-23).",
         "file": ".agent/knowledge/memories/pitfalls/stream-reader-silent-exit-on-oversized-line.md",
         "concepts": [
           "executor",
@@ -3916,7 +3916,7 @@
       },
       "workflow-yaml-requires-front-matter": {
         "type": "pitfall",
-        "summary": ".pilot/workflow.yaml must be YAML front-matter (---/version: 1/---) + Markdown body; plain YAML silently falls back to defaults every run (WARN only), and unknown schema keys are silently ignored \u2014 pilot-console ran with a dead config until 2026-07-23 (fixed console#32\u2192PR#33).",
+        "summary": ".pilot/workflow.yaml must be YAML front-matter (---/version: 1/---) + Markdown body; plain YAML silently falls back to defaults every run (WARN only), and unknown schema keys are silently ignored — pilot-console ran with a dead config until 2026-07-23 (fixed console#32→PR#33).",
         "file": ".agent/knowledge/memories/pitfalls/workflow-yaml-requires-front-matter.md",
         "concepts": [
           "executor",
@@ -3957,7 +3957,7 @@
       },
       "ready-gate-couples-credential-validity": {
         "type": "pitfall",
-        "summary": "GH-3769 registered live adapter credential probes as /ready readiness checkers (adapter_preflight.go:133 -> server.go:414 returns 503 if any fails), so one expired token makes a lifecycle gate polling /ready report a dead credential as 'instance not ready' \u2014 auth faults present as provisioning faults. pilot-console#45 addresses it.",
+        "summary": "GH-3769 registered live adapter credential probes as /ready readiness checkers (adapter_preflight.go:133 -> server.go:414 returns 503 if any fails), so one expired token makes a lifecycle gate polling /ready report a dead credential as 'instance not ready' — auth faults present as provisioning faults. pilot-console#45 addresses it.",
         "file": ".agent/knowledge/memories/pitfalls/ready-gate-couples-credential-validity.md",
         "concepts": [
           "health",
@@ -3983,7 +3983,7 @@
       },
       "oauth-ssm-params-rot-live-credentials-source-of-truth": {
         "type": "pitfall",
-        "summary": "A CLAUDE_CODE_OAUTH_TOKEN copied into SSM is a snapshot that expires into silent 401 loops \u2014 the live ~/.claude/.credentials.json on a working machine is the only source of truth; separately a well-formed ANTHROPIC_API_KEY can still have zero credits. console secrets.validKeys lacks the OAuth key, forcing raw SSM puts.",
+        "summary": "A CLAUDE_CODE_OAUTH_TOKEN copied into SSM is a snapshot that expires into silent 401 loops — the live ~/.claude/.credentials.json on a working machine is the only source of truth; separately a well-formed ANTHROPIC_API_KEY can still have zero credits. console secrets.validKeys lacks the OAuth key, forcing raw SSM puts.",
         "file": ".agent/knowledge/memories/pitfalls/oauth-ssm-params-rot-live-credentials-source-of-truth.md",
         "concepts": [
           "pilot-console",
@@ -3996,7 +3996,7 @@
       },
       "shared-oauth-session-strands-second-machine": {
         "type": "pitfall",
-        "summary": "Copying ~/.claude/.credentials.json to a second machine shares one OAuth session \u2014 whichever refreshes first strands the other. Stranded side: TUI works, headless `claude --print` hangs (exit 124), executor dies with EMPTY stderr + only the init line, network/401 probe perfectly healthy, creds mtime hours stale. Box outage 2026-07-24 16:2x-18:17Z cost 5 executions + a tripped repick cap.",
+        "summary": "Copying ~/.claude/.credentials.json to a second machine shares one OAuth session — whichever refreshes first strands the other. Stranded side: TUI works, headless `claude --print` hangs (exit 124), executor dies with EMPTY stderr + only the init line, network/401 probe perfectly healthy, creds mtime hours stale. Box outage 2026-07-24 16:2x-18:17Z cost 5 executions + a tripped repick cap.",
         "file": ".agent/knowledge/memories/pitfalls/shared-oauth-session-strands-second-machine.md",
         "concepts": [
           "executor",
@@ -4010,7 +4010,7 @@
       },
       "required-checks-allowlist-makes-other-gates-decorative": {
         "type": "pitfall",
-        "summary": "With autopilot.required_checks set to an allowlist, CIMonitor.isScopedCheck (ci_monitor.go:562-570) reports ONLY those checks \u2014 every other gate can fail red and auto-merge proceeds. On pilot (required_checks: [test, lint]) that makes Knowledge Graph Drift Gate, Check Secret Patterns and Box Scripts decorative; PR #4534 merged with the drift gate failing and deleted 5 indexed memory files. UNFIXED as of 2026-07-25 (founder config decision).",
+        "summary": "With autopilot.required_checks set to an allowlist, CIMonitor.isScopedCheck (ci_monitor.go:562-570) reports ONLY those checks — every other gate can fail red and auto-merge proceeds. On pilot (required_checks: [test, lint]) that makes Knowledge Graph Drift Gate, Check Secret Patterns and Box Scripts decorative; PR #4534 merged with the drift gate failing and deleted 5 indexed memory files. UNFIXED as of 2026-07-25 (founder config decision).",
         "file": ".agent/knowledge/memories/pitfalls/required-checks-allowlist-makes-other-gates-decorative.md",
         "concepts": [
           "autopilot",
@@ -4024,7 +4024,7 @@
       },
       "mem-160": {
         "type": "pitfall",
-        "summary": "Top-level autopilot: YAML binds to nothing (only orchestrator.autopilot) and Enabled is set only by --env \u2014 daemon opens PRs while no CI monitor or merger exists; tell is a missing autopilot_pr_state table",
+        "summary": "Top-level autopilot: YAML binds to nothing (only orchestrator.autopilot) and Enabled is set only by --env — daemon opens PRs while no CI monitor or merger exists; tell is a missing autopilot_pr_state table",
         "path": "memories/pitfalls/top-level-autopilot-yaml-binds-to-nothing.md",
         "confidence": 0.98,
         "concepts": [
@@ -4053,7 +4053,7 @@
       },
       "mem-161": {
         "type": "pitfall",
-        "summary": "core.bare=true in shared .git/config makes git status fatal in root AND all linked worktrees; go -buildvcs runs git status, so build/lint/test fail with 'error obtaining VCS status: exit status 128'. Check 'git config --show-origin --get-all core.bare' before debugging individual tools. Fix: git config core.bare false. Also: TestResolveMemoryDBPath (/var symlink) + newTestStartCmd orphan check are known pre-existing macOS gate noise \u2014 reproduce on clean main; CI is the arbiter.",
+        "summary": "core.bare=true in shared .git/config makes git status fatal in root AND all linked worktrees; go -buildvcs runs git status, so build/lint/test fail with 'error obtaining VCS status: exit status 128'. Check 'git config --show-origin --get-all core.bare' before debugging individual tools. Fix: git config core.bare false. Also: TestResolveMemoryDBPath (/var symlink) + newTestStartCmd orphan check are known pre-existing macOS gate noise — reproduce on clean main; CI is the arbiter.",
         "path": "memories/pitfalls/core-bare-true-poisons-status-and-vcs-stamping.md",
         "confidence": 0.8,
         "concepts": [
@@ -4143,35 +4143,35 @@
       },
       "confirm-before-destructive-act-fresh-reads": {
         "type": "pattern",
-        "summary": "Never take a destructive/escalating action from ONE read of an eventually-consistent source \u2014 require N consecutive confirming FRESH reads within a grace window, reset the counter on any contradicting read, and take one final fresh read immediately before acting.",
+        "summary": "Never take a destructive/escalating action from ONE read of an eventually-consistent source — require N consecutive confirming FRESH reads within a grace window, reset the counter on any contradicting read, and take one final fresh read immediately before acting.",
         "file": ".agent/knowledge/memories/patterns/confirm-before-destructive-act-fresh-reads.md",
         "created": "2026-07-30",
         "last_validated": "2026-07-30"
       },
       "epic-waiter-misreads-takeover-stalled-row": {
         "type": "pitfall",
-        "summary": "The epic child-outcome lookup returns the first TERMINAL execution row it finds, so a GH-4536 force-stalled-for-takeover row (bookkeeping, not a real stall) reads as child failure while the takeover run is actively executing \u2014 epic fails and re-implements the child's scope.",
+        "summary": "The epic child-outcome lookup returns the first TERMINAL execution row it finds, so a GH-4536 force-stalled-for-takeover row (bookkeeping, not a real stall) reads as child failure while the takeover run is actively executing — epic fails and re-implements the child's scope.",
         "file": ".agent/knowledge/memories/pitfalls/epic-waiter-misreads-takeover-stalled-row.md",
         "created": "2026-07-30",
         "last_validated": "2026-07-30"
       },
       "fresh-get-body-discarded-list-snapshot-validated": {
         "type": "pitfall",
-        "summary": "Both the SDK poller and Pilot's issue handler fetch a fresh GetIssue before dispatch/validation but discard its Body, validating the stale list-snapshot body instead \u2014 an issue edited seconds before a poll tick gets judged on its pre-edit content.",
+        "summary": "Both the SDK poller and Pilot's issue handler fetch a fresh GetIssue before dispatch/validation but discard its Body, validating the stale list-snapshot body instead — an issue edited seconds before a poll tick gets judged on its pre-edit content.",
         "file": ".agent/knowledge/memories/pitfalls/fresh-get-body-discarded-list-snapshot-validated.md",
         "created": "2026-07-30",
         "last_validated": "2026-07-30"
       },
       "takeover-execution-never-finalized-stale-subexecid": {
         "type": "pitfall",
-        "summary": "After ErrClaimLost\u2192takeover, the epic loop's local subExecID is empty, so every finalizeSubIssueExecution call silently no-ops \u2014 takeover execution rows stay `running` forever and only the 2h orphan sweep closes them, even when the run shipped a PR.",
+        "summary": "After ErrClaimLost→takeover, the epic loop's local subExecID is empty, so every finalizeSubIssueExecution call silently no-ops — takeover execution rows stay `running` forever and only the 2h orphan sweep closes them, even when the run shipped a PR.",
         "file": ".agent/knowledge/memories/pitfalls/takeover-execution-never-finalized-stale-subexecid.md",
         "created": "2026-07-30",
         "last_validated": "2026-07-30"
       },
       "cdk-untagged-estate-invisible-to-cost-view": {
         "type": "pitfall",
-        "summary": "CDK never applies the account's Environment tag convention (only its own aws:cdk:* tags) \u2014 pilot-cloud-infra's 4 fleet stacks ran as 'No tag key' spend from the 07-24 deploy until the 07-31 cost audit; same audit: NatGateways=minAzCount(2) in fleetvpc.go contradicts the v1 single-NAT design (~$33/mo waste). Fix: Tags.of(app).Add('Environment','fleet') at app scope in main.go at SCAFFOLD time + synth unit tests asserting tag presence and NAT count (dispatched infra#26).",
+        "summary": "CDK never applies the account's Environment tag convention (only its own aws:cdk:* tags) — pilot-cloud-infra's 4 fleet stacks ran as 'No tag key' spend from the 07-24 deploy until the 07-31 cost audit; same audit: NatGateways=minAzCount(2) in fleetvpc.go contradicts the v1 single-NAT design (~$33/mo waste). Fix: Tags.of(app).Add('Environment','fleet') at app scope in main.go at SCAFFOLD time + synth unit tests asserting tag presence and NAT count (dispatched infra#26).",
         "path": "memories/pitfalls/cdk-untagged-estate-invisible-to-cost-view.md",
         "confidence": 0.95,
         "concepts": [
@@ -4228,7 +4228,7 @@
       },
       "config-env-expansion-eats-dollar-vars-in-commands": {
         "type": "pitfall",
-        "summary": "config.yaml values are env-var-expanded at load \u2014 a shell $var inside a gate command is blanked before the shell runs, silently neutering the gate; only a load-time WARN hints at it. Use $-free forms (ls|xargs) and treat any 'WARN: config:' line as a blocker.",
+        "summary": "config.yaml values are env-var-expanded at load — a shell $var inside a gate command is blanked before the shell runs, silently neutering the gate; only a load-time WARN hints at it. Use $-free forms (ls|xargs) and treat any 'WARN: config:' line as a blocker.",
         "file": ".agent/knowledge/memories/pitfalls/config-env-expansion-eats-dollar-vars-in-commands.md",
         "concepts": [
           "config",
@@ -4242,7 +4242,7 @@
       },
       "poller-labels-removed-log-means-never-applied": {
         "type": "pitfall",
-        "summary": "Poller log 'status labels removed' also fires when pilot-in-progress was NEVER applied. Root cause (GH-4687): since the 07-16 SDK cutover no live path applies pilot-in-progress on ANY repo \u2014 only the webhook-only legacy handler does; SDK dispatch chain has zero label ops, studio-sdk Notifier unwired dead code. Orphan recovery + pre-dispatch label guards structurally dead; no duplicate dispatch (hasCompletedExecution + execution_claims hold).",
+        "summary": "Poller log 'status labels removed' also fires when pilot-in-progress was NEVER applied. Root cause (GH-4687): since the 07-16 SDK cutover no live path applies pilot-in-progress on ANY repo — only the webhook-only legacy handler does; SDK dispatch chain has zero label ops, studio-sdk Notifier unwired dead code. Orphan recovery + pre-dispatch label guards structurally dead; no duplicate dispatch (hasCompletedExecution + execution_claims hold).",
         "file": ".agent/knowledge/memories/pitfalls/poller-labels-removed-log-means-never-applied.md",
         "concepts": [
           "poller",
@@ -4257,7 +4257,7 @@
       },
       "runselfreview-runs-in-repo-root-phantom-reimplementation": {
         "type": "pitfall",
-        "summary": "runSelfReview (runner.go:5223) spawns its subprocess in the daemon repo ROOT (task.ProjectPath) not the worktree (executionPath) \u2014 empty root diff + the prompt's FIX-missing-changes rule makes it re-implement the task's spec and stage a phantom copy in the shared root. 3rd recurrence of the TASK-323/GH-3577 class; fix GH-4702, chokepoint GH-4703. Dirty box root before rebuild = check STAGED changes, stash pathspec-limited.",
+        "summary": "runSelfReview (runner.go:5223) spawns its subprocess in the daemon repo ROOT (task.ProjectPath) not the worktree (executionPath) — empty root diff + the prompt's FIX-missing-changes rule makes it re-implement the task's spec and stage a phantom copy in the shared root. 3rd recurrence of the TASK-323/GH-3577 class; fix GH-4702, chokepoint GH-4703. Dirty box root before rebuild = check STAGED changes, stash pathspec-limited.",
         "file": ".agent/knowledge/memories/pitfalls/runselfreview-runs-in-repo-root-phantom-reimplementation.md",
         "concepts": [
           "worktree",
@@ -4271,7 +4271,7 @@
       },
       "localmode-tasks-never-get-worktree-qdocs-in-root": {
         "type": "pitfall",
-        "summary": "LocalMode/Q&A tasks (Branch=='') never get a worktree (runner.go:2162 gate needs non-empty Branch) \u2014 they run in the shared root and CreateTaskDoc writes untracked q-<epoch>.md into <root>/.agent/tasks/. Intentional root scope for read-only tasks; the doc side-effects are the defect. GH-4703's guard must keep this exception.",
+        "summary": "LocalMode/Q&A tasks (Branch=='') never get a worktree (runner.go:2162 gate needs non-empty Branch) — they run in the shared root and CreateTaskDoc writes untracked q-<epoch>.md into <root>/.agent/tasks/. Intentional root scope for read-only tasks; the doc side-effects are the defect. GH-4703's guard must keep this exception.",
         "file": ".agent/knowledge/memories/pitfalls/localmode-tasks-never-get-worktree-qdocs-in-root.md",
         "concepts": [
           "worktree",
@@ -4361,7 +4361,7 @@
       },
       "mem-170": {
         "type": "decision",
-        "summary": "Leg order: 1\u21922\u21923 first, 8 last - Class-coverage per token; doc refresh before code lands = rework",
+        "summary": "Leg order: 1→2→3 first, 8 last - Class-coverage per token; doc refresh before code lands = rework",
         "path": "memories/decisions/mem-170.md",
         "confidence": 0.95,
         "concepts": [
@@ -4377,6 +4377,30 @@
         ],
         "created": "2026-08-05",
         "last_validated": "2026-08-05"
+      },
+      "no-decompose-spec-sizing-one-subsystem": {
+        "type": "learning",
+        "summary": "A no-decompose issue gets one execution window: scope it to one subsystem + its tests. #4780 (outage breaker) timed out twice at 1h as a single unit; the same content split as #4791/#4792 dispatched cleanly. Pre-split when the task list names >1 subsystem; otherwise dispatch and watch the first run (2026-08-07).",
+        "file": ".agent/knowledge/memories/learnings/no-decompose-spec-sizing-one-subsystem.md",
+        "concepts": [
+          "dispatch",
+          "spec-authoring",
+          "workflow-discipline"
+        ],
+        "confidence": 0.9,
+        "created": "2026-08-07"
+      },
+      "ssm-runs-as-root-cli-reads-empty-ledger": {
+        "type": "pitfall",
+        "summary": "AWS SSM commands execute as root; the daemon/ledger live under ec2-user — a bare `pilot` verb under SSM reads root's empty ~/.pilot and reports a fresh ledger, mimicking split-brain wipe. Always `sudo -iu ec2-user pilot ...`; treat SSM 'empty state' as user-context evidence, not daemon state (2026-08-06/07).",
+        "file": ".agent/knowledge/memories/pitfalls/ssm-runs-as-root-cli-reads-empty-ledger.md",
+        "concepts": [
+          "aws-box",
+          "ops-discipline",
+          "sqlite-ledger"
+        ],
+        "confidence": 0.95,
+        "created": "2026-08-07"
       }
     }
   },
@@ -7070,10 +7094,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-07T17:17:56.156663+00:00",
+  "last_updated": "2026-08-07T17:55:00+00:00",
   "stats": {
-    "total_nodes": 374,
+    "total_nodes": 376,
     "total_edges": 317,
-    "memory_count": 213
+    "memory_count": 215
   }
 }
