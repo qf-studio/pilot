@@ -96,6 +96,20 @@ func (h *SlackHandler) Name() string {
 	return "slack"
 }
 
+// resolveChannel picks the Slack destination for req: the first approver
+// when it's set, otherwise the handler's own configured channel. This is
+// the single place that rule lives — SendApprovalRequest and Rehydrate both
+// call it, so the first send and any post-restart rehydrate never disagree
+// on where a given request's message lives (GH-4772; before this fix,
+// SendApprovalRequest used h.channel unconditionally while Rehydrate
+// honored Approvers[0]).
+func (h *SlackHandler) resolveChannel(req *Request) string {
+	if len(req.Approvers) > 0 && req.Approvers[0] != "" {
+		return req.Approvers[0]
+	}
+	return h.channel
+}
+
 // WithStore attaches a persistence store so pending approvals survive restarts.
 // Returns h to allow builder-style chaining after NewSlackHandler.
 func (h *SlackHandler) WithStore(store PendingApprovalStore) *SlackHandler {
@@ -134,6 +148,14 @@ func (h *SlackHandler) Rehydrate(ctx context.Context) error {
 	now := time.Now()
 	rehydrated := 0
 	for _, row := range rows {
+		// GH-4772: only rehydrate rows this handler actually owns — a row
+		// originally dispatched to Telegram (or any other channel) must not
+		// be re-armed here, and this handler must not delete an expired row
+		// it doesn't own out from under its owning handler's own sweep. See
+		// ownsChannel/defaultChannelName.
+		if !ownsChannel(h.Name(), row.PreferredChannel) {
+			continue
+		}
 		if row.ExpiresAt.Before(now) {
 			_ = h.store.DeletePendingApproval(row.ID)
 			continue
@@ -150,10 +172,7 @@ func (h *SlackHandler) Rehydrate(ctx context.Context) error {
 			CreatedAt:        row.CreatedAt,
 			ExpiresAt:        row.ExpiresAt,
 		}
-		channel := h.channel
-		if len(req.Approvers) > 0 && req.Approvers[0] != "" {
-			channel = req.Approvers[0]
-		}
+		channel := h.resolveChannel(req)
 		h.mu.Lock()
 		if _, exists := h.pending[req.ID]; !exists {
 			h.pending[req.ID] = &slackPending{
@@ -218,7 +237,10 @@ func (h *SlackHandler) PruneExpired(ctx context.Context) (int, error) {
 	}
 
 	if h.store != nil {
-		if _, err := h.store.PrunePendingApprovals(now); err != nil {
+		// GH-4772: scope the store-level sweep to rows this handler owns
+		// (see TelegramHandler.PruneExpired's matching comment). Slack is
+		// never the default channel, so it never runs the orphan fallback.
+		if _, err := h.store.PrunePendingApprovals(now, ownedChannels(h.Name())); err != nil {
 			return len(expired), fmt.Errorf("prune expired: sweep store: %w", err)
 		}
 	}
@@ -239,7 +261,7 @@ func (h *SlackHandler) SendApprovalRequest(ctx context.Context, req *Request) (<
 
 	// Create interactive message
 	msg := &SlackInteractiveMessage{
-		Channel: h.channel,
+		Channel: h.resolveChannel(req),
 		Text:    h.formatFallbackText(req), // Fallback for notifications
 		Blocks:  blocks,
 	}

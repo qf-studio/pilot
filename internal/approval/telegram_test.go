@@ -1229,15 +1229,39 @@ func (s *mockPendingStore) LoadPendingApprovals() ([]*memory.PendingApproval, er
 	return out, nil
 }
 
-func (s *mockPendingStore) PrunePendingApprovals(cutoff time.Time) (int64, error) {
+func (s *mockPendingStore) PrunePendingApprovals(cutoff time.Time, channels []string) (int64, error) {
 	if s.pruneErr != nil {
 		return 0, s.pruneErr
+	}
+	owned := make(map[string]bool, len(channels))
+	for _, c := range channels {
+		owned[c] = true
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var deleted int64
 	for id, r := range s.rows {
-		if r.ExpiresAt.Before(cutoff) {
+		if r.ExpiresAt.Before(cutoff) && owned[r.PreferredChannel] {
+			delete(s.rows, id)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+func (s *mockPendingStore) PrunePendingApprovalsOutside(cutoff time.Time, knownChannels []string) (int64, error) {
+	if s.pruneErr != nil {
+		return 0, s.pruneErr
+	}
+	known := make(map[string]bool, len(knownChannels))
+	for _, c := range knownChannels {
+		known[c] = true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var deleted int64
+	for id, r := range s.rows {
+		if r.ExpiresAt.Before(cutoff) && !known[r.PreferredChannel] {
 			delete(s.rows, id)
 			deleted++
 		}

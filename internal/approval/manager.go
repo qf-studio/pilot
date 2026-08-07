@@ -248,7 +248,14 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 	var handler Handler
 	preferredMissing := false
 	if req.PreferredChannel != "" {
-		if h, ok := m.handlers[req.PreferredChannel]; ok {
+		// GH-4772: normalize aliases (e.g. the autopilot config value
+		// "github-review" -> the GitHubHandler's registered Name()
+		// "github") before lookup, so an alias never hits the hard-error
+		// path below just because it doesn't literally match a handler's
+		// Name(). GH-4380 semantics are unchanged: a channel that's still
+		// unresolvable after normalization is a hard error, never a silent
+		// fallback.
+		if h, ok := m.handlers[normalizeChannelName(req.PreferredChannel)]; ok {
 			handler = h
 		} else {
 			preferredMissing = true
