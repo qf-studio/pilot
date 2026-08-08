@@ -1,6 +1,6 @@
 # feat(autopilot): platform-outage circuit breaker — correlate failures, suppress destructive actions, self-resume
 
-**Status (2026-08-08)**: ✅ **CODE COMPLETE** — part 1 PR#4797 · part 2 PR#4806 · follow-ups all merged (#4803 metrics-aggregate, #4809 recovery-path, #4810 approval-routing sibling). **Sole remainder: operator enablement** — after today's 16:00 train deploys, flip `platform_breaker.enabled: true` in the box config (`~/.pilot/config.yaml` on the box) + restart per SOP. Then archive this doc.
+**Status (2026-08-08)**: 🏁 **DONE — ENABLED IN PRODUCTION, ARCHIVED.** Part 1 PR#4797 · part 2 PR#4806 · follow-ups all merged (#4803 metrics-aggregate, #4809 recovery-path, #4810 approval-routing sibling). Operator enablement completed 2026-08-08 ~10:55Z, ahead of the train: box rebuilt from `main` at v2.256.0-29-g35450fea, `orchestrator.autopilot.platform_breaker.enabled: true` added to box config (NOTE: **`orchestrator.autopilot`, not top-level `autopilot:`** — the top-level block binds to nothing, per the recorded pitfall; config backup at `config.yaml.bak-20260808-breaker`), SOP restart, verified 1 proc / clean log / `pilot_platform_breaker_open` gauge exporting. Residual: no armed-state signal exists at startup (breaker logs only on open/close) → filed [#4814](https://github.com/qf-studio/pilot/issues/4814).
 
 ## Problem
 

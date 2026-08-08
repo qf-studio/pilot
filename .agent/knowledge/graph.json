@@ -1482,12 +1482,12 @@
         "title": "Task 458 Platform Outage Breaker",
         "status": "unknown",
         "concepts": [
-          "context",
-          "frontend",
-          "testing",
-          "markers",
+          "api",
           "deployment",
-          "api"
+          "context",
+          "markers",
+          "testing",
+          "frontend"
         ]
       },
       "TASK-459": {
@@ -1495,13 +1495,13 @@
         "title": "Irreversible-action audit \u2014 destructive sites require typed verdicts with positive evidence",
         "status": "dispatched",
         "concepts": [
-          "authentication",
-          "theory of mind",
-          "deployment",
-          "api",
-          "testing",
           "markers",
-          "context"
+          "authentication",
+          "testing",
+          "api",
+          "deployment",
+          "context",
+          "theory of mind"
         ]
       },
       "TASK-460": {
@@ -7148,7 +7148,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-08T09:54:19.344108+00:00",
+  "last_updated": "2026-08-08T11:04:55.273513+00:00",
   "stats": {
     "total_nodes": 379,
     "total_edges": 318,

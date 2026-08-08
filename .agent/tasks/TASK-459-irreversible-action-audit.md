@@ -1,6 +1,6 @@
 # TASK-459: Irreversible-action audit — destructive sites require typed verdicts with positive evidence
 
-**Status**: 🚧 Phase 2 dispatched 2026-08-08 → [#4811](https://github.com/qf-studio/pilot/issues/4811) (`no-decompose`). Phase 1 ✅ (#4796 → PR#4802, post-merge reviewed 08-08: 4 findings, all folded into the Phase 2 spec — zero-value `Verdict{}` hazard is the load-bearing one). Phase 3 next after 2. Phase 5 RESOLVED 08-08: false-success class split out to [TASK-460](TASK-460-delivery-evidence-false-success.md) (founder scope call) — this task is 4 phases and done at Phase 4
+**Status**: ✅ **Phase 2 MERGED same-day 2026-08-08** — #4811 → PR#4812 (dispatched 09:32Z, merged 10:34Z), post-merge reviewed 08-08 (APPROVE; finding → [#4813](https://github.com/qf-studio/pilot/issues/4813) evidenced-infra post-merge spawn gap; `ciFailureVerdictEvidence` re-derivation parity noted for Phase 4 below). **Live on the box since the 08-08 10:55Z operator rebuild** (v2.256.0-29-g35450fea) — did not wait for the train. Phase 1 ✅ (#4796 → PR#4802, reviewed). **Phase 3 dispatchable next.** Phase 5 RESOLVED 08-08: false-success class split out to [TASK-460](TASK-460-delivery-evidence-false-success.md) (founder scope call) — this task is 4 phases and done at Phase 4
 **Created**: 2026-08-07
 **Assignee**: Pilot (multi-leg; dispatch one leg at a time)
 
@@ -88,6 +88,7 @@ Legs are sized per the #4780 lesson (one subsystem + its tests per `no-decompose
 
 **Tasks**:
 - [ ] Shared table for "what counts as a failed check" consumed by both status mapping and evidence gathering; parity test fails on divergence (the #4790 fix generalized).
+- [ ] Third parity target (PR#4812 post-merge review, 2026-08-08): `ciFailureVerdictEvidence` re-derives per-check classification independently of `classifyPRFailure`'s aggregation — pattern-3 duplication whose drift direction is conservative (mismatch → empty evidence → Unknown → hold), but add a fixture-corpus parity test asserting non-Unknown aggregate ⇒ non-empty derived evidence.
 - [ ] Second parity target (PR#4795 post-merge review, 2026-08-07): approval-channel vocabulary has **three** implementations — the unexported alias table in `internal/approval/channel.go`, `validApprovalSourceValues` in `internal/config/config.go`, and the `sourceRegistered` switch in `internal/health/health.go`. Export one table, consume it from all three, parity test. Fold in the one-line fix for explicit `approval_source: ""` project overlays: validation documents empty as "inherits env/global" but `NewController` copies the pointer verbatim → `PreferredChannel: ""` → `defaultChannelName` routes to telegram instead of the resolved source (add `!= ""` guard in the resolution block + test).
 - [ ] `scripts/check-destructive-calls.sh` + gate step: destructive APIs may only be called from gated helpers. Also ban composite-literal `Verdict{` construction outside `failure_class.go` (PR#4802 review finding 2 — unexported fields don't restrict intra-package construction).
 - [ ] SOP `.agent/sops/quality/irreversible-actions.md`.
@@ -149,7 +150,8 @@ make gate
 ## Refs
 
 - Phase 1 issue: https://github.com/qf-studio/pilot/issues/4796 (dispatched 2026-08-07) → PR#4802 (merged; post-merge review in PR comments, 2026-08-08)
-- Phase 2 issue: https://github.com/qf-studio/pilot/issues/4811 (dispatched 2026-08-08)
+- Phase 2 issue: https://github.com/qf-studio/pilot/issues/4811 (dispatched 2026-08-08) → PR#4812 (merged same day; post-merge review in PR comments)
+- Phase 2 review follow-up: https://github.com/qf-studio/pilot/issues/4813 (evidenced-infra post-merge spawn — no post-merge infra-retry leg)
 - Incident: 2026-08-06 GitHub Actions outage (~9.5h) and 08-07 recovery — marker `2026-08-06_outage-pause-approval-wave-dispatched.md`
 - Instances already fixed/in flight: #4787 (structural classification + `Unknown`), #4790 (check-run dedupe), #4791/#4792 (breaker), #4794 (superseded ≠ failed)
 - Prior art: `.agent/tasks/archive/TASK-418-ci-infra-failure-classification.md`, `.agent/tasks/archive/TASK-421-repick-counter-counts-non-failures.md`, `.agent/tasks/archive/TASK-441-contract-hardening-tune-up.md` (grep-gate precedent)
