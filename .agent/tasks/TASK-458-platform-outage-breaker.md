@@ -1,5 +1,7 @@
 # feat(autopilot): platform-outage circuit breaker — correlate failures, suppress destructive actions, self-resume
 
+**Status (2026-08-08)**: ✅ **CODE COMPLETE** — part 1 PR#4797 · part 2 PR#4806 · follow-ups all merged (#4803 metrics-aggregate, #4809 recovery-path, #4810 approval-routing sibling). **Sole remainder: operator enablement** — after today's 16:00 train deploys, flip `platform_breaker.enabled: true` in the box config (`~/.pilot/config.yaml` on the box) + restart per SOP. Then archive this doc.
+
 ## Problem
 
 During the 2026-08-06 GitHub Actions outage the daemon had no notion of "the platform is broken, stand down." It kept acting on false signals for ~50 minutes — closing a correct PR, burning retries, escalating tasks, spending executor budget on work that could not pass CI — until a human noticed and stopped it. Per-PR guards cannot catch this by construction: the existing circuit breaker is deliberately **per-PR** ("so one bad PR doesn't block others", `controller.go:108-109`), and each PR individually looked like a normal failure. The missing signal is **correlation across PRs**: four unrelated PRs failing within minutes is a platform event, not four independent regressions.
