@@ -2127,6 +2127,21 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				if platformBreakerProbeInterval <= 0 {
 					platformBreakerProbeInterval = autopilot.DefaultPlatformBreakerProbeInterval
 				}
+				// GH-4814: enabling the breaker was otherwise silent at
+				// startup — NewPlatformBreaker logs nothing at construction
+				// and the component=platform-breaker logger only speaks on
+				// the OPEN transition, so confirming today's enablement
+				// required tracing this config decode path by hand. One
+				// INFO line with every resolved setting (including the two,
+				// probe_interval/pause_admission, NewPlatformBreaker itself
+				// never sees) fixes that.
+				logging.WithComponent("platform-breaker").Info("platform-outage breaker enabled",
+					slog.Int("min_correlated_prs", platformBreaker.MinCorrelatedPRs()),
+					slog.Duration("correlation_window", platformBreaker.CorrelationWindow()),
+					slog.Duration("quiet_period", platformBreaker.QuietPeriod()),
+					slog.Duration("probe_interval", platformBreakerProbeInterval),
+					slog.Bool("pause_admission", platformBreakerPauseAdmissionEnabled),
+				)
 			}
 			// GH-4454: every controller's lane-starvation reconciler needs the
 			// same trigger label the GitHub SDK poller watches for

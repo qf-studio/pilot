@@ -197,6 +197,44 @@ func TestPlatformBreaker_NilReceiverIsNoOp(t *testing.T) {
 	if b.IsOpen() {
 		t.Error("nil breaker IsOpen() = true, want false")
 	}
+	if got := b.MinCorrelatedPRs(); got != 0 {
+		t.Errorf("nil breaker MinCorrelatedPRs() = %d, want 0", got)
+	}
+	if got := b.CorrelationWindow(); got != 0 {
+		t.Errorf("nil breaker CorrelationWindow() = %v, want 0", got)
+	}
+	if got := b.QuietPeriod(); got != 0 {
+		t.Errorf("nil breaker QuietPeriod() = %v, want 0", got)
+	}
+}
+
+// TestPlatformBreaker_ResolvedSettingsGetters verifies MinCorrelatedPRs,
+// CorrelationWindow, and QuietPeriod (GH-4814) expose the POST-default
+// resolved settings — used by cmd/pilot/main.go to log the breaker's armed
+// state at startup — for both explicit and zero-value (default-falling-back)
+// constructor args.
+func TestPlatformBreaker_ResolvedSettingsGetters(t *testing.T) {
+	explicit := NewPlatformBreaker(5, 10*time.Minute, 30*time.Minute, nil)
+	if got := explicit.MinCorrelatedPRs(); got != 5 {
+		t.Errorf("MinCorrelatedPRs() = %d, want 5", got)
+	}
+	if got := explicit.CorrelationWindow(); got != 10*time.Minute {
+		t.Errorf("CorrelationWindow() = %v, want 10m", got)
+	}
+	if got := explicit.QuietPeriod(); got != 30*time.Minute {
+		t.Errorf("QuietPeriod() = %v, want 30m", got)
+	}
+
+	defaulted := NewPlatformBreaker(0, 0, 0, nil)
+	if got := defaulted.MinCorrelatedPRs(); got != DefaultPlatformBreakerMinCorrelatedPRs {
+		t.Errorf("MinCorrelatedPRs() = %d, want default %d", got, DefaultPlatformBreakerMinCorrelatedPRs)
+	}
+	if got := defaulted.CorrelationWindow(); got != DefaultPlatformBreakerCorrelationWindow {
+		t.Errorf("CorrelationWindow() = %v, want default %v", got, DefaultPlatformBreakerCorrelationWindow)
+	}
+	if got := defaulted.QuietPeriod(); got != DefaultPlatformBreakerQuietPeriod {
+		t.Errorf("QuietPeriod() = %v, want default %v", got, DefaultPlatformBreakerQuietPeriod)
+	}
 }
 
 // TestPlatformBreaker_DefaultsApplied verifies zero-value constructor args

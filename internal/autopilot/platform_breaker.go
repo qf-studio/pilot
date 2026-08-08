@@ -208,6 +208,36 @@ func (b *PlatformBreaker) IsOpen() bool {
 	return b.open
 }
 
+// MinCorrelatedPRs, CorrelationWindow, and QuietPeriod expose the resolved
+// (post-default) construction settings — GH-4814: cmd/pilot/main.go logs
+// these once at startup so an operator can confirm the breaker is armed and
+// with which thresholds without tracing the config decode path by hand.
+// Immutable after NewPlatformBreaker, so no locking is needed. A nil
+// receiver returns the zero value.
+func (b *PlatformBreaker) MinCorrelatedPRs() int {
+	if b == nil {
+		return 0
+	}
+	return b.minDistinctPRs
+}
+
+// CorrelationWindow returns the resolved correlation window (see
+// MinCorrelatedPRs).
+func (b *PlatformBreaker) CorrelationWindow() time.Duration {
+	if b == nil {
+		return 0
+	}
+	return b.correlationWindow
+}
+
+// QuietPeriod returns the resolved quiet period (see MinCorrelatedPRs).
+func (b *PlatformBreaker) QuietPeriod() time.Duration {
+	if b == nil {
+		return 0
+	}
+	return b.quietPeriod
+}
+
 // EvaluateClose runs the same time-based close check Observe applies as a
 // side effect, standalone. GH-4792 (TASK-458 part 2): unlike Observe, this
 // is not gated behind a CI-failure event — the periodic breaker monitor
