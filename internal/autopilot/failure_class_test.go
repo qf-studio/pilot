@@ -1,6 +1,9 @@
 package autopilot
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestClassifyCheckFailure_TableDriven exercises the conservative infra
 // signature set from GH-4526/GH-4531/GH-4533: only unambiguous CI
@@ -565,4 +568,142 @@ func TestVerdict_EvidenceFreeNeverAuthorizesDestructiveClass(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestVerdict_ZeroValue is the TASK-459 Phase 2 regression test for PR#4802
+// review finding 1: a zero-value Verdict (var v Verdict, or any accidental
+// Verdict{} composite literal) must read as FailureClassUnknown with empty
+// evidence — never as some other class a naive `class != FailureClassUnknown`
+// gate would treat as authorized, since the zero value's unexported class
+// field is "" (neither FailureClassUnknown's string value nor any
+// destructive class).
+func TestVerdict_ZeroValue(t *testing.T) {
+	var v Verdict
+	if got := v.Class(); got != FailureClassUnknown {
+		t.Errorf("zero-value Verdict.Class() = %q, want %q", got, FailureClassUnknown)
+	}
+	if got := v.Evidence(); got != "" {
+		t.Errorf("zero-value Verdict.Evidence() = %q, want empty", got)
+	}
+	if got := v.Source(); got != "" {
+		t.Errorf("zero-value Verdict.Source() = %q, want empty", got)
+	}
+	if got := v.Scope(); got != "" {
+		t.Errorf("zero-value Verdict.Scope() = %q, want empty", got)
+	}
+	if v.AuthorizesDestructive() {
+		t.Error("zero-value Verdict.AuthorizesDestructive() = true, want false (finding-1 regression: a zero-value Verdict must never authorize a destructive action)")
+	}
+}
+
+// TestVerdict_AuthorizesDestructive is the TASK-459 Phase 2 contract test
+// for the single shared gate every destructive rung in the CI-failure path
+// consumes: true only for a non-Unknown class carrying non-empty evidence,
+// false for every other combination a Verdict can actually be constructed
+// in — including the finding-1 zero value, which NewVerdict/NewUnknownVerdict
+// can never produce but a bare `Verdict{}` composite literal still can.
+func TestVerdict_AuthorizesDestructive(t *testing.T) {
+	tests := []struct {
+		name string
+		v    Verdict
+		want bool
+	}{
+		{
+			name: "zero value never authorizes (finding 1)",
+			v:    Verdict{},
+			want: false,
+		},
+		{
+			name: "NewUnknownVerdict never authorizes",
+			v:    NewUnknownVerdict("classifyPRFailure", "qf-studio/pilot"),
+			want: false,
+		},
+		{
+			name: "evidence-free NewVerdict request never authorizes",
+			v:    NewVerdict(FailureClassCode, "", "classifyPRFailure", "qf-studio/pilot"),
+			want: false,
+		},
+		{
+			name: "evidenced FailureClassCode authorizes",
+			v:    NewVerdict(FailureClassCode, "ci:code(real_annotation)", "classifyPRFailure", "qf-studio/pilot"),
+			want: true,
+		},
+		{
+			name: "evidenced FailureClassInfra authorizes",
+			v:    NewVerdict(FailureClassInfra, "ci:infra(structural)", "classifyPRFailure", "qf-studio/pilot"),
+			want: true,
+		},
+		{
+			name: "evidenced FailureClassInfraBilling authorizes",
+			v:    NewVerdict(FailureClassInfraBilling, "ci:infra_billing(billing)", "classifyPRFailure", "qf-studio/pilot"),
+			want: true,
+		},
+		{
+			name: "explicit Unknown with evidence still never authorizes",
+			v:    NewVerdict(FailureClassUnknown, "diagnostic note", "classifyPRFailure", "qf-studio/pilot"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.v.AuthorizesDestructive(); got != tt.want {
+				t.Errorf("AuthorizesDestructive() = %v, want %v (class=%q evidence=%q)", got, tt.want, tt.v.Class(), tt.v.Evidence())
+			}
+		})
+	}
+}
+
+// TestCIFailureVerdictEvidence_NamesConcreteChecks verifies
+// ciFailureVerdictEvidence (via newCIFailureVerdict) names the specific
+// failed check(s)/signal(s) that produced class, not a restatement of the
+// class itself — the evidence-quality requirement from TASK-459 Phase 2's
+// task doc ("not a generic 'checks failed' restatement of the verdict
+// itself").
+func TestCIFailureVerdictEvidence_NamesConcreteChecks(t *testing.T) {
+	t.Run("infra aggregate names the infra-classified check", func(t *testing.T) {
+		checks := []FailedCheckLog{
+			{CheckName: "build", Logs: "##[error]Failed to run: step\nUnexpected HTTP response: 503"},
+		}
+		v := newCIFailureVerdict(classifyPRFailure(checks), checks, "qf-studio/pilot")
+		if v.Class() != FailureClassInfra {
+			t.Fatalf("class = %q, want %q", v.Class(), FailureClassInfra)
+		}
+		if !strings.Contains(v.Evidence(), "build") {
+			t.Errorf("Evidence() = %q, want it to name the failing check %q", v.Evidence(), "build")
+		}
+		if v.Evidence() == string(FailureClassInfra) {
+			t.Errorf("Evidence() = %q, must not be a bare restatement of the class", v.Evidence())
+		}
+	})
+
+	t.Run("code aggregate names only the check(s) that tipped it to code", func(t *testing.T) {
+		checks := []FailedCheckLog{
+			{CheckName: "lint", Logs: "internal/foo.go:12:3: undefined: bar"},
+			{CheckName: "build", Logs: "##[error]Failed to run: step\nUnexpected HTTP response: 503"},
+		}
+		v := newCIFailureVerdict(classifyPRFailure(checks), checks, "qf-studio/pilot")
+		if v.Class() != FailureClassCode {
+			t.Fatalf("class = %q, want %q", v.Class(), FailureClassCode)
+		}
+		if !strings.Contains(v.Evidence(), "lint") {
+			t.Errorf("Evidence() = %q, want it to name the code-classified check %q", v.Evidence(), "lint")
+		}
+		if strings.Contains(v.Evidence(), "build") {
+			t.Errorf("Evidence() = %q, must not name the infra-classified check that did not tip the aggregate", v.Evidence())
+		}
+	})
+
+	t.Run("zero checks constructs via NewUnknownVerdict", func(t *testing.T) {
+		v := newCIFailureVerdict(classifyPRFailure(nil), nil, "qf-studio/pilot")
+		if v.Class() != FailureClassUnknown {
+			t.Fatalf("class = %q, want %q", v.Class(), FailureClassUnknown)
+		}
+		if v.Evidence() != "" {
+			t.Errorf("Evidence() = %q, want empty", v.Evidence())
+		}
+		if v.AuthorizesDestructive() {
+			t.Error("AuthorizesDestructive() = true, want false for zero-gathered-evidence verdict")
+		}
+	})
 }

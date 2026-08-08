@@ -1,7 +1,16 @@
 # Irreversible-action inventory (TASK-459 Phase 1)
 
-**Status**: Phase 1 of 5 — inventory + `Verdict` contract only. No behaviour
-change; no call site below is migrated in this phase.
+**Status**: Phase 2 of 5 landed. Phase 1 built the inventory + `Verdict`
+contract with no behaviour change. Phase 2 migrated the CI-failure path —
+`handleCIFailed`'s ladder (family 1's `MaxCIFixIterations` close, family 3's
+pre-merge `CreateFailureIssue`, family 8's zero-evidence `escalateAndHold`)
+and the post-merge CI rung (family 3's post-merge `CreateFailureIssue`, plus
+a *new* family-8 zero-evidence hold that didn't exist before Phase 2 — the
+post-merge path previously spawned a fix issue for any `CIFailure` with no
+classification at all) — to gate on `Verdict.AuthorizesDestructive()`
+instead of raw `FailureClass`/string/nil-check comparisons. Their rows below
+are marked `typed-verdict` accordingly. All other rows are still Phase
+1-only classification; Phase 3 covers executor/dispatcher/poller sites.
 
 **Purpose**: Every call site in the daemon that closes a PR, deletes a
 branch, spawns a fix issue, burns retry budget, writes a terminal label, or
@@ -50,7 +59,7 @@ branch/commits may also be deleted immediately after, see family 2)
 
 | Site | Subsystem | Reversibility | Blast radius | Evidence | required_checks scoping |
 |---|---|---|---|---|---|
-| `internal/autopilot/controller.go:2453` (`handleCIFailed`, `MaxCIFixIterations` rung) | autopilot | irreversible | Discards the PR + all executor work on it (the #4765/#4768/#4770 incident shape); triggers the follow-on branch-delete-adjacent cleanup | `counter` — `iteration >= MaxCIFixIterations`, iteration parsed by regex from issue body text. Reached only after upstream `classifyPRFailure`/platform-breaker gates (2350-2404), but the close trigger itself is evidence-blind to *what* failed, only *how many times* | **Authoritative for the iteration count itself (scope-agnostic), but the whole `handleCIFailed` function is only entered because `CIMonitor.CheckCI`/`checkRequiredChecks` aggregated `CIFailure` from in-scope checks only** — a failing but unscoped check never reaches this rung at all |
+| `internal/autopilot/controller.go:2550` (`handleCIFailed`, `MaxCIFixIterations` rung) | autopilot | irreversible | Discards the PR + all executor work on it (the #4765/#4768/#4770 incident shape); triggers the follow-on branch-delete-adjacent cleanup | `typed-verdict` (TASK-459 Phase 2) — the counter rung is unreachable unless `verdict.AuthorizesDestructive()` gated earlier in the function (controller.go:2501); the close trigger itself is still `counter`-driven (`iteration >= MaxCIFixIterations`) but is now provably behind positive-evidence, not just behind the platform-breaker/upstream gates | **Authoritative for the iteration count itself (scope-agnostic), but the whole `handleCIFailed` function is only entered because `CIMonitor.CheckCI`/`checkRequiredChecks` aggregated `CIFailure` from in-scope checks only** — a failing but unscoped check never reaches this rung at all |
 | `internal/autopilot/controller.go:2579` (`handleReviewRequested` tail) | autopilot | irreversible | Discards the PR | `raw-string`/`raw-bool` — driven by `ListPullRequestReviews`/`GetPullRequestComments` review state, not CI | N/A — review path, not CI-scoped |
 | `internal/autopilot/controller.go:2784` (`handleReviewRequested`, `ReviewFeedback.MaxIterations` rung) | autopilot | irreversible | Discards the PR | `counter` — same `parseAutopilotIteration` mechanism as 2453 | N/A |
 | `internal/autopilot/controller.go:2842` (`handleReviewRequested` fallthrough, immediately followed by branch delete at 2847) | autopilot | irreversible | Discards the PR + branch | `raw-bool`/`counter` per the preceding review-state checks | N/A |
@@ -70,8 +79,8 @@ branch/commits may also be deleted immediately after, see family 2)
 
 | Site | Subsystem | Reversibility | Blast radius | Evidence | required_checks scoping |
 |---|---|---|---|---|---|
-| `internal/autopilot/controller.go:2531` (`handleCIFailed` main rung) | autopilot | costly-reversible — a spurious issue can be closed by a human, but burns a full executor dispatch first (the #4766/#4769/#4775 incident shape: ~$ per junk fix run) | Executor $ + operator triage time | `typed`+`raw-string` — `failedChecks` from `CIMonitor.GetFailedChecks`, already `isScopedCheck`-filtered | **Yes — decorative for unscoped checks.** The issue body's diagnosis (failed-check names + logs) only ever names checks the allowlist let through; an actually-failing unlisted check contributes zero evidence to the spawned issue |
-| `internal/autopilot/controller.go:3977` (post-merge CI failure rung) | autopilot | costly-reversible | Same as above, post-merge variant | Same evidence chain | Yes, same scoping |
+| `internal/autopilot/controller.go:2628` (`handleCIFailed` main rung) | autopilot | costly-reversible — a spurious issue can be closed by a human, but burns a full executor dispatch first (the #4766/#4769/#4775 incident shape: ~$ per junk fix run) | Executor $ + operator triage time | `typed-verdict` (TASK-459 Phase 2) — unreachable unless `verdict.AuthorizesDestructive()` gated earlier (controller.go:2501); `failedChecks` feeding the issue body is still `CIMonitor.GetFailedChecks`, already `isScopedCheck`-filtered | **Yes — decorative for unscoped checks.** The issue body's diagnosis (failed-check names + logs) only ever names checks the allowlist let through; an actually-failing unlisted check contributes zero evidence to the spawned issue |
+| `internal/autopilot/controller.go:4122` (post-merge CI failure rung) | autopilot | costly-reversible | Same as above, post-merge variant | `typed-verdict` (TASK-459 Phase 2) — previously this rung had **no classification at all** (any post-merge `CIFailure` spawned a fix issue modulo iteration/size guards); now unreachable unless `postMergeVerdict.AuthorizesDestructive()` gated earlier (controller.go:4112), the same construction as the pre-merge rung | Yes, same scoping |
 | `internal/autopilot/feedback_loop.go:156` (`FeedbackLoop.CreateFailureIssue`, the shared implementation both rungs above call) | autopilot | — | — | Has its own dedup guard: SQLite claim (`ClaimSpawnedFix`, GH-4307/#4319) + GitHub-search belt-and-suspenders (`SpawnedFixExists`) so two ticks racing on the same failure spawn exactly one issue — this guard is about *duplication*, not about evidence quality | Inherits caller's scoping |
 | `internal/executor/epic.go:1501` (`subIssueCreator.CreateIssue`, epic decomposition) | executor | costly-reversible | Different family — decomposition sub-issue spawn, not CI-fix-driven | `raw` decomposition logic, not CI evidence | N/A |
 | `internal/comms/issue_intake.go:144` (generic issue-intake `CreateIssue`) | comms | costly-reversible | Adapter-driven (e.g. Slack), not autonomous-daemon-invoked in the CI-fix sense | N/A | N/A |
@@ -126,15 +135,16 @@ branch/commits may also be deleted immediately after, see family 2)
 
 ## 8. `escalateAndHold` and hold/escalation (semi-destructive: never closes/deletes/merges, but pages a human and parks the PR — operator-costly)
 
-Defined once at `internal/autopilot/controller.go:5204`. Call sites:
+Defined once at `internal/autopilot/controller.go:5349`. Call sites:
 
 | Site | Reason string | Evidence gating this call |
 |---|---|---|
-| `controller.go:2411` | "CI failure with zero gathered evidence" | `typed` + `nil-check` — `classifyPRFailure == FailureClassUnknown` *and* `perCheckLogs` came back empty. This is the GH-4779 fix that already implements the TASK-459 invariant for one site: zero evidence routes here, never to `ClosePullRequest`/`CreateFailureIssue` |
-| `controller.go:2516` | "CI fix size guard fired" | `counter` — production-line diff stat vs `MaxCIFixPRSize`; fails open (does not hold) if `ListPullRequestFiles` errors |
-| `controller.go:2551` | "CI-fix continuation declined at preflight" | `nil-check` — `CreateFailureIssue` returned an error or a legitimate dedup-claim-in-flight `(0, nil)`; chosen over closing to avoid GH-4415's double-lost-work dead end |
-| `controller.go:4929` | "auto-rebase failed" | `raw-bool` — `attemptMechanicalConflictResolution` (local merge replay) found the conflict surface isn't confined to go.mod/go.sum |
-| `controller.go:5130` (`holdClosedIssueWorkNotOnMain`) | "source issue #N is closed but {situation}" | `re-read` — `checkPRWorkOnMain` reachability check errored or returned false; fail-safe against discarding unmerged work |
+| `controller.go:2508` | "CI failure with zero gathered evidence" | `typed-verdict` (TASK-459 Phase 2) — `!verdict.AuthorizesDestructive()`, i.e. `Class() == FailureClassUnknown` or `Evidence() == ""`, superseding the prior direct `classifyPRFailure == FailureClassUnknown` + `nil-check` comparison with the same GH-4779 invariant expressed through the shared gate helper |
+| `controller.go:4117` (new in Phase 2 — no equivalent pre-Phase-2 site) | "post-merge CI failure with zero gathered evidence" | `typed-verdict` — `!postMergeVerdict.AuthorizesDestructive()`. Previously the post-merge rung had no zero-evidence gate at all; a GH-4779-style race on the post-merge check-runs re-fetch would have spawned a fix issue blind. Closes that gap using the same `newCIFailureVerdict`/`AuthorizesDestructive()` construction as the pre-merge site |
+| `controller.go:2613` | "CI fix size guard fired" | `counter` — production-line diff stat vs `MaxCIFixPRSize`; fails open (does not hold) if `ListPullRequestFiles` errors |
+| `controller.go:2648` | "CI-fix continuation declined at preflight" | `nil-check` — `CreateFailureIssue` returned an error or a legitimate dedup-claim-in-flight `(0, nil)`; chosen over closing to avoid GH-4415's double-lost-work dead end |
+| `controller.go:5074` | "auto-rebase failed" | `raw-bool` — `attemptMechanicalConflictResolution` (local merge replay) found the conflict surface isn't confined to go.mod/go.sum |
+| `controller.go:5274` (`holdClosedIssueWorkNotOnMain`) | "source issue #N is closed but {situation}" | `re-read` — `checkPRWorkOnMain` reachability check errored or returned false; fail-safe against discarding unmerged work |
 | `internal/executor/dispatcher.go:1811/1832/1851` (`stallTaskAfterRepickHardCap`/`StallCap`/`InfraCap`, via `escalateStalledTask` at 1911) | Three distinct named reasons (repick-hard-cap / stall-watchdog-cap / infra-cap) | `counter` — raw consecutive-drop-count thresholds, each with its own distinct reason string (deliberately not conflating "code is broken" vs "environment kept failing"); idempotent via matching the prior `Error` string exactly. This is the executor-level (pre-GitHub-PR) analog of `escalateAndHold` |
 
 ## 9. Cross-cutting findings
@@ -149,9 +159,20 @@ Defined once at `internal/autopilot/controller.go:5204`. Call sites:
 
 ## How Phase 2+ consumes this
 
-Phase 2 gates `handleCIFailed`'s three rungs (family 1's `controller.go:2453`,
-family 3's `:2531`/`:3977`, family 8's `:2411`) behind the `Verdict` type
-defined in `internal/autopilot/failure_class.go`. Phase 3 does the same for
+**Phase 2 (landed, TASK-459)** gated `handleCIFailed`'s rungs (family 1's
+`controller.go:2550`, family 3's `:2628`, family 8's `:2508`) and the
+post-merge CI rung (family 3's `:4122`, plus the new family-8 hold at
+`:4117` that didn't exist pre-Phase-2) behind `Verdict.AuthorizesDestructive()`,
+using the `Verdict` type defined in `internal/autopilot/failure_class.go`.
+The gate requires both a non-`Unknown` `Class()` and non-empty `Evidence()`
+— a bare `Class() != FailureClassUnknown` check was explicitly rejected
+during Phase 2 review because a zero-value `Verdict{}` has `Class() ==
+FailureClassUnknown` by construction but that alone doesn't rule out every
+degenerate-construction path, so `Evidence()` is checked independently.
+`maybeRetryInfraFailure`'s infra-retry gate deliberately does *not* require
+`AuthorizesDestructive()` (retry is non-destructive and must keep admitting
+`FailureClassUnknown` per GH-4779) and `PlatformBreaker.Observe` remains
+upstream of and independent from this gate. Phase 3 does the same for
 families 4/6/7's executor/dispatcher/poller sites. Phase 4 adds
 `scripts/check-destructive-calls.sh` to keep new call sites from bypassing
 the contract. This document is not re-derived per phase — update the
