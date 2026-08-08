@@ -1240,6 +1240,20 @@ type PRState struct {
 	// forever — it eventually stays parked for a human. Never reset
 	// (lifetime counter for the PR). Persisted.
 	BreakerReadoptCount int
+	// PostMergeInfraRerunCount is the post-merge analog of InfraRerunCount
+	// (GH-4813): how many times handlePostMergeCI has auto-retried this
+	// carrier's failed jobs after classifying a post-merge CI failure as a CI
+	// infrastructure outage. Scoped to PostMergeInfraRerunSHA rather than
+	// InfraRerunSHA/HeadSHA — post-merge monitoring polls the main-branch
+	// commit (PostMergeSHA), not the PR's head, and the two rerun budgets
+	// must not share state (a PR that already spent its pre-merge infra
+	// budget must still get a fresh post-merge budget). Persisted.
+	PostMergeInfraRerunCount int
+	// PostMergeInfraRerunSHA is the mainSHA the PostMergeInfraRerunCount
+	// budget above applies to. When it no longer matches the carrier's
+	// current PostMergeSHA, the effective retry budget is treated as 0.
+	// Persisted.
+	PostMergeInfraRerunSHA string
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -1295,6 +1309,8 @@ func (ps *PRState) snapshot() *PRState {
 		PostMergeCINoWorkflowChecked: ps.PostMergeCINoWorkflowChecked,
 		BreakerHoldActive:            ps.BreakerHoldActive,
 		BreakerReadoptCount:          ps.BreakerReadoptCount,
+		PostMergeInfraRerunCount:     ps.PostMergeInfraRerunCount,
+		PostMergeInfraRerunSHA:       ps.PostMergeInfraRerunSHA,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.

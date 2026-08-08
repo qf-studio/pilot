@@ -5808,6 +5808,128 @@ func TestHandlePostMergeCI_CIFailure_MaxCIFixPRSizeGuard(t *testing.T) {
 	}
 }
 
+// TestHandlePostMergeCI_InfraFailure_AutoRetries is the GH-4813 regression
+// test for the post-merge CI-failure rung's missing infra-retry leg: an
+// evidenced infra-class post-merge failure (429-rate-limited action
+// download, same fixture as the pre-merge GH-4526 replay) must auto-retry
+// via RerunFailedJobs instead of ever reaching CreateFailureIssue.
+func TestHandlePostMergeCI_InfraFailure_AutoRetries(t *testing.T) {
+	rerunCalled := false
+	issueCreated := false
+
+	server := gh4533InfraTestServer(t, "pminfrasha1", &rerunCalled, func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost {
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 910}))
+			return true
+		}
+		return false
+	})
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+
+	prState := &PRState{
+		PRNumber:             501,
+		Stage:                StagePostMergeCI,
+		PostMergeSHA:         "pminfrasha1",
+		PostMergeCIStartedAt: time.Now(),
+	}
+	c.mu.Lock()
+	c.activePRs[501] = prState
+	c.mu.Unlock()
+
+	if err := c.handlePostMergeCI(context.Background(), prState); err != nil {
+		t.Fatalf("handlePostMergeCI returned unexpected error: %v", err)
+	}
+
+	if !rerunCalled {
+		t.Error("expected RerunFailedJobs to be called for the infra-classified post-merge failure")
+	}
+	if issueCreated {
+		t.Error("no fix issue should be spawned for an infra-classified post-merge failure with retry budget remaining")
+	}
+	if prState.Stage != StagePostMergeCI {
+		t.Errorf("Stage = %s, want %s (still polling after auto-retry)", prState.Stage, StagePostMergeCI)
+	}
+	if prState.PostMergeInfraRerunCount != 1 {
+		t.Errorf("PostMergeInfraRerunCount = %d, want 1", prState.PostMergeInfraRerunCount)
+	}
+	if prState.PostMergeInfraRerunSHA != "pminfrasha1" {
+		t.Errorf("PostMergeInfraRerunSHA = %q, want %q", prState.PostMergeInfraRerunSHA, "pminfrasha1")
+	}
+}
+
+// TestHandlePostMergeCI_InfraFailure_NoRerunPlumbing_EscalatesInsteadOfSpawning
+// is the GH-4813 fallback-path regression test: when the rerun plumbing
+// can't reach the post-merge SHA (no StepLogClient wired — the same
+// condition that makes maybeRetryPostMergeInfraFailure a no-op), an
+// evidenced infra-class post-merge failure must still never reach
+// CreateFailureIssue — it must escalateAndHold with the distinct
+// "post-merge CI failure classified infra" reason instead.
+func TestHandlePostMergeCI_InfraFailure_NoRerunPlumbing_EscalatesInsteadOfSpawning(t *testing.T) {
+	issueCreated := false
+	var labelsAdded []string
+
+	server := gh4533InfraTestServer(t, "pminfrasha2", nil, func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 911}))
+			return true
+		case strings.Contains(r.URL.Path, "/labels") && r.Method == http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			labelsAdded = append(labelsAdded, body["labels"]...)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{})
+			return true
+		}
+		return false
+	})
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	// Deliberately no WithStepLogClient — mirrors a controller instance
+	// where rerun plumbing was never wired up for this repo.
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:             502,
+		IssueNumber:          88,
+		Stage:                StagePostMergeCI,
+		PostMergeSHA:         "pminfrasha2",
+		PostMergeCIStartedAt: time.Now(),
+	}
+	c.mu.Lock()
+	c.activePRs[502] = prState
+	c.mu.Unlock()
+
+	if err := c.handlePostMergeCI(context.Background(), prState); err != nil {
+		t.Fatalf("handlePostMergeCI returned unexpected error: %v", err)
+	}
+
+	if issueCreated {
+		t.Error("no fix issue should ever be spawned for an infra-classified post-merge failure — GH-4813 invariant")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	found := false
+	for _, l := range labelsAdded {
+		if l == labelNeedsHuman {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pilot-needs-human label via escalateAndHold, got labels: %v", labelsAdded)
+	}
+}
+
 // TestHandleCIFailed_EmptyLogs_SkipsLearning verifies that handleCIFailed skips
 // LearnFromCIFailure when CI logs are empty or whitespace-only (GH-1979).
 // TestHandleCIFailed_EmptyLogs_SkipsLearning verifies that handleCIFailed skips

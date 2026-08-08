@@ -2806,6 +2806,64 @@ func (c *Controller) rerunInfraFailures(ctx context.Context, prState *PRState, c
 	return rerun
 }
 
+// maybeRetryPostMergeInfraFailure is the post-merge analog of
+// maybeRetryInfraFailure (GH-4813): before this, handlePostMergeCI had no
+// infra-retry leg at all, so an evidenced infra-class post-merge failure
+// (e.g. a runner 503 in the post-merge check logs) flowed straight to
+// CreateFailureIssue — a junk code-fix issue for a failure that is GitHub's,
+// not the repo's (the #4766/#4769/#4775 incident shape, surviving on the
+// post-merge rung only). Pre-merge, maybeRetryInfraFailure intercepts infra
+// classes upstream of every destructive rung; this gives the post-merge
+// rung the same interception.
+//
+// Budget is tracked separately from the pre-merge InfraRerunCount/
+// InfraRerunSHA pair — PostMergeInfraRerunCount/PostMergeInfraRerunSHA,
+// scoped to mainSHA rather than HeadSHA, since post-merge monitoring polls
+// the main-branch commit, not the PR's head, and the two budgets must not
+// share state.
+//
+// Unlike the pre-merge gate, callers here must NOT fall through to
+// CreateFailureIssue when this returns false (budget exhausted, or nothing
+// could be rerun) — the caller's contract (and GH-4813's acceptance
+// criteria) is that an evidenced infra-class post-merge failure never
+// reaches the fix-issue rung; the caller instead falls back to
+// escalateAndHold.
+func (c *Controller) maybeRetryPostMergeInfraFailure(ctx context.Context, prState *PRState, checks []FailedCheckLog, mainSHA string) bool {
+	if c.stepLogClient == nil {
+		return false
+	}
+
+	// A new mainSHA resets the effective budget to 0, mirroring
+	// maybeRetryInfraFailure's HeadSHA handling above.
+	effectiveCount := prState.PostMergeInfraRerunCount
+	if mainSHA != prState.PostMergeInfraRerunSHA {
+		effectiveCount = 0
+	}
+	if effectiveCount >= maxInfraRerunBudget {
+		c.log.Warn("post-merge CI infra-failure retry budget exhausted, holding instead of spawning fix issue",
+			"pr", prState.PRNumber, "sha", ShortSHA(mainSHA), "attempts", effectiveCount)
+		return false
+	}
+
+	rerunCount := c.rerunInfraFailures(ctx, prState, checks)
+	if rerunCount == 0 {
+		// Fail-safe: couldn't resolve/rerun anything — fall through to the
+		// escalateAndHold fallback without charging the budget, since nothing
+		// was actually retried.
+		c.log.Warn("post-merge CI classified as infra outage but no jobs could be rerun, holding instead of spawning fix issue",
+			"pr", prState.PRNumber, "sha", ShortSHA(mainSHA))
+		return false
+	}
+
+	prState.PostMergeInfraRerunCount = effectiveCount + 1
+	prState.PostMergeInfraRerunSHA = mainSHA
+	c.metrics.RecordCIRun("infra_retry")
+	c.log.Warn("post-merge CI failure classified as infra outage, auto-retried failed jobs",
+		"pr", prState.PRNumber, "sha", ShortSHA(mainSHA),
+		"attempt", prState.PostMergeInfraRerunCount, "budget", maxInfraRerunBudget, "runs_rerun", rerunCount)
+	return true
+}
+
 // recordCIFailVerdict records the terminal CI-run verdict metric for a
 // non-retried failure (GH-4533, extended GH-4779): "fail" preserves the
 // pre-GH-4533 meaning for genuine code failures and any other non-infra
@@ -4063,14 +4121,44 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		postMergeClass := classifyPRFailure(postMergePerCheckLogs)
 		postMergeVerdict := newCIFailureVerdict(postMergeClass, postMergePerCheckLogs, c.repoKey())
 
+		iteration := 0
+		skipSpawn := false
+
+		// GH-4813: intercept an evidenced infra-class post-merge failure
+		// before any destructive rung below — the post-merge path had no
+		// analog of maybeRetryInfraFailure, so an infra-classified failure
+		// on the post-merge SHA (e.g. a runner 503 in the check logs) fell
+		// straight through to CreateFailureIssue further down: a junk
+		// code-fix issue for a failure that is GitHub's, not the repo's
+		// (the #4766/#4769/#4775 incident shape, surviving on this rung
+		// only). Unlike the pre-merge rung, a post-merge infra failure must
+		// NEVER reach CreateFailureIssue even once its own retry budget is
+		// exhausted — escalateAndHold instead (skipSpawn=true, falling
+		// through to the same ScopeKey/StageFailed handling the zero-
+		// evidence hold below uses), so a human sees it without burning an
+		// executor dispatch on a failure with nothing to fix.
+		if postMergeClass.IsInfra() {
+			if postMergeClass == FailureClassInfraBilling {
+				c.alertBillingRefusalOnce(postMergePerCheckLogs)
+			}
+			if c.maybeRetryPostMergeInfraFailure(ctx, prState, postMergePerCheckLogs, mainSHA) {
+				// A rerun was issued — stay at StagePostMergeCI and re-poll
+				// CheckCI next tick, mirroring maybeRetryInfraFailure's
+				// pre-merge return-nil-immediately contract.
+				return nil
+			}
+			comment := fmt.Sprintf("Post-merge CI reported failure classified as a CI infrastructure outage (not a code failure), but it could not be auto-retried — holding this PR for manual review instead of spawning a fix issue. %s",
+				ciFailedChecksSummary(failedChecks))
+			c.escalateAndHold(ctx, prState, "post-merge CI failure classified infra", []string{labelNeedsHuman}, comment)
+			skipSpawn = true
+		}
+
 		// GH-4312: port the pre-merge cascade/size guards (~:1502-1593) to the
 		// post-merge path. Post-merge failures normally start a new lineage
 		// (iteration 1), but when prState.IssueNumber is itself a spawned fix
 		// issue carrying a higher counter in its body, the depth cap must still
 		// apply; an oversized merged PR must not spawn yet another fix either way.
-		iteration := 0
-		skipSpawn := false
-		if prState.IssueNumber > 0 && c.config.MaxCIFixIterations > 0 {
+		if !skipSpawn && prState.IssueNumber > 0 && c.config.MaxCIFixIterations > 0 {
 			issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
 			if err != nil {
 				c.log.Warn("failed to fetch issue for post-merge iteration check", "issue", prState.IssueNumber, "error", err)
