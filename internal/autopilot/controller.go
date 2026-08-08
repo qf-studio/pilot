@@ -2435,6 +2435,15 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	failureClass := classifyPRFailure(perCheckLogs)
 	c.logCIFailureClassification(prState, perCheckLogs, failureClass)
 
+	// TASK-459 Phase 2: construct the evidence-carrying Verdict once, right
+	// at the classification boundary. Every destructive rung below (close on
+	// MaxCIFixIterations, fix-issue spawn) is now gated on
+	// verdict.AuthorizesDestructive() rather than comparing failureClass
+	// directly — failureClass itself stays in scope for metrics/logging and
+	// the platform-breaker correlation gate below, which are observational,
+	// not decision points this task migrates.
+	verdict := newCIFailureVerdict(failureClass, perCheckLogs, c.repoKey())
+
 	// GH-4791: record this observation for cross-PR platform-outage
 	// correlation before anything else — even PRs that end up auto-retried
 	// below (maybeRetryInfraFailure) or otherwise short-circuited still feed
@@ -2446,7 +2455,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	if failureClass == FailureClassInfraBilling {
 		c.alertBillingRefusalOnce(perCheckLogs)
 	}
-	infraNote, retried := c.maybeRetryInfraFailure(ctx, prState, perCheckLogs, failureClass)
+	infraNote, retried := c.maybeRetryInfraFailure(ctx, prState, perCheckLogs, verdict)
 	if retried {
 		return nil
 	}
@@ -2477,17 +2486,19 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 
 	// GH-4779 THE INVARIANT: a CIFailure aggregate with zero gathered
 	// evidence must never fall through to the destructive fix-issue/close
-	// path below. classifyPRFailure only returns FailureClassUnknown when
-	// perCheckLogs came back empty despite CI's own aggregate status already
-	// being CIFailure to reach handleCIFailed at all — the check-runs list
-	// API call itself failed, or no in-scope check run actually carried a
-	// CIFailure-mapped conclusion. maybeRetryInfraFailure above already gave
-	// this the same infra-rerun chance as a classified infra failure (its
-	// gate now also admits FailureClassUnknown); reaching here means that
-	// path found nothing to rerun (there is no job ID to resolve when there
-	// is no evidence), so hold for a human instead of closing a PR autopilot
-	// never actually looked at.
-	if failureClass == FailureClassUnknown {
+	// path below. TASK-459 Phase 2 now enforces this via
+	// verdict.AuthorizesDestructive() rather than a hand-written
+	// FailureClassUnknown comparison — verdict is Unknown/evidence-free
+	// exactly when perCheckLogs came back empty despite CI's own aggregate
+	// status already being CIFailure to reach handleCIFailed at all (the
+	// check-runs list API call itself failed, or no in-scope check run
+	// actually carried a CIFailure-mapped conclusion). maybeRetryInfraFailure
+	// above already gave this the same infra-rerun chance as a classified
+	// infra failure (its gate now also admits FailureClassUnknown); reaching
+	// here means that path found nothing to rerun (there is no job ID to
+	// resolve when there is no evidence), so hold for a human instead of
+	// closing a PR autopilot never actually looked at.
+	if !verdict.AuthorizesDestructive() {
 		failedChecks, err := c.ciMonitor.GetFailedChecks(ctx, prState.HeadSHA)
 		if err != nil {
 			c.log.Warn("failed to get failed checks for zero-evidence escalation", "pr", prState.PRNumber, "error", err)
@@ -2717,7 +2728,16 @@ const maxInfraRerunBudget = 2
 // rerunInfraFailures below has no job IDs to resolve and falls through with
 // retried=false — but it costs nothing to try, and it means a future signal
 // that lets Unknown carry partial evidence doesn't need this gate revisited.
-func (c *Controller) maybeRetryInfraFailure(ctx context.Context, prState *PRState, checks []FailedCheckLog, class FailureClass) (note string, retried bool) {
+//
+// TASK-459 Phase 2: takes verdict rather than a raw FailureClass — the gate
+// below reads verdict.Class(), which is hardened to read a zero-value
+// Verdict as Unknown (never a bare "" that could slip past the IsInfra()
+// check). This retry gate deliberately does not also require
+// verdict.AuthorizesDestructive(): retrying is the non-destructive rung, and
+// Unknown must still get the same rerun chance an evidenced infra
+// classification gets, per the GH-4779 note above.
+func (c *Controller) maybeRetryInfraFailure(ctx context.Context, prState *PRState, checks []FailedCheckLog, verdict Verdict) (note string, retried bool) {
+	class := verdict.Class()
 	if (!class.IsInfra() && class != FailureClassUnknown) || c.stepLogClient == nil {
 		return "", false
 	}
@@ -4033,6 +4053,16 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		// GH-4460: failing-step-tail excerpts, see the matching comment above.
 		ciLogs := c.ciMonitor.GetFailedCheckExcerpts(ctx, mainSHA)
 
+		// TASK-459 Phase 2: classify per-check evidence and construct a
+		// Verdict the same way handleCIFailed's pre-merge path does. Before
+		// this, the post-merge rung spawned a fix issue for ANY post-merge
+		// CIFailure with no classification at all — the same evidence-blind
+		// shape GH-4779 fixed pre-merge (family 3 of the irreversible-action
+		// inventory).
+		postMergePerCheckLogs := c.ciMonitor.GetFailedCheckLogsByCheck(ctx, mainSHA)
+		postMergeClass := classifyPRFailure(postMergePerCheckLogs)
+		postMergeVerdict := newCIFailureVerdict(postMergeClass, postMergePerCheckLogs, c.repoKey())
+
 		// GH-4312: port the pre-merge cascade/size guards (~:1502-1593) to the
 		// post-merge path. Post-merge failures normally start a new lineage
 		// (iteration 1), but when prState.IssueNumber is itself a spawned fix
@@ -4072,6 +4102,20 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 					skipSpawn = true
 				}
 			}
+		}
+
+		// TASK-459 Phase 2 (GH-4779 parity for the post-merge rung): zero
+		// gathered evidence must never authorize CreateFailureIssue here
+		// either — route to escalateAndHold instead, same as the pre-merge
+		// invariant, rather than spawning a fix issue nothing was actually
+		// classified against.
+		if !skipSpawn && !postMergeVerdict.AuthorizesDestructive() {
+			c.log.Warn("post-merge CI failure with zero gathered evidence, holding instead of spawning fix issue",
+				"pr", prState.PRNumber, "sha", ShortSHA(mainSHA))
+			comment := fmt.Sprintf("Post-merge CI reported failure, but no evidence could be gathered from any check run to classify it — holding this PR for manual review instead of spawning a fix issue blind. %s",
+				ciFailedChecksSummary(failedChecks))
+			c.escalateAndHold(ctx, prState, "post-merge CI failure with zero gathered evidence", []string{labelNeedsHuman}, comment)
+			skipSpawn = true
 		}
 
 		if !skipSpawn {

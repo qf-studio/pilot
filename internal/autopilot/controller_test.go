@@ -5589,6 +5589,98 @@ func TestHandlePostMergeCI_CIFailure_MarksStageFailedNotRemoved(t *testing.T) {
 	}
 }
 
+// TestHandlePostMergeCI_ZeroEvidence_EscalatesInsteadOfSpawning is the
+// TASK-459 Phase 2 regression test for the post-merge CI-failure
+// CreateFailureIssue rung (family 3 of the irreversible-action inventory,
+// controller.go ~:3977 at inventory time): the initial CheckCI status
+// determination sees a failing check (that's the only way this rung is
+// reached at all), but the classification re-fetch a moment later races
+// GitHub's own status propagation and comes back with zero check runs —
+// the exact GH-4779 shape, replayed for the post-merge path, which
+// previously had no classification step at all and would spawn a fix issue
+// for any post-merge CIFailure regardless of evidence.
+func TestHandlePostMergeCI_ZeroEvidence_EscalatesInsteadOfSpawning(t *testing.T) {
+	issueCreated := false
+	var labelsAdded []string
+	checkRunsCalls := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/zeroevidencepm1/check-runs":
+			checkRunsCalls++
+			if checkRunsCalls == 1 {
+				// First call — CheckCI's own status determination — sees a
+				// failing check, which is what routes into the CIFailure
+				// switch case at all.
+				resp := github.CheckRunsResponse{
+					TotalCount: 1,
+					CheckRuns: []github.CheckRun{
+						{Name: "ci", Status: "completed", Conclusion: "failure"},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(mustJSON(t, resp))
+				return
+			}
+			// Every subsequent call (GetFailedChecks / GetFailedCheckExcerpts
+			// / GetFailedCheckLogsByCheck) comes back with nothing — the
+			// zero-gathered-evidence race.
+			resp := github.CheckRunsResponse{TotalCount: 0, CheckRuns: []github.CheckRun{}}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 700}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		case strings.Contains(r.URL.Path, "/labels") && r.Method == http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			labelsAdded = append(labelsAdded, body["labels"]...)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:             124,
+		IssueNumber:          33,
+		Stage:                StagePostMergeCI,
+		PostMergeSHA:         "zeroevidencepm1",
+		PostMergeCIStartedAt: time.Now(),
+	}
+	c.mu.Lock()
+	c.activePRs[124] = prState
+	c.mu.Unlock()
+
+	if err := c.handlePostMergeCI(context.Background(), prState); err != nil {
+		t.Fatalf("handlePostMergeCI returned unexpected error: %v", err)
+	}
+
+	if issueCreated {
+		t.Error("no fix issue should be spawned when there is zero gathered evidence post-merge")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	found := false
+	for _, l := range labelsAdded {
+		if l == labelNeedsHuman {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pilot-needs-human label via escalateAndHold, got labels: %v", labelsAdded)
+	}
+}
+
 // TestHandlePostMergeCI_CIFailure_MaxCIFixIterationsGuard verifies GH-4312:
 // the pre-merge iteration-depth guard (controller.go handleCIFailed, ~:1502)
 // is ported to the post-merge path — when the merged PR's issue is itself a

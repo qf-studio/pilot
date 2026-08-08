@@ -1,6 +1,7 @@
 package autopilot
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -296,6 +297,54 @@ func classifyPRFailure(checks []FailedCheckLog) FailureClass {
 	return FailureClassInfra
 }
 
+// ciFailureVerdictEvidence names the concrete evidence backing a
+// classifyPRFailure result (TASK-459 Phase 2): the specific failed check(s)
+// and classification signal(s) that produced class, not a restatement of
+// class itself. Re-derives each check's own classification the same way
+// classifyPRFailure did, then keeps only the checks whose own IsInfra()
+// matches class's — for an infra-family aggregate that is every check (all
+// of them must be infra-family for classifyPRFailure to report infra at
+// all); for a code aggregate that is the specific check(s) that actually
+// tipped the verdict to code, which may coexist with other infra-classified
+// checks in the same run.
+//
+// Only meaningful when class != FailureClassUnknown; classifyPRFailure only
+// returns Unknown when checks is empty, in which case there is nothing here
+// to name (callers use NewUnknownVerdict directly instead of calling this).
+func ciFailureVerdictEvidence(checks []FailedCheckLog, class FailureClass) string {
+	var parts []string
+	for _, chk := range checks {
+		chkClass, signal := classifyCheckFailureFull(chk)
+		if chkClass.IsInfra() == class.IsInfra() {
+			parts = append(parts, fmt.Sprintf("%s:%s(%s)", chk.CheckName, chkClass, signal))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// newCIFailureVerdict constructs the TASK-459 Phase 2 Verdict for a
+// classifyPRFailure result. source is always "classifyPRFailure" — the
+// function that produced class — regardless of which per-check signal
+// tiers actually fired (those are named individually inside the Evidence()
+// string via ciFailureVerdictEvidence). scope is conventionally
+// Controller.repoKey().
+//
+// SHA binding: the returned Verdict does not carry the HeadSHA checks was
+// gathered against — only the evidence text names individual checks, not a
+// commit. This is a deliberate scope fence (TASK-459 Phase 2 decision
+// point): handleCIFailed always acts on this verdict within the same tick
+// it gathers checks, so there is no tick boundary for a stale-SHA verdict to
+// cross, and the gathering side is already guarded against stale check-run
+// evidence by #4790's check-run dedupe. Do not extend the shipped Verdict
+// contract with a SHA field unless a future call site is found to actually
+// carry a verdict across a tick boundary.
+func newCIFailureVerdict(class FailureClass, checks []FailedCheckLog, scope string) Verdict {
+	if class == FailureClassUnknown {
+		return NewUnknownVerdict("classifyPRFailure", scope)
+	}
+	return NewVerdict(class, ciFailureVerdictEvidence(checks, class), "classifyPRFailure", scope)
+}
+
 // Verdict is the typed, evidence-carrying result of a classification that
 // authorizes (or withholds) an irreversible or operator-costly autopilot
 // action — TASK-459 Phase 1. `.agent/system/irreversible-actions.md`
@@ -360,7 +409,21 @@ func NewUnknownVerdict(source, scope string) Verdict {
 // Class returns the verdict's failure classification. Callers gating a
 // destructive action must treat FailureClassUnknown as "do not act" —
 // never as a synonym for FailureClassCode.
-func (v Verdict) Class() FailureClass { return v.class }
+//
+// A zero-value Verdict (var v Verdict, or any Verdict{} composite literal
+// built outside this file's constructors) has an empty underlying class —
+// neither FailureClassUnknown nor a destructive class, since FailureClass is
+// just a string type. Class() maps that empty class to FailureClassUnknown
+// here so a zero-value Verdict always reads as "do not act", never as
+// "not-Unknown" (TASK-459 Phase 2, PR#4802 review finding 1: a gate written
+// as `class != FailureClassUnknown` would otherwise authorize a destructive
+// action on a zero-value Verdict, since "" != "unknown").
+func (v Verdict) Class() FailureClass {
+	if v.class == "" {
+		return FailureClassUnknown
+	}
+	return v.class
+}
 
 // Evidence returns the positive fact backing this verdict. Always empty for
 // FailureClassUnknown; always non-empty for every other class, guaranteed
@@ -377,3 +440,24 @@ func (v Verdict) Source() string { return v.source }
 // authorize an action within its own scope — evidence gathered for one
 // project's required_checks configuration says nothing about another's.
 func (v Verdict) Scope() string { return v.scope }
+
+// AuthorizesDestructive reports whether v carries enough positive evidence
+// to authorize an irreversible or operator-costly action — ClosePullRequest,
+// CreateFailureIssue, and their kin (TASK-459 Phase 2). This is the single
+// shared gate every destructive rung in the CI-failure path consumes;
+// Phase 4's grep gate (`scripts/check-destructive-calls.sh`) is meant to
+// require a call to this method (or a composite check equivalent to it)
+// next to every such call site, so it must stay the one seam.
+//
+// Deliberately checks both Evidence() and Class() rather than either alone
+// (PR#4802 review finding 1): Class() is hardened above to read a zero-value
+// Verdict as Unknown, but this method does not lean on that hardening as its
+// only line of defense — a gate written purely as `Class() !=
+// FailureClassUnknown` is the exact form that finding flagged as unsafe, so
+// this helper checks Evidence() explicitly too. Both checks are actually
+// redundant given the constructors' invariant (Evidence() != "" iff Class()
+// != FailureClassUnknown), but redundant-by-construction is the point:
+// either check alone failing keeps this false.
+func (v Verdict) AuthorizesDestructive() bool {
+	return v.Evidence() != "" && v.Class() != FailureClassUnknown
+}
