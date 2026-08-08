@@ -1,6 +1,6 @@
 # TASK-459: Irreversible-action audit — destructive sites require typed verdicts with positive evidence
 
-**Status**: 🚧 Phase 2 dispatched 2026-08-08 → [#4811](https://github.com/qf-studio/pilot/issues/4811) (`no-decompose`). Phase 1 ✅ (#4796 → PR#4802, post-merge reviewed 08-08: 4 findings, all folded into the Phase 2 spec — zero-value `Verdict{}` hazard is the load-bearing one). Phase 3 next after 2; Phase 5 still needs a scope call
+**Status**: 🚧 Phase 2 dispatched 2026-08-08 → [#4811](https://github.com/qf-studio/pilot/issues/4811) (`no-decompose`). Phase 1 ✅ (#4796 → PR#4802, post-merge reviewed 08-08: 4 findings, all folded into the Phase 2 spec — zero-value `Verdict{}` hazard is the load-bearing one). Phase 3 next after 2. Phase 5 RESOLVED 08-08: false-success class split out to [TASK-460](TASK-460-delivery-evidence-false-success.md) (founder scope call) — this task is 4 phases and done at Phase 4
 **Created**: 2026-08-07
 **Assignee**: Pilot (multi-leg; dispatch one leg at a time)
 
@@ -89,16 +89,16 @@ Legs are sized per the #4780 lesson (one subsystem + its tests per `no-decompose
 **Tasks**:
 - [ ] Shared table for "what counts as a failed check" consumed by both status mapping and evidence gathering; parity test fails on divergence (the #4790 fix generalized).
 - [ ] Second parity target (PR#4795 post-merge review, 2026-08-07): approval-channel vocabulary has **three** implementations — the unexported alias table in `internal/approval/channel.go`, `validApprovalSourceValues` in `internal/config/config.go`, and the `sourceRegistered` switch in `internal/health/health.go`. Export one table, consume it from all three, parity test. Fold in the one-line fix for explicit `approval_source: ""` project overlays: validation documents empty as "inherits env/global" but `NewController` copies the pointer verbatim → `PreferredChannel: ""` → `defaultChannelName` routes to telegram instead of the resolved source (add `!= ""` guard in the resolution block + test).
-- [ ] `scripts/check-destructive-calls.sh` + gate step: destructive APIs may only be called from gated helpers.
+- [ ] `scripts/check-destructive-calls.sh` + gate step: destructive APIs may only be called from gated helpers. Also ban composite-literal `Verdict{` construction outside `failure_class.go` (PR#4802 review finding 2 — unexported fields don't restrict intra-package construction).
 - [ ] SOP `.agent/sops/quality/irreversible-actions.md`.
+- [ ] TASK-460 hook: update the success-side inventory rows (`AutoMerger.MergePR`, `LabelDone`/`pilot-done` writes, epic parent close) with evidence labeled "green CI — decorative for the delivery claim" (scope decision 2026-08-08; TASK-460 inherits these rows).
 
 **Files**: `scripts/` · `Makefile` · `scripts/pre-push-gate.sh` · `.agent/sops/quality/`
 
-### Phase 5 (optional, scope decision required): false-success side
-**Goal**: Green CI is not proof the requested change shipped (`mem-151`).
+### Phase 5 — RESOLVED OUT (2026-08-08 founder scope call): false-success side → TASK-460
+**Decision**: delivery-evidence checks (diff touches the target surface; ACs fail-when-unwired) are a **separate track** — [`TASK-460-delivery-evidence-false-success.md`](TASK-460-delivery-evidence-false-success.md). Rationale: Phases 1–4 plumb *existing* evidence through one contract in one subsystem family; the false-success side must *generate new* evidence and its fixes land upstream (decomposer/spec-guard territory) — bolting it on violates the one-subsystem-per-leg sizing lesson (#4780).
 
-**Tasks**:
-- [ ] Decide whether delivery-evidence checks (diff touches the target surface; ACs observable) belong in this audit or a separate track.
+**Hook retained here**: Phase 4's inventory pass records the success-side sites (`AutoMerger.MergePR`, `LabelDone`/`pilot-done` writes, decomposed-epic parent close) with evidence labeled "green CI — decorative for the delivery claim", so TASK-460 inherits its inventory rows instead of re-deriving them.
 
 ---
 
@@ -120,6 +120,7 @@ Legs are sized per the #4780 lesson (one subsystem + its tests per `no-decompose
 | Enforcement mechanism | Type system only · grep CI check only · both | **Both** | Types stop honest mistakes; the grep gate stops new direct call sites — precedent: `check-mocks.sh` (TASK-441 L1) chose grep for exactly this reason |
 | Uncertainty representation | Boolean `hasEvidence` · `FailureClassUnknown` · confidence score | **`Unknown` class** (already shipped in #4787) | Extending a shipped vocabulary beats inventing a parallel one; scores invite threshold-tuning bikesheds |
 | Rollout | One big PR · phased legs | **Phased legs** | #4780 timed out twice at 1h as a single unit; one subsystem + tests per leg |
+| Phase 5 / false-success class | Phase 5 here · separate track · drop | **Separate track → TASK-460** (founder call 2026-08-08) | Phases 1–4 plumb existing evidence in the autopilot ladder; false-success needs new evidence generation upstream (decomposer/spec-guard). Phase 4 keeps the inventory hook so TASK-460 inherits its site rows |
 
 ---
 

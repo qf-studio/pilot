@@ -1495,12 +1495,26 @@
         "title": "Irreversible-action audit \u2014 destructive sites require typed verdicts with positive evidence",
         "status": "dispatched",
         "concepts": [
-          "context",
           "authentication",
-          "api",
-          "markers",
+          "theory of mind",
           "deployment",
-          "testing"
+          "api",
+          "testing",
+          "markers",
+          "context"
+        ]
+      },
+      "TASK-460": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-460-delivery-evidence-false-success.md",
+        "title": "Delivery-evidence audit \u2014 green CI is not proof the requested change shipped (false-success class)",
+        "status": "dispatched",
+        "concepts": [
+          "theory of mind",
+          "authentication",
+          "testing",
+          "deployment",
+          "knowledge",
+          "context"
         ]
       }
     },
@@ -6016,6 +6030,11 @@
       "from": "TASK-459",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-460",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6133,7 +6152,8 @@
       "TASK-450",
       "TASK-453",
       "TASK-454",
-      "TASK-455"
+      "TASK-455",
+      "TASK-460"
     ],
     "deployment": [
       "TASK-386",
@@ -6240,7 +6260,8 @@
       "TASK-456",
       "TASK-457",
       "TASK-458",
-      "TASK-459"
+      "TASK-459",
+      "TASK-460"
     ],
     "authentication": [
       "TASK-386",
@@ -6297,7 +6318,8 @@
       "TASK-450",
       "TASK-451",
       "TASK-452",
-      "TASK-459"
+      "TASK-459",
+      "TASK-460"
     ],
     "testing": [
       "TASK-386",
@@ -6402,7 +6424,8 @@
       "TASK-456",
       "TASK-457",
       "TASK-458",
-      "TASK-459"
+      "TASK-459",
+      "TASK-460"
     ],
     "api": [
       "TASK-386",
@@ -6571,7 +6594,8 @@
       "TASK-456",
       "TASK-457",
       "TASK-458",
-      "TASK-459"
+      "TASK-459",
+      "TASK-460"
     ],
     "markers": [
       "TASK-387",
@@ -6797,7 +6821,9 @@
       "TASK-443",
       "TASK-447",
       "TASK-453",
-      "TASK-454"
+      "TASK-454",
+      "TASK-460",
+      "TASK-459"
     ],
     "autopilot": [
       "mem-100",
@@ -7122,10 +7148,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-08T09:32:45.150406+00:00",
+  "last_updated": "2026-08-08T09:54:19.344108+00:00",
   "stats": {
-    "total_nodes": 378,
-    "total_edges": 317,
+    "total_nodes": 379,
+    "total_edges": 318,
     "memory_count": 217
   }
 }
