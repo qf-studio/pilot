@@ -7818,7 +7818,11 @@ func TestNotifyExternalClose_SkipsRetryReadyWhenDone(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
-					issue := github.Issue{Number: 10, State: "closed", Labels: tt.issueLabels}
+					// TASK-459 Phase 3 (GH-4817): State is deliberately "open"
+					// here — this test isolates the pilot-done label check
+					// from notifyExternalClose's separate closed-issue guard
+					// (covered by TestNotifyExternalClose_SkipsRetryReadyWhenIssueClosed).
+					issue := github.Issue{Number: 10, State: "open", Labels: tt.issueLabels}
 					w.WriteHeader(http.StatusOK)
 					_ = json.NewEncoder(w).Encode(issue)
 
@@ -7914,6 +7918,96 @@ func TestNotifyExternalClose_PostsCommentsEvenWhenIssueAlreadyDone(t *testing.T)
 	}
 	if !strings.Contains(issueCommentBody, "42") || !strings.Contains(issueCommentBody, "unit-tests") {
 		t.Errorf("issue comment should reference the closed PR and the failure reason, got: %s", issueCommentBody)
+	}
+}
+
+// TestNotifyExternalClose_SkipsRetryReadyWhenIssueClosed is the Task-5
+// regression test (TASK-459 Phase 3, GH-4817) for notifyExternalClose's new
+// closed-but-not-pilot-done guard: a positively-known-closed issue that
+// doesn't carry pilot-done (e.g. closed manually, or by an unrelated
+// automation) must not get pilot-retry-ready/TerminalLabel applied — the
+// label would strand there forever since the poller's candidate list
+// already excludes non-open issues. An open issue must still fall through
+// to the existing labeling behavior unchanged.
+func TestNotifyExternalClose_SkipsRetryReadyWhenIssueClosed(t *testing.T) {
+	tests := []struct {
+		name           string
+		issueState     string
+		wantRetryAdded bool
+	}{
+		{
+			name:           "issue closed (not pilot-done) - skip retry-ready label",
+			issueState:     "closed",
+			wantRetryAdded: false,
+		},
+		{
+			name:           "issue open - add retry-ready as before",
+			issueState:     "open",
+			wantRetryAdded: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var retryReadyAdded bool
+			var issueCommentPosted bool
+			var issueCommentBody string
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
+					issue := github.Issue{Number: 10, State: tt.issueState}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(issue)
+
+				case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+					var body struct {
+						Labels []string `json:"labels"`
+					}
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					for _, l := range body.Labels {
+						if l == github.LabelRetryReady {
+							retryReadyAdded = true
+						}
+					}
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[]"))
+
+				case r.URL.Path == "/repos/owner/repo/issues/10/comments" && r.Method == http.MethodPost:
+					issueCommentPosted = true
+					body, _ := io.ReadAll(r.Body)
+					issueCommentBody = string(body)
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]int{"id": 2})
+
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/labels/") && r.Method == http.MethodDelete:
+					w.WriteHeader(http.StatusOK)
+
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			prState := &PRState{PRNumber: 42, IssueNumber: 10}
+			c.notifyExternalClose(context.Background(), prState)
+
+			if retryReadyAdded != tt.wantRetryAdded {
+				t.Errorf("pilot-retry-ready added = %v, want %v", retryReadyAdded, tt.wantRetryAdded)
+			}
+			// A discarded PR must never be silent, even when the issue is
+			// closed and its labels are left alone.
+			if !issueCommentPosted {
+				t.Fatal("expected an issue comment regardless of whether the issue is open or closed")
+			}
+			if tt.issueState == "closed" && !strings.Contains(issueCommentBody, "already closed") {
+				t.Errorf("expected the closed-issue comment to explain labels were left unchanged, got: %s", issueCommentBody)
+			}
+		})
 	}
 }
 

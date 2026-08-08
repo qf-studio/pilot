@@ -1,6 +1,6 @@
 # Irreversible-action inventory (TASK-459 Phase 1)
 
-**Status**: Phase 2 of 5 landed. Phase 1 built the inventory + `Verdict`
+**Status**: Phase 3 of 5 landed. Phase 1 built the inventory + `Verdict`
 contract with no behaviour change. Phase 2 migrated the CI-failure path —
 `handleCIFailed`'s ladder (family 1's `MaxCIFixIterations` close, family 3's
 pre-merge `CreateFailureIssue`, family 8's zero-evidence `escalateAndHold`)
@@ -9,8 +9,16 @@ a *new* family-8 zero-evidence hold that didn't exist before Phase 2 — the
 post-merge path previously spawned a fix issue for any `CIFailure` with no
 classification at all) — to gate on `Verdict.AuthorizesDestructive()`
 instead of raw `FailureClass`/string/nil-check comparisons. Their rows below
-are marked `typed-verdict` accordingly. All other rows are still Phase
-1-only classification; Phase 3 covers executor/dispatcher/poller sites.
+are marked `typed-verdict` accordingly. Phase 3 (TASK-459 Phase 3, GH-4817)
+did two things: (a) made the recorded execution status authoritative over
+missing-artifact inference at four sites (`recoverStaleRunningTasks`,
+`recoverStaleQueuedTasks`, the GH-3053 GitLab demotion, and the CLI
+no-artifact check) via the new `IsDesignedNoArtifactOutcome` helper, and (b)
+gated five additive terminal/progress-label writes on the issue's recorded
+open/closed state, skipping the write (but not the informational comment,
+where one exists) when the issue is positively known closed, and failing
+open on any lookup error. Their rows below are updated in place rather than
+duplicated. Phase 4 remains: the `check-destructive-calls.sh` grep gate.
 
 **Purpose**: Every call site in the daemon that closes a PR, deletes a
 branch, spawns a fix issue, burns retry budget, writes a terminal label, or
@@ -106,11 +114,13 @@ branch/commits may also be deleted immediately after, see family 2)
 | `internal/autopilot/controller.go:5157-5165` (`closeAndReexecute`) | autopilot | cheap-reversible | Restores dispatch-ready labels after unresolved-conflict close (family 1) | Inherits family-1 evidence |
 | `internal/autopilot/controller.go:5204-5215` (`escalateAndHold`) | autopilot | cheap-reversible (label only) — but see family 8 for what it *prevents* | Adds `labelNeedsHuman` + caller labels; sets `Stage = StageFailed`; fires `EventTypeTaskFailed` alert (pages a human) | Inherits caller's evidence (see family 8 table) |
 | `internal/autopilot/controller.go:6641-6649` (external-merge twin of 3301-3308, via `checkExternalMergeOrClose`) | autopilot | cheap-reversible | `LabelDone` add, `LabelInProgress`/`LabelFailed` remove, `clearRetryLabels` | `raw-bool` — `PullRequest.Merged` field read directly, not inferred |
-| `internal/autopilot/controller.go:6930-6992` (`notifyExternalClose`) | autopilot | cheap-reversible (label), but gates family-7 ledger writes | Splits `pilot-superseded` vs `pilot-failed` on `prState.TerminalLabel == LabelSuperseded` | `raw-string` compare against a flag set upstream (by family-1's `closeConflictSourceIssueClosed`), not re-evidenced here |
+| `internal/autopilot/controller.go:7242` (`notifyExternalClose`) | autopilot | cheap-reversible (label), but gates family-7 ledger writes | Splits `pilot-superseded` vs `pilot-failed` on `prState.TerminalLabel == LabelSuperseded` | `raw-string` compare against a flag set upstream (by family-1's `closeConflictSourceIssueClosed`), not re-evidenced here. **TASK-459 Phase 3 (GH-4817)**: a new branch immediately after the done-label check now short-circuits to skip the `pilot-retry-ready`/`TerminalLabel` add when `issue.State == github.StateClosed` and the issue isn't already `pilot-done` (e.g. closed manually or by unrelated automation) — labeling would strand there forever since the poller excludes non-open issues from its candidate list. The informational comment (and `maybeCloseParentIssue`) still fire unconditionally; a `GetIssue` lookup error still falls through and labels as before (fail-open, unchanged). Evidence tag for the new branch: `raw-string` on `issue.State`, same tier as the existing check |
 | `internal/autopilot/controller.go:6863` | autopilot | cheap-reversible | Generic `RemoveLabel` in retry-label cleanup helper | — |
 | `internal/autopilot/controller.go:7077-7086` | autopilot | cheap-reversible | Generic terminal-label-application helper shared by multiple ladder rungs | Inherits caller's evidence |
-| `internal/executor/title_rejection.go:220` | executor | cheap-reversible | `pilot-failed`+`pilot-title-rejected` on 2nd consecutive same-title rejection | `raw-string` exact-hash match (family 4) |
-| `internal/executor/dispatcher.go:2019` (`surfaceStalledIssue`, via `escalateStalledTask`) | executor | cheap-reversible | `pilot-blocked` add, `pilot-failed`+`pilot-in-progress` remove | `counter` — raw drop-count threshold; idempotent via matching prior `Error` string |
+| `internal/executor/title_rejection.go:220` (`postTitleRejectionEscalation`) | executor | cheap-reversible | `pilot-failed`+`pilot-title-rejected` on 2nd consecutive same-title rejection | `raw-string` exact-hash match (family 4). **TASK-459 Phase 3 (GH-4817)**: now consults `fetchIssueState` first and skips the label add (comment still posted) when the issue is positively known closed; a lookup error fails open and labels as before |
+| `internal/executor/dispatcher.go:2036` (`surfaceStalledIssue`, via `escalateStalledTask`) | executor | cheap-reversible | `pilot-blocked` add, `pilot-failed`+`pilot-in-progress` remove | `counter` — raw drop-count threshold; idempotent via matching prior `Error` string. **TASK-459 Phase 3 (GH-4817)**: same `fetchIssueState` closed-issue skip/fail-open pattern as the title-rejection and coverage-gap sites, added at the top of `surfaceStalledIssue` |
+| `internal/executor/epic.go:711` (`handleSubIssueCoverageGap`) | executor | cheap-reversible | `pilot-needs-clarification` add on a sub-issue coverage gap (planned subtasks that failed to create) | `nil-check` — reached only when `gh issue create` failed for at least one planned subtask. **TASK-459 Phase 3 (GH-4817)**: new row — same `fetchIssueState` closed-issue skip/fail-open pattern; the coverage-gap comment itself (`ghIssueComment`) stays unconditional in all cases, only the label add is gated |
+| `cmd/pilot/handlers.go:835` (SDK-dispatch path, guarding the `notifyTaskStartedSDK` call at :839, GH-4687) | cmd/pilot CLI | cheap-reversible | `pilot-in-progress` add at dispatch start | `raw-string` compare against `issueState` (already fetched earlier in the same function for GH-4050). **TASK-459 Phase 3 (GH-4817)**: new row — skips the label add when `issueState == githubSDK.StateClosed` (a closed issue re-dispatched from a stale poll tick would otherwise get a label the poller's open-issues-only candidate list can never remove); empty/unfetched `issueState` fails open and labels as before |
 | `internal/adapters/github/notifier.go:34,75,81,86,122,127,147` | adapters/github | cheap-reversible | Baseline (non-autopilot) issue-lifecycle labels on the dispatch/execution-complete path | Execution result (success/fail), not CI-check-scoped |
 | `internal/adapters/github/cleanup.go:336,444,521` | adapters/github | cheap-reversible | Background sweep removing stale labels on closed issues (extended by #4800/GH-4794 to strip `pilot-retry-ready`) | Time/state-based sweep |
 | `cmd/pilot/commands.go:1462,1499,1502,1515,1525,1546` | cmd/pilot CLI | cheap-reversible | Operator-invoked `pilot task cancel`/label commands | N/A — manual, not autonomous-daemon-invoked; distinct category, out of scope for the daemon decision ladder proper |
@@ -129,10 +139,10 @@ branch/commits may also be deleted immediately after, see family 2)
 | `internal/memory/store.go:1407` `ReclassifyCompletionAsSuperseded` (GH-4701) | memory store | costly-reversible | Called from `controller.go:6961`, sibling branch when `TerminalLabel == LabelSuperseded` |
 | `internal/memory/store.go:1439` `TerminateNonTerminalExecution` | memory store | costly-reversible | Called from `controller.go:6986`, terminates a still-running row as `failed` when a close is observed before completion |
 | `internal/memory/store.go:1460` `TerminateNonTerminalExecutionAsSuperseded` | memory store | costly-reversible | Called from `controller.go:6984`, superseded sibling |
-| `internal/memory/store.go:2183` `UpdateExecutionStatus` | memory store | costly-reversible | Generic unconditional status writer; callers include `dispatcher.go:372` (boot-time orphan reap -> `stalled`) and `dispatcher.go:1936` (`escalateStalledTask` -> `stalled`, family 4/8) |
-| `internal/memory/store.go:2247` `UpdateExecutionStatusIfNotTerminal` | memory store | costly-reversible | CAS-guarded (race-safe) writer; callers `dispatcher.go:623,803,926`, `lifecycle.go:220,318,547` (`ExecutionLifecycle.Cancel`, the `pilot task cancel` CLI path, GH-4586 — refuses if already `running` or already terminal) |
+| `internal/memory/store.go:2183` `UpdateExecutionStatus` | memory store | costly-reversible | Generic unconditional status writer; callers include `dispatcher.go:403` (boot-time orphan reap -> `stalled`) and `dispatcher.go:1983` (`escalateStalledTask` -> `stalled`, family 4/8) |
+| `internal/memory/store.go:2247` `UpdateExecutionStatusIfNotTerminal` | memory store | costly-reversible | CAS-guarded (race-safe) writer; callers `dispatcher.go:661,850,973`, `lifecycle.go:220,318,547` (`ExecutionLifecycle.Cancel`, the `pilot task cancel` CLI path, GH-4586 — refuses if already `running` or already terminal). **TASK-459 Phase 3 (GH-4817)**: the `:661` (`recoverStaleRunningTasks`) and `:850` (`recoverStaleQueuedTasks`) callers now write `typed` statuses instead of inferring failure from the reap itself — `:661` writes `ExecStatusStalled` (a stale-but-claimed running row is liveness-loss, aligning with the boot-time `dispatcher.go:403` sibling that already wrote `stalled` for the same shape), `:850` writes `ExecStatusCanceled` (an orphaned queued row whose project was removed from config is an administrative termination, not a task-authored failure — also makes the row terminal-forever via `HasTerminalCompletion` so a re-added project can't resurrect it through `nextRetryGeneration`). Both replace a prior unconditional `failed` write |
 | `internal/memory/store.go:2320` `UpdateExecutionStatusByTaskID` | memory store | costly-reversible | Task-ID-keyed variant |
-| `internal/executor/dispatcher.go:79` `IsTerminalByDesignStatus` (GH-4794, #4800, landed same cycle as this inventory) | executor | N/A — this is the fix, not the hazard | Converts `handleIssueGeneric`'s classification from **`side-effect-inferred`** ("no PR produced" read as failure) to **`typed`** (consult the recorded ledger status vocabulary — `superseded`/`canceled` vs `failed` — directly). Consumed by `cmd/pilot/handlers.go:560,675,873`. This is the concrete instance of root pattern 2 from the TASK-459 brief, already fixed for this one site — the general case is what `Verdict.Scope`+evidence enforcement in later phases generalizes |
+| `internal/executor/dispatcher.go:79` `IsTerminalByDesignStatus` (GH-4794, #4800, landed same cycle as this inventory) | executor | N/A — this is the fix, not the hazard | Converts `handleIssueGeneric`'s classification from **`side-effect-inferred`** ("no PR produced" read as failure) to **`typed`** (consult the recorded ledger status vocabulary — `superseded`/`canceled` vs `failed` — directly). Consumed by `cmd/pilot/handlers.go:560,675,873`. This is the concrete instance of root pattern 2 from the TASK-459 brief, already fixed for this one site — the general case is what `Verdict.Scope`+evidence enforcement in later phases generalizes. **TASK-459 Phase 3 (GH-4817)**: extended by the new `IsDesignedNoArtifactOutcome` helper (`dispatcher.go`, immediately after `IsTerminalByDesignStatus`) — adds `no_op` to the vocabulary (`IsTerminalByDesignStatus` alone only covers `superseded`/`canceled`) and is consumed by two more side-effect-inferred sites this phase closed: the GH-3053 GitLab demotion (`cmd/pilot/handlers.go:581-591`, no longer flips `issueResult.Success = false` for a recorded `superseded`/`no_op`/terminal-by-design row) and the CLI no-artifact check (`cmd/pilot/commands.go:1523-1539`, same treatment) |
 
 ## 8. `escalateAndHold` and hold/escalation (semi-destructive: never closes/deletes/merges, but pages a human and parks the PR — operator-costly)
 
@@ -174,8 +184,32 @@ degenerate-construction path, so `Evidence()` is checked independently.
 `maybeRetryInfraFailure`'s infra-retry gate deliberately does *not* require
 `AuthorizesDestructive()` (retry is non-destructive and must keep admitting
 `FailureClassUnknown` per GH-4779) and `PlatformBreaker.Observe` remains
-upstream of and independent from this gate. Phase 3 does the same for
-families 4/6/7's executor/dispatcher/poller sites. Phase 4 adds
+upstream of and independent from this gate.
+
+**Phase 3 (landed, TASK-459, GH-4817)** closed the two remaining
+`side-effect-inferred` shapes the brief called out and generalized the
+family-7 `IsTerminalByDesignStatus` fix from a one-site patch into a
+reusable helper. Concretely: (1) `recoverStaleRunningTasks`/
+`recoverStaleQueuedTasks` (family 7, `dispatcher.go:661,850`) now write
+`typed` statuses (`stalled`/`canceled`) instead of an unconditional `failed`
+for a reap that observed no evidence of task-authored failure; (2) the new
+`IsDesignedNoArtifactOutcome` helper (`dispatcher.go`, next to
+`IsTerminalByDesignStatus`) is consulted before inferring failure from a
+missing artifact at two more sites — the GH-3053 GitLab demotion
+(`handlers.go:581-591`) and the CLI no-artifact check (`commands.go:1523-1539`);
+and (3) five additive label-write sites (family 2 table: `controller.go`'s
+`notifyExternalClose`, `title_rejection.go`, `dispatcher.go`'s
+`surfaceStalledIssue`, `epic.go`'s `handleSubIssueCoverageGap`, and
+`handlers.go`'s SDK-dispatch `pilot-in-progress` guard) now skip the label
+write — but never the informational comment, where one exists — when the
+target issue is positively known closed, via the shared `fetchIssueState`
+seam, and fail open (label as before) on any lookup error, per the GH-4656
+acceptance-#4 precedent that pipeline availability outranks the guard.
+`finish_tripwires.go`'s `checkWorktreePruned` (family 9-adjacent) was
+extended to exclude `IsTerminalByDesignStatus` rows, not just
+`ExecStatusDecomposed`, from the committed-but-no-PR tripwire, so a
+superseded/canceled row's abandoned worktree branch doesn't fire a false
+"work silently discarded" alert. Phase 4 adds
 `scripts/check-destructive-calls.sh` to keep new call sites from bypassing
 the contract. This document is not re-derived per phase — update the
 relevant row(s) in place as each site migrates.

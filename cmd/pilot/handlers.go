@@ -579,7 +579,12 @@ func handleGitlabIssueWithResult(ctx context.Context, cfg *config.Config, client
 			)
 		}
 	} else if hr.Result != nil && hr.Result.Success {
-		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
+		// TASK-459 Phase 3 (GH-4817): consult the recorded outcome/status
+		// before demoting — a no_op or terminal-by-design (superseded/
+		// canceled) row already explains the missing commit/PR; only an
+		// unexplained "claimed success, no artifacts" warrants the demotion.
+		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" &&
+			!executor.IsDesignedNoArtifactOutcome(hr.Result.Outcome) && !hr.IsTerminalByDesign() { // GH-3053
 			note := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\nDuration: %s\nBranch: %s\n\nNo commits or MR were created. The task may need clarification or manual intervention.",
 				hr.Result.Duration, branchName)
 			if _, err := client.AddIssueNote(ctx, issueIID, note); err != nil {
@@ -820,7 +825,18 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 			alerts.DefaultDeadManWindow,
 		)
 		labelTracker.RecordAttempt()
-		if err := notifyTaskStartedSDK(ctx, specClient, pilotLabel, repoOwner, repoName, issueNum, taskID); err != nil {
+		// TASK-459 Phase 3 (GH-4817): issueState was already fetched above
+		// (GH-4050) — consult it before applying pilot-in-progress so a
+		// closed issue (re-dispatched from a stale poll tick) doesn't get a
+		// label the poller's own open-issues-only candidate list will never
+		// let it remove. Empty issueState means the fetch above failed or
+		// wasn't attempted (fetchGithubIssueForSDKTask returned nil) — fail
+		// open and label as before.
+		if issueState == githubSDK.StateClosed {
+			logging.WithComponent("github").Info("Skipping pilot-in-progress label: issue already closed",
+				slog.String("task_id", taskID),
+				slog.Int("issue", issueNum))
+		} else if err := notifyTaskStartedSDK(ctx, specClient, pilotLabel, repoOwner, repoName, issueNum, taskID); err != nil {
 			labelTracker.RecordFailure(map[string]string{"repo": repoOwner + "/" + repoName})
 			logging.WithComponent("github").Warn("Failed to notify task started (SDK path)",
 				slog.String("task_id", taskID),

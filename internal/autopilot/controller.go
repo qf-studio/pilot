@@ -7347,6 +7347,22 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 			}
 			c.maybeCloseParentIssue(ctx, prState)
 			return
+		} else if issue.State == github.StateClosed {
+			// TASK-459 Phase 3 (GH-4817): the issue is closed but not
+			// pilot-done (e.g. closed manually, or by an unrelated
+			// automation) — labeling it pilot-retry-ready/TerminalLabel
+			// would strand the label forever, since the poller's
+			// candidate list already excludes non-open issues. Still post
+			// an informational comment so the discarded PR's fate isn't
+			// silent.
+			c.log.Info("skipping issue label on PR close: issue already closed",
+				"issue", prState.IssueNumber, "pr", prState.PRNumber)
+			issueComment += "\n\nThe issue is already closed, so its labels were left unchanged."
+			if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, issueComment); cerr != nil {
+				c.log.Warn("failed to comment on issue after PR close", "issue", prState.IssueNumber, "error", cerr)
+			}
+			c.maybeCloseParentIssue(ctx, prState)
+			return
 		}
 
 		// GH-3417: Skip pilot-retry-ready when a human recovery PR is already open

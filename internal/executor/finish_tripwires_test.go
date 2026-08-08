@@ -277,6 +277,31 @@ func TestCheckWorktreePruned(t *testing.T) {
 		}
 	})
 
+	// TASK-459 Phase 3 (GH-4817): superseded/canceled rows are terminal-by-
+	// design (IsTerminalByDesignStatus) — a stranded commit on an abandoned
+	// or operator-canceled branch is not "committed work silently
+	// discarded", so the tripwire must stay silent for these two statuses
+	// too, not just ExecStatusDecomposed.
+	t.Run("commits with no PR is fine for a superseded execution", func(t *testing.T) {
+		result := checkWorktreePruned(&memory.Execution{
+			ID: "exec-superseded", TaskID: "GH-8032", TaskCreatePR: true, CommitSHA: "deadbeef", PRUrl: "",
+			Status: string(ExecStatusSuperseded),
+		})
+		if result.violated {
+			t.Errorf("expected no violation for a superseded execution, got %+v", result)
+		}
+	})
+
+	t.Run("commits with no PR is fine for a canceled execution", func(t *testing.T) {
+		result := checkWorktreePruned(&memory.Execution{
+			ID: "exec-canceled", TaskID: "GH-8033", TaskCreatePR: true, CommitSHA: "deadbeef", PRUrl: "",
+			Status: string(ExecStatusCanceled),
+		})
+		if result.violated {
+			t.Errorf("expected no violation for a canceled execution, got %+v", result)
+		}
+	})
+
 	t.Run("commits with a PR present is fine", func(t *testing.T) {
 		result := checkWorktreePruned(&memory.Execution{
 			ID: "exec-shipped", TaskID: "GH-8041", TaskCreatePR: true, CommitSHA: "deadbeef",

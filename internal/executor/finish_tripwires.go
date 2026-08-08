@@ -255,7 +255,14 @@ func checkChildrenTerminal(store *memory.Store, row *memory.Execution) tripwireC
 //     requested one (TaskCreatePR) — the exact "committed work, no
 //     delivery" shape PR#3383 made loud instead of silently discarding.
 //     Skipped for ExecStatusDecomposed rows: a decomposed parent
-//     legitimately has no commit of its own to ship.
+//     legitimately has no commit of its own to ship. TASK-459 Phase 3
+//     (GH-4817): also skipped for superseded/canceled rows
+//     (IsTerminalByDesignStatus) — a superseded execution's commit lives on
+//     a worktree branch that was deliberately abandoned when the issue
+//     closed underneath it, and a canceled one was deliberately stopped by
+//     an operator; neither is "committed work silently discarded", so
+//     flagging them here would just be noise on top of an already-recorded,
+//     intentional terminal status.
 func checkWorktreePruned(row *memory.Execution) tripwireCheckResult {
 	if dirs, err := findOrphanedWorktreeDirs(row.TaskID); err == nil && len(dirs) > 0 {
 		return tripwireCheckResult{
@@ -265,7 +272,8 @@ func checkWorktreePruned(row *memory.Execution) tripwireCheckResult {
 		}
 	}
 
-	if row.TaskCreatePR && row.CommitSHA != "" && row.PRUrl == "" && row.Status != string(ExecStatusDecomposed) {
+	if row.TaskCreatePR && row.CommitSHA != "" && row.PRUrl == "" &&
+		row.Status != string(ExecStatusDecomposed) && !IsTerminalByDesignStatus(row.Status) {
 		return tripwireCheckResult{
 			violated: true,
 			reason: fmt.Sprintf("execution %s committed %s but produced no PR (task requested one)",

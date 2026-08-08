@@ -39,6 +39,100 @@ func setupTestStore(t *testing.T) (*memory.Store, func()) {
 	return store, cleanup
 }
 
+// TestIsDesignedNoArtifactOutcome covers the TASK-459 Phase 3 (GH-4817)
+// vocabulary consulted by the GH-3053 no-commit/no-PR demotion sites
+// (cmd/pilot/handlers.go, cmd/pilot/commands.go): a no_op or
+// terminal-by-design (superseded/canceled) outcome/status explains a
+// missing commit/PR by design, as opposed to a genuine unexplained
+// completion that still warrants a failure report.
+func TestIsDesignedNoArtifactOutcome(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome string
+		want    bool
+	}{
+		{"no_op is designed", string(ExecStatusNoOp), true},
+		{"superseded is designed", string(ExecStatusSuperseded), true},
+		{"canceled is designed", string(ExecStatusCanceled), true},
+		{"empty outcome is not designed", "", false},
+		{"completed is not designed", string(ExecStatusCompleted), false},
+		{"failed is not designed", string(ExecStatusFailed), false},
+		{"stalled is not designed", string(ExecStatusStalled), false},
+		{"declined is not designed", "declined", false},
+		{"arbitrary unknown string is not designed", "some_other_outcome", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsDesignedNoArtifactOutcome(tt.outcome); got != tt.want {
+				t.Errorf("IsDesignedNoArtifactOutcome(%q) = %v, want %v", tt.outcome, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSurfaceStalledIssue_GatedOnIssueOpenState is the Task-5 regression test
+// (TASK-459 Phase 3, GH-4817) for surfaceStalledIssue's new closed-issue
+// guard: a positively-known-closed issue must skip both the pilot-blocked
+// label and the explanatory comment (the poller already excludes non-open
+// issues from its candidate list, so the label would strand forever), while
+// an open issue or a state-lookup error must fall through to the pre-GH-4817
+// behavior unchanged (fail-open, per GH-4656 acceptance #4).
+func TestSurfaceStalledIssue_GatedOnIssueOpenState(t *testing.T) {
+	tests := []struct {
+		name          string
+		stateFn       func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error)
+		wantSkipLog   string
+		wantNoSkipLog bool
+	}{
+		{
+			name: "closed issue skips label/comment",
+			stateFn: func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error) {
+				return IssueState{Closed: true}, nil
+			},
+			wantSkipLog: "issue already closed, skipping pilot-blocked label/comment",
+		},
+		{
+			name: "open issue proceeds to label/comment (fail-open baseline)",
+			stateFn: func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error) {
+				return IssueState{Closed: false}, nil
+			},
+			wantNoSkipLog: true,
+		},
+		{
+			name: "state-lookup error fails open and proceeds",
+			stateFn: func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error) {
+				return IssueState{}, errors.New("boom: github api unreachable")
+			},
+			wantNoSkipLog: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubFetchIssueState(t, tt.stateFn)
+
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			dispatcher := NewDispatcher(store, NewRunner(), nil)
+			var buf bytes.Buffer
+			dispatcher.log = slog.New(slog.NewTextHandler(&buf, nil))
+
+			task := &Task{ID: "GH-9001", ProjectPath: "/project-stalled", SourceAdapter: "github"}
+			dispatcher.surfaceStalledIssue(task, "repick hard cap exceeded")
+
+			logOutput := buf.String()
+			if tt.wantSkipLog != "" && !strings.Contains(logOutput, tt.wantSkipLog) {
+				t.Errorf("expected log to contain %q, got: %s", tt.wantSkipLog, logOutput)
+			}
+			if tt.wantNoSkipLog && strings.Contains(logOutput, "skipping pilot-blocked label/comment") {
+				t.Errorf("expected surfaceStalledIssue to proceed (not skip), got: %s", logOutput)
+			}
+		})
+	}
+}
+
 func TestDispatcher_QueueTask(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -693,15 +787,16 @@ func TestDispatcher_RecoverStaleTasks(t *testing.T) {
 	}
 	defer dispatcher.Stop()
 
-	// Check that the task was marked failed (not re-queued — re-queuing without
-	// a worker just recreates the orphan).
+	// Check that the task was marked stalled (not re-queued — re-queuing
+	// without a worker just recreates the orphan; not failed — TASK-459 Phase
+	// 3 (GH-4817), liveness-loss is not evidence of failure).
 	updated, err := store.GetExecution("exec-recover")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
 
-	if updated.Status != "failed" {
-		t.Errorf("expected recovered task to have status 'failed', got '%s'", updated.Status)
+	if updated.Status != "stalled" {
+		t.Errorf("expected recovered task to have status 'stalled', got '%s'", updated.Status)
 	}
 }
 
@@ -802,24 +897,25 @@ func TestRecoverStaleTasks_QueuedAndRunning(t *testing.T) {
 
 	// The orphaned RUNNING task (crashed worker) is still reaped — unaffected
 	// by GH-3732, since recoverStaleRunningTasks runs before queue adoption
-	// creates any workers.
+	// creates any workers. TASK-459 Phase 3 (GH-4817): liveness-loss, not
+	// failure — written as 'stalled', not 'failed'.
 	exec, err := store.GetExecution("exec-stale-run")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status != "failed" {
-		t.Errorf("expected exec-stale-run to be 'failed', got '%s'", exec.Status)
+	if exec.Status != "stalled" {
+		t.Errorf("expected exec-stale-run to be 'stalled', got '%s'", exec.Status)
 	}
 
 	// GH-3732: the queued sibling must NOT be reaped as an orphan — its
 	// project gets re-adopted at Start, so a real worker should pick it up
-	// instead of the stale-queued reap wrongly failing it.
+	// instead of the stale-queued reap wrongly canceling it.
 	exec, err = store.GetExecution("exec-stale-q")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status == "failed" && exec.Error == "queued task orphaned by restart; project no longer configured" {
-		t.Errorf("expected exec-stale-q to be adopted, not reaped as an orphan (error=%q)", exec.Error)
+	if exec.Error == "queued task orphaned by restart; project no longer configured" {
+		t.Errorf("expected exec-stale-q to be adopted, not reaped as an orphan (status=%q, error=%q)", exec.Status, exec.Error)
 	}
 
 	status := dispatcher.GetWorkerStatus()
@@ -1003,11 +1099,12 @@ func TestRecoverStaleRunningTasks_HealsUsingRecordedBranchNotTaskID(t *testing.T
 	}
 }
 
-// TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR guards the negative
+// TestRecoverStaleRunningTasks_MarksStalledWhenNoMergedPR guards the negative
 // case: a genuinely orphaned running row (no live worker, no merged PR on its
-// branch) must still be marked "failed" — the GH-4092 healing path must not
-// swallow real orphans.
-func TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR(t *testing.T) {
+// branch) must still be marked "stalled" — the GH-4092 healing path must not
+// swallow real orphans, and TASK-459 Phase 3 (GH-4817) requires this
+// liveness-loss evidence to write 'stalled', not 'failed'.
+func TestRecoverStaleRunningTasks_MarksStalledWhenNoMergedPR(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1036,8 +1133,8 @@ func TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if got.Status != "failed" {
-		t.Errorf("expected genuinely orphaned running task to be marked 'failed', got %q", got.Status)
+	if got.Status != "stalled" {
+		t.Errorf("expected genuinely orphaned running task to be marked 'stalled', got %q", got.Status)
 	}
 }
 
@@ -1100,8 +1197,8 @@ func TestRecoverStaleRunningTasks_SkipsWhenOpenPRExists(t *testing.T) {
 // regression test for finding 1's TOCTOU: if the row's own worker completes
 // it for real in the gap between the reaper's evidence-gathering
 // (staleRunningMergedPRCheck's GitHub round trip here) and the reaper's final
-// "mark failed" write, that final write must be rejected instead of
-// silently stamping the completed row failed. The merged-PR-check override
+// "mark stalled" write, that final write must be rejected instead of
+// silently stamping the completed row stalled. The merged-PR-check override
 // below simulates the race by completing the row as a side effect, mirroring
 // a concurrent writer finishing the task mid-reap.
 func TestRecoverStaleRunningTasks_CASRejectsRaceWithCompletion(t *testing.T) {
@@ -1138,7 +1235,7 @@ func TestRecoverStaleRunningTasks_CASRejectsRaceWithCompletion(t *testing.T) {
 
 	resetCount := dispatcher.recoverStaleRunningTasks()
 	if resetCount != 0 {
-		t.Errorf("expected resetCount=0 — the CAS guard must reject the failed-write, got %d", resetCount)
+		t.Errorf("expected resetCount=0 — the CAS guard must reject the stalled-write, got %d", resetCount)
 	}
 
 	got, err := store.GetExecution("exec-race-run")
@@ -1152,7 +1249,7 @@ func TestRecoverStaleRunningTasks_CASRejectsRaceWithCompletion(t *testing.T) {
 		t.Errorf("expected pr_url from the racing completion to survive, got %q", got.PRUrl)
 	}
 
-	// The reaper must not have recorded a stale_running-failed audit event
+	// The reaper must not have recorded a stale_running-stalled audit event
 	// over the real completion — only evidence of the reap's own outcome
 	// (none, since the write was rejected) may exist.
 	events, err := store.ListExecutionEvents("exec-race-run")
@@ -1160,14 +1257,14 @@ func TestRecoverStaleRunningTasks_CASRejectsRaceWithCompletion(t *testing.T) {
 		t.Fatalf("ListExecutionEvents failed: %v", err)
 	}
 	for _, e := range events {
-		if e.Stage == memory.StageFailed {
-			t.Errorf("expected no stale_running-failed event over a racing completion, got %+v", e)
+		if e.Stage == memory.StageStalled {
+			t.Errorf("expected no stale_running-stalled event over a racing completion, got %+v", e)
 		}
 	}
 }
 
 // TestRecoverStaleRunningTasks_WritesExecutionEvent verifies GH-4101: marking
-// a stale running task failed also writes an execution_events row, closing
+// a stale running task stalled also writes an execution_events row, closing
 // the gap where a restart/orphan-driven terminal transition was invisible in
 // the audit trail (the root-causing gap in the 2026-07-08 GH-4050
 // duplicate-execution incident, where execution_events for 5ce9bc2c simply
@@ -1197,8 +1294,8 @@ func TestRecoverStaleRunningTasks_WritesExecutionEvent(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 execution event, got %d: %+v", len(events), events)
 	}
-	if events[0].Stage != memory.StageFailed {
-		t.Errorf("expected stage %q, got %q", memory.StageFailed, events[0].Stage)
+	if events[0].Stage != memory.StageStalled {
+		t.Errorf("expected stage %q, got %q", memory.StageStalled, events[0].Stage)
 	}
 	if !strings.Contains(events[0].Detail, "stale_running recovered after restart") {
 		t.Errorf("expected detail to explain the stale_running recovery reason, got %q", events[0].Detail)
@@ -1281,8 +1378,8 @@ func TestRecoverStaleRunningTasks_FateReconstructableFromEventsAlone(t *testing.
 		t.Fatal("execution_events timeline is empty — fate is unrecoverable from events alone (the GH-4050 gap)")
 	}
 	last := events[len(events)-1]
-	if last.Stage != memory.StageFailed {
-		t.Fatalf("reconstructed fate from events: last stage = %q, want %q (terminal failure)", last.Stage, memory.StageFailed)
+	if last.Stage != memory.StageStalled {
+		t.Fatalf("reconstructed fate from events: last stage = %q, want %q (liveness-loss, not failure — TASK-459 Phase 3/GH-4817)", last.Stage, memory.StageStalled)
 	}
 	if !strings.Contains(last.Detail, "recovered after restart") {
 		t.Errorf("reconstructed fate from events: detail %q does not explain the restart-driven recovery", last.Detail)
@@ -2376,8 +2473,8 @@ func TestRecoverStaleRunningTasks_DecomposedParentGuard(t *testing.T) {
 		wantStatus    string // checked only when !wantDeleted
 	}{
 		{name: "all children completed guard fires", childStatuses: []string{"completed", "completed"}, wantDeleted: true},
-		{name: "one child incomplete falls through to failed", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "failed"},
-		{name: "no completed rows falls through to failed", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "failed"},
+		{name: "one child incomplete falls through to stalled", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "stalled"},
+		{name: "no completed rows falls through to stalled", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "stalled"},
 	}
 
 	for _, tc := range tests {
@@ -2447,8 +2544,8 @@ func TestRecoverStaleQueuedTasks_DecomposedParentGuard(t *testing.T) {
 		wantStatus    string
 	}{
 		{name: "all children completed guard fires", childStatuses: []string{"completed", "completed"}, wantDeleted: true},
-		{name: "one child incomplete falls through to failed", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "failed"},
-		{name: "no completed rows falls through to failed", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "failed"},
+		{name: "one child incomplete falls through to canceled", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "canceled"},
+		{name: "no completed rows falls through to canceled", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "canceled"},
 	}
 
 	for _, tc := range tests {
@@ -2668,8 +2765,8 @@ func TestRunStaleRecoveryLoop_Periodic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if updated.Status != "failed" {
-		t.Errorf("expected periodic recovery to mark task 'failed', got '%s'", updated.Status)
+	if updated.Status != "stalled" {
+		t.Errorf("expected periodic recovery to mark task 'stalled', got '%s'", updated.Status)
 	}
 }
 
@@ -2720,7 +2817,7 @@ func TestRecoverStaleTasks_DeletesOrphanWhenCompleted(t *testing.T) {
 	}
 }
 
-func TestRecoverStaleTasks_MarksFailedWhenNoCompleted(t *testing.T) {
+func TestRecoverStaleTasks_MarksNonTerminalWhenNoCompleted(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -2749,13 +2846,14 @@ func TestRecoverStaleTasks_MarksFailedWhenNoCompleted(t *testing.T) {
 	defer dispatcher.Stop()
 
 	// The running orphan has no worker (recoverStaleRunningTasks runs before
-	// adoption) and no completed sibling, so it's genuinely reaped.
+	// adoption) and no completed sibling, so it's genuinely reaped — as
+	// 'stalled' (liveness-loss, not failure; TASK-459 Phase 3/GH-4817).
 	exec, err := store.GetExecution("exec-only-run")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status != "failed" {
-		t.Errorf("expected exec-only-run to be 'failed', got '%s'", exec.Status)
+	if exec.Status != "stalled" {
+		t.Errorf("expected exec-only-run to be 'stalled', got '%s'", exec.Status)
 	}
 
 	// GH-3732: the queued task's project gets re-adopted at Start, so it must
@@ -2767,8 +2865,8 @@ func TestRecoverStaleTasks_MarksFailedWhenNoCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status == "failed" && exec.Error == "queued task orphaned by restart; project no longer configured" {
-		t.Errorf("expected exec-only-q to be adopted, not reaped as an orphan (error=%q)", exec.Error)
+	if exec.Error == "queued task orphaned by restart; project no longer configured" {
+		t.Errorf("expected exec-only-q to be adopted, not reaped as an orphan (status=%q, error=%q)", exec.Status, exec.Error)
 	}
 }
 
@@ -2777,7 +2875,7 @@ func TestRecoverStaleTasks_DifferentProjectPath(t *testing.T) {
 	defer cleanup()
 
 	// Scenario: completed execution exists for a DIFFERENT project path.
-	// The orphan should still be marked failed (HasCompletedExecution checks both fields).
+	// The orphan should still be marked stalled (HasCompletedExecution checks both fields).
 	executions := []*memory.Execution{
 		{ID: "exec-diff-completed", TaskID: "TASK-DIFF", ProjectPath: "/project-a", Status: "completed"},
 		{ID: "exec-diff-orphan", TaskID: "TASK-DIFF", ProjectPath: "/project-b", Status: "running"},
@@ -2801,13 +2899,13 @@ func TestRecoverStaleTasks_DifferentProjectPath(t *testing.T) {
 	}
 	defer dispatcher.Stop()
 
-	// Different project path → no match → should be marked failed, not deleted.
+	// Different project path → no match → should be marked stalled, not deleted.
 	exec, err := store.GetExecution("exec-diff-orphan")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status != "failed" {
-		t.Errorf("expected orphan with different project to be 'failed', got '%s'", exec.Status)
+	if exec.Status != "stalled" {
+		t.Errorf("expected orphan with different project to be 'stalled', got '%s'", exec.Status)
 	}
 }
 
@@ -5041,7 +5139,7 @@ func TestRecoverStaleQueuedTasks_MessageAccuracy(t *testing.T) {
 		{
 			name:          "genuine orphan gets reworded message",
 			injectWorker:  false,
-			wantStatus:    "failed",
+			wantStatus:    "canceled",
 			wantErrSubstr: "queued task orphaned by restart; project no longer configured",
 		},
 		{
@@ -5089,7 +5187,7 @@ func TestRecoverStaleQueuedTasks_MessageAccuracy(t *testing.T) {
 }
 
 // TestRecoverStaleQueuedTasks_WritesExecutionEvent verifies GH-4101: marking
-// an orphaned queued task failed also writes an execution_events row, so its
+// an orphaned queued task canceled also writes an execution_events row, so its
 // terminal transition is visible in the audit trail instead of the event
 // stream simply stopping.
 func TestRecoverStaleQueuedTasks_WritesExecutionEvent(t *testing.T) {
@@ -5113,8 +5211,8 @@ func TestRecoverStaleQueuedTasks_WritesExecutionEvent(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 execution event, got %d: %+v", len(events), events)
 	}
-	if events[0].Stage != memory.StageFailed {
-		t.Errorf("expected stage %q, got %q", memory.StageFailed, events[0].Stage)
+	if events[0].Stage != memory.StageCanceled {
+		t.Errorf("expected stage %q, got %q", memory.StageCanceled, events[0].Stage)
 	}
 	if !strings.Contains(events[0].Detail, "stale_queued recovered after restart") {
 		t.Errorf("expected detail to explain the stale_queued recovery reason, got %q", events[0].Detail)

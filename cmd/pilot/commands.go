@@ -1520,7 +1520,12 @@ Examples:
 			// GH-3053: skip for epic-parent results. The parent legitimately
 			// produces no commit/PR when sub-issues handle the work; flagging
 			// it as failed mislabels the issue and posts a misleading comment.
-			if !result.IsEpic && result.CommitSHA == "" && result.PRUrl == "" {
+			// TASK-459 Phase 3 (GH-4817): also skip when the recorded outcome
+			// already explains the absence (no_op/superseded/canceled) —
+			// this triple condition previously ignored result.Outcome
+			// entirely, so a designed no_op reached the same pilot-failed
+			// label + error as a genuinely unexplained empty result.
+			if !result.IsEpic && result.CommitSHA == "" && result.PRUrl == "" && !executor.IsDesignedNoArtifactOutcome(result.Outcome) {
 				// No commits and no PR - mark as failed
 				if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-failed"}); err != nil {
 					logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)

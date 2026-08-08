@@ -1,7 +1,10 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,6 +109,88 @@ func TestBuildTitleRejectionComment_ContainsKeyElements(t *testing.T) {
 		if !strings.Contains(comment, m) {
 			t.Errorf("comment missing %q\n---\n%s", m, comment)
 		}
+	}
+}
+
+// TestPostTitleRejectionEscalation_GatedOnIssueOpenState is the Task-5
+// regression test (TASK-459 Phase 3, GH-4817) for
+// postTitleRejectionEscalation's closed-issue guard: a positively-known-
+// closed issue must skip the pilot-failed/pilot-title-rejected labels (the
+// poller already excludes non-open issues from its candidate list, so the
+// labels would strand there forever with no way for the re-dispatch
+// instructions in the comment to ever fire), while an open issue or a
+// state-lookup error must fall through to the pre-GH-4817 behavior
+// unchanged (fail-open, per GH-4656 acceptance #4). The escalation comment
+// itself stays unconditional in all three cases.
+func TestPostTitleRejectionEscalation_GatedOnIssueOpenState(t *testing.T) {
+	tests := []struct {
+		name          string
+		stateFn       func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error)
+		wantLabelCall bool
+		wantSkipLog   string
+	}{
+		{
+			name: "closed issue skips pilot-failed/pilot-title-rejected labels",
+			stateFn: func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error) {
+				return IssueState{Closed: true}, nil
+			},
+			wantLabelCall: false,
+			wantSkipLog:   "title-rejection: issue already closed, skipping pilot-failed/pilot-title-rejected labels",
+		},
+		{
+			name: "open issue gets labeled (fail-open baseline)",
+			stateFn: func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error) {
+				return IssueState{Closed: false}, nil
+			},
+			wantLabelCall: true,
+		},
+		{
+			name: "state-lookup error fails open and labels as before",
+			stateFn: func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error) {
+				return IssueState{}, errors.New("boom: github api unreachable")
+			},
+			wantLabelCall: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubFetchIssueState(t, tt.stateFn)
+
+			fakeBin := t.TempDir()
+			logFile := filepath.Join(t.TempDir(), "gh-calls.log")
+			script := filepath.Join(fakeBin, "gh")
+			content := "#!/bin/sh\n" + `echo "$@" >> "` + logFile + `"` + "\nexit 0\n"
+			if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+				t.Fatalf("write fake gh: %v", err)
+			}
+			t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+			var logBuf bytes.Buffer
+			runner := NewRunner()
+			runner.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+			task := &Task{ID: "GH-9301", ProjectPath: t.TempDir(), Title: "add stuff"}
+
+			if err := runner.postTitleRejectionEscalation(context.Background(), task); err != nil {
+				t.Fatalf("postTitleRejectionEscalation returned unexpected error: %v", err)
+			}
+
+			ghCalls, _ := os.ReadFile(logFile)
+			ghCallsStr := string(ghCalls)
+			sawLabelCall := strings.Contains(ghCallsStr, "issue edit") &&
+				strings.Contains(ghCallsStr, "--add-label pilot-failed") &&
+				strings.Contains(ghCallsStr, "--add-label pilot-title-rejected")
+			if sawLabelCall != tt.wantLabelCall {
+				t.Errorf("pilot-failed/pilot-title-rejected label call: got %v, want %v; gh calls:\n%s", sawLabelCall, tt.wantLabelCall, ghCallsStr)
+			}
+			if !strings.Contains(ghCallsStr, "issue comment") {
+				t.Errorf("expected the escalation comment to still be posted unconditionally, gh calls:\n%s", ghCallsStr)
+			}
+			if tt.wantSkipLog != "" && !strings.Contains(logBuf.String(), tt.wantSkipLog) {
+				t.Errorf("expected log to contain %q, got: %s", tt.wantSkipLog, logBuf.String())
+			}
+		})
 	}
 }
 

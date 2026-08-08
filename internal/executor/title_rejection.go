@@ -216,6 +216,20 @@ func (r *Runner) postTitleRejectionEscalation(ctx context.Context, task *Task) e
 	if err := ghIssueComment(ctx, task.ProjectPath, issueNum, comment); err != nil {
 		return fmt.Errorf("post comment: %w", err)
 	}
+	// TASK-459 Phase 3 (GH-4817): a closed issue must not get pilot-failed/
+	// pilot-title-rejected applied — the GitHub poller already excludes
+	// non-open issues from its candidate list, so the label would strand
+	// there forever with no way for the re-dispatch instructions in the
+	// comment above to ever fire. A state-lookup error fails open (labels
+	// as before), per GH-4656 acceptance #4.
+	if state, err := fetchIssueState(ctx, r, task, task.ProjectPath); err != nil {
+		r.log.Warn("title-rejection: failed to check issue state; proceeding (fail-open)",
+			"task_id", task.ID, "issue", issueNum, "error", err)
+	} else if state.Closed {
+		r.log.Info("title-rejection: issue already closed, skipping pilot-failed/pilot-title-rejected labels",
+			"task_id", task.ID, "issue", issueNum)
+		return nil
+	}
 	// Both labels are best-effort; log but don't fail.
 	if err := ghAddLabels(ctx, task.ProjectPath, issueNum, []string{"pilot-failed", "pilot-title-rejected"}); err != nil {
 		r.log.Warn("title-rejection: failed to add labels",

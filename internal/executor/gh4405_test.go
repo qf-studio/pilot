@@ -1,7 +1,10 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,6 +102,86 @@ exit 0
 	}
 	if !sawComment {
 		t.Error("expected a `gh issue comment` call posting the coverage-gap comment")
+	}
+}
+
+// TestHandleSubIssueCoverageGap_GatedOnIssueOpenState is the Task-5
+// regression test (TASK-459 Phase 3, GH-4817) for handleSubIssueCoverageGap's
+// closed-parent guard: a positively-known-closed parent must skip the
+// pilot-needs-clarification label (the poller already excludes non-open
+// issues from its candidate list, so the label would strand there forever),
+// while an open parent or a state-lookup error must fall through to the
+// pre-GH-4817 behavior unchanged (fail-open, per GH-4656 acceptance #4). The
+// coverage-gap comment itself stays unconditional in all three cases.
+func TestHandleSubIssueCoverageGap_GatedOnIssueOpenState(t *testing.T) {
+	tests := []struct {
+		name          string
+		stateFn       func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error)
+		wantLabelCall bool
+		wantSkipLog   string
+	}{
+		{
+			name: "closed parent skips pilot-needs-clarification label",
+			stateFn: func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error) {
+				return IssueState{Closed: true}, nil
+			},
+			wantLabelCall: false,
+			wantSkipLog:   "coverage-gap: parent issue already closed, skipping pilot-needs-clarification label",
+		},
+		{
+			name: "open parent gets labeled (fail-open baseline)",
+			stateFn: func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error) {
+				return IssueState{Closed: false}, nil
+			},
+			wantLabelCall: true,
+		},
+		{
+			name: "state-lookup error fails open and labels as before",
+			stateFn: func(ctx context.Context, runner *Runner, task *Task, projectPath string) (IssueState, error) {
+				return IssueState{}, errors.New("boom: github api unreachable")
+			},
+			wantLabelCall: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubFetchIssueState(t, tt.stateFn)
+
+			fakeBin := t.TempDir()
+			logFile := filepath.Join(t.TempDir(), "gh-calls.log")
+			script := filepath.Join(fakeBin, "gh")
+			content := "#!/bin/sh\n" + `echo "$@" >> "` + logFile + `"` + "\nexit 0\n"
+			if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+				t.Fatalf("write fake gh: %v", err)
+			}
+			t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+			var logBuf bytes.Buffer
+			runner := NewRunner()
+			runner.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+			parent := &Task{ID: "GH-9201", ProjectPath: t.TempDir()}
+			plan := &EpicPlan{ParentTask: parent, Subtasks: gh4300TwoSubtasks()}
+
+			runner.handleSubIssueCoverageGap(context.Background(), plan, nil, parent.ProjectPath, errors.New("creation failed"))
+
+			ghCalls, _ := os.ReadFile(logFile)
+			ghCallsStr := string(ghCalls)
+			// Match the actual `gh issue edit ... --add-label pilot-needs-clarification`
+			// call, not the label's mention inside the (always-posted)
+			// coverage-gap comment body.
+			sawLabelCall := strings.Contains(ghCallsStr, "issue edit") && strings.Contains(ghCallsStr, "--add-label pilot-needs-clarification")
+			if sawLabelCall != tt.wantLabelCall {
+				t.Errorf("pilot-needs-clarification label call: got %v, want %v; gh calls:\n%s", sawLabelCall, tt.wantLabelCall, ghCallsStr)
+			}
+			if !strings.Contains(ghCallsStr, "issue comment") {
+				t.Errorf("expected the coverage-gap comment to still be posted unconditionally, gh calls:\n%s", ghCallsStr)
+			}
+			if tt.wantSkipLog != "" && !strings.Contains(logBuf.String(), tt.wantSkipLog) {
+				t.Errorf("expected log to contain %q, got: %s", tt.wantSkipLog, logBuf.String())
+			}
+		})
 	}
 }
 
