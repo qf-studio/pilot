@@ -1495,12 +1495,12 @@
         "title": "Irreversible-action audit \u2014 destructive sites require typed verdicts with positive evidence",
         "status": "dispatched",
         "concepts": [
-          "api",
-          "testing",
           "context",
           "authentication",
+          "api",
+          "markers",
           "deployment",
-          "markers"
+          "testing"
         ]
       }
     },
@@ -7122,7 +7122,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-08T08:46:14.298498+00:00",
+  "last_updated": "2026-08-08T09:32:45.150406+00:00",
   "stats": {
     "total_nodes": 378,
     "total_edges": 317,

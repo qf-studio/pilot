@@ -1,6 +1,6 @@
 # TASK-459: Irreversible-action audit — destructive sites require typed verdicts with positive evidence
 
-**Status**: ✅ Phase 1 complete 2026-08-07 → [#4796](https://github.com/qf-studio/pilot/issues/4796) (`no-decompose`): inventory + `Verdict` contract landed, no behaviour changed. Phases 2–4 unblocked; Phase 5 still needs a scope call
+**Status**: 🚧 Phase 2 dispatched 2026-08-08 → [#4811](https://github.com/qf-studio/pilot/issues/4811) (`no-decompose`). Phase 1 ✅ (#4796 → PR#4802, post-merge reviewed 08-08: 4 findings, all folded into the Phase 2 spec — zero-value `Verdict{}` hazard is the load-bearing one). Phase 3 next after 2; Phase 5 still needs a scope call
 **Created**: 2026-08-07
 **Assignee**: Pilot (multi-leg; dispatch one leg at a time)
 
@@ -147,7 +147,8 @@ make gate
 
 ## Refs
 
-- Phase 1 issue: https://github.com/qf-studio/pilot/issues/4796 (dispatched 2026-08-07)
+- Phase 1 issue: https://github.com/qf-studio/pilot/issues/4796 (dispatched 2026-08-07) → PR#4802 (merged; post-merge review in PR comments, 2026-08-08)
+- Phase 2 issue: https://github.com/qf-studio/pilot/issues/4811 (dispatched 2026-08-08)
 - Incident: 2026-08-06 GitHub Actions outage (~9.5h) and 08-07 recovery — marker `2026-08-06_outage-pause-approval-wave-dispatched.md`
 - Instances already fixed/in flight: #4787 (structural classification + `Unknown`), #4790 (check-run dedupe), #4791/#4792 (breaker), #4794 (superseded ≠ failed)
 - Prior art: `.agent/tasks/archive/TASK-418-ci-infra-failure-classification.md`, `.agent/tasks/archive/TASK-421-repick-counter-counts-non-failures.md`, `.agent/tasks/archive/TASK-441-contract-hardening-tune-up.md` (grep-gate precedent)
@@ -159,6 +160,8 @@ make gate
 
 Dispatch order: Phase 1 first (its inventory is the input to everything else), then Phase 2, then 3, then 4. Phase 5 needs a scope call before it is written up.
 
+**Phase 2 dispatched** (2026-08-08, #4811): scope per the inventory's "How Phase 2+ consumes this" — pre-merge `handleCIFailed` ladder + post-merge CI-failure rung. Folds in the PR#4802 post-merge review findings: (1) zero-value `Verdict{}` hazard — `Class()` hardening + positive-evidence gate via one shared helper, never `!= Unknown`; (2) composite-literal construction ban deferred to Phase 4's grep; (3) SHA binding left as an in-PR decision point, biased to same-tick constraint over contract change; (4) migrated inventory rows get refreshed line refs. `SetApprovalDecision`/`handleReleasing` tracing stays Phase 3.
+
 **Phase 1 complete** (2026-08-07, #4796): `.agent/system/irreversible-actions.md` inventories 9 site families (`ClosePullRequest`, branch delete, `CreateFailureIssue`, retry/repick counters, terminal labels, merge, ledger cancel/supersede writes, `escalateAndHold`, plus cross-cutting findings) with file:line, reversibility tier, blast radius, evidence shape, and `required_checks` authoritative/decorative status per site. `Verdict` (`internal/autopilot/failure_class.go`) extends the existing `FailureClass` vocabulary rather than a new package — unexported fields, `NewVerdict`/`NewUnknownVerdict` constructors, evidence-free construction always downgrades to `FailureClassUnknown` regardless of requested class. Table-driven tests cover the downgrade rule for every destructive class, evidence retention, and scope/source round-tripping. No call site migrated; no behaviour changed — `make build`/`make test`/`make lint` all green. Two inventory items flagged as not fully traced in this pass for Phase 2/3 pickup: `SetApprovalDecision`'s CAS arbitration mechanics, and the `handleReleasing` release-pipeline retry/escalation ladder (controller.go ~4196-4615).
 
-**Last Updated**: 2026-08-07
+**Last Updated**: 2026-08-08
