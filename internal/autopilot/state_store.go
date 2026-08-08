@@ -200,6 +200,13 @@ func (s *StateStore) migrate() error {
 		// naming a check that will never post) get parked instead of
 		// retrying forever.
 		`ALTER TABLE autopilot_scope_release ADD COLUMN timeout_attempts INTEGER NOT NULL DEFAULT 0`,
+		// GH-4813: persist the post-merge infra-outage auto-retry budget,
+		// mirroring infra_rerun_count/infra_rerun_sha above but scoped to the
+		// post-merge mainSHA rather than the PR's HeadSHA — a daemon restart
+		// between a post-merge rerun and the next CI verdict must not silently
+		// grant a fresh 2-retry budget on the same SHA.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_infra_rerun_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_infra_rerun_sha TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, m := range migrations {
@@ -463,6 +470,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			readopt_count INTEGER NOT NULL DEFAULT 0,
 			breaker_hold_active INTEGER NOT NULL DEFAULT 0,
 			breaker_readopt_count INTEGER NOT NULL DEFAULT 0,
+			post_merge_infra_rerun_count INTEGER NOT NULL DEFAULT 0,
+			post_merge_infra_rerun_sha TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -478,7 +487,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
 			parked, escalation_reason, rebase_hold_active, readopt_count,
-			breaker_hold_active, breaker_readopt_count
+			breaker_hold_active, breaker_readopt_count,
+			post_merge_infra_rerun_count, post_merge_infra_rerun_sha
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -489,7 +499,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
 			parked, escalation_reason, rebase_hold_active, readopt_count,
-			breaker_hold_active, breaker_readopt_count
+			breaker_hold_active, breaker_readopt_count,
+			post_merge_infra_rerun_count, post_merge_infra_rerun_sha
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -635,8 +646,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
 			parked, escalation_reason, rebase_hold_active, readopt_count,
-			breaker_hold_active, breaker_readopt_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			breaker_hold_active, breaker_readopt_count,
+			post_merge_infra_rerun_count, post_merge_infra_rerun_sha
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -668,7 +680,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			rebase_hold_active = excluded.rebase_hold_active,
 			readopt_count = excluded.readopt_count,
 			breaker_hold_active = excluded.breaker_hold_active,
-			breaker_readopt_count = excluded.breaker_readopt_count
+			breaker_readopt_count = excluded.breaker_readopt_count,
+			post_merge_infra_rerun_count = excluded.post_merge_infra_rerun_count,
+			post_merge_infra_rerun_sha = excluded.post_merge_infra_rerun_sha
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -680,6 +694,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.PRTitle, pr.MergeFollowupPosted, pr.InfraRerunCount, pr.InfraRerunSHA,
 		pr.Parked, pr.EscalationReason, pr.RebaseHoldActive, pr.ReadoptCount,
 		pr.BreakerHoldActive, pr.BreakerReadoptCount,
+		pr.PostMergeInfraRerunCount, pr.PostMergeInfraRerunSHA,
 	)
 	return err
 }
@@ -696,7 +711,8 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
 			parked, escalation_reason, rebase_hold_active, readopt_count,
-			breaker_hold_active, breaker_readopt_count
+			breaker_hold_active, breaker_readopt_count,
+			post_merge_infra_rerun_count, post_merge_infra_rerun_sha
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -722,7 +738,8 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts, scope_key,
 			pr_title, merge_followup_posted, infra_rerun_count, infra_rerun_sha,
 			parked, escalation_reason, rebase_hold_active, readopt_count,
-			breaker_hold_active, breaker_readopt_count
+			breaker_hold_active, breaker_readopt_count,
+			post_merge_infra_rerun_count, post_merge_infra_rerun_sha
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -746,6 +763,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.PRTitle, &pr.MergeFollowupPosted, &pr.InfraRerunCount, &pr.InfraRerunSHA,
 			&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 			&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
+			&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
 		); err != nil {
 			return nil, err
 		}
@@ -1003,6 +1021,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.PRTitle, &pr.MergeFollowupPosted, &pr.InfraRerunCount, &pr.InfraRerunSHA,
 		&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 		&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
+		&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
 	)
 	if err != nil {
 		return nil, err
