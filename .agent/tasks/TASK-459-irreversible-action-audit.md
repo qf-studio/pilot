@@ -1,6 +1,6 @@
 # TASK-459: Irreversible-action audit — destructive sites require typed verdicts with positive evidence
 
-**Status**: ✅ **Phase 2 MERGED same-day 2026-08-08** — #4811 → PR#4812 (dispatched 09:32Z, merged 10:34Z), post-merge reviewed 08-08 (APPROVE; finding → [#4813](https://github.com/qf-studio/pilot/issues/4813) evidenced-infra post-merge spawn gap; `ciFailureVerdictEvidence` re-derivation parity noted for Phase 4 below). **Live on the box since the 08-08 10:55Z operator rebuild** (v2.256.0-29-g35450fea) — did not wait for the train. Phase 1 ✅ (#4796 → PR#4802, reviewed). **Phase 3 dispatchable next.** Phase 5 RESOLVED 08-08: false-success class split out to [TASK-460](TASK-460-delivery-evidence-false-success.md) (founder scope call) — this task is 4 phases and done at Phase 4
+**Status**: 🚀 **Phase 3 DISPATCHED 2026-08-08** — [#4817](https://github.com/qf-studio/pilot/issues/4817) (`no-decompose`). Pre-dispatch research re-anchored the leg: the side-effect-inference sites live in `dispatcher.go` (`recoverStaleRunningTasks` writes `failed` from artifact absence while its boot-time sibling :388 already writes `stalled`), `handlers.go:581-591` (GH-3053 gitlab demotion overrides `EffectiveSuccess()`), `commands.go:1523`, and `finish_tripwires.go:268` — **not** `poller_github.go` (pure wiring, nothing to do). The "retry label on closed issue" bug is `controller.go:7389` (`notifyExternalClose` — its own :7331 comment names the hazard; guard is label-based only), included as the leg's single controller.go change. `SetApprovalDecision`/`handleReleasing`/watchdog traces done during prep → inventory §9 (watchdog already status-authoritative end-to-end; approval gate + `scope_release.go:433` reason-string protocol recorded as Phase 4 targets). Phase 2 ✅ merged same-day 08-08 (#4811 → PR#4812, reviewed; finding → [#4813](https://github.com/qf-studio/pilot/issues/4813), fixed via #4816); live on the box (v2.256.0-29). Phase 1 ✅ (#4796 → PR#4802). Phase 5 split to [TASK-460](TASK-460-delivery-evidence-false-success.md) — this task is 4 phases and done at Phase 4
 **Created**: 2026-08-07
 **Assignee**: Pilot (multi-leg; dispatch one leg at a time)
 
@@ -74,14 +74,17 @@ Legs are sized per the #4780 lesson (one subsystem + its tests per `no-decompose
 
 **Files**: `internal/autopilot/controller.go` · `internal/autopilot/failure_class.go` · `internal/autopilot/ci_monitor.go`
 
-### Phase 3: Status vocabulary is authoritative (executor/dispatcher/poller)
+### Phase 3: Status vocabulary is authoritative (executor/dispatcher/poller) — DISPATCHED #4817
 **Goal**: Kill inference-from-side-effects.
 
-**Tasks**:
-- [ ] Terminal statuses (`superseded`, `canceled`, `stalled`, `failed`) drive reporting/labelling decisions; no subsystem infers failure from "no PR produced" (#4794 generalized).
-- [ ] Label writes respect issue state (no retry labels on closed issues).
+**Tasks** (re-anchored 2026-08-08 pre-dispatch; full spec in #4817):
+- [ ] `recoverStaleRunningTasks` writes `stalled` not `failed` (liveness evidence, not failure evidence; aligns with boot-reap sibling at `dispatcher.go:388`).
+- [ ] Stale-queued recovery: `failed` → bias `canceled` (decision point in-PR).
+- [ ] GH-3053 no-artifact demotions consult the ledger (`handlers.go:581-591`, `commands.go:1523`); `no_op`/terminal-by-design never flipped (#4794 generalized).
+- [ ] Additive label writes gated on issue open-state via the existing `IssueStateChecker` seam: `surfaceStalledIssue`, `notifyTaskStartedSDK`, `title_rejection.go:220`, `epic.go:756`, and `controller.go:7389` (`notifyExternalClose` retry-label — the leg's only controller.go change). Fail-open on lookup error; removal-only writes untouched.
+- [ ] Finish-tripwire excludes `superseded`/`canceled` (`finish_tripwires.go:268`).
 
-**Files**: `cmd/pilot/poller_github.go` · `internal/executor/dispatcher.go` · `internal/executor/lifecycle.go`
+**Files**: `internal/executor/dispatcher.go` · `cmd/pilot/handlers.go` · `cmd/pilot/commands.go` · `internal/executor/finish_tripwires.go` · `internal/executor/title_rejection.go` · `internal/executor/epic.go` · `internal/autopilot/controller.go` (one guard). `poller_github.go` dropped from the plan — verified pure wiring, no classification or label sites.
 
 ### Phase 4: Parity + enforcement
 **Goal**: Make drift and bypass impossible rather than unlikely.
@@ -90,6 +93,7 @@ Legs are sized per the #4780 lesson (one subsystem + its tests per `no-decompose
 - [ ] Shared table for "what counts as a failed check" consumed by both status mapping and evidence gathering; parity test fails on divergence (the #4790 fix generalized).
 - [ ] Third parity target (PR#4812 post-merge review, 2026-08-08): `ciFailureVerdictEvidence` re-derives per-check classification independently of `classifyPRFailure`'s aggregation — pattern-3 duplication whose drift direction is conservative (mismatch → empty evidence → Unknown → hold), but add a fixture-corpus parity test asserting non-Unknown aggregate ⇒ non-empty derived evidence.
 - [ ] Second parity target (PR#4795 post-merge review, 2026-08-07): approval-channel vocabulary has **three** implementations — the unexported alias table in `internal/approval/channel.go`, `validApprovalSourceValues` in `internal/config/config.go`, and the `sourceRegistered` switch in `internal/health/health.go`. Export one table, consume it from all three, parity test. Fold in the one-line fix for explicit `approval_source: ""` project overlays: validation documents empty as "inherits env/global" but `NewController` copies the pointer verbatim → `PreferredChannel: ""` → `defaultChannelName` routes to telegram instead of the resolved source (add `!= ""` guard in the resolution block + test).
+- [ ] Fourth vocabulary target (Phase 3 prep trace, 2026-08-08): reason-string-as-protocol — `scope_release.go:433` routes retry-vs-park by `strings.Contains` on a human-formatted message (assembled controller.go:4064/:4231); replace with a typed reason constant. Same trace flagged `applyApprovalDecision`'s raw-string gate (controller.go:3226 — store CAS is sound, gate consumes unvalidated in-memory string; expiry path :3087 synthesizes a decision with no decider evidence) and `escalateStalledTask`'s exact-`Error`-string idempotence key (dispatcher.go:1938-1950). Inventory §9 has full traces.
 - [ ] `scripts/check-destructive-calls.sh` + gate step: destructive APIs may only be called from gated helpers. Also ban composite-literal `Verdict{` construction outside `failure_class.go` (PR#4802 review finding 2 — unexported fields don't restrict intra-package construction).
 - [ ] SOP `.agent/sops/quality/irreversible-actions.md`.
 - [ ] TASK-460 hook: update the success-side inventory rows (`AutoMerger.MergePR`, `LabelDone`/`pilot-done` writes, epic parent close) with evidence labeled "green CI — decorative for the delivery claim" (scope decision 2026-08-08; TASK-460 inherits these rows).
@@ -151,7 +155,8 @@ make gate
 
 - Phase 1 issue: https://github.com/qf-studio/pilot/issues/4796 (dispatched 2026-08-07) → PR#4802 (merged; post-merge review in PR comments, 2026-08-08)
 - Phase 2 issue: https://github.com/qf-studio/pilot/issues/4811 (dispatched 2026-08-08) → PR#4812 (merged same day; post-merge review in PR comments)
-- Phase 2 review follow-up: https://github.com/qf-studio/pilot/issues/4813 (evidenced-infra post-merge spawn — no post-merge infra-retry leg)
+- Phase 2 review follow-up: https://github.com/qf-studio/pilot/issues/4813 (evidenced-infra post-merge spawn — no post-merge infra-retry leg) → fixed via #4816 (PR merged 08-08)
+- Phase 3 issue: https://github.com/qf-studio/pilot/issues/4817 (dispatched 2026-08-08)
 - Incident: 2026-08-06 GitHub Actions outage (~9.5h) and 08-07 recovery — marker `2026-08-06_outage-pause-approval-wave-dispatched.md`
 - Instances already fixed/in flight: #4787 (structural classification + `Unknown`), #4790 (check-run dedupe), #4791/#4792 (breaker), #4794 (superseded ≠ failed)
 - Prior art: `.agent/tasks/archive/TASK-418-ci-infra-failure-classification.md`, `.agent/tasks/archive/TASK-421-repick-counter-counts-non-failures.md`, `.agent/tasks/archive/TASK-441-contract-hardening-tune-up.md` (grep-gate precedent)
@@ -162,6 +167,8 @@ make gate
 ## Notes
 
 Dispatch order: Phase 1 first (its inventory is the input to everything else), then Phase 2, then 3, then 4. Phase 5 needs a scope call before it is written up.
+
+**Phase 3 dispatched** (2026-08-08, #4817): scope re-anchored by a pre-dispatch research pass — planned files had drifted (see Phase 3 section). Key spec calls: (1) `stalled` not `failed` for stale-running recovery — evidence is liveness-loss; boot-reap already writes `stalled` for the identical shape; (2) suppress-on-positive-evidence semantics for the closed-issue label guards — a state-lookup error fails open, preserving today's behaviour; (3) reuse the GH-4656 `IssueStateChecker` seam, no fresh GitHub calls where state is already fetched (`handlers.go:763`, `controller.go:7336`); (4) GH-3053 demotion policy for genuinely-completed-with-no-artifact rows explicitly NOT expanded — that's TASK-460's delivery-evidence question. Prep traces (approval gate CAS, release ladder, watchdog, `outcomeClassifiers`) written to inventory §9 during this session rather than delegated — watchdog needs no change; `applyApprovalDecision` raw-string gate + `scope_release.go:433` reason-string-as-protocol are Phase 4 vocabulary targets.
 
 **Phase 2 dispatched** (2026-08-08, #4811): scope per the inventory's "How Phase 2+ consumes this" — pre-merge `handleCIFailed` ladder + post-merge CI-failure rung. Folds in the PR#4802 post-merge review findings: (1) zero-value `Verdict{}` hazard — `Class()` hardening + positive-evidence gate via one shared helper, never `!= Unknown`; (2) composite-literal construction ban deferred to Phase 4's grep; (3) SHA binding left as an in-PR decision point, biased to same-tick constraint over contract change; (4) migrated inventory rows get refreshed line refs. `SetApprovalDecision`/`handleReleasing` tracing stays Phase 3.
 
