@@ -1495,13 +1495,14 @@
         "title": "Irreversible-action audit \u2014 destructive sites require typed verdicts with positive evidence",
         "status": "dispatched",
         "concepts": [
-          "markers",
-          "authentication",
-          "testing",
           "api",
-          "deployment",
+          "testing",
+          "theory of mind",
+          "authentication",
           "context",
-          "theory of mind"
+          "knowledge",
+          "markers",
+          "deployment"
         ]
       },
       "TASK-460": {
@@ -1515,6 +1516,22 @@
           "deployment",
           "knowledge",
           "context"
+        ]
+      },
+      "TASK-461": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-461-app-cutover-sdk-token-wiring.md",
+        "title": "GitHub App cutover \u2014 SDK-client token wiring (two legs + operator steps)",
+        "status": "dispatched",
+        "concepts": [
+          "skills",
+          "testing",
+          "theory of mind",
+          "workflow",
+          "context",
+          "authentication",
+          "deployment",
+          "markers",
+          "api"
         ]
       }
     },
@@ -6035,6 +6052,16 @@
       "from": "TASK-460",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-461",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-461",
+      "to": "workflow",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6079,7 +6106,8 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-461"
     ],
     "knowledge": [
       "TASK-386",
@@ -6153,7 +6181,8 @@
       "TASK-453",
       "TASK-454",
       "TASK-455",
-      "TASK-460"
+      "TASK-460",
+      "TASK-459"
     ],
     "deployment": [
       "TASK-386",
@@ -6261,7 +6290,8 @@
       "TASK-457",
       "TASK-458",
       "TASK-459",
-      "TASK-460"
+      "TASK-460",
+      "TASK-461"
     ],
     "authentication": [
       "TASK-386",
@@ -6319,7 +6349,8 @@
       "TASK-451",
       "TASK-452",
       "TASK-459",
-      "TASK-460"
+      "TASK-460",
+      "TASK-461"
     ],
     "testing": [
       "TASK-386",
@@ -6425,7 +6456,8 @@
       "TASK-457",
       "TASK-458",
       "TASK-459",
-      "TASK-460"
+      "TASK-460",
+      "TASK-461"
     ],
     "api": [
       "TASK-386",
@@ -6505,7 +6537,8 @@
       "TASK-456",
       "TASK-457",
       "TASK-458",
-      "TASK-459"
+      "TASK-459",
+      "TASK-461"
     ],
     "context": [
       "TASK-386",
@@ -6595,7 +6628,8 @@
       "TASK-457",
       "TASK-458",
       "TASK-459",
-      "TASK-460"
+      "TASK-460",
+      "TASK-461"
     ],
     "markers": [
       "TASK-387",
@@ -6614,7 +6648,8 @@
       "TASK-449",
       "TASK-453",
       "TASK-458",
-      "TASK-459"
+      "TASK-459",
+      "TASK-461"
     ],
     "database": [
       "TASK-387",
@@ -6735,7 +6770,8 @@
       "TASK-449",
       "TASK-455",
       "TASK-456",
-      "TASK-457"
+      "TASK-457",
+      "TASK-461"
     ],
     "simplification": [
       "TASK-387",
@@ -6823,7 +6859,8 @@
       "TASK-453",
       "TASK-454",
       "TASK-460",
-      "TASK-459"
+      "TASK-459",
+      "TASK-461"
     ],
     "autopilot": [
       "mem-100",
@@ -7148,10 +7185,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-08T11:04:55.273513+00:00",
+  "last_updated": "2026-08-09T06:38:23.643523+00:00",
   "stats": {
-    "total_nodes": 379,
-    "total_edges": 318,
+    "total_nodes": 380,
+    "total_edges": 320,
     "memory_count": 217
   }
 }
