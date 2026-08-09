@@ -211,6 +211,20 @@ func (r *Runner) postTitleRejectionEscalation(ctx context.Context, task *Task) e
 	if _, err := fmt.Sscanf(issueNum, "%d", &parsed); err != nil || parsed <= 0 {
 		return fmt.Errorf("invalid issue number %q: %w", issueNum, err)
 	}
+
+	// TASK-459 Phase 3 Task 5c: skip the escalation comment + labels on
+	// positive evidence the issue is already closed (fail open on lookup
+	// error — never block the existing best-effort path on an unrelated
+	// GitHub read failure).
+	if state, err := fetchIssueState(ctx, r, task, task.ProjectPath); err != nil {
+		r.log.Warn("title-rejection escalation: failed to check issue state before labeling; proceeding (fail-open)",
+			"task_id", task.ID, "issue", issueNum, "error", err)
+	} else if state.Closed {
+		r.log.Info("title-rejection escalation: issue already closed, skipping comment and labels",
+			"task_id", task.ID, "issue", issueNum)
+		return nil
+	}
+
 	comment := buildTitleRejectionComment(parsed, task.Title, task.Labels)
 
 	if err := ghIssueComment(ctx, task.ProjectPath, issueNum, comment); err != nil {

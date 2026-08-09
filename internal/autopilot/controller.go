@@ -7386,21 +7386,35 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 			nextSteps = "This issue will not be retried automatically under its own number — see the reason above for what happens next."
 		}
 
-		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{issueLabel}); err != nil {
-			c.log.Warn("failed to set issue label on PR close", "issue", prState.IssueNumber, "label", issueLabel, "error", err)
-		}
-		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
-			c.log.Warn("failed to remove pilot-in-progress label", "issue", prState.IssueNumber, "error", err)
-		}
-		if issueLabel != github.LabelFailed {
-			// Remove stale pilot-failed label (GH-1302 gap) — only when we're not
-			// the ones setting it above.
-			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
-				c.log.Debug("failed to remove pilot-failed (may not exist)", "issue", prState.IssueNumber, "error", err)
+		// TASK-459 Phase 3 Task 5e: skip the label writes below on positive
+		// evidence the issue is already closed — reuse the `issue`/`err` fetch
+		// from the pilot-done check above (line ~7336) instead of a fresh
+		// GitHub call. err != nil there already fails open (issue is nil), so
+		// only a clean read with State == closed counts as positive evidence.
+		issueAlreadyClosed := err == nil && issue != nil && issue.State == github.StateClosed
+		if issueAlreadyClosed {
+			c.log.Info("skipping issue label correction: issue already closed", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+		} else {
+			if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{issueLabel}); err != nil {
+				c.log.Warn("failed to set issue label on PR close", "issue", prState.IssueNumber, "label", issueLabel, "error", err)
 			}
+			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
+				c.log.Warn("failed to remove pilot-in-progress label", "issue", prState.IssueNumber, "error", err)
+			}
+			if issueLabel != github.LabelFailed {
+				// Remove stale pilot-failed label (GH-1302 gap) — only when we're not
+				// the ones setting it above.
+				if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
+					c.log.Debug("failed to remove pilot-failed (may not exist)", "issue", prState.IssueNumber, "error", err)
+				}
+			}
+			c.log.Info("corrected issue label on PR close", "issue", prState.IssueNumber, "pr", prState.PRNumber, "label", issueLabel)
 		}
-		c.log.Info("corrected issue label on PR close", "issue", prState.IssueNumber, "pr", prState.PRNumber, "label", issueLabel)
 
+		// Task 5e: unlike the other gated sites, this one still posts the
+		// informational comment on skip — the issue is already closed, so
+		// there's no retry/label state to protect, but the PR-closed context
+		// is still useful history on the issue.
 		issueComment += "\n\n" + nextSteps
 		if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, issueComment); cerr != nil {
 			c.log.Warn("failed to comment on issue after PR close", "issue", prState.IssueNumber, "error", cerr)

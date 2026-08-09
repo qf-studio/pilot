@@ -161,3 +161,36 @@ func TestGithubHandlerSDK_NotifyTaskStartedWired(t *testing.T) {
 		t.Error("notifyTaskStartedSDK errors must be logged as a non-fatal WARN, not propagated")
 	}
 }
+
+// TestGithubHandlerSDK_NotifyTaskStartedGatedOnIssueState is a source-level
+// guard (GH-4817, TASK-459 Phase 3 Task 5b): the notifyTaskStartedSDK call
+// must be gated on issueState != githubSDK.StateClosed, so a closed issue
+// never gets a stranded pilot-in-progress label/comment. issueState defaults
+// to "" (unknown) on fetch failure or when specClient is nil (see the
+// fetchGithubIssueForSDKTask comment above), so the comparison must be
+// against the positive "closed" value only — never against issueState == ""
+// — to keep the existing fail-open behavior for unresolvable state.
+func TestGithubHandlerSDK_NotifyTaskStartedGatedOnIssueState(t *testing.T) {
+	body := githubFuncBody(t, "handlers.go", "func handleGithubIssueEventSDK(")
+
+	notifyIdx := strings.Index(body, "notifyTaskStartedSDK(")
+	if notifyIdx < 0 {
+		t.Fatal("handleGithubIssueEventSDK must call notifyTaskStartedSDK")
+	}
+
+	// The nearest preceding "if" before the call must gate on issueState,
+	// comparing against the closed constant (not equality with "").
+	preamble := body[:notifyIdx]
+	ifIdx := strings.LastIndex(preamble, "if specClient != nil")
+	if ifIdx < 0 {
+		t.Fatal("expected an `if specClient != nil` guard preceding the notifyTaskStartedSDK call")
+	}
+	guardClause := preamble[ifIdx:]
+	if !strings.Contains(guardClause, "issueState != githubSDK.StateClosed") {
+		t.Error("notifyTaskStartedSDK must only fire when issueState != githubSDK.StateClosed (fail-open on \"\"/unknown)")
+	}
+
+	if !strings.Contains(body, "skipping pilot-in-progress label and comment") {
+		t.Error("expected an informational log line when the label/comment write is skipped for a closed issue")
+	}
+}

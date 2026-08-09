@@ -286,6 +286,41 @@ func TestCheckWorktreePruned(t *testing.T) {
 			t.Errorf("expected no violation once a PR exists, got %+v", result)
 		}
 	})
+
+	// GH-4817 (TASK-459 Phase 3 Task 6): commits with no PR is fine for a
+	// terminal-by-design row (superseded/canceled) — mirrors the existing
+	// decomposed-parent carve-out above. The PR was deliberately not carried
+	// out, not silently discarded; this tripwire must not fire the exact
+	// GH-4794 shape (alert-only variant).
+	t.Run("commits with no PR is fine for a superseded row", func(t *testing.T) {
+		result := checkWorktreePruned(&memory.Execution{
+			ID: "exec-superseded", TaskID: "GH-8051", TaskCreatePR: true, CommitSHA: "deadbeef", PRUrl: "",
+			Status: string(ExecStatusSuperseded),
+		})
+		if result.violated {
+			t.Errorf("expected no violation for a superseded row, got %+v", result)
+		}
+	})
+
+	t.Run("commits with no PR is fine for a canceled row", func(t *testing.T) {
+		result := checkWorktreePruned(&memory.Execution{
+			ID: "exec-canceled", TaskID: "GH-8061", TaskCreatePR: true, CommitSHA: "deadbeef", PRUrl: "",
+			Status: string(ExecStatusCanceled),
+		})
+		if result.violated {
+			t.Errorf("expected no violation for a canceled row, got %+v", result)
+		}
+	})
+
+	t.Run("commits with no PR still fails for a plain failed row (guard is narrow)", func(t *testing.T) {
+		result := checkWorktreePruned(&memory.Execution{
+			ID: "exec-failed", TaskID: "GH-8071", TaskCreatePR: true, CommitSHA: "deadbeef", PRUrl: "",
+			Status: string(ExecStatusFailed),
+		})
+		if !result.violated {
+			t.Error("expected a violation for a plain failed row — the terminal-by-design carve-out must not swallow genuine failures")
+		}
+	})
 }
 
 // TestRunFinishTripwireSweep_EmitsAttemptForEveryCheck verifies the sweep

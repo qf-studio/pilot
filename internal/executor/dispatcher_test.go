@@ -693,15 +693,16 @@ func TestDispatcher_RecoverStaleTasks(t *testing.T) {
 	}
 	defer dispatcher.Stop()
 
-	// Check that the task was marked failed (not re-queued — re-queuing without
-	// a worker just recreates the orphan).
+	// Check that the task was marked stalled (not re-queued — re-queuing
+	// without a worker just recreates the orphan; not failed — a stale
+	// running row is liveness-loss, not a genuine failure, GH-4817).
 	updated, err := store.GetExecution("exec-recover")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
 
-	if updated.Status != "failed" {
-		t.Errorf("expected recovered task to have status 'failed', got '%s'", updated.Status)
+	if updated.Status != "stalled" {
+		t.Errorf("expected recovered task to have status 'stalled', got '%s'", updated.Status)
 	}
 }
 
@@ -807,18 +808,18 @@ func TestRecoverStaleTasks_QueuedAndRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status != "failed" {
-		t.Errorf("expected exec-stale-run to be 'failed', got '%s'", exec.Status)
+	if exec.Status != "stalled" {
+		t.Errorf("expected exec-stale-run to be 'stalled', got '%s'", exec.Status)
 	}
 
 	// GH-3732: the queued sibling must NOT be reaped as an orphan — its
 	// project gets re-adopted at Start, so a real worker should pick it up
-	// instead of the stale-queued reap wrongly failing it.
+	// instead of the stale-queued reap wrongly canceling it.
 	exec, err = store.GetExecution("exec-stale-q")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status == "failed" && exec.Error == "queued task orphaned by restart; project no longer configured" {
+	if exec.Status == "canceled" && exec.Error == "queued task orphaned by restart; project no longer configured" {
 		t.Errorf("expected exec-stale-q to be adopted, not reaped as an orphan (error=%q)", exec.Error)
 	}
 
@@ -1003,11 +1004,11 @@ func TestRecoverStaleRunningTasks_HealsUsingRecordedBranchNotTaskID(t *testing.T
 	}
 }
 
-// TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR guards the negative
+// TestRecoverStaleRunningTasks_MarksStalledWhenNoMergedPR guards the negative
 // case: a genuinely orphaned running row (no live worker, no merged PR on its
-// branch) must still be marked "failed" — the GH-4092 healing path must not
+// branch) must still be marked "stalled" — the GH-4092 healing path must not
 // swallow real orphans.
-func TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR(t *testing.T) {
+func TestRecoverStaleRunningTasks_MarksStalledWhenNoMergedPR(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1036,8 +1037,8 @@ func TestRecoverStaleRunningTasks_MarksFailedWhenNoMergedPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if got.Status != "failed" {
-		t.Errorf("expected genuinely orphaned running task to be marked 'failed', got %q", got.Status)
+	if got.Status != "stalled" {
+		t.Errorf("expected genuinely orphaned running task to be marked 'stalled', got %q", got.Status)
 	}
 }
 
@@ -1197,8 +1198,8 @@ func TestRecoverStaleRunningTasks_WritesExecutionEvent(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 execution event, got %d: %+v", len(events), events)
 	}
-	if events[0].Stage != memory.StageFailed {
-		t.Errorf("expected stage %q, got %q", memory.StageFailed, events[0].Stage)
+	if events[0].Stage != memory.StageStalled {
+		t.Errorf("expected stage %q, got %q", memory.StageStalled, events[0].Stage)
 	}
 	if !strings.Contains(events[0].Detail, "stale_running recovered after restart") {
 		t.Errorf("expected detail to explain the stale_running recovery reason, got %q", events[0].Detail)
@@ -1281,8 +1282,8 @@ func TestRecoverStaleRunningTasks_FateReconstructableFromEventsAlone(t *testing.
 		t.Fatal("execution_events timeline is empty — fate is unrecoverable from events alone (the GH-4050 gap)")
 	}
 	last := events[len(events)-1]
-	if last.Stage != memory.StageFailed {
-		t.Fatalf("reconstructed fate from events: last stage = %q, want %q (terminal failure)", last.Stage, memory.StageFailed)
+	if last.Stage != memory.StageStalled {
+		t.Fatalf("reconstructed fate from events: last stage = %q, want %q (liveness-loss, not a genuine failure)", last.Stage, memory.StageStalled)
 	}
 	if !strings.Contains(last.Detail, "recovered after restart") {
 		t.Errorf("reconstructed fate from events: detail %q does not explain the restart-driven recovery", last.Detail)
@@ -2376,8 +2377,8 @@ func TestRecoverStaleRunningTasks_DecomposedParentGuard(t *testing.T) {
 		wantStatus    string // checked only when !wantDeleted
 	}{
 		{name: "all children completed guard fires", childStatuses: []string{"completed", "completed"}, wantDeleted: true},
-		{name: "one child incomplete falls through to failed", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "failed"},
-		{name: "no completed rows falls through to failed", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "failed"},
+		{name: "one child incomplete falls through to stalled", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "stalled"},
+		{name: "no completed rows falls through to stalled", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "stalled"},
 	}
 
 	for _, tc := range tests {
@@ -2447,8 +2448,8 @@ func TestRecoverStaleQueuedTasks_DecomposedParentGuard(t *testing.T) {
 		wantStatus    string
 	}{
 		{name: "all children completed guard fires", childStatuses: []string{"completed", "completed"}, wantDeleted: true},
-		{name: "one child incomplete falls through to failed", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "failed"},
-		{name: "no completed rows falls through to failed", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "failed"},
+		{name: "one child incomplete falls through to canceled", childStatuses: []string{"completed", "running"}, wantDeleted: false, wantStatus: "canceled"},
+		{name: "no completed rows falls through to canceled", childStatuses: []string{"", ""}, wantDeleted: false, wantStatus: "canceled"},
 	}
 
 	for _, tc := range tests {
@@ -2668,8 +2669,8 @@ func TestRunStaleRecoveryLoop_Periodic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if updated.Status != "failed" {
-		t.Errorf("expected periodic recovery to mark task 'failed', got '%s'", updated.Status)
+	if updated.Status != "stalled" {
+		t.Errorf("expected periodic recovery to mark task 'stalled', got '%s'", updated.Status)
 	}
 }
 
@@ -2720,7 +2721,7 @@ func TestRecoverStaleTasks_DeletesOrphanWhenCompleted(t *testing.T) {
 	}
 }
 
-func TestRecoverStaleTasks_MarksFailedWhenNoCompleted(t *testing.T) {
+func TestRecoverStaleTasks_MarksStalledOrCanceledWhenNoCompleted(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -2749,13 +2750,14 @@ func TestRecoverStaleTasks_MarksFailedWhenNoCompleted(t *testing.T) {
 	defer dispatcher.Stop()
 
 	// The running orphan has no worker (recoverStaleRunningTasks runs before
-	// adoption) and no completed sibling, so it's genuinely reaped.
+	// adoption) and no completed sibling, so it's genuinely reaped as stalled
+	// (liveness-loss, not a genuine failure — GH-4817).
 	exec, err := store.GetExecution("exec-only-run")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status != "failed" {
-		t.Errorf("expected exec-only-run to be 'failed', got '%s'", exec.Status)
+	if exec.Status != "stalled" {
+		t.Errorf("expected exec-only-run to be 'stalled', got '%s'", exec.Status)
 	}
 
 	// GH-3732: the queued task's project gets re-adopted at Start, so it must
@@ -2767,7 +2769,7 @@ func TestRecoverStaleTasks_MarksFailedWhenNoCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status == "failed" && exec.Error == "queued task orphaned by restart; project no longer configured" {
+	if exec.Status == "canceled" && exec.Error == "queued task orphaned by restart; project no longer configured" {
 		t.Errorf("expected exec-only-q to be adopted, not reaped as an orphan (error=%q)", exec.Error)
 	}
 }
@@ -2777,7 +2779,7 @@ func TestRecoverStaleTasks_DifferentProjectPath(t *testing.T) {
 	defer cleanup()
 
 	// Scenario: completed execution exists for a DIFFERENT project path.
-	// The orphan should still be marked failed (HasCompletedExecution checks both fields).
+	// The orphan should still be marked stalled (HasCompletedExecution checks both fields).
 	executions := []*memory.Execution{
 		{ID: "exec-diff-completed", TaskID: "TASK-DIFF", ProjectPath: "/project-a", Status: "completed"},
 		{ID: "exec-diff-orphan", TaskID: "TASK-DIFF", ProjectPath: "/project-b", Status: "running"},
@@ -2801,13 +2803,13 @@ func TestRecoverStaleTasks_DifferentProjectPath(t *testing.T) {
 	}
 	defer dispatcher.Stop()
 
-	// Different project path → no match → should be marked failed, not deleted.
+	// Different project path → no match → should be marked stalled, not deleted.
 	exec, err := store.GetExecution("exec-diff-orphan")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
-	if exec.Status != "failed" {
-		t.Errorf("expected orphan with different project to be 'failed', got '%s'", exec.Status)
+	if exec.Status != "stalled" {
+		t.Errorf("expected orphan with different project to be 'stalled', got '%s'", exec.Status)
 	}
 }
 
@@ -5041,7 +5043,7 @@ func TestRecoverStaleQueuedTasks_MessageAccuracy(t *testing.T) {
 		{
 			name:          "genuine orphan gets reworded message",
 			injectWorker:  false,
-			wantStatus:    "failed",
+			wantStatus:    "canceled",
 			wantErrSubstr: "queued task orphaned by restart; project no longer configured",
 		},
 		{
@@ -5089,9 +5091,9 @@ func TestRecoverStaleQueuedTasks_MessageAccuracy(t *testing.T) {
 }
 
 // TestRecoverStaleQueuedTasks_WritesExecutionEvent verifies GH-4101: marking
-// an orphaned queued task failed also writes an execution_events row, so its
-// terminal transition is visible in the audit trail instead of the event
-// stream simply stopping.
+// an orphaned queued task canceled also writes an execution_events row, so
+// its terminal transition is visible in the audit trail instead of the
+// event stream simply stopping.
 func TestRecoverStaleQueuedTasks_WritesExecutionEvent(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -5113,8 +5115,8 @@ func TestRecoverStaleQueuedTasks_WritesExecutionEvent(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 execution event, got %d: %+v", len(events), events)
 	}
-	if events[0].Stage != memory.StageFailed {
-		t.Errorf("expected stage %q, got %q", memory.StageFailed, events[0].Stage)
+	if events[0].Stage != memory.StageCanceled {
+		t.Errorf("expected stage %q, got %q", memory.StageCanceled, events[0].Stage)
 	}
 	if !strings.Contains(events[0].Detail, "stale_queued recovered after restart") {
 		t.Errorf("expected detail to explain the stale_queued recovery reason, got %q", events[0].Detail)

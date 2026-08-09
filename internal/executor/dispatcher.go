@@ -80,6 +80,19 @@ func IsTerminalByDesignStatus(status string) bool {
 	return terminalByDesignExecutionStatuses[status]
 }
 
+// IsNoArtifactExplainedOutcome reports whether outcome (an ExecutionResult's
+// Outcome field, or a persisted execution's status) explains an absent
+// commit/PR by design rather than by anomaly. GH-4817 (TASK-459 Phase 3):
+// consumers that infer failure from "no commit, no PR" alone (GH-3053's
+// GitLab demotion, the CLI's no-artifact check) must consult this first —
+// a no_op row deliberately produced no deliverable, and superseded/canceled
+// rows are covered by IsTerminalByDesignStatus. What a *completed* row with
+// no artifact means beyond that is TASK-460; this helper does not expand
+// into it.
+func IsNoArtifactExplainedOutcome(outcome string) bool {
+	return outcome == string(ExecStatusNoOp) || IsTerminalByDesignStatus(outcome)
+}
+
 // DispatcherConfig configures the task dispatcher behavior.
 type DispatcherConfig struct {
 	// StaleTaskDuration is a backwards-compat alias for StaleRunningThreshold.
@@ -627,7 +640,17 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 			continue
 		}
 
-		d.log.Warn("Marking stale running task as failed",
+		// GH-4817 (TASK-459 Phase 3): a stale "running" row past every liveness
+		// check above is evidence the worker died mid-flight, not evidence the
+		// task's code is broken — the boot-time sibling reconcileOrphanedExecutions
+		// already writes ExecStatusStalled for the exact same shape ("orphaned by
+		// daemon restart", above). Writing "failed" here inferred failure purely
+		// from artifact absence (no completed row, no live worker, no merged/open
+		// PR) — liveness-loss, not a genuine failure — and fed the same
+		// consecutiveDrops counter a real failure would. Downstream is already
+		// status-driven: priorClaimWasStalled -> the stall carve-out ->
+		// stallTaskAfterStallCap at cap 8, instead of the failure ladder.
+		d.log.Warn("Marking stale running task as stalled",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
 			slog.Time("created_at", exec.CreatedAt),
@@ -636,18 +659,18 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 		// evidence gathered above and this write (the reaper's own TOCTOU
 		// window), the write is rejected instead of clobbering the completed
 		// row. The store already logs the rejection at ERROR with both states.
-		applied, err := d.store.UpdateExecutionStatusIfNotTerminal(exec.ID, "failed", "stale running task recovered (orphaned worker)")
+		applied, err := d.store.UpdateExecutionStatusIfNotTerminal(exec.ID, string(ExecStatusStalled), "stale running task recovered (orphaned worker)")
 		if err != nil {
 			d.log.Error("Failed to mark stale running task", slog.String("id", exec.ID), slog.Any("error", err))
 		} else if !applied {
-			d.log.Warn("Skipped marking stale running task failed — row reached a terminal status during reap (GH-4423 CAS guard)",
+			d.log.Warn("Skipped marking stale running task stalled — row reached a terminal status during reap (GH-4423 CAS guard)",
 				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID))
 		} else {
 			resetCount++
 			// GH-4101: without this, the terminal transition a restart forces on an
 			// orphaned row is invisible in execution_events — the audit trail simply
 			// stops, indistinguishable from a row still legitimately mid-flight.
-			d.recordExecutionEvent(exec.ID, memory.StageFailed, "stale_running recovered after restart")
+			d.recordExecutionEvent(exec.ID, memory.StageStalled, "stale_running recovered after restart")
 		}
 	}
 
@@ -737,13 +760,21 @@ var mergedPRPreflightCheck = func(ctx context.Context, projectPath, branch strin
 	return NewGitOperations(projectPath).FindMergedPRByBranch(ctx, branch)
 }
 
-// recoverStaleQueuedTasks marks orphaned queued tasks as failed: either a
-// duplicate row for a task that already completed, or a queued task whose
-// project has no live worker even after Dispatcher.Start's adoption pass
-// (e.g. the project was removed from config). GH-2331: a live worker means
-// the task is simply waiting its turn — Pilot runs tasks serially per
-// project, and a sibling taking 8+ minutes (common for epic/Navigator work)
-// would otherwise exceed the 5-minute threshold and get killed mid-queue.
+// recoverStaleQueuedTasks reaps orphaned queued tasks: either deleting a
+// duplicate row for a task that already completed, or marking canceled a
+// queued task whose project has no live worker even after Dispatcher.Start's
+// adoption pass (e.g. the project was removed from config). GH-2331: a live
+// worker means the task is simply waiting its turn — Pilot runs tasks
+// serially per project, and a sibling taking 8+ minutes (common for
+// epic/Navigator work) would otherwise exceed the 5-minute threshold and get
+// killed mid-queue.
+//
+// GH-4817 (TASK-459 Phase 3): a queued task that never ran did not fail —
+// the operator removing the project (or a restart racing adoption) is a
+// designed termination, not a code defect. Marking it "canceled" mirrors
+// reclaimSelfOwnedQueuedChild's use of a typed administrative marker for
+// exactly this kind of non-outcome write, and keeps it out of failure-ladder
+// consumers (retry budgets, alerting) that "failed" would otherwise feed.
 func (d *Dispatcher) recoverStaleQueuedTasks() int {
 	var resetCount int
 
@@ -802,7 +833,7 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 			continue
 		}
 
-		d.log.Warn("Marking orphaned queued task as failed",
+		d.log.Warn("Marking orphaned queued task as canceled",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
 			slog.Time("created_at", exec.CreatedAt),
@@ -816,17 +847,17 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 		// above; if this row went terminal between the guards above and this
 		// write, the write is rejected instead of clobbering it (the store
 		// already logs both states at ERROR).
-		applied, err := d.store.UpdateExecutionStatusIfNotTerminal(exec.ID, "failed", "queued task orphaned by restart; project no longer configured")
+		applied, err := d.store.UpdateExecutionStatusIfNotTerminal(exec.ID, string(ExecStatusCanceled), "queued task orphaned by restart; project no longer configured")
 		if err != nil {
 			d.log.Error("Failed to mark stale queued task", slog.String("id", exec.ID), slog.Any("error", err))
 		} else if !applied {
-			d.log.Warn("Skipped marking stale queued task failed — row reached a terminal status during reap (GH-4423 CAS guard)",
+			d.log.Warn("Skipped marking stale queued task canceled — row reached a terminal status during reap (GH-4423 CAS guard)",
 				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID))
 		} else {
 			resetCount++
 			// GH-4101: mirrors the stale-running event above — the audit trail must
 			// show why this row went terminal, not just that it did.
-			d.recordExecutionEvent(exec.ID, memory.StageFailed, "stale_queued recovered after restart: project no longer configured")
+			d.recordExecutionEvent(exec.ID, memory.StageCanceled, "stale_queued recovered after restart: project no longer configured")
 		}
 	}
 
@@ -2020,6 +2051,21 @@ func (d *Dispatcher) surfaceStalledIssue(task *Task, reason string) {
 
 	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 	defer cancel()
+
+	// GH-4817 (TASK-459 Phase 3): a closed issue has already left the
+	// poller's candidate set — labeling/commenting on it strands
+	// pilot-blocked (and the removed pilot-failed/pilot-in-progress) on an
+	// issue no human will revisit, with no poller pass left to ever clean it
+	// up. Positive evidence of closed suppresses the write; a lookup error
+	// fails open (today's behavior — proceed with the write).
+	if state, err := fetchIssueState(ctx, d.runner, task, task.ProjectPath); err != nil {
+		d.log.Warn("stalled-issue surfacing: failed to check issue state before labeling; proceeding (fail-open)",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+	} else if state.Closed {
+		d.log.Info("stalled-issue surfacing: issue already closed, skipping pilot-blocked label and comment",
+			slog.String("task_id", task.ID))
+		return
+	}
 
 	comment := fmt.Sprintf(
 		"Pilot stopped retrying (repick hard cap): %s\n\n"+

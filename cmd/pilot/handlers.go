@@ -588,7 +588,15 @@ func handleGitlabIssueWithResult(ctx context.Context, cfg *config.Config, client
 					slog.Any("error", err),
 				)
 			}
-			issueResult.Success = false
+			// GH-4817 (TASK-459 Phase 3): only demote to failure when the
+			// absent commit/PR is anomalous. A no_op/terminal-by-design
+			// outcome deliberately produced no deliverable — consult the
+			// recorded classification instead of inferring failure from
+			// artifact absence alone (the exact GH-4794 mechanism, which
+			// re-arms the vendored SDK poller's unmark-for-retry branch).
+			if !hr.IsTerminalByDesign() && !executor.IsNoArtifactExplainedOutcome(hr.Result.Outcome) {
+				issueResult.Success = false
+			}
 		} else {
 			var parts []string
 			parts = append(parts, "✅ Pilot execution completed successfully!")
@@ -798,7 +806,13 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	// auto-creates the label via AddLabels if the repo doesn't have it yet.
 	// Mirrors the non-fatal (WARN-only) pattern at pilot.go:1191-1195 and
 	// controller.go:3011-3015 — labeling must never block dispatch.
-	if specClient != nil {
+	// TASK-459 Phase 3 Task 5b: skip the pilot-in-progress label/comment write
+	// only on positive evidence the issue is already closed. issueState is ""
+	// on fetch failure or when specClient is nil (fail-open default set above,
+	// GH-4050) — treat that as unknown, not closed, so the label still fires
+	// when state can't be determined. Mirrors the surfaceStalledIssue guard
+	// (dispatcher.go).
+	if specClient != nil && issueState != githubSDK.StateClosed {
 		pilotLabel := ""
 		if cfg.Adapters != nil && cfg.Adapters.GitHub != nil {
 			pilotLabel = cfg.Adapters.GitHub.PilotLabel
@@ -829,6 +843,10 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		} else {
 			labelTracker.RecordSuccess()
 		}
+	} else if specClient != nil {
+		logging.WithComponent("github").Info("SDK-dispatch: issue already closed, skipping pilot-in-progress label and comment",
+			slog.String("task_id", taskID),
+			slog.Int("issue", issueNum))
 	}
 
 	task := &executor.Task{

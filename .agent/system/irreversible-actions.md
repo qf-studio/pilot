@@ -1,6 +1,6 @@
 # Irreversible-action inventory (TASK-459 Phase 1)
 
-**Status**: Phase 2 of 4 landed (Phase 5's false-success class split to TASK-460, 2026-08-08). Phase 1 built the inventory + `Verdict`
+**Status**: Phase 3 (GH-4817) landed 2026-08-09. Phase 1 built the inventory + `Verdict`
 contract with no behaviour change. Phase 2 migrated the CI-failure path —
 `handleCIFailed`'s ladder (family 1's `MaxCIFixIterations` close, family 3's
 pre-merge `CreateFailureIssue`, family 8's zero-evidence `escalateAndHold`)
@@ -9,8 +9,24 @@ a *new* family-8 zero-evidence hold that didn't exist before Phase 2 — the
 post-merge path previously spawned a fix issue for any `CIFailure` with no
 classification at all) — to gate on `Verdict.AuthorizesDestructive()`
 instead of raw `FailureClass`/string/nil-check comparisons. Their rows below
-are marked `typed-verdict` accordingly. All other rows are still Phase
-1-only classification; Phase 3 covers executor/dispatcher/poller sites.
+are marked `typed-verdict` accordingly. Phase 3 (GH-4817, this leg) migrated
+family 4/5/6/7's executor/dispatcher/poller sites named in the Phase-1 §9
+findings: `recoverStaleRunningTasks`/`recoverStaleQueuedTasks` now write
+typed `stalled`/`canceled` instead of collapsing every boot-time orphan to
+`failed`; the GitLab and CLI GH-3053 "no commit, no PR" demotions now
+consult `IsNoArtifactExplainedOutcome` (typed outcome check) before
+inferring failure from an absent artifact alone (closing the
+`side-effect-inferred` gap flagged in family 7's `IsTerminalByDesignStatus`
+row below); five additive label/comment-write sites (family 5) now gate on
+a fresh `fetchIssueState` re-read of the target issue and skip the write on
+positive evidence it's already closed, failing open on a lookup error; and
+`checkWorktreePruned` (finish_tripwires.go) now excludes `superseded`/
+`canceled` rows from its "commits but no PR" violation, alongside the
+pre-existing `decomposed` carve-out. Rows below are updated in place per
+site; see the row-level Evidence column for the `re-read` tag Phase 3 added.
+All rows not called out as `typed-verdict` or Phase-3-updated are still
+Phase 1-only classification. Phase 4 (`check-destructive-calls.sh` grep
+gate) is next.
 
 **Purpose**: Every call site in the daemon that closes a PR, deletes a
 branch, spawns a fix issue, burns retry budget, writes a terminal label, or
@@ -109,8 +125,11 @@ branch/commits may also be deleted immediately after, see family 2)
 | `internal/autopilot/controller.go:6930-6992` (`notifyExternalClose`) | autopilot | cheap-reversible (label), but gates family-7 ledger writes | Splits `pilot-superseded` vs `pilot-failed` on `prState.TerminalLabel == LabelSuperseded` | `raw-string` compare against a flag set upstream (by family-1's `closeConflictSourceIssueClosed`), not re-evidenced here |
 | `internal/autopilot/controller.go:6863` | autopilot | cheap-reversible | Generic `RemoveLabel` in retry-label cleanup helper | — |
 | `internal/autopilot/controller.go:7077-7086` | autopilot | cheap-reversible | Generic terminal-label-application helper shared by multiple ladder rungs | Inherits caller's evidence |
-| `internal/executor/title_rejection.go:220` | executor | cheap-reversible | `pilot-failed`+`pilot-title-rejected` on 2nd consecutive same-title rejection | `raw-string` exact-hash match (family 4) |
-| `internal/executor/dispatcher.go:2019` (`surfaceStalledIssue`, via `escalateStalledTask`) | executor | cheap-reversible | `pilot-blocked` add, `pilot-failed`+`pilot-in-progress` remove | `counter` — raw drop-count threshold; idempotent via matching prior `Error` string |
+| `internal/executor/title_rejection.go:220` (`postTitleRejectionEscalation`) | executor | cheap-reversible | `pilot-failed`+`pilot-title-rejected` on 2nd consecutive same-title rejection | `raw-string` exact-hash match (family 4), **plus `re-read` (GH-4817 Phase 3 Task 5c)** — `fetchIssueState` gate skips the comment+labels on positive evidence the issue is already closed, fails open on lookup error |
+| `internal/executor/dispatcher.go:2036` (`surfaceStalledIssue`, via `escalateStalledTask`) | executor | cheap-reversible | `pilot-blocked` add, `pilot-failed`+`pilot-in-progress` remove | `counter` — raw drop-count threshold; idempotent via matching prior `Error` string. **Plus `re-read` (GH-4817 Phase 3 Task 5a)** — `fetchIssueState` gate skips the label write on positive evidence the issue is already closed, fails open on lookup error |
+| `cmd/pilot/handlers.go:837` (`notifyTaskStartedSDK` call, SDK-dispatch path) | cmd/pilot | cheap-reversible | `pilot-in-progress` add + start comment on SDK-poller dispatch (GH-4687) | `re-read` (GH-4817 Phase 3 Task 5b) — gated on `issueState != githubSDK.StateClosed`; `issueState` defaults to `""` (unknown) on fetch failure or nil `specClient`, so the comparison is against the positive `closed` value only, preserving fail-open on unresolvable state |
+| `internal/executor/epic.go:756` (`handleSubIssueCoverageGap`) | executor | cheap-reversible | `pilot-needs-clarification` add + coverage-gap comment on the parent issue | `counter`-adjacent (planned vs. created sub-issue count mismatch), **plus `re-read` (GH-4817 Phase 3 Task 5d)** — `fetchIssueState` gate on the parent issue skips the label+comment on positive evidence it's already closed (avoids the misleading "this issue stays open" comment on an externally-closed parent), fails open on lookup error |
+| `internal/autopilot/controller.go:7242` (`notifyExternalClose`, label-correction block only — the informational comment below it still posts unconditionally) | autopilot | cheap-reversible | `LabelInProgress`/`LabelFailed` remove + issue-label add, on external PR close | `raw-string` (`prState.TerminalLabel`), **plus `re-read` (GH-4817 Phase 3 Task 5e)** — reuses the `issue`/`err` already fetched earlier in the function for the pilot-done check (no fresh GitHub call) and skips the label writes when `issue.State == github.StateClosed`; the informational comment is deliberately left unconditional since a closed issue has no label/retry state left to protect, only history worth recording |
 | `internal/adapters/github/notifier.go:34,75,81,86,122,127,147` | adapters/github | cheap-reversible | Baseline (non-autopilot) issue-lifecycle labels on the dispatch/execution-complete path | Execution result (success/fail), not CI-check-scoped |
 | `internal/adapters/github/cleanup.go:336,444,521` | adapters/github | cheap-reversible | Background sweep removing stale labels on closed issues (extended by #4800/GH-4794 to strip `pilot-retry-ready`) | Time/state-based sweep |
 | `cmd/pilot/commands.go:1462,1499,1502,1515,1525,1546` | cmd/pilot CLI | cheap-reversible | Operator-invoked `pilot task cancel`/label commands | N/A — manual, not autonomous-daemon-invoked; distinct category, out of scope for the daemon decision ladder proper |
@@ -129,10 +148,11 @@ branch/commits may also be deleted immediately after, see family 2)
 | `internal/memory/store.go:1407` `ReclassifyCompletionAsSuperseded` (GH-4701) | memory store | costly-reversible | Called from `controller.go:6961`, sibling branch when `TerminalLabel == LabelSuperseded` |
 | `internal/memory/store.go:1439` `TerminateNonTerminalExecution` | memory store | costly-reversible | Called from `controller.go:6986`, terminates a still-running row as `failed` when a close is observed before completion |
 | `internal/memory/store.go:1460` `TerminateNonTerminalExecutionAsSuperseded` | memory store | costly-reversible | Called from `controller.go:6984`, superseded sibling |
-| `internal/memory/store.go:2183` `UpdateExecutionStatus` | memory store | costly-reversible | Generic unconditional status writer; callers include `dispatcher.go:372` (boot-time orphan reap -> `stalled`) and `dispatcher.go:1936` (`escalateStalledTask` -> `stalled`, family 4/8) |
+| `internal/memory/store.go:2183` `UpdateExecutionStatus` | memory store | costly-reversible | Generic unconditional status writer; callers include `dispatcher.go:541` `recoverStaleRunningTasks` (boot-time running-orphan reap) and `dispatcher.go:778` `recoverStaleQueuedTasks` (boot-time queued-orphan reap), both **typed as of GH-4817 Phase 3 Tasks 1/2** — `recoverStaleRunningTasks` now writes `stalled` and `recoverStaleQueuedTasks` now writes `canceled`, replacing a prior blanket `failed` write that collapsed every boot-time orphan (including ones later explainable as superseded/canceled work) into the same non-terminal-by-design bucket; and `dispatcher.go:1936` (`escalateStalledTask` -> `stalled`, family 4/8) |
 | `internal/memory/store.go:2247` `UpdateExecutionStatusIfNotTerminal` | memory store | costly-reversible | CAS-guarded (race-safe) writer; callers `dispatcher.go:623,803,926`, `lifecycle.go:220,318,547` (`ExecutionLifecycle.Cancel`, the `pilot task cancel` CLI path, GH-4586 — refuses if already `running` or already terminal) |
 | `internal/memory/store.go:2320` `UpdateExecutionStatusByTaskID` | memory store | costly-reversible | Task-ID-keyed variant |
-| `internal/executor/dispatcher.go:79` `IsTerminalByDesignStatus` (GH-4794, #4800, landed same cycle as this inventory) | executor | N/A — this is the fix, not the hazard | Converts `handleIssueGeneric`'s classification from **`side-effect-inferred`** ("no PR produced" read as failure) to **`typed`** (consult the recorded ledger status vocabulary — `superseded`/`canceled` vs `failed` — directly). Consumed by `cmd/pilot/handlers.go:560,675,873`. This is the concrete instance of root pattern 2 from the TASK-459 brief, already fixed for this one site — the general case is what `Verdict.Scope`+evidence enforcement in later phases generalizes |
+| `internal/executor/dispatcher.go:79` `IsTerminalByDesignStatus` (GH-4794, #4800) / `dispatcher.go:92` `IsNoArtifactExplainedOutcome` (GH-4817, TASK-459 Phase 3 Tasks 3/4) | executor | N/A — this is the fix, not the hazard | Converts three consumers' classification from **`side-effect-inferred`** ("no PR produced" read as failure) to **`typed`** (consult the recorded ledger status vocabulary — `no_op`/`superseded`/`canceled` vs `failed` — directly). `IsTerminalByDesignStatus` (superseded/canceled only) is consumed by `cmd/pilot/handlers.go:560,675,873`. `IsNoArtifactExplainedOutcome` (superset: adds `no_op`) is the GH-4817 Phase 3 addition consumed by the two GH-3053 "no commit, no PR" demotion sites named in the TASK-459 brief's root pattern 2 — `cmd/pilot/handlers.go:597` (`handleGitlabIssueWithResult`, guards `issueResult.Success = false`) and `cmd/pilot/commands.go:1527` (`newGitHubRunCmd`'s CLI no-artifact check) — both previously inferred failure from an absent commit/PR alone with no outcome check at all. The general case is what `Verdict.Scope`+evidence enforcement in later phases generalizes |
+| `internal/executor/finish_tripwires.go:264` `checkWorktreePruned` | executor | N/A — a false-positive-avoidance guard, not itself a destructive write | Flags a "commits with no PR" tripwire violation for rows that requested a PR but produced none. **GH-4817 Phase 3 Task 6** extended the pre-existing `decomposed`-parent carve-out to also exclude `superseded`/`canceled` rows — a superseded/canceled execution can legitimately have a commit with no PR (the work was intentionally abandoned mid-flight), and flagging it as a tripwire violation was a false positive of the same `side-effect-inferred` shape as the GH-3053 sites above. A plain `failed` row still trips the violation (guard is deliberately narrow — see `TestCheckWorktreePruned`'s "guard is narrow" subtest) |
 
 ## 8. `escalateAndHold` and hold/escalation (semi-destructive: never closes/deletes/merges, but pages a human and parks the PR — operator-costly)
 

@@ -7796,16 +7796,27 @@ func TestNotifyExternalClose_ReclassifyNotCalledWithoutEvalStore(t *testing.T) {
 func TestNotifyExternalClose_SkipsRetryReadyWhenDone(t *testing.T) {
 	tests := []struct {
 		name           string
+		issueState     string
 		issueLabels    []github.Label
 		wantRetryAdded bool
 	}{
 		{
+			// A pilot-done issue is normally already closed too — the
+			// pilot-done guard (checked first) is what actually skips
+			// retry-ready here, not the GH-4817 closed-state guard below it.
 			name:           "issue already pilot-done - skip retry-ready",
+			issueState:     "closed",
 			issueLabels:    []github.Label{{Name: github.LabelDone}},
 			wantRetryAdded: false,
 		},
 		{
+			// GH-4817: an issue that's genuinely still open (not done) is the
+			// only realistic fixture for "add retry-ready" — a closed-but-not-
+			// done issue would (correctly) now be skipped by the open-state
+			// guard added in Task 5e, since retry-ready on a closed issue is
+			// dead weight the poller will never pick up.
 			name:           "issue not done - add retry-ready",
+			issueState:     "open",
 			issueLabels:    []github.Label{},
 			wantRetryAdded: true,
 		},
@@ -7818,7 +7829,7 @@ func TestNotifyExternalClose_SkipsRetryReadyWhenDone(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
-					issue := github.Issue{Number: 10, State: "closed", Labels: tt.issueLabels}
+					issue := github.Issue{Number: 10, State: tt.issueState, Labels: tt.issueLabels}
 					w.WriteHeader(http.StatusOK)
 					_ = json.NewEncoder(w).Encode(issue)
 
@@ -7855,6 +7866,58 @@ func TestNotifyExternalClose_SkipsRetryReadyWhenDone(t *testing.T) {
 				t.Errorf("pilot-retry-ready added = %v, want %v", retryReadyAdded, tt.wantRetryAdded)
 			}
 		})
+	}
+}
+
+// TestNotifyExternalClose_SkipsLabelWriteWhenIssueClosed (GH-4817, TASK-459
+// Phase 3 Task 5e/7g): when the reused pilot-done GetIssue fetch shows the
+// issue is already closed (but not pilot-done — the pilot-done guard above
+// this code path already covers that case), notifyExternalClose must skip
+// the label correction (AddLabels/RemoveLabel) entirely — there's no retry
+// state to protect on an issue the poller will never revisit — but it must
+// still post the informational issue comment, unlike every other GH-4817
+// open-state-gated site in this codebase (which skip the comment too).
+func TestNotifyExternalClose_SkipsLabelWriteWhenIssueClosed(t *testing.T) {
+	var labelsPosted, labelsDeleted, issueCommentPosted bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
+			issue := github.Issue{Number: 10, State: "closed", Labels: []github.Label{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(issue)
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+			labelsPosted = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/labels/") && r.Method == http.MethodDelete:
+			labelsDeleted = true
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/owner/repo/issues/10/comments" && r.Method == http.MethodPost:
+			issueCommentPosted = true
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]int{"id": 2})
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 42, IssueNumber: 10, Error: "CI checks failed"}
+	c.notifyExternalClose(context.Background(), prState)
+
+	if labelsPosted {
+		t.Error("expected no label POST when the issue is already closed")
+	}
+	if labelsDeleted {
+		t.Error("expected no label DELETE when the issue is already closed")
+	}
+	if !issueCommentPosted {
+		t.Error("expected the informational issue comment to still post even though the issue is closed")
 	}
 }
 

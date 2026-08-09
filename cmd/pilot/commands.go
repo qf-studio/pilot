@@ -1520,7 +1520,11 @@ Examples:
 			// GH-3053: skip for epic-parent results. The parent legitimately
 			// produces no commit/PR when sub-issues handle the work; flagging
 			// it as failed mislabels the issue and posts a misleading comment.
-			if !result.IsEpic && result.CommitSHA == "" && result.PRUrl == "" {
+			// GH-4817 (TASK-459 Phase 3): also skip when the recorded outcome
+			// already explains the absence by design (no_op/terminal-by-design)
+			// — inferring failure from artifact absence alone here ignores the
+			// classification runner.Execute already computed.
+			if !result.IsEpic && result.CommitSHA == "" && result.PRUrl == "" && !executor.IsNoArtifactExplainedOutcome(result.Outcome) {
 				// No commits and no PR - mark as failed
 				if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-failed"}); err != nil {
 					logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)

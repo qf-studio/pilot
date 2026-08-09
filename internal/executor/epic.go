@@ -753,6 +753,20 @@ func (r *Runner) handleSubIssueCoverageGap(ctx context.Context, plan *EpicPlan, 
 	// to WARN.
 	ghRef := plan.ParentTask.GHIssueRef()
 
+	// TASK-459 Phase 3 Task 5d: skip the label/comment on positive evidence
+	// the parent issue is already closed (fail open on lookup error) — the
+	// comment below asserts "this issue stays open", which would be
+	// misleading if the parent was externally closed between decomposition
+	// and this coverage-gap check.
+	if state, err := fetchIssueState(ctx, r, plan.ParentTask, executionPath); err != nil {
+		r.log.Warn("coverage-gap: failed to check parent issue state before labeling; proceeding (fail-open)",
+			"parent_id", parentID, "error", err)
+	} else if state.Closed {
+		r.log.Info("coverage-gap: parent issue already closed, skipping pilot-needs-clarification label and comment",
+			"parent_id", parentID)
+		return gap
+	}
+
 	if err := ghAddLabels(ctx, executionPath, ghRef, []string{"pilot-needs-clarification"}); err != nil {
 		r.log.Warn("failed to label parent with pilot-needs-clarification after coverage gap",
 			"parent_id", parentID, "error", err)
