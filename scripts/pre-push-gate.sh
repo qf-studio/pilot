@@ -141,14 +141,14 @@ if [ "${PILOT_GATE_DOCS_ONLY:-0}" = "1" ]; then
 fi
 
 # 1. BUILD
-echo -e "${BLUE}[1/7] Build${NC}"
+echo -e "${BLUE}[1/8] Build${NC}"
 if ! run_check "go build" "go build -o /dev/null ./cmd/pilot"; then
     FAILURES=$((FAILURES + 1))
 fi
 echo ""
 
 # 2. LINT
-echo -e "${BLUE}[2/7] Lint${NC}"
+echo -e "${BLUE}[2/8] Lint${NC}"
 if command -v golangci-lint >/dev/null 2>&1; then
     if ! run_check "golangci-lint" "golangci-lint run --timeout 60s"; then
         FAILURES=$((FAILURES + 1))
@@ -160,14 +160,14 @@ fi
 echo ""
 
 # 3. TEST (short mode for speed)
-echo -e "${BLUE}[3/7] Test (short)${NC}"
+echo -e "${BLUE}[3/8] Test (short)${NC}"
 if ! run_check "go test -short" "go test -short -race ./..."; then
     FAILURES=$((FAILURES + 1))
 fi
 echo ""
 
 # 4. SECRETS
-echo -e "${BLUE}[4/7] Secret Patterns${NC}"
+echo -e "${BLUE}[4/8] Secret Patterns${NC}"
 if [ -x "$SCRIPT_DIR/check-secret-patterns.sh" ]; then
     if ! run_check "check-secrets" "$SCRIPT_DIR/check-secret-patterns.sh"; then
         FAILURES=$((FAILURES + 1))
@@ -178,7 +178,7 @@ fi
 echo ""
 
 # 5. MOCKS
-echo -e "${BLUE}[5/7] Argument-Discarding Mocks${NC}"
+echo -e "${BLUE}[5/8] Argument-Discarding Mocks${NC}"
 if [ -x "$SCRIPT_DIR/check-mocks.sh" ]; then
     if ! run_check "check-mocks" "$SCRIPT_DIR/check-mocks.sh"; then
         FAILURES=$((FAILURES + 1))
@@ -188,15 +188,26 @@ else
 fi
 echo ""
 
-# 6. KNOWLEDGE GRAPH
-echo -e "${BLUE}[6/7] Knowledge Graph${NC}"
+# 6. DESTRUCTIVE-CALL GATE
+echo -e "${BLUE}[6/8] Destructive-Call Gate${NC}"
+if [ -x "$SCRIPT_DIR/check-destructive-calls.sh" ]; then
+    if ! run_check "check-destructive" "$SCRIPT_DIR/check-destructive-calls.sh"; then
+        FAILURES=$((FAILURES + 1))
+    fi
+else
+    echo -e "  [check-destructive] ${YELLOW}skipped (script not found)${NC}"
+fi
+echo ""
+
+# 7. KNOWLEDGE GRAPH
+echo -e "${BLUE}[7/8] Knowledge Graph${NC}"
 if ! run_check "check-graph" "python3 $SCRIPT_DIR/check-graph.py"; then
     FAILURES=$((FAILURES + 1))
 fi
 echo ""
 
-# 7. INTEGRATION
-echo -e "${BLUE}[7/7] Integration${NC}"
+# 8. INTEGRATION
+echo -e "${BLUE}[8/8] Integration${NC}"
 if [ -x "$SCRIPT_DIR/check-integration.sh" ]; then
     if ! run_check "integration" "$SCRIPT_DIR/check-integration.sh"; then
         FAILURES=$((FAILURES + 1))

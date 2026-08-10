@@ -28,6 +28,15 @@ jobs:
       - name: Check for argument-discarding Backend.Execute mocks
         run: ./scripts/check-mocks.sh
 
+  destructive-call-gate:
+    name: Check Destructive-Call Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for destructive-call-gate bypasses
+        run: ./scripts/check-destructive-calls.sh
+
   graph-check:
     name: Knowledge Graph Drift Gate
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-graph gate check-integration test-prepush-fastpath auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph gate check-integration test-prepush-fastpath auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard
 
 # Variables
 BINARY_NAME=pilot
@@ -132,6 +132,13 @@ check-secrets:
 # Check for argument-discarding Backend.Execute mocks in test files (TASK-441 L1 / GH-4708)
 check-mocks:
 	@./scripts/check-mocks.sh
+
+# Check for destructive-call-gate bypasses: new ClosePullRequest/DeleteBranch/
+# CreateFailureIssue/MergePullRequest call sites outside their gated helpers,
+# and bare Verdict{} composite literals outside failure_class.go (TASK-459
+# Phase 4 / GH-4823)
+check-destructive:
+	@./scripts/check-destructive-calls.sh
 
 # Check knowledge-graph drift (graph.json vs .agent/knowledge/memories/ on disk)
 check-graph:
@@ -284,6 +291,7 @@ help:
 	@echo "  make install-hooks  Install git pre-commit/pre-push hooks"
 	@echo "  make check-secrets  Check for secret patterns in tests"
 	@echo "  make check-mocks    Check for argument-discarding Backend.Execute mocks"
+	@echo "  make check-destructive  Check for destructive-call-gate bypasses"
 	@echo "  make check-graph    Check knowledge-graph drift (graph.json vs disk)"
 	@echo "  make check-integration  Check for orphan code"
 	@echo "  make test-prepush-fastpath  Test the pre-push docs-only fast-path classifier"
