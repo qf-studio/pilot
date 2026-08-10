@@ -802,7 +802,16 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		if c.projectApproval.RequireApproval != nil {
 			c.resolvedRequireApproval = *c.projectApproval.RequireApproval
 		}
-		if c.projectApproval.ApprovalSource != nil {
+		// TASK-459 Phase 4 task 3: an explicit approval_source: "" overlay
+		// must inherit the resolved env/global source, not blank it — config
+		// validation documents empty as "inherits" (approval.ApprovalSourceValues
+		// accepts "" for exactly that reason), but a bare non-nil check let a
+		// pointer to an empty string overwrite c.resolvedApprovalSource with
+		// "", which then flows to PreferredChannel: "" (controller.go:3169)
+		// and routes the ask to the default channel (telegram) instead of the
+		// project's actually-resolved source. Found in PR#4795 post-merge
+		// review, 2026-08-07.
+		if c.projectApproval.ApprovalSource != nil && *c.projectApproval.ApprovalSource != "" {
 			c.resolvedApprovalSource = *c.projectApproval.ApprovalSource
 		}
 	}
