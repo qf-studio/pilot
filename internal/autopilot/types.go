@@ -1107,6 +1107,20 @@ type PRState struct {
 	ApprovalRequestID string
 	// ApprovalDecision holds the recorded async approval decision ("approved", "rejected", "timeout").
 	ApprovalDecision string
+	// ApprovalDecisionBy records who/what produced ApprovalDecision — TASK-459
+	// Phase 4 task 4b. For the real webhook/channel-tap path this is the "by"
+	// value SetApprovalDecision was called with (an HTTP caller identity, a
+	// Telegram/Slack username, or "system" for approval.Manager's own
+	// in-process timeout). For the controller's separate wall-clock-expiry
+	// "post-restart guard" (handleAwaitApproval Path 3, which synthesizes a
+	// decision in memory without ever calling SetApprovalDecision — the
+	// gap this field closes) it is set to
+	// approvalDecisionSourceWallClockExpiryDefault. Not itself the durable
+	// audit record (memoryStore's executions.approval_decision_by is,
+	// wherever a memory store is wired); this is in-memory evidence for the
+	// gate (applyApprovalDecision) and its logs to consume so a decision is
+	// never applied with zero visibility into who/what made it.
+	ApprovalDecisionBy string
 	// ApprovalRequestedAt is when the async approval request was first submitted.
 	ApprovalRequestedAt time.Time
 	// PostMergeSHA is the main branch SHA captured on first entry to StagePostMergeCI.
@@ -1290,6 +1304,7 @@ func (ps *PRState) snapshot() *PRState {
 		MergeNotificationPosted:      ps.MergeNotificationPosted,
 		ApprovalRequestID:            ps.ApprovalRequestID,
 		ApprovalDecision:             ps.ApprovalDecision,
+		ApprovalDecisionBy:           ps.ApprovalDecisionBy,
 		ApprovalRequestedAt:          ps.ApprovalRequestedAt,
 		PostMergeSHA:                 ps.PostMergeSHA,
 		PostMergeCIStartedAt:         ps.PostMergeCIStartedAt,

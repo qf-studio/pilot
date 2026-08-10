@@ -3069,6 +3069,13 @@ func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState) 
 	return false
 }
 
+// approvalDecisionSourceWallClockExpiryDefault is the ApprovalDecisionBy value
+// recorded when handleAwaitApproval's Path 3 "post-restart guard" synthesizes
+// a decision from wall-clock expiry — the one decision path that never calls
+// SetApprovalDecision (and so never carries a real "by" identity or a ledger
+// write) at all. TASK-459 Phase 4 task 4b.
+const approvalDecisionSourceWallClockExpiryDefault = "wall-clock-expiry-default"
+
 // handleAwaitApproval is a non-blocking tick handler for StageAwaitApproval.
 //
 // Tick 1 (no ApprovalRequestID): submits the request via SubmitApprovalRequest,
@@ -3101,6 +3108,7 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 			"elapsed", time.Since(prState.ApprovalRequestedAt).Round(time.Second),
 			"default_action", defaultAction)
 		prState.ApprovalDecision = string(defaultAction)
+		prState.ApprovalDecisionBy = approvalDecisionSourceWallClockExpiryDefault
 		return c.applyApprovalDecision(prState)
 	}
 
@@ -3232,20 +3240,31 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 		c.metrics.RecordApprovalWaitDuration(time.Since(prState.ApprovalRequestedAt))
 	}
 
+	// TASK-459 Phase 4 task 4b: decidedBy is evidence of who/what produced
+	// ApprovalDecision — a real webhook/channel-tap identity, "system" for
+	// approval.Manager's own in-process timeout, or
+	// approvalDecisionSourceWallClockExpiryDefault for the controller's
+	// separate post-restart wall-clock guard (handleAwaitApproval Path 3).
+	// Logged on every branch below so a decision this consequential (it
+	// gates StageMerging) is never applied with zero visibility into its
+	// source.
+	decidedBy := prState.ApprovalDecisionBy
+
 	switch approval.Decision(prState.ApprovalDecision) {
 	case approval.DecisionApproved:
-		c.log.Info("approval granted — advancing to merging stage", "pr", prState.PRNumber)
+		c.log.Info("approval granted — advancing to merging stage",
+			"pr", prState.PRNumber, "decided_by", decidedBy)
 		prState.Stage = StageMerging
 	case approval.DecisionRejected, approval.DecisionTimeout:
 		c.log.Info("approval not granted — failing PR",
-			"pr", prState.PRNumber, "decision", prState.ApprovalDecision)
+			"pr", prState.PRNumber, "decision", prState.ApprovalDecision, "decided_by", decidedBy)
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("merge rejected: approval %s", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
 		c.metrics.RecordIssueProcessed("failed")
 	default:
 		c.log.Warn("unknown approval decision — failing PR",
-			"pr", prState.PRNumber, "decision", prState.ApprovalDecision)
+			"pr", prState.PRNumber, "decision", prState.ApprovalDecision, "decided_by", decidedBy)
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("unknown approval decision: %q", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
@@ -3307,6 +3326,7 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 			// the pr.mu hold across this branch is the only guard, sufficient
 			// since it's the same in-process PRState object.
 			pr.ApprovalDecision = decision
+			pr.ApprovalDecisionBy = by
 			if c.stateStore != nil {
 				_ = c.stateStore.SavePRState(c.repoKey(), pr)
 			}
@@ -3344,6 +3364,7 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 
 		pr.mu.Lock()
 		pr.ApprovalDecision = decision
+		pr.ApprovalDecisionBy = by
 		if c.stateStore != nil {
 			_ = c.stateStore.SavePRState(c.repoKey(), pr)
 		}
