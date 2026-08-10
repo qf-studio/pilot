@@ -1533,6 +1533,18 @@
           "markers",
           "context"
         ]
+      },
+      "TASK-462": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-462-dashboard-fleet-wide-metrics-scope.md",
+        "title": "Task 462 Dashboard Fleet Wide Metrics Scope",
+        "status": "dispatched",
+        "concepts": [
+          "context",
+          "testing",
+          "api",
+          "knowledge",
+          "deployment"
+        ]
       }
     },
     "memories": {
@@ -6062,6 +6074,11 @@
       "from": "TASK-461",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "TASK-462",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6182,7 +6199,8 @@
       "TASK-454",
       "TASK-455",
       "TASK-460",
-      "TASK-459"
+      "TASK-459",
+      "TASK-462"
     ],
     "deployment": [
       "TASK-386",
@@ -6291,7 +6309,8 @@
       "TASK-458",
       "TASK-459",
       "TASK-460",
-      "TASK-461"
+      "TASK-461",
+      "TASK-462"
     ],
     "authentication": [
       "TASK-386",
@@ -6457,7 +6476,8 @@
       "TASK-458",
       "TASK-459",
       "TASK-460",
-      "TASK-461"
+      "TASK-461",
+      "TASK-462"
     ],
     "api": [
       "TASK-386",
@@ -6538,7 +6558,8 @@
       "TASK-457",
       "TASK-458",
       "TASK-459",
-      "TASK-461"
+      "TASK-461",
+      "TASK-462"
     ],
     "context": [
       "TASK-386",
@@ -6629,7 +6650,8 @@
       "TASK-458",
       "TASK-459",
       "TASK-460",
-      "TASK-461"
+      "TASK-461",
+      "TASK-462"
     ],
     "markers": [
       "TASK-387",
@@ -7185,10 +7207,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-10T13:37:26.273405+00:00",
+  "last_updated": "2026-08-10T18:56:42.090504+00:00",
   "stats": {
-    "total_nodes": 380,
-    "total_edges": 320,
+    "total_nodes": 381,
+    "total_edges": 321,
     "memory_count": 217
   }
 }
