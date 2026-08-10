@@ -384,6 +384,12 @@ type DashboardConfig struct {
 	// GH-4735: lifetime aggregates blend model eras and are misleading;
 	// history is not deleted, only the headline surfaces are windowed.
 	StatsWindowDays int `yaml:"stats_window_days"`
+	// MetricsScopePath filters the TUI's store-backed metrics panels (cost
+	// card, task breakdown, recent executions, lifetime tokens, sparklines)
+	// to one project path. Empty (default) = fleet-wide, matching the
+	// pilot_window_* Prometheus gauges. The git-graph panel is unaffected —
+	// it follows the daemon's project path. GH-4829.
+	MetricsScopePath string `yaml:"metrics_scope_path"`
 }
 
 // AlertsConfig holds configuration for the alerting system including
@@ -699,6 +705,9 @@ func Load(path string) (*Config, error) {
 	}
 	for _, project := range config.Projects {
 		project.Path = expandPath(project.Path)
+	}
+	if config.Dashboard != nil && config.Dashboard.MetricsScopePath != "" {
+		config.Dashboard.MetricsScopePath = expandPath(config.Dashboard.MetricsScopePath)
 	}
 
 	// Apply bot model default when bot is configured without an explicit model.

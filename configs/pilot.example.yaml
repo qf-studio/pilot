@@ -813,3 +813,12 @@ autopilot:
 dashboard:
   refresh_interval: 1000     # ms
   show_logs: true
+  # metrics_scope_path filters the TUI's store-backed metrics panels (cost
+  # card, task breakdown, recent executions, lifetime tokens, sparklines) to
+  # one project. Default (unset/empty) is fleet-wide, matching the
+  # pilot_window_* Prometheus gauges — the daemon serves multiple repos, so
+  # fleet-wide is the correct default view. Set this to a project path to
+  # restore the old per-project numbers for that one repo. The git-graph
+  # panel always follows the daemon's --project path, regardless of this
+  # setting. (GH-4829)
+  # metrics_scope_path: /path/to/one/project

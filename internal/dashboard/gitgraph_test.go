@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // makeKey creates a tea.KeyMsg for the given string (single char or named key).
@@ -812,6 +814,79 @@ func TestSetMetricsScopePath(t *testing.T) {
 	}
 	if m.metricsScopePath != "/tmp/metrics-scope" {
 		t.Errorf("metricsScopePath = %q, want /tmp/metrics-scope", m.metricsScopePath)
+	}
+}
+
+// TestMetricsScopePath_FleetWideDefault is the GH-4829 regression: the
+// dashboard's store-backed metrics panels must default to fleet-wide (all
+// projects), not the single project SetProjectPath seeds. main.go wires this
+// by always calling SetMetricsScopePath(cfg.Dashboard.MetricsScopePath) right
+// after SetProjectPath — an empty config value (the default) must explicitly
+// override the seeded scope back to "", not leave it seeded to one project.
+func TestMetricsScopePath_FleetWideDefault(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Seed executions for two different projects, 150 tokens each.
+	for _, e := range []struct{ id, project string }{
+		{"exec-a", "/proj/a"},
+		{"exec-b", "/proj/b"},
+	} {
+		if err := store.SaveExecution(&memory.Execution{
+			ID: e.id, TaskID: "TASK-" + e.id, ProjectPath: e.project, Status: "completed",
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.id, err)
+		}
+		if err := store.SaveExecutionMetrics(&memory.ExecutionMetrics{
+			ExecutionID: e.id, TokensInput: 100, TokensOutput: 50, TokensTotal: 150, EstimatedCostUSD: 1.0,
+		}); err != nil {
+			t.Fatalf("SaveExecutionMetrics %s: %v", e.id, err)
+		}
+	}
+
+	tests := []struct {
+		name          string
+		configure     func(m *Model)
+		wantTotalTkns int // GetLifetimeTokens is queried with m.metricsScopePath
+	}{
+		{
+			name: "SetProjectPath alone seeds scope to that project (existing behavior)",
+			configure: func(m *Model) {
+				m.SetProjectPath("/proj/a")
+			},
+			wantTotalTkns: 150,
+		},
+		{
+			name: "SetMetricsScopePath empty overrides the seed to fleet-wide",
+			configure: func(m *Model) {
+				m.SetProjectPath("/proj/a")
+				m.SetMetricsScopePath("")
+			},
+			wantTotalTkns: 300,
+		},
+		{
+			name: "SetMetricsScopePath to another project overrides the seed",
+			configure: func(m *Model) {
+				m.SetProjectPath("/proj/a")
+				m.SetMetricsScopePath("/proj/b")
+			},
+			wantTotalTkns: 150,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModelWithStore("test", store)
+			tt.configure(&m)
+			m.hydrateFromStore()
+			if m.metricsCard.TotalTokens != tt.wantTotalTkns {
+				t.Errorf("TotalTokens = %d, want %d (metricsScopePath=%q)",
+					m.metricsCard.TotalTokens, tt.wantTotalTkns, m.metricsScopePath)
+			}
+		})
 	}
 }
 

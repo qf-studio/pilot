@@ -1020,9 +1020,12 @@ Examples:
 					}
 					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
 					model.SetProjectPath(projectPath)
+					scope := ""
 					if cfg.Dashboard != nil {
 						model.SetStatsWindowDays(cfg.Dashboard.StatsWindowDays)
+						scope = cfg.Dashboard.MetricsScopePath
 					}
+					model.SetMetricsScopePath(scope)
 					applyDashboardBannerMeta(&model, cfg, cmd)
 					model.EnableSplash(resolvedConfigPath())
 					gwProgram = tea.NewProgram(model,
@@ -2646,9 +2649,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		model.SetProjectPath(projectPath)
+		scope := ""
 		if cfg.Dashboard != nil {
 			model.SetStatsWindowDays(cfg.Dashboard.StatsWindowDays)
+			scope = cfg.Dashboard.MetricsScopePath
 		}
+		model.SetMetricsScopePath(scope)
 		applyDashboardBannerMeta(&model, cfg, cmd)
 		model.EnableSplash(resolvedConfigPath())
 		program = tea.NewProgram(model,

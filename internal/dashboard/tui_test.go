@@ -668,6 +668,11 @@ func TestUpdateTokensMsg_AddsToLifetimeTotals(t *testing.T) {
 	}
 
 	m := NewModelWithStore("test", store)
+	// GH-4829: CostPerTask now only ever carries the store's CostPerDelivered
+	// value (set by hydrateFromStore/GetWindowedStats) — pin a sentinel here
+	// so the assertion below fails if updateTokensMsg recomputes it.
+	m.metricsCard.CostPerTask = 42.0
+	m.metricsCard.TotalTasks = 3
 
 	// Simulate a token update from a running execution (cumulative: 2000 in, 1000 out)
 	updated, _ := m.Update(updateTokensMsg{InputTokens: 2000, OutputTokens: 1000, TotalTokens: 3000})
@@ -683,10 +688,18 @@ func TestUpdateTokensMsg_AddsToLifetimeTotals(t *testing.T) {
 	if model.metricsCard.TotalTokens != 18000 {
 		t.Errorf("TotalTokens = %d, want 18000", model.metricsCard.TotalTokens)
 	}
+	// GH-4829: CostPerTask must NOT be recomputed from TotalCostUSD/TotalTasks.
+	if model.metricsCard.CostPerTask != 42.0 {
+		t.Errorf("CostPerTask = %v, want unchanged 42.0 (must not be recomputed live)", model.metricsCard.CostPerTask)
+	}
 }
 
 func TestAddCompletedTask_NewFieldsStored(t *testing.T) {
 	m := NewModel("test")
+	// GH-4829: pin a sentinel CostPerTask so we can assert addCompletedTaskMsg
+	// does not recompute it from TotalCostUSD/TotalTasks.
+	m.metricsCard.CostPerTask = 42.0
+	m.metricsCard.TotalCostUSD = 10.0
 
 	// Send a completed task with parentID and isEpic=false (sub-issue)
 	msg := addCompletedTaskMsg(CompletedTask{
@@ -709,6 +722,10 @@ func TestAddCompletedTask_NewFieldsStored(t *testing.T) {
 	}
 	if task.IsEpic {
 		t.Error("IsEpic = true, want false")
+	}
+	// GH-4829: CostPerTask must NOT be recomputed from TotalCostUSD/TotalTasks.
+	if model.metricsCard.CostPerTask != 42.0 {
+		t.Errorf("CostPerTask = %v, want unchanged 42.0 (must not be recomputed live)", model.metricsCard.CostPerTask)
 	}
 
 	// Send an epic task with SubIssues, TotalSubs, DoneSubs
