@@ -1,13 +1,16 @@
 package approval
 
 // This file is the single normalization point for approval channel names in
-// this package (GH-4772). Everything that compares a persisted/requested
+// this package (GH-4772), and — as of TASK-459 Phase 4 task 2 — the single
+// exported vocabulary for approval-source/channel names consumed outside
+// this package too (internal/config's config validation, internal/health's
+// registration check). Everything that compares a persisted/requested
 // channel string against a registered Handler.Name() — Manager's dispatch
 // lookup, each handler's Rehydrate, and the expiry sweep's channel scoping —
-// goes through normalizeChannelName/ownsChannel so the alias table and the
+// goes through NormalizeChannelName/ownsChannel so the alias table and the
 // legacy-row ownership rule are defined exactly once.
 
-// defaultChannelName is the approval channel that claims pending-approval
+// DefaultChannelName is the approval channel that claims pending-approval
 // rows persisted with an empty preferred_channel: rows written before
 // PreferredChannel existed (pre-GH-4380), or by any future caller that
 // leaves it unset. Exactly one handler must own these rows, or Rehydrate/the
@@ -24,7 +27,7 @@ package approval
 // every empty-preferred_channel row in a live database predates Slack
 // entirely — Telegram is the correct legacy owner in practice, not just by
 // convention.
-const defaultChannelName = "telegram"
+const DefaultChannelName = "telegram"
 
 // githubReviewAlias is the autopilot-level ApprovalSource config value for
 // GitHub PR-review approvals (autopilot.ApprovalSourceGitHubReview =
@@ -45,11 +48,36 @@ const githubReviewAlias = "github-review"
 // when a new Handler type is added.
 var knownChannelNames = []string{"telegram", "slack", "github", githubReviewAlias}
 
-// normalizeChannelName maps a channel name as it appears on a Request or a
+// ApprovalSourceValues is the canonical, exported vocabulary of accepted
+// `approval_source` config values (TASK-459 Phase 4 task 2). This used to
+// exist three times: this file's own knownChannelNames (a different,
+// unexported vocabulary — see above), internal/config's
+// validApprovalSourceValues, and internal/health's sourceRegistered switch.
+// All three needed to accept exactly the same set or silently drift apart.
+//
+// "" is included because it is itself a valid approval_source config value
+// (meaning "inherit the resolved env/global source") even though it is not
+// a channel/handler name — that's why this isn't just knownChannelNames
+// re-exported. "github" (the canonical Handler.Name()) is deliberately
+// excluded: the only documented config-facing spelling for that handler is
+// the "github-review" alias (githubReviewAlias), normalized to "github" by
+// NormalizeChannelName at dispatch time. Update this map (and
+// knownChannelNames above) together when a new Handler type is added.
+var ApprovalSourceValues = map[string]bool{
+	"":                true,
+	"telegram":        true,
+	"slack":           true,
+	githubReviewAlias: true,
+}
+
+// NormalizeChannelName maps a channel name as it appears on a Request or a
 // persisted PendingApproval row to the name its serving Handler is
 // registered under. Every value other than the github-review alias passes
-// through unchanged.
-func normalizeChannelName(name string) string {
+// through unchanged. Exported (TASK-459 Phase 4 task 2) so callers outside
+// this package — e.g. internal/health's registration check — can normalize
+// a raw approval_source value the same way Manager's own dispatch lookup
+// does, instead of re-deriving the alias mapping themselves.
+func NormalizeChannelName(name string) string {
 	if name == githubReviewAlias {
 		return "github"
 	}
@@ -63,16 +91,16 @@ func normalizeChannelName(name string) string {
 // legacy claimant (GH-4772).
 func ownsChannel(handlerName, preferredChannel string) bool {
 	if preferredChannel == "" {
-		return handlerName == defaultChannelName
+		return handlerName == DefaultChannelName
 	}
-	return normalizeChannelName(preferredChannel) == handlerName
+	return NormalizeChannelName(preferredChannel) == handlerName
 }
 
 // ownedChannels returns the set of preferred_channel values a channel-scoped
 // store sweep (PrunePendingApprovals) should delete for handlerName: its own
 // name, plus "" (empty/legacy) when handlerName is the default claimant.
 func ownedChannels(handlerName string) []string {
-	if handlerName == defaultChannelName {
+	if handlerName == DefaultChannelName {
 		return []string{handlerName, ""}
 	}
 	return []string{handlerName}

@@ -22,6 +22,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/health/verify"
 	"github.com/qf-studio/pilot/internal/upgrade"
@@ -977,20 +978,29 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 			cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled
 		githubRegistered := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Approval != nil && cfg.Adapters.GitHub.Approval.Enabled
 
+		// registeredByChannel maps each approval.NormalizeChannelName-normalized
+		// channel name to whether this process would register a handler for
+		// it. Keyed by the same handler names the approval package itself
+		// uses (approval.DefaultChannelName == "telegram" for the empty/
+		// legacy claimant), so this can't drift from the channel vocabulary
+		// independently (TASK-459 Phase 4 task 2).
+		registeredByChannel := map[string]bool{
+			approval.DefaultChannelName: telegramRegistered,
+			"slack":                     slackRegistered,
+			"github":                    githubRegistered,
+		}
+
 		sourceRegistered := func(source string) bool {
-			switch source {
-			case "", "telegram":
-				// defaultChannelName in internal/approval/channel.go claims an
-				// empty/unset preferred channel — mirror that default here.
-				return telegramRegistered
-			case "slack":
-				return slackRegistered
-			case "github-review":
-				return githubRegistered
-			default:
+			if source == "" {
+				// approval.DefaultChannelName claims an empty/unset preferred
+				// channel — mirror that default here.
+				source = approval.DefaultChannelName
+			}
+			if !approval.ApprovalSourceValues[source] {
 				// Unknown values are already rejected by config validation.
 				return true
 			}
+			return registeredByChannel[approval.NormalizeChannelName(source)]
 		}
 
 		reported := make(map[string]bool)

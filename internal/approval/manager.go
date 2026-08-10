@@ -278,7 +278,7 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 		// Name(). GH-4380 semantics are unchanged: a channel that's still
 		// unresolvable after normalization is a hard error, never a silent
 		// fallback.
-		if h, ok := m.handlers[normalizeChannelName(req.PreferredChannel)]; ok {
+		if h, ok := m.handlers[NormalizeChannelName(req.PreferredChannel)]; ok {
 			handler = h
 		} else {
 			preferredMissing = true

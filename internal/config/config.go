@@ -883,19 +883,6 @@ var validReleaseTriggerValues = map[string]bool{
 	"on_schedule":    true,
 }
 
-// validApprovalSourceValues are the accepted values for a per-project
-// approval.approval_source overlay (GH-4774). Mirrors the alias table in
-// internal/approval/channel.go's knownChannelNames — "github-review" is the
-// config-facing alias for the "github" Handler.Name(), normalized at
-// dispatch time, so both the canonical and alias spellings are accepted
-// here rather than duplicating that unexported mapping.
-var validApprovalSourceValues = map[string]bool{
-	"":              true, // Empty inherits the resolved env/global source
-	"telegram":      true,
-	"slack":         true,
-	"github-review": true,
-}
-
 // validateReleaseTriggerFields validates the trigger enum and, when trigger
 // is "on_schedule", that schedule is present and parses as a robfig/cron/v3
 // standard (5-field: minute hour dom month dow) cron expression; when
@@ -1031,14 +1018,15 @@ func (c *Config) Validate() error {
 	}
 
 	// GH-4774: Validate approval.approval_source on each project's approval
-	// overlay against the same channel names the approval package's
-	// normalizeChannelName/knownChannelNames alias table recognizes.
+	// overlay against the canonical vocabulary exported by the approval
+	// package (TASK-459 Phase 4 task 2 — approval.ApprovalSourceValues is
+	// the single source of truth, no longer duplicated here).
 	for i, p := range c.Projects {
 		if p == nil || p.Approval == nil || p.Approval.ApprovalSource == nil {
 			continue
 		}
 		source := string(*p.Approval.ApprovalSource)
-		if !validApprovalSourceValues[source] {
+		if !approval.ApprovalSourceValues[source] {
 			return fmt.Errorf("projects[%d].approval.approval_source must be \"telegram\", \"slack\", or \"github-review\", got %q", i, source)
 		}
 	}

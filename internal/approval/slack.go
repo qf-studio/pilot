@@ -202,7 +202,7 @@ func (h *SlackHandler) Rehydrate(ctx context.Context) error {
 		// originally dispatched to Telegram (or any other channel) must not
 		// be re-armed here, and this handler must not delete an expired row
 		// it doesn't own out from under its owning handler's own sweep. See
-		// ownsChannel/defaultChannelName.
+		// ownsChannel/DefaultChannelName.
 		if !ownsChannel(h.Name(), row.PreferredChannel) {
 			continue
 		}
