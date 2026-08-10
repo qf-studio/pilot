@@ -266,6 +266,29 @@ func newGitHubClient(cfg *config.Config) *github.Client {
 	return github.NewClientWithTokenFuncAndInvalidate(githubTokenFunc(cfg), invalidateGitHubAppToken(cfg))
 }
 
+// newGitHubSDKClient builds a studio-sdk GitHub client whose token is
+// re-resolved on every request via githubTokenFunc (TASK-461 Leg 2 — the
+// studio-sdk client family's counterpart to newGitHubClient's GH-4747 fix).
+// Use this instead of githubSDK.NewClient(token) for anything held past the
+// call that constructs it: a client built once from a static string keeps
+// that string for the daemon's lifetime, which is exactly the bug that
+// leaves App-auth installation tokens (hourly expiry) frozen at boot.
+// invalidateGitHubAppToken returns nil when App auth isn't configured — the
+// SDK's withAuthRetry treats a nil hook as no-retry (safe) — but the option
+// is only passed when there's something to invalidate, to keep intent
+// explicit at the call site. extraOpts is exposed so tests can pin the
+// client's base URL (githubSDK.WithClientBaseURL) at a local test server
+// without duplicating this constructor's wiring; production call sites all
+// pass none.
+func newGitHubSDKClient(cfg *config.Config, extraOpts ...githubSDK.ClientOption) *githubSDK.Client {
+	var opts []githubSDK.ClientOption
+	if invalidate := invalidateGitHubAppToken(cfg); invalidate != nil {
+		opts = append(opts, githubSDK.WithTokenInvalidate(invalidate))
+	}
+	opts = append(opts, extraOpts...)
+	return githubSDK.NewClientWithTokenFunc(githubSDK.TokenFunc(githubTokenFunc(cfg)), opts...)
+}
+
 // validateGitHubToken makes one authenticated API call to confirm the
 // resolved token actually works. A dead/expired token otherwise fails
 // silently on every subsequent poll (live incident 2026-06-30) — this makes
@@ -822,8 +845,10 @@ Examples:
 							}
 
 							// M7 4d.1: autopilot consumes the studio-sdk client; the in-tree
-							// ghClient stays for the legacy poller/webhook until later phases.
-							apGHClient := githubSDK.NewClient(ghToken)
+							// ghClient stays for the legacy poller/webhook. TASK-461 Leg 2:
+							// built via newGitHubSDKClient so the daemon-lifetime client
+							// re-resolves its token per request instead of freezing ghToken.
+							apGHClient := newGitHubSDKClient(cfg)
 
 							// GH-1870: Board sync option for gateway autopilot controller.
 							var gwBoardOpts []autopilot.ControllerOption
@@ -2081,8 +2106,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// and autopilot's step-log client for the daemon's lifetime.
 			ghClient := newGitHubClient(cfg)
 			// M7 4d.1: autopilot consumes the studio-sdk client; ghClient (in-tree)
-			// stays for the approval handler and legacy paths until later phases.
-			apGHClient := githubSDK.NewClient(ghToken)
+			// stays for the approval handler and legacy paths. TASK-461 Leg 2:
+			// built via newGitHubSDKClient so the daemon-lifetime client
+			// re-resolves its token per request instead of freezing ghToken.
+			apGHClient := newGitHubSDKClient(cfg)
 
 			// GH-3992: one shared LLM release summary generator for every
 			// controller constructed below (default + per-project) — nil
@@ -2538,7 +2565,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			capturedController := autopilotController
 			token, _ := resolveGitHubToken(cfg)
 			if token != "" {
-				ghClient := githubSDK.NewClient(token)
+				// TASK-461 Leg 2: built via newGitHubSDKClient so this
+				// daemon-lifetime client re-resolves its token per request
+				// instead of freezing the one-off token string above (which
+				// is retained only to gate whether a client is built at all).
+				ghClient := newGitHubSDKClient(cfg)
 				ghWH := githubSDK.NewWebhookHandler(ghClient, cfg.Adapters.GitHub.WebhookSecret, cfg.Adapters.GitHub.PilotLabel)
 				ghWH.OnPRReview(func(ctx context.Context, prNumber int, action, state, reviewer string, repo *githubSDK.Repository) error {
 					if action == "submitted" {

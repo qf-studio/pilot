@@ -767,7 +767,11 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	var specClient *githubSDK.Client
 	if repoOwner != "" && repoName != "" {
 		if ghToken, _ := resolveGitHubToken(cfg); ghToken != "" {
-			specClient = githubSDK.NewClient(ghToken)
+			// TASK-461 Leg 2: built via newGitHubSDKClient for uniformity with
+			// the daemon-lifetime sites — this per-event client already
+			// re-resolved ghToken fresh above, so the swap is low-risk, not a
+			// behavior fix.
+			specClient = newGitHubSDKClient(cfg)
 			if realIssue := fetchGithubIssueForSDKTask(ctx, specClient, repoOwner, repoName, issueNum, taskID); realIssue != nil {
 				issueState = realIssue.State
 				memberID = resolveGitHubMemberIDByLogin(realIssue.User.Login, realIssue.User.Email)

@@ -223,19 +223,29 @@ func githubPollerRegistration() PollerRegistration {
 			// path uses (config -> GITHUB_TOKEN env -> `gh auth token` CLI) instead
 			// of trusting ghCfg.Token verbatim. With token: "" in config (the common
 			// setup), the SDK poller previously sent empty credentials on every poll
-			// while startup still logged "polling enabled". One token is shared across
-			// every per-repo poller (M7 4d.2b fan-out).
-			token, tokenSource := resolveGitHubToken(deps.Cfg)
-			if token == "" {
+			// while startup still logged "polling enabled". Only used here to check
+			// whether ANY credential resolves and to label the shared client's
+			// source in logs — the client built below re-resolves per request.
+			_, tokenSource := resolveGitHubToken(deps.Cfg)
+			if tokenSource == githubTokenSourceNone {
 				log.Error("GitHub SDK poller disabled: no token resolved",
 					slog.String("resolution_chain", "adapters.github.token config -> GITHUB_TOKEN env -> gh auth token CLI"),
 				)
 				return
 			}
 
+			// TASK-461 Leg 2: one shared TokenFunc-backed client for the whole
+			// fan-out (matches the pre-existing one-token-shared design — the
+			// rate-limit budget is per-credential, not per-repo) instead of a
+			// frozen boot-time string. Injected into each repo's adapter via
+			// WithAdapterClient below, so the poller, MergeWaiter, and board
+			// sync/source all re-resolve the token per request instead of
+			// freezing it for the daemon's lifetime.
+			client := newGitHubSDKClient(deps.Cfg)
+
 			// GH-3917: fail loud on a dead/invalid token once, up front, instead of
 			// letting every repo's poll silently 401.
-			if !verifySDKGithubToken(ctx, githubSDK.NewClient(token), tokenSource, deps.AlertsEngine) {
+			if !verifySDKGithubToken(ctx, client, tokenSource, deps.AlertsEngine) {
 				return
 			}
 
@@ -243,7 +253,7 @@ func githubPollerRegistration() PollerRegistration {
 			targets := githubSDKPollerTargets(deps.Cfg, deps.ProjectPath)
 			started := 0
 			for _, target := range targets {
-				if startGithubSDKPollerForRepo(ctx, deps, log, token, tokenSource, target) {
+				if startGithubSDKPollerForRepo(ctx, deps, log, client, tokenSource, target) {
 					started++
 				}
 			}
@@ -318,12 +328,14 @@ func resolveRepoMetrics(deps *PollerDeps, repoFullName string) *autopilot.Metric
 }
 
 // startGithubSDKPollerForRepo constructs and starts one SDK poller for target.
-// The shared token is already resolved and verified by the caller. Returns false
-// (and logs) without starting when the repo cannot be driven safely (invalid repo
-// format). Each poller carries its own repo identity, project path, autopilot
-// controller, rate-limit scheduler and PR creator; they share the token and the
+// The shared client is already resolved and verified by the caller. Returns
+// false (and logs) without starting when the repo cannot be driven safely
+// (invalid repo format). Each poller carries its own repo identity, project
+// path, autopilot controller, rate-limit scheduler and PR creator; they share
+// the client (TASK-461 Leg 2 — one TokenFunc-backed client across the
+// fan-out, matching the pre-existing one-token-shared design) and the
 // repo-scoped processed store.
-func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slog.Logger, token string, tokenSource githubTokenSource, target githubSDKPollerTarget) bool {
+func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slog.Logger, client *githubSDK.Client, tokenSource githubTokenSource, target githubSDKPollerTarget) bool {
 	ghCfg := deps.Cfg.Adapters.GitHub
 
 	repoParts := strings.SplitN(target.repoFullName, "/", 2)
@@ -366,8 +378,11 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 		pilotLabel = "pilot"
 	}
 	sdkCfg := &githubSDK.Config{
-		Enabled:       ghCfg.Enabled,
-		Token:         token,
+		Enabled: ghCfg.Enabled,
+		// Token is intentionally left unset: the adapter is given a
+		// TokenFunc-backed client via WithAdapterClient below (TASK-461 Leg
+		// 2), which NewPoller uses instead of constructing a static-token
+		// client from this field.
 		WebhookSecret: ghCfg.WebhookSecret,
 		Repo:          target.repoFullName,
 		TriggerLabel:  pilotLabel,
@@ -475,7 +490,9 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	// SDK client and re-enters the SDK handler path, so the whole retry loop stays
 	// on core.IssueEvent. Priority is left "" on retry — it only affects queue
 	// ordering and the event is already past candidate selection.
-	sdkClient := githubSDK.NewClient(token)
+	// TASK-461 Leg 2: sdkClient is the shared TokenFunc-backed client passed
+	// in by the caller (one client per fan-out, not per repo).
+	sdkClient := client
 	rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
 	rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
 		var issueNum int
@@ -539,7 +556,11 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 		deps.Runner.RegisterIssueStateChecker("github:"+target.repoFullName, sdkshim.NewGitHubIssueStateChecker(sdkClient))
 	}
 
-	githubPoller := githubSDK.New(sdkCfg).NewPoller(pollerDeps)
+	// TASK-461 Leg 2: WithAdapterClient injects the shared TokenFunc-backed
+	// client so NewPoller reuses it instead of constructing a static-token
+	// client from sdkCfg.Token (which is now left unset) — the Poller, its
+	// MergeWaiter, and board sync/source all inherit it.
+	githubPoller := githubSDK.New(sdkCfg, githubSDK.WithAdapterClient(client)).NewPoller(pollerDeps)
 
 	// GH-4110: publish the SDK poller handle to the shared repo-keyed registry so
 	// the main.go sub-issue-skip / done-remark / stale-label loops can mark/clear it.
