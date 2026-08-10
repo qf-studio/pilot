@@ -315,7 +315,7 @@ func TestScopeCarrier_AttemptsCapEscalatesToFailedAlert(t *testing.T) {
 	c.SetAlertsEngine(sink)
 
 	prState := &PRState{PRNumber: 9, ScopeKey: "epic:1", IssueNumber: 1}
-	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed")
+	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed", false)
 
 	row, err := stateStore.GetScopeRelease("owner/repo", "epic:1")
 	if err != nil || row == nil {
@@ -702,8 +702,8 @@ func TestHandleScopeReleaseFailure_TerminalFailedRowIsNotResurrected(t *testing.
 	// even though its scope already resolved terminal.
 	prState := &PRState{PRNumber: 9, ScopeKey: "epic:1", IssueNumber: 1, Stage: StagePostMergeCI, PostMergeSHA: "redsha"}
 
-	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed")
-	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed")
+	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed", false)
+	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed", false)
 
 	row, err := stateStore.GetScopeRelease("owner/repo", "epic:1")
 	if err != nil || row == nil {

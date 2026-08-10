@@ -167,7 +167,7 @@ func TestHandleScopeReleaseFailure_ParksAfterRepeatedTimeouts(t *testing.T) {
 	prState := &PRState{PRNumber: 9, ScopeKey: "epic:1", IssueNumber: 1, PostMergeSHA: "sha-red"}
 
 	for i := 0; i < maxScopeReleaseTimeoutAttempts; i++ {
-		c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI timeout after 30m0s")
+		c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI timeout after 30m0s", true)
 	}
 
 	row, err := stateStore.GetScopeRelease("owner/repo", "epic:1")
@@ -188,7 +188,7 @@ func TestHandleScopeReleaseFailure_ParksAfterRepeatedTimeouts(t *testing.T) {
 
 	// A further zombie-carrier failure against the now-parked scope must not
 	// re-queue it, bump the counter further, or fire a second alert.
-	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI timeout after 30m0s")
+	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI timeout after 30m0s", true)
 
 	row2, err := stateStore.GetScopeRelease("owner/repo", "epic:1")
 	if err != nil || row2 == nil {
@@ -225,9 +225,9 @@ func TestHandleScopeReleaseFailure_NonTimeoutReasonResetsTimeoutStreak(t *testin
 
 	prState := &PRState{PRNumber: 9, ScopeKey: "epic:1", IssueNumber: 1, PostMergeSHA: "sha-red"}
 
-	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI timeout after 30m0s")
-	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI timeout after 30m0s")
-	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed")
+	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI timeout after 30m0s", true)
+	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI timeout after 30m0s", true)
+	c.handleScopeReleaseFailure(context.Background(), prState, "post-merge CI failed", false)
 
 	row, err := stateStore.GetScopeRelease("owner/repo", "epic:1")
 	if err != nil || row == nil {

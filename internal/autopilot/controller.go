@@ -802,7 +802,16 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		if c.projectApproval.RequireApproval != nil {
 			c.resolvedRequireApproval = *c.projectApproval.RequireApproval
 		}
-		if c.projectApproval.ApprovalSource != nil {
+		// TASK-459 Phase 4 task 3: an explicit approval_source: "" overlay
+		// must inherit the resolved env/global source, not blank it — config
+		// validation documents empty as "inherits" (approval.ApprovalSourceValues
+		// accepts "" for exactly that reason), but a bare non-nil check let a
+		// pointer to an empty string overwrite c.resolvedApprovalSource with
+		// "", which then flows to PreferredChannel: "" (controller.go:3169)
+		// and routes the ask to the default channel (telegram) instead of the
+		// project's actually-resolved source. Found in PR#4795 post-merge
+		// review, 2026-08-07.
+		if c.projectApproval.ApprovalSource != nil && *c.projectApproval.ApprovalSource != "" {
 			c.resolvedApprovalSource = *c.projectApproval.ApprovalSource
 		}
 	}
@@ -3060,6 +3069,13 @@ func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState) 
 	return false
 }
 
+// approvalDecisionSourceWallClockExpiryDefault is the ApprovalDecisionBy value
+// recorded when handleAwaitApproval's Path 3 "post-restart guard" synthesizes
+// a decision from wall-clock expiry — the one decision path that never calls
+// SetApprovalDecision (and so never carries a real "by" identity or a ledger
+// write) at all. TASK-459 Phase 4 task 4b.
+const approvalDecisionSourceWallClockExpiryDefault = "wall-clock-expiry-default"
+
 // handleAwaitApproval is a non-blocking tick handler for StageAwaitApproval.
 //
 // Tick 1 (no ApprovalRequestID): submits the request via SubmitApprovalRequest,
@@ -3092,6 +3108,7 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 			"elapsed", time.Since(prState.ApprovalRequestedAt).Round(time.Second),
 			"default_action", defaultAction)
 		prState.ApprovalDecision = string(defaultAction)
+		prState.ApprovalDecisionBy = approvalDecisionSourceWallClockExpiryDefault
 		return c.applyApprovalDecision(prState)
 	}
 
@@ -3223,20 +3240,31 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 		c.metrics.RecordApprovalWaitDuration(time.Since(prState.ApprovalRequestedAt))
 	}
 
+	// TASK-459 Phase 4 task 4b: decidedBy is evidence of who/what produced
+	// ApprovalDecision — a real webhook/channel-tap identity, "system" for
+	// approval.Manager's own in-process timeout, or
+	// approvalDecisionSourceWallClockExpiryDefault for the controller's
+	// separate post-restart wall-clock guard (handleAwaitApproval Path 3).
+	// Logged on every branch below so a decision this consequential (it
+	// gates StageMerging) is never applied with zero visibility into its
+	// source.
+	decidedBy := prState.ApprovalDecisionBy
+
 	switch approval.Decision(prState.ApprovalDecision) {
 	case approval.DecisionApproved:
-		c.log.Info("approval granted — advancing to merging stage", "pr", prState.PRNumber)
+		c.log.Info("approval granted — advancing to merging stage",
+			"pr", prState.PRNumber, "decided_by", decidedBy)
 		prState.Stage = StageMerging
 	case approval.DecisionRejected, approval.DecisionTimeout:
 		c.log.Info("approval not granted — failing PR",
-			"pr", prState.PRNumber, "decision", prState.ApprovalDecision)
+			"pr", prState.PRNumber, "decision", prState.ApprovalDecision, "decided_by", decidedBy)
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("merge rejected: approval %s", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
 		c.metrics.RecordIssueProcessed("failed")
 	default:
 		c.log.Warn("unknown approval decision — failing PR",
-			"pr", prState.PRNumber, "decision", prState.ApprovalDecision)
+			"pr", prState.PRNumber, "decision", prState.ApprovalDecision, "decided_by", decidedBy)
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("unknown approval decision: %q", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
@@ -3298,6 +3326,7 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 			// the pr.mu hold across this branch is the only guard, sufficient
 			// since it's the same in-process PRState object.
 			pr.ApprovalDecision = decision
+			pr.ApprovalDecisionBy = by
 			if c.stateStore != nil {
 				_ = c.stateStore.SavePRState(c.repoKey(), pr)
 			}
@@ -3335,6 +3364,7 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 
 		pr.mu.Lock()
 		pr.ApprovalDecision = decision
+		pr.ApprovalDecisionBy = by
 		if c.stateStore != nil {
 			_ = c.stateStore.SavePRState(c.repoKey(), pr)
 		}
@@ -4061,7 +4091,7 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 				// GH-3990: re-queue the scope for a fresh carrier attempt instead of
 				// leaving this one wedged at StageFailed forever — drain it now so the
 				// anchor PR slot frees for the retry.
-				c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI timeout after %v", ciTimeout))
+				c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI timeout after %v", ciTimeout), true)
 				c.removePR(prState.PRNumber)
 				return nil
 			}
@@ -4228,7 +4258,7 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 			// leaving this one wedged at StageFailed forever — drain it now so the
 			// anchor PR slot frees for the retry. Re-discovery of the drained PR is
 			// guarded separately by ScopeMemberPending (controller.go ScanRecentlyMergedPRs).
-			c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI failed at %s", ShortSHA(mainSHA)))
+			c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI failed at %s", ShortSHA(mainSHA)), false)
 			c.removePR(prState.PRNumber)
 			return nil
 		}
@@ -4257,7 +4287,7 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 			"pr", prState.PRNumber, "sha", ShortSHA(mainSHA),
 			"missing_required_checks", missing, "discovered_checks", discovered)
 		if prState.ScopeKey != "" {
-			c.handleScopeReleaseFailure(ctx, prState, reason)
+			c.handleScopeReleaseFailure(ctx, prState, reason, false)
 			c.removePR(prState.PRNumber)
 			return nil
 		}
@@ -4827,7 +4857,7 @@ func (c *Controller) escalateReleasingFailed(ctx context.Context, prState *PRSta
 	// flip the scope back to pending (or terminal-failed past the retry cap)
 	// and drain the carrier so the anchor PR slot frees for the next attempt.
 	if prState.ScopeKey != "" {
-		c.handleScopeReleaseFailure(ctx, prState, reason)
+		c.handleScopeReleaseFailure(ctx, prState, reason, false)
 		c.removePR(prState.PRNumber)
 	}
 }

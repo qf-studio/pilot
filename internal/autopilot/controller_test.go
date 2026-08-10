@@ -9550,6 +9550,12 @@ func TestController_AwaitApproval_AppliesDefaultActionAtTimeout(t *testing.T) {
 	if pr.ApprovalDecision != string(approval.DecisionRejected) {
 		t.Errorf("after timeout: decision = %q, want %q", pr.ApprovalDecision, approval.DecisionRejected)
 	}
+	// TASK-459 Phase 4 task 4b: this synthesized decision never calls
+	// SetApprovalDecision (no real "by" identity, no ledger write) — it must
+	// still carry typed decider evidence rather than none at all.
+	if pr.ApprovalDecisionBy != approvalDecisionSourceWallClockExpiryDefault {
+		t.Errorf("after timeout: decided_by = %q, want %q", pr.ApprovalDecisionBy, approvalDecisionSourceWallClockExpiryDefault)
+	}
 }
 
 // TestController_TwoPRQueue_StalledApprovalDoesNotBlockOther verifies that a PR

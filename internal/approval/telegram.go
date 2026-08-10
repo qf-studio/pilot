@@ -25,7 +25,7 @@ type PendingApprovalStore interface {
 	PrunePendingApprovals(cutoff time.Time, channels []string) (int64, error)
 	// PrunePendingApprovalsOutside sweeps rows whose channel matches none of
 	// `knownChannels` — the orphan fallback (GH-4772). Only the default
-	// channel handler should call this (see defaultChannelName).
+	// channel handler should call this (see DefaultChannelName).
 	PrunePendingApprovalsOutside(cutoff time.Time, knownChannels []string) (int64, error)
 }
 
@@ -209,7 +209,7 @@ func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
 		// originally dispatched to Slack (or any other channel) must not
 		// get a duplicate Telegram prompt, and this handler must not delete
 		// an expired row it doesn't own out from under its owning handler's
-		// own sweep. See ownsChannel/defaultChannelName.
+		// own sweep. See ownsChannel/DefaultChannelName.
 		if !ownsChannel(h.Name(), row.PreferredChannel) {
 			continue
 		}
@@ -336,7 +336,7 @@ func (h *TelegramHandler) PruneExpired(ctx context.Context) (int, error) {
 		// config, typo'd, etc.) — so such a row is never permanently
 		// unprunable. A full Manager-level orphan sweep is roadmap leg B4;
 		// this just keeps rows collectible until then.
-		if h.Name() == defaultChannelName {
+		if h.Name() == DefaultChannelName {
 			if _, err := h.store.PrunePendingApprovalsOutside(now, knownChannelNames); err != nil {
 				return len(expired), fmt.Errorf("prune expired: sweep orphaned-channel rows: %w", err)
 			}

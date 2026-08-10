@@ -97,6 +97,67 @@ func TestController_ProjectApprovalOverride_NoOverrideRegression_GH4774(t *testi
 	}
 }
 
+// TestController_ProjectApprovalOverride_ExplicitEmptySource_GH4823 is
+// TASK-459 Phase 4 task 3: config validation documents approval_source: ""
+// as "inherits the resolved env/global source" (approval.ApprovalSourceValues
+// accepts "" for exactly that reason), but NewController used to copy
+// *c.projectApproval.ApprovalSource verbatim whenever the pointer was
+// non-nil — an explicit empty string silently overwrote
+// c.resolvedApprovalSource with "", which then flowed to
+// PreferredChannel: "" (submitAsyncApprovalRequest) and routed the ask to
+// defaultChannelName (telegram) instead of the project's actually-resolved
+// source. Table-driven over the three overlay shapes: nil (no overlay set),
+// explicit-empty (must inherit), and explicit-value (must apply).
+func TestController_ProjectApprovalOverride_ExplicitEmptySource_GH4823(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+
+	emptySource := ApprovalSource("")
+	slackSource := ApprovalSourceSlack
+
+	// Resolved global source is telegram; "explicit non-empty" overrides to
+	// slack — a different value from the global default, so a regression
+	// that always-inherits or always-applies is distinguishable in every case.
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.ApprovalSource = ApprovalSourceTelegram
+
+	tests := []struct {
+		name    string
+		overlay *ProjectApprovalOverride
+		want    ApprovalSource
+	}{
+		{
+			name:    "nil overlay inherits resolved global source",
+			overlay: nil,
+			want:    ApprovalSourceTelegram,
+		},
+		{
+			name:    "explicit empty-string overlay inherits resolved global source",
+			overlay: &ProjectApprovalOverride{ApprovalSource: &emptySource},
+			want:    ApprovalSourceTelegram,
+		},
+		{
+			name:    "explicit non-empty overlay applies the override",
+			overlay: &ProjectApprovalOverride{ApprovalSource: &slackSource},
+			want:    ApprovalSourceSlack,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var opts []ControllerOption
+			if tt.overlay != nil {
+				opts = append(opts, WithApprovalOverride(tt.overlay))
+			}
+			c := NewController(cfg, ghClient, nil, "owner", "repo", opts...)
+
+			if c.resolvedApprovalSource != tt.want {
+				t.Errorf("resolvedApprovalSource = %q, want %q", c.resolvedApprovalSource, tt.want)
+			}
+		})
+	}
+}
+
 // TestSubmitAsyncApprovalRequest_ProjectApprovalOverride_PreferredChannel_GH4774
 // verifies the escalation-gate interplay: a PR escalated to StageAwaitApproval
 // by a defense-in-depth gate (size-floor here, mirroring

@@ -102,62 +102,72 @@ Test suite failed to run
 	}
 }
 
+// prFailureBasicCorpus is the GH-4533 classifyPRFailure fixture corpus
+// (PR#4787/TASK-418) — extracted to package scope (TASK-459 Phase 4 task 1)
+// so TestCIFailureVerdictEvidence_ParityWithClassifyPRFailure can assert
+// ciFailureVerdictEvidence's independent re-derivation never drifts from
+// classifyPRFailure's own aggregation over the same fixtures, instead of
+// maintaining a second, parallel corpus that could silently diverge.
+var prFailureBasicCorpus = []struct {
+	name   string
+	checks []FailedCheckLog
+	want   FailureClass
+}{
+	{
+		// GH-4779: zero gathered evidence must never fall back to
+		// FailureClassCode — that's the exact gap that let the
+		// 2026-08-06 outage close a correct PR (#4770) with nothing to
+		// point at. FailureClassUnknown routes callers to the
+		// non-destructive escalate-and-hold path instead.
+		name:   "no failed checks is unknown (zero evidence)",
+		checks: nil,
+		want:   FailureClassUnknown,
+	},
+	{
+		name: "all checks infra",
+		checks: []FailedCheckLog{
+			{CheckName: "lint", JobID: 1, Logs: prFailureCorpusInfraLog},
+			{CheckName: "test", JobID: 2, Logs: prFailureCorpusInfraLog},
+		},
+		want: FailureClassInfra,
+	},
+	{
+		name: "one code check among infra checks is code",
+		checks: []FailedCheckLog{
+			{CheckName: "lint", JobID: 1, Logs: prFailureCorpusInfraLog},
+			{CheckName: "test", JobID: 2, Logs: prFailureCorpusCodeLog},
+		},
+		want: FailureClassCode,
+	},
+	{
+		name: "log fetch error (empty logs) among checks is code",
+		checks: []FailedCheckLog{
+			{CheckName: "lint", JobID: 1, Logs: prFailureCorpusInfraLog},
+			{CheckName: "test", JobID: 2, Logs: ""},
+		},
+		want: FailureClassCode,
+	},
+	{
+		name: "single infra check is infra",
+		checks: []FailedCheckLog{
+			{CheckName: "lint", JobID: 1, Logs: prFailureCorpusInfraLog},
+		},
+		want: FailureClassInfra,
+	},
+}
+
+// prFailureCorpusInfraLog and prFailureCorpusCodeLog are the raw log bodies
+// shared across prFailureBasicCorpus and prFailureJobsNeverStartedCorpus.
+const (
+	prFailureCorpusInfraLog = `##[error]Failed to download action 'https://api.github.com/repos/actions/checkout/tarball/v4'. Error: Response status code does not indicate success: 429 (Too Many Requests).`
+	prFailureCorpusCodeLog  = `internal/autopilot/controller.go:1234:6: Error return value is not checked (errcheck)`
+)
+
 // TestClassifyPRFailure_TableDriven covers aggregation across multiple
 // scoped failed checks on one SHA (GH-4533): infra only when there is at
 // least one failed check and every single one classifies infra.
 func TestClassifyPRFailure_TableDriven(t *testing.T) {
-	infraLog := `##[error]Failed to download action 'https://api.github.com/repos/actions/checkout/tarball/v4'. Error: Response status code does not indicate success: 429 (Too Many Requests).`
-	codeLog := `internal/autopilot/controller.go:1234:6: Error return value is not checked (errcheck)`
-
-	tests := []struct {
-		name   string
-		checks []FailedCheckLog
-		want   FailureClass
-	}{
-		{
-			// GH-4779: zero gathered evidence must never fall back to
-			// FailureClassCode — that's the exact gap that let the
-			// 2026-08-06 outage close a correct PR (#4770) with nothing to
-			// point at. FailureClassUnknown routes callers to the
-			// non-destructive escalate-and-hold path instead.
-			name:   "no failed checks is unknown (zero evidence)",
-			checks: nil,
-			want:   FailureClassUnknown,
-		},
-		{
-			name: "all checks infra",
-			checks: []FailedCheckLog{
-				{CheckName: "lint", JobID: 1, Logs: infraLog},
-				{CheckName: "test", JobID: 2, Logs: infraLog},
-			},
-			want: FailureClassInfra,
-		},
-		{
-			name: "one code check among infra checks is code",
-			checks: []FailedCheckLog{
-				{CheckName: "lint", JobID: 1, Logs: infraLog},
-				{CheckName: "test", JobID: 2, Logs: codeLog},
-			},
-			want: FailureClassCode,
-		},
-		{
-			name: "log fetch error (empty logs) among checks is code",
-			checks: []FailedCheckLog{
-				{CheckName: "lint", JobID: 1, Logs: infraLog},
-				{CheckName: "test", JobID: 2, Logs: ""},
-			},
-			want: FailureClassCode,
-		},
-		{
-			name: "single infra check is infra",
-			checks: []FailedCheckLog{
-				{CheckName: "lint", JobID: 1, Logs: infraLog},
-			},
-			want: FailureClassInfra,
-		},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range prFailureBasicCorpus {
 		t.Run(tt.name, func(t *testing.T) {
 			got := classifyPRFailure(tt.checks)
 			if got != tt.want {
@@ -232,67 +242,7 @@ func TestIsJobsNeverStartedInfra_TableDriven(t *testing.T) {
 // classifies code — a mixed signal must never allow an auto-retry, same
 // fail-safe rule as the pre-existing runner-infra aggregation.
 func TestClassifyPRFailure_JobsNeverStarted_TableDriven(t *testing.T) {
-	codeLog := `internal/autopilot/controller.go:1234:6: Error return value is not checked (errcheck)`
-
-	tests := []struct {
-		name   string
-		checks []FailedCheckLog
-		want   FailureClass
-	}{
-		{
-			name: "billing-refused run: all jobs zero steps with annotation classifies infra_billing",
-			checks: []FailedCheckLog{
-				{CheckName: "lint", JobID: 1, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
-				{CheckName: "test", JobID: 2, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
-			},
-			want: FailureClassInfraBilling,
-		},
-		{
-			name: "billing-refused run: zero steps alone (no annotation captured) still classifies infra_billing",
-			checks: []FailedCheckLog{
-				{CheckName: "lint", JobID: 1, StepsKnown: true, StepsCount: 0},
-				{CheckName: "test", JobID: 2, StepsKnown: true, StepsCount: 0},
-			},
-			want: FailureClassInfraBilling,
-		},
-		{
-			name: "real test failure: steps executed, one failing classifies code",
-			checks: []FailedCheckLog{
-				{CheckName: "test", JobID: 1, Logs: codeLog, StepsKnown: true, StepsCount: 6},
-			},
-			want: FailureClassCode,
-		},
-		{
-			name: "mixed run: billing-refused check alongside genuine code failure classifies code",
-			checks: []FailedCheckLog{
-				{CheckName: "lint", JobID: 1, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
-				{CheckName: "test", JobID: 2, Logs: codeLog, StepsKnown: true, StepsCount: 6},
-			},
-			want: FailureClassCode,
-		},
-		{
-			name: "mixed infra-family run: runner-infra check alongside billing-refused check classifies infra_billing",
-			checks: []FailedCheckLog{
-				{CheckName: "lint", JobID: 1, Logs: `##[error]Failed to download action 'https://api.github.com/repos/actions/checkout/tarball/v4'. Error: Response status code does not indicate success: 429 (Too Many Requests).`},
-				{CheckName: "test", JobID: 2, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
-			},
-			want: FailureClassInfraBilling,
-		},
-		{
-			// Regression guard: an incomplete/stale jobs-API response (e.g. a
-			// job lookup that succeeds but returns no step breakdown) must
-			// not misclassify a genuine code failure as billing just because
-			// StepsCount reads 0 — the real compiler annotation in the log is
-			// definitive proof the job actually ran.
-			name: "real annotation wins over a StepsCount=0 false positive",
-			checks: []FailedCheckLog{
-				{CheckName: "lint", JobID: 1, Logs: codeLog, StepsKnown: true, StepsCount: 0},
-			},
-			want: FailureClassCode,
-		},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range prFailureJobsNeverStartedCorpus {
 		t.Run(tt.name, func(t *testing.T) {
 			got := classifyPRFailure(tt.checks)
 			if got != tt.want {
@@ -300,6 +250,111 @@ func TestClassifyPRFailure_JobsNeverStarted_TableDriven(t *testing.T) {
 			}
 			if got.IsInfra() != (tt.want != FailureClassCode) {
 				t.Errorf("IsInfra() = %v inconsistent with want %q", got.IsInfra(), tt.want)
+			}
+		})
+	}
+}
+
+// prFailureJobsNeverStartedCorpus is the GH-4591 jobs-never-started fixture
+// corpus (PR#4787/TASK-418), extracted to package scope alongside
+// prFailureBasicCorpus for the same reason (TASK-459 Phase 4 task 1).
+var prFailureJobsNeverStartedCorpus = []struct {
+	name   string
+	checks []FailedCheckLog
+	want   FailureClass
+}{
+	{
+		name: "billing-refused run: all jobs zero steps with annotation classifies infra_billing",
+		checks: []FailedCheckLog{
+			{CheckName: "lint", JobID: 1, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
+			{CheckName: "test", JobID: 2, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
+		},
+		want: FailureClassInfraBilling,
+	},
+	{
+		name: "billing-refused run: zero steps alone (no annotation captured) still classifies infra_billing",
+		checks: []FailedCheckLog{
+			{CheckName: "lint", JobID: 1, StepsKnown: true, StepsCount: 0},
+			{CheckName: "test", JobID: 2, StepsKnown: true, StepsCount: 0},
+		},
+		want: FailureClassInfraBilling,
+	},
+	{
+		name: "real test failure: steps executed, one failing classifies code",
+		checks: []FailedCheckLog{
+			{CheckName: "test", JobID: 1, Logs: prFailureCorpusCodeLog, StepsKnown: true, StepsCount: 6},
+		},
+		want: FailureClassCode,
+	},
+	{
+		name: "mixed run: billing-refused check alongside genuine code failure classifies code",
+		checks: []FailedCheckLog{
+			{CheckName: "lint", JobID: 1, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
+			{CheckName: "test", JobID: 2, Logs: prFailureCorpusCodeLog, StepsKnown: true, StepsCount: 6},
+		},
+		want: FailureClassCode,
+	},
+	{
+		name: "mixed infra-family run: runner-infra check alongside billing-refused check classifies infra_billing",
+		checks: []FailedCheckLog{
+			{CheckName: "lint", JobID: 1, Logs: prFailureCorpusInfraLog},
+			{CheckName: "test", JobID: 2, AnnotationText: billingAnnotation, StepsKnown: true, StepsCount: 0},
+		},
+		want: FailureClassInfraBilling,
+	},
+	{
+		// Regression guard: an incomplete/stale jobs-API response (e.g. a
+		// job lookup that succeeds but returns no step breakdown) must
+		// not misclassify a genuine code failure as billing just because
+		// StepsCount reads 0 — the real compiler annotation in the log is
+		// definitive proof the job actually ran.
+		name: "real annotation wins over a StepsCount=0 false positive",
+		checks: []FailedCheckLog{
+			{CheckName: "lint", JobID: 1, Logs: prFailureCorpusCodeLog, StepsKnown: true, StepsCount: 0},
+		},
+		want: FailureClassCode,
+	},
+}
+
+// TestCIFailureVerdictEvidence_ParityWithClassifyPRFailure is TASK-459 Phase
+// 4 task 1: ciFailureVerdictEvidence (failure_class.go:314) independently
+// re-derives each check's classification via classifyCheckFailureFull rather
+// than consuming classifyPRFailure's own aggregation — pattern-3 duplication
+// per the task brief. The drift direction is conservative (a mismatch
+// produces empty evidence, which the Phase-2 gate reads as evidence-free and
+// routes to hold rather than authorizing a destructive action), but a parity
+// test still pins the invariant: for every corpus entry where
+// classifyPRFailure returns a non-Unknown class, ciFailureVerdictEvidence
+// must return non-empty evidence for that same (checks, class) pair — an
+// evidence-free non-Unknown verdict would make NewVerdict/newCIFailureVerdict
+// silently downgrade a positively-classified failure back to Unknown
+// (NewVerdict's empty-evidence rule, failure_class.go:391-396), masking the
+// drift instead of failing loudly.
+//
+// Reuses prFailureBasicCorpus and prFailureJobsNeverStartedCorpus (the
+// existing PR#4787/TASK-418 fixture corpus) rather than inventing a parallel
+// one, per the task brief.
+func TestCIFailureVerdictEvidence_ParityWithClassifyPRFailure(t *testing.T) {
+	corpus := make([]struct {
+		name   string
+		checks []FailedCheckLog
+		want   FailureClass
+	}, 0, len(prFailureBasicCorpus)+len(prFailureJobsNeverStartedCorpus))
+	corpus = append(corpus, prFailureBasicCorpus...)
+	corpus = append(corpus, prFailureJobsNeverStartedCorpus...)
+
+	for _, tt := range corpus {
+		t.Run(tt.name, func(t *testing.T) {
+			class := classifyPRFailure(tt.checks)
+			if class != tt.want {
+				t.Fatalf("corpus drift: classifyPRFailure() = %q, corpus says %q", class, tt.want)
+			}
+			if class == FailureClassUnknown {
+				return
+			}
+			evidence := ciFailureVerdictEvidence(tt.checks, class)
+			if evidence == "" {
+				t.Errorf("ciFailureVerdictEvidence() = \"\" for non-Unknown class %q — would silently downgrade to Unknown via NewVerdict's empty-evidence rule", class)
 			}
 		})
 	}
