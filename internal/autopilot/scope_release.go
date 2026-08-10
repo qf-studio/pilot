@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/alerts"
@@ -40,13 +39,6 @@ const maxScopeReleaseAttempts = 5
 // will never post) — every ordinary merge to main was otherwise handing a
 // fresh 5-attempt budget to a wait that can never succeed.
 const maxScopeReleaseTimeoutAttempts = 3
-
-// postMergeCITimeoutReasonSubstr is the substring handleScopeReleaseFailure
-// matches against reason to classify a failure as a post-merge CI timeout
-// (see controller.go's handlePostMergeCI, the sole producer of this reason
-// string) rather than any other carrier failure (CI red, handleReleasing
-// escalation, etc).
-const postMergeCITimeoutReasonSubstr = "post-merge CI timeout"
 
 // enqueueScopeRelease durably records that scopeKey's members (mergedPRs) are
 // ready to release as one carrier once startPendingScopeReleases claims the
@@ -419,7 +411,16 @@ func (c *Controller) markScopeReleaseDone(prState *PRState, tag string) {
 // store is wired. Callers remain responsible for draining the carrier
 // PRState itself (removePR) so the anchor PR slot frees for the next attempt
 // (GH-3990).
-func (c *Controller) handleScopeReleaseFailure(ctx context.Context, prState *PRState, reason string) {
+//
+// isTimeout is a typed fact the caller carries explicitly — TASK-459 Phase 4
+// task 4a: this used to be inferred via strings.Contains(reason,
+// "post-merge CI timeout") against the human-formatted reason string
+// assembled at controller.go's handlePostMergeCI, making that prose the de
+// facto routing protocol (any future rewording of the timeout message would
+// silently stop parking timed-out scopes). reason still carries the
+// human-readable detail for logs/alerts/comments; it just no longer decides
+// routing.
+func (c *Controller) handleScopeReleaseFailure(ctx context.Context, prState *PRState, reason string, isTimeout bool) {
 	_ = ctx
 	if prState.ScopeKey == "" || c.stateStore == nil {
 		return
@@ -430,7 +431,6 @@ func (c *Controller) handleScopeReleaseFailure(ctx context.Context, prState *PRS
 		return
 	}
 
-	isTimeout := strings.Contains(reason, postMergeCITimeoutReasonSubstr)
 	timeoutAttempts, err := c.stateStore.UpdateScopeReleaseTimeoutAttempts(repo, prState.ScopeKey, isTimeout)
 	if err != nil {
 		c.log.Warn("handleScopeReleaseFailure: failed to update timeout attempts", "scope", prState.ScopeKey, "error", err)

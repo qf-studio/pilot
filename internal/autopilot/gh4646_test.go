@@ -192,7 +192,7 @@ func TestHandleScopeReleaseFailure_ConfigMismatchReason_PropagatesToFailureAlert
 	// the ordinary attempts cap (maxScopeReleaseAttempts) rather than the
 	// separate timeout-park path — drive it past that cap here.
 	for i := 0; i <= maxScopeReleaseAttempts; i++ {
-		c.handleScopeReleaseFailure(context.Background(), prState, reason)
+		c.handleScopeReleaseFailure(context.Background(), prState, reason, false)
 	}
 
 	row, err := stateStore.GetScopeRelease("owner/repo", "epic:1")

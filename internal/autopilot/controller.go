@@ -4070,7 +4070,7 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 				// GH-3990: re-queue the scope for a fresh carrier attempt instead of
 				// leaving this one wedged at StageFailed forever — drain it now so the
 				// anchor PR slot frees for the retry.
-				c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI timeout after %v", ciTimeout))
+				c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI timeout after %v", ciTimeout), true)
 				c.removePR(prState.PRNumber)
 				return nil
 			}
@@ -4237,7 +4237,7 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 			// leaving this one wedged at StageFailed forever — drain it now so the
 			// anchor PR slot frees for the retry. Re-discovery of the drained PR is
 			// guarded separately by ScopeMemberPending (controller.go ScanRecentlyMergedPRs).
-			c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI failed at %s", ShortSHA(mainSHA)))
+			c.handleScopeReleaseFailure(ctx, prState, fmt.Sprintf("post-merge CI failed at %s", ShortSHA(mainSHA)), false)
 			c.removePR(prState.PRNumber)
 			return nil
 		}
@@ -4266,7 +4266,7 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 			"pr", prState.PRNumber, "sha", ShortSHA(mainSHA),
 			"missing_required_checks", missing, "discovered_checks", discovered)
 		if prState.ScopeKey != "" {
-			c.handleScopeReleaseFailure(ctx, prState, reason)
+			c.handleScopeReleaseFailure(ctx, prState, reason, false)
 			c.removePR(prState.PRNumber)
 			return nil
 		}
@@ -4836,7 +4836,7 @@ func (c *Controller) escalateReleasingFailed(ctx context.Context, prState *PRSta
 	// flip the scope back to pending (or terminal-failed past the retry cap)
 	// and drain the carrier so the anchor PR slot frees for the next attempt.
 	if prState.ScopeKey != "" {
-		c.handleScopeReleaseFailure(ctx, prState, reason)
+		c.handleScopeReleaseFailure(ctx, prState, reason, false)
 		c.removePR(prState.PRNumber)
 	}
 }
