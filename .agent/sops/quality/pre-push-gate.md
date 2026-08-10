@@ -15,17 +15,18 @@ forcing repeated gate re-runs (worst during the 16:00 daily train hour).
 `.git/hooks/pre-push` is generated from the heredoc in
 `scripts/install-hooks.sh` (run `make install-hooks` to regenerate — never
 hand-edit `.git/hooks/*`, it's untracked and gets overwritten). The hook
-invokes `scripts/pre-push-gate.sh`, which runs 7 steps in the full path:
+invokes `scripts/pre-push-gate.sh`, which runs 8 steps in the full path:
 
 | Step | Check | Measured cost |
 |------|-------|----------------|
-| 1/7 | `go build` | 1-5s |
-| 2/7 | `golangci-lint` | 4-12s |
-| 3/7 | `go test -short -race ./...` | 188-238s |
-| 4/7 | `check-secret-patterns.sh` | 3s |
-| 5/7 | `check-mocks.sh` | 0s |
-| 6/7 | `check-graph.py` | 0s |
-| 7/7 | `check-integration.sh` | 26-29s |
+| 1/8 | `go build` | 1-5s |
+| 2/8 | `golangci-lint` | 4-12s |
+| 3/8 | `go test -short -race ./...` | 188-238s |
+| 4/8 | `check-secret-patterns.sh` | 3s |
+| 5/8 | `check-mocks.sh` | 0s |
+| 6/8 | `check-destructive-calls.sh` (TASK-459 Phase 4 / GH-4823) | 0s |
+| 7/8 | `check-graph.py` | 0s |
+| 8/8 | `check-integration.sh` | 26-29s |
 
 ## The docs-only fast path
 
@@ -59,15 +60,17 @@ skipped and why — never a silent skip. Target: <10s.
   case.
 
 **Safe to skip on a zero-`.go`/`go.mod`/`go.sum` diff:** build, lint,
-`go test -short -race`, check-mocks, check-integration. Verified (2026-08-06)
-that no Go test in this repo reads the real `.agent/` tree — all
-`.agent`-touching tests build fixtures in `t.TempDir()`.
+`go test -short -race`, check-mocks, check-destructive-calls, check-integration.
+Verified (2026-08-06) that no Go test in this repo reads the real `.agent/`
+tree — all `.agent`-touching tests build fixtures in `t.TempDir()`.
+check-destructive-calls.sh only scans `*.go` files, so it's a no-op (and
+correctly skippable) on a docs-only diff by construction.
 
 ## `make gate` always runs the full gate
 
 `make gate` invokes `scripts/pre-push-gate.sh` directly with no stdin to
 classify, so `PILOT_GATE_DOCS_ONLY` is unset (defaults to `0`) and the full
-7-step gate always runs. This is intentional — manual gate runs are for
+8-step gate always runs. This is intentional — manual gate runs are for
 verifying the complete gate before an unusual push, not for fast iteration.
 
 ## Operator step: re-run `make install-hooks` after merge
@@ -88,7 +91,7 @@ remote (new branch), ref deletion, and empty stdin. Run directly:
 ./scripts/test-prepush-fastpath.sh
 ```
 
-It's also wired into `scripts/check-integration.sh` (step 7/7 of the full
+It's also wired into `scripts/check-integration.sh` (step 8/8 of the full
 gate), so a code push that breaks the classifier fails the gate.
 
 ## References
