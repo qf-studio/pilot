@@ -1277,9 +1277,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			int64(outputDelta),
 			costModel,
 		)
-		if m.metricsCard.TotalTasks > 0 {
-			m.metricsCard.CostPerTask = m.metricsCard.TotalCostUSD / float64(m.metricsCard.TotalTasks)
-		}
+		// GH-4829: CostPerTask is NOT recomputed here. It stays whatever the
+		// store's GetWindowedStats last set (CostPerDelivered = window cost /
+		// distinct delivered issues), which is a different metric than
+		// TotalCostUSD/AttemptTotal (all execution rows, any status). Live
+		// recompute made the detail line oscillate between two definitions
+		// until the next periodic re-query converged it.
 
 	case addCompletedTaskMsg:
 		prevLen := len(m.completedTasks)
@@ -1297,9 +1300,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.metricsCard.Failed++
 		}
-		if m.metricsCard.TotalTasks > 0 {
-			m.metricsCard.CostPerTask = m.metricsCard.TotalCostUSD / float64(m.metricsCard.TotalTasks)
-		}
+		// GH-4829: CostPerTask is NOT recomputed here — see the updateTokensMsg
+		// case above for why (store's CostPerDelivered vs. AttemptTotal drift).
 
 		// GH-1249: History count changed → force repaint
 		if len(m.completedTasks) != prevLen {
@@ -2493,9 +2495,13 @@ func (m Model) renderEvalStats() string {
 		)
 	}
 
+	// GH-4829: metricsScopePath is fleet-wide (empty) by default now, so an
+	// empty scope must render as "all projects" rather than a blank label.
 	info := ""
 	if m.metricsScopePath != "" {
 		info = dimStyle.Render("global")
+	} else {
+		info = dimStyle.Render("all projects")
 	}
 	return renderPanelInfo("eval", info, line, tw)
 }

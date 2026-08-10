@@ -137,6 +137,11 @@ func TestDefaultConfig(t *testing.T) {
 		if config.Dashboard.StatsWindowDays != 30 {
 			t.Errorf("Dashboard.StatsWindowDays = %d, want %d", config.Dashboard.StatsWindowDays, 30)
 		}
+		// GH-4829: zero value (fleet-wide) IS the default — DefaultConfig must
+		// not set it, so the TUI's metrics panels default to all projects.
+		if config.Dashboard.MetricsScopePath != "" {
+			t.Errorf("Dashboard.MetricsScopePath = %q, want empty (fleet-wide default)", config.Dashboard.MetricsScopePath)
+		}
 	})
 
 	t.Run("Alerts", func(t *testing.T) {
@@ -1145,6 +1150,59 @@ func TestExpandPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLoad_DashboardMetricsScopePath is the GH-4829 config round-trip test:
+// metrics_scope_path parses when present (with ~ expansion, matching
+// default_project) and defaults to "" (fleet-wide) when absent.
+func TestLoad_DashboardMetricsScopePath(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	t.Run("set and tilde-expanded", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+		configContent := `
+dashboard:
+  metrics_scope_path: "~/Projects/startups/pilot"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		config, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		want := filepath.Join(homeDir, "Projects/startups/pilot")
+		if config.Dashboard.MetricsScopePath != want {
+			t.Errorf("Dashboard.MetricsScopePath = %q, want %q", config.Dashboard.MetricsScopePath, want)
+		}
+	})
+
+	t.Run("absent defaults to empty", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+		configContent := `
+dashboard:
+  refresh_interval: 500
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		config, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if config.Dashboard.MetricsScopePath != "" {
+			t.Errorf("Dashboard.MetricsScopePath = %q, want empty", config.Dashboard.MetricsScopePath)
+		}
+	})
 }
 
 func TestDefaultConfigPath(t *testing.T) {
