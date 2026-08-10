@@ -1,6 +1,6 @@
 # Irreversible-action inventory (TASK-459 Phase 1)
 
-**Status**: Phase 3 (GH-4817) landed 2026-08-09. Phase 1 built the inventory + `Verdict`
+**Status**: Phase 3 of 4 (GH-4817) landed 2026-08-09 (Phase 5's false-success class split to TASK-460, 2026-08-08). Phase 1 built the inventory + `Verdict`
 contract with no behaviour change. Phase 2 migrated the CI-failure path —
 `handleCIFailed`'s ladder (family 1's `MaxCIFixIterations` close, family 3's
 pre-merge `CreateFailureIssue`, family 8's zero-evidence `escalateAndHold`)

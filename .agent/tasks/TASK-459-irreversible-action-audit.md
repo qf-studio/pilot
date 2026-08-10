@@ -1,6 +1,6 @@
 # TASK-459: Irreversible-action audit — destructive sites require typed verdicts with positive evidence
 
-**Status**: 🚀 **Phase 3 DISPATCHED 2026-08-08** — [#4817](https://github.com/qf-studio/pilot/issues/4817) (`no-decompose`). Pre-dispatch research re-anchored the leg: the side-effect-inference sites live in `dispatcher.go` (`recoverStaleRunningTasks` writes `failed` from artifact absence while its boot-time sibling :388 already writes `stalled`), `handlers.go:581-591` (GH-3053 gitlab demotion overrides `EffectiveSuccess()`), `commands.go:1523`, and `finish_tripwires.go:268` — **not** `poller_github.go` (pure wiring, nothing to do). The "retry label on closed issue" bug is `controller.go:7389` (`notifyExternalClose` — its own :7331 comment names the hazard; guard is label-based only), included as the leg's single controller.go change. `SetApprovalDecision`/`handleReleasing`/watchdog traces done during prep → inventory §9 (watchdog already status-authoritative end-to-end; approval gate + `scope_release.go:433` reason-string protocol recorded as Phase 4 targets). Phase 2 ✅ merged same-day 08-08 (#4811 → PR#4812, reviewed; finding → [#4813](https://github.com/qf-studio/pilot/issues/4813), fixed via #4816); live on the box (v2.256.0-29). Phase 1 ✅ (#4796 → PR#4802). Phase 5 split to [TASK-460](TASK-460-delivery-evidence-false-success.md) — this task is 4 phases and done at Phase 4
+**Status**: ✅ **Phase 3 MERGED 2026-08-09** — [#4817](https://github.com/qf-studio/pilot/issues/4817) → PR#4818 (hit a docs-only merge conflict with the interactive session's own inventory-trace commit `c7f649c4` → `needs-manual-rebase` hold worked as designed → manually resolved in a worktree 08-09 → CI ran → one genuine lint finding, errcheck in `gh4405_test.go:167` → PR closed + fix chain) → retry generation **PR#4821 merged 08-09 08:38Z**, in the v2.258.0 train. **Post-merge review of PR#4821 PENDING.** Recovery-path observations from the lint cycle recorded in roadmap backlog: fix-issue #4820's auto-generated body truncated the CI logs (preflight judge correctly `reject_vague`-ed it; closed as orphan 08-10) and both recovery paths (fix-issue + issue retry) were armed simultaneously — benign this time, GH-3806 `TerminalLabel` didn't mark the fix issue as retry owner. **Phase 4 dispatchable next** (last phase). Phase 2 ✅ (#4811 → PR#4812, reviewed; finding → #4813, fixed via #4816). Phase 1 ✅ (#4796 → PR#4802). Phase 5 split to [TASK-460](TASK-460-delivery-evidence-false-success.md) — this task is done at Phase 4
 **Created**: 2026-08-07
 **Assignee**: Pilot (multi-leg; dispatch one leg at a time)
 
@@ -43,7 +43,7 @@ Point fixes already shipped (#4787 structural classification + `FailureClassUnkn
 - [x] A typed `Verdict` contract exists: class + evidence + source + scope. Constructing one without evidence is impossible or explicitly marked `Unknown`.
 - [ ] `Unknown` (or evidence-free) verdicts cannot authorize a destructive action anywhere — enforced by the type system and/or a CI check, not by convention.
 - [ ] Every site that derives the same external fact twice (status vocabularies) reads from one shared table, with a parity test that fails on drift.
-- [ ] No subsystem infers failure from a missing side-effect when a recorded status exists.
+- [x] No subsystem infers failure from a missing side-effect when a recorded status exists. (Phase 3, PR#4821)
 - [ ] A CI check bans direct calls to destructive APIs outside the gate (following the `check-mocks.sh` grep-gate precedent).
 - [ ] An SOP documents the invariant for future call sites.
 
@@ -74,15 +74,15 @@ Legs are sized per the #4780 lesson (one subsystem + its tests per `no-decompose
 
 **Files**: `internal/autopilot/controller.go` · `internal/autopilot/failure_class.go` · `internal/autopilot/ci_monitor.go`
 
-### Phase 3: Status vocabulary is authoritative (executor/dispatcher/poller) — DISPATCHED #4817
+### Phase 3: Status vocabulary is authoritative (executor/dispatcher/poller) — ✅ MERGED (#4817 → PR#4821, 2026-08-09)
 **Goal**: Kill inference-from-side-effects.
 
-**Tasks** (re-anchored 2026-08-08 pre-dispatch; full spec in #4817):
-- [ ] `recoverStaleRunningTasks` writes `stalled` not `failed` (liveness evidence, not failure evidence; aligns with boot-reap sibling at `dispatcher.go:388`).
-- [ ] Stale-queued recovery: `failed` → bias `canceled` (decision point in-PR).
-- [ ] GH-3053 no-artifact demotions consult the ledger (`handlers.go:581-591`, `commands.go:1523`); `no_op`/terminal-by-design never flipped (#4794 generalized).
-- [ ] Additive label writes gated on issue open-state via the existing `IssueStateChecker` seam: `surfaceStalledIssue`, `notifyTaskStartedSDK`, `title_rejection.go:220`, `epic.go:756`, and `controller.go:7389` (`notifyExternalClose` retry-label — the leg's only controller.go change). Fail-open on lookup error; removal-only writes untouched.
-- [ ] Finish-tripwire excludes `superseded`/`canceled` (`finish_tripwires.go:268`).
+**Tasks** (re-anchored 2026-08-08 pre-dispatch; full spec in #4817; all delivered per PR#4821):
+- [x] `recoverStaleRunningTasks` writes `stalled` not `failed` (liveness evidence; aligns with boot-reap sibling).
+- [x] Stale-queued recovery: `failed` → `canceled` (per spec bias; Pilot added sound extra reasoning — terminal-forever via `HasTerminalCompletion` so a re-added project can't resurrect the row).
+- [x] GH-3053 no-artifact demotions consult the ledger via new `IsNoArtifactExplainedOutcome` helper (adds `no_op` beyond `IsTerminalByDesignStatus`'s `superseded`/`canceled`).
+- [x] Additive label writes gated on issue open-state (`fetchIssueState` seam, fail-open on lookup error): `surfaceStalledIssue`, SDK-dispatch `pilot-in-progress`, `title_rejection.go`, `epic.go` (`handleSubIssueCoverageGap:711` — spec's `:756` had drifted, Pilot found the real site), `notifyExternalClose` retry-label.
+- [x] Finish-tripwire excludes `superseded`/`canceled`.
 
 **Files**: `internal/executor/dispatcher.go` · `cmd/pilot/handlers.go` · `cmd/pilot/commands.go` · `internal/executor/finish_tripwires.go` · `internal/executor/title_rejection.go` · `internal/executor/epic.go` · `internal/autopilot/controller.go` (one guard). `poller_github.go` dropped from the plan — verified pure wiring, no classification or label sites.
 
@@ -156,7 +156,7 @@ make gate
 - Phase 1 issue: https://github.com/qf-studio/pilot/issues/4796 (dispatched 2026-08-07) → PR#4802 (merged; post-merge review in PR comments, 2026-08-08)
 - Phase 2 issue: https://github.com/qf-studio/pilot/issues/4811 (dispatched 2026-08-08) → PR#4812 (merged same day; post-merge review in PR comments)
 - Phase 2 review follow-up: https://github.com/qf-studio/pilot/issues/4813 (evidenced-infra post-merge spawn — no post-merge infra-retry leg) → fixed via #4816 (PR merged 08-08)
-- Phase 3 issue: https://github.com/qf-studio/pilot/issues/4817 (dispatched 2026-08-08)
+- Phase 3 issue: https://github.com/qf-studio/pilot/issues/4817 → PR#4818 (closed on lint after manual conflict resolution) → **PR#4821 merged 2026-08-09** (post-merge review pending). Orphaned fix issue #4820 closed 08-10 (preflight `reject_vague` on truncated logs; retry chain delivered first)
 - Incident: 2026-08-06 GitHub Actions outage (~9.5h) and 08-07 recovery — marker `2026-08-06_outage-pause-approval-wave-dispatched.md`
 - Instances already fixed/in flight: #4787 (structural classification + `Unknown`), #4790 (check-run dedupe), #4791/#4792 (breaker), #4794 (superseded ≠ failed)
 - Prior art: `.agent/tasks/archive/TASK-418-ci-infra-failure-classification.md`, `.agent/tasks/archive/TASK-421-repick-counter-counts-non-failures.md`, `.agent/tasks/archive/TASK-441-contract-hardening-tune-up.md` (grep-gate precedent)

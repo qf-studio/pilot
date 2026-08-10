@@ -1,6 +1,6 @@
 # TASK-461: GitHub App cutover — SDK-client token wiring (two legs + operator steps)
 
-**Status**: 🚀 **Leg 1 (SDK) dispatched 2026-08-09** → [sdk#109](https://github.com/qf-studio/studio-sdk/issues/109). **Leg 2 (pilot wiring) authored below, HELD** — dispatch only after sdk#109 merges (pin its pseudo-version or a release containing it).
+**Status**: ✅ **Leg 1 (SDK) MERGED 2026-08-09** — sdk#109 → [sdk PR#110](https://github.com/qf-studio/studio-sdk/pull/110) (merged 06:45Z, same-day). **Leg 2 (pilot wiring) is now DISPATCHABLE** — no SDK release contains PR#110 yet (v0.32.0 predates it, tagged 08-07), so the bump pins PR#110's merge commit (`go get github.com/qf-studio/studio-sdk@main` at implementation time resolves the pseudo-version) or a newer tagged release if one exists by then.
 **Created**: 2026-08-09
 **Assignee**: Pilot (one leg at a time)
 

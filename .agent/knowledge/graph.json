@@ -1493,16 +1493,16 @@
       "TASK-459": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-459-irreversible-action-audit.md",
         "title": "Irreversible-action audit \u2014 destructive sites require typed verdicts with positive evidence",
-        "status": "dispatched",
+        "status": "backlog",
         "concepts": [
           "api",
-          "testing",
-          "theory of mind",
-          "authentication",
-          "context",
           "knowledge",
-          "markers",
-          "deployment"
+          "theory of mind",
+          "context",
+          "testing",
+          "authentication",
+          "deployment",
+          "markers"
         ]
       },
       "TASK-460": {
@@ -1521,17 +1521,17 @@
       "TASK-461": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-461-app-cutover-sdk-token-wiring.md",
         "title": "GitHub App cutover \u2014 SDK-client token wiring (two legs + operator steps)",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
-          "skills",
-          "testing",
           "theory of mind",
-          "workflow",
+          "api",
+          "markers",
+          "skills",
           "context",
           "authentication",
-          "deployment",
-          "markers",
-          "api"
+          "testing",
+          "workflow",
+          "deployment"
         ]
       }
     },
@@ -7185,7 +7185,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-09T06:38:23.643523+00:00",
+  "last_updated": "2026-08-10T11:10:31.575850+00:00",
   "stats": {
     "total_nodes": 380,
     "total_edges": 320,
