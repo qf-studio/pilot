@@ -1,6 +1,6 @@
 # TASK-461: GitHub App cutover — SDK-client token wiring (two legs + operator steps)
 
-**Status**: ✅ **Leg 1 (SDK) MERGED 2026-08-09** — sdk#109 → [sdk PR#110](https://github.com/qf-studio/studio-sdk/pull/110) (merged 06:45Z, same-day). **Leg 2 (pilot wiring) is now DISPATCHABLE** — no SDK release contains PR#110 yet (v0.32.0 predates it, tagged 08-07), so the bump pins PR#110's merge commit (`go get github.com/qf-studio/studio-sdk@main` at implementation time resolves the pseudo-version) or a newer tagged release if one exists by then.
+**Status**: 🚧 **Leg 2 (pilot wiring) DISPATCHED 2026-08-10** — [#4824](https://github.com/qf-studio/pilot/issues/4824) (anchors re-verified on main @ `39881bba`; one drift folded in: `specClient` moved to `handlers.go:770` after the Phase 3 insertion. Still no tagged SDK release with PR#110 — spec pins merge commit `2e0f01e9`). **Leg 1 (SDK) ✅ MERGED 2026-08-09** — sdk#109 → [sdk PR#110](https://github.com/qf-studio/studio-sdk/pull/110). After Leg 2 merges + deploys: operator steps below (App provisioning · `GH_TOKEN` precedence check · restart + token-boundary watch).
 **Created**: 2026-08-09
 **Assignee**: Pilot (one leg at a time)
 
@@ -33,9 +33,9 @@ sdk#107 → PR#108 (merged 08-07, in v0.32.0) added the client-side API: `TokenF
 
 `New(cfg, ...AdapterOption)` + `WithAdapterClient(*Client)`; nil-safe; MergeWaiter/board layer inherit automatically; rotation test pins the no-freeze property. See issue body.
 
-## Leg 2 — pilot wiring (HELD until sdk#109 merges)
+## Leg 2 — pilot wiring (DISPATCHED 2026-08-10 as [#4824](https://github.com/qf-studio/pilot/issues/4824), `pilot` + `no-decompose`)
 
-Issue draft — dispatch as `pilot` + `no-decompose` on qf-studio/pilot:
+Issue body follows this draft (anchors refreshed @ `39881bba`):
 
 1. **Bump studio-sdk** to a version containing #108 + #109 (pseudo-version pin is established practice — the current pin `v0.31.2-0.20260721...` is itself one).
 2. **`newGitHubSDKClient(cfg *config.Config) *githubSDK.Client`** beside `newGitHubClient` (`main.go:265`): `githubSDK.NewClientWithTokenFunc(githubSDK.TokenFunc(githubTokenFunc(cfg)), githubSDK.WithTokenInvalidate(invalidateGitHubAppToken(cfg)))`. Note `invalidateGitHubAppToken` returns nil when App auth isn't configured — SDK `withAuthRetry` treats a nil hook as no-retry (safe), but pass the option conditionally to keep intent explicit.
