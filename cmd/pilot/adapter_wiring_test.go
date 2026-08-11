@@ -20,6 +20,7 @@ func TestAdapterPollerRegistrations_CoverAllAdapterTypes(t *testing.T) {
 		"GitLab":   true, // webhook-based, no poller
 		"Slack":    true, // notification channel + socket mode, not a task source poller
 		"Telegram": true, // bot adapter, not a task source poller
+		"Chat":     true, // GH-4835: operator chat HTTP transport, not a task source poller
 	}
 
 	// Build set of registered poller names (lowercased).

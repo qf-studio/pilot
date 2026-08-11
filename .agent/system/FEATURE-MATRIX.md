@@ -140,6 +140,7 @@
 | Discord adapter wiring | ✅ | main | `--discord` | `adapters.discord` | Wire Discord poller, config, and CLI flag in main.go (v2.30.0, PR #1882) |
 | Asana CompleteTask callback | ✅ | adapters/asana | - | - | Wire Asana CompleteTask on successful PR creation (v2.10.0, PR #1720) |
 | Telegram memory store | ✅ | adapters/telegram | - | - | Wire memory store to Telegram HandlerConfig (v2.25.0, PR #1754) |
+| Web chat API | ✅ | adapters/web, gateway | - | `adapters.chat` | Operator chat HTTP transport for console dashboard: `POST /api/v1/chat/messages` + `GET /api/v1/chat/conversations/{id}/events`, backed by comms.Handler via a per-conversation seq-numbered in-memory event buffer (500-event cap, 1h expiry); dispatches on the daemon context so tasks survive request cancellation; rejects approve/reject-shaped callbacks (approvals route through `/api/v1/approvals/{requestId}/decision` instead) (GH-4835) |
 
 ## Output/Notifications
 

@@ -19,6 +19,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/adapters/web"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/comms"
@@ -66,6 +67,7 @@ type Pilot struct {
 	slackHandler           *slack.Handler                   // Slack Socket Mode handler (GH-652)
 	slackRunner            *executor.Runner                 // Runner for Slack tasks (GH-652)
 	slackMemberResolver    slack.MemberResolver             // Team member resolver for Slack RBAC (GH-786)
+	chatRunner             *executor.Runner                 // Runner for the web chat API's tasks (GH-4835)
 	alertEngine            *alerts.Engine
 	teamsService           *teams.Service // Teams RBAC service (GH-633)
 	store                  *memory.Store
@@ -173,6 +175,20 @@ func WithSlackHandler(runner *executor.Runner, projectPath string) Option {
 func WithSlackMemberResolver(resolver slack.MemberResolver) Option {
 	return func(p *Pilot) {
 		p.slackMemberResolver = resolver
+	}
+}
+
+// WithChatHandler enables the web chat API (console Operator chat panel,
+// GH-4835) in gateway mode. The runner is required to execute tasks
+// dispatched through POST /api/v1/chat/messages; mirrors WithTelegramHandler
+// / WithSlackHandler. Only takes effect when cfg.Adapters.Chat.Enabled is
+// also true — see the wiring block in New().
+func WithChatHandler(runner *executor.Runner, projectPath string) Option {
+	return func(p *Pilot) {
+		p.chatRunner = runner
+		if projectPath != "" && len(p.config.Projects) > 0 {
+			p.config.Projects[0].Path = projectPath
+		}
 	}
 }
 
@@ -787,6 +803,36 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		}
 
 		logging.WithComponent("pilot").Info("Slack handler initialized for gateway mode")
+	}
+
+	// Initialize the web chat API if a runner was provided via options
+	// (GH-4835). Backs the console Operator chat panel: POST
+	// /api/v1/chat/messages and GET
+	// /api/v1/chat/conversations/{id}/events. Must be wired here (gateway
+	// mode) AND in cmd/pilot/main.go (polling mode) — see SetChatAPI's doc
+	// comment in internal/gateway/chat.go; missing either means the routes
+	// silently don't exist in that mode.
+	if p.chatRunner != nil && cfg.Adapters.Chat != nil && cfg.Adapters.Chat.Enabled {
+		projectPath := ""
+		if len(cfg.Projects) > 0 {
+			projectPath = cfg.Projects[0].Path
+		}
+
+		webMessenger := web.NewMessenger()
+		webCommsHandler := comms.BuildHandler(comms.HandlerDeps{
+			Messenger:       webMessenger,
+			Runner:          p.chatRunner,
+			Projects:        config.NewProjectSource(cfg),
+			ProjectPath:     projectPath,
+			RateLimit:       cfg.Adapters.Chat.RateLimit,
+			Store:           p.store,
+			TaskIDPrefix:    "WEB",
+			ExecutorBackend: cfg.Executor,
+		})
+
+		p.gateway.SetChatAPI(web.NewAPI(webCommsHandler, webMessenger))
+
+		logging.WithComponent("pilot").Info("Chat API initialized for gateway mode")
 	}
 
 	return p, nil

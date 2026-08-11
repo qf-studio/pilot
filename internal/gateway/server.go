@@ -106,6 +106,8 @@ type Server struct {
 	gitGraphPath             string                    // Project path for git graph API (defaults to ".")
 	gitGraphFetcher          GitGraphFetcher           // Injected to avoid import cycle with internal/dashboard
 	decisionRecorder         approval.DecisionRecorder // GH-4748: backs POST /api/v1/approvals/{requestId}/decision
+	chatAPI                  ChatAPI                   // GH-4835: backs the chat routes; nil = routes not registered (adapters.chat.enabled: false)
+	daemonCtx                context.Context           // GH-4835: long-lived ctx stashed by Start(), used to dispatch chat tasks outside the HTTP request lifetime
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -213,6 +215,13 @@ func (s *Server) Start(ctx context.Context) error {
 	s.running = true
 	s.mu.Unlock()
 
+	// Stash the daemon context so chat dispatch (handleChatMessages) can run
+	// task-shaped work past the lifetime of any single HTTP request — see
+	// chat.go's doc comments and the daemonCtx field comment.
+	s.mu.Lock()
+	s.daemonCtx = ctx
+	s.mu.Unlock()
+
 	mux := http.NewServeMux()
 
 	// WebSocket endpoint for control plane
@@ -242,6 +251,18 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("POST /api/v1/approvals/{requestId}/decision", s.handleApprovalDecision)
 	apiMux.HandleFunc("GET /api/v1/executions/{id}/events", s.handleExecutionEvents)
 	apiMux.HandleFunc("GET /api/v1/tasks/{taskId}/events", s.handleTaskEvents)
+
+	// GH-4835: chat routes only exist when a ChatAPI has been wired
+	// (adapters.chat.enabled: true at both daemon construction sites). When
+	// nil, these paths are simply absent from apiMux, so they 404 like any
+	// unmatched route rather than 503ing from inside the handler.
+	s.mu.RLock()
+	chatEnabled := s.chatAPI != nil
+	s.mu.RUnlock()
+	if chatEnabled {
+		apiMux.HandleFunc("POST /api/v1/chat/messages", s.handleChatMessages)
+		apiMux.HandleFunc("GET /api/v1/chat/conversations/{id}/events", s.handleChatEvents)
+	}
 
 	// Apply auth middleware to API routes
 	if s.auth != nil {
