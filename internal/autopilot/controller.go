@@ -7583,8 +7583,39 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 				c.log.Warn("durable spawned-fix lookup failed, falling back to retry-ready",
 					"pr", prState.PRNumber, "error", err)
 			} else if fixIssue > 0 {
-				issueLabel = github.LabelFailed
-				nextSteps = fmt.Sprintf("This issue will not be retried automatically under its own number — fix issue #%d already owns this work.", fixIssue)
+				// GH-4852: the claim only records that a fix issue was
+				// spawned — it says nothing about whether that issue is
+				// still alive. A human can close it during daemon downtime
+				// (no race needed); trusting the claim blindly here labels
+				// the source pilot-failed pointing at a corpse, and GH-4842's
+				// reactions are event-driven only (preflight-decline hook,
+				// dedup-path re-check inside CreateFailureIssue) so they
+				// cannot fire for an already-closed, untracked issue —
+				// permanent strand. Health-check before trusting it.
+				fixGH, ghErr := c.ghClient.GetIssue(ctx, c.owner, c.repo, fixIssue)
+				switch {
+				case ghErr != nil:
+					// Fail open: trust the claim, mirroring the GH-4842
+					// dedup path's "owner-health check failed, returning
+					// existing fix issue unverified" behavior in
+					// CreateFailureIssue.
+					c.log.Warn("owner-health check on claimed fix issue failed, trusting claim",
+						"pr", prState.PRNumber, "fix_issue", fixIssue, "error", ghErr)
+					issueLabel = github.LabelFailed
+					nextSteps = fmt.Sprintf("This issue will not be retried automatically under its own number — fix issue #%d already owns this work.", fixIssue)
+				case classifyOwnerHealth(fixGH) == ownerDead:
+					// Dead owner: fall through to the default retry-ready
+					// label/nextSteps set above instead of stranding the
+					// source on pilot-failed, and surface it the same way
+					// the other owner-death reactions do.
+					reasonMsg := fmt.Sprintf("its designated fix issue #%d died (closed without shipping, discovered during external-close scan)", fixIssue)
+					c.log.Warn("owner-death: claimed fix issue is dead, re-arming source instead of stranding it",
+						"pr", prState.PRNumber, "fix_issue", fixIssue, "source", prState.IssueNumber)
+					c.fireOwnerDeathAlert(prState.IssueNumber, reasonMsg, "rearmed")
+				default:
+					issueLabel = github.LabelFailed
+					nextSteps = fmt.Sprintf("This issue will not be retried automatically under its own number — fix issue #%d already owns this work.", fixIssue)
+				}
 			}
 		}
 
