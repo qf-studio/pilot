@@ -77,12 +77,25 @@ DESTRUCTIVE_CALL_ALLOWLIST=(
 # owning file.
 # ---------------------------------------------------------------------------
 #
-# Uses a negative lookbehind so a *qualified* identifier of the same name in
-# an unrelated package (e.g. cmd/pilot/poller_github.go's sdkcore.Verdict)
-# doesn't false-positive, and a leading \b so embedded-suffix type names
-# (PreFlightVerdict{}, JudgeVerdict{} in internal/executor/intent_judge.go)
-# don't either.
-VERDICT_LITERAL_PATTERN='(?<!\.)\bVerdict\{'
+# POSIX ERE (grep -E), portable across BSD grep (macOS) and GNU grep
+# (Linux CI) — deliberately NOT `grep -P`. BSD grep has no -P: it exits 2
+# on an unsupported pattern, and the caller's `|| true` (needed to keep
+# "no matches" from tripping `set -e`) silently turns that error into an
+# empty, "clean" result. That let this exact check pass vacuously on macOS
+# pre-push while flagging real violations in Linux CI (found in post-merge
+# review of PR#4828 / GH-4831).
+#
+# The original PCRE `(?<!\.)\bVerdict\{` used a negative lookbehind to
+# reject a *qualified* identifier of the same name in an unrelated package
+# (e.g. cmd/pilot/poller_github.go's sdkcore.Verdict{}), and a leading \b so
+# embedded-suffix type names (PreFlightVerdict{}, JudgeVerdict{} in
+# internal/executor/intent_judge.go) didn't match either. This pattern gets
+# the same two exclusions without lookbehind or \b: it requires the
+# character immediately before "Verdict{" to be either start-of-line or
+# something that is NOT alnum/underscore (rules out PreFlightVerdict{},
+# whose preceding char is the word char "t") and NOT a dot (rules out
+# sdkcore.Verdict{}, whose preceding char is ".").
+VERDICT_LITERAL_PATTERN='(^|[^A-Za-z0-9_.])Verdict\{'
 
 VERDICT_LITERAL_ALLOWLIST=(
     # The owning file: NewVerdict/NewUnknownVerdict construct Verdict{} here,
@@ -129,15 +142,17 @@ scan_destructive_calls() {
 }
 
 # scan_verdict_literals FILE...
-# Prints grep -PHn-format matches for bare Verdict{} composite literals in
+# Prints grep -HnE-format matches for bare Verdict{} composite literals in
 # the given files, skipping anything on VERDICT_LITERAL_ALLOWLIST. Empty
-# output means clean.
+# output means clean. Uses -E (POSIX ERE), not -P, so this works under BSD
+# grep (macOS) as well as GNU grep (Linux CI) — see the Check 2 comment
+# above for why -P silently no-ops on macOS.
 scan_verdict_literals() {
     local f hit
     for f in "$@"; do
         [ -z "$f" ] && continue
         is_allowlisted "$f" "${VERDICT_LITERAL_ALLOWLIST[@]}" && continue
-        hit=$(grep -PHn "$VERDICT_LITERAL_PATTERN" "$f" 2>/dev/null || true)
+        hit=$(grep -HnE "$VERDICT_LITERAL_PATTERN" "$f" 2>/dev/null || true)
         [ -n "$hit" ] && echo "$hit"
     done
     return 0
