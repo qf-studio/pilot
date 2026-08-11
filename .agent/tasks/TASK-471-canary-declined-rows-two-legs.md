@@ -1,6 +1,6 @@
 # fix(memory): canary flag on declined-preflight rows — sdk interface leg + pilot stamping leg
 
-**Status**: 🚀 Leg 1 dispatched 2026-08-11 → [sdk#111](https://github.com/qf-studio/studio-sdk/issues/111) (`pilot` + `no-decompose`) · Leg 2 filed UNLABELED → [pilot#4845](https://github.com/qf-studio/pilot/issues/4845) — **label only after sdk#111's release is pinned**
+**Status**: ✅ Leg 1 MERGED 2026-08-11 → sdk PR#112 (`ExecutionSaverV2` + `DeclinedExecutionRecord`, 18:21Z after awaiting_approval; review agent ran ~18:30Z — check PR comments, incl. re-anchor requirements for leg 2). **NOT YET RELEASED** — latest sdk tag v0.33.0; next sdk train Mon–Fri 16:00 Berlin tags it. Leg 2 [pilot#4845](https://github.com/qf-studio/pilot/issues/4845) stays UNLABELED — **label after the sdk release exists (re-anchor body to merged V2 shape first if the reviewer flagged drift)**.
 **Created**: 2026-08-11
 **Assignee**: Pilot
 

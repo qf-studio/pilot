@@ -1,6 +1,6 @@
 # TASK-465: C16 — console GET /api/v1/dashboard aggregation for the v4 register
 
-**Status**: 🚀 Dispatched 2026-08-11 → [console#114](https://github.com/qf-studio/pilot-console/issues/114) (`pilot` + `no-decompose`)
+**Status**: ✅ MERGED + REVIEWED 2026-08-11 → console PR#116 (12:29Z). **Review verdict: APPROVED, tenancy clean, no blocking defects** (posted on the PR). Non-blocking: activity array spans window+1 days (UI must not assume len==days) · no upper time bound on aggregates (midnight clock-skew edge) · 3 nits. → **READY TO ARCHIVE.**
 **Created**: 2026-08-11
 **Assignee**: Pilot
 

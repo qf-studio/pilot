@@ -1,6 +1,6 @@
 # fix(autopilot): reconcile sentinel-bundle truncation with the excerpt assembly budget
 
-**Status**: 🚀 Dispatched 2026-08-11 → [pilot#4844](https://github.com/qf-studio/pilot/issues/4844) (`pilot` + `no-decompose`)
+**Status**: ✅ Merged + REVIEWED 2026-08-11 → PR#4850 (16:12Z). **Review verdict: PASS — all 5 spec items verified (constant-reuse approach; revert-tested), 4 cosmetic nits, no follow-up warranted** (posted on the PR). → **READY TO ARCHIVE.**
 **Created**: 2026-08-11
 **Assignee**: Pilot
 

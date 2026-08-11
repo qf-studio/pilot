@@ -1559,23 +1559,23 @@
       "TASK-464": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-464-console-chat-proxy.md",
         "title": "C17 console leg \u2014 operator chat proxy to the tenant daemon (C14 idiom)",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
+          "api",
+          "deployment",
           "testing",
           "authentication",
-          "deployment",
-          "api",
           "context"
         ]
       },
       "TASK-465": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-465-console-dashboard-endpoint.md",
-        "title": "C16 \u2014 console dashboard aggregation endpoint",
-        "status": "dispatched",
+        "title": "C16 \u2014 console GET /api/v1/dashboard aggregation for the v4 register",
+        "status": "completed",
         "concepts": [
-          "api",
-          "saas",
-          "dashboard"
+          "deployment",
+          "testing",
+          "api"
         ]
       },
       "TASK-466": {
@@ -1590,48 +1590,64 @@
       },
       "TASK-467": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-467-durable-recovery-owner-designation.md",
-        "title": "Durable recovery-owner designation + review-path seam",
-        "status": "dispatched",
+        "title": "Task 467 Durable Recovery Owner Designation",
+        "status": "blocked",
         "concepts": [
-          "autopilot",
-          "reliability"
+          "deployment",
+          "testing",
+          "context",
+          "markers",
+          "theory of mind",
+          "knowledge",
+          "database",
+          "api"
         ]
       },
       "TASK-468": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-468-recovery-owner-death-handling.md",
-        "title": "Owner-death recovery for designated fix issues",
-        "status": "dispatched",
+        "title": "Task 468 Recovery Owner Death Handling",
+        "status": "completed",
         "concepts": [
-          "autopilot",
-          "reliability"
+          "context",
+          "frontend",
+          "testing",
+          "workflow",
+          "deployment"
         ]
       },
       "TASK-469": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-469-chat-api-gateway-wiring-latestseq.md",
-        "title": "Chat API gateway-mode wiring + latestSeq",
-        "status": "dispatched",
+        "title": "Task 469 Chat Api Gateway Wiring Latestseq",
+        "status": "completed",
         "concepts": [
-          "gateway",
-          "saas",
-          "api"
+          "context",
+          "deployment",
+          "authentication",
+          "api",
+          "testing"
         ]
       },
       "TASK-470": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-470-excerpt-bundle-budget-reconcile.md",
-        "title": "Excerpt bundle-budget reconcile",
-        "status": "dispatched",
+        "title": "Task 470 Excerpt Bundle Budget Reconcile",
+        "status": "completed",
         "concepts": [
-          "autopilot"
+          "deployment",
+          "workflow",
+          "context",
+          "markers",
+          "testing"
         ]
       },
       "TASK-471": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-471-canary-declined-rows-two-legs.md",
-        "title": "Canary flag on declined-preflight rows (sdk+pilot legs)",
-        "status": "dispatched",
+        "title": "Task 471 Canary Declined Rows Two Legs",
+        "status": "completed",
         "concepts": [
-          "canary",
-          "memory",
-          "sdk"
+          "testing",
+          "deployment",
+          "knowledge",
+          "context"
         ]
       }
     },
@@ -7068,7 +7084,8 @@
       "TASK-454",
       "TASK-460",
       "TASK-459",
-      "TASK-461"
+      "TASK-461",
+      "TASK-467"
     ],
     "autopilot": [
       "mem-100",
@@ -7393,7 +7410,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-11T13:40:00+00:00",
+  "last_updated": "2026-08-11T18:27:20.146502+00:00",
   "stats": {
     "total_nodes": 390,
     "total_edges": 332,

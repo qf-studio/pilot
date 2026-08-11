@@ -1,6 +1,6 @@
 # fix(autopilot): owner-death recovery — a designated fix issue that dies must re-arm the source or escalate
 
-**Status**: 🚀 Dispatched 2026-08-11 → [pilot#4842](https://github.com/qf-studio/pilot/issues/4842) (`pilot` + `no-decompose`)
+**Status**: ✅ Merged 2026-08-11 → PR#4849 (15:50Z). Post-merge review agent ran at ~18:30Z — check PR#4849 comments for the verdict (incl. interaction risk with then-unmerged PR#4846).
 **Created**: 2026-08-11
 **Assignee**: Pilot
 

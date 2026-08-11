@@ -1,6 +1,6 @@
 # fix(autopilot): recovery-owner designation must survive restart — persist it and extend the seam to the review path
 
-**Status**: 🚀 Dispatched 2026-08-11 → [pilot#4841](https://github.com/qf-studio/pilot/issues/4841) (`pilot` + `no-decompose`)
+**Status**: ⚠️ **PR#4846 STRANDED OPEN — daemon marked it `failed` on a bogus CI timeout** (2026-08-11 15:27Z). GitHub checks all GREEN (sha fe0f1d5 matches both sides); daemon adopted the PR at 14:35, wait started 14:57, checks had finished ~14:43 — wait never saw completion → "CI timeout after 30m0s" → stage=failed, ci_status=pending. Zero-evidence guard correctly held the PR open; CAS tripwire refused to mark the completed execution failed. Same symptom family as GH-4384 (pointer PRs, 30m timeout w/ green checks) but NEW variant on the adoption path — defect issue NOT yet filed. **Operator call pending: manual merge vs ledger re-drive.** Issue #4841 still open.
 **Created**: 2026-08-11
 **Assignee**: Pilot
 

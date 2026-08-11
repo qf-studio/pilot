@@ -1,6 +1,6 @@
 # fix(gateway): chat API — gateway-mode wiring hole + latestSeq for reset detection
 
-**Status**: 🚀 Dispatched 2026-08-11 → [pilot#4843](https://github.com/qf-studio/pilot/issues/4843) (`pilot` + `no-decompose`)
+**Status**: ✅ Merged 2026-08-11 → PR#4848 (15:13Z). Post-merge review agent ran at ~18:30Z — check PR#4848 comments (incl. whether latestSeq shape matches console#115 §3).
 **Created**: 2026-08-11
 **Assignee**: Pilot
 

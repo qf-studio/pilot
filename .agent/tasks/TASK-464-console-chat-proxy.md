@@ -1,6 +1,6 @@
 # TASK-464: C17 console leg — operator chat proxy to the tenant daemon (C14 idiom)
 
-**Status**: 🚀 **Dispatched 2026-08-11** → [console#115](https://github.com/qf-studio/pilot-console/issues/115) (`pilot` + `no-decompose`). Gate cleared same day: pilot#4835 merged as pilot PR#4838; body re-anchored to the MERGED contract per post-merge review (added `success` field, null-events relay, daemon-404→409 `chat_not_enabled` mapping, no-reset-promise until pilot#4843 lands `latestSeq`, callback vocabulary `execute`/`cancel`).
+**Status**: ✅ **MERGED 2026-08-11** → console PR#117 (18:20Z, released from awaiting_approval by founder; console#115 closed-completed). Full same-day chain: gate cleared (pilot#4835 → PR#4838) → body re-anchored to merged contract → labeled → implemented → held → approved → merged. Post-merge review agent ran ~18:30Z — check PR#117 comments (key question: does `latestSeq` from pilot PR#4848 pass through the relay). Archive after review verdict is read.
 **Created**: 2026-08-11
 **Assignee**: Pilot (after gate)
 
