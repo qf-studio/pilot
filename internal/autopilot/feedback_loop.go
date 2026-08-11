@@ -598,6 +598,24 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 		return 0, fmt.Errorf("failed to create review issue: %w", err)
 	}
 
+	// GH-4841: mirror CreateFailureIssue's durable claim (GH-4307), minus the
+	// dedup gate on creation — a repeat review round must still create a new
+	// issue, but a durable row naming its number must exist before
+	// handleReviewRequested's caller (spawnReviewIssue) ever closes the PR, so
+	// notifyExternalClose's HasSpawnedFixForPR fallback can find it even if a
+	// daemon restart loses prState.TerminalLabel. failedChecks is nil (review
+	// feedback has no check-run concept); the dedup key namespace only needs
+	// the PR number to be found by HasSpawnedFixForPR's prefix match.
+	if f.stateStore != nil {
+		dedupRepo := f.owner + "/" + f.repo
+		dedupKey := spawnedFixDedupKey(prState.PRNumber, FailureReviewRequested, nil)
+		if _, claimErr := f.stateStore.ClaimSpawnedFix(dedupRepo, dedupKey); claimErr != nil {
+			f.log.Warn("review-issue durable claim failed", "pr", prState.PRNumber, "error", claimErr)
+		} else if recErr := f.stateStore.RecordSpawnedFixIssue(dedupRepo, dedupKey, issue.Number); recErr != nil {
+			f.log.Warn("failed to record spawned review issue number", "issue", issue.Number, "pr", prState.PRNumber, "error", recErr)
+		}
+	}
+
 	f.log.Info("created review issue",
 		"issue", issue.Number,
 		"pr", prState.PRNumber,

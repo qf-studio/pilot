@@ -2955,6 +2955,22 @@ func (c *Controller) logCIFailureClassification(prState *PRState, checks []Faile
 	}
 }
 
+// spawnReviewIssue is spawnFailureIssue's counterpart for the review-feedback
+// close path (GH-4841). Before this seam existed, handleReviewRequested
+// closed the PR (controller.go ClosePullRequest call below) and only set
+// prState.TerminalLabel afterward — the same designate-after-close ordering
+// GH-4826 fixed for CI failures, reintroduced on this sibling path. Routing
+// through this seam instead means the designation happens the moment
+// CreateReviewIssue actually returns a live issue, strictly before the PR is
+// ever closed, matching spawnFailureIssue's ordering exactly.
+func (c *Controller) spawnReviewIssue(ctx context.Context, prState *PRState, reviews []*github.PullRequestReview, comments []*github.PRReviewComment, iteration int) (int, error) {
+	issueNum, err := c.feedbackLoop.CreateReviewIssue(ctx, prState, reviews, comments, iteration)
+	if err == nil && issueNum > 0 {
+		prState.TerminalLabel = github.LabelFailed
+	}
+	return issueNum, err
+}
+
 // handleReviewRequested processes a PR that received "changes requested" review feedback.
 // It fetches reviews and comments, checks iteration limits, creates a revision issue,
 // learns from the review, then closes the PR and deletes the branch.
@@ -3006,8 +3022,11 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 		}
 	}
 
-	// Create revision issue with review feedback
-	issueNum, err := c.feedbackLoop.CreateReviewIssue(ctx, prState, reviews, comments, iteration+1)
+	// Create revision issue with review feedback. GH-4841: routed through
+	// spawnReviewIssue rather than calling feedbackLoop.CreateReviewIssue
+	// directly, so prState.TerminalLabel is designated the moment the issue
+	// exists — strictly before the ClosePullRequest call below.
+	issueNum, err := c.spawnReviewIssue(ctx, prState, reviews, comments, iteration+1)
 	if err != nil {
 		return fmt.Errorf("failed to create review issue: %w", err)
 	}
@@ -3060,12 +3079,13 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 		}
 	}
 
-	// GH-3806: the revision issue created above now owns the retry, so this
-	// issue must be marked pilot-failed rather than re-queued (see the matching
+	// GH-3806/GH-4841: name the reason so notifyExternalClose can post the
+	// audit-trail comments. prState.TerminalLabel itself was already set by
+	// spawnReviewIssue above the moment CreateReviewIssue succeeded — it is
+	// not set here, so this rung cannot forget it (mirrors the matching
 	// comment on handleCIFailed's main CI-fail branch).
 	prState.Stage = StageFailed
 	prState.Error = fmt.Sprintf("changes requested by reviewer; revision issue #%d created to continue this work", issueNum)
-	prState.TerminalLabel = github.LabelFailed
 	c.metrics.RecordPRFailed()
 	return nil
 }
@@ -7460,6 +7480,21 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		if prState.TerminalLabel != "" {
 			issueLabel = prState.TerminalLabel
 			nextSteps = "This issue will not be retried automatically under its own number — see the reason above for what happens next."
+		} else if c.stateStore != nil {
+			// GH-4841: prState.TerminalLabel is in-memory only and can be lost to
+			// a daemon restart landing between the PR close (handleCIFailed/
+			// handlePostMergeCI/handleReviewRequested) and the end-of-ProcessPR
+			// persistPRState call — the exact window that resurrected the #4818
+			// double-arm shape. Fall back to the durable spawned-fix claim, which
+			// CreateFailureIssue/CreateReviewIssue record synchronously before
+			// either handler ever closes the PR, so it survives that restart.
+			if fixIssue, err := c.stateStore.HasSpawnedFixForPR(c.repoKey(), prState.PRNumber); err != nil {
+				c.log.Warn("durable spawned-fix lookup failed, falling back to retry-ready",
+					"pr", prState.PRNumber, "error", err)
+			} else if fixIssue > 0 {
+				issueLabel = github.LabelFailed
+				nextSteps = fmt.Sprintf("This issue will not be retried automatically under its own number — fix issue #%d already owns this work.", fixIssue)
+			}
 		}
 
 		// TASK-459 Phase 3 Task 5e: skip the label writes below on positive
