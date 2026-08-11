@@ -1,6 +1,6 @@
 # fix(memory): canary flag on declined-preflight rows — sdk interface leg + pilot stamping leg
 
-**Status**: ✅ Leg 1 MERGED 2026-08-11 → sdk PR#112 (`ExecutionSaverV2` + `DeclinedExecutionRecord`, 18:21Z after awaiting_approval; review agent ran ~18:30Z — check PR comments, incl. re-anchor requirements for leg 2). **NOT YET RELEASED** — latest sdk tag v0.33.0; next sdk train Mon–Fri 16:00 Berlin tags it. Leg 2 [pilot#4845](https://github.com/qf-studio/pilot/issues/4845) stays UNLABELED — **label after the sdk release exists (re-anchor body to merged V2 shape first if the reviewer flagged drift)**.
+**Status**: ✅ Leg 1 MERGED + REVIEWED 2026-08-11 → sdk PR#112 (**verdict: APPROVE, additive-clean, no sdk follow-up**; posted on the PR). **NOT YET RELEASED** — latest sdk tag v0.33.0; next sdk train tags it. Leg 2 [pilot#4845](https://github.com/qf-studio/pilot/issues/4845) UNLABELED and **NEEDS RE-ANCHOR before labeling** (reviewer-confirmed drift): stamping goes in the NEW `core.ExecutionSaverV2.SaveDeclinedExecutionRecord(core.DeclinedExecutionRecord{…RepoOwner, RepoName})` — NOT the legacy method; implement with a **VALUE receiver** on `storeExecutionSaver` (poller wires a value; pointer receiver silently keeps the legacy path) + `var _ core.ExecutionSaverV2 = storeExecutionSaver{}`; treat empty RepoOwner/RepoName as fall-back-to-path (sdk lax-parse Low defect). Gate: first sdk tag containing e426f27 + pin bump.
 **Created**: 2026-08-11
 **Assignee**: Pilot
 

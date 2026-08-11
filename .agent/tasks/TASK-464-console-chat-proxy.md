@@ -1,6 +1,6 @@
 # TASK-464: C17 console leg — operator chat proxy to the tenant daemon (C14 idiom)
 
-**Status**: ✅ **MERGED 2026-08-11** → console PR#117 (18:20Z, released from awaiting_approval by founder; console#115 closed-completed). Full same-day chain: gate cleared (pilot#4835 → PR#4838) → body re-anchored to merged contract → labeled → implemented → held → approved → merged. Post-merge review agent ran ~18:30Z — check PR#117 comments (key question: does `latestSeq` from pilot PR#4848 pass through the relay). Archive after review verdict is read.
+**Status**: ✅ **MERGED 2026-08-11** → console PR#117 (18:20Z, released from awaiting_approval by founder; console#115 closed-completed). Full same-day chain: gate cleared (pilot#4835 → PR#4838) → body re-anchored to merged contract → labeled → implemented → held → approved → merged. **Review verdict: APPROVE — contract-faithful, tenancy clean, byte-faithful relay confirmed (`latestSeq` reaches the SPA today with zero console change).** Two follow-up candidates (not filed): 502/409 written without logging cause (handlers.go:91-103; C14 logs, this doesn't) · unescaped conversationID in upstream URL (client.go:127 — `url.PathEscape` hardening; bounded to own-org GET). → **Archive after the follow-up decision.**
 **Created**: 2026-08-11
 **Assignee**: Pilot (after gate)
 

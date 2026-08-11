@@ -1,6 +1,6 @@
 # fix(gateway): chat API — gateway-mode wiring hole + latestSeq for reset detection
 
-**Status**: ✅ Merged 2026-08-11 → PR#4848 (15:13Z). Post-merge review agent ran at ~18:30Z — check PR#4848 comments (incl. whether latestSeq shape matches console#115 §3).
+**Status**: ✅ Merged + REVIEWED 2026-08-11 → PR#4848. **Verdict: APPROVED — all 4 items verified fixed, acceptance tests real, no follow-up warranted; latestSeq shape matches console#115 §3 exactly and PR#117's relay passes it through** (posted on the PR). → **READY TO ARCHIVE.**
 **Created**: 2026-08-11
 **Assignee**: Pilot
 

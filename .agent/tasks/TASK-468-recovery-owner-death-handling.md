@@ -1,6 +1,6 @@
 # fix(autopilot): owner-death recovery — a designated fix issue that dies must re-arm the source or escalate
 
-**Status**: ✅ Merged 2026-08-11 → PR#4849 (15:50Z). Post-merge review agent ran at ~18:30Z — check PR#4849 comments for the verdict (incl. interaction risk with then-unmerged PR#4846).
+**Status**: ✅ Merged + REVIEWED 2026-08-11 → PR#4849. **Verdict: holds, merge stands — but D1 (Medium): tick-ordering race can silently strand** (poller declines fresh fix issue BEFORE `pilot-failed` lands one tick later → reaction dropped permanently, zero alerts — the GH-4842 shape surviving one ordering; fix = gate on the durable spawned-fix claim **once PR#4846 lands**). D2–D6 smaller (opportunistic closed-unmerged detection · first-match `Depends on:` regex can misdirect vs log excerpts · fetch-error one-shot loss · preflight seam untested · declined owner left open). **Two risks recorded for 4846's eventual review**: `HasSpawnedFixForPR` fallback must health-check via `classifyOwnerHealth`; restart rehydration widens the D1 window. Full detail on the PR. **Keep open until the D1 follow-up decision is made alongside 4846.**
 **Created**: 2026-08-11
 **Assignee**: Pilot
 
