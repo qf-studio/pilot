@@ -1577,13 +1577,12 @@
       },
       "TASK-466": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-466-console-docs-page.md",
-        "title": "Console Docs page \u2014 surface Navigator .agent docs",
-        "status": "planned",
+        "title": "Console Docs page \u2014 surface Navigator `.agent/` docs, later make them manageable",
+        "status": "research",
         "concepts": [
-          "saas",
-          "dashboard",
-          "navigator",
-          "documentation"
+          "deployment",
+          "testing",
+          "knowledge"
         ]
       }
     },
@@ -6134,6 +6133,11 @@
       "from": "TASK-465",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-466",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6255,7 +6259,8 @@
       "TASK-455",
       "TASK-460",
       "TASK-459",
-      "TASK-462"
+      "TASK-462",
+      "TASK-466"
     ],
     "deployment": [
       "TASK-386",
@@ -6368,7 +6373,8 @@
       "TASK-462",
       "TASK-463",
       "TASK-464",
-      "TASK-465"
+      "TASK-465",
+      "TASK-466"
     ],
     "authentication": [
       "TASK-386",
@@ -6540,7 +6546,8 @@
       "TASK-462",
       "TASK-463",
       "TASK-464",
-      "TASK-465"
+      "TASK-465",
+      "TASK-466"
     ],
     "api": [
       "TASK-386",
@@ -7276,10 +7283,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-11T12:30:00+00:00",
+  "last_updated": "2026-08-11T13:11:47.374548+00:00",
   "stats": {
-    "total_nodes": 384,
-    "total_edges": 324,
+    "total_nodes": 385,
+    "total_edges": 325,
     "memory_count": 217
   }
 }

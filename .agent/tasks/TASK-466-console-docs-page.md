@@ -1,6 +1,6 @@
 # TASK-466: Console Docs page — surface Navigator `.agent/` docs, later make them manageable
 
-**Status**: 🎨 Design APPROVED 2026-08-11 (`design/docs-v1.html` @ pilot-console-ui, commit 741b8d9). No issue filed, nothing dispatched — read leg needs contract research first.
+**Status**: 🎨 Design APPROVED 2026-08-11 (`design/docs-v1.html` @ pilot-console-ui, commit 741b8d9). No issue filed; not yet in Pilot's queue — read leg needs contract research first.
 **Created**: 2026-08-11
 **Assignee**: —
 
