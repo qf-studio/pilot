@@ -1202,6 +1202,37 @@ func (s *StateStore) GetSpawnedFixIssue(repo, dedupKey string) (int, error) {
 	return issueNumber, nil
 }
 
+// HasSpawnedFixForPR reports whether a fix/review issue has already been
+// durably claimed for prNumber, regardless of failure type or the exact set
+// of failed checks — a prefix match on the "fix:pr<N>:" dedup-key namespace
+// (spawnedFixDedupKey) rather than an exact-key lookup like GetSpawnedFixIssue.
+// Returns the most recently recorded issue number, or 0 if no claim has been
+// backfilled with a live issue number yet (no claim at all, or a claim still
+// in flight between ClaimSpawnedFix and RecordSpawnedFixIssue).
+//
+// GH-4841: notifyExternalClose uses this as a durable fallback for
+// prState.TerminalLabel, which is in-memory only and can be lost to a daemon
+// restart landing between a CI-failure/review-feedback PR close and the
+// end-of-cycle persistPRState call. The claim row this reads was written by
+// CreateFailureIssue/CreateReviewIssue synchronously, before either handler
+// ever closes the PR — so it survives exactly the restart window that loses
+// prState.TerminalLabel.
+func (s *StateStore) HasSpawnedFixForPR(repo string, prNumber int) (int, error) {
+	var issueNumber int
+	err := s.db.QueryRow(`
+		SELECT issue_number FROM autopilot_spawned_fixes
+		WHERE repo = ? AND dedup_key LIKE ? AND issue_number > 0
+		ORDER BY created_at DESC LIMIT 1
+	`, repo, fmt.Sprintf("fix:pr%d:%%", prNumber)).Scan(&issueNumber)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return issueNumber, nil
+}
+
 // GetScopeRelease returns one scope-release row by repo+scopeKey, or nil, nil
 // if not found.
 func (s *StateStore) GetScopeRelease(repo, scopeKey string) (*ScopeRelease, error) {
