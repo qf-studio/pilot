@@ -4146,11 +4146,22 @@ func (c terminalCompletionChecker) InvalidateCompletion(taskID, projectPath stri
 // GH-2802: Persists pre-flight rejection records for observability.
 type storeExecutionSaver struct {
 	store *memory.Store
+	// controller is optional (nil for a repo with no autopilot controller
+	// wired) — when set, a preflight decline of a Pilot-spawned fix issue
+	// reacts via the owner-death path (GH-4842) instead of only being
+	// recorded for observability.
+	controller *autopilot.Controller
 }
+
+// ownerDeathReactTimeout bounds the synchronous owner-death reaction
+// (GitHub issue fetch + label/comment writes) fired from inside
+// SaveDeclinedExecution, which the SDK poller calls inline on every
+// pre-flight decline.
+const ownerDeathReactTimeout = 15 * time.Second
 
 func (s storeExecutionSaver) SaveDeclinedExecution(taskID, projectPath, status, reason string) error {
 	now := time.Now()
-	return s.store.SaveExecution(&memory.Execution{
+	err := s.store.SaveExecution(&memory.Execution{
 		ID:          fmt.Sprintf("%s-preflight-%d", taskID, now.UnixNano()),
 		TaskID:      taskID,
 		ProjectPath: projectPath,
@@ -4159,6 +4170,20 @@ func (s storeExecutionSaver) SaveDeclinedExecution(taskID, projectPath, status, 
 		CreatedAt:   now,
 		CompletedAt: &now,
 	})
+
+	// GH-4842: a preflight decline is owner death for a Pilot-spawned fix
+	// issue — react (re-arm/escalate its source) using the same signal the
+	// SDK already produces here, instead of adding a new poller.
+	if status == "declined-preflight" && s.controller != nil {
+		var issueNum int
+		if _, scanErr := fmt.Sscanf(taskID, "GH-%d", &issueNum); scanErr == nil && issueNum > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), ownerDeathReactTimeout)
+			s.controller.ReactToDeclinedFixIssue(ctx, issueNum, reason)
+			cancel()
+		}
+	}
+
+	return err
 }
 
 // warnIfMetricsScopeEmpty logs a startup warning when a configured

@@ -481,7 +481,10 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 				repoFullName: target.repoFullName,
 			}
 			if deps.Store != nil {
-				pollerDeps.ExecutionSaver = storeExecutionSaver{store: deps.Store}
+				// GH-4842: wire the per-repo controller (may be nil) so a
+				// preflight decline of a Pilot-spawned fix issue can react
+				// via the owner-death path.
+				pollerDeps.ExecutionSaver = storeExecutionSaver{store: deps.Store, controller: controller}
 			}
 		}
 	}
