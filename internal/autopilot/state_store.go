@@ -1219,10 +1219,17 @@ func (s *StateStore) GetSpawnedFixIssue(repo, dedupKey string) (int, error) {
 // prState.TerminalLabel.
 func (s *StateStore) HasSpawnedFixForPR(repo string, prNumber int) (int, error) {
 	var issueNumber int
+	// GH-4852 nit: created_at is DATETIME DEFAULT CURRENT_TIMESTAMP, i.e.
+	// second resolution — two claims for the same PR landing within the same
+	// second (fast re-tick, or a CI-fix round immediately followed by a
+	// review round on the replacement PR) would otherwise tie and fall back
+	// to SQLite's undefined row order. rowid is monotonically assigned on
+	// insert for this ordinary (non-WITHOUT ROWID) table, so it's a stable
+	// tiebreaker for "most recently recorded".
 	err := s.db.QueryRow(`
 		SELECT issue_number FROM autopilot_spawned_fixes
 		WHERE repo = ? AND dedup_key LIKE ? AND issue_number > 0
-		ORDER BY created_at DESC LIMIT 1
+		ORDER BY created_at DESC, rowid DESC LIMIT 1
 	`, repo, fmt.Sprintf("fix:pr%d:%%", prNumber)).Scan(&issueNumber)
 	if err == sql.ErrNoRows {
 		return 0, nil

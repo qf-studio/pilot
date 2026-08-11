@@ -73,6 +73,29 @@ func parseFixIssueSource(body string) (int, bool) {
 	return n, true
 }
 
+// fixIssuePRRe extracts the originating PR number embedded by
+// FeedbackLoop.generateBody/CreateReviewIssue's autopilot-meta comment
+// ("pr:123"), mirroring controller.go's iterationRe for the same comment.
+var fixIssuePRRe = regexp.MustCompile(`<!-- autopilot-meta.*?pr:(\d+).*?-->`)
+
+// parseFixIssuePR recovers the originating PR number from a spawned fix
+// issue's body. Companion to parseFixIssueSource: the source issue is named
+// via "Depends on: #N", the PR via "pr:N" in the same autopilot-meta comment.
+// Used by reactToDeadFixIssue (GH-4852) to re-check the durable spawned-fix
+// claim as an alternate designation source when the pilot-failed label
+// hasn't landed yet.
+func parseFixIssuePR(body string) (int, bool) {
+	m := fixIssuePRRe.FindStringSubmatch(body)
+	if len(m) < 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 // emitOwnerDeathAlert fires an alerts.Event for an owner-death reaction
 // (rearm/escalate/replace). Shared by Controller and FeedbackLoop, which
 // each hold their own optional alertSink. Logs (rather than drops silently)
@@ -141,7 +164,31 @@ func (c *Controller) reactToDeadFixIssue(ctx context.Context, deadIssue *github.
 		c.log.Info("owner-death: source issue already closed, nothing to re-arm", "fix_issue", deadIssue.Number, "source", sourceNum)
 		return
 	}
-	if !github.HasLabel(source, github.LabelFailed) {
+	designated := github.HasLabel(source, github.LabelFailed)
+	if !designated && c.stateStore != nil {
+		// GH-4852: the pilot-failed label is written by notifyExternalClose,
+		// which only runs once the external-close poll tick observes the PR
+		// closed. The SDK poller's preflight-decline hook (ReactToDeclinedFixIssue)
+		// can fire on a freshly-spawned fix issue BEFORE that tick lands the
+		// label (TASK-468 D1 ordering race: restart in the close→persist
+		// window). Without this fallback the label-only check below would
+		// skip — consuming this one-shot reaction — while the durable
+		// spawned-fix claim already designates deadIssue as this source's
+		// recovery owner; PR#4846's controller.go fallback then re-designates
+		// the already-declined owner from that still-live claim, permanently
+		// stranding the source. Re-check the claim (recorded synchronously
+		// before either handler closes the PR) as an alternate designation
+		// source before giving up.
+		if prNum, ok := parseFixIssuePR(deadIssue.Body); ok {
+			if claimedIssue, cerr := c.stateStore.HasSpawnedFixForPR(c.repoKey(), prNum); cerr != nil {
+				c.log.Warn("owner-death: durable claim lookup failed while checking designation",
+					"fix_issue", deadIssue.Number, "source", sourceNum, "error", cerr)
+			} else {
+				designated = claimedIssue == deadIssue.Number
+			}
+		}
+	}
+	if !designated {
 		// Source isn't currently designated to this fix issue (already
 		// re-armed by something else, or was never in the TerminalLabel
 		// state to begin with) — avoid double-processing.

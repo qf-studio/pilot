@@ -550,6 +550,47 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 // iteration tracks how many review-fix attempts have been chained.
 // Returns the issue number on success.
 func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, reviews []*github.PullRequestReview, comments []*github.PRReviewComment, iteration int) (int, error) {
+	// GH-4852: claim the durable dedup row BEFORE creating the issue, not
+	// after (the ordering CreateFailureIssue already uses for the same
+	// reason, GH-4307). The old after-create ordering left a window where a
+	// crash between CreatePilotIssue succeeding and this claim landing loses
+	// the claim entirely — a restart re-enters handleReviewRequested for the
+	// same still-open PR, finds no claim, and mints a second revision issue
+	// for the same review round (PR#4846 pre-merge review, D4). Claiming
+	// first closes that window: a retry after any crash finds the claim
+	// already taken and reuses whatever issue number (if any) was recorded,
+	// instead of creating a duplicate. No owner-health re-check is needed
+	// here unlike CreateFailureIssue's dedup path — a fresh review round
+	// always carries a new PR number (dedupKey is PR-scoped), so the "existing
+	// owner might be dead" question never arises for a *repeat* claim of the
+	// same key; the same key is only ever reused across restarts/re-ticks
+	// still processing the same review round.
+	var dedupRepo, dedupKey string
+	if f.stateStore != nil {
+		dedupRepo = f.owner + "/" + f.repo
+		dedupKey = spawnedFixDedupKey(prState.PRNumber, FailureReviewRequested, nil)
+		claimed, claimErr := f.stateStore.ClaimSpawnedFix(dedupRepo, dedupKey)
+		if claimErr != nil {
+			f.log.Warn("review-issue durable claim check failed, proceeding without guard",
+				"pr", prState.PRNumber, "error", claimErr)
+		} else if !claimed {
+			existing, lookupErr := f.stateStore.GetSpawnedFixIssue(dedupRepo, dedupKey)
+			if lookupErr != nil {
+				f.log.Warn("duplicate review-issue creation suppressed but issue lookup failed",
+					"pr", prState.PRNumber, "error", lookupErr)
+				return existing, nil
+			}
+			// existing > 0: a review issue already exists for this exact PR;
+			// reuse it instead of minting a duplicate. existing == 0: the
+			// claim landed but the prior attempt crashed before recording an
+			// issue number (create failed, or crashed between create and
+			// record) — narrow, accepted window, mirrors CreateFailureIssue's
+			// identical "existing <= 0: return existing, nil" branch.
+			f.log.Info("duplicate review-issue creation suppressed", "pr", prState.PRNumber, "existing_issue", existing)
+			return existing, nil
+		}
+	}
+
 	title := f.generateTitle(prState, FailureReviewRequested)
 
 	var sb strings.Builder
@@ -598,20 +639,13 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 		return 0, fmt.Errorf("failed to create review issue: %w", err)
 	}
 
-	// GH-4841: mirror CreateFailureIssue's durable claim (GH-4307), minus the
-	// dedup gate on creation — a repeat review round must still create a new
-	// issue, but a durable row naming its number must exist before
-	// handleReviewRequested's caller (spawnReviewIssue) ever closes the PR, so
-	// notifyExternalClose's HasSpawnedFixForPR fallback can find it even if a
-	// daemon restart loses prState.TerminalLabel. failedChecks is nil (review
-	// feedback has no check-run concept); the dedup key namespace only needs
-	// the PR number to be found by HasSpawnedFixForPR's prefix match.
-	if f.stateStore != nil {
-		dedupRepo := f.owner + "/" + f.repo
-		dedupKey := spawnedFixDedupKey(prState.PRNumber, FailureReviewRequested, nil)
-		if _, claimErr := f.stateStore.ClaimSpawnedFix(dedupRepo, dedupKey); claimErr != nil {
-			f.log.Warn("review-issue durable claim failed", "pr", prState.PRNumber, "error", claimErr)
-		} else if recErr := f.stateStore.RecordSpawnedFixIssue(dedupRepo, dedupKey, issue.Number); recErr != nil {
+	// GH-4841/GH-4852: backfill the issue number onto the claim taken above
+	// (or, if stateStore is nil, this is a no-op). A durable row naming this
+	// issue must exist before handleReviewRequested's caller (spawnReviewIssue)
+	// ever closes the PR, so notifyExternalClose's HasSpawnedFixForPR fallback
+	// can find it even if a daemon restart loses prState.TerminalLabel.
+	if f.stateStore != nil && dedupKey != "" {
+		if recErr := f.stateStore.RecordSpawnedFixIssue(dedupRepo, dedupKey, issue.Number); recErr != nil {
 			f.log.Warn("failed to record spawned review issue number", "issue", issue.Number, "pr", prState.PRNumber, "error", recErr)
 		}
 	}
