@@ -1,6 +1,6 @@
 # TASK-461: GitHub App cutover — SDK-client token wiring (two legs + operator steps)
 
-**Status**: 🚧 **Leg 2 (pilot wiring) DISPATCHED 2026-08-10** — [#4824](https://github.com/qf-studio/pilot/issues/4824) (anchors re-verified on main @ `39881bba`; one drift folded in: `specClient` moved to `handlers.go:770` after the Phase 3 insertion. Still no tagged SDK release with PR#110 — spec pins merge commit `2e0f01e9`). **Leg 1 (SDK) ✅ MERGED 2026-08-09** — sdk#109 → [sdk PR#110](https://github.com/qf-studio/studio-sdk/pull/110). After Leg 2 merges + deploys: operator steps below (App provisioning · `GH_TOKEN` precedence check · restart + token-boundary watch).
+**Status**: ✅ **BOTH LEGS MERGED — Leg 2 merged 2026-08-10** ([#4824](https://github.com/qf-studio/pilot/issues/4824) → **PR#4827**, same-day). Leg 1 (SDK) merged 08-09 (sdk#109 → [sdk PR#110](https://github.com/qf-studio/studio-sdk/pull/110)). **Post-merge review of PR#4827 PENDING.** Remaining: operator steps below (box App provisioning · `GH_TOKEN` precedence check pilot#4753 · restart + first poll/autopilot action past the ~1h token boundary) → then archive.
 **Created**: 2026-08-09
 **Assignee**: Pilot (one leg at a time)
 
