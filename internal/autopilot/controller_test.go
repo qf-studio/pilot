@@ -5949,7 +5949,7 @@ func TestHandleCIFailed_EmptyLogs_SkipsLearning(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(mustJSON(t, resp))
-		// GetFailedCheckLogs tries to fetch job logs — return 404 so logs are empty
+		// GetFailedCheckExcerpts tries to fetch job logs — return 404 so logs are empty
 		case strings.Contains(r.URL.Path, "/actions/jobs/") && strings.HasSuffix(r.URL.Path, "/logs"):
 			w.WriteHeader(http.StatusNotFound)
 		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST":

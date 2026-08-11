@@ -1573,6 +1573,88 @@ func TestFeedbackLoop_CreateFailureIssue_MidLogErrcheckSurvives(t *testing.T) {
 	}
 }
 
+// TestFeedbackLoop_CreateFailureIssue_MultiCheckBundle_MiddleFailureSurvives
+// covers GH-4844: the sentinel-bundle path in generateBody used to blind-cut
+// the pre-assembled excerpt bundle to maxCIErrorExcerptChars (4000), a much
+// smaller budget than the 12000 (failedCheckExcerptBudgetChars) that
+// AssembleFailureExcerptsBody used to build it. On a multi-check bundle
+// whose total size sits between those two budgets, the 4000-char cut sliced
+// straight through whichever check's excerpt landed in the middle of the
+// bundle — the exact failure mode GH-4825 fixed for the single-blob path,
+// reintroduced one layer up. This asserts the middle check's failing line
+// survives into the final issue body now that the cut reuses the 12000
+// assembly budget.
+func TestFeedbackLoop_CreateFailureIssue_MultiCheckBundle_MiddleFailureSurvives(t *testing.T) {
+	capturedBody := ""
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST" {
+			var input github.IssueInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			capturedBody = input.Body
+
+			resp := github.Issue{Number: 202}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+
+	const failingLine = "internal/gh4844_test.go:88:2: UNIQUE_MIDDLE_FAILURE_EVIDENCE_12345 (errcheck)"
+
+	// Three per-check sections, each padded well past maxCIErrorExcerptChars
+	// (4000) when combined, but comfortably under failedCheckExcerptBudgetChars
+	// (12000) — this is the size band where the pre-fix code (a 4000-char cut
+	// of an assembly built for a 12000-char budget) diverges from correct
+	// behavior. The failing line lives in the middle section.
+	pad := strings.Repeat("noise line filler\n", 200) // ~3600 chars
+	var bundle strings.Builder
+	bundle.WriteString("=== checkA ===\n")
+	bundle.WriteString(pad)
+	bundle.WriteString("\n\n=== checkB \u2014 failing step: lint ===\n")
+	bundle.WriteString(failingLine + "\n")
+	bundle.WriteString("\n\n=== checkC ===\n")
+	bundle.WriteString(pad)
+
+	logs := ciExcerptSentinel + bundle.String()
+
+	// Sanity-check the premise: cutting this exact bundle to the old 4000-char
+	// budget must NOT reach the failing line, proving this test would have
+	// failed against the pre-GH-4844 `truncateKeepingTail(bundle, 4000)` call.
+	legacyCut := truncateKeepingTail(bundle.String(), maxCIErrorExcerptChars)
+	if strings.Contains(legacyCut, failingLine) {
+		t.Fatal("test setup invalid: failing line survives even the old 4000-char cut, so this test can't distinguish the fix")
+	}
+
+	prState := &PRState{PRNumber: 44, HeadSHA: "abc9999"}
+
+	_, err := fl.CreateFailureIssue(
+		context.Background(),
+		prState,
+		FailureCIPreMerge,
+		[]string{"checkA", "checkB", "checkC"},
+		logs,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("CreateFailureIssue() error = %v", err)
+	}
+
+	if !strings.Contains(capturedBody, failingLine) {
+		t.Error("body should contain the middle check's failing line; the sentinel-bundle cut dropped it")
+	}
+	const maxIssueBodyChars = 65536 // GitHub issue-body limit
+	if len(capturedBody) > maxIssueBodyChars {
+		t.Errorf("body length %d exceeds GitHub's issue-body limit %d", len(capturedBody), maxIssueBodyChars)
+	}
+}
+
 func mustFLJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
