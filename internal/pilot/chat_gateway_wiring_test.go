@@ -46,7 +46,7 @@ func TestGatewayMode_ChatEnabledNoPollingAdapters_RoutesServe(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	cfg.Memory.Path = t.TempDir()
-	cfg.Gateway.Port = 19199 // distinct from other packages' fixed test ports
+	cfg.Gateway.Port = 19099 // distinct from other packages' fixed test ports (19199 collides with cmd/pilot/adapter_preflight_test.go)
 	cfg.Adapters.Chat = &web.Config{Enabled: true}
 	// Deliberately no Telegram/Slack/GitHub polling config — this is the
 	// exact "webhooks-only / chat-only gateway daemon" shape D1 broke.
@@ -64,7 +64,7 @@ func TestGatewayMode_ChatEnabledNoPollingAdapters_RoutesServe(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	baseURL := "http://127.0.0.1:19199"
+	baseURL := "http://127.0.0.1:19099"
 
 	postResp, err := client.Post(baseURL+"/api/v1/chat/messages", "application/json",
 		bytes.NewBufferString(`{"conversationId":"gh4843-conv","text":"hello"}`))
