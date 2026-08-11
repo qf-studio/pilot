@@ -161,6 +161,7 @@ type FeedbackLoop struct {
 	issueLabels  []string
 	learningLoop *memory.LearningLoop // GH-1979: optional, annotates issues with known patterns
 	stateStore   *StateStore          // GH-4307: optional, dedups fix-issue creation across retries/daemons
+	alertsEngine alertSink            // GH-4842: optional, observes owner-death (dead designated fix issue) events
 	log          *slog.Logger
 }
 
@@ -185,6 +186,12 @@ func (f *FeedbackLoop) SetLearningLoop(ll *memory.LearningLoop) {
 // existing claim and always creates a new issue (pre-GH-4307 behavior).
 func (f *FeedbackLoop) SetStateStore(store *StateStore) {
 	f.stateStore = store
+}
+
+// SetAlertsEngine wires an alert sink so owner-death events discovered via
+// the dedup open-state check (GH-4842) are observable, not just logged.
+func (f *FeedbackLoop) SetAlertsEngine(engine alertSink) {
+	f.alertsEngine = engine
 }
 
 // spawnedFixDedupKey identifies one failure signal for idempotent fix-issue
@@ -253,14 +260,36 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 				"pr", prState.PRNumber, "error", claimErr)
 		} else if !claimed {
 			existing, lookupErr := f.stateStore.GetSpawnedFixIssue(dedupRepo, dedupKey)
-			if lookupErr != nil {
+			switch {
+			case lookupErr != nil:
 				f.log.Warn("duplicate fix-issue creation suppressed but issue lookup failed",
 					"pr", prState.PRNumber, "failure", failureType, "error", lookupErr)
-			} else {
-				f.log.Info("duplicate fix-issue creation suppressed",
-					"pr", prState.PRNumber, "failure", failureType, "existing_issue", existing)
+				return existing, nil
+			case existing <= 0:
+				return existing, nil
+			default:
+				// GH-4842: verify the previously-designated fix issue is
+				// still a live owner before handing it back out. A fix
+				// issue that closed without ever shipping is dead — it
+				// must never be re-designated as the recovery owner via
+				// dedup; fall through and mint a replacement instead.
+				existingIssue, err := f.ghClient.GetIssue(ctx, f.owner, f.repo, existing)
+				switch {
+				case err != nil:
+					f.log.Warn("owner-health check failed, returning existing fix issue unverified",
+						"pr", prState.PRNumber, "failure", failureType, "existing_issue", existing, "error", err)
+					return existing, nil
+				case classifyOwnerHealth(existingIssue) != ownerDead:
+					f.log.Info("duplicate fix-issue creation suppressed",
+						"pr", prState.PRNumber, "failure", failureType, "existing_issue", existing)
+					return existing, nil
+				}
+				f.log.Warn("designated fix issue is dead (closed without shipping) — minting a replacement",
+					"pr", prState.PRNumber, "failure", failureType, "dead_issue", existing)
+				f.fireOwnerDeathAlert(existing, fmt.Sprintf("fix issue #%d closed without shipping, replacing via dedup path", existing), "replaced")
+				// fall through: dedupKey stays set so RecordSpawnedFixIssue
+				// below overwrites this dead issue's row with the replacement.
 			}
-			return existing, nil
 		}
 	}
 

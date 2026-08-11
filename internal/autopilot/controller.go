@@ -1839,6 +1839,9 @@ func (c *Controller) SetOnIssueDone(fn func(issueNumber int)) {
 // SetOnIssueDone above. GH-3954.
 func (c *Controller) SetAlertsEngine(engine alertSink) {
 	c.alertsEngine = engine
+	if c.feedbackLoop != nil {
+		c.feedbackLoop.SetAlertsEngine(engine)
+	}
 }
 
 // OnPRCreated registers a new PR for autopilot processing.
