@@ -1,6 +1,6 @@
 # TASK-461: GitHub App cutover — SDK-client token wiring (two legs + operator steps)
 
-**Status**: ✅ **BOTH LEGS MERGED — Leg 2 merged 2026-08-10** ([#4824](https://github.com/qf-studio/pilot/issues/4824) → **PR#4827**, same-day). Leg 1 (SDK) merged 08-09 (sdk#109 → [sdk PR#110](https://github.com/qf-studio/studio-sdk/pull/110)). **Post-merge review of PR#4827 PENDING.** Remaining: operator steps below (box App provisioning · `GH_TOKEN` precedence check pilot#4753 · restart + first poll/autopilot action past the ~1h token boundary) → then archive.
+**Status**: ✅ **BOTH LEGS MERGED — Leg 2 merged 2026-08-10** ([#4824](https://github.com/qf-studio/pilot/issues/4824) → **PR#4827**, same-day). Leg 1 (SDK) merged 08-09 (sdk#109 → [sdk PR#110](https://github.com/qf-studio/studio-sdk/pull/110)). **Post-merge review of PR#4827 DONE 2026-08-11 — notes-only, all 5 acceptance criteria met** (v0.33.0 pin = sdk PR#110 merge commit exactly; rotation proven on the wire; no drifted static-token sites; review posted on the PR). Remaining: operator steps below (box App provisioning · `GH_TOKEN` precedence check pilot#4753 · restart + first poll/autopilot action past the ~1h token boundary) → then archive.
 **Created**: 2026-08-09
 **Assignee**: Pilot (one leg at a time)
 
@@ -50,6 +50,11 @@ Issue body follows this draft (anchors refreshed @ `39881bba`):
 1. App provisioning: `adapters.github.app` (App ID, installation ID, private key) in box config.
 2. Box-env `GH_TOKEN` check — pilot#4753 precedence finding: ensure env `GH_TOKEN` doesn't shadow the App path for `gh`-CLI/executor credentials.
 3. Restart + watch: `token_source=app` in startup log; first poll AND first autopilot action past the ~1h token boundary.
+
+**Cutover caveats (from PR#4827 post-merge review, 2026-08-11):**
+
+- `verifySDKGithubToken` probes `GET /user`, which returns **403 for App installation tokens** — under App auth the boot fail-loud gate degrades to a "could not verify … proceeding anyway" warn. **Do not read that warn as failure**; the first real proof of App auth is the first live poll (step 3), not boot.
+- No pilot-side test covers the poller fan-out injection chain (`startGithubSDKPollerForRepo` → `WithAdapterClient` → Poller/MergeWaiter/board) — proven by SDK package tests only. A regression reintroducing `sdkCfg.Token` would not be caught in this repo's suite; watch the first board-sync + merge-wait past the token boundary specifically.
 
 ---
 

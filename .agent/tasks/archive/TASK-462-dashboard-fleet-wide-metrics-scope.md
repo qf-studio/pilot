@@ -1,8 +1,8 @@
 # feat(dashboard): fleet-wide metrics scope by default, per-project via dashboard.metrics_scope_path
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ **MERGED — PR#4830 (2026-08-10). Post-merge review 2026-08-11: notes-only, spec implemented exactly** (provenance clean, wiring verified yaml→config→main.go→every store query, real two-project SQLite wiring test). Hardening notes → [#4832](https://github.com/qf-studio/pilot/issues/4832) (sentinel overload in `SetProjectPath` · uncanonicalized path match → silent zero rows · eval panel ignores scope; unlabeled, dispatch TBD). Canary-flag defect from § Out of scope filed → [#4833](https://github.com/qf-studio/pilot/issues/4833). **ARCHIVED 2026-08-11.**
 **Created**: 2026-08-10
-**Last Updated**: 2026-08-10
+**Last Updated**: 2026-08-11
 **Type**: feat (dashboard + config wiring)
 
 ## Problem

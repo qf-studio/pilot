@@ -1491,18 +1491,18 @@
         ]
       },
       "TASK-459": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-459-irreversible-action-audit.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-459-irreversible-action-audit.md",
         "title": "Irreversible-action audit \u2014 destructive sites require typed verdicts with positive evidence",
-        "status": "backlog",
+        "status": "completed",
         "concepts": [
           "api",
-          "context",
           "authentication",
-          "theory of mind",
-          "deployment",
+          "context",
           "testing",
+          "knowledge",
+          "theory of mind",
           "markers",
-          "knowledge"
+          "deployment"
         ]
       },
       "TASK-460": {
@@ -1523,27 +1523,27 @@
         "title": "GitHub App cutover \u2014 SDK-client token wiring (two legs + operator steps)",
         "status": "completed",
         "concepts": [
-          "workflow",
-          "markers",
+          "theory of mind",
           "skills",
-          "context",
           "testing",
+          "markers",
           "api",
           "deployment",
+          "workflow",
           "authentication",
-          "theory of mind"
+          "context"
         ]
       },
       "TASK-462": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-462-dashboard-fleet-wide-metrics-scope.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-462-dashboard-fleet-wide-metrics-scope.md",
         "title": "Task 462 Dashboard Fleet Wide Metrics Scope",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "context",
-          "testing",
+          "deployment",
           "api",
-          "knowledge",
-          "deployment"
+          "testing",
+          "knowledge"
         ]
       }
     },
@@ -7207,7 +7207,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-11T07:58:17.721713+00:00",
+  "last_updated": "2026-08-11T09:43:13.804603+00:00",
   "stats": {
     "total_nodes": 381,
     "total_edges": 321,
