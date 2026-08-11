@@ -639,8 +639,8 @@ func (m *CIMonitor) aggregateStatus(statuses map[string]CIStatus) CIStatus {
 
 // ciFailureConclusions is every GitHub check-run conclusion mapCheckStatus
 // treats as CIFailure (GH-4779). mapCheckStatus and the evidence-gathering
-// functions below (GetFailedChecks, GetFailedCheckLogs,
-// GetFailedCheckLogsByCheck, GetFailedCheckExcerpts) all read this single
+// functions below (GetFailedChecks, GetFailedCheckLogsByCheck,
+// GetFailedCheckExcerpts) all read this single
 // table via isCIFailureConclusion instead of separately hardcoding
 // "conclusion != failure" — that drift is exactly what amplified the
 // 2026-08-06 outage: mapCheckStatus already treated cancelled/timed_out as
@@ -811,60 +811,12 @@ func (m *CIMonitor) isScopedCheck(name string) bool {
 	return true
 }
 
-// GetFailedCheckLogs fetches logs for all failed check runs and returns them
-// as a combined string. Each check's logs are prefixed with the check name.
-// Logs are truncated to maxLen total characters to keep issues readable.
-// GH-1567: Include actual CI error output in fix issues.
-func (m *CIMonitor) GetFailedCheckLogs(ctx context.Context, sha string, maxLen int) string {
-	checkRuns, err := m.listLatestCheckRuns(ctx, sha)
-	if err != nil {
-		m.log.Warn("failed to list check runs for log fetch", "sha", ShortSHA(sha), "error", err)
-		return ""
-	}
-
-	var combined strings.Builder
-	for _, run := range checkRuns.CheckRuns {
-		if !isCIFailureConclusion(run.Conclusion) {
-			continue
-		}
-		if !m.isScopedCheck(run.Name) {
-			continue
-		}
-
-		logs, err := m.ghClient.GetJobLogs(ctx, m.owner, m.repo, run.ID)
-		if err != nil {
-			m.log.Warn("failed to fetch logs for check run",
-				"check", run.Name,
-				"id", run.ID,
-				"error", err,
-			)
-			continue
-		}
-
-		if combined.Len() > 0 {
-			combined.WriteString("\n\n")
-		}
-		combined.WriteString(fmt.Sprintf("=== %s ===\n", run.Name))
-		combined.WriteString(logs)
-
-		if combined.Len() >= maxLen {
-			break
-		}
-	}
-
-	result := combined.String()
-	if len(result) > maxLen {
-		result = result[:maxLen]
-	}
-	return result
-}
-
 // FailedCheckLog pairs one failed, in-scope check run's name and job ID with
 // its raw job log — GH-4533's infra-vs-code classifier
 // (classifyCheckFailure) needs to evaluate each failed check's log
-// independently rather than the single concatenated blob GetFailedCheckLogs
-// produces, and the auto-retry path needs each check's job ID to resolve its
-// owning workflow run via GetWorkflowRunIDForJob.
+// independently rather than a single concatenated blob, and the auto-retry
+// path needs each check's job ID to resolve its owning workflow run via
+// GetWorkflowRunIDForJob.
 type FailedCheckLog struct {
 	CheckName string
 	JobID     int64
@@ -911,10 +863,9 @@ type FailedCheckLog struct {
 
 // GetFailedCheckLogsByCheck fetches raw job logs for each failed, in-scope
 // check run individually, scoped by isScopedCheck (same scoping as
-// GetFailedChecks, GH-4307). It reuses the GetJobLogs path from
-// GetFailedCheckLogs above but keeps each check's log (and job ID) separate
-// instead of concatenating them into one budget-capped blob, so callers
-// (GH-4533) can classify each failure independently.
+// GetFailedChecks, GH-4307), keeping each check's log (and job ID) separate
+// instead of concatenating them into one blob, so callers (GH-4533) can
+// classify each failure independently.
 //
 // A log-fetch failure for one check still yields an entry for that check,
 // with an empty Logs field, rather than dropping it silently — every failed,

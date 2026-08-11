@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/qf-studio/pilot/internal/ghissue"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -24,7 +25,14 @@ var failureMarkerRes = []*regexp.Regexp{
 	// `go test` prints (`FAIL\t<pkg>\t<duration>`) — kept as its own marker
 	// because on a large panic dump it can sit far enough past the "panic:"
 	// line that a single shared context window wouldn't reach it.
-	regexp.MustCompile(`--- FAIL:|panic:|^FAIL\t`),
+	//
+	// GH-4844: `FAIL\t` is intentionally NOT `^`-anchored. GitHub Actions
+	// prefixes every raw job-log line with an RFC3339-nanosecond timestamp
+	// (see jobLogLineTimestampRe), so an anchored `^FAIL\t` never matches a
+	// production log line — the summary line always has the timestamp, not
+	// `FAIL`, at column 0. `--- FAIL:` covers the per-test failure lines in
+	// practice; this marker exists for the trailing package summary.
+	regexp.MustCompile(`--- FAIL:|panic:|FAIL\t`),
 	// GitHub Actions error annotations: the runner's own `##[error]`
 	// workflow command, and the `::error ...::` form tools emit when
 	// configured for GitHub Actions output (e.g. golangci-lint's
@@ -137,6 +145,13 @@ func mergeMatchWindows(matched []int, total, context int) [][2]int {
 // (where the trailing `FAIL <pkg>` summary lives). A naive head-only cut can
 // silently drop the summary line on a large panic/stack-trace dump that
 // exceeds maxChars on its own.
+//
+// GH-4844: maxChars is a byte budget (staying under GitHub's issue-body
+// limit is what matters, not rune count), so cuts still cap by bytes — but
+// both cut points are snapped to the nearest UTF-8 rune boundary so a
+// multi-byte rune (e.g. in a non-ASCII test failure message) is never split
+// in half, which would corrupt it into replacement-character garbage. Both
+// snaps only ever shrink the kept slice, so the byte cap is never exceeded.
 func truncateKeepingTail(s string, maxChars int) string {
 	if len(s) <= maxChars {
 		return s
@@ -144,11 +159,43 @@ func truncateKeepingTail(s string, maxChars int) string {
 	const marker = "\n... (truncated) ...\n"
 	budget := maxChars - len(marker)
 	if budget <= 0 {
-		return s[:maxChars] + "\n... (truncated)"
+		return s[:runeSafeHeadLen(s, maxChars)] + "\n... (truncated)"
 	}
-	headLen := budget * 7 / 10
-	tailLen := budget - headLen
-	return s[:headLen] + marker + s[len(s)-tailLen:]
+	headLen := runeSafeHeadLen(s, budget*7/10)
+	tailStart := runeSafeTailStart(s, len(s)-(budget-headLen))
+	return s[:headLen] + marker + s[tailStart:]
+}
+
+// runeSafeHeadLen returns the largest index <= n (clamped to len(s)) that
+// lies on a UTF-8 rune boundary within s, so s[:idx] never splits a
+// multi-byte rune.
+func runeSafeHeadLen(s string, n int) int {
+	if n >= len(s) {
+		return len(s)
+	}
+	if n < 0 {
+		n = 0
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return n
+}
+
+// runeSafeTailStart returns the smallest index >= n (clamped to len(s))
+// that lies on a UTF-8 rune boundary within s, so s[idx:] never splits a
+// multi-byte rune.
+func runeSafeTailStart(s string, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	if n > len(s) {
+		n = len(s)
+	}
+	for n < len(s) && !utf8.RuneStart(s[n]) {
+		n++
+	}
+	return n
 }
 
 // FeedbackLoop creates issues when CI fails or bugs are detected.
@@ -433,9 +480,20 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 			// Re-running the single-blob marker search below would misfire —
 			// there's no top-level --- FAIL:/panic: marker in a multi-check
 			// bundle — and its last-N-lines fallback would clobber earlier
-			// checks' excerpts. Assembly already respects the char budget, so
-			// this truncation is a defensive no-op in the normal case.
-			sb.WriteString(truncateKeepingTail(bundle, maxCIErrorExcerptChars))
+			// checks' excerpts.
+			//
+			// GH-4844: this cut must reuse the same failedCheckExcerptBudgetChars
+			// (12000) that AssembleFailureExcerptsBody used, not the smaller
+			// maxCIErrorExcerptChars (4000) meant for the single-blob path below.
+			// Assembly already keeps each check's excerpt intact within that
+			// 12000-char budget; re-truncating to 4000 here blind-cut straight
+			// through the middle of a multi-check bundle, silently dropping
+			// whichever checks' excerpts landed past that point — the exact
+			// failure mode GH-4825 fixed for the single-blob path. With matching
+			// budgets, this call is a true no-op except in the rare case where
+			// AssembleFailureExcerptsBody's per-excerpt minimum floor
+			// (minTailBudget) pushed the assembled bundle slightly over budget.
+			sb.WriteString(truncateKeepingTail(bundle, failedCheckExcerptBudgetChars))
 		} else {
 			sb.WriteString(extractFailureExcerpt(logs, maxCIErrorExcerptChars))
 		}
