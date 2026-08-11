@@ -382,6 +382,28 @@ func main() {
 	}
 }
 
+// gatewayChatNeedsOwnRunner reports whether gateway mode must build a
+// dedicated executor.Runner for the chat API on its own, separate from the
+// needsPollingInfra block. GH-4843 (D1): chat is an HTTP endpoint, not a
+// polling adapter — before this fix, chatEnabled didn't factor into
+// needsPollingInfra at all, so a webhooks-only gateway daemon (chat enabled,
+// zero polling adapters) left gwRunner nil, silently wiring
+// WithChatHandler(nil, ...) and leaving the chat routes unregistered (a 404)
+// despite the startup log claiming "Chat API enabled in gateway mode". When
+// needsPollingInfra is already true, that block builds gwRunner itself, so
+// this only needs to cover the gap case.
+//
+// Decision: fixed by building a second, chat-scoped runner rather than
+// folding chatEnabled into needsPollingInfra's own condition. The latter
+// would also pull in that block's polling-only side effects (memory store +
+// dispatcher, teams RBAC, approval handlers, autopilot controller, alerts
+// engine) for a deployment that only asked for the chat HTTP endpoint —
+// scope creep with real side effects (e.g. autopilot starting to act on PRs)
+// for config that never opted into it.
+func gatewayChatNeedsOwnRunner(chatEnabled, needsPollingInfra bool) bool {
+	return chatEnabled && !needsPollingInfra
+}
+
 func newStartCmd() *cobra.Command {
 	var (
 		dashboardMode bool
@@ -665,6 +687,14 @@ Examples:
 					cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled) ||
 				(slackFlagSet && hasSlack) ||
 				adapterPollerEnabled
+			// GH-4843 (D1): chat is an HTTP endpoint, not a polling adapter, so
+			// it must NOT gate on needsPollingInfra the way Telegram/Slack/GitHub
+			// polling do — a webhooks-only gateway daemon with chat enabled and
+			// zero polling adapters still needs a runner to dispatch chat tasks.
+			// Checked separately from needsPollingInfra below so a chat-only
+			// deployment doesn't also spin up autopilot/approvals/alerts infra
+			// it never asked for.
+			chatEnabled := cfg.Adapters.Chat != nil && cfg.Adapters.Chat.Enabled
 
 			// Shared infrastructure for polling adapters
 			var gwRunner *executor.Runner
@@ -1038,6 +1068,21 @@ Examples:
 					// GH-2291: Progress/token callbacks are registered by runDashboardMode
 					// which merges task states from both adapter pollers and gateway webhooks.
 				}
+			} else if gatewayChatNeedsOwnRunner(chatEnabled, needsPollingInfra) {
+				// GH-4843 (D1): chat needs a runner to dispatch tasks even when
+				// no polling adapter is enabled — build just enough of it
+				// (mirrors the runner-setup prefix of the needsPollingInfra
+				// block above) without the rest of that block's polling-only
+				// infra (memory store/dispatcher, teams, approvals, autopilot,
+				// alerts), which a chat-only deployment never asked for.
+				var runnerErr error
+				gwRunner, runnerErr = executor.NewRunnerWithConfig(cfg.Executor)
+				if runnerErr != nil {
+					return fmt.Errorf("failed to create executor runner for chat API: %w", runnerErr)
+				}
+				gwRunner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
+				gwRunner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
+				gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
 			}
 
 			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
@@ -1067,10 +1112,18 @@ Examples:
 			// GH-4835: enable the web chat API (console Operator chat panel)
 			// in gateway mode whenever adapters.chat.enabled is true. No CLI
 			// flag gate like Telegram/Slack polling — this is an HTTP
-			// endpoint the console calls, not a polling loop.
-			if cfg.Adapters.Chat != nil && cfg.Adapters.Chat.Enabled {
+			// endpoint the console calls, not a polling loop. gwRunner is
+			// guaranteed non-nil here when chatEnabled (built above by either
+			// the needsPollingInfra block or the chatEnabled else-if), but the
+			// nil check guards against silently logging "enabled" on a path
+			// that left the handler unwired (GH-4843 D1).
+			if chatEnabled {
 				pilotOpts = append(pilotOpts, pilot.WithChatHandler(gwRunner, projectPath))
-				logging.WithComponent("start").Info("Chat API enabled in gateway mode")
+				if gwRunner != nil {
+					logging.WithComponent("start").Info("Chat API enabled in gateway mode")
+				} else {
+					logging.WithComponent("start").Warn("Chat API enabled in config but no runner was constructed — chat routes will not be wired")
+				}
 			}
 
 			// GH-539: Create budget enforcer for gateway mode

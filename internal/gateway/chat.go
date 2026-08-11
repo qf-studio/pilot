@@ -19,7 +19,7 @@ import (
 // convention already used in this package.
 type ChatAPI interface {
 	Dispatch(ctx context.Context, req web.DispatchRequest) (seq int64, err error)
-	Events(conversationID string, after int64) []web.Event
+	Events(conversationID string, after int64) (events []web.Event, latestSeq int64)
 }
 
 // SetChatAPI wires the web chat transport (GH-4835 / C17) backing
@@ -60,10 +60,18 @@ type chatMessageResponse struct {
 	Seq            int64  `json:"seq"`
 }
 
-// chatEventsResponse is the GET .../events body.
+// chatEventsResponse is the GET .../events body. LatestSeq is the newest seq
+// currently known for the conversation (0 if it has no buffer yet) — the
+// reset-detection signal documented on web.API.Events (GH-4843 D2): a client
+// whose own `after` cursor exceeds LatestSeq has outlived the server's
+// in-memory buffer (daemon restart, or 1h conversation expiry) and must
+// re-poll from after=0. A gap between the returned Events' lowest seq and
+// `after` (visible against LatestSeq) signals the 500-event drop-oldest cap
+// truncated history instead.
 type chatEventsResponse struct {
 	ConversationID string      `json:"conversationId"`
 	Events         []web.Event `json:"events"`
+	LatestSeq      int64       `json:"latestSeq"`
 }
 
 // handleChatMessages serves POST /api/v1/chat/messages (GH-4835 acceptance
@@ -164,10 +172,14 @@ func (s *Server) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 		after = v
 	}
 
-	events := api.Events(id, after)
+	events, latestSeq := api.Events(id, after)
+	if events == nil {
+		events = []web.Event{}
+	}
 	writeJSON(w, chatEventsResponse{
 		ConversationID: id,
 		Events:         events,
+		LatestSeq:      latestSeq,
 	})
 }
 

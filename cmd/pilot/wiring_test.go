@@ -746,6 +746,57 @@ func TestConvertKeyboardToTelegram_Empty(t *testing.T) {
 }
 
 // =============================================================================
+// GH-4843 (D1): gatewayChatNeedsOwnRunner — chat/gateway-mode wiring hole
+// =============================================================================
+
+func TestGatewayChatNeedsOwnRunner(t *testing.T) {
+	tests := []struct {
+		name              string
+		chatEnabled       bool
+		needsPollingInfra bool
+		want              bool
+	}{
+		{
+			name:              "chat off, no polling infra",
+			chatEnabled:       false,
+			needsPollingInfra: false,
+			want:              false,
+		},
+		{
+			name:              "chat off, polling infra needed",
+			chatEnabled:       false,
+			needsPollingInfra: true,
+			want:              false,
+		},
+		{
+			// The GH-4843 D1 gap: chat enabled, nothing else needs a runner —
+			// gwRunner would otherwise stay nil and WithChatHandler(nil, ...)
+			// silently leaves the chat routes unregistered.
+			name:              "chat on, no polling infra",
+			chatEnabled:       true,
+			needsPollingInfra: false,
+			want:              true,
+		},
+		{
+			// needsPollingInfra's own block already builds gwRunner — chat
+			// must not build a second, redundant one.
+			name:              "chat on, polling infra also needed",
+			chatEnabled:       true,
+			needsPollingInfra: true,
+			want:              false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gatewayChatNeedsOwnRunner(tt.chatEnabled, tt.needsPollingInfra); got != tt.want {
+				t.Errorf("gatewayChatNeedsOwnRunner(%v, %v) = %v, want %v", tt.chatEnabled, tt.needsPollingInfra, got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
 // GH-2134: autopilotProviderAdapter compile check
 // =============================================================================
 

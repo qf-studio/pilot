@@ -238,7 +238,10 @@ func (m *WebMessenger) Events(contextID string, after int64) (events []Event, la
 	m.pruneLocked()
 	c, ok := m.conversations[contextID]
 	if !ok {
-		return nil, 0
+		// GH-4843 D3: an unknown/expired conversation must still serialize
+		// as `"events": []`, not `null` — a nil slice here propagates all
+		// the way to json.Marshal in the gateway handler.
+		return []Event{}, 0
 	}
 	latestSeq = c.nextSeq
 	out := make([]Event, 0, len(c.events))
