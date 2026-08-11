@@ -1545,6 +1545,35 @@
           "testing",
           "knowledge"
         ]
+      },
+      "TASK-463": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-463-gateway-chat-api.md",
+        "title": "C17 pilot leg \u2014 gateway operator chat API (web transport for comms brain)",
+        "status": "dispatched",
+        "concepts": [
+          "api",
+          "gateway",
+          "adapters"
+        ]
+      },
+      "TASK-464": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-464-console-chat-proxy.md",
+        "title": "C17 console leg \u2014 operator chat proxy (C14 idiom)",
+        "status": "blocked",
+        "concepts": [
+          "api",
+          "saas"
+        ]
+      },
+      "TASK-465": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-465-console-dashboard-endpoint.md",
+        "title": "C16 \u2014 console dashboard aggregation endpoint",
+        "status": "dispatched",
+        "concepts": [
+          "api",
+          "saas",
+          "dashboard"
+        ]
       }
     },
     "memories": {
@@ -6079,6 +6108,21 @@
       "from": "TASK-462",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-463",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-464",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-465",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6310,7 +6354,10 @@
       "TASK-459",
       "TASK-460",
       "TASK-461",
-      "TASK-462"
+      "TASK-462",
+      "TASK-463",
+      "TASK-464",
+      "TASK-465"
     ],
     "authentication": [
       "TASK-386",
@@ -6369,7 +6416,9 @@
       "TASK-452",
       "TASK-459",
       "TASK-460",
-      "TASK-461"
+      "TASK-461",
+      "TASK-463",
+      "TASK-464"
     ],
     "testing": [
       "TASK-386",
@@ -6477,7 +6526,10 @@
       "TASK-459",
       "TASK-460",
       "TASK-461",
-      "TASK-462"
+      "TASK-462",
+      "TASK-463",
+      "TASK-464",
+      "TASK-465"
     ],
     "api": [
       "TASK-386",
@@ -6559,7 +6611,10 @@
       "TASK-458",
       "TASK-459",
       "TASK-461",
-      "TASK-462"
+      "TASK-462",
+      "TASK-463",
+      "TASK-464",
+      "TASK-465"
     ],
     "context": [
       "TASK-386",
@@ -6651,7 +6706,9 @@
       "TASK-459",
       "TASK-460",
       "TASK-461",
-      "TASK-462"
+      "TASK-462",
+      "TASK-463",
+      "TASK-464"
     ],
     "markers": [
       "TASK-387",
@@ -6671,7 +6728,8 @@
       "TASK-453",
       "TASK-458",
       "TASK-459",
-      "TASK-461"
+      "TASK-461",
+      "TASK-463"
     ],
     "database": [
       "TASK-387",
@@ -7207,10 +7265,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-11T09:43:13.804603+00:00",
+  "last_updated": "2026-08-11T10:07:58.363435+00:00",
   "stats": {
-    "total_nodes": 381,
-    "total_edges": 321,
+    "total_nodes": 384,
+    "total_edges": 324,
     "memory_count": 217
   }
 }
