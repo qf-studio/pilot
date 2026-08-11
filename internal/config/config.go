@@ -707,7 +707,12 @@ func Load(path string) (*Config, error) {
 		project.Path = expandPath(project.Path)
 	}
 	if config.Dashboard != nil && config.Dashboard.MetricsScopePath != "" {
-		config.Dashboard.MetricsScopePath = expandPath(config.Dashboard.MetricsScopePath)
+		// GH-4832: filepath.Clean closes the trailing-slash class of mismatch
+		// against the uncanonicalized executions.project_path values it's
+		// matched against (store.go's GetRecentExecutions/GetLifetimeTokens/
+		// GetWindowedStats do an exact string match, not CanonicalizeProjectPath) —
+		// a full fix needs both sides canonicalized, tracked separately.
+		config.Dashboard.MetricsScopePath = filepath.Clean(expandPath(config.Dashboard.MetricsScopePath))
 	}
 
 	// Apply bot model default when bot is configured without an explicit model.

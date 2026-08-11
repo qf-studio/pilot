@@ -1626,8 +1626,9 @@ func TestRenderEvalStats(t *testing.T) {
 }
 
 // TestRenderEvalStats_ProjectFilter verifies that renderEvalStats scopes its
-// ListEvalTasks query to m.defaultProjectPath when set and returns all tasks
-// when defaultProjectPath is empty (global mode).
+// ListEvalTasks query to m.metricsScopePath when set and returns all tasks
+// when metricsScopePath is empty (fleet-wide mode). GH-4832: the eval query
+// aligns with the metrics scope, not the git-graph defaultProjectPath.
 func TestRenderEvalStats_ProjectFilter(t *testing.T) {
 	store, err := memory.NewStore(t.TempDir())
 	if err != nil {
@@ -1661,28 +1662,28 @@ func TestRenderEvalStats_ProjectFilter(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		defaultProject string
-		wantRate       string
-		wantTaskCount  string
+		name          string
+		metricsScope  string
+		wantRate      string
+		wantTaskCount string
 	}{
 		{
-			name:           "scoped to alpha: only 4 passing tasks",
-			defaultProject: "/proj/alpha",
-			wantRate:       "100.0%",
-			wantTaskCount:  "(4 tasks)",
+			name:          "scoped to alpha: only 4 passing tasks",
+			metricsScope:  "/proj/alpha",
+			wantRate:      "100.0%",
+			wantTaskCount: "(4 tasks)",
 		},
 		{
-			name:           "global mode: all 10 tasks, 40% pass",
-			defaultProject: "",
-			wantRate:       "40.0%",
-			wantTaskCount:  "(10 tasks)",
+			name:          "global mode: all 10 tasks, 40% pass",
+			metricsScope:  "",
+			wantRate:      "40.0%",
+			wantTaskCount: "(10 tasks)",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := Model{store: store, defaultProjectPath: tt.defaultProject}
+			m := Model{store: store, metricsScopePath: tt.metricsScope}
 			got := m.renderEvalStats()
 			plain := stripANSI(got)
 			if !strings.Contains(plain, tt.wantRate) {
@@ -2419,37 +2420,37 @@ func TestRenderEvalStats_ProjectPathFilter(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		defaultProjPath string
-		wantTaskCount   string // substring of "(N tasks)"
-		wantRate        string // substring of "X.X%"
+		name          string
+		metricsScope  string
+		wantTaskCount string // substring of "(N tasks)"
+		wantRate      string // substring of "X.X%"
 	}{
 		{
-			name:            "scoped to alpha sees only alpha task (100%)",
-			defaultProjPath: "/projects/alpha",
-			wantTaskCount:   "(1 tasks)",
-			wantRate:        "100.0%",
+			name:          "scoped to alpha sees only alpha task (100%)",
+			metricsScope:  "/projects/alpha",
+			wantTaskCount: "(1 tasks)",
+			wantRate:      "100.0%",
 		},
 		{
-			name:            "global mode (empty path) sees all tasks (50%)",
-			defaultProjPath: "",
-			wantTaskCount:   "(2 tasks)",
-			wantRate:        "50.0%",
+			name:          "global mode (empty path) sees all tasks (50%)",
+			metricsScope:  "",
+			wantTaskCount: "(2 tasks)",
+			wantRate:      "50.0%",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := NewModelWithStore("test", store)
-			m.defaultProjectPath = tt.defaultProjPath
+			m.metricsScopePath = tt.metricsScope
 
 			out := stripANSI(m.renderEvalStats())
 
 			if !strings.Contains(out, tt.wantTaskCount) {
-				t.Errorf("renderEvalStats(%q): want %q in output; got:\n%s", tt.defaultProjPath, tt.wantTaskCount, out)
+				t.Errorf("renderEvalStats(%q): want %q in output; got:\n%s", tt.metricsScope, tt.wantTaskCount, out)
 			}
 			if !strings.Contains(out, tt.wantRate) {
-				t.Errorf("renderEvalStats(%q): want %q in output; got:\n%s", tt.defaultProjPath, tt.wantRate, out)
+				t.Errorf("renderEvalStats(%q): want %q in output; got:\n%s", tt.metricsScope, tt.wantRate, out)
 			}
 		})
 	}
