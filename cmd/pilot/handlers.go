@@ -889,6 +889,12 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		ProjectPath:  projectPath,
 		Metrics:      metrics,
 	}
+	if repoOwner != "" && repoName != "" {
+		// GH-4833: pass the already-resolved repo match through so
+		// handleIssueGeneric's canary-stamping prefers it over the
+		// (possibly default-project-colliding) projectPath.
+		deps.ProjectRepo = repoOwner + "/" + repoName
+	}
 	info := IssueInfo{
 		TaskID:  taskID,
 		Title:   title,

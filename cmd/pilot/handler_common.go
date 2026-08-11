@@ -106,6 +106,15 @@ type HandlerDeps struct {
 	Enforcer     *budget.Enforcer
 	ProjectPath  string
 
+	// ProjectRepo is the "owner/repo" the GitHub SDK poller already matched
+	// this task's projects[] entry against (GH-4833). When set, it takes
+	// precedence over ProjectPath for resolving that projects[] entry inside
+	// handleIssueGeneric — see the canary-stamping comment below for why the
+	// path alone isn't reliable. Adapters without a repo-based project match
+	// (Linear, Jira, Asana, Plane, direct filesystem paths) leave this empty
+	// and keep the existing ProjectPath-only resolution.
+	ProjectRepo string
+
 	// Metrics records the GH-4376 repick-storm skip counter (and any other
 	// poller skip/dispatch counters this chokepoint later grows) onto
 	// pilot_poller_skipped_total. Nil is tolerated — the admission gate and
@@ -134,8 +143,28 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// executions row (ExecutionLifecycle.Begin) and the runner's live
 	// metrics guard. deps.Cfg.GetProject returns nil for an unregistered
 	// path (e.g. ad-hoc CLI runs), which correctly resolves to non-canary.
+	//
+	// GH-4833: prefer an exact GitHub "owner/repo" match (deps.ProjectRepo)
+	// over the path lookup when both are available. githubSDKPollerTargets
+	// (poller_github.go) falls back to the default adapter repo's project
+	// path for any projects[] entry with no explicit `path` set — a
+	// perfectly normal config for a repo-only registration (e.g. a synthetic
+	// sandbox project that only needs GitHub polling + a canary flag, not a
+	// distinct local checkout). That fallback makes deps.Cfg.GetProject(path)
+	// silently resolve to the DEFAULT project instead of the actual matched
+	// one, discarding its Canary=true (confirmed root cause of
+	// pilot-canary-sandbox rows landing is_canary=0 despite Canary: true
+	// being configured). FindProjectByRepo sidesteps the path entirely,
+	// matching the same pattern ResolveProjectBoard already uses.
 	if deps.Cfg != nil {
-		if proj := deps.Cfg.GetProject(projectPath); proj != nil {
+		var proj *config.ProjectConfig
+		if deps.ProjectRepo != "" {
+			proj = deps.Cfg.FindProjectByRepo(deps.ProjectRepo)
+		}
+		if proj == nil {
+			proj = deps.Cfg.GetProject(projectPath)
+		}
+		if proj != nil {
 			task.IsCanary = proj.Canary
 		}
 	}
