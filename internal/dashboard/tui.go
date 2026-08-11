@@ -523,7 +523,14 @@ type Model struct {
 	projectPath        string // Working directory for git commands
 	defaultProjectPath string // Fallback project path from config (GH-2167)
 	metricsScopePath   string // Project path used to filter store/metrics queries (GH-3531)
-	gitProjectName     string // Current project name shown in git panel title (GH-2167)
+	// metricsScopeSet is true once SetMetricsScopePath has been called
+	// explicitly. Guards SetProjectPath from re-seeding metricsScopePath —
+	// without it, "" is overloaded as both "unset" and the meaningful
+	// fleet-wide value, so a later runtime SetProjectPath call (e.g. a
+	// project switch) would silently flip an explicitly-set fleet-wide scope
+	// back to per-project (GH-4832).
+	metricsScopeSet bool
+	gitProjectName  string // Current project name shown in git panel title (GH-2167)
 	// statsWindowDays is the rolling window (days) for windowed cost/success
 	// stats (GH-4735), set from config.DashboardConfig.StatsWindowDays via
 	// SetStatsWindowDays. 0 means unset — effectiveStatsWindowDays() falls
@@ -942,15 +949,20 @@ func NewModelWithOptions(version string, store *memory.Store, controller *autopi
 }
 
 // SetProjectPath sets the working directory used for git graph commands.
-// The first call also sets the default fallback path (GH-2167) and seeds
+// The first call also sets the default fallback path (GH-2167) and, unless
+// SetMetricsScopePath has already been called explicitly, seeds
 // metricsScopePath so callers that only call SetProjectPath retain their
-// current behavior (metrics scoped to the same project).
+// current behavior (metrics scoped to the same project). GH-4832: the seed
+// is gated on metricsScopeSet rather than `metricsScopePath == ""` because
+// "" is also the meaningful fleet-wide value — without the gate, a later
+// SetProjectPath call (e.g. a runtime project switch) would silently flip
+// an explicitly-set fleet-wide scope back to per-project.
 func (m *Model) SetProjectPath(path string) {
 	m.projectPath = path
 	if m.defaultProjectPath == "" {
 		m.defaultProjectPath = path
 	}
-	if m.metricsScopePath == "" {
+	if !m.metricsScopeSet {
 		m.metricsScopePath = path
 	}
 }
@@ -958,8 +970,10 @@ func (m *Model) SetProjectPath(path string) {
 // SetMetricsScopePath sets the project path used to filter store queries
 // (recent executions, lifetime tokens, task counts, sparklines, eval panel).
 // Defaults to the value passed to SetProjectPath when not set explicitly.
+// Once called, SetProjectPath no longer overwrites metricsScopePath (GH-4832).
 func (m *Model) SetMetricsScopePath(path string) {
 	m.metricsScopePath = path
+	m.metricsScopeSet = true
 }
 
 // SetStatsWindowDays sets the rolling window (days) used for windowed
@@ -1254,10 +1268,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateTokensMsg:
 		// GH-4735: this optimistically increments the (now windowed)
-		// TotalCostUSD/CostPerTask for immediate in-session feedback. It is
-		// not window-aware — it just adds today's delta — so it can drift
-		// from the true windowed value until the next every-5th-tick
+		// TotalCostUSD for immediate in-session feedback. It is not
+		// window-aware — it just adds today's delta — so it can drift from
+		// the true windowed value until the next every-5th-tick
 		// storeRefreshCmd re-query converges it back to GetWindowedStats.
+		// (CostPerTask is NOT recomputed here — see the GH-4829 note below.)
 		// Calculate delta and persist to session
 		inputDelta := msg.InputTokens - m.tokenUsage.InputTokens
 		outputDelta := msg.OutputTokens - m.tokenUsage.OutputTokens
@@ -2430,7 +2445,10 @@ func (m Model) renderEvalStats() string {
 
 	tw := m.effectivePanelTotalWidth()
 
-	tasks, err := m.store.ListEvalTasks(memory.EvalTaskFilter{ProjectPath: m.defaultProjectPath, Limit: 200})
+	// GH-4832: scoped by metricsScopePath (not defaultProjectPath) so the
+	// query matches the panel label below, which already reflects the
+	// metrics scope.
+	tasks, err := m.store.ListEvalTasks(memory.EvalTaskFilter{ProjectPath: m.metricsScopePath, Limit: 200})
 	if err != nil || len(tasks) == 0 {
 		return ""
 	}

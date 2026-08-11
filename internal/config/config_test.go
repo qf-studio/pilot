@@ -1183,6 +1183,32 @@ dashboard:
 		}
 	})
 
+	t.Run("trailing slash is cleaned (GH-4832)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+		configContent := `
+dashboard:
+  metrics_scope_path: "/repos/pilot/"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		config, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		// A trailing-slash config value must not silently mismatch the
+		// uncanonicalized executions.project_path values it's matched
+		// against (store.go), so Load cleans it the same way filepath.Clean
+		// would for any other project path.
+		want := "/repos/pilot"
+		if config.Dashboard.MetricsScopePath != want {
+			t.Errorf("Dashboard.MetricsScopePath = %q, want %q", config.Dashboard.MetricsScopePath, want)
+		}
+	})
+
 	t.Run("absent defaults to empty", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "config.yaml")

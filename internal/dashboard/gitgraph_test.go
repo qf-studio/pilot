@@ -875,6 +875,21 @@ func TestMetricsScopePath_FleetWideDefault(t *testing.T) {
 			},
 			wantTotalTkns: 150,
 		},
+		{
+			// GH-4832 regression: once SetMetricsScopePath has been called
+			// explicitly, a later SetProjectPath (e.g. a runtime project
+			// switch) must NOT re-seed metricsScopePath — "" is both "unset"
+			// and the meaningful fleet-wide value, so without the
+			// metricsScopeSet guard this would silently flip fleet-wide back
+			// to per-project.
+			name: "runtime project switch after explicit fleet-wide scope stays fleet-wide",
+			configure: func(m *Model) {
+				m.SetProjectPath("/proj/a")
+				m.SetMetricsScopePath("")
+				m.SetProjectPath("/proj/b")
+			},
+			wantTotalTkns: 300,
+		},
 	}
 
 	for _, tt := range tests {

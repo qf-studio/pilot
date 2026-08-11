@@ -1026,6 +1026,7 @@ Examples:
 						scope = cfg.Dashboard.MetricsScopePath
 					}
 					model.SetMetricsScopePath(scope)
+					warnIfMetricsScopeEmpty(gwStore, scope)
 					applyDashboardBannerMeta(&model, cfg, cmd)
 					model.EnableSplash(resolvedConfigPath())
 					gwProgram = tea.NewProgram(model,
@@ -2655,6 +2656,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			scope = cfg.Dashboard.MetricsScopePath
 		}
 		model.SetMetricsScopePath(scope)
+		warnIfMetricsScopeEmpty(store, scope)
 		applyDashboardBannerMeta(&model, cfg, cmd)
 		model.EnableSplash(resolvedConfigPath())
 		program = tea.NewProgram(model,
@@ -4075,6 +4077,30 @@ func (s storeExecutionSaver) SaveDeclinedExecution(taskID, projectPath, status, 
 		CreatedAt:   now,
 		CompletedAt: &now,
 	})
+}
+
+// warnIfMetricsScopeEmpty logs a startup warning when a configured
+// dashboard.metrics_scope_path matches zero executions in the store. This is
+// otherwise silent: metrics_scope_path is matched with an exact string
+// comparison against the uncanonicalized executions.project_path column
+// (store.go's GetRecentExecutions/GetLifetimeTokens/GetWindowedStats), so a
+// trailing-slash or symlink variant (e.g. /var vs /private/var) of the real
+// project path yields all-zero scoped metrics with no other indication
+// anything is wrong (GH-4832).
+func warnIfMetricsScopeEmpty(store *memory.Store, scope string) {
+	if store == nil || scope == "" {
+		return
+	}
+	counts, err := store.GetLifetimeTaskCounts(scope)
+	if err != nil {
+		return
+	}
+	if counts.Total == 0 {
+		logging.WithComponent("start").Warn(
+			"dashboard.metrics_scope_path matches zero executions — check for a trailing slash or symlink variant (e.g. /var vs /private/var) of the project_path recorded in the store",
+			slog.String("metrics_scope_path", scope),
+		)
+	}
 }
 
 // countGitHubRepos counts unique GitHub repos from the default config and project-level entries.
