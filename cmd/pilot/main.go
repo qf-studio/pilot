@@ -28,6 +28,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/adapters/web"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/autopilot"
@@ -1061,6 +1062,15 @@ Examples:
 					pilotOpts = append(pilotOpts, pilot.WithSlackMemberResolver(teamAdapter))
 				}
 				logging.WithComponent("start").Info("Slack Socket Mode enabled in gateway mode")
+			}
+
+			// GH-4835: enable the web chat API (console Operator chat panel)
+			// in gateway mode whenever adapters.chat.enabled is true. No CLI
+			// flag gate like Telegram/Slack polling — this is an HTTP
+			// endpoint the console calls, not a polling loop.
+			if cfg.Adapters.Chat != nil && cfg.Adapters.Chat.Enabled {
+				pilotOpts = append(pilotOpts, pilot.WithChatHandler(gwRunner, projectPath))
+				logging.WithComponent("start").Info("Chat API enabled in gateway mode")
 			}
 
 			// GH-539: Create budget enforcer for gateway mode
@@ -2599,6 +2609,25 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		// identical Manager.RecordDecision seam in polling mode too (the
 		// GH-4738 lesson: wire both gateway-mode and polling-mode paths).
 		gwServer.SetDecisionRecorder(approvalMgr)
+		// GH-4835: wire the web chat API (console Operator chat panel) in
+		// polling mode too — the gateway-mode leg is in internal/pilot/pilot.go
+		// (WithChatHandler). Missing either means the chat routes silently
+		// don't exist in that daemon mode; see SetChatAPI's doc comment.
+		if cfg.Adapters.Chat != nil && cfg.Adapters.Chat.Enabled {
+			webMessenger := web.NewMessenger()
+			webCommsHandler := comms.BuildHandler(comms.HandlerDeps{
+				Messenger:       webMessenger,
+				Runner:          runner,
+				Projects:        config.NewProjectSource(cfg),
+				ProjectPath:     projectPath,
+				RateLimit:       cfg.Adapters.Chat.RateLimit,
+				Store:           store,
+				TaskIDPrefix:    "WEB",
+				ExecutorBackend: cfg.Executor,
+			})
+			gwServer.SetChatAPI(web.NewAPI(webCommsHandler, webMessenger))
+			logging.WithComponent("start").Info("Chat API enabled in polling mode")
+		}
 		gwServer.SetDashboardProjectPath(projectPath)
 		if cfg.Dashboard != nil {
 			gwServer.SetDashboardStatsWindowDays(cfg.Dashboard.StatsWindowDays)

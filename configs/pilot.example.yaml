@@ -225,6 +225,22 @@ adapters:
       history_size: 10                 # Messages to keep per channel for context
       history_ttl: 30m                 # TTL for conversation history
 
+  # Chat - HTTP transport backing the console's Operator chat panel (GH-4835).
+  # Feeds the same comms brain as Telegram/Slack/Discord via a per-conversation,
+  # in-memory poll-drain event buffer (no SSE/WS, no chat-history persistence).
+  # Routes (bearer auth inherited from `auth:` above; absent entirely when
+  # disabled): POST /api/v1/chat/messages, GET
+  # /api/v1/chat/conversations/{id}/events?after=<seq>. Approval decisions do
+  # NOT go through this API — the console calls
+  # POST /api/v1/approvals/{requestId}/decision directly.
+  chat:
+    enabled: false
+    rate_limit:
+      enabled: true
+      messages_per_minute: 20
+      tasks_per_hour: 10
+      burst_size: 5
+
 # Conversational bot module
 # When enabled, chat / greeting / question intents are answered directly via the
 # Anthropic API (~1-2s) instead of spinning up the Claude Code executor (15-30s).

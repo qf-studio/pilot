@@ -23,6 +23,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/adapters/web"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/autopilot"
@@ -153,6 +154,10 @@ type AdaptersConfig struct {
 	Asana       *asana.Config       `yaml:"asana"`
 	Plane       *plane.Config       `yaml:"plane"`
 	Discord     *discord.Config     `yaml:"discord"`
+	// Chat configures the web transport for the console Operator chat panel
+	// (GH-4835). Disabled by default; when absent/disabled the gateway
+	// chat routes are not registered at all.
+	Chat *web.Config `yaml:"chat"`
 }
 
 // OrchestratorConfig holds settings for the task orchestrator including
@@ -474,6 +479,7 @@ func DefaultConfig() *Config {
 			Asana:       asana.DefaultConfig(),
 			Plane:       plane.DefaultConfig(),
 			Discord:     discord.DefaultConfig(),
+			Chat:        web.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{
 			Model:         "claude-sonnet-4-6",
