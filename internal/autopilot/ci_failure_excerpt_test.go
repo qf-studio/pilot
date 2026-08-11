@@ -3,10 +3,12 @@ package autopilot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -193,8 +195,8 @@ func TestCIMonitor_GetFailedCheckExcerpts_FallsBackToAnnotations(t *testing.T) {
 // TestCIMonitor_GetFailedCheckExcerpts_FallsBackToWholeJobWithoutStepLogClient
 // verifies the third fallback tier: when no StepLogClient is wired at all
 // (e.g. an older Controller wiring, or SetStepLogClient was never called),
-// buildFailingStepExcerpt still produces a useful tail — just the whole
-// job's last N lines rather than the isolated failing step.
+// buildFailingStepExcerpt still produces a useful excerpt — match-anchored
+// against the whole job log rather than the isolated failing step.
 func TestCIMonitor_GetFailedCheckExcerpts_FallsBackToWholeJobWithoutStepLogClient(t *testing.T) {
 	server := gh4460NewTestServer(t, []github.CheckRun{
 		{ID: 100, Name: "test", Status: "completed", Conclusion: "failure", DetailsURL: "https://github.com/owner/repo/runs/100"},
@@ -210,10 +212,9 @@ func TestCIMonitor_GetFailedCheckExcerpts_FallsBackToWholeJobWithoutStepLogClien
 	if body == "" {
 		t.Fatal("expected non-empty excerpt body")
 	}
-	// The fixture log is short enough that tailLines(_, 200) keeps everything,
-	// including the preamble — this tier is a fallback, not a fix, for checks
-	// with no wired StepLogClient. What matters is it still surfaces the
-	// actual failure line rather than truncating before reaching it.
+	// This tier is a fallback, not a fix, for checks with no wired
+	// StepLogClient. What matters is it still surfaces the actual failure
+	// line rather than truncating before reaching it.
 	if !strings.Contains(body, "TestForecastMonthlyBurn") {
 		t.Errorf("expected whole-job tail to still include the failure, got:\n%s", body)
 	}
@@ -370,4 +371,85 @@ func TestSliceLogByStepWindow(t *testing.T) {
 			t.Error("expected false when step has no StartedAt/CompletedAt")
 		}
 	})
+}
+
+// TestCIMonitor_GetFailedCheckExcerpts_MidStepFailureSurvivesNoise covers
+// GH-4825 in the step-log tier specifically (buildFailingStepExcerpt's
+// "step" source — the common production path when a StepLogClient is
+// wired): a failing step's own log can keep emitting output well past the
+// actual failure line (more lint findings, cleanup noise). A plain
+// last-N-lines tail on the step window would drop the failure entirely;
+// this verifies GetFailedCheckExcerpts survives it end-to-end via
+// match-anchored extraction.
+func TestCIMonitor_GetFailedCheckExcerpts_MidStepFailureSurvivesNoise(t *testing.T) {
+	const failingLine = "internal/executor/gh4405_test.go:167:2: Error return value of `w.Write` is not checked (errcheck)"
+
+	stepStart, err := time.Parse(time.RFC3339Nano, "2026-08-09T10:00:05.0000000Z")
+	if err != nil {
+		t.Fatalf("failed to parse fixture step start: %v", err)
+	}
+	ts := func(offsetMillis int) string {
+		return stepStart.Add(time.Duration(offsetMillis) * time.Millisecond).Format("2006-01-02T15:04:05.0000000Z")
+	}
+
+	var logBuilder strings.Builder
+	logBuilder.WriteString("2026-08-09T10:00:00.0000000Z Current runner version: '2.319.1'\n")
+	logBuilder.WriteString("2026-08-09T10:00:00.1000000Z Runner Image Provisioner\n")
+	fmt.Fprintf(&logBuilder, "%s ##[group]Run golangci-lint run\n", ts(0))
+	for i := 1; i <= 30; i++ {
+		fmt.Fprintf(&logBuilder, "%s golangci-lint: checking package %d\n", ts(i), i)
+	}
+	fmt.Fprintf(&logBuilder, "%s %s\n", ts(31), failingLine)
+	for i := 32; i <= 431; i++ {
+		fmt.Fprintf(&logBuilder, "%s post-lint noise line %d\n", ts(i), i)
+	}
+	fmt.Fprintf(&logBuilder, "%s ##[error]Process completed with exit code 1.\n", ts(432))
+	jobLog := logBuilder.String()
+
+	steps := []ghadapter.JobStep{
+		{Name: "Set up job", Status: "completed", Conclusion: "success", Number: 1,
+			StartedAt: "2026-08-09T10:00:00.0000000Z", CompletedAt: "2026-08-09T10:00:04.9000000Z"},
+		{Name: "Run golangci-lint run", Status: "completed", Conclusion: "failure", Number: 2,
+			StartedAt: ts(0), CompletedAt: ts(432)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc123/check-runs":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{ID: 200, Name: "lint", Status: "completed", Conclusion: "failure", DetailsURL: "https://github.com/owner/repo/runs/200"},
+				},
+			})
+		case "/repos/owner/repo/actions/jobs/200/logs":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(jobLog))
+		case "/repos/owner/repo/actions/jobs/200":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{ID: 200, Name: "lint", Status: "completed", Steps: steps})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	sdkClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	adapterClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	monitor := NewCIMonitor(sdkClient, "owner", "repo", DefaultConfig())
+	monitor.SetStepLogClient(adapterClient)
+
+	body := monitor.GetFailedCheckExcerpts(context.Background(), "abc123")
+
+	if !strings.Contains(body, failingLine) {
+		t.Errorf("expected the mid-step errcheck finding to survive, got:\n%s", body)
+	}
+	if strings.Contains(body, "Current runner version") {
+		t.Errorf("excerpt should not contain runner-setup preamble, got:\n%s", body)
+	}
+	if len(body) > failedCheckExcerptBudgetChars+len(ciExcerptSentinel) {
+		t.Errorf("body length = %d, want <= %d", len(body), failedCheckExcerptBudgetChars+len(ciExcerptSentinel))
+	}
 }

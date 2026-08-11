@@ -9,12 +9,6 @@ import (
 	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
 )
 
-// failedCheckExcerptMaxLines is how many trailing lines of a failing step's
-// log to keep per check (GH-4460). Large enough to show the actual
-// assertion/panic/compiler-error plus a few lines of surrounding context,
-// without dragging in the job's runner-provisioning preamble.
-const failedCheckExcerptMaxLines = 200
-
 // failedCheckExcerptBudgetChars caps the total size of the multi-check
 // failing-step excerpt bundle embedded in a continuation issue body, so a
 // PR with several failing checks still produces a body comfortably under
