@@ -114,13 +114,25 @@ func (a *API) Dispatch(dispatchCtx context.Context, req DispatchRequest) (seq in
 	return seq, nil
 }
 
-// Events returns events for conversationID with seq > after, in seq order.
-// A conversationID with no buffer (never messaged, or expired/evicted) is
-// not an error — it returns an empty slice, matching "no events yet" rather
-// than "unknown conversation" (the chat API has no separate concept of
-// conversation existence beyond "has it produced any events").
-func (a *API) Events(conversationID string, after int64) []Event {
+// Events returns events for conversationID with seq > after, in seq order,
+// along with the newest seq currently known for the conversation (0 if it
+// has no buffer). A conversationID with no buffer (never messaged, or
+// expired/evicted) is not an error — it returns an empty slice, matching
+// "no events yet" rather than "unknown conversation" (the chat API has no
+// separate concept of conversation existence beyond "has it produced any
+// events").
+//
+// latestSeq is how a poll-drain client detects a server-side reset (GH-4843
+// D2): if the client's own `after` cursor is greater than latestSeq, the
+// server has forgotten more history than the client remembers (daemon
+// restart wiped the in-memory buffer, or the 1h conversation-expiry evicted
+// it — see WebMessenger's restart-semantics doc comment) and the client must
+// re-poll from after=0. Conversely, `after` less than the oldest retained
+// seq (visible as a gap between the returned events' lowest seq and `after`)
+// signals the drop-oldest cap (500 events, WebMessenger.maxEventsPerConversation)
+// truncated history the client hasn't seen yet — events simply resume from
+// the oldest still-retained entry in that case.
+func (a *API) Events(conversationID string, after int64) (events []Event, latestSeq int64) {
 	contextID := contextIDPrefix + conversationID
-	events, _ := a.messenger.Events(contextID, after)
-	return events
+	return a.messenger.Events(contextID, after)
 }

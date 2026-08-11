@@ -93,13 +93,21 @@ func TestAPI_Dispatch_ValidTextMessage_ReturnsAcceptTimeSeq(t *testing.T) {
 func TestAPI_Dispatch_UsesGivenContextNotCancelledOne(t *testing.T) {
 	api, m := newTestAPI()
 
-	// The context passed to Dispatch is cancelled immediately, but
-	// HandleMessage should still observe the request's own cancellation
-	// state correctly since we pass it a background context deliberately —
-	// Dispatch itself doesn't derive from the caller's ctx beyond passing it
-	// straight to the goroutine, so the caller (gateway handler) is what's
-	// responsible for using the daemon ctx, not the request ctx. Here we
-	// simulate that correctly-wired caller behavior.
+	// requestCtx simulates the inbound HTTP request's own context — a real
+	// gateway handler must NOT pass this to Dispatch (see
+	// internal/gateway/chat.go's handleChatMessages, which stashes the
+	// long-lived daemon context precisely to avoid this). It is genuinely
+	// cancelled here (GH-4843 D4: previously this test never cancelled
+	// anything, so the "not cancelled one" behavior it claims to cover was
+	// never actually exercised).
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	cancelRequest()
+	if requestCtx.Err() == nil {
+		t.Fatal("test setup bug: requestCtx should already be cancelled")
+	}
+
+	// daemonCtx is what a correctly-wired caller actually passes to
+	// Dispatch — long-lived and never cancelled by the request lifecycle.
 	daemonCtx := context.Background()
 	seq, err := api.Dispatch(daemonCtx, DispatchRequest{ConversationID: "c1", Text: "hello"})
 	if err != nil {
@@ -109,6 +117,10 @@ func TestAPI_Dispatch_UsesGivenContextNotCancelledOne(t *testing.T) {
 		t.Fatalf("seq = %d, want 0", seq)
 	}
 
+	// Dispatch completing (the goroutine landing its event) despite
+	// requestCtx already being cancelled proves Dispatch uses only the
+	// context explicitly given to it, not some other context the caller
+	// happens to also hold.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		events, _ := m.Events("web:c1", 0)
@@ -117,14 +129,20 @@ func TestAPI_Dispatch_UsesGivenContextNotCancelledOne(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("no event landed")
+	t.Fatal("no event landed — dispatch appears to have been affected by the cancelled request context")
 }
 
 func TestAPI_Events_UnknownConversationIsEmptyNotError(t *testing.T) {
 	api, _ := newTestAPI()
-	events := api.Events("nope", 0)
+	events, latestSeq := api.Events("nope", 0)
 	if len(events) != 0 {
 		t.Fatalf("got %d events, want 0", len(events))
+	}
+	if events == nil {
+		t.Error("events = nil, want non-nil empty slice (GH-4843 D3)")
+	}
+	if latestSeq != 0 {
+		t.Errorf("latestSeq = %d, want 0", latestSeq)
 	}
 }
 
@@ -141,8 +159,31 @@ func TestAPI_Events_UsesConversationIDPrefix(t *testing.T) {
 	}()
 	wg.Wait()
 
-	events := api.Events("c1", 0)
+	events, latestSeq := api.Events("c1", 0)
 	if len(events) != 1 || events[0].Text != "hi" {
 		t.Fatalf("events = %+v", events)
+	}
+	if latestSeq != 1 {
+		t.Errorf("latestSeq = %d, want 1", latestSeq)
+	}
+}
+
+// TestAPI_Events_LatestSeqDetectsReset exercises the GH-4843 D2 reset-
+// detection contract end to end through API.Events: after a daemon restart
+// (simulated here by a fresh WebMessenger with no buffer for the
+// conversation), a client polling with a stale `after` cursor greater than
+// the server's latestSeq gets an unambiguous signal — latestSeq (0) is less
+// than its own cursor — telling it to reset to after=0, entirely from the
+// response body.
+func TestAPI_Events_LatestSeqDetectsReset(t *testing.T) {
+	api, _ := newTestAPI()
+
+	const staleClientCursor = 42
+	events, latestSeq := api.Events("c1", staleClientCursor)
+	if len(events) != 0 {
+		t.Fatalf("got %d events, want 0 (fresh buffer)", len(events))
+	}
+	if latestSeq >= staleClientCursor {
+		t.Fatalf("latestSeq = %d, want < %d (client cursor) so reset is detectable", latestSeq, staleClientCursor)
 	}
 }

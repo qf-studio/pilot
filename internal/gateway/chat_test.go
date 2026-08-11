@@ -22,7 +22,7 @@ import (
 // package's *_test.go files.
 type mockChatAPI struct {
 	dispatchFunc func(ctx context.Context, req web.DispatchRequest) (int64, error)
-	eventsFunc   func(conversationID string, after int64) []web.Event
+	eventsFunc   func(conversationID string, after int64) ([]web.Event, int64)
 }
 
 func (m *mockChatAPI) Dispatch(ctx context.Context, req web.DispatchRequest) (int64, error) {
@@ -32,11 +32,11 @@ func (m *mockChatAPI) Dispatch(ctx context.Context, req web.DispatchRequest) (in
 	return 0, nil
 }
 
-func (m *mockChatAPI) Events(conversationID string, after int64) []web.Event {
+func (m *mockChatAPI) Events(conversationID string, after int64) ([]web.Event, int64) {
 	if m.eventsFunc != nil {
 		return m.eventsFunc(conversationID, after)
 	}
-	return nil
+	return nil, 0
 }
 
 func newTestServerWithChat(api ChatAPI) *Server {
@@ -231,10 +231,10 @@ func TestHandleChatEvents_Success_200(t *testing.T) {
 	var gotID string
 	var gotAfter int64
 	api := &mockChatAPI{
-		eventsFunc: func(conversationID string, after int64) []web.Event {
+		eventsFunc: func(conversationID string, after int64) ([]web.Event, int64) {
 			gotID = conversationID
 			gotAfter = after
-			return want
+			return want, 9
 		},
 	}
 	s := newTestServerWithChat(api)
@@ -254,6 +254,62 @@ func TestHandleChatEvents_Success_200(t *testing.T) {
 	}
 	if resp.ConversationID != "c1" || len(resp.Events) != 1 || resp.Events[0].Text != "hi" {
 		t.Errorf("resp = %+v", resp)
+	}
+	if resp.LatestSeq != 9 {
+		t.Errorf("resp.LatestSeq = %d, want 9", resp.LatestSeq)
+	}
+}
+
+// TestHandleChatEvents_UnknownConversation_EventsIsEmptyArrayNotNull covers
+// GH-4843 D3: the wire body for an unknown/expired conversation must contain
+// `"events": []`, not `"events": null` — a nil slice serializes to null,
+// which forces every client to null-check before iterating.
+func TestHandleChatEvents_UnknownConversation_EventsIsEmptyArrayNotNull(t *testing.T) {
+	api := &mockChatAPI{
+		eventsFunc: func(conversationID string, after int64) ([]web.Event, int64) {
+			return nil, 0
+		},
+	}
+	s := newTestServerWithChat(api)
+	req := httpTestRequestWithPathValue(t, http.MethodGet, "/api/v1/chat/conversations/unknown/events", nil, "id", "unknown")
+	w := newTestResponseRecorder()
+	s.handleChatEvents(w, req)
+
+	if w.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.status)
+	}
+	if !bytes.Contains(w.body.Bytes(), []byte(`"events":[]`)) {
+		t.Errorf("body = %s, want \"events\":[] present (not null)", w.body.String())
+	}
+}
+
+// TestHandleChatEvents_LatestSeqSignalsReset covers GH-4843 D2: a client
+// whose `after` cursor exceeds the response's latestSeq (server buffer
+// reset — daemon restart or conversation-expiry eviction) must be able to
+// detect that from the GET response alone, with no separate signal needed.
+func TestHandleChatEvents_LatestSeqSignalsReset(t *testing.T) {
+	api := &mockChatAPI{
+		eventsFunc: func(conversationID string, after int64) ([]web.Event, int64) {
+			// Fresh post-restart buffer: no events, latestSeq back at 0,
+			// while the client polls with a stale cursor from before restart.
+			return nil, 0
+		},
+	}
+	s := newTestServerWithChat(api)
+	req := httpTestRequestWithPathValue(t, http.MethodGet, "/api/v1/chat/conversations/c1/events?after=100", nil, "id", "c1")
+	w := newTestResponseRecorder()
+	s.handleChatEvents(w, req)
+
+	if w.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.status)
+	}
+	var resp chatEventsResponse
+	if err := json.Unmarshal(w.body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	const clientCursor = 100
+	if resp.LatestSeq >= clientCursor {
+		t.Fatalf("resp.LatestSeq = %d, want < %d so the client can detect a reset", resp.LatestSeq, clientCursor)
 	}
 }
 
