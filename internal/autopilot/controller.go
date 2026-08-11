@@ -2432,6 +2432,41 @@ func ciFailedChecksSummary(failedChecks []string) string {
 	return fmt.Sprintf("CI checks failed (%s)", strings.Join(failedChecks, ", "))
 }
 
+// spawnFailureIssue is the single seam through which every CI-failure rung
+// (pre-merge handleCIFailed and post-merge handlePostMergeCI today; any
+// future rung tomorrow) must create a continuation fix issue via
+// c.feedbackLoop.CreateFailureIssue. GH-4826: the incident behind this
+// function was PR#4818's CI-failure close arming BOTH recovery paths at
+// once — the spawned fix issue (#4820) AND the source issue's own
+// pilot-retry-ready re-queue (#4817 → PR#4821) — because the branch that
+// spawned the fix issue was trusted to also remember to mark the source
+// terminal, and a sibling branch (the post-merge rung) did not. Centralizing
+// the ownership decision here, at the one place CreateFailureIssue is ever
+// called, means a call site inherits exclusivity by construction instead of
+// having to remember it on its own:
+//
+//   - CreateFailureIssue succeeds (issueNum > 0, err == nil): the fix issue
+//     now owns recovery — prState.TerminalLabel is set to github.LabelFailed
+//     so notifyExternalClose (GH-3806) marks the source issue pilot-failed
+//     instead of pilot-retry-ready, and it is never re-queued alongside the
+//     fix issue that already continues the work.
+//   - CreateFailureIssue declines or fails (dedup/budget claim in flight,
+//     GH-4307; or a transient create error): no fix issue exists to own the
+//     work, so prState.TerminalLabel is left untouched — the source retry
+//     chain remains the sole owner. Exactly one owner in every branch, never
+//     both, never neither.
+//
+// Callers keep their own branching on the returned (issueNum, err) for
+// messaging/comments/escalation — this seam only owns the TerminalLabel
+// decision, so a caller cannot accidentally skip it.
+func (c *Controller) spawnFailureIssue(ctx context.Context, prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int) (int, error) {
+	issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, failureType, failedChecks, logs, iteration)
+	if err == nil && issueNum > 0 {
+		prState.TerminalLabel = github.LabelFailed
+	}
+	return issueNum, err
+}
+
 func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error {
 	// GH-4533: classify the failure as code vs. CI infrastructure outage
 	// before doing anything else. An infra-classified failure with retry
@@ -2634,7 +2669,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	// continuation issue body is self-contained enough to pass preflight.
 	ciLogs := c.ciMonitor.GetFailedCheckExcerpts(ctx, prState.HeadSHA)
 
-	issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPreMerge, failedChecks, ciLogs, iteration+1)
+	issueNum, err := c.spawnFailureIssue(ctx, prState, FailureCIPreMerge, failedChecks, ciLogs, iteration+1)
 	// GH-4459: the PR must never be closed unless the continuation fix issue
 	// actually cleared preflight admission — CreateFailureIssue's dedup guard
 	// can legitimately return (0, nil) when a claim is in flight but not yet
@@ -2697,14 +2732,14 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		}
 	}
 
-	// GH-3806: name the reason (and the follow-up issue that now owns this work)
-	// so notifyExternalClose can post the audit-trail comments and mark this
-	// issue pilot-failed instead of leaving it stranded on a stale label — the
-	// fix issue created above carries the retry forward, so this issue must not
-	// also be re-queued (that would double-dispatch the same failure).
+	// GH-3806/GH-4826: name the reason (and the follow-up issue that now owns
+	// this work) so notifyExternalClose can post the audit-trail comments and
+	// mark this issue pilot-failed instead of leaving it stranded on a stale
+	// label. prState.TerminalLabel itself was already set by spawnFailureIssue
+	// above the moment CreateFailureIssue succeeded — it is not set here, so
+	// this rung cannot forget it the way the post-merge rung once did.
 	prState.Stage = StageFailed
 	prState.Error = fmt.Sprintf("%s; fix issue #%d created to continue this work%s", ciFailedChecksSummary(failedChecks), issueNum, infraNote)
-	prState.TerminalLabel = github.LabelFailed
 	c.metrics.RecordPRFailed()
 	c.metrics.RecordPRFailedClass(failureClass)
 	c.recordCIFailVerdict(failureClass)
@@ -4237,7 +4272,15 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		}
 
 		if !skipSpawn {
-			issueNum, issueErr := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPostMerge, failedChecks, ciLogs, iteration+1)
+			// GH-4826: route through the shared spawnFailureIssue seam rather
+			// than calling feedbackLoop.CreateFailureIssue directly — this rung
+			// is the one that used to leave prState.TerminalLabel unset even on
+			// a successful spawn. The original issue is normally already closed
+			// by handleMerging before a PR can ever reach StagePostMergeCI, so
+			// notifyExternalClose's label write is a no-op here today, but this
+			// rung must still not be the one branch that forgets the invariant
+			// if that ever changes.
+			issueNum, issueErr := c.spawnFailureIssue(ctx, prState, FailureCIPostMerge, failedChecks, ciLogs, iteration+1)
 			if issueErr != nil {
 				c.log.Error("failed to create post-merge fix issue", "error", issueErr)
 			} else {
