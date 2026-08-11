@@ -1944,6 +1944,41 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 	}
 }
 
+// seedAdoptedCIWaitClock seeds CIWaitStartedAt for a just-adopted PR (see
+// reconcileOrphanPRs / ScanExistingPRs) from GitHub's own last-activity
+// timestamp instead of letting handlePRCreated default it to time.Now() once
+// the pipeline reaches StageWaitingCI.
+//
+// GH-4851: an adopted PR can have every check long completed by the time
+// OnPRCreated fires — starting the clock at "now" instead of the PR's own
+// last-known-activity time means a suppressed processing window (rate-limit
+// cooldown, circuit breaker, restart) that delays the first handleWaitingCI
+// tick makes the CIWaitTimeout deadline look freshly exceeded, when CI in
+// reality finished the moment the PR stopped changing (PR#4846: adopted
+// 14:35Z, checks green by 14:43Z). This is a lower-bound approximation, not
+// a CI timestamp itself — the deadline-confirmation logic added to
+// handleWaitingCI in the same fix is what actually prevents a false timeout;
+// this just makes the clock (and CIWaitDuration metrics) reflect reality
+// more closely. Only applied while the PR is still sitting in StagePRCreated
+// with a zero CIWaitStartedAt, so it never clobbers a wait already in
+// progress (e.g. a concurrent registration that raced ahead of this call).
+func (c *Controller) seedAdoptedCIWaitClock(prNumber int, updatedAt time.Time) {
+	if updatedAt.IsZero() {
+		return
+	}
+	c.mu.RLock()
+	prState, ok := c.activePRs[prNumber]
+	c.mu.RUnlock()
+	if !ok {
+		return
+	}
+	prState.mu.Lock()
+	if prState.Stage == StagePRCreated && prState.CIWaitStartedAt.IsZero() {
+		prState.CIWaitStartedAt = updatedAt
+	}
+	prState.mu.Unlock()
+}
+
 // OnReviewRequested handles PR review events from GitHub webhooks.
 // For changes_requested reviews on tracked PRs, it transitions the PR to StageReviewRequested
 // so the next processAllPRs tick will create a revision issue.
@@ -2125,15 +2160,37 @@ func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState, ghPR
 		}
 	}
 
-	// All environments wait for CI - no skipping
+	// All environments wait for CI - no skipping.
+	// GH-4851: an adopted PR (reconciler/startup-scan, see
+	// seedAdoptedCIWaitClock) may already have CIWaitStartedAt seeded from
+	// GitHub's own last-activity evidence rather than "now" — preserve that
+	// seed instead of clobbering it, so the wait clock reflects when CI
+	// activity plausibly started, not when Pilot happened to notice the PR.
 	prState.Stage = StageWaitingCI
-	prState.CIWaitStartedAt = time.Now()
+	if prState.CIWaitStartedAt.IsZero() {
+		prState.CIWaitStartedAt = time.Now()
+	}
 	return nil
 }
 
 // handleWaitingCI checks CI status once (non-blocking) and updates state.
 // Uses CheckCI instead of WaitForCI to prevent blocking the processing loop.
 // Accepts optional cached ghPR to avoid redundant API calls.
+//
+// GH-4851: the CI-wait deadline is a lower bound on "how long has this PR
+// waited", not a promise that a poll ever actually ran during that window —
+// a suppressed processing tick (rate-limit cooldown, circuit breaker, a
+// restart) can leave the wall clock running with zero CI reads while CI
+// itself genuinely finished (even green) minutes or hours earlier. The
+// deadline is therefore only ever honored AFTER a same-tick CheckCI read
+// comes back — and only if that read is CIPending/CIRunning ("still
+// genuinely unresolved"); a read that resolves CISuccess/CIFailure/
+// CIConfigMismatch always takes priority over an expired clock, via
+// applyCIOutcome below. Incident: PR#4846 was adopted 14:35Z, all checks
+// went green by 14:43Z, the wait clock started (blind) at 14:57Z, and the
+// first-ever evaluation of this function — at 15:27Z, after a suppressed
+// window — declared "CI timeout" without ever having consulted CI, leaving
+// the persisted ci_status at its adoption-time CIPending default.
 func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR *github.PullRequest) error {
 	// Initialize CIWaitStartedAt if not set (backwards compatibility)
 	if prState.CIWaitStartedAt.IsZero() {
@@ -2148,13 +2205,7 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	if envCITimeout > 0 && (ciTimeout == 0 || envCITimeout < ciTimeout) {
 		ciTimeout = envCITimeout
 	}
-
-	if time.Since(prState.CIWaitStartedAt) > ciTimeout {
-		c.log.Warn("CI timeout", "pr", prState.PRNumber, "waited", time.Since(prState.CIWaitStartedAt))
-		prState.Stage = StageFailed
-		prState.Error = fmt.Sprintf("CI timeout after %v", ciTimeout)
-		return nil
-	}
+	deadlineExceeded := time.Since(prState.CIWaitStartedAt) > ciTimeout
 
 	// GH-419, GH-457: Always refresh HeadSHA from GitHub before checking CI.
 	// Self-review or other post-creation commits can change the HEAD,
@@ -2245,6 +2296,37 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 		"status", status,
 	)
 
+	// GH-4851: a same-tick read that resolves CISuccess/CIFailure/
+	// CIConfigMismatch always wins over an expired deadline — only a read
+	// that comes back CIPending/CIRunning ("still genuinely unresolved")
+	// falls through to the confirmed-timeout check below.
+	if c.applyCIOutcome(prState, sha, status) {
+		return nil
+	}
+
+	if deadlineExceeded {
+		waited := time.Since(prState.CIWaitStartedAt)
+		c.log.Warn("CI timeout confirmed by same-tick poll",
+			"pr", prState.PRNumber, "waited", waited, "last_status", status)
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("CI timeout after %v (last confirmed status: %s)", ciTimeout, status)
+		// GH-4851: without a TerminalLabel here, a later external close of
+		// this stranded PR (notifyExternalClose, GH-3806) would default to
+		// pilot-retry-ready and silently re-dispatch the issue's already-
+		// shipped work. Mirrors the iteration-limit idiom at handleCIFailed
+		// (controller.go:2619) — this branch is just as terminal.
+		prState.TerminalLabel = github.LabelFailed
+	}
+
+	return nil
+}
+
+// applyCIOutcome transitions prState based on a freshly-read, same-tick CI
+// status. Returns true if the PR left StageWaitingCI for a terminal or
+// passed stage (CISuccess/CIFailure/CIConfigMismatch); false if status is
+// still CIPending/CIRunning, in which case the caller decides whether to
+// keep waiting or — GH-4851 — declare a deadline-confirmed timeout.
+func (c *Controller) applyCIOutcome(prState *PRState, sha string, status CIStatus) bool {
 	switch status {
 	case CISuccess:
 		c.log.Info("CI passed", "pr", prState.PRNumber, "sha", ShortSHA(sha))
@@ -2253,12 +2335,14 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 		if !prState.CIWaitStartedAt.IsZero() {
 			c.metrics.RecordCIWaitDuration(time.Since(prState.CIWaitStartedAt))
 		}
+		return true
 	case CIFailure:
 		c.log.Warn("CI failed", "pr", prState.PRNumber, "sha", ShortSHA(sha))
 		prState.Stage = StageCIFailed
 		if !prState.CIWaitStartedAt.IsZero() {
 			c.metrics.RecordCIWaitDuration(time.Since(prState.CIWaitStartedAt))
 		}
+		return true
 	case CIConfigMismatch:
 		// GH-4646: required_checks/ci_checks.required names a check this repo's
 		// CI will never post — a config error, not a code failure. Fail the PR
@@ -2271,12 +2355,13 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 			"missing_required_checks", missing, "discovered_checks", discovered)
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("CI required-checks config mismatch: required check(s) %v never posted on this SHA (discovered checks: %v) — fix required_checks/ci_checks.required, then retry (GH-4646)", missing, discovered)
+		return true
 	case CIPending, CIRunning:
 		// Stay in StageWaitingCI, will be checked next poll cycle
 		c.log.Debug("CI still running", "pr", prState.PRNumber, "status", status)
+		return false
 	}
-
-	return nil
+	return false
 }
 
 // requiredCheckMismatchDetail computes, from sha's already-discovered check
@@ -6116,6 +6201,9 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 
 		// Register PR via existing mechanism
 		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA, pr.Head.Ref, "")
+		if updatedAt, err := time.Parse(time.RFC3339, pr.UpdatedAt); err == nil {
+			c.seedAdoptedCIWaitClock(pr.Number, updatedAt)
+		}
 		c.metrics.RecordOrphanPRRegistered("startup_scan")
 		restored++
 	}
@@ -6195,6 +6283,9 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 			"issue", issueNum,
 		)
 		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA, pr.Head.Ref, "")
+		if updatedAt, err := time.Parse(time.RFC3339, pr.UpdatedAt); err == nil {
+			c.seedAdoptedCIWaitClock(pr.Number, updatedAt)
+		}
 		c.metrics.RecordOrphanPRRegistered("reconciler")
 	}
 }
