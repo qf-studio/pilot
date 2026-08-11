@@ -592,6 +592,27 @@ projects:
   #     schedule: "0 21 * * FRI"          # Fridays 21:00
   #     schedule_timezone: "Europe/Berlin"
 
+  # Canary/synthetic sandbox example (GH-4240/GH-4833): `canary: true` marks
+  # a project as a synthetic sandbox rather than real work. Executions
+  # dispatched for it are still fully persisted and event-logged, but they're
+  # excluded from success-rate/cost/throughput metrics, the metrics hydrator,
+  # and dashboard history — so a scheduled canary probe (e.g. a GitHub
+  # Actions cron that files a real issue to prove the daemon still ships
+  # code end-to-end) can run indefinitely without skewing fleet-wide
+  # averages. `path` is intentionally omitted here: a repo-only registration
+  # (github.owner/github.repo set, no local checkout override) is normal for
+  # a project that doesn't need its own distinct working directory. GH-4833:
+  # `canary` designation is matched by `github.owner`/`github.repo`
+  # (config.FindProjectByRepo, the same lookup ResolveProjectBoard uses) —
+  # NOT by `path` — because two projects sharing the same (or absent) `path`
+  # would otherwise collide on a path-based lookup and silently resolve to
+  # the wrong project's Canary flag.
+  # - name: "pilot-canary-sandbox"
+  #   github:
+  #     owner: "qf-studio"
+  #     repo: "pilot-canary-sandbox"
+  #   canary: true
+
 # Autopilot settings
 autopilot:
   enabled: false

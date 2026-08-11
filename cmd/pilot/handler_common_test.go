@@ -17,6 +17,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/budget"
+	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -1009,6 +1010,153 @@ func TestHandleIssueGeneric_NilEnforcer(t *testing.T) {
 	}()
 
 	_, _ = handleIssueGeneric(context.Background(), deps, info, task)
+}
+
+// TestHandleIssueGeneric_CanaryStampedViaProjectRepo is the GH-4833
+// regression test for pilot-canary-sandbox rows landing is_canary=0: a
+// projects[] entry with no explicit `path` (a perfectly normal config for a
+// repo-only registration, e.g. a synthetic canary sandbox that doesn't need
+// its own local checkout override) makes githubSDKPollerTargets fall back to
+// the default adapter repo's project path — so the canary project and the
+// default project resolve to the SAME deps.ProjectPath. Before this fix,
+// handleIssueGeneric's deps.Cfg.GetProject(projectPath) then silently
+// resolved to whichever project happened to match that shared path first,
+// discarding the actual matched project's Canary flag. deps.ProjectRepo lets
+// the caller pass its already-resolved "owner/repo" match through, sidestepping
+// the ambiguous path entirely (mirroring config.FindProjectByRepo's use in
+// ResolveProjectBoard).
+func TestHandleIssueGeneric_CanaryStampedViaProjectRepo(t *testing.T) {
+	sharedPath := "/tmp/pilot-gh-4833-shared-path-does-not-exist"
+	cfg := &config.Config{
+		Projects: []*config.ProjectConfig{
+			{
+				Name:   "pilot",
+				Path:   sharedPath,
+				GitHub: &config.ProjectGitHubConfig{Owner: "qf-studio", Repo: "pilot"},
+				Canary: false,
+			},
+			{
+				Name: "pilot-canary-sandbox",
+				// No explicit Path — githubSDKPollerTargets falls back to the
+				// default project's path for entries like this in production.
+				GitHub: &config.ProjectGitHubConfig{Owner: "qf-studio", Repo: "pilot-canary-sandbox"},
+				Canary: true,
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		projectRepo string
+		wantCanary  bool
+	}{
+		{
+			name:        "ProjectRepo resolves the canary project despite the shared path",
+			projectRepo: "qf-studio/pilot-canary-sandbox",
+			wantCanary:  true,
+		},
+		{
+			name:        "ProjectRepo resolves the default (non-canary) project — no false positive",
+			projectRepo: "qf-studio/pilot",
+			wantCanary:  false,
+		},
+		{
+			name:        "no ProjectRepo — falls back to the path lookup (existing behavior preserved)",
+			projectRepo: "",
+			wantCanary:  false, // GetProject(sharedPath) matches the first (non-canary) entry
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budgetCfg := &budget.Config{Enabled: true}
+			enforcer := budget.NewEnforcer(budgetCfg, nil)
+			enforcer.Pause("test: short-circuit before dispatch — canary stamping runs before this gate")
+
+			deps := HandlerDeps{
+				Cfg:         cfg,
+				Monitor:     executor.NewMonitor(),
+				Enforcer:    enforcer,
+				ProjectPath: sharedPath,
+				ProjectRepo: tt.projectRepo,
+			}
+			info := IssueInfo{TaskID: "GH-4833", Title: "canary probe", Adapter: "github", LogMark: "▸"}
+			task := &executor.Task{ID: "GH-4833", Title: "canary probe", Branch: "pilot/GH-4833", ProjectPath: sharedPath}
+
+			if _, err := handleIssueGeneric(context.Background(), deps, info, task); err == nil {
+				t.Fatal("expected budget-exceeded error from the early return")
+			}
+
+			if task.IsCanary != tt.wantCanary {
+				t.Errorf("task.IsCanary = %v, want %v", task.IsCanary, tt.wantCanary)
+			}
+		})
+	}
+}
+
+// TestHandleIssueGeneric_CanaryStampedViaProjectRepo_PersistsThroughRealStore
+// is the end-to-end companion to
+// TestHandleIssueGeneric_CanaryStampedViaProjectRepo: drives the REAL
+// dispatcher/store (not a mock) through handleIssueGeneric's QueueTask call,
+// then asserts the persisted execution row's is_canary column via
+// store.GetLatestExecutionByTaskID — closing the loop from GH-4833's
+// production evidence (480 pilot-canary-sandbox rows with is_canary=0 in the
+// 30d window) all the way to the actual write path.
+func TestHandleIssueGeneric_CanaryStampedViaProjectRepo_PersistsThroughRealStore(t *testing.T) {
+	sharedPath := "/tmp/pilot-gh-4833-e2e-shared-path-does-not-exist"
+	cfg := &config.Config{
+		Projects: []*config.ProjectConfig{
+			{
+				Name:   "pilot",
+				Path:   sharedPath,
+				GitHub: &config.ProjectGitHubConfig{Owner: "qf-studio", Repo: "pilot"},
+				Canary: false,
+			},
+			{
+				Name:   "pilot-canary-sandbox",
+				GitHub: &config.ProjectGitHubConfig{Owner: "qf-studio", Repo: "pilot-canary-sandbox"},
+				Canary: true,
+			},
+		},
+	}
+
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+
+	taskID := "GH-4833-E2E"
+	deps := HandlerDeps{
+		Cfg:         cfg,
+		Dispatcher:  dispatcher,
+		Monitor:     executor.NewMonitor(),
+		ProjectPath: sharedPath,
+		ProjectRepo: "qf-studio/pilot-canary-sandbox",
+	}
+	info := IssueInfo{TaskID: taskID, Title: "canary probe e2e", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "canary probe e2e", Branch: "pilot/" + taskID, ProjectPath: sharedPath}
+
+	// A short-lived context lets WaitForExecution bail out quickly via
+	// ctx.Done() instead of blocking on a real backend execution against a
+	// project path that doesn't exist — QueueTask (and the is_canary write)
+	// already completed synchronously before WaitForExecution starts polling.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, _ = handleIssueGeneric(ctx, deps, info, task)
+
+	exec, err := store.GetLatestExecutionByTaskID(taskID, sharedPath)
+	if err != nil {
+		t.Fatalf("GetLatestExecutionByTaskID failed: %v", err)
+	}
+	if !exec.IsCanary {
+		t.Error("expected persisted execution row to have is_canary=1 for the canary-designated project, got false")
+	}
 }
 
 // --- GH-4794: superseded/canceled executions must not be reported as
