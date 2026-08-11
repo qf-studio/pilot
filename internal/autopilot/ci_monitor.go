@@ -1029,7 +1029,14 @@ func (m *CIMonitor) buildFailingStepExcerpt(ctx context.Context, run github.Chec
 			if jobLog, logErr := m.ghClient.GetJobLogs(ctx, m.owner, m.repo, run.ID); logErr == nil {
 				if window, ok := sliceLogByStepWindow(jobLog, step); ok {
 					excerpt.StepName = step.Name
-					excerpt.Tail = tailLines(window, failedCheckExcerptMaxLines)
+					// GH-4825: match-anchored extraction, not a plain tail
+					// cut — a failing step's own log can still run long
+					// after the actual failure line (more lint findings,
+					// cleanup output), which a tail-only cut would drop.
+					// AssembleFailureExcerptsBody applies the final
+					// even-split char budget across checks below, so this
+					// pre-budget here is deliberately generous.
+					excerpt.Tail = extractFailureExcerpt(window, failedCheckExcerptBudgetChars)
 					excerpt.Source = "step"
 					return excerpt
 				}
@@ -1052,13 +1059,15 @@ func (m *CIMonitor) buildFailingStepExcerpt(ctx context.Context, run github.Chec
 		}
 	}
 
-	// Fallback: whole job log, tail only (still better than head-of-log).
+	// Fallback: whole job log, match-anchored (still better than
+	// head-of-log, and better than a plain tail cut — see the "step" tier
+	// above, GH-4825).
 	jobLog, err := m.ghClient.GetJobLogs(ctx, m.owner, m.repo, run.ID)
 	if err != nil {
 		m.log.Warn("failed to fetch logs for check run", "check", run.Name, "id", run.ID, "error", err)
 		return excerpt
 	}
-	excerpt.Tail = tailLines(jobLog, failedCheckExcerptMaxLines)
+	excerpt.Tail = extractFailureExcerpt(jobLog, failedCheckExcerptBudgetChars)
 	excerpt.Source = "job"
 	return excerpt
 }

@@ -14,11 +14,31 @@ import (
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
-// ciFailureExcerptRe matches the start of an actionable CI failure: a Go test
-// failure header, a panic, or a GitHub Actions error annotation. These lines
-// are typically prefixed by a runner timestamp, so the patterns are not
-// anchored to line start.
-var ciFailureExcerptRe = regexp.MustCompile(`--- FAIL:|panic:|##\[error\]`)
+// failureMarkerRes are the patterns used to locate actionable failure lines
+// within a raw CI log, one per category of failure (GH-4825). Each is
+// checked independently against every line so a log carrying only, say,
+// lint findings (no Go test failure marker at all) still gets accurate
+// match-anchored windows instead of falling through to a blind tail cut.
+var failureMarkerRes = []*regexp.Regexp{
+	// Go test failures/panics, plus the trailing per-package summary line
+	// `go test` prints (`FAIL\t<pkg>\t<duration>`) — kept as its own marker
+	// because on a large panic dump it can sit far enough past the "panic:"
+	// line that a single shared context window wouldn't reach it.
+	regexp.MustCompile(`--- FAIL:|panic:|^FAIL\t`),
+	// GitHub Actions error annotations: the runner's own `##[error]`
+	// workflow command, and the `::error ...::` form tools emit when
+	// configured for GitHub Actions output (e.g. golangci-lint's
+	// --out-format=github-actions).
+	regexp.MustCompile(`##\[error\]|::error\b`),
+	// Compiler, `go vet`, and linter findings: `path/to/file.go:LINE:COL:
+	// message` — the shared output shape for `go build` errors and
+	// golangci-lint's default text output (errcheck, staticcheck, ...).
+	// GH-4825: this marker was missing entirely, so an errcheck finding
+	// with no `--- FAIL:`/`panic:`/`##[error]` anywhere near it fell
+	// through to the no-marker tail fallback and was silently dropped
+	// whenever it wasn't within the trailing N lines of the log.
+	regexp.MustCompile(`\S+\.go:\d+:\d+:`),
+}
 
 // maxCIErrorExcerptChars caps the size of the CI Error Logs section embedded
 // in fix-request issue bodies to stay well within GitHub's issue body limit.
@@ -28,43 +48,88 @@ const maxCIErrorExcerptChars = 4000
 // failure marker is found in the log (e.g. plain build/lint output).
 const ciFailureExcerptFallbackLines = 150
 
-// extractFailureExcerpt returns the actionable slice of CI logs to embed in a
-// fix-request issue body: from the first failure marker onward (this
-// naturally includes the trailing `FAIL <pkg>` summary since it always
-// follows the failure in a Go test log), or the last N lines when no marker
-// is found.
+// failureExcerptContextLines is how many lines of surrounding context to
+// keep before and after each matched failure-marker line.
+const failureExcerptContextLines = 5
+
+// extractFailureExcerpt returns the actionable slice of CI logs to embed in
+// a fix-request issue body: a window of context around every line matching
+// an actionable failure marker (test failure, panic, GH Actions error
+// annotation, or a compiler/lint finding), merged in log order, or the last
+// N lines when no marker is found anywhere in the log.
 //
 // GH-3958: excerpting from the head of the log only captured GitHub Actions
 // runner-provisioning preamble ("Current runner version", "Runner Image
 // Provisioner"...) and never the actual failure, which sits near the end of
-// the log. Every auto-generated fix issue self-rejected as vague as a result.
+// the log.
+//
+// GH-4825: a single "first marker to end of log" cut (the GH-3958 fix) still
+// dropped the failing line when it sat mid-log with a long tail of
+// unrelated output after it (further lint findings, teardown/cache-save
+// logs) — the char-budget truncation then cut through the middle of that
+// tail, discarding the failure before the resulting excerpt even reached
+// it. Match-anchored windows fix this by keeping only the content around
+// each actionable line, regardless of how much unrelated log follows it.
 func extractFailureExcerpt(logs string, maxChars int) string {
 	lines := strings.Split(logs, "\n")
 
-	start := -1
+	var matched []int
 	for i, line := range lines {
-		if ciFailureExcerptRe.MatchString(line) {
-			start = i
-			break
+		for _, re := range failureMarkerRes {
+			if re.MatchString(line) {
+				matched = append(matched, i)
+				break
+			}
 		}
 	}
 
-	var excerpt []string
-	switch {
-	case start >= 0:
-		if start > 3 {
-			start -= 3 // small lead-in context before the failure marker
-		} else {
+	if len(matched) == 0 {
+		return truncateKeepingTail(tailLines(logs, ciFailureExcerptFallbackLines), maxChars)
+	}
+
+	windows := mergeMatchWindows(matched, len(lines), failureExcerptContextLines)
+
+	blocks := make([]string, len(windows))
+	for i, w := range windows {
+		blocks[i] = strings.Join(lines[w[0]:w[1]], "\n")
+	}
+
+	return truncateKeepingTail(strings.Join(blocks, "\n...\n"), maxChars)
+}
+
+// mergeMatchWindows expands each matched line index into a
+// [idx-context, idx+context+1) window clamped to [0, total), then merges
+// overlapping/adjacent windows so a run of nearby failure lines (e.g.
+// several lint findings in the same file, or a failure marker plus its
+// trailing summary line) collapses into one contiguous block instead of
+// duplicating their shared context. matched must be in ascending order,
+// which the single top-to-bottom scan in extractFailureExcerpt guarantees.
+func mergeMatchWindows(matched []int, total, context int) [][2]int {
+	windows := make([][2]int, len(matched))
+	for i, idx := range matched {
+		start := idx - context
+		if start < 0 {
 			start = 0
 		}
-		excerpt = lines[start:]
-	case len(lines) > ciFailureExcerptFallbackLines:
-		excerpt = lines[len(lines)-ciFailureExcerptFallbackLines:]
-	default:
-		excerpt = lines
+		end := idx + context + 1
+		if end > total {
+			end = total
+		}
+		windows[i] = [2]int{start, end}
 	}
 
-	return truncateKeepingTail(strings.Join(excerpt, "\n"), maxChars)
+	merged := windows[:1]
+	for _, w := range windows[1:] {
+		last := &merged[len(merged)-1]
+		if w[0] <= last[1] {
+			if w[1] > last[1] {
+				last[1] = w[1]
+			}
+			continue
+		}
+		merged = append(merged, w)
+	}
+	return merged
 }
 
 // truncateKeepingTail caps s to maxChars while preserving both ends: the

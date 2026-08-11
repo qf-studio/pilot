@@ -1396,6 +1396,183 @@ func TestExtractFailureExcerpt_OversizedExcerptKeepsTrailingSummary(t *testing.T
 	}
 }
 
+// TestExtractFailureExcerpt_MidLogFailureNoise covers GH-4825: the errcheck
+// finding that spawned orphan issue #4820 sat mid-log with hundreds of
+// unrelated lines after it (further lint output, GH Actions post-job
+// noise). The GH-3958 "first marker to end of log, then char-truncate"
+// strategy still dropped it — the char truncation cut through the middle of
+// that trailing noise before the excerpt ever re-reached the failure.
+// Match-anchored windows must keep the failing line regardless of how much
+// unrelated log follows it.
+func TestExtractFailureExcerpt_MidLogFailureNoise(t *testing.T) {
+	var sb strings.Builder
+	for i := 1; i <= 50; i++ {
+		fmt.Fprintf(&sb, "golangci-lint: analyzing package %d\n", i)
+	}
+	const failingLine = "internal/executor/gh4405_test.go:167:2: Error return value of `w.Write` is not checked (errcheck)"
+	sb.WriteString(failingLine + "\n")
+	for i := 1; i <= 500; i++ {
+		fmt.Fprintf(&sb, "##[endgroup]\nPost job cleanup.\ncache saved successfully (entry %d)\n", i)
+	}
+	logs := sb.String()
+
+	excerpt := extractFailureExcerpt(logs, maxCIErrorExcerptChars)
+
+	if !strings.Contains(excerpt, failingLine) {
+		t.Errorf("excerpt missing the mid-log errcheck finding (#4820 shape), excerpt:\n%s", excerpt)
+	}
+	if len(excerpt) > maxCIErrorExcerptChars+len("\n... (truncated) ...\n") {
+		t.Errorf("excerpt length %d exceeds budget %d", len(excerpt), maxCIErrorExcerptChars)
+	}
+}
+
+// TestExtractFailureExcerpt_MarkerTypes verifies each actionable failure
+// marker category (lint finding, go test failure, compiler error) is
+// extracted with its surrounding context, and that a log with no
+// recognizable marker at all falls back to the trailing-lines behavior
+// (GH-4825).
+func TestExtractFailureExcerpt_MarkerTypes(t *testing.T) {
+	preamble := strings.Repeat("Current runner version: '2.319.1'\nRunner Image Provisioner\n", 20)
+	// Buffer of neutral lines between the preamble and the failing line so
+	// the failure's context window (failureExcerptContextLines) can't reach
+	// back into the preamble text itself.
+	buffer := strings.Repeat("=== RUN   TestSomethingUnrelated\n--- PASS: TestSomethingUnrelated (0.00s)\n", 10)
+	trailingNoise := strings.Repeat("unrelated log output after the failure\n", 300)
+
+	tests := []struct {
+		name        string
+		failingLine string
+		wantContain string
+	}{
+		{
+			name:        "lint finding (errcheck)",
+			failingLine: "internal/foo/bar.go:42:2: Error return value of `f.Close` is not checked (errcheck)",
+			wantContain: "bar.go:42:2: Error return value of `f.Close` is not checked (errcheck)",
+		},
+		{
+			name:        "go test failure",
+			failingLine: "--- FAIL: TestBar (0.01s)",
+			wantContain: "--- FAIL: TestBar (0.01s)",
+		},
+		{
+			name:        "compile error",
+			failingLine: "internal/foo/baz.go:10:5: undefined: someUndefinedFunc",
+			wantContain: "baz.go:10:5: undefined: someUndefinedFunc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := preamble + buffer + tt.failingLine + "\n" + trailingNoise
+			excerpt := extractFailureExcerpt(logs, maxCIErrorExcerptChars)
+			if !strings.Contains(excerpt, tt.wantContain) {
+				t.Errorf("excerpt missing %q, excerpt:\n%s", tt.wantContain, excerpt)
+			}
+			if strings.Contains(excerpt, "Current runner version") {
+				t.Errorf("excerpt should not contain runner preamble, excerpt:\n%s", excerpt)
+			}
+		})
+	}
+
+	t.Run("no marker falls back to trailing lines", func(t *testing.T) {
+		var sb strings.Builder
+		for i := 1; i <= 300; i++ {
+			fmt.Fprintf(&sb, "plain build output line %d\n", i)
+		}
+		excerpt := extractFailureExcerpt(sb.String(), maxCIErrorExcerptChars)
+		if !strings.Contains(excerpt, "plain build output line 300") {
+			t.Errorf("expected fallback tail to include the last line, excerpt:\n%s", excerpt)
+		}
+		if !strings.Contains(excerpt, "plain build output line 152") {
+			t.Errorf("expected fallback tail to cover ciFailureExcerptFallbackLines, excerpt:\n%s", excerpt)
+		}
+		if strings.Contains(excerpt, "plain build output line 1\n") {
+			t.Errorf("fallback tail should not reach back to line 1, excerpt:\n%s", excerpt)
+		}
+	})
+}
+
+// TestExtractFailureExcerpt_ManyMatchesStayWithinBudget verifies that a log
+// with many failure-marker matches (e.g. a lint job reporting dozens of
+// findings) still respects maxChars in the concatenated result — matches
+// windows can't add up to an unbounded body just because there were many of
+// them.
+func TestExtractFailureExcerpt_ManyMatchesStayWithinBudget(t *testing.T) {
+	var sb strings.Builder
+	for i := 1; i <= 400; i++ {
+		fmt.Fprintf(&sb, "internal/pkg%d/file.go:%d:2: Error return value is not checked (errcheck)\n", i, i)
+		sb.WriteString(strings.Repeat("unrelated build noise\n", 5))
+	}
+
+	excerpt := extractFailureExcerpt(sb.String(), maxCIErrorExcerptChars)
+
+	if len(excerpt) > maxCIErrorExcerptChars+len("\n... (truncated) ...\n") {
+		t.Errorf("excerpt length %d exceeds budget %d", len(excerpt), maxCIErrorExcerptChars)
+	}
+}
+
+// TestFeedbackLoop_CreateFailureIssue_MidLogErrcheckSurvives is the GH-4825
+// end-to-end regression: an errcheck finding sitting mid-log with a long
+// tail of unrelated noise after it (the #4820 shape) must survive into the
+// generated fix-issue body, and the body must stay within the existing size
+// bound.
+func TestFeedbackLoop_CreateFailureIssue_MidLogErrcheckSurvives(t *testing.T) {
+	capturedBody := ""
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST" {
+			var input github.IssueInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			capturedBody = input.Body
+
+			resp := github.Issue{Number: 201}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+
+	var sb strings.Builder
+	for i := 1; i <= 60; i++ {
+		fmt.Fprintf(&sb, "golangci-lint: checking package %d\n", i)
+	}
+	const failingLine = "internal/executor/gh4405_test.go:167:2: Error return value of `w.Write` is not checked (errcheck)"
+	sb.WriteString(failingLine + "\n")
+	for i := 1; i <= 400; i++ {
+		fmt.Fprintf(&sb, "post-lint noise line %d\n", i)
+	}
+	logs := sb.String()
+
+	prState := &PRState{PRNumber: 43, HeadSHA: "def5678"}
+
+	_, err := fl.CreateFailureIssue(
+		context.Background(),
+		prState,
+		FailureCIPreMerge,
+		[]string{"lint"},
+		logs,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("CreateFailureIssue() error = %v", err)
+	}
+
+	if !strings.Contains(capturedBody, failingLine) {
+		t.Error("body should contain the mid-log errcheck finding (#4820 shape); truncation dropped it before ever reaching it")
+	}
+	const maxIssueBodyChars = 65536 // GitHub issue-body limit
+	if len(capturedBody) > maxIssueBodyChars {
+		t.Errorf("body length %d exceeds GitHub's issue-body limit %d", len(capturedBody), maxIssueBodyChars)
+	}
+}
+
 func mustFLJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
