@@ -1,6 +1,6 @@
 # TASK-466: Console Docs page — surface Navigator `.agent/` docs, later make them manageable
 
-**Status**: 💡 Idea — design-only stage (founder call 2026-08-11). No issue filed, nothing dispatched.
+**Status**: 🎨 Design APPROVED 2026-08-11 (`design/docs-v1.html` @ pilot-console-ui, commit 741b8d9). No issue filed, nothing dispatched — read leg needs contract research first.
 **Created**: 2026-08-11
 **Assignee**: —
 
@@ -13,9 +13,11 @@ console so the operator can *see* the project's living documentation; a later ph
 
 ## Phasing
 
-1. **Design only (now)** — v4-language mockup `design/docs-v1.html` @ pilot-console-ui.
-   Read-only browse + view: tree grouped by `.agent/` taxonomy (System · SOPs · Tasks ·
-   Knowledge memories), markdown viewer, per-project scope (docs live per connection/repo).
+1. **Design only (now)** — ✅ DONE, founder-approved 2026-08-11: `design/docs-v1.html` @
+   pilot-console-ui. Third v4 layout template — full-height tree sidebar (flush-left text,
+   hairline border-right) | centered 740px reading column | borderless "On this page"
+   heading anchors (hidden <1560px). Project picker + Search (⌘K) in the sidebar top;
+   no in-content page title (topbar owns it — same dedupe rule as board v1).
 2. **Read leg (later)** — console serves the connected repo's `.agent/` tree (likely via
    daemon proxy, C13/C14 idiom; contract TBD — needs research like C16/C17 got).
 3. **Manage leg (much later)** — edit/create from console; writes must respect Navigator
