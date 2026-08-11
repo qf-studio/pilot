@@ -191,6 +191,15 @@ echo ""
 # 6. DESTRUCTIVE-CALL GATE
 echo -e "${BLUE}[6/8] Destructive-Call Gate${NC}"
 if [ -x "$SCRIPT_DIR/check-destructive-calls.sh" ]; then
+    # Self-test first: proves the gate's own detection logic (seeded
+    # violations caught, allowlisted files not flagged) still works on this
+    # machine's grep before trusting its "clean" verdict below. This is what
+    # would have caught GH-4831 — BSD grep on macOS silently no-op'd Check 2
+    # (bare Verdict{} literals), so the plain run reported false-green while
+    # the self-test failed outright.
+    if ! run_check "check-destructive --self-test" "$SCRIPT_DIR/check-destructive-calls.sh --self-test"; then
+        FAILURES=$((FAILURES + 1))
+    fi
     if ! run_check "check-destructive" "$SCRIPT_DIR/check-destructive-calls.sh"; then
         FAILURES=$((FAILURES + 1))
     fi
