@@ -1558,11 +1558,14 @@
       },
       "TASK-464": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-464-console-chat-proxy.md",
-        "title": "C17 console leg \u2014 operator chat proxy (C14 idiom)",
-        "status": "blocked",
+        "title": "C17 console leg \u2014 operator chat proxy to the tenant daemon (C14 idiom)",
+        "status": "dispatched",
         "concepts": [
+          "testing",
+          "authentication",
+          "deployment",
           "api",
-          "saas"
+          "context"
         ]
       },
       "TASK-465": {
@@ -1583,6 +1586,52 @@
           "deployment",
           "testing",
           "knowledge"
+        ]
+      },
+      "TASK-467": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-467-durable-recovery-owner-designation.md",
+        "title": "Durable recovery-owner designation + review-path seam",
+        "status": "dispatched",
+        "concepts": [
+          "autopilot",
+          "reliability"
+        ]
+      },
+      "TASK-468": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-468-recovery-owner-death-handling.md",
+        "title": "Owner-death recovery for designated fix issues",
+        "status": "dispatched",
+        "concepts": [
+          "autopilot",
+          "reliability"
+        ]
+      },
+      "TASK-469": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-469-chat-api-gateway-wiring-latestseq.md",
+        "title": "Chat API gateway-mode wiring + latestSeq",
+        "status": "dispatched",
+        "concepts": [
+          "gateway",
+          "saas",
+          "api"
+        ]
+      },
+      "TASK-470": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-470-excerpt-bundle-budget-reconcile.md",
+        "title": "Excerpt bundle-budget reconcile",
+        "status": "dispatched",
+        "concepts": [
+          "autopilot"
+        ]
+      },
+      "TASK-471": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-471-canary-declined-rows-two-legs.md",
+        "title": "Canary flag on declined-preflight rows (sdk+pilot legs)",
+        "status": "dispatched",
+        "concepts": [
+          "canary",
+          "memory",
+          "sdk"
         ]
       }
     },
@@ -6138,6 +6187,41 @@
       "from": "TASK-466",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-467",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-468",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-468",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-469",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-470",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-470",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-471",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6260,7 +6344,9 @@
       "TASK-460",
       "TASK-459",
       "TASK-462",
-      "TASK-466"
+      "TASK-466",
+      "TASK-467",
+      "TASK-471"
     ],
     "deployment": [
       "TASK-386",
@@ -6374,7 +6460,12 @@
       "TASK-463",
       "TASK-464",
       "TASK-465",
-      "TASK-466"
+      "TASK-466",
+      "TASK-467",
+      "TASK-468",
+      "TASK-469",
+      "TASK-470",
+      "TASK-471"
     ],
     "authentication": [
       "TASK-386",
@@ -6435,7 +6526,8 @@
       "TASK-460",
       "TASK-461",
       "TASK-463",
-      "TASK-464"
+      "TASK-464",
+      "TASK-469"
     ],
     "testing": [
       "TASK-386",
@@ -6547,7 +6639,12 @@
       "TASK-463",
       "TASK-464",
       "TASK-465",
-      "TASK-466"
+      "TASK-466",
+      "TASK-467",
+      "TASK-468",
+      "TASK-469",
+      "TASK-470",
+      "TASK-471"
     ],
     "api": [
       "TASK-386",
@@ -6632,7 +6729,9 @@
       "TASK-462",
       "TASK-463",
       "TASK-464",
-      "TASK-465"
+      "TASK-465",
+      "TASK-467",
+      "TASK-469"
     ],
     "context": [
       "TASK-386",
@@ -6726,7 +6825,12 @@
       "TASK-461",
       "TASK-462",
       "TASK-463",
-      "TASK-464"
+      "TASK-464",
+      "TASK-467",
+      "TASK-468",
+      "TASK-469",
+      "TASK-470",
+      "TASK-471"
     ],
     "markers": [
       "TASK-387",
@@ -6747,7 +6851,9 @@
       "TASK-458",
       "TASK-459",
       "TASK-461",
-      "TASK-463"
+      "TASK-463",
+      "TASK-467",
+      "TASK-470"
     ],
     "database": [
       "TASK-387",
@@ -6800,7 +6906,8 @@
       "mem-170",
       "TASK-442",
       "TASK-452",
-      "TASK-455"
+      "TASK-455",
+      "TASK-467"
     ],
     "workflow": [
       "TASK-387",
@@ -6869,7 +6976,9 @@
       "TASK-455",
       "TASK-456",
       "TASK-457",
-      "TASK-461"
+      "TASK-461",
+      "TASK-468",
+      "TASK-470"
     ],
     "simplification": [
       "TASK-387",
@@ -6910,7 +7019,8 @@
       "TASK-443",
       "TASK-446",
       "TASK-447",
-      "TASK-458"
+      "TASK-458",
+      "TASK-468"
     ],
     "theory of mind": [
       "TASK-394",
@@ -7283,10 +7393,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-11T13:11:47.374548+00:00",
+  "last_updated": "2026-08-11T13:40:00+00:00",
   "stats": {
-    "total_nodes": 385,
-    "total_edges": 325,
+    "total_nodes": 390,
+    "total_edges": 332,
     "memory_count": 217
   }
 }
