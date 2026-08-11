@@ -1574,6 +1574,17 @@
           "saas",
           "dashboard"
         ]
+      },
+      "TASK-466": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-466-console-docs-page.md",
+        "title": "Console Docs page \u2014 surface Navigator .agent docs",
+        "status": "planned",
+        "concepts": [
+          "saas",
+          "dashboard",
+          "navigator",
+          "documentation"
+        ]
       }
     },
     "memories": {
@@ -7265,7 +7276,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-11T10:07:58.363435+00:00",
+  "last_updated": "2026-08-11T12:30:00+00:00",
   "stats": {
     "total_nodes": 384,
     "total_edges": 324,
