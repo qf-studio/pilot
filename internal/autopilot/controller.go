@@ -2268,6 +2268,16 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 			prState.Stage = StageFailed
 			prState.Error = fmt.Sprintf("CI check API failed %d consecutive times: %v",
 				prState.ConsecutiveAPIFailures, err)
+			// GH-4855: this branch produces the exact GH-4851 incident
+			// fingerprint — zero successful polls, ci_status still at its
+			// adoption default, and (without this) no TerminalLabel. Without
+			// a TerminalLabel, a later external close of this stranded PR
+			// (notifyExternalClose, GH-3806) would default to
+			// pilot-retry-ready and silently re-dispatch the issue, even
+			// though autopilot never got a single successful read on this
+			// PR's CI. Mirrors the confirmed-CI-timeout branch above
+			// (checkPRWaitingCI, GH-4851/#4853) — this is just as terminal.
+			prState.TerminalLabel = github.LabelFailed
 			c.log.Error("PR transitioned to failed due to consecutive API failures",
 				"pr", prState.PRNumber,
 				"consecutive_failures", prState.ConsecutiveAPIFailures)
@@ -2900,6 +2910,15 @@ func (c *Controller) maybeRetryInfraFailure(ctx context.Context, prState *PRStat
 	prState.InfraRerunCount = effectiveCount + 1
 	prState.InfraRerunSHA = prState.HeadSHA
 	prState.Stage = StageWaitingCI
+	// GH-4855: this re-entry explicitly triggers a brand-new CI run, so the
+	// wait deadline must be measured from now, not from whenever the PR
+	// originally entered StageWaitingCI. Without this, a PR that already
+	// waited most of its budget before the original failure can have its
+	// freshly-triggered rerun timed out instantly on the very next tick
+	// (post-#4853, that instant timeout also stamps a terminal label — see
+	// the confirmed-timeout branch in checkPRWaitingCI — permanently
+	// stranding a PR whose rerun never got a fair chance to complete).
+	prState.CIWaitStartedAt = time.Now()
 	c.metrics.RecordCIRun("infra_retry")
 	c.log.Warn("CI failure classified as infra outage, auto-retried failed jobs",
 		"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA),
@@ -5317,6 +5336,10 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 		c.log.Info("auto-rebased conflicting PR", "pr", prState.PRNumber, "attempt", prState.RebaseAttempts, "max", c.config.MaxRebaseAttempts)
 		prState.Stage = StageWaitingCI // rebase triggers new CI
 		prState.HeadSHA = ""           // force refresh on next tick
+		// GH-4855: the rebase triggers a fresh CI run — reset the wait clock
+		// so the deadline is measured from this re-entry, mirroring the
+		// infra-outage rerun above (maybeRetryInfraFailure).
+		prState.CIWaitStartedAt = time.Now()
 		return nil
 	}
 	c.log.Warn("auto-rebase failed, attempting mechanical go.mod/go.sum resolution", "pr", prState.PRNumber, "error", err)
@@ -5433,6 +5456,10 @@ func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, pr
 	c.log.Info("mechanically resolved go.mod/go.sum conflict", "pr", prState.PRNumber, "attempt", prState.RebaseAttempts, "max", c.config.MaxRebaseAttempts)
 	prState.Stage = StageWaitingCI // mechanical resolution triggers new CI
 	prState.HeadSHA = ""           // force refresh on next tick
+	// GH-4855: the mechanical resolution triggers a fresh CI run — reset the
+	// wait clock so the deadline is measured from this re-entry, mirroring
+	// the auto-rebase and infra-outage-rerun re-entry sites above.
+	prState.CIWaitStartedAt = time.Now()
 	return true, nil
 }
 
