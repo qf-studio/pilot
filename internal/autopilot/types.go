@@ -1160,12 +1160,43 @@ type PRState struct {
 	// notifyExternalClose applies once it observes this PR closed on GitHub.
 	// Set by a close path that already determined the issue must NOT be
 	// auto-retried under its own number — either because the failure is
-	// terminal (iteration/size-guard cap reached) or because a dependent
-	// follow-up issue was already created to continue the work, and re-queuing
-	// the original would cause a duplicate dispatch. Empty means "use the
-	// default retry-ready flow" (GH-3806). In-memory only; lost on restart —
-	// safe because a restart re-enters the handler that sets it before the PR
-	// can reach notifyExternalClose again.
+	// terminal (iteration/size-guard cap reached, a confirmed CI-wait
+	// timeout, or 5 consecutive CI-check API failures — GH-4851/GH-4855) or
+	// because a dependent follow-up issue was already created to continue
+	// the work, and re-queuing the original would cause a duplicate
+	// dispatch. Empty means "use the default retry-ready flow" (GH-3806).
+	//
+	// In-memory only; lost on restart. This is NOT restart-safe for every
+	// terminal path: GH-4841 gave the fix-issue/review-feedback close paths
+	// a durable fallback (StateStore.HasSpawnedFixForPR, consulted by
+	// notifyExternalClose below) because CreateFailureIssue/CreateReviewIssue
+	// always record a durable claim before closing anything. The CI-timeout
+	// and consecutive-API-failure paths above set TerminalLabel WITHOUT ever
+	// closing the PR or spawning a fix issue — the PR is left open,
+	// unclosed, for a human (or a later external event) to close, sometimes
+	// days and several restarts later — so they have no durable claim to
+	// fall back on.
+	//
+	// GH-4855: RestoreState deliberately skips rehydrating StageFailed rows
+	// into c.activePRs on restart (they're terminal), so a PR carrying this
+	// in-memory-only label is untracked immediately after a restart. It is
+	// usually "healed" by the ~60s orphan-PR reconciler sweep, which
+	// rediscovers the still-open PR and re-adopts it via OnPRCreated — but
+	// OnPRCreated always starts a brand-new PRState (TerminalLabel empty)
+	// rather than reading back any prior terminal state, and the very act of
+	// re-adopting immediately persists that fresh empty state, overwriting
+	// whatever was last saved for this PR number. A close landing after that
+	// re-adoption (the PR is tracked again, so checkExternalMergeOrClose can
+	// see it) reaches notifyExternalClose with an empty TerminalLabel and no
+	// spawned-fix claim, and defaults to pilot-retry-ready — silently
+	// re-dispatching work whose fate was already decided. This is an
+	// accepted residual (restart-gated, minutes-wide) rather than a fix
+	// attempted here — closing it durably would mean teaching OnPRCreated's
+	// adoption path to look up and carry forward a prior terminal state
+	// before re-persisting, which changes re-adoption semantics broadly
+	// enough to warrant its own task. See
+	// TestGH4855_ReAdoptionWindow_LosesTerminalLabel_AcceptedResidual for a
+	// regression test documenting the exact window.
 	TerminalLabel string
 	// ScopeKey marks this PRState as a scope-release CARRIER — registered by
 	// startPendingScopeReleases on behalf of a completed epic ("epic:<N>") or
