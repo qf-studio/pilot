@@ -298,6 +298,7 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 	// fix issue for it. The claim lives in the shared SQLite store so it
 	// holds even across process boundaries.
 	var dedupRepo, dedupKey string
+	var ownFailureClaim bool
 	if f.stateStore != nil {
 		dedupRepo = f.owner + "/" + f.repo
 		dedupKey = spawnedFixDedupKey(prState.PRNumber, failureType, failedChecks)
@@ -321,13 +322,30 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 				// must never be re-designated as the recovery owner via
 				// dedup; fall through and mint a replacement instead.
 				existingIssue, err := f.ghClient.GetIssue(ctx, f.owner, f.repo, existing)
+				health := classifyOwnerHealth(existingIssue)
 				switch {
 				case err != nil:
 					f.log.Warn("owner-health check failed, returning existing fix issue unverified",
 						"pr", prState.PRNumber, "failure", failureType, "existing_issue", existing, "error", err)
 					return existing, nil
-				case classifyOwnerHealth(existingIssue) != ownerDead:
+				case health != ownerDead:
 					f.log.Info("duplicate fix-issue creation suppressed",
+						"pr", prState.PRNumber, "failure", failureType, "existing_issue", existing)
+					return existing, nil
+				case existingIssue.State != github.StateClosed:
+					// GH-4860 D2: open + pilot-needs-clarification reads as
+					// ownerDead (it will never ship) but is NOT abandoned —
+					// it's the documented-resumable preflight-decline state
+					// (notifier.go, epic.go). A transient ClosePullRequest
+					// failure or crash-before-close can re-enter this create
+					// path while a human is mid-clarification; minting a
+					// replacement here would move the claim, leave the
+					// declined issue open as a zombie, and — once the human
+					// removes the label — dispatch BOTH issues against the
+					// same branch: meta, clobbering each other. Reuse
+					// instead: hand back the existing (still-resumable)
+					// owner, leave the claim row untouched, fire no alert.
+					f.log.Info("existing owner open + needs-clarification (resumable) — reusing, not replacing",
 						"pr", prState.PRNumber, "failure", failureType, "existing_issue", existing)
 					return existing, nil
 				}
@@ -337,6 +355,8 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 				// fall through: dedupKey stays set so RecordSpawnedFixIssue
 				// below overwrites this dead issue's row with the replacement.
 			}
+		} else {
+			ownFailureClaim = true
 		}
 	}
 
@@ -382,6 +402,22 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 	// explicit sentinel encodes that intent (vs a nil-means-skip default). TASK-286 / GH-3027 / TASK-347.
 	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, body, f.issueLabels)
 	if err != nil {
+		// GH-4860 N1: mirror CreateReviewIssue's claim release (GH-4856,
+		// feedback_loop.go ~679) — without this, a transient create error on
+		// the CI path leaves the claim row surviving with issue_number=0
+		// forever (RecordSpawnedFixIssue below is only reached on the
+		// success path), so every future attempt for this PR hits the
+		// dedup-hit "existing <= 0: return existing, nil" branch and
+		// permanently escalates per the GH-4459 guard, with no way to ever
+		// record a real issue number. Only release a claim this call
+		// actually took — a claim-check failure above (proceeding without
+		// the guard) never took one.
+		if ownFailureClaim {
+			if relErr := f.stateStore.ReleaseSpawnedFix(dedupRepo, dedupKey); relErr != nil {
+				f.log.Warn("failed to release spawned fix claim after create failure",
+					"pr", prState.PRNumber, "failure", failureType, "error", relErr)
+			}
+		}
 		return 0, fmt.Errorf("failed to create issue: %w", err)
 	}
 
@@ -603,13 +639,26 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 				// spawnReviewIssue would set TerminalLabel pointing at a
 				// corpse.
 				existingIssue, err := f.ghClient.GetIssue(ctx, f.owner, f.repo, existing)
+				health := classifyOwnerHealth(existingIssue)
 				switch {
 				case err != nil:
 					f.log.Warn("owner-health check failed, returning existing review issue unverified",
 						"pr", prState.PRNumber, "existing_issue", existing, "error", err)
 					return existing, nil
-				case classifyOwnerHealth(existingIssue) != ownerDead:
+				case health != ownerDead:
 					f.log.Info("duplicate review-issue creation suppressed", "pr", prState.PRNumber, "existing_issue", existing)
+					return existing, nil
+				case existingIssue.State != github.StateClosed:
+					// GH-4860 D2: mirror CreateFailureIssue's reuse-don't-
+					// replace for an open + pilot-needs-clarification owner
+					// (see the matching comment there). Minting a
+					// replacement here while a human is mid-clarification
+					// would move the claim and leave a zombie review issue
+					// open — review issues additionally share `branch:`
+					// meta with the source PR, so a later duplicate
+					// dispatch clobbers the same branch.
+					f.log.Info("existing review owner open + needs-clarification (resumable) — reusing, not replacing",
+						"pr", prState.PRNumber, "existing_issue", existing)
 					return existing, nil
 				}
 				f.log.Warn("designated review issue is dead (closed without shipping) — minting a replacement",
