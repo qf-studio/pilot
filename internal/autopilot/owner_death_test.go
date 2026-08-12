@@ -323,6 +323,18 @@ func TestFeedbackLoop_CreateFailureIssue_DedupOwnerHealth(t *testing.T) {
 			wantCreateCall: true,
 			wantReturned:   555,
 		},
+		{
+			// GH-4860 D2: open + pilot-needs-clarification reads as ownerDead
+			// (classifyOwnerHealth, GH-4856) but is the documented-resumable
+			// preflight-decline state, not abandonment — a transient close
+			// failure or crash-before-close must not mint a replacement and
+			// strand the declined issue as an open zombie while a human is
+			// mid-clarification.
+			name:           "existing fix issue open+pilot-needs-clarification — dead but resumable, dedup reuses it unchanged",
+			existingIssue:  &github.Issue{Number: 999, State: github.StateOpen, Labels: []github.Label{{Name: github.LabelNeedsClarification}}},
+			wantCreateCall: false,
+			wantReturned:   999,
+		},
 	}
 
 	for _, tt := range tests {
@@ -393,8 +405,19 @@ func TestFeedbackLoop_CreateFailureIssue_DedupOwnerHealth(t *testing.T) {
 				if len(sink.events) != 1 {
 					t.Errorf("expected exactly 1 owner-death alert, got %d", len(sink.events))
 				}
-			} else if len(sink.events) != 0 {
-				t.Errorf("expected no owner-death alert for a live/shipped owner, got %d", len(sink.events))
+			} else {
+				if len(sink.events) != 0 {
+					t.Errorf("expected no owner-death alert for a live/shipped/resumable owner, got %d", len(sink.events))
+				}
+				// GH-4860 D2: the claim row must stay pointed at the reused
+				// owner, not be silently overwritten or cleared.
+				stored, err := store.GetSpawnedFixIssue(dedupRepo, dedupKey)
+				if err != nil {
+					t.Fatalf("GetSpawnedFixIssue error = %v", err)
+				}
+				if stored != 999 {
+					t.Errorf("dedup row = %d, want unchanged at 999 (no replace)", stored)
+				}
 			}
 		})
 	}
