@@ -2234,6 +2234,21 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 				"old", ShortSHA(sha),
 				"new", ShortSHA(ghPR.Head.SHA),
 			)
+			// GH-4859: a changed HeadSHA means a new CI run — reset the wait
+			// clock so the deadline measures the new run, not the original
+			// StageWaitingCI entry. PR#4857 reset CIWaitStartedAt at the three
+			// Stage=StageWaitingCI assignment sites, but this refresh happens
+			// on every tick without a stage transition, so it was the fourth
+			// re-entry vector PR#4857's post-merge review flagged: a PR could
+			// sit past deadline, pick up a post-creation commit (self-review
+			// or human push), and get an instant CONFIRMED timeout against a
+			// brand-new, still-pending CI run purely because deadlineExceeded
+			// (line ~2208) was computed against the stale CIWaitStartedAt
+			// before this refresh ran. Clearing deadlineExceeded here keeps
+			// the GH-4851 same-tick-success-wins ordering intact: applyCIOutcome
+			// below still short-circuits on CISuccess regardless of this flag.
+			prState.CIWaitStartedAt = time.Now()
+			deadlineExceeded = false
 		} else if sha == "" {
 			c.log.Info("refreshed empty HeadSHA from GitHub",
 				"pr", prState.PRNumber,
