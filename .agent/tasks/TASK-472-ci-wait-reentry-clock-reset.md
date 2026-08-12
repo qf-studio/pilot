@@ -1,6 +1,6 @@
 # fix(autopilot): reset CI-wait clock on WaitingCI re-entry; TerminalLabel on the API-failure timeout path
 
-**Status**: 🚀 Dispatched 2026-08-12 → [pilot#4855](https://github.com/qf-studio/pilot/issues/4855) (`pilot` + `no-decompose`; from PR#4853 post-merge review D1–D3)
+**Status**: ✅ Merged + REVIEWED 2026-08-12 → [pilot#4855](https://github.com/qf-studio/pilot/issues/4855) → **PR#4857** (squash 496137aa). **Verdict: APPROVE** (posted on the PR) — all 3 spec items delivered; item 3 = option B (documented residual, types.go comment rewrite verified accurate); all 6 `Stage = StageWaitingCI` sites swept, mutation-verified tests, composes with PR#4858. Follow-up candidates: **D1 (medium)** — fourth re-entry vector: mid-wait head-SHA change (new commit → fresh CI) keeps the old clock → instant confirmed timeout + `pilot-failed` strand; one-line fix = reset clock in the SHA-refresh branch (controller.go:~2234). D2 (minor) — residual-documenting test is storeless so it can't detect the residual being closed; fold store-backed hardening into whichever task closes the re-adoption window. N3 watch: API-failure path permanently de-queues after 5 transient errors (breaker should intercept first; revisit only if incident data shows it firing on ordinary flakiness). Live on the box since the 11:02Z restart (v2.259.0-14).
 **Created**: 2026-08-12
 **Assignee**: Pilot
 
