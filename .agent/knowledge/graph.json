@@ -1673,6 +1673,28 @@
           "frontend",
           "deployment"
         ]
+      },
+      "TASK-474": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-474-ci-wait-sha-change-clock-reset.md",
+        "title": "Task 474 Ci Wait Sha Change Clock Reset",
+        "status": "dispatched",
+        "concepts": [
+          "deployment",
+          "context",
+          "testing"
+        ]
+      },
+      "TASK-475": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-475-review-guard-test-dedup-reuse-ci-claim-release.md",
+        "title": "Task 475 Review Guard Test Dedup Reuse Ci Claim Release",
+        "status": "dispatched",
+        "concepts": [
+          "workflow",
+          "frontend",
+          "testing",
+          "deployment",
+          "context"
+        ]
       }
     },
     "memories": {
@@ -6290,6 +6312,21 @@
       "from": "TASK-473",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "TASK-474",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-475",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-475",
+      "to": "workflow",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6535,7 +6572,9 @@
       "TASK-470",
       "TASK-471",
       "TASK-472",
-      "TASK-473"
+      "TASK-473",
+      "TASK-474",
+      "TASK-475"
     ],
     "authentication": [
       "TASK-386",
@@ -6716,7 +6755,9 @@
       "TASK-470",
       "TASK-471",
       "TASK-472",
-      "TASK-473"
+      "TASK-473",
+      "TASK-474",
+      "TASK-475"
     ],
     "api": [
       "TASK-386",
@@ -6907,7 +6948,9 @@
       "TASK-470",
       "TASK-471",
       "TASK-472",
-      "TASK-473"
+      "TASK-473",
+      "TASK-474",
+      "TASK-475"
     ],
     "markers": [
       "TASK-387",
@@ -7056,7 +7099,8 @@
       "TASK-461",
       "TASK-468",
       "TASK-470",
-      "TASK-473"
+      "TASK-473",
+      "TASK-475"
     ],
     "simplification": [
       "TASK-387",
@@ -7099,7 +7143,8 @@
       "TASK-447",
       "TASK-458",
       "TASK-468",
-      "TASK-473"
+      "TASK-473",
+      "TASK-475"
     ],
     "theory of mind": [
       "TASK-394",
@@ -7473,10 +7518,10 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-12T11:22:41.097047+00:00",
+  "last_updated": "2026-08-12T12:16:33.481228+00:00",
   "stats": {
-    "total_nodes": 393,
-    "total_edges": 335,
+    "total_nodes": 395,
+    "total_edges": 338,
     "memory_count": 218
   }
 }
