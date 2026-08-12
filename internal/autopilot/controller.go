@@ -3131,8 +3131,29 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	// directly, so prState.TerminalLabel is designated the moment the issue
 	// exists — strictly before the ClosePullRequest call below.
 	issueNum, err := c.spawnReviewIssue(ctx, prState, reviews, comments, iteration+1)
-	if err != nil {
-		return fmt.Errorf("failed to create review issue: %w", err)
+	// GH-4856/GH-4459: the PR must never be closed unless the revision issue
+	// actually cleared preflight admission — CreateReviewIssue's dedup guard
+	// can legitimately return (0, nil) when a claim is in flight but not yet
+	// recorded (GH-4852's claim-before-create ordering), and a create error
+	// leaves nothing to continue the work either way. Closing the PR (and
+	// deleting the branch) on either shape discards the review round: the
+	// external-close fallback finds no live claim to fall back to and
+	// re-arms retry-ready, so the source re-runs from scratch instead of
+	// addressing the feedback. Mirror the CI path's guard (controller.go
+	// handleCIFailed, GH-4459) — escalate and hold instead, PR and branch
+	// intact, rather than looping silently.
+	if err != nil || issueNum <= 0 {
+		if err != nil {
+			c.log.Warn("review-fix continuation declined at preflight: failed to create review issue",
+				"pr", prState.PRNumber, "error", err)
+		} else {
+			c.log.Warn("review-fix continuation declined at preflight: no review issue number returned",
+				"pr", prState.PRNumber)
+		}
+		comment := "Could not create a continuation review issue for this feedback round — holding this PR for manual review instead of closing it with no follow-up."
+		c.escalateAndHold(ctx, prState, "review-fix continuation declined at preflight", []string{labelNeedsHuman}, comment)
+		c.metrics.RecordPRFailed()
+		return nil
 	}
 
 	// Learn from review (self-improvement)

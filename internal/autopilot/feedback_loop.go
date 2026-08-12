@@ -559,13 +559,17 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 	// for the same review round (PR#4846 pre-merge review, D4). Claiming
 	// first closes that window: a retry after any crash finds the claim
 	// already taken and reuses whatever issue number (if any) was recorded,
-	// instead of creating a duplicate. No owner-health re-check is needed
-	// here unlike CreateFailureIssue's dedup path — a fresh review round
-	// always carries a new PR number (dedupKey is PR-scoped), so the "existing
-	// owner might be dead" question never arises for a *repeat* claim of the
-	// same key; the same key is only ever reused across restarts/re-ticks
-	// still processing the same review round.
+	// instead of creating a duplicate.
+	//
+	// GH-4856: the "existing owner might be dead" question DOES arise here
+	// too, despite dedupKey being PR-scoped — a crash between claim and
+	// record (existing == 0, handled below) isn't the only poisoned shape; a
+	// *recorded* existing issue can also die (closed without shipping) while
+	// the daemon is down, and dedup would otherwise hand it straight back to
+	// spawnReviewIssue, which sets TerminalLabel pointing at a corpse. Mirror
+	// CreateFailureIssue's GH-4842 dedup-path re-check below.
 	var dedupRepo, dedupKey string
+	var ownReviewClaim bool
 	if f.stateStore != nil {
 		dedupRepo = f.owner + "/" + f.repo
 		dedupKey = spawnedFixDedupKey(prState.PRNumber, FailureReviewRequested, nil)
@@ -575,19 +579,47 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 				"pr", prState.PRNumber, "error", claimErr)
 		} else if !claimed {
 			existing, lookupErr := f.stateStore.GetSpawnedFixIssue(dedupRepo, dedupKey)
-			if lookupErr != nil {
+			switch {
+			case lookupErr != nil:
 				f.log.Warn("duplicate review-issue creation suppressed but issue lookup failed",
 					"pr", prState.PRNumber, "error", lookupErr)
 				return existing, nil
+			case existing <= 0:
+				// The claim landed but the prior attempt crashed before
+				// recording an issue number (create failed, or crashed
+				// between create and record) — narrow, accepted window,
+				// mirrors CreateFailureIssue's identical "existing <= 0:
+				// return existing, nil" branch. handleReviewRequested's
+				// issueNum<=0 guard (GH-4856) escalates-and-holds instead of
+				// closing the PR on this shape.
+				return existing, nil
+			default:
+				// GH-4856: verify the previously-designated review issue is
+				// still a live owner before handing it back out, mirroring
+				// CreateFailureIssue's GH-4842 dedup-path re-check
+				// (:317-338). A revision issue that closed without shipping
+				// (human closed it during a crash/downtime window) must
+				// never be re-designated as the recovery owner via dedup —
+				// spawnReviewIssue would set TerminalLabel pointing at a
+				// corpse.
+				existingIssue, err := f.ghClient.GetIssue(ctx, f.owner, f.repo, existing)
+				switch {
+				case err != nil:
+					f.log.Warn("owner-health check failed, returning existing review issue unverified",
+						"pr", prState.PRNumber, "existing_issue", existing, "error", err)
+					return existing, nil
+				case classifyOwnerHealth(existingIssue) != ownerDead:
+					f.log.Info("duplicate review-issue creation suppressed", "pr", prState.PRNumber, "existing_issue", existing)
+					return existing, nil
+				}
+				f.log.Warn("designated review issue is dead (closed without shipping) — minting a replacement",
+					"pr", prState.PRNumber, "dead_issue", existing)
+				f.fireOwnerDeathAlert(existing, fmt.Sprintf("review issue #%d closed without shipping, replacing via dedup path", existing), "replaced")
+				// fall through: dedupKey stays set so RecordSpawnedFixIssue
+				// below overwrites this dead issue's row with the replacement.
 			}
-			// existing > 0: a review issue already exists for this exact PR;
-			// reuse it instead of minting a duplicate. existing == 0: the
-			// claim landed but the prior attempt crashed before recording an
-			// issue number (create failed, or crashed between create and
-			// record) — narrow, accepted window, mirrors CreateFailureIssue's
-			// identical "existing <= 0: return existing, nil" branch.
-			f.log.Info("duplicate review-issue creation suppressed", "pr", prState.PRNumber, "existing_issue", existing)
-			return existing, nil
+		} else {
+			ownReviewClaim = true
 		}
 	}
 
@@ -636,6 +668,20 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 	// sentinel encodes intent vs a nil-means-skip default (TASK-286 / GH-3027 / TASK-347).
 	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, body, f.issueLabels)
 	if err != nil {
+		// GH-4856: release the claim row taken above so a transient create
+		// failure doesn't poison the dedup key forever. Without this, the
+		// row survives with issue_number=0 (RecordSpawnedFixIssue below is
+		// only ever reached on the success path) and every future attempt
+		// for this PR hits the dedup-hit branch above, permanently getting
+		// back (0, nil) with no way to ever record a real issue number.
+		// Only release a claim this call actually took — a claim-check
+		// failure above (proceeding without the guard) never took one.
+		if ownReviewClaim {
+			if relErr := f.stateStore.ReleaseSpawnedFix(dedupRepo, dedupKey); relErr != nil {
+				f.log.Warn("failed to release spawned review-issue claim after create failure",
+					"pr", prState.PRNumber, "error", relErr)
+			}
+		}
 		return 0, fmt.Errorf("failed to create review issue: %w", err)
 	}
 

@@ -1185,6 +1185,22 @@ func (s *StateStore) RecordSpawnedFixIssue(repo, dedupKey string, issueNumber in
 	return err
 }
 
+// ReleaseSpawnedFix deletes the claim row for (repo, dedupKey) taken by
+// ClaimSpawnedFix. GH-4856: call this when the create-issue call that
+// followed a successful claim fails synchronously (e.g. a transient
+// CreatePilotIssue error) — without it, the row survives with
+// issue_number=0 forever (RecordSpawnedFixIssue is only ever reached on the
+// success path), permanently poisoning the dedup key: every future attempt
+// hits the dedup-hit branch and gets back (0, nil) with no way to ever
+// record a real issue number. Deleting the row lets the next attempt
+// re-claim and retry cleanly.
+func (s *StateStore) ReleaseSpawnedFix(repo, dedupKey string) error {
+	_, err := s.db.Exec(`
+		DELETE FROM autopilot_spawned_fixes WHERE repo = ? AND dedup_key = ?
+	`, repo, dedupKey)
+	return err
+}
+
 // GetSpawnedFixIssue returns the issue number recorded for (repo, dedupKey),
 // or 0 if the claim row exists but RecordSpawnedFixIssue hasn't landed yet
 // (a create is still in flight) or the row doesn't exist.

@@ -33,8 +33,24 @@ const (
 // whether its closure represents a completed hand-off (ownerShipped), no
 // closure at all (ownerAlive), or an owner-death event (ownerDead) that
 // must trigger source re-arm/escalation.
+//
+// GH-4856: a fix issue declined at preflight stays OPEN carrying
+// pilot-needs-clarification (GH-2768) and never dispatches — it reads as
+// ownerAlive by the closed-only check below even though it will never ship.
+// ReactToDeclinedFixIssue already reacts to this exact event and re-arms the
+// source, but any caller that re-checks health afterward (the dedup path
+// here, or notifyExternalClose's durable-claim fallback) must agree it's
+// dead too, or it re-designates the already-declined zombie as the recovery
+// owner — the TASK-468 D1 shape where the reaction's re-arm is immediately
+// clobbered by a fallback that still thinks the zombie is alive.
 func classifyOwnerHealth(issue *github.Issue) ownerHealth {
-	if issue == nil || issue.State != github.StateClosed {
+	if issue == nil {
+		return ownerAlive
+	}
+	if issue.State != github.StateClosed {
+		if github.HasLabel(issue, github.LabelNeedsClarification) {
+			return ownerDead
+		}
 		return ownerAlive
 	}
 	if github.HasLabel(issue, github.LabelDone) {
