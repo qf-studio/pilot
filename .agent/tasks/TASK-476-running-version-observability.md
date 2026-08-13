@@ -1,6 +1,6 @@
 # fix(observability): expose the running daemon version — hot restarts are invisible to every status surface
 
-**Status**: 📋 Authored 2026-08-13 — dispatching to Pilot
+**Status**: ✅ MERGED same-day 2026-08-13 → [pilot#4864](https://github.com/qf-studio/pilot/issues/4864) → **PR#4865** (`7660794f`) — **POST-MERGE REVIEW PENDING.** Not on the box until the next train + restart; board-remote `ver` repoint (operator step) after that.
 **Created**: 2026-08-13
 **Assignee**: Pilot
 

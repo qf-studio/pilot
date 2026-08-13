@@ -1,6 +1,6 @@
 # fix(autopilot): reset CI-wait clock when the head SHA changes mid-wait — fourth re-entry vector
 
-**Status**: ✅ Merged 2026-08-12 12:37Z → [pilot#4859](https://github.com/qf-studio/pilot/issues/4859) → **PR#4861** — **POST-MERGE REVIEW PENDING.** In tag v2.259.1 (on the box's disk); NOT in the running process until next restart (process started 08-12 11:02Z on v2.259.0-14).
+**Status**: ✅ CLOSED 2026-08-13 — merged 08-12 12:37Z ([pilot#4859](https://github.com/qf-studio/pilot/issues/4859) → **PR#4861**); **post-merge review APPROVE** ([verdict](https://github.com/qf-studio/pilot/pull/4861#issuecomment-5279255606)): ordering correct (reset precedes confirm-poll and deadline honor, single per-tick PR read), 3 mutants independently killed, tests drive a real mid-wait SHA change. D1 minor **latent**: `ghPR == nil` + in-handler refresh failure + cached SHA skips the reset and lets a stale pending read confirm the old deadline — unreachable today (sole caller passes non-nil, skips tick on fetch failure); follow-up shape: failed refresh ⇒ cannot-confirm ⇒ don't honor the deadline. N1 stale `DiscoveredChecks` snapshot (cosmetic) · N2 fixtures reuse live PR numbers (recurrence of #4857 N2) · N3 comment misattributes ordering guarantee. **LIVE in production since 08-12 14:18Z** — the v2.259.1 self-upgrade hot restart DID take effect (`upgrade verified complete … via "hot restart"` in daemon.log; the "disk≠process" reading was an uptime-heuristic misdiagnosis — `syscall.Exec` preserves PID/etime).
 **Created**: 2026-08-12
 **Assignee**: Pilot
 
