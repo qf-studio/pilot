@@ -11,8 +11,15 @@ sweep); this SOP is the operator-run verification.
   train after 2026-08-04 16:00). Check: `~/bin/pilot-board` header. If still
   2.253.0, the seam code is NOT live — do not run the drill.
 - Use ONLY a sandbox/demo repo (`counter`/`greeter` class). Never drill against
-  `startups/pilot` or any tenant repo.
-- No daemon restart is needed for either drill.
+  `startups/pilot` or any tenant repo. The canonical sandbox is
+  `qf-studio/pilot-canary-sandbox` — it was **de-onboarded from the box config**
+  after 07-17, so re-add its project block (backup at
+  `config.yaml.bak-20260813-drill441` has the shape) **+ restart** before drilling.
+- Drill issues MUST pass the spec-guard: body needs an H2 structural header
+  (`## Context` / `## Implementation` / `## Acceptance`) or the issue is struck
+  with `pilot-spec-incomplete`+`pilot-blocked` and never dispatches (learned
+  2026-08-13, GH-267 first strike).
+- No daemon restart is needed for either drill (beyond the onboarding one).
 
 ## Drill A — dead-man streak (notify/label seam)
 
@@ -20,10 +27,19 @@ Guards: GH-4687/GH-4692 class ("wired to nothing" produces zero errors).
 Trackers fire `dead_man_streak`-family events; alert at consecutive-failure
 threshold (default 10, `alerts.DefaultDeadManFailureThreshold`).
 
-1. On the sandbox repo, remove the bot account's triage/write permission
-   (Settings → Collaborators), so label/comment mutations 403.
+1. Make the bot's label/comment mutations 403. ⚠️ **The as-written method —
+   remove the bot's triage/write permission — is IMPOSSIBLE while the daemon
+   authenticates as an org owner** (`alekspetrov` since the 08-07 OAuth move;
+   org owners cannot be demoted per-repo). Working deviation (verified
+   2026-08-13): **file the drill issues FIRST, then `gh repo archive` the
+   sandbox** — archived repos 403 every mutation (`Repository was archived so
+   is read-only`) while polling reads keep working; reverse with
+   `gh repo unarchive`. Once the TASK-461 GitHub App cutover is done, the
+   faithful method becomes uninstalling the App from the sandbox repo.
 2. File ~12 trivial `pilot`-labeled issues on the sandbox repo (past the
-   threshold of 10).
+   threshold of 10). Note the poller still QUEUES them (serial per-project) —
+   each execution runs and then fails at push with the same 403; bounded
+   cost (~$0.30/issue on sonnet-low), and the extra failures feed the streak.
 3. Expect within the hour: notify attempts fail per dispatch → failure streak →
    one alert (Telegram/alert channels) naming the tracker. WARN lines in
    `daemon.log` per failure.
@@ -50,17 +66,47 @@ names (from `internal/executor/finish_tripwires.go`):
 ## Verification queries
 
 ```bash
-# daemon log, both drills:
+# daemon log, both drills (this IS the proof — see note below):
 grep -E "finish_tripwire|dead.?man|failure streak" ~/.pilot/logs/daemon.log | tail -20   # via SSM
-# event ledger:
-sqlite3 -column /home/ec2-user/.pilot/data/pilot.db \
-  "SELECT event_type, substr(metadata,1,80), datetime(created_at) FROM execution_events \
-   WHERE event_type LIKE '%dead_man%' OR metadata LIKE '%tripwire%' \
-   ORDER BY rowid DESC LIMIT 20;"
 ```
+
+⚠️ The original "event ledger" sqlite query here could never work:
+`execution_events` has columns `(execution_id, stage, occurred_at, …)` — no
+`event_type`/`metadata`/`created_at` (verified 2026-08-13). Tripwire
+violations and dead-man failures are log + in-memory tracker state; only the
+threshold ALERT produces a durable artifact (alert channels). The daemon.log
+WARN line with `tracker=` + execution id is the drill's proof.
 
 ## After the drill
 
 Tick the TASK-441 acceptance box ("kill-drill alert observed end-to-end") in
 `.agent/tasks/TASK-441-contract-hardening-tune-up.md` and archive the task if
 legs 6/8 are also done.
+
+## Drill record — 2026-08-13 (first run)
+
+- **Drill B: PASS.** `finish_tripwire_root_clean` WARN fired 10ms after
+  GH-267's dispatcher Finish (tracker name + execution id in the line).
+  Bonus real catch: the same tripwire had been firing on `startups/pilot`
+  since 08-11 — root cause was a leaked LocalMode q-doc
+  (`q-1784736791.md`, untracked in the box root; removed, backup in box
+  `/tmp`). 9-deep genuine violation streak, reset by the cleanup.
+- **Drill A: FAIL — the dead-man streak alert NEVER fired.** 57 minutes of
+  continuous seam failures on the archived sandbox (12+ notify-started
+  403s, executor.lifecycle label-strip ERRORs, push failures, ~36 infra
+  executions across 12 issues with 3 retries each ≈ $10) produced ZERO
+  `dead_man`/`failure streak` lines and no streak alert. The generic
+  per-task `task_failed` rule DID fire (≈1/failed run → slack-engineering)
+  — per-task alerting works; the seam-death signal does not. This is the
+  exact GH-4687/4692 "wired to nothing" class the drill exists to catch.
+  Defect dispatched: [pilot#4866](https://github.com/qf-studio/pilot/issues/4866)
+  (TASK-477) — root cause: the four dead-man rules are never loaded by the
+  daemon (they exist only in `alerts.defaultRules()`, CLI-only path), the
+  streak is global-not-per-repo, two seams are unwired, and the no-match
+  path is silent. Acceptance box stays UNTICKED until a re-drill passes
+  after #4866 reaches the box.
+- Ops notes: infra-classified failures retry ×3 per issue — close the drill
+  issues IMMEDIATELY after the alert observation window to stop cost bleed
+  (requires unarchive first; mutations are blocked while archived).
+  Auto-merge on the sandbox is live — pre-archive drill PRs can MERGE
+  (three did); keep drill changes no-op-safe.

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-08-13T11:15:00+00:00",
+  "updated": "2026-08-13T13:20:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -1255,14 +1255,14 @@
         "title": "Contract hardening tune-up — seams, dead-man signals, tripwires",
         "status": "completed",
         "concepts": [
+          "theory of mind",
           "testing",
           "skills",
-          "workflow",
           "api",
-          "database",
-          "theory of mind",
           "deployment",
           "knowledge",
+          "database",
+          "workflow",
           "context"
         ]
       },
@@ -1709,6 +1709,17 @@
           "deployment",
           "observability",
           "api",
+          "testing"
+        ]
+      },
+      "TASK-477": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-477-deadman-rules-never-loaded.md",
+        "title": "Dead-man streak alerts can never fire — daemon rule set omits all dead-man rules (kill-drill A find)",
+        "status": "dispatched",
+        "concepts": [
+          "alerts",
+          "observability",
+          "config",
           "testing"
         ]
       }
@@ -6485,7 +6496,8 @@
       "TASK-466",
       "TASK-467",
       "TASK-471",
-      "TASK-476"
+      "TASK-476",
+      "TASK-477"
     ],
     "deployment": [
       "TASK-386",
@@ -6609,7 +6621,8 @@
       "TASK-473",
       "TASK-474",
       "TASK-475",
-      "TASK-476"
+      "TASK-476",
+      "TASK-477"
     ],
     "authentication": [
       "TASK-386",
@@ -6887,7 +6900,8 @@
       "TASK-473",
       "TASK-474",
       "TASK-475",
-      "TASK-476"
+      "TASK-476",
+      "TASK-477"
     ],
     "context": [
       "TASK-386",
@@ -6991,7 +7005,8 @@
       "TASK-473",
       "TASK-474",
       "TASK-475",
-      "TASK-476"
+      "TASK-476",
+      "TASK-477"
     ],
     "markers": [
       "TASK-387",
@@ -7560,9 +7575,9 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-13T11:15:00+00:00",
+  "last_updated": "2026-08-13T13:20:00+00:00",
   "stats": {
-    "total_nodes": 398,
+    "total_nodes": 399,
     "total_edges": 339,
     "memory_count": 219
   }
