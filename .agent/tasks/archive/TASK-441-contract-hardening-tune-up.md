@@ -53,10 +53,13 @@ bypasses the seam; 4 argument-discarding mocks remain (`runner_test.go` ×3,
 
 ## Acceptance Criteria
 
-- [ ] A seam that silently stops working (zero successes while attempts flow, or
+- [x] A seam that silently stops working (zero successes while attempts flow, or
       attempts stop while tasks flow) raises an alert within 1 hour — verified by
-      killing one subsystem in a test and observing the alert. *(code merged; drill
-      pending train — `.agent/sops/operations/task441-kill-drill.md`)*
+      killing one subsystem in a test and observing the alert. *(re-drill PASS
+      2026-08-13 18:36Z on v2.259.2: `label_lifecycle_failure_streak` paged
+      slack-engineering 10 min after archive-403 break; `push_retry_exhausted`
+      seam paged at 18:41Z — `.agent/sops/operations/task441-kill-drill.md`
+      § drill record)*
 - [x] No `*_test.go` mock discards all arguments of a seam method (CI-enforced) —
       `make check-mocks`, PR#4711.
 - [x] Post-task tripwire sweep runs on every terminal `Finish`; violations alert,

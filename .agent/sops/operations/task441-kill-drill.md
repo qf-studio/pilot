@@ -110,3 +110,22 @@ legs 6/8 are also done.
   (requires unarchive first; mutations are blocked while archived).
   Auto-merge on the sandbox is live — pre-archive drill PRs can MERGE
   (three did); keep drill changes no-op-safe.
+
+## Drill record — 2026-08-13 (re-drill, post-#4866 fix)
+
+- **Drill A: PASS.** Box v2.259.2 (PR#4867 live, running-version metric-confirmed).
+  12 issues (#285–296) filed 18:25Z, repo archived 18:26Z. Streak crossed in
+  **10 minutes**: 18:36:11Z `dead-man tracker reached failure threshold`
+  (`component=alerts.deadman`, `tracker=label_lifecycle:qf-studio/pilot-canary-sandbox`,
+  `consecutive_failures=10 threshold=10`) → 18:36:11.873Z
+  `alert fired rule=label_lifecycle_failure_streak severity=critical
+  delivered_to=[slack-engineering]`. **Bonus**: the newly-wired push seam also
+  proved live — 18:41:07Z `tracker=push_retry_exhausted` crossed and
+  `rule=push_retry_exhausted_failure_streak` paged. Per-repo keying confirmed
+  on the wire (tracker name carries the repo). Cleanup 18:44Z: unarchive +
+  all 12 issues closed. TASK-441 acceptance box 1 TICKED; task archived.
+- Amusing find: from ~18:40Z the pre-flight intent judge began REJECTING the
+  drill issues as out-of-scope (`reject_out_of_scope` — it read the honest
+  "this is a drill" body and declined to implement). Honest drill bodies
+  self-limit cost, but a future drill that needs sustained executions should
+  write the body as a plausible trivial task instead.
