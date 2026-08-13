@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/autopilot"
 )
 
 func TestNewServer(t *testing.T) {
@@ -65,6 +67,7 @@ func TestPingEndpoint(t *testing.T) {
 func TestHealthEndpoint(t *testing.T) {
 	config := &Config{Host: "127.0.0.1", Port: 9090}
 	server := NewServer(config)
+	server.SetVersion("v2.259.1-29-g35450fea")
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
@@ -82,6 +85,32 @@ func TestHealthEndpoint(t *testing.T) {
 
 	if response["status"] != "healthy" {
 		t.Errorf("Expected status 'healthy', got '%s'", response["status"])
+	}
+
+	// GH-4864: /health must report the running process's real version, not
+	// a hardcoded placeholder — this is the surface pilot doctor's
+	// running-vs-disk check reads to detect a hot restart.
+	if response["version"] != "v2.259.1-29-g35450fea" {
+		t.Errorf("Expected version 'v2.259.1-29-g35450fea', got '%s'", response["version"])
+	}
+}
+
+func TestHealthEndpoint_VersionUnset(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 9090}
+	server := NewServer(config)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+
+	server.handleHealth(w, req)
+
+	var response map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if response["version"] != "" {
+		t.Errorf("Expected empty version when SetVersion was never called, got '%s'", response["version"])
 	}
 }
 
@@ -396,6 +425,7 @@ func TestRegisterReadinessChecker(t *testing.T) {
 func TestStatusEndpoint(t *testing.T) {
 	config := &Config{Host: "127.0.0.1", Port: 9090}
 	server := NewServer(config)
+	server.SetVersion("v2.259.1-29-g35450fea")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
 	w := httptest.NewRecorder()
@@ -411,12 +441,61 @@ func TestStatusEndpoint(t *testing.T) {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if response["version"] != "0.1.0" {
-		t.Errorf("Expected version '0.1.0', got '%v'", response["version"])
+	// GH-4864: real running version, not the hardcoded "0.1.0" placeholder.
+	if response["version"] != "v2.259.1-29-g35450fea" {
+		t.Errorf("Expected version 'v2.259.1-29-g35450fea', got '%v'", response["version"])
 	}
 	if _, ok := response["adapters"]; ok {
 		t.Error("Expected no 'adapters' key when no AdapterHealthSource is wired")
 	}
+}
+
+// TestSetVersion_PropagatesToMetricsSourceSetBeforeOrAfter verifies GH-4864's
+// pilot_build_info gauge picks up the version/commit regardless of whether
+// SetVersion or SetMetricsSource is called first — production call sites
+// don't guarantee an order (SetMetricsSource is conditional on autopilot
+// controllers existing).
+func TestSetVersion_PropagatesToMetricsSourceSetBeforeOrAfter(t *testing.T) {
+	newMetricsSource := func() *mockMetricsSource {
+		return &mockMetricsSource{
+			snapshot: autopilot.MetricsSnapshot{
+				IssuesProcessed:  make(map[string]int64),
+				APIErrors:        make(map[string]int64),
+				LabelCleanups:    make(map[string]int64),
+				ActivePRsByStage: make(map[autopilot.PRStage]int),
+			},
+		}
+	}
+
+	t.Run("SetVersion before SetMetricsSource", func(t *testing.T) {
+		server := NewServer(&Config{Host: "127.0.0.1", Port: 9090})
+		server.SetVersion("v2.259.1-29-g35450fea")
+		server.SetMetricsSource(newMetricsSource())
+
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		w := httptest.NewRecorder()
+		server.handleMetrics(w, req)
+
+		body := w.Body.String()
+		if !strings.Contains(body, `pilot_build_info{version="v2.259.1-29-g35450fea",commit="35450fea"} 1`) {
+			t.Errorf("expected pilot_build_info with version+commit labels, got body:\n%s", body)
+		}
+	})
+
+	t.Run("SetVersion after SetMetricsSource", func(t *testing.T) {
+		server := NewServer(&Config{Host: "127.0.0.1", Port: 9090})
+		server.SetMetricsSource(newMetricsSource())
+		server.SetVersion("v2.259.1-29-g35450fea")
+
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		w := httptest.NewRecorder()
+		server.handleMetrics(w, req)
+
+		body := w.Body.String()
+		if !strings.Contains(body, `pilot_build_info{version="v2.259.1-29-g35450fea",commit="35450fea"} 1`) {
+			t.Errorf("expected pilot_build_info with version+commit labels, got body:\n%s", body)
+		}
+	})
 }
 
 // mockAdapterHealthSource implements AdapterHealthSource for tests.
@@ -723,6 +802,7 @@ func TestHandleHealthTableDriven(t *testing.T) {
 func TestHandleStatusTableDriven(t *testing.T) {
 	config := &Config{Host: "127.0.0.1", Port: 9090}
 	server := NewServer(config)
+	server.SetVersion("v2.259.1-29-g35450fea")
 
 	tests := []struct {
 		name           string
@@ -761,8 +841,8 @@ func TestHandleStatusTableDriven(t *testing.T) {
 				t.Fatalf("Failed to decode response: %v", err)
 			}
 
-			if response["version"] != "0.1.0" {
-				t.Errorf("Expected version '0.1.0', got '%v'", response["version"])
+			if response["version"] != "v2.259.1-29-g35450fea" {
+				t.Errorf("Expected version 'v2.259.1-29-g35450fea', got '%v'", response["version"])
 			}
 
 			if _, ok := response["running"]; !ok {

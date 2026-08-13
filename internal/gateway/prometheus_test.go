@@ -490,6 +490,67 @@ func TestFormatLabels(t *testing.T) {
 	}
 }
 
+// TestCommitFromVersion covers GH-4864's commit extraction from a
+// git-describe-style version string — the same VERSION computation the
+// Makefile uses to stamp main.version, so there's no separate commit ldflag
+// to read from.
+func TestCommitFromVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		want    string
+	}{
+		{"dev build with commits since tag", "v2.259.1-29-g35450fea", "35450fea"},
+		{"dirty dev build", "v2.259.1-29-g35450fea-dirty", "35450fea-dirty"},
+		{"full 40-char hash", "v2.259.1-1-g" + strings.Repeat("a1b2c3d4", 5), strings.Repeat("a1b2c3d4", 5)},
+		{"clean tag build", "v2.259.1", "unknown"},
+		{"no-ldflags fallback", "1.0.0", "unknown"},
+		{"dev fallback (git describe failed)", "dev", "unknown"},
+		{"empty", "", "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commitFromVersion(tt.version)
+			if got != tt.want {
+				t.Errorf("commitFromVersion(%q) = %q, want %q", tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPrometheusExporter_BuildInfo verifies pilot_build_info is registered
+// and labeled from SetBuildInfo (GH-4864) — the metric that changes across a
+// hot restart (syscall.Exec) with no PID change, unlike ps-based uptime.
+func TestPrometheusExporter_BuildInfo(t *testing.T) {
+	source := &mockMetricsSource{
+		snapshot: autopilot.MetricsSnapshot{
+			IssuesProcessed:  make(map[string]int64),
+			APIErrors:        make(map[string]int64),
+			LabelCleanups:    make(map[string]int64),
+			ActivePRsByStage: make(map[autopilot.PRStage]int),
+		},
+	}
+	exporter := NewPrometheusExporter(source)
+	exporter.SetBuildInfo("v2.259.1-29-g35450fea", "35450fea")
+
+	var buf bytes.Buffer
+	if err := exporter.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus failed: %v", err)
+	}
+	output := buf.String()
+
+	for _, want := range []string{
+		"# HELP pilot_build_info",
+		"# TYPE pilot_build_info gauge",
+		`pilot_build_info{version="v2.259.1-29-g35450fea",commit="35450fea"} 1`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("Output missing expected string: %q\nGot:\n%s", want, output)
+		}
+	}
+}
+
 // TestMetricsEndpointWiring verifies that /metrics returns Prometheus text when
 // SetMetricsSource is called, and the fallback response when it is not.
 func TestMetricsEndpointWiring(t *testing.T) {

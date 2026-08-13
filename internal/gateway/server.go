@@ -108,6 +108,8 @@ type Server struct {
 	decisionRecorder         approval.DecisionRecorder // GH-4748: backs POST /api/v1/approvals/{requestId}/decision
 	chatAPI                  ChatAPI                   // GH-4835: backs the chat routes; nil = routes not registered (adapters.chat.enabled: false)
 	daemonCtx                context.Context           // GH-4835: long-lived ctx stashed by Start(), used to dispatch chat tasks outside the HTTP request lifetime
+	version                  string                    // GH-4864: running process's compiled-in version (main.version); "" until SetVersion is called
+	commit                   string                    // GH-4864: VCS commit parsed from version (see commitFromVersion), derived by SetVersion
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -330,8 +332,25 @@ func (s *Server) SetMetricsSource(source MetricsSource) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prometheusExporter = NewPrometheusExporter(source)
+	s.prometheusExporter.SetBuildInfo(s.version, s.commit)
 	if s.alertsSource != nil {
 		s.prometheusExporter.SetAlertsSource(s.alertsSource)
+	}
+}
+
+// SetVersion records the running process's compiled-in version (GH-4864) so
+// it can be surfaced on /health, /api/v1/status, and the pilot_build_info
+// Prometheus gauge — the only truthful source that a hot restart
+// (syscall.Exec, no PID change) actually took effect, since disk-binary
+// version and ps-based uptime are both blind to it. Safe to call before or
+// after SetMetricsSource.
+func (s *Server) SetVersion(version string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.version = version
+	s.commit = commitFromVersion(version)
+	if s.prometheusExporter != nil {
+		s.prometheusExporter.SetBuildInfo(s.version, s.commit)
 	}
 }
 
@@ -432,8 +451,14 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 // handleHealth returns server health status
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	s.mu.RLock()
+	v := s.version
+	s.mu.RUnlock()
+
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status": "healthy",
+		"status":  "healthy",
+		"version": v,
 	})
 }
 
@@ -553,15 +578,16 @@ func (s *Server) Heartbeat() {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	s.mu.RLock()
+	v := s.version
+	ahSource := s.adapterHealthSource
+	s.mu.RUnlock()
+
 	resp := map[string]interface{}{
-		"version":  "0.1.0",
+		"version":  v,
 		"running":  s.running,
 		"sessions": s.sessions.Count(),
 	}
-
-	s.mu.RLock()
-	ahSource := s.adapterHealthSource
-	s.mu.RUnlock()
 	if ahSource != nil {
 		resp["adapters"] = ahSource.AdapterHealthSnapshot()
 	}

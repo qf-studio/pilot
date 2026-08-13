@@ -1247,6 +1247,12 @@ Examples:
 			p.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
 			logging.WithComponent("start").Info("quality gates enabled for webhook mode")
 
+			// GH-4864: surface the running process's compiled-in version on
+			// /health, /api/v1/status, and the pilot_build_info metric — the
+			// only status surface a hot restart (syscall.Exec, no PID
+			// change) actually shows up on.
+			p.Gateway().SetVersion(version)
+
 			// GH-4314: surface adapter goroutine health on /api/v1/status.
 			p.Gateway().SetAdapterHealthSource(&adapterHealthProviderAdapter{registry: adapterHealthRegistry})
 
@@ -2580,6 +2586,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		// configured (cfg.Auth); empty/default token keeps today's open
 		// behavior (loopback bind is the mitigant) via a nil authConfig.
 		gwServer = gateway.NewServerWithAuth(cfg.Gateway, cfg.GatewayAuthConfig())
+		// GH-4864: see the p.Gateway().SetVersion call above for rationale.
+		gwServer.SetVersion(version)
 		gwServer.SetAdapterHealthSource(&adapterHealthProviderAdapter{registry: adapterHealthRegistry})
 
 		if autopilotController != nil {

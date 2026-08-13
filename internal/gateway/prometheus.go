@@ -3,6 +3,7 @@ package gateway
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -11,6 +12,28 @@ import (
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/logging"
 )
+
+// commitSuffixPattern matches the trailing "-g<hash>[-dirty]" segment that
+// `git describe --tags --always --dirty` appends to the version string when
+// the build isn't exactly on a tag (e.g. "v2.259.1-29-g35450fea", or
+// "v2.259.1-29-g35450fea-dirty"). This is the same VERSION computation the
+// Makefile uses to stamp main.version via -ldflags -X (see Makefile
+// LDFLAGS) — there's no separate commit ldflag, so the commit is recovered
+// from the version string itself.
+var commitSuffixPattern = regexp.MustCompile(`-g([0-9a-f]{7,40})(-dirty)?$`)
+
+// commitFromVersion extracts the short VCS commit hash embedded in a
+// git-describe-style version string (GH-4864). Clean tag builds (e.g.
+// "v2.259.1") and non-git-describe versions (e.g. the "1.0.0" fallback for
+// binaries built without ldflags) carry no embedded commit, so this returns
+// "unknown" rather than guessing.
+func commitFromVersion(version string) string {
+	m := commitSuffixPattern.FindStringSubmatch(version)
+	if m == nil {
+		return "unknown"
+	}
+	return m[1] + m[2]
+}
 
 // goPanicCounter is the concrete PanicCounter wired into the logging package.
 // It accumulates per-component panic counts and is read by WritePrometheus.
@@ -44,6 +67,8 @@ type PrometheusExporter struct {
 	metricsSource MetricsSource
 	alertsSource  AlertMetricsSource
 	panicCtr      *goPanicCounter
+	version       string // GH-4864: running process's compiled-in version, set via SetBuildInfo
+	commit        string // GH-4864: VCS commit parsed from version, set via SetBuildInfo
 }
 
 // MetricsSource provides metrics data for the exporter.
@@ -68,6 +93,13 @@ func NewPrometheusExporter(source MetricsSource) *PrometheusExporter {
 // SetAlertsSource wires an alert metrics source into the exporter.
 func (e *PrometheusExporter) SetAlertsSource(s AlertMetricsSource) {
 	e.alertsSource = s
+}
+
+// SetBuildInfo records the running process's version/commit for the
+// pilot_build_info gauge (GH-4864). Called by Server.SetVersion.
+func (e *PrometheusExporter) SetBuildInfo(version, commit string) {
+	e.version = version
+	e.commit = commit
 }
 
 // WritePrometheus writes metrics in Prometheus text format to the writer.
@@ -263,6 +295,17 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	}
 
 	// --- Gauges ---
+
+	// pilot_build_info (GH-4864): standard build-info idiom — value is
+	// always 1, version/commit ride as labels. Sourced from the running
+	// process's compiled-in version var (SetBuildInfo/Server.SetVersion),
+	// so this changes across a hot restart (syscall.Exec) even though the
+	// PID and disk binary don't — the signal every other status surface
+	// (ps uptime, disk `pilot version`, doctor's pre-fix staleness check)
+	// was blind to.
+	writeHelp(w, "pilot_build_info", "Build information for the running Pilot process (value is always 1; version/commit are labels)")
+	writeType(w, "pilot_build_info", "gauge")
+	writeGaugeLabeled(w, "pilot_build_info", 1, "version", e.version, "commit", e.commit)
 
 	// pilot_queue_depth
 	writeHelp(w, "pilot_queue_depth", "Number of issues waiting in queue")
