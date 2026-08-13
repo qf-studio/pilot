@@ -457,6 +457,71 @@ func checkSelfUpgradeStaleness(get httpGetter, currentVersion string, threshold 
 // constant since it belongs to a different package's public API surface.
 const releasesCheckLimit = 30
 
+// runningHealthResponse mirrors the fields gateway.handleHealth returns —
+// duplicated here rather than imported to avoid pulling the gateway package
+// (and its transitive deps) into internal/health.
+type runningHealthResponse struct {
+	Version string `json:"version"`
+}
+
+// checkRunningVsDiskVersion compares the locally running daemon's actual
+// version (fetched live from its own /health endpoint) against the disk
+// binary's version (currentVersion — the version `pilot doctor` itself was
+// built with, since doctor execs the just-installed disk binary directly).
+//
+// GH-4864: before this check, every doctor/staleness signal read the disk
+// binary or PID-based uptime, both of which are blind to a hot restart
+// (syscall.Exec preserves the PID and doesn't touch the disk binary) — a
+// daemon that hot-restarted successfully, or one where the hot restart
+// silently failed, looked identical to every other surface. This check
+// reaches into the one place that actually reflects what the running
+// process has loaded.
+//
+// Degrades gracefully to StatusOK ("skip") when no daemon is reachable
+// locally (checkSelfUpgradeStaleness's disk-vs-latest comparison above still
+// runs regardless — the two together give the full three-way picture).
+func checkRunningVsDiskVersion(get httpGetter, port int, diskVersion string) ConfigCheck {
+	const checkName = "self-upgrade.running-vs-disk"
+	const skipMessage = "daemon not reachable locally, skipping running-version check"
+
+	if port <= 0 {
+		return ConfigCheck{Name: checkName, Status: StatusOK, Message: skipMessage}
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+	resp, err := get(url)
+	if err != nil {
+		return ConfigCheck{Name: checkName, Status: StatusOK, Message: skipMessage}
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return ConfigCheck{Name: checkName, Status: StatusOK, Message: skipMessage}
+	}
+
+	var payload runningHealthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil || payload.Version == "" {
+		return ConfigCheck{Name: checkName, Status: StatusOK, Message: skipMessage}
+	}
+
+	running := strings.TrimPrefix(payload.Version, "v")
+	disk := strings.TrimPrefix(diskVersion, "v")
+	if running == disk {
+		return ConfigCheck{
+			Name:    checkName,
+			Status:  StatusOK,
+			Message: fmt.Sprintf("running matches disk (%s)", diskVersion),
+		}
+	}
+
+	return ConfigCheck{
+		Name:    checkName,
+		Status:  StatusWarning,
+		Message: fmt.Sprintf("running (%s) != disk (%s) — hot restart pending or failed", payload.Version, diskVersion),
+		Fix:     `Check daemon.log for "upgrade verified complete" — if absent, the hot restart did not take effect`,
+	}
+}
+
 // RunChecks performs all health checks based on config. currentVersion is
 // compared against GitHub releases for the self-upgrade staleness check
 // (GH-3790); pass "" to skip it.
@@ -487,6 +552,15 @@ func RunChecks(cfg *config.Config, currentVersion string) *HealthReport {
 			threshold = cfg.Upgrade.StaleReleaseThreshold
 		}
 		configChecks = append(configChecks, checkSelfUpgradeStaleness(brewTapHTTPGet, currentVersion, threshold))
+
+		// GH-4864: disk-vs-latest is covered above; this adds the missing
+		// running-vs-disk leg so the three values (running, disk, latest)
+		// are all observable from `pilot doctor`.
+		gatewayPort := 0
+		if cfg.Gateway != nil {
+			gatewayPort = cfg.Gateway.Port
+		}
+		configChecks = append(configChecks, checkRunningVsDiskVersion(brewTapHTTPGet, gatewayPort, currentVersion))
 	}
 
 	report := &HealthReport{

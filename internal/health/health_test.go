@@ -1210,6 +1210,122 @@ func TestCheckSelfUpgradeStaleness_BelowThreshold(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// checkRunningVsDiskVersion (GH-4864)
+// ---------------------------------------------------------------------------
+
+func TestCheckRunningVsDiskVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		get        httpGetter
+		port       int
+		disk       string
+		wantStatus Status
+		wantMsg    string
+	}{
+		{
+			name: "running matches disk",
+			get: makeBrewTapGetter([]struct {
+				code int
+				body string
+			}{{200, `{"status":"healthy","version":"v2.259.1-29-g35450fea"}`}}),
+			port:       9091,
+			disk:       "v2.259.1-29-g35450fea",
+			wantStatus: StatusOK,
+			wantMsg:    "running matches disk",
+		},
+		{
+			name: "running differs from disk — hot restart pending or failed",
+			get: makeBrewTapGetter([]struct {
+				code int
+				body string
+			}{{200, `{"status":"healthy","version":"v2.259.0"}`}}),
+			port:       9091,
+			disk:       "v2.259.1-29-g35450fea",
+			wantStatus: StatusWarning,
+			wantMsg:    "hot restart pending or failed",
+		},
+		{
+			name:       "daemon unreachable — graceful skip",
+			get:        func(_ string) (*http.Response, error) { return nil, io.ErrUnexpectedEOF },
+			port:       9091,
+			disk:       "v2.259.1-29-g35450fea",
+			wantStatus: StatusOK,
+			wantMsg:    "skipping running-version check",
+		},
+		{
+			name: "gateway not configured (port 0) — graceful skip",
+			get: func(_ string) (*http.Response, error) {
+				t.Fatal("should not make a network call when port <= 0")
+				return nil, nil
+			},
+			port:       0,
+			disk:       "v2.259.1-29-g35450fea",
+			wantStatus: StatusOK,
+			wantMsg:    "skipping running-version check",
+		},
+		{
+			name: "non-200 from /health — graceful skip",
+			get: makeBrewTapGetter([]struct {
+				code int
+				body string
+			}{{503, `{}`}}),
+			port:       9091,
+			disk:       "v2.259.1-29-g35450fea",
+			wantStatus: StatusOK,
+			wantMsg:    "skipping running-version check",
+		},
+		{
+			name: "unparseable body — graceful skip",
+			get: makeBrewTapGetter([]struct {
+				code int
+				body string
+			}{{200, `not json`}}),
+			port:       9091,
+			disk:       "v2.259.1-29-g35450fea",
+			wantStatus: StatusOK,
+			wantMsg:    "skipping running-version check",
+		},
+		{
+			name: "v-prefix normalized (not a false mismatch)",
+			get: makeBrewTapGetter([]struct {
+				code int
+				body string
+			}{{200, `{"status":"healthy","version":"2.259.1"}`}}),
+			port:       9091,
+			disk:       "v2.259.1",
+			wantStatus: StatusOK,
+			wantMsg:    "running matches disk",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			check := checkRunningVsDiskVersion(tt.get, tt.port, tt.disk)
+			if check.Status != tt.wantStatus {
+				t.Errorf("status = %v, want %v (message: %q)", check.Status, tt.wantStatus, check.Message)
+			}
+			if !strings.Contains(check.Message, tt.wantMsg) {
+				t.Errorf("message = %q, want substring %q", check.Message, tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestCheckRunningVsDiskVersion_MismatchHasFix(t *testing.T) {
+	get := makeBrewTapGetter([]struct {
+		code int
+		body string
+	}{{200, `{"status":"healthy","version":"v2.259.0"}`}})
+	check := checkRunningVsDiskVersion(get, 9091, "v2.259.1-29-g35450fea")
+	if check.Fix == "" {
+		t.Error("expected a Fix hint pointing at daemon.log for a running/disk mismatch")
+	}
+	if !strings.Contains(check.Fix, "upgrade verified complete") {
+		t.Errorf("Fix = %q, want mention of the boot-reconcile log marker", check.Fix)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // checkGitHubTokenLive (GH-3718)
 // ---------------------------------------------------------------------------
 
