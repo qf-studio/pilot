@@ -441,6 +441,25 @@ func (l *ExecutionLifecycle) stripInProgressLabelOnTerminalFailure(execID string
 	defer cancel()
 
 	log := logging.WithComponent("executor.lifecycle")
+
+	// GH-4866: dead-man tracker for this seam — the kill-drill's box found
+	// this exact path producing `failed to strip pilot-in-progress label`
+	// ERRORs for 57 minutes straight with zero dead-man signal, because
+	// nothing here ever recorded into a tracker at all (the "wired to
+	// nothing" shape, same class as GH-4687/GH-4702). RecordAttempt fires
+	// right before the actual ghEditLabels call, not before the skip checks
+	// above — those are legitimate "nothing to strip here" decisions
+	// (non-GitHub adapter, unparseable issue number), not failures. Relayed
+	// via emitTripwireAlertEvent (finish_tripwires.go), the same nil-safe
+	// AlertEventProcessor send the finish-tripwire sweep above already uses.
+	now := time.Now()
+	emitTripwireAlertEvent(l.alertProcessor, AlertEvent{
+		Type:      AlertEventTypeDeadManAttempt,
+		TaskID:    exec.TaskID,
+		Metadata:  map[string]string{"tracker": LabelStripDeadManTrackerName},
+		Timestamp: now,
+	})
+
 	if err := ghEditLabels(ctx, exec.ProjectPath, issueNum, nil, []string{"pilot-in-progress"}); err != nil {
 		// GH-4692 lesson (studio-sdk's "labels removed" log line fired on
 		// labels that were never applied at all): log this failure loudly —
@@ -449,10 +468,23 @@ func (l *ExecutionLifecycle) stripInProgressLabelOnTerminalFailure(execID string
 		// inert marker with no visible signal that anything went wrong.
 		log.Error("failed to strip pilot-in-progress label after terminal execution — issue may stay stuck behind the marker",
 			"execution_id", execID, "task_id", exec.TaskID, "issue", parsed, "status", string(status), "error", err)
+		emitTripwireAlertEvent(l.alertProcessor, AlertEvent{
+			Type:      AlertEventTypeDeadManFailure,
+			TaskID:    exec.TaskID,
+			Error:     err.Error(),
+			Metadata:  map[string]string{"tracker": LabelStripDeadManTrackerName},
+			Timestamp: time.Now(),
+		})
 		return
 	}
 	log.Info("stripped pilot-in-progress label after terminal execution",
 		"execution_id", execID, "task_id", exec.TaskID, "issue", parsed, "status", string(status))
+	emitTripwireAlertEvent(l.alertProcessor, AlertEvent{
+		Type:      AlertEventTypeDeadManSuccess,
+		TaskID:    exec.TaskID,
+		Metadata:  map[string]string{"tracker": LabelStripDeadManTrackerName},
+		Timestamp: time.Now(),
+	})
 }
 
 // Finish terminates execID in one call: Classify followed by Persist.

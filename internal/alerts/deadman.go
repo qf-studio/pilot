@@ -3,9 +3,12 @@ package alerts
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // DefaultDeadManFailureThreshold mirrors judgeFailureStreakAlertThreshold
@@ -63,10 +66,14 @@ const (
 // (memory: poller-labels-removed-log-means-never-applied).
 //
 // A tracker fires its registered AlertType exactly once when its consecutive
-// failure streak reaches threshold (equality, not >=, mirroring
-// fireLoopBreakerAlert/the pre-generalization sdkPreFlightJudge.recordFailure
-// — a dead-open seam pages once, not on every subsequent failure), and
-// resets the streak on the next success.
+// failure streak reaches threshold (>=, gated by a fired-once flag rather
+// than an equality check — GH-4866: a tracker that starts counting mid-streak,
+// e.g. after a process restart or a threshold lowered below an
+// already-elevated streak, would otherwise sail past an exact-match
+// threshold and never fire at all) and resets the streak, and the fired
+// flag, on the next success — a dead-open seam pages once per streak, not on
+// every subsequent failure, and pages again if it dies again after
+// recovering.
 type DeadManTracker struct {
 	engine    *Engine
 	name      string
@@ -79,6 +86,7 @@ type DeadManTracker struct {
 	attempts            uint64
 	successes           uint64
 	consecutiveFailures int
+	fired               bool
 	lastAttemptAt       time.Time
 }
 
@@ -175,9 +183,12 @@ func (t *DeadManTracker) RecordAttempt() {
 	t.mu.Unlock()
 }
 
-// RecordSuccess resets the consecutive-failure streak so failures before and
-// after an intervening success don't compound toward the alert threshold,
-// and increments the success counter exposed by Successes().
+// RecordSuccess resets the consecutive-failure streak (and the fired-once
+// gate — see RecordFailure) so failures before and after an intervening
+// success don't compound toward the alert threshold, and a seam that dies
+// again after recovering pages again instead of staying silenced by its
+// first streak's fired flag. Increments the success counter exposed by
+// Successes().
 func (t *DeadManTracker) RecordSuccess() {
 	if t == nil {
 		return
@@ -185,14 +196,23 @@ func (t *DeadManTracker) RecordSuccess() {
 	t.mu.Lock()
 	t.successes++
 	t.consecutiveFailures = 0
+	t.fired = false
 	t.mu.Unlock()
 }
 
-// RecordFailure increments the consecutive-failure streak and fires exactly
-// one alert when it reaches threshold — an equality check, not >=, so a seam
-// that never recovers pages once instead of on every failure thereafter.
-// extraMetadata is merged into the fired event alongside the tracker's own
-// name/consecutive_failures (e.g. repo, task_id).
+// RecordFailure increments the consecutive-failure streak and, at the
+// threshold crossing, logs an unconditional WARN — greppable (`alerts.deadman`
+// component) whether or not an alerts engine is even wired up, since GH-4866
+// found the daemon can silently run without a single dead-man rule
+// registered at all. The crossing also fires exactly one alert event per
+// streak, gated by a fired-once flag rather than an equality check (see the
+// DeadManTracker doc comment for why) so a seam that never recovers pages
+// once instead of on every failure thereafter, and pages again on the next
+// streak past threshold after an intervening RecordSuccess. Both the WARN
+// log and the alert event share the same shouldFire gate, so the log line is
+// always present when (and only when) an alert would have fired had an
+// engine been wired. extraMetadata is merged into the fired event alongside
+// the tracker's own name/consecutive_failures (e.g. repo, task_id).
 func (t *DeadManTracker) RecordFailure(extraMetadata map[string]string) {
 	if t == nil {
 		return
@@ -200,9 +220,24 @@ func (t *DeadManTracker) RecordFailure(extraMetadata map[string]string) {
 	t.mu.Lock()
 	t.consecutiveFailures++
 	consecutive := t.consecutiveFailures
+	shouldFire := consecutive >= t.threshold && !t.fired
+	if shouldFire {
+		t.fired = true
+	}
 	t.mu.Unlock()
 
-	if consecutive != t.threshold || t.engine == nil {
+	if !shouldFire {
+		return
+	}
+
+	logging.WithComponent("alerts.deadman").Warn("dead-man tracker reached failure threshold",
+		slog.String("tracker", t.name),
+		slog.String("alert_type", string(t.alertType)),
+		slog.Int("consecutive_failures", consecutive),
+		slog.Int("threshold", t.threshold),
+	)
+
+	if t.engine == nil {
 		return
 	}
 
@@ -307,16 +342,31 @@ func (e *Engine) handleDeadManFailure(event Event) {
 // counting happens here).
 func (e *Engine) handleDeadManStreak(ctx context.Context, event Event) {
 	alertType := AlertType(event.Metadata["alert_type"])
+	matched := false
 	for _, rule := range e.config.Rules {
-		if !rule.Enabled || rule.Type != alertType {
+		if rule.Type != alertType {
 			continue
 		}
-		if !e.shouldFire(rule) {
+		matched = true
+		if !rule.Enabled || !e.shouldFire(rule) {
 			continue
 		}
 		message := fmt.Sprintf("Dead-man tracker %q has failed %s consecutive times without a success",
 			event.Metadata["tracker"], event.Metadata["consecutive_failures"])
 		alert := e.createAlert(rule, event, message)
 		e.fireAlert(ctx, rule, alert)
+	}
+	// RecordFailure already logs an unconditional WARN at the threshold
+	// crossing (greppable regardless of rule coverage), so this only needs
+	// to flag the additional, more specific failure mode: the streak
+	// crossed threshold but no configured rule can ever deliver it as a
+	// channel alert — the same class of gap FromConfigAlerts' default-rule
+	// union (GH-4866) closes for a fresh/persisted config, surfaced here as
+	// a runtime backstop for any rule set that still slips through it.
+	if !matched {
+		e.logger.Warn("dead-man streak event has no matching rule — alert dropped silently",
+			slog.String("tracker", event.Metadata["tracker"]),
+			slog.String("alert_type", string(alertType)),
+			slog.String("consecutive_failures", event.Metadata["consecutive_failures"]))
 	}
 }

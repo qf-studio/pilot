@@ -392,9 +392,15 @@ func TestFromConfigAlerts(t *testing.T) {
 		t.Error("slack channel config incorrect")
 	}
 
-	// Verify rules
-	if len(config.Rules) != 2 {
-		t.Errorf("expected 2 rules, got %d", len(config.Rules))
+	// Verify rules: the 2 caller-supplied rules plus every default AlertType
+	// the caller's list didn't already cover (GH-4866's FromConfigAlerts
+	// union — see that function's doc comment). Both caller-supplied Types
+	// here (task_failed, consecutive_failures) already exist in
+	// defaultRules(), so they aren't duplicated — only the remaining default
+	// Types are unioned in.
+	wantRules := len(defaultRules())
+	if len(config.Rules) != wantRules {
+		t.Errorf("expected %d rules (2 supplied + unioned defaults, no duplicates), got %d", wantRules, len(config.Rules))
 	}
 
 	// Find and verify task-failed rule
@@ -433,8 +439,12 @@ func TestFromConfigAlerts_Empty(t *testing.T) {
 	if len(config.Channels) != 0 {
 		t.Errorf("expected 0 channels, got %d", len(config.Channels))
 	}
-	if len(config.Rules) != 0 {
-		t.Errorf("expected 0 rules, got %d", len(config.Rules))
+	// GH-4866: an empty rule list still gets every default AlertType unioned
+	// in (see FromConfigAlerts) — a caller-supplied empty/truncated rule
+	// list must never leave the daemon with zero dead-man/health rules.
+	wantRules := len(defaultRules())
+	if len(config.Rules) != wantRules {
+		t.Errorf("expected %d unioned default rules, got %d", wantRules, len(config.Rules))
 	}
 }
 

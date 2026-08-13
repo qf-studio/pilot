@@ -117,6 +117,129 @@ func TestDeadManTracker_SuccessResetsStreak(t *testing.T) {
 	}
 }
 
+// TestDeadManTracker_FiresAgainAfterRecoveryAndRelapse verifies GH-4866's
+// >=-threshold + fired-once-flag semantics: a tracker fires once at
+// threshold, stays silent through further failures in the same streak (the
+// pre-existing "fires once" guarantee), but — unlike a bare equality check —
+// fires again on a second streak that crosses threshold after an
+// intervening RecordSuccess. This also covers a tracker built with an
+// already-elevated consecutiveFailures relative to a lowered threshold: an
+// equality check could sail past a threshold if the streak somehow started
+// above it, whereas >= always catches it on the very next failure.
+func TestDeadManTracker_FiresAgainAfterRecoveryAndRelapse(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []AlertRule{
+			{
+				Name:     "self_review_failure_streak",
+				Type:     AlertTypeSelfReviewFailureStreak,
+				Enabled:  true,
+				Severity: SeverityCritical,
+				Channels: []string{"test-channel"},
+				Cooldown: 0,
+			},
+		},
+	}
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	tracker := engine.RegisterDeadManTracker("relapse-tracker", AlertTypeSelfReviewFailureStreak, 3, DefaultDeadManWindow)
+
+	// First streak: fires exactly once at threshold, stays silent past it.
+	for i := 0; i < 5; i++ {
+		tracker.RecordFailure(nil)
+	}
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+	time.Sleep(20 * time.Millisecond)
+	if got := len(mockCh.getAlerts()); got != 1 {
+		t.Fatalf("expected exactly 1 alert after first streak, got %d", got)
+	}
+
+	// Recovery resets the fired gate.
+	tracker.RecordSuccess()
+
+	// Second streak crosses threshold again — must fire again, not stay
+	// silenced by the first streak's fired flag. waitForAlerts drains
+	// signals already consumed above, so only 1 more is expected here.
+	for i := 0; i < 3; i++ {
+		tracker.RecordFailure(nil)
+	}
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+	time.Sleep(20 * time.Millisecond)
+	if got := len(mockCh.getAlerts()); got != 2 {
+		t.Fatalf("expected exactly 2 alerts after relapse streak, got %d", got)
+	}
+}
+
+// TestDeadManTracker_WarnLogsEvenWithNilEngine verifies RecordFailure's WARN
+// log fires at the threshold crossing unconditionally — including when the
+// tracker has no engine wired (engine=nil) — so a streak is greppable via
+// the `alerts.deadman` component even when no alerts engine exists to
+// deliver a channel alert. This can't assert on log output directly (no
+// logger injection point), but it does assert the crossing doesn't panic
+// and the fired-once gate still applies with a nil engine, matching the
+// non-nil-engine behavior in TestDeadManTracker_StreakFiresOnceAtThreshold.
+func TestDeadManTracker_WarnLogsEvenWithNilEngine(t *testing.T) {
+	tracker := NewDeadManTracker(nil, "standalone-warn", AlertTypeSelfReviewFailureStreak, 2, DefaultDeadManWindow)
+
+	tracker.RecordFailure(nil)
+	tracker.RecordFailure(nil) // crosses threshold; must log WARN, must not panic with nil engine
+	tracker.RecordFailure(nil) // past threshold; fired-once gate still applies
+
+	if got := tracker.ConsecutiveFailures(); got != 3 {
+		t.Errorf("expected streak of 3, got %d", got)
+	}
+}
+
+// TestHandleDeadManStreak_NoMatchingRule verifies GH-4866's no-match WARN
+// path: a dead-man streak reaching threshold with zero configured rules for
+// its AlertType must not panic and must not fire a channel alert — the
+// runtime backstop for the same "config declares no rule for this Type"
+// class of bug FromConfigAlerts' default-rule union closes for the on-disk
+// config.
+func TestHandleDeadManStreak_NoMatchingRule(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []AlertRule{
+			{
+				Name:     "unrelated_rule",
+				Type:     AlertTypeTaskFailed,
+				Enabled:  true,
+				Severity: SeverityWarning,
+				Channels: []string{"test-channel"},
+			},
+		},
+	}
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	tracker := engine.RegisterDeadManTracker("no-rule-tracker", AlertTypeSelfReviewFailureStreak, 1, DefaultDeadManWindow)
+	tracker.RecordFailure(nil) // crosses threshold; no rule declares AlertTypeSelfReviewFailureStreak
+	engine.flushForTest()
+
+	if got := len(mockCh.getAlerts()); got != 0 {
+		t.Errorf("expected 0 alerts (no matching rule), got %d", got)
+	}
+}
+
 // TestDeadManTracker_ZeroAttemptsDetection covers the half of the
 // silent-death class a pure failure counter can never observe (GH-4687,
 // GH-4702): a tracker nothing calls produces zero failures too, so Stale

@@ -832,7 +832,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		// zero attempts already are (Stale) instead of hiding behind an
 		// error-only counter.
 		labelTracker := alertsEngine.RegisterDeadManTracker(
-			labelLifecycleDeadManTrackerName,
+			labelLifecycleDeadManTrackerName(repoOwner+"/"+repoName),
 			alerts.AlertTypeLabelLifecycleFailureStreak,
 			alerts.DefaultDeadManFailureThreshold,
 			alerts.DefaultDeadManWindow,
@@ -935,11 +935,29 @@ func fetchGithubIssueForSDKTask(ctx context.Context, client *githubSDK.Client, o
 	return issue
 }
 
-// labelLifecycleDeadManTrackerName is the alerts.DeadManTracker registration
-// name (TASK-441 L2, GH-4709) for the notifyTaskStartedSDK call site above —
-// global (not per-repo) since the GH-4687 incident it guards was the whole
-// label-lifecycle path going silent, not a single repo's.
-const labelLifecycleDeadManTrackerName = "label_lifecycle"
+// labelLifecycleDeadManTrackerPrefix is the alerts.DeadManTracker
+// registration name prefix (TASK-441 L2, GH-4709) for the
+// notifyTaskStartedSDK call site above. GH-4866: per-repo, not global — a
+// global shared counter let one repo's real, sustained label-lifecycle
+// failures get diluted by every other (healthy) repo's RecordSuccess calls
+// on the same tracker, so a single broken repo's streak could take far
+// longer to reach threshold (or never reach it at all, on a large
+// multi-repo fleet) than the DefaultDeadManFailureThreshold consecutive
+// failures the tracker is supposed to guarantee. Mirrors
+// sdkPreFlightJudge's per-repo "intent_judge:"+repoFullName keying
+// (poller_github.go) for the same reason.
+const labelLifecycleDeadManTrackerPrefix = "label_lifecycle:"
+
+// labelLifecycleDeadManTrackerName returns the per-repo tracker name for
+// repoFullName ("owner/repo"). Registered once per repo poller at startup
+// (startGithubSDKPollerForRepo, poller_github.go — mirroring the self-review
+// tracker registered there) and resolved again here by the same name on
+// every event, relying on RegisterDeadManTracker's memoize-by-name so both
+// call sites share one set of counters per repo instead of the startup
+// registration and the event-time registration racing to create two.
+func labelLifecycleDeadManTrackerName(repoFullName string) string {
+	return labelLifecycleDeadManTrackerPrefix + repoFullName
+}
 
 // notifyTaskStartedSDK applies the pilot-in-progress label and posts the
 // task-started comment via studio-sdk's tested Notifier (GH-4687). Extracted

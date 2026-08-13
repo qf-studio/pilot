@@ -83,7 +83,12 @@ const (
 	// (handleDeadManStreak) rather than a pre-existing dedicated handler.
 	// Label-lifecycle: the post-GH-4692 notifyTaskStartedSDK path has gone
 	// silent for 19 days (GH-4687) with zero errors surfaced. Self-review:
-	// runSelfReview has gone silent for months (GH-4702) the same way.
+	// runSelfReview has gone silent for months (GH-4702) the same way. GH-4866
+	// added a second tracker under this same AlertType — executor.
+	// LabelStripDeadManTrackerName, the removal-side counterpart wired into
+	// stripInProgressLabelOnTerminalFailure (lifecycle.go) — mirroring how
+	// AlertTypeFinishTripwireFailureStreak below already covers four
+	// independently-counted trackers under one rule.
 	AlertTypeLabelLifecycleFailureStreak AlertType = "label_lifecycle_failure_streak"
 	AlertTypeSelfReviewFailureStreak     AlertType = "self_review_failure_streak"
 
@@ -97,7 +102,61 @@ const (
 	// (DeadManTracker instances are per-name); this only selects which rule
 	// fires when any one of them reaches its threshold.
 	AlertTypeFinishTripwireFailureStreak AlertType = "finish_tripwire_failure_streak"
+
+	// AlertTypePushRetryExhaustedFailureStreak (GH-4866): the git-push retry
+	// loop (Runner.executeWithOptions, runner.go) exhausted every retry
+	// attempt N+ consecutive times without a success — committed work left
+	// stranded with no PR. Previously observable only as isolated "Push
+	// failed, retrying" WARN lines with no dead-man coverage at all (the
+	// GH-4866 kill-drill's unwired-seam finding).
+	AlertTypePushRetryExhaustedFailureStreak AlertType = "push_retry_exhausted_failure_streak"
 )
+
+// HandlerEmittedAlertTypes lists every AlertType whose handler
+// (handleDispatchLoopBreaker, handleIntentJudgeFailureStreak,
+// handleDeadManStreak — engine.go/deadman.go) fires without any
+// Condition-based counting of its own: the caller already computed and
+// gated on the exact threshold before emitting the event, so if no enabled
+// rule exists for one of these types by the time the event arrives, the
+// alert is dropped silently no matter what — each of those handlers WARNs
+// on that no-match case (GH-4866), but the WARN only fires after the fact.
+// CheckAlertRuleCoverage (internal/health/subsystems.go) and
+// TestHandlerEmittedAlertTypesHaveCoverage (types_test.go) both key off
+// this list so the doctor coverage check catches the gap before the
+// runtime WARN ever needs to. Adding a new caller-gated handler means
+// adding its AlertType here too.
+var HandlerEmittedAlertTypes = []AlertType{
+	AlertTypeDispatchLoopBreaker,
+	AlertTypeIntentJudgeFailureStreak,
+	AlertTypeLabelLifecycleFailureStreak,
+	AlertTypeSelfReviewFailureStreak,
+	AlertTypeFinishTripwireFailureStreak,
+	AlertTypePushRetryExhaustedFailureStreak,
+}
+
+// CoverageGaps returns the subset of HandlerEmittedAlertTypes that cfg has
+// no enabled rule for. An empty, non-nil cfg (Rules == nil/empty) reports
+// every handler-emitted type as a gap, matching the "engine never delivers
+// any of these alerts" reality of that config. A nil cfg is treated the
+// same way (alerts subsystem entirely absent).
+func CoverageGaps(cfg *AlertConfig) []AlertType {
+	covered := make(map[AlertType]bool)
+	if cfg != nil {
+		for _, r := range cfg.Rules {
+			if r.Enabled {
+				covered[r.Type] = true
+			}
+		}
+	}
+
+	var gaps []AlertType
+	for _, t := range HandlerEmittedAlertTypes {
+		if !covered[t] {
+			gaps = append(gaps, t)
+		}
+	}
+	return gaps
+}
 
 // Alert represents an alert event
 type Alert struct {
@@ -520,6 +579,20 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when a post-task invariant sweep check fails N+ consecutive times without a success",
+		},
+		// Push-retry-exhausted dead-man tracker (GH-4866): same shape as
+		// label_lifecycle_failure_streak/self_review_failure_streak, guarding
+		// a sustained run of exhausted git-push retries (stranded commits,
+		// no PR) — the GH-4866 kill-drill's unwired-seam finding.
+		{
+			Name:        "push_retry_exhausted_failure_streak",
+			Type:        AlertTypePushRetryExhaustedFailureStreak,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when the git-push retry loop exhausts all attempts N+ consecutive times without a success",
 		},
 	}
 }

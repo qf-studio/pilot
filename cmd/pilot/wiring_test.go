@@ -438,6 +438,54 @@ func TestGetAlertsConfig_WithChannelsAndRules(t *testing.T) {
 	}
 }
 
+// TestGetAlertsConfig_LegacyFiveRuleConfig_YieldsFullCoverage is the GH-4866
+// acceptance-criteria table test: even when the input config carries only
+// the legacy 5-rule list (config.defaultAlertRules — task_stuck/task_failed/
+// consecutive_failures/daily_spend/budget_depleted, predating every
+// dead-man/intent-judge/dispatch-loop-breaker rule), the daemon-path config
+// (getAlertsConfig, which now delegates to config.AlertsConfig.
+// ToAlertConfig -> alerts.FromConfigAlerts) must still yield an enabled rule
+// for every AlertType an engine handler can emit — the exact gap the
+// kill-drill found (TASK-441 kill-drill A): the daemon's rule set omitted
+// every dead-man rule, so 57 minutes of continuous seam failures produced
+// zero dead-man output.
+func TestGetAlertsConfig_LegacyFiveRuleConfig_YieldsFullCoverage(t *testing.T) {
+	cfg := &config.Config{
+		Alerts: &config.AlertsConfig{
+			Enabled: true,
+			Rules:   defaultAlertRulesForTest(),
+			Defaults: config.AlertDefaultsConfig{
+				Cooldown:        5 * time.Minute,
+				DefaultSeverity: "warning",
+			},
+		},
+	}
+
+	result := getAlertsConfig(cfg)
+	if result == nil {
+		t.Fatal("expected non-nil AlertConfig")
+	}
+
+	gaps := alerts.CoverageGaps(result)
+	if len(gaps) != 0 {
+		t.Errorf("legacy 5-rule config left these handler-emitted alert types with no enabled rule: %v", gaps)
+	}
+}
+
+// defaultAlertRulesForTest reproduces config.defaultAlertRules()'s legacy
+// 5-rule list (the function itself is unexported) for the coverage table
+// test above — same Types/Enabled values, since only those two fields
+// matter for alerts.CoverageGaps.
+func defaultAlertRulesForTest() []config.AlertRuleConfig {
+	return []config.AlertRuleConfig{
+		{Name: "task_stuck", Type: "task_stuck", Enabled: true},
+		{Name: "task_failed", Type: "task_failed", Enabled: true},
+		{Name: "consecutive_failures", Type: "consecutive_failures", Enabled: true},
+		{Name: "daily_spend", Type: "daily_spend_exceeded", Enabled: false},
+		{Name: "budget_depleted", Type: "budget_depleted", Enabled: false},
+	}
+}
+
 // =============================================================================
 // GH-2134: resolveOwnerRepo tests
 // =============================================================================

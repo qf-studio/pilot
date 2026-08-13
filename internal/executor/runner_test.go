@@ -4202,6 +4202,75 @@ func TestRunner_PRCreate_HasCommits_ProceedsToCreate(t *testing.T) {
 	}
 }
 
+// TestRunner_PushRetryExhausted_RecordsDeadManEvents is GH-4866's seam test
+// for the push-retry-exhaustion dead-man tracker: the kill-drill found this
+// exact path (git push exhausting every gitPushRetryAttempts attempt)
+// producing zero dead-man signal despite repeated occurrences during the
+// drill window. Reuses the same no-remote repo setup as
+// TestRunner_PRCreate_HasCommits_ProceedsToCreate (every push attempt fails
+// identically, exhausting retries) but asserts on the alert-processor relay
+// instead of the returned error string — a real *Runner crossing the
+// executor→alerts seam via emitAlertEvent, not an argument-discarding mock
+// (TASK-441 L1).
+func TestRunner_PushRetryExhausted_RecordsDeadManEvents(t *testing.T) {
+	const branch = "pilot/GH-9997"
+	dir := setupPRGuardRepo(t, branch, true) // one commit on branch, no remote configured
+
+	backend := &mockFixedBackend{
+		result: &BackendResult{Success: true, Output: "implementation complete"},
+	}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+
+	task := &Task{
+		ID:          "GH-9997",
+		Title:       "fix(executor): push-retry-exhaustion dead-man wiring test",
+		Description: "Verify push-retry exhaustion records a dead-man attempt+failure",
+		ProjectPath: dir,
+		Branch:      branch,
+		CreatePR:    true,
+	}
+
+	result, err := runner.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected failure (push has no remote), got success")
+	}
+
+	var attempts, failures, successes int
+	for _, event := range processor.events {
+		if event.Metadata["tracker"] != PushRetryExhaustedDeadManTrackerName {
+			continue
+		}
+		switch event.Type {
+		case AlertEventTypeDeadManAttempt:
+			attempts++
+		case AlertEventTypeDeadManFailure:
+			failures++
+			if event.Error == "" {
+				t.Error("expected DeadManFailure event to carry the underlying push error, got empty Error")
+			}
+		case AlertEventTypeDeadManSuccess:
+			successes++
+		}
+	}
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 DeadManAttempt event (one push operation, not one per internal retry), got %d", attempts)
+	}
+	if failures != 1 {
+		t.Errorf("expected exactly 1 DeadManFailure event, got %d", failures)
+	}
+	if successes != 0 {
+		t.Errorf("expected 0 DeadManSuccess events, got %d", successes)
+	}
+}
+
 // TestParseDeclinedReason verifies the DECLINED:<reason> marker extraction. GH-2777.
 func TestParseDeclinedReason(t *testing.T) {
 	tests := []struct {

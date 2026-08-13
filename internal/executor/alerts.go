@@ -88,3 +88,25 @@ const (
 // startup) — guards the GH-4702 incident class (self-review silently dead
 // for months).
 const SelfReviewDeadManTrackerName = "self_review"
+
+// LabelStripDeadManTrackerName is the alerts.DeadManTracker registration
+// name (GH-4866) for stripInProgressLabelOnTerminalFailure (lifecycle.go) —
+// the removal-side counterpart of the apply-side label_lifecycle tracker
+// (labelLifecycleDeadManTrackerName, cmd/pilot/handlers.go). It routes
+// through the same alerts.AlertTypeLabelLifecycleFailureStreak rule as the
+// apply-side tracker (mirrors how the four finish-tripwire trackers all
+// share one AlertType): both are the same "label lifecycle silently broken"
+// incident class, just counted separately by name. Global rather than
+// per-repo — unlike the apply-side call site, ExecutionLifecycle has no
+// live repo-owner context to key on here (only ProjectPath/TaskID), and the
+// kill-drill gap this closes (GH-4866) was "wired to nothing at all," not
+// dilution across repos.
+const LabelStripDeadManTrackerName = "label_strip"
+
+// PushRetryExhaustedDeadManTrackerName is the alerts.DeadManTracker
+// registration name (GH-4866) for the git-push retry loop in
+// Runner.executeWithOptions (runner.go): a sustained run of pushes that
+// exhaust every gitPushRetryAttempts attempt leaves committed work stranded
+// with no PR, and the kill-drill found this producing zero dead-man signal
+// despite repeated occurrences during the drill window.
+const PushRetryExhaustedDeadManTrackerName = "push_retry_exhausted"
