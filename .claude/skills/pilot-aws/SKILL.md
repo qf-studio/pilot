@@ -163,6 +163,7 @@ every grant minimally; never print policy docs containing secrets.
 | TUI monochrome | TERM captured at daemon start | `~/.tmux.conf` already sets 256color; colors return on next restart — do not bounce for paint |
 | PR stuck "rebase N/3" in panel | awaiting_approval mislabel | ledger: `SELECT stage FROM autopilot_pr_state WHERE pr_number=N` |
 | Box unreachable via SSM | agent/instance down | `aws ec2 describe-instances --instance-ids i-0e0c…` → LOUD escalate to operator; never assume |
+| Board shows new `ver` but multi-day `uptime` right after a train — looks like "installed but never restarted" | NOT a stale process — self-upgrade's restart leg is `syscall.Exec` (PID preserved, so ps etime/`uptime` survives the restart); `ver` reads the DISK binary (mem `hot-restart-preserves-pid-uptime-false-mismatch`; #4864 adds a real running-version surface) | `grep 'upgrade verified complete' ~/.pilot/logs/daemon.log` — the boot-reconcile line's `from=`/`to=` is logged by the NEW image and is proof; failure counterpart is `previous upgrade did NOT take effect`. Do NOT bounce the daemon on uptime evidence alone |
 
 ## Refs
 
