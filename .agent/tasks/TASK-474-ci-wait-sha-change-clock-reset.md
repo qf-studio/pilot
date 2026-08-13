@@ -1,6 +1,6 @@
 # fix(autopilot): reset CI-wait clock when the head SHA changes mid-wait — fourth re-entry vector
 
-**Status**: 🚀 Dispatched 2026-08-12 → [pilot#4859](https://github.com/qf-studio/pilot/issues/4859) (`pilot` + `no-decompose`; from PR#4857 post-merge review D1)
+**Status**: ✅ Merged 2026-08-12 12:37Z → [pilot#4859](https://github.com/qf-studio/pilot/issues/4859) → **PR#4861** — **POST-MERGE REVIEW PENDING.** In tag v2.259.1 (on the box's disk); NOT in the running process until next restart (process started 08-12 11:02Z on v2.259.0-14).
 **Created**: 2026-08-12
 **Assignee**: Pilot
 

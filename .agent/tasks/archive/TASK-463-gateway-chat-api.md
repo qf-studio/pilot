@@ -1,6 +1,6 @@
 # TASK-463: C17 pilot leg — gateway operator chat API (web transport for the comms brain)
 
-**Status**: 🚀 Dispatched 2026-08-11 → [pilot#4835](https://github.com/qf-studio/pilot/issues/4835) (`pilot` + `no-decompose`)
+**Status**: ✅ Merged + REVIEWED 2026-08-11 → [pilot#4835](https://github.com/qf-studio/pilot/issues/4835) → **PR#4838** (verdict posted in review wave 1; the wiring hole + latestSeq follow-ups it exposed shipped same day as #4843 → PR#4848, APPROVED). C17 shipped end-to-end with console#115 → console PR#117.
 **Created**: 2026-08-11
 **Assignee**: Pilot
 

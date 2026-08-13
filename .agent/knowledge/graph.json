@@ -1547,13 +1547,16 @@
         ]
       },
       "TASK-463": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-463-gateway-chat-api.md",
-        "title": "C17 pilot leg \u2014 gateway operator chat API (web transport for comms brain)",
-        "status": "dispatched",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-463-gateway-chat-api.md",
+        "title": "C17 pilot leg \u2014 gateway operator chat API (web transport for the comms brain)",
+        "status": "completed",
         "concepts": [
-          "api",
-          "gateway",
-          "adapters"
+          "deployment",
+          "testing",
+          "authentication",
+          "markers",
+          "context",
+          "api"
         ]
       },
       "TASK-464": {
@@ -1569,7 +1572,7 @@
         ]
       },
       "TASK-465": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-465-console-dashboard-endpoint.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-465-console-dashboard-endpoint.md",
         "title": "C16 \u2014 console GET /api/v1/dashboard aggregation for the v4 register",
         "status": "completed",
         "concepts": [
@@ -1589,9 +1592,9 @@
         ]
       },
       "TASK-467": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-467-durable-recovery-owner-designation.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-467-durable-recovery-owner-designation.md",
         "title": "Task 467 Durable Recovery Owner Designation",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "testing",
           "database",
@@ -1603,9 +1606,9 @@
         ]
       },
       "TASK-468": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-468-recovery-owner-death-handling.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-468-recovery-owner-death-handling.md",
         "title": "Task 468 Recovery Owner Death Handling",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "deployment",
           "context",
@@ -1616,7 +1619,7 @@
         ]
       },
       "TASK-469": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-469-chat-api-gateway-wiring-latestseq.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-469-chat-api-gateway-wiring-latestseq.md",
         "title": "Task 469 Chat Api Gateway Wiring Latestseq",
         "status": "completed",
         "concepts": [
@@ -1628,7 +1631,7 @@
         ]
       },
       "TASK-470": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-470-excerpt-bundle-budget-reconcile.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-470-excerpt-bundle-budget-reconcile.md",
         "title": "Task 470 Excerpt Bundle Budget Reconcile",
         "status": "completed",
         "concepts": [
@@ -1651,7 +1654,7 @@
         ]
       },
       "TASK-472": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-472-ci-wait-reentry-clock-reset.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-472-ci-wait-reentry-clock-reset.md",
         "title": "Task 472 Ci Wait Reentry Clock Reset",
         "status": "completed",
         "concepts": [
@@ -1662,7 +1665,7 @@
         ]
       },
       "TASK-473": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-473-review-claim-guard-owner-health.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-473-review-claim-guard-owner-health.md",
         "title": "Task 473 Review Claim Guard Owner Health",
         "status": "completed",
         "concepts": [
@@ -1677,21 +1680,23 @@
       "TASK-474": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-474-ci-wait-sha-change-clock-reset.md",
         "title": "Task 474 Ci Wait Sha Change Clock Reset",
-        "status": "dispatched",
+        "status": "in_progress",
         "concepts": [
           "deployment",
+          "testing",
           "context",
-          "testing"
+          "api"
         ]
       },
       "TASK-475": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-475-review-guard-test-dedup-reuse-ci-claim-release.md",
         "title": "Task 475 Review Guard Test Dedup Reuse Ci Claim Release",
-        "status": "dispatched",
+        "status": "in_progress",
         "concepts": [
           "workflow",
           "frontend",
           "testing",
+          "api",
           "deployment",
           "context"
         ]
@@ -6847,7 +6852,9 @@
       "TASK-469",
       "TASK-468",
       "TASK-472",
-      "TASK-473"
+      "TASK-473",
+      "TASK-474",
+      "TASK-475"
     ],
     "context": [
       "TASK-386",
@@ -7518,7 +7525,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-12T12:16:33.481228+00:00",
+  "last_updated": "2026-08-13T09:45:00+00:00",
   "stats": {
     "total_nodes": 395,
     "total_edges": 338,

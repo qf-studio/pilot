@@ -1,6 +1,6 @@
 # fix(autopilot): seeded-claim test for the review guard; dedup reuse-don't-replace for clarification owners; CI-path claim release
 
-**Status**: 🚀 Dispatched 2026-08-12 → [pilot#4860](https://github.com/qf-studio/pilot/issues/4860) (`pilot` + `no-decompose`; from PR#4858 post-merge review D1/D2/N1)
+**Status**: ✅ Merged 2026-08-12 12:55Z → [pilot#4860](https://github.com/qf-studio/pilot/issues/4860) → **PR#4862** — **POST-MERGE REVIEW PENDING.** In tag v2.259.1 (on the box's disk); NOT in the running process until next restart (process started 08-12 11:02Z on v2.259.0-14).
 **Created**: 2026-08-12
 **Assignee**: Pilot
 
