@@ -722,16 +722,23 @@ func (e *Engine) handleLaneStarvation(ctx context.Context, event Event) {
 // gated on the exact threshold before emitting this event, so — like
 // handleReleaseMissing — no Condition-based counting happens here.
 func (e *Engine) handleDispatchLoopBreaker(ctx context.Context, event Event) {
+	matched := false
 	for _, rule := range e.config.Rules {
-		if !rule.Enabled {
+		if rule.Type != AlertTypeDispatchLoopBreaker {
 			continue
 		}
-		if rule.Type == AlertTypeDispatchLoopBreaker && e.shouldFire(rule) {
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
 			message := fmt.Sprintf("Task %s has been dispatched-and-rejected %s consecutive times without completing — stopping until operator action or backoff expiry",
 				event.TaskID, event.Metadata["consecutive_drops"])
 			alert := e.createAlert(rule, event, message)
 			e.fireAlert(ctx, rule, alert)
 		}
+	}
+	if !matched {
+		e.logger.Warn("dispatch loop breaker threshold event has no matching rule — alert dropped silently",
+			slog.String("task_id", event.TaskID),
+			slog.String("consecutive_drops", event.Metadata["consecutive_drops"]))
 	}
 }
 
@@ -742,16 +749,23 @@ func (e *Engine) handleDispatchLoopBreaker(ctx context.Context, event Event) {
 // threshold before emitting this event — mirroring handleDispatchLoopBreaker
 // — so no Condition-based counting happens here.
 func (e *Engine) handleIntentJudgeFailureStreak(ctx context.Context, event Event) {
+	matched := false
 	for _, rule := range e.config.Rules {
-		if !rule.Enabled {
+		if rule.Type != AlertTypeIntentJudgeFailureStreak {
 			continue
 		}
-		if rule.Type == AlertTypeIntentJudgeFailureStreak && e.shouldFire(rule) {
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
 			message := fmt.Sprintf("Pre-flight intent judge for %s has failed open %s consecutive times — judge is not producing verdicts",
 				event.Metadata["repo"], event.Metadata["consecutive_failures"])
 			alert := e.createAlert(rule, event, message)
 			e.fireAlert(ctx, rule, alert)
 		}
+	}
+	if !matched {
+		e.logger.Warn("intent judge failure streak event has no matching rule — alert dropped silently",
+			slog.String("repo", event.Metadata["repo"]),
+			slog.String("consecutive_failures", event.Metadata["consecutive_failures"]))
 	}
 }
 

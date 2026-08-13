@@ -175,60 +175,13 @@ func wireProjectAccessChecker(runner *executor.Runner, cfg *config.Config) func(
 	return func() { _ = db.Close() }
 }
 
-// getAlertsConfig extracts alerts configuration from the main config
+// getAlertsConfig extracts alerts configuration from the main config.
+// GH-4866: delegates to config.AlertsConfig.ToAlertConfig so this
+// conversion has exactly one implementation, shared with internal/health's
+// doctor rule-coverage check (which can't reach this function directly —
+// cmd/pilot imports internal/health, not the reverse).
 func getAlertsConfig(cfg *config.Config) *alerts.AlertConfig {
-	if cfg.Alerts == nil {
-		return nil
-	}
-
-	alertsCfg := cfg.Alerts
-
-	// Convert to alerts package types (channel configs are shared types, passed directly)
-	channels := make([]alerts.ChannelConfigInput, 0, len(alertsCfg.Channels))
-	for _, ch := range alertsCfg.Channels {
-		channels = append(channels, alerts.ChannelConfigInput{
-			Name:       ch.Name,
-			Type:       ch.Type,
-			Enabled:    ch.Enabled,
-			Severities: ch.Severities,
-			Slack:      ch.Slack,     // Same type, direct pass-through
-			Telegram:   ch.Telegram,  // Same type, direct pass-through
-			Email:      ch.Email,     // Same type, direct pass-through
-			Webhook:    ch.Webhook,   // Same type, direct pass-through
-			PagerDuty:  ch.PagerDuty, // Same type, direct pass-through
-		})
-	}
-
-	rules := make([]alerts.RuleConfigInput, 0, len(alertsCfg.Rules))
-	for _, r := range alertsCfg.Rules {
-		rules = append(rules, alerts.RuleConfigInput{
-			Name:        r.Name,
-			Type:        r.Type,
-			Enabled:     r.Enabled,
-			Severity:    r.Severity,
-			Channels:    r.Channels,
-			Cooldown:    r.Cooldown,
-			Description: r.Description,
-			Condition: alerts.ConditionConfigInput{
-				ProgressUnchangedFor: r.Condition.ProgressUnchangedFor,
-				ConsecutiveFailures:  r.Condition.ConsecutiveFailures,
-				DailySpendThreshold:  r.Condition.DailySpendThreshold,
-				BudgetLimit:          r.Condition.BudgetLimit,
-				UsageSpikePercent:    r.Condition.UsageSpikePercent,
-				Pattern:              r.Condition.Pattern,
-				FilePattern:          r.Condition.FilePattern,
-				Paths:                r.Condition.Paths,
-			},
-		})
-	}
-
-	defaults := alerts.DefaultsConfigInput{
-		Cooldown:           alertsCfg.Defaults.Cooldown,
-		DefaultSeverity:    alertsCfg.Defaults.DefaultSeverity,
-		SuppressDuplicates: alertsCfg.Defaults.SuppressDuplicates,
-	}
-
-	return alerts.FromConfigAlerts(alertsCfg.Enabled, channels, rules, defaults)
+	return cfg.Alerts.ToAlertConfig()
 }
 
 // qualityCheckerWrapper adapts quality.Executor to executor.QualityChecker interface

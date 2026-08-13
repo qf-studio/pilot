@@ -1,6 +1,7 @@
 package health
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
@@ -65,19 +66,28 @@ func TestCheckAlertEngineStarted(t *testing.T) {
 	}
 }
 
-func TestCheckAlertProcessorWiredOnRunner_AlwaysFalse(t *testing.T) {
-	// GH-3839: the poller's alertProcessor (this issue's B4) is a different
-	// wire than the runner's task-lifecycle alertProcessor — cmd/pilot's
-	// polling-mode start path never calls Runner.SetAlertProcessor, so this
-	// check must report false regardless of how alerts are configured.
-	cfg := &config.Config{
-		Alerts: &config.AlertsConfig{
-			Enabled:  true,
-			Channels: []config.AlertChannelConfig{{Name: "ops", Type: "slack", Enabled: true}},
-		},
-	}
+func TestCheckAlertProcessorWiredOnRunner(t *testing.T) {
+	// GH-4866: GH-4716 fixed the underlying gap (cmd/pilot/main.go:3058 now
+	// calls runner.SetAlertProcessor right after alertsEngine.Start succeeds),
+	// but this check kept hardcoding false — a permanently-red doctor line.
+	// Engine.Start (engine.go) never errors on zero channels — it only
+	// no-ops when config.Enabled is false — so main.go's SetAlertProcessor
+	// call is gated on alerts.enabled alone, not on channels being
+	// configured too (that's "alert engine started"'s concern, a distinct
+	// question from whether the processor gets wired).
+	cfg := &config.Config{}
 	if wired, reason := checkAlertProcessorWiredOnRunner(cfg); wired {
-		t.Errorf("wired=true, want false (reason=%q)", reason)
+		t.Errorf("nil alerts config: wired=true, want false (reason=%q)", reason)
+	}
+
+	cfg.Alerts = &config.AlertsConfig{Enabled: false}
+	if wired, reason := checkAlertProcessorWiredOnRunner(cfg); wired {
+		t.Errorf("alerts.enabled=false: wired=true, want false (reason=%q)", reason)
+	}
+
+	cfg.Alerts.Enabled = true
+	if wired, reason := checkAlertProcessorWiredOnRunner(cfg); !wired {
+		t.Errorf("alerts.enabled=true: wired=false, want true (reason=%q)", reason)
 	}
 }
 
@@ -201,6 +211,55 @@ func TestCheckIntentClassifier(t *testing.T) {
 	}
 	if !wired && reason == "" {
 		t.Error("wired=false but empty reason")
+	}
+}
+
+// TestCheckAlertRuleCoverage covers the GH-4866 doctor gap: a persisted
+// alerts.rules: list that predates the dead-man/intent-judge/dispatch-
+// loop-breaker AlertTypes (the "legacy 5-rule" config.defaultAlertRules
+// list) used to mean every one of those alerts was silently unreachable —
+// the kill-drill's central finding. config.AlertsConfig.ToAlertConfig
+// unions in alerts.defaultRules() for any missing Type, so this check
+// should report wired=true through that path; this test also proves the
+// check actually looks at rule coverage (not just cfg.Alerts.Enabled) by
+// deliberately disabling the one rule GH-4866 cares about most and
+// confirming it's named in the reason string.
+func TestCheckAlertRuleCoverage(t *testing.T) {
+	cfg := &config.Config{}
+	if wired, reason := checkAlertRuleCoverage(cfg); wired {
+		t.Errorf("nil alerts config: wired=true, want false (no rules exist at all — nothing can fire) (reason=%q)", reason)
+	}
+
+	// Legacy 5-rule list, same as config.defaultAlertRules(): predates every
+	// dead-man/intent-judge/dispatch-loop-breaker rule.
+	cfg.Alerts = &config.AlertsConfig{
+		Enabled: true,
+		Rules: []config.AlertRuleConfig{
+			{Name: "task_stuck", Type: "task_stuck", Enabled: true},
+			{Name: "task_failed", Type: "task_failed", Enabled: true},
+			{Name: "consecutive_failures", Type: "consecutive_failures", Enabled: true},
+			{Name: "daily_spend", Type: "daily_spend_exceeded", Enabled: false},
+			{Name: "budget_depleted", Type: "budget_depleted", Enabled: false},
+		},
+	}
+	wired, reason := checkAlertRuleCoverage(cfg)
+	if !wired {
+		t.Errorf("legacy 5-rule config: wired=false, want true (ToAlertConfig's union should still cover every handler-emitted type) (reason=%q)", reason)
+	}
+
+	// Now explicitly disable the label_lifecycle rule the union added —
+	// coverage must report the gap.
+	cfg.Alerts.Rules = append(cfg.Alerts.Rules, config.AlertRuleConfig{
+		Name:    "label_lifecycle_failure_streak",
+		Type:    "label_lifecycle_failure_streak",
+		Enabled: false,
+	})
+	wired, reason = checkAlertRuleCoverage(cfg)
+	if wired {
+		t.Errorf("label_lifecycle_failure_streak explicitly disabled: wired=true, want false (reason=%q)", reason)
+	}
+	if !strings.Contains(reason, "label_lifecycle_failure_streak") {
+		t.Errorf("reason %q does not name the missing rule label_lifecycle_failure_streak", reason)
 	}
 }
 

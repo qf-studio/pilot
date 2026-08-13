@@ -29,6 +29,32 @@ func FromConfigAlerts(enabled bool, channels []ChannelConfigInput, rules []RuleC
 		alertCfg.Rules = append(alertCfg.Rules, convertRule(r))
 	}
 
+	// GH-4866 (TASK-441 kill-drill A): union in any default rule Type absent
+	// from the caller's list. The daemon path's config-sourced rules
+	// (internal/config/config.go's defaultAlertRules, or a persisted
+	// alerts.rules: list that predates a Type added since) can omit Types
+	// added after that list was authored — dead-man streaks
+	// (label_lifecycle/self_review/finish_tripwire), the intent-judge
+	// streak, and the GitHub side-effect audit all exist only in
+	// defaultRules(), whose sole caller used to be the one-shot `--alerts`
+	// CLI (DefaultConfig()). There is no migration path for a persisted
+	// config, so config.Load's "replace defaults wholesale with any
+	// persisted list" behavior would otherwise silently drop these Types
+	// forever. Every default AlertType is therefore load-bearing here: this
+	// is the single point both production callers (cmd/pilot/adapters.go's
+	// getAlertsConfig and internal/pilot/pilot.go's initAlerts) go through,
+	// so a rule the caller's list already covers (by Type) is left
+	// untouched — only a genuinely missing Type gets the default appended.
+	seenTypes := make(map[AlertType]bool, len(alertCfg.Rules))
+	for _, r := range alertCfg.Rules {
+		seenTypes[r.Type] = true
+	}
+	for _, defaultRule := range defaultRules() {
+		if !seenTypes[defaultRule.Type] {
+			alertCfg.Rules = append(alertCfg.Rules, defaultRule)
+		}
+	}
+
 	return alertCfg
 }
 

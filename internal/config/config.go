@@ -454,6 +454,68 @@ type AlertDefaultsConfig struct {
 	SuppressDuplicates bool          `yaml:"suppress_duplicates"`
 }
 
+// ToAlertConfig converts the YAML-facing AlertsConfig into the alerts
+// package's runtime AlertConfig, routing through alerts.FromConfigAlerts so
+// the union-with-defaultRules() logic (GH-4866) always applies here too.
+// This is the single conversion cmd/pilot's daemon start path
+// (getAlertsConfig) and internal/health's doctor coverage check both need —
+// internal/health cannot import cmd/pilot (reverse import direction), and
+// internal/alerts cannot import internal/config (config already imports
+// alerts for the channel-config types above), so this method is the only
+// place both callers can reach without a cycle. Returns nil if a is nil,
+// mirroring the pre-existing nil-config handling in getAlertsConfig.
+func (a *AlertsConfig) ToAlertConfig() *alerts.AlertConfig {
+	if a == nil {
+		return nil
+	}
+
+	channels := make([]alerts.ChannelConfigInput, 0, len(a.Channels))
+	for _, ch := range a.Channels {
+		channels = append(channels, alerts.ChannelConfigInput{
+			Name:       ch.Name,
+			Type:       ch.Type,
+			Enabled:    ch.Enabled,
+			Severities: ch.Severities,
+			Slack:      ch.Slack,
+			Telegram:   ch.Telegram,
+			Email:      ch.Email,
+			Webhook:    ch.Webhook,
+			PagerDuty:  ch.PagerDuty,
+		})
+	}
+
+	rules := make([]alerts.RuleConfigInput, 0, len(a.Rules))
+	for _, r := range a.Rules {
+		rules = append(rules, alerts.RuleConfigInput{
+			Name:        r.Name,
+			Type:        r.Type,
+			Enabled:     r.Enabled,
+			Severity:    r.Severity,
+			Channels:    r.Channels,
+			Cooldown:    r.Cooldown,
+			Description: r.Description,
+			Condition: alerts.ConditionConfigInput{
+				ProgressUnchangedFor: r.Condition.ProgressUnchangedFor,
+				ConsecutiveFailures:  r.Condition.ConsecutiveFailures,
+				DailySpendThreshold:  r.Condition.DailySpendThreshold,
+				BudgetLimit:          r.Condition.BudgetLimit,
+				UsageSpikePercent:    r.Condition.UsageSpikePercent,
+				Pattern:              r.Condition.Pattern,
+				FilePattern:          r.Condition.FilePattern,
+				Paths:                r.Condition.Paths,
+			},
+		})
+	}
+
+	defaults := alerts.DefaultsConfigInput{
+		Cooldown:           a.Defaults.Cooldown,
+		DefaultSeverity:    a.Defaults.DefaultSeverity,
+		SuppressDuplicates: a.Defaults.SuppressDuplicates,
+	}
+
+	return alerts.FromConfigAlerts(a.Enabled, channels, rules, defaults)
+}
+
 // DefaultConfig returns a new Config instance with sensible default values.
 // The gateway binds to localhost:9090, recording is enabled, and common
 // alert rules are pre-configured but disabled.
@@ -539,7 +601,28 @@ func DefaultConfig() *Config {
 	}
 }
 
-// defaultAlertRules returns the default alert rules
+// defaultAlertRules returns the default alert rules for a fresh config.
+// This list is intentionally NOT fully delegated to alerts.DefaultConfig()
+// (GH-4866 considered it): "service_unhealthy" exists only here (no
+// alerts.defaultRules() entry), and several autopilot-health rules there
+// (failed_queue_high, api_error_rate_high, pr_stuck_waiting_ci) key off
+// RuleCondition fields (FailedQueueThreshold, APIErrorRatePerMin,
+// PRStuckTimeout) that AlertConditionConfig below has no field for and
+// whose handlers (engine.go's handleAutopilotMetrics) have no zero-value
+// fallback — round-tripping those through this narrower struct would
+// silently zero the threshold and permanently disable the rule. This list
+// is deliberately kept small and self-contained instead.
+//
+// The actual GH-4866 fix (the daemon rule set omitting every dead-man
+// rule) lives one layer down: alerts.FromConfigAlerts unions in any
+// alerts.defaultRules() Type absent from the caller's list — including
+// every type this list doesn't carry (the four dead-man streaks, the
+// intent-judge/lane-starvation/dispatch-loop-breaker/deadlock/escalation/
+// release-monitoring rules, etc.) — using the RICH alerts.AlertRule value
+// directly (no truncation), so those rules' extra Condition fields survive
+// intact regardless of what's authored here. This function only needs to
+// keep covering the handful of types (documented in the original list)
+// that predate or fall outside that union's default set.
 func defaultAlertRules() []AlertRuleConfig {
 	return []AlertRuleConfig{
 		{

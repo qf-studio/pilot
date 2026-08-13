@@ -77,6 +77,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeSelfReviewFailureStreak:     {"self_review_failure_streak", true},
 		// Finish tripwire sweep failure streak (TASK-441 L5, GH-4716)
 		AlertTypeFinishTripwireFailureStreak: {"finish_tripwire_failure_streak", true},
+		// Push-retry-exhausted dead-man tracker (GH-4866)
+		AlertTypePushRetryExhaustedFailureStreak: {"push_retry_exhausted_failure_streak", true},
 	}
 
 	if len(rules) != len(expectedRules) {

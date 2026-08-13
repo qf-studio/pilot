@@ -874,3 +874,123 @@ func TestExecutionLifecycle_Finish_Completed_DoesNotStripInProgressLabel(t *test
 		t.Error("expected no gh CLI invocation for a completed execution")
 	}
 }
+
+// setupFailingFakeGHForLifecycleTest mirrors setupFakeGHForLifecycleTest but
+// the fake `gh` always exits non-zero, simulating the strip call itself
+// failing (e.g. a revoked token or 403'd repo — the GH-4866 kill-drill's
+// sandbox-repo-archived scenario).
+func setupFailingFakeGHForLifecycleTest(t *testing.T) {
+	t.Helper()
+	fakeBin := t.TempDir()
+	script := filepath.Join(fakeBin, "gh")
+	content := "#!/bin/sh\necho 'gh: 403 Forbidden' >&2\nexit 1\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+}
+
+// TestExecutionLifecycle_Finish_FailedGitHubTask_RecordsLabelStripDeadManEvents
+// is GH-4866's seam test for the label-strip dead-man tracker: the
+// kill-drill found stripInProgressLabelOnTerminalFailure logging `failed to
+// strip pilot-in-progress label` ERRORs for 57 minutes straight with zero
+// dead-man signal, because nothing here ever recorded into a tracker at all
+// (the same "wired to nothing" shape already fixed for self-review/
+// label-lifecycle). Exercises the real seam — a real *ExecutionLifecycle
+// crossing into a real fakeAlertProcessor via SetAlertProcessor, not an
+// argument-discarding mock (TASK-441 L1) — for both the failure and success
+// outcomes of the strip call itself.
+func TestExecutionLifecycle_Finish_FailedGitHubTask_RecordsLabelStripDeadManEvents(t *testing.T) {
+	t.Run("strip call fails: records attempt+failure", func(t *testing.T) {
+		setupFailingFakeGHForLifecycleTest(t)
+
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4866-STRIP-FAIL", ProjectPath: t.TempDir(), SourceAdapter: "github", SourceIssueID: "4866"}
+		lifecycle := NewExecutionLifecycle(store)
+		processor := &fakeAlertProcessor{}
+		lifecycle.SetAlertProcessor(processor)
+		execID, err := lifecycle.Begin(task, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("Begin failed: %v", err)
+		}
+
+		result := &ExecutionResult{TaskID: task.ID, Success: false, Error: "boom"}
+		if _, err := lifecycle.Finish(execID, result, errors.New("boom"), time.Second); err != nil {
+			t.Fatalf("Finish failed: %v", err)
+		}
+
+		var attempts, failures, successes int
+		for _, event := range processor.events {
+			if event.Metadata["tracker"] != LabelStripDeadManTrackerName {
+				continue
+			}
+			switch event.Type {
+			case AlertEventTypeDeadManAttempt:
+				attempts++
+			case AlertEventTypeDeadManFailure:
+				failures++
+				if event.Error == "" {
+					t.Error("expected DeadManFailure event to carry the underlying gh error, got empty Error")
+				}
+			case AlertEventTypeDeadManSuccess:
+				successes++
+			}
+		}
+		if attempts != 1 {
+			t.Errorf("expected exactly 1 DeadManAttempt event, got %d", attempts)
+		}
+		if failures != 1 {
+			t.Errorf("expected exactly 1 DeadManFailure event, got %d", failures)
+		}
+		if successes != 0 {
+			t.Errorf("expected 0 DeadManSuccess events, got %d", successes)
+		}
+	})
+
+	t.Run("strip call succeeds: records attempt+success", func(t *testing.T) {
+		setupFakeGHForLifecycleTest(t)
+
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+
+		task := &Task{ID: "GH-4866-STRIP-OK", ProjectPath: t.TempDir(), SourceAdapter: "github", SourceIssueID: "4867"}
+		lifecycle := NewExecutionLifecycle(store)
+		processor := &fakeAlertProcessor{}
+		lifecycle.SetAlertProcessor(processor)
+		execID, err := lifecycle.Begin(task, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("Begin failed: %v", err)
+		}
+
+		result := &ExecutionResult{TaskID: task.ID, Success: false, Error: "boom"}
+		if _, err := lifecycle.Finish(execID, result, errors.New("boom"), time.Second); err != nil {
+			t.Fatalf("Finish failed: %v", err)
+		}
+
+		var attempts, failures, successes int
+		for _, event := range processor.events {
+			if event.Metadata["tracker"] != LabelStripDeadManTrackerName {
+				continue
+			}
+			switch event.Type {
+			case AlertEventTypeDeadManAttempt:
+				attempts++
+			case AlertEventTypeDeadManFailure:
+				failures++
+			case AlertEventTypeDeadManSuccess:
+				successes++
+			}
+		}
+		if attempts != 1 {
+			t.Errorf("expected exactly 1 DeadManAttempt event, got %d", attempts)
+		}
+		if successes != 1 {
+			t.Errorf("expected exactly 1 DeadManSuccess event, got %d", successes)
+		}
+		if failures != 0 {
+			t.Errorf("expected 0 DeadManFailure events, got %d", failures)
+		}
+	})
+}

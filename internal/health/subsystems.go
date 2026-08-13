@@ -3,7 +3,9 @@ package health
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 )
@@ -53,6 +55,9 @@ func CheckDisabledSubsystems(cfg *config.Config) []SubsystemCheck {
 	wired, reason = checkApprovalChannelDeliverable(cfg)
 	checks = append(checks, SubsystemCheck{Name: "approval channel deliverable", Wired: wired, Reason: reason})
 
+	wired, reason = checkAlertRuleCoverage(cfg)
+	checks = append(checks, SubsystemCheck{Name: "alert rule coverage", Wired: wired, Reason: reason})
+
 	return checks
 }
 
@@ -69,23 +74,27 @@ func checkAlertEngineStarted(cfg *config.Config) (bool, string) {
 }
 
 // checkAlertProcessorWiredOnRunner reports whether cmd/pilot's active start
-// path calls executor.Runner.SetAlertProcessor. GH-394 makes runPollingMode
-// (cmd/pilot/main.go) the default whenever GitHub or Telegram polling is
-// enabled, and that path never calls SetAlertProcessor — alertsEngine is only
-// passed into individual issue-handler calls for one-off ProcessEvent
-// invocations, never wired onto the runner itself. That means task-lifecycle
-// events (stagnation/OOM/retry/escalation, emitted via Runner.emitAlertEvent)
-// are dropped silently even when the alert engine is healthy and running.
-// This is a build-time fact about the current start path, not a config
-// toggle — update this check if cmd/pilot/main.go is changed to wire
-// SetAlertProcessor there (internal/pilot's gateway-only path already does,
-// via orchestrator.SetAlertProcessor, but that path is not the default once
-// any polling adapter is enabled).
+// path calls executor.Runner.SetAlertProcessor once the alert engine starts.
+// GH-394 originally left runPollingMode (cmd/pilot/main.go) — the default
+// path whenever GitHub or Telegram polling is enabled — never calling
+// SetAlertProcessor, so task-lifecycle events (stagnation/OOM/retry/
+// escalation/dead-man, emitted via Runner.emitAlertEvent) were dropped
+// silently even with a healthy, running alert engine. GH-4716 fixed that:
+// main.go now calls runner.SetAlertProcessor immediately after
+// alertsEngine.Start succeeds (main.go:3058), and internal/pilot's
+// gateway/orchestrator path wires the equivalent
+// orchestrator.SetAlertProcessor the same way (pilot.go's initAlerts). GH-4866
+// found this check still hardcoded to `return false` long after that fix
+// landed — a permanently-red doctor line trains operators to ignore doctor
+// entirely, which is worse than no check at all. This is a build-time fact
+// about the current start paths, not a config toggle — update this (not just
+// flip the literal) if a start path is ever added that starts the alert
+// engine without also wiring the processor.
 func checkAlertProcessorWiredOnRunner(cfg *config.Config) (bool, string) {
 	if cfg.Alerts == nil || !cfg.Alerts.Enabled {
 		return false, "alert engine not started (see \"alert engine started\")"
 	}
-	return false, "runner.SetAlertProcessor is not called on the polling-mode start path (cmd/pilot/main.go runPollingMode) — task lifecycle alerts (stagnation/OOM/retry) are dropped even though the alert engine is running"
+	return true, "runner.SetAlertProcessor is called once the alert engine starts (cmd/pilot/main.go runPollingMode; internal/pilot/pilot.go initAlerts for the gateway/orchestrator path)"
 }
 
 // checkReleaserResolved mirrors autopilot.resolveRelease's env-scoped-wins-
@@ -185,4 +194,34 @@ func checkApprovalChannelDeliverable(cfg *config.Config) (bool, string) {
 		return false, "approval.enabled=false"
 	}
 	return true, "inbound processing active"
+}
+
+// checkAlertRuleCoverage reports whether every AlertType an engine handler
+// can emit without its own Condition-based counting (alerts.
+// HandlerEmittedAlertTypes — dispatch-loop-breaker, intent-judge streak, and
+// every generic dead-man tracker: label-lifecycle, self-review, finish-
+// tripwire, push-retry-exhausted) actually has an enabled rule once this
+// config runs through the same union-with-defaults conversion the daemon
+// start path uses (config.AlertsConfig.ToAlertConfig, which wraps
+// alerts.FromConfigAlerts). GH-4866: a persisted config carrying only the
+// legacy 5-rule list (task_stuck/task_failed/consecutive_failures/
+// daily_spend/budget_depleted, predating the dead-man trackers) used to
+// mean every one of those alerts was silently unreachable — the kill-drill's
+// central finding. ToAlertConfig's union logic already closes that gap for
+// any config going through the real conversion, so this check should read
+// as wired=true for any config using that path; a false here means either a
+// gap in FromConfigAlerts' union list or a rule explicitly disabled by the
+// operator.
+func checkAlertRuleCoverage(cfg *config.Config) (bool, string) {
+	acfg := cfg.Alerts.ToAlertConfig()
+	gaps := alerts.CoverageGaps(acfg)
+	if len(gaps) == 0 {
+		return true, fmt.Sprintf("all %d handler-emitted alert types have an enabled rule", len(alerts.HandlerEmittedAlertTypes))
+	}
+
+	names := make([]string, len(gaps))
+	for i, t := range gaps {
+		names[i] = string(t)
+	}
+	return false, fmt.Sprintf("no enabled rule for: %s — these alerts can never fire", strings.Join(names, ", "))
 }

@@ -366,6 +366,57 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 		alerts.DefaultDeadManWindow,
 	)
 
+	// TASK-441 L2 (GH-4709), per-repo (GH-4866): register the label-lifecycle
+	// dead-man tracker here too, mirroring the self-review registration just
+	// above — unlike self-review, this one is keyed per-repo
+	// (labelLifecycleDeadManTrackerName, handlers.go) so one repo's real,
+	// sustained label-lifecycle failures can't get diluted by every other
+	// repo's successes sharing the same counter. The actual
+	// attempt/success/failure recording happens inline in
+	// handleGithubIssueEventSDK (handlers.go), which resolves this same
+	// per-repo name and relies on RegisterDeadManTracker's memoize-by-name to
+	// share this registration's counters rather than racing to create a
+	// second tracker at first-event time.
+	deps.AlertsEngine.RegisterDeadManTracker(
+		labelLifecycleDeadManTrackerName(target.repoFullName),
+		alerts.AlertTypeLabelLifecycleFailureStreak,
+		alerts.DefaultDeadManFailureThreshold,
+		alerts.DefaultDeadManWindow,
+	)
+
+	// GH-4866: register the label-strip dead-man tracker here too — the
+	// removal-side counterpart of the label-lifecycle tracker just above.
+	// Unlike that one, this stays global (executor.LabelStripDeadManTrackerName,
+	// not per-repo): the recording site (stripInProgressLabelOnTerminalFailure,
+	// internal/executor/lifecycle.go) runs off an ExecutionLifecycle that has
+	// no live repo-owner context to key on, only ProjectPath/TaskID. It
+	// shares alerts.AlertTypeLabelLifecycleFailureStreak with the apply-side
+	// tracker (mirrors the four finish-tripwire trackers sharing one
+	// AlertType) since both are the same "label lifecycle silently broken"
+	// incident class, just counted independently by name.
+	deps.AlertsEngine.RegisterDeadManTracker(
+		executor.LabelStripDeadManTrackerName,
+		alerts.AlertTypeLabelLifecycleFailureStreak,
+		alerts.DefaultDeadManFailureThreshold,
+		alerts.DefaultDeadManWindow,
+	)
+
+	// GH-4866: register the push-retry-exhausted dead-man tracker here as
+	// well — the actual attempt/success/failure recording happens inline in
+	// Runner.executeWithOptions's push-retry loop (runner.go), which relays
+	// through the AlertEventTypeDeadMan{Attempt,Success,Failure} events the
+	// same way runSelfReview does (runner.go cannot import internal/alerts
+	// directly). Global, not per-repo, for the same reason as label-strip
+	// above — the push-retry loop has no repo-owner context in scope, only
+	// task.Branch/task.SourceRepo (SourceRepo is only ever set for
+	// GitHub-dispatched tasks, and this loop runs for every adapter).
+	deps.AlertsEngine.RegisterDeadManTracker(
+		executor.PushRetryExhaustedDeadManTrackerName,
+		alerts.AlertTypePushRetryExhaustedFailureStreak,
+		alerts.DefaultDeadManFailureThreshold,
+		alerts.DefaultDeadManWindow,
+	)
+
 	// Determine interval (shared adapter polling config; projects have no per-repo interval).
 	interval := 30 * time.Second
 	if ghCfg.Polling != nil && ghCfg.Polling.Interval > 0 {

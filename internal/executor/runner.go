@@ -4859,6 +4859,22 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// Push branch — retry transient failures before declaring the work
 			// stranded (GH-3785: a single failed push previously produced a
 			// silent "committed work but no PR" report with no detail).
+			//
+			// GH-4866: dead-man tracker for this seam — the kill-drill found
+			// push-retry exhaustion producing zero dead-man signal despite
+			// repeated occurrences during the drill window, the exact
+			// "wired to nothing" shape already fixed for self-review/
+			// label-lifecycle. RecordAttempt covers the whole retry loop (one
+			// push operation, not one per internal retry); only exhausting
+			// every attempt counts as a tracker failure — a retry that
+			// eventually succeeds, or a chdir false-positive resolved via
+			// RemoteBranchExists below, is a success.
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeDeadManAttempt,
+				TaskID:    task.ID,
+				Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
+				Timestamp: time.Now(),
+			})
 			var pushErr error
 			for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
 				pushErr = git.Push(ctx, task.Branch)
@@ -4886,11 +4902,24 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				}
 			}
 			if pushErr != nil {
+				r.emitAlertEvent(AlertEvent{
+					Type:      AlertEventTypeDeadManFailure,
+					TaskID:    task.ID,
+					Error:     pushErr.Error(),
+					Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
+					Timestamp: time.Now(),
+				})
 				result.Success = false
 				result.Error = formatGitStepFailureWithRecovery(ctx, git, "push", gitPushRetryAttempts, pushErr, task.ID, task.Branch, result.CommitSHA)
 				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 				return result, nil
 			}
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeDeadManSuccess,
+				TaskID:    task.ID,
+				Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
+				Timestamp: time.Now(),
+			})
 
 			// GH-457: Use actual pushed HEAD as CommitSHA source of truth.
 			// Self-review or quality retries may push new commits after

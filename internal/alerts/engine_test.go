@@ -1536,6 +1536,53 @@ func TestHandleDispatchLoopBreaker(t *testing.T) {
 			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
 		}
 	})
+
+	// GH-4866: an event that matches zero configured rules (not merely a
+	// disabled one) must not panic and must not fire — this is the runtime
+	// no-match WARN path (see handleDispatchLoopBreaker's "matched" flag),
+	// the backstop for the class of bug FromConfigAlerts' default-rule
+	// union closes for the on-disk config.
+	t.Run("no matching rule does not fire and does not panic", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "unrelated_rule",
+					Type:     AlertTypeTaskFailed,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type:   EventTypeDispatchLoopBreaker,
+			TaskID: "GH-4391",
+			Metadata: map[string]string{
+				"consecutive_drops": "10",
+			},
+			Timestamp: time.Now(),
+		})
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (no matching rule), got %d", got)
+		}
+	})
 }
 
 // TestHandleIntentJudgeFailureStreak covers the GH-4669 intent-judge
@@ -1636,6 +1683,50 @@ func TestHandleIntentJudgeFailureStreak(t *testing.T) {
 
 		if got := len(mockCh.getAlerts()); got != 0 {
 			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+
+	// GH-4866: mirrors TestHandleDispatchLoopBreaker's no-match subtest —
+	// an event with zero matching rules must not panic and must not fire.
+	t.Run("no matching rule does not fire and does not panic", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "unrelated_rule",
+					Type:     AlertTypeTaskFailed,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(Event{
+			Type: EventTypeIntentJudgeFailureStreak,
+			Metadata: map[string]string{
+				"repo":                 "qf-studio/pilot",
+				"consecutive_failures": "10",
+			},
+			Timestamp: time.Now(),
+		})
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (no matching rule), got %d", got)
 		}
 	})
 }
