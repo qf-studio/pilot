@@ -1,6 +1,6 @@
 # fix(alerts): dead-man streak alerts can never fire — daemon rule set omits all dead-man rules
 
-**Status**: 🚀 Dispatched 2026-08-13 → [pilot#4866](https://github.com/qf-studio/pilot/issues/4866) (`pilot` + `no-decompose`)
+**Status**: ✅ MERGED same-day 2026-08-13 13:58Z → [pilot#4866](https://github.com/qf-studio/pilot/issues/4866) → **PR#4867** — **POST-MERGE REVIEW PENDING.** Rode the 14:00Z train into **v2.259.2 — LIVE on the box** (hot restart 14:19Z, metric-confirmed). The TASK-441 re-drill is now unblocked (fix reached the box); review PR#4867 first, then re-drill to tick TASK-441 acceptance box 1.
 **Created**: 2026-08-13
 **Assignee**: Pilot
 

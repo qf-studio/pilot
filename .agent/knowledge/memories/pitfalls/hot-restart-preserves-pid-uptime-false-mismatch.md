@@ -47,5 +47,13 @@ whether the signal's data source can even observe the thing it claims.
 A signature that has "recurred" N times with zero direct evidence is N
 repetitions of one unverified inference.
 
+**Confirmed in the wild + resolved (2026-08-13 14:19Z):** the box hot-restarted
+v2.259.1→v2.259.2 via `syscall.Exec`; three hours later board `uptime` still
+read 06:22 (from the 11:27Z start), yet the process genuinely ran v2.259.2.
+The resolution (pilot#4864/PR#4865, live in v2.259.2) is a machine-readable
+running-version surface — `curl localhost:9091/metrics | grep pilot_build_info`
+and `/health` now report the PROCESS version directly. Use those, plus the
+`upgrade verified complete … via "hot restart"` log line; never uptime.
+
 Related: [[bug_daemon_autoupgrade_reverts_dev_binary]] ·
 [[one-method-two-interface-contracts-self-upgrade-drain]]
