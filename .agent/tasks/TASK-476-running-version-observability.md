@@ -1,6 +1,6 @@
 # fix(observability): expose the running daemon version — hot restarts are invisible to every status surface
 
-**Status**: ✅ MERGED same-day 2026-08-13 → [pilot#4864](https://github.com/qf-studio/pilot/issues/4864) → **PR#4865** (`7660794f`) — **POST-MERGE REVIEW PENDING.** Not on the box until the next train + restart; board-remote `ver` repoint (operator step) after that.
+**Status**: ✅ MERGED + REVIEWED 2026-08-13 → [pilot#4864](https://github.com/qf-studio/pilot/issues/4864) → **PR#4865** (`7660794f`) — **post-merge review APPROVE** ([verdict](https://github.com/qf-studio/pilot/pull/4865#issuecomment-5280911885)): all 3 legs faithful (gauge on the real exporter from the ldflags var · /health plumbed at both entrypoints · doctor probes config port with graceful degrade); 3/3 mutants killed; upgrade flow untouched. Follow-up candidates (not filed): **D1 minor** — the `payload.Version == ""` degrade leg (health.go:502-505) says "daemon not reachable" for a reachable pre-4865 daemon, wrong wording during exactly the first post-merge upgrade window · N1 gauge absent (metrics 503) when autopilot metrics unwired · N2 probe hardcodes 127.0.0.1, ignores `cfg.Gateway.Host`. D2 (FEATURE-MATRIX date) fixed in docs same day. **Remaining: next train + box restart puts it live → operator repoints `pilot-board-remote` `ver` at `pilot_build_info` → then archive.**
 **Created**: 2026-08-13
 **Assignee**: Pilot
 
