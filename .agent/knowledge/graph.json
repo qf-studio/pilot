@@ -1728,13 +1728,14 @@
         "title": "Console rail implementation program \u2014 11 approved designs \u2192 shipped surfaces",
         "status": "dispatched",
         "concepts": [
+          "context",
+          "theory of mind",
+          "workflow",
           "authentication",
           "deployment",
           "api",
-          "workflow",
-          "testing",
-          "context",
-          "database"
+          "database",
+          "testing"
         ]
       }
     },
@@ -7281,7 +7282,8 @@
       "TASK-460",
       "TASK-459",
       "TASK-461",
-      "TASK-467"
+      "TASK-467",
+      "TASK-478"
     ],
     "autopilot": [
       "mem-100",
@@ -7606,7 +7608,7 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ]
   },
-  "last_updated": "2026-08-14T22:15:03.593272+00:00",
+  "last_updated": "2026-08-14T22:28:40.377771+00:00",
   "stats": {
     "total_nodes": 399,
     "total_edges": 341,
