@@ -1,6 +1,6 @@
 # TASK-478: Console rail implementation program — 11 approved designs → shipped surfaces
 
-**Status**: 🚀 ACTIVE — 9 of 17 legs MERGED + REVIEWED, all APPROVE (console PR#119/121/123/125 · ui PR#51/53/55/57/59). Console chain DONE except founder-gated CON-5. t5 dispatched: UI-6 dashboard (ui#60). Remaining: UI-7..12 + CON-5.
+**Status**: 🚀 ACTIVE — 10 of 17 legs MERGED + REVIEWED, all APPROVE (console PR#119/121/123/125 · ui PR#51/53/55/57/59/61). Console chain DONE except founder-gated CON-5. t6 dispatched: UI-7 instances (ui#62). Remaining: UI-8..12 + CON-5.
 **Created**: 2026-08-14
 **Plan of record**: approved plan 2026-08-14 (research pass: console bff0520 + ui inventory; both at origin/main)
 
@@ -31,8 +31,8 @@ Implement every approved design page (`pilot-console-ui/design/`: dashboard-v4 �
 | UI-3 | Chat side panel + ⤢ expanded overlay | L 🔒 | UI-2 (chain) | ✅ PR#55 merged+reviewed 08-14 (pre-merge; size-held) |
 | UI-4 | Board restyle per board-v1 | M/L | UI-3 (chain) | ✅ PR#57 merged+reviewed 08-14 (pre-merge; size-held) |
 | UI-5 | Bell popover (needs-you + activity glance; fixes lossy activity mapping) | M | CON-1 + CON-2 ✅ | ✅ PR#59 merged+reviewed 08-14 (pre-merge; size-held) |
-| UI-6 | Dashboard v4 (existing `GET /api/v1/dashboard` + C13 proxy metrics tiles) | M/L | UI-3 ✅ | 🚀 [#60](https://github.com/qf-studio/pilot-console-ui/issues/60) |
-| UI-7 | Instances v1 (vitals via proxy, events timeline, deprovision, provision gate) | M | CON-1 | 📋 |
+| UI-6 | Dashboard v4 (existing `GET /api/v1/dashboard` + C13 proxy metrics tiles) | M/L | UI-3 ✅ | ✅ PR#61 merged+reviewed 08-14 |
+| UI-7 | Instances v1 (vitals via proxy, events timeline, deprovision, provision gate) | M | CON-1 ✅ | 🚀 [#62](https://github.com/qf-studio/pilot-console-ui/issues/62) |
 | UI-8 | Connections v1 | M | — (slack leg) | 📋 |
 | UI-9 | Onboarding v1 (signup+org merge, get-started checklist) | M/L | — (slack leg) | 📋 |
 | UI-10 | Settings v1 (rename / members read-only / plan+past_due / danger zone) | M/L | CON-4 (portal btn: CON-5) | 📋 |
@@ -64,7 +64,8 @@ Docs page (TASK-466 — daemon contract research first) · comments read-model �
 - CON-4: console#124 → **PR#125 merged 16:07Z**, review APPROVE (create-parity validation tested; name-column-only proven e2e; no notes)
 - UI-4: ui#56 → **PR#57 pre-merge reviewed APPROVE, merged ~16:2xZ** (size-held; daemon completed the merge concurrently with the release). Fence held completely — nothing faked; decision ladder EXTRACTED to `useCardDecision`, drawer + strip both consume it. Notes: tile face drops priority/labels/assignee (design-conformant, drawer retains) · per-caller composable state = strip/drawer don't share in-flight lock (server 409 covers it)
 - UI-5: ui#58 → **PR#59 pre-merge reviewed APPROVE, merged ~17:0xZ** (size-held). Highlights: lossy activity mapping fixed as a discriminated union + shared `formatActivityMessage` composer; mirror-not-inbox with derived badge; `useCardDecision` gained cross-surface bell refetch; BONUS — Escape/outside-click close added to bell AND avatar menu (closes the UI-1 note); dead mock-only `parked` kind removed. Notes: no 9+ badge cap · brittle class-selector test · **real-stack verify now due for UI-2..5 (decision loop complete)**
-- UI-6: ui#60 (2026-08-14) — dashboard on the C16 aggregate (DTO quoted from `internal/dashboardapi/dto.go`); cost/median tiles: verify C13 `metrics` tail shape first, honest placeholder otherwise — NO hardcoded specimens; chart ported from the design HTML, no chart lib
+- UI-6: ui#60 → **PR#61 merged 19:21Z by autopilot** (approval gate held the 1,083-line diff ~1h45m; released on the posted APPROVE review), review APPROVE. Data-honest throughout: cost/median tiles = em-dash + "available when your box reports metrics" (no $3.66/26m specimens, test-asserted); trend line correctly dropped (approved spec's founder call beats the stale acceptance bullet); deleted dashboard provisioning CTA verified redundant (InstancesView carries it). Notes: chart-legend vs by-project-column color identity diverges for a project with 0 shipped in-window (invisible at v1's one-repo/org) · window-selector race is last-resolved-wins · real-stack verify batched with UI-2..5's pending pass
+- UI-7: ui#62 (2026-08-14) — adapter re-anchor ordered: merged S3.3 DTO `{id,region,status,specVersion:int,driftFromSpec}` (status: provisioning|running|upgrading|stopped|suspended|terminating|error), provision route FIX (`POST /instances/provision`, was POSTing `/instances`), dead `getInstance` removed (no such route — detail selects from list), `deprovisionInstance` NEW (200 `{"status":"terminating"}`), events re-map to CON-1 eventDTO with OPEN dotted vocabulary (no closed union — GH-58 lesson), vitals via proxy `status` tail `{version,running,sessions,adapters?}` loose-parsed (409 not-running · 502 unreachable)
 
 **Contract anchor from merged CON-3** (for UI-11): via `GET /api/v1/instances/{instanceID}/pilot/...` — `executions/{id}/events` → `[{stage, occurredAt, detail}]` (ASC, `stage` opaque) · `tasks/{taskId}/events?project=` → `{executionId, status, events:[...]}` (newest, C8 pick-newest rule; query forwarded).
 
