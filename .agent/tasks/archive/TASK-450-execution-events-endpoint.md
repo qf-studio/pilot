@@ -1,5 +1,10 @@
 # feat(gateway): execution-events read endpoint — pilot leg for the S4 per-card timeline
 
+> **ARCHIVED 2026-08-14** — pilot#4749 CLOSED `pilot-done`: both routes shipped
+> (`GET /api/v1/executions/{id}/events` + `GET /api/v1/tasks/{taskId}/events`).
+> Downstream consumers now tracked in TASK-478 (console rail program): CON-3
+> proxy allowlist tails → UI-11 issue-page timeline.
+
 ## Problem
 
 The S4 per-card timeline needs stage-by-stage execution history. `execution_events` exists (`internal/memory/store.go:374-382`: `execution_id, stage, occurred_at, detail`) with a full store API (`ListExecutionEvents` `store.go:1137`), but **no gateway endpoint serves it** — zero `ListExecutionEvents` calls in `internal/gateway/`, and `DashboardStore` (`internal/gateway/dashboard.go:21-29`) doesn't include it. The console's C8 join endpoint exposes no execution id, so a task-scoped route is required alongside the execution-scoped one.
