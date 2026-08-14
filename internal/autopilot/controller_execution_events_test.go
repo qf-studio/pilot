@@ -175,6 +175,129 @@ func buildHappyPathServer(t *testing.T) (*httptest.Server, int, int, string, fun
 	return server, prNumber, issueNumber, headSHA, configure
 }
 
+// TestController_CheckExternalMergeOrClose_RecordsExecutionEvent is the
+// GH-4869 regression pin: the external-merge finalizer in
+// checkExternalMergeOrClose must append a terminal "merged" execution_events
+// row before draining the PR from tracking, the same way handleMerging's
+// StageMerging -> StageMerged transition does via recordExecutionEvent. A
+// size-held PR that an operator merges by hand (release not configured, so
+// the finalizer falls straight through to removePR) previously left the
+// journal stuck at whatever stage it was in — usually awaiting_approval —
+// forever, because this code path removed the PR without ever writing the
+// journal's terminal entry.
+func TestController_CheckExternalMergeOrClose_RecordsExecutionEvent(t *testing.T) {
+	tests := []struct {
+		name string
+		// execByTask seeds mockApprovalPersister's task_id -> execution_id
+		// map. Leaving "GH-10" unset simulates an unresolvable execution row
+		// (e.g. a PR merged for an issue autopilot never tracked an
+		// execution for).
+		execByTask map[string]string
+	}{
+		{
+			name:       "tracked execution present",
+			execByTask: map[string]string{"GH-10": "exec-gh-10"},
+		},
+		{
+			name:       "execution unresolvable",
+			execByTask: map[string]string{}, // GH-10 intentionally absent
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const prNumber = 42
+			const issueNumber = 10
+			prURL := "https://github.com/owner/repo/pull/42"
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 1})
+				default:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{}`))
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			// Release deliberately left unconfigured: checkExternalMergeOrClose's
+			// GH-411 release-triggering block is then skipped entirely and the
+			// finalizer falls straight through to the removePR drain this task
+			// targets — matching the size-held-PR scenario in the bug report.
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			mock := &mockApprovalPersister{execByTask: tt.execByTask}
+			c.memoryStore = mock
+
+			prState := &PRState{
+				PRNumber:    prNumber,
+				IssueNumber: issueNumber,
+				PRURL:       prURL,
+				Stage:       StageAwaitApproval,
+			}
+			c.mu.Lock()
+			c.activePRs[prNumber] = prState
+			c.mu.Unlock()
+
+			ghPR := &github.PullRequest{
+				Number:  prNumber,
+				State:   "closed",
+				Merged:  true,
+				HTMLURL: prURL,
+			}
+
+			ctx := context.Background()
+			prState.mu.Lock()
+			resolved := c.checkExternalMergeOrClose(ctx, prState, ghPR)
+			prState.mu.Unlock()
+
+			if !resolved {
+				t.Fatal("checkExternalMergeOrClose should return true (PR removed from tracking)")
+			}
+			if _, ok := c.GetPRState(prNumber); ok {
+				t.Error("PR should be drained from tracking after external-merge finalization")
+			}
+
+			wantEventID, execTracked := tt.execByTask["GH-10"]
+			if execTracked {
+				if len(mock.executionEvents) != 1 {
+					t.Fatalf("execution events = %d, want 1: %+v", len(mock.executionEvents), mock.executionEvents)
+				}
+				ev := mock.executionEvents[0]
+				if ev.executionID != wantEventID {
+					t.Errorf("executionID = %q, want %q", ev.executionID, wantEventID)
+				}
+				if ev.stage != memory.StageMerged {
+					t.Errorf("stage = %q, want %q", ev.stage, memory.StageMerged)
+				}
+				wantDetail := "pr #42: merged externally (" + prURL + ")"
+				if ev.detail != wantDetail {
+					t.Errorf("detail = %q, want %q", ev.detail, wantDetail)
+				}
+			} else {
+				// No execution row resolves for "GH-10" — recordExecutionEvent
+				// logs a WARN and returns without writing an event, but
+				// finalization (drain from tracking) must still complete.
+				if len(mock.executionEvents) != 0 {
+					t.Errorf("execution events = %d, want 0 when execution is unresolvable: %+v", len(mock.executionEvents), mock.executionEvents)
+				}
+			}
+		})
+	}
+}
+
+// TestController_ExecutionEvents_PRLifecycle above (driven entirely through
+// ProcessPR, never through checkExternalMergeOrClose) already pins the
+// internal handleMerging -> handleMerged merge path's event sequence
+// (waiting_ci -> ci_passed -> merged -> released) byte-for-byte. GH-4869's
+// new write lives exclusively inside checkExternalMergeOrClose's
+// externally-merged branch, so that path is untouched by construction — this
+// comment documents the coverage rather than duplicating the test.
+
 // buildCIFailureServer wires a fake GitHub API where CI fails, driving the PR
 // through ci_failed → failed (fix-issue creation + PR close).
 func buildCIFailureServer(t *testing.T) (*httptest.Server, int, int, string, func(cfg *Config)) {

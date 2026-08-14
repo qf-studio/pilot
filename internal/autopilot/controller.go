@@ -7277,6 +7277,24 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			}
 		}
 
+		// GH-4869: append the same terminal journal event the internal
+		// handleMerging path writes on the StageMerging -> StageMerged
+		// transition (via processPR's stage-transition detector,
+		// executionEventStageFor + recordExecutionEvent above). An
+		// externally-merged PR never makes that transition — it is drained
+		// straight out of tracking below — so without this write the
+		// execution_events journal simply stops at whatever stage it was in
+		// (e.g. awaiting_approval for a size-held PR) and the dashboard
+		// history strip renders that stale label forever, even across a
+		// daemon restart. recordExecutionEvent is best-effort: a lookup miss
+		// logs a WARN and returns, it never fails finalization.
+		prURL := ghPR.HTMLURL
+		if prURL == "" {
+			prURL = prState.PRURL
+		}
+		c.recordExecutionEvent(prState, memory.StageMerged,
+			fmt.Sprintf("pr #%d: merged externally (%s)", prState.PRNumber, prURL))
+
 		c.removePR(prState.PRNumber)
 		return true
 	}
