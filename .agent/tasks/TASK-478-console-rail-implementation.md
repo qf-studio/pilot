@@ -1,6 +1,6 @@
 # TASK-478: Console rail implementation program — 11 approved designs → shipped surfaces
 
-**Status**: 🚀 ACTIVE — plan approved 2026-08-14; t0 legs dispatching (CON-1 console · UI-1 shell)
+**Status**: 🚀 ACTIVE — t0 MERGED + REVIEWED same-day (CON-1 → console PR#119 · UI-1 → ui PR#51, both APPROVE); t1 dispatched (CON-2 journal · UI-2 decideCard)
 **Created**: 2026-08-14
 **Plan of record**: approved plan 2026-08-14 (research pass: console bff0520 + ui inventory; both at origin/main)
 
@@ -16,8 +16,8 @@ Implement every approved design page (`pilot-console-ui/design/`: dashboard-v4 �
 
 | Leg | Title | Size | Gate | Status |
 |-----|-------|------|------|--------|
-| CON-1 | `GET /api/v1/approvals` list + `GET /api/v1/instances/{id}/events` | S/M | — | 🚀 dispatched |
-| CON-2 | Activity journal v2 (migration 0011, typed `kind`, dispatch/status/decision writers) | L 🔒 | CON-1 merged (chain) | 📋 |
+| CON-1 | `GET /api/v1/approvals` list + `GET /api/v1/instances/{id}/events` | S/M | — | ✅ PR#119 merged+reviewed 08-14 |
+| CON-2 | Activity journal v2 (migration 0011, typed `kind`, dispatch/status/decision writers) | L 🔒 | CON-1 merged (chain) | 🚀 [#120](https://github.com/qf-studio/pilot-console/issues/120) |
 | CON-3 | Proxy allowlist tails `executions/{id}/events` + `tasks/{taskId}/events` (#4749 shipped) | S | CON-2 (chain) | 📋 |
 | CON-4 | `PUT /api/v1/org` rename | S | CON-3 (chain) | 📋 |
 | CON-5 | `POST /api/v1/billing/portal-session` | S | **founder Stripe inputs** — floats | 📋 |
@@ -26,8 +26,8 @@ Implement every approved design page (`pilot-console-ui/design/`: dashboard-v4 �
 
 | Leg | Title | Size | Gate | Status |
 |-----|-------|------|------|--------|
-| UI-1 | v4 shell: icon rail + header + chat region + token sync | L 🔒 | — | 🚀 dispatched |
-| UI-2 | Wire `decideCard` + decision error UX (kills 501 stub + pinning test) | S/M | UI-1 (chain) | 📋 |
+| UI-1 | v4 shell: icon rail + header + chat region + token sync | L 🔒 | — | ✅ PR#51 merged+reviewed 08-14 |
+| UI-2 | Wire `decideCard` + decision error UX (kills 501 stub + pinning test) | S/M | UI-1 (chain) | 🚀 [#52](https://github.com/qf-studio/pilot-console-ui/issues/52) |
 | UI-3 | Chat side panel + ⤢ expanded overlay | L 🔒 | UI-2 (chain) | 📋 |
 | UI-4 | Board restyle per board-v1 | M/L | UI-3 (chain) | 📋 |
 | UI-5 | Bell popover (needs-you + activity glance; fixes lossy activity mapping) | M | CON-1 + CON-2 | 📋 |
@@ -53,10 +53,14 @@ Docs page (TASK-466 — daemon contract research first) · comments read-model �
 4. 501 pinning tests (`httpAdapter.spec.ts:696`) — UI-2/UI-11 bodies explicitly order replacement.
 5. UI-9 touches session bootstrap + router guards — review carefully.
 
-## Dispatched
+## Dispatched / merged
 
-- CON-1: https://github.com/qf-studio/pilot-console/issues/118 (2026-08-14)
-- UI-1: https://github.com/qf-studio/pilot-console-ui/issues/50 (2026-08-14)
+- CON-1: console#118 → **PR#119 merged 14:18Z**, post-merge review APPROVE (notes: DTO nullables are `omitempty`-absent — UI legs treat absent as unjoined; N+1 card lookup fine at approval cardinality)
+- UI-1: ui#50 → **PR#51 merged 14:20Z**, post-merge review APPROVE (notes: max-width wrapper gone — pages full-width until restyle legs; avatar menu lacks click-outside close)
+- CON-2: console#120 (2026-08-14) — journal v2; decision writer MIGRATES from `AppendConflict`, no double-write
+- UI-2: ui#52 (2026-08-14) — decideCard wiring; pinning test `httpAdapter.spec.ts:696` ordered replaced
+
+**Contract anchors from merged CON-1** (for UI-5/UI-7 authoring): `approvalDTO{requestId, taskId, executionId?, projectPath?, prNumber?, prUrl?, requestedAt, cardId?, cardTitle?}` (nullable = absent) · `eventDTO{id, eventType, detail, createdAt}` · both under `{"approvals":[...]}` / `{"events":[...]}` envelopes, limit default 50 max 200.
 
 ## Refs
 
