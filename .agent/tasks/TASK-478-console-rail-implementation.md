@@ -1,6 +1,6 @@
 # TASK-478: Console rail implementation program — 11 approved designs → shipped surfaces
 
-**Status**: 🚀 ACTIVE — t0–t3 MERGED + REVIEWED, all APPROVE (console PR#119/121/123/125 · ui PR#51/53/55/57). **Console chain DONE except founder-gated CON-5** (Stripe inputs). t4 dispatched: UI-5 bell (ui#58). Remaining after: UI-6..12, all UI-repo.
+**Status**: 🚀 ACTIVE — 9 of 17 legs MERGED + REVIEWED, all APPROVE (console PR#119/121/123/125 · ui PR#51/53/55/57/59). Console chain DONE except founder-gated CON-5. t5 dispatched: UI-6 dashboard (ui#60). Remaining: UI-7..12 + CON-5.
 **Created**: 2026-08-14
 **Plan of record**: approved plan 2026-08-14 (research pass: console bff0520 + ui inventory; both at origin/main)
 
@@ -30,8 +30,8 @@ Implement every approved design page (`pilot-console-ui/design/`: dashboard-v4 �
 | UI-2 | Wire `decideCard` + decision error UX (kills 501 stub + pinning test) | S/M | UI-1 (chain) | ✅ PR#53 merged+reviewed 08-14 |
 | UI-3 | Chat side panel + ⤢ expanded overlay | L 🔒 | UI-2 (chain) | ✅ PR#55 merged+reviewed 08-14 (pre-merge; size-held) |
 | UI-4 | Board restyle per board-v1 | M/L | UI-3 (chain) | ✅ PR#57 merged+reviewed 08-14 (pre-merge; size-held) |
-| UI-5 | Bell popover (needs-you + activity glance; fixes lossy activity mapping) | M | CON-1 + CON-2 ✅ | 🚀 [#58](https://github.com/qf-studio/pilot-console-ui/issues/58) |
-| UI-6 | Dashboard v4 (existing `GET /api/v1/dashboard` + C13 proxy metrics tiles) | M/L | UI-3 | 📋 |
+| UI-5 | Bell popover (needs-you + activity glance; fixes lossy activity mapping) | M | CON-1 + CON-2 ✅ | ✅ PR#59 merged+reviewed 08-14 (pre-merge; size-held) |
+| UI-6 | Dashboard v4 (existing `GET /api/v1/dashboard` + C13 proxy metrics tiles) | M/L | UI-3 ✅ | 🚀 [#60](https://github.com/qf-studio/pilot-console-ui/issues/60) |
 | UI-7 | Instances v1 (vitals via proxy, events timeline, deprovision, provision gate) | M | CON-1 | 📋 |
 | UI-8 | Connections v1 | M | — (slack leg) | 📋 |
 | UI-9 | Onboarding v1 (signup+org merge, get-started checklist) | M/L | — (slack leg) | 📋 |
@@ -63,7 +63,8 @@ Docs page (TASK-466 — daemon contract research first) · comments read-model �
 - UI-3: ui#54 → **PR#55 pre-merge reviewed APPROVE + manually merged ~15:5xZ** (1,926-line diff was size-held awaiting a human; issue #54 auto-closed after merge). Follow-up candidates, not filed: overlay lacks a Tab-cycle trap · persistent 502/503 keeps status line at "box awake" (reconnecting-state candidate) · real-stack verify pending (batch with UI-2/UI-5)
 - CON-4: console#124 → **PR#125 merged 16:07Z**, review APPROVE (create-parity validation tested; name-column-only proven e2e; no notes)
 - UI-4: ui#56 → **PR#57 pre-merge reviewed APPROVE, merged ~16:2xZ** (size-held; daemon completed the merge concurrently with the release). Fence held completely — nothing faked; decision ladder EXTRACTED to `useCardDecision`, drawer + strip both consume it. Notes: tile face drops priority/labels/assignee (design-conformant, drawer retains) · per-caller composable state = strip/drawer don't share in-flight lock (server 409 covers it)
-- UI-5: ui#58 (2026-08-14) — bell on merged CON-1/CON-2 anchors; ask rows explicitly OUT (no backend concept); AppShell inert-bell pinning test explicitly ordered replaced; reuses useCardDecision + formatRelativeTime
+- UI-5: ui#58 → **PR#59 pre-merge reviewed APPROVE, merged ~17:0xZ** (size-held). Highlights: lossy activity mapping fixed as a discriminated union + shared `formatActivityMessage` composer; mirror-not-inbox with derived badge; `useCardDecision` gained cross-surface bell refetch; BONUS — Escape/outside-click close added to bell AND avatar menu (closes the UI-1 note); dead mock-only `parked` kind removed. Notes: no 9+ badge cap · brittle class-selector test · **real-stack verify now due for UI-2..5 (decision loop complete)**
+- UI-6: ui#60 (2026-08-14) — dashboard on the C16 aggregate (DTO quoted from `internal/dashboardapi/dto.go`); cost/median tiles: verify C13 `metrics` tail shape first, honest placeholder otherwise — NO hardcoded specimens; chart ported from the design HTML, no chart lib
 
 **Contract anchor from merged CON-3** (for UI-11): via `GET /api/v1/instances/{instanceID}/pilot/...` — `executions/{id}/events` → `[{stage, occurredAt, detail}]` (ASC, `stage` opaque) · `tasks/{taskId}/events?project=` → `{executionId, status, events:[...]}` (newest, C8 pick-newest rule; query forwarded).
 
