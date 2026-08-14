@@ -1,6 +1,6 @@
 # TASK-478: Console rail implementation program — 11 approved designs → shipped surfaces
 
-**Status**: 🚀 ACTIVE — t0 MERGED + REVIEWED same-day (CON-1 → console PR#119 · UI-1 → ui PR#51, both APPROVE); t1 dispatched (CON-2 journal · UI-2 decideCard)
+**Status**: 🚀 ACTIVE — t0+t1 MERGED + REVIEWED same-day, all APPROVE (PR#119/#121 console · PR#51/#53 ui); t2 dispatched (CON-3 proxy tails · UI-3 chat). Both program risks #2 (double-journal) and #4 (pinning test) confirmed handled in t1.
 **Created**: 2026-08-14
 **Plan of record**: approved plan 2026-08-14 (research pass: console bff0520 + ui inventory; both at origin/main)
 
@@ -17,8 +17,8 @@ Implement every approved design page (`pilot-console-ui/design/`: dashboard-v4 �
 | Leg | Title | Size | Gate | Status |
 |-----|-------|------|------|--------|
 | CON-1 | `GET /api/v1/approvals` list + `GET /api/v1/instances/{id}/events` | S/M | — | ✅ PR#119 merged+reviewed 08-14 |
-| CON-2 | Activity journal v2 (migration 0011, typed `kind`, dispatch/status/decision writers) | L 🔒 | CON-1 merged (chain) | 🚀 [#120](https://github.com/qf-studio/pilot-console/issues/120) |
-| CON-3 | Proxy allowlist tails `executions/{id}/events` + `tasks/{taskId}/events` (#4749 shipped) | S | CON-2 (chain) | 📋 |
+| CON-2 | Activity journal v2 (migration 0011, typed `kind`, dispatch/status/decision writers) | L 🔒 | CON-1 merged (chain) | ✅ PR#121 merged+reviewed 08-14 |
+| CON-3 | Proxy allowlist tails `executions/{id}/events` + `tasks/{taskId}/events` (#4749 shipped) | S | CON-2 (chain) | 🚀 [#122](https://github.com/qf-studio/pilot-console/issues/122) |
 | CON-4 | `PUT /api/v1/org` rename | S | CON-3 (chain) | 📋 |
 | CON-5 | `POST /api/v1/billing/portal-session` | S | **founder Stripe inputs** — floats | 📋 |
 
@@ -27,8 +27,8 @@ Implement every approved design page (`pilot-console-ui/design/`: dashboard-v4 �
 | Leg | Title | Size | Gate | Status |
 |-----|-------|------|------|--------|
 | UI-1 | v4 shell: icon rail + header + chat region + token sync | L 🔒 | — | ✅ PR#51 merged+reviewed 08-14 |
-| UI-2 | Wire `decideCard` + decision error UX (kills 501 stub + pinning test) | S/M | UI-1 (chain) | 🚀 [#52](https://github.com/qf-studio/pilot-console-ui/issues/52) |
-| UI-3 | Chat side panel + ⤢ expanded overlay | L 🔒 | UI-2 (chain) | 📋 |
+| UI-2 | Wire `decideCard` + decision error UX (kills 501 stub + pinning test) | S/M | UI-1 (chain) | ✅ PR#53 merged+reviewed 08-14 |
+| UI-3 | Chat side panel + ⤢ expanded overlay | L 🔒 | UI-2 (chain) | 🚀 [#54](https://github.com/qf-studio/pilot-console-ui/issues/54) |
 | UI-4 | Board restyle per board-v1 | M/L | UI-3 (chain) | 📋 |
 | UI-5 | Bell popover (needs-you + activity glance; fixes lossy activity mapping) | M | CON-1 + CON-2 | 📋 |
 | UI-6 | Dashboard v4 (existing `GET /api/v1/dashboard` + C13 proxy metrics tiles) | M/L | UI-3 | 📋 |
@@ -57,8 +57,12 @@ Docs page (TASK-466 — daemon contract research first) · comments read-model �
 
 - CON-1: console#118 → **PR#119 merged 14:18Z**, post-merge review APPROVE (notes: DTO nullables are `omitempty`-absent — UI legs treat absent as unjoined; N+1 card lookup fine at approval cardinality)
 - UI-1: ui#50 → **PR#51 merged 14:20Z**, post-merge review APPROVE (notes: max-width wrapper gone — pages full-width until restyle legs; avatar menu lacks click-outside close)
-- CON-2: console#120 (2026-08-14) — journal v2; decision writer MIGRATES from `AppendConflict`, no double-write
-- UI-2: ui#52 (2026-08-14) — decideCard wiring; pinning test `httpAdapter.spec.ts:696` ordered replaced
+- CON-2: console#120 → **PR#121 merged 15:00Z**, review APPROVE (double-journal dead — test asserts zero sync_conflicts writes; interim: new-kind rows render blandly through the SPA's lossy mapping until UI-5)
+- UI-2: ui#52 → **PR#53 merged 14:53Z**, review APPROVE (pinning test replaced with 6 wire tests; notes: 400/401/503 rungs still rethrow silently — practically unreachable; **real-stack verify PENDING**, batch with UI-5's — decision fixtures are source-derived)
+- CON-3: console#122 (2026-08-14) — proxy tails, anchored to merged daemon `internal/gateway/events.go`; tasks tail MUST forward `?project=`
+- UI-3: ui#54 (2026-08-14) — chat panel + overlay on C17; client-minted conversation id, null-events tolerated, unknown event types degrade
+
+**Contract anchors from merged CON-2** (for UI-5): `activityDTO{id, kind, cardId?, createdAt}` + per-kind fields — conflict `{field, boardValue?, remoteValue?, winner}` · dispatch `{provider, sequenceId}` · status `{from, to}` · decision `{decision, by}`.
 
 **Contract anchors from merged CON-1** (for UI-5/UI-7 authoring): `approvalDTO{requestId, taskId, executionId?, projectPath?, prNumber?, prUrl?, requestedAt, cardId?, cardTitle?}` (nullable = absent) · `eventDTO{id, eventType, detail, createdAt}` · both under `{"approvals":[...]}` / `{"events":[...]}` envelopes, limit default 50 max 200.
 
