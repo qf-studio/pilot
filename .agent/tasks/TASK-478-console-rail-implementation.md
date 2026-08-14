@@ -1,6 +1,6 @@
 # TASK-478: Console rail implementation program — 11 approved designs → shipped surfaces
 
-**Status**: 🚀 ACTIVE — 12 of 17 legs MERGED + REVIEWED, all APPROVE (console PR#119/121/123/125 · ui PR#51/53/55/57/59/61/63/65). Console chain DONE except founder-gated CON-5. t8: UI-9 → **PR#67 pre-merge reviewed APPROVE (2 edge defects → fast-follow ui#69 filed)**, awaiting autopilot merge. t9 dispatched: UI-10 settings (ui#68). Remaining: UI-11..12 + CON-5 + ui#69 fast-follow. Side-filed: pilot#4869 → **PR#4870 open, reviewed APPROVE** (journal-close on external merge).
+**Status**: 🚀 ACTIVE — 12 of 17 legs MERGED + REVIEWED, all APPROVE (console PR#119/121/123/125 · ui PR#51/53/55/57/59/61/63/65). Console chain DONE except founder-gated CON-5 (the only non-autopilotable leg). **ALL remaining ui legs dispatched for the 2026-08-15 overnight run**: PR#67 (UI-9, reviewed APPROVE, size-held — founder Slack approve releases the queue) → ui#68 (UI-10) → ui#69 (fast-follow) → ui#70 (UI-11) → ui#71 (UI-12, queue-last gate). Hourly watch loop reviewing PRs as they land. Side-filed pilot#4869 → **PR#4870 MERGED 22:17Z 08-14, reviewed APPROVE**.
 **Created**: 2026-08-14
 **Plan of record**: approved plan 2026-08-14 (research pass: console bff0520 + ui inventory; both at origin/main)
 
@@ -36,8 +36,8 @@ Implement every approved design page (`pilot-console-ui/design/`: dashboard-v4 �
 | UI-8 | Connections v1 | M | — (slack leg) | ✅ PR#65 merged+reviewed 08-14 |
 | UI-9 | Onboarding v1 (signup+org merge, get-started checklist) | M/L | — (slack leg) | 🔍 [#66](https://github.com/qf-studio/pilot-console-ui/issues/66) → PR#67 reviewed APPROVE; fast-follow [#69](https://github.com/qf-studio/pilot-console-ui/issues/69) |
 | UI-10 | Settings v1 (rename / members read-only / plan+past_due / danger zone) | M/L | CON-4 (portal btn: CON-5) | 🚀 [#68](https://github.com/qf-studio/pilot-console-ui/issues/68) |
-| UI-11 | Issue page (routed detail + run timeline via CON-3) | L 🔒 | CON-3 | 📋 |
-| UI-12 | Mobile v1 (media queries + 4-tab bar; 5 frames) | M/L 🔒 | all surfaces | 📋 |
+| UI-11 | Issue page (routed detail + run timeline via CON-3) | L 🔒 | CON-3 ✅ | 🚀 [#70](https://github.com/qf-studio/pilot-console-ui/issues/70) |
+| UI-12 | Mobile v1 (media queries + 4-tab bar; 5 frames) | M/L 🔒 | all surfaces (queue-last) | 🚀 [#71](https://github.com/qf-studio/pilot-console-ui/issues/71) |
 
 🔒 = `<!-- pilot:no-decompose -->`
 
@@ -70,6 +70,9 @@ Docs page (TASK-466 — daemon contract research first) · comments read-model �
 - UI-9: ui#66 → **PR#67 pre-merge reviewed APPROVE 2026-08-15** (736/−128, CI green, awaiting autopilot merge). Risk #5 held: guard made instance-unaware (matrix collapses correctly, all 5 cases tested); auto-provision single-trigger watch + triple re-entrancy guard; poll correctly bounded (provisioning-only, stops on any other status/unmount, InstancesView untouched); one-submit register→createOrg idempotent on resubmit. **2 edge defects → fast-follow ui#69**: (D1) authed-no-org after partial signup failure = hard guard lock — org checklist row has no create affordance and OrgCreateView is gone; (D2) plan row's "redirecting to checkout…" renders only in `inactive`/`past_due`, where the only redirect path (auto-provision 402) never fires
 - UI-10: ui#68 (2026-08-15) — settings v1 authored after third contract pass (no drift this time; CON-4 shapes quoted from `efcd712`): routed sub-nav general/members/billing (no Account), `getOrg`/`renameOrg` adapter legs mapping the full orgResponse (`members[]`; wire `connections` deliberately unmapped), members read-only (no invites/joined — not on the wire), plan card w/ $299 placeholder + past_due banner (Fix-payment stubbed until CON-5; checkout-session explicitly NOT wired — new-subscription verb), Created row + Renews row dropped (data-honest), danger zone disabled-Delete (no backend verb), usage card reusing getDashboard + UI-6 honest-degrade idiom
 - ui#69 fast-follow (2026-08-15): org-row inline create form (RegisterView 409-resync idiom) kills the D1 guard lock + guard-lock regression test + honest plan-row copy (D2)
+- UI-11: ui#70 (2026-08-15, overnight batch) — routed `/board/:cardId` issue page on merged CON-3 tails; daemon DTOs quoted from `internal/gateway/events.go` (`{stage, occurredAt, detail}` ASC / `{executionId, status, events}` newest-only); task-id derivation per adapter converters (GH-/JIRA-/LIN- prefixes); C13 409/502 honest degrade. **Data-honest drops ordered explicitly**: sub-issues section (no wire data), multi-attempt history + cost/time stats (newest execution only), tracker-side status row
+- UI-12: ui#71 (2026-08-15, overnight batch, queue-last gate) — CSS/navigation leg per design annotations: 4-tab bar replaces rail + chat-hide media query, home glance w/ UI-6 honest tiles, board count pills, approve/bell bottom sheets on existing stores, fallback column for desk-first surfaces
+- **Overnight run 2026-08-15**: queue after PR#67 approve = ui#68 → #69 → #70 → #71; hourly watch loop active (review new PRs, no self-approval of size-holds, anomaly = report-only)
 
 **Contract anchor from merged CON-3** (for UI-11): via `GET /api/v1/instances/{instanceID}/pilot/...` — `executions/{id}/events` → `[{stage, occurredAt, detail}]` (ASC, `stage` opaque) · `tasks/{taskId}/events?project=` → `{executionId, status, events:[...]}` (newest, C8 pick-newest rule; query forwarded).
 
