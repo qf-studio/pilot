@@ -129,3 +129,23 @@ legs 6/8 are also done.
   "this is a drill" body and declined to implement). Honest drill bodies
   self-limit cost, but a future drill that needs sustained executions should
   write the body as a plausible trivial task instead.
+
+## Postscript 2026-08-14 — de-onboarding IS part of drill cleanup
+
+Leaving the sandbox onboarded after the drill **re-armed the dormant canary
+scenario suite** (`canary-scenario-*` labels): a 4-issue probe batch fired
+within 2 minutes of the unarchive, then every ~6h (18:45Z · 00:59Z · 07:05Z).
+Ledger rows false-FAILED (`waiting_ci -> failed`) on every helper PR even
+though all of them MERGED green — the sandbox `required_checks` config names
+a check the repo never posts (its CI posts `test`); daemon self-diagnosed it
+(`required-checks config mismatch` WARN). One probe stuck open tripped a
+`lane_starvation` alert. Resolution (operator-consented): closed GH-315 +
+canary-cascade PR#309, restored `config.yaml.bak-20260813-drill441` (diff was
+exactly the 7-line canary project block; with-canary state saved as
+`config.yaml.bak-20260814-with-canary`), daemon restarted — sandbox poller
+gone, board green on v2.259.2.
+
+**Rule: the drill cleanup checklist ends with de-onboard + restart**, not
+with closing the drill issues. If the canary suite is ever wanted long-term,
+fix the sandbox `required_checks` to `test` first or every cycle pollutes
+the 30d delivery metrics with false failures.
