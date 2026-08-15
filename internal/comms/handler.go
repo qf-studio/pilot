@@ -415,6 +415,7 @@ If the question is too broad, ask for clarification instead of exploring everyth
 		Description: prompt,
 		ProjectPath: questionProjectPath,
 		LocalMode:   true,
+		ReadOnly:    true,
 		CreatePR:    false,
 		Verbose:     false,
 		IsCanary:    h.isCanaryProject(questionProjectPath),
@@ -459,6 +460,7 @@ Provide findings in a structured format with:
 DO NOT make any code changes. This is a read-only research task.`, query),
 		ProjectPath: researchProjectPath,
 		LocalMode:   true,
+		ReadOnly:    true,
 		CreatePR:    false,
 		IsCanary:    h.isCanaryProject(researchProjectPath),
 	}
@@ -601,6 +603,7 @@ Be concise - this is a chat conversation, not a report. Keep response under 500 
 User message: %s`, chatProjectPath, message),
 		ProjectPath: chatProjectPath,
 		LocalMode:   true,
+		ReadOnly:    true,
 		CreatePR:    false,
 		IsCanary:    h.isCanaryProject(chatProjectPath),
 	}

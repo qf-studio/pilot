@@ -470,6 +470,8 @@ type Task struct {
 	// When true, BuildPrompt skips Navigator detection and uses a focused
 	// problem-solving prompt suitable for local execution.
 	LocalMode bool
+	// ReadOnly marks tasks whose contract forbids changes (questions, research); quality gates skip them.
+	ReadOnly bool
 	// State is the current issue state in the source adapter (GH-2867).
 	// Examples: "open", "closed", "merged"
 	State string
@@ -4249,7 +4251,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// Run quality gates if configured.
 		// Previously skipped in LocalMode (v25 OOM concern), re-enabled since
 		// deps are now pre-installed and gate runs pytest only (bounded cost).
-		if r.qualityCheckerFactory != nil {
+		if r.qualityCheckerFactory != nil && !task.ReadOnly {
 			const maxAutoRetries = 2 // Circuit breaker to prevent infinite loops
 
 			// Track quality gate results across retries (GH-209)
