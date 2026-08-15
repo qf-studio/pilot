@@ -33,9 +33,17 @@ func (m *TelegramMessenger) parseMode() string {
 	return "Markdown"
 }
 
+func parseThreadID(threadID string) int64 {
+	id, err := strconv.ParseInt(threadID, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
 // SendText sends a plain text message to the given chat.
 func (m *TelegramMessenger) SendText(ctx context.Context, contextID, text string) error {
-	_, err := m.client.SendMessage(ctx, contextID, text, m.parseMode())
+	_, err := m.client.SendMessage(ctx, contextID, text, m.parseMode(), 0)
 	return err
 }
 
@@ -51,7 +59,7 @@ func (m *TelegramMessenger) SendConfirmation(ctx context.Context, contextID, thr
 		},
 	}
 
-	resp, err := m.client.SendMessageWithKeyboard(ctx, contextID, text, m.parseMode(), keyboard)
+	resp, err := m.client.SendMessageWithKeyboard(ctx, contextID, text, m.parseMode(), keyboard, parseThreadID(threadID))
 	if err != nil {
 		return "", fmt.Errorf("send confirmation: %w", err)
 	}
@@ -100,7 +108,7 @@ func (m *TelegramMessenger) SendResult(ctx context.Context, contextID, threadID,
 		text += fmt.Sprintf("\n\n🔗 PR: %s", prURL)
 	}
 
-	_, err := m.client.SendMessage(ctx, contextID, text, m.parseMode())
+	_, err := m.client.SendMessage(ctx, contextID, text, m.parseMode(), parseThreadID(threadID))
 	return err
 }
 
@@ -112,7 +120,7 @@ func (m *TelegramMessenger) SendChunked(ctx context.Context, contextID, threadID
 		if prefix != "" && i == 0 {
 			text = prefix + "\n\n" + chunk
 		}
-		if _, err := m.client.SendMessage(ctx, contextID, text, m.parseMode()); err != nil {
+		if _, err := m.client.SendMessage(ctx, contextID, text, m.parseMode(), parseThreadID(threadID)); err != nil {
 			return fmt.Errorf("send chunk %d: %w", i, err)
 		}
 	}

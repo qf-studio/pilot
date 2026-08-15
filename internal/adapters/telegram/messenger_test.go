@@ -211,3 +211,53 @@ func TestTelegramMessenger_MaxMessageLength(t *testing.T) {
 		t.Errorf("expected 4000, got %d", got)
 	}
 }
+
+func TestTelegramMessenger_ForwardsThreadID(t *testing.T) {
+	sends := map[string]func(m *TelegramMessenger, threadID string) error{
+		"SendConfirmation": func(m *TelegramMessenger, threadID string) error {
+			_, err := m.SendConfirmation(context.Background(), "123", threadID, "TASK-1", "Add feature", "/project")
+			return err
+		},
+		"SendResult": func(m *TelegramMessenger, threadID string) error {
+			return m.SendResult(context.Background(), "123", threadID, "TASK-1", true, "done", "")
+		},
+		"SendChunked": func(m *TelegramMessenger, threadID string) error {
+			return m.SendChunked(context.Background(), "123", threadID, "short content", "")
+		},
+	}
+
+	tests := []struct {
+		name      string
+		threadID  string
+		wantKey   bool
+		wantValue float64
+	}{
+		{name: "forum topic", threadID: "99", wantKey: true, wantValue: 99},
+		{name: "empty thread id", threadID: "", wantKey: false},
+		{name: "unparseable thread id", threadID: "general", wantKey: false},
+	}
+
+	for method, send := range sends {
+		for _, tt := range tests {
+			t.Run(method+"/"+tt.name, func(t *testing.T) {
+				var raw map[string]interface{}
+				m := newTestMessenger(t, func(w http.ResponseWriter, r *http.Request) {
+					_ = json.NewDecoder(r.Body).Decode(&raw)
+					_ = json.NewEncoder(w).Encode(SendMessageResponse{OK: true, Result: &Result{MessageID: 1}})
+				})
+
+				if err := send(m, tt.threadID); err != nil {
+					t.Fatalf("%s returned error: %v", method, err)
+				}
+
+				got, ok := raw["message_thread_id"]
+				if ok != tt.wantKey {
+					t.Fatalf("message_thread_id present = %v, want %v", ok, tt.wantKey)
+				}
+				if tt.wantKey && got != tt.wantValue {
+					t.Errorf("message_thread_id = %v, want %v", got, tt.wantValue)
+				}
+			})
+		}
+	}
+}

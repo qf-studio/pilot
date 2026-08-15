@@ -37,6 +37,7 @@ type mockSentMessage struct {
 	ChatID   string
 	Text     string
 	Keyboard [][]InlineKeyboardButton
+	ThreadID int64
 }
 
 type mockEditedMessage struct {
@@ -50,7 +51,7 @@ type mockAnsweredCallback struct {
 	Text       string
 }
 
-func (m *mockTelegramClient) SendMessageWithKeyboard(ctx context.Context, chatID, text, parseMode string, keyboard [][]InlineKeyboardButton) (*MessageResponse, error) {
+func (m *mockTelegramClient) SendMessageWithKeyboard(ctx context.Context, chatID, text, parseMode string, keyboard [][]InlineKeyboardButton, messageThreadID int64) (*MessageResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -62,6 +63,7 @@ func (m *mockTelegramClient) SendMessageWithKeyboard(ctx context.Context, chatID
 		ChatID:   chatID,
 		Text:     text,
 		Keyboard: keyboard,
+		ThreadID: messageThreadID,
 	})
 
 	m.nextMessageID++
@@ -129,7 +131,7 @@ func (m *mockTelegramClient) getAnsweredCallbacks() []mockAnsweredCallback {
 
 func TestTelegramHandler_Name(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "12345")
+	handler := NewTelegramHandler(client, "12345", 0)
 
 	if handler.Name() != "telegram" {
 		t.Errorf("expected name 'telegram', got '%s'", handler.Name())
@@ -172,7 +174,7 @@ func TestTelegramHandler_SendApprovalRequest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &mockTelegramClient{}
-			handler := NewTelegramHandler(client, "chat123")
+			handler := NewTelegramHandler(client, "chat123", 0)
 
 			req := &Request{
 				ID:        "req-1",
@@ -221,7 +223,7 @@ func TestTelegramHandler_SendApprovalRequest(t *testing.T) {
 
 func TestTelegramHandler_SendApprovalRequest_WithMetadata(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:          "req-meta",
@@ -260,7 +262,7 @@ func TestTelegramHandler_SendApprovalRequest_Error(t *testing.T) {
 	client := &mockTelegramClient{
 		sendError: errors.New("network error"),
 	}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:        "req-err",
@@ -282,7 +284,7 @@ func TestTelegramHandler_SendApprovalRequest_Error(t *testing.T) {
 
 func TestTelegramHandler_CancelRequest(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:        "req-cancel",
@@ -317,7 +319,7 @@ func TestTelegramHandler_CancelRequest(t *testing.T) {
 
 func TestTelegramHandler_CancelRequest_NotFound(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	// Cancel a request that doesn't exist
 	err := handler.CancelRequest(context.Background(), "nonexistent")
@@ -336,7 +338,7 @@ func TestTelegramHandler_CancelRequest_EditError(t *testing.T) {
 	client := &mockTelegramClient{
 		editError: errors.New("edit failed"),
 	}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:        "req-edit-err",
@@ -360,7 +362,7 @@ func TestTelegramHandler_CancelRequest_EditError(t *testing.T) {
 
 func TestTelegramHandler_HandleCallback_Approve(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:        "req-cb-approve",
@@ -418,7 +420,7 @@ func TestTelegramHandler_HandleCallback_Approve(t *testing.T) {
 
 func TestTelegramHandler_HandleCallback_Reject(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:        "req-cb-reject",
@@ -461,7 +463,7 @@ func TestTelegramHandler_HandleCallback_Reject(t *testing.T) {
 
 func TestTelegramHandler_HandleCallback_InvalidFormat(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	tests := []struct {
 		name string
@@ -486,7 +488,7 @@ func TestTelegramHandler_HandleCallback_InvalidFormat(t *testing.T) {
 
 func TestTelegramHandler_HandleCallback_ExpiredRequest(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	// Handle callback for a request that doesn't exist
 	handled := handler.HandleCallback(context.Background(), "cb123", "approve:nonexistent", "user", "username")
@@ -506,7 +508,7 @@ func TestTelegramHandler_HandleCallback_ExpiredRequest(t *testing.T) {
 
 func TestTelegramHandler_HandleCallback_ExpiredButStillPending(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:        "req-expired-race",
@@ -564,7 +566,7 @@ func TestTelegramHandler_HandleCallback_EditError(t *testing.T) {
 	client := &mockTelegramClient{
 		editError: errors.New("edit failed"),
 	}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:        "req-edit-fail",
@@ -694,7 +696,7 @@ func TestFormatDuration(t *testing.T) {
 
 func TestTelegramHandler_FormatApprovalMessage_Stages(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	tests := []struct {
 		stage     Stage
@@ -731,7 +733,7 @@ func TestTelegramHandler_FormatApprovalMessage_Stages(t *testing.T) {
 
 func TestTelegramHandler_FormatResponseMessage(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:     "test",
@@ -772,7 +774,7 @@ func TestTelegramHandler_FormatResponseMessage(t *testing.T) {
 // control paths, which must fall back to the generic APPROVED/REJECTED card.
 func TestTelegramHandler_FormatResponseMessage_ReleasePlan(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	tests := []struct {
 		name         string
@@ -834,7 +836,7 @@ func TestTelegramHandler_FormatResponseMessage_ReleasePlan(t *testing.T) {
 
 func TestTelegramHandler_CreateApprovalKeyboard(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	tests := []struct {
 		stage       Stage
@@ -882,7 +884,7 @@ func TestTelegramHandler_NilMessageResponse(t *testing.T) {
 	// Create a client that returns nil result
 	client := &mockTelegramClient{}
 	// Modify to return nil result
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID:        "req-nil",
@@ -905,7 +907,7 @@ func TestTelegramHandler_NilMessageResponse(t *testing.T) {
 func TestTelegramHandler_CancelWithZeroMessageID(t *testing.T) {
 	// Create handler that tracks a request with message ID 0
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	// Manually add a pending request with 0 message ID
 	handler.mu.Lock()
@@ -935,7 +937,7 @@ func TestTelegramHandler_CancelWithZeroMessageID(t *testing.T) {
 
 func TestTelegramHandler_HandleCallbackWithZeroMessageID(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	// Manually add a pending request with 0 message ID
 	respCh := make(chan *Response, 1)
@@ -981,7 +983,7 @@ func TestTelegramHandler_HandleCallbackWithZeroMessageID(t *testing.T) {
 func TestTelegramHandler_ApproverRouting(t *testing.T) {
 	t.Run("uses approver chat_id when set", func(t *testing.T) {
 		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat")
+		handler := NewTelegramHandler(client, "constructor-chat", 0)
 
 		req := &Request{
 			ID:        "req-approver",
@@ -1008,7 +1010,7 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 
 	t.Run("falls back to constructor chat_id when approvers empty", func(t *testing.T) {
 		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat")
+		handler := NewTelegramHandler(client, "constructor-chat", 0)
 
 		req := &Request{
 			ID:        "req-no-approver",
@@ -1035,7 +1037,7 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 
 	t.Run("uses @channel approver as-is", func(t *testing.T) {
 		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat")
+		handler := NewTelegramHandler(client, "constructor-chat", 0)
 
 		req := &Request{
 			ID:        "req-approver-channel",
@@ -1068,7 +1070,7 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 	// incident's PRs #4373/#4374.
 	t.Run("falls back to constructor chat_id when approver is not a valid telegram destination", func(t *testing.T) {
 		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat")
+		handler := NewTelegramHandler(client, "constructor-chat", 0)
 
 		req := &Request{
 			ID:        "req-invalid-approver",
@@ -1095,7 +1097,7 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 
 	t.Run("edit after callback uses same chat_id as original send", func(t *testing.T) {
 		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat")
+		handler := NewTelegramHandler(client, "constructor-chat", 0)
 
 		req := &Request{
 			ID:        "req-edit-routing",
@@ -1153,7 +1155,7 @@ func TestIsValidTelegramChatID(t *testing.T) {
 // approvers list doesn't spam the log every controller tick (GH-4380).
 func TestTelegramHandler_InvalidApprover_WarnsOnce(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "constructor-chat")
+	handler := NewTelegramHandler(client, "constructor-chat", 0)
 	logger, buf := newCapturingLogger()
 	handler.log = logger
 
@@ -1284,7 +1286,7 @@ func (s *mockPendingStore) len() int {
 func TestTelegramHandler_WithStore_PersistOnSend(t *testing.T) {
 	client := &mockTelegramClient{}
 	store := newMockPendingStore()
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 
 	req := &Request{
 		ID: "persist-1", TaskID: "T-1", Stage: StagePreMerge,
@@ -1312,7 +1314,7 @@ func TestTelegramHandler_WithStore_PersistOnSend(t *testing.T) {
 func TestTelegramHandler_WithStore_PersistsProject(t *testing.T) {
 	client := &mockTelegramClient{}
 	store := newMockPendingStore()
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 
 	req := &Request{
 		ID: "persist-project-1", TaskID: "T-1", Stage: StagePreMerge,
@@ -1334,7 +1336,7 @@ func TestTelegramHandler_WithStore_PersistsProject(t *testing.T) {
 func TestTelegramHandler_WithStore_DeleteOnCallback(t *testing.T) {
 	client := &mockTelegramClient{}
 	store := newMockPendingStore()
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 
 	req := &Request{
 		ID: "del-cb-1", TaskID: "T-2", Stage: StagePreMerge,
@@ -1357,7 +1359,7 @@ func TestTelegramHandler_WithStore_DeleteOnCallback(t *testing.T) {
 func TestTelegramHandler_WithStore_DeleteOnCancel(t *testing.T) {
 	client := &mockTelegramClient{}
 	store := newMockPendingStore()
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 
 	req := &Request{
 		ID: "del-cancel-1", TaskID: "T-3", Stage: StagePreMerge,
@@ -1392,7 +1394,7 @@ func TestTelegramHandler_Rehydrate_RestoреsNonExpired(t *testing.T) {
 		Title: "Dead", CreatedAt: time.Now(), ExpiresAt: past,
 	})
 
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 	if err := handler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1416,7 +1418,7 @@ func TestTelegramHandler_Rehydrate_RestoреsNonExpired(t *testing.T) {
 
 func TestTelegramHandler_Rehydrate_NoStore(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 	// No store attached — Rehydrate should be a no-op.
 	if err := handler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("expected no error without store, got: %v", err)
@@ -1431,7 +1433,7 @@ func TestTelegramHandler_Rehydrate_CallbackWorksAfterRehydrate(t *testing.T) {
 		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 	if err := handler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("rehydrate error: %v", err)
 	}
@@ -1492,7 +1494,7 @@ func (r *mockDecisionRecorder) getCalls() []struct {
 func TestTelegramHandler_HandleCallback_RecordsDecisionViaRecorder(t *testing.T) {
 	client := &mockTelegramClient{}
 	recorder := &mockDecisionRecorder{}
-	handler := NewTelegramHandler(client, "chat123").WithDecisionRecorder(recorder)
+	handler := NewTelegramHandler(client, "chat123", 0).WithDecisionRecorder(recorder)
 
 	req := &Request{ID: "req-1", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
 	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
@@ -1525,7 +1527,7 @@ func TestTelegramHandler_Rehydrate_CallbackRecordsDecisionDirectly(t *testing.T)
 		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	handler := NewTelegramHandler(client, "chat123").WithStore(store).WithDecisionRecorder(recorder)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store).WithDecisionRecorder(recorder)
 	if err := handler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("rehydrate error: %v", err)
 	}
@@ -1547,7 +1549,7 @@ func TestTelegramHandler_Rehydrate_CallbackRecordsDecisionDirectly(t *testing.T)
 func TestTelegramHandler_HandleCallback_RecorderErrorIsNonFatal(t *testing.T) {
 	client := &mockTelegramClient{}
 	recorder := &mockDecisionRecorder{err: errors.New("db down")}
-	handler := NewTelegramHandler(client, "chat123").WithDecisionRecorder(recorder)
+	handler := NewTelegramHandler(client, "chat123", 0).WithDecisionRecorder(recorder)
 
 	req := &Request{ID: "req-2", TaskID: "T-2", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
 	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
@@ -1570,7 +1572,7 @@ func TestTelegramHandler_HandleCallback_RecorderErrorIsNonFatal(t *testing.T) {
 func TestTelegramHandler_HandleCallback_RaceLoss_ShowsAlreadyDecided(t *testing.T) {
 	client := &mockTelegramClient{}
 	recorder := &mockDecisionRecorder{err: memory.ErrApprovalAlreadyDecided}
-	handler := NewTelegramHandler(client, "chat123").WithDecisionRecorder(recorder)
+	handler := NewTelegramHandler(client, "chat123", 0).WithDecisionRecorder(recorder)
 
 	req := &Request{ID: "req-race-loss", TaskID: "T-Race", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
 	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
@@ -1636,7 +1638,7 @@ func findSubstring(s, substr string) bool {
 func TestTelegramHandler_HandleCallback_UnknownRequest_LogsInfo(t *testing.T) {
 	client := &mockTelegramClient{}
 	logger, buf := newCapturingLogger()
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 	handler.log = logger
 
 	handled := handler.HandleCallback(context.Background(), "cb-unknown", "approve:ghost-request", "u1", "tester")
@@ -1662,7 +1664,7 @@ func TestTelegramHandler_HandleCallback_UnknownRequest_LogsInfo(t *testing.T) {
 func TestTelegramHandler_HandleCallback_AnswerCallbackError_LogsWarn(t *testing.T) {
 	client := &mockTelegramClient{answerError: errors.New("telegram api down")}
 	logger, buf := newCapturingLogger()
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 	handler.log = logger
 
 	req := &Request{ID: "req-answer-fail", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
@@ -1689,7 +1691,7 @@ func TestTelegramHandler_HandleCallback_AnswerCallbackError_LogsWarn(t *testing.
 func TestTelegramHandler_HandleCallback_UnknownRequest_AnswerCallbackError_LogsWarn(t *testing.T) {
 	client := &mockTelegramClient{answerError: errors.New("telegram api down")}
 	logger, buf := newCapturingLogger()
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 	handler.log = logger
 
 	handled := handler.HandleCallback(context.Background(), "cb-1", "approve:ghost", "u1", "tester")
@@ -1708,7 +1710,7 @@ func TestTelegramHandler_HandleCallback_UnknownRequest_AnswerCallbackError_LogsW
 func TestTelegramHandler_HandleCallback_ExpiredButPending_AnswerCallbackError_LogsWarn(t *testing.T) {
 	client := &mockTelegramClient{answerError: errors.New("telegram api down")}
 	logger, buf := newCapturingLogger()
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 	handler.log = logger
 
 	req := &Request{ID: "req-exp-answer-fail", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(-time.Minute)}
@@ -1740,7 +1742,7 @@ func TestTelegramHandler_Rehydrate_ResendsFreshPromptPerPendingRequest(t *testin
 		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 	if err := handler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("rehydrate error: %v", err)
 	}
@@ -1780,7 +1782,7 @@ func TestTelegramHandler_Rehydrate_NoSpamOnRepeatedCalls(t *testing.T) {
 		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 	if err := handler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("first rehydrate error: %v", err)
 	}
@@ -1810,7 +1812,7 @@ func TestTelegramHandler_Rehydrate_ResendFailureIsNonFatal(t *testing.T) {
 		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 	handler.log = logger
 
 	if err := handler.Rehydrate(context.Background()); err != nil {
@@ -1835,7 +1837,7 @@ func TestTelegramHandler_Rehydrate_ResendFailureIsNonFatal(t *testing.T) {
 func TestTelegramHandler_PruneExpired_EditsMessageAndRemoves(t *testing.T) {
 	client := &mockTelegramClient{}
 	store := newMockPendingStore()
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 
 	req := &Request{
 		ID: "exp-1", TaskID: "T-1", Stage: StagePreMerge,
@@ -1876,7 +1878,7 @@ func TestTelegramHandler_PruneExpired_EditsMessageAndRemoves(t *testing.T) {
 func TestTelegramHandler_PruneExpired_LeavesNonExpired(t *testing.T) {
 	client := &mockTelegramClient{}
 	store := newMockPendingStore()
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 
 	expired := &Request{ID: "exp-2", TaskID: "T-2", Stage: StagePreMerge, Title: "Old", ExpiresAt: time.Now().Add(-time.Minute)}
 	live := &Request{ID: "live-2", TaskID: "T-3", Stage: StagePreMerge, Title: "Fresh", ExpiresAt: time.Now().Add(time.Hour)}
@@ -1924,7 +1926,7 @@ func TestTelegramHandler_PruneExpired_RehydratedGetsFreshMessageID(t *testing.T)
 		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(20 * time.Millisecond),
 	})
 
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 	if err := handler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("rehydrate error: %v", err)
 	}
@@ -1972,7 +1974,7 @@ func TestTelegramHandler_PruneExpired_RehydratedResendFailure_NoMessageID(t *tes
 		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(20 * time.Millisecond),
 	})
 
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 	if err := handler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("rehydrate error: %v", err)
 	}
@@ -1997,7 +1999,7 @@ func TestTelegramHandler_PruneExpired_RehydratedResendFailure_NoMessageID(t *tes
 
 func TestTelegramHandler_PruneExpired_NoStore(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{ID: "exp-3", TaskID: "T-4", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(-time.Minute)}
 	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
@@ -2019,7 +2021,7 @@ func TestTelegramHandler_PruneExpired_NoStore(t *testing.T) {
 func TestTelegramHandler_PruneExpired_SweepsOrphanedStoreRows(t *testing.T) {
 	client := &mockTelegramClient{}
 	store := newMockPendingStore()
-	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
 
 	// A row with no in-memory pending counterpart — e.g. left behind by a
 	// process that crashed before Rehydrate ran.
@@ -2049,7 +2051,7 @@ func TestTelegramHandler_PruneExpired_SweepsOrphanedStoreRows(t *testing.T) {
 func TestTelegramHandler_HandleCallback_EditFailure_FallsBackToNewMessage(t *testing.T) {
 	client := &mockTelegramClient{editError: errors.New("edit failed")}
 	logger, buf := newCapturingLogger()
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 	handler.log = logger
 
 	req := &Request{ID: "req-fallback", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
@@ -2090,7 +2092,7 @@ func TestTelegramHandler_HandleCallback_EditFailure_FallsBackToNewMessage(t *tes
 // merge-completion follow-up to the same chat the approval card was sent to.
 func TestTelegramHandler_NotifyMerged_SendsFollowUpInSameChat(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{
 		ID: "req-merged", TaskID: "GH-1", Stage: StagePreMerge, Title: "Test",
@@ -2125,7 +2127,7 @@ func TestTelegramHandler_NotifyMerged_SendsFollowUpInSameChat(t *testing.T) {
 // or already notified once — is a silent no-op.
 func TestTelegramHandler_NotifyMerged_UnknownRequestIsNoOp(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	if err := handler.NotifyMerged(context.Background(), "never-approved", "abc1234"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2140,7 +2142,7 @@ func TestTelegramHandler_NotifyMerged_UnknownRequestIsNoOp(t *testing.T) {
 // tick) does not send a second follow-up.
 func TestTelegramHandler_NotifyMerged_FiresOnceThenNoOp(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{ID: "req-once", TaskID: "GH-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
 	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
@@ -2166,7 +2168,7 @@ func TestTelegramHandler_NotifyMerged_FiresOnceThenNoOp(t *testing.T) {
 // is dropped from the resolved map so it cannot grow unbounded.
 func TestTelegramHandler_PruneExpired_SweepsStaleResolvedDecisions(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123")
+	handler := NewTelegramHandler(client, "chat123", 0)
 
 	req := &Request{ID: "req-stale", TaskID: "GH-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
 	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
@@ -2187,5 +2189,75 @@ func TestTelegramHandler_PruneExpired_SweepsStaleResolvedDecisions(t *testing.T)
 	handler.mu.RUnlock()
 	if exists {
 		t.Error("expected stale resolved decision to be swept")
+	}
+}
+
+func TestTelegramHandlerMessageThreadID(t *testing.T) {
+	tests := []struct {
+		name            string
+		messageThreadID int64
+		approvers       []string
+		wantChatID      string
+		wantThreadID    int64
+	}{
+		{
+			name:            "topic applied to the configured chat",
+			messageThreadID: 12,
+			approvers:       []string{},
+			wantChatID:      "configured-chat",
+			wantThreadID:    12,
+		},
+		{
+			name:            "topic dropped for an approver override",
+			messageThreadID: 12,
+			approvers:       []string{"99999"},
+			wantChatID:      "99999",
+			wantThreadID:    0,
+		},
+		{
+			name:            "invalid approver falls back to chat and keeps the topic",
+			messageThreadID: 12,
+			approvers:       []string{"#slack-channel"},
+			wantChatID:      "configured-chat",
+			wantThreadID:    12,
+		},
+		{
+			name:            "no topic configured",
+			messageThreadID: 0,
+			approvers:       []string{},
+			wantChatID:      "configured-chat",
+			wantThreadID:    0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &mockTelegramClient{}
+			handler := NewTelegramHandler(client, "configured-chat", tt.messageThreadID)
+
+			req := &Request{
+				ID:        "req-thread",
+				TaskID:    "TASK-01",
+				Stage:     StagePreMerge,
+				Title:     "Test",
+				Approvers: tt.approvers,
+				ExpiresAt: time.Now().Add(1 * time.Hour),
+			}
+
+			if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			msgs := client.getSentMessages()
+			if len(msgs) != 1 {
+				t.Fatalf("expected 1 message sent, got %d", len(msgs))
+			}
+			if msgs[0].ChatID != tt.wantChatID {
+				t.Errorf("chat_id = %q, want %q", msgs[0].ChatID, tt.wantChatID)
+			}
+			if msgs[0].ThreadID != tt.wantThreadID {
+				t.Errorf("message_thread_id = %d, want %d", msgs[0].ThreadID, tt.wantThreadID)
+			}
+		})
 	}
 }

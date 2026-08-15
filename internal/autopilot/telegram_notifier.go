@@ -52,7 +52,7 @@ func (n *TelegramNotifier) NotifyMerged(ctx context.Context, prState *PRState) e
 		"Method: squash",
 		envPrefix(prState), prState.PRNumber, prDetail(prState))
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
 	return err
 }
 
@@ -71,7 +71,7 @@ func (n *TelegramNotifier) NotifyCIFailed(ctx context.Context, prState *PRState,
 	msg := fmt.Sprintf("%s❌ *CI Failed* for PR #%d%s\n\n%s",
 		envPrefix(prState), prState.PRNumber, prDetail(prState), checks)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
 	return err
 }
 
@@ -83,7 +83,7 @@ func (n *TelegramNotifier) NotifyApprovalRequired(ctx context.Context, prState *
 		envPrefix(prState), prState.PRNumber, prDetail(prState),
 		prState.PRNumber, prState.PRNumber)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
 	return err
 }
 
@@ -94,7 +94,7 @@ func (n *TelegramNotifier) NotifyFixIssueCreated(ctx context.Context, prState *P
 		"Pilot will pick this up automatically.",
 		envPrefix(prState), issueNumber, prState.PRNumber)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
 	return err
 }
 
@@ -103,7 +103,7 @@ func (n *TelegramNotifier) NotifyPipelineComplete(ctx context.Context, prState *
 	msg := fmt.Sprintf("%s🏁 *Pipeline complete* for GH-%d — PR #%d merged%s",
 		envPrefix(prState), prState.IssueNumber, prState.PRNumber, prDetail(prState))
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
 	return err
 }
 
@@ -140,7 +140,7 @@ func (n *TelegramNotifier) NotifyReleased(ctx context.Context, prState *PRState,
 		releaseURL,
 	)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
 	return err
 }
 

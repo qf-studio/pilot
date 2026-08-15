@@ -478,3 +478,46 @@ func TestNotifierPlainTextModeConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestNotifierSendsConfiguredMessageThreadID(t *testing.T) {
+	tests := []struct {
+		name            string
+		messageThreadID int64
+		wantKey         bool
+		wantValue       float64
+	}{
+		{name: "no topic configured", messageThreadID: 0, wantKey: false},
+		{name: "topic configured", messageThreadID: 321, wantKey: true, wantValue: 321},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&raw)
+				_ = json.NewEncoder(w).Encode(SendMessageResponse{OK: true, Result: &Result{MessageID: 1}})
+			}))
+			defer server.Close()
+
+			notifier := NewNotifier(&Config{
+				BotToken:        testutil.FakeTelegramBotToken,
+				ChatID:          "123456",
+				MessageThreadID: tt.messageThreadID,
+				PlainTextMode:   true,
+			})
+			notifier.client = NewClientWithBaseURL(testutil.FakeTelegramBotToken, server.URL)
+
+			if err := notifier.SendTaskStarted(context.Background(), "TASK-1", "Add feature"); err != nil {
+				t.Fatalf("SendTaskStarted error = %v", err)
+			}
+
+			got, ok := raw["message_thread_id"]
+			if ok != tt.wantKey {
+				t.Fatalf("message_thread_id present = %v, want %v", ok, tt.wantKey)
+			}
+			if tt.wantKey && got != tt.wantValue {
+				t.Errorf("message_thread_id = %v, want %v", got, tt.wantValue)
+			}
+		})
+	}
+}

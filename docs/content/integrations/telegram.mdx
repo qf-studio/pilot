@@ -54,6 +54,7 @@ Always set `allowed_ids` to restrict who can trigger Pilot via Telegram. Without
 | `enabled` | bool | `false` | Enable the Telegram adapter |
 | `bot_token` | string | required | Bot token from @BotFather |
 | `chat_id` | string | — | Default chat ID for outbound notifications |
+| `message_thread_id` | int64 | — | Forum topic for outbound notifications and approval prompts. Forum supergroups only |
 | `allowed_ids` | []int64 | — | User/chat IDs authorized to send tasks |
 | `project_path` | string | — | Default project path for tasks |
 | `polling` | bool | `false` | Enable inbound message polling |
@@ -69,6 +70,27 @@ Always set `allowed_ids` to restrict who can trigger Pilot via Telegram. Without
 | `llm_classifier.timeout_seconds` | int | `2` | Classification timeout |
 | `llm_classifier.history_size` | int | `10` | Messages to keep per chat |
 | `llm_classifier.history_ttl` | duration | `30m` | Conversation history TTL |
+
+## Forum Topics
+
+Supergroups with Topics enabled route every message to a topic. Set
+`message_thread_id` to post notifications and approval prompts into one topic
+instead of General:
+
+```yaml
+adapters:
+  telegram:
+    chat_id: "-1001234567890"
+    message_thread_id: 12
+```
+
+The id is the middle segment of a link to any message in that topic —
+`https://t.me/c/<chat>/<topic>/<msg>`. Leave it unset for chats without Topics;
+sending a topic id to a non-forum chat is rejected by the Bot API.
+
+Approval prompts addressed to an individual approver (where `approvers[0]` is a
+chat ID) go to that chat directly and ignore this setting. Alert channels take
+their own `message_thread_id` — see [Alerts](/features/alerts).
 
 ## Chat Modes
 

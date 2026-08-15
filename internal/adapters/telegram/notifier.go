@@ -11,9 +11,11 @@ import (
 
 // Config holds Telegram adapter configuration
 type Config struct {
-	Enabled       bool                   `yaml:"enabled"`
-	BotToken      string                 `yaml:"bot_token"`
-	ChatID        string                 `yaml:"chat_id"`
+	Enabled         bool   `yaml:"enabled"`
+	BotToken        string `yaml:"bot_token"`
+	ChatID          string `yaml:"chat_id"`
+	MessageThreadID int64  `yaml:"message_thread_id"`
+
 	Polling       bool                   `yaml:"polling"`         // Enable inbound polling
 	SDKBridge     bool                   `yaml:"sdk_bridge"`      // GH-3470: drive inbound via the studio-sdk chat bridge instead of the local long-poll loop (opt-in; default off)
 	AllowedIDs    []int64                `yaml:"allowed_ids"`     // User/chat IDs allowed to send tasks
@@ -53,17 +55,19 @@ func DefaultConfig() *Config {
 
 // Notifier sends notifications to Telegram
 type Notifier struct {
-	client        *Client
-	chatID        string
-	plainTextMode bool
+	client          *Client
+	chatID          string
+	messageThreadID int64
+	plainTextMode   bool
 }
 
 // NewNotifier creates a new Telegram notifier
 func NewNotifier(config *Config) *Notifier {
 	return &Notifier{
-		client:        NewClient(config.BotToken),
-		chatID:        config.ChatID,
-		plainTextMode: config.PlainTextMode,
+		client:          NewClient(config.BotToken),
+		chatID:          config.ChatID,
+		messageThreadID: config.MessageThreadID,
+		plainTextMode:   config.PlainTextMode,
 	}
 }
 
@@ -78,7 +82,7 @@ func (n *Notifier) getParseMode() string {
 
 // SendMessage sends a plain text message
 func (n *Notifier) SendMessage(ctx context.Context, text string) error {
-	_, err := n.client.SendMessage(ctx, n.chatID, text, "")
+	_, err := n.client.SendMessage(ctx, n.chatID, text, "", n.messageThreadID)
 	return err
 }
 
@@ -90,7 +94,7 @@ func (n *Notifier) SendTaskStarted(ctx context.Context, taskID, title string) er
 	} else {
 		text = fmt.Sprintf("🚀 *Pilot started task*\n`%s` %s", taskID, escapeMarkdown(title))
 	}
-	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode())
+	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode(), n.messageThreadID)
 	return err
 }
 
@@ -108,7 +112,7 @@ func (n *Notifier) SendTaskCompleted(ctx context.Context, taskID, title, prURL s
 			text += fmt.Sprintf("\n\n[PR ready for review](%s)", prURL)
 		}
 	}
-	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode())
+	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode(), n.messageThreadID)
 	return err
 }
 
@@ -120,7 +124,7 @@ func (n *Notifier) SendTaskFailed(ctx context.Context, taskID, title, errorMsg s
 	} else {
 		text = fmt.Sprintf("❌ *Pilot task failed*\n`%s` %s\n\n```\n%s\n```", taskID, escapeMarkdown(title), errorMsg)
 	}
-	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode())
+	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode(), n.messageThreadID)
 	return err
 }
 
@@ -133,7 +137,7 @@ func (n *Notifier) TaskProgress(ctx context.Context, taskID, status string, prog
 	} else {
 		text = fmt.Sprintf("⏳ *Task Progress*\n`%s` %s\n%s %d%%", taskID, escapeMarkdown(status), progressBar, progress)
 	}
-	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode())
+	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode(), n.messageThreadID)
 	return err
 }
 
@@ -145,7 +149,7 @@ func (n *Notifier) PRReady(ctx context.Context, taskID, title, prURL string, fil
 	} else {
 		text = fmt.Sprintf("🔔 *PR Ready for Review*\n`%s` %s\n\n[View PR](%s) • %d files changed", taskID, escapeMarkdown(title), prURL, filesChanged)
 	}
-	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode())
+	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode(), n.messageThreadID)
 	return err
 }
 
@@ -190,7 +194,7 @@ func (n *Notifier) SendBudgetWarning(ctx context.Context, alertType, message str
 	} else {
 		text = fmt.Sprintf("%s *%s*\n\n%s", icon, title, escapeMarkdown(message))
 	}
-	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode())
+	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode(), n.messageThreadID)
 	return err
 }
 
@@ -202,7 +206,7 @@ func (n *Notifier) SendBudgetPaused(ctx context.Context, reason string) error {
 	} else {
 		text = fmt.Sprintf("🛑 *Task Execution Paused*\n\n%s\n\nNew tasks will not start until limits reset or budget is increased.", escapeMarkdown(reason))
 	}
-	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode())
+	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode(), n.messageThreadID)
 	return err
 }
 
@@ -214,7 +218,7 @@ func (n *Notifier) SendTaskBlocked(ctx context.Context, taskID, reason string) e
 	} else {
 		text = fmt.Sprintf("⛔ *Task Blocked*\n`%s`\n\n%s", taskID, escapeMarkdown(reason))
 	}
-	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode())
+	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode(), n.messageThreadID)
 	return err
 }
 
