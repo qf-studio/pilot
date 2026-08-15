@@ -400,10 +400,23 @@ type DashboardConfig struct {
 // AlertsConfig holds configuration for the alerting system including
 // channels, rules, and default settings.
 type AlertsConfig struct {
-	Enabled  bool                 `yaml:"enabled"`
-	Channels []AlertChannelConfig `yaml:"channels"`
-	Rules    []AlertRuleConfig    `yaml:"rules"`
-	Defaults AlertDefaultsConfig  `yaml:"defaults"`
+	Enabled             bool                 `yaml:"enabled"`
+	Channels            []AlertChannelConfig `yaml:"channels"`
+	Rules               []AlertRuleConfig    `yaml:"rules"`
+	Defaults            AlertDefaultsConfig  `yaml:"defaults"`
+	HealthCheckInterval time.Duration        `yaml:"health_check_interval"`
+}
+
+const defaultAlertHealthCheckInterval = 15 * time.Minute
+
+func (a *AlertsConfig) ResolvedHealthCheckInterval() time.Duration {
+	if a == nil || a.HealthCheckInterval < 0 {
+		return 0
+	}
+	if a.HealthCheckInterval == 0 {
+		return defaultAlertHealthCheckInterval
+	}
+	return a.HealthCheckInterval
 }
 
 // AlertChannelConfig configures a destination channel for alerts.
@@ -452,6 +465,7 @@ type AlertDefaultsConfig struct {
 	Cooldown           time.Duration `yaml:"cooldown"`
 	DefaultSeverity    string        `yaml:"default_severity"`
 	SuppressDuplicates bool          `yaml:"suppress_duplicates"`
+	NotifyOnResolve    *bool         `yaml:"notify_on_resolve"`
 }
 
 // ToAlertConfig converts the YAML-facing AlertsConfig into the alerts
@@ -511,6 +525,7 @@ func (a *AlertsConfig) ToAlertConfig() *alerts.AlertConfig {
 		Cooldown:           a.Defaults.Cooldown,
 		DefaultSeverity:    a.Defaults.DefaultSeverity,
 		SuppressDuplicates: a.Defaults.SuppressDuplicates,
+		NotifyOnResolve:    a.Defaults.NotifyOnResolve,
 	}
 
 	return alerts.FromConfigAlerts(a.Enabled, channels, rules, defaults)

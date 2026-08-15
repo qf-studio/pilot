@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/health/verify"
@@ -174,5 +176,64 @@ func TestRegisterAdapterReadiness_ReadyEndpoint(t *testing.T) {
 	}
 	if body.Checks["broken-adapter"] {
 		t.Error("broken-adapter check = true, want false")
+	}
+}
+
+type countingVerifiable struct {
+	name  string
+	err   error
+	mu    sync.Mutex
+	calls int
+	fired chan struct{}
+}
+
+func (c *countingVerifiable) Name() string { return c.name }
+
+func (c *countingVerifiable) Verify(ctx context.Context) error {
+	c.mu.Lock()
+	c.calls++
+	first := c.calls == 1
+	c.mu.Unlock()
+	if first && c.fired != nil {
+		close(c.fired)
+	}
+	return c.err
+}
+
+func TestStartAdapterHealthLoopReverifies(t *testing.T) {
+	v := &countingVerifiable{name: "github", fired: make(chan struct{})}
+	engine := alerts.NewEngine(&alerts.AlertConfig{Enabled: true})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startAdapterHealthLoop(ctx, []verify.Verifiable{v}, engine, 10*time.Millisecond)
+
+	select {
+	case <-v.fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("health loop did not re-verify within 2s")
+	}
+}
+
+func TestStartAdapterHealthLoopGuards(t *testing.T) {
+	tests := []struct {
+		name      string
+		interval  time.Duration
+		verifiers []verify.Verifiable
+		engine    *alerts.Engine
+	}{
+		{name: "zero interval disables", interval: 0, verifiers: []verify.Verifiable{&fakeVerifiable{name: "x"}}, engine: alerts.NewEngine(&alerts.AlertConfig{})},
+		{name: "negative interval disables", interval: -time.Minute, verifiers: []verify.Verifiable{&fakeVerifiable{name: "x"}}, engine: alerts.NewEngine(&alerts.AlertConfig{})},
+		{name: "no verifiers", interval: time.Millisecond, verifiers: nil, engine: alerts.NewEngine(&alerts.AlertConfig{})},
+		{name: "nil engine", interval: time.Millisecond, verifiers: []verify.Verifiable{&fakeVerifiable{name: "x"}}, engine: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			startAdapterHealthLoop(ctx, tt.verifiers, tt.engine, tt.interval)
+		})
 	}
 }

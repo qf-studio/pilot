@@ -230,6 +230,22 @@ type AlertDefaults struct {
 	Cooldown           time.Duration `yaml:"cooldown"`
 	DefaultSeverity    Severity      `yaml:"default_severity"`
 	SuppressDuplicates bool          `yaml:"suppress_duplicates"`
+	NotifyOnResolve    *bool         `yaml:"notify_on_resolve"`
+}
+
+func (d AlertDefaults) ResolveNotificationsEnabled() bool {
+	return d.NotifyOnResolve == nil || *d.NotifyOnResolve
+}
+
+func (a *Alert) IsResolution() bool {
+	return a != nil && a.ResolvedAt != nil
+}
+
+func (a *Alert) Duration() time.Duration {
+	if !a.IsResolution() {
+		return 0
+	}
+	return a.ResolvedAt.Sub(a.CreatedAt)
 }
 
 // ChannelConfig configures an alert channel

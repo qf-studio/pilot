@@ -18,6 +18,7 @@ func FromConfigAlerts(enabled bool, channels []ChannelConfigInput, rules []RuleC
 			Cooldown:           defaults.Cooldown,
 			DefaultSeverity:    parseSeverity(defaults.DefaultSeverity),
 			SuppressDuplicates: defaults.SuppressDuplicates,
+			NotifyOnResolve:    defaults.NotifyOnResolve,
 		},
 	}
 
@@ -102,6 +103,7 @@ type DefaultsConfigInput struct {
 	Cooldown           time.Duration
 	DefaultSeverity    string
 	SuppressDuplicates bool
+	NotifyOnResolve    *bool
 }
 
 func convertChannel(in ChannelConfigInput) ChannelConfig {

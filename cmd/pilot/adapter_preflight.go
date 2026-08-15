@@ -76,6 +76,10 @@ func buildAdapterVerifiers(cfg *config.Config) []verify.Verifiable {
 	return verifiers
 }
 
+func adapterAlertSource(name string) string {
+	return "adapter:" + name
+}
+
 // runAdapterPreflight calls Verify(ctx) on every verifier concurrently,
 // each bounded by preflightVerifyTimeout, and returns the per-adapter
 // result. A failure logs ERROR and emits an alerts.EventTypeConfigError
@@ -110,6 +114,13 @@ func runAdapterPreflight(ctx context.Context, verifiers []verify.Verifiable, ale
 			switch {
 			case err == nil:
 				log.Info("adapter verified", slog.String("adapter", v.Name()))
+				if alertsEngine != nil {
+					alertsEngine.ProcessEvent(alerts.Event{
+						Type:      alerts.EventTypeConfigHealthy,
+						Source:    adapterAlertSource(v.Name()),
+						Timestamp: time.Now(),
+					})
+				}
 			case errors.Is(err, verify.ErrProbeNotImplemented):
 				// No live probe yet — not evidence of a broken credential.
 			default:
@@ -120,6 +131,7 @@ func runAdapterPreflight(ctx context.Context, verifiers []verify.Verifiable, ale
 				if alertsEngine != nil {
 					alertsEngine.ProcessEvent(alerts.Event{
 						Type:      alerts.EventTypeConfigError,
+						Source:    adapterAlertSource(v.Name()),
 						Error:     fmt.Sprintf("%s adapter verification failed: %v", v.Name(), err),
 						Timestamp: time.Now(),
 					})
@@ -130,6 +142,24 @@ func runAdapterPreflight(ctx context.Context, verifiers []verify.Verifiable, ale
 	wg.Wait()
 
 	return results
+}
+
+func startAdapterHealthLoop(ctx context.Context, verifiers []verify.Verifiable, alertsEngine *alerts.Engine, interval time.Duration) {
+	if interval <= 0 || len(verifiers) == 0 || alertsEngine == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runAdapterPreflight(ctx, verifiers, alertsEngine)
+			}
+		}
+	}()
 }
 
 // registerAdapterReadiness wraps each verifier as a gateway.ReadinessChecker

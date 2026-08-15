@@ -56,12 +56,17 @@ func (c *SlackChannel) formatSlackBlocks(alert *Alert) []slack.Block {
 	emoji := c.severityEmoji(alert.Severity)
 	severityLabel := strings.ToUpper(string(alert.Severity))
 
+	header := fmt.Sprintf("%s %s Alert", emoji, severityLabel)
+	if alert.IsResolution() {
+		header = fmt.Sprintf("✅ Resolved after %s", formatAlertDuration(alert.Duration()))
+	}
+
 	blocks := []slack.Block{
 		{
 			Type: "header",
 			Text: &slack.TextObject{
 				Type: "plain_text",
-				Text: fmt.Sprintf("%s %s Alert", emoji, severityLabel),
+				Text: header,
 			},
 		},
 		{
@@ -160,7 +165,11 @@ func (c *TelegramChannel) formatMessage(alert *Alert) string {
 	severityLabel := strings.ToUpper(string(alert.Severity))
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s *%s ALERT*\n\n", emoji, severityLabel))
+	if alert.IsResolution() {
+		fmt.Fprintf(&sb, "✅ *RESOLVED* after %s\n\n", escapeMarkdown(formatAlertDuration(alert.Duration())))
+	} else {
+		fmt.Fprintf(&sb, "%s *%s ALERT*\n\n", emoji, severityLabel)
+	}
 	sb.WriteString(fmt.Sprintf("*%s*\n", escapeMarkdown(alert.Title)))
 	sb.WriteString(fmt.Sprintf("%s\n\n", escapeMarkdown(alert.Message)))
 
@@ -341,6 +350,10 @@ func (c *EmailChannel) formatSubject(alert *Alert) string {
 		emoji = "⚠️"
 	}
 
+	if alert.IsResolution() {
+		return fmt.Sprintf("✅ [RESOLVED after %s] Pilot Alert: %s", formatAlertDuration(alert.Duration()), alert.Title)
+	}
+
 	return fmt.Sprintf("%s [%s] Pilot Alert: %s", emoji, strings.ToUpper(string(alert.Severity)), alert.Title)
 }
 
@@ -485,4 +498,15 @@ func (c *PagerDutyChannel) Send(ctx context.Context, alert *Alert) error {
 	}
 
 	return nil
+}
+
+func formatAlertDuration(d time.Duration) string {
+	switch {
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
 }
