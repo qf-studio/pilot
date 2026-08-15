@@ -715,6 +715,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			ProjectPath:     projectPath,
 			Projects:        config.NewProjectSource(cfg),
 			AllowedIDs:      allowedIDs,
+			ChatID:          cfg.Adapters.Telegram.ChatID,
 			Transcription:   cfg.Adapters.Telegram.Transcription,
 			Store:           p.store,
 			ApprovalHandler: p.telegramApprovalHdlr,

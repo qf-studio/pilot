@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -1717,5 +1718,56 @@ func TestUpdateParsesEditedMessage(t *testing.T) {
 	}
 	if u.Message != nil {
 		t.Error("Message must stay nil for an edited_message update")
+	}
+}
+
+func TestWarnIfChatNotAllowed(t *testing.T) {
+	tests := []struct {
+		name       string
+		allowedIDs map[int64]bool
+		chatID     string
+		wantWarn   bool
+	}{
+		{name: "chat listed", allowedIDs: map[int64]bool{-100123: true}, chatID: "-100123"},
+		{name: "chat missing warns", allowedIDs: map[int64]bool{55: true}, chatID: "-100123", wantWarn: true},
+		{name: "no allowlist is unrestricted", allowedIDs: map[int64]bool{}, chatID: "-100123"},
+		{name: "no chat configured", allowedIDs: map[int64]bool{55: true}, chatID: ""},
+		{name: "unparseable chat id", allowedIDs: map[int64]bool{55: true}, chatID: "@channel"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logPath := filepath.Join(t.TempDir(), "telegram.log")
+			if err := logging.Init(&logging.Config{Level: "warn", Format: "text", Output: logPath}); err != nil {
+				t.Fatalf("logging.Init: %v", err)
+			}
+			defer func() { _ = logging.Init(nil) }()
+
+			warnIfChatNotAllowed(tt.allowedIDs, tt.chatID)
+
+			out, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read log: %v", err)
+			}
+			gotWarn := strings.Contains(string(out), "not listed in allowed_ids")
+			if gotWarn != tt.wantWarn {
+				t.Errorf("warned = %v, want %v (log: %q)", gotWarn, tt.wantWarn, out)
+			}
+		})
+	}
+}
+
+func TestWarnDroppedOnceDedupes(t *testing.T) {
+	h := &Handler{warnedDropped: make(map[string]bool)}
+
+	h.warnDroppedOnce(-100123, 0, true)
+	h.warnDroppedOnce(-100123, 0, true)
+	h.warnDroppedOnce(-100123, 55, false)
+
+	if got := len(h.warnedDropped); got != 2 {
+		t.Errorf("tracked %d distinct drop keys, want 2", got)
+	}
+	if !h.warnedDropped["-100123|0"] || !h.warnedDropped["-100123|55"] {
+		t.Errorf("unexpected keys: %v", h.warnedDropped)
 	}
 }

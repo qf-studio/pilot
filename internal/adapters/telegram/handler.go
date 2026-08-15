@@ -75,7 +75,9 @@ type Handler struct {
 	projects         comms.ProjectSource // Project source for multi-project support
 	projectPath      string              // Default/fallback project path
 	allowedIDs       map[int64]bool      // Allowed user/chat IDs for security
-	offset           int64               // Last processed update ID
+	warnedDropped    map[string]bool     // dedupes the unauthorized-drop warning per chat/sender
+	warnedDroppedMu  sync.Mutex
+	offset           int64 // Last processed update ID
 	mu               sync.Mutex
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
@@ -92,6 +94,7 @@ type Handler struct {
 // HandlerConfig holds configuration for the Telegram handler
 type HandlerConfig struct {
 	BotToken        string
+	ChatID          string                  // Configured outbound chat; validated against AllowedIDs
 	ProjectPath     string                  // Default/fallback project path
 	Projects        comms.ProjectSource     // Project source for multi-project support
 	AllowedIDs      []int64                 // User/chat IDs allowed to send tasks
@@ -112,6 +115,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	for _, id := range config.AllowedIDs {
 		allowedIDs[id] = true
 	}
+	warnIfChatNotAllowed(allowedIDs, config.ChatID)
 
 	// Determine default project path
 	projectPath := config.ProjectPath
@@ -133,6 +137,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		projects:        config.Projects,
 		projectPath:     projectPath,
 		allowedIDs:      allowedIDs,
+		warnedDropped:   make(map[string]bool),
 		stopCh:          make(chan struct{}),
 		store:           config.Store,
 		plainTextMode:   config.PlainTextMode,
@@ -359,8 +364,7 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 		}
 
 		if !h.allowedIDs[msg.Chat.ID] && !h.allowedIDs[senderID] {
-			logging.WithComponent("telegram").Debug("Ignoring message from unauthorized chat/user",
-				slog.Int64("chat_id", msg.Chat.ID), slog.Int64("sender_id", senderID))
+			h.warnDroppedOnce(msg.Chat.ID, senderID, msg.From == nil)
 			return
 		}
 	}
@@ -876,6 +880,41 @@ func stripBotMention(text, botUsername string) string {
 		text = strings.TrimSpace(text[len(prefix):])
 	}
 	return text
+}
+
+func warnIfChatNotAllowed(allowedIDs map[int64]bool, chatID string) {
+	if len(allowedIDs) == 0 || chatID == "" {
+		return
+	}
+	id, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil || allowedIDs[id] {
+		return
+	}
+	logging.WithComponent("telegram").Warn("adapters.telegram.chat_id is not listed in allowed_ids — messages posted anonymously or as the group will be ignored",
+		slog.Int64("chat_id", id))
+}
+
+func (h *Handler) warnDroppedOnce(chatID, senderID int64, anonymous bool) {
+	key := fmt.Sprintf("%d|%d", chatID, senderID)
+
+	h.warnedDroppedMu.Lock()
+	if h.warnedDropped == nil {
+		h.warnedDropped = make(map[string]bool)
+	}
+	seen := h.warnedDropped[key]
+	h.warnedDropped[key] = true
+	h.warnedDroppedMu.Unlock()
+
+	if seen {
+		return
+	}
+
+	reason := "neither chat_id nor sender is in allowed_ids"
+	if anonymous {
+		reason = "message has no sender (posted anonymously or as the group) and chat_id is not in allowed_ids"
+	}
+	logging.WithComponent("telegram").Warn("Ignoring message — "+reason+"; add the id to adapters.telegram.allowed_ids",
+		slog.Int64("chat_id", chatID), slog.Int64("sender_id", senderID), slog.Bool("anonymous", anonymous))
 }
 
 // containsAny returns true if s contains any of the substrings
