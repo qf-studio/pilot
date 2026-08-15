@@ -82,7 +82,7 @@ func TestCommandHandler_HandleHelp(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "123", "/help")
+	cmd.HandleCommand(ctx, "123", "", "/help")
 
 	// Check that message was formatted (we can't check exact content due to mock server)
 	// The handler will try to send but the mock server won't match URLs
@@ -112,7 +112,7 @@ func TestCommandHandler_HandleStatus(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// This will fail to send (no real Telegram) but should not panic
-			cmd.HandleCommand(ctx, tt.chatID, "/status")
+			cmd.HandleCommand(ctx, tt.chatID, "", "/status")
 		})
 	}
 }
@@ -139,7 +139,7 @@ func TestCommandHandler_HandleCancel(t *testing.T) {
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd.HandleCommand(ctx, tt.chatID, "/cancel")
+			cmd.HandleCommand(ctx, tt.chatID, "", "/cancel")
 			// Verify no panic; cancel state managed by commsHandler
 		})
 	}
@@ -173,7 +173,7 @@ func TestCommandHandler_HandleQueue(t *testing.T) {
 				cmd = NewCommandHandler(h, nil)
 			}
 
-			cmd.HandleCommand(ctx, "chat1", "/queue")
+			cmd.HandleCommand(ctx, "chat1", "", "/queue")
 			// Just verify no panic
 		})
 	}
@@ -212,7 +212,7 @@ func TestCommandHandler_HandleProjects(t *testing.T) {
 			h := newTestHandlerForCommands(tt.projects, "/default/path")
 			cmd := NewCommandHandler(h, nil)
 
-			cmd.HandleCommand(ctx, "chat1", "/projects")
+			cmd.HandleCommand(ctx, "chat1", "", "/projects")
 			// Just verify no panic
 		})
 	}
@@ -255,7 +255,7 @@ func TestCommandHandler_HandleSwitch(t *testing.T) {
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd.HandleCommand(ctx, "chat1", tt.command)
+			cmd.HandleCommand(ctx, "chat1", "", tt.command)
 
 			path := h.getActiveProjectPath("chat1")
 			if path != tt.wantPath {
@@ -289,7 +289,7 @@ func TestCommandHandler_HandleHistory(t *testing.T) {
 				cmd = NewCommandHandler(h, nil)
 			}
 
-			cmd.HandleCommand(ctx, "chat1", "/history")
+			cmd.HandleCommand(ctx, "chat1", "", "/history")
 			// Just verify no panic
 		})
 	}
@@ -301,7 +301,7 @@ func TestCommandHandler_HandleBudget(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/budget")
+	cmd.HandleCommand(ctx, "chat1", "", "/budget")
 	// Just verify no panic
 }
 
@@ -311,7 +311,7 @@ func TestCommandHandler_HandleTasks(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/tasks")
+	cmd.HandleCommand(ctx, "chat1", "", "/tasks")
 	// Just verify no panic
 }
 
@@ -321,7 +321,7 @@ func TestCommandHandler_UnknownCommand(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/unknown_command")
+	cmd.HandleCommand(ctx, "chat1", "", "/unknown_command")
 	// Just verify no panic
 }
 
@@ -428,7 +428,7 @@ func TestCommandHandler_HandleCallbackSwitch(t *testing.T) {
 	// Set initial project
 	_ = h.commsHandler.SetActiveProject("chat1", "project-a")
 
-	cmd.HandleCallbackSwitch(ctx, "chat1", "project-b")
+	cmd.HandleCallbackSwitch(ctx, "chat1", "", "project-b")
 
 	path := h.getActiveProjectPath("chat1")
 	if path != "/path/b" {
@@ -468,7 +468,7 @@ func TestCommandRouting(t *testing.T) {
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
 			// Should not panic
-			cmd.HandleCommand(ctx, "chat1", command)
+			cmd.HandleCommand(ctx, "chat1", "", command)
 		})
 	}
 }

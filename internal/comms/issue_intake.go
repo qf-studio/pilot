@@ -102,11 +102,11 @@ func (r *Responder) DraftIssue(ctx context.Context, history []intent.Conversatio
 // handleIssueIntake drafts a GitHub issue from the user's freeform message and creates it directly.
 func (h *Handler) handleIssueIntake(ctx context.Context, contextID, threadID, text string) {
 	if h.responder == nil {
-		_ = h.messenger.SendText(ctx, contextID, "Issue intake requires the bot module to be enabled (bot.enabled: true).")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "Issue intake requires the bot module to be enabled (bot.enabled: true).")
 		return
 	}
 	if h.issueCreator == nil {
-		_ = h.messenger.SendText(ctx, contextID, "Issue creation requires GitHub to be configured (adapters.github).")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "Issue creation requires GitHub to be configured (adapters.github).")
 		return
 	}
 
@@ -114,7 +114,7 @@ func (h *Handler) handleIssueIntake(ctx context.Context, contextID, threadID, te
 	h.mu.Lock()
 	if _, inFlight := h.pendingIssues[contextID]; inFlight {
 		h.mu.Unlock()
-		_ = h.messenger.SendText(ctx, contextID, "⚠️ An issue is already being drafted for this context. Please wait.")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "⚠️ An issue is already being drafted for this context. Please wait.")
 		return
 	}
 	placeholder := &IssueDraft{}
@@ -126,7 +126,7 @@ func (h *Handler) handleIssueIntake(ctx context.Context, contextID, threadID, te
 		h.mu.Unlock()
 	}()
 
-	_ = h.messenger.SendText(ctx, contextID, "🎫 Drafting issue...")
+	_ = h.messenger.SendText(ctx, contextID, threadID, "🎫 Drafting issue...")
 
 	var history []intent.ConversationMessage
 	if h.convStore != nil {
@@ -136,7 +136,7 @@ func (h *Handler) handleIssueIntake(ctx context.Context, contextID, threadID, te
 	draft, err := h.responder.DraftIssue(ctx, history, text)
 	if err != nil {
 		h.log.Warn("DraftIssue failed", slog.Any("error", err))
-		_ = h.messenger.SendText(ctx, contextID, "❌ Failed to draft issue. Try being more specific about what you'd like to track.")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "❌ Failed to draft issue. Try being more specific about what you'd like to track.")
 		return
 	}
 
@@ -144,7 +144,7 @@ func (h *Handler) handleIssueIntake(ctx context.Context, contextID, threadID, te
 	url, err := h.issueCreator.CreateIssue(ctx, projectPath, draft)
 	if err != nil {
 		h.log.Warn("CreateIssue failed", slog.Any("error", err), slog.String("title", draft.Title))
-		_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("❌ Failed to create issue: %s", err.Error()))
+		_ = h.messenger.SendText(ctx, contextID, threadID, fmt.Sprintf("❌ Failed to create issue: %s", err.Error()))
 		return
 	}
 

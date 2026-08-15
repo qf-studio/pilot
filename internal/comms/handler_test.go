@@ -44,7 +44,7 @@ type hSentProgress struct {
 	progress                                 int
 }
 
-func (m *handlerMock) SendText(_ context.Context, contextID, text string) error {
+func (m *handlerMock) SendText(_ context.Context, contextID, threadID, text string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.texts = append(m.texts, hSentText{contextID, text})
@@ -1279,5 +1279,69 @@ func TestSendTaskResult_NotDeclined(t *testing.T) {
 	res := m.results[0]
 	if !res.success || res.prURL != "https://github.com/qf-studio/pilot/pull/123" || res.output != "done" {
 		t.Errorf("unexpected SendResult contents: %+v", res)
+	}
+}
+
+type threadCapturingMessenger struct {
+	mockMessenger
+	mu      sync.Mutex
+	threads []string
+}
+
+func (m *threadCapturingMessenger) SendText(_ context.Context, _, threadID, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.threads = append(m.threads, threadID)
+	return nil
+}
+
+func (m *threadCapturingMessenger) SendConfirmation(_ context.Context, _, threadID, _, _, _ string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.threads = append(m.threads, threadID)
+	return "1", nil
+}
+
+func (m *threadCapturingMessenger) seen() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.threads...)
+}
+
+func TestRepliesReturnToOriginatingThread(t *testing.T) {
+	tests := []struct {
+		name     string
+		threadID string
+		text     string
+	}{
+		{name: "task intent from a topic", threadID: "42", text: "implement rate limiting for the API"},
+		{name: "greeting from a topic", threadID: "42", text: "hi"},
+		{name: "command from a topic", threadID: "42", text: "/status"},
+		{name: "general thread carries no topic", threadID: "", text: "implement rate limiting for the API"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgr := &threadCapturingMessenger{}
+			h := NewHandler(&HandlerConfig{Messenger: msgr, TaskIDPrefix: "TG"})
+
+			h.HandleMessage(context.Background(), &IncomingMessage{
+				ContextID: "chat-1",
+				SenderID:  "user-1",
+				Text:      tt.text,
+				ThreadID:  tt.threadID,
+				Platform:  "telegram",
+			})
+
+			got := msgr.seen()
+			if len(got) == 0 {
+				t.Fatal("expected at least one outbound message")
+			}
+			for i, threadID := range got {
+				if threadID != tt.threadID {
+					t.Errorf("outbound %d threadID = %q, want %q", i, threadID, tt.threadID)
+				}
+			}
+		})
 	}
 }

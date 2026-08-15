@@ -42,7 +42,7 @@ func TestSlackMessenger_SendText(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(PostMessageResponse{OK: true, TS: "1234.5678", Channel: msg.Channel})
 	})
 
-	err := m.SendText(context.Background(), "C123", "hello slack")
+	err := m.SendText(context.Background(), "C123", "", "hello slack")
 	if err != nil {
 		t.Fatalf("SendText returned error: %v", err)
 	}

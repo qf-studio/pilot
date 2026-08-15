@@ -135,7 +135,7 @@ func (m *WebMessenger) pruneLocked() {
 }
 
 // SendText appends a plain text event.
-func (m *WebMessenger) SendText(_ context.Context, contextID, text string) error {
+func (m *WebMessenger) SendText(_ context.Context, contextID, _threadID, text string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneLocked()
@@ -213,7 +213,7 @@ func (m *WebMessenger) SendChunked(ctx context.Context, contextID, _threadID, co
 	if prefix != "" {
 		text = prefix + content
 	}
-	return m.SendText(ctx, contextID, text)
+	return m.SendText(ctx, contextID, _threadID, text)
 }
 
 // AcknowledgeCallback is a no-op: there is no platform-level callback

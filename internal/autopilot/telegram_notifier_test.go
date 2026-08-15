@@ -26,7 +26,7 @@ func newTestNotifier(t *testing.T, captureText *string) (*TelegramNotifier, *htt
 	}))
 
 	client := telegram.NewClientWithBaseURL("test-token", server.URL)
-	notifier := NewTelegramNotifier(client, "123456")
+	notifier := NewTelegramNotifier(client, "123456", 0)
 	return notifier, server
 }
 
@@ -338,7 +338,7 @@ func TestTelegramNotifier_NotifyReleased_ScopeCarrier(t *testing.T) {
 
 func TestNewTelegramNotifier(t *testing.T) {
 	client := telegram.NewClient("test-token")
-	notifier := NewTelegramNotifier(client, "123456")
+	notifier := NewTelegramNotifier(client, "123456", 0)
 
 	if notifier == nil {
 		t.Fatal("NewTelegramNotifier returned nil")

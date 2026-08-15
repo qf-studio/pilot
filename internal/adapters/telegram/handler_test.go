@@ -24,7 +24,7 @@ import (
 // noopMessenger is a no-op implementation of comms.Messenger for tests.
 type noopMessenger struct{}
 
-func (n *noopMessenger) SendText(context.Context, string, string) error { return nil }
+func (n *noopMessenger) SendText(context.Context, string, string, string) error { return nil }
 func (n *noopMessenger) SendConfirmation(context.Context, string, string, string, string, string) (string, error) {
 	return "", nil
 }

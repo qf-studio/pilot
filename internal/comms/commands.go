@@ -86,7 +86,7 @@ func (c *CommandHandler) SetIssueIntakeFunc(f func(ctx context.Context, contextI
 }
 
 // HandleCommand routes slash commands to their handlers.
-func (c *CommandHandler) HandleCommand(ctx context.Context, contextID, text string) {
+func (c *CommandHandler) HandleCommand(ctx context.Context, contextID, threadID, text string) {
 	parts := strings.Fields(text)
 	if len(parts) == 0 {
 		return
@@ -97,66 +97,66 @@ func (c *CommandHandler) HandleCommand(ctx context.Context, contextID, text stri
 
 	switch cmd {
 	case "/start", "/help":
-		c.handleHelp(ctx, contextID)
+		c.handleHelp(ctx, contextID, threadID)
 	case "/status":
-		c.handleStatus(ctx, contextID)
+		c.handleStatus(ctx, contextID, threadID)
 	case "/cancel":
-		c.handleCancel(ctx, contextID)
+		c.handleCancel(ctx, contextID, threadID)
 	case "/queue":
-		c.handleQueue(ctx, contextID)
+		c.handleQueue(ctx, contextID, threadID)
 	case "/projects":
-		c.handleProjects(ctx, contextID)
+		c.handleProjects(ctx, contextID, threadID)
 	case "/project", "/switch":
 		if len(args) > 0 {
-			c.handleSwitch(ctx, contextID, args[0])
+			c.handleSwitch(ctx, contextID, threadID, args[0])
 		} else {
-			c.handleCurrentProject(ctx, contextID)
+			c.handleCurrentProject(ctx, contextID, threadID)
 		}
 	case "/history":
-		c.handleHistory(ctx, contextID)
+		c.handleHistory(ctx, contextID, threadID)
 	case "/budget":
-		c.handleBudget(ctx, contextID)
+		c.handleBudget(ctx, contextID, threadID)
 	case "/tasks", "/list":
-		c.handleTasks(ctx, contextID)
+		c.handleTasks(ctx, contextID, threadID)
 	case "/run":
 		if len(args) > 0 {
 			if c.runCommandFunc != nil {
 				c.runCommandFunc(ctx, contextID, args[0])
 			} else {
-				_ = c.messenger.SendText(ctx, contextID, "Usage: /run <task-id>\nExample: /run 07")
+				_ = c.messenger.SendText(ctx, contextID, threadID, "Usage: /run <task-id>\nExample: /run 07")
 			}
 		} else {
-			_ = c.messenger.SendText(ctx, contextID, "Usage: /run <task-id>\nExample: /run 07")
+			_ = c.messenger.SendText(ctx, contextID, threadID, "Usage: /run <task-id>\nExample: /run 07")
 		}
 	case "/stop":
-		c.handleStop(ctx, contextID)
+		c.handleStop(ctx, contextID, threadID)
 	case "/brief":
-		c.handleBrief(ctx, contextID)
+		c.handleBrief(ctx, contextID, threadID)
 	case "/nopr":
 		if len(args) > 0 {
-			c.handleNoPR(ctx, contextID, strings.Join(args, " "))
+			c.handleNoPR(ctx, contextID, threadID, strings.Join(args, " "))
 		} else {
-			_ = c.messenger.SendText(ctx, contextID, "Usage: /nopr <task description>\nExecutes task without creating a PR.")
+			_ = c.messenger.SendText(ctx, contextID, threadID, "Usage: /nopr <task description>\nExecutes task without creating a PR.")
 		}
 	case "/pr":
 		if len(args) > 0 {
-			c.handleForcePR(ctx, contextID, strings.Join(args, " "))
+			c.handleForcePR(ctx, contextID, threadID, strings.Join(args, " "))
 		} else {
-			_ = c.messenger.SendText(ctx, contextID, "Usage: /pr <task description>\nForces PR creation even for ephemeral-looking tasks.")
+			_ = c.messenger.SendText(ctx, contextID, threadID, "Usage: /pr <task description>\nForces PR creation even for ephemeral-looking tasks.")
 		}
 	case "/draft-issue":
 		if len(args) > 0 {
-			c.handleDraftIssue(ctx, contextID, strings.Join(args, " "))
+			c.handleDraftIssue(ctx, contextID, threadID, strings.Join(args, " "))
 		} else {
-			_ = c.messenger.SendText(ctx, contextID, "Usage: /draft-issue <description>\nDrafts and creates a pilot-labeled GitHub issue.")
+			_ = c.messenger.SendText(ctx, contextID, threadID, "Usage: /draft-issue <description>\nDrafts and creates a pilot-labeled GitHub issue.")
 		}
 	default:
-		_ = c.messenger.SendText(ctx, contextID, "Unknown command. Use /help for available commands.")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "Unknown command. Use /help for available commands.")
 	}
 }
 
 // handleHelp shows comprehensive help with all commands.
-func (c *CommandHandler) handleHelp(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleHelp(ctx context.Context, contextID, threadID string) {
 	helpText := `🤖 Pilot Bot
 
 I execute tasks and answer questions about your codebase.
@@ -192,7 +192,7 @@ What I Understand
 
 Note: Ephemeral commands (serve, run, etc.) auto-skip PR creation.`
 
-	_ = c.messenger.SendText(ctx, contextID, helpText)
+	_ = c.messenger.SendText(ctx, contextID, threadID, helpText)
 }
 
 // formatQueueSummary formats active and queued executions into a concise status string.
@@ -254,7 +254,7 @@ func formatQueueSummary(running, queued []*memory.Execution) string {
 }
 
 // handleStatus shows current status with running/pending/queue info.
-func (c *CommandHandler) handleStatus(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleStatus(ctx context.Context, contextID, threadID string) {
 	var sb strings.Builder
 	sb.WriteString("📊 Status\n\n")
 
@@ -311,46 +311,46 @@ func (c *CommandHandler) handleStatus(ctx context.Context, contextID string) {
 		sb.WriteString("\n✅ Ready for tasks")
 	}
 
-	_ = c.messenger.SendText(ctx, contextID, sb.String())
+	_ = c.messenger.SendText(ctx, contextID, threadID, sb.String())
 }
 
 // handleCancel cancels pending or running task.
-func (c *CommandHandler) handleCancel(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleCancel(ctx context.Context, contextID, threadID string) {
 	if c.cancelTaskFunc != nil {
 		if err := c.cancelTaskFunc(ctx, contextID); err == nil {
 			return
 		}
 	}
-	_ = c.messenger.SendText(ctx, contextID, "No task to cancel.")
+	_ = c.messenger.SendText(ctx, contextID, threadID, "No task to cancel.")
 }
 
 // handleQueue shows queued tasks.
-func (c *CommandHandler) handleQueue(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleQueue(ctx context.Context, contextID, threadID string) {
 	if c.store == nil {
-		_ = c.messenger.SendText(ctx, contextID, "📋 Queue not available (no memory store)")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "📋 Queue not available (no memory store)")
 		return
 	}
 
 	queued, err := c.store.GetQueuedTasks(10)
 	if err != nil {
-		_ = c.messenger.SendText(ctx, contextID, "❌ Failed to fetch queue")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "❌ Failed to fetch queue")
 		return
 	}
 
-	_ = c.messenger.SendText(ctx, contextID, formatQueueSummary(nil, queued))
+	_ = c.messenger.SendText(ctx, contextID, threadID, formatQueueSummary(nil, queued))
 }
 
 // handleProjects lists configured projects.
-func (c *CommandHandler) handleProjects(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleProjects(ctx context.Context, contextID, threadID string) {
 	if c.projectListFunc == nil {
-		_ = c.messenger.SendText(ctx, contextID,
+		_ = c.messenger.SendText(ctx, contextID, threadID,
 			"📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml")
 		return
 	}
 
 	projects := c.projectListFunc()
 	if len(projects) == 0 {
-		_ = c.messenger.SendText(ctx, contextID,
+		_ = c.messenger.SendText(ctx, contextID, threadID,
 			"📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml")
 		return
 	}
@@ -388,18 +388,18 @@ func (c *CommandHandler) handleProjects(ctx context.Context, contextID string) {
 		}
 	}
 
-	_ = c.messenger.SendText(ctx, contextID, sb.String())
+	_ = c.messenger.SendText(ctx, contextID, threadID, sb.String())
 }
 
 // handleSwitch switches to a different project.
-func (c *CommandHandler) handleSwitch(ctx context.Context, contextID, projectName string) {
+func (c *CommandHandler) handleSwitch(ctx context.Context, contextID, threadID, projectName string) {
 	if c.setProjectFunc == nil {
-		_ = c.messenger.SendText(ctx, contextID, "Project switching not configured")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "Project switching not configured")
 		return
 	}
 
 	if err := c.setProjectFunc(contextID, projectName); err != nil {
-		_ = c.messenger.SendText(ctx, contextID,
+		_ = c.messenger.SendText(ctx, contextID, threadID,
 			fmt.Sprintf("❌ Project '%s' not found\n\nUse /projects to see available projects", projectName))
 		return
 	}
@@ -412,13 +412,13 @@ func (c *CommandHandler) handleSwitch(ctx context.Context, contextID, projectNam
 		}
 	}
 
-	_ = c.messenger.SendText(ctx, contextID, fmt.Sprintf("✅ Switched to %s", name))
+	_ = c.messenger.SendText(ctx, contextID, threadID, fmt.Sprintf("✅ Switched to %s", name))
 }
 
 // handleCurrentProject shows current active project.
-func (c *CommandHandler) handleCurrentProject(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleCurrentProject(ctx context.Context, contextID, threadID string) {
 	if c.activeProjectFunc == nil {
-		_ = c.messenger.SendText(ctx, contextID, "Active project: unknown\n\nUse /projects to see all")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "Active project: unknown\n\nUse /projects to see all")
 		return
 	}
 
@@ -428,24 +428,24 @@ func (c *CommandHandler) handleCurrentProject(ctx context.Context, contextID str
 	}
 
 	text := fmt.Sprintf("📁 Active: %s\n%s\n\nUse /projects to see all", projName, projPath)
-	_ = c.messenger.SendText(ctx, contextID, text)
+	_ = c.messenger.SendText(ctx, contextID, threadID, text)
 }
 
 // handleHistory shows recent task history.
-func (c *CommandHandler) handleHistory(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleHistory(ctx context.Context, contextID, threadID string) {
 	if c.store == nil {
-		_ = c.messenger.SendText(ctx, contextID, "📜 History not available (no memory store)")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "📜 History not available (no memory store)")
 		return
 	}
 
 	executions, err := c.store.GetRecentExecutions(10, "")
 	if err != nil {
-		_ = c.messenger.SendText(ctx, contextID, "❌ Failed to fetch history")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "❌ Failed to fetch history")
 		return
 	}
 
 	if len(executions) == 0 {
-		_ = c.messenger.SendText(ctx, contextID, "📜 No task history yet")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "📜 No task history yet")
 		return
 	}
 
@@ -484,13 +484,13 @@ func (c *CommandHandler) handleHistory(ctx context.Context, contextID string) {
 		sb.WriteString("\n")
 	}
 
-	_ = c.messenger.SendText(ctx, contextID, sb.String())
+	_ = c.messenger.SendText(ctx, contextID, threadID, sb.String())
 }
 
 // handleBudget shows usage and costs.
-func (c *CommandHandler) handleBudget(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleBudget(ctx context.Context, contextID, threadID string) {
 	if c.store == nil {
-		_ = c.messenger.SendText(ctx, contextID, "💰 Budget not available (no memory store)")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "💰 Budget not available (no memory store)")
 		return
 	}
 
@@ -503,7 +503,7 @@ func (c *CommandHandler) handleBudget(ctx context.Context, contextID string) {
 		End:   now,
 	})
 	if err != nil {
-		_ = c.messenger.SendText(ctx, contextID, "❌ Failed to fetch usage data")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "❌ Failed to fetch usage data")
 		return
 	}
 
@@ -542,38 +542,38 @@ func (c *CommandHandler) handleBudget(ctx context.Context, contextID string) {
 	// Period info
 	sb.WriteString(fmt.Sprintf("Period: %s - %s", monthStart.Format("Jan 2"), now.Format("Jan 2")))
 
-	_ = c.messenger.SendText(ctx, contextID, sb.String())
+	_ = c.messenger.SendText(ctx, contextID, threadID, sb.String())
 }
 
 // handleTasks shows task backlog.
-func (c *CommandHandler) handleTasks(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleTasks(ctx context.Context, contextID, threadID string) {
 	if c.listTasksFunc == nil {
-		_ = c.messenger.SendText(ctx, contextID, "📋 No tasks found in .agent/tasks/")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "📋 No tasks found in .agent/tasks/")
 		return
 	}
 
 	taskList := c.listTasksFunc()
 	if taskList == "" {
-		_ = c.messenger.SendText(ctx, contextID, "📋 No tasks found in .agent/tasks/")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "📋 No tasks found in .agent/tasks/")
 		return
 	}
 
 	text := "📋 Task Backlog\n\n" + taskList
-	_ = c.messenger.SendText(ctx, contextID, text)
+	_ = c.messenger.SendText(ctx, contextID, threadID, text)
 }
 
 // handleStop stops a running task.
-func (c *CommandHandler) handleStop(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleStop(ctx context.Context, contextID, threadID string) {
 	if c.stopTaskFunc != nil {
 		if err := c.stopTaskFunc(ctx, contextID); err == nil {
 			return
 		}
 	}
-	_ = c.messenger.SendText(ctx, contextID, "No task is currently running.")
+	_ = c.messenger.SendText(ctx, contextID, threadID, "No task is currently running.")
 }
 
 // handleBrief generates and sends a daily brief on demand.
-func (c *CommandHandler) handleBrief(ctx context.Context, contextID string) {
+func (c *CommandHandler) handleBrief(ctx context.Context, contextID, threadID string) {
 	if c.briefGeneratorFunc != nil {
 		// Use the platform-specific brief generator (e.g., from Telegram adapter)
 		_ = c.briefGeneratorFunc(ctx, contextID)
@@ -581,49 +581,49 @@ func (c *CommandHandler) handleBrief(ctx context.Context, contextID string) {
 	}
 
 	if c.store == nil {
-		_ = c.messenger.SendText(ctx, contextID, "📋 Brief not available (no memory store)")
+		_ = c.messenger.SendText(ctx, contextID, threadID, "📋 Brief not available (no memory store)")
 		return
 	}
 
-	_ = c.messenger.SendText(ctx, contextID, "📊 Brief generation not configured")
+	_ = c.messenger.SendText(ctx, contextID, threadID, "📊 Brief generation not configured")
 }
 
 // handleNoPR executes a task without creating a PR.
-func (c *CommandHandler) handleNoPR(ctx context.Context, contextID, description string) {
+func (c *CommandHandler) handleNoPR(ctx context.Context, contextID, threadID, description string) {
 	if c.runCommandFunc != nil {
 		taskID := fmt.Sprintf("CMD-%d", time.Now().Unix())
-		_ = c.messenger.SendText(ctx, contextID,
+		_ = c.messenger.SendText(ctx, contextID, threadID,
 			fmt.Sprintf("🚀 Executing without PR: %s", TruncateText(description, 50)))
 		// Note: In Telegram, this calls executeTaskWithOptions with forcePR=false
 		// For shared handler, we just invoke the run command and let the adapter handle noPR semantics
 		c.runCommandFunc(ctx, contextID, taskID)
 	} else {
-		_ = c.messenger.SendText(ctx, contextID,
+		_ = c.messenger.SendText(ctx, contextID, threadID,
 			fmt.Sprintf("🚀 Executing without PR: %s", TruncateText(description, 50)))
 	}
 }
 
 // handleForcePR executes a task and forces PR creation.
-func (c *CommandHandler) handleForcePR(ctx context.Context, contextID, description string) {
+func (c *CommandHandler) handleForcePR(ctx context.Context, contextID, threadID, description string) {
 	if c.runCommandFunc != nil {
 		taskID := fmt.Sprintf("CMD-%d", time.Now().Unix())
-		_ = c.messenger.SendText(ctx, contextID,
+		_ = c.messenger.SendText(ctx, contextID, threadID,
 			fmt.Sprintf("🚀 Executing with PR: %s", TruncateText(description, 50)))
 		// Note: In Telegram, this calls executeTaskWithOptions with forcePR=true
 		// For shared handler, we just invoke the run command and let the adapter handle forcePR semantics
 		c.runCommandFunc(ctx, contextID, taskID)
 	} else {
-		_ = c.messenger.SendText(ctx, contextID,
+		_ = c.messenger.SendText(ctx, contextID, threadID,
 			fmt.Sprintf("🚀 Executing with PR: %s", TruncateText(description, 50)))
 	}
 }
 
 // handleDraftIssue creates a pilot-labeled GitHub issue from a freeform description.
-func (c *CommandHandler) handleDraftIssue(ctx context.Context, contextID, description string) {
+func (c *CommandHandler) handleDraftIssue(ctx context.Context, contextID, threadID, description string) {
 	if c.issueIntakeFunc != nil {
 		c.issueIntakeFunc(ctx, contextID, description)
 	} else {
-		_ = c.messenger.SendText(ctx, contextID,
+		_ = c.messenger.SendText(ctx, contextID, threadID,
 			"Issue intake is not available. Ensure bot and GitHub adapter are configured.")
 	}
 }

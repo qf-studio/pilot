@@ -11,7 +11,7 @@ func TestWebMessenger_SendText_SeqOrdering(t *testing.T) {
 	ctx := context.Background()
 
 	for i, text := range []string{"one", "two", "three"} {
-		if err := m.SendText(ctx, "web:c1", text); err != nil {
+		if err := m.SendText(ctx, "web:c1", "", text); err != nil {
 			t.Fatalf("SendText[%d] error: %v", i, err)
 		}
 	}
@@ -140,7 +140,7 @@ func TestWebMessenger_BufferCap_DropsOldest(t *testing.T) {
 
 	total := maxEventsPerConversation + 10
 	for i := 0; i < total; i++ {
-		if err := m.SendText(ctx, "web:c1", "msg"); err != nil {
+		if err := m.SendText(ctx, "web:c1", "", "msg"); err != nil {
 			t.Fatalf("SendText error: %v", err)
 		}
 	}
@@ -166,7 +166,7 @@ func TestWebMessenger_ConversationExpiry(t *testing.T) {
 	m.now = func() time.Time { return fakeNow }
 	ctx := context.Background()
 
-	if err := m.SendText(ctx, "web:c1", "hello"); err != nil {
+	if err := m.SendText(ctx, "web:c1", "", "hello"); err != nil {
 		t.Fatalf("SendText error: %v", err)
 	}
 

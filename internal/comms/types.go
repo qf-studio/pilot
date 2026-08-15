@@ -27,7 +27,7 @@ type IncomingMessage struct {
 // Messenger is the interface every chat adapter must implement for outbound messaging.
 type Messenger interface {
 	// SendText sends a plain text message to the given context (channel/chat).
-	SendText(ctx context.Context, contextID, text string) error
+	SendText(ctx context.Context, contextID, threadID, text string) error
 
 	// SendConfirmation sends a task confirmation prompt with approve/reject buttons.
 	// Returns a messageRef that can be used to update the message later.
@@ -71,6 +71,7 @@ func (p *PendingTask) GetCreatedAt() time.Time { return p.CreatedAt }
 type RunningTask struct {
 	TaskID    string
 	ContextID string
+	ThreadID  string
 	StartedAt time.Time
 	Cancel    context.CancelFunc
 }

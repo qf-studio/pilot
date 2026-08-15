@@ -42,8 +42,8 @@ func parseThreadID(threadID string) int64 {
 }
 
 // SendText sends a plain text message to the given chat.
-func (m *TelegramMessenger) SendText(ctx context.Context, contextID, text string) error {
-	_, err := m.client.SendMessage(ctx, contextID, text, m.parseMode(), 0)
+func (m *TelegramMessenger) SendText(ctx context.Context, contextID, threadID, text string) error {
+	_, err := m.client.SendMessage(ctx, contextID, text, m.parseMode(), parseThreadID(threadID))
 	return err
 }
 

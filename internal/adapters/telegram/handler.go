@@ -374,7 +374,7 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 
 	// Commands stay local
 	if strings.HasPrefix(text, "/") {
-		h.handleCommand(ctx, chatID, text)
+		h.handleCommand(ctx, chatID, msg.topicThreadID(), text)
 		return
 	}
 
@@ -447,7 +447,7 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 		}
 	case strings.HasPrefix(data, "switch_"):
 		projectName := strings.TrimPrefix(data, "switch_")
-		h.cmdHandler.HandleCallbackSwitch(ctx, chatID, projectName)
+		h.cmdHandler.HandleCallbackSwitch(ctx, chatID, callback.Message.topicThreadID(), projectName)
 	case data == "voice_check_status":
 		h.sendVoiceSetupPrompt(ctx, chatID)
 	case strings.HasPrefix(data, "approve:") || strings.HasPrefix(data, "reject:"):
@@ -467,9 +467,9 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 }
 
 // handleCommand processes bot commands
-func (h *Handler) handleCommand(ctx context.Context, chatID, text string) {
+func (h *Handler) handleCommand(ctx context.Context, chatID, threadID, text string) {
 	// Delegate to command handler
-	h.cmdHandler.HandleCommand(ctx, chatID, text)
+	h.cmdHandler.HandleCommand(ctx, chatID, threadID, text)
 }
 
 // handleRunCommand executes a task directly without confirmation

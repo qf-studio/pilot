@@ -3765,7 +3765,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 			if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled {
 				tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
-				deliveryOpts = append(deliveryOpts, briefs.WithTelegramSender(&telegramBriefAdapter{client: tgClient}))
+				deliveryOpts = append(deliveryOpts, briefs.WithTelegramSender(&telegramBriefAdapter{client: tgClient, messageThreadID: cfg.Adapters.Telegram.MessageThreadID}))
 			}
 			deliveryOpts = append(deliveryOpts, briefs.WithLogger(slog.Default()))
 

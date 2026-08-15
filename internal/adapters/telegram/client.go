@@ -538,8 +538,8 @@ type BriefMessageResponse struct {
 
 // SendBriefMessage sends a message and returns a simplified response for brief delivery.
 // This method satisfies the briefs.TelegramSender interface.
-func (c *Client) SendBriefMessage(ctx context.Context, chatID, text, parseMode string) (*BriefMessageResponse, error) {
-	resp, err := c.SendMessage(ctx, chatID, text, parseMode, 0)
+func (c *Client) SendBriefMessage(ctx context.Context, chatID, text, parseMode string, messageThreadID int64) (*BriefMessageResponse, error) {
+	resp, err := c.SendMessage(ctx, chatID, text, parseMode, messageThreadID)
 	if err != nil {
 		return nil, err
 	}

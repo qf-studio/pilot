@@ -65,7 +65,7 @@ func TestAPI_Dispatch_ValidTextMessage_ReturnsAcceptTimeSeq(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed one prior event so the accept-time seq is non-zero.
-	if err := m.SendText(ctx, "web:c1", "prior"); err != nil {
+	if err := m.SendText(ctx, "web:c1", "", "prior"); err != nil {
 		t.Fatalf("seed SendText error: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestAPI_Events_UsesConversationIDPrefix(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = m.SendText(ctx, "web:c1", "hi")
+		_ = m.SendText(ctx, "web:c1", "", "hi")
 	}()
 	wg.Wait()
 

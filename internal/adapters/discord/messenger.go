@@ -21,7 +21,7 @@ func NewMessenger(client *Client) *DiscordMessenger {
 }
 
 // SendText sends a plain text message to the given channel.
-func (m *DiscordMessenger) SendText(ctx context.Context, contextID, text string) error {
+func (m *DiscordMessenger) SendText(ctx context.Context, contextID, threadID, text string) error {
 	msg, err := m.client.SendMessage(ctx, contextID, text)
 	if err != nil {
 		return fmt.Errorf("send text: %w", err)

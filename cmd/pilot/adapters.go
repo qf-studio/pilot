@@ -25,11 +25,12 @@ import (
 
 // telegramBriefAdapter wraps telegram.Client to satisfy briefs.TelegramSender interface
 type telegramBriefAdapter struct {
-	client *telegram.Client
+	client          *telegram.Client
+	messageThreadID int64
 }
 
 func (a *telegramBriefAdapter) SendBriefMessage(ctx context.Context, chatID, text, parseMode string) (*briefs.TelegramMessageResponse, error) {
-	resp, err := a.client.SendMessage(ctx, chatID, text, parseMode, 0)
+	resp, err := a.client.SendMessage(ctx, chatID, text, parseMode, a.messageThreadID)
 	if err != nil {
 		return nil, err
 	}

@@ -14,7 +14,7 @@ type mockMessenger struct {
 	messages []string
 }
 
-func (m *mockMessenger) SendText(ctx context.Context, contextID, text string) error {
+func (m *mockMessenger) SendText(ctx context.Context, contextID, threadID, text string) error {
 	m.messages = append(m.messages, text)
 	return nil
 }
@@ -50,7 +50,7 @@ func TestCommandHandler_HandleHelp(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/help")
+	cmd.HandleCommand(ctx, "chat1", "", "/help")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -79,7 +79,7 @@ func TestCommandHandler_HandleStart(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/start")
+	cmd.HandleCommand(ctx, "chat1", "", "/start")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -122,7 +122,7 @@ func TestCommandHandler_HandleStatus(t *testing.T) {
 			tt.setupFunc(cmd)
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", "/status")
+			cmd.HandleCommand(ctx, "chat1", "", "/status")
 
 			if len(tt.messenger.messages) == 0 {
 				t.Fatal("no messages sent")
@@ -162,7 +162,7 @@ func TestCommandHandler_HandleQueue(t *testing.T) {
 			cmd := NewCommandHandler(tt.messenger, tt.store)
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", "/queue")
+			cmd.HandleCommand(ctx, "chat1", "", "/queue")
 
 			if len(tt.messenger.messages) == 0 {
 				t.Fatal("no messages sent")
@@ -182,7 +182,7 @@ func TestCommandHandler_HandleProjects(t *testing.T) {
 
 	// No projects function configured
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/projects")
+	cmd.HandleCommand(ctx, "chat1", "", "/projects")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -200,7 +200,7 @@ func TestCommandHandler_HandleTasks(t *testing.T) {
 
 	// No list function configured
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/tasks")
+	cmd.HandleCommand(ctx, "chat1", "", "/tasks")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -217,7 +217,7 @@ func TestCommandHandler_HandleCancel(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/cancel")
+	cmd.HandleCommand(ctx, "chat1", "", "/cancel")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -234,7 +234,7 @@ func TestCommandHandler_HandleStop(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/stop")
+	cmd.HandleCommand(ctx, "chat1", "", "/stop")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -251,7 +251,7 @@ func TestCommandHandler_HandleBudget(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/budget")
+	cmd.HandleCommand(ctx, "chat1", "", "/budget")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -268,7 +268,7 @@ func TestCommandHandler_HandleHistory(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/history")
+	cmd.HandleCommand(ctx, "chat1", "", "/history")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -285,7 +285,7 @@ func TestCommandHandler_HandleBrief(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/brief")
+	cmd.HandleCommand(ctx, "chat1", "", "/brief")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -332,12 +332,12 @@ func TestCommandHandler_HandleRun(t *testing.T) {
 			if tt.hasHandler {
 				cmd.SetRunCommandFunc(func(ctx context.Context, contextID, taskID string) {
 					// Just mark that handler was called
-					_ = messenger.SendText(ctx, contextID, "Handler called with "+taskID)
+					_ = messenger.SendText(ctx, contextID, "", "Handler called with "+taskID)
 				})
 			}
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", tt.input)
+			cmd.HandleCommand(ctx, "chat1", "", tt.input)
 
 			if len(messenger.messages) == 0 {
 				t.Fatal("no messages sent")
@@ -386,7 +386,7 @@ func TestCommandHandler_HandleSwitch(t *testing.T) {
 			tt.setupFunc(cmd)
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", tt.input)
+			cmd.HandleCommand(ctx, "chat1", "", tt.input)
 
 			if len(messenger.messages) == 0 {
 				t.Fatal("no messages sent")
@@ -405,7 +405,7 @@ func TestCommandHandler_HandleUnknown(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/unknown")
+	cmd.HandleCommand(ctx, "chat1", "", "/unknown")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -426,7 +426,7 @@ func TestCommandHandler_HandleNoPR(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/nopr create a new feature")
+	cmd.HandleCommand(ctx, "chat1", "", "/nopr create a new feature")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -443,7 +443,7 @@ func TestCommandHandler_HandlePR(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/pr create a new feature")
+	cmd.HandleCommand(ctx, "chat1", "", "/pr create a new feature")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -487,7 +487,7 @@ func TestCommandHandler_CommandParsing(t *testing.T) {
 			cmd := NewCommandHandler(messenger, nil)
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", tt.input)
+			cmd.HandleCommand(ctx, "chat1", "", tt.input)
 
 			tt.verify(t, messenger.messages)
 		})
@@ -500,7 +500,7 @@ func TestCommandHandler_ListAlias(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/list")
+	cmd.HandleCommand(ctx, "chat1", "", "/list")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -518,7 +518,7 @@ func TestCommandHandler_ProjectAlias(t *testing.T) {
 
 	ctx := context.Background()
 	// /project without args should show current project
-	cmd.HandleCommand(ctx, "chat1", "/project")
+	cmd.HandleCommand(ctx, "chat1", "", "/project")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
