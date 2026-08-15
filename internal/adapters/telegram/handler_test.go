@@ -1771,3 +1771,94 @@ func TestWarnDroppedOnceDedupes(t *testing.T) {
 		t.Errorf("unexpected keys: %v", h.warnedDropped)
 	}
 }
+
+type threadRecordingMessenger struct {
+	noopMessenger
+	mu       sync.Mutex
+	called   bool
+	threadID string
+}
+
+func (m *threadRecordingMessenger) record(threadID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.called = true
+	m.threadID = threadID
+}
+
+func (m *threadRecordingMessenger) seen() (bool, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.called, m.threadID
+}
+
+func (m *threadRecordingMessenger) SendConfirmation(_ context.Context, _, threadID, _, _, _ string) (string, error) {
+	m.record(threadID)
+	return "1", nil
+}
+
+func (m *threadRecordingMessenger) SendResult(_ context.Context, _, threadID, _ string, _ bool, _, _ string) error {
+	m.record(threadID)
+	return nil
+}
+
+func (m *threadRecordingMessenger) SendChunked(_ context.Context, _, threadID, _, _ string) error {
+	m.record(threadID)
+	return nil
+}
+
+func TestProcessUpdatePropagatesTopicThreadID(t *testing.T) {
+	tests := []struct {
+		name            string
+		messageThreadID int64
+		isTopicMessage  bool
+		wantThreadID    string
+	}{
+		{
+			name:            "reply goes back to the originating topic",
+			messageThreadID: 42,
+			isTopicMessage:  true,
+			wantThreadID:    "42",
+		},
+		{
+			name:         "General thread reply carries no topic",
+			wantThreadID: "",
+		},
+		{
+			name:            "supergroup reply chain is not treated as a topic",
+			messageThreadID: 42,
+			wantThreadID:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgr := &threadRecordingMessenger{}
+			h := &Handler{
+				commsHandler: comms.NewHandler(&comms.HandlerConfig{
+					Messenger:    msgr,
+					TaskIDPrefix: "TG",
+				}),
+			}
+
+			h.processUpdate(context.Background(), &Update{
+				Message: &Message{
+					MessageID:       7,
+					MessageThreadID: tt.messageThreadID,
+					IsTopicMessage:  tt.isTopicMessage,
+					Chat:            &Chat{ID: -100123, Type: "supergroup"},
+					From:            &User{ID: 55, FirstName: "Ada"},
+					Text:            "implement rate limiting for the API",
+				},
+			})
+
+			called, got := msgr.seen()
+			if !called {
+				t.Fatal("expected an outbound messenger call carrying a thread id")
+			}
+			if got != tt.wantThreadID {
+				t.Errorf("threadID = %q, want %q", got, tt.wantThreadID)
+			}
+		})
+	}
+}

@@ -393,6 +393,7 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 			SenderID:   senderID,
 			SenderName: senderName,
 			Text:       text,
+			ThreadID:   msg.topicThreadID(),
 			Platform:   "telegram",
 			Timestamp:  time.Now(),
 		})
@@ -421,6 +422,7 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 			h.commsHandler.HandleMessage(ctx, &comms.IncomingMessage{
 				ContextID:  chatID,
 				SenderID:   senderID,
+				ThreadID:   callback.Message.topicThreadID(),
 				Platform:   "telegram",
 				IsCallback: true,
 				CallbackID: callback.ID,
@@ -436,6 +438,7 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 			h.commsHandler.HandleMessage(ctx, &comms.IncomingMessage{
 				ContextID:  chatID,
 				SenderID:   senderID,
+				ThreadID:   callback.Message.topicThreadID(),
 				Platform:   "telegram",
 				IsCallback: true,
 				CallbackID: callback.ID,
