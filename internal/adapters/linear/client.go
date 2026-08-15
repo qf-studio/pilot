@@ -435,10 +435,92 @@ func (c *Client) GetLabelByName(ctx context.Context, teamID, labelName string) (
 	}
 
 	if len(result.IssueLabels.Nodes) == 0 {
-		return "", fmt.Errorf("label %q not found in team %s", labelName, teamID)
+		return c.getWorkspaceLabelByName(ctx, teamID, labelName)
 	}
 
 	return result.IssueLabels.Nodes[0].ID, nil
+}
+
+func (c *Client) getWorkspaceLabelByName(ctx context.Context, teamID, labelName string) (string, error) {
+	query := `
+		query GetWorkspaceLabel($name: String!) {
+			issueLabels(filter: { name: { eq: $name } }) {
+				nodes { id name team { id } }
+			}
+		}
+	`
+	var result struct {
+		IssueLabels struct {
+			Nodes []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+				Team *struct {
+					ID string `json:"id"`
+				} `json:"team"`
+			} `json:"nodes"`
+		} `json:"issueLabels"`
+	}
+
+	if err := c.Execute(ctx, query, map[string]interface{}{"name": labelName}, &result); err != nil {
+		return "", err
+	}
+
+	for _, n := range result.IssueLabels.Nodes {
+		if n.Team == nil {
+			return n.ID, nil
+		}
+	}
+	return "", fmt.Errorf("label %q not found in team %s", labelName, teamID)
+}
+
+func (c *Client) ResolveTeamUUID(ctx context.Context, teamRef string) (string, error) {
+	if looksLikeUUID(teamRef) {
+		return teamRef, nil
+	}
+
+	query := `
+		query GetTeamID($teamKey: String!) {
+			teams(filter: { key: { eq: $teamKey } }) {
+				nodes { id key }
+			}
+		}
+	`
+	var result struct {
+		Teams struct {
+			Nodes []struct {
+				ID  string `json:"id"`
+				Key string `json:"key"`
+			} `json:"nodes"`
+		} `json:"teams"`
+	}
+
+	if err := c.Execute(ctx, query, map[string]interface{}{"teamKey": teamRef}, &result); err != nil {
+		return "", err
+	}
+	if len(result.Teams.Nodes) == 0 {
+		return "", fmt.Errorf("team %q not found", teamRef)
+	}
+	return result.Teams.Nodes[0].ID, nil
+}
+
+func looksLikeUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // CreateLabel creates a new label in a team and returns its ID.
@@ -466,8 +548,13 @@ func (c *Client) CreateLabel(ctx context.Context, teamID, labelName, color strin
 		} `json:"issueLabelCreate"`
 	}
 
+	teamUUID, err := c.ResolveTeamUUID(ctx, teamID)
+	if err != nil {
+		return "", err
+	}
+
 	if err := c.Execute(ctx, mutation, map[string]interface{}{
-		"teamId": teamID,
+		"teamId": teamUUID,
 		"name":   labelName,
 		"color":  color,
 	}, &result); err != nil {
