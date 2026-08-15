@@ -43,6 +43,8 @@ func TestClassify(t *testing.T) {
 		{"api GET implicit", []string{"api", "repos/qf-studio/pilot/issues/1"}, VerdictAllow},
 		{"api GET explicit -X", []string{"api", "repos/qf-studio/pilot/issues/1", "-X", "GET"}, VerdictAllow},
 		{"api GET explicit --method lowercase", []string{"api", "repos/qf-studio/pilot/issues/1", "--method", "get"}, VerdictAllow},
+		{"api search with -f query and explicit GET", []string{"api", "search/issues", "-X", "GET", "-f", "q=6220 in:body type:pr"}, VerdictAllow},
+		{"api search with -f query lowercase get", []string{"api", "search/issues", "--method", "get", "-f", "q=repo:o/r is:open"}, VerdictAllow},
 
 		// --- own-artifact allows ---
 		{"pr create no head (current branch)", []string{"pr", "create", "--title", "t", "--body", "b"}, VerdictAllow},

@@ -392,10 +392,14 @@ func Classify(id Identity, args []string) Decision {
 // presence as non-GET is stricter than the letter of "gh api non-GET" but
 // closes that implicit-mutation gap deliberately.
 func checkAPIRead(p parsedArgs) Decision {
-	if p.hasDataFlag {
-		return deny("gh api with -f/-F/--field/--raw-field/--input carries a request body and is treated as a mutation", allowedSummary())
-	}
 	method := strings.ToUpper(strings.TrimSpace(p.method))
+	if p.hasDataFlag {
+		// gh auto-switches to POST only when -X is absent; explicit GET + data flags is a query-parameter read.
+		if method == "GET" {
+			return Decision{Verdict: VerdictAllow, Reason: "gh api explicit -X GET with query fields"}
+		}
+		return deny("gh api with -f/-F/--field/--raw-field/--input carries a request body and is treated as a mutation; for a read-only query add an explicit -X GET, or URL-encode it (gh api 'search/issues?q=...')", allowedSummary())
+	}
 	if method != "" && method != "GET" {
 		return deny(fmt.Sprintf("gh api -X %s is not a read", p.method), allowedSummary())
 	}
