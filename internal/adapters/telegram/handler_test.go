@@ -1688,3 +1688,34 @@ func TestStripBotMention(t *testing.T) {
 		})
 	}
 }
+
+func TestProcessUpdateEditedMessageDoesNotDispatch(t *testing.T) {
+	h := &Handler{}
+
+	h.processUpdate(context.Background(), &Update{
+		UpdateID: 399151960,
+		EditedMessage: &Message{
+			MessageID: 12,
+			Chat:      &Chat{ID: -100123, Type: "supergroup"},
+			From:      &User{ID: 55},
+			Text:      "edited text",
+		},
+	})
+}
+
+func TestUpdateParsesEditedMessage(t *testing.T) {
+	raw := `{"update_id": 399151959, "edited_message": {"message_id": 7, "chat": {"id": -100123, "type": "supergroup"}, "text": "fixed typo"}}`
+	var u Update
+	if err := json.Unmarshal([]byte(raw), &u); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if u.EditedMessage == nil {
+		t.Fatal("edited_message not parsed into Update")
+	}
+	if u.EditedMessage.Text != "fixed typo" {
+		t.Errorf("EditedMessage.Text = %q, want %q", u.EditedMessage.Text, "fixed typo")
+	}
+	if u.Message != nil {
+		t.Error("Message must stay nil for an edited_message update")
+	}
+}
