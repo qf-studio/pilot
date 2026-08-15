@@ -844,6 +844,15 @@ func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, task
 		return
 	}
 
+	if result.Declined {
+		reason := result.DeclinedReason
+		if reason == "" {
+			reason = "no action needed"
+		}
+		_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("⏸ No changes needed: %s\n%s", taskID, reason))
+		return
+	}
+
 	output := CleanInternalSignals(result.Output)
 	_ = h.messenger.SendResult(ctx, contextID, threadID, taskID, result.Success, output, result.PRUrl)
 }
