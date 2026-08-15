@@ -13,6 +13,21 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
+func newSDKLinearWorkspace(name, apiKey, teamID, triggerLabel string, projectIDs, projects []string, interval time.Duration) *linearSDK.WorkspaceConfig {
+	return &linearSDK.WorkspaceConfig{
+		Name:         name,
+		APIKey:       apiKey,
+		TeamID:       teamID,
+		TriggerLabel: triggerLabel,
+		ProjectIDs:   projectIDs,
+		Projects:     projects,
+		Polling: &linearSDK.PollingConfig{
+			Enabled:  true,
+			Interval: interval,
+		},
+	}
+}
+
 func linearPollerRegistration() PollerRegistration {
 	return PollerRegistration{
 		Name: "linear",
@@ -44,16 +59,7 @@ func linearPollerRegistration() PollerRegistration {
 				if ws.Polling != nil && ws.Polling.Interval > 0 {
 					wsInterval = ws.Polling.Interval
 				}
-				sdkWorkspaces = append(sdkWorkspaces, &linearSDK.WorkspaceConfig{
-					Name:         ws.Name,
-					APIKey:       ws.APIKey,
-					TeamID:       ws.TeamID,
-					TriggerLabel: triggerLabel,
-					Polling: &linearSDK.PollingConfig{
-						Enabled:  true,
-						Interval: wsInterval,
-					},
-				})
+				sdkWorkspaces = append(sdkWorkspaces, newSDKLinearWorkspace(ws.Name, ws.APIKey, ws.TeamID, triggerLabel, ws.ProjectIDs, ws.Projects, wsInterval))
 				notifiersByTeamID[ws.TeamID] = linearSDK.NewNotifier(linearSDK.NewClient(ws.APIKey))
 			}
 
