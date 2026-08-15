@@ -336,8 +336,23 @@ func cleanInternalSignals(text string) string {
 	lines := strings.Split(text, "\n")
 	var cleanLines []string
 	skipBlock := false
+	inSignalFence := false
 
 	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if inSignalFence {
+			if trimmed == "```" {
+				inSignalFence = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```pilot-signal") {
+			inSignalFence = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, `{"v":`) && strings.HasSuffix(trimmed, "}") {
+			continue
+		}
 		// Skip NAVIGATOR_STATUS blocks
 		if strings.Contains(line, "NAVIGATOR_STATUS") {
 			skipBlock = true
