@@ -472,3 +472,33 @@ func TestCommandRouting(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitCommandMention(t *testing.T) {
+	tests := []struct {
+		name          string
+		token         string
+		botUsername   string
+		wantCmd       string
+		wantAddressed bool
+	}{
+		{name: "bare command", token: "/status", botUsername: "pilotbot", wantCmd: "/status", wantAddressed: true},
+		{name: "suffixed with our name", token: "/status@pilotbot", botUsername: "pilotbot", wantCmd: "/status", wantAddressed: true},
+		{name: "suffix case-insensitive", token: "/Status@PilotBot", botUsername: "pilotbot", wantCmd: "/status", wantAddressed: true},
+		{name: "addressed to another bot", token: "/status@otherbot", botUsername: "pilotbot", wantCmd: "/status", wantAddressed: false},
+		{name: "unknown bot username accepts any suffix", token: "/status@pilotbot", botUsername: "", wantCmd: "/status", wantAddressed: true},
+		{name: "uppercase bare command", token: "/STATUS", botUsername: "pilotbot", wantCmd: "/status", wantAddressed: true},
+		{name: "empty mention", token: "/status@", botUsername: "pilotbot", wantCmd: "/status", wantAddressed: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, addressed := splitCommandMention(tt.token, tt.botUsername)
+			if cmd != tt.wantCmd {
+				t.Errorf("cmd = %q, want %q", cmd, tt.wantCmd)
+			}
+			if addressed != tt.wantAddressed {
+				t.Errorf("addressed = %v, want %v", addressed, tt.wantAddressed)
+			}
+		})
+	}
+}
