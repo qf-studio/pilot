@@ -506,6 +506,26 @@
         "name": "Bake-Test",
         "aliases": [],
         "domain": "general"
+      },
+      "config-push": {
+        "name": "Config-Push",
+        "aliases": [],
+        "domain": "general"
+      },
+      "ssm": {
+        "name": "Ssm",
+        "aliases": [],
+        "domain": "general"
+      },
+      "secrets": {
+        "name": "Secrets",
+        "aliases": [],
+        "domain": "general"
+      },
+      "forensics": {
+        "name": "Forensics",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -865,14 +885,14 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
+          "frontend",
+          "authentication",
           "testing",
           "deployment",
+          "markers",
           "context",
           "theory of mind",
-          "markers",
-          "authentication",
           "knowledge",
-          "frontend",
           "api"
         ]
       },
@@ -4791,6 +4811,22 @@
         ],
         "created": "2026-08-16",
         "last_validated": "2026-08-16"
+      },
+      "apply-script-silent-rollback-causes": {
+        "type": "pitfall",
+        "summary": "config-push rollbacks are causeless in the console \u2014 real error only in box SSM invocation output. Proven causes: root-run git vs pilot-owned clones (dubious ownership reads as 'not in a git directory') and boot-time-stale /run/pilot/env (post-boot secret seed/rotation invisible). Any root SSM script touching pilot-owned repos must runuser -u pilot",
+        "path": "memories/pitfalls/apply-script-silent-rollback-causes.md",
+        "confidence": 0.95,
+        "concepts": [
+          "fleet",
+          "git",
+          "config-push",
+          "ssm",
+          "secrets",
+          "forensics"
+        ],
+        "created": "2026-08-16",
+        "last_validated": "2026-08-16"
       }
     }
   },
@@ -6509,6 +6545,11 @@
       "from": "bake-workflow-tee-masked-failure-promoted-source-ami",
       "to": "TASK-405",
       "type": "learned-from"
+    },
+    {
+      "from": "apply-script-silent-rollback-causes",
+      "to": "TASK-405",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -7667,7 +7708,8 @@
       "mem-160"
     ],
     "git": [
-      "mem-161"
+      "mem-161",
+      "apply-script-silent-rollback-causes"
     ],
     "pre-push-gate": [
       "mem-161"
@@ -7722,7 +7764,8 @@
       "commit-message-hyphenated-close-keyword-autocloses-issues"
     ],
     "fleet": [
-      "cdk-tenant-role-not-an-instance-role"
+      "cdk-tenant-role-not-an-instance-role",
+      "apply-script-silent-rollback-causes"
     ],
     "provisioning": [
       "cdk-tenant-role-not-an-instance-role"
@@ -7754,12 +7797,24 @@
     ],
     "bake-test": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
+    ],
+    "config-push": [
+      "apply-script-silent-rollback-causes"
+    ],
+    "ssm": [
+      "apply-script-silent-rollback-causes"
+    ],
+    "secrets": [
+      "apply-script-silent-rollback-causes"
+    ],
+    "forensics": [
+      "apply-script-silent-rollback-causes"
     ]
   },
-  "last_updated": "2026-08-16T18:23:47.377638+00:00",
+  "last_updated": "2026-08-16T21:38:44.712851+00:00",
   "stats": {
-    "total_nodes": 413,
-    "total_edges": 343,
-    "memory_count": 222
+    "total_nodes": 418,
+    "total_edges": 344,
+    "memory_count": 223
   }
 }
