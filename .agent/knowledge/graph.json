@@ -451,6 +451,36 @@
         "name": "Pilot-Cloud-Infra",
         "aliases": [],
         "domain": "general"
+      },
+      "fleet": {
+        "name": "Fleet",
+        "aliases": [],
+        "domain": "general"
+      },
+      "provisioning": {
+        "name": "Provisioning",
+        "aliases": [],
+        "domain": "general"
+      },
+      "iam": {
+        "name": "Iam",
+        "aliases": [],
+        "domain": "general"
+      },
+      "bootstrap": {
+        "name": "Bootstrap",
+        "aliases": [],
+        "domain": "general"
+      },
+      "ship-test": {
+        "name": "Ship-Test",
+        "aliases": [],
+        "domain": "general"
+      },
+      "credential-helper": {
+        "name": "Credential-Helper",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -810,14 +840,15 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
-          "context",
-          "knowledge",
           "theory of mind",
           "testing",
-          "deployment",
-          "frontend",
           "api",
-          "authentication"
+          "frontend",
+          "authentication",
+          "deployment",
+          "markers",
+          "knowledge",
+          "context"
         ]
       },
       "TASK-407": {
@@ -1729,11 +1760,11 @@
         "status": "completed",
         "concepts": [
           "context",
-          "api",
-          "workflow",
-          "testing",
           "deployment",
+          "testing",
+          "api",
           "theory of mind",
+          "workflow",
           "database",
           "authentication"
         ]
@@ -4703,6 +4734,22 @@
         ],
         "confidence": 0.98,
         "created": "2026-08-15"
+      },
+      "cdk-tenant-role-not-an-instance-role": {
+        "type": "pitfall",
+        "summary": "TenantAccessRole (pilot-cloud-infra) trusts account-root+session-tags, NOT ec2 \u2014 cannot back an instance profile (burned 3 ship-test provisions); only in-code instance-role path is pilot-console TenantResourceFactory. Same class: any role running an 'aws s3 cp' bridge needs explicit s3:GetObject. Push fix = repo-local credential helper, never tokened remote (hygiene test enforces scrub)",
+        "path": "memories/pitfalls/cdk-tenant-role-not-an-instance-role.md",
+        "confidence": 0.95,
+        "concepts": [
+          "fleet",
+          "provisioning",
+          "iam",
+          "bootstrap",
+          "ship-test",
+          "credential-helper"
+        ],
+        "created": "2026-08-16",
+        "last_validated": "2026-08-16"
       }
     }
   },
@@ -6411,6 +6458,11 @@
       "from": "TASK-478",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "cdk-tenant-role-not-an-instance-role",
+      "to": "TASK-405",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -7075,7 +7127,8 @@
       "TASK-463",
       "TASK-467",
       "TASK-470",
-      "TASK-476"
+      "TASK-476",
+      "TASK-405"
     ],
     "database": [
       "TASK-387",
@@ -7621,12 +7674,30 @@
     ],
     "gotcha": [
       "commit-message-hyphenated-close-keyword-autocloses-issues"
+    ],
+    "fleet": [
+      "cdk-tenant-role-not-an-instance-role"
+    ],
+    "provisioning": [
+      "cdk-tenant-role-not-an-instance-role"
+    ],
+    "iam": [
+      "cdk-tenant-role-not-an-instance-role"
+    ],
+    "bootstrap": [
+      "cdk-tenant-role-not-an-instance-role"
+    ],
+    "ship-test": [
+      "cdk-tenant-role-not-an-instance-role"
+    ],
+    "credential-helper": [
+      "cdk-tenant-role-not-an-instance-role"
     ]
   },
-  "last_updated": "2026-08-15T15:30:58.191082+00:00",
+  "last_updated": "2026-08-16T17:21:41.094285+00:00",
   "stats": {
-    "total_nodes": 400,
-    "total_edges": 341,
-    "memory_count": 220
+    "total_nodes": 407,
+    "total_edges": 342,
+    "memory_count": 221
   }
 }
