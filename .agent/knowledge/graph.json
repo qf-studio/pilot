@@ -481,6 +481,31 @@
         "name": "Credential-Helper",
         "aliases": [],
         "domain": "general"
+      },
+      "ami": {
+        "name": "Ami",
+        "aliases": [],
+        "domain": "general"
+      },
+      "ci-gates": {
+        "name": "Ci-Gates",
+        "aliases": [],
+        "domain": "general"
+      },
+      "false-success": {
+        "name": "False-Success",
+        "aliases": [],
+        "domain": "general"
+      },
+      "packer": {
+        "name": "Packer",
+        "aliases": [],
+        "domain": "general"
+      },
+      "bake-test": {
+        "name": "Bake-Test",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -840,15 +865,15 @@
         "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
         "status": "unknown",
         "concepts": [
-          "theory of mind",
           "testing",
-          "api",
-          "frontend",
-          "authentication",
           "deployment",
+          "context",
+          "theory of mind",
           "markers",
+          "authentication",
           "knowledge",
-          "context"
+          "frontend",
+          "api"
         ]
       },
       "TASK-407": {
@@ -4750,6 +4775,22 @@
         ],
         "created": "2026-08-16",
         "last_validated": "2026-08-16"
+      },
+      "bake-workflow-tee-masked-failure-promoted-source-ami": {
+        "type": "pitfall",
+        "summary": "build-ami.yml tee-without-pipefail masked a failed packer build; bare grep then extracted the AL2023 SOURCE ami \u2014 only the never-before-executed throwaway validation stopped a blank image becoming golden. Never trust CI machinery with zero live runs; no env-dependent asserts (pilot doctor) in image builds; pipefail before tee; artifact-anchored id extraction. TASK-460 class, infra form",
+        "path": "memories/pitfalls/bake-workflow-tee-masked-failure-promoted-source-ami.md",
+        "confidence": 0.95,
+        "concepts": [
+          "ship-test",
+          "ami",
+          "ci-gates",
+          "false-success",
+          "packer",
+          "bake-test"
+        ],
+        "created": "2026-08-16",
+        "last_validated": "2026-08-16"
       }
     }
   },
@@ -6463,6 +6504,11 @@
       "from": "cdk-tenant-role-not-an-instance-role",
       "to": "TASK-405",
       "type": "learned-from"
+    },
+    {
+      "from": "bake-workflow-tee-masked-failure-promoted-source-ami",
+      "to": "TASK-405",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -7688,16 +7734,32 @@
       "cdk-tenant-role-not-an-instance-role"
     ],
     "ship-test": [
-      "cdk-tenant-role-not-an-instance-role"
+      "cdk-tenant-role-not-an-instance-role",
+      "bake-workflow-tee-masked-failure-promoted-source-ami"
     ],
     "credential-helper": [
       "cdk-tenant-role-not-an-instance-role"
+    ],
+    "ami": [
+      "bake-workflow-tee-masked-failure-promoted-source-ami"
+    ],
+    "ci-gates": [
+      "bake-workflow-tee-masked-failure-promoted-source-ami"
+    ],
+    "false-success": [
+      "bake-workflow-tee-masked-failure-promoted-source-ami"
+    ],
+    "packer": [
+      "bake-workflow-tee-masked-failure-promoted-source-ami"
+    ],
+    "bake-test": [
+      "bake-workflow-tee-masked-failure-promoted-source-ami"
     ]
   },
-  "last_updated": "2026-08-16T17:21:41.094285+00:00",
+  "last_updated": "2026-08-16T18:23:47.377638+00:00",
   "stats": {
-    "total_nodes": 407,
-    "total_edges": 342,
-    "memory_count": 221
+    "total_nodes": 413,
+    "total_edges": 343,
+    "memory_count": 222
   }
 }
