@@ -1,7 +1,15 @@
 package telegram
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
+
+	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // TestCallbackQueryData tests callback query data parsing
@@ -396,5 +404,58 @@ func TestChatFields(t *testing.T) {
 				t.Errorf("Type = %q, want %q", tt.chat.Type, tt.wantType)
 			}
 		})
+	}
+}
+
+func TestHandleCallbackAcceptsConfirmationButtonData(t *testing.T) {
+	for _, data := range []string{
+		"execute_task:TG-1786801033",
+		"cancel_task:TG-1786801033",
+		"execute",
+		"cancel",
+		"voice_check_status",
+		"",
+	} {
+		t.Run(data, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+			}))
+			defer srv.Close()
+
+			h := &Handler{
+				client: NewClientWithBaseURL(testutil.FakeTelegramBotToken, srv.URL),
+				commsHandler: comms.NewHandler(&comms.HandlerConfig{
+					Messenger:    &noopMessenger{},
+					TaskIDPrefix: "TG",
+				}),
+			}
+
+			h.handleCallback(context.Background(), &CallbackQuery{
+				ID:      "cb-1",
+				From:    &User{ID: 55},
+				Data:    data,
+				Message: &Message{MessageID: 7, Chat: &Chat{ID: -100123}},
+			})
+		})
+	}
+}
+
+func TestConfirmationCallbackDataMatchesHandler(t *testing.T) {
+	messenger, err := os.ReadFile("messenger.go")
+	if err != nil {
+		t.Fatalf("read messenger.go: %v", err)
+	}
+	handler, err := os.ReadFile("handler.go")
+	if err != nil {
+		t.Fatalf("read handler.go: %v", err)
+	}
+
+	for _, prefix := range []string{"execute_task:", "cancel_task:"} {
+		if !strings.Contains(string(messenger), prefix) {
+			t.Fatalf("messenger no longer emits %q; update this guard", prefix)
+		}
+		if !strings.Contains(string(handler), prefix) {
+			t.Errorf("handleCallback does not match %q — confirmation buttons silently do nothing", prefix)
+		}
 	}
 }

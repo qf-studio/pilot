@@ -390,7 +390,7 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 	_ = h.client.AnswerCallback(ctx, callback.ID, "")
 
 	switch {
-	case data == "execute":
+	case data == "execute" || strings.HasPrefix(data, "execute_task:"):
 		if h.commsHandler != nil {
 			senderID := ""
 			if callback.From != nil {
@@ -405,7 +405,7 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 				ActionID:   "execute",
 			})
 		}
-	case data == "cancel":
+	case data == "cancel" || strings.HasPrefix(data, "cancel_task:"):
 		if h.commsHandler != nil {
 			senderID := ""
 			if callback.From != nil {
