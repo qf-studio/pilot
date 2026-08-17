@@ -73,6 +73,9 @@ func TestController_ExecutionEvents_PRLifecycle(t *testing.T) {
 			c.memoryStore = mock
 
 			c.OnPRCreated(prNumber, "https://github.com/owner/repo/pull/42", issueNumber, headSHA, "pilot/GH-10", "")
+			if prState, ok := c.GetPRState(prNumber); ok {
+				prState.TargetBranch = "main"
+			}
 
 			ctx := context.Background()
 			// Drive the state machine until the PR drains from tracking (merged +

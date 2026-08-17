@@ -141,6 +141,7 @@ func TestController_OnPRCreated_DuplicateDoesNotDuplicateMergedComment(t *testin
 	c.OnPRCreated(3808, "https://github.com/owner/repo/pull/3808", 100, "abc1234", "pilot/GH-100", "")
 	prState, _ := c.GetPRState(3808)
 	prState.Stage = StageMerging
+	prState.TargetBranch = "main"
 
 	ctx := context.Background()
 	if err := c.handleMerging(ctx, prState); err != nil {

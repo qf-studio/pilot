@@ -47,6 +47,17 @@ func newRecordingGHServer() (*recordingGHServer, *httptest.Server) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.record(r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusOK)
+		// GH-4872: safeDeleteBranch's branchIsBaseOfOpenPR check calls
+		// ListPullRequests (GET .../pulls?state=open), which decodes the body
+		// into a []*PullRequest — "{}" fails that decode (object, not array)
+		// and makes the branch-delete guard fail closed, silently skipping
+		// every DELETE these tests assert on. Reply "[]" for exactly the list
+		// endpoint (no further path segments) so it decodes to zero open PRs;
+		// every other endpoint keeps the original "{}" stub.
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls" {
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
 		_, _ = w.Write([]byte("{}"))
 	}))
 	return rec, srv

@@ -183,8 +183,32 @@ func (m *AutoMerger) CanMerge(ctx context.Context, prNumber int) (bool, string, 
 	if pr.Mergeable != nil && !*pr.Mergeable {
 		return false, "merge conflicts", nil
 	}
+	// GH-4872: defense-in-depth mirror of handleMerging's base-branch guard
+	// (controller.go) — CanMerge isn't wired into the production merge path
+	// today (handleMerging calls AutoMerger.MergePR directly), but it is a
+	// public "is this PR safe to merge" predicate and should not silently
+	// green-light a PR stacked on a non-default base if a future caller
+	// relies on it alone.
+	if defaultBranch := m.resolveMainBranchName(); pr.Base.Ref != "" && pr.Base.Ref != defaultBranch {
+		return false, fmt.Sprintf("base branch mismatch: targets %q, not default branch %q", pr.Base.Ref, defaultBranch), nil
+	}
 
 	return true, "", nil
+}
+
+// resolveMainBranchName mirrors Controller.resolveMainBranchName (GH-4872).
+// Duplicated rather than shared across a cross-type dependency: AutoMerger
+// and Controller each already own their own *Config value, and the logic is
+// a handful of lines.
+func (m *AutoMerger) resolveMainBranchName() string {
+	if env := m.config.ResolvedEnvOrDefault(); env != nil && env.Branch != "" {
+		return env.Branch
+	}
+	m.log.Warn("resolveMainBranchName: no environment branch configured, falling back to literal \"main\" — set environments.<env>.branch to silence this warning",
+		"owner", m.owner,
+		"repo", m.repo,
+	)
+	return "main"
 }
 
 // ShouldWaitForCI returns true if the environment requires CI to pass before merge.

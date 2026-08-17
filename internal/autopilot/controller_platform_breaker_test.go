@@ -622,11 +622,12 @@ func TestHandleMerging_PlatformBreakerNilOrClosed_IsNoOp(t *testing.T) {
 			c := NewController(cfg, ghClient, nil, "owner", "repo", opts...)
 
 			prState := &PRState{
-				PRNumber:  prNum,
-				HeadSHA:   fmt.Sprintf("sha%d", prNum),
-				Stage:     StageMerging,
-				CIStatus:  CISuccess,
-				CreatedAt: time.Now(),
+				PRNumber:     prNum,
+				HeadSHA:      fmt.Sprintf("sha%d", prNum),
+				Stage:        StageMerging,
+				CIStatus:     CISuccess,
+				CreatedAt:    time.Now(),
+				TargetBranch: "main",
 			}
 			c.mu.Lock()
 			c.activePRs[prNum] = prState

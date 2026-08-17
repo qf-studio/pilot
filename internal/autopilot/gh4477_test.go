@@ -146,14 +146,15 @@ func TestHandleMerging_CIStillPassing_ProceedsToMerge(t *testing.T) {
 
 	c.mu.Lock()
 	c.activePRs[88] = &PRState{
-		PRNumber:    88,
-		PRURL:       "https://github.com/owner/repo/pull/88",
-		IssueNumber: 40,
-		BranchName:  "pilot/GH-40",
-		HeadSHA:     "sha88",
-		Stage:       StageMerging,
-		CIStatus:    CISuccess,
-		CreatedAt:   time.Now(),
+		PRNumber:     88,
+		PRURL:        "https://github.com/owner/repo/pull/88",
+		IssueNumber:  40,
+		BranchName:   "pilot/GH-40",
+		HeadSHA:      "sha88",
+		Stage:        StageMerging,
+		CIStatus:     CISuccess,
+		CreatedAt:    time.Now(),
+		TargetBranch: "main",
 	}
 	c.mu.Unlock()
 

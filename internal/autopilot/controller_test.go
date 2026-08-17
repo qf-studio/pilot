@@ -453,6 +453,7 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+	c.activePRs[42].TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	ctx := context.Background()
 
@@ -552,6 +553,7 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+	c.activePRs[42].TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	ctx := context.Background()
 
@@ -735,11 +737,12 @@ func TestController_HandleMerging_SelfHealsExecution(t *testing.T) {
 
 	c.mu.Lock()
 	c.activePRs[42] = &PRState{
-		PRNumber:    42,
-		PRURL:       "https://github.com/owner/repo/pull/42",
-		HeadSHA:     "abc1234",
-		IssueNumber: 99,
-		Stage:       StageMerging,
+		PRNumber:     42,
+		PRURL:        "https://github.com/owner/repo/pull/42",
+		HeadSHA:      "abc1234",
+		IssueNumber:  99,
+		Stage:        StageMerging,
+		TargetBranch: "main",
 	}
 	c.mu.Unlock()
 
@@ -1033,8 +1036,9 @@ func TestController_CircuitBreaker(t *testing.T) {
 	// Start with PR in merging stage (will fail on merge)
 	c.mu.Lock()
 	c.activePRs[42] = &PRState{
-		PRNumber: 42,
-		Stage:    StageMerging,
+		PRNumber:     42,
+		Stage:        StageMerging,
+		TargetBranch: "main",
 	}
 	c.mu.Unlock()
 
@@ -1278,9 +1282,10 @@ func TestController_MergeAttemptIncrement(t *testing.T) {
 	// Start at merging stage
 	c.mu.Lock()
 	c.activePRs[42] = &PRState{
-		PRNumber: 42,
-		HeadSHA:  "abc1234",
-		Stage:    StageMerging,
+		PRNumber:     42,
+		HeadSHA:      "abc1234",
+		Stage:        StageMerging,
+		TargetBranch: "main",
 	}
 	c.mu.Unlock()
 
@@ -3438,8 +3443,8 @@ func TestController_PerPRCircuitBreaker_DoesNotBlockOtherPRs(t *testing.T) {
 
 	// Set up PR 42 at merging stage (will fail)
 	c.mu.Lock()
-	c.activePRs[42] = &PRState{PRNumber: 42, HeadSHA: "sha42", Stage: StageMerging}
-	c.activePRs[43] = &PRState{PRNumber: 43, HeadSHA: "sha43", Stage: StageMerging}
+	c.activePRs[42] = &PRState{PRNumber: 42, HeadSHA: "sha42", Stage: StageMerging, TargetBranch: "main"}
+	c.activePRs[43] = &PRState{PRNumber: 43, HeadSHA: "sha43", Stage: StageMerging, TargetBranch: "main"}
 	c.mu.Unlock()
 
 	ctx := context.Background()
@@ -3751,6 +3756,7 @@ func TestController_handleMerging_ConflictClearsLabel(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
+	prState.TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	ctx := context.Background()
 
@@ -3855,6 +3861,7 @@ func TestController_handleMerging_Success_RemovesFailedLabel(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
+	prState.TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	ctx := context.Background()
 
@@ -3954,6 +3961,7 @@ func TestController_handleMerging_Success_ClearsRetryLabels(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
+	prState.TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	ctx := context.Background()
 
@@ -4215,6 +4223,7 @@ func TestController_MonitorCompletedOnMerge(t *testing.T) {
 	c.SetMonitor(mockMonitor)
 
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+	c.activePRs[42].TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	ctx := context.Background()
 
@@ -4874,6 +4883,7 @@ func TestController_handleMergeConflict_AutoRebaseSuccess(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
+	prState.TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	ctx := context.Background()
 	err := c.ProcessPR(ctx, 42, nil)
@@ -4974,6 +4984,7 @@ func TestController_handleMergeConflict_AutoRebaseFails(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
+	prState.TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	ctx := context.Background()
 	err := c.ProcessPR(ctx, 42, nil)
@@ -8402,6 +8413,7 @@ func TestController_handleMerging_IdempotentCompletionComment(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
+	prState.TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	ctx := context.Background()
 
@@ -8540,6 +8552,7 @@ func TestController_handleMerging_NotifiesApprovalGatedMerge(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
+	prState.TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 	prState.ApprovalRequestID = "req-42"
 
 	if err := c.handleMerging(context.Background(), prState); err != nil {
@@ -8617,6 +8630,7 @@ func TestController_handleMerging_MergeFollowupNotDoubleFired(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
+	prState.TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 	prState.ApprovalRequestID = "req-42"
 
 	if err := c.handleMerging(context.Background(), prState); err != nil {
@@ -10001,6 +10015,7 @@ func TestController_IssuesProcessed_Success(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "mergesha1", "pilot/GH-10", "")
 	pr, _ := c.GetPRState(42)
 	pr.Stage = StageMerging
+	pr.TargetBranch = "main" // GH-4872: guard requires a known default-branch target before merging
 
 	if err := c.ProcessPR(context.Background(), 42, nil); err != nil {
 		t.Fatalf("ProcessPR returned error: %v", err)

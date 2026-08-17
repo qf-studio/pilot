@@ -846,6 +846,7 @@ func TestCheckExternalMergeOrClose_StageGuards(t *testing.T) {
 		{name: "scope carrier guard", scopeKey: "epic:1", stage: StageMerging},
 		{name: "post_merge_ci guard (GH-3994)", stage: StagePostMergeCI},
 		{name: "releasing guard (GH-4124)", stage: StageReleasing},
+		{name: "merged guard (GH-4872)", stage: StageMerged},
 	}
 
 	for i, tt := range tests {
