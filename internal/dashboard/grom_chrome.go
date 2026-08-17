@@ -45,12 +45,6 @@ var warnChrome = render.PanelStyle{
 	Title:  gromTheme.WarningStyle().Bold(true),
 }
 
-// renderPanelInfo builds a grom-style card with a legend embedded in the
-// top-right border: ╭─ title ────┤ info ├─╮.
-func renderPanelInfo(title, info, content string, tw int) string {
-	return renderPanelStyled(title, info, content, tw, panelChrome)
-}
-
 // renderPanelStyled renders the card with explicit chrome (warn, focus).
 // Height is derived from the content so panels stay content-sized.
 func renderPanelStyled(title, info, content string, tw int, ps render.PanelStyle) string {
