@@ -1312,6 +1312,9 @@ Examples:
 			if gwStore != nil {
 				p.Gateway().SetDashboardStore(gwStore)
 				p.Gateway().SetLogStreamStore(gwStore)
+				// GH-4922: eval pass@1 now lives on /metrics instead of the
+				// TUI eval panel — same store, same wiring site.
+				p.Gateway().SetEvalMetricsSource(gwStore)
 			}
 			// GH-4748: wire the same DecisionRecorder (approvalMgr) that
 			// Telegram/Slack use via WithDecisionRecorder above, so
@@ -2663,6 +2666,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		if store != nil {
 			gwServer.SetDashboardStore(store)
 			gwServer.SetLogStreamStore(store)
+			// GH-4922: eval pass@1 now lives on /metrics instead of the TUI
+			// eval panel — same store, same wiring site.
+			gwServer.SetEvalMetricsSource(store)
 		}
 		// GH-4748: wire the same DecisionRecorder (approvalMgr) that
 		// Telegram/Slack use via WithDecisionRecorder above, so

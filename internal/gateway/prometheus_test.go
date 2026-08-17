@@ -709,3 +709,115 @@ func TestPrometheusExporter_AlertMetrics_SetAlertsSourceBeforeMetricsSource(t *t
 		t.Errorf("alert_events_dropped_total not found:\n%s", w.Body.String())
 	}
 }
+
+// =============================================================================
+// Eval metrics tests (GH-4922): pilot_eval_tasks_total / pilot_eval_pass_ratio
+// replaced the TUI eval stats panel (renderEvalStats, removed).
+// =============================================================================
+
+// mockEvalSource implements EvalMetricsSource for testing.
+type mockEvalSource struct {
+	counts memory.EvalTaskCounts
+	err    error
+}
+
+func (s *mockEvalSource) GetEvalTaskCounts() (memory.EvalTaskCounts, error) {
+	return s.counts, s.err
+}
+
+func TestPrometheusExporter_EvalMetrics_NotEmittedWhenNilSource(t *testing.T) {
+	exp := NewPrometheusExporter(&mockMetricsSource{})
+	var buf bytes.Buffer
+	if err := exp.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus error: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "pilot_eval_tasks_total") || strings.Contains(out, "pilot_eval_pass_ratio") {
+		t.Error("eval series should not appear when no EvalMetricsSource is wired")
+	}
+}
+
+func TestPrometheusExporter_EvalMetrics_SeriesRendered(t *testing.T) {
+	exp := NewPrometheusExporter(&mockMetricsSource{})
+	exp.SetEvalSource(&mockEvalSource{counts: memory.EvalTaskCounts{Passed: 7, Failed: 3}})
+
+	var buf bytes.Buffer
+	if err := exp.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus error: %v", err)
+	}
+	out := buf.String()
+
+	expectations := []string{
+		`# HELP pilot_eval_tasks_total`,
+		`# TYPE pilot_eval_tasks_total gauge`,
+		`pilot_eval_tasks_total{success="true"} 7`,
+		`pilot_eval_tasks_total{success="false"} 3`,
+		`# HELP pilot_eval_pass_ratio`,
+		`# TYPE pilot_eval_pass_ratio gauge`,
+		`pilot_eval_pass_ratio 0.7`,
+	}
+	for _, want := range expectations {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected output to contain %q\ngot:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrometheusExporter_EvalMetrics_EmptyTableIsDeterministic(t *testing.T) {
+	exp := NewPrometheusExporter(&mockMetricsSource{})
+	exp.SetEvalSource(&mockEvalSource{counts: memory.EvalTaskCounts{Passed: 0, Failed: 0}})
+
+	var buf bytes.Buffer
+	if err := exp.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus error: %v", err)
+	}
+	out := buf.String()
+
+	expectations := []string{
+		`pilot_eval_tasks_total{success="true"} 0`,
+		`pilot_eval_tasks_total{success="false"} 0`,
+		`pilot_eval_pass_ratio 0`,
+	}
+	for _, want := range expectations {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected output to contain %q\ngot:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrometheusExporter_EvalMetrics_SetEvalMetricsSourceViaServer(t *testing.T) {
+	srv := NewServer(&Config{Host: "127.0.0.1", Port: 0})
+	srv.SetMetricsSource(&mockMetricsSource{})
+	srv.SetEvalMetricsSource(&mockEvalSource{counts: memory.EvalTaskCounts{Passed: 1, Failed: 1}})
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	srv.handleMetrics(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `pilot_eval_pass_ratio 0.5`) {
+		t.Errorf("eval pass ratio not found in output:\n%s", w.Body.String())
+	}
+}
+
+func TestPrometheusExporter_EvalMetrics_SetEvalMetricsSourceBeforeMetricsSource(t *testing.T) {
+	// Verify SetEvalMetricsSource is safe to call before SetMetricsSource,
+	// mirroring the alerts-source ordering guarantee above.
+	srv := NewServer(&Config{Host: "127.0.0.1", Port: 0})
+
+	srv.SetEvalMetricsSource(&mockEvalSource{counts: memory.EvalTaskCounts{Passed: 2, Failed: 0}})
+	srv.SetMetricsSource(&mockMetricsSource{}) // exporter created after evalSource is stored
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	srv.handleMetrics(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `pilot_eval_pass_ratio 1`) {
+		t.Errorf("pilot_eval_pass_ratio not found:\n%s", w.Body.String())
+	}
+}
