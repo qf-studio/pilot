@@ -2370,3 +2370,64 @@ executor:
 		}
 	})
 }
+
+func TestResolvedHealthCheckInterval(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *AlertsConfig
+		want time.Duration
+	}{
+		{name: "unset uses the default", cfg: &AlertsConfig{}, want: 15 * time.Minute},
+		{name: "explicit interval is honoured", cfg: &AlertsConfig{HealthCheckInterval: 90 * time.Second}, want: 90 * time.Second},
+		{name: "negative disables", cfg: &AlertsConfig{HealthCheckInterval: -time.Second}, want: 0},
+		{name: "nil config disables", cfg: nil, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.ResolvedHealthCheckInterval(); got != tt.want {
+				t.Errorf("ResolvedHealthCheckInterval() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToAlertConfigCarriesNotifyOnResolve(t *testing.T) {
+	enabled := true
+	disabled := false
+
+	tests := []struct {
+		name            string
+		notifyOnResolve *bool
+		wantEnabled     bool
+	}{
+		{name: "unset means enabled", notifyOnResolve: nil, wantEnabled: true},
+		{name: "explicit true", notifyOnResolve: &enabled, wantEnabled: true},
+		{name: "explicit false is carried through", notifyOnResolve: &disabled, wantEnabled: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := &AlertsConfig{
+				Enabled:  true,
+				Defaults: AlertDefaultsConfig{NotifyOnResolve: tt.notifyOnResolve},
+			}
+
+			got := in.ToAlertConfig()
+			if got == nil {
+				t.Fatal("ToAlertConfig returned nil")
+			}
+			if got.Defaults.ResolveNotificationsEnabled() != tt.wantEnabled {
+				t.Errorf("ResolveNotificationsEnabled() = %v, want %v",
+					got.Defaults.ResolveNotificationsEnabled(), tt.wantEnabled)
+			}
+		})
+	}
+}
+
+func TestToAlertConfigNilReturnsNil(t *testing.T) {
+	var cfg *AlertsConfig
+	if got := cfg.ToAlertConfig(); got != nil {
+		t.Errorf("ToAlertConfig() on nil = %v, want nil", got)
+	}
+}

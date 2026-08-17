@@ -1053,3 +1053,66 @@ func TestPagerDutyChannel_Send_Error(t *testing.T) {
 		t.Fatal("expected error for 403 response")
 	}
 }
+
+func TestFormatAlertDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{name: "seconds", d: 45 * time.Second, want: "45s"},
+		{name: "sub-second rounds to zero", d: 200 * time.Millisecond, want: "0s"},
+		{name: "minutes and seconds", d: 3*time.Minute + 7*time.Second, want: "3m7s"},
+		{name: "exact minute", d: time.Minute, want: "1m0s"},
+		{name: "hours and minutes", d: 2*time.Hour + 15*time.Minute, want: "2h15m"},
+		{name: "exact hour", d: time.Hour, want: "1h0m"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatAlertDuration(tt.d); got != tt.want {
+				t.Errorf("formatAlertDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAlertDurationAndIsResolution(t *testing.T) {
+	created := time.Now().Add(-90 * time.Second)
+	resolved := created.Add(90 * time.Second)
+
+	open := &Alert{CreatedAt: created}
+	if open.IsResolution() {
+		t.Error("unresolved alert reports IsResolution true")
+	}
+	if open.Duration() != 0 {
+		t.Errorf("unresolved Duration = %v, want 0", open.Duration())
+	}
+
+	done := &Alert{CreatedAt: created, ResolvedAt: &resolved}
+	if !done.IsResolution() {
+		t.Error("resolved alert reports IsResolution false")
+	}
+	if got := done.Duration(); got != 90*time.Second {
+		t.Errorf("Duration = %v, want 90s", got)
+	}
+}
+
+func TestTelegramResolutionRendering(t *testing.T) {
+	created := time.Now().Add(-5 * time.Minute)
+	resolved := created.Add(5 * time.Minute)
+	ch := &TelegramChannel{name: "t"}
+
+	firing := ch.formatMessage(&Alert{Severity: SeverityWarning, Title: "x", Message: "y", CreatedAt: created})
+	if strings.Contains(firing, "RESOLVED") {
+		t.Error("firing alert rendered as RESOLVED")
+	}
+
+	recovered := ch.formatMessage(&Alert{Severity: SeverityInfo, Title: "x", Message: "y", CreatedAt: created, ResolvedAt: &resolved})
+	if !strings.Contains(recovered, "RESOLVED") {
+		t.Errorf("resolution not marked RESOLVED: %q", recovered)
+	}
+	if !strings.Contains(recovered, "5m0s") {
+		t.Errorf("resolution missing duration: %q", recovered)
+	}
+}
