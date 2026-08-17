@@ -310,6 +310,20 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 	}
 
 	if update.Message == nil {
+		// Edits are deliberately not re-processed: a task-triggering edit would double-dispatch.
+		if update.EditedMessage != nil {
+			chatID := int64(0)
+			if update.EditedMessage.Chat != nil {
+				chatID = update.EditedMessage.Chat.ID
+			}
+			logging.WithComponent("telegram").Info("ignoring edited message",
+				slog.Int64("chat_id", chatID),
+				slog.Int64("message_id", update.EditedMessage.MessageID),
+			)
+			return
+		}
+		logging.WithComponent("telegram").Debug("ignoring update with no message payload",
+			slog.Int64("update_id", update.UpdateID))
 		return
 	}
 
@@ -330,6 +344,10 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 
 	// Skip if no text
 	if msg.Text == "" {
+		logging.WithComponent("telegram").Debug("ignoring message with no text",
+			slog.Int64("chat_id", msg.Chat.ID),
+			slog.Int64("message_id", msg.MessageID),
+		)
 		return
 	}
 
