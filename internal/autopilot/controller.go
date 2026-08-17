@@ -1615,6 +1615,14 @@ func (c *Controller) alertApprovalMisconfigOnce(prState *PRState, reason, missin
 // misconfigCommentMarker in auto_merger.go).
 const baseMismatchCommentMarker = "<!-- pilot-base-mismatch -->"
 
+// baseMismatchReasonPrefix identifies an EscalationReason set by
+// parkForBaseMismatch, as opposed to any other cause that shares the same
+// Parked flag (e.g. submitAsyncApprovalRequest's misconfig park, GH-4596).
+// GH-4911: handleMerging's guard-pass un-park check uses this prefix to
+// confirm a residual Parked=true belongs to a now-resolved base mismatch
+// before clearing it, so it never clobbers an unrelated, still-active park.
+const baseMismatchReasonPrefix = "base branch mismatch:"
+
 // basePivotCommentMarker identifies the GH-4872 "merged sideways" comment
 // posted by postBasePivotComment to an issue whose linked PR merged into a
 // non-default base outside autopilot's own guarded merge path (external
@@ -1645,7 +1653,7 @@ const basePivotCommentMarker = "<!-- pilot-base-pivot -->"
 // inheriting the first park.
 func (c *Controller) parkForBaseMismatch(ctx context.Context, prState *PRState, target, defaultBranch string) {
 	reason := fmt.Sprintf(
-		"base branch mismatch: PR targets %q, not the default branch %q — this looks like a stacked or mis-based PR; a human must retarget it or merge the stack in order",
+		baseMismatchReasonPrefix+" PR targets %q, not the default branch %q — this looks like a stacked or mis-based PR; a human must retarget it or merge the stack in order",
 		target, defaultBranch,
 	)
 	alreadyParkedForThisMismatch := prState.Parked && prState.EscalationReason == reason
@@ -3687,8 +3695,19 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		// the gate that fired, and Parked dedupes the one-time log/PR
 		// comment/alert across every subsequent tick while the misconfig
 		// persists.
+		//
+		// GH-4911 (GH-4909 defect-4 pattern applied here too): Parked is a
+		// single flag shared with every other park cause, including
+		// parkForBaseMismatch's — and unlike that call site, this one used to
+		// compare the bare flag only. A PR still carrying Parked=true from an
+		// unrelated, already-resolved park (e.g. state-store residue that
+		// predates handleMerging's GH-4911 un-park fix, or any future park
+		// cause) would silently inherit the old park and skip this cause's own
+		// one-time alert/label/comment. Snapshot the OLD reason before
+		// overwriting EscalationReason below so the comparison is meaningful.
+		alreadyParkedForThisMisconfig := prState.Parked && prState.EscalationReason == reason
 		prState.EscalationReason = reason
-		if prState.Parked {
+		if alreadyParkedForThisMisconfig {
 			// Already logged/commented on a prior tick — stay parked quietly.
 			return nil
 		}
@@ -3700,9 +3719,9 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		// them having to read daemon logs — a label on the linked issue (same
 		// convention as escalateAndHold's labelNeedsHuman), the misconfig PR
 		// comment below (naming the exact unset config key), and a single
-		// deduped operator alert. The `if prState.Parked` early-return above
-		// guards every later tick; alertApprovalMisconfigOnce's {PR, reason}
-		// map additionally dedupes across fresh cycles where Parked resets.
+		// deduped operator alert. The alreadyParkedForThisMisconfig early-return
+		// above guards every later tick for this reason; alertApprovalMisconfigOnce's
+		// {PR, reason} map additionally dedupes across fresh cycles where Parked resets.
 		if prState.IssueNumber > 0 {
 			if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{labelParkedAwaitingApproval}); err != nil {
 				c.log.Warn("failed to apply parked-awaiting-approval label", "issue", prState.IssueNumber, "pr", prState.PRNumber, "error", err)
@@ -4012,6 +4031,29 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		return nil
 	}
 
+	// GH-4911: the guard above just passed, so any residual park from an
+	// earlier tick's base mismatch (parkForBaseMismatch) is now resolved — a
+	// human retargeted the PR back to the default branch. Parked,
+	// EscalationReason, and the parked-awaiting-approval label all persist
+	// across ticks via the state store (GH-4598); left in place, they wedge
+	// here as dead state once the PR merges below, and a bare `if
+	// prState.Parked` check elsewhere (submitAsyncApprovalRequest) would
+	// wrongly treat this PR as still parked for a later, unrelated cause.
+	// Guarded by the reason prefix so an unrelated, still-active park (e.g.
+	// an approval misconfig) is never clobbered by this base-mismatch-only
+	// cleanup.
+	if prState.Parked && strings.HasPrefix(prState.EscalationReason, baseMismatchReasonPrefix) {
+		c.log.Info("handleMerging: un-parking PR — base mismatch resolved, guard now passes",
+			"pr", prState.PRNumber, "issue", prState.IssueNumber, "prior_reason", prState.EscalationReason)
+		prState.Parked = false
+		prState.EscalationReason = ""
+		if prState.IssueNumber > 0 {
+			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, labelParkedAwaitingApproval); err != nil {
+				c.log.Debug("parked-awaiting-approval label cleanup on un-park", "issue", prState.IssueNumber, "error", err)
+			}
+		}
+	}
+
 	prState.MergeAttempts++
 
 	c.log.Info("handleMerging: attempting merge",
@@ -4085,9 +4127,18 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	// checkExternalMergeOrClose below. Fail-open on a re-read error (mirrors
 	// the CI re-validation fail-open above) — trust the pre-merge value
 	// rather than holding every successful merge hostage to a flaky
-	// follow-up API call. Skip ONLY the delivered bookkeeping (issue close,
-	// pilot-done label, monitor.Complete, self-heal, board->Done) — branch
-	// cleanup and the merge notifier still run below regardless of base.
+	// follow-up API call.
+	//
+	// GH-4911: a positive result here used to skip only the delivered
+	// bookkeeping (issue close, pilot-done label, monitor.Complete,
+	// self-heal, board->Done) while leaving Stage=StageMerged — the next
+	// tick's handleMerged then ran deployer.Deploy against the stack branch
+	// and could route to StageReleasing off content that never reached the
+	// default branch. The sibling external-merge mismatch site below
+	// (checkExternalMergeOrClose, "PR merged into non-default base") already
+	// calls removePR to prevent exactly that; the block right after this one
+	// now does the same here so both sites dead-end a sideways merge
+	// identically instead of leaving one of them to keep ticking forward.
 	baseMismatchAfterMerge := false
 	if mergedPR, gerr := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber); gerr != nil {
 		c.log.Warn("handleMerging: failed to re-verify merged PR's base branch post-merge — trusting pre-merge value",
@@ -4104,9 +4155,23 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		c.postBasePivotComment(ctx, prState.IssueNumber, prState.PRNumber, target, defaultBranch)
 	}
 
+	// GH-4911: dead-end a sideways merge here instead of leaving Stage=
+	// StageMerged for handleMerged to pick up next tick (deployer.Deploy /
+	// StageReleasing off content that landed on the wrong branch). Mirrors
+	// checkExternalMergeOrClose's "PR merged into non-default base" site,
+	// which calls plain removePR for the identical reason. removePR's own
+	// safeDeleteBranch call still refuses to delete BranchName if it happens
+	// to be the base of another open (stacked) PR — the same protection the
+	// sibling site relies on — so this branch is not force-deleted out from
+	// under a dependent PR merely because this one merged sideways.
+	if baseMismatchAfterMerge {
+		c.removePR(prState.PRNumber)
+		return nil
+	}
+
 	// GH-1015: Add pilot-done label after successful merge (not at PR creation)
 	// This prevents false positives where PRs are closed without merging
-	if !baseMismatchAfterMerge && prState.IssueNumber > 0 && !c.shouldDeferIssueClose(ctx, prState.IssueNumber, prState.PRNumber) {
+	if prState.IssueNumber > 0 && !c.shouldDeferIssueClose(ctx, prState.IssueNumber, prState.PRNumber) {
 		// GH-3271: mark issue processed in all pollers before any label updates so
 		// a poll tick that fires during the merge→pilot-done propagation window
 		// cannot re-dispatch the issue (phantom pilot-blocked).
