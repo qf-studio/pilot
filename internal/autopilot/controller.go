@@ -2486,6 +2486,24 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 		c.resetPRFailures(prNumber)
 	}
 
+	// GH-4915: a handler above (e.g. handleMerging's sideways-merge dead-end at
+	// StageMerged, or handleMerged's SkipPostMergeCI paths) may have called
+	// removePR mid-handle, which already deleted this row from both activePRs
+	// and the state store (persistRemovePR). persistPRState below is an
+	// unconditional UPSERT — without this membership check it would
+	// re-insert the exact row removePR just deleted, and a later restart's
+	// RestoreState would rehydrate it (still at the just-assigned Stage,
+	// e.g. StageMerged) and re-drive deploy/release off content that never
+	// landed on the default branch, silently defeating the dead-end across
+	// restarts. One check under c.mu covers every in-handler removePR site.
+	c.mu.RLock()
+	_, stillActive := c.activePRs[prNumber]
+	c.mu.RUnlock()
+	if !stillActive {
+		c.log.Debug("ProcessPR: skipping tail persist — PR removed mid-handle", "pr", prNumber)
+		return err
+	}
+
 	// Persist state after every processing cycle (covers transitions and updated fields)
 	c.persistPRState(prState)
 
@@ -4318,6 +4336,24 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 		"env", c.config.EnvironmentName(),
 		"should_release", c.shouldTriggerRelease(),
 	)
+
+	// GH-4915 (belt-and-braces): refuse deploy/release for a PR whose target
+	// isn't the default branch. handleMerging's sideways-merge dead-end
+	// (~line 4168) already calls removePR before Stage ever advances to
+	// StageMerged for a base mismatch, so this should be unreachable in the
+	// normal flow — but it's a cheap second fence, behind the same
+	// resolveMainBranchName predicate family as that guard, in case any
+	// future path ever lands a non-default TargetBranch here some other way.
+	// Empty TargetBranch (pre-GH-2065 restored rows) fails open rather than
+	// blocking every legitimate merged PR on an unpopulated field.
+	if prState.TargetBranch != "" {
+		if defaultBranch := c.resolveMainBranchName(); prState.TargetBranch != defaultBranch {
+			c.log.Warn("handleMerged: refusing deploy/release — TargetBranch is not the default branch",
+				"pr", prState.PRNumber, "target_branch", prState.TargetBranch, "default_branch", defaultBranch)
+			c.removePR(prState.PRNumber)
+			return nil
+		}
+	}
 
 	// Run deployer if configured (webhook, branch-push).
 	// Tag action is a no-op here — handled by the releaser stage.
