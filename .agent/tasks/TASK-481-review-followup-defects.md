@@ -1,6 +1,6 @@
 # TASK-481: Three independent defects surfaced by the lkshrk PR review
 
-**Status**: 📋 Planned — NOT dispatched. Research complete 2026-08-17. Three independent legs, dispatchable separately.
+**Status**: 📋 Planned — NOT dispatched. Research complete 2026-08-17. Three independent legs, dispatchable separately. **Gates cleared 08-17**: #4896 MERGED (Leg A composes on top — implement the read-filter branch only) · #4899 MERGED (Leg B's `StripIssuePrefix` inherits the widened regex) · #4903 MERGED (**Leg C unblocked** — consolidate onto its `comms.CleanInternalSignals`). Leg A was also raised with the contributor on #4896; if they take it, drop Leg A.
 **Created**: 2026-08-17
 **Origin**: review of external contributor PRs #4896 / #4899 / #4903 (lkshrk) — each PR fixes part of a defect and leaves an adjacent part unfixed. Leg C turned out substantially larger than the PR's own note suggested.
 

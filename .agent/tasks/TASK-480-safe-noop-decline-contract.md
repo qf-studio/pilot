@@ -1,6 +1,6 @@
 # TASK-480: Safe no-op / decline contract — a dedicated signal, never the mandatory exit signal
 
-**Status**: 📋 Planned — NOT dispatched. Research complete 2026-08-17 (full read of the post-execution classification path; no sampling gaps in the critical section).
+**Status**: 📋 Planned — NOT dispatched. Research complete 2026-08-17 (full read of the post-execution classification path; no sampling gaps in the critical section). **#4901 review posted CHANGES_REQUESTED 08-17** — contributor told legs 1+2 are wanted, leg 3 needs this contract; offered to review a PR against it. Dispatch when the contributor window closes.
 **Created**: 2026-08-17
 **Origin**: review of external contributor PR #4901 (lkshrk). Two of its three legs are correct and welcome; the third re-opens the TASK-460 false-success class at scale. This task salvages the good legs and specifies the safe version of the third.
 
