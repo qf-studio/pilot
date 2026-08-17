@@ -623,6 +623,20 @@ type Controller struct {
 	// same PR still alerts on its own (GH-4597).
 	alertedApprovalMisconfigs map[string]bool
 
+	// alertedBaseMismatches deduplicates the base-branch-mismatch escalation
+	// alert (GH-4872) per "PRNumber:targetBranch", guarded by mu. Covers both
+	// parkForBaseMismatch (held pre-merge) and the post-merge discovery sites
+	// (isPilotPR scanner path, checkExternalMergeOrClose) so a PR stuck on the
+	// wrong base doesn't re-alert every poll tick while it stays unresolved.
+	alertedBaseMismatches map[string]bool
+
+	// alertedBranchDeleteHolds deduplicates the branch-delete-held escalation
+	// alert (GH-4872) per branch name, guarded by mu — safeDeleteBranch is
+	// called from four independent cleanup sites and a long-lived stacked
+	// branch could be re-offered for deletion by more than one of them before
+	// the stack is resolved.
+	alertedBranchDeleteHolds map[string]bool
+
 	// warnedUnsourcedIssues deduplicates the "labeled issue not board-sourced"
 	// WARN reconcileUnsourcedBoardIssues emits, per issue number, guarded by
 	// mu — logged once per poll-session (not every tick) while the issue
@@ -1583,6 +1597,266 @@ func (c *Controller) alertApprovalMisconfigOnce(prState *PRState, reason, missin
 			"issue":              strconv.Itoa(prState.IssueNumber),
 			"reason":             reason,
 			"missing_config_key": missingKey,
+		},
+	})
+}
+
+// baseMismatchCommentMarker identifies the GH-4872 auto-merge-blocked PR
+// comment posted by postBaseMismatchComment, so a re-parked tick doesn't
+// scan comment bodies for anything but the marker (mirrors
+// misconfigCommentMarker in auto_merger.go).
+const baseMismatchCommentMarker = "<!-- pilot-base-mismatch -->"
+
+// basePivotCommentMarker identifies the GH-4872 "merged sideways" comment
+// posted by postBasePivotComment to an issue whose linked PR merged into a
+// non-default base outside autopilot's own guarded merge path (external
+// merge, or discovered by the recently-merged-PR scanner).
+const basePivotCommentMarker = "<!-- pilot-base-pivot -->"
+
+// parkForBaseMismatch holds a PR at StageMerging without merging when its
+// base branch is not the repo's default (GH-4872). Root incident,
+// 2026-08-15: ui PR#76 was stacked on pilot/GH-70 (base != main); autopilot
+// squash-merged it into that branch, closed the linked issue as delivered,
+// and later deleted the stack branch during unrelated cleanup — orphaning
+// the merged content with no trace on main. A stacked/mis-based PR under
+// autopilot needs a human to decide whether to retarget it at the default
+// branch or merge the stack in order; auto-merge must never guess.
+// Idempotent via prState.Parked — the one-time label/alert/comment side
+// effects only fire once per park cycle, mirroring the
+// submitAsyncApprovalRequest misconfig idiom (GH-4596/GH-4597).
+func (c *Controller) parkForBaseMismatch(ctx context.Context, prState *PRState, target, defaultBranch string) {
+	reason := fmt.Sprintf(
+		"base branch mismatch: PR targets %q, not the default branch %q — this looks like a stacked or mis-based PR; a human must retarget it or merge the stack in order",
+		target, defaultBranch,
+	)
+	prState.EscalationReason = reason
+	if prState.Parked {
+		// Already logged/commented/alerted on a prior tick — stay parked quietly.
+		return
+	}
+	prState.Parked = true
+	c.log.Warn("handleMerging: PR base is not the default branch — holding instead of auto-merging",
+		"pr", prState.PRNumber, "target_branch", target, "default_branch", defaultBranch)
+
+	if prState.IssueNumber > 0 {
+		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{labelParkedAwaitingApproval}); err != nil {
+			c.log.Warn("failed to apply parked-awaiting-approval label for base mismatch",
+				"issue", prState.IssueNumber, "pr", prState.PRNumber, "error", err)
+		}
+	}
+	c.alertBaseMismatchOnce(prState.PRNumber, prState.IssueNumber, target, defaultBranch, false)
+	c.postBaseMismatchComment(ctx, prState, target, defaultBranch)
+}
+
+// alertBaseMismatchOnce fires an escalation alert the first time autopilot
+// discovers a pilot/GH-* PR whose base is not the repo's default branch —
+// either held pre-merge (parkForBaseMismatch) or discovered already merged
+// (the isPilotPR scanner path / checkExternalMergeOrClose). Deduplicated per
+// "PRNumber:targetBranch" via alertedBaseMismatches (same pattern as
+// alertApprovalMisconfigOnce).
+func (c *Controller) alertBaseMismatchOnce(prNumber, issueNumber int, target, defaultBranch string, merged bool) {
+	key := fmt.Sprintf("%d:%s", prNumber, target)
+
+	c.mu.Lock()
+	if c.alertedBaseMismatches == nil {
+		c.alertedBaseMismatches = make(map[string]bool)
+	}
+	if c.alertedBaseMismatches[key] {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedBaseMismatches[key] = true
+	c.mu.Unlock()
+
+	var msg string
+	if merged {
+		msg = fmt.Sprintf(
+			"PR #%d (%s) merged into %q, not the default branch %q — the linked issue is NOT being marked delivered; a human must check whether the content still needs to land on %q",
+			prNumber, c.repoKey(), target, defaultBranch, defaultBranch,
+		)
+	} else {
+		msg = fmt.Sprintf(
+			"PR #%d (%s) targets %q, not the default branch %q — auto-merge is held; a human must retarget the PR or merge the stack in order",
+			prNumber, c.repoKey(), target, defaultBranch,
+		)
+	}
+	if c.alertsEngine == nil {
+		c.log.Error("base_mismatch alert not delivered: SetAlertsEngine was never called",
+			"pr", prNumber, "target_branch", target, "merged", merged)
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeEscalation,
+		TaskID:    fmt.Sprintf("pr-%d-base-mismatch", prNumber),
+		TaskTitle: fmt.Sprintf("Base branch mismatch on PR #%d", prNumber),
+		Project:   c.repoKey(),
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo":           c.repoKey(),
+			"pr":             strconv.Itoa(prNumber),
+			"issue":          strconv.Itoa(issueNumber),
+			"target_branch":  target,
+			"default_branch": defaultBranch,
+			"merged":         strconv.FormatBool(merged),
+		},
+	})
+}
+
+// postBaseMismatchComment posts a single explanatory comment on the PR
+// naming the base mismatch (GH-4872), idempotent via baseMismatchCommentMarker
+// so a PR re-checked every poll tick while parked only gets the one-time
+// side effect once (mirrors AutoMerger.postMisconfigComment).
+func (c *Controller) postBaseMismatchComment(ctx context.Context, prState *PRState, target, defaultBranch string) {
+	existing, err := c.ghClient.ListIssueComments(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		c.log.Warn("postBaseMismatchComment: failed to list PR comments, will post anyway",
+			"pr", prState.PRNumber, "error", err)
+	} else {
+		for _, cmt := range existing {
+			if strings.Contains(cmt.Body, baseMismatchCommentMarker) {
+				c.log.Debug("postBaseMismatchComment: already posted, skipping", "pr", prState.PRNumber)
+				return
+			}
+		}
+	}
+
+	body := fmt.Sprintf(`%s
+🚧 **Merge blocked: base branch mismatch**
+
+This PR targets `+"`%s`"+`, not this repo's default branch (`+"`%s`"+`). Auto-merge refuses to land it — merging into a non-default base under autopilot is how a stacked PR's content silently disappears (merged into a branch that later gets deleted, with no trace on `+"`%s`"+`).
+
+A human needs to decide: retarget this PR at `+"`%s`"+`, or merge the stack in order (base first, then this PR) with `+"`gh pr merge %d`"+`.`,
+		baseMismatchCommentMarker, target, defaultBranch, defaultBranch, defaultBranch, prState.PRNumber)
+
+	if _, postErr := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, body); postErr != nil {
+		c.log.Warn("postBaseMismatchComment: failed to post PR comment",
+			"pr", prState.PRNumber, "error", postErr)
+	}
+}
+
+// postBasePivotComment posts a single comment on the linked issue when a
+// pilot/GH-* PR is discovered already merged into a non-default base
+// (GH-4872) — the content landed, but not where "delivered" implies, so the
+// issue is being left open/retryable instead of closed. Idempotent via
+// basePivotCommentMarker, same pattern as postBaseMismatchComment.
+func (c *Controller) postBasePivotComment(ctx context.Context, issueNumber, prNumber int, target, defaultBranch string) {
+	if issueNumber <= 0 {
+		return
+	}
+	existing, err := c.ghClient.ListIssueComments(ctx, c.owner, c.repo, issueNumber)
+	if err != nil {
+		c.log.Warn("postBasePivotComment: failed to list issue comments, will post anyway",
+			"issue", issueNumber, "pr", prNumber, "error", err)
+	} else {
+		for _, cmt := range existing {
+			if strings.Contains(cmt.Body, basePivotCommentMarker) {
+				c.log.Debug("postBasePivotComment: already posted, skipping", "issue", issueNumber)
+				return
+			}
+		}
+	}
+
+	body := fmt.Sprintf(`%s
+⚠️ **Merged sideways — not marked delivered**
+
+PR #%d for this issue merged into `+"`%s`"+`, not this repo's default branch (`+"`%s`"+`). The content did NOT land on `+"`%s`"+`, so this issue is being left open/retryable instead of closed as delivered.
+
+A human needs to check whether `+"`%s`"+` still needs to be merged into `+"`%s`"+`, or the content re-applied.`,
+		basePivotCommentMarker, prNumber, target, defaultBranch, defaultBranch, target, defaultBranch)
+
+	if _, postErr := c.ghClient.AddComment(ctx, c.owner, c.repo, issueNumber, body); postErr != nil {
+		c.log.Warn("postBasePivotComment: failed to post issue comment", "issue", issueNumber, "pr", prNumber, "error", postErr)
+	}
+}
+
+// branchIsBaseOfOpenPR reports whether branchName is currently the base
+// ("Base.Ref") of any open PR in this repo (GH-4872). ListPullRequests has
+// no base= filter, so this is a client-side scan over all open PRs — cheap
+// at Pilot's PR volumes.
+func (c *Controller) branchIsBaseOfOpenPR(ctx context.Context, branchName string) (bool, error) {
+	openPRs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
+	if err != nil {
+		return false, err
+	}
+	for _, pr := range openPRs {
+		if pr.Base.Ref == branchName {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// safeDeleteBranch deletes branchName unless it is currently the base of
+// another open PR (GH-4872) — deleting a stack's base branch out from under
+// an open child PR is exactly how the 2026-08-15 incident's merged content
+// was orphaned: pilot/GH-70 (already holding ui#76's squashed commit) was
+// deleted during unrelated PR#74 cleanup while ui#76 was the only pointer to
+// that content. Fail-closed: a failure to even check (transient API error)
+// skips the delete this cycle rather than deleting blind, matching the
+// non-retry posture the four call sites already had for a failed
+// DeleteBranch call. Returns deleted=true only on an actual successful
+// delete, so callers can tell "held" apart from "API error" apart from
+// "deleted" without duplicating the check.
+func (c *Controller) safeDeleteBranch(ctx context.Context, branchName string, prNumber int) (deleted bool, err error) {
+	if branchName == "" {
+		return false, nil
+	}
+	isBase, checkErr := c.branchIsBaseOfOpenPR(ctx, branchName)
+	if checkErr != nil {
+		c.log.Warn("safeDeleteBranch: failed to check whether branch is the base of an open PR — skipping delete this cycle (fail-closed)",
+			"branch", branchName, "pr", prNumber, "error", checkErr)
+		return false, nil
+	}
+	if isBase {
+		c.log.Warn("safeDeleteBranch: refusing to delete branch — it is the base of another open PR",
+			"branch", branchName, "pr", prNumber)
+		c.alertBranchDeleteHeldOnce(branchName, prNumber)
+		return false, nil
+	}
+	if err := c.ghClient.DeleteBranch(ctx, c.owner, c.repo, branchName); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// alertBranchDeleteHeldOnce fires an escalation alert the first time
+// safeDeleteBranch refuses to delete a given branch because it is the base
+// of another open PR (GH-4872), deduplicated per branch name via
+// alertedBranchDeleteHolds — safeDeleteBranch is called from four
+// independent cleanup sites, any of which could re-offer the same branch
+// for deletion before the underlying stack is resolved.
+func (c *Controller) alertBranchDeleteHeldOnce(branchName string, prNumber int) {
+	c.mu.Lock()
+	if c.alertedBranchDeleteHolds == nil {
+		c.alertedBranchDeleteHolds = make(map[string]bool)
+	}
+	if c.alertedBranchDeleteHolds[branchName] {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedBranchDeleteHolds[branchName] = true
+	c.mu.Unlock()
+
+	msg := fmt.Sprintf(
+		"refused to delete branch %q (from PR #%d cleanup) because it is the base of another open PR in %s — deleting it would orphan that PR's content the same way GH-4872 did",
+		branchName, prNumber, c.repoKey(),
+	)
+	if c.alertsEngine == nil {
+		c.log.Error("branch_delete_held alert not delivered: SetAlertsEngine was never called", "branch", branchName, "pr", prNumber)
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeEscalation,
+		TaskID:    fmt.Sprintf("branch-%s-delete-held", branchName),
+		TaskTitle: fmt.Sprintf("Branch delete held: %s is the base of an open PR", branchName),
+		Project:   c.repoKey(),
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo":   c.repoKey(),
+			"branch": branchName,
+			"pr":     strconv.Itoa(prNumber),
 		},
 	})
 }
@@ -3214,7 +3488,7 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	}
 
 	if prState.BranchName != "" {
-		if err := c.ghClient.DeleteBranch(ctx, c.owner, c.repo, prState.BranchName); err != nil {
+		if _, err := c.safeDeleteBranch(ctx, prState.BranchName, prState.PRNumber); err != nil {
 			c.log.Debug("branch cleanup after review", "branch", prState.BranchName, "error", err)
 		}
 	}
@@ -3478,7 +3752,7 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 //
 // GH-4777 (PR#4767 review): two callers can race for the same requestID — a
 // concurrent HTTP POST and a Telegram/Slack tap, or two concurrent POSTs.
-// memoryStore.SetApprovalDecision's atomic `AND approval_decision = ''` guard
+// memoryStore.SetApprovalDecision's atomic `AND approval_decision = ”` guard
 // is the arbiter: exactly one caller's write can ever return nil. The
 // actionable layer (pr.ApprovalDecision, what autopilot's ProcessPR loop
 // reads) is applied ONLY after that arbitration succeeds, so a race loser can
@@ -3636,6 +3910,30 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		}
 	}
 
+	// GH-4872: never auto-merge a PR whose base is not this repo's default
+	// branch. Root incident, 2026-08-15: ui PR#76 was stacked on pilot/GH-70
+	// (base != main); the old code merged it anyway — squashed into that
+	// stack branch, closed the linked issue as delivered, and later deleted
+	// the stack branch during unrelated cleanup, orphaning the content with
+	// no trace on main. TargetBranch is normally populated by ProcessPR from
+	// ghPR.Base.Ref (GH-2065); if it's still empty here (e.g. a row restored
+	// pre-GH-2065), re-read the PR rather than fail open on an unknown base.
+	target := prState.TargetBranch
+	if target == "" {
+		ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+		if err != nil || ghPR.Base.Ref == "" {
+			c.log.Warn("handleMerging: could not resolve PR base branch to verify it targets the default branch — holding rather than failing open",
+				"pr", prState.PRNumber, "error", err)
+			return nil
+		}
+		target = ghPR.Base.Ref
+		prState.TargetBranch = target
+	}
+	if defaultBranch := c.resolveMainBranchName(); target != defaultBranch {
+		c.parkForBaseMismatch(ctx, prState, target, defaultBranch)
+		return nil
+	}
+
 	prState.MergeAttempts++
 
 	c.log.Info("handleMerging: attempting merge",
@@ -3763,9 +4061,9 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	// Branch is safe to delete — it's fully merged. If GitHub already deleted it
 	// (delete_branch_on_merge setting), the API returns 404/422 which we ignore.
 	if prState.BranchName != "" {
-		if err := c.ghClient.DeleteBranch(ctx, c.owner, c.repo, prState.BranchName); err != nil {
+		if deleted, err := c.safeDeleteBranch(ctx, prState.BranchName, prState.PRNumber); err != nil {
 			c.log.Warn("failed to delete branch after merge", "branch", prState.BranchName, "pr", prState.PRNumber, "error", err)
-		} else {
+		} else if deleted {
 			c.log.Info("deleted branch after merge", "branch", prState.BranchName, "pr", prState.PRNumber)
 		}
 	}
@@ -5908,9 +6206,9 @@ func (c *Controller) removePRTracking(prNumber int, deleteBranch bool) {
 	// in the 2026-07-27 incident: branch_deleted=true was logged regardless).
 	branchDeleted := false
 	if deleteBranch && branchName != "" && c.ghClient != nil {
-		if err := c.ghClient.DeleteBranch(context.Background(), c.owner, c.repo, branchName); err != nil {
+		if deleted, err := c.safeDeleteBranch(context.Background(), branchName, prNumber); err != nil {
 			c.log.Debug("branch cleanup on PR removal", "branch", branchName, "pr", prNumber, "error", err)
-		} else {
+		} else if deleted {
 			branchDeleted = true
 			c.log.Info("deleted branch on PR removal", "branch", branchName, "pr", prNumber)
 		}
@@ -6567,6 +6865,22 @@ func (c *Controller) ScanRecentlyMergedPRsWithWindow(ctx context.Context, scanWi
 		// the PR wasn't opened on a literal "pilot/GH-N" branch.
 		issueNum := resolveIssueNumFromPR(pr)
 
+		// GH-4872: a pilot/GH-* PR merged into a base other than the default
+		// branch is a stacked/mis-based PR — the content did not land on the
+		// branch "delivered" implies. Skip the delivered bookkeeping
+		// (self-heal, monitor, board, release-triggering) entirely and alert
+		// instead; mirrors the human-PR check above (isPilotPR guard, this
+		// loop) now applied to Pilot's own PRs too.
+		if isPilotPR {
+			if defaultBranch := c.resolveMainBranchName(); pr.Base.Ref != defaultBranch {
+				c.log.Warn("scanner: pilot PR merged into non-default base — not marking issue delivered",
+					"pr", pr.Number, "issue", issueNum, "target_branch", pr.Base.Ref, "default_branch", defaultBranch)
+				c.alertBaseMismatchOnce(pr.Number, issueNum, pr.Base.Ref, defaultBranch, true)
+				c.postBasePivotComment(ctx, issueNum, pr.Number, pr.Base.Ref, defaultBranch)
+				continue
+			}
+		}
+
 		// Record merge metrics BEFORE the activePRs/release-exists skip gates
 		// below — those gates exist to avoid duplicate release triggering, but
 		// the metric must fire on every discovered merged Pilot PR regardless
@@ -7192,9 +7506,42 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		return false
 	}
 
+	// GH-4872 (item 3): once a PR reaches StageMerged, ghPR.Merged stays
+	// true on GitHub for the rest of its life, exactly like the
+	// StagePostMergeCI case above — but this stage had no guard at all.
+	// checkExternalMergeOrClose runs BEFORE ProcessPR every tick
+	// (processAllPRs), so without this guard, the tick immediately after
+	// handleMerging's own finalize (which leaves Stage=StageMerged) re-ran
+	// the entire external-merge flow a second time: a second issue-close
+	// call, a second completion comment (no MergeNotificationPosted guard
+	// existed on this path), a second StageMerged execution-event write
+	// (recordExecutionEvent has no idempotency key), and a second
+	// removePR/DeleteBranch. handleMerged (dispatched by ProcessPR's normal
+	// switch once this function bounces off) owns StageMerged's own tick.
+	if prState.Stage == StageMerged {
+		return false
+	}
+
 	// Check if PR was merged externally
 	if ghPR.Merged {
 		c.log.Info("PR merged externally", "pr", prState.PRNumber)
+
+		// GH-4872 (item 2): a PR merged into a base other than the repo's
+		// default branch never delivered its content to the branch
+		// "delivered" implies. This PR was merged by something other than
+		// autopilot's own guarded handleMerging (a human ran `gh pr merge`,
+		// or GitHub's UI) — alert, leave the issue retryable, and stop
+		// tracking. Do not close the issue, label done, board-sync, or
+		// trigger a release off this merge.
+		if defaultBranch := c.resolveMainBranchName(); ghPR.Base.Ref != "" && ghPR.Base.Ref != defaultBranch {
+			c.log.Warn("checkExternalMergeOrClose: PR merged into non-default base — not marking issue delivered",
+				"pr", prState.PRNumber, "issue", prState.IssueNumber, "target_branch", ghPR.Base.Ref, "default_branch", defaultBranch)
+			c.alertBaseMismatchOnce(prState.PRNumber, prState.IssueNumber, ghPR.Base.Ref, defaultBranch, true)
+			c.postBasePivotComment(ctx, prState.IssueNumber, prState.PRNumber, ghPR.Base.Ref, defaultBranch)
+			c.removePR(prState.PRNumber)
+			return true
+		}
+
 		c.notifyExternalMerge(ctx, prState)
 
 		// GH-1486: Close associated issue and add pilot-done label on external merge
@@ -7219,10 +7566,19 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			} else {
 				c.log.Info("closed issue after external merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 
-				// GH-2297: Post success comment so last comment isn't stale failure
-				comment := buildMergeCompletionComment(prState)
-				if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); err != nil {
-					c.log.Warn("failed to post merge completion comment on external merge", "issue", prState.IssueNumber, "error", err)
+				// GH-2297: Post success comment so last comment isn't stale failure.
+				// GH-4872: guard against re-entry producing duplicate comments — this
+				// path had no such guard, which combined with the missing StageMerged
+				// guard above (checkExternalMergeOrClose running before ProcessPR every
+				// tick) meant every autopilot-merged PR got a second completion comment
+				// on the tick right after handleMerging's own finalize.
+				if !prState.MergeNotificationPosted {
+					comment := buildMergeCompletionComment(prState)
+					if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); err != nil {
+						c.log.Warn("failed to post merge completion comment on external merge", "issue", prState.IssueNumber, "error", err)
+					} else {
+						prState.MergeNotificationPosted = true
+					}
 				}
 			}
 		}
@@ -7390,11 +7746,14 @@ func (c *Controller) finalizeExternalClose(ctx context.Context, prNumber int, br
 			"pr", prNumber, "branch", branchName)
 		return
 	}
-	if err := c.ghClient.DeleteBranch(ctx, c.owner, c.repo, branchName); err != nil {
+	deleted, err := c.safeDeleteBranch(ctx, branchName, prNumber)
+	if err != nil {
 		c.log.Debug("branch cleanup on PR removal", "branch", branchName, "pr", prNumber, "error", err)
 		return
 	}
-	c.log.Info("deleted branch on PR removal", "branch", branchName, "pr", prNumber)
+	if deleted {
+		c.log.Info("deleted branch on PR removal", "branch", branchName, "pr", prNumber)
+	}
 }
 
 // notifyExternalMerge sends notification when a PR is merged externally.

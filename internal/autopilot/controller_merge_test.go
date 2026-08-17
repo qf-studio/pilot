@@ -201,13 +201,14 @@ func TestController_HandleMerging_ClosesIssueWithPilotDone(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	c.mu.Lock()
 	c.activePRs[99] = &PRState{
-		PRNumber:    99,
-		PRURL:       "https://github.com/owner/repo/pull/99",
-		IssueNumber: 30,
-		BranchName:  "pilot/GH-30",
-		HeadSHA:     "sha99",
-		Stage:       StageMerging,
-		CreatedAt:   time.Now(),
+		PRNumber:     99,
+		PRURL:        "https://github.com/owner/repo/pull/99",
+		IssueNumber:  30,
+		BranchName:   "pilot/GH-30",
+		HeadSHA:      "sha99",
+		Stage:        StageMerging,
+		TargetBranch: "main",
+		CreatedAt:    time.Now(),
 	}
 	c.mu.Unlock()
 
@@ -277,13 +278,14 @@ func TestController_HandleMerging_CallsOnIssueDone(t *testing.T) {
 	})
 	c.mu.Lock()
 	c.activePRs[77] = &PRState{
-		PRNumber:    77,
-		PRURL:       "https://github.com/owner/repo/pull/77",
-		IssueNumber: 55,
-		BranchName:  "pilot/GH-55",
-		HeadSHA:     "sha77",
-		Stage:       StageMerging,
-		CreatedAt:   time.Now(),
+		PRNumber:     77,
+		PRURL:        "https://github.com/owner/repo/pull/77",
+		IssueNumber:  55,
+		BranchName:   "pilot/GH-55",
+		HeadSHA:      "sha77",
+		Stage:        StageMerging,
+		TargetBranch: "main",
+		CreatedAt:    time.Now(),
 	}
 	c.mu.Unlock()
 
@@ -356,6 +358,7 @@ func TestController_HandleMerging_MergeAttemptCapEscalates(t *testing.T) {
 		BranchName:    "pilot/GH-40",
 		HeadSHA:       "sha88",
 		Stage:         StageMerging,
+		TargetBranch:  "main",
 		MergeAttempts: 2,
 		CreatedAt:     time.Now(),
 	}
@@ -429,6 +432,7 @@ func TestController_HandleMerging_BelowCapReturnsRetryableError(t *testing.T) {
 		BranchName:    "pilot/GH-66",
 		HeadSHA:       "sha66",
 		Stage:         StageMerging,
+		TargetBranch:  "main",
 		MergeAttempts: 1,
 		CreatedAt:     time.Now(),
 	}

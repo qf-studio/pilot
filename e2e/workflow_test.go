@@ -357,6 +357,11 @@ func TestWorkflow_CircuitBreaker(t *testing.T) {
 	// Manually set to merging stage
 	prState, _ := controller.GetPRState(1)
 	prState.Stage = autopilot.StageMerging
+	// GH-4872: handleMerging now requires a known TargetBranch before it will
+	// even attempt the merge — without it, it re-reads the PR (404s against
+	// this mock) and holds rather than merging, which would starve this
+	// test's circuit-breaker failures before they ever happen.
+	prState.TargetBranch = "main"
 
 	ctx := context.Background()
 

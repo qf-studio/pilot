@@ -140,6 +140,13 @@ func TestGH4570_FinalizeExternalClose_ReReadsBeforeDelete(t *testing.T) {
 					deleteCalled = true
 					w.WriteHeader(http.StatusOK)
 					_, _ = w.Write([]byte("{}"))
+				// GH-4872: safeDeleteBranch's branchIsBaseOfOpenPR check calls
+				// ListPullRequests (GET .../pulls?state=open) before deleting —
+				// "{}" fails to decode into []*PullRequest and fails the guard
+				// closed, so the delete never fires. Reply "[]" (zero open PRs).
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls":
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[]"))
 				default:
 					w.WriteHeader(http.StatusOK)
 					_, _ = w.Write([]byte("{}"))

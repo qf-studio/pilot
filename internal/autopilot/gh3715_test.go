@@ -82,6 +82,7 @@ func TestController_HandleMergeConflict_RebaseAttemptCapEscalates(t *testing.T) 
 		Stage:          StageMerging,
 		RebaseAttempts: 2,
 		CreatedAt:      time.Now(),
+		TargetBranch:   "main",
 	}
 	c.mu.Unlock()
 
@@ -161,6 +162,7 @@ func TestController_HandleMergeConflict_BelowRebaseCapStaysWaitingCI(t *testing.
 		Stage:          StageMerging,
 		RebaseAttempts: 1,
 		CreatedAt:      time.Now(),
+		TargetBranch:   "main",
 	}
 	c.mu.Unlock()
 
@@ -235,6 +237,7 @@ func TestController_HandleMerging_ResetsRebaseAttemptsOnSuccess(t *testing.T) {
 		Stage:          StageMerging,
 		RebaseAttempts: 2,
 		CreatedAt:      time.Now(),
+		TargetBranch:   "main",
 	}
 	c.mu.Unlock()
 

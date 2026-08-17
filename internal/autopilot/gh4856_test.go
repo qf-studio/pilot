@@ -72,6 +72,13 @@ func TestHandleReviewRequested_CreateIssueErrors_EscalatesInsteadOfClosing(t *te
 		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/git/refs/heads/") && r.Method == http.MethodDelete:
 			branchDeleted.Store(true)
 			w.WriteHeader(http.StatusOK)
+		// GH-4872: safeDeleteBranch's branchIsBaseOfOpenPR check calls
+		// ListPullRequests (GET .../pulls?state=open) before deleting — "{}"
+		// fails to decode into []*PullRequest and fails the guard closed, so
+		// the delete never fires. Reply "[]" (zero open PRs).
+		case r.URL.Path == "/repos/owner/repo/pulls" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
 		default:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{}"))

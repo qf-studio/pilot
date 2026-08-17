@@ -138,6 +138,20 @@ func TestAutoMerger_CanMerge(t *testing.T) {
 			reason:     "",
 			wantErr:    true,
 		},
+		{
+			name: "cannot merge - non-default base (GH-4872)",
+			pr: github.PullRequest{
+				Number:    42,
+				State:     "open",
+				Merged:    false,
+				Mergeable: boolPtr(true),
+				Base:      github.PRRef{Ref: "pilot/GH-70"},
+			},
+			statusCode: http.StatusOK,
+			canMerge:   false,
+			reason:     `base branch mismatch: targets "pilot/GH-70", not default branch "main"`,
+			wantErr:    false,
+		},
 	}
 
 	for _, tt := range tests {
