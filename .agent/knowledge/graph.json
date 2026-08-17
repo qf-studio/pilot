@@ -1813,6 +1813,45 @@
           "database",
           "authentication"
         ]
+      },
+      "TASK-479": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-479-ghguard-parser-parity.md",
+        "title": "gh-guard parser parity \u2014 the guard must derive what `gh` derives",
+        "status": "completed",
+        "concepts": [
+          "deployment",
+          "knowledge",
+          "workflow",
+          "testing",
+          "api",
+          "context"
+        ]
+      },
+      "TASK-480": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-480-safe-noop-decline-contract.md",
+        "title": "Safe no-op / decline contract \u2014 a dedicated signal, never the mandatory exit signal",
+        "status": "completed",
+        "concepts": [
+          "testing",
+          "markers",
+          "context",
+          "deployment",
+          "api"
+        ]
+      },
+      "TASK-481": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-481-review-followup-defects.md",
+        "title": "Three independent defects surfaced by the lkshrk PR review",
+        "status": "completed",
+        "concepts": [
+          "deployment",
+          "theory of mind",
+          "api",
+          "knowledge",
+          "markers",
+          "authentication",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -6550,6 +6589,26 @@
       "from": "apply-script-silent-rollback-causes",
       "to": "TASK-405",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-479",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-479",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-480",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-481",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6676,7 +6735,9 @@
       "TASK-467",
       "TASK-471",
       "TASK-476",
-      "TASK-477"
+      "TASK-477",
+      "TASK-479",
+      "TASK-481"
     ],
     "deployment": [
       "TASK-386",
@@ -6802,7 +6863,10 @@
       "TASK-475",
       "TASK-476",
       "TASK-477",
-      "TASK-478"
+      "TASK-478",
+      "TASK-479",
+      "TASK-480",
+      "TASK-481"
     ],
     "authentication": [
       "TASK-386",
@@ -6866,7 +6930,8 @@
       "TASK-464",
       "TASK-469",
       "TASK-476",
-      "TASK-478"
+      "TASK-478",
+      "TASK-481"
     ],
     "testing": [
       "TASK-386",
@@ -6989,7 +7054,10 @@
       "TASK-474",
       "TASK-475",
       "TASK-476",
-      "TASK-478"
+      "TASK-478",
+      "TASK-479",
+      "TASK-480",
+      "TASK-481"
     ],
     "api": [
       "TASK-386",
@@ -7084,7 +7152,10 @@
       "TASK-475",
       "TASK-476",
       "TASK-477",
-      "TASK-478"
+      "TASK-478",
+      "TASK-479",
+      "TASK-480",
+      "TASK-481"
     ],
     "context": [
       "TASK-386",
@@ -7190,7 +7261,9 @@
       "TASK-475",
       "TASK-476",
       "TASK-477",
-      "TASK-478"
+      "TASK-478",
+      "TASK-479",
+      "TASK-480"
     ],
     "markers": [
       "TASK-387",
@@ -7215,7 +7288,9 @@
       "TASK-467",
       "TASK-470",
       "TASK-476",
-      "TASK-405"
+      "TASK-405",
+      "TASK-480",
+      "TASK-481"
     ],
     "database": [
       "TASK-387",
@@ -7344,7 +7419,8 @@
       "TASK-470",
       "TASK-473",
       "TASK-475",
-      "TASK-478"
+      "TASK-478",
+      "TASK-479"
     ],
     "simplification": [
       "TASK-387",
@@ -7438,7 +7514,8 @@
       "TASK-459",
       "TASK-461",
       "TASK-467",
-      "TASK-478"
+      "TASK-478",
+      "TASK-481"
     ],
     "autopilot": [
       "mem-100",
@@ -7811,10 +7888,10 @@
       "apply-script-silent-rollback-causes"
     ]
   },
-  "last_updated": "2026-08-16T21:38:44.712851+00:00",
+  "last_updated": "2026-08-17T12:18:38.843421+00:00",
   "stats": {
-    "total_nodes": 418,
-    "total_edges": 344,
+    "total_nodes": 421,
+    "total_edges": 348,
     "memory_count": 223
   }
 }
