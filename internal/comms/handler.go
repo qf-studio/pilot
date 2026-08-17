@@ -3,6 +3,7 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -828,15 +829,38 @@ func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, task
 		})
 	}
 
+	// Chat tasks bypass the dispatcher; without Begin, execution_events writes have no parent row.
+	lifecycle := executor.NewExecutionLifecycle(h.store)
+	execID, lifeErr := lifecycle.Begin(task, executor.ExecStatusRunning)
+	if lifeErr != nil {
+		if errors.Is(lifeErr, executor.ErrClaimLost) {
+			_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("⚠️ %s is already being executed by another Pilot process.", taskID))
+			if h.runner != nil {
+				h.runner.RemoveProgressCallback(callbackName)
+			}
+			return
+		}
+		h.log.Warn("Failed to record execution start; running without an audit trail",
+			slog.String("task_id", taskID), slog.Any("error", lifeErr))
+	}
+
 	// Execute
 	h.log.Info("Executing task",
 		slog.String("task_id", taskID),
 		slog.String("context_id", contextID))
+	startedAt := time.Now()
 	result, err := h.runner.Execute(taskCtx, task)
 
 	// Remove named progress callback
 	if h.runner != nil {
 		h.runner.RemoveProgressCallback(callbackName)
+	}
+
+	if execID != "" && lifeErr == nil {
+		if _, finErr := lifecycle.Finish(execID, result, err, time.Since(startedAt)); finErr != nil {
+			h.log.Warn("Failed to record execution finish",
+				slog.String("task_id", taskID), slog.Any("error", finErr))
+		}
 	}
 
 	if err != nil {
