@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -245,5 +246,385 @@ func TestReconcileReleaseBackfill_SkipsNonCandidateStages(t *testing.T) {
 
 	if pullFetches != 0 {
 		t.Errorf("pull fetches = %d, want 0 — non-candidate stages must never be touched", pullFetches)
+	}
+}
+
+// alwaysErrorPullServer serves a 500 for every /pulls/ request (any PR
+// number) and counts how many were made — the fixture for GH-4919's
+// backoff/abandon tests, which need every attempt to fail identically.
+func alwaysErrorPullServer(t *testing.T, fetches *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/pulls/") {
+			*fetches++
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+}
+
+// TestReconcileReleaseBackfill_Backoff covers GH-4919's per-row exponential
+// backoff: a row whose GetPullRequest call errors must not be re-attempted
+// on the very next tick, the backoff schedule must double from the poll
+// interval each consecutive failure, and a due row (clock has reached
+// nextRetryAt) must be retried exactly on schedule.
+func TestReconcileReleaseBackfill_Backoff(t *testing.T) {
+	var pullFetches int
+	server := alwaysErrorPullServer(t, &pullFetches)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+
+	if err := store.SavePRState("owner/repo", &PRState{
+		PRNumber: 300,
+		PRURL:    "https://github.com/owner/repo/pull/300",
+		Stage:    StageFailed,
+	}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+
+	base := cfg.CIPollInterval // 30s default — releaseBackfillObserveFailure's backoff base
+	clock := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	c.releaseBackfillClock = func() time.Time { return clock }
+
+	// Tick 1: first attempt, first failure. backoff = base.
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 1 {
+		t.Fatalf("after tick 1: pull fetches = %d, want 1", pullFetches)
+	}
+
+	// Tick 2: same instant — row must be skipped without any API call.
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 1 {
+		t.Fatalf("after tick 2 (still in backoff): pull fetches = %d, want 1", pullFetches)
+	}
+
+	// Just short of the first backoff deadline — still skipped.
+	clock = clock.Add(base - time.Second)
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 1 {
+		t.Fatalf("after tick 3 (1s short of backoff): pull fetches = %d, want 1", pullFetches)
+	}
+
+	// Backoff elapsed — due again. Second failure doubles backoff to 2*base.
+	clock = clock.Add(time.Second)
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 2 {
+		t.Fatalf("after tick 4 (backoff elapsed): pull fetches = %d, want 2", pullFetches)
+	}
+
+	// Just short of the doubled deadline — still skipped.
+	clock = clock.Add(2*base - time.Second)
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 2 {
+		t.Fatalf("after tick 5 (1s short of doubled backoff): pull fetches = %d, want 2", pullFetches)
+	}
+
+	// Doubled backoff elapsed — third failure.
+	clock = clock.Add(time.Second)
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 3 {
+		t.Fatalf("after tick 6 (doubled backoff elapsed): pull fetches = %d, want 3", pullFetches)
+	}
+
+	row, err := store.GetPRState("owner/repo", 300)
+	if err != nil {
+		t.Fatalf("GetPRState: %v", err)
+	}
+	if row == nil {
+		t.Fatal("row unexpectedly drained")
+	}
+	if row.ReleaseBackfillAbandoned {
+		t.Error("row abandoned prematurely — only 3 of the 10-failure threshold observed")
+	}
+}
+
+// TestReconcileReleaseBackfill_BackoffResetsOnSuccess covers the "resets on
+// success" half of GH-4919's backoff contract: once an API call succeeds
+// (even if the row is genuinely still unreleased), the very next tick must
+// not be held back by a stale backoff from an earlier failure.
+func TestReconcileReleaseBackfill_BackoffResetsOnSuccess(t *testing.T) {
+	var pullFetches int
+	failFirst := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/pulls/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		pullFetches++
+		if failFirst {
+			failFirst = false
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(&github.PullRequest{Number: 301, Merged: false})
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+
+	if err := store.SavePRState("owner/repo", &PRState{
+		PRNumber: 301,
+		PRURL:    "https://github.com/owner/repo/pull/301",
+		Stage:    StageFailed,
+	}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+
+	clock := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	c.releaseBackfillClock = func() time.Time { return clock }
+
+	// Tick 1: fails, backoff scheduled.
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 1 {
+		t.Fatalf("after tick 1: pull fetches = %d, want 1", pullFetches)
+	}
+
+	// Advance past the backoff and succeed — this must clear the streak.
+	clock = clock.Add(cfg.CIPollInterval)
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 2 {
+		t.Fatalf("after tick 2 (success): pull fetches = %d, want 2", pullFetches)
+	}
+
+	// Immediately due again (no clock advance) — a stale backoff would skip this.
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 3 {
+		t.Fatalf("after tick 3 (post-success, same instant): pull fetches = %d, want 3 — backoff should have reset on success", pullFetches)
+	}
+}
+
+// TestReconcileReleaseBackfill_AbandonsAfterThreshold covers GH-4919's
+// permanent-failure classification: a row must cross BOTH the consecutive-
+// failure count and the minimum wall-clock window before it is marked
+// abandoned, the transition must persist (ReleaseBackfillAbandoned + Error),
+// and it must happen exactly once — every sweep after the transition makes
+// zero further API calls for the row.
+func TestReconcileReleaseBackfill_AbandonsAfterThreshold(t *testing.T) {
+	var pullFetches int
+	server := alwaysErrorPullServer(t, &pullFetches)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+
+	if err := store.SavePRState("owner/repo", &PRState{
+		PRNumber: 400,
+		PRURL:    "https://github.com/owner/repo/pull/400",
+		Stage:    StageFailed,
+	}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+
+	clock := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	c.releaseBackfillClock = func() time.Time { return clock }
+
+	// Drive releaseBackfillAbandonThreshold consecutive failures, jumping the
+	// clock well past releaseBackfillMaxBackoff between each so every tick is
+	// immediately due — this also comfortably clears
+	// releaseBackfillAbandonMinWindow well before the threshold count is
+	// reached, isolating the count as the binding constraint being exercised.
+	for i := 0; i < releaseBackfillAbandonThreshold; i++ {
+		if i > 0 {
+			clock = clock.Add(releaseBackfillMaxBackoff + time.Minute)
+		}
+		c.reconcileReleaseBackfill(context.Background())
+	}
+
+	if pullFetches != releaseBackfillAbandonThreshold {
+		t.Fatalf("pull fetches = %d, want exactly %d (the threshold) — abandon must fire on the crossing tick, not before or after",
+			pullFetches, releaseBackfillAbandonThreshold)
+	}
+
+	row, err := store.GetPRState("owner/repo", 400)
+	if err != nil {
+		t.Fatalf("GetPRState: %v", err)
+	}
+	if row == nil {
+		t.Fatal("row unexpectedly drained — abandon must persist the row, not remove it")
+	}
+	if !row.ReleaseBackfillAbandoned {
+		t.Fatal("row not marked abandoned after crossing the threshold")
+	}
+	if row.Error == "" {
+		t.Error("abandoned row's Error is empty — reason must be persisted")
+	}
+	if row.Stage != StageFailed {
+		t.Errorf("abandoned row Stage = %q, want unchanged %q", row.Stage, StageFailed)
+	}
+
+	// Further sweeps — even ones due by the clock — must never call the API
+	// for this row again: the persisted flag is now authoritative.
+	for i := 0; i < 3; i++ {
+		clock = clock.Add(releaseBackfillMaxBackoff + time.Minute)
+		c.reconcileReleaseBackfill(context.Background())
+	}
+	if pullFetches != releaseBackfillAbandonThreshold {
+		t.Errorf("pull fetches after abandonment = %d, want unchanged %d — abandoned row must never be retried",
+			pullFetches, releaseBackfillAbandonThreshold)
+	}
+}
+
+// TestReconcileReleaseBackfill_ShortIncidentDoesNotAbandon covers the window
+// half of GH-4919's abandon gate: a failure streak that crosses the
+// consecutive-failure count quickly (a burst of retries within a short span,
+// not a sustained multi-hour incident) must NOT be classified permanent —
+// this is the guard that stops a same-day platform incident from
+// terminalizing a row that would have healed once the incident cleared.
+func TestReconcileReleaseBackfill_ShortIncidentDoesNotAbandon(t *testing.T) {
+	var pullFetches int
+	server := alwaysErrorPullServer(t, &pullFetches)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+
+	if err := store.SavePRState("owner/repo", &PRState{
+		PRNumber: 401,
+		PRURL:    "https://github.com/owner/repo/pull/401",
+		Stage:    StageFailed,
+	}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+
+	clock := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	// Directly seed a failure streak one short of the count threshold, but
+	// with firstFailAt only a minute old — nowhere near
+	// releaseBackfillAbandonMinWindow. Exercises releaseBackfillObserveFailure
+	// without needing releaseBackfillAbandonThreshold real sweeps.
+	c.releaseBackfillRows = map[string]*releaseBackfillRowState{
+		releaseBackfillRowKey("owner", "repo", 401): {
+			consecutiveFails: releaseBackfillAbandonThreshold - 1,
+			firstFailAt:      clock.Add(-time.Minute),
+			nextRetryAt:      clock,
+		},
+	}
+	c.releaseBackfillClock = func() time.Time { return clock }
+
+	// One more failure crosses the count threshold but not the window.
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 1 {
+		t.Fatalf("pull fetches = %d, want 1", pullFetches)
+	}
+
+	row, err := store.GetPRState("owner/repo", 401)
+	if err != nil {
+		t.Fatalf("GetPRState: %v", err)
+	}
+	if row.ReleaseBackfillAbandoned {
+		t.Error("row abandoned on a short (1-minute) failure streak — the minimum wall-clock window must gate this")
+	}
+}
+
+// TestReconcileReleaseBackfill_AbandonedRowSkipped covers a row that was
+// already marked abandoned by a prior sweep (e.g. before a daemon restart):
+// the very next sweep must make zero API calls for it.
+func TestReconcileReleaseBackfill_AbandonedRowSkipped(t *testing.T) {
+	var pullFetches int
+	server := alwaysErrorPullServer(t, &pullFetches)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+
+	if err := store.SavePRState("owner/repo", &PRState{
+		PRNumber:                 402,
+		PRURL:                    "https://github.com/owner/repo/pull/402",
+		Stage:                    StageFailed,
+		Error:                    "release-backfill: abandoned after 10 consecutive API failures",
+		ReleaseBackfillAbandoned: true,
+	}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+
+	c.reconcileReleaseBackfill(context.Background())
+
+	if pullFetches != 0 {
+		t.Errorf("pull fetches = %d, want 0 — an already-abandoned row must never be retried", pullFetches)
+	}
+}
+
+// TestReconcileReleaseBackfill_BreakerOpenSkipsSweep covers GH-4919's
+// breaker gate: the TASK-458 platform-outage breaker being open must make
+// the ENTIRE sweep a no-op for that tick — no row is fetched, healed, or
+// have its backoff/failure state touched, regardless of stage or prior
+// history.
+func TestReconcileReleaseBackfill_BreakerOpenSkipsSweep(t *testing.T) {
+	var pullFetches int
+	server := alwaysErrorPullServer(t, &pullFetches)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+	c.platformBreaker = &PlatformBreaker{open: true}
+
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+
+	if err := store.SavePRState("owner/repo", &PRState{
+		PRNumber: 403,
+		PRURL:    "https://github.com/owner/repo/pull/403",
+		Stage:    StageFailed,
+	}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+
+	c.reconcileReleaseBackfill(context.Background())
+
+	if pullFetches != 0 {
+		t.Errorf("pull fetches = %d, want 0 — sweep must be a no-op while the platform breaker is open", pullFetches)
+	}
+
+	row, err := store.GetPRState("owner/repo", 403)
+	if err != nil {
+		t.Fatalf("GetPRState: %v", err)
+	}
+	if row.ReleaseBackfillAbandoned {
+		t.Error("row abandoned despite the breaker-gated sweep never running")
+	}
+
+	// Once the breaker closes, the row must behave exactly as if nothing
+	// happened — normal sweep resumes.
+	c.platformBreaker = &PlatformBreaker{open: false}
+	c.reconcileReleaseBackfill(context.Background())
+	if pullFetches != 1 {
+		t.Errorf("pull fetches after breaker closed = %d, want 1", pullFetches)
 	}
 }
