@@ -198,6 +198,7 @@ func TestIsPlaceholderSubtaskTitle(t *testing.T) {
 		"GH-123: Subtask 1",
 		"GH-2494: Subtask 10",
 		"APP-456: Subtask 3",
+		"LIN-ROU-586: Subtask 2",
 	}
 	for _, title := range accept {
 		if !isPlaceholderSubtaskTitle(title) {

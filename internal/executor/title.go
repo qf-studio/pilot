@@ -24,7 +24,7 @@ var conventionalCommitRegex = regexp.MustCompile(
 // to PR titles (e.g. "GH-2325: ", "APP-123: ") before conventional-commit
 // validation. The downstream squash-merge path strips the same prefix
 // (see internal/autopilot/auto_merger.go).
-var issuePrefixRegex = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+:\s+`)
+var issuePrefixRegex = regexp.MustCompile(`^[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-\d+:\s+`)
 
 // ErrNonConventionalTitle is returned when a title does not match the
 // conventional commit format and could not be auto-corrected. Callers use

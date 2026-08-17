@@ -604,7 +604,7 @@ var conventionalSubtaskTitleRE = regexp.MustCompile(
 
 // placeholderSubtaskTitleRE matches synthetic fallback titles like "GH-123: Subtask 1"
 // produced by syntheticSubtaskTitle. Their presence in a batch signals a re-prompt is needed.
-var placeholderSubtaskTitleRE = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+:\s+Subtask\s+\d+$`)
+var placeholderSubtaskTitleRE = regexp.MustCompile(`^[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-\d+:\s+Subtask\s+\d+$`)
 
 // parentTypeScopeRE extracts the conventional-commit prefix from a parent task title.
 // Used by Approach B fallback: "feat(auth):" → "feat(auth): " prepended to the subtask description.
