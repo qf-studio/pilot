@@ -637,6 +637,14 @@ type Controller struct {
 	// the stack is resolved.
 	alertedBranchDeleteHolds map[string]bool
 
+	// alertedUnresolvableBase deduplicates the base-unresolvable escalation
+	// alert (GH-4909, GH-4872 fast-follow item 3) per PR number, guarded by
+	// mu. handleMerging holds a PR with an empty TargetBranch whose re-read
+	// GetPullRequest call fails (or returns an empty Base.Ref) with only a
+	// per-tick Warn log — this map makes that soft-wedge visible to a human
+	// exactly once instead of requiring someone to notice it in daemon logs.
+	alertedUnresolvableBase map[int]bool
+
 	// warnedUnsourcedIssues deduplicates the "labeled issue not board-sourced"
 	// WARN reconcileUnsourcedBoardIssues emits, per issue number, guarded by
 	// mu — logged once per poll-session (not every tick) while the issue
@@ -1621,16 +1629,28 @@ const basePivotCommentMarker = "<!-- pilot-base-pivot -->"
 // the merged content with no trace on main. A stacked/mis-based PR under
 // autopilot needs a human to decide whether to retarget it at the default
 // branch or merge the stack in order; auto-merge must never guess.
-// Idempotent via prState.Parked — the one-time label/alert/comment side
-// effects only fire once per park cycle, mirroring the
-// submitAsyncApprovalRequest misconfig idiom (GH-4596/GH-4597).
+// Idempotent via prState.Parked plus prState.EscalationReason — the
+// one-time label/alert/comment side effects only fire once per distinct
+// park reason, mirroring the submitAsyncApprovalRequest misconfig idiom
+// (GH-4596/GH-4597).
+//
+// GH-4909 (GH-4872 fast-follow, defect 4): Parked is a single flag shared
+// with submitAsyncApprovalRequest's unrelated misconfig park (GH-4596). A PR
+// parked earlier for a misconfig (Parked=true, EscalationReason naming the
+// gate) that later reaches StageMerging and hits a base mismatch must still
+// get its own alert/comment — comparing the recorded EscalationReason
+// against this call's reason (not just the Parked bool) tells "already
+// parked for this exact base mismatch" apart from "parked for something
+// else", so each cause alerts once instead of the second cause silently
+// inheriting the first park.
 func (c *Controller) parkForBaseMismatch(ctx context.Context, prState *PRState, target, defaultBranch string) {
 	reason := fmt.Sprintf(
 		"base branch mismatch: PR targets %q, not the default branch %q — this looks like a stacked or mis-based PR; a human must retarget it or merge the stack in order",
 		target, defaultBranch,
 	)
+	alreadyParkedForThisMismatch := prState.Parked && prState.EscalationReason == reason
 	prState.EscalationReason = reason
-	if prState.Parked {
+	if alreadyParkedForThisMismatch {
 		// Already logged/commented/alerted on a prior tick — stay parked quietly.
 		return
 	}
@@ -1857,6 +1877,52 @@ func (c *Controller) alertBranchDeleteHeldOnce(branchName string, prNumber int) 
 			"repo":   c.repoKey(),
 			"branch": branchName,
 			"pr":     strconv.Itoa(prNumber),
+		},
+	})
+}
+
+// alertUnresolvableBaseOnce fires an escalation alert the first time
+// handleMerging cannot resolve a PR's base branch at all — TargetBranch is
+// empty and the re-read GetPullRequest call either failed or came back with
+// an empty Base.Ref (GH-4909, GH-4872 fast-follow item 3). Before this,
+// that condition only produced a per-tick Warn log, so a PR wedged this way
+// held silently forever with nothing but daemon logs to notice it.
+// Deduplicated per PR number via alertedUnresolvableBase (same pattern as
+// alertBranchDeleteHeldOnce).
+func (c *Controller) alertUnresolvableBaseOnce(prNumber, issueNumber int, readErr error) {
+	c.mu.Lock()
+	if c.alertedUnresolvableBase == nil {
+		c.alertedUnresolvableBase = make(map[int]bool)
+	}
+	if c.alertedUnresolvableBase[prNumber] {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedUnresolvableBase[prNumber] = true
+	c.mu.Unlock()
+
+	msg := fmt.Sprintf(
+		"PR #%d (%s) has no known base branch and re-reading it from GitHub failed — auto-merge is held with nothing to verify the base-branch guard against; a human must check the PR",
+		prNumber, c.repoKey(),
+	)
+	if readErr != nil {
+		msg = fmt.Sprintf("%s (error: %v)", msg, readErr)
+	}
+	if c.alertsEngine == nil {
+		c.log.Error("unresolvable_base alert not delivered: SetAlertsEngine was never called", "pr", prNumber)
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeEscalation,
+		TaskID:    fmt.Sprintf("pr-%d-unresolvable-base", prNumber),
+		TaskTitle: fmt.Sprintf("Unresolvable base branch on PR #%d", prNumber),
+		Project:   c.repoKey(),
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo":  c.repoKey(),
+			"pr":    strconv.Itoa(prNumber),
+			"issue": strconv.Itoa(issueNumber),
 		},
 	})
 }
@@ -2336,7 +2402,18 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 		if prState.PRTitle == "" && ghPR.Title != "" {
 			prState.PRTitle = ghPR.Title
 		}
-		if prState.TargetBranch == "" && ghPR.Base.Ref != "" {
+		// GH-4909 (GH-4872 fast-follow, defect 1): refresh TargetBranch
+		// unconditionally every tick — ghPR is already fetched on every
+		// ProcessPR call, so this is zero extra API cost. The old
+		// only-when-empty guard let the cached value go stale in both
+		// directions: a PR parked on a stacked base that a human retargets
+		// to main stayed parked forever (the resume check re-read only when
+		// empty, so it kept seeing the old non-default value); a PR adopted
+		// with base=main that was later retargeted to a feature branch sailed
+		// through handleMerging's base guard on the stale "main" and merged
+		// into the new, wrong base — reopening the exact GH-4872 incident
+		// through the very path meant to guard against it.
+		if ghPR.Base.Ref != "" {
 			prState.TargetBranch = ghPR.Base.Ref
 		}
 	}
@@ -3924,6 +4001,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		if err != nil || ghPR.Base.Ref == "" {
 			c.log.Warn("handleMerging: could not resolve PR base branch to verify it targets the default branch — holding rather than failing open",
 				"pr", prState.PRNumber, "error", err)
+			c.alertUnresolvableBaseOnce(prState.PRNumber, prState.IssueNumber, err)
 			return nil
 		}
 		target = ghPR.Base.Ref
@@ -3994,9 +4072,41 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	prState.RebaseAttempts = 0 // GH-3715: reset rebase-oscillation counter on a clean merge
 	c.recordMergeSuccess(prState)
 
+	// GH-4909 (GH-4872 fast-follow, defect 2): belt-and-braces re-verification
+	// of the base branch right before the "delivered" finalize block. The
+	// guard above (line ~3921) already refuses to call MergePR at all on a
+	// known non-default target — but that check runs against the TargetBranch
+	// value read moments earlier, and MergePullRequest merges into whatever
+	// base is current on GitHub at the instant it executes, not whatever we
+	// last cached. A retarget landing in that narrow gap would otherwise sail
+	// straight through to "delivered" with no second look. Re-read the PR now
+	// that GitHub confirms it merged and verify against the ACTUAL landed
+	// base, applying the identical predicate as the isPilotPR scanner and
+	// checkExternalMergeOrClose below. Fail-open on a re-read error (mirrors
+	// the CI re-validation fail-open above) — trust the pre-merge value
+	// rather than holding every successful merge hostage to a flaky
+	// follow-up API call. Skip ONLY the delivered bookkeeping (issue close,
+	// pilot-done label, monitor.Complete, self-heal, board->Done) — branch
+	// cleanup and the merge notifier still run below regardless of base.
+	baseMismatchAfterMerge := false
+	if mergedPR, gerr := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber); gerr != nil {
+		c.log.Warn("handleMerging: failed to re-verify merged PR's base branch post-merge — trusting pre-merge value",
+			"pr", prState.PRNumber, "error", gerr)
+	} else if mergedPR.Base.Ref != "" {
+		target = mergedPR.Base.Ref
+		prState.TargetBranch = target
+	}
+	if defaultBranch := c.resolveMainBranchName(); target != defaultBranch {
+		baseMismatchAfterMerge = true
+		c.log.Warn("handleMerging: merged PR's base is not the default branch — not marking issue delivered",
+			"pr", prState.PRNumber, "issue", prState.IssueNumber, "target_branch", target, "default_branch", defaultBranch)
+		c.alertBaseMismatchOnce(prState.PRNumber, prState.IssueNumber, target, defaultBranch, true)
+		c.postBasePivotComment(ctx, prState.IssueNumber, prState.PRNumber, target, defaultBranch)
+	}
+
 	// GH-1015: Add pilot-done label after successful merge (not at PR creation)
 	// This prevents false positives where PRs are closed without merging
-	if prState.IssueNumber > 0 && !c.shouldDeferIssueClose(ctx, prState.IssueNumber, prState.PRNumber) {
+	if !baseMismatchAfterMerge && prState.IssueNumber > 0 && !c.shouldDeferIssueClose(ctx, prState.IssueNumber, prState.PRNumber) {
 		// GH-3271: mark issue processed in all pollers before any label updates so
 		// a poll tick that fires during the merge→pilot-done propagation window
 		// cannot re-dispatch the issue (phantom pilot-blocked).
