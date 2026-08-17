@@ -29,8 +29,23 @@ func CleanInternalSignals(text string) string {
 	lines := strings.Split(text, "\n")
 	var clean []string
 	skipBlock := false
+	inSignalFence := false
 
 	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if inSignalFence {
+			if trimmed == "```" {
+				inSignalFence = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```pilot-signal") {
+			inSignalFence = true
+			continue
+		}
+		if isBareSignalLine(trimmed) {
+			continue
+		}
 		if strings.Contains(line, "NAVIGATOR_STATUS") {
 			skipBlock = true
 			continue
@@ -67,6 +82,11 @@ func CleanInternalSignals(text string) string {
 	}
 
 	return strings.Join(clean, "\n")
+}
+
+// isBareSignalLine reports whether a line is an unfenced pilot-signal protocol payload.
+func isBareSignalLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, `{"v":`) && strings.HasSuffix(trimmed, "}")
 }
 
 // ChunkContent splits text into chunks of at most maxLen characters,

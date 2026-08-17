@@ -19,6 +19,11 @@ func TestCleanInternalSignals(t *testing.T) {
 		{"leading blanks stripped", "\n\nhello", "hello"},
 		{"trailing blanks stripped", "hello\n\n", "hello"},
 		{"multiple signals", "[EXIT_SIGNAL]\n[IMPL_DONE]\nreal output", "real output"},
+		{"pilot-signal fence stripped", "answer\n```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true}\n```\nmore", "answer\nmore"},
+		{"bare protocol line stripped", "checked the issue\n{\"v\":2,\"type\":\"status\",\"phase\":\"INIT\",\"progress\":5}\nnothing to do", "checked the issue\nnothing to do"},
+		{"multiline fence stripped", "```pilot-signal\n{\"v\":2,\n\"type\":\"exit\"}\n```\nresult", "result"},
+		{"ordinary code fence kept", "```go\nfmt.Println(\"hi\")\n```", "```go\nfmt.Println(\"hi\")\n```"},
+		{"prose json kept", "the response was {\"ok\": true}", "the response was {\"ok\": true}"},
 	}
 
 	for _, tt := range tests {
