@@ -1299,6 +1299,18 @@ type PRState struct {
 	// current PostMergeSHA, the effective retry budget is treated as 0.
 	// Persisted.
 	PostMergeInfraRerunSHA string
+	// ReleaseBackfillAbandoned is true once reconcileReleaseBackfill
+	// (GH-4919) has classified this row's API failures as permanent — it
+	// crossed both the consecutive-failure and minimum-wall-clock-window
+	// thresholds in releaseBackfillObserveFailure, so no future sweep will
+	// call the GitHub API for it again. Error carries the last failure
+	// reason at the moment of the transition. Distinct from
+	// RebaseHoldActive/BreakerHoldActive: those hold a PR that is expected
+	// to be re-driven back to normal processing; this marks a row the sweep
+	// has given up on entirely (e.g. its repo was deleted, or the incident
+	// that broke it never resolved). Persisted so the skip survives a
+	// daemon restart.
+	ReleaseBackfillAbandoned bool
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -1357,6 +1369,7 @@ func (ps *PRState) snapshot() *PRState {
 		BreakerReadoptCount:          ps.BreakerReadoptCount,
 		PostMergeInfraRerunCount:     ps.PostMergeInfraRerunCount,
 		PostMergeInfraRerunSHA:       ps.PostMergeInfraRerunSHA,
+		ReleaseBackfillAbandoned:     ps.ReleaseBackfillAbandoned,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.

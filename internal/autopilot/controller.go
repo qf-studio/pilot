@@ -738,6 +738,21 @@ type Controller struct {
 	// — alertPlatformBreakerTransition's nil check makes this byte-identical
 	// to part-1 behavior when unset.
 	admissionPauser AdmissionPauser
+
+	// releaseBackfillMu guards releaseBackfillRows below.
+	releaseBackfillMu sync.Mutex
+	// releaseBackfillRows is reconcileReleaseBackfill's (GH-4919) per-row
+	// backoff and consecutive-failure bookkeeping, keyed by
+	// "owner/repo#pr". Deliberately in-memory only, not persisted: the fix
+	// shape only requires the permanent-failure classification (see
+	// PRState.ReleaseBackfillAbandoned) to survive a restart — losing an
+	// in-progress backoff on restart just means one immediate retry, not a
+	// budget blowout.
+	releaseBackfillRows map[string]*releaseBackfillRowState
+	// releaseBackfillClock overrides time.Now() for reconcileReleaseBackfill
+	// when set — nil in production, used by tests to simulate backoff and
+	// the abandon threshold's wall-clock window without real sleeps.
+	releaseBackfillClock func() time.Time
 }
 
 // AdmissionPauser is the narrow seam Controller uses to pause/resume new-work
