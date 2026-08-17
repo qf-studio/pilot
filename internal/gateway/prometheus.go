@@ -3,6 +3,7 @@ package gateway
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"sort"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // commitSuffixPattern matches the trailing "-g<hash>[-dirty]" segment that
@@ -66,6 +68,7 @@ func (c *goPanicCounter) snapshot() map[string]int64 {
 type PrometheusExporter struct {
 	metricsSource MetricsSource
 	alertsSource  AlertMetricsSource
+	evalSource    EvalMetricsSource // GH-4922: optional, set via SetEvalMetricsSource
 	panicCtr      *goPanicCounter
 	version       string // GH-4864: running process's compiled-in version, set via SetBuildInfo
 	commit        string // GH-4864: VCS commit parsed from version, set via SetBuildInfo
@@ -83,6 +86,12 @@ type AlertMetricsSource interface {
 	AlertSnapshot() alerts.AlertMetricsSnapshot
 }
 
+// EvalMetricsSource provides eval pass@1 data for the exporter (GH-4922).
+// *memory.Store satisfies this interface via its GetEvalTaskCounts method.
+type EvalMetricsSource interface {
+	GetEvalTaskCounts() (memory.EvalTaskCounts, error)
+}
+
 // NewPrometheusExporter creates a new Prometheus exporter and wires the panic counter.
 func NewPrometheusExporter(source MetricsSource) *PrometheusExporter {
 	ctr := newGoPanicCounter()
@@ -93,6 +102,11 @@ func NewPrometheusExporter(source MetricsSource) *PrometheusExporter {
 // SetAlertsSource wires an alert metrics source into the exporter.
 func (e *PrometheusExporter) SetAlertsSource(s AlertMetricsSource) {
 	e.alertsSource = s
+}
+
+// SetEvalSource wires an eval metrics source into the exporter (GH-4922).
+func (e *PrometheusExporter) SetEvalSource(s EvalMetricsSource) {
+	e.evalSource = s
 }
 
 // SetBuildInfo records the running process's version/commit for the
@@ -459,6 +473,33 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	if e.panicCtr != nil {
 		for component, count := range e.panicCtr.snapshot() {
 			writeCounter(w, "pilot_panics_total", count, "component", component)
+		}
+	}
+
+	// --- Eval metrics (optional; only emitted when an EvalMetricsSource is wired) ---
+	// pilot_eval_tasks_total / pilot_eval_pass_ratio (GH-4922): replaces the
+	// TUI eval stats panel (renderEvalStats, removed) — pass@1 now lives in
+	// the same metrics surface as the rest of the pipeline instead of a
+	// bespoke dashboard card. Fleet-wide (all projects), matching the
+	// GH-4830 default scope.
+	if e.evalSource != nil {
+		counts, err := e.evalSource.GetEvalTaskCounts()
+		if err != nil {
+			logging.WithComponent("gateway").Warn("failed to read eval task counts for /metrics", slog.Any("error", err))
+		} else {
+			writeHelp(w, "pilot_eval_tasks_total", "Total eval_tasks rows by outcome, fleet-wide across all projects. 0 for both labels when the table is empty")
+			writeType(w, "pilot_eval_tasks_total", "gauge")
+			writeGaugeLabeled(w, "pilot_eval_tasks_total", float64(counts.Passed), "success", "true")
+			writeGaugeLabeled(w, "pilot_eval_tasks_total", float64(counts.Failed), "success", "false")
+
+			writeHelp(w, "pilot_eval_pass_ratio", "Fraction of eval_tasks rows with success=1 (0-1), fleet-wide across all projects. 0 when the table is empty")
+			writeType(w, "pilot_eval_pass_ratio", "gauge")
+			total := counts.Passed + counts.Failed
+			ratio := 0.0
+			if total > 0 {
+				ratio = float64(counts.Passed) / float64(total)
+			}
+			writeGauge(w, "pilot_eval_pass_ratio", ratio)
 		}
 	}
 

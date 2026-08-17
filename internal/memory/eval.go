@@ -2,6 +2,7 @@ package memory
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -246,6 +247,35 @@ type EvalTaskFilter struct {
 	SuccessOnly bool
 	FailedOnly  bool
 	Limit       int
+}
+
+// EvalTaskCounts aggregates pass/fail row counts across all eval_tasks rows,
+// fleet-wide (no project_path scoping — matches the GH-4830 default). Backs
+// the pilot_eval_tasks_total / pilot_eval_pass_ratio Prometheus gauges
+// (GH-4922), which replaced the TUI eval panel that used to compute this via
+// ListEvalTasks with a Limit — that approach undercounts once the table
+// exceeds the limit, so this queries the full table with a SQL aggregate
+// instead.
+type EvalTaskCounts struct {
+	Passed int
+	Failed int
+}
+
+// GetEvalTaskCounts returns fleet-wide pass/fail counts across all eval_tasks
+// rows. Zero values (including an empty table) are valid results, not errors.
+func (s *Store) GetEvalTaskCounts() (EvalTaskCounts, error) {
+	var counts EvalTaskCounts
+	var passed, failed sql.NullInt64
+	err := s.db.QueryRow(`SELECT
+		SUM(CASE WHEN success THEN 1 ELSE 0 END),
+		SUM(CASE WHEN success THEN 0 ELSE 1 END)
+		FROM eval_tasks`).Scan(&passed, &failed)
+	if err != nil {
+		return counts, fmt.Errorf("query eval_task_counts: %w", err)
+	}
+	counts.Passed = int(passed.Int64)
+	counts.Failed = int(failed.Int64)
+	return counts, nil
 }
 
 // ListEvalTasks returns eval tasks matching the given filter, ordered by created_at DESC.

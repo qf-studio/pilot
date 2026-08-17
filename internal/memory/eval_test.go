@@ -413,3 +413,47 @@ func TestEvalTaskPassCriteriaRoundTrip(t *testing.T) {
 		t.Errorf("expected 3 files, got %d", len(got.FilesChanged))
 	}
 }
+
+// TestGetEvalTaskCounts verifies the fleet-wide pass/fail aggregate backing
+// the pilot_eval_tasks_total / pilot_eval_pass_ratio Prometheus gauges
+// (GH-4922), including the empty-table case (both counts 0, no error).
+func TestGetEvalTaskCounts(t *testing.T) {
+	store, cleanup := newTestStoreForEval(t)
+	defer cleanup()
+
+	t.Run("empty table returns zero counts", func(t *testing.T) {
+		counts, err := store.GetEvalTaskCounts()
+		if err != nil {
+			t.Fatalf("GetEvalTaskCounts: %v", err)
+		}
+		if counts.Passed != 0 || counts.Failed != 0 {
+			t.Errorf("expected zero counts on empty table, got %+v", counts)
+		}
+	})
+
+	// Mixed pass/fail across multiple project paths — counts must be
+	// fleet-wide (no ProjectPath scoping), unlike ListEvalTasks.
+	tasks := []*EvalTask{
+		{ID: "eval-c1", Repo: "org/repo", IssueNumber: 1, Success: true, ProjectPath: "/projects/alpha"},
+		{ID: "eval-c2", Repo: "org/repo", IssueNumber: 2, Success: true, ProjectPath: "/projects/beta"},
+		{ID: "eval-c3", Repo: "org/repo", IssueNumber: 3, Success: false, ProjectPath: "/projects/alpha"},
+	}
+	for _, task := range tasks {
+		if err := store.SaveEvalTask(task); err != nil {
+			t.Fatalf("SaveEvalTask(%s): %v", task.ID, err)
+		}
+	}
+
+	t.Run("aggregates across all projects", func(t *testing.T) {
+		counts, err := store.GetEvalTaskCounts()
+		if err != nil {
+			t.Fatalf("GetEvalTaskCounts: %v", err)
+		}
+		if counts.Passed != 2 {
+			t.Errorf("Passed = %d, want 2", counts.Passed)
+		}
+		if counts.Failed != 1 {
+			t.Errorf("Failed = %d, want 1", counts.Failed)
+		}
+	})
+}

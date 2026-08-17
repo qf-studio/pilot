@@ -97,6 +97,7 @@ type Server struct {
 	liveness                 *livenessState
 	prometheusExporter       *PrometheusExporter
 	alertsSource             AlertMetricsSource
+	evalSource               EvalMetricsSource // GH-4922: wired into prometheusExporter for pilot_eval_* gauges
 	autopilotProvider        AutopilotProvider
 	adapterHealthSource      AdapterHealthSource
 	dashboardStore           DashboardStore
@@ -336,6 +337,9 @@ func (s *Server) SetMetricsSource(source MetricsSource) {
 	if s.alertsSource != nil {
 		s.prometheusExporter.SetAlertsSource(s.alertsSource)
 	}
+	if s.evalSource != nil {
+		s.prometheusExporter.SetEvalSource(s.evalSource)
+	}
 }
 
 // SetVersion records the running process's compiled-in version (GH-4864) so
@@ -362,6 +366,18 @@ func (s *Server) SetAlertsMetricsSource(source AlertMetricsSource) {
 	s.alertsSource = source
 	if s.prometheusExporter != nil {
 		s.prometheusExporter.SetAlertsSource(source)
+	}
+}
+
+// SetEvalMetricsSource wires an eval metrics source (typically the same
+// *memory.Store passed to SetDashboardStore) into the Prometheus exporter
+// (GH-4922). Safe to call before or after SetMetricsSource.
+func (s *Server) SetEvalMetricsSource(source EvalMetricsSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evalSource = source
+	if s.prometheusExporter != nil {
+		s.prometheusExporter.SetEvalSource(source)
 	}
 }
 
