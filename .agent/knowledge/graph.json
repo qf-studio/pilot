@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-08-17T14:30:00+00:00",
+  "updated": "2026-08-17T16:45:00+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -4894,6 +4894,19 @@
         ],
         "confidence": 0.9,
         "created": "2026-08-17"
+      },
+      "handlemerged-shadowed-dead-by-external-merge-detector": {
+        "type": "learning",
+        "summary": "handleMerged (deploy + review-learning + eval extraction) was dead in production for the box entire life: checkExternalMergeOrClose consumed every own-merge as external before stage dispatch. GH-4872 item-3 guard (PR#4908) resurrected the tail 2026-08-17 — surfaces appearing out of nowhere post-upgrade may be un-deadened old producers, not new features.",
+        "file": ".agent/knowledge/memories/learnings/handlemerged-shadowed-dead-by-external-merge-detector.md",
+        "concepts": [
+          "autopilot",
+          "dead-code",
+          "eval",
+          "incident-diagnosis"
+        ],
+        "confidence": 0.95,
+        "created": "2026-08-17"
       }
     }
   },
@@ -6637,6 +6650,11 @@
       "from": "TASK-481",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "handlemerged-shadowed-dead-by-external-merge-detector",
+      "to": "autopilot",
+      "type": "relates_to"
     }
   ],
   "concept_index": {
@@ -7916,10 +7934,10 @@
       "apply-script-silent-rollback-causes"
     ]
   },
-  "last_updated": "2026-08-17T14:30:00+00:00",
+  "last_updated": "2026-08-17T16:45:00+00:00",
   "stats": {
-    "total_nodes": 423,
-    "total_edges": 348,
+    "total_nodes": 424,
+    "total_edges": 349,
     "memory_count": 225
   }
 }
