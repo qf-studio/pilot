@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1303,4 +1304,225 @@ func (c *testableCreateIssueClient) getLabelByName(ctx context.Context, teamKey,
 func (c *testableCreateIssueClient) createLabel(ctx context.Context, teamKey, labelName, color string) (string, error) {
 	// For testing, just return a fake label ID
 	return "label-" + labelName, nil
+}
+
+func TestLooksLikeUUID(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "team key", in: "ROU", want: false},
+		{name: "lowercase uuid", in: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", want: true},
+		{name: "uppercase uuid", in: "A1B2C3D4-E5F6-7890-ABCD-EF1234567890", want: true},
+		{name: "wrong length", in: "a1b2c3d4-e5f6-7890-abcd-ef123456789", want: false},
+		{name: "misplaced dashes", in: "a1b2c3d4e-5f6-7890-abcd-ef1234567890", want: false},
+		{name: "non-hex character", in: "z1b2c3d4-e5f6-7890-abcd-ef1234567890", want: false},
+		{name: "empty", in: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeUUID(tt.in); got != tt.want {
+				t.Errorf("looksLikeUUID(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCreateLabelResolvesTeamKeyToUUID(t *testing.T) {
+	const teamUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+	tests := []struct {
+		name         string
+		teamRef      string
+		wantResolve  bool
+		wantMutation string
+	}{
+		{name: "team key is resolved before the mutation", teamRef: "ROU", wantResolve: true, wantMutation: teamUUID},
+		{name: "uuid is used as-is", teamRef: teamUUID, wantResolve: false, wantMutation: teamUUID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sawResolve bool
+			var mutationTeamID string
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Query     string                 `json:"query"`
+					Variables map[string]interface{} `json:"variables"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+
+				if strings.Contains(req.Query, "GetTeamID") {
+					sawResolve = true
+					_, _ = w.Write([]byte(`{"data":{"teams":{"nodes":[{"id":"` + teamUUID + `","key":"ROU"}]}}}`))
+					return
+				}
+				mutationTeamID, _ = req.Variables["teamId"].(string)
+				_, _ = w.Write([]byte(`{"data":{"issueLabelCreate":{"success":true,"issueLabel":{"id":"label-1","name":"pilot-done"}}}}`))
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL("test-linear-key", server.URL)
+			if _, err := client.CreateLabel(context.Background(), tt.teamRef, "pilot-done", "#00AA55"); err != nil {
+				t.Fatalf("CreateLabel: %v", err)
+			}
+
+			if sawResolve != tt.wantResolve {
+				t.Errorf("team resolution performed = %v, want %v", sawResolve, tt.wantResolve)
+			}
+			if mutationTeamID != tt.wantMutation {
+				t.Errorf("mutation teamId = %q, want %q", mutationTeamID, tt.wantMutation)
+			}
+		})
+	}
+}
+
+func TestGetLabelByNameWorkspaceFallback(t *testing.T) {
+	tests := []struct {
+		name          string
+		teamNodes     string
+		workspaceResp string
+		wantID        string
+		wantErr       bool
+		wantFallback  bool
+	}{
+		{
+			name:         "team-scoped label found without fallback",
+			teamNodes:    `[{"id":"team-label","name":"llm-pilot"}]`,
+			wantID:       "team-label",
+			wantFallback: false,
+		},
+		{
+			name:          "workspace-scoped label found via fallback",
+			teamNodes:     `[]`,
+			workspaceResp: `[{"id":"ws-label","name":"llm-pilot","team":null}]`,
+			wantID:        "ws-label",
+			wantFallback:  true,
+		},
+		{
+			name:          "another team's label is not accepted",
+			teamNodes:     `[]`,
+			workspaceResp: `[{"id":"other-team-label","name":"llm-pilot","team":{"id":"other"}}]`,
+			wantErr:       true,
+			wantFallback:  true,
+		},
+		{
+			name:          "missing everywhere",
+			teamNodes:     `[]`,
+			workspaceResp: `[]`,
+			wantErr:       true,
+			wantFallback:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sawFallback bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Query string `json:"query"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+
+				if strings.Contains(req.Query, "GetWorkspaceLabel") {
+					sawFallback = true
+					_, _ = w.Write([]byte(`{"data":{"issueLabels":{"nodes":` + tt.workspaceResp + `}}}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":{"issueLabels":{"nodes":` + tt.teamNodes + `}}}`))
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL("test-linear-key", server.URL)
+			id, err := client.GetLabelByName(context.Background(), "ROU", "llm-pilot")
+
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if id != tt.wantID {
+					t.Errorf("id = %q, want %q", id, tt.wantID)
+				}
+			}
+			if sawFallback != tt.wantFallback {
+				t.Errorf("workspace fallback performed = %v, want %v", sawFallback, tt.wantFallback)
+			}
+		})
+	}
+}
+
+func TestGetOrCreateLabel(t *testing.T) {
+	const teamUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+	tests := []struct {
+		name        string
+		teamLabels  string
+		wsLabels    string
+		wantID      string
+		wantCreated bool
+	}{
+		{
+			name:        "existing team label is reused",
+			teamLabels:  `[{"id":"existing","name":"pilot-done"}]`,
+			wantID:      "existing",
+			wantCreated: false,
+		},
+		{
+			name:        "existing workspace label is reused",
+			teamLabels:  `[]`,
+			wsLabels:    `[{"id":"ws","name":"pilot-done","team":null}]`,
+			wantID:      "ws",
+			wantCreated: false,
+		},
+		{
+			name:        "missing label is created",
+			teamLabels:  `[]`,
+			wsLabels:    `[]`,
+			wantID:      "created",
+			wantCreated: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var created bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Query string `json:"query"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+
+				switch {
+				case strings.Contains(req.Query, "GetWorkspaceLabel"):
+					_, _ = w.Write([]byte(`{"data":{"issueLabels":{"nodes":` + tt.wsLabels + `}}}`))
+				case strings.Contains(req.Query, "GetLabel"):
+					_, _ = w.Write([]byte(`{"data":{"issueLabels":{"nodes":` + tt.teamLabels + `}}}`))
+				case strings.Contains(req.Query, "GetTeamID"):
+					_, _ = w.Write([]byte(`{"data":{"teams":{"nodes":[{"id":"` + teamUUID + `","key":"ROU"}]}}}`))
+				default:
+					created = true
+					_, _ = w.Write([]byte(`{"data":{"issueLabelCreate":{"success":true,"issueLabel":{"id":"created","name":"pilot-done"}}}}`))
+				}
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL("test-linear-key", server.URL)
+			id, err := client.GetOrCreateLabel(context.Background(), "ROU", "pilot-done", "#00AA55")
+			if err != nil {
+				t.Fatalf("GetOrCreateLabel: %v", err)
+			}
+			if id != tt.wantID {
+				t.Errorf("id = %q, want %q", id, tt.wantID)
+			}
+			if created != tt.wantCreated {
+				t.Errorf("label created = %v, want %v", created, tt.wantCreated)
+			}
+		})
+	}
 }
