@@ -398,12 +398,21 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 		wantErr bool
 	}{
 		{
+			// GH-4953: real GitHub always serves /tags with 200 (empty array
+			// when there are none, never 404), so a release-backed tag also
+			// shows up in ListTags. This mirrors that — both sources agree.
 			name: "from latest release",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/repos/owner/repo/releases/latest" {
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
 						"id":       1,
 						"tag_name": "v1.2.3",
+					})
+					return
+				}
+				if r.URL.Path == "/repos/owner/repo/tags" {
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+						{"name": "v1.2.3"},
 					})
 					return
 				}
@@ -464,6 +473,113 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 			}
 			if !tt.wantErr && got != tt.want {
 				t.Errorf("GetCurrentVersion() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestReleaser_CurrentVersionBaselineForRepo_TagBeyondRelease reproduces the
+// live GH-4953 incident: the sdk train's latest published Release was
+// v0.34.1, but v0.35.0 had already been pushed as a tag-only ref (a manual
+// base-guard tag, never published as a GitHub Release). The old
+// release-first lookup returned v0.34.1 as the baseline, so a "fix:" commit
+// bumped to v0.34.2 — a version Go module resolution ranks BELOW the
+// existing v0.35.0 tag. The baseline must be the max across ALL tags
+// (release-backed or not), so the same patch bump must land on v0.35.1.
+func TestReleaser_CurrentVersionBaselineForRepo_TagBeyondRelease(t *testing.T) {
+	tests := []struct {
+		name             string
+		latestReleaseTag string // "" means no Release object exists (404)
+		tags             []string
+		bumpType         BumpType
+		wantBaseline     SemVer
+		wantSource       string
+		wantNext         SemVer
+	}{
+		{
+			// Acceptance: existing tags {v0.34.1, v0.35.0} + patch release
+			// -> next is v0.35.1 (NOT v0.34.2).
+			name:             "tag-only ref beyond the latest Release wins the baseline",
+			latestReleaseTag: "v0.34.1",
+			tags:             []string{"v0.34.1", "v0.35.0"},
+			bumpType:         BumpPatch,
+			wantBaseline:     SemVer{Major: 0, Minor: 35, Patch: 0},
+			wantSource:       "tag:v0.35.0",
+			wantNext:         SemVer{Major: 0, Minor: 35, Patch: 1},
+		},
+		{
+			// Acceptance: tag-without-Release counts toward the baseline
+			// even when NO Release object exists at all (404 on /releases/latest).
+			name:             "tag-without-release counts toward baseline with no Release object",
+			latestReleaseTag: "",
+			tags:             []string{"v1.0.0", "v1.4.0"},
+			bumpType:         BumpMinor,
+			wantBaseline:     SemVer{Major: 1, Minor: 4, Patch: 0},
+			wantSource:       "tag:v1.4.0",
+			wantNext:         SemVer{Major: 1, Minor: 5, Patch: 0},
+		},
+		{
+			// Acceptance: existing flows unchanged when ledger (Release) and
+			// tags agree — the Release IS the max tag, so the source may
+			// legitimately be either the release or its matching tag, but
+			// the resolved version must be unchanged from pre-fix behavior.
+			name:             "ledger and tags agree, resolved version unchanged",
+			latestReleaseTag: "v2.5.0",
+			tags:             []string{"v2.4.0", "v2.5.0"},
+			bumpType:         BumpPatch,
+			wantBaseline:     SemVer{Major: 2, Minor: 5, Patch: 0},
+			wantNext:         SemVer{Major: 2, Minor: 5, Patch: 1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/owner/repo/releases/latest":
+					if tt.latestReleaseTag == "" {
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = w.Write([]byte(`{"message": "Not Found"}`))
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":       1,
+						"tag_name": tt.latestReleaseTag,
+					})
+				case "/repos/owner/repo/tags":
+					tags := make([]map[string]interface{}, 0, len(tt.tags))
+					for _, name := range tt.tags {
+						tags = append(tags, map[string]interface{}{"name": name})
+					}
+					_ = json.NewEncoder(w).Encode(tags)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}
+
+			server := httptest.NewServer(http.HandlerFunc(handler))
+			defer server.Close()
+
+			client := github.NewClientWithBaseURL("test-token", server.URL)
+			r := NewReleaser(client, "owner", "repo", DefaultReleaseConfig())
+
+			baseline, err := r.CurrentVersionBaselineForRepo(context.Background(), "owner", "repo")
+			if err != nil {
+				t.Fatalf("CurrentVersionBaselineForRepo() error = %v", err)
+			}
+			if baseline.Version != tt.wantBaseline {
+				t.Errorf("baseline version = %v, want %v", baseline.Version, tt.wantBaseline)
+			}
+			if tt.wantSource != "" && baseline.Source != tt.wantSource {
+				t.Errorf("baseline source = %q, want %q", baseline.Source, tt.wantSource)
+			}
+			if baseline.Source == "" || baseline.Source == "none" {
+				t.Errorf("baseline source must identify how the baseline was found, got %q", baseline.Source)
+			}
+
+			next := baseline.Version.Bump(tt.bumpType)
+			if next != tt.wantNext {
+				t.Errorf("next version = %v, want %v (must never be lower than an existing tag)", next, tt.wantNext)
 			}
 		})
 	}
