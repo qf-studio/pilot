@@ -1,6 +1,9 @@
 package jira
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Config holds Jira adapter configuration
 type Config struct {
@@ -103,6 +106,37 @@ type Issue struct {
 	Key    string `json:"key"`
 	Self   string `json:"self"`
 	Fields Fields `json:"fields"`
+}
+
+// extractADFText extracts plain text from Atlassian Document Format.
+//
+// GH-4931: promoted from a WebhookHandler method to a package-level function
+// so it can be shared by both the webhook path and the poller path.
+func extractADFText(adf map[string]interface{}) string {
+	var sb strings.Builder
+	extractADFTextRecursive(adf, &sb)
+	return strings.TrimSpace(sb.String())
+}
+
+// extractADFTextRecursive recursively extracts text from ADF nodes.
+func extractADFTextRecursive(node map[string]interface{}, sb *strings.Builder) {
+	if text, ok := node["text"].(string); ok {
+		sb.WriteString(text)
+	}
+
+	if content, ok := node["content"].([]interface{}); ok {
+		for _, item := range content {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				extractADFTextRecursive(itemMap, sb)
+			}
+		}
+		// Add newline for block elements
+		if nodeType, ok := node["type"].(string); ok {
+			if nodeType == "paragraph" || nodeType == "heading" || nodeType == "listItem" {
+				sb.WriteString("\n")
+			}
+		}
+	}
 }
 
 // Fields represents Jira issue fields

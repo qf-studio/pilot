@@ -193,7 +193,7 @@ func (h *WebhookHandler) extractIssue(payload map[string]interface{}) (*Issue, e
 		}
 		// Also check for ADF description (Jira Cloud)
 		if desc, ok := fieldsData["description"].(map[string]interface{}); ok {
-			issue.Fields.Description, descStripped = text.SanitizeUntrusted(h.extractADFText(desc))
+			issue.Fields.Description, descStripped = text.SanitizeUntrusted(extractADFText(desc))
 		}
 		if summaryStripped+descStripped > 0 {
 			logging.WithComponent("jira").Warn(
@@ -248,34 +248,6 @@ func (h *WebhookHandler) extractIssue(payload map[string]interface{}) (*Issue, e
 	}
 
 	return issue, nil
-}
-
-// extractADFText extracts plain text from Atlassian Document Format
-func (h *WebhookHandler) extractADFText(adf map[string]interface{}) string {
-	var sb strings.Builder
-	h.extractADFTextRecursive(adf, &sb)
-	return strings.TrimSpace(sb.String())
-}
-
-// extractADFTextRecursive recursively extracts text from ADF nodes
-func (h *WebhookHandler) extractADFTextRecursive(node map[string]interface{}, sb *strings.Builder) {
-	if text, ok := node["text"].(string); ok {
-		sb.WriteString(text)
-	}
-
-	if content, ok := node["content"].([]interface{}); ok {
-		for _, item := range content {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				h.extractADFTextRecursive(itemMap, sb)
-			}
-		}
-		// Add newline for block elements
-		if nodeType, ok := node["type"].(string); ok {
-			if nodeType == "paragraph" || nodeType == "heading" || nodeType == "listItem" {
-				sb.WriteString("\n")
-			}
-		}
-	}
 }
 
 // hasPilotLabel checks if the issue has the pilot label
