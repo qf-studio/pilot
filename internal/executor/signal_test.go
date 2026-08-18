@@ -235,6 +235,80 @@ func TestSignalParser_NilLogger(t *testing.T) {
 	}
 }
 
+func TestSignalParser_NoOpExitReason(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	parser := NewSignalParser(logger)
+
+	tests := []struct {
+		name         string
+		input        string
+		expectedOK   bool
+		expectedText string
+	}{
+		{
+			name:         "bare mandatory exit signal is never a no-op",
+			input:        "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true}\n```",
+			expectedOK:   false,
+			expectedText: "",
+		},
+		{
+			name:         "no_op with reason is valid",
+			input:        "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true,\"no_op\":true,\"reason\":\"watch ticket unchanged\"}\n```",
+			expectedOK:   true,
+			expectedText: "watch ticket unchanged",
+		},
+		{
+			name:         "no_op with empty reason is rejected",
+			input:        "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true,\"no_op\":true,\"reason\":\"\"}\n```",
+			expectedOK:   false,
+			expectedText: "",
+		},
+		{
+			name:         "no_op with whitespace-only reason is rejected",
+			input:        "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true,\"no_op\":true,\"reason\":\"   \"}\n```",
+			expectedOK:   false,
+			expectedText: "",
+		},
+		{
+			name:         "no_op without success is rejected",
+			input:        "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":false,\"no_op\":true,\"reason\":\"blocked\"}\n```",
+			expectedOK:   false,
+			expectedText: "",
+		},
+		{
+			name:         "success+reason without no_op is rejected — no Message fallback",
+			input:        "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true,\"reason\":\"not a no-op field\"}\n```",
+			expectedOK:   false,
+			expectedText: "",
+		},
+		{
+			name:         "no_op on a non-exit status signal is ignored",
+			input:        "```pilot-signal\n{\"v\":2,\"type\":\"status\",\"success\":true,\"no_op\":true,\"reason\":\"premature\"}\n```",
+			expectedOK:   false,
+			expectedText: "",
+		},
+		{
+			name:         "type exit without exit_signal bool still counts",
+			input:        "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"success\":true,\"no_op\":true,\"reason\":\"already exists\"}\n```",
+			expectedOK:   true,
+			expectedText: "already exists",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signals := parser.ParseSignals(tt.input)
+			reason, ok := parser.NoOpExitReason(signals)
+			if ok != tt.expectedOK {
+				t.Errorf("expected ok=%v, got %v (reason=%q)", tt.expectedOK, ok, reason)
+			}
+			if reason != tt.expectedText {
+				t.Errorf("expected reason %q, got %q", tt.expectedText, reason)
+			}
+		})
+	}
+}
+
 func TestTruncateSignalForLog(t *testing.T) {
 	tests := []struct {
 		input    string

@@ -869,6 +869,25 @@ func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, task
 	}
 
 	output := CleanInternalSignals(result.Output)
+	h.sendTaskResult(ctx, contextID, threadID, taskID, result, output)
+}
+
+// sendTaskResult renders a finished ExecutionResult to chat. A declined task
+// (GH-4964: DECLINED marker or explicit no_op+reason exit signal — never the
+// bare mandatory exit signal) is not a failure and must not render as ❌ via
+// SendResult's success=false path; it gets its own "no changes needed"
+// message via SendChunked, which — unlike SendText — carries threadID so
+// Slack replies land in the originating thread (ThreadTS) instead of the
+// channel root; Telegram/Discord ignore threadID harmlessly.
+func (h *Handler) sendTaskResult(ctx context.Context, contextID, threadID, taskID string, result *executor.ExecutionResult, output string) {
+	if result.Declined {
+		reason := result.DeclinedReason
+		if reason == "" {
+			reason = "no reason provided"
+		}
+		_ = h.messenger.SendChunked(ctx, contextID, threadID, fmt.Sprintf("⏸ No changes needed: %s", reason), "")
+		return
+	}
 	_ = h.messenger.SendResult(ctx, contextID, threadID, taskID, result.Success, output, result.PRUrl)
 }
 

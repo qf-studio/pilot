@@ -380,6 +380,12 @@ type progressState struct {
 	navProgress  int      // Navigator-reported progress
 	exitSignal   bool     // Navigator EXIT_SIGNAL detected
 	commitSHAs   []string // Extracted commit SHAs from git output
+	// GH-4964: captured only when a structured exit signal explicitly opts
+	// into the no-op/decline branch (no_op:true + non-empty reason) — see
+	// SignalParser.NoOpExitReason. The bare mandatory exit signal never sets
+	// these; exitSignalReason is empty unless exitSignalNoOp is true.
+	exitSignalNoOp   bool
+	exitSignalReason string
 	// Metrics tracking (TASK-13)
 	tokensInput              int64  // Input tokens used
 	tokensOutput             int64  // Output tokens used
@@ -1614,6 +1620,73 @@ func parseDeclinedReason(text string) (string, bool) {
 		return "", false
 	}
 	return reason, true
+}
+
+// finishDeclined centralizes the decline-completion path shared by every
+// insertion point (ghost-SHA, GH-916 pre-retry, post-retry): mark the result
+// declined, persist diagnostics, and finish the recorder as "declined" —
+// never "failed", and with no alert/webhook dispatch, matching the existing
+// DECLINED-marker behavior. GH-4964. Callers must `return result, nil`
+// immediately after calling this.
+func (r *Runner) finishDeclined(task *Task, result *ExecutionResult, backendResult *BackendResult, recorder *replay.Recorder, state *progressState, log *slog.Logger, reason string) {
+	result.Success = false
+	result.Declined = true
+	result.DeclinedReason = reason
+	result.Outcome = "declined" // TASK-358
+	if backendResult != nil {
+		backendResult.ErrorType = string(ErrorTypeDeclined)
+	}
+	log.Warn("Task declined by executor",
+		slog.String("task_id", task.ID),
+		slog.String("reason", reason),
+	)
+	r.reportProgress(task.ID, "Declined", 100, "Task declined: "+reason)
+	r.persistBackendDiagnostics(task.LogExecutionID(), backendResult)
+
+	if recorder != nil {
+		recorder.SetModel(result.ModelName)
+		recorder.SetNavigator(state.hasNavigator)
+		if finErr := recorder.Finish("declined"); finErr != nil {
+			log.Warn("Failed to finish recording", slog.Any("error", finErr))
+		}
+	}
+}
+
+// preserveDirtyOrFail is the GH-4517 backstop shared by every no-commit
+// classification point (ghost-SHA path, GH-916 pre-retry, post-retry): if
+// the worktree still holds uncommitted work, auto-preserve it and fail with
+// "needs manual review" — real, uncommitted diffs must always win over any
+// DECLINED marker or no_op+reason signal, since they contradict the claim
+// that nothing needed to change. GH-4517/GH-4964. Returns true when it
+// already finished `result` (auto-preserved); the caller must
+// `return result, nil` immediately.
+func (r *Runner) preserveDirtyOrFail(ctx context.Context, git *GitOperations, task *Task, result *ExecutionResult, backendResult *BackendResult, recorder *replay.Recorder, state *progressState, log *slog.Logger, stage string) bool {
+	sha, preserved := preserveDirtyWorktreeAsWIP(ctx, git, task, log)
+	if !preserved {
+		return false
+	}
+	result.CommitSHA = sha
+	result.Success = false
+	result.Error = fmt.Sprintf(
+		"worktree had uncommitted work %s — auto-preserved as %s on branch %s; needs manual review, not a genuine no-op",
+		stage, sha[:min(7, len(sha))], task.Branch,
+	)
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StageWorkPreserved, result.Error)
+	log.Warn("executor: auto-preserved dirty worktree",
+		slog.String("task_id", task.ID),
+		slog.String("stage", stage),
+		slog.String("sha", sha[:min(7, len(sha))]),
+	)
+	r.reportProgress(task.ID, "Auto-Preserved", 100, result.Error)
+	r.persistBackendDiagnostics(task.LogExecutionID(), backendResult)
+	if recorder != nil {
+		recorder.SetModel(result.ModelName)
+		recorder.SetNavigator(state.hasNavigator)
+		if finErr := recorder.Finish("failed"); finErr != nil {
+			log.Warn("Failed to finish recording", slog.Any("error", finErr))
+		}
+	}
+	return true
 }
 
 // persistBackendDiagnostics writes the backend's stderr, error type, final
@@ -3897,6 +3970,30 @@ retrySucceeded:
 		r.metricsRecorder.RecordExecution(model, outcomeLabel)
 	}
 
+	// GH-4964: a ghost-SHA rejection with a genuinely clean worktree (the
+	// EXACT ghostSHACleanNoCommitError string — preserveDirtyWorktreeAsWIP
+	// already ran inside applyGhostSHAGuardWithPreserve above and found
+	// nothing to preserve, so reaching this string is structural proof the
+	// tree is clean) is the earliest point a decline can safely be inferred.
+	// Only an explicit DECLINED:<reason> marker or a no_op+reason exit
+	// signal counts as evidence — the bare mandatory exit signal alone never
+	// does, since it's emitted on every run the model believes finished,
+	// including the GH-916 "claimed success, never committed" failure class.
+	if result.Error == ghostSHACleanNoCommitError {
+		refusal := ""
+		if backendResult != nil {
+			refusal = strings.TrimSpace(backendResult.LastAssistantText)
+		}
+		if declinedReason, ok := parseDeclinedReason(refusal); ok {
+			r.finishDeclined(task, result, backendResult, recorder, state, log, declinedReason)
+			return result, nil
+		}
+		if state.exitSignalNoOp && state.exitSignalReason != "" {
+			r.finishDeclined(task, result, backendResult, recorder, state, log, state.exitSignalReason)
+			return result, nil
+		}
+	}
+
 	if !result.Success {
 		log.Error("Task execution failed",
 			slog.String("error", result.Error),
@@ -3986,6 +4083,35 @@ retrySucceeded:
 					slog.Any("error", countErr),
 				)
 			} else if commitCount == 0 {
+				// GH-4964: confirm the worktree is genuinely clean BEFORE
+				// even considering a decline or spending a retry — a dirty
+				// tree always wins over any DECLINED marker or no_op+reason
+				// signal, since real uncommitted diffs contradict any
+				// no-op claim (the GH-916 class: model believes it
+				// finished, emits the mandatory exit signal, but never ran
+				// `git commit`).
+				if r.preserveDirtyOrFail(ctx, git, task, result, backendResult, recorder, state, log, "before no-commit retry") {
+					return result, nil
+				}
+
+				// Tree is clean — an explicit DECLINED marker or
+				// no_op+reason exit signal is valid evidence to decline
+				// without spending a retry. Everything whose only evidence
+				// is the bare mandatory exit signal falls through to the
+				// retry below, unchanged from today's behavior.
+				refusal := ""
+				if backendResult != nil {
+					refusal = strings.TrimSpace(backendResult.LastAssistantText)
+				}
+				if declinedReason, ok := parseDeclinedReason(refusal); ok {
+					r.finishDeclined(task, result, backendResult, recorder, state, log, declinedReason)
+					return result, nil
+				}
+				if state.exitSignalNoOp && state.exitSignalReason != "" {
+					r.finishDeclined(task, result, backendResult, recorder, state, log, state.exitSignalReason)
+					return result, nil
+				}
+
 				log.Warn("Claude made no commits, retrying with explicit instruction",
 					slog.String("task_id", task.ID),
 					slog.String("branch", task.Branch),
@@ -4076,61 +4202,30 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						refusal = strings.TrimSpace(retryResult.LastAssistantText)
 					}
 
+					// GH-4964/GH-4517: confirm the worktree is genuinely clean
+					// BEFORE honoring any decline evidence — closes the latent
+					// ordering gap where a dirty tree + DECLINED marker would
+					// previously have discarded real, uncommitted diffs. The
+					// model may have done real work and simply never run
+					// `git commit` (pilot-console#26/B8); auto-preserve instead
+					// of letting the deferred worktree cleanup delete it.
+					if r.preserveDirtyOrFail(ctx, git, task, result, backendResult, recorder, state, log, "after no-commit retry") {
+						return result, nil
+					}
+
 					// GH-2777: Check for an explicit DECLINED:<reason> marker before
 					// classifying as a generic no_changes failure. DECLINED avoids
 					// pilot-failed and instead adds pilot-needs-clarification.
 					if declinedReason, ok := parseDeclinedReason(refusal); ok {
-						result.Declined = true
-						result.DeclinedReason = declinedReason
-						result.Outcome = "declined" // TASK-358
-						if backendResult != nil {
-							backendResult.ErrorType = string(ErrorTypeDeclined)
-						}
-						log.Warn("Task declined by executor",
-							slog.String("task_id", task.ID),
-							slog.String("reason", declinedReason),
-						)
-						r.reportProgress(task.ID, "Declined", 100, "Task declined: "+declinedReason)
-						r.persistBackendDiagnostics(task.LogExecutionID(), backendResult)
-
-						if recorder != nil {
-							recorder.SetModel(result.ModelName)
-							recorder.SetNavigator(state.hasNavigator)
-							if finErr := recorder.Finish("declined"); finErr != nil {
-								log.Warn("Failed to finish recording", slog.Any("error", finErr))
-							}
-						}
+						r.finishDeclined(task, result, backendResult, recorder, state, log, declinedReason)
 						return result, nil
 					}
 
-					// GH-4517: before declaring a genuine no_changes no-op, check
-					// whether the worktree still has uncommitted changes despite
-					// zero counted commits — the model may have done real work and
-					// simply never run `git commit` (pilot-console#26/B8, where the
-					// same failure mode showed up via the ghost-SHA guard instead
-					// of this no-commit-after-retry path). If so, auto-preserve
-					// instead of letting the deferred worktree cleanup delete it.
-					if sha, preserved := preserveDirtyWorktreeAsWIP(ctx, git, task, log); preserved {
-						result.CommitSHA = sha
-						result.Success = false
-						result.Error = fmt.Sprintf(
-							"worktree had uncommitted work after no-commit retry — auto-preserved as %s on branch %s; needs manual review, not a genuine no-op",
-							sha[:min(7, len(sha))], task.Branch,
-						)
-						r.recordExecutionEvent(task.LogExecutionID(), memory.StageWorkPreserved, result.Error)
-						log.Warn("executor: auto-preserved dirty worktree after no-commit retry",
-							slog.String("task_id", task.ID),
-							slog.String("sha", sha[:min(7, len(sha))]),
-						)
-						r.reportProgress(task.ID, "Auto-Preserved", 100, result.Error)
-						r.persistBackendDiagnostics(task.LogExecutionID(), backendResult)
-						if recorder != nil {
-							recorder.SetModel(result.ModelName)
-							recorder.SetNavigator(state.hasNavigator)
-							if finErr := recorder.Finish("failed"); finErr != nil {
-								log.Warn("Failed to finish recording", slog.Any("error", finErr))
-							}
-						}
+					// GH-4964: an explicit no_op+reason exit signal is equally
+					// valid decline evidence — the bare mandatory exit signal
+					// alone is not.
+					if state.exitSignalNoOp && state.exitSignalReason != "" {
+						r.finishDeclined(task, result, backendResult, recorder, state, log, state.exitSignalReason)
 						return result, nil
 					}
 
@@ -5948,6 +6043,16 @@ func (r *Runner) handleStructuredSignals(taskID string, signals []PilotSignal, s
 
 	// Mark as having Navigator
 	state.hasNavigator = true
+
+	// GH-4964: capture an explicit no_op+reason exit signal so the runner can
+	// treat it as decline evidence later. Never inferred from the bare
+	// mandatory exit signal — see SignalParser.NoOpExitReason.
+	if r.signalParser != nil {
+		if reason, ok := r.signalParser.NoOpExitReason(signals); ok {
+			state.exitSignalNoOp = true
+			state.exitSignalReason = reason
+		}
+	}
 
 	// Process signals in order
 	for _, signal := range signals {
