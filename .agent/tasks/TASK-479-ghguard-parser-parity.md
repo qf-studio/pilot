@@ -1,6 +1,6 @@
 # TASK-479: gh-guard parser parity — the guard must derive what `gh` derives
 
-**Status**: 📋 Planned — NOT dispatched. Research complete 2026-08-17 (empirical probe of `parseArgs`/`Classify` on main via build overlay; repo untouched). **#4905 review posted CHANGES_REQUESTED 08-17** — contributor told the GET+fields semantics are wanted and can land on top of the hardened parser. Dispatch when the contributor window closes; the 11 main-side gaps are ours regardless of what #4905 does.
+**Status**: 🚀 DISPATCHED 2026-08-18 → [pilot#4963](https://github.com/qf-studio/pilot/issues/4963) (parser, no-decompose) + [pilot#4968](https://github.com/qf-studio/pilot/issues/4968) (D5 env bypass). lkshrk window closed (no reactions 08-15→08-18); #4905 pointed at #4963. Research complete 2026-08-17 (empirical probe of `parseArgs`/`Classify` on main via build overlay; repo untouched). **#4905 review posted CHANGES_REQUESTED 08-17** — contributor told the GET+fields semantics are wanted and can land on top of the hardened parser. Dispatch when the contributor window closes; the 11 main-side gaps are ours regardless of what #4905 does.
 **Created**: 2026-08-17
 **Origin**: review of external contributor PR #4905 (lkshrk). The PR's `-X GET` relaxation is sound in principle but rests on a parser that does not match `gh`'s. Research then found **11 pre-existing parity gaps on main today**, independent of that PR.
 
