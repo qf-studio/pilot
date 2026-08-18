@@ -8,64 +8,6 @@ import (
 	"github.com/qf-studio/pilot/internal/executor"
 )
 
-func TestCleanInternalSignals(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "empty string",
-			input:    "",
-			expected: "",
-		},
-		{
-			name:     "clean text stays clean",
-			input:    "Created file.go\nModified main.go",
-			expected: "Created file.go\nModified main.go",
-		},
-		{
-			name:     "removes EXIT_SIGNAL",
-			input:    "Task done\nEXIT_SIGNAL: true\nCompleted",
-			expected: "Task done\nCompleted",
-		},
-		{
-			name:     "removes LOOP COMPLETE",
-			input:    "Done\nLOOP COMPLETE\nEnd",
-			expected: "Done\nEnd",
-		},
-		{
-			name:     "removes NAVIGATOR_STATUS block",
-			input:    "Start\n━━━━━━━━━━\nNAVIGATOR_STATUS\nPhase: IMPL\nIteration: 2\n━━━━━━━━━━\nContinuing",
-			expected: "Start\nContinuing",
-		},
-		{
-			name:     "removes Phase and Progress lines",
-			input:    "Working\nPhase: VERIFY\nProgress: 80%\nDone",
-			expected: "Working\nDone",
-		},
-		{
-			name:     "trims leading empty lines",
-			input:    "\n\n\nActual content",
-			expected: "Actual content",
-		},
-		{
-			name:     "trims trailing empty lines",
-			input:    "Content\n\n\n",
-			expected: "Content",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := cleanInternalSignals(tt.input)
-			if got != tt.expected {
-				t.Errorf("cleanInternalSignals() =\n%q\nwant\n%q", got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestExtractSummary(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -673,59 +615,6 @@ func TestFormatFailureResultTruncation(t *testing.T) {
 	}
 }
 
-// TestCleanInternalSignalsNavigatorBlock tests NAVIGATOR_STATUS block removal
-func TestCleanInternalSignalsNavigatorBlock(t *testing.T) {
-	input := `Start of output
-━━━━━━━━━━
-NAVIGATOR_STATUS
-Phase: IMPL
-Iteration: 2
-Progress: 50%
-━━━━━━━━━━
-End of output`
-
-	got := cleanInternalSignals(input)
-
-	if strings.Contains(got, "NAVIGATOR_STATUS") {
-		t.Error("cleanInternalSignals should remove NAVIGATOR_STATUS")
-	}
-	if strings.Contains(got, "Phase: IMPL") {
-		t.Error("cleanInternalSignals should remove Phase line")
-	}
-	if !strings.Contains(got, "Start of output") {
-		t.Error("cleanInternalSignals should keep Start of output")
-	}
-	if !strings.Contains(got, "End of output") {
-		t.Error("cleanInternalSignals should keep End of output")
-	}
-}
-
-// TestCleanInternalSignalsAllSignals tests all signal types
-func TestCleanInternalSignalsAllSignals(t *testing.T) {
-	signals := []string{
-		"EXIT_SIGNAL: true",
-		"EXIT_SIGNAL:true",
-		"LOOP COMPLETE",
-		"TASK MODE COMPLETE",
-		"Iteration: 5",
-		"Completion Indicators: done",
-		"Exit Conditions: met",
-		"State Hash: abc123",
-		"Next Action: verify",
-	}
-
-	for _, signal := range signals {
-		t.Run(signal, func(t *testing.T) {
-			input := "Before\n" + signal + "\nAfter"
-			got := cleanInternalSignals(input)
-
-			if strings.Contains(got, signal) {
-				t.Errorf("cleanInternalSignals should remove %q, got:\n%s", signal, got)
-			}
-		})
-	}
-}
-
 // TestExtractSummaryPatterns tests all extraction patterns
 func TestExtractSummaryPatterns(t *testing.T) {
 	tests := []struct {
@@ -942,46 +831,6 @@ func TestFormatTaskResultSuccessWithInternalSignals(t *testing.T) {
 	}
 	if strings.Contains(got, "LOOP COMPLETE") {
 		t.Error("FormatTaskResult() should clean LOOP COMPLETE from output")
-	}
-}
-
-// TestInternalSignalsArray tests the internal signals slice
-func TestInternalSignalsArray(t *testing.T) {
-	expectedSignals := []string{
-		"EXIT_SIGNAL: true",
-		"EXIT_SIGNAL:true",
-		"LOOP COMPLETE",
-		"TASK MODE COMPLETE",
-		"NAVIGATOR_STATUS",
-	}
-
-	for _, expected := range expectedSignals {
-		found := false
-		for _, signal := range internalSignals {
-			if signal == expected {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("internalSignals should contain %q", expected)
-		}
-	}
-}
-
-// TestCleanInternalSignalsWithSeparators tests separator handling
-func TestCleanInternalSignalsWithSeparators(t *testing.T) {
-	input := `Before content
-━━━━━━━━━━
-More text
-━━━━━━━━━━
-After content`
-
-	got := cleanInternalSignals(input)
-
-	// Separators should be removed
-	if strings.Contains(got, "━━━━━━━━━━") {
-		t.Errorf("cleanInternalSignals should remove separators, got:\n%s", got)
 	}
 }
 

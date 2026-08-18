@@ -3,6 +3,8 @@ package discord
 import (
 	"fmt"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/comms"
 )
 
 // FormatTaskConfirmation formats a task confirmation message for Discord.
@@ -37,12 +39,16 @@ func FormatTaskResult(output string, success bool, prURL string) string {
 	}
 
 	if output != "" {
-		out := output
+		// Strip internal Navigator/Pilot signal markers before this ever
+		// reaches a Discord user (GH-4967 — previously unwired dead code).
+		out := comms.CleanInternalSignals(output)
 		if len(out) > 1500 {
 			out = out[:1497] + "..."
 		}
-		sb.WriteString(out)
-		sb.WriteString("\n\n")
+		if out != "" {
+			sb.WriteString(out)
+			sb.WriteString("\n\n")
+		}
 	}
 
 	if prURL != "" {
@@ -130,16 +136,6 @@ func ChunkContent(content string, maxLen int) []string {
 	}
 
 	return chunks
-}
-
-// CleanInternalSignals removes internal markers from output.
-func CleanInternalSignals(output string) string {
-	// Remove common internal markers
-	output = strings.ReplaceAll(output, "<!-- INTERNAL: ", "")
-	output = strings.ReplaceAll(output, "<!-- /INTERNAL -->", "")
-	output = strings.ReplaceAll(output, "-->", "")
-	output = strings.TrimSpace(output)
-	return output
 }
 
 // TruncateText truncates text to a maximum length.

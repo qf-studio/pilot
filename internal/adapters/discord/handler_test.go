@@ -776,19 +776,6 @@ func TestChunkContent(t *testing.T) {
 	}
 }
 
-func TestCleanInternalSignals(t *testing.T) {
-	input := "<!-- INTERNAL: This is internal -->Some output<!-- /INTERNAL -->"
-	output := CleanInternalSignals(input)
-
-	if contains(output, "INTERNAL") {
-		t.Errorf("internal signals not cleaned: %s", output)
-	}
-
-	if !contains(output, "output") {
-		t.Errorf("regular content lost: %s", output)
-	}
-}
-
 // --- Rate limit (Client-level) ---
 
 func TestRateLimitHandling(t *testing.T) {

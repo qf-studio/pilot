@@ -90,7 +90,7 @@ func (m *TelegramMessenger) SendResult(ctx context.Context, contextID, threadID,
 
 	text := fmt.Sprintf("%s Task %s: %s", icon, status, taskID)
 	if output != "" {
-		clean := cleanInternalSignals(output)
+		clean := comms.CleanInternalSignals(output)
 		if len(clean) > 3000 {
 			clean = clean[:3000] + "..."
 		}

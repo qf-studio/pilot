@@ -172,6 +172,7 @@
 | Bot grounded Q&A retrieval | ✅ | comms | - | `bot.retrieval` | `Responder.Answer()` + bounded file retrieval; falls back to executor for too-broad questions (v2.194.2, GH-3671) |
 | Bot conversational issue intake | ✅ | comms | - | `bot.enabled`, GitHub adapter | `Responder.DraftIssue()` + `handleIssueIntake`; creates GitHub issue with `pilot` label (v2.194.2, GH-3691) |
 | Bot persona + voice scaffold | ✅ | comms, config | - | `bot.persona`, `bot.voice.enabled` | Persona in Chat/Answer/DraftIssue; VoiceText seam in HandleMessage; fully commented example config (v2.194.2, GH-3673) |
+| Slack/Discord signal stripping wired in | ✅ | adapters/slack, adapters/discord, comms | - | - | Consolidated four independent "strip internal signal markers" copies onto `comms.CleanInternalSignals`; deleted unreachable `slack.CleanInternalSignals` and vestigial `discord.CleanInternalSignals`, deleted telegram's duplicated unexported copy in favor of the comms one. **New production behavior**, not a pure refactor: slack/discord `FormatTaskResult` previously never called any signal-stripping function at all, so `EXIT_SIGNAL`/`NAVIGATOR_STATUS`/fenced `pilot-signal` blocks leaked to Slack/Discord users unconditionally — now stripped before truncation (GH-4967) |
 
 ## Alerts & Monitoring
 
