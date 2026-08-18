@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/executor"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
@@ -77,12 +78,12 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 	commitTitle := fmt.Sprintf("Merge PR #%d", prState.PRNumber)
 	if mergeMethod == github.MergeMethodSquash && prState.PRTitle != "" {
 		commitTitle = prState.PRTitle
-		// Strip "GH-XXXX: " prefix from Pilot-generated PR titles so
+		// Strip adapter issue-id prefixes (e.g. "GH-4909: ", "APP-123: ",
+		// "LIN-ROU-586: ") from Pilot-generated PR titles so
 		// parseBumpFromMessage() sees the conventional commit prefix (e.g. "fix(scope): ...").
-		if prState.IssueNumber > 0 {
-			prefix := fmt.Sprintf("GH-%d: ", prState.IssueNumber)
-			commitTitle = strings.TrimPrefix(commitTitle, prefix)
-		}
+		// Regex only strips on an actual match, so this is safe unconditionally
+		// and also covers adapters where IssueNumber is unset.
+		commitTitle = executor.StripIssuePrefix(commitTitle)
 		// GH-4150: append the "(#N)" suffix GitHub's own squash-merge UI uses,
 		// so scheduleReleaseTick's resolveTrainMemberPRs (trainPRSuffixRe) can
 		// resolve this commit back to its member PR. Skip if the title already
