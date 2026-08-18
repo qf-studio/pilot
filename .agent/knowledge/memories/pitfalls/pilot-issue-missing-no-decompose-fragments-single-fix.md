@@ -46,11 +46,18 @@ or reviewer ever sees the whole change.
   a spec constraint turned into a child) and an **ordering defect** (child 1 needed a
   helper child 2 would only later promote).
 - **Salvage variant when a child is already EXECUTING** (can't close-all cleanly, no
-  cancel verb): let distinct-file implementation children ride sequentially; close no-op
-  and test-only fragments BEFORE their dispatch (post-#4908 external-close handling skips
-  them safely) and fold the test scope into the implementation siblings by EDITING THEIR
-  BODIES — body edits reach the executor at dispatch; issue comments are deliberately
-  untrusted input and do not.
+  cancel verb): let distinct-file implementation children ride sequentially, and fold
+  scope between siblings by EDITING THEIR BODIES — body edits reach the executor at
+  dispatch; issue comments are deliberately untrusted input and do not.
+- **⚠️ Closing a queued epic child does NOT skip it** (verified live, #4932): the epic
+  dispatched the closed child anyway, the executor ran ~14 min, and only PR-creation
+  aborted — "issue closed before PR creation (superseded_label=false)" — which **failed
+  the whole epic run** and triggered a parent retry + full re-decomposition. The skip
+  path requires a `superseded` LABEL, not a plain close. Skipped-looking siblings after
+  such a failure are "superseded" only because the retry's re-plan excluded closed
+  issues. If you must remove a queued child, label it `superseded` (verify the label
+  gate first) — or accept one burned execution + a parent retry cycle. Defect filed:
+  a plain external close should supersede, not fail the run.
 
 Related: [[pilot_stalled_status_is_retry_not_cancel]] ·
 `.agent/tasks/TASK-437-duplicate-execution-race-prevention.md` ·
