@@ -392,13 +392,17 @@ func TestReleaser_ShouldRelease(t *testing.T) {
 
 func TestReleaser_GetCurrentVersion(t *testing.T) {
 	tests := []struct {
-		name    string
-		handler http.HandlerFunc
-		want    SemVer
-		wantErr bool
+		name       string
+		handler    http.HandlerFunc
+		want       SemVer
+		wantSource string
+		wantErr    bool
 	}{
 		{
-			name: "from latest release",
+			// GH-4953 acceptance: "existing release flows unchanged when
+			// ledger and tags agree" — the release and the tag list agree on
+			// v1.2.3, so the baseline is the release with no tag override.
+			name: "from latest release, tags agree",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/repos/owner/repo/releases/latest" {
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -407,12 +411,20 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 					})
 					return
 				}
+				if r.URL.Path == "/repos/owner/repo/tags" {
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+						{"name": "v1.2.3"},
+						{"name": "v1.2.2"},
+					})
+					return
+				}
 				w.WriteHeader(http.StatusNotFound)
 			},
-			want: SemVer{Major: 1, Minor: 2, Patch: 3},
+			want:       SemVer{Major: 1, Minor: 2, Patch: 3},
+			wantSource: baselineSourceReleaseAndTags,
 		},
 		{
-			name: "fallback to tags",
+			name: "fallback to tags, no release",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/repos/owner/repo/releases/latest" {
 					w.WriteHeader(http.StatusNotFound)
@@ -429,7 +441,8 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 				}
 				w.WriteHeader(http.StatusNotFound)
 			},
-			want: SemVer{Major: 2, Minor: 0, Patch: 0},
+			want:       SemVer{Major: 2, Minor: 0, Patch: 0},
+			wantSource: baselineSourceTags,
 		},
 		{
 			name: "no releases or tags - zero version",
@@ -445,7 +458,33 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 				}
 				w.WriteHeader(http.StatusNotFound)
 			},
-			want: SemVer{Major: 0, Minor: 0, Patch: 0},
+			want:       SemVer{Major: 0, Minor: 0, Patch: 0},
+			wantSource: baselineSourceNone,
+		},
+		{
+			// GH-4953 live specimen: a tag (v0.35.0) was pushed without a
+			// GitHub Release object, so GetLatestRelease still reports the
+			// older v0.34.1 release. The tag must win.
+			name: "tag without Release object supersedes stale latest release",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/repos/owner/repo/releases/latest" {
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":       1,
+						"tag_name": "v0.34.1",
+					})
+					return
+				}
+				if r.URL.Path == "/repos/owner/repo/tags" {
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+						{"name": "v0.35.0"},
+						{"name": "v0.34.1"},
+					})
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			},
+			want:       SemVer{Major: 0, Minor: 35, Patch: 0},
+			wantSource: baselineSourceTagsSupersede,
 		},
 	}
 
@@ -465,7 +504,64 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 			if !tt.wantErr && got != tt.want {
 				t.Errorf("GetCurrentVersion() = %v, want %v", got, tt.want)
 			}
+
+			gotSrc, srcErr := r.resolveVersionBaselineSourceForTest(context.Background())
+			if srcErr != nil {
+				t.Fatalf("resolveVersionBaseline() error = %v", srcErr)
+			}
+			if !tt.wantErr && gotSrc != tt.wantSource {
+				t.Errorf("resolveVersionBaseline() source = %v, want %v", gotSrc, tt.wantSource)
+			}
 		})
+	}
+}
+
+// resolveVersionBaselineSourceForTest exposes resolveVersionBaseline's source
+// string to the table-driven test above without adding a second exported
+// method solely for tests.
+func (r *Releaser) resolveVersionBaselineSourceForTest(ctx context.Context) (string, error) {
+	_, source, err := r.resolveVersionBaseline(ctx, r.owner, r.repo)
+	return source, err
+}
+
+// TestReleaser_NextVersion_TagsSupersedeRelease is the GH-4953 acceptance
+// criterion verbatim: existing tags {v0.34.1, v0.35.0} plus a patch-bump
+// release must compute next = v0.35.1, never v0.34.2 (the wrong version the
+// sdk release train actually cut in production because the releaser trusted
+// the stale v0.34.1 GitHub Release over the untagged-by-Release v0.35.0 tag).
+func TestReleaser_NextVersion_TagsSupersedeRelease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/releases/latest":
+			// The GitHub Release ledger is stale — it never saw v0.35.0
+			// because that tag was pushed without a matching Release object.
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":       1,
+				"tag_name": "v0.34.1",
+			})
+		case "/repos/owner/repo/tags":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"name": "v0.35.0"},
+				{"name": "v0.34.1"},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := github.NewClientWithBaseURL("test-token", server.URL)
+	r := NewReleaser(client, "owner", "repo", DefaultReleaseConfig())
+
+	baseline, err := r.GetCurrentVersionForRepo(context.Background(), "owner", "repo")
+	if err != nil {
+		t.Fatalf("GetCurrentVersionForRepo() error = %v", err)
+	}
+
+	next := baseline.Bump(BumpPatch)
+	want := SemVer{Major: 0, Minor: 35, Patch: 1}
+	if next != want {
+		t.Errorf("next version = %v, want %v (NOT v0.34.2)", next, want)
 	}
 }
 

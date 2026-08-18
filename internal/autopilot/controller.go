@@ -5321,12 +5321,23 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		return nil
 	}
 
-	// Get current version from the target repo
-	currentVersion, err := c.releaser.GetCurrentVersionForRepo(ctx, owner, repo)
+	// Get current version from the target repo. GH-4953: the baseline is the
+	// max semver across the latest GitHub Release AND all git tags, so a tag
+	// pushed without a matching Release object (e.g. a base-guard tag) can't
+	// silently outrank what the releaser computes next. Logged on every
+	// release decision so a baseline/tag mismatch is visible before it ships
+	// a version that ranks below one already on the repo.
+	currentVersion, baselineSource, err := c.releaser.GetCurrentVersionForRepoWithSource(ctx, owner, repo)
 	if err != nil {
 		c.log.Warn("failed to get current version, defaulting to 0.0.0", "error", err)
 		currentVersion = SemVer{}
+		baselineSource = "error (defaulted to 0.0.0)"
 	}
+	c.log.Info("release baseline resolved",
+		"pr", prState.PRNumber,
+		"baseline", currentVersion.String(rel.TagPrefix),
+		"baseline_source", baselineSource,
+	)
 
 	// Get commits for bump detection: a "train:" scope carrier is defined as
 	// "everything since the last tag" (CompareCommits, not a member-PR union
