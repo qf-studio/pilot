@@ -99,6 +99,82 @@ func TestClassify(t *testing.T) {
 		{"gist create", []string{"gist", "create", "file.txt"}, VerdictDeny},
 		{"empty argv", []string{}, VerdictDeny},
 		{"issue comment missing target", []string{"issue", "comment", "--body", "hi"}, VerdictDeny},
+
+		// --- parser parity (pflag shapes) ---
+		// GH-4963: gh uses pflag, which accepts attached shorthand
+		// (-XPOST == -X POST), `=` form, boolean bundling, and
+		// last-occurrence-wins for scalars. Rows below are drawn from the
+		// issue's confirmed parity gaps (G1-G11), each verified live
+		// against the installed `gh` binary (via --hostname pointed at a
+		// non-routable host + --verbose, so no request ever reaches
+		// GitHub) rather than taken on faith from the issue text.
+		{"api attached -XPOST", []string{"api", "repos/o/r/issues", "-XPOST"}, VerdictDeny},       // G1
+		{"api attached -XDELETE", []string{"api", "repos/o/r/issues/1", "-XDELETE"}, VerdictDeny}, // G2
+		{"api attached -XGET is a read", []string{"api", "repos/o/r/issues/1", "-XGET"}, VerdictAllow},
+		{"api eq short -X=POST", []string{"api", "x", "-X=POST"}, VerdictDeny},                           // regression
+		{"api long eq --method=PATCH", []string{"api", "x", "--method=PATCH"}, VerdictDeny},              // regression
+		{"api attached raw-field", []string{"api", "repos/o/r/issues/1", "-fstate=closed"}, VerdictDeny}, // G3
+		{"api attached typed field", []string{"api", "graphql", "-Fquery=mutation"}, VerdictDeny},        // G4
+		{"api eq short field", []string{"api", "graphql", "-F=query=x"}, VerdictDeny},
+
+		// -p/--preview take a VALUE (opt into API previews) — they are not
+		// a paginate shorthand; --paginate itself has no short form. This
+		// was checked live: `gh api ... -pXDELETE` sends a plain GET with
+		// a garbage preview header, never a DELETE. The bundling/attached-
+		// value/doesn't-swallow-the-next-flag mechanics the issue's G5-G7
+		// rows were probing are exercised below with -i/--include instead,
+		// gh's actual boolean short flag on `api`.
+		{"api bundled bool then value (-i include, -X method)", []string{"api", "repos/o/r/x", "-iX", "POST"}, VerdictDeny},
+		{"api bundled attached bool+value", []string{"api", "repos/o/r/x", "-iXPOST"}, VerdictDeny},
+		{"api -i is boolean, does not swallow -X", []string{"api", "repos/o/r/x", "-i", "-X", "POST"}, VerdictDeny},
+		{"api paginate GET stays a read", []string{"api", "repos/o/r/x", "--paginate"}, VerdictAllow},
+		{"api include bool GET stays a read", []string{"api", "repos/o/r/x", "-i"}, VerdictAllow},
+		{"api attached preview value stays a read", []string{"api", "repos/o/r/x", "-pXDELETE"}, VerdictAllow}, // -p swallows "XDELETE" as its own value, not -X/DELETE
+		{"api benign value flags", []string{"api", "x", "--cache", "3600s", "-H", "Accept: a", "-q", ".items", "-t", "{{.}}"}, VerdictAllow},
+		{"api attached header stays a read", []string{"api", "x", "-HAccept: a"}, VerdictAllow},
+
+		// repeated flags — last occurrence wins
+		{"api repeated -X last POST attached", []string{"api", "x", "-X", "GET", "-XPOST"}, VerdictDeny}, // G8
+		{"api repeated -X last GET", []string{"api", "x", "-X", "POST", "-X", "GET"}, VerdictAllow},      // regression
+
+		// attached -R
+		{"issue view attached -R matching", []string{"issue", "view", "1", "-Rqf-studio/pilot"}, VerdictAllow},
+		{"issue view attached -R wrong repo", []string{"issue", "view", "1", "-Rqf-studio/upstream"}, VerdictDeny},                  // G9
+		{"issue comment attached -R cross-repo", []string{"issue", "comment", "4671", "-Rother/repo", "--body", "hi"}, VerdictDeny}, // G10
+
+		// pr create -f is --fill (boolean), not a value flag
+		{"pr create fill does not swallow --head", []string{"pr", "create", "-f", "--head", "other-branch"}, VerdictDeny}, // G11
+		{"pr create fill with own head", []string{"pr", "create", "-f", "--head", "pilot/GH-4671"}, VerdictAllow},
+		{"pr create fill with own head via -H", []string{"pr", "create", "-f", "-H", "pilot/GH-4671"}, VerdictAllow},
+
+		// -- terminates flag parsing
+		{"pr create -- then --head is positional not a flag", []string{"pr", "create", "--head", "pilot/GH-4671", "--", "--head"}, VerdictAllow},
+
+		// fail-closed on unverifiable api/own-artifact flags
+		{"api unknown flag fails closed", []string{"api", "x", "--not-a-real-flag", "v"}, VerdictDeny},
+		{"api dangling -X at end of argv", []string{"api", "x", "-X"}, VerdictDeny},
+		{"pr create unknown flag fails closed", []string{"pr", "create", "--not-a-real-flag", "v"}, VerdictDeny},
+		{"issue comment unknown flag fails closed", []string{"issue", "comment", "4671", "--not-a-real-flag", "v"}, VerdictDeny},
+		// kindRead commands stay lenient on unknown flags — never denied for
+		// this reason alone (repo mismatch / hard-deny checks still apply).
+		{"issue view unknown flag stays lenient", []string{"issue", "view", "1", "--not-a-real-flag", "v"}, VerdictAllow},
+
+		// --- explicit-GET query fields (#4905) ---
+		// All three verified live: gh sends a plain GET with the -f value
+		// appended to the query string, including with a lowercase
+		// "--method get" (gh's method compare is case-insensitive).
+		{"api search -f with explicit -X GET", []string{"api", "search/issues", "-X", "GET", "-f", "q=x in:body"}, VerdictAllow},
+		{"api search -f with --method get", []string{"api", "search/issues", "--method", "get", "-f", "q=x"}, VerdictAllow},
+		{"api search -f with attached -XGET", []string{"api", "search/issues", "-XGET", "-f", "q=x"}, VerdictAllow},
+		{"api field without method still denies", []string{"api", "repos/o/r/issues/1", "-f", "state=closed"}, VerdictDeny}, // regression
+		{"api field with -X GET then -X POST", []string{"api", "x", "-X", "GET", "-f", "a=b", "-X", "POST"}, VerdictDeny},
+
+		// --input is a body ALWAYS — immune to the relaxation. Verified
+		// live: `-X GET --input file.json` still ships the file as the
+		// request body.
+		{"api --input with explicit GET", []string{"api", "x", "-X", "GET", "--input", "p.json"}, VerdictDeny},
+		{"api --input=file", []string{"api", "x", "--input=p.json"}, VerdictDeny}, // regression
+		{"api --input from stdin", []string{"api", "x", "--input", "-"}, VerdictDeny},
 	}
 
 	for _, tt := range tests {
@@ -188,6 +264,74 @@ func TestParseArgs_FlagAliases(t *testing.T) {
 	p = parseArgs([]string{"api", "x", "-X", "DELETE"})
 	if p.method != "DELETE" {
 		t.Errorf("-X short flag not parsed: %+v", p)
+	}
+}
+
+// TestParseArgs_PflagShapes asserts the derived parsedArgs fields
+// (method/hasFieldFlag/hasInputFlag/repo/head) directly for the pflag
+// shapes GH-4963 closes parity gaps on — attached shorthand, `=` forms,
+// boolean bundling, and last-occurrence-wins — independent of the
+// resulting Classify verdict (covered separately in TestClassify).
+func TestParseArgs_PflagShapes(t *testing.T) {
+	p := parseArgs([]string{"api", "x", "-XPOST"})
+	if p.method != "POST" {
+		t.Errorf("attached -XPOST: method = %q, want POST: %+v", p.method, p)
+	}
+
+	p = parseArgs([]string{"api", "x", "-X=POST"})
+	if p.method != "POST" {
+		t.Errorf("-X=POST: method = %q, want POST: %+v", p.method, p)
+	}
+
+	p = parseArgs([]string{"api", "x", "-fstate=closed"})
+	if !p.hasFieldFlag {
+		t.Errorf("attached -fstate=closed: hasFieldFlag = false, want true: %+v", p)
+	}
+
+	p = parseArgs([]string{"api", "x", "--input=payload.json"})
+	if !p.hasInputFlag || p.hasFieldFlag {
+		t.Errorf("--input=payload.json: hasInputFlag=%v hasFieldFlag=%v, want true/false: %+v", p.hasInputFlag, p.hasFieldFlag, p)
+	}
+
+	// Last occurrence wins for the method scalar.
+	p = parseArgs([]string{"api", "x", "-X", "GET", "-XPOST"})
+	if p.method != "POST" {
+		t.Errorf("repeated -X: method = %q, want POST (last wins): %+v", p.method, p)
+	}
+
+	// Boolean bundling: -i (include) doesn't swallow -X's value.
+	p = parseArgs([]string{"api", "x", "-iX", "POST"})
+	if p.method != "POST" {
+		t.Errorf("bundled -iX POST: method = %q, want POST: %+v", p.method, p)
+	}
+
+	// Attached -R on a command outside `api`.
+	p = parseArgs([]string{"issue", "view", "1", "-Rqf-studio/pilot"})
+	if !p.repoGiven || p.repo != "qf-studio/pilot" {
+		t.Errorf("attached -R: repoGiven=%v repo=%q: %+v", p.repoGiven, p.repo, p)
+	}
+
+	// pr create: -f is boolean --fill, does not consume --head's value.
+	p = parseArgs([]string{"pr", "create", "-f", "--head", "other-branch"})
+	if !p.headGiven || p.head != "other-branch" {
+		t.Errorf("pr create -f --head: headGiven=%v head=%q, want true/other-branch: %+v", p.headGiven, p.head, p)
+	}
+
+	// -- terminates flag parsing: a literal "--head" after -- is positional.
+	p = parseArgs([]string{"pr", "create", "--head", "keep-me", "--", "--head"})
+	if p.head != "keep-me" || len(p.positional) != 1 || p.positional[0] != "--head" {
+		t.Errorf("-- termination: head=%q positional=%v, want keep-me/[--head]: %+v", p.head, p.positional, p)
+	}
+
+	// Unknown flag on a strict command sets parseIssue; on a lenient
+	// (kindRead) command it does not.
+	p = parseArgs([]string{"api", "x", "--not-a-real-flag", "v"})
+	if p.parseIssue == "" {
+		t.Errorf("api unknown flag: parseIssue empty, want non-empty: %+v", p)
+	}
+	p = parseArgs([]string{"issue", "view", "1", "--not-a-real-flag", "v"})
+	if p.parseIssue != "" {
+		t.Errorf("issue view unknown flag: parseIssue = %q, want empty (lenient): %+v", p.parseIssue, p)
 	}
 }
 
