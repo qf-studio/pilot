@@ -143,6 +143,69 @@ func (c *Controller) startScheduleRelease(ctx context.Context) {
 	c.recoverMissedTrainTick(ctx, rel, schedule, loc)
 }
 
+// trainRecoveryDecision is recoverMissedTrainTick's fire/skip verdict plus
+// the reasoning that produced it (GH-4982 acceptance criterion: one log
+// line must be enough to diagnose this class of bug).
+type trainRecoveryDecision struct {
+	Fire   bool
+	Reason string
+}
+
+// decideTrainRecovery judges whether a boot-time recovery pass should fire
+// the release train tick scheduled for scheduledAt, given lastReleaseAt (the
+// timestamp of the most recent release actually cut for the repo, or the
+// zero time if none). Pure function of its three inputs so the boot/tick/
+// release orderings are unit-testable without a state store or GitHub
+// client (GH-4982).
+//
+// GH-4982: two cooperating live defects motivated this gate. (1) A boot
+// restart ran recovery for a tick whose scheduled time hadn't arrived yet
+// and cut a release 15 minutes before the tick it claimed to recover — a
+// recovery pass must never consider a tick still in the future relative to
+// now. (2) A later restart, after the tick had genuinely passed with
+// nothing released for it, apparently treated a nearby-but-earlier release
+// as satisfying the tick and never fired recovery — a release cut before
+// the scheduled time does not satisfy that tick, however close the two
+// timestamps are.
+//
+// The rule: fire iff the tick is actually in the past (scheduledAt <= now)
+// AND the last release for the repo predates it (lastReleaseAt is zero, or
+// strictly before scheduledAt).
+func decideTrainRecovery(now, scheduledAt, lastReleaseAt time.Time) trainRecoveryDecision {
+	if scheduledAt.After(now) {
+		return trainRecoveryDecision{
+			Fire:   false,
+			Reason: "scheduled tick is in the future relative to now",
+		}
+	}
+	if lastReleaseAt.IsZero() {
+		return trainRecoveryDecision{
+			Fire:   true,
+			Reason: "no prior release found for this repo",
+		}
+	}
+	if !lastReleaseAt.Before(scheduledAt) {
+		return trainRecoveryDecision{
+			Fire:   false,
+			Reason: "last release already covers this tick",
+		}
+	}
+	return trainRecoveryDecision{
+		Fire:   true,
+		Reason: "last release predates the scheduled tick",
+	}
+}
+
+// formatOptionalTime renders t as RFC3339, or "none" for the zero time —
+// used to keep recoverMissedTrainTick's decision log line readable when no
+// prior release exists to compare against.
+func formatOptionalTime(t time.Time) string {
+	if t.IsZero() {
+		return "none"
+	}
+	return t.Format(time.RFC3339)
+}
+
 // recoverMissedTrainTick runs the release-train tick once, immediately, if
 // the daemon was offline across a scheduled fire and the missed slot is
 // still within rel.ScopeLookback. A miss older than the lookback is left for
@@ -150,8 +213,14 @@ func (c *Controller) startScheduleRelease(ctx context.Context) {
 // rather than silently tagging a long-stale train — mirrors the
 // lookback-gated backstop precedent in reconcileLabelScope
 // (internal/autopilot/scope_reconcile.go) (GH-3993).
+//
+// Beyond the lookback and existing-scope-row checks, the fire/skip verdict
+// itself is decided by decideTrainRecovery against the repo's actual last
+// release time (GH-4982) rather than trusting the scope row alone — see
+// decideTrainRecovery's doc comment for the two live defects this closes.
 func (c *Controller) recoverMissedTrainTick(ctx context.Context, rel *ReleaseConfig, schedule cron.Schedule, loc *time.Location) {
-	prevScheduled := previousScheduledTime(schedule, time.Now().In(loc))
+	now := time.Now()
+	prevScheduled := previousScheduledTime(schedule, now.In(loc))
 	if prevScheduled.IsZero() {
 		return
 	}
@@ -181,7 +250,25 @@ func (c *Controller) recoverMissedTrainTick(ctx context.Context, rel *ReleaseCon
 		}
 	}
 
-	c.log.Warn("recovering missed train", "scheduled_at", prevScheduled.Format(time.RFC3339))
+	lastReleaseAt, err := c.releaser.GetLastReleaseTime(ctx, c.owner, c.repo)
+	if err != nil {
+		c.log.Warn("recoverMissedTrainTick: failed to determine last release time, skipping recovery",
+			"scheduled_at", prevScheduled.Format(time.RFC3339), "error", err)
+		return
+	}
+
+	decision := decideTrainRecovery(now, prevScheduled, lastReleaseAt)
+	logArgs := []any{
+		"scheduled_at", prevScheduled.Format(time.RFC3339),
+		"last_release_at", formatOptionalTime(lastReleaseAt),
+		"verdict", decision.Reason,
+	}
+	if !decision.Fire {
+		c.log.Debug("recoverMissedTrainTick: recovery not fired", logArgs...)
+		return
+	}
+
+	c.log.Warn("recovering missed train", logArgs...)
 	c.scheduleReleaseTickWithRetry(ctx, prevScheduled)
 }
 
