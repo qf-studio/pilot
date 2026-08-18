@@ -36,9 +36,19 @@
 // open rather than folded in here: denying `api graphql` with field flags
 // regardless of method (belt-and-braces; D2), and consuming known
 // value-flags while scanning for the sub when flags precede the
-// subcommand (a false-deny-only gap; D3). GH_REPO/GH_HOST env var
-// bypasses of the -R/--repo check are tracked separately (D5) since no
-// argv-level fix covers them.
+// subcommand (a false-deny-only gap; D3).
+//
+// GH_REPO/GH_HOST env bypass (GH-4968/D5): argv-only classification missed
+// that `gh` itself also honors GH_REPO/GH_HOST from the environment, so
+// `GH_REPO=other/repo gh issue comment N --body x` used to sail through the
+// -R/--repo check (which only ever looked at argv) straight into a
+// cross-repo mutation — the exact class GH-4649 exists to stop. Classify
+// now takes an EnvOverride carrying those two vars: a set GH_REPO is
+// treated exactly like an explicit -R/--repo when argv gave none (argv
+// still wins when both are present, matching gh's own -R > GH_REPO > local
+// git remote precedence — see EnvOverride's doc comment), and a non-
+// github.com GH_HOST is a hard, unconditional deny (fail closed: every
+// repo this guard reasons about lives on github.com).
 package ghguard
 
 import (
@@ -108,6 +118,31 @@ type Identity struct {
 	RealGh     string
 }
 
+// EnvOverride carries the subset of gh's OWN environment variables (not
+// Pilot's — contrast Identity, which is built from PILOT_* vars) that
+// change which repo/host a `gh` call actually targets, independent of
+// argv. gh resolves the target repo as: -R/--repo flag > GH_REPO env var >
+// the repo detected from the current directory's git remote (`gh help
+// environment`); GH_HOST similarly overrides the default "github.com" host
+// gh assumes when no repo/host can otherwise be resolved. Classify honors
+// both so an executor session can't launder a cross-repo (or
+// cross-instance) mutation past the -R/--repo check just by setting an env
+// var instead of passing a flag (GH-4968/D5).
+type EnvOverride struct {
+	Repo string // GH_REPO, empty if unset
+	Host string // GH_HOST, empty if unset
+}
+
+// EnvOverrideFromEnv builds an EnvOverride from gh's own environment
+// variables. The caller (cmd/pilot/ghguard.go) calls this directly against
+// the same getenv it passes to IdentityFromEnv.
+func EnvOverrideFromEnv(getenv func(string) string) EnvOverride {
+	return EnvOverride{
+		Repo: getenv("GH_REPO"),
+		Host: getenv("GH_HOST"),
+	}
+}
+
 // Decision is the result of Classify: whether to allow the call, and (on
 // deny) a one-line reason plus a hint of what IS allowed, so the executor
 // session sees actionable stderr instead of a bare failure.
@@ -115,6 +150,13 @@ type Decision struct {
 	Verdict Verdict
 	Reason  string
 	Allowed string // populated on deny only
+
+	// EnvRepo/EnvHost are populated only when a deny was actually driven by
+	// GH_REPO/GH_HOST (as opposed to argv or an unrelated hard-deny rule),
+	// so the journal entry built from this Decision can distinguish an
+	// env-bypass denial from an argv one (GH-4968).
+	EnvRepo string
+	EnvHost string
 }
 
 // ruleKind distinguishes the three ways an allowlisted command is verified.
@@ -560,12 +602,13 @@ func isAllDigits(s string) bool {
 	return true
 }
 
-// Classify is the pure policy core: given the task's Identity and the `gh`
+// Classify is the pure policy core: given the task's Identity, the `gh`
 // argv (excluding the "gh" program name — e.g. []string{"issue", "view",
-// "42"}), decide whether the call may proceed. Deterministic, no I/O, safe
-// to call from a table test for every rule in allowRules plus every
+// "42"}), and gh's own env-var overrides (GH_REPO/GH_HOST — see
+// EnvOverride), decide whether the call may proceed. Deterministic, no I/O,
+// safe to call from a table test for every rule in allowRules plus every
 // hard-deny case.
-func Classify(id Identity, args []string) Decision {
+func Classify(id Identity, args []string, env EnvOverride) Decision {
 	if len(args) == 0 {
 		return deny("empty gh invocation", allowedSummary())
 	}
@@ -584,8 +627,40 @@ func Classify(id Identity, args []string) Decision {
 	if p.hasAddLabel || p.hasRemoveLabel {
 		return deny("label mutation (--add-label/--remove-label) is never permitted", allowedSummary())
 	}
-	if p.repoGiven && id.TaskRepo != "" && p.repo != id.TaskRepo {
-		return deny(fmt.Sprintf("-R/--repo %s does not match the task's repo %s", p.repo, id.TaskRepo), allowedSummary())
+
+	// GH_HOST fail-closed (GH-4968/D5): every repo this guard's TaskRepo/
+	// allowlist reasoning assumes lives on github.com. A GH_HOST pointing
+	// anywhere else (GHE, a test double, ...) means we can no longer vouch
+	// for what host the call actually reaches, so deny unconditionally
+	// rather than evaluate the rest of the policy against an assumption
+	// that no longer holds.
+	if env.Host != "" && !strings.EqualFold(env.Host, "github.com") {
+		d := deny(fmt.Sprintf("GH_HOST=%s is not github.com; refusing to guess what host this call actually targets", env.Host), allowedSummary())
+		d.EnvHost = env.Host
+		return d
+	}
+
+	// Repo-scoping check, argv OR env: gh resolves the target repo as
+	// -R/--repo flag > GH_REPO env var > local git remote, so an explicit
+	// argv -R/--repo always wins when both are present — effRepoGiven only
+	// falls through to env.Repo when parseArgs saw no -R/--repo at all.
+	// This closes the GH-4968 bypass (GH_REPO alone used to skip this check
+	// entirely) while still matching gh's own precedence rather than adding
+	// a guard-only rule that argv could never override.
+	effRepo, effRepoGiven, envRepoUsed := p.repo, p.repoGiven, false
+	if !effRepoGiven && env.Repo != "" {
+		effRepo, effRepoGiven, envRepoUsed = env.Repo, true, true
+	}
+	if effRepoGiven && id.TaskRepo != "" && effRepo != id.TaskRepo {
+		reason := fmt.Sprintf("-R/--repo %s does not match the task's repo %s", effRepo, id.TaskRepo)
+		if envRepoUsed {
+			reason = fmt.Sprintf("GH_REPO=%s does not match the task's repo %s (no -R/--repo flag given)", effRepo, id.TaskRepo)
+		}
+		d := deny(reason, allowedSummary())
+		if envRepoUsed {
+			d.EnvRepo = env.Repo
+		}
+		return d
 	}
 
 	for _, r := range allowRules {
@@ -711,6 +786,13 @@ type JournalEntry struct {
 	Args      []string  `json:"args"`
 	TaskIssue string    `json:"task_issue,omitempty"`
 	TaskRepo  string    `json:"task_repo,omitempty"`
+
+	// EnvRepo/EnvHost record GH_REPO/GH_HOST when they actually drove this
+	// denial (see Decision.EnvRepo/EnvHost), so a denied env-bypass attempt
+	// is distinguishable in the audit trail from an argv -R/--repo one
+	// (GH-4968).
+	EnvRepo string `json:"env_repo,omitempty"`
+	EnvHost string `json:"env_host,omitempty"`
 }
 
 // AppendJournal appends one entry to the JSONL journal at path, creating it

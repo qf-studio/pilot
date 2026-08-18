@@ -53,7 +53,10 @@ func stripLeadingDoubleDash(args []string) []string {
 }
 
 // runGhGuard is the testable core of the gh-guard command: classify args
-// against the identity built from getenv, and either deny (journal +
+// against the identity built from getenv plus gh's own GH_REPO/GH_HOST env
+// overrides (ghguard.EnvOverrideFromEnv — GH-4968/D5, since gh itself
+// honors those vars and a guard that only reads argv can be bypassed by
+// setting them instead of passing -R/--host), and either deny (journal +
 // explain on stderr, no exec) or exec the real `gh` with stdin/stdout/
 // stderr wired straight through. Returns the process exit code the caller
 // should use.
@@ -71,7 +74,8 @@ func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdo
 	}
 
 	id := ghguard.IdentityFromEnv(getenv)
-	decision := ghguard.Classify(id, args)
+	env := ghguard.EnvOverrideFromEnv(getenv)
+	decision := ghguard.Classify(id, args, env)
 
 	if decision.Verdict == ghguard.VerdictDeny {
 		journalPath := getenv(ghguard.EnvJournalPath)
@@ -82,6 +86,8 @@ func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdo
 			Args:      args,
 			TaskIssue: id.TaskIssue,
 			TaskRepo:  id.TaskRepo,
+			EnvRepo:   decision.EnvRepo,
+			EnvHost:   decision.EnvHost,
 		}
 		// Best-effort: the journal is evidence for the GH-4670 audit to pick
 		// up later, never a reason to change the deny decision itself.
