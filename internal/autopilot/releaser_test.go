@@ -469,6 +469,124 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 	}
 }
 
+// TestReleaser_GetCurrentVersionForRepoWithSource_BaselineFromTags covers
+// GH-4953: the sdk release train cut PR#120 as v0.34.2 while tag v0.35.0
+// already existed on the repo — that tag was pushed without a GitHub Release
+// object, so the old "trust GetLatestRelease and only fall back to tags when
+// there is NO release" logic short-circuited on the older v0.34.1 release and
+// never looked at tags at all. The baseline must be the max semver across
+// BOTH the latest Release and every git tag, regardless of who created the
+// tag or whether it has a Release object.
+func TestReleaser_GetCurrentVersionForRepoWithSource_BaselineFromTags(t *testing.T) {
+	tests := []struct {
+		name       string
+		handler    http.HandlerFunc
+		wantSemVer SemVer
+		wantNext   SemVer // wantSemVer.Bump(BumpPatch)
+		wantSource string
+	}{
+		{
+			// Live specimen: release/latest still says v0.34.1 (v0.35.0 was
+			// tagged directly, no Release object), but /tags lists both.
+			// Baseline must be v0.35.0, so a patch release is v0.35.1 — NOT
+			// v0.34.2 (bumping the stale release-only baseline).
+			name: "tag ahead of latest release wins baseline",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/owner/repo/releases/latest":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":       1,
+						"tag_name": "v0.34.1",
+					})
+				case "/repos/owner/repo/tags":
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+						{"name": "v0.35.0"},
+						{"name": "v0.34.1"},
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			},
+			wantSemVer: SemVer{Major: 0, Minor: 35, Patch: 0},
+			wantNext:   SemVer{Major: 0, Minor: 35, Patch: 1},
+			wantSource: "git tag v0.35.0 (ahead of latest GitHub Release v0.34.1)",
+		},
+		{
+			// No GitHub Release exists at all (e.g. a repo that only ever
+			// gets tagged) — the tag-only baseline must still count.
+			name: "tag-only baseline, no release object anywhere",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/owner/repo/releases/latest":
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"message": "Not Found"}`))
+				case "/repos/owner/repo/tags":
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+						{"name": "v1.4.0"},
+						{"name": "v1.3.0"},
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			},
+			wantSemVer: SemVer{Major: 1, Minor: 4, Patch: 0},
+			wantNext:   SemVer{Major: 1, Minor: 4, Patch: 1},
+			wantSource: "git tag v1.4.0 (no GitHub Release found)",
+		},
+		{
+			// Ledger and tags agree (normal releaser-driven flow: every tag
+			// has a matching Release) — behavior must be unchanged, baseline
+			// comes from the release.
+			name: "ledger and tags agree, release wins as before",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/owner/repo/releases/latest":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":       1,
+						"tag_name": "v2.1.0",
+					})
+				case "/repos/owner/repo/tags":
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+						{"name": "v2.1.0"},
+						{"name": "v2.0.0"},
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			},
+			wantSemVer: SemVer{Major: 2, Minor: 1, Patch: 0},
+			wantNext:   SemVer{Major: 2, Minor: 1, Patch: 1},
+			wantSource: "latest GitHub Release v2.1.0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(tt.handler)
+			defer server.Close()
+
+			client := github.NewClientWithBaseURL("test-token", server.URL)
+			r := NewReleaser(client, "owner", "repo", DefaultReleaseConfig())
+
+			got, source, err := r.GetCurrentVersionForRepoWithSource(context.Background(), "owner", "repo")
+			if err != nil {
+				t.Fatalf("GetCurrentVersionForRepoWithSource() error = %v", err)
+			}
+			if got != tt.wantSemVer {
+				t.Errorf("baseline = %v, want %v", got, tt.wantSemVer)
+			}
+			if source != tt.wantSource {
+				t.Errorf("source = %q, want %q", source, tt.wantSource)
+			}
+
+			next := got.Bump(BumpPatch)
+			if next != tt.wantNext {
+				t.Errorf("next patch version = %v, want %v", next, tt.wantNext)
+			}
+		})
+	}
+}
+
 func TestReleaser_CreateTag(t *testing.T) {
 	var capturedBody map[string]interface{}
 

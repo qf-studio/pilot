@@ -5321,11 +5321,14 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		return nil
 	}
 
-	// Get current version from the target repo
-	currentVersion, err := c.releaser.GetCurrentVersionForRepo(ctx, owner, repo)
+	// Get current version from the target repo. GH-4953: baseline is the max
+	// semver across the latest GitHub Release AND all git tags — versionSource
+	// records which one won so the release decision log line below explains it.
+	currentVersion, versionSource, err := c.releaser.GetCurrentVersionForRepoWithSource(ctx, owner, repo)
 	if err != nil {
 		c.log.Warn("failed to get current version, defaulting to 0.0.0", "error", err)
 		currentVersion = SemVer{}
+		versionSource = "error fetching baseline, defaulted to 0.0.0"
 	}
 
 	// Get commits for bump detection: a "train:" scope carrier is defined as
@@ -5376,6 +5379,7 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	c.log.Info("creating release",
 		"pr", prState.PRNumber,
 		"current", currentVersion.String(rel.TagPrefix),
+		"baseline_source", versionSource,
 		"new", prState.ReleaseVersion,
 		"bump", bumpType,
 	)
