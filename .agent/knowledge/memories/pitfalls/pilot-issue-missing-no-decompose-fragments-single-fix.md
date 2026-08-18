@@ -38,6 +38,19 @@ or reviewer ever sees the whole change.
 - Salvage guidance: when fragmentation has already happened, prefer closing all partial
   PRs and re-filing one `no-decompose` issue over rebasing/merging the fragments. Merging
   a mergeable subset lands half-wired intermediate states no reviewer validated.
+- **Recurrence 2026-08-18 (#4929 → 8 children):** the bare token `no-decompose` written
+  in prose (`## Fix (no-decompose — single subsystem)`) matches NOTHING in
+  `noDecomposePhrases` — only the exact phrases, the label, or `<!-- pilot:no-decompose -->`
+  count. #4938 adds the bare-token regex; until it ships, use the full belt-and-suspenders
+  form above. The split also produced a **no-op work item** (#4932, "leave X unchanged" —
+  a spec constraint turned into a child) and an **ordering defect** (child 1 needed a
+  helper child 2 would only later promote).
+- **Salvage variant when a child is already EXECUTING** (can't close-all cleanly, no
+  cancel verb): let distinct-file implementation children ride sequentially; close no-op
+  and test-only fragments BEFORE their dispatch (post-#4908 external-close handling skips
+  them safely) and fold the test scope into the implementation siblings by EDITING THEIR
+  BODIES — body edits reach the executor at dispatch; issue comments are deliberately
+  untrusted input and do not.
 
 Related: [[pilot_stalled_status_is_retry_not_cancel]] ·
 `.agent/tasks/TASK-437-duplicate-execution-race-prevention.md` ·
