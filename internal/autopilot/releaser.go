@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -380,6 +381,49 @@ func isDuplicateReleaseError(err error) bool {
 func (r *Releaser) GetCurrentVersionForRepo(ctx context.Context, owner, repo string) (SemVer, error) {
 	v, _, err := r.GetCurrentVersionWithSource(ctx, owner, repo)
 	return v, err
+}
+
+// GetLastReleaseTime returns when the release-version baseline for
+// owner/repo — as computed by GetCurrentVersionWithSource's
+// tags-authoritative comparison (GH-4953) — was actually cut, or the zero
+// time if the repo has no releases/tags yet, or if the winning tag has no
+// covering GitHub Release to read a timestamp from.
+//
+// GH-4982: boot-time missed-train recovery used to gauge "is there already
+// a recent-enough release" from whatever GetLatestRelease happened to
+// return, without comparing its timestamp against the specific tick being
+// considered — so a release that landed minutes before a scheduled tick
+// satisfied a freshness check even though it predated the tick and never
+// covered it. Anchoring the timestamp lookup to the SAME winning tag
+// GetCurrentVersionWithSource resolves (via GetReleaseByTag) avoids
+// repeating that mistake with a second stale-Release trap: GetLatestRelease
+// alone can return an older Release than the true tags-authoritative
+// baseline (the exact GH-4953 gap — a newer tag with no covering Release).
+//
+// A zero return (no covering Release for the winning tag) is treated by
+// callers as "does not satisfy any tick" — this errs toward firing recovery
+// rather than silently skipping a genuinely missed train.
+func (r *Releaser) GetLastReleaseTime(ctx context.Context, owner, repo string) (time.Time, error) {
+	version, _, err := r.GetCurrentVersionWithSource(ctx, owner, repo)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if version == (SemVer{}) {
+		return time.Time{}, nil
+	}
+
+	tagName := version.String(r.config.TagPrefix)
+	release, err := r.ghClient.GetReleaseByTag(ctx, owner, repo, tagName)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if release == nil {
+		return time.Time{}, nil
+	}
+	if !release.PublishedAt.IsZero() {
+		return release.PublishedAt, nil
+	}
+	return release.CreatedAt, nil
 }
 
 // ShouldRelease determines if a release should be created based on config and bump type.
