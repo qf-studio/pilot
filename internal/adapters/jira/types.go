@@ -1,6 +1,10 @@
 package jira
 
-import "time"
+import (
+	"encoding/json"
+	"strings"
+	"time"
+)
 
 // Config holds Jira adapter configuration
 type Config struct {
@@ -105,10 +109,64 @@ type Issue struct {
 	Fields Fields `json:"fields"`
 }
 
+// ADFText holds Jira text content that may arrive as either a plain JSON
+// string (Jira Server) or an Atlassian Document Format (ADF) document
+// (Jira Cloud rich-text fields, e.g. the issue description). It always
+// unmarshals down to plain text.
+type ADFText string
+
+// UnmarshalJSON implements json.Unmarshaler for ADFText. It first tries to
+// decode the value as a plain JSON string. If that fails (because the field
+// is an ADF document object), it falls back to unmarshaling into
+// map[string]interface{} and extracting the plain text via the ADF walker.
+func (t *ADFText) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*t = ADFText(s)
+		return nil
+	}
+
+	var adf map[string]interface{}
+	if err := json.Unmarshal(data, &adf); err != nil {
+		return err
+	}
+
+	*t = ADFText(extractADFText(adf))
+	return nil
+}
+
+// extractADFText extracts plain text from an Atlassian Document Format node.
+func extractADFText(adf map[string]interface{}) string {
+	var sb strings.Builder
+	extractADFTextRecursive(adf, &sb)
+	return strings.TrimSpace(sb.String())
+}
+
+// extractADFTextRecursive recursively extracts text from ADF nodes.
+func extractADFTextRecursive(node map[string]interface{}, sb *strings.Builder) {
+	if text, ok := node["text"].(string); ok {
+		sb.WriteString(text)
+	}
+
+	if content, ok := node["content"].([]interface{}); ok {
+		for _, item := range content {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				extractADFTextRecursive(itemMap, sb)
+			}
+		}
+		// Add newline for block elements
+		if nodeType, ok := node["type"].(string); ok {
+			if nodeType == "paragraph" || nodeType == "heading" || nodeType == "listItem" {
+				sb.WriteString("\n")
+			}
+		}
+	}
+}
+
 // Fields represents Jira issue fields
 type Fields struct {
 	Summary     string        `json:"summary"`
-	Description string        `json:"description"`
+	Description ADFText       `json:"description"`
 	IssueType   IssueType     `json:"issuetype"`
 	Status      Status        `json:"status"`
 	Priority    *JiraPriority `json:"priority,omitempty"`

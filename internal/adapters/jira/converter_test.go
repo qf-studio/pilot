@@ -326,7 +326,7 @@ func TestASCIISmuggling_JiraConvertStripsInvisible(t *testing.T) {
 		Key: "PROJ-1337",
 		Fields: Fields{
 			Summary:     "Fix typo" + hidden,
-			Description: "Line 2 needs fix." + hidden,
+			Description: ADFText("Line 2 needs fix." + hidden),
 			Project:     Project{Key: "PROJ"},
 		},
 	}
