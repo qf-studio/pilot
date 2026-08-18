@@ -60,7 +60,14 @@ func ConvertIssueToTask(issue *Issue, baseURL string) *TaskInfo {
 	return task
 }
 
-// extractDescription cleans and extracts the task description
+// extractDescription cleans and extracts the task description.
+//
+// Decision (GH-4932): takes a plain string, not ADFText. Fields.Description
+// is ADFText (types.go) so it can unmarshal either a plain string (Jira
+// Server) or an ADF document (Jira Cloud), but by the time it reaches this
+// function it has already been flattened to plain text — the call site
+// (ConvertIssueToTask) explicitly converts via string(issue.Fields.Description).
+// No change needed here; confirmed correct as-is.
 func extractDescription(body string) string {
 	if body == "" {
 		return ""
