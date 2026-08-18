@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,6 +46,18 @@ func (c *Client) apiPath() string {
 	return "/rest/api/2"
 }
 
+// APIError represents a non-2xx response from the Jira API, preserving the
+// HTTP status code so callers can branch on specific failure modes (e.g. 410
+// Gone on the retired legacy search endpoint).
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Body)
+}
+
 // doRequest performs an HTTP request to the Jira API
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, result interface{}) error {
 	var bodyReader io.Reader
@@ -82,7 +95,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		return &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	if result != nil && len(respBody) > 0 {
@@ -248,6 +261,10 @@ func (c *Client) SearchIssues(ctx context.Context, jql string, maxResults int) (
 	path := fmt.Sprintf("/search?jql=%s&maxResults=%d", strings.ReplaceAll(jql, " ", "+"), maxResults)
 	var resp SearchResponse
 	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusGone {
+			return nil, fmt.Errorf("legacy /rest/api/2/search endpoint returned 410 Gone — this Jira instance appears to be Cloud, which requires platform: cloud in config: %w", err)
+		}
 		return nil, err
 	}
 	return resp.Issues, nil

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -408,6 +409,26 @@ func TestSearchIssues_Server(t *testing.T) {
 	}
 	if len(issues) != 1 {
 		t.Fatalf("expected 1 issue, got %d", len(issues))
+	}
+}
+
+func TestSearchIssues_LegacyEndpointGone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/2/search" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte(`{"errorMessages":["The requested resource is not available anymore"]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin", "token", PlatformServer)
+	_, err := client.SearchIssues(context.Background(), "labels = pilot", 50)
+	if err == nil {
+		t.Fatal("expected error for HTTP 410 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "platform: cloud") {
+		t.Errorf("expected error to hint at platform: cloud config, got: %v", err)
 	}
 }
 

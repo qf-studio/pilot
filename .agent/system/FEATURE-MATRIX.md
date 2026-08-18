@@ -118,6 +118,7 @@
 | Linear sub-issue creation | ✅ | adapters/linear | - | `adapters.linear` | CreateIssue GraphQL mutation for epic decomposition (v1.27.0) |
 | Jira webhooks | ✅ | adapters/jira | - | `adapters.jira` | Wired in pilot.go, gateway route + handler + orchestrator |
 | Jira ADF description unmarshal | ✅ | adapters/jira | - | - | `Fields.Description` typed `ADFText`; `UnmarshalJSON` accepts plain string (Server) or ADF doc object (Cloud) via shared ADF walker — fixes `GetIssue`/`SearchIssues` erroring on Cloud issues whose description is an ADF object (GH-4930) |
+| Jira legacy search 410 hint | ✅ | adapters/jira | - | - | `SearchIssues` detects HTTP 410 Gone from legacy `/rest/api/2/search` (retired on Cloud) and wraps the error with a hint to set `platform: cloud` (GH-4933) |
 | Slack Socket Mode | ✅ | adapters/slack | `pilot start --slack` | `adapters.slack.app_token` | Listen() with auto-reconnect, wired in main.go (v0.29.0) |
 | Parallel GitHub polling | ✅ | adapters/github | - | `orchestrator.max_concurrent` | Goroutines + semaphore for concurrent issue processing (v0.26.1) |
 | Multi-repo polling | ✅ | adapters/github | - | `projects[].github` | Poll issues from all projects with GitHub config (v0.54.0) |
