@@ -108,4 +108,4 @@ jobs:
           # v2.0.2 was built with go1.24 and refuses the go 1.25 target
           # (TASK-390 bumped the toolchain for grot); 2.8.0 matches local.
           version: v2.8.0
-          args: --timeout=5m --new-from-rev=origin/main
+          args: --timeout=5m
