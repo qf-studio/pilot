@@ -49,6 +49,30 @@ func TestValidatePRTitle(t *testing.T) {
 	}
 }
 
+func TestStripIssuePrefix(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+		want  string
+	}{
+		{"GH prefix", "GH-4909: fix(autopilot): guard merge", "fix(autopilot): guard merge"},
+		{"jira-style prefix", "APP-123: feat(auth): oauth flow", "feat(auth): oauth flow"},
+		{"compound linear prefix", "LIN-ROU-586: fix(core): widen window", "fix(core): widen window"},
+		{"three-segment linear prefix", "LIN-MY1-TEAM-42: fix(core): resolve", "fix(core): resolve"},
+		{"no prefix unchanged", "fix(core): direct commit", "fix(core): direct commit"},
+		{"prefix with empty subject", "GH-123: ", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripIssuePrefix(tt.title)
+			if got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAutoPrefixTitle(t *testing.T) {
 	tests := []struct {
 		name   string

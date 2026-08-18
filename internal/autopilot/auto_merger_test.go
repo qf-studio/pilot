@@ -537,22 +537,46 @@ func TestAutoMerger_MergePR_SquashStripsIssuePrefix(t *testing.T) {
 			wantTitle:   "fix(autopilot): strip issue prefix from squash title (#42)",
 		},
 		{
-			name:        "no strip when issue number mismatches",
+			name:        "strips regardless of issue number mismatch (regex-driven, not IssueNumber-gated)",
 			prTitle:     "GH-9999: feat(scope): something",
 			issueNumber: 2312,
-			wantTitle:   "GH-9999: feat(scope): something (#42)",
+			wantTitle:   "feat(scope): something (#42)",
 		},
 		{
-			name:        "no strip when no issue number",
+			name:        "strips even when no issue number set (GH-4966)",
 			prTitle:     "GH-2312: fix(autopilot): something",
 			issueNumber: 0,
-			wantTitle:   "GH-2312: fix(autopilot): something (#42)",
+			wantTitle:   "fix(autopilot): something (#42)",
 		},
 		{
 			name:        "plain conventional commit unchanged",
 			prTitle:     "feat(api): add endpoint",
 			issueNumber: 2312,
 			wantTitle:   "feat(api): add endpoint (#42)",
+		},
+		{
+			name:        "strips jira-style non-GH prefix (GH-4966)",
+			prTitle:     "APP-123: feat(auth): oauth flow",
+			issueNumber: 123,
+			wantTitle:   "feat(auth): oauth flow (#42)",
+		},
+		{
+			name:        "strips compound linear prefix with no issue number (GH-4966)",
+			prTitle:     "LIN-ROU-586: fix(core): widen window",
+			issueNumber: 0,
+			wantTitle:   "fix(core): widen window (#42)",
+		},
+		{
+			name:        "strips three-segment linear prefix (GH-4966)",
+			prTitle:     "LIN-MY1-TEAM-42: fix(core): resolve",
+			issueNumber: 0,
+			wantTitle:   "fix(core): resolve (#42)",
+		},
+		{
+			name:        "prefix-only title with empty subject does not panic on suffix append (GH-4966)",
+			prTitle:     "GH-123: ",
+			issueNumber: 123,
+			wantTitle:   " (#42)",
 		},
 	}
 

@@ -26,6 +26,15 @@ var conventionalCommitRegex = regexp.MustCompile(
 // (see internal/autopilot/auto_merger.go).
 var issuePrefixRegex = regexp.MustCompile(`^[A-Z][A-Z0-9]*(-[A-Z0-9]+)*-\d+:\s+`)
 
+// StripIssuePrefix removes a leading adapter-specific issue prefix (e.g.
+// "GH-2325: ", "APP-123: ", "LIN-ROU-586: ") from title, if present. Exported
+// so the squash-merge path (internal/autopilot/auto_merger.go) can strip the
+// same prefix before parseBumpFromMessage() runs conventional-commit
+// detection on the squash subject.
+func StripIssuePrefix(title string) string {
+	return issuePrefixRegex.ReplaceAllString(title, "")
+}
+
 // ErrNonConventionalTitle is returned when a title does not match the
 // conventional commit format and could not be auto-corrected. Callers use
 // errors.Is to distinguish this from transport failures.
