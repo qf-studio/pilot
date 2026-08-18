@@ -161,48 +161,109 @@ func bumpPriority(b BumpType) int {
 	}
 }
 
-// GetCurrentVersion returns the current version from latest release or tags.
+// GetCurrentVersion returns the current version baseline for the releaser's
+// default repo. See GetCurrentVersionWithSource for how the baseline is
+// computed.
 func (r *Releaser) GetCurrentVersion(ctx context.Context) (SemVer, error) {
-	// Try latest release first
-	release, err := r.ghClient.GetLatestRelease(ctx, r.owner, r.repo)
+	v, _, err := r.GetCurrentVersionWithSource(ctx, r.owner, r.repo)
+	return v, err
+}
+
+// GetCurrentVersionWithSource computes the release-version baseline as the
+// MAX semver across every git tag on the repo, compared against the latest
+// GitHub Release's tag (if any), and returns which one won plus a
+// human-readable description of where it came from.
+//
+// GH-4953: the previous implementation returned the latest Release's tag
+// immediately and only consulted the tags list when no Release existed at
+// all. That let a tag-only version (no Release object — e.g. a manual
+// base-guard tag, or the Release-API publish path failing after the tag
+// landed) rank BELOW a stale Release. Live incident: the sdk repo had tag
+// v0.35.0 with no covering Release; the releaser's baseline read the older
+// Release tag v0.34.1 and cut the next patch as v0.34.2 — a version Go
+// module resolution ranks below the v0.35.0 that was already out. mem-093
+// documented "the releaser reads the baseline live from git tags" as the
+// safety net for out-of-band tags; this had silently stopped being true
+// whenever a Release object existed. Tags are now always the source of
+// truth, regardless of whether a Release was ever published for them.
+func (r *Releaser) GetCurrentVersionWithSource(ctx context.Context, owner, repo string) (SemVer, string, error) {
+	// Latest Release is a hint, not authoritative — a repo can have no
+	// Releases at all (tags-only) so this error is non-fatal.
+	var releaseVersion SemVer
+	var haveReleaseVersion bool
+	var releaseTag string
+	release, err := r.ghClient.GetLatestRelease(ctx, owner, repo)
 	if err != nil {
-		return SemVer{}, fmt.Errorf("failed to get latest release: %w", err)
+		return SemVer{}, "", fmt.Errorf("failed to get latest release: %w", err)
 	}
 	if release != nil {
-		return ParseSemVer(release.TagName)
+		if v, perr := ParseSemVer(release.TagName); perr == nil {
+			releaseVersion = v
+			haveReleaseVersion = true
+			releaseTag = release.TagName
+		}
 	}
 
-	// Fall back to tags
-	tags, err := r.ghClient.ListTags(ctx, r.owner, r.repo, 10)
+	// Tags are the authoritative baseline: every tag counts, whether or not
+	// it has a covering GitHub Release. maxReleaseBackfillTags (100, paginated
+	// by ListTags) comfortably covers full tag history for any repo with a
+	// sane release cadence.
+	tags, err := r.ghClient.ListTags(ctx, owner, repo, maxReleaseBackfillTags)
 	if err != nil {
-		return SemVer{}, fmt.Errorf("failed to list tags: %w", err)
+		return SemVer{}, "", fmt.Errorf("failed to list tags: %w", err)
 	}
 
-	// Find highest semver tag
-	var versions []SemVer
+	var tagVersions []SemVer
+	tagNames := map[SemVer]string{}
 	for _, tag := range tags {
 		if v, err := ParseSemVer(tag.Name); err == nil {
-			versions = append(versions, v)
+			tagVersions = append(tagVersions, v)
+			tagNames[v] = tag.Name
 		}
 	}
 
-	if len(versions) == 0 {
-		// No versions found, start at 0.0.0
-		return SemVer{}, nil
-	}
-
-	// Sort descending
-	sort.Slice(versions, func(i, j int) bool {
-		if versions[i].Major != versions[j].Major {
-			return versions[i].Major > versions[j].Major
+	sort.Slice(tagVersions, func(i, j int) bool {
+		if tagVersions[i].Major != tagVersions[j].Major {
+			return tagVersions[i].Major > tagVersions[j].Major
 		}
-		if versions[i].Minor != versions[j].Minor {
-			return versions[i].Minor > versions[j].Minor
+		if tagVersions[i].Minor != tagVersions[j].Minor {
+			return tagVersions[i].Minor > tagVersions[j].Minor
 		}
-		return versions[i].Patch > versions[j].Patch
+		return tagVersions[i].Patch > tagVersions[j].Patch
 	})
 
-	return versions[0], nil
+	var maxTagVersion SemVer
+	var haveTagVersion bool
+	var maxTagName string
+	if len(tagVersions) > 0 {
+		maxTagVersion = tagVersions[0]
+		haveTagVersion = true
+		maxTagName = tagNames[maxTagVersion]
+	}
+
+	switch {
+	case !haveReleaseVersion && !haveTagVersion:
+		return SemVer{}, "no releases or tags found, starting at 0.0.0", nil
+	case !haveTagVersion:
+		return releaseVersion, fmt.Sprintf("latest release %s (no tags found)", releaseTag), nil
+	case !haveReleaseVersion:
+		return maxTagVersion, fmt.Sprintf("max tag %s (no releases found)", maxTagName), nil
+	case tagCompare(maxTagVersion, releaseVersion) > 0:
+		return maxTagVersion, fmt.Sprintf("max tag %s (ahead of latest release %s)", maxTagName, releaseTag), nil
+	default:
+		return releaseVersion, fmt.Sprintf("latest release %s (tags do not exceed it)", releaseTag), nil
+	}
+}
+
+// tagCompare returns >0 if a > b, 0 if equal, <0 if a < b.
+func tagCompare(a, b SemVer) int {
+	if a.Major != b.Major {
+		return a.Major - b.Major
+	}
+	if a.Minor != b.Minor {
+		return a.Minor - b.Minor
+	}
+	return a.Patch - b.Patch
 }
 
 // GenerateChangelog generates a changelog from commits.
@@ -313,43 +374,12 @@ func isDuplicateReleaseError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "already_exists")
 }
 
-// GetCurrentVersionForRepo gets the current version from the specified repository.
+// GetCurrentVersionForRepo returns the current version baseline for the
+// specified repository. See GetCurrentVersionWithSource for how the
+// baseline is computed.
 func (r *Releaser) GetCurrentVersionForRepo(ctx context.Context, owner, repo string) (SemVer, error) {
-	release, err := r.ghClient.GetLatestRelease(ctx, owner, repo)
-	if err != nil {
-		return SemVer{}, fmt.Errorf("failed to get latest release: %w", err)
-	}
-	if release != nil {
-		return ParseSemVer(release.TagName)
-	}
-
-	tags, err := r.ghClient.ListTags(ctx, owner, repo, 10)
-	if err != nil {
-		return SemVer{}, fmt.Errorf("failed to list tags: %w", err)
-	}
-
-	var versions []SemVer
-	for _, tag := range tags {
-		if v, err := ParseSemVer(tag.Name); err == nil {
-			versions = append(versions, v)
-		}
-	}
-
-	if len(versions) == 0 {
-		return SemVer{}, nil
-	}
-
-	sort.Slice(versions, func(i, j int) bool {
-		if versions[i].Major != versions[j].Major {
-			return versions[i].Major > versions[j].Major
-		}
-		if versions[i].Minor != versions[j].Minor {
-			return versions[i].Minor > versions[j].Minor
-		}
-		return versions[i].Patch > versions[j].Patch
-	})
-
-	return versions[0], nil
+	v, _, err := r.GetCurrentVersionWithSource(ctx, owner, repo)
+	return v, err
 }
 
 // ShouldRelease determines if a release should be created based on config and bump type.
