@@ -398,16 +398,25 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 		wantErr bool
 	}{
 		{
+			// GH-4953: GetCurrentVersion now always consults the tags list
+			// too (not just the latest Release), so this mocks the realistic
+			// GitHub behavior of an empty (not 404) tags array when the
+			// release tag is also the highest tag.
 			name: "from latest release",
 			handler: func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/repos/owner/repo/releases/latest" {
+				switch r.URL.Path {
+				case "/repos/owner/repo/releases/latest":
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
 						"id":       1,
 						"tag_name": "v1.2.3",
 					})
-					return
+				case "/repos/owner/repo/tags":
+					_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+						{"name": "v1.2.3"},
+					})
+				default:
+					w.WriteHeader(http.StatusNotFound)
 				}
-				w.WriteHeader(http.StatusNotFound)
 			},
 			want: SemVer{Major: 1, Minor: 2, Patch: 3},
 		},
@@ -464,6 +473,96 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 			}
 			if !tt.wantErr && got != tt.want {
 				t.Errorf("GetCurrentVersion() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestReleaser_GetCurrentVersionWithSource_TagBeatsStaleRelease is a
+// table-driven regression test for GH-4953: a tag pushed without a covering
+// GitHub Release must still count toward the baseline. Live incident: the
+// sdk repo's latest Release was v0.34.1 but tag v0.35.0 already existed
+// (pushed as a base-guard tag, no Release object); the releaser used to read
+// only the Release and cut the next patch as v0.34.2 — a version Go module
+// resolution ranks BELOW the v0.35.0 already shipped.
+func TestReleaser_GetCurrentVersionWithSource_TagBeatsStaleRelease(t *testing.T) {
+	tests := []struct {
+		name          string
+		latestRelease string // empty = 404 (no release)
+		tags          []string
+		wantVersion   SemVer
+		wantSourceHas string // substring the source description must contain
+		wantNextPatch SemVer // currentVersion.Bump(BumpPatch)
+	}{
+		{
+			name:          "tag without covering release beats stale release (sdk PR#120 incident)",
+			latestRelease: "v0.34.1",
+			tags:          []string{"v0.34.1", "v0.35.0"},
+			wantVersion:   SemVer{Major: 0, Minor: 35, Patch: 0},
+			wantSourceHas: "max tag",
+			wantNextPatch: SemVer{Major: 0, Minor: 35, Patch: 1},
+		},
+		{
+			name:          "ledger and tags agree - release flow unchanged",
+			latestRelease: "v1.2.3",
+			tags:          []string{"v1.2.3", "v1.2.2", "v1.2.1"},
+			wantVersion:   SemVer{Major: 1, Minor: 2, Patch: 3},
+			wantSourceHas: "latest release",
+			wantNextPatch: SemVer{Major: 1, Minor: 2, Patch: 4},
+		},
+		{
+			name:          "tag-only repo, no release object at all",
+			latestRelease: "",
+			tags:          []string{"v2.0.0", "v1.0.0"},
+			wantVersion:   SemVer{Major: 2, Minor: 0, Patch: 0},
+			wantSourceHas: "max tag",
+			wantNextPatch: SemVer{Major: 2, Minor: 0, Patch: 1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/owner/repo/releases/latest":
+					if tt.latestRelease == "" {
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = w.Write([]byte(`{"message": "Not Found"}`))
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"id":       1,
+						"tag_name": tt.latestRelease,
+					})
+				case "/repos/owner/repo/tags":
+					tags := make([]map[string]interface{}, len(tt.tags))
+					for i, name := range tt.tags {
+						tags[i] = map[string]interface{}{"name": name}
+					}
+					_ = json.NewEncoder(w).Encode(tags)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			client := github.NewClientWithBaseURL("test-token", server.URL)
+			r := NewReleaser(client, "owner", "repo", DefaultReleaseConfig())
+
+			got, source, err := r.GetCurrentVersionWithSource(context.Background(), "owner", "repo")
+			if err != nil {
+				t.Fatalf("GetCurrentVersionWithSource() error = %v", err)
+			}
+			if got != tt.wantVersion {
+				t.Errorf("GetCurrentVersionWithSource() version = %v, want %v", got, tt.wantVersion)
+			}
+			if !strings.Contains(source, tt.wantSourceHas) {
+				t.Errorf("GetCurrentVersionWithSource() source = %q, want to contain %q", source, tt.wantSourceHas)
+			}
+
+			nextPatch := got.Bump(BumpPatch)
+			if nextPatch != tt.wantNextPatch {
+				t.Errorf("Bump(BumpPatch) from baseline = %v, want %v", nextPatch, tt.wantNextPatch)
 			}
 		})
 	}
