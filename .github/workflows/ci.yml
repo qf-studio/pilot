@@ -109,3 +109,10 @@ jobs:
           # (TASK-390 bumped the toolchain for grot); 2.8.0 matches local.
           version: v2.8.0
           args: --timeout=5m
+          # 2026-08-18 incident: the action's analysis cache poisons itself —
+          # every green run saves a cache whose NEXT restore yields 6 phantom
+          # SA5011s in untouched adapter test files (staticcheck loses the
+          # t.Fatal noreturn fact), so autopilot closed 4 green PRs in a row
+          # (#4956/#4958/#4960/#4969/#4971/#4973 chain). Fresh-cache runs are
+          # deterministically green. Trade ~1min of lint time for correctness.
+          skip-cache: true

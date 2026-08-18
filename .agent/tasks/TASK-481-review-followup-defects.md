@@ -1,6 +1,6 @@
 # TASK-481: Three independent defects surfaced by the lkshrk PR review
 
-**Status**: 📋 Planned — NOT dispatched. Research complete 2026-08-17. Three independent legs, dispatchable separately. **Gates cleared 08-17**: #4896 MERGED (Leg A composes on top — implement the read-filter branch only) · #4899 MERGED (Leg B's `StripIssuePrefix` inherits the widened regex) · #4903 MERGED (**Leg C unblocked** — consolidate onto its `comms.CleanInternalSignals`). Leg A was also raised with the contributor on #4896; if they take it, drop Leg A.
+**Status**: 🚀 DISPATCHED 2026-08-18 → Leg A [pilot#4965](https://github.com/qf-studio/pilot/issues/4965) · Leg B [pilot#4966](https://github.com/qf-studio/pilot/issues/4966) · Leg C [pilot#4967](https://github.com/qf-studio/pilot/issues/4967). lkshrk window closed with no reaction on #4896, so Leg A is ours. Research complete 2026-08-17. Three independent legs, dispatchable separately. **Gates cleared 08-17**: #4896 MERGED (Leg A composes on top — implement the read-filter branch only) · #4899 MERGED (Leg B's `StripIssuePrefix` inherits the widened regex) · #4903 MERGED (**Leg C unblocked** — consolidate onto its `comms.CleanInternalSignals`). Leg A was also raised with the contributor on #4896; if they take it, drop Leg A.
 **Created**: 2026-08-17
 **Origin**: review of external contributor PRs #4896 / #4899 / #4903 (lkshrk) — each PR fixes part of a defect and leaves an adjacent part unfixed. Leg C turned out substantially larger than the PR's own note suggested.
 
