@@ -119,6 +119,10 @@ var noDecomposePhrases = []*regexp.Regexp{
 	regexp.MustCompile(`is a standalone task`),
 	regexp.MustCompile(`as a single pr\b`),
 	regexp.MustCompile(`<!--\s*pilot:no-decompose\s*-->`),
+	// GH-4938: bare "no-decompose" token in body text — mirrors the label
+	// name and is how people naturally write it; #4929 opened with
+	// "(no-decompose — single subsystem)" and was still decomposed.
+	regexp.MustCompile(`\bno-decompose\b`),
 }
 
 // HasNoDecomposePhrase returns true when the task title or description contains
