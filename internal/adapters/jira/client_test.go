@@ -432,6 +432,125 @@ func TestSearchIssues_LegacyEndpointGone(t *testing.T) {
 	}
 }
 
+// TestSearchIssues_Server_PlainStringDescription is a regression check: before
+// Fields.Description was retyped to ADFText (GH-4930), Server/DC's plain
+// string description unmarshaled directly into a string field. Confirm that
+// behavior is unchanged now that ADFText.UnmarshalJSON handles the plain
+// string case.
+func TestSearchIssues_Server_PlainStringDescription(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"issues": [
+				{
+					"id": "10001",
+					"key": "PROJ-1",
+					"fields": {
+						"summary": "Server issue",
+						"description": "Plain text description, unchanged."
+					}
+				}
+			],
+			"total": 1
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin", "token", PlatformServer)
+	issues, err := client.SearchIssues(context.Background(), "labels = pilot", 50)
+	if err != nil {
+		t.Fatalf("SearchIssues failed: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(issues))
+	}
+	if issues[0].Fields.Description != "Plain text description, unchanged." {
+		t.Errorf("Description = %q, want %q", issues[0].Fields.Description, "Plain text description, unchanged.")
+	}
+
+	task := ConvertIssueToTask(issues[0], "https://jira.example.com")
+	if task.Description != "Plain text description, unchanged." {
+		t.Errorf("task.Description = %q, want %q", task.Description, "Plain text description, unchanged.")
+	}
+}
+
+// TestSearchIssues_Cloud_ADFDescription is the poller-path regression for
+// GH-4931: Cloud's POST /search/jql page can return issues whose description
+// is an ADF document rather than a plain string. Before ADFText existed this
+// broke SearchResponse unmarshaling for the whole page (json.Unmarshal fails
+// atomically), rejecting every issue in the batch, not just the one with a
+// rich-text description. Verify the full page still parses and the walked
+// text reaches Task.Description sanitized, same as the plain-string path.
+func TestSearchIssues_Cloud_ADFDescription(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/api/3/search/jql" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"issues": [
+				{
+					"id": "10001",
+					"key": "PROJ-1",
+					"fields": {
+						"summary": "Cloud issue with ADF description",
+						"description": {
+							"type": "doc",
+							"version": 1,
+							"content": [
+								{
+									"type": "paragraph",
+									"content": [
+										{"type": "text", "text": "First paragraph"}
+									]
+								},
+								{
+									"type": "paragraph",
+									"content": [
+										{"type": "text", "text": "Second paragraph"}
+									]
+								}
+							]
+						}
+					}
+				},
+				{
+					"id": "10002",
+					"key": "PROJ-2",
+					"fields": {
+						"summary": "Cloud issue with plain description",
+						"description": "still a plain string on this issue"
+					}
+				}
+			],
+			"isLast": true
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "user@example.com", "api-token", PlatformCloud)
+	issues, err := client.SearchIssues(context.Background(), "labels = pilot", 50)
+	if err != nil {
+		t.Fatalf("SearchIssues rejected the page: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("expected the full page (2 issues), got %d", len(issues))
+	}
+
+	wantADF := "First paragraph\nSecond paragraph"
+	if issues[0].Fields.Description != ADFText(wantADF) {
+		t.Errorf("issues[0].Fields.Description = %q, want %q", issues[0].Fields.Description, wantADF)
+	}
+	if issues[1].Fields.Description != "still a plain string on this issue" {
+		t.Errorf("issues[1].Fields.Description = %q, want %q", issues[1].Fields.Description, "still a plain string on this issue")
+	}
+
+	task := ConvertIssueToTask(issues[0], "https://company.atlassian.net")
+	if task.Description != wantADF {
+		t.Errorf("task.Description = %q, want %q", task.Description, wantADF)
+	}
+}
+
 // Integration test helper - verifies client can be created and method signatures are correct
 func TestClientMethodSignatures(t *testing.T) {
 	client := NewClient("https://jira.example.com", "user", "token", PlatformCloud)

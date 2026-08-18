@@ -479,10 +479,11 @@ func TestExtractIssue_MissingIssue(t *testing.T) {
 	}
 }
 
-func TestExtractADFText(t *testing.T) {
-	client := NewClient("https://jira.example.com", "user", "token", PlatformCloud)
-	handler := NewWebhookHandler(client, "", "pilot")
-
+// TestExtractADFText_WebhookPath exercises the package-level extractADFText
+// walker (types.go) via the same fixtures the webhook handler feeds it,
+// confirming the webhook path still gets correct output now that the walker
+// is package-level rather than a WebhookHandler method.
+func TestExtractADFText_WebhookPath(t *testing.T) {
 	tests := []struct {
 		name string
 		adf  map[string]interface{}
@@ -539,7 +540,7 @@ func TestExtractADFText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := handler.extractADFText(tt.adf)
+			got := extractADFText(tt.adf)
 			if got != tt.want {
 				t.Errorf("extractADFText() = %q, want %q", got, tt.want)
 			}
