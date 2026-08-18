@@ -816,8 +816,14 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	// GH-4050) — treat that as unknown, not closed, so the label still fires
 	// when state can't be determined. Mirrors the surfaceStalledIssue guard
 	// (dispatcher.go).
+	// notifyAttempted and labelTracker are captured here (rather than kept
+	// local to the block below) so the post-dispatch unwind further down —
+	// GH-4961 — can reuse the exact same client/label/tracker that applied
+	// pilot-in-progress, without re-deriving them.
+	var notifyAttempted bool
+	var pilotLabel string
+	var labelTracker *alerts.DeadManTracker
 	if specClient != nil && issueState != githubSDK.StateClosed {
-		pilotLabel := ""
 		if cfg.Adapters != nil && cfg.Adapters.GitHub != nil {
 			pilotLabel = cfg.Adapters.GitHub.PilotLabel
 		}
@@ -831,12 +837,13 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		// (zero attempts despite issues flowing) is detectable the same way
 		// zero attempts already are (Stale) instead of hiding behind an
 		// error-only counter.
-		labelTracker := alertsEngine.RegisterDeadManTracker(
+		labelTracker = alertsEngine.RegisterDeadManTracker(
 			labelLifecycleDeadManTrackerName(repoOwner+"/"+repoName),
 			alerts.AlertTypeLabelLifecycleFailureStreak,
 			alerts.DefaultDeadManFailureThreshold,
 			alerts.DefaultDeadManWindow,
 		)
+		notifyAttempted = true
 		labelTracker.RecordAttempt()
 		if err := notifyTaskStartedSDK(ctx, specClient, pilotLabel, repoOwner, repoName, issueNum, taskID); err != nil {
 			labelTracker.RecordFailure(map[string]string{"repo": repoOwner + "/" + repoName})
@@ -905,6 +912,47 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
+	// GH-4961: notifyTaskStartedSDK above applies pilot-in-progress BEFORE
+	// the dispatcher has actually claimed the task (preserving the GH-4687
+	// pre-claim ordering for the happy path). When the dispatcher instead
+	// drops this pickup — repick backoff, claim lost, or any other
+	// admission-gate decline surfaced as hr.IsDispatchGated() — and no other
+	// execution genuinely owns the task, the label just applied is the only
+	// evidence of "in progress" left behind with nothing running to clear it
+	// later. Unwind it here so the next poll tick isn't permanently skipped.
+	//
+	// dispatcher.IsActive is the same live-ownership check
+	// handleIssueGeneric's own admission gates consult (GH-4008): if it
+	// reports true, a *different*, genuinely active execution owns this
+	// task (e.g. a legitimate concurrent dispatch) and the label correctly
+	// reflects that — must not strip it. hr.IsDispatchGated() can only be
+	// true when dispatcher != nil (every ErrDispatchGated-setting branch in
+	// handleIssueGeneric requires it), but dispatcherActive is still guarded
+	// explicitly here since it's evaluated as a plain argument before
+	// shouldUnwindGithubInProgressLabel's own short-circuit ever runs — a
+	// bare dispatcher.IsActive(...) call would otherwise risk a nil-pointer
+	// dereference if that invariant is ever violated.
+	dispatcherActive := dispatcher != nil && dispatcher.IsActive(taskID, projectPath)
+	if shouldUnwindGithubInProgressLabel(notifyAttempted, hr, dispatcherActive) {
+		labelTracker.RecordAttempt()
+		if err := specClient.RemoveLabel(ctx, repoOwner, repoName, issueNum, pilotLabel); err != nil {
+			// A failed unwind is a genuine label-lifecycle failure (the
+			// label is now stranded), unlike the unwind itself — which is a
+			// deliberate correction, not evidence the original apply/notify
+			// path is broken.
+			labelTracker.RecordFailure(map[string]string{"repo": repoOwner + "/" + repoName})
+			logging.WithComponent("github").Warn("Failed to unwind pilot-in-progress after dropped dispatch pickup",
+				slog.String("task_id", taskID),
+				slog.Int("issue", issueNum),
+				slog.Any("error", err))
+		} else {
+			labelTracker.RecordSuccess()
+			logging.WithComponent("github").Info("Unwound pilot-in-progress label after dropped dispatch pickup",
+				slog.String("task_id", taskID),
+				slog.Int("issue", issueNum))
+		}
+	}
+
 	issueResult := &sdkcore.IssueResult{
 		Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
 		BranchName: hr.BranchName,
@@ -957,6 +1005,37 @@ const labelLifecycleDeadManTrackerPrefix = "label_lifecycle:"
 // registration and the event-time registration racing to create two.
 func labelLifecycleDeadManTrackerName(repoFullName string) string {
 	return labelLifecycleDeadManTrackerPrefix + repoFullName
+}
+
+// shouldUnwindGithubInProgressLabel reports whether a pilot-in-progress label
+// applied earlier in handleGithubIssueEventSDK (before the dispatch attempt,
+// per GH-4687's pre-claim ordering) must be removed again because the
+// dispatch that followed never actually claimed the task (GH-4961).
+//
+// notifyAttempted is true only when notifyTaskStartedSDK was actually called
+// for this event (skipped entirely for a closed issue, or when specClient
+// couldn't be built) — nothing to unwind if the label was never touched.
+//
+// hr.IsDispatchGated() is true for every admission-gate decline
+// handleIssueGeneric can return with no execution having been claimed:
+// already-active/backoff/terminal-completion pre-checks, and the dispatcher's
+// own repick-backoff/claim-lost drops (QueueTask returning "", nil) — see
+// executor.ErrDispatchGated and handler_common.go's gatedDrop paths.
+//
+// dispatcherActive distinguishes the two ways a gated decline can arise:
+//   - false: nothing is running for this task — the label just applied is
+//     now the sole (stale) evidence of "in progress" and must be removed, or
+//     every future poll tick will skip the issue forever (the wedge this
+//     bug fixes).
+//   - true: a *different*, genuinely active execution owns the task (e.g. a
+//     legitimate concurrent dispatch race) — the label correctly describes
+//     reality and must be left alone.
+//
+// A successful (non-gated) dispatch must never reach here with a true
+// result — see the call site — so the happy path never performs the extra
+// label round-trip this function exists to avoid.
+func shouldUnwindGithubInProgressLabel(notifyAttempted bool, hr *HandlerResult, dispatcherActive bool) bool {
+	return notifyAttempted && hr.IsDispatchGated() && !dispatcherActive
 }
 
 // notifyTaskStartedSDK applies the pilot-in-progress label and posts the
