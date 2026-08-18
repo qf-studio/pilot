@@ -8,6 +8,15 @@ import (
 	"os/exec"
 )
 
+// ghostSHACleanNoCommitError is applyGhostSHAGuard's Error string when a
+// ghost SHA was rejected AND preserveDirtyWorktreeAsWIP already ran and found
+// nothing to preserve — i.e. structural proof the worktree is genuinely
+// clean. GH-4964's decline classification is only safe to key off this
+// EXACT string (not a prefix): the preserved-WIP branch's error text reads
+// differently ("...auto-preserved as %s...") and must never be treated as
+// decline evidence, since real uncommitted diffs contradict any no-op claim.
+const ghostSHACleanNoCommitError = "no new commit produced — worktree HEAD matches base branch parent"
+
 // applyGhostSHAGuard enforces GH-3126: reject executions that produced no new commit.
 // When Claude makes no new commit, git log returns the parent (pre-execution) SHA.
 // Recording that as CommitSHA causes IsTaskShipped to return true on a no-op run,
@@ -62,7 +71,7 @@ func applyGhostSHAGuard(ctx context.Context, task *Task, result *ExecutionResult
 		}
 		result.CommitSHA = ""
 		result.Success = false
-		result.Error = "no new commit produced — worktree HEAD matches base branch parent"
+		result.Error = ghostSHACleanNoCommitError
 	}
 	return false
 }

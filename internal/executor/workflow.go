@@ -171,6 +171,15 @@ to the actual change you made):
 {"v":2,"type":"exit","exit_signal":true,"success":true}
 ` + "```" + `
 
+**No-op exit** (only when no code change was needed — task already satisfied,
+requirement not applicable, nothing to do). This is a distinct, opt-in signal —
+never the default. Do NOT emit the plain exit signal above and expect it to be
+read as a no-op; ` + "`no_op:true`" + ` and a one-sentence ` + "`reason`" + ` are both mandatory
+for this branch:
+` + "```" + `pilot-signal
+{"v":2,"type":"exit","exit_signal":true,"success":true,"no_op":true,"reason":"<one sentence, mandatory>"}
+` + "```" + `
+
 ---
 
 ### Completion Contract (Non-negotiable)

@@ -235,10 +235,18 @@ func (m *mockDirtyBackend) Execute(_ context.Context, opts ExecuteOptions) (*Bac
 }
 
 // TestRunner_DirtyWorktreeAfterNoCommitRetry_AutoPreserved covers the GH-916
-// no-commit-after-retry path (runner.go, "No-commit detection and retry"):
-// when the backend leaves real, uncommitted files on disk across both the
-// initial attempt and the retry, the run must not be silently classified
-// no_op — the dirty state must be auto-committed and pushed instead.
+// no-commit path (runner.go, "No-commit detection and retry"): when the
+// backend leaves real, uncommitted files on disk after the initial attempt,
+// the run must not be silently classified no_op — the dirty state must be
+// auto-committed and pushed instead.
+//
+// GH-4964: preserveDirtyWorktreeAsWIP now runs BEFORE the no-commit retry is
+// even considered (not just after it, as before) — a dirty tree always wins
+// over spending a retry or honoring any decline evidence, since real
+// uncommitted diffs contradict any claim that nothing needed to change. So
+// the backend is called exactly once here, not twice: the retry never fires
+// because the first attempt's dirty tree is caught and preserved
+// immediately.
 func TestRunner_DirtyWorktreeAfterNoCommitRetry_AutoPreserved(t *testing.T) {
 	const branch = "pilot/GH-4517RETRY"
 	dir, bareDir := setupFreshnessRepo(t)
@@ -291,8 +299,8 @@ func TestRunner_DirtyWorktreeAfterNoCommitRetry_AutoPreserved(t *testing.T) {
 	count := backend.execCount
 	gotProjectPath := backend.gotProjectPath
 	backend.mu.Unlock()
-	if count != 2 {
-		t.Errorf("expected backend called 2 times (initial + retry), got %d", count)
+	if count != 1 {
+		t.Errorf("expected backend called exactly once — GH-4964 preserve-first ordering must skip the retry for a dirty tree, got %d", count)
 	}
 	if gotProjectPath != dir {
 		t.Errorf("backend received ProjectPath %q, want %q", gotProjectPath, dir)

@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/intent"
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -1192,5 +1193,91 @@ func TestHandleMessage_VoiceTextFallback(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("VoiceText not routed through greeting intent via Responder; got texts: %v", texts)
+	}
+}
+
+// TestSendTaskResult_Declined verifies GH-4964's comms contract: a declined
+// ExecutionResult renders via SendChunked (which carries threadID, so Slack
+// replies land in the originating thread) rather than SendResult's ❌ path —
+// a decline is not a failure and must not render as one.
+func TestSendTaskResult_Declined(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	result := &executor.ExecutionResult{
+		Success:        false,
+		Declined:       true,
+		DeclinedReason: "requirement already satisfied — no code change needed",
+	}
+
+	h.sendTaskResult(context.Background(), "ch1", "thread-42", "TEST-1", result, "")
+
+	if len(m.results) != 0 {
+		t.Errorf("expected no SendResult calls for a declined result, got %d", len(m.results))
+	}
+	if len(m.texts) != 0 {
+		t.Errorf("expected no SendText calls for a declined result, got %d", len(m.texts))
+	}
+	if len(m.chunks) != 1 {
+		t.Fatalf("expected exactly 1 SendChunked call, got %d", len(m.chunks))
+	}
+	chunk := m.chunks[0]
+	if chunk.contextID != "ch1" {
+		t.Errorf("expected contextID ch1, got %q", chunk.contextID)
+	}
+	if chunk.threadID != "thread-42" {
+		t.Errorf("expected threadID thread-42 to be preserved, got %q", chunk.threadID)
+	}
+	if !strings.Contains(chunk.content, "requirement already satisfied — no code change needed") {
+		t.Errorf("expected chunk content to contain decline reason, got %q", chunk.content)
+	}
+}
+
+// TestSendTaskResult_DeclinedEmptyReason verifies the fallback text when a
+// declined result somehow carries no reason string (defense in depth — the
+// runner always sets one via finishDeclined, but the comms layer should not
+// render an empty message if that invariant is ever violated).
+func TestSendTaskResult_DeclinedEmptyReason(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	result := &executor.ExecutionResult{
+		Success:  false,
+		Declined: true,
+	}
+
+	h.sendTaskResult(context.Background(), "ch1", "thread-42", "TEST-1", result, "")
+
+	if len(m.chunks) != 1 {
+		t.Fatalf("expected exactly 1 SendChunked call, got %d", len(m.chunks))
+	}
+	if !strings.Contains(m.chunks[0].content, "no reason provided") {
+		t.Errorf("expected fallback reason text, got %q", m.chunks[0].content)
+	}
+}
+
+// TestSendTaskResult_NotDeclined verifies the non-declined path is
+// unaffected: a normal success/failure result still renders via SendResult,
+// not SendChunked.
+func TestSendTaskResult_NotDeclined(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	result := &executor.ExecutionResult{
+		Success: true,
+		PRUrl:   "https://github.com/qf-studio/pilot/pull/123",
+	}
+
+	h.sendTaskResult(context.Background(), "ch1", "thread-42", "TEST-1", result, "done")
+
+	if len(m.chunks) != 0 {
+		t.Errorf("expected no SendChunked calls for a non-declined result, got %d", len(m.chunks))
+	}
+	if len(m.results) != 1 {
+		t.Fatalf("expected exactly 1 SendResult call, got %d", len(m.results))
+	}
+	res := m.results[0]
+	if !res.success || res.prURL != "https://github.com/qf-studio/pilot/pull/123" || res.output != "done" {
+		t.Errorf("unexpected SendResult contents: %+v", res)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"regexp"
+	"strings"
 )
 
 // Signal types for v2 protocol
@@ -27,6 +28,12 @@ type PilotSignal struct {
 	Success    bool            `json:"success,omitempty"`
 	Reason     string          `json:"reason,omitempty"`
 	Message    string          `json:"message,omitempty"`
+	// NoOp opts an exit signal into the "nothing needed to change" branch
+	// (GH-4964). It is never inferred — the plain mandatory exit signal
+	// ({"exit_signal":true,"success":true}, emitted on every run the model
+	// believes finished) must NOT be read as a decline. Only an exit signal
+	// with NoOp true AND a non-empty Reason counts; see NoOpExitReason.
+	NoOp bool `json:"no_op,omitempty"`
 }
 
 // signalBlockRegex matches ```pilot-signal\n{...}\n```
@@ -111,6 +118,32 @@ func (p *SignalParser) HasExitSignal(signals []PilotSignal) bool {
 		}
 	}
 	return false
+}
+
+// NoOpExitReason returns the reason from the latest exit signal that
+// explicitly opts into the no-op/decline branch (GH-4964). It returns true
+// ONLY when a signal is an exit signal (ExitSignal or Type ==
+// SignalTypeExit), reports Success, sets NoOp, AND carries a non-empty
+// Reason — mirroring parseDeclinedReason's empty-reason rejection so a
+// no_op:true with no explanation is never treated as valid decline evidence.
+// The bare mandatory exit signal (no NoOp field at all) always returns
+// ("", false); there is no Message fallback and no fabricated default reason.
+func (p *SignalParser) NoOpExitReason(signals []PilotSignal) (string, bool) {
+	for i := len(signals) - 1; i >= 0; i-- {
+		s := signals[i]
+		if !s.ExitSignal && s.Type != SignalTypeExit {
+			continue
+		}
+		if !s.Success || !s.NoOp {
+			continue
+		}
+		reason := strings.TrimSpace(s.Reason)
+		if reason == "" {
+			continue
+		}
+		return reason, true
+	}
+	return "", false
 }
 
 // GetLatestProgress returns the progress from the last status signal
