@@ -238,6 +238,27 @@ type EvalStore interface {
 // ControllerOption is a functional option for Controller configuration.
 type ControllerOption func(*Controller)
 
+// WithLogger overrides the controller's logger, which otherwise defaults to
+// slog.Default() captured at construction time. GH-4946: tests asserting on
+// NewController's startup log output (e.g. "resolved release policy") used
+// to mutate the process-global slog.SetDefault() around the constructor
+// call — safe in isolation, but other autopilot components (metrics
+// persister/alerter, feedback loop, deployer, ci-monitor) independently
+// capture slog.Default() too and can log through it from background
+// goroutines left running by earlier tests in the same package binary,
+// racing on the test's private bytes.Buffer under CI's heavier scheduling
+// load and producing an intermittent, code-unrelated failure (killed the
+// unrelated PR#4943). Passing a logger via this option lets a test assert
+// against a buffer no other goroutine can write to, without touching global
+// state. Nil is a no-op (falls back to the slog.Default() capture).
+func WithLogger(log *slog.Logger) ControllerOption {
+	return func(c *Controller) {
+		if log != nil {
+			c.log = log.With("component", "autopilot")
+		}
+	}
+}
+
 // WithProjectBoardSync wires a GitHub Projects V2 board sync into the controller.
 // doneStatus: merged PRs; failStatus: CI/exec failures; reviewStatus: PR created (In Progress → Review);
 // inProgressStatus: reserved for future use (wired for symmetry, not yet emitted).
