@@ -196,7 +196,7 @@ func (h *WebhookHandler) extractIssue(payload map[string]interface{}) (*Issue, e
 		// Also check for ADF description (Jira Cloud)
 		if desc, ok := fieldsData["description"].(map[string]interface{}); ok {
 			var cleaned string
-			cleaned, descStripped = text.SanitizeUntrusted(h.extractADFText(desc))
+			cleaned, descStripped = text.SanitizeUntrusted(extractADFText(desc))
 			issue.Fields.Description = ADFText(cleaned)
 		}
 		if summaryStripped+descStripped > 0 {
@@ -252,12 +252,6 @@ func (h *WebhookHandler) extractIssue(payload map[string]interface{}) (*Issue, e
 	}
 
 	return issue, nil
-}
-
-// extractADFText extracts plain text from Atlassian Document Format.
-// Delegates to the shared ADF walker (types.go) used by ADFText.UnmarshalJSON.
-func (h *WebhookHandler) extractADFText(adf map[string]interface{}) string {
-	return extractADFText(adf)
 }
 
 // hasPilotLabel checks if the issue has the pilot label
