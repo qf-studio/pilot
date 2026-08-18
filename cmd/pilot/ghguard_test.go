@@ -116,6 +116,87 @@ func TestRunGhGuard_DeniesMutationAndNeverExecs(t *testing.T) {
 	}
 }
 
+// TestRunGhGuard_GhRepoEnvBypassDenied is GH-4968/D5's e2e check: gh itself
+// honors GH_REPO from the environment (not just -R/--repo on argv), so a
+// task session that sets GH_REPO instead of passing -R must be denied and
+// journaled exactly like the argv form is — confirming the env var is
+// actually read from the subprocess environment runGhGuard inherits, not
+// just exercised via ghguard.Classify's own unit tests.
+func TestRunGhGuard_GhRepoEnvBypassDenied(t *testing.T) {
+	tmpDir := t.TempDir()
+	recordPath := filepath.Join(tmpDir, "record.txt")
+	fakeGh := writeFakeGh(t, tmpDir, recordPath)
+	journalPath := filepath.Join(tmpDir, "journal.jsonl")
+
+	env := envLookup(map[string]string{
+		"PILOT_TASK_ISSUE":       "123",
+		"PILOT_TASK_REPO":        "qf-studio/pilot",
+		"PILOT_TASK_BRANCH":      "pilot/GH-123",
+		"PILOT_GH_REAL":          fakeGh,
+		"PILOT_GH_GUARD_JOURNAL": journalPath,
+		"GH_REPO":                "other/repo",
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := runGhGuard([]string{"issue", "comment", "1", "--body", "x"}, env, strings.NewReader(""), &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatal("expected non-zero exit code for a GH_REPO cross-repo bypass attempt")
+	}
+	if _, err := os.Stat(recordPath); err == nil {
+		t.Error("expected fake gh to never be invoked on a deny verdict")
+	}
+
+	journalBytes, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("expected a journal entry to be written on deny: %v", err)
+	}
+	journalStr := string(journalBytes)
+	if !strings.Contains(journalStr, `"env_repo":"other/repo"`) {
+		t.Errorf("expected journal entry to record the env-derived repo, got: %s", journalStr)
+	}
+	if !strings.Contains(stderr.String(), "GH_REPO") {
+		t.Errorf("expected stderr to explain the GH_REPO-driven denial, got: %s", stderr.String())
+	}
+}
+
+// TestRunGhGuard_GhHostEnvOverrideDenied is GH-4968/D5's e2e check for
+// GH_HOST: a non-github.com host is fail-closed regardless of command.
+func TestRunGhGuard_GhHostEnvOverrideDenied(t *testing.T) {
+	tmpDir := t.TempDir()
+	recordPath := filepath.Join(tmpDir, "record.txt")
+	fakeGh := writeFakeGh(t, tmpDir, recordPath)
+	journalPath := filepath.Join(tmpDir, "journal.jsonl")
+
+	env := envLookup(map[string]string{
+		"PILOT_TASK_ISSUE":       "123",
+		"PILOT_TASK_REPO":        "qf-studio/pilot",
+		"PILOT_TASK_BRANCH":      "pilot/GH-123",
+		"PILOT_GH_REAL":          fakeGh,
+		"PILOT_GH_GUARD_JOURNAL": journalPath,
+		"GH_HOST":                "ghe.example.com",
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := runGhGuard([]string{"api", "user"}, env, strings.NewReader(""), &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatal("expected non-zero exit code for a non-github.com GH_HOST")
+	}
+	if _, err := os.Stat(recordPath); err == nil {
+		t.Error("expected fake gh to never be invoked on a deny verdict")
+	}
+
+	journalBytes, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("expected a journal entry to be written on deny: %v", err)
+	}
+	journalStr := string(journalBytes)
+	if !strings.Contains(journalStr, `"env_host":"ghe.example.com"`) {
+		t.Errorf("expected journal entry to record the env-derived host, got: %s", journalStr)
+	}
+}
+
 func TestRunGhGuard_NoArgs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := runGhGuard(nil, envLookup(nil), strings.NewReader(""), &stdout, &stderr)

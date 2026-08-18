@@ -3,6 +3,7 @@ package ghguard
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -179,7 +180,7 @@ func TestClassify(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Classify(id, tt.args)
+			got := Classify(id, tt.args, EnvOverride{})
 			if got.Verdict != tt.wantVerdict {
 				t.Fatalf("Classify(%v) = %s (reason: %q), want %s", tt.args, got.Verdict, got.Reason, tt.wantVerdict)
 			}
@@ -195,6 +196,97 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// TestClassify_EnvOverride is GH-4968/D5: gh itself honors GH_REPO/GH_HOST
+// from the environment, not just -R/--repo on argv, so Classify must too —
+// otherwise `GH_REPO=other/repo gh issue comment N --body x` sails through
+// the repo-scoping check (which used to look at argv only) into a
+// cross-repo mutation, the exact class GH-4649 exists to stop. Kept as its
+// own table (rather than folded into TestClassify's) since every row here
+// exercises the env parameter, not just args.
+func TestClassify_EnvOverride(t *testing.T) {
+	id := testIdentity()
+
+	tests := []struct {
+		name        string
+		args        []string
+		env         EnvOverride
+		wantVerdict Verdict
+	}{
+		{"GH_REPO cross-repo mutation denied like argv -R would be",
+			[]string{"issue", "comment", "1", "--body", "x"}, EnvOverride{Repo: "other/repo"}, VerdictDeny},
+		{"GH_REPO matching own repo allows a read",
+			[]string{"issue", "view", "1"}, EnvOverride{Repo: "qf-studio/pilot"}, VerdictAllow},
+		{"GH_REPO matching own repo allows own-artifact comment",
+			[]string{"issue", "comment", "4671", "--body", "x"}, EnvOverride{Repo: "qf-studio/pilot"}, VerdictAllow},
+		{"argv -R wins over conflicting GH_REPO (own repo via argv, foreign via env)",
+			[]string{"issue", "view", "1", "-R", "qf-studio/pilot"}, EnvOverride{Repo: "other/repo"}, VerdictAllow},
+		{"argv -R wins over conflicting GH_REPO (foreign via argv, own via env) — still denied",
+			[]string{"issue", "view", "1", "-R", "other/repo"}, EnvOverride{Repo: "qf-studio/pilot"}, VerdictDeny},
+		{"GH_HOST non-github.com denies an otherwise-allowed read",
+			[]string{"api", "user"}, EnvOverride{Host: "ghe.example.com"}, VerdictDeny},
+		{"GH_HOST=github.com is a no-op",
+			[]string{"issue", "view", "1"}, EnvOverride{Host: "github.com"}, VerdictAllow},
+		{"GH_HOST case-insensitive match is a no-op",
+			[]string{"issue", "view", "1"}, EnvOverride{Host: "GitHub.com"}, VerdictAllow},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Classify(id, tt.args, tt.env)
+			if got.Verdict != tt.wantVerdict {
+				t.Fatalf("Classify(%v, env=%+v) = %s (reason: %q), want %s", tt.args, tt.env, got.Verdict, got.Reason, tt.wantVerdict)
+			}
+			if got.Verdict == VerdictDeny {
+				if got.Reason == "" {
+					t.Errorf("deny decision missing Reason")
+				}
+				if got.Allowed == "" {
+					t.Errorf("deny decision missing Allowed hint")
+				}
+			}
+		})
+	}
+}
+
+// TestClassify_EnvBypassJournalDistinguishable verifies the GH-4968
+// requirement that a denial driven by GH_REPO/GH_HOST is distinguishable
+// from an argv -R/--repo denial: the Decision carries the env-derived
+// value (which cmd/pilot/ghguard.go copies into the journal entry) and the
+// Reason text itself names the env var rather than "-R/--repo".
+func TestClassify_EnvBypassJournalDistinguishable(t *testing.T) {
+	id := testIdentity()
+
+	envDeny := Classify(id, []string{"issue", "comment", "1", "--body", "x"}, EnvOverride{Repo: "other/repo"})
+	if envDeny.Verdict != VerdictDeny {
+		t.Fatalf("expected deny, got %s", envDeny.Verdict)
+	}
+	if envDeny.EnvRepo != "other/repo" {
+		t.Errorf("expected Decision.EnvRepo = %q, got %q", "other/repo", envDeny.EnvRepo)
+	}
+	if !strings.Contains(envDeny.Reason, "GH_REPO") {
+		t.Errorf("expected env-derived deny reason to mention GH_REPO, got %q", envDeny.Reason)
+	}
+
+	argvDeny := Classify(id, []string{"issue", "comment", "1", "--body", "x", "-R", "other/repo"}, EnvOverride{})
+	if argvDeny.Verdict != VerdictDeny {
+		t.Fatalf("expected deny, got %s", argvDeny.Verdict)
+	}
+	if argvDeny.EnvRepo != "" {
+		t.Errorf("expected Decision.EnvRepo empty for an argv-driven denial, got %q", argvDeny.EnvRepo)
+	}
+	if strings.Contains(argvDeny.Reason, "GH_REPO") {
+		t.Errorf("argv-driven deny reason should not mention GH_REPO, got %q", argvDeny.Reason)
+	}
+
+	hostDeny := Classify(id, []string{"api", "user"}, EnvOverride{Host: "ghe.example.com"})
+	if hostDeny.Verdict != VerdictDeny {
+		t.Fatalf("expected deny, got %s", hostDeny.Verdict)
+	}
+	if hostDeny.EnvHost != "ghe.example.com" {
+		t.Errorf("expected Decision.EnvHost = %q, got %q", "ghe.example.com", hostDeny.EnvHost)
+	}
+}
+
 // TestClassify_IncompleteIdentity verifies that when TaskRepo/TaskBranch/
 // TaskIssue are empty (identity incomplete), repo-mismatch checks are
 // skipped (unenforceable) but own-artifact checks still deny rather than
@@ -203,20 +295,20 @@ func TestClassify_IncompleteIdentity(t *testing.T) {
 	id := Identity{} // fully empty
 
 	// Reads still work — the allowlist doesn't require identity.
-	if got := Classify(id, []string{"issue", "view", "1"}); got.Verdict != VerdictAllow {
+	if got := Classify(id, []string{"issue", "view", "1"}, EnvOverride{}); got.Verdict != VerdictAllow {
 		t.Errorf("read with empty identity: got %s, want allow", got.Verdict)
 	}
 
 	// Own-artifact still denies — can't confirm ownership without identity.
-	if got := Classify(id, []string{"issue", "comment", "1", "--body", "hi"}); got.Verdict != VerdictDeny {
+	if got := Classify(id, []string{"issue", "comment", "1", "--body", "hi"}, EnvOverride{}); got.Verdict != VerdictDeny {
 		t.Errorf("issue comment with empty identity: got %s, want deny", got.Verdict)
 	}
-	if got := Classify(id, []string{"pr", "create", "--head", "some-branch"}); got.Verdict != VerdictDeny {
+	if got := Classify(id, []string{"pr", "create", "--head", "some-branch"}, EnvOverride{}); got.Verdict != VerdictDeny {
 		t.Errorf("pr create --head with empty identity: got %s, want deny", got.Verdict)
 	}
 
 	// pr create with no --head at all still allows (defaults to current branch).
-	if got := Classify(id, []string{"pr", "create", "--title", "t"}); got.Verdict != VerdictAllow {
+	if got := Classify(id, []string{"pr", "create", "--title", "t"}, EnvOverride{}); got.Verdict != VerdictAllow {
 		t.Errorf("pr create no --head with empty identity: got %s, want allow", got.Verdict)
 	}
 }
