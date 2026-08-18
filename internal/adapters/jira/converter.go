@@ -34,7 +34,7 @@ func ConvertIssueToTask(issue *Issue, baseURL string) *TaskInfo {
 	}
 
 	title, titleStripped := text.SanitizeUntrusted(issue.Fields.Summary)
-	description, bodyStripped := text.SanitizeUntrusted(extractDescription(issue.Fields.Description))
+	description, bodyStripped := text.SanitizeUntrusted(extractDescription(string(issue.Fields.Description)))
 
 	if titleStripped+bodyStripped > 0 {
 		logging.WithComponent("jira").Warn(
