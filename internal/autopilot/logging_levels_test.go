@@ -146,13 +146,17 @@ func TestNewController_LogsResolvedReleasePolicy(t *testing.T) {
 				cfg.activeEnvConfig = &EnvironmentConfig{Release: tt.envRelease}
 			}
 
-			var buf bytes.Buffer
-			h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-			prev := slog.Default()
-			slog.SetDefault(slog.New(h))
-			defer slog.SetDefault(prev)
+			// GH-4946: assert against a logger private to this subtest rather
+			// than mutating the process-global slog default. Other autopilot
+			// components (metrics persister/alerter, feedback loop, deployer,
+			// ci-monitor) independently capture slog.Default() and can log
+			// through it from background goroutines started by earlier tests
+			// in this package binary; swapping the global default raced with
+			// those writes into this test's buffer under CI load and
+			// intermittently corrupted/blanked the captured output.
+			logger, buf := newCapturingLogger()
 
-			NewController(cfg, ghClient, nil, "owner", "repo")
+			NewController(cfg, ghClient, nil, "owner", "repo", WithLogger(logger))
 
 			out := buf.String()
 			if !strings.Contains(out, "resolved release policy") {
