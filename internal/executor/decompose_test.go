@@ -957,6 +957,17 @@ func TestHasNoDecomposePhrase(t *testing.T) {
 		{name: "mixed case HTML marker", body: "<!-- Pilot:No-Decompose -->", expected: true},
 		// HTML marker with extra whitespace → true
 		{name: "HTML marker with spaces", body: "<!--  pilot:no-decompose  -->", expected: true},
+		// GH-4938: bare "no-decompose" token in body text — the way people
+		// naturally write it, mirroring the label name. #4929 opened with this
+		// exact parenthetical and was still decomposed into 8 sub-issues.
+		{name: "bare token in parenthetical", body: "## Fix (no-decompose — single subsystem, internal/adapters/jira)", expected: true},
+		{name: "bare token alone on a line", body: "no-decompose", expected: true},
+		{name: "bare token mixed case", body: "No-Decompose", expected: true},
+		// GH-4938 negative: word-boundary hyphenated token only — no hyphen or
+		// a space instead of a hyphen must NOT match (unless an existing
+		// phrase separately catches it).
+		{name: "nodecompose without hyphen", body: "Please nodecompose this before merging.", expected: false},
+		{name: "no decompose with space", body: "no decompose please", expected: false},
 		// Phrase as unrelated substring → false
 		{name: "single word only", body: "This is a single change to a file.", expected: false},
 		{name: "split without do not", body: "We should split this into modules.", expected: false},
