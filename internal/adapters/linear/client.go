@@ -409,15 +409,33 @@ func (c *Client) RemoveLabel(ctx context.Context, issueID, labelID string) error
 	}, nil)
 }
 
-// GetLabelByName fetches a label ID by name for a team
+// GetLabelByName fetches a label ID by name for a team.
+// teamID may be a Linear team key (e.g. "ROU") or a team UUID — see
+// config.Config.TeamID ("Team ID or name"). Linear's `team.key` filter only
+// matches the short slug, so a UUID-configured team_id must be filtered via
+// `team.id` instead, or the lookup never matches (GH-4965, unfixed read half
+// of GH-4884; write half fixed in GH-4896's ResolveTeamUUID).
 func (c *Client) GetLabelByName(ctx context.Context, teamID, labelName string) (string, error) {
-	query := `
-		query GetLabel($teamId: String!, $name: String!) {
+	const queryByKey = `
+		query GetLabelByTeamKey($teamId: String!, $name: String!) {
 			issueLabels(filter: { team: { key: { eq: $teamId } }, name: { eq: $name } }) {
 				nodes { id name }
 			}
 		}
 	`
+	const queryByID = `
+		query GetLabelByTeamID($teamId: String!, $name: String!) {
+			issueLabels(filter: { team: { id: { eq: $teamId } }, name: { eq: $name } }) {
+				nodes { id name }
+			}
+		}
+	`
+
+	query := queryByKey
+	if looksLikeUUID(teamID) {
+		query = queryByID
+	}
+
 	var result struct {
 		IssueLabels struct {
 			Nodes []struct {

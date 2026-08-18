@@ -1381,46 +1381,69 @@ func TestCreateLabelResolvesTeamKeyToUUID(t *testing.T) {
 }
 
 func TestGetLabelByNameWorkspaceFallback(t *testing.T) {
+	const teamUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
 	tests := []struct {
 		name          string
+		teamID        string
 		teamNodes     string
 		workspaceResp string
 		wantID        string
 		wantErr       bool
 		wantFallback  bool
+		wantFilter    string // "GetLabelByTeamKey" or "GetLabelByTeamID"
 	}{
 		{
-			name:         "team-scoped label found without fallback",
+			name:         "key-configured team, label exists",
+			teamID:       "ROU",
 			teamNodes:    `[{"id":"team-label","name":"llm-pilot"}]`,
 			wantID:       "team-label",
 			wantFallback: false,
+			wantFilter:   "GetLabelByTeamKey",
 		},
 		{
-			name:          "workspace-scoped label found via fallback",
+			// GH-4965: UUID-configured team_id must filter via team.id, not
+			// team.key — Linear's key filter only matches the short slug.
+			name:         "UUID-configured team, label exists",
+			teamID:       teamUUID,
+			teamNodes:    `[{"id":"team-label","name":"llm-pilot"}]`,
+			wantID:       "team-label",
+			wantFallback: false,
+			wantFilter:   "GetLabelByTeamID",
+		},
+		{
+			name:          "UUID-configured team, only workspace-scoped label",
+			teamID:        teamUUID,
 			teamNodes:     `[]`,
 			workspaceResp: `[{"id":"ws-label","name":"llm-pilot","team":null}]`,
 			wantID:        "ws-label",
 			wantFallback:  true,
+			wantFilter:    "GetLabelByTeamID",
 		},
 		{
 			name:          "another team's label is not accepted",
+			teamID:        "ROU",
 			teamNodes:     `[]`,
 			workspaceResp: `[{"id":"other-team-label","name":"llm-pilot","team":{"id":"other"}}]`,
 			wantErr:       true,
 			wantFallback:  true,
+			wantFilter:    "GetLabelByTeamKey",
 		},
 		{
-			name:          "missing everywhere",
+			name:          "key-configured team, missing everywhere",
+			teamID:        "ROU",
 			teamNodes:     `[]`,
 			workspaceResp: `[]`,
 			wantErr:       true,
 			wantFallback:  true,
+			wantFilter:    "GetLabelByTeamKey",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var sawFallback bool
+			var sawFilter string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
 					Query string `json:"query"`
@@ -1432,12 +1455,18 @@ func TestGetLabelByNameWorkspaceFallback(t *testing.T) {
 					_, _ = w.Write([]byte(`{"data":{"issueLabels":{"nodes":` + tt.workspaceResp + `}}}`))
 					return
 				}
+				switch {
+				case strings.Contains(req.Query, "GetLabelByTeamID"):
+					sawFilter = "GetLabelByTeamID"
+				case strings.Contains(req.Query, "GetLabelByTeamKey"):
+					sawFilter = "GetLabelByTeamKey"
+				}
 				_, _ = w.Write([]byte(`{"data":{"issueLabels":{"nodes":` + tt.teamNodes + `}}}`))
 			}))
 			defer server.Close()
 
 			client := NewClientWithBaseURL("test-linear-key", server.URL)
-			id, err := client.GetLabelByName(context.Background(), "ROU", "llm-pilot")
+			id, err := client.GetLabelByName(context.Background(), tt.teamID, "llm-pilot")
 
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
@@ -1453,6 +1482,9 @@ func TestGetLabelByNameWorkspaceFallback(t *testing.T) {
 			if sawFallback != tt.wantFallback {
 				t.Errorf("workspace fallback performed = %v, want %v", sawFallback, tt.wantFallback)
 			}
+			if sawFilter != tt.wantFilter {
+				t.Errorf("team filter sent = %q, want %q", sawFilter, tt.wantFilter)
+			}
 		})
 	}
 }
@@ -1462,6 +1494,7 @@ func TestGetOrCreateLabel(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		teamID      string
 		teamLabels  string
 		wsLabels    string
 		wantID      string
@@ -1469,12 +1502,14 @@ func TestGetOrCreateLabel(t *testing.T) {
 	}{
 		{
 			name:        "existing team label is reused",
+			teamID:      "ROU",
 			teamLabels:  `[{"id":"existing","name":"pilot-done"}]`,
 			wantID:      "existing",
 			wantCreated: false,
 		},
 		{
 			name:        "existing workspace label is reused",
+			teamID:      "ROU",
 			teamLabels:  `[]`,
 			wsLabels:    `[{"id":"ws","name":"pilot-done","team":null}]`,
 			wantID:      "ws",
@@ -1482,10 +1517,21 @@ func TestGetOrCreateLabel(t *testing.T) {
 		},
 		{
 			name:        "missing label is created",
+			teamID:      "ROU",
 			teamLabels:  `[]`,
 			wsLabels:    `[]`,
 			wantID:      "created",
 			wantCreated: true,
+		},
+		{
+			// GH-4965/GH-4884: a UUID-configured team_id must resolve the
+			// existing label via the team.id filter and never fall through
+			// to CreateLabel — that fallthrough is the duplicate-create bug.
+			name:        "UUID-configured team, existing label is reused (no duplicate create)",
+			teamID:      teamUUID,
+			teamLabels:  `[{"id":"existing-uuid","name":"pilot-done"}]`,
+			wantID:      "existing-uuid",
+			wantCreated: false,
 		},
 	}
 
@@ -1513,7 +1559,7 @@ func TestGetOrCreateLabel(t *testing.T) {
 			defer server.Close()
 
 			client := NewClientWithBaseURL("test-linear-key", server.URL)
-			id, err := client.GetOrCreateLabel(context.Background(), "ROU", "pilot-done", "#00AA55")
+			id, err := client.GetOrCreateLabel(context.Background(), tt.teamID, "pilot-done", "#00AA55")
 			if err != nil {
 				t.Fatalf("GetOrCreateLabel: %v", err)
 			}
