@@ -6,25 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/executor"
 )
-
-// Internal signals to strip from output
-var internalSignals = []string{
-	"EXIT_SIGNAL: true",
-	"EXIT_SIGNAL:true",
-	"LOOP COMPLETE",
-	"TASK MODE COMPLETE",
-	"NAVIGATOR_STATUS",
-	"━━━━━━━━━━",
-	"Phase:",
-	"Iteration:",
-	"Progress:",
-	"Completion Indicators:",
-	"Exit Conditions:",
-	"State Hash:",
-	"Next Action:",
-}
 
 // FormatTaskConfirmation formats a task confirmation message
 func FormatTaskConfirmation(taskID, description, projectPath string) string {
@@ -130,7 +114,7 @@ func formatSuccessResult(result *executor.ExecutionResult) string {
 	}
 
 	// Clean and add output summary
-	cleanOutput := cleanInternalSignals(result.Output)
+	cleanOutput := comms.CleanInternalSignals(result.Output)
 	if cleanOutput != "" {
 		// Extract key information from output
 		summary := extractSummary(cleanOutput)
@@ -194,7 +178,7 @@ func formatFailureResult(result *executor.ExecutionResult) string {
 		sb.WriteString(formatQualityGatesSummary(result.QualityGates))
 	}
 
-	cleanError := cleanInternalSignals(result.Error)
+	cleanError := comms.CleanInternalSignals(result.Error)
 	if cleanError == "" {
 		cleanError = "Unknown error"
 	}
@@ -240,7 +224,7 @@ func FormatQuestionAck() string {
 // FormatQuestionAnswer formats an answer to a question
 func FormatQuestionAnswer(answer string) string {
 	// Clean any internal signals from the answer
-	cleanAnswer := cleanInternalSignals(answer)
+	cleanAnswer := comms.CleanInternalSignals(answer)
 
 	// Convert markdown tables to lists (Telegram doesn't support tables)
 	cleanAnswer = convertTablesToLists(cleanAnswer)
@@ -325,73 +309,6 @@ func parseTableRow(row string) []string {
 		}
 	}
 	return cells
-}
-
-// cleanInternalSignals removes internal Navigator signals from output
-func cleanInternalSignals(text string) string {
-	if text == "" {
-		return ""
-	}
-
-	lines := strings.Split(text, "\n")
-	var cleanLines []string
-	skipBlock := false
-	inSignalFence := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if inSignalFence {
-			if trimmed == "```" {
-				inSignalFence = false
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```pilot-signal") {
-			inSignalFence = true
-			continue
-		}
-		if strings.HasPrefix(trimmed, `{"v":`) && strings.HasSuffix(trimmed, "}") {
-			continue
-		}
-		// Skip NAVIGATOR_STATUS blocks
-		if strings.Contains(line, "NAVIGATOR_STATUS") {
-			skipBlock = true
-			continue
-		}
-		if skipBlock {
-			// End of block when we see another separator
-			if strings.HasPrefix(strings.TrimSpace(line), "━") && len(cleanLines) > 0 {
-				skipBlock = false
-			}
-			continue
-		}
-
-		// Skip lines with internal signals
-		shouldSkip := false
-		for _, signal := range internalSignals {
-			if strings.Contains(line, signal) {
-				shouldSkip = true
-				break
-			}
-		}
-		if shouldSkip {
-			continue
-		}
-
-		// Skip empty lines at the start
-		if len(cleanLines) == 0 && strings.TrimSpace(line) == "" {
-			continue
-		}
-
-		cleanLines = append(cleanLines, line)
-	}
-
-	// Trim trailing empty lines
-	for len(cleanLines) > 0 && strings.TrimSpace(cleanLines[len(cleanLines)-1]) == "" {
-		cleanLines = cleanLines[:len(cleanLines)-1]
-	}
-
-	return strings.Join(cleanLines, "\n")
 }
 
 // extractSummary extracts key summary points from output

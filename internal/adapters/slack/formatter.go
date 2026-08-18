@@ -3,6 +3,8 @@ package slack
 import (
 	"fmt"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/comms"
 )
 
 // Block Kit formatting helpers for Slack messages.
@@ -60,13 +62,17 @@ func FormatTaskResult(output string, success bool, prURL string) string {
 	}
 
 	if output != "" {
+		// Strip internal Navigator/Pilot signal markers before this ever
+		// reaches a Slack user (GH-4967 — previously unwired dead code).
+		out := comms.CleanInternalSignals(output)
 		// Truncate if too long for Slack
-		out := output
 		if len(out) > 2500 {
 			out = out[:2497] + "..."
 		}
-		sb.WriteString(out)
-		sb.WriteString("\n\n")
+		if out != "" {
+			sb.WriteString(out)
+			sb.WriteString("\n\n")
+		}
 	}
 
 	if prURL != "" {
@@ -297,22 +303,4 @@ func planEmptyMessage(resultError string, resultSuccess bool) string {
 	default:
 		return "🤷 The task may be too simple for planning. Try executing it directly."
 	}
-}
-
-// CleanInternalSignals removes internal Navigator signals from output.
-func CleanInternalSignals(output string) string {
-	// Remove common internal signals
-	signals := []string{
-		"[EXIT_SIGNAL]",
-		"[NAV_COMPLETE]",
-		"[RESEARCH_DONE]",
-		"[IMPL_DONE]",
-	}
-
-	result := output
-	for _, signal := range signals {
-		result = strings.ReplaceAll(result, signal, "")
-	}
-
-	return strings.TrimSpace(result)
 }
