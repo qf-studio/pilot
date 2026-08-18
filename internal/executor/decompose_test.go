@@ -946,6 +946,13 @@ func TestHasNoDecomposePhrase(t *testing.T) {
 		{name: "should not be split", body: "This should not be split across PRs.", expected: true},
 		{name: "is a standalone task", body: "This is a standalone task covering one package.", expected: true},
 		{name: "as a single PR", body: "Implement it as a single PR.", expected: true},
+		// GH-4938: bare "no-decompose" token — the way people naturally
+		// write it, mirroring the label name (#4929 mis-split)
+		{name: "bare no-decompose token with context", body: "## Fix (no-decompose — single subsystem, internal/adapters/jira)", expected: true},
+		{name: "bare no-decompose token alone on a line", body: "no-decompose", expected: true},
+		{name: "bare no-decompose token mixed case", body: "No-Decompose", expected: true},
+		{name: "nodecompose without hyphen unmatched", body: "please nodecompose this task", expected: false},
+		{name: "no decompose without hyphen unmatched", body: "no decompose please", expected: false},
 		// Each canonical phrase in title → true
 		{name: "do not decompose in title", title: "do not decompose this", expected: true},
 		{name: "do not split in title", title: "do not split this", expected: true},
