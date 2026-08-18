@@ -1982,7 +1982,7 @@ func (r *Runner) getSubIssuePRState(ctx context.Context, projectPath string, prN
 // renders its per-state counts in, so the summary text is deterministic despite
 // being built from a map.
 var childTerminalStateOrder = []string{
-	"completed", "no_op", "skipped", "declined", "rate_limited", "stalled", "infra", "failed",
+	"completed", "no_op", "skipped", "superseded", "declined", "rate_limited", "stalled", "infra", "failed",
 }
 
 // summarizeChildTerminalStates classifies a decomposed parent from its
@@ -2904,6 +2904,42 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			IsCanary: parent.IsCanary,
 		}
 
+		// GH-4944: revalidate the child issue's live GitHub state immediately
+		// before dispatch — this is the gap checkIssueSupersededBeforePR
+		// (runner.go, the PR-creation backstop below) can't cover: closing a
+		// queued epic child is a legitimate operator verb (removing a
+		// mis-decomposed fragment), but until now the loop dispatched the
+		// CLOSED child anyway. The executor ran to completion and only
+		// aborted at PR-creation time — and that single abort failed the
+		// WHOLE epic run, triggering a parent retry and full nondeterministic
+		// re-decomposition (live specimen: #4929 run 1 / child #4932,
+		// 2026-08-18; pitfall memory
+		// pilot-issue-missing-no-decompose-fragments-single-fix). Mirrors
+		// dispatcher.go's pickup-time guard, which this in-process sub-issue
+		// loop never passes through. Fails open on any lookup error —
+		// pipeline availability outranks the guard, same contract as every
+		// other fetchIssueState call site.
+		if state, ghErr := fetchIssueState(ctx, r, subTask, subTaskRepoPath); ghErr != nil {
+			r.log.Warn("Failed to revalidate child issue state before dispatch; proceeding (fail-open)",
+				"parent_id", parent.ID,
+				"sub_issue", issueRef,
+				"error", ghErr,
+			)
+		} else if state.Closed {
+			detail := fmt.Sprintf("issue closed before dispatch (superseded_label=%t, labels=%v)", state.HasLabel(labelPilotSuperseded), state.Labels)
+			r.log.Info("Child issue closed before dispatch; superseding without execution",
+				"parent_id", parent.ID,
+				"sub_issue", issueRef,
+				"labels", state.Labels,
+			)
+			skipMsg := fmt.Sprintf("⏭️ Skipped %d/%d: closed externally: %s (%s)",
+				i+1, total, issue.Subtask.Title, issueRef)
+			_ = r.UpdateIssueProgress(ctx, projectPath, parentRef, skipMsg)
+			r.recordExecutionEvent(parent.LogExecutionID(), memory.StageSuperseded, detail)
+			childStates = append(childStates, "superseded")
+			continue
+		}
+
 		// GH-4141: give this in-process sub-issue run its own executions ledger
 		// row before invoking the backend. Without one, Task.LogExecutionID()
 		// falls back to subTask.ID ("GH-N"), which has no matching executions
@@ -3046,6 +3082,27 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 					"error", result.Error,
 				)
 				r.finalizeSubIssueExecution(subExecID, "no_op", result, subExecStart)
+				continue
+			}
+			// GH-4944: the child was closed externally WHILE it executed —
+			// checkIssueSupersededBeforePR (runner.go's PR-creation preflight)
+			// caught it and refused to open the PR, setting Outcome=
+			// "superseded" instead of a bare failure. This is the backstop
+			// for closes that happen mid-execution, i.e. after the
+			// pre-dispatch check above already passed. Treat it the same as
+			// the pre-dispatch case: supersede and continue the sequence
+			// rather than failing the whole epic run.
+			if result.Outcome == "superseded" {
+				childStates = append(childStates, "superseded")
+				supersededMsg := fmt.Sprintf("⏭️ Skipped %d/%d: closed externally: %s — %s",
+					i+1, total, issue.Subtask.Title, result.Error)
+				_ = r.UpdateIssueProgress(ctx, projectPath, parentRef, supersededMsg)
+				r.log.Info("sub-issue superseded (closed during execution); continuing epic",
+					"parent_id", parent.ID,
+					"sub_issue", issueRef,
+					"error", result.Error,
+				)
+				r.finalizeSubIssueExecution(subExecID, "superseded", result, subExecStart)
 				continue
 			}
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - %s",
