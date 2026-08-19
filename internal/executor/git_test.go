@@ -1458,3 +1458,117 @@ func TestCreateRecoveryRef(t *testing.T) {
 func trimNewline(s string) string {
 	return strings.TrimRight(s, "\n")
 }
+
+// runGitIn runs a git command in dir, failing the test on error.
+func runGitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git -C %s %v: %v\n%s", dir, args, err, out)
+	}
+	return string(out)
+}
+
+// TestGetDiffWithBase_StaleLocalMainUpstreamAdvance is the GH-4988
+// regression test. It reproduces the exact false-veto RCA: a worktree's
+// local "main" ref goes stale (never fetched again after the task branch
+// was cut), other issues merge more commits onto origin/main in the
+// meantime, and the intent judge's diff must still contain only the task's
+// own commit — never the commits that landed on origin/main in between.
+func TestGetDiffWithBase_StaleLocalMainUpstreamAdvance(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+
+	// Bare "origin" remote.
+	remoteDir := t.TempDir()
+	runGitIn(t, remoteDir, "init", "--bare")
+
+	// workRepo is the long-lived worktree under test.
+	workDir := t.TempDir()
+	runGitIn(t, workDir, "init", "-b", "main")
+	runGitIn(t, workDir, "config", "user.email", "test@test.com")
+	runGitIn(t, workDir, "config", "user.name", "Test User")
+	runGitIn(t, workDir, "remote", "add", "origin", remoteDir)
+	if err := os.WriteFile(filepath.Join(workDir, "shared.txt"), []byte("base"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGitIn(t, workDir, "add", "shared.txt")
+	runGitIn(t, workDir, "commit", "-m", "C0: initial")
+	runGitIn(t, workDir, "push", "-u", "origin", "main")
+
+	// A second clone stands in for other Pilot tasks merging PRs to main
+	// while workDir's task branch is being worked on.
+	otherDir := t.TempDir()
+	runGitIn(t, otherDir, "clone", remoteDir, ".")
+	runGitIn(t, otherDir, "config", "user.email", "other@test.com")
+	runGitIn(t, otherDir, "config", "user.name", "Other User")
+
+	commitAndPush := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(otherDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		runGitIn(t, otherDir, "add", name)
+		runGitIn(t, otherDir, "commit", "-m", "merge "+name)
+		runGitIn(t, otherDir, "push", "origin", "main")
+	}
+
+	// C1, C2: two other issues' work land on origin/main.
+	commitAndPush("other1.txt", "other issue 1")
+	commitAndPush("other2.txt", "other issue 2")
+
+	// Simulate worktree/task-branch creation: fetch origin/main (picks up
+	// C1+C2) and branch the task off it - origin/main at branch-cut time.
+	runGitIn(t, workDir, "fetch", "origin", "main")
+	branchCutSHA := trimNewline(runGitIn(t, workDir, "rev-parse", "origin/main"))
+	runGitIn(t, workDir, "checkout", "-b", "task", "origin/main")
+
+	// Task's own commit.
+	if err := os.WriteFile(filepath.Join(workDir, "task.txt"), []byte("task change"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGitIn(t, workDir, "add", "task.txt")
+	runGitIn(t, workDir, "commit", "-m", "C3: task change")
+
+	// C4: yet another issue merges to origin/main *after* the task branch
+	// was cut and *before* the judge runs - this is "current origin/main".
+	commitAndPush("other3.txt", "other issue 3, merged after branch cut")
+
+	// Critically: workDir's local "main" ref is never touched again after
+	// the initial push - it is stale at C0, exactly like a long-lived
+	// daemon repo/worktree whose local main ref isn't kept in sync.
+	staleLocalMainSHA := trimNewline(runGitIn(t, workDir, "rev-parse", "main"))
+
+	git := NewGitOperations(workDir)
+
+	diff, baseSHA, err := git.GetDiffWithBase(ctx, "main")
+	if err != nil {
+		t.Fatalf("GetDiffWithBase failed: %v", err)
+	}
+
+	// The resolved base must be the merge-base with (fetched) origin/main -
+	// i.e. the SHA origin/main pointed to when the task branch was cut -
+	// not the stale local "main" ref, and not current origin/main (C4).
+	if baseSHA != branchCutSHA {
+		t.Errorf("baseSHA = %q, want branch-cut origin/main SHA %q", baseSHA, branchCutSHA)
+	}
+	if baseSHA == staleLocalMainSHA {
+		t.Fatalf("baseSHA resolved to the stale local main ref (%q) - fix regressed", staleLocalMainSHA)
+	}
+
+	// The diff must contain only the task's own change...
+	if !strings.Contains(diff, "task.txt") {
+		t.Errorf("diff missing task's own change (task.txt):\n%s", diff)
+	}
+	// ...and never the other issues' already-merged work, whether it landed
+	// before the branch was cut (other1/other2) or after (other3, which is
+	// reachable from current origin/main but not from HEAD at all).
+	for _, unrelated := range []string{"other1.txt", "other2.txt", "other3.txt"} {
+		if strings.Contains(diff, unrelated) {
+			t.Errorf("diff contains unrelated other-issue file %q - stale/incorrect base leaked into judge diff:\n%s", unrelated, diff)
+		}
+	}
+}

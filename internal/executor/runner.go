@@ -4666,6 +4666,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		var intentErr error
 		var intentDiff string
 		var intentBaseBranch string
+		var intentBaseSHA string // GH-4988: base commit the judge diff was computed against
 
 		// Determine if intent judge should run
 		runIntentJudge := r.intentJudge != nil && task.CreatePR && !task.DirectCommit && task.Branch != ""
@@ -4690,7 +4691,12 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					intentBaseBranch = "main"
 				}
 			}
-			intentDiff, intentErr = git.GetDiff(ctx, intentBaseBranch)
+			// GH-4988: GetDiffWithBase fetches origin/<intentBaseBranch>
+			// fresh and diffs against its merge-base with HEAD, so the
+			// judge's diff never contains commits reachable from current
+			// origin/main (e.g. other issues' already-merged work sitting
+			// on a stale local base ref).
+			intentDiff, intentBaseSHA, intentErr = git.GetDiffWithBase(ctx, intentBaseBranch)
 			if intentErr != nil {
 				log.Warn("Intent judge skipped: failed to get diff",
 					slog.String("task_id", task.ID),
@@ -4699,6 +4705,12 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				runIntentJudge = false
 			} else if intentDiff == "" {
 				runIntentJudge = false
+			} else {
+				log.Info("Intent judge diff base resolved",
+					slog.String("task_id", task.ID),
+					slog.String("base_branch", intentBaseBranch),
+					slog.String("base_sha", intentBaseSHA),
+				)
 			}
 		}
 
@@ -4729,6 +4741,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				log.Info("Intent judge running",
 					slog.String("task_id", task.ID),
 					slog.Int("diff_len", len(intentDiff)),
+					slog.String("base_sha", intentBaseSHA), // GH-4988
 				)
 				r.reportProgress(task.ID, "Intent Check", 96, "Verifying diff matches intent...")
 				intentVerdict, intentErr = r.intentJudge.Judge(ctx, task.Title, task.Description, intentDiff)
@@ -4798,9 +4811,17 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						result.TokensOutput = state.tokensOutput
 						result.TokensTotal = state.tokensInput + state.tokensOutput
 
-						// Re-judge the new diff
-						newDiff, _ := git.GetDiff(ctx, intentBaseBranch)
+						// Re-judge the new diff. GH-4988: GetDiffWithBase
+						// re-fetches origin/<intentBaseBranch> so the retry's
+						// judge diff is computed against the same
+						// never-stale base as the first pass.
+						newDiff, newBaseSHA, _ := git.GetDiffWithBase(ctx, intentBaseBranch)
 						if newDiff != "" {
+							log.Info("Intent judge retry diff base resolved",
+								slog.String("task_id", task.ID),
+								slog.String("base_branch", intentBaseBranch),
+								slog.String("base_sha", newBaseSHA),
+							)
 							v2, _ := r.intentJudge.Judge(ctx, task.Title, task.Description, newDiff)
 							if v2 != nil && !v2.Passed {
 								result.IntentWarning = v2.Reason

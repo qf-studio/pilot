@@ -1156,16 +1156,77 @@ func (g *GitOperations) ResetHardToCommit(ctx context.Context, sha string) error
 	return nil
 }
 
-// GetDiff returns the diff between the base branch and HEAD.
-// Uses three-dot notation (base...HEAD) to show changes on the current branch.
+// GetDiff returns the diff between HEAD and the merge-base of
+// origin/baseBranch and HEAD. See GetDiffWithBase for the variant that also
+// returns the resolved base SHA.
 func (g *GitOperations) GetDiff(ctx context.Context, baseBranch string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", baseBranch+"...HEAD")
+	diff, _, err := g.GetDiffWithBase(ctx, baseBranch)
+	return diff, err
+}
+
+// GetDiffWithBase returns the diff between HEAD and the merge-base of
+// origin/baseBranch and HEAD, along with the resolved base SHA so callers
+// (the intent judge) can log exactly which commit the diff was computed
+// against.
+//
+// GH-4988: intent judge false-veto RCA. The judge repeatedly flagged correct
+// first-generation diffs as "scope creep" because the diff it evaluated was
+// computed against a stale ref — this function previously ran
+// `git diff <local baseBranch>...HEAD` directly, with no fetch. In a
+// long-lived daemon repo/worktree, the local "main" ref can be arbitrarily
+// behind origin/main by the time the judge runs. Since HEAD (the task
+// branch) descends from an up-to-date origin/main at branch-cut time, the
+// merge-base of the stale local ref and HEAD collapses to the stale ref
+// itself — so the three-dot diff pulled in every commit that had landed on
+// origin/main between that staleness point and judge time (other issues'
+// already-merged work), which the judge then correctly, but misleadingly,
+// flagged as unrelated to this task. Recurred 5x in 2 days (GH-4922,
+// GH-4938, sdk#119, GH-4952, GH-4965/4966) before this fix.
+//
+// Fetching origin/<baseBranch> fresh and diffing against its merge-base with
+// HEAD guarantees the diff never contains commits reachable from current
+// origin/main, regardless of how stale the local ref is. The fetch is
+// best-effort (mirrors CountNewCommitsAgainstOrigin): if it fails, or no
+// "origin" remote is configured at all (bare local repos, some unit tests),
+// this falls back to comparing against the local baseBranch ref, preserving
+// the previous behavior in that environment.
+func (g *GitOperations) GetDiffWithBase(ctx context.Context, baseBranch string) (diff string, baseSHA string, err error) {
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
+	fetchCmd.Dir = g.projectPath
+	withGitCredentials(ctx, fetchCmd)
+	_ = fetchCmd.Run() // best-effort; fall back to the local ref below on failure
+
+	baseRef := "origin/" + baseBranch
+	mergeBaseOut, mbErr := g.mergeBase(ctx, baseRef)
+	if mbErr != nil {
+		// No origin remote, or origin/<baseBranch> doesn't resolve locally -
+		// fall back to the local ref (previous behavior).
+		baseRef = baseBranch
+		mergeBaseOut, mbErr = g.mergeBase(ctx, baseRef)
+		if mbErr != nil {
+			return "", "", fmt.Errorf("git merge-base %s HEAD failed: %w", baseRef, mbErr)
+		}
+	}
+	baseSHA = mergeBaseOut
+
+	cmd := exec.CommandContext(ctx, "git", "diff", baseSHA+"...HEAD")
+	cmd.Dir = g.projectPath
+	output, diffErr := cmd.Output()
+	if diffErr != nil {
+		return "", "", fmt.Errorf("git diff failed: %w", diffErr)
+	}
+	return string(output), baseSHA, nil
+}
+
+// mergeBase resolves the merge-base commit SHA between ref and HEAD.
+func (g *GitOperations) mergeBase(ctx context.Context, ref string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "merge-base", ref, "HEAD")
 	cmd.Dir = g.projectPath
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git diff failed: %w", err)
+		return "", err
 	}
-	return string(output), nil
+	return strings.TrimSpace(string(output)), nil
 }
 
 // Pull fetches and merges changes from remote for the specified branch
