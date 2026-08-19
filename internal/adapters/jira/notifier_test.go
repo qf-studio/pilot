@@ -58,6 +58,42 @@ func TestNotifyTaskStarted_WithTransitionID(t *testing.T) {
 	}
 }
 
+// TestNotifyTaskStarted_CloudADFCommentResponse verifies NotifyTaskStarted
+// succeeds when the Cloud API echoes the posted comment back as an ADF
+// object (the real-world response shape). Before Comment.Body was ADFText,
+// this response failed to unmarshal and NotifyTaskStarted always returned
+// an error despite the comment having been posted successfully (GH-4998,
+// twin of studio-sdk#121, live-verified on the KAN-6 e2e card).
+func TestNotifyTaskStarted_CloudADFCommentResponse(t *testing.T) {
+	client, server := newTestNotifierServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/api/3/issue/PROJ-42/transitions" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/rest/api/3/issue/PROJ-42/comment" && r.Method == http.MethodPost:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id": "10047",
+				"body": {
+					"type": "doc",
+					"version": 1,
+					"content": [
+						{"type": "paragraph", "content": [{"type": "text", "text": "started"}]}
+					]
+				}
+			}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer server.Close()
+
+	notifier := NewNotifier(client, "21", "31")
+	if err := notifier.NotifyTaskStarted(context.Background(), "PROJ-42", "task-123"); err != nil {
+		t.Fatalf("NotifyTaskStarted failed on Cloud ADF comment response: %v", err)
+	}
+}
+
 func TestNotifyTaskStarted_WithoutTransitionID(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string

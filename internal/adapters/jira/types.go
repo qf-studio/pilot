@@ -234,13 +234,15 @@ type TransitionsResponse struct {
 	Transitions []Transition `json:"transitions"`
 }
 
-// Comment represents a Jira comment
+// Comment represents a Jira comment. Body is ADFText because Jira Cloud v3
+// returns comment bodies as Atlassian Document Format (ADF) objects, while
+// Server/DC returns plain strings (same split as Fields.Description).
 type Comment struct {
-	ID      string `json:"id"`
-	Body    string `json:"body"`
-	Author  User   `json:"author"`
-	Created string `json:"created"`
-	Updated string `json:"updated"`
+	ID      string  `json:"id"`
+	Body    ADFText `json:"body"`
+	Author  User    `json:"author"`
+	Created string  `json:"created"`
+	Updated string  `json:"updated"`
 }
 
 // RemoteLink represents a Jira remote link (for PR linking)

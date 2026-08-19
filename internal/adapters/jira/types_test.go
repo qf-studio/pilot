@@ -2,6 +2,7 @@ package jira
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -117,6 +118,96 @@ func TestADFText_UnmarshalJSON_InvalidJSON(t *testing.T) {
 	var got ADFText
 	if err := json.Unmarshal([]byte(`not-json`), &got); err == nil {
 		t.Errorf("UnmarshalJSON() expected error for invalid JSON, got nil")
+	}
+}
+
+// TestComment_UnmarshalJSON_MixedBodyShapes verifies that Comment (which
+// embeds ADFText for Body) correctly parses both plain-string (Server/DC)
+// and ADF-object (Cloud v3 AddComment response) body payloads. Before
+// Comment.Body was ADFText, unmarshaling a Cloud response into a plain
+// string field rejected the entire AddComment response with:
+//
+//	json: cannot unmarshal object into Go struct field Comment.body of type string
+//
+// even though the comment had already been posted successfully (GH-4998,
+// twin of studio-sdk#121 / sdk PR#122, same class as pilot#4929).
+func TestComment_UnmarshalJSON_MixedBodyShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want ADFText
+	}{
+		{
+			name: "plain string body (Server/DC)",
+			json: `{"id":"10001","body":"Test comment"}`,
+			want: "Test comment",
+		},
+		{
+			name: "ADF object body (Cloud v3)",
+			json: `{
+				"id": "10047",
+				"body": {
+					"type": "doc",
+					"version": 1,
+					"content": [
+						{"type": "paragraph", "content": [{"type": "text", "text": "Pilot started working on this issue"}]}
+					]
+				}
+			}`,
+			want: "Pilot started working on this issue",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var c Comment
+			if err := json.Unmarshal([]byte(tt.json), &c); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.Body != tt.want {
+				t.Errorf("Body = %q, want %q", c.Body, tt.want)
+			}
+		})
+	}
+}
+
+// TestComment_UnmarshalJSON_LegacyStringFieldWouldFail documents the exact
+// live failure this fix prevents: unmarshaling a Cloud ADF comment body
+// into a plain string field (the pre-fix Comment.Body type) rejects the
+// entire response even though the comment was posted successfully.
+func TestComment_UnmarshalJSON_LegacyStringFieldWouldFail(t *testing.T) {
+	type legacyComment struct {
+		ID   string `json:"id"`
+		Body string `json:"body"`
+	}
+	adfBody := `{
+		"id": "10047",
+		"body": {
+			"type": "doc",
+			"version": 1,
+			"content": [
+				{"type": "paragraph", "content": [{"type": "text", "text": "Pilot started working on this issue"}]}
+			]
+		}
+	}`
+
+	var legacy legacyComment
+	err := json.Unmarshal([]byte(adfBody), &legacy)
+	if err == nil {
+		t.Fatal("expected error unmarshaling ADF body into string-typed field, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot unmarshal object into Go struct field") ||
+		!strings.Contains(err.Error(), "body") {
+		t.Errorf("error = %q, want it to describe the body field unmarshal failure", err.Error())
+	}
+
+	// The fixed Comment type parses the identical payload without error.
+	var fixed Comment
+	if err := json.Unmarshal([]byte(adfBody), &fixed); err != nil {
+		t.Fatalf("Comment (ADFText Body) failed to parse the same payload: %v", err)
+	}
+	if fixed.Body != "Pilot started working on this issue" {
+		t.Errorf("fixed.Body = %q, want %q", fixed.Body, "Pilot started working on this issue")
 	}
 }
 
