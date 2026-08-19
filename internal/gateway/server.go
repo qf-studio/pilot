@@ -106,6 +106,7 @@ type Server struct {
 	logStreamStore           LogStreamStore
 	gitGraphPath             string                    // Project path for git graph API (defaults to ".")
 	gitGraphFetcher          GitGraphFetcher           // Injected to avoid import cycle with internal/dashboard
+	docsProjectPath          string                    // GH-5003: project worktree path backing /api/v1/docs/{tree,file}; "" until SetDocsProjectPath is called
 	decisionRecorder         approval.DecisionRecorder // GH-4748: backs POST /api/v1/approvals/{requestId}/decision
 	chatAPI                  ChatAPI                   // GH-4835: backs the chat routes; nil = routes not registered (adapters.chat.enabled: false)
 	daemonCtx                context.Context           // GH-4835: long-lived ctx stashed by Start(), used to dispatch chat tasks outside the HTTP request lifetime
@@ -254,6 +255,12 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("POST /api/v1/approvals/{requestId}/decision", s.handleApprovalDecision)
 	apiMux.HandleFunc("GET /api/v1/executions/{id}/events", s.handleExecutionEvents)
 	apiMux.HandleFunc("GET /api/v1/tasks/{taskId}/events", s.handleTaskEvents)
+
+	// GH-5003 / TASK-466 read leg: docs routes are always-on, unlike chat
+	// above — a pure file reader has no side effects, so there's no
+	// adapters.chat.enabled-style config gate (founder decision 2026-08-19).
+	apiMux.HandleFunc("GET /api/v1/docs/tree", s.handleDocsTree)
+	apiMux.HandleFunc("GET /api/v1/docs/file", s.handleDocsFile)
 
 	// GH-4835: chat routes only exist when a ChatAPI has been wired
 	// (adapters.chat.enabled: true at both daemon construction sites). When
@@ -412,6 +419,21 @@ func (s *Server) SetGitGraphFetcher(f GitGraphFetcher) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gitGraphFetcher = f
+}
+
+// SetDocsProjectPath sets the project worktree path backing
+// GET /api/v1/docs/tree and GET /api/v1/docs/file (GH-5003 / TASK-466 read
+// leg). Mirrors SetGitGraphPath: must be called at BOTH daemon construction
+// sites (cmd/pilot/main.go's gateway mode and polling mode) — a contract
+// wired only one way silently doesn't exist in the other (the GH-4784
+// class; pilot#4835 §wiring is the precedent). Unlike dashboard/gitgraph
+// scoping, this is never cleared to "" for an "all projects" view — the
+// docs routes always resolve a single filesystem `.agent/` tree, so callers
+// must pass the actual project directory.
+func (s *Server) SetDocsProjectPath(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.docsProjectPath = path
 }
 
 // Shutdown gracefully shuts down the server with a 30-second timeout.

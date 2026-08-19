@@ -1340,6 +1340,12 @@ Examples:
 			})
 			p.Gateway().SetGitGraphPath(projectPath)
 
+			// GH-5003 / TASK-466 read leg: wire the project path backing
+			// GET /api/v1/docs/tree and /docs/file (gateway mode). Must
+			// mirror the polling-mode wiring below or the routes 404 in
+			// this mode (the GH-4784 class; pilot#4835 §wiring precedent).
+			p.Gateway().SetDocsProjectPath(projectPath)
+
 			// GH-1935: Wire learning system into gateway mode (mirrors polling-mode wiring)
 			if gwStore != nil && (cfg.Memory.Learning == nil || cfg.Memory.Learning.Enabled) {
 				gwPatternStore, gwPatternErr := memory.NewGlobalPatternStore(cfg.Memory.Path)
@@ -2703,6 +2709,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			return dashboard.FetchGitGraph(path, limit)
 		})
 		gwServer.SetGitGraphPath(projectPath)
+
+		// GH-5003 / TASK-466 read leg: wire the project path backing
+		// GET /api/v1/docs/tree and /docs/file (polling mode). Must mirror
+		// the gateway-mode wiring above or the routes 404 in this mode.
+		gwServer.SetDocsProjectPath(projectPath)
 		go func() {
 			addr := fmt.Sprintf("%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
 			logging.WithComponent("gateway").Info("gateway started in background", "addr", addr)
