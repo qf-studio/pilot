@@ -133,6 +133,21 @@ type ReleaseNotifier interface {
 	NotifyReleased(ctx context.Context, prState *PRState, releaseURL string) error
 }
 
+// JiraDoneNotifier fires the merge-side "done" leg for a Jira-originated
+// task: a completion comment carrying the PR URL, plus a request to
+// transition the card to a done-category status. GH-4987: the start leg
+// (GH-4718) already notifies Jira when a task begins; this is its
+// counterpart at merge time. Implemented by the SDK's
+// sdk/integrations/jira.Notifier (constructed in cmd/pilot/poller_jira.go
+// and wired in via SetJiraDoneNotifier) — this narrow interface keeps
+// studio-sdk out of internal/autopilot's import graph, mirroring
+// executor/alerts.go's AlertEventProcessor seam.
+type JiraDoneNotifier interface {
+	// NotifyTaskCompleted posts a completion comment (with prURL) and
+	// requests the done-category transition for issueKey.
+	NotifyTaskCompleted(ctx context.Context, issueKey, prURL, summary string) error
+}
+
 // TaskMonitor allows autopilot to update task display state.
 // GH-1336: Sync monitor state when autopilot merges PR so dashboard shows correct status.
 type TaskMonitor interface {
@@ -439,6 +454,7 @@ type Controller struct {
 	releaser         *Releaser
 	deployer         *Deployer
 	notifier         Notifier
+	jiraDoneNotifier JiraDoneNotifier   // GH-4987: merge-side done leg for JIRA-* tasks (optional, nil = no Jira notify)
 	monitor          TaskMonitor        // GH-1336: sync dashboard state on merge
 	dispatcherLive   DispatcherLiveness // GH-4412: always-on live-worker signal (unlike monitor, dashboard-only)
 	laneQueueStatus  LaneQueueStatus    // GH-4454: project-scoped queued/running count for lane-starvation detection
@@ -1164,6 +1180,13 @@ func (c *Controller) resolveParentIssue(ctx context.Context, issueNum int) int {
 // This is optional; if not set, no notifications will be sent.
 func (c *Controller) SetNotifier(n Notifier) {
 	c.notifier = n
+}
+
+// SetJiraDoneNotifier wires the merge-side Jira done leg (GH-4987).
+// This is optional; if not set, JIRA-* tasks get no merge-side Jira
+// notification (matching today's behavior for every task source).
+func (c *Controller) SetJiraDoneNotifier(n JiraDoneNotifier) {
+	c.jiraDoneNotifier = n
 }
 
 // SetMonitor sets the task monitor for dashboard state sync.
@@ -4024,6 +4047,51 @@ func (c *Controller) shouldDeferIssueClose(ctx context.Context, issueNum, prNum 
 	return false
 }
 
+// jiraTaskIDPrefix is the SDK adapter's prefix for Jira-originated task IDs
+// (sdk/integrations/jira/adapter.go: SequenceID = "JIRA-" + issue.Key).
+// Branch names follow the "pilot/<task-id>" convention set in
+// cmd/pilot/handlers.go (handleJiraSDKIssueWithResult), so a Jira-originated
+// PR's branch is "pilot/JIRA-<KEY>".
+const jiraTaskIDPrefix = "JIRA-"
+
+// jiraIssueKeyFromBranch extracts the native Jira issue key (e.g. "KAN-6")
+// from a Pilot branch name (e.g. "pilot/JIRA-KAN-6"). Returns "" for any
+// branch that isn't a JIRA-* task — including GH-*/Linear-originated
+// branches — so callers can gate the Jira-only merge leg without touching
+// behavior for other task sources (GH-4987 acceptance criteria).
+func jiraIssueKeyFromBranch(branchName string) string {
+	taskID := strings.TrimPrefix(branchName, "pilot/")
+	if !strings.HasPrefix(taskID, jiraTaskIDPrefix) {
+		return ""
+	}
+	return strings.TrimPrefix(taskID, jiraTaskIDPrefix)
+}
+
+// notifyJiraDone fires the Jira merge-side done leg (GH-4987): a completion
+// comment carrying the PR URL, plus the done-category transition, for a
+// JIRA-* task's merged PR. No-op when jiraDoneNotifier isn't wired
+// (SetJiraDoneNotifier never called — e.g. Jira adapter disabled) or when
+// prState's branch doesn't match the "pilot/JIRA-<KEY>" convention — GH-/
+// Linear-originated tasks fall through here untouched. Failure is WARN-only:
+// this must never fail or block the merge path, mirroring every other
+// merge-time notify call in handleMerging (labels, comments, c.notifier).
+func (c *Controller) notifyJiraDone(ctx context.Context, prState *PRState) {
+	if c.jiraDoneNotifier == nil {
+		return
+	}
+	issueKey := jiraIssueKeyFromBranch(prState.BranchName)
+	if issueKey == "" {
+		return
+	}
+	if err := c.jiraDoneNotifier.NotifyTaskCompleted(ctx, issueKey, prState.PRURL, ""); err != nil {
+		c.log.Warn("failed to notify Jira task completed",
+			"issue_key", issueKey,
+			"pr", prState.PRNumber,
+			"error", err,
+		)
+	}
+}
+
 func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error {
 	// GH-4792 (TASK-458 part 2): suppress merges while the platform-outage
 	// breaker is open — CI signal itself is untrustworthy during a platform
@@ -4303,6 +4371,13 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			c.log.Warn("failed to send merge notification", "error", err)
 		}
 	}
+
+	// GH-4987: merge-side Jira done leg. Independent of the prState.IssueNumber
+	// > 0 GitHub-issue-close block above — Jira-originated PRs carry
+	// IssueNumber == 0 (OnPRCreated's non-GitHub adapters always pass 0) — and
+	// gated purely on the branch-derived task ID, so GH-/Linear-originated
+	// PRs are untouched (jiraIssueKeyFromBranch returns "" for them).
+	c.notifyJiraDone(ctx, prState)
 
 	// GH-4164: PRs gated by human approval (Telegram/Slack) get a short
 	// "🔀 Merged <sha>" follow-up in the same chat the approval decision was
