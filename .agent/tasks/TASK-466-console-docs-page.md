@@ -1,6 +1,6 @@
 # TASK-466: Console Docs page — surface Navigator `.agent/` docs, later make them manageable
 
-**Status**: 🎨 Design APPROVED 2026-08-11 (`design/docs-v1.html` @ pilot-console-ui, commit 741b8d9). No issue filed; not yet in Pilot's queue — read leg needs contract research first.
+**Status**: 🚀 Read-leg gate DISPATCHED 2026-08-19 — [pilot#5003](https://github.com/qf-studio/pilot/issues/5003) (daemon: `GET /api/v1/docs/tree` + `GET /api/v1/docs/file`, C17 gate sequencing per pilot#4835). Contract research done 2026-08-19: daemon-proxy over GitHub-direct (live worktree beats pushed main); console leg = C13 proxy `allowedTails` extension, **file only after #5003 merges, frozen on the merged contract**. Founder decisions 08-19: 413 hard-reject >512KB · always-on (no config gate) · `graph.json` not served in v1 (counts from memories subdir walk).
 **Created**: 2026-08-11
 **Assignee**: —
 
