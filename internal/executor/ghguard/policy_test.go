@@ -176,6 +176,24 @@ func TestClassify(t *testing.T) {
 		{"api --input with explicit GET", []string{"api", "x", "-X", "GET", "--input", "p.json"}, VerdictDeny},
 		{"api --input=file", []string{"api", "x", "--input=p.json"}, VerdictDeny}, // regression
 		{"api --input from stdin", []string{"api", "x", "--input", "-"}, VerdictDeny},
+
+		// --- api graphql with data-carrying flags denies regardless of
+		// method (GH-4986/D2): the explicit-GET relaxation above is
+		// REST-shaped and never applies to graphql, since gh always POSTs
+		// the query — the query text, not -X, decides mutate vs. read.
+		{"api graphql with -f query denies (no explicit method)", []string{"api", "graphql", "-f", "query=mutation { x }"}, VerdictDeny},
+		{"api graphql with -f query denies even with explicit -X GET", []string{"api", "graphql", "-f", "query=mutation { x }", "-X", "GET"}, VerdictDeny},
+		{"api graphql with --field denies even with --method get", []string{"api", "graphql", "--field", "query=x", "--method", "get"}, VerdictDeny},
+		{"api graphql with --input denies regardless of method", []string{"api", "graphql", "--input", "p.json", "-X", "GET"}, VerdictDeny},
+		{"api graphql bare is a read", []string{"api", "graphql"}, VerdictAllow},
+		{"api graphql with only benign flags is a read", []string{"api", "graphql", "--jq", ".data"}, VerdictAllow},
+
+		// --- --hostname is the argv twin of GH_HOST (GH-4986): same
+		// fail-closed non-github.com deny, case-insensitive github.com no-op.
+		{"api --hostname non-github.com denies", []string{"api", "--hostname", "ghe.example.com", "user"}, VerdictDeny},
+		{"api --hostname github.com is a no-op", []string{"api", "--hostname", "github.com", "user"}, VerdictAllow},
+		{"api --hostname case-insensitive github.com is a no-op", []string{"api", "--hostname", "GitHub.Com", "user"}, VerdictAllow},
+		{"api --hostname non-github.com denies even a would-be-GET", []string{"api", "--hostname", "ghe.example.com", "user", "-X", "GET"}, VerdictDeny},
 	}
 
 	for _, tt := range tests {
@@ -228,6 +246,16 @@ func TestClassify_EnvOverride(t *testing.T) {
 			[]string{"issue", "view", "1"}, EnvOverride{Host: "github.com"}, VerdictAllow},
 		{"GH_HOST case-insensitive match is a no-op",
 			[]string{"issue", "view", "1"}, EnvOverride{Host: "GitHub.com"}, VerdictAllow},
+
+		// --hostname + GH_HOST both set: denies regardless (host reason),
+		// with argv --hostname taking precedence over GH_HOST — mirroring
+		// -R/--repo's precedence over GH_REPO (GH-4986).
+		{"--hostname and GH_HOST both non-github.com denies",
+			[]string{"api", "--hostname", "ghe.example.com", "user"}, EnvOverride{Host: "other.example.com"}, VerdictDeny},
+		{"argv --hostname=github.com wins over conflicting GH_HOST",
+			[]string{"api", "--hostname", "github.com", "user"}, EnvOverride{Host: "ghe.example.com"}, VerdictAllow},
+		{"argv --hostname=ghe wins over conflicting GH_HOST=github.com — still denied",
+			[]string{"api", "--hostname", "ghe.example.com", "user"}, EnvOverride{Host: "github.com"}, VerdictDeny},
 	}
 
 	for _, tt := range tests {
@@ -284,6 +312,26 @@ func TestClassify_EnvBypassJournalDistinguishable(t *testing.T) {
 	}
 	if hostDeny.EnvHost != "ghe.example.com" {
 		t.Errorf("expected Decision.EnvHost = %q, got %q", "ghe.example.com", hostDeny.EnvHost)
+	}
+	if !strings.Contains(hostDeny.Reason, "GH_HOST") {
+		t.Errorf("expected GH_HOST-driven deny reason to mention GH_HOST, got %q", hostDeny.Reason)
+	}
+
+	// --hostname (argv) is the GH-4986 twin: same EnvHost field (shared
+	// journal schema), but the Reason names --hostname instead of GH_HOST so
+	// the two are still distinguishable in the audit trail.
+	hostnameDeny := Classify(id, []string{"api", "--hostname", "ghe.example.com", "user"}, EnvOverride{})
+	if hostnameDeny.Verdict != VerdictDeny {
+		t.Fatalf("expected deny, got %s", hostnameDeny.Verdict)
+	}
+	if hostnameDeny.EnvHost != "ghe.example.com" {
+		t.Errorf("expected Decision.EnvHost = %q, got %q", "ghe.example.com", hostnameDeny.EnvHost)
+	}
+	if !strings.Contains(hostnameDeny.Reason, "--hostname") {
+		t.Errorf("expected --hostname-driven deny reason to mention --hostname, got %q", hostnameDeny.Reason)
+	}
+	if strings.Contains(hostnameDeny.Reason, "GH_HOST") {
+		t.Errorf("--hostname-driven deny reason should not mention GH_HOST, got %q", hostnameDeny.Reason)
 	}
 }
 
@@ -424,6 +472,19 @@ func TestParseArgs_PflagShapes(t *testing.T) {
 	p = parseArgs([]string{"issue", "view", "1", "--not-a-real-flag", "v"})
 	if p.parseIssue != "" {
 		t.Errorf("issue view unknown flag: parseIssue = %q, want empty (lenient): %+v", p.parseIssue, p)
+	}
+
+	// --hostname (GH-4986): recognized on api, sets host/hostGiven.
+	p = parseArgs([]string{"api", "--hostname", "ghe.example.com", "user"})
+	if !p.hostGiven || p.host != "ghe.example.com" {
+		t.Errorf("--hostname not parsed: hostGiven=%v host=%q, want true/ghe.example.com: %+v", p.hostGiven, p.host, p)
+	}
+
+	// api graphql: the endpoint lands as the first positional, not the sub
+	// (api has no subcommand in this grammar).
+	p = parseArgs([]string{"api", "graphql", "-f", "query=x"})
+	if len(p.positional) == 0 || p.positional[0] != "graphql" || !p.hasFieldFlag {
+		t.Errorf("api graphql: positional=%v hasFieldFlag=%v, want [graphql]/true: %+v", p.positional, p.hasFieldFlag, p)
 	}
 }
 

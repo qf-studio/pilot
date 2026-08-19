@@ -32,23 +32,34 @@
 // mirrors pflag's per-command flag grammar — attached shorthand (-XPOST),
 // `=` forms, boolean bundling, last-occurrence-wins, and `--` termination —
 // via a per-(command,sub) flagSpec table (flagTableFor) rather than one
-// global flag list. Two decisions from the originating research were left
-// open rather than folded in here: denying `api graphql` with field flags
-// regardless of method (belt-and-braces; D2), and consuming known
-// value-flags while scanning for the sub when flags precede the
-// subcommand (a false-deny-only gap; D3).
+// global flag list. One decision from the originating research is still
+// left open rather than folded in here: consuming known value-flags while
+// scanning for the sub when flags precede the subcommand (a false-deny-only
+// gap; D3).
 //
-// GH_REPO/GH_HOST env bypass (GH-4968/D5): argv-only classification missed
-// that `gh` itself also honors GH_REPO/GH_HOST from the environment, so
-// `GH_REPO=other/repo gh issue comment N --body x` used to sail through the
-// -R/--repo check (which only ever looked at argv) straight into a
-// cross-repo mutation — the exact class GH-4649 exists to stop. Classify
-// now takes an EnvOverride carrying those two vars: a set GH_REPO is
-// treated exactly like an explicit -R/--repo when argv gave none (argv
-// still wins when both are present, matching gh's own -R > GH_REPO > local
-// git remote precedence — see EnvOverride's doc comment), and a non-
-// github.com GH_HOST is a hard, unconditional deny (fail closed: every
-// repo this guard reasons about lives on github.com).
+// api graphql with field flags (GH-4986/D2): GraphQL requests are POSTs
+// whose read/write nature lives in the query text, not the HTTP method, so
+// the REST-shaped explicit-GET relaxation in checkAPIRead never applies to
+// `gh api graphql` — any data-carrying flag (-f/-F/--raw-field/--field/
+// --input) denies regardless of -X/--method (belt-and-braces; a
+// fields-carrying graphql call cannot be proven read-only from argv).
+//
+// GH_REPO/GH_HOST env bypass (GH-4968/D5) and its --hostname argv twin
+// (GH-4986): argv-only classification missed that `gh` itself also honors
+// GH_REPO/GH_HOST from the environment, so `GH_REPO=other/repo gh issue
+// comment N --body x` used to sail through the -R/--repo check (which only
+// ever looked at argv) straight into a cross-repo mutation — the exact
+// class GH-4649 exists to stop. Classify now takes an EnvOverride carrying
+// those two vars: a set GH_REPO is treated exactly like an explicit
+// -R/--repo when argv gave none (argv still wins when both are present,
+// matching gh's own -R > GH_REPO > local git remote precedence — see
+// EnvOverride's doc comment), and a non-github.com GH_HOST is a hard,
+// unconditional deny (fail closed: every repo this guard reasons about
+// lives on github.com). `gh api --hostname` is the argv-flag form of the
+// exact same override (gh resolves the api call's host as --hostname >
+// GH_HOST > default github.com) and was left recognized-but-inert
+// (actionNone) until GH-4986 wired it through the identical fail-closed
+// check, with argv --hostname winning over GH_HOST when both are set.
 package ghguard
 
 import (
@@ -151,10 +162,16 @@ type Decision struct {
 	Reason  string
 	Allowed string // populated on deny only
 
-	// EnvRepo/EnvHost are populated only when a deny was actually driven by
-	// GH_REPO/GH_HOST (as opposed to argv or an unrelated hard-deny rule),
-	// so the journal entry built from this Decision can distinguish an
-	// env-bypass denial from an argv one (GH-4968).
+	// EnvRepo is populated only when a deny was actually driven by GH_REPO
+	// (as opposed to argv -R/--repo or an unrelated hard-deny rule), so the
+	// journal entry built from this Decision can distinguish an env-bypass
+	// denial from an argv one (GH-4968).
+	//
+	// EnvHost is populated whenever a deny was driven by the resolved host
+	// — GH_HOST (GH-4968/D5) OR its argv twin --hostname (GH-4986) — with
+	// Reason itself naming which of the two actually fired (see the host
+	// fail-closed check in Classify), so the two are distinguishable in the
+	// audit trail even though they share this one field.
 	EnvRepo string
 	EnvHost string
 }
@@ -244,6 +261,7 @@ const (
 	actionInput // --input: a request body ALWAYS, regardless of method
 	actionAddLabel
 	actionRemoveLabel
+	actionSetHost // --hostname: the argv twin of GH_HOST (see the GH_HOST fail-closed check in Classify)
 )
 
 // flagSpec is one entry in a per-command flag table: does this flag consume
@@ -277,7 +295,11 @@ var apiFlags = mergeFlags(universalFlags, map[string]flagSpec{
 	"-F": {true, actionField}, "--field": {true, actionField},
 	"--input": {true, actionInput},
 	"-H":      {true, actionNone}, "--header": {true, actionNone},
-	"--hostname": {true, actionNone},
+	// --hostname is the argv twin of GH_HOST (GH-4986): it overrides which
+	// host this specific call targets, exactly like GH_HOST does for the
+	// process as a whole, so it is routed through the same fail-closed
+	// non-github.com check in Classify rather than left policy-inert.
+	"--hostname": {true, actionSetHost},
 	"-q":         {true, actionNone}, "--jq": {true, actionNone},
 	"-t": {true, actionNone}, "--template": {true, actionNone},
 	"--cache": {true, actionNone},
@@ -411,6 +433,8 @@ type parsedArgs struct {
 	hasRemoveLabel bool
 	head           string
 	headGiven      bool
+	host           string // --hostname value; the argv twin of GH_HOST (GH-4986)
+	hostGiven      bool
 	// parseIssue is non-empty when an unrecognized flag or a value flag
 	// missing its value was encountered. Classify enforces it (denies) for
 	// strict commands and ignores it for lenient (kindRead) ones. Only the
@@ -433,6 +457,9 @@ func applyFlag(p *parsedArgs, action flagAction, val string) {
 	case actionSetHead:
 		p.head = val
 		p.headGiven = true
+	case actionSetHost:
+		p.host = val
+		p.hostGiven = true
 	case actionField:
 		p.hasFieldFlag = true
 	case actionInput:
@@ -628,15 +655,28 @@ func Classify(id Identity, args []string, env EnvOverride) Decision {
 		return deny("label mutation (--add-label/--remove-label) is never permitted", allowedSummary())
 	}
 
-	// GH_HOST fail-closed (GH-4968/D5): every repo this guard's TaskRepo/
-	// allowlist reasoning assumes lives on github.com. A GH_HOST pointing
-	// anywhere else (GHE, a test double, ...) means we can no longer vouch
-	// for what host the call actually reaches, so deny unconditionally
-	// rather than evaluate the rest of the policy against an assumption
-	// that no longer holds.
-	if env.Host != "" && !strings.EqualFold(env.Host, "github.com") {
-		d := deny(fmt.Sprintf("GH_HOST=%s is not github.com; refusing to guess what host this call actually targets", env.Host), allowedSummary())
-		d.EnvHost = env.Host
+	// Host fail-closed, argv OR env (GH_HOST: GH-4968/D5; --hostname argv
+	// twin: GH-4986): every repo this guard's TaskRepo/allowlist reasoning
+	// assumes lives on github.com. A resolved host pointing anywhere else
+	// (GHE, a test double, ...) means we can no longer vouch for what host
+	// the call actually reaches, so deny unconditionally rather than
+	// evaluate the rest of the policy against an assumption that no longer
+	// holds. An explicit argv --hostname always wins over GH_HOST when both
+	// are present, mirroring -R/--repo's precedence over GH_REPO below —
+	// but with either source alone still routing through the identical
+	// fail-closed check, so leaving GH_HOST unset can't be used to launder
+	// a non-github.com --hostname (or vice versa).
+	effHost, hostFromFlag := env.Host, false
+	if p.hostGiven {
+		effHost, hostFromFlag = p.host, true
+	}
+	if effHost != "" && !strings.EqualFold(effHost, "github.com") {
+		reason := fmt.Sprintf("GH_HOST=%s is not github.com; refusing to guess what host this call actually targets", effHost)
+		if hostFromFlag {
+			reason = fmt.Sprintf("--hostname %s is not github.com; refusing to guess what host this call actually targets", effHost)
+		}
+		d := deny(reason, allowedSummary())
+		d.EnvHost = effHost
 		return d
 	}
 
@@ -691,6 +731,14 @@ func Classify(id Identity, args []string, env EnvOverride) Decision {
 
 // checkAPIRead allows `gh api` only when it is unambiguously a GET.
 //
+// api graphql is special-cased FIRST (GH-4986/D2): GraphQL requests are
+// always POSTs whose read/write nature lives in the query text, not the
+// HTTP method — unlike REST, an explicit `-X GET` alongside a graphql query
+// does not make the call a read (gh still POSTs the query; the -f/-F
+// relaxation below exists only because REST honors an explicit GET). A
+// fields-carrying graphql call can never be proven read-only from argv
+// alone, so any data-carrying flag denies regardless of method.
+//
 // --input is a request body ALWAYS — gh will send it even alongside an
 // explicit -X GET (confirmed live: `-X GET --input file.json` still ships
 // the file as the request body) — so it is denied regardless of method,
@@ -702,8 +750,12 @@ func Classify(id Identity, args []string, env EnvOverride) Decision {
 // query string instead (confirmed live, including case-insensitively —
 // `--method get` behaves identically to `--method GET`) — this is the
 // relaxation from #4877/#4905, now keyed off the split hasFieldFlag so it
-// can never be satisfied by an --input body.
+// can never be satisfied by an --input body. This relaxation never applies
+// to api graphql — see above.
 func checkAPIRead(p parsedArgs) Decision {
+	if isAPIGraphQL(p) && (p.hasFieldFlag || p.hasInputFlag) {
+		return deny("gh api graphql with a data-carrying flag (-f/-F/--raw-field/--field/--input) cannot be proven read-only from argv — the query text, not the HTTP method, decides mutate vs. read — and is treated as a mutation", allowedSummary())
+	}
 	if p.hasInputFlag {
 		return deny("gh api --input always sends a request body and is treated as a mutation", allowedSummary())
 	}
@@ -715,6 +767,13 @@ func checkAPIRead(p parsedArgs) Decision {
 		return deny(fmt.Sprintf("gh api -X %s is not a read", p.method), allowedSummary())
 	}
 	return Decision{Verdict: VerdictAllow, Reason: "gh api GET"}
+}
+
+// isAPIGraphQL reports whether a `gh api` call targets the graphql
+// endpoint — i.e. its first positional argument is literally "graphql", the
+// form `gh api graphql ...` always takes (GH-4986/D2).
+func isAPIGraphQL(p parsedArgs) bool {
+	return len(p.positional) > 0 && p.positional[0] == "graphql"
 }
 
 // checkOwnArtifact allows pr create / issue comment / pr comment only when
@@ -787,10 +846,11 @@ type JournalEntry struct {
 	TaskIssue string    `json:"task_issue,omitempty"`
 	TaskRepo  string    `json:"task_repo,omitempty"`
 
-	// EnvRepo/EnvHost record GH_REPO/GH_HOST when they actually drove this
-	// denial (see Decision.EnvRepo/EnvHost), so a denied env-bypass attempt
-	// is distinguishable in the audit trail from an argv -R/--repo one
-	// (GH-4968).
+	// EnvRepo/EnvHost record GH_REPO/GH_HOST (or, for EnvHost, the argv
+	// --hostname twin — GH-4986) when they actually drove this denial (see
+	// Decision.EnvRepo/EnvHost), so a denied env-bypass attempt is
+	// distinguishable in the audit trail from an argv -R/--repo one
+	// (GH-4968). Reason itself distinguishes GH_HOST from --hostname.
 	EnvRepo string `json:"env_repo,omitempty"`
 	EnvHost string `json:"env_host,omitempty"`
 }
