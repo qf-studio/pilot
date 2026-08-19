@@ -1,5 +1,7 @@
 # feat(board): C14 console leg — approval mirror ingest, NeedsYou, decision proxy
 
+> **✅ COMPLETE — archived 2026-08-19.** Backend leg: console#109 → PR#111 merged 2026-08-06. UI leg (decideCard 501 kill): ui#52 merged. Sole residual — the #109 coordination note's `project`-field preference (pilot#4773) was never wired into ingest — filed as [console#182](https://github.com/qf-studio/pilot-console/issues/182), dispatched 2026-08-19. The 08-19 marker's "S4 wave-4 remainder: TASK-452" entry was stale.
+
 ## Problem
 
 The daemon now exposes approvals over HTTP (pilot PR#4752, merged 2026-08-06: `GET /api/v1/approvals` + `POST /api/v1/approvals/{requestId}/decision`), but the console has no approval surface at all: no `approval_mirror` table, no ingest, `cardDTO.NeedsYou` hardcoded `false` (`internal/boardapi/handlers.go:119`), and the UI's `decideCard` throws a local 501 (`pilot-console-ui` `src/lib/api/httpAdapter.ts:630-633`). The UI read path is already live (`needsYou` comes off the wire, Needs-You lane + approve/reject buttons fully built) — this leg is the entire backend.
