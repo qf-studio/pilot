@@ -123,6 +123,41 @@ func TestAddComment_Cloud(t *testing.T) {
 	}
 }
 
+// TestAddComment_Cloud_ADFResponseBody verifies AddComment parses a real
+// Jira Cloud v3 response, where the comment body comes back as an ADF
+// object rather than the plain string the request was posted with. Before
+// Comment.Body was ADFText, this response shape failed to unmarshal (see
+// studio-sdk#121): the comment was created successfully server-side, but
+// the client reported an error, so NotifyTaskStarted always WARNed on
+// Cloud sites (GH-4998, twin of sdk PR#122).
+func TestAddComment_Cloud_ADFResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "10047",
+			"body": {
+				"type": "doc",
+				"version": 1,
+				"content": [
+					{"type": "paragraph", "content": [{"type": "text", "text": "Test comment"}]}
+				]
+			},
+			"created": "2026-08-18T15:12:46.244Z",
+			"updated": "2026-08-18T15:12:46.244Z"
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "user@example.com", "api-token", PlatformCloud)
+	comment, err := client.AddComment(context.Background(), "PROJ-42", "Test comment")
+	if err != nil {
+		t.Fatalf("AddComment failed to parse Cloud ADF response: %v", err)
+	}
+	if comment.Body != "Test comment" {
+		t.Errorf("comment.Body = %q, want %q", comment.Body, "Test comment")
+	}
+}
+
 func TestAddComment_Server(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
