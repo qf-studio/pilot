@@ -1168,6 +1168,63 @@ func (g *GitOperations) GetDiff(ctx context.Context, baseBranch string) (string,
 	return string(output), nil
 }
 
+// GetDiffAgainstOrigin is GetDiff compared against a freshly fetched
+// origin/<baseBranch> instead of the possibly-stale local <baseBranch> ref.
+// GH-4988: the intent judge calls GetDiff with a local branch name (task's
+// BaseBranch, or GetDefaultBranch's local resolution), which — exactly like
+// the GH-4566 CountNewCommits class this mirrors — can be behind
+// origin/<baseBranch> in a long-lived worktree or shared clone. Other
+// issues merging into origin/main mid-task then show up inside the judge's
+// diff as if this branch produced them, and the judge correctly (but
+// wrongly, from the operator's perspective) vetoes them as scope creep.
+//
+// Fetches origin/<baseBranch> (best-effort — falls back to whatever
+// tracking ref already resolves locally on failure, same as
+// CountNewCommitsAgainstOrigin), resolves the merge-base of that ref and
+// HEAD, and diffs from there. Diffing from the merge-base — rather than
+// origin/<baseBranch>'s tip — guarantees the result never contains commits
+// reachable from current origin/<baseBranch> even when HEAD is also behind
+// tip for unrelated reasons.
+//
+// Returns the diff and the base SHA it was computed against, so callers can
+// log which commit the judge actually evaluated from.
+func (g *GitOperations) GetDiffAgainstOrigin(ctx context.Context, baseBranch string) (diff string, baseSHA string, err error) {
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
+	fetchCmd.Dir = g.projectPath
+	withGitCredentials(ctx, fetchCmd)
+	_ = fetchCmd.Run() // best-effort; fall back to whatever origin/<baseBranch> already resolves to locally
+
+	baseSHA, err = g.resolveMergeBaseSHA(ctx, baseBranch)
+	if err != nil {
+		return "", "", err
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "diff", baseSHA+"...HEAD")
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return "", baseSHA, fmt.Errorf("git diff failed: %w", err)
+	}
+	return string(output), baseSHA, nil
+}
+
+// resolveMergeBaseSHA resolves the merge-base commit SHA between HEAD and
+// origin/<baseBranch>, falling back to the local <baseBranch> ref when
+// origin/<baseBranch> doesn't resolve at all (no "origin" remote — bare
+// local repos, some unit tests). Mirrors the fallback order
+// CountNewCommitsAgainstOrigin uses.
+func (g *GitOperations) resolveMergeBaseSHA(ctx context.Context, baseBranch string) (string, error) {
+	for _, ref := range []string{"origin/" + baseBranch, baseBranch} {
+		cmd := exec.CommandContext(ctx, "git", "merge-base", ref, "HEAD")
+		cmd.Dir = g.projectPath
+		output, err := cmd.Output()
+		if err == nil {
+			return strings.TrimSpace(string(output)), nil
+		}
+	}
+	return "", fmt.Errorf("could not resolve merge-base for %q against origin/%s or local %s", baseBranch, baseBranch, baseBranch)
+}
+
 // Pull fetches and merges changes from remote for the specified branch
 func (g *GitOperations) Pull(ctx context.Context, branch string) error {
 	cmd := exec.CommandContext(ctx, "git", "pull", "origin", branch)
