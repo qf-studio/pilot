@@ -95,6 +95,12 @@ func jiraPollerRegistration() PollerRegistration {
 				pollerDeps.OnPRCreated = func(prEv sdkcore.PRCreatedEvent) {
 					ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, 0, prEv.HeadSHA, prEv.BranchName, "")
 				}
+
+				// GH-4987: wire the same start-leg notifier (constructed above)
+				// as the merge-side done leg — completion comment + done
+				// transition when a JIRA-* task's PR merges. WARN-only on
+				// failure inside Controller.notifyJiraDone; never blocks merge.
+				ctrl.SetJiraDoneNotifier(notifier)
 			}
 
 			jiraPoller := jiraSDK.New(sdkCfg).NewPoller(pollerDeps)
