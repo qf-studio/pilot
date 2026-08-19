@@ -230,8 +230,8 @@ func (c *Controller) recoverMissedTrainTick(ctx context.Context, rel *ReleaseCon
 		lookback = 24 * time.Hour
 	}
 	if time.Since(prevScheduled) > lookback {
-		c.log.Debug("recoverMissedTrainTick: previous scheduled tick predates the lookback window, skipping",
-			"scheduled_at", prevScheduled.Format(time.RFC3339), "lookback", lookback)
+		c.log.Info("recoverMissedTrainTick: skipping recovery — previous scheduled tick predates the lookback window",
+			"repo", c.repoKey(), "scheduled_at", prevScheduled.Format(time.RFC3339), "lookback", lookback, "gate", "lookback")
 		return
 	}
 
@@ -240,12 +240,17 @@ func (c *Controller) recoverMissedTrainTick(ctx context.Context, rel *ReleaseCon
 		row, err := c.stateStore.GetScopeRelease(c.repoKey(), scopeKey)
 		if err != nil {
 			c.log.Warn("recoverMissedTrainTick: failed to check for an existing train row, skipping recovery",
-				"scope", scopeKey, "error", err)
+				"repo", c.repoKey(), "scope", scopeKey, "error", err, "gate", "row-lookup-error")
 			return
 		}
 		if row != nil {
 			// Already enqueued — either the tick fired on schedule, or a prior
-			// recovery pass already ran for this slot.
+			// recovery pass already ran for this slot. GH-4989: this was the
+			// one skip that mattered in the #4982 misdiagnosis (08-18 15:11Z)
+			// and it logged nothing, so the incident was misread as "recovery
+			// never ran" — always log the row state that suppressed recovery.
+			c.log.Info("recoverMissedTrainTick: skipping recovery — a row already exists for this scheduled slot",
+				"repo", c.repoKey(), "scope", scopeKey, "row_state", row.State, "row_tag", row.Tag, "gate", "row-exists")
 			return
 		}
 	}
@@ -253,18 +258,19 @@ func (c *Controller) recoverMissedTrainTick(ctx context.Context, rel *ReleaseCon
 	lastReleaseAt, err := c.releaser.GetLastReleaseTime(ctx, c.owner, c.repo)
 	if err != nil {
 		c.log.Warn("recoverMissedTrainTick: failed to determine last release time, skipping recovery",
-			"scheduled_at", prevScheduled.Format(time.RFC3339), "error", err)
+			"repo", c.repoKey(), "scheduled_at", prevScheduled.Format(time.RFC3339), "error", err, "gate", "last-release-lookup-error")
 		return
 	}
 
 	decision := decideTrainRecovery(now, prevScheduled, lastReleaseAt)
 	logArgs := []any{
+		"repo", c.repoKey(),
 		"scheduled_at", prevScheduled.Format(time.RFC3339),
 		"last_release_at", formatOptionalTime(lastReleaseAt),
 		"verdict", decision.Reason,
 	}
 	if !decision.Fire {
-		c.log.Debug("recoverMissedTrainTick: recovery not fired", logArgs...)
+		c.log.Info("recoverMissedTrainTick: skipping recovery — last-release gate", append(logArgs, "gate", "last-release")...)
 		return
 	}
 
