@@ -215,6 +215,13 @@ func (s *StateStore) migrate() error {
 		// the skip survives a daemon restart; error already carries the
 		// reason via the existing error column.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN release_backfill_abandoned INTEGER NOT NULL DEFAULT 0`,
+		// GH-4999: durable idempotency guard for the Jira merge-side done leg
+		// (notifyJiraDone). checkExternalMergeOrClose's merged branch has no
+		// persistPRState call between detecting the merge and its terminal
+		// removePR, so without a persisted flag a crash in that window would
+		// leave a restart free to re-enter the merged branch and re-fire the
+		// Jira completion comment.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN jira_done_notified INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, m := range migrations {
@@ -481,6 +488,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			post_merge_infra_rerun_count INTEGER NOT NULL DEFAULT 0,
 			post_merge_infra_rerun_sha TEXT NOT NULL DEFAULT '',
 			release_backfill_abandoned INTEGER NOT NULL DEFAULT 0,
+			jira_done_notified INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -498,7 +506,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned
+			release_backfill_abandoned, jira_done_notified
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -511,7 +519,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned
+			release_backfill_abandoned, jira_done_notified
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -659,8 +667,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			release_backfill_abandoned, jira_done_notified
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -695,7 +703,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			breaker_readopt_count = excluded.breaker_readopt_count,
 			post_merge_infra_rerun_count = excluded.post_merge_infra_rerun_count,
 			post_merge_infra_rerun_sha = excluded.post_merge_infra_rerun_sha,
-			release_backfill_abandoned = excluded.release_backfill_abandoned
+			release_backfill_abandoned = excluded.release_backfill_abandoned,
+			jira_done_notified = excluded.jira_done_notified
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -708,7 +717,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.Parked, pr.EscalationReason, pr.RebaseHoldActive, pr.ReadoptCount,
 		pr.BreakerHoldActive, pr.BreakerReadoptCount,
 		pr.PostMergeInfraRerunCount, pr.PostMergeInfraRerunSHA,
-		pr.ReleaseBackfillAbandoned,
+		pr.ReleaseBackfillAbandoned, pr.JiraDoneNotified,
 	)
 	return err
 }
@@ -727,7 +736,7 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned
+			release_backfill_abandoned, jira_done_notified
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -755,7 +764,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned
+			release_backfill_abandoned, jira_done_notified
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -780,7 +789,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 			&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 			&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
-			&pr.ReleaseBackfillAbandoned,
+			&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified,
 		); err != nil {
 			return nil, err
 		}
@@ -1039,7 +1048,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 		&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 		&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
-		&pr.ReleaseBackfillAbandoned,
+		&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified,
 	)
 	if err != nil {
 		return nil, err

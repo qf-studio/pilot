@@ -1231,6 +1231,20 @@ type PRState struct {
 	// Mirrors the MergeNotificationPosted guard above for the same race
 	// (GH-4164).
 	MergeFollowupPosted bool
+	// JiraDoneNotified is true once notifyJiraDone (GH-4987) has attempted the
+	// Jira merge-side done leg (completion comment + done-category transition)
+	// for this PR. GH-4999: notifyJiraDone is now called from two sites —
+	// handleMerging (autopilot's own merge) and checkExternalMergeOrClose's
+	// merged branch (a human/externally merged pilot/JIRA-* PR) — and the
+	// latter has no persistPRState call between detecting the merge and its
+	// terminal removePR, so a crash in that window left nothing durable to
+	// stop a post-restart re-entry from re-firing the Jira comment. Set (and
+	// persisted immediately by notifyJiraDone itself) after the first attempt
+	// regardless of NotifyTaskCompleted's outcome — mirrors MergeFollowupPosted's
+	// unconditional set-after-attempt semantics, since this leg is WARN-only
+	// and must never retry indefinitely against a permanently failing Jira
+	// call. Persisted.
+	JiraDoneNotified bool
 	// InfraRerunCount tracks how many times handleCIFailed has auto-retried
 	// this PR's failed jobs after classifying the failure as a CI
 	// infrastructure outage rather than a code failure (GH-4533). Scoped to
@@ -1360,6 +1374,7 @@ func (ps *PRState) snapshot() *PRState {
 		ScopeTitle:                   ps.ScopeTitle,
 		ConflictRecorded:             ps.ConflictRecorded,
 		MergeFollowupPosted:          ps.MergeFollowupPosted,
+		JiraDoneNotified:             ps.JiraDoneNotified,
 		InfraRerunCount:              ps.InfraRerunCount,
 		InfraRerunSHA:                ps.InfraRerunSHA,
 		RebaseHoldActive:             ps.RebaseHoldActive,

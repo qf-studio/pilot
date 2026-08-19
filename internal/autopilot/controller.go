@@ -4161,12 +4161,24 @@ func jiraIssueKeyFromBranch(branchName string) string {
 // Linear-originated tasks fall through here untouched. Failure is WARN-only:
 // this must never fail or block the merge path, mirroring every other
 // merge-time notify call in handleMerging (labels, comments, c.notifier).
+//
+// GH-4999: called from two sites — handleMerging (autopilot's own merge) and
+// checkExternalMergeOrClose's merged branch (a human/externally merged
+// pilot/JIRA-* PR, e.g. KAN-6/PR#4955). The latter has no persistPRState call
+// between detecting the merge and its terminal removePR, so JiraDoneNotified
+// is checked-and-set here, with an immediate persist, rather than left to the
+// caller's own end-of-tick persist — a crash between the merge and the
+// notify must not leave a restart free to re-enter the merged branch and
+// double-post the Jira comment.
 func (c *Controller) notifyJiraDone(ctx context.Context, prState *PRState) {
 	if c.jiraDoneNotifier == nil {
 		return
 	}
 	issueKey := jiraIssueKeyFromBranch(prState.BranchName)
 	if issueKey == "" {
+		return
+	}
+	if prState.JiraDoneNotified {
 		return
 	}
 	if err := c.jiraDoneNotifier.NotifyTaskCompleted(ctx, issueKey, prState.PRURL, ""); err != nil {
@@ -4176,6 +4188,11 @@ func (c *Controller) notifyJiraDone(ctx context.Context, prState *PRState) {
 			"error", err,
 		)
 	}
+	// Set unconditionally (mirrors MergeFollowupPosted's attempt-once
+	// semantics): this leg is WARN-only and must never retry indefinitely
+	// against a permanently failing Jira call.
+	prState.JiraDoneNotified = true
+	c.persistPRState(prState)
 }
 
 func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error {
@@ -7958,6 +7975,18 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		}
 
 		c.notifyExternalMerge(ctx, prState)
+
+		// GH-4999: fire the Jira merge-side done leg for a human/externally
+		// merged pilot/JIRA-* PR (the KAN-6/PR#4955 case) — PR#4992 wired
+		// notifyJiraDone into handleMerging only, but a PR merged by anything
+		// other than autopilot's own guarded merge (a human `gh pr merge`, or
+		// GitHub's UI) never reaches handleMerging at all; this is the only
+		// site that ever sees that merge. Independent of the
+		// prState.IssueNumber > 0 block below — Jira-originated PRs carry
+		// IssueNumber == 0 — and gated purely on the branch-derived task ID
+		// (jiraIssueKeyFromBranch returns "" for GH-/Linear-originated
+		// branches), so those are untouched.
+		c.notifyJiraDone(ctx, prState)
 
 		// GH-1486: Close associated issue and add pilot-done label on external merge
 		if prState.IssueNumber > 0 {
