@@ -4690,7 +4690,8 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					intentBaseBranch = "main"
 				}
 			}
-			intentDiff, intentErr = git.GetDiff(ctx, intentBaseBranch)
+			var intentBaseSHA string
+			intentDiff, intentBaseSHA, intentErr = git.GetDiffAgainstOrigin(ctx, intentBaseBranch)
 			if intentErr != nil {
 				log.Warn("Intent judge skipped: failed to get diff",
 					slog.String("task_id", task.ID),
@@ -4699,6 +4700,16 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				runIntentJudge = false
 			} else if intentDiff == "" {
 				runIntentJudge = false
+			} else {
+				// GH-4988: record the base SHA the judge diff was computed
+				// against so a false "scope creep" veto can be checked
+				// against what was actually on origin/<baseBranch> at judge
+				// time, instead of guessing whether the base was stale.
+				log.Info("Intent judge diff base resolved",
+					slog.String("task_id", task.ID),
+					slog.String("base_branch", intentBaseBranch),
+					slog.String("base_sha", intentBaseSHA),
+				)
 			}
 		}
 
@@ -4798,9 +4809,18 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						result.TokensOutput = state.tokensOutput
 						result.TokensTotal = state.tokensInput + state.tokensOutput
 
-						// Re-judge the new diff
-						newDiff, _ := git.GetDiff(ctx, intentBaseBranch)
+						// Re-judge the new diff. GH-4988: re-fetch origin and
+						// re-resolve the merge-base rather than reusing the
+						// first pass's intentBaseSHA — the retry generation
+						// took real wall-clock time, during which
+						// origin/<baseBranch> can have advanced again.
+						newDiff, newBaseSHA, _ := git.GetDiffAgainstOrigin(ctx, intentBaseBranch)
 						if newDiff != "" {
+							log.Info("Intent judge retry diff base resolved",
+								slog.String("task_id", task.ID),
+								slog.String("base_branch", intentBaseBranch),
+								slog.String("base_sha", newBaseSHA),
+							)
 							v2, _ := r.intentJudge.Judge(ctx, task.Title, task.Description, newDiff)
 							if v2 != nil && !v2.Passed {
 								result.IntentWarning = v2.Reason
