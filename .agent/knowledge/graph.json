@@ -1663,11 +1663,12 @@
       "TASK-466": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-466-console-docs-page.md",
         "title": "Console Docs page \u2014 surface Navigator `.agent/` docs, later make them manageable",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
-          "testing",
+          "context",
+          "knowledge",
           "deployment",
-          "knowledge"
+          "testing"
         ]
       },
       "TASK-467": {
@@ -7425,7 +7426,8 @@
       "TASK-478",
       "TASK-479",
       "TASK-480",
-      "TASK-481"
+      "TASK-481",
+      "TASK-466"
     ],
     "markers": [
       "TASK-387",
@@ -8053,7 +8055,7 @@
       "apply-script-silent-rollback-causes"
     ]
   },
-  "last_updated": "2026-08-19T14:53:25.459200+00:00",
+  "last_updated": "2026-08-19T15:46:44.010892+00:00",
   "stats": {
     "total_nodes": 432,
     "total_edges": 354,
