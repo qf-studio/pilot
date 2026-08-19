@@ -3016,6 +3016,61 @@ func (c *Controller) spawnFailureIssue(ctx context.Context, prState *PRState, fa
 	return issueNum, err
 }
 
+// gh4997CIFixSpawnGate re-reads the origin PR (and, for a pre-merge
+// continuation, the origin issue) from GitHub immediately before
+// handleCIFailed mints a fix issue, rather than trusting the possibly-stale
+// failure event that reached this rung. #4995 (08-19) was created 45s after
+// #4988 had already been delivered by a superseding retry: PR#4994 (gen 1)
+// failed CI and was closed without merging, PR#4996 merged and closed #4988
+// — the fix-issue spawn ran anyway and burned a generation "fixing" a PR
+// nothing depended on any more.
+//
+// Two gates, checked in order:
+//
+//   - origin_pr_closed: the failing PR itself was closed without merging —
+//     retry/supersede flows close first-generation PRs as a matter of
+//     course, so a closed-not-merged PR's CI failure is moot by definition.
+//   - origin_issue_closed: the origin ticket issue closed (delivered, or
+//     otherwise) before this continuation could be minted — same PR, but a
+//     sibling/retry PR delivered the ticket first.
+//
+// This gate is wired into handleCIFailed (the pre-merge rung) only, not the
+// post-merge rung's spawnFailureIssue call: a post-merge PR is, by
+// construction, always State=closed+Merged=true (never closed-without-
+// merging, so origin_pr_closed is a no-op there anyway), and its origin
+// issue is *normally* already closed by handleMerging before StagePostMergeCI
+// is even reached (see the comment at that call site) — applying
+// origin_issue_closed there would silently stop every legitimate post-merge
+// fix spawn.
+//
+// Both GitHub reads fail open (log + proceed) on a transient error — an API
+// hiccup must not block a legitimate spawn.
+func (c *Controller) gh4997CIFixSpawnGate(ctx context.Context, prState *PRState) (skip bool, gate string) {
+	pr, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		c.log.Warn("CI-fix spawn gate: failed to re-read PR state, proceeding (fail-open)",
+			"pr", prState.PRNumber, "error", err)
+		return false, ""
+	}
+	if pr.State == github.StateClosed && !pr.Merged {
+		return true, "origin_pr_closed"
+	}
+
+	if prState.IssueNumber > 0 {
+		issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+		if err != nil {
+			c.log.Warn("CI-fix spawn gate: failed to re-read origin issue state, proceeding (fail-open)",
+				"issue", prState.IssueNumber, "pr", prState.PRNumber, "error", err)
+			return false, ""
+		}
+		if issue.State == github.StateClosed {
+			return true, "origin_issue_closed"
+		}
+	}
+
+	return false, ""
+}
+
 func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error {
 	// GH-4533: classify the failure as code vs. CI infrastructure outage
 	// before doing anything else. An infra-classified failure with retry
@@ -3210,6 +3265,37 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				return nil
 			}
 		}
+	}
+
+	// GH-4997: race-tolerant gate, checked as late as possible (right before
+	// the fix issue is minted, not from the cached failure event that
+	// triggered this call) — #4995 was created 45s *after* #4988 had already
+	// been delivered by a superseding retry (#4994 failed CI and closed
+	// without merging; #4996 merged and closed #4988). By the time this rung
+	// got here, the failure it was about to spawn a fix for no longer had a
+	// live origin. See gh4997CIFixSpawnGate's doc comment for why this only
+	// applies to the pre-merge rung.
+	if skip, gate := c.gh4997CIFixSpawnGate(ctx, prState); skip {
+		c.log.Info("CI-fix spawn skipped: origin already resolved via another path",
+			"pr", prState.PRNumber, "issue", prState.IssueNumber, "gate", gate)
+		if gate == "origin_issue_closed" {
+			// The origin issue was delivered through another path (e.g. a
+			// superseding retry) while this PR's own CI failure was still in
+			// flight, so this PR is now orphaned — close it so the
+			// sequential poller's merge waiter doesn't block forever on a PR
+			// that will never merge (mirrors the successful-spawn close
+			// below). gate == origin_pr_closed needs no such close: the PR
+			// is already closed by definition.
+			if cerr := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); cerr != nil {
+				c.log.Warn("CI-fix spawn gate: failed to close orphaned PR", "pr", prState.PRNumber, "error", cerr)
+			}
+		}
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("CI-fix spawn skipped: %s (GH-4997)", gate)
+		c.metrics.RecordPRFailed()
+		c.metrics.RecordPRFailedClass(failureClass)
+		c.recordCIFailVerdict(failureClass)
+		return nil
 	}
 
 	// GH-1567: Fetch actual CI error logs to include in fix issues.

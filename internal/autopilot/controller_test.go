@@ -2645,6 +2645,230 @@ func TestHandleCIFailed_RecordsCIRunOnFail(t *testing.T) {
 	}
 }
 
+// TestHandleCIFailed_GH4997_SkipsSpawnWhenOriginPRClosed is the regression
+// test for the #4995 incident (08-19): CI failed on PR#4994 (GH-4988 gen 1)
+// and handleCIFailed was triggered from that (now-stale) failure event, but
+// by the time it re-reads PR state right before spawning, PR#4994 has
+// already been closed without merging — superseded by the retry PR#4996,
+// which merged and delivered #4988 first. No fix issue must be created for
+// a PR whose CI failure is already moot, and the skip must be logged at Info
+// naming the pr/issue/gate.
+func TestHandleCIFailed_GH4997_SkipsSpawnWhenOriginPRClosed(t *testing.T) {
+	issueCreated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/sha994/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/4994" && r.Method == http.MethodGet:
+			resp := github.PullRequest{Number: 4994, State: github.StateClosed, Merged: false}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 4995}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	var logBuf bytes.Buffer
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	prState := &PRState{
+		PRNumber:    4994,
+		IssueNumber: 4988,
+		HeadSHA:     "sha994",
+		Stage:       StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if issueCreated {
+		t.Error("expected no fix issue to be created for a PR already closed without merging")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "CI-fix spawn skipped") {
+		t.Errorf("expected a skip log line, got logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, "gate=origin_pr_closed") {
+		t.Errorf("expected skip log to name gate=origin_pr_closed, got logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, "pr=4994") {
+		t.Errorf("expected skip log to name pr=4994, got logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, "issue=4988") {
+		t.Errorf("expected skip log to name issue=4988, got logs:\n%s", logs)
+	}
+}
+
+// TestHandleCIFailed_GH4997_SkipsSpawnWhenOriginIssueClosed covers the
+// sibling gate: the failing PR is still open, but the origin issue was
+// already delivered (closed) through another path — e.g. a sibling/retry PR
+// merged first. No fix issue must be created, and the now-orphaned PR must
+// be closed so the sequential poller doesn't block on it forever.
+func TestHandleCIFailed_GH4997_SkipsSpawnWhenOriginIssueClosed(t *testing.T) {
+	issueCreated := false
+	prClosed := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/sha994/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/4994" && r.Method == http.MethodGet:
+			resp := github.PullRequest{Number: 4994, State: github.StateOpen}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/4994" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		case r.URL.Path == "/repos/owner/repo/issues/4988" && r.Method == http.MethodGet:
+			resp := github.Issue{Number: 4988, State: github.StateClosed}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 4995}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	var logBuf bytes.Buffer
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	prState := &PRState{
+		PRNumber:    4994,
+		IssueNumber: 4988,
+		HeadSHA:     "sha994",
+		Stage:       StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if issueCreated {
+		t.Error("expected no fix issue to be created when the origin issue is already closed")
+	}
+	if !prClosed {
+		t.Error("expected the now-orphaned open PR to be closed")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "CI-fix spawn skipped") {
+		t.Errorf("expected a skip log line, got logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, "gate=origin_issue_closed") {
+		t.Errorf("expected skip log to name gate=origin_issue_closed, got logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, "pr=4994") {
+		t.Errorf("expected skip log to name pr=4994, got logs:\n%s", logs)
+	}
+	if !strings.Contains(logs, "issue=4988") {
+		t.Errorf("expected skip log to name issue=4988, got logs:\n%s", logs)
+	}
+}
+
+// TestHandleCIFailed_GH4997_SpawnsWhenOriginPROrIssueOpen is the "unchanged"
+// half of the GH-4997 acceptance criteria: with the PR still open and the
+// origin issue still open, the CI-fix spawn gate must not interfere with the
+// normal fix-issue creation path.
+func TestHandleCIFailed_GH4997_SpawnsWhenOriginPROrIssueOpen(t *testing.T) {
+	issueCreated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/sha994/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/pulls/4994" && r.Method == http.MethodGet:
+			resp := github.PullRequest{Number: 4994, State: github.StateOpen}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues/4988" && r.Method == http.MethodGet:
+			resp := github.Issue{Number: 4988, State: github.StateOpen}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			resp := github.Issue{Number: 4995}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, resp))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:    4994,
+		IssueNumber: 4988,
+		HeadSHA:     "sha994",
+		Stage:       StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if !issueCreated {
+		t.Error("expected a fix issue to be created when the origin PR and issue are both still open")
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+}
+
 // gh4533InfraTestServer builds one httptest.Server answering both the
 // studio-sdk client's endpoints (check-runs list, job log fetch) and the
 // in-tree client's endpoints (jobs API, rerun-failed-jobs), matching the
