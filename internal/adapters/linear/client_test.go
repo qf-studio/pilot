@@ -1489,6 +1489,67 @@ func TestGetLabelByNameWorkspaceFallback(t *testing.T) {
 	}
 }
 
+// TestGetLabelByNameVariableDeclaration pins the GraphQL variable type
+// declared for $teamId on each branch of GetLabelByName. GH-4985: the
+// ID-branch query filters via `team: { id: { eq: $teamId } }`, and Linear's
+// schema types NullableTeamFilter.id as IDComparator (`eq: ID`) — GraphQL
+// does not coerce a `String!` variable into an `ID` position, so a
+// `$teamId: String!` declaration fails schema validation with HTTP 400
+// GRAPHQL_VALIDATION_FAILED before auth is even checked (empirically
+// reproduced against api.linear.app). The httptest mock below performs no
+// GraphQL schema validation, so only an explicit substring assertion on the
+// declaration text catches a regression here — that's why #4978 shipped
+// green despite being a functional no-op.
+func TestGetLabelByNameVariableDeclaration(t *testing.T) {
+	const teamUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+	tests := []struct {
+		name       string
+		teamID     string
+		wantDecl   string
+		unwantDecl string
+	}{
+		{
+			name:       "UUID-configured team declares $teamId as ID!",
+			teamID:     teamUUID,
+			wantDecl:   "$teamId: ID!",
+			unwantDecl: "$teamId: String!",
+		},
+		{
+			name:     "key-configured team declaration is unchanged",
+			teamID:   "ROU",
+			wantDecl: "$teamId: String!",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sawQuery string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Query string `json:"query"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				sawQuery = req.Query
+				_, _ = w.Write([]byte(`{"data":{"issueLabels":{"nodes":[{"id":"team-label","name":"llm-pilot"}]}}}`))
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL("test-linear-key", server.URL)
+			if _, err := client.GetLabelByName(context.Background(), tt.teamID, "llm-pilot"); err != nil {
+				t.Fatalf("GetLabelByName: %v", err)
+			}
+
+			if !strings.Contains(sawQuery, tt.wantDecl) {
+				t.Errorf("request body does not contain %q; got query:\n%s", tt.wantDecl, sawQuery)
+			}
+			if tt.unwantDecl != "" && strings.Contains(sawQuery, tt.unwantDecl) {
+				t.Errorf("request body unexpectedly contains %q; got query:\n%s", tt.unwantDecl, sawQuery)
+			}
+		})
+	}
+}
+
 func TestGetOrCreateLabel(t *testing.T) {
 	const teamUUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
