@@ -454,7 +454,7 @@ type Controller struct {
 	releaser         *Releaser
 	deployer         *Deployer
 	notifier         Notifier
-	jiraDoneNotifier JiraDoneNotifier // GH-4987: merge-side done leg for JIRA-* tasks (optional, nil = no Jira notify)
+	jiraDoneNotifier JiraDoneNotifier   // GH-4987: merge-side done leg for JIRA-* tasks (optional, nil = no Jira notify)
 	monitor          TaskMonitor        // GH-1336: sync dashboard state on merge
 	dispatcherLive   DispatcherLiveness // GH-4412: always-on live-worker signal (unlike monitor, dashboard-only)
 	laneQueueStatus  LaneQueueStatus    // GH-4454: project-scoped queued/running count for lane-starvation detection
