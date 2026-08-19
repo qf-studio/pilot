@@ -1,6 +1,6 @@
 # TASK-466: Console Docs page — surface Navigator `.agent/` docs, later make them manageable
 
-**Status**: 🚀 Read-leg gate DISPATCHED 2026-08-19 — [pilot#5003](https://github.com/qf-studio/pilot/issues/5003) (daemon: `GET /api/v1/docs/tree` + `GET /api/v1/docs/file`, C17 gate sequencing per pilot#4835). Contract research done 2026-08-19: daemon-proxy over GitHub-direct (live worktree beats pushed main); console leg = C13 proxy `allowedTails` extension, **file only after #5003 merges, frozen on the merged contract**. Founder decisions 08-19: 413 hard-reject >512KB · always-on (no config gate) · `graph.json` not served in v1 (counts from memories subdir walk).
+**Status**: 🚀 Read leg IN FLIGHT 2026-08-19 — daemon gate **MERGED same day**: pilot#5003 → PR#5004, in **v2.263.0** (14:20Z train). Post-merge review APPROVE-w-notes (posted on PR): single-project scoping only (no multi-project fan-out — console must not assume it) · stat→read TOCTOU nit. Console proxy leg dispatched: [console#185](https://github.com/qf-studio/pilot-console/issues/185) (C13 `allowedTails` + query passthrough, frozen on merged contract). **Remaining after #185: the UI leg** (pilot-console-ui — Docs page against `design/docs-v1.html`, gated on #185). Founder decisions 08-19: 413 hard-reject >512KB · always-on (no config gate) · `graph.json` not served in v1 (counts from memories subdir walk). Contract research 08-19: daemon-proxy over GitHub-direct (live worktree beats pushed main).
 **Created**: 2026-08-11
 **Assignee**: —
 
