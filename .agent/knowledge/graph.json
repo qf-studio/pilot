@@ -1481,12 +1481,13 @@
         "title": "Task 452 C14 Console Approval Mirror",
         "status": "unknown",
         "concepts": [
-          "database",
-          "api",
           "testing",
           "deployment",
           "authentication",
-          "context"
+          "database",
+          "context",
+          "markers",
+          "api"
         ]
       },
       "TASK-453": {
@@ -1662,10 +1663,10 @@
       "TASK-466": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-466-console-docs-page.md",
         "title": "Console Docs page \u2014 surface Navigator `.agent/` docs, later make them manageable",
-        "status": "research",
+        "status": "dispatched",
         "concepts": [
-          "deployment",
           "testing",
+          "deployment",
           "knowledge"
         ]
       },
@@ -7314,7 +7315,8 @@
       "TASK-479",
       "TASK-480",
       "TASK-481",
-      "TASK-460"
+      "TASK-460",
+      "TASK-466"
     ],
     "context": [
       "TASK-386",
@@ -7450,7 +7452,8 @@
       "TASK-476",
       "TASK-405",
       "TASK-480",
-      "TASK-481"
+      "TASK-481",
+      "TASK-452"
     ],
     "database": [
       "TASK-387",
@@ -8050,7 +8053,7 @@
       "apply-script-silent-rollback-causes"
     ]
   },
-  "last_updated": "2026-08-19T11:51:14.611026+00:00",
+  "last_updated": "2026-08-19T14:53:25.459200+00:00",
   "stats": {
     "total_nodes": 432,
     "total_edges": 354,
