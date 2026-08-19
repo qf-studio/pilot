@@ -424,7 +424,7 @@ func (c *Client) GetLabelByName(ctx context.Context, teamID, labelName string) (
 		}
 	`
 	const queryByID = `
-		query GetLabelByTeamID($teamId: String!, $name: String!) {
+		query GetLabelByTeamID($teamId: ID!, $name: String!) {
 			issueLabels(filter: { team: { id: { eq: $teamId } }, name: { eq: $name } }) {
 				nodes { id name }
 			}
