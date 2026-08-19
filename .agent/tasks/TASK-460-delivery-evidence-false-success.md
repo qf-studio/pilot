@@ -16,6 +16,11 @@ Concrete incident (`mem-151`, TASK-398/#4199, 2026-07-11): a 4-phase epic auto-c
 
 Structurally the same class as TASK-459's outage bugs: an irreversible action taken on decorative evidence. Mechanically different, which is why it's a separate track: TASK-459 *plumbs existing evidence* (check runs, logs, ledger status) through a typed contract in the autopilot ladder; this task must *generate new evidence* (does the diff touch the target surface? do ACs fail when the code is unwired?) and its fix territory is upstream — decomposition, executor scoping, spec quality — not `controller.go` gating.
 
+**Second and third confirmed incidents (2026-08-19, both caught only by post-merge review agents):**
+- **PR#4978** (GH-4965): merged fix was a functional no-op — `$teamId: String!` in a GraphQL `ID` position; live Linear API rejects the exact merged document pre-auth. Mock-transport tests validate no GraphQL, so all gates green. Pitfall `graphql-mock-tests-cannot-catch-schema-validation`. Fixed same day (#4985 → PR#4991, review mutation-tested the pin).
+- **PR#4992** (GH-4987): merged feature is dead code — the Jira done leg hangs off autopilot PR tracking, but no path registers `pilot/JIRA-*` PRs (sdk adapter drops `OnPRCreated`; reconciler adoption filters `pilot/GH-`; external-merge path never calls it). The PR's own FEATURE-MATRIX entry claimed reachability that was checkable and false. Pitfall `merged-feature-dead-callback-not-bridged-onprcreated`. Follow-ups: pilot#4999, sdk#123/#124.
+- New candidate leg from these: **reachability evidence** — for a PR whose spec says "call X when Y happens", delivery verification names the concrete production event path that invokes the new code (or an integration test that drives it end-to-end); "new code + green unit tests" is exactly the evidence shape both incidents defeated.
+
 **Goal**:
 
 Success-side finalization actions (merge, `pilot-done` label, parent/epic auto-close) require positive delivery evidence, not just green CI. Uncertainty routes to human review, not auto-close.
