@@ -111,14 +111,29 @@ type DispatcherConfig struct {
 	// StaleRecoveryInterval is how often the periodic stale-recovery loop
 	// runs. Default: 5 minutes.
 	StaleRecoveryInterval time.Duration
+
+	// BasePresenceHoldMaxCycles bounds how many consecutive claim-path
+	// held cycles (GH-5045/GH-5052: an explicit "Depends on: #N" ref still
+	// an open PR — directly, or via an issue whose attached PR is still
+	// open-unmerged — or a referenced file path missing from the default
+	// branch) a task can accumulate before ProjectWorker.processQueue
+	// escalates by applying the pilot-needs-human label and parking the
+	// row (dequeued via ExecStatusSkipped) so the queue head advances.
+	// Generous default (20) — a held task is retried only when the
+	// project's worker is signalled again (a new poll tick, a new task
+	// queued for the same project, or the periodic stale-recovery loop),
+	// not on a tight timer, so this is meant to tolerate a genuinely slow
+	// prerequisite landing rather than churn through cycles quickly.
+	BasePresenceHoldMaxCycles int
 }
 
 // DefaultDispatcherConfig returns default dispatcher settings.
 func DefaultDispatcherConfig() *DispatcherConfig {
 	return &DispatcherConfig{
-		StaleRunningThreshold: 30 * time.Minute,
-		StaleQueuedThreshold:  5 * time.Minute,
-		StaleRecoveryInterval: 5 * time.Minute,
+		StaleRunningThreshold:     30 * time.Minute,
+		StaleQueuedThreshold:      5 * time.Minute,
+		StaleRecoveryInterval:     5 * time.Minute,
+		BasePresenceHoldMaxCycles: 20,
 	}
 }
 
@@ -131,6 +146,9 @@ func (c *DispatcherConfig) resolveDefaults() {
 	}
 	if c.StaleRecoveryInterval == 0 {
 		c.StaleRecoveryInterval = 5 * time.Minute
+	}
+	if c.BasePresenceHoldMaxCycles == 0 {
+		c.BasePresenceHoldMaxCycles = 20
 	}
 }
 
@@ -2241,6 +2259,7 @@ func (d *Dispatcher) ensureWorker(projectPath string) {
 	// Create new worker
 	worker := NewProjectWorker(projectPath, d.store, d.runner, d.log)
 	worker.setAdmissionPaused(d.admissionPaused)
+	worker.setBasePresenceHoldMaxCycles(d.config.BasePresenceHoldMaxCycles)
 	d.workers[projectPath] = worker
 
 	// Start worker in background
@@ -2569,6 +2588,16 @@ type ProjectWorker struct {
 	// as "never paused", preserving prior behavior for any caller that
 	// doesn't wire it. GH-4683.
 	admissionPaused *atomic.Bool
+
+	// basePresenceHoldMaxCycles mirrors DispatcherConfig.BasePresenceHoldMaxCycles
+	// (GH-5045/GH-5052), threaded in post-construction the same way
+	// admissionPaused is (see setBasePresenceHoldMaxCycles/ensureWorker)
+	// since the many existing NewProjectWorker(...) call sites — production
+	// and test alike — shouldn't need a signature change. Zero for a
+	// ProjectWorker built directly (e.g. tests) — processQueue falls back
+	// to DefaultDispatcherConfig()'s value in that case rather than
+	// treating 0 as "escalate immediately."
+	basePresenceHoldMaxCycles int
 }
 
 // NewProjectWorker creates a new project worker.
@@ -2645,6 +2674,25 @@ func (w *ProjectWorker) Signal() {
 // updating; only Dispatcher.ensureWorker calls this. GH-4683.
 func (w *ProjectWorker) setAdmissionPaused(p *atomic.Bool) {
 	w.admissionPaused = p
+}
+
+// setBasePresenceHoldMaxCycles wires DispatcherConfig.BasePresenceHoldMaxCycles
+// (GH-5045/GH-5052) from the owning Dispatcher. Kept as a post-construction
+// setter for the same reason as setAdmissionPaused: only
+// Dispatcher.ensureWorker calls this, so the many existing direct
+// NewProjectWorker(...) call sites don't need updating.
+func (w *ProjectWorker) setBasePresenceHoldMaxCycles(n int) {
+	w.basePresenceHoldMaxCycles = n
+}
+
+// resolvedBasePresenceHoldMaxCycles returns basePresenceHoldMaxCycles when
+// set, else DefaultDispatcherConfig()'s value — covers a ProjectWorker
+// built directly (e.g. tests) without going through ensureWorker.
+func (w *ProjectWorker) resolvedBasePresenceHoldMaxCycles() int {
+	if w.basePresenceHoldMaxCycles > 0 {
+		return w.basePresenceHoldMaxCycles
+	}
+	return DefaultDispatcherConfig().BasePresenceHoldMaxCycles
 }
 
 // Status returns the current worker status.
@@ -2781,21 +2829,16 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			slog.String("title", exec.TaskTitle),
 		)
 
-		// Update status to running
-		if err := w.lifecycle.Transition(exec.ID, ExecStatusRunning); err != nil {
-			w.log.Error("Failed to update status to running", slog.Any("error", err))
-			continue
-		}
-
-		// GH-3846: record queued->running transition to the execution-events audit trail.
-		w.recordExecutionEvent(exec.ID, memory.StageRunning, fmt.Sprintf("worker started task %s", exec.TaskID))
-
-		// Emit progress callback for task started
-		w.runner.EmitProgress(exec.TaskID, "Running", 2, fmt.Sprintf("Worker started: %s", truncateForLog(exec.TaskTitle, 40)))
-
 		// Build task from execution record (full details stored when queued)
 		// GH-2326: restore Labels so runner-side no-decompose / autopilot-fix
 		// gates see the same labels the dispatch-time Decompose() saw.
+		//
+		// GH-5045/GH-5052: built here, before the GH-4656 revalidation and
+		// the base-presence hold check below (both of which read task
+		// fields), and before the running-status transition further down —
+		// a held task must stay picklable by the next
+		// GetQueuedTasksForProject call (queued/pending only), not get
+		// stranded in "running" forever.
 		task := buildTaskFromExecution(exec)
 
 		// GH-4656: revalidate the issue's live GitHub state at pickup time.
@@ -2809,6 +2852,12 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// (adapter mismatch, unparseable issue number, unresolved repo,
 		// transient GitHub error) — pipeline availability outranks the guard
 		// (acceptance #4).
+		//
+		// GH-5052: runs BEFORE the base-presence hold check below (and on
+		// EVERY tick, regardless of whether the row is currently held) so
+		// that closing the held issue out from under a base-presence hold
+		// always releases it on the very next tick — a hold must never make
+		// this revalidation unreachable.
 		if task.SourceAdapter == "" || task.SourceAdapter == "github" {
 			if state, ghErr := fetchIssueState(ctx, w.runner, task, exec.ProjectPath); ghErr != nil {
 				w.log.Warn("Failed to revalidate issue state before pickup; proceeding (fail-open)",
@@ -2830,10 +2879,127 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 					w.log.Error("Failed to finalize superseded execution", slog.String("execution_id", exec.ID), slog.Any("error", finErr))
 				}
 				w.runner.EmitProgress(exec.TaskID, "Superseded", 100, detail)
+				// GH-5052: the issue that superseded this row also clears any
+				// accumulated base-presence hold count — a fresh execution
+				// row for the same task_id (if one is ever created) starts
+				// counting from zero rather than inheriting a stale count.
+				if clrErr := w.store.SetBasePresenceHoldCount(repickBackoffKey(exec.ProjectPath, exec.TaskID), 0); clrErr != nil {
+					w.log.Warn("base-presence hold: failed to clear hold count on supersede",
+						slog.String("execution_id", exec.ID), slog.Any("error", clrErr))
+				}
 				w.currentTaskID.Store("")
 				continue
 			}
 		}
+
+		// GH-5045/GH-5052: base-presence hold. Before committing to execute
+		// (and before the running-status transition below), check whether
+		// the issue body's own stated prerequisites — an explicit "Depends
+		// on: #N"/"Blocked by: #N" ref still an open PR (directly, or via
+		// an issue whose attached PR is still open-unmerged), or a
+		// backtick-quoted file path missing from the target repo's default
+		// branch — have actually landed on main yet. When neither refs nor
+		// paths are extracted this whole block is skipped: zero probe
+		// calls, byte-identical to the pre-GH-5045 pickup path.
+		if refs, paths := ExtractDependencyRefs(task.Description), ExtractReferencedPaths(task.Description); len(refs) > 0 || len(paths) > 0 {
+			key := repickBackoffKey(exec.ProjectPath, exec.TaskID)
+			hold, checkErr := checkBasePresence(ctx, w.runner, task, exec.ProjectPath, refs, paths)
+			if checkErr != nil {
+				w.log.Warn("base-presence check: failed to resolve repo; proceeding (fail-open)",
+					slog.String("execution_id", exec.ID),
+					slog.String("task_id", exec.TaskID),
+					slog.Any("error", checkErr))
+			} else if hold.Held {
+				detail := fmt.Sprintf("held: prerequisite not on main (%s)", hold.Reason)
+				count, _, cErr := w.store.GetBasePresenceHoldCount(key)
+				if cErr != nil {
+					w.log.Warn("base-presence hold: failed to read hold count",
+						slog.String("execution_id", exec.ID), slog.Any("error", cErr))
+				}
+				count++
+				if sErr := w.store.SetBasePresenceHoldCount(key, count); sErr != nil {
+					w.log.Error("base-presence hold: failed to persist hold count",
+						slog.String("execution_id", exec.ID), slog.Any("error", sErr))
+				}
+
+				w.log.Info("Task held: prerequisite not on main",
+					slog.String("execution_id", exec.ID),
+					slog.String("task_id", exec.TaskID),
+					slog.String("reason", hold.Reason),
+					slog.Int("hold_count", count),
+				)
+				w.recordExecutionEvent(exec.ID, memory.StageBasePresenceHeld, detail)
+				w.runner.EmitProgress(exec.TaskID, "Held", 0, detail)
+
+				if count >= w.resolvedBasePresenceHoldMaxCycles() {
+					// GH-5052 gap F2: escalating must not just reset the
+					// counter and let the row keep being re-picked
+					// (reset-and-loop) — that re-fires the escalation every
+					// resolvedBasePresenceHoldMaxCycles() cycles forever and
+					// never lets other project tasks past the head of the
+					// queue. Instead: apply the label, then actually park the
+					// row (ExecStatusSkipped, a terminal status excluded from
+					// GetQueuedTasksForProject's WHERE clause) so the queue
+					// head genuinely advances. The row only resumes via the
+					// existing pilot-needs-human resolution path — nothing
+					// here re-queues it.
+					w.escalateBasePresenceHold(ctx, task, hold.Reason)
+					escDetail := fmt.Sprintf("escalated after %d held cycles: pilot-needs-human applied; task parked (%s)", count, hold.Reason)
+					w.recordExecutionEvent(exec.ID, memory.StageBasePresenceHeld, escDetail)
+					if _, finErr := w.lifecycle.Finish(exec.ID, nil, nil, 0, ExecStatusSkipped); finErr != nil {
+						w.log.Error("base-presence hold: failed to park execution after escalation",
+							slog.String("execution_id", exec.ID), slog.Any("error", finErr))
+					}
+					if clrErr := w.store.SetBasePresenceHoldCount(key, 0); clrErr != nil {
+						w.log.Error("base-presence hold: failed to clear hold count after escalation",
+							slog.String("execution_id", exec.ID), slog.Any("error", clrErr))
+					}
+					w.runner.EmitProgress(exec.TaskID, "NeedsHuman", 100, escDetail)
+					w.currentTaskID.Store("")
+					// Unlike the not-yet-escalated case below, the row is now
+					// parked (no longer queued/pending) — continue so THIS
+					// tick's loop advances to the next queued row (for this
+					// same project) instead of ending the tick, satisfying
+					// "queue head advances and other project tasks proceed"
+					// without waiting for a fresh external signal.
+					continue
+				}
+
+				w.currentTaskID.Store("")
+				// Not yet escalated: the row stays queued/pending unchanged,
+				// so GetQueuedTasksForProject would hand back this exact same
+				// row again immediately — returning (rather than continuing)
+				// ends this tick here instead of busy-looping on it.
+				return
+			} else {
+				// GH-5052: natural release. The task was previously held
+				// (count > 0) but is not held this tick — reset the counter
+				// so a later hold (e.g. after this task completes and a
+				// fresh retry execution is created) starts counting from
+				// zero rather than carrying over a stale count.
+				if count, found, cErr := w.store.GetBasePresenceHoldCount(key); cErr != nil {
+					w.log.Warn("base-presence hold: failed to read hold count for natural-release reset",
+						slog.String("execution_id", exec.ID), slog.Any("error", cErr))
+				} else if found && count != 0 {
+					if clrErr := w.store.SetBasePresenceHoldCount(key, 0); clrErr != nil {
+						w.log.Warn("base-presence hold: failed to reset hold count on natural release",
+							slog.String("execution_id", exec.ID), slog.Any("error", clrErr))
+					}
+				}
+			}
+		}
+
+		// Update status to running
+		if err := w.lifecycle.Transition(exec.ID, ExecStatusRunning); err != nil {
+			w.log.Error("Failed to update status to running", slog.Any("error", err))
+			continue
+		}
+
+		// GH-3846: record queued->running transition to the execution-events audit trail.
+		w.recordExecutionEvent(exec.ID, memory.StageRunning, fmt.Sprintf("worker started task %s", exec.TaskID))
+
+		// Emit progress callback for task started
+		w.runner.EmitProgress(exec.TaskID, "Running", 2, fmt.Sprintf("Worker started: %s", truncateForLog(exec.TaskTitle, 40)))
 
 		// GH-4141 Phase 3: pre-execute merged-PR short-circuit. A queued task
 		// whose branch already has a merged PR (e.g. a poller-retry duplicate of
@@ -3003,6 +3169,39 @@ func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.St
 			slog.String("stage", string(stage)),
 			slog.Any("error", err))
 	}
+}
+
+// escalateBasePresenceHold applies the pilot-needs-human label once a held
+// task (GH-5045/GH-5052) has exhausted BasePresenceHoldMaxCycles held
+// cycles without its extracted refs/paths landing on main. Best-effort and
+// GitHub-only, mirroring Dispatcher.surfaceStalledIssue's stance: a
+// labeling failure is logged, not fatal — the caller parks the row
+// (ExecStatusSkipped) and clears the hold counter regardless, so a stuck
+// GitHub call here never wedges the hold accounting itself.
+func (w *ProjectWorker) escalateBasePresenceHold(ctx context.Context, task *Task, reason string) {
+	if task.SourceAdapter != "" && task.SourceAdapter != "github" {
+		return
+	}
+	issueNum := strings.TrimPrefix(task.ID, "GH-")
+	if task.SourceIssueID != "" {
+		issueNum = task.SourceIssueID
+	}
+	if issueNum == "" {
+		return
+	}
+
+	labelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if err := ghEditLabels(labelCtx, task.ProjectPath, issueNum, []string{labelPilotNeedsHuman}, nil); err != nil {
+		w.log.Warn("base-presence hold escalation: failed to apply label",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+		return
+	}
+	w.log.Info("base-presence hold escalation: applied pilot-needs-human label",
+		slog.String("task_id", task.ID),
+		slog.String("reason", reason),
+	)
 }
 
 // hasTerminalSuccessLedger reports whether the TASK-394 execution ledger

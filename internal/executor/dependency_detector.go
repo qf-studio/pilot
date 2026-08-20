@@ -3,6 +3,7 @@ package executor
 import (
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // DependencyReason identifies why a sub-issue is treated as depending on a
@@ -93,4 +94,109 @@ func subIssueDisplayRef(issue CreatedIssue) string {
 		return issue.Identifier
 	}
 	return "unknown"
+}
+
+// ExtractDependencyRefs returns every issue/PR number referenced via an
+// explicit "Depends on: #N" / "Blocked by: #N" marker in body, in
+// first-seen order with duplicates removed (GH-5045/GH-5052).
+//
+// This generalizes detectChildDependency's dependencyRefRe usage by
+// dropping the siblingNumbers scoping: that scoping exists because
+// detectChildDependency runs at decomposition time, when the current
+// epic's own child set is known and a ref to an unrelated issue elsewhere
+// in the tracker must not force a wait. The dispatch-time base-presence
+// check this feeds (base_presence.go) has no such sibling context — it
+// runs once per queued issue, independent of any epic — so every explicit
+// ref is a candidate prerequisite worth probing.
+func ExtractDependencyRefs(body string) []int {
+	if body == "" {
+		return nil
+	}
+	seen := make(map[int]bool)
+	var refs []int
+	for _, m := range dependencyRefRe.FindAllStringSubmatch(body, -1) {
+		num, err := strconv.Atoi(m[1])
+		if err != nil || num <= 0 || seen[num] {
+			continue
+		}
+		seen[num] = true
+		refs = append(refs, num)
+	}
+	return refs
+}
+
+// backtickSpanRe matches the content of a single-line backtick-quoted span,
+// e.g. the `internal/foo.go` in "see `internal/foo.go` for details".
+var backtickSpanRe = regexp.MustCompile("`([^`\n]+)`")
+
+// pathLineRefSuffixRe strips an optional trailing "line" or "line-range"
+// reference (":42" or ":42-58") so a citation like
+// `internal/executor/runner.go:42` still resolves to the bare file path.
+var pathLineRefSuffixRe = regexp.MustCompile(`:\d+(?:-\d+)?$`)
+
+// referencedPathIgnorePrefixes excludes URLs from ExtractReferencedPaths —
+// a backtick-quoted link is not a repo file path even though it may
+// contain slashes and a dot.
+var referencedPathIgnorePrefixes = []string{"http://", "https://"}
+
+// ExtractReferencedPaths returns every backtick-quoted repo-relative file
+// path mentioned in body, in first-seen order with duplicates removed
+// (GH-5045/GH-5052).
+//
+// Heuristic, validated by hand against real issue bodies (GH-5021, ui
+// GH-120/124/139): backtick content counts as a path when it (1) is not a
+// URL, (2) contains a "/", (3) contains no whitespace, and (4) ends in a
+// dot-extension once an optional trailing ":<line>" or ":<start>-<end>"
+// line-ref suffix is stripped. This is intentionally conservative — it
+// catches genuine file citations (`internal/boardapi/dto.go`,
+// `internal/fleet/tenantres.go:42`) while excluding shell commands
+// (`aws s3 cp`, `make test`), bare API routes with no extension
+// (`/api/v1/orgs`), and extensionless filenames with no path separator
+// (`0008_board.up.sql`).
+func ExtractReferencedPaths(body string) []string {
+	if body == "" {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var paths []string
+	for _, m := range backtickSpanRe.FindAllStringSubmatch(body, -1) {
+		candidate := strings.TrimSpace(m[1])
+		if candidate == "" || strings.ContainsAny(candidate, " \t") {
+			continue
+		}
+
+		isURL := false
+		for _, prefix := range referencedPathIgnorePrefixes {
+			if strings.HasPrefix(candidate, prefix) {
+				isURL = true
+				break
+			}
+		}
+		if isURL || !strings.Contains(candidate, "/") {
+			continue
+		}
+
+		stripped := pathLineRefSuffixRe.ReplaceAllString(candidate, "")
+		if !hasFileExtension(stripped) {
+			continue
+		}
+
+		if seen[stripped] {
+			continue
+		}
+		seen[stripped] = true
+		paths = append(paths, stripped)
+	}
+	return paths
+}
+
+// hasFileExtension reports whether s ends in a "." followed by at least one
+// character within its final path segment (i.e. the dot is not itself part
+// of a directory component).
+func hasFileExtension(s string) bool {
+	idx := strings.LastIndex(s, ".")
+	if idx < 0 || idx == len(s)-1 {
+		return false
+	}
+	return !strings.Contains(s[idx:], "/")
 }

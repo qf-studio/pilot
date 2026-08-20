@@ -451,6 +451,14 @@ func (s *Store) migrate() error {
 		// reasoning exactly but for a different prior-claim status. See
 		// Dispatcher.priorClaimWasInfra.
 		`ALTER TABLE repick_backoff ADD COLUMN infra_drops INTEGER NOT NULL DEFAULT 0`,
+		// GH-5045/GH-5052: base_presence_holds tracks consecutive claim-path
+		// holds (an unmet "Depends on: #N" or referenced-path prerequisite,
+		// executor/base_presence.go) toward
+		// DispatcherConfig.BasePresenceHoldMaxCycles — same key shape and
+		// lifecycle as stall_drops/infra_drops above, on its own column
+		// since a hold is neither a stall-kill nor a failure classification,
+		// just "not yet".
+		`ALTER TABLE repick_backoff ADD COLUMN base_presence_holds INTEGER NOT NULL DEFAULT 0`,
 		// GH-4773: project identity on approval records. The gateway approvals
 		// surface (PR#4752) attributed rows only via the best-effort
 		// executions.approval_request_id join and dropped unlinked rows
@@ -1065,6 +1073,18 @@ const (
 	// operator to judge whether the attempted call indicates a prompt/task
 	// problem worth investigating.
 	StageGhGuardDenied Stage = "executor.gh_guard_denied"
+	// StageBasePresenceHeld records a GH-5045/GH-5052 claim-path hold: the
+	// task's issue body referenced a prerequisite (an explicit "Depends on:
+	// #N" ref that is either an open PR or an issue whose attached PR is
+	// still open-unmerged, or a backtick-quoted file path missing from the
+	// target repo's default branch) that hasn't landed yet, so the
+	// dispatcher declined to claim/execute it this cycle. Detail is a
+	// human-readable reason string (e.g. "held: prerequisite not on main
+	// (referenced PR #123 is still open (not merged))"). Not a terminal
+	// status — the task stays queued and is re-checked the next time its
+	// project worker is signalled; see ProjectWorker.processQueue and
+	// executor/base_presence.go.
+	StageBasePresenceHeld Stage = "executor.base_presence_held"
 )
 
 // Event represents a single stage-transition record for an execution.
@@ -3267,6 +3287,42 @@ func (s *Store) SetClaimLostBackoff(key string, claimLostDrops int, nextAllowedA
 			claim_lost_drops = excluded.claim_lost_drops,
 			updated_at = CURRENT_TIMESTAMP
 	`, key, nextAllowedAt, claimLostDrops)
+	return err
+}
+
+// GetBasePresenceHoldCount returns the persisted count of consecutive
+// claim-path base-presence holds for key (GH-5045/GH-5052) — the same
+// "project_path|task_id" string repickBackoffKey mints. found is false when
+// no hold has ever been recorded for key. Distinct from consecutive_drops
+// on the same row: a hold is never a failure (the task simply hasn't
+// claimed yet), so it must not count toward dispatcherRepickHardCap.
+func (s *Store) GetBasePresenceHoldCount(key string) (count int, found bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT base_presence_holds FROM repick_backoff WHERE key = ?
+	`, key).Scan(&count)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return count, true, nil
+}
+
+// SetBasePresenceHoldCount persists count as the base-presence hold count
+// for key (GH-5045/GH-5052), creating the repick_backoff row if key has no
+// prior state. consecutive_drops/next_allowed_at are only supplied for a
+// brand-new row — an existing row's genuine-failure counter and backoff
+// window are left untouched by the ON CONFLICT clause, since a hold must
+// not perturb genuine-failure accounting.
+func (s *Store) SetBasePresenceHoldCount(key string, count int) error {
+	_, err := s.db.Exec(`
+		INSERT INTO repick_backoff (key, consecutive_drops, next_allowed_at, base_presence_holds, updated_at)
+		VALUES (?, 0, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT (key) DO UPDATE SET
+			base_presence_holds = excluded.base_presence_holds,
+			updated_at = CURRENT_TIMESTAMP
+	`, key, count)
 	return err
 }
 
