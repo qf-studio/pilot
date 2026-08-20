@@ -935,7 +935,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	dispatcherActive := dispatcher != nil && dispatcher.IsActive(taskID, projectPath)
 	if shouldUnwindGithubInProgressLabel(notifyAttempted, hr, dispatcherActive) {
 		labelTracker.RecordAttempt()
-		if err := specClient.RemoveLabel(ctx, repoOwner, repoName, issueNum, pilotLabel); err != nil {
+		if err := unwindGithubStartedLabel(ctx, specClient, repoOwner, repoName, issueNum); err != nil {
 			// A failed unwind is a genuine label-lifecycle failure (the
 			// label is now stranded), unlike the unwind itself — which is a
 			// deliberate correction, not evidence the original apply/notify
@@ -1036,6 +1036,26 @@ func labelLifecycleDeadManTrackerName(repoFullName string) string {
 // label round-trip this function exists to avoid.
 func shouldUnwindGithubInProgressLabel(notifyAttempted bool, hr *HandlerResult, dispatcherActive bool) bool {
 	return notifyAttempted && hr.IsDispatchGated() && !dispatcherActive
+}
+
+// unwindGithubStartedLabel removes exactly the label notifyTaskStartedSDK
+// applied — githubSDK.LabelInProgress ("pilot-in-progress") — never the
+// poller's own trigger label ("pilot", cfg.Adapters.GitHub.PilotLabel).
+//
+// GH-5028: the unwind call at this call site used to remove pilotLabel (the
+// trigger label) instead of the label NotifyTaskStarted actually applies
+// (studio-sdk's Notifier.NotifyTaskStarted only ever adds the constant
+// LabelInProgress — the triggerLabel it's constructed with is never read).
+// A dispatch pickup dropped after the label went on (repick backoff, claim
+// lost) then had its "correction" strip the wrong label: the issue was left
+// with pilot-in-progress still on it but pilot gone, invisible to the next
+// poll's `Labels: []string{p.label}` query, with zero execution ever having
+// started — exactly the live incident (issue queued 16:35Z, pilot label
+// removed, no PR, no ledger progress, sat invisible until an operator
+// manually restored it). Extracted so the exact label targeted by the
+// unwind is unit-testable without standing up the full SDK dispatch path.
+func unwindGithubStartedLabel(ctx context.Context, client *githubSDK.Client, owner, repo string, issueNum int) error {
+	return client.RemoveLabel(ctx, owner, repo, issueNum, githubSDK.LabelInProgress)
 }
 
 // notifyTaskStartedSDK applies the pilot-in-progress label and posts the
