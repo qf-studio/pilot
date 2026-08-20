@@ -82,6 +82,18 @@ Docs page (TASK-466 — daemon contract research first) · comments read-model �
 
 **Contract anchors from merged CON-1** (for UI-5/UI-7 authoring): `approvalDTO{requestId, taskId, executionId?, projectPath?, prNumber?, prUrl?, requestedAt, cardId?, cardTitle?}` (nullable = absent) · `eventDTO{id, eventType, detail, createdAt}` · both under `{"approvals":[...]}` / `{"events":[...]}` envelopes, limit default 50 max 200.
 
+## Dashboard design-fidelity batch (2026-08-20, founder walkthrough on live local stack)
+
+First real shipped cards (08-19) exposed the gap between dashboard-v4 and the shipped UI-6 surface. Filed:
+
+- **ui#118** 🚀 in-progress — chart empty-with-data: `byProject` consumed by name, wire keys by `projectDTO.Key` (5th TASK-460 doc-vs-wire incident; see TASK-460 doc) + chart-color dot identity helper.
+- **ui#131** (labeled) — window pill restyle + `All N Projects ▾` client-side filter (chart+list only; stats tiles stay org-window, data-honest).
+- **ui#132** (⚠️ UNLABELED — label after ui#118 PR merges, same component) — by-project fidelity: dot header, no `GH ·` prefix, count `N shipped in Nd from GitHub`, clickable rows → `/board/:cardId`, sub-line `seq · merged Nh ago`, View All → `/board`. Right column reserved for PR#.
+- **console#197** (labeled) — contract leg: `prNumber`/`prUrl` per shipped card (sourced at done-transition via GitHub API; raw-body-pinned test mandatory per console#195 gate). **ui render leg (D) files only after #197 merges.**
+- **ui#133** (labeled) — Cost/Shipped tile wired to C13 metrics relay; contract quoted from `pilot/internal/gateway/dashboard.go:94-102` (`window.costPerDeliveredUsd`; casing trap `totalCostUsd` vs top-level `totalCostUSD`). Median-to-PR stays honest-degraded — **no wire source exists** (daemon leg candidate, unfiled). Local stack always degrades (C13 → 502, box on fleet-VPC private IP — known class).
+
+Founder call recorded: cost tile must NOT default to $0 when metrics are unreachable (false-data); em-dash until wire reports.
+
 ## Refs
 
 - Designs: `pilot-console-ui/design/*.html` (all approved 2026-08-14)
