@@ -119,9 +119,21 @@ func (w *wrappedErr) Unwrap() error { return w.err }
 // TestGithubHandlerSDK_NotifyTaskStartedWired's established pattern for this
 // otherwise-unexercisable function): handleGithubIssueEventSDK must call
 // shouldUnwindGithubInProgressLabel AFTER handleIssueGeneric returns (so the
-// dispatch outcome is known), and the unwind call itself must remove the
-// label via the same specClient the apply used — never a fresh client — so
-// it targets the same repo/token context.
+// dispatch outcome is known), and the unwind call itself must go through
+// unwindGithubStartedLabel with the same specClient the apply used — never a
+// fresh client — so it targets the same repo/token context.
+//
+// GH-5042/GH-5028: this test used to pin
+// `specClient.RemoveLabel(ctx, repoOwner, repoName, issueNum, pilotLabel)` as
+// correct — but pilotLabel is the poller's trigger label ("pilot"), not the
+// label notifyTaskStartedSDK actually applies (githubSDK.LabelInProgress,
+// "pilot-in-progress"; studio-sdk's NotifyTaskStarted never reads the
+// triggerLabel it's constructed with). Removing pilotLabel on a dropped
+// dispatch pickup strips the label the poller filters its queue by, so a
+// queued-but-never-dispatched issue comes back from this "correction"
+// invisible to every future poll — the exact live incident. See
+// unwindGithubStartedLabel's doc comment and
+// TestUnwindGithubStartedLabel_GH5028 for the behavioral regression test.
 func TestGithubHandlerSDK_LabelUnwindWired(t *testing.T) {
 	body := githubFuncBody(t, "handlers.go", "func handleGithubIssueEventSDK(")
 
@@ -134,7 +146,10 @@ func TestGithubHandlerSDK_LabelUnwindWired(t *testing.T) {
 		t.Error("shouldUnwindGithubInProgressLabel must be consulted after handleIssueGeneric returns, once the dispatch outcome is known")
 	}
 
-	if !strings.Contains(body, "specClient.RemoveLabel(ctx, repoOwner, repoName, issueNum, pilotLabel)") {
-		t.Error("the unwind path must call specClient.RemoveLabel with the same owner/repo/issue/label the apply used")
+	if !strings.Contains(body, "unwindGithubStartedLabel(ctx, specClient, repoOwner, repoName, issueNum)") {
+		t.Error("the unwind path must call unwindGithubStartedLabel with the same owner/repo/issue the apply used")
+	}
+	if strings.Contains(body, "specClient.RemoveLabel(ctx, repoOwner, repoName, issueNum, pilotLabel)") {
+		t.Error("GH-5028: the unwind must never remove pilotLabel (the trigger label) directly — that strands a queued-but-never-dispatched issue unpollable")
 	}
 }

@@ -4600,17 +4600,18 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		if c.onIssueDone != nil {
 			c.onIssueDone(prState.IssueNumber)
 		}
-		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
-			c.log.Warn("failed to add pilot-done label after merge", "issue", prState.IssueNumber, "error", err)
-		}
-		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
-			c.log.Warn("failed to remove pilot-in-progress label after merge", "issue", prState.IssueNumber, "error", err)
-		}
-		// GH-1302: Clean up stale pilot-failed label from prior failed attempt
-		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
-			// 404 is expected if label doesn't exist - silently ignore
-			c.log.Debug("pilot-failed label cleanup", "issue", prState.IssueNumber, "error", err)
-		}
+		// GH-1302: pilot-failed is cleaned up as stale residue from a prior
+		// failed attempt. GH-5042: a terminal completion also sheds any
+		// escalation hold (pilot-needs-human, needs-manual-rebase) — those
+		// describe a hold on work that just shipped, not a finished issue
+		// (GH-5030/#5022: closed-completed issues were observed retaining
+		// pilot-needs-human with no PR left to hold it against).
+		c.mutateIssueLabels(ctx, prState.IssueNumber, []string{github.LabelDone}, []string{
+			github.LabelInProgress,
+			github.LabelFailed,
+			labelNeedsHuman,
+			labelNeedsManualRebase,
+		})
 		// GH-4021: A pilot-retry-* label from an earlier PR-closed-without-merge
 		// cycle must not survive a later successful merge — left in place it
 		// arms a redundant auto-retry against already-shipped work.
@@ -6326,7 +6327,7 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 			"Merge conflict detected. Auto-rebase failed and the conflict surface is not limited to go.mod/go.sum — holding for manual resolution instead of closing.\n\nConflicted files:\n- %s",
 			strings.Join(conflictedFiles, "\n- "),
 		)
-		c.escalateAndHold(ctx, prState, "auto-rebase failed", []string{"needs-manual-rebase"}, comment)
+		c.escalateAndHold(ctx, prState, "auto-rebase failed", []string{labelNeedsManualRebase}, comment)
 		return nil
 	}
 
@@ -6662,7 +6663,7 @@ func (c *Controller) holdClosedIssueWorkNotOnMain(ctx context.Context, prState *
 		prState.IssueNumber, situation,
 	)
 	reason := fmt.Sprintf("source issue #%d is closed but %s", prState.IssueNumber, situation)
-	c.escalateAndHold(ctx, prState, reason, []string{"needs-manual-rebase"}, comment)
+	c.escalateAndHold(ctx, prState, reason, []string{labelNeedsManualRebase}, comment)
 	return nil
 }
 
@@ -6715,6 +6716,15 @@ func (c *Controller) closeAndReexecute(ctx context.Context, prState *PRState, cl
 // versioned part of that SDK. GH-4458.
 const labelNeedsHuman = "pilot-needs-human"
 
+// labelNeedsManualRebase flags an issue whose PR was held by escalateAndHold
+// for an unresolved merge conflict a human must rebase by hand (see
+// handleMergeConflict's auto-rebase-failed and closed-source-issue rungs).
+// Named as a constant (it used to be the raw "needs-manual-rebase" string
+// literal repeated at every call site) so the mutual-exclusion and
+// terminal-state hygiene cleanup added by GH-5042 can reference the exact
+// same value from other functions instead of retyping the literal.
+const labelNeedsManualRebase = "needs-manual-rebase"
+
 // labelParkedAwaitingApproval flags an issue whose PR is parked in
 // StageAwaitApproval because an escalation gate demanded approval but no
 // approval channel is wired (approvalMgr nil, or approval.pre_merge.enabled
@@ -6723,12 +6733,40 @@ const labelNeedsHuman = "pilot-needs-human"
 // implies automated recovery gave up on the PR's code).
 const labelParkedAwaitingApproval = "autopilot/parked-awaiting-approval"
 
+// mutateIssueLabels applies an add/remove label delta to issueNumber and
+// always logs the delta — "issue #N: +[added] -[removed]" — even when one
+// side is empty. GH-5042/GH-5028: a label removal with no accompanying log
+// line is exactly how a queued issue's pilot label disappeared for hours
+// with nothing to diagnose from (poller-labels-removed-log-means-never-
+// applied pitfall). Individual Add/Remove API failures are still logged at
+// Warn/Debug as before; this adds the aggregate delta record every label-
+// lifecycle site in the escalation/retry/finalization chain must emit.
+func (c *Controller) mutateIssueLabels(ctx context.Context, issueNumber int, add []string, remove []string) {
+	if issueNumber <= 0 || (len(add) == 0 && len(remove) == 0) {
+		return
+	}
+	if len(add) > 0 {
+		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, issueNumber, add); err != nil {
+			c.log.Warn("mutateIssueLabels: failed to add labels", "issue", issueNumber, "labels", add, "error", err)
+		}
+	}
+	for _, label := range remove {
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, issueNumber, label); err != nil {
+			// 404 is expected when the label was never set on the issue -
+			// silently ignore at Debug; the aggregate Info line below still
+			// records that removal was attempted.
+			c.log.Debug("mutateIssueLabels: label removal (may not exist)", "issue", issueNumber, "label", label, "error", err)
+		}
+	}
+	c.log.Info(fmt.Sprintf("issue #%d: +%v -%v", issueNumber, add, remove), "issue", issueNumber, "added", add, "removed", remove)
+}
+
 // escalateAndHold is the give-up rung for automated recovery paths that must
 // not throw away in-flight work: unlike closeAndReexecute, it never closes
 // the PR, never deletes the branch, and never re-triggers execution. It
 // sets StageFailed (so the poll loop stops re-driving this PR through
 // CI/merge), applies labelNeedsHuman plus any caller-supplied labels to the
-// linked issue (e.g. "needs-manual-rebase"), posts a diagnostic PR comment
+// linked issue (e.g. labelNeedsManualRebase), posts a diagnostic PR comment
 // naming the reason, and fires an alert through the existing engine so
 // configured channels (Slack/Telegram/PagerDuty) notify a human. The PR
 // itself is left open with its branch intact for manual recovery.
@@ -6736,6 +6774,14 @@ const labelParkedAwaitingApproval = "autopilot/parked-awaiting-approval"
 // GH-4458 foundation for the rung escalation ladder — no rung calls this
 // yet; it is unit-tested standalone here so the attribution/labels/alert
 // behavior is verified independently of any specific rung wiring it up.
+//
+// GH-5042: pilot-needs-human and pilot-retry-ready must never coexist on an
+// issue (GH-5032: an escalation hold that predated a retry-ready re-arm sat
+// alongside it for 2+ hours, unpollable, until an operator intervened) — an
+// escalation applied here always supersedes any retry-ready arming still
+// standing, so the retry-ready label is removed in the same mutation. The
+// reverse direction (retry-ready superseding an escalation hold) is
+// enforced at the retry-arming site in notifyExternalClose.
 func (c *Controller) escalateAndHold(ctx context.Context, prState *PRState, reason string, labels []string, comment string) {
 	prState.Stage = StageFailed
 	prState.Error = reason
@@ -6743,13 +6789,11 @@ func (c *Controller) escalateAndHold(ctx context.Context, prState *PRState, reas
 	// resolve (a rebase an operator fixed by pushing to the branch) rather
 	// than every StageFailed PR — other holds (CI-fix size guard, rebase-
 	// oscillation cap, CI timeout) stay parked even if their branch moves.
-	prState.RebaseHoldActive = slices.Contains(labels, "needs-manual-rebase")
+	prState.RebaseHoldActive = slices.Contains(labels, labelNeedsManualRebase)
 
 	if prState.IssueNumber > 0 {
 		allLabels := append([]string{labelNeedsHuman}, labels...)
-		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, allLabels); err != nil {
-			c.log.Warn("escalateAndHold: failed to add labels", "issue", prState.IssueNumber, "pr", prState.PRNumber, "labels", allLabels, "error", err)
-		}
+		c.mutateIssueLabels(ctx, prState.IssueNumber, allLabels, []string{github.LabelRetryReady})
 	}
 
 	if comment != "" {
@@ -8318,18 +8362,16 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 
 		// GH-1486: Close associated issue and add pilot-done label on external merge
 		if prState.IssueNumber > 0 {
-			// Add pilot-done label
-			if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
-				c.log.Warn("failed to add pilot-done label after external merge", "issue", prState.IssueNumber, "error", err)
-			}
-			// Remove pilot-in-progress label
-			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
-				c.log.Debug("pilot-in-progress label cleanup on external merge", "issue", prState.IssueNumber, "error", err)
-			}
-			// Remove pilot-failed label (cleanup from prior failed attempt)
-			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
-				c.log.Debug("pilot-failed label cleanup on external merge", "issue", prState.IssueNumber, "error", err)
-			}
+			// Add pilot-done, remove pilot-in-progress/pilot-failed. GH-5042:
+			// also shed any escalation hold (pilot-needs-human,
+			// needs-manual-rebase) — same terminal-state hygiene as the
+			// polled-merge finalization path above.
+			c.mutateIssueLabels(ctx, prState.IssueNumber, []string{github.LabelDone}, []string{
+				github.LabelInProgress,
+				github.LabelFailed,
+				labelNeedsHuman,
+				labelNeedsManualRebase,
+			})
 			// GH-4021: same stale-label cleanup as the polled-merge path.
 			c.clearRetryLabels(ctx, prState.IssueNumber)
 			// Close the issue
@@ -8570,12 +8612,12 @@ func (c *Controller) getBotLogin(ctx context.Context) string {
 // third, redundant dispatch that raced the orphan-row cleanup into a false
 // task_failed alert.
 func (c *Controller) clearRetryLabels(ctx context.Context, issueNumber int) {
-	for _, label := range []string{github.LabelRetryReady, github.LabelRetry1, github.LabelRetry2, github.LabelRetryExhausted} {
-		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, issueNumber, label); err != nil {
-			// 404 is expected when the label was never set - silently ignore.
-			c.log.Debug("retry label cleanup", "issue", issueNumber, "label", label, "error", err)
-		}
-	}
+	// GH-5042: routed through mutateIssueLabels so this cleanup emits the
+	// same "issue #N: +[] -[...]" delta log as every other label mutation
+	// in the escalation/retry/finalization lifecycle.
+	c.mutateIssueLabels(ctx, issueNumber, nil, []string{
+		github.LabelRetryReady, github.LabelRetry1, github.LabelRetry2, github.LabelRetryExhausted,
+	})
 }
 
 // selfCloseMarkerTTL bounds how long a markSelfClosed stamp stays valid.
@@ -8840,20 +8882,31 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		if issueAlreadyClosed {
 			c.log.Info("skipping issue label correction: issue already closed", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 		} else {
-			if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{issueLabel}); err != nil {
-				c.log.Warn("failed to set issue label on PR close", "issue", prState.IssueNumber, "label", issueLabel, "error", err)
+			addLabels := []string{issueLabel}
+			// GH-5042/GH-5032: pilot-retry-ready must always imply pollable —
+			// ensure the pilot label is present in the very same mutation
+			// instead of trusting it survived whatever state the issue was
+			// already in. GH-5032's live incident: an escalateAndHold hold
+			// had left `pilot` absent, so setting pilot-retry-ready alone
+			// stranded a "ready to retry" issue the poller could never see
+			// for 2+ hours.
+			if issueLabel == github.LabelRetryReady {
+				addLabels = append(addLabels, github.LabelPilot)
 			}
-			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
-				c.log.Warn("failed to remove pilot-in-progress label", "issue", prState.IssueNumber, "error", err)
-			}
+			// GH-5042: whatever this close resolves to — retry-ready,
+			// superseded, or failed-owned-elsewhere — it always supersedes
+			// any escalation hold still standing on the issue (the hold
+			// existed for a PR that is now closed; there is nothing left
+			// for it to hold). Strip pilot-needs-human/needs-manual-rebase
+			// here unconditionally, mirroring escalateAndHold's reverse
+			// direction (needs-human supersedes retry-ready).
+			removeLabels := []string{github.LabelInProgress, labelNeedsHuman, labelNeedsManualRebase}
 			if issueLabel != github.LabelFailed {
 				// Remove stale pilot-failed label (GH-1302 gap) — only when we're not
 				// the ones setting it above.
-				if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
-					c.log.Debug("failed to remove pilot-failed (may not exist)", "issue", prState.IssueNumber, "error", err)
-				}
+				removeLabels = append(removeLabels, github.LabelFailed)
 			}
-			c.log.Info("corrected issue label on PR close", "issue", prState.IssueNumber, "pr", prState.PRNumber, "label", issueLabel)
+			c.mutateIssueLabels(ctx, prState.IssueNumber, addLabels, removeLabels)
 		}
 
 		// Task 5e: unlike the other gated sites, this one still posts the
