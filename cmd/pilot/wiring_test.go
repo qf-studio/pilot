@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -675,6 +679,14 @@ func TestNewProjectQualityCheckerFactory_AutoDetectsGoProject(t *testing.T) {
 // the doc-vs-wire gate for that code path in production, the exact failure
 // class TASK-460 keeps recurring on. Mirrors docs_wiring_test.go's
 // source-grep parity pattern.
+//
+// GH-5022 extends this same tripwire to also require SetContractContentFetcher
+// parity: the dependency lookup alone only tells the gate a citation is
+// *required*, not whether it's *true*. A runner wired with the lookup but not
+// the fetcher fails closed per-citation (SetContractContentFetcher's doc
+// comment on runner.go), but that's still a silently degraded gate in
+// production if a site is missed — same incident class, same grep-parity
+// defense.
 func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testing.T) {
 	mainContent, err := os.ReadFile("main.go")
 	if err != nil {
@@ -688,6 +700,7 @@ func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testin
 
 	qualityCount := strings.Count(src, "SetQualityCheckerFactory(")
 	contractCount := strings.Count(src, "SetContractDependencyLookup(")
+	fetcherCount := strings.Count(src, "SetContractContentFetcher(")
 
 	if qualityCount != 5 {
 		t.Fatalf("SetQualityCheckerFactory( occurs %d times across main.go+commands.go, want 5 — this test's baseline assumption is stale, update it", qualityCount)
@@ -697,11 +710,16 @@ func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testin
 			"a runner constructed without the contract-evidence lookup wired silently no-ops the TASK-460 doc-vs-wire gate (GH-5009) for that code path",
 			contractCount, qualityCount)
 	}
+	if fetcherCount != qualityCount {
+		t.Errorf("SetContractContentFetcher( occurs %d times across main.go+commands.go, want %d (parity with SetQualityCheckerFactory's 5 runner-construction call sites, GH-5022) — "+
+			"a runner wired with the dependency lookup but not the content fetcher fails every citation closed (GH-5011) rather than genuinely verifying them",
+			fetcherCount, qualityCount)
+	}
 
 	// Verify each specific receiver pairs its quality-checker-factory call
-	// with a contract-dependency-lookup call, not just an aggregate count
-	// (which parity alone wouldn't catch if two calls moved to the wrong
-	// receiver).
+	// with a contract-dependency-lookup call and a contract-content-fetcher
+	// call, not just an aggregate count (which parity alone wouldn't catch
+	// if calls moved to the wrong receiver).
 	wantPairs := []string{
 		"gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))",
 		"p.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))",
@@ -712,6 +730,11 @@ func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testin
 		"p.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))",
 		"runner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))",
 	}
+	wantFetcherPairs := []string{
+		"gwRunner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))",
+		"p.SetContractContentFetcher(newProjectContractContentFetcher(cfg))",
+		"runner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))",
+	}
 	for i, want := range wantPairs {
 		if !strings.Contains(src, want) {
 			t.Errorf("expected to find quality-checker-factory call %q", want)
@@ -719,10 +742,17 @@ func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testin
 		if !strings.Contains(src, wantContractPairs[i]) {
 			t.Errorf("expected matching contract-dependency-lookup call %q", wantContractPairs[i])
 		}
+		if !strings.Contains(src, wantFetcherPairs[i]) {
+			t.Errorf("expected matching contract-content-fetcher call %q", wantFetcherPairs[i])
+		}
 	}
 	if strings.Count(src, "gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))") !=
 		strings.Count(src, "gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))") {
 		t.Error("gwRunner call-count parity broken: expected 2 gateway-mode sites (needsPollingInfra + chat-only) to wire both setters identically")
+	}
+	if strings.Count(src, "gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))") !=
+		strings.Count(src, "gwRunner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))") {
+		t.Error("gwRunner call-count parity broken: expected 2 gateway-mode sites (needsPollingInfra + chat-only) to wire the content fetcher identically")
 	}
 }
 
@@ -785,6 +815,81 @@ func TestNewProjectContractDependencyLookup_NoOpWhenUnconfigured(t *testing.T) {
 	}
 	if deps := lookup("/some/unregistered/path"); len(deps) != 0 {
 		t.Errorf("lookup for unregistered path = %v, want empty", deps)
+	}
+}
+
+// =============================================================================
+// GH-5022: newProjectContractContentFetcher — end-to-end activation check
+// =============================================================================
+
+// TestNewProjectContractContentFetcher_ReturnsRealGithubClientType is the
+// constructor-level half of GH-5022's end-to-end test: for a project with
+// contract_dependencies configured, the fetcher newProjectContractContentFetcher
+// wires at all 5 runner-construction sites (main.go x4, commands.go x1) must
+// be the real github-client-backed implementation — not a stub — so the
+// Contract Evidence gate's citation verification (internal/executor/
+// contract_evidence.go) hits GitHub's actual Contents API in production.
+func TestNewProjectContractContentFetcher_ReturnsRealGithubClientType(t *testing.T) {
+	projectPath := t.TempDir()
+	cfg := &config.Config{
+		Projects: []*config.ProjectConfig{
+			{
+				Name: "consumer-project",
+				Path: projectPath,
+				ContractDependencies: []config.ContractDependency{
+					{Owner: "qf-studio", Repo: "pilot", ContractFiles: []string{"internal/instances/handlers.go"}, Ref: "main"},
+				},
+			},
+		},
+	}
+
+	fetcher := newProjectContractContentFetcher(cfg)
+	if fetcher == nil {
+		t.Fatal("newProjectContractContentFetcher(cfg) returned nil")
+	}
+	if _, ok := fetcher.(*github.Client); !ok {
+		t.Fatalf("fetcher concrete type = %T, want *github.Client (the real GetFileContent implementation from PR#5015)", fetcher)
+	}
+}
+
+// TestNewProjectContractContentFetcher_FetchesOverFakeHTTPTransport is the
+// HTTP-fetch half of GH-5022's end-to-end test: the *github.Client type
+// newProjectContractContentFetcher returns must genuinely fetch producer
+// content over HTTP — exercised here against a fake transport
+// (httptest.Server) serving the producer file exactly as GitHub's Contents
+// API does, the same request/response/base64-decode path
+// internal/executor's Contract Evidence gate relies on to verify a citation
+// (internal/executor/runner_contract_evidence_real_client_test.go's
+// TestRunner_ContractEvidence_FakeHTTPTransportEndToEnd covers that gate's
+// pass/fail behavior at the Runner.Execute() level — internal/executor
+// can't import internal/adapters/github directly, see that file's doc
+// comment, so the two tests together cover both halves).
+func TestNewProjectContractContentFetcher_FetchesOverFakeHTTPTransport(t *testing.T) {
+	wantContent := "type InstanceDTO struct {\n\tConfigGeneration int `json:\"specVersion\"`\n}\n"
+	encoded := base64.StdEncoding.EncodeToString([]byte(wantContent))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantPath := "/repos/qf-studio/pilot/contents/internal/instances/handlers.go"
+		if r.URL.Path != wantPath {
+			t.Errorf("unexpected request path: %s, want %s", r.URL.Path, wantPath)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"content":  encoded,
+			"encoding": "base64",
+		})
+	}))
+	defer server.Close()
+
+	// Concrete *github.Client — the same type newProjectContractContentFetcher returns.
+	client := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	got, err := client.GetFileContent(context.Background(), "qf-studio", "pilot", "internal/instances/handlers.go", "main")
+	if err != nil {
+		t.Fatalf("GetFileContent() error = %v", err)
+	}
+	if got != wantContent {
+		t.Errorf("GetFileContent() = %q, want %q", got, wantContent)
 	}
 }
 
