@@ -213,6 +213,38 @@ func newProjectQualityCheckerFactory(cfg *config.Config) func(taskID, taskProjec
 	}
 }
 
+// newProjectContractDependencyLookup builds an executor.ContractDependencyLookup
+// that resolves a project's configured `contract_dependencies` (GH-5010) per
+// task project path, mirroring newProjectQualityCheckerFactory above.
+//
+// internal/executor cannot import internal/config (import cycle risk via
+// internal/comms — see internal/executor/contract_evidence.go's package doc),
+// so ContractDependency is duplicated there as an executor-local mirror.
+// This function is the one place that bridges the two shapes (GH-5013): it
+// resolves the task's project via cfg.FindProjectByPath and translates each
+// config.ContractDependency into its executor.ContractDependency twin. A
+// project with no `contract_dependencies` configured (or no matching
+// project) yields an empty slice — the Contract Evidence gate (GH-5009)
+// treats that as a complete no-op, per its first acceptance criterion.
+func newProjectContractDependencyLookup(cfg *config.Config) executor.ContractDependencyLookup {
+	return func(taskProjectPath string) []executor.ContractDependency {
+		proj := cfg.FindProjectByPath(taskProjectPath)
+		if proj == nil || len(proj.ContractDependencies) == 0 {
+			return nil
+		}
+		deps := make([]executor.ContractDependency, len(proj.ContractDependencies))
+		for i, d := range proj.ContractDependencies {
+			deps[i] = executor.ContractDependency{
+				Owner:         d.Owner,
+				Repo:          d.Repo,
+				ContractFiles: d.ContractFiles,
+				Ref:           d.Ref,
+			}
+		}
+		return deps
+	}
+}
+
 // Check implements executor.QualityChecker by delegating to quality.Executor
 // and converting the result type
 func (w *qualityCheckerWrapper) Check(ctx context.Context) (*executor.QualityOutcome, error) {
