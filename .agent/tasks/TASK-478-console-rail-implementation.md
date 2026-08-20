@@ -94,6 +94,8 @@ First real shipped cards (08-19) exposed the gap between dashboard-v4 and the sh
 
 Founder call recorded: cost tile must NOT default to $0 when metrics are unreachable (false-data); em-dash until wire reports.
 
+**Review pass 2026-08-20 late (all 14 batch PRs, verdicts posted):** ui#118 chain — PR#125 APPROVE-w-notes (scope creep absorbed #120/#121 slices → both trailing PRs CONFLICTING; `:key="s.name"` nit) · #127 APPROVE · #128 APPROVE-w-notes (failing-test leg merged AFTER fix — never failed in CI; pin is genuine though) · #129 APPROVE (unfiltered-index color handling standout) · **OPEN #126 needs rebase, its producer-cited docblock must win over #125's uncited interim** · **OPEN #130 needs rebase-to-test-only (re-implements merged #129)**. ui#133 — PR#136 APPROVE (casing-trap test is a real two-way discriminator) · #137 APPROVE-w-notes (**single-instance zero-delivered renders $0.00 not em-dash — product call pending, see below**). ui#131 — PR#140 APPROVE · **OPEN #141 needs rebase (shipped duplicate incompatible PillDropdown; branch pre-dates #140)**. console#197 chain — PR#201/#202/#203 all APPROVE(-w-notes): raw-body presence+omission pinned, gate irony-check PASSED. **Open product call for founder: single-instance-zero-delivered cost tile = $0.00 (current) vs em-dash (honest-degrade doctrine) — founder earlier leaned "$0 default".** Fast-follow candidates unfiled: console `--self-test` in CI · pilot contents.go path escaping · `:key="s.key"` legend nit. Merge-order: #5016 → #5017 (pilot) · #126/#130/#141 after rebases · ui#132 stays unlabeled until #118 chain fully lands incl. #130.
+
 ## Refs
 
 - Designs: `pilot-console-ui/design/*.html` (all approved 2026-08-14)
