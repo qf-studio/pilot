@@ -1602,7 +1602,7 @@ func (p *Pilot) initAlerts(cfg *config.Config) {
 		p.telegramClient = telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 		for _, ch := range cfg.Alerts.Channels {
 			if ch.Type == "telegram" && ch.Enabled && ch.Telegram != nil {
-				telegramChannel := alerts.NewTelegramChannel(ch.Name, p.telegramClient, ch.Telegram.ChatID)
+				telegramChannel := alerts.NewTelegramChannel(ch.Name, p.telegramClient, ch.Telegram.ChatID, ch.Telegram.MessageThreadID)
 				dispatcher.RegisterChannel(telegramChannel)
 				log.Info("Registered Telegram alert channel",
 					slog.String("name", ch.Name),

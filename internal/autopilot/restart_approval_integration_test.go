@@ -21,7 +21,7 @@ type fakeRestartTelegramClient struct {
 	nextID int64
 }
 
-func (f *fakeRestartTelegramClient) SendMessageWithKeyboard(_ context.Context, _, _, _ string, _ [][]approval.InlineKeyboardButton) (*approval.MessageResponse, error) {
+func (f *fakeRestartTelegramClient) SendMessageWithKeyboard(_ context.Context, _, _, _ string, _ [][]approval.InlineKeyboardButton, _ int64) (*approval.MessageResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextID++
@@ -96,7 +96,7 @@ func TestRestartApprovalFlow_WritesExecutionDecisionAndResumesMerge(t *testing.T
 
 	// --- Pre-restart process ---
 	mgr1 := approval.NewManager(approvalCfg)
-	tg1 := approval.NewTelegramHandler(tgClient, "chat-1").WithStore(store)
+	tg1 := approval.NewTelegramHandler(tgClient, "chat-1", 0).WithStore(store)
 	tg1.WithDecisionRecorder(mgr1)
 	mgr1.RegisterHandler(tg1)
 
@@ -144,7 +144,7 @@ func TestRestartApprovalFlow_WritesExecutionDecisionAndResumesMerge(t *testing.T
 	// sharing only the on-disk store/state store. No goroutine or in-memory map
 	// from c1/mgr1/tg1 survives into this section. ---
 	mgr2 := approval.NewManager(approvalCfg)
-	tg2 := approval.NewTelegramHandler(tgClient, "chat-1").WithStore(store)
+	tg2 := approval.NewTelegramHandler(tgClient, "chat-1", 0).WithStore(store)
 	tg2.WithDecisionRecorder(mgr2)
 	mgr2.RegisterHandler(tg2)
 	if err := tg2.Rehydrate(ctx); err != nil {

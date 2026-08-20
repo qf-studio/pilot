@@ -32,7 +32,7 @@ type PendingApprovalStore interface {
 // TelegramClient defines the interface for Telegram operations
 // This allows the approval handler to use the existing Telegram client
 type TelegramClient interface {
-	SendMessageWithKeyboard(ctx context.Context, chatID, text, parseMode string, keyboard [][]InlineKeyboardButton) (*MessageResponse, error)
+	SendMessageWithKeyboard(ctx context.Context, chatID, text, parseMode string, keyboard [][]InlineKeyboardButton, messageThreadID int64) (*MessageResponse, error)
 	EditMessage(ctx context.Context, chatID string, messageID int64, text, parseMode string) error
 	AnswerCallback(ctx context.Context, callbackID, text string) error
 }
@@ -55,14 +55,15 @@ type MessageResult struct {
 
 // TelegramHandler handles approval requests via Telegram
 type TelegramHandler struct {
-	client   TelegramClient
-	chatID   string
-	pending  map[string]*telegramPending  // requestID -> pending state
-	resolved map[string]*telegramResolved // requestID -> approved decision (for a later merge follow-up)
-	mu       sync.RWMutex
-	log      *slog.Logger
-	store    PendingApprovalStore // optional; enables restart persistence
-	recorder DecisionRecorder     // optional; persists decisions directly (restart-safe)
+	client          TelegramClient
+	chatID          string
+	messageThreadID int64
+	pending         map[string]*telegramPending  // requestID -> pending state
+	resolved        map[string]*telegramResolved // requestID -> approved decision (for a later merge follow-up)
+	mu              sync.RWMutex
+	log             *slog.Logger
+	store           PendingApprovalStore // optional; enables restart persistence
+	recorder        DecisionRecorder     // optional; persists decisions directly (restart-safe)
 
 	// warnedInvalidDest dedupes the "Approvers[0] is not a valid Telegram
 	// destination" warning per bad value (GH-4380), so a persistently
@@ -97,10 +98,11 @@ type telegramResolved struct {
 const resolvedRetention = 24 * time.Hour
 
 // NewTelegramHandler creates a new Telegram approval handler
-func NewTelegramHandler(client TelegramClient, chatID string) *TelegramHandler {
+func NewTelegramHandler(client TelegramClient, chatID string, messageThreadID int64) *TelegramHandler {
 	return &TelegramHandler{
 		client:            client,
 		chatID:            chatID,
+		messageThreadID:   messageThreadID,
 		pending:           make(map[string]*telegramPending),
 		resolved:          make(map[string]*telegramResolved),
 		log:               logging.WithComponent("approval.telegram"),
@@ -141,6 +143,13 @@ func (h *TelegramHandler) resolveDestChatID(req *Request) string {
 	}
 	h.warnInvalidDestOnce(req.ID, req.Approvers[0])
 	return h.chatID
+}
+
+func (h *TelegramHandler) threadFor(dest string) int64 {
+	if dest != h.chatID {
+		return 0
+	}
+	return h.messageThreadID
 }
 
 // warnInvalidDestOnce logs the first time a given invalid Approvers[0] value
@@ -264,7 +273,7 @@ func (h *TelegramHandler) resendRehydratedPrompt(ctx context.Context, p *telegra
 	text := h.formatRehydratedMessage(p.Request)
 	keyboard := h.createApprovalKeyboard(p.Request)
 
-	resp, err := h.client.SendMessageWithKeyboard(ctx, p.ChatID, text, "", keyboard)
+	resp, err := h.client.SendMessageWithKeyboard(ctx, p.ChatID, text, "", keyboard, h.threadFor(p.ChatID))
 	if err != nil {
 		h.log.Warn("failed to resend rehydrated approval prompt",
 			slog.String("request_id", p.Request.ID), slog.Any("error", err))
@@ -376,7 +385,7 @@ func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request)
 	destChatID := h.resolveDestChatID(req)
 
 	// Send message
-	resp, err := h.client.SendMessageWithKeyboard(ctx, destChatID, text, "", keyboard)
+	resp, err := h.client.SendMessageWithKeyboard(ctx, destChatID, text, "", keyboard, h.threadFor(destChatID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to send Telegram message: %w", err)
 	}
@@ -627,7 +636,7 @@ func (h *TelegramHandler) deliverResponseCard(ctx context.Context, chatID string
 		h.log.Warn("failed to edit response message, falling back to a new message",
 			slog.String("chat_id", chatID), slog.Int64("message_id", messageID), slog.Any("error", err))
 	}
-	if _, err := h.client.SendMessageWithKeyboard(ctx, chatID, text, "", nil); err != nil {
+	if _, err := h.client.SendMessageWithKeyboard(ctx, chatID, text, "", nil, h.threadFor(chatID)); err != nil {
 		h.log.Warn("failed to send fallback response message",
 			slog.String("chat_id", chatID), slog.Any("error", err))
 	}
@@ -653,7 +662,7 @@ func (h *TelegramHandler) NotifyMerged(ctx context.Context, requestID, shortSHA 
 	}
 
 	text := fmt.Sprintf("🔀 Merged %s", shortSHA)
-	if _, err := h.client.SendMessageWithKeyboard(ctx, r.ChatID, text, "", nil); err != nil {
+	if _, err := h.client.SendMessageWithKeyboard(ctx, r.ChatID, text, "", nil, h.threadFor(r.ChatID)); err != nil {
 		return fmt.Errorf("notify merged: %w", err)
 	}
 	return nil

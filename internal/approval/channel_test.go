@@ -92,7 +92,7 @@ func TestRehydrate_MixedChannelScenario(t *testing.T) {
 		Title: "Unknown-channel row", PreferredChannel: "webhook", CreatedAt: time.Now(), ExpiresAt: future,
 	})
 
-	telegramHandler := NewTelegramHandler(&mockTelegramClient{}, "chat123").WithStore(store)
+	telegramHandler := NewTelegramHandler(&mockTelegramClient{}, "chat123", 0).WithStore(store)
 	if err := telegramHandler.Rehydrate(context.Background()); err != nil {
 		t.Fatalf("telegram rehydrate: unexpected error: %v", err)
 	}

@@ -585,7 +585,7 @@ func TestTelegramChannel_UsesMarkdownV2_E4(t *testing.T) {
 	defer server.Close()
 
 	client := telegram.NewClientWithBaseURL("test-telegram-token", server.URL)
-	ch := NewTelegramChannel("test", client, 123456789)
+	ch := NewTelegramChannel("test", client, 123456789, 0)
 
 	alert := &Alert{
 		ID:          "a1",
@@ -1072,6 +1072,52 @@ func TestFormatAlertDuration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := formatAlertDuration(tt.d); got != tt.want {
 				t.Errorf("formatAlertDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTelegramChannelSendsMessageThreadID(t *testing.T) {
+	tests := []struct {
+		name            string
+		messageThreadID int64
+		wantKey         bool
+		wantValue       float64
+	}{
+		{name: "no topic configured", messageThreadID: 0, wantKey: false},
+		{name: "topic configured", messageThreadID: 555, wantKey: true, wantValue: 555},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&raw)
+				_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+			}))
+			defer server.Close()
+
+			client := telegram.NewClientWithBaseURL(testutil.FakeTelegramBotToken, server.URL)
+			ch := NewTelegramChannel("test", client, 123456789, tt.messageThreadID)
+
+			alert := &Alert{
+				ID:        "a1",
+				Type:      AlertTypeTaskFailed,
+				Severity:  SeverityCritical,
+				Title:     "Task failed",
+				Message:   "investigate now",
+				CreatedAt: time.Now(),
+			}
+			if err := ch.Send(context.Background(), alert); err != nil {
+				t.Fatalf("Send() error = %v", err)
+			}
+
+			got, ok := raw["message_thread_id"]
+			if ok != tt.wantKey {
+				t.Fatalf("message_thread_id present = %v, want %v", ok, tt.wantKey)
+			}
+			if tt.wantKey && got != tt.wantValue {
+				t.Errorf("message_thread_id = %v, want %v", got, tt.wantValue)
 			}
 		})
 	}

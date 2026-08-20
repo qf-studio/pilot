@@ -305,7 +305,7 @@ func TestClientSendMessage(t *testing.T) {
 			// Test verifies method signature exists
 			client := NewClient(testutil.FakeTelegramBotToken)
 			ctx := context.Background()
-			_, _ = client.SendMessage(ctx, tt.chatID, tt.text, tt.parseMode)
+			_, _ = client.SendMessage(ctx, tt.chatID, tt.text, tt.parseMode, 0)
 		})
 	}
 }
@@ -348,7 +348,7 @@ func TestClientSendMessageWithKeyboard(t *testing.T) {
 
 	client := NewClient(testutil.FakeTelegramBotToken)
 	ctx := context.Background()
-	_, _ = client.SendMessageWithKeyboard(ctx, "123456", "Choose:", "", keyboard)
+	_, _ = client.SendMessageWithKeyboard(ctx, "123456", "Choose:", "", keyboard, 0)
 }
 
 // TestClientEditMessage tests message editing
@@ -634,5 +634,99 @@ func TestCallbackQueryStructure(t *testing.T) {
 	}
 	if callback.Message.MessageID != 200 {
 		t.Errorf("Message.MessageID = %d, want 200", callback.Message.MessageID)
+	}
+}
+
+func TestSendMessageRequestMessageThreadID(t *testing.T) {
+	tests := []struct {
+		name            string
+		messageThreadID int64
+		wantKey         bool
+		wantValue       float64
+	}{
+		{
+			name:            "unset omits the field",
+			messageThreadID: 0,
+			wantKey:         false,
+		},
+		{
+			name:            "forum topic is serialized",
+			messageThreadID: 42,
+			wantKey:         true,
+			wantValue:       42,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(SendMessageRequest{
+				ChatID:          "123456",
+				Text:            "hello",
+				MessageThreadID: tt.messageThreadID,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			var raw map[string]interface{}
+			if err := json.Unmarshal(body, &raw); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			got, ok := raw["message_thread_id"]
+			if ok != tt.wantKey {
+				t.Fatalf("message_thread_id present = %v, want %v (body: %s)", ok, tt.wantKey, body)
+			}
+			if tt.wantKey && got != tt.wantValue {
+				t.Errorf("message_thread_id = %v, want %v", got, tt.wantValue)
+			}
+		})
+	}
+}
+
+func TestClientSendsMessageThreadID(t *testing.T) {
+	tests := []struct {
+		name            string
+		withKeyboard    bool
+		messageThreadID int64
+		wantKey         bool
+	}{
+		{name: "sendMessage without topic", messageThreadID: 0, wantKey: false},
+		{name: "sendMessage with topic", messageThreadID: 77, wantKey: true},
+		{name: "keyboard without topic", withKeyboard: true, messageThreadID: 0, wantKey: false},
+		{name: "keyboard with topic", withKeyboard: true, messageThreadID: 88, wantKey: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&raw)
+				_ = json.NewEncoder(w).Encode(SendMessageResponse{OK: true, Result: &Result{MessageID: 1}})
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeTelegramBotToken, server.URL)
+			ctx := context.Background()
+
+			var err error
+			if tt.withKeyboard {
+				keyboard := [][]InlineKeyboardButton{{{Text: "OK", CallbackData: "ok"}}}
+				_, err = client.SendMessageWithKeyboard(ctx, "123456", "hi", "", keyboard, tt.messageThreadID)
+			} else {
+				_, err = client.SendMessage(ctx, "123456", "hi", "", tt.messageThreadID)
+			}
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+
+			got, ok := raw["message_thread_id"]
+			if ok != tt.wantKey {
+				t.Fatalf("message_thread_id present = %v, want %v", ok, tt.wantKey)
+			}
+			if tt.wantKey && got != float64(tt.messageThreadID) {
+				t.Errorf("message_thread_id = %v, want %d", got, tt.messageThreadID)
+			}
+		})
 	}
 }

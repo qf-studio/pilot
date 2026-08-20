@@ -132,17 +132,19 @@ func (c *SlackChannel) severityColor(severity Severity) string {
 
 // TelegramChannel sends alerts to Telegram
 type TelegramChannel struct {
-	name   string
-	client *telegram.Client
-	chatID int64
+	name            string
+	client          *telegram.Client
+	chatID          int64
+	messageThreadID int64
 }
 
 // NewTelegramChannel creates a new Telegram alert channel
-func NewTelegramChannel(name string, client *telegram.Client, chatID int64) *TelegramChannel {
+func NewTelegramChannel(name string, client *telegram.Client, chatID, messageThreadID int64) *TelegramChannel {
 	return &TelegramChannel{
-		name:   name,
-		client: client,
-		chatID: chatID,
+		name:            name,
+		client:          client,
+		chatID:          chatID,
+		messageThreadID: messageThreadID,
 	}
 }
 
@@ -156,7 +158,7 @@ func (c *TelegramChannel) Send(ctx context.Context, alert *Alert) error {
 	// MarkdownV2 metacharacter set. Legacy "Markdown" left those escapes as literal
 	// backslashes (e.g. "50\.00") or rejected the entities outright ("can't parse
 	// entities"), silently dropping cost/failure alerts.
-	_, err := c.client.SendMessage(ctx, chatID, text, "MarkdownV2")
+	_, err := c.client.SendMessage(ctx, chatID, text, "MarkdownV2", c.messageThreadID)
 	return err
 }
 

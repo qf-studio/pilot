@@ -64,6 +64,13 @@ adapters:
     enabled: false
     bot_token: "${TELEGRAM_BOT_TOKEN}"
     chat_id: "${TELEGRAM_CHAT_ID}"    # Your user/chat ID for notifications
+    # Forum supergroups only (groups with Topics enabled): post task lifecycle
+    # notifications and approval prompts into one topic instead of General.
+    # The id is the topic's message_thread_id — the middle segment of a topic
+    # message link (https://t.me/c/<chat>/<topic>/<msg>). Omit or 0 for
+    # non-forum chats. Approval prompts addressed to an individual approver
+    # (approvers[0] is a chat id) ignore this and go to that chat directly.
+    # message_thread_id: 12
     transcription:
       provider: openai
       openai_key: "${OPENAI_API_KEY}"  # For voice message transcription
@@ -470,6 +477,30 @@ briefs:
     include_metrics: true
     include_errors: true
     max_items_per_section: 10
+
+# Alerting
+# alerts:
+#   enabled: true
+#   channels:
+#     # Two channels can share one chat_id and split by topic + severity.
+#     # message_thread_id applies to forum supergroups only (Topics enabled);
+#     # it is the topic's message_thread_id — the middle segment of a topic
+#     # message link (https://t.me/c/<chat>/<topic>/<msg>). Omit or 0 for
+#     # non-forum chats.
+#     - name: telegram-critical
+#       type: telegram
+#       enabled: true
+#       severities: [critical]
+#       telegram:
+#         chat_id: -1001234567890
+#         message_thread_id: 12
+#     - name: telegram-routine
+#       type: telegram
+#       enabled: true
+#       severities: [warning, info]
+#       telegram:
+#         chat_id: -1001234567890
+#         message_thread_id: 34
 
 # Memory settings
 memory:

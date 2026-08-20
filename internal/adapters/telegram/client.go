@@ -45,10 +45,11 @@ func NewClientWithBaseURL(botToken, baseURL string) *Client {
 
 // SendMessageRequest represents a Telegram sendMessage request
 type SendMessageRequest struct {
-	ChatID      string                `json:"chat_id"`
-	Text        string                `json:"text"`
-	ParseMode   string                `json:"parse_mode,omitempty"`
-	ReplyMarkup *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	ChatID          string                `json:"chat_id"`
+	Text            string                `json:"text"`
+	ParseMode       string                `json:"parse_mode,omitempty"`
+	MessageThreadID int64                 `json:"message_thread_id,omitempty"`
+	ReplyMarkup     *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
 }
 
 // SendMessageResponse represents the response from sending a message
@@ -283,11 +284,12 @@ func (c *Client) Verify(ctx context.Context) error {
 }
 
 // SendMessage sends a message to a chat
-func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string) (*SendMessageResponse, error) {
+func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string, messageThreadID int64) (*SendMessageResponse, error) {
 	req := SendMessageRequest{
-		ChatID:    chatID,
-		Text:      text,
-		ParseMode: parseMode,
+		ChatID:          chatID,
+		Text:            text,
+		ParseMode:       parseMode,
+		MessageThreadID: messageThreadID,
 	}
 
 	body, err := json.Marshal(req)
@@ -327,11 +329,12 @@ func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string
 }
 
 // SendMessageWithKeyboard sends a message with an inline keyboard
-func (c *Client) SendMessageWithKeyboard(ctx context.Context, chatID, text, parseMode string, keyboard [][]InlineKeyboardButton) (*SendMessageResponse, error) {
+func (c *Client) SendMessageWithKeyboard(ctx context.Context, chatID, text, parseMode string, keyboard [][]InlineKeyboardButton, messageThreadID int64) (*SendMessageResponse, error) {
 	req := SendMessageRequest{
-		ChatID:    chatID,
-		Text:      text,
-		ParseMode: parseMode,
+		ChatID:          chatID,
+		Text:            text,
+		ParseMode:       parseMode,
+		MessageThreadID: messageThreadID,
 		ReplyMarkup: &InlineKeyboardMarkup{
 			InlineKeyboard: keyboard,
 		},
@@ -526,7 +529,7 @@ type BriefMessageResponse struct {
 // SendBriefMessage sends a message and returns a simplified response for brief delivery.
 // This method satisfies the briefs.TelegramSender interface.
 func (c *Client) SendBriefMessage(ctx context.Context, chatID, text, parseMode string) (*BriefMessageResponse, error) {
-	resp, err := c.SendMessage(ctx, chatID, text, parseMode)
+	resp, err := c.SendMessage(ctx, chatID, text, parseMode, 0)
 	if err != nil {
 		return nil, err
 	}

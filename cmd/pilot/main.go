@@ -816,7 +816,7 @@ Examples:
 				if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
 					(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 					tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
-					gwTgApprovalHandler = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
+					gwTgApprovalHandler = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID, cfg.Adapters.Telegram.MessageThreadID)
 					// GH-3825: persist decisions directly to PRState via the manager so a
 					// button tap on a Rehydrate-restored request isn't lost when no
 					// waiter goroutine survived the restart.
@@ -993,7 +993,7 @@ Examples:
 						telegramClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 						for _, ch := range alertsCfg.Channels {
 							if ch.Type == "telegram" && ch.Telegram != nil {
-								telegramChannel := alerts.NewTelegramChannel(ch.Name, telegramClient, ch.Telegram.ChatID)
+								telegramChannel := alerts.NewTelegramChannel(ch.Name, telegramClient, ch.Telegram.ChatID, ch.Telegram.MessageThreadID)
 								alertsDispatcher.RegisterChannel(telegramChannel)
 							}
 						}
@@ -2147,7 +2147,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
 		(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 		tgApprovalClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
-		tgApprovalHandlerImpl = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgApprovalClient}, cfg.Adapters.Telegram.ChatID)
+		tgApprovalHandlerImpl = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgApprovalClient}, cfg.Adapters.Telegram.ChatID, cfg.Adapters.Telegram.MessageThreadID)
 		// GH-3825: persist decisions directly to PRState via the manager so a
 		// button tap on a Rehydrate-restored request isn't lost when no waiter
 		// goroutine survived the restart.
@@ -3036,7 +3036,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			telegramClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 			for _, ch := range alertsCfg.Channels {
 				if ch.Type == "telegram" && ch.Telegram != nil {
-					telegramChannel := alerts.NewTelegramChannel(ch.Name, telegramClient, ch.Telegram.ChatID)
+					telegramChannel := alerts.NewTelegramChannel(ch.Name, telegramClient, ch.Telegram.ChatID, ch.Telegram.MessageThreadID)
 					alertsDispatcher.RegisterChannel(telegramChannel)
 				}
 			}

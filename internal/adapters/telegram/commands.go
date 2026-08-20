@@ -66,7 +66,7 @@ func (c *CommandHandler) HandleCommand(ctx context.Context, chatID, text string)
 		if len(args) > 0 {
 			c.handler.handleRunCommand(ctx, chatID, args[0])
 		} else {
-			_, _ = c.handler.client.SendMessage(ctx, chatID, "Usage: /run <task-id>\nExample: /run 07", "")
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "Usage: /run <task-id>\nExample: /run 07", "", 0)
 		}
 	case "/stop":
 		c.handleStop(ctx, chatID)
@@ -78,16 +78,16 @@ func (c *CommandHandler) HandleCommand(ctx context.Context, chatID, text string)
 		if len(args) > 0 {
 			c.handleNoPR(ctx, chatID, strings.Join(args, " "))
 		} else {
-			_, _ = c.handler.client.SendMessage(ctx, chatID, "Usage: /nopr <task description>\nExecutes task without creating a PR.", "")
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "Usage: /nopr <task description>\nExecutes task without creating a PR.", "", 0)
 		}
 	case "/pr":
 		if len(args) > 0 {
 			c.handleForcePR(ctx, chatID, strings.Join(args, " "))
 		} else {
-			_, _ = c.handler.client.SendMessage(ctx, chatID, "Usage: /pr <task description>\nForces PR creation even for ephemeral-looking tasks.", "")
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "Usage: /pr <task description>\nForces PR creation even for ephemeral-looking tasks.", "", 0)
 		}
 	default:
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "Unknown command. Use /help for available commands.", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "Unknown command. Use /help for available commands.", "", 0)
 	}
 }
 
@@ -164,7 +164,7 @@ I execute tasks and answer questions about your codebase.
 _Note: Ephemeral commands (serve, run, etc.) auto-skip PR creation._`
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, helpText, c.handler.getParseMode())
+	_, _ = c.handler.client.SendMessage(ctx, chatID, helpText, c.handler.getParseMode(), 0)
 }
 
 // handleStatus shows current status with running/pending/queue info
@@ -232,40 +232,39 @@ func (c *CommandHandler) handleStatus(ctx context.Context, chatID string) {
 		sb.WriteString("\n✅ Ready for tasks")
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
+	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode(), 0)
 }
 
 // handleCancel cancels pending or running task
 func (c *CommandHandler) handleCancel(ctx context.Context, chatID string) {
 	if c.handler.commsHandler != nil {
 		if err := c.handler.commsHandler.CancelTask(ctx, chatID); err != nil {
-			_, _ = c.handler.client.SendMessage(ctx, chatID, "No task to cancel.", "")
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "No task to cancel.", "", 0)
 		}
 		return
 	}
-	_, _ = c.handler.client.SendMessage(ctx, chatID, "No task to cancel.", "")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, "No task to cancel.", "", 0)
 }
 
 // handleQueue shows queued tasks
 func (c *CommandHandler) handleQueue(ctx context.Context, chatID string) {
 	if c.store == nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 Queue not available (no memory store)", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 Queue not available (no memory store)", "", 0)
 		return
 	}
 
 	queued, err := c.store.GetQueuedTasks(10)
 	if err != nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "❌ Failed to fetch queue", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "❌ Failed to fetch queue", "", 0)
 		return
 	}
 
 	if len(queued) == 0 {
 		// Show pending task as fallback
 		if c.handler.commsHandler != nil && c.handler.commsHandler.GetPendingTask(chatID) != nil {
-			_, _ = c.handler.client.SendMessage(ctx, chatID,
-				"📋 No queued tasks\n⏳ 1 pending confirmation", "")
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 No queued tasks\n⏳ 1 pending confirmation", "", 0)
 		} else {
-			_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 Queue is empty", "")
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 Queue is empty", "", 0)
 		}
 		return
 	}
@@ -289,21 +288,19 @@ func (c *CommandHandler) handleQueue(ctx context.Context, chatID string) {
 		sb.WriteString(fmt.Sprintf("   📁 %s • ⏱ %s ago\n\n", filepath.Base(task.ProjectPath), age))
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
+	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode(), 0)
 }
 
 // handleProjects lists configured projects
 func (c *CommandHandler) handleProjects(ctx context.Context, chatID string) {
 	if c.handler.projects == nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID,
-			"📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml", "", 0)
 		return
 	}
 
 	projects := c.handler.projects.ListProjects()
 	if len(projects) == 0 {
-		_, _ = c.handler.client.SendMessage(ctx, chatID,
-			"📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml", "", 0)
 		return
 	}
 
@@ -346,9 +343,9 @@ func (c *CommandHandler) handleProjects(ctx context.Context, chatID string) {
 	}
 
 	if len(keyboard) > 0 {
-		_, _ = c.handler.client.SendMessageWithKeyboard(ctx, chatID, sb.String(), c.handler.getParseMode(), keyboard)
+		_, _ = c.handler.client.SendMessageWithKeyboard(ctx, chatID, sb.String(), c.handler.getParseMode(), keyboard, 0)
 	} else {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
+		_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode(), 0)
 	}
 }
 
@@ -367,8 +364,7 @@ func (c *CommandHandler) handleSwitch(ctx context.Context, chatID, projectName s
 		}
 
 		if err != nil {
-			_, _ = c.handler.client.SendMessage(ctx, chatID,
-				fmt.Sprintf("❌ Project '%s' not found\n\nUse /projects to see available projects", projectName), "")
+			_, _ = c.handler.client.SendMessage(ctx, chatID, fmt.Sprintf("❌ Project '%s' not found\n\nUse /projects to see available projects", projectName), "", 0)
 			return
 		}
 	}
@@ -383,7 +379,7 @@ func (c *CommandHandler) handleSwitch(ctx context.Context, chatID, projectName s
 	} else {
 		text = fmt.Sprintf("✅ Switched to *%s*%s\n`%s`", escapeMarkdown(proj.Name), nav, proj.Path)
 	}
-	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
+	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode(), 0)
 }
 
 // handleCurrentProject shows current active project
@@ -408,24 +404,24 @@ func (c *CommandHandler) handleCurrentProject(ctx context.Context, chatID string
 	} else {
 		text = fmt.Sprintf("📁 Active: *%s*%s\n`%s`\n\nUse /projects to see all", escapeMarkdown(projName), nav, activeProjectPath)
 	}
-	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
+	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode(), 0)
 }
 
 // handleHistory shows recent task history
 func (c *CommandHandler) handleHistory(ctx context.Context, chatID string) {
 	if c.store == nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "📜 History not available (no memory store)", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "📜 History not available (no memory store)", "", 0)
 		return
 	}
 
 	executions, err := c.store.GetRecentExecutions(10, "")
 	if err != nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "❌ Failed to fetch history", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "❌ Failed to fetch history", "", 0)
 		return
 	}
 
 	if len(executions) == 0 {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "📜 No task history yet", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "📜 No task history yet", "", 0)
 		return
 	}
 
@@ -478,13 +474,13 @@ func (c *CommandHandler) handleHistory(ctx context.Context, chatID string) {
 		sb.WriteString("\n")
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
+	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode(), 0)
 }
 
 // handleBudget shows usage and costs
 func (c *CommandHandler) handleBudget(ctx context.Context, chatID string) {
 	if c.store == nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "💰 Budget not available (no memory store)", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "💰 Budget not available (no memory store)", "", 0)
 		return
 	}
 
@@ -497,7 +493,7 @@ func (c *CommandHandler) handleBudget(ctx context.Context, chatID string) {
 		End:   now,
 	})
 	if err != nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "❌ Failed to fetch usage data", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "❌ Failed to fetch usage data", "", 0)
 		return
 	}
 
@@ -554,14 +550,14 @@ func (c *CommandHandler) handleBudget(ctx context.Context, chatID string) {
 		sb.WriteString(fmt.Sprintf("\n_Period: %s - %s_", monthStart.Format("Jan 2"), now.Format("Jan 2")))
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
+	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode(), 0)
 }
 
 // handleTasks shows task backlog
 func (c *CommandHandler) handleTasks(ctx context.Context, chatID string) {
 	taskList := c.handler.fastListTasks()
 	if taskList == "" {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 No tasks found in .agent/tasks/", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 No tasks found in .agent/tasks/", "", 0)
 		return
 	}
 	var text string
@@ -570,7 +566,7 @@ func (c *CommandHandler) handleTasks(ctx context.Context, chatID string) {
 	} else {
 		text = "📋 *Task Backlog*\n\n" + taskList
 	}
-	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
+	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode(), 0)
 }
 
 // handleStop stops a running task
@@ -578,7 +574,7 @@ func (c *CommandHandler) handleStop(ctx context.Context, chatID string) {
 	if c.handler.commsHandler != nil {
 		running := c.handler.commsHandler.GetRunningTask(chatID)
 		if running == nil {
-			_, _ = c.handler.client.SendMessage(ctx, chatID, "No task is currently running.", "")
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "No task is currently running.", "", 0)
 			return
 		}
 		_ = c.handler.commsHandler.CancelTask(ctx, chatID)
@@ -588,26 +584,25 @@ func (c *CommandHandler) handleStop(ctx context.Context, chatID string) {
 		} else {
 			text = fmt.Sprintf("🛑 Stopped task `%s`", running.TaskID)
 		}
-		_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
+		_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode(), 0)
 		return
 	}
-	_, _ = c.handler.client.SendMessage(ctx, chatID, "No task is currently running.", "")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, "No task is currently running.", "", 0)
 }
 
 // handleBrief generates and sends a daily brief on demand
 func (c *CommandHandler) handleBrief(ctx context.Context, chatID string) {
 	if c.store == nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 Brief not available (no memory store)", "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 Brief not available (no memory store)", "", 0)
 		return
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, "📊 Generating brief...", "")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, "📊 Generating brief...", "", 0)
 
 	generator := briefs.NewGenerator(c.store, nil)
 	brief, err := generator.GenerateDaily()
 	if err != nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("❌ Failed to generate brief: %s", err.Error()), "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, fmt.Sprintf("❌ Failed to generate brief: %s", err.Error()), "", 0)
 		return
 	}
 
@@ -615,12 +610,11 @@ func (c *CommandHandler) handleBrief(ctx context.Context, chatID string) {
 	formatter := briefs.NewPlainTextFormatter()
 	text, err := formatter.Format(brief)
 	if err != nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("❌ Failed to format brief: %s", err.Error()), "")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, fmt.Sprintf("❌ Failed to format brief: %s", err.Error()), "", 0)
 		return
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, text, "")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, text, "", 0)
 }
 
 // formatTimeAgo formats a time as relative (e.g., "2h ago", "3d ago")
@@ -649,8 +643,7 @@ func (c *CommandHandler) HandleCallbackSwitch(ctx context.Context, chatID, proje
 // handleNoPR executes a task without creating a PR
 func (c *CommandHandler) handleNoPR(ctx context.Context, chatID, description string) {
 	taskID := fmt.Sprintf("TG-%d", time.Now().Unix())
-	_, _ = c.handler.client.SendMessage(ctx, chatID,
-		fmt.Sprintf("🚀 Executing without PR: %s", truncateForDisplay(description, 50)), "")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, fmt.Sprintf("🚀 Executing without PR: %s", truncateForDisplay(description, 50)), "", 0)
 	if c.handler.commsHandler != nil {
 		forcePR := false
 		c.handler.commsHandler.ExecuteDirectTask(ctx, chatID, "", taskID, description, &comms.DirectTaskOpts{
@@ -662,8 +655,7 @@ func (c *CommandHandler) handleNoPR(ctx context.Context, chatID, description str
 // handleForcePR executes a task and forces PR creation
 func (c *CommandHandler) handleForcePR(ctx context.Context, chatID, description string) {
 	taskID := fmt.Sprintf("TG-%d", time.Now().Unix())
-	_, _ = c.handler.client.SendMessage(ctx, chatID,
-		fmt.Sprintf("🚀 Executing with PR: %s", truncateForDisplay(description, 50)), "")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, fmt.Sprintf("🚀 Executing with PR: %s", truncateForDisplay(description, 50)), "", 0)
 	if c.handler.commsHandler != nil {
 		forcePR := true
 		c.handler.commsHandler.ExecuteDirectTask(ctx, chatID, "", taskID, description, &comms.DirectTaskOpts{

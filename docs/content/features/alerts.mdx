@@ -144,6 +144,7 @@ Sends MarkdownV2 formatted messages with emoji indicators.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `chat_id` | integer | Yes | Telegram chat or group ID |
+| `message_thread_id` | integer | No | Forum topic to post into. Forum supergroups only |
 
 **Formatting:**
 - Severity emoji header (🚨 critical, ⚠️ warning, ℹ️ info)
@@ -158,6 +159,27 @@ Sends MarkdownV2 formatted messages with emoji indicators.
   severities: [critical, warning]
   telegram:
     chat_id: -1001234567890
+```
+
+**Splitting severities across forum topics:** in a supergroup with Topics
+enabled, several channels can share one `chat_id` and differ only by
+`message_thread_id`, keeping critical alerts out of the routine feed.
+
+```yaml
+- name: telegram-critical
+  type: telegram
+  enabled: true
+  severities: [critical]
+  telegram:
+    chat_id: -1001234567890
+    message_thread_id: 12
+- name: telegram-routine
+  type: telegram
+  enabled: true
+  severities: [warning, info]
+  telegram:
+    chat_id: -1001234567890
+    message_thread_id: 34
 ```
 
 ### Email (SMTP)
