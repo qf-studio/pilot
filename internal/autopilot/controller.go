@@ -1682,6 +1682,18 @@ const baseMismatchCommentMarker = "<!-- pilot-base-mismatch -->"
 // before clearing it, so it never clobbers an unrelated, still-active park.
 const baseMismatchReasonPrefix = "base branch mismatch:"
 
+// stackedSupersetReasonPrefix identifies an EscalationReason set by
+// parkForStackedSuperset (GH-5027/GH-5031) when a PR is held for being built
+// stacked on another still-open PR's unmerged head — the sibling park cause
+// to baseMismatchReasonPrefix above, sharing the same Parked flag. Value
+// matches parkForStackedSuperset's exactly so the two land compatible
+// regardless of merge order between GH-5031 and this un-park mirror
+// (GH-5032): this file's un-park check below reads Parked/EscalationReason
+// generically, the same way GH-4911's does, and does not require
+// parkForStackedSuperset to have run in this process — the state may equally
+// have been restored from the state store (GH-4598) on a prior tick.
+const stackedSupersetReasonPrefix = "stacked on open PR:"
+
 // basePivotCommentMarker identifies the GH-4872 "merged sideways" comment
 // posted by postBasePivotComment to an issue whose linked PR merged into a
 // non-default base outside autopilot's own guarded merge path (external
@@ -4276,6 +4288,54 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, labelParkedAwaitingApproval); err != nil {
 				c.log.Debug("parked-awaiting-approval label cleanup on un-park", "issue", prState.IssueNumber, "error", err)
 			}
+		}
+	}
+
+	// GH-5032: mirrors the GH-4911 un-park immediately above, for the
+	// sibling stacked-superset park (GH-5027/GH-5031, parkForStackedSuperset)
+	// instead of the base-mismatch one. Unlike the base-mismatch case, the
+	// resolving condition ("is the PR this one was stacked on still an open
+	// ancestor?") isn't a field already re-read earlier in this function, so
+	// this re-runs detectStackedSuperset (GH-5029) directly rather than
+	// trusting the stale park reason — the PR this one was stacked on may
+	// have merged, been closed, or the stack may have been rebased away
+	// since the park was set. Same idempotent Parked/EscalationReason/label
+	// residue-cleanup shape as GH-4911, and likewise does not depend on
+	// parkForStackedSuperset having fired in this process — the park state
+	// may equally have been restored from the state store (GH-4598) on a
+	// prior tick, same as the base-mismatch case.
+	//
+	// Fails OPEN (un-parks) on a detection error, matching GH-5027
+	// requirement 5's fail-open policy for this exact probe: it's a
+	// toil-reducing guard, not a correctness gate, and a transient ancestry
+	// lookup failure must never wedge a PR parked here indefinitely —
+	// handleMergeConflict downstream still recovers a genuinely-stacked PR
+	// that slips through, at the cost of one operator recovery cycle.
+	if prState.Parked && strings.HasPrefix(prState.EscalationReason, stackedSupersetReasonPrefix) {
+		stackedOn, err := c.detectStackedSuperset(ctx, prState)
+		if err != nil {
+			c.log.Warn("handleMerging: stacked-superset re-check failed while parked — un-parking anyway (fail-open, mirrors GH-5027 requirement 5)",
+				"pr", prState.PRNumber, "error", err)
+		}
+		if err != nil || stackedOn == nil {
+			c.log.Info("handleMerging: un-parking PR — stacked-superset resolved, blocking PR no longer an open ancestor",
+				"pr", prState.PRNumber, "issue", prState.IssueNumber, "prior_reason", prState.EscalationReason)
+			prState.Parked = false
+			prState.EscalationReason = ""
+			if prState.IssueNumber > 0 {
+				if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, labelParkedAwaitingApproval); err != nil {
+					c.log.Debug("parked-awaiting-approval label cleanup on un-park", "issue", prState.IssueNumber, "error", err)
+				}
+			}
+		} else {
+			// Still stacked on stackedOn's still-open head — stay parked and
+			// re-check again next tick, exactly like parkForStackedSuperset's
+			// own hold (and unlike the base-mismatch guard above, which
+			// already returned early via parkForBaseMismatch before this
+			// point ever runs). Do not fall through to a merge attempt.
+			c.log.Debug("handleMerging: PR still stacked on an open PR — staying parked",
+				"pr", prState.PRNumber, "stacked_on_pr", stackedOn.PRNumber)
+			return nil
 		}
 	}
 
