@@ -111,14 +111,27 @@ type DispatcherConfig struct {
 	// StaleRecoveryInterval is how often the periodic stale-recovery loop
 	// runs. Default: 5 minutes.
 	StaleRecoveryInterval time.Duration
+
+	// BasePresenceHoldMaxCycles bounds how many consecutive claim-path
+	// held cycles (GH-5045: an explicit "Depends on: #N" ref still an open
+	// PR, or a referenced file path missing from the default branch) a
+	// task can accumulate before ProjectWorker.processQueue escalates by
+	// applying the pilot-needs-human label and clearing the hold counter.
+	// Generous default (20) — a held task is retried only when the
+	// project's worker is signalled again (a new poll tick, a new task
+	// queued for the same project, or the periodic stale-recovery loop),
+	// not on a tight timer, so this is meant to tolerate a genuinely slow
+	// prerequisite landing rather than churn through cycles quickly.
+	BasePresenceHoldMaxCycles int
 }
 
 // DefaultDispatcherConfig returns default dispatcher settings.
 func DefaultDispatcherConfig() *DispatcherConfig {
 	return &DispatcherConfig{
-		StaleRunningThreshold: 30 * time.Minute,
-		StaleQueuedThreshold:  5 * time.Minute,
-		StaleRecoveryInterval: 5 * time.Minute,
+		StaleRunningThreshold:     30 * time.Minute,
+		StaleQueuedThreshold:      5 * time.Minute,
+		StaleRecoveryInterval:     5 * time.Minute,
+		BasePresenceHoldMaxCycles: 20,
 	}
 }
 
@@ -131,6 +144,9 @@ func (c *DispatcherConfig) resolveDefaults() {
 	}
 	if c.StaleRecoveryInterval == 0 {
 		c.StaleRecoveryInterval = 5 * time.Minute
+	}
+	if c.BasePresenceHoldMaxCycles == 0 {
+		c.BasePresenceHoldMaxCycles = 20
 	}
 }
 
@@ -2241,6 +2257,7 @@ func (d *Dispatcher) ensureWorker(projectPath string) {
 	// Create new worker
 	worker := NewProjectWorker(projectPath, d.store, d.runner, d.log)
 	worker.setAdmissionPaused(d.admissionPaused)
+	worker.setBasePresenceHoldMaxCycles(d.config.BasePresenceHoldMaxCycles)
 	d.workers[projectPath] = worker
 
 	// Start worker in background
@@ -2569,6 +2586,16 @@ type ProjectWorker struct {
 	// as "never paused", preserving prior behavior for any caller that
 	// doesn't wire it. GH-4683.
 	admissionPaused *atomic.Bool
+
+	// basePresenceHoldMaxCycles mirrors DispatcherConfig.BasePresenceHoldMaxCycles
+	// (GH-5045), threaded in post-construction the same way admissionPaused
+	// is (see setBasePresenceHoldMaxCycles/ensureWorker) since the many
+	// existing NewProjectWorker(...) call sites — production and test alike
+	// — shouldn't need a signature change. Zero for a ProjectWorker built
+	// directly (e.g. tests) — processQueue falls back to
+	// DefaultDispatcherConfig()'s value in that case rather than treating 0
+	// as "escalate immediately."
+	basePresenceHoldMaxCycles int
 }
 
 // NewProjectWorker creates a new project worker.
@@ -2645,6 +2672,25 @@ func (w *ProjectWorker) Signal() {
 // updating; only Dispatcher.ensureWorker calls this. GH-4683.
 func (w *ProjectWorker) setAdmissionPaused(p *atomic.Bool) {
 	w.admissionPaused = p
+}
+
+// setBasePresenceHoldMaxCycles wires DispatcherConfig.BasePresenceHoldMaxCycles
+// (GH-5045) from the owning Dispatcher. Kept as a post-construction setter
+// for the same reason as setAdmissionPaused: only Dispatcher.ensureWorker
+// calls this, so the many existing direct NewProjectWorker(...) call sites
+// don't need updating.
+func (w *ProjectWorker) setBasePresenceHoldMaxCycles(n int) {
+	w.basePresenceHoldMaxCycles = n
+}
+
+// resolvedBasePresenceHoldMaxCycles returns basePresenceHoldMaxCycles when
+// set, else DefaultDispatcherConfig()'s value — covers a ProjectWorker
+// built directly (e.g. tests) without going through ensureWorker.
+func (w *ProjectWorker) resolvedBasePresenceHoldMaxCycles() int {
+	if w.basePresenceHoldMaxCycles > 0 {
+		return w.basePresenceHoldMaxCycles
+	}
+	return DefaultDispatcherConfig().BasePresenceHoldMaxCycles
 }
 
 // Status returns the current worker status.
@@ -2781,6 +2827,68 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			slog.String("title", exec.TaskTitle),
 		)
 
+		// Build task from execution record (full details stored when queued)
+		// GH-2326: restore Labels so runner-side no-decompose / autopilot-fix
+		// gates see the same labels the dispatch-time Decompose() saw.
+		//
+		// GH-5045: built here, before the running-status transition below,
+		// so the base-presence check that follows can read task.Description
+		// without having already committed this row to ExecStatusRunning —
+		// a held task must stay picklable by the next GetQueuedTasksForProject
+		// call (queued/pending only), not get stranded in "running" forever.
+		task := buildTaskFromExecution(exec)
+
+		// GH-5045: base-presence hold. Before committing to execute (and
+		// before the running-status transition just below), check whether
+		// the issue body's own stated prerequisites — an explicit "Depends
+		// on: #N"/"Blocked by: #N" ref still an open PR, or a backtick-quoted
+		// file path missing from the target repo's default branch — have
+		// actually landed on main yet. When neither refs nor paths are
+		// extracted this whole block is skipped: zero probe calls,
+		// byte-identical to the pre-GH-5045 call path.
+		if refs, paths := ExtractDependencyRefs(task.Description), ExtractReferencedPaths(task.Description); len(refs) > 0 || len(paths) > 0 {
+			hold, checkErr := checkBasePresence(ctx, w.runner, task, exec.ProjectPath, refs, paths)
+			if checkErr != nil {
+				w.log.Warn("base-presence check: failed to resolve repo; proceeding (fail-open)",
+					slog.String("execution_id", exec.ID),
+					slog.String("task_id", exec.TaskID),
+					slog.Any("error", checkErr))
+			} else if hold.Held {
+				detail := fmt.Sprintf("held: prerequisite not on main (%s)", hold.Reason)
+				key := repickBackoffKey(exec.ProjectPath, exec.TaskID)
+				count, _, cErr := w.store.GetBasePresenceHoldCount(key)
+				if cErr != nil {
+					w.log.Warn("base-presence hold: failed to read hold count",
+						slog.String("execution_id", exec.ID), slog.Any("error", cErr))
+				}
+				count++
+				if sErr := w.store.SetBasePresenceHoldCount(key, count); sErr != nil {
+					w.log.Error("base-presence hold: failed to persist hold count",
+						slog.String("execution_id", exec.ID), slog.Any("error", sErr))
+				}
+
+				w.log.Info("Task held: prerequisite not on main",
+					slog.String("execution_id", exec.ID),
+					slog.String("task_id", exec.TaskID),
+					slog.String("reason", hold.Reason),
+					slog.Int("hold_count", count),
+				)
+				w.recordExecutionEvent(exec.ID, memory.StageBasePresenceHeld, detail)
+				w.runner.EmitProgress(exec.TaskID, "Held", 0, detail)
+
+				if count >= w.resolvedBasePresenceHoldMaxCycles() {
+					w.escalateBasePresenceHold(ctx, task, hold.Reason)
+					if clrErr := w.store.SetBasePresenceHoldCount(key, 0); clrErr != nil {
+						w.log.Error("base-presence hold: failed to clear hold count after escalation",
+							slog.String("execution_id", exec.ID), slog.Any("error", clrErr))
+					}
+				}
+
+				w.currentTaskID.Store("")
+				return
+			}
+		}
+
 		// Update status to running
 		if err := w.lifecycle.Transition(exec.ID, ExecStatusRunning); err != nil {
 			w.log.Error("Failed to update status to running", slog.Any("error", err))
@@ -2792,11 +2900,6 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 
 		// Emit progress callback for task started
 		w.runner.EmitProgress(exec.TaskID, "Running", 2, fmt.Sprintf("Worker started: %s", truncateForLog(exec.TaskTitle, 40)))
-
-		// Build task from execution record (full details stored when queued)
-		// GH-2326: restore Labels so runner-side no-decompose / autopilot-fix
-		// gates see the same labels the dispatch-time Decompose() saw.
-		task := buildTaskFromExecution(exec)
 
 		// GH-4656: revalidate the issue's live GitHub state at pickup time.
 		// Closes the 2026-07-31 GH-4649 incident window: a retry's claim was
@@ -3003,6 +3106,39 @@ func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.St
 			slog.String("stage", string(stage)),
 			slog.Any("error", err))
 	}
+}
+
+// escalateBasePresenceHold applies the pilot-needs-human label once a held
+// task (GH-5045) has exhausted BasePresenceHoldMaxCycles held cycles
+// without its extracted refs/paths landing on main. Best-effort and
+// GitHub-only, mirroring Dispatcher.surfaceStalledIssue's stance: a
+// labeling failure is logged, not fatal — the caller has already recorded
+// this cycle's hold event and clears the counter regardless, so a stuck
+// GitHub call here never wedges the hold accounting itself.
+func (w *ProjectWorker) escalateBasePresenceHold(ctx context.Context, task *Task, reason string) {
+	if task.SourceAdapter != "" && task.SourceAdapter != "github" {
+		return
+	}
+	issueNum := strings.TrimPrefix(task.ID, "GH-")
+	if task.SourceIssueID != "" {
+		issueNum = task.SourceIssueID
+	}
+	if issueNum == "" {
+		return
+	}
+
+	labelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if err := ghEditLabels(labelCtx, task.ProjectPath, issueNum, []string{labelPilotNeedsHuman}, nil); err != nil {
+		w.log.Warn("base-presence hold escalation: failed to apply label",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+		return
+	}
+	w.log.Info("base-presence hold escalation: applied pilot-needs-human label",
+		slog.String("task_id", task.ID),
+		slog.String("reason", reason),
+	)
 }
 
 // hasTerminalSuccessLedger reports whether the TASK-394 execution ledger
