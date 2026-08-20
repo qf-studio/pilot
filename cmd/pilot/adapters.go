@@ -245,6 +245,20 @@ func newProjectContractDependencyLookup(cfg *config.Config) executor.ContractDep
 	}
 }
 
+// newProjectContractContentFetcher builds an executor.ContractContentFetcher
+// backed by the shared *github.Client (GH-5022, the activation leg of
+// GH-5009/GH-5011). *github.Client's GetFileContent method (PR#5015)
+// already matches ContractContentFetcher's signature exactly, so
+// newGitHubClient(cfg) satisfies the interface directly — no adapter type
+// needed. Named/wrapped as its own function (rather than passing
+// newGitHubClient(cfg) inline at each call site) to mirror
+// newProjectContractDependencyLookup's shape and give
+// TestContractContentFetcherWiredAtEveryQualityCheckerFactorySite a stable
+// grep target.
+func newProjectContractContentFetcher(cfg *config.Config) executor.ContractContentFetcher {
+	return newGitHubClient(cfg)
+}
+
 // Check implements executor.QualityChecker by delegating to quality.Executor
 // and converting the result type
 func (w *qualityCheckerWrapper) Check(ctx context.Context) (*executor.QualityOutcome, error) {

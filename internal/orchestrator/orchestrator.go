@@ -45,6 +45,7 @@ type Orchestrator struct {
 	completionCallback       func(taskID, prURL string, success bool, errMsg string)
 	qualityCheckerFactory    executor.QualityCheckerFactory
 	contractDependencyLookup executor.ContractDependencyLookup
+	contractContentFetcher   executor.ContractContentFetcher
 	mu                       sync.Mutex
 	wg                       sync.WaitGroup
 	ctx                      context.Context
@@ -414,6 +415,18 @@ func (o *Orchestrator) SetContractDependencyLookup(lookup executor.ContractDepen
 	o.contractDependencyLookup = lookup
 	// Also set on the runner for direct execution
 	o.runner.SetContractDependencyLookup(lookup)
+}
+
+// SetContractContentFetcher sets the fetcher used by the executor's
+// Contract Evidence gate (GH-5009/GH-5011/GH-5022) to independently verify
+// a citation's producer source. Mirrors SetContractDependencyLookup's
+// bridging shape so main.go can wire it without an import cycle.
+func (o *Orchestrator) SetContractContentFetcher(fetcher executor.ContractContentFetcher) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.contractContentFetcher = fetcher
+	// Also set on the runner for direct execution
+	o.runner.SetContractContentFetcher(fetcher)
 }
 
 // extractLabelNames extracts label names from Linear labels
