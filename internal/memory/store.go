@@ -984,6 +984,15 @@ const (
 	// retry wall-clock share is queryable (GH-4129). Detail is a JSON object:
 	// {"loop","attempt"}.
 	StageRetryAttempt Stage = "retry_attempt"
+	// StageContractEvidence records the Contract Evidence gate's outcome for
+	// tasks touching a configured contract_dependencies file (TASK-460
+	// doc-vs-wire leg, GH-5009/GH-5012): one event per evaluated field
+	// (detail: {"field","cited","verified","rejection_reason"}) plus a
+	// trailing summary event (detail: {"required","passed","field_count"}).
+	// This is the hard-block gate that fetches and verifies producer source
+	// for a diff's wire-contract field citations — distinct from
+	// StageQualityGate (build/test/lint) and purely advisory self-review.
+	StageContractEvidence Stage = "contract_evidence"
 	// StageDecompositionSkipped records that a task classified epic (or at/
 	// above decompose.min_complexity) did NOT enter decomposition — the gate
 	// and concrete threshold/observed values are carried in Detail as a
