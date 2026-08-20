@@ -1242,6 +1242,14 @@ func (p *Pilot) SetQualityCheckerFactory(factory executor.QualityCheckerFactory)
 	p.orchestrator.SetQualityCheckerFactory(factory)
 }
 
+// SetContractDependencyLookup sets the lookup used by the executor's
+// Contract Evidence gate (GH-5009/GH-5013) to resolve a task's project's
+// configured contract dependencies. This allows main.go to wire the lookup
+// without creating import cycles.
+func (p *Pilot) SetContractDependencyLookup(lookup executor.ContractDependencyLookup) {
+	p.orchestrator.SetContractDependencyLookup(lookup)
+}
+
 // SetOnPRReview wires a PR review callback on the GitHub webhook handler.
 // This allows cmd/pilot/main.go to route review events to the autopilot controller
 // without creating import cycles.

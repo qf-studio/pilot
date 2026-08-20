@@ -690,12 +690,67 @@ func (r *Runner) buildSelfReviewPrompt(task *Task) (prompt string) {
 		}
 	}
 
+	// Advisory only — NOT the enforcement mechanism. The Contract Evidence
+	// gate (contract_evidence.go, TASK-460 doc-vs-wire leg, GH-5009) is a
+	// separate, hard-blocking check that independently fetches and verifies
+	// producer source after this self-review phase completes; this section
+	// exists so the executor front-loads the citations correctly, but the
+	// gate does not read or trust anything written here — it re-derives
+	// evidence via its own dedicated structured-output call
+	// (getContractEvidence) and rejects unverifiable citations regardless
+	// of what this advisory pass concluded.
+	sb.WriteString("### Contract Evidence (advisory)\n")
+	sb.WriteString("If this project declares contract_dependencies and your diff touches a\n")
+	sb.WriteString("configured contract file, a separate hard gate will require you to cite\n")
+	sb.WriteString("real producer source for every changed wire field. When you assert what a\n")
+	sb.WriteString("field means:\n")
+	sb.WriteString("- Cite the code that PRODUCES the value (server handler/serializer/DB\n")
+	sb.WriteString("  write in the dependency repo) — never a same-repo docblock or comment.\n")
+	sb.WriteString("- If issue evidence contradicts a docblock, the evidence wins.\n")
+	sb.WriteString("- This is advisory guidance only; the actual gate independently fetches\n")
+	sb.WriteString("  and verifies your citations and does not trust this self-review pass.\n\n")
+
 	sb.WriteString("### Actions\n")
 	sb.WriteString("- If you find issues: FIX them and commit the fix\n")
 	sb.WriteString("- Output `REVIEW_FIXED: <description>` if you fixed something\n")
 	sb.WriteString("- Output `REVIEW_PASSED` if everything looks good\n\n")
 
 	sb.WriteString("Work autonomously. Fix any issues you find.\n")
+
+	return sb.String()
+}
+
+// buildContractEvidencePrompt constructs the prompt for the Contract
+// Evidence gate's dedicated structured-output call (getContractEvidence,
+// TASK-460 doc-vs-wire leg, GH-5009 Requirement 7). Unlike
+// buildSelfReviewPrompt's advisory section above, this prompt backs the
+// actual enforcement mechanism: its response is schema-constrained
+// (ContractEvidenceSchema) and every citation it returns is independently
+// fetched and verified by verifyContractEvidence — nothing here is trusted
+// at face value.
+func buildContractEvidencePrompt(fields []string) string {
+	var sb strings.Builder
+
+	sb.WriteString("## Contract Evidence\n\n")
+	sb.WriteString("Your diff changed the following wire-contract field(s):\n")
+	for _, field := range fields {
+		sb.WriteString("- `" + field + "`\n")
+	}
+	sb.WriteString("\nFor EACH field above, cite the producer source that defines its\n")
+	sb.WriteString("semantics — the code that PRODUCES the value (a server handler,\n")
+	sb.WriteString("serializer, or DB write in the dependency repository). Do NOT cite a\n")
+	sb.WriteString("same-repo docblock, comment, or consumer-side type definition — those are\n")
+	sb.WriteString("not producer source and will be rejected.\n\n")
+	sb.WriteString("For each field, report:\n")
+	sb.WriteString("- field: the exact field name\n")
+	sb.WriteString("- producer_repo: the producer repository, as \"owner/repo\"\n")
+	sb.WriteString("- producer_file: the path to the producer source file\n")
+	sb.WriteString("- producer_line: the 1-indexed line number where the value is produced\n")
+	sb.WriteString("- producing_expr: the exact code snippet at that line establishing the\n")
+	sb.WriteString("  field's semantics\n\n")
+	sb.WriteString("If you cannot find real producer source for a field, do not fabricate a\n")
+	sb.WriteString("citation — omit it. Every citation you report will be independently\n")
+	sb.WriteString("fetched and verified; unverifiable or irrelevant citations fail the task.\n")
 
 	return sb.String()
 }

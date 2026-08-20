@@ -761,6 +761,10 @@ Examples:
 			runner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
 			fmt.Println("   Quality:   ✓ gates enabled")
 
+			// GH-5013: wire the Contract Evidence gate's dependency lookup,
+			// mirroring the quality gate wiring above.
+			runner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
+
 			// Decomposer status (GH-218) - wired via NewRunnerWithConfig
 			if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {
 				fmt.Println("   Decompose: ✓ enabled")
