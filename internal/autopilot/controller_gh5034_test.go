@@ -19,11 +19,174 @@ import (
 // targeting main. B clears CI first and reaches StageMerging before A does —
 // driving B through ProcessPR (the state-machine test harness, exactly as
 // controller_gh5031_test.go's HoldsInsteadOfMerging test does) must park it
-// naming A instead of merging out of order. Once A merges — modeled here the
-// same way the real lifecycle removes a fully finalized PR, by dropping it
-// from activePRs — a later tick for B must un-park and proceed to merge
-// normally, with no extra escalation firing on the way through.
+// naming A instead of merging out of order. Once A merges — modeled here as
+// a stage transition to StageMerged while STILL tracked in activePRs
+// (GH-5049 requirement 3: the real lifecycle keeps a merged PR tracked
+// through post-merge CI/release bookkeeping before eventually evicting it;
+// dropping it from activePRs outright, as this test used to, only exercises
+// the finalization-eviction resume path and can't distinguish it from
+// resuming on the base reaching StageMerged — this version fails against
+// pre-GH-5049 main, which resumed only on eviction) — a later tick for B
+// must un-park (Parked=false, parked-awaiting-approval label removed) and
+// proceed to merge normally, with no extra escalation firing on the way
+// through.
 func TestController_HandleMerging_StackedSuperset_UnparksAfterBaseMerges(t *testing.T) {
+	local := newFixtureRepo(t)
+	ctx := context.Background()
+
+	runFixtureGit(t, local, "checkout", "-b", "pilot/GH-16")
+	writeFixtureFile(t, local, "base.txt", "from base PR\n")
+	runFixtureGit(t, local, "add", "base.txt")
+	runFixtureGit(t, local, "commit", "-m", "GH-16 work")
+	runFixtureGit(t, local, "push", "origin", "pilot/GH-16")
+	baseSHA := strings.TrimSpace(runFixtureGit(t, local, "rev-parse", "HEAD"))
+
+	runFixtureGit(t, local, "checkout", "-b", "pilot/GH-17")
+	writeFixtureFile(t, local, "stacked.txt", "from stacked PR\n")
+	runFixtureGit(t, local, "add", "stacked.txt")
+	runFixtureGit(t, local, "commit", "-m", "GH-17 work, stacked on GH-16")
+	runFixtureGit(t, local, "push", "origin", "pilot/GH-17")
+	stackedSHA := strings.TrimSpace(runFixtureGit(t, local, "rev-parse", "HEAD"))
+
+	var mergeCalled, labelApplied, labelRemoved atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/pulls/17/merge" && r.Method == http.MethodPut:
+			mergeCalled.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"sha":"mergedSHA","merged":true,"message":"merged"}`))
+		case r.URL.Path == "/repos/owner/repo/issues/17/comments" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		case r.URL.Path == "/repos/owner/repo/issues/17/labels" && r.Method == http.MethodPost:
+			labelApplied.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		case r.URL.Path == "/repos/owner/repo/issues/17/labels/"+labelParkedAwaitingApproval && r.Method == http.MethodDelete:
+			labelRemoved.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/17/labels/") && r.Method == http.MethodDelete:
+			// Other label removals fired by the post-merge "delivered" bookkeeping
+			// (pilot-in-progress/pilot-failed/pilot-retry-* cleanup) — not under
+			// test here, just acknowledged so they don't 404-noise the log.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithProjectPath(local))
+	sink := &fakeAlertSink{}
+	c.SetAlertsEngine(sink)
+
+	c.mu.Lock()
+	c.activePRs[16] = &PRState{
+		PRNumber:     16,
+		BranchName:   "pilot/GH-16",
+		HeadSHA:      baseSHA,
+		TargetBranch: "main",
+		Stage:        StageWaitingCI, // A hasn't cleared CI yet
+		CreatedAt:    time.Now(),
+	}
+	c.activePRs[17] = &PRState{
+		PRNumber:     17,
+		IssueNumber:  17, // GH-5049: needed so the un-park path's label removal actually fires
+		BranchName:   "pilot/GH-17",
+		HeadSHA:      stackedSHA,
+		TargetBranch: "main",
+		Stage:        StageMerging, // B cleared CI first
+		CreatedAt:    time.Now(),
+	}
+	c.mu.Unlock()
+
+	ghPR17 := &github.PullRequest{
+		Number: 17,
+		Head:   github.PRRef{SHA: stackedSHA},
+		Base:   github.PRRef{Ref: "main"},
+	}
+
+	// Tick 1: A is still open — B must park naming A instead of merging.
+	if err := c.ProcessPR(ctx, 17, ghPR17); err != nil {
+		t.Fatalf("tick 1: ProcessPR: %v", err)
+	}
+	if mergeCalled.Load() != 0 {
+		t.Fatalf("tick 1: merge called %d times, want 0 — B must not merge ahead of A", mergeCalled.Load())
+	}
+	pr17, ok := c.GetPRState(17)
+	if !ok {
+		t.Fatal("PR 17 should still be tracked")
+	}
+	if !pr17.Parked {
+		t.Error("tick 1: Parked should be true")
+	}
+	if !strings.Contains(pr17.EscalationReason, "PR #16") {
+		t.Errorf("tick 1: EscalationReason = %q, want it to name PR #16", pr17.EscalationReason)
+	}
+	if pr17.Stage != StageMerging {
+		t.Errorf("tick 1: Stage = %s, want %s (parked, not merged)", pr17.Stage, StageMerging)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("tick 1: alerts fired %d times, want 1", len(sink.events))
+	}
+	if labelApplied.Load() != 1 {
+		t.Errorf("tick 1: parked-awaiting-approval label applied %d times, want 1", labelApplied.Load())
+	}
+
+	// A merges: modeled as a stage transition to StageMerged while STILL
+	// tracked in activePRs (GH-5049 requirement 1/3) — NOT removal from
+	// activePRs. The real lifecycle keeps a merged PR tracked through
+	// post-merge CI/release bookkeeping (handleMerged/handleReleasing)
+	// before eventually evicting it via removePR; a resume mechanism that
+	// only reacts to eviction resumes late in the normal case and can wedge
+	// permanently if the base ever gets stuck tracked in a post-merge stage.
+	// This step must be enough, on its own, to un-park B on the next tick.
+	c.mu.Lock()
+	c.activePRs[16].Stage = StageMerged
+	c.mu.Unlock()
+
+	// Tick 2: A has merged (still tracked, StageMerged) — B must un-park and
+	// proceed to merge.
+	if err := c.ProcessPR(ctx, 17, ghPR17); err != nil {
+		t.Fatalf("tick 2: ProcessPR: %v", err)
+	}
+	if mergeCalled.Load() != 1 {
+		t.Fatalf("tick 2: merge called %d times, want 1 — B must merge once A reaches StageMerged", mergeCalled.Load())
+	}
+	pr17, ok = c.GetPRState(17)
+	if !ok {
+		t.Fatal("PR 17 should still be tracked")
+	}
+	if pr17.Parked {
+		t.Error("tick 2: Parked should be false — the stacked-superset park must clear once the base reaches StageMerged")
+	}
+	if labelRemoved.Load() != 1 {
+		t.Errorf("tick 2: parked-awaiting-approval label removed %d times, want 1", labelRemoved.Load())
+	}
+	if pr17.Stage != StageMerged {
+		t.Errorf("tick 2: Stage = %s, want %s — B should have proceeded through to a completed merge", pr17.Stage, StageMerged)
+	}
+	// No new escalation should fire on the way through — un-parking is not
+	// itself an event.
+	if len(sink.events) != 1 {
+		t.Errorf("tick 2: alerts fired %d times total, want 1 (no new escalation on un-park)", len(sink.events))
+	}
+}
+
+// TestController_HandleMerging_StackedSuperset_FailedBaseNotBlocking is the
+// GH-5049 (GH-5032 residual, requirement 2) regression flagged in PR#5035's
+// review: a base PR (A) that reached StageFailed will never merge, so it can
+// never legitimately be "merge that first" — a descendant built on top of
+// its still-unmerged branch must NOT be parked on it and must merge normally
+// through handleMerging via ProcessPR.
+func TestController_HandleMerging_StackedSuperset_FailedBaseNotBlocking(t *testing.T) {
 	local := newFixtureRepo(t)
 	ctx := context.Background()
 
@@ -72,7 +235,7 @@ func TestController_HandleMerging_StackedSuperset_UnparksAfterBaseMerges(t *test
 		BranchName:   "pilot/GH-16",
 		HeadSHA:      baseSHA,
 		TargetBranch: "main",
-		Stage:        StageWaitingCI, // A hasn't cleared CI yet
+		Stage:        StageFailed, // A will never merge
 		CreatedAt:    time.Now(),
 	}
 	c.activePRs[17] = &PRState{
@@ -80,7 +243,7 @@ func TestController_HandleMerging_StackedSuperset_UnparksAfterBaseMerges(t *test
 		BranchName:   "pilot/GH-17",
 		HeadSHA:      stackedSHA,
 		TargetBranch: "main",
-		Stage:        StageMerging, // B cleared CI first
+		Stage:        StageMerging,
 		CreatedAt:    time.Now(),
 	}
 	c.mu.Unlock()
@@ -91,56 +254,24 @@ func TestController_HandleMerging_StackedSuperset_UnparksAfterBaseMerges(t *test
 		Base:   github.PRRef{Ref: "main"},
 	}
 
-	// Tick 1: A is still open — B must park naming A instead of merging.
 	if err := c.ProcessPR(ctx, 17, ghPR17); err != nil {
-		t.Fatalf("tick 1: ProcessPR: %v", err)
+		t.Fatalf("ProcessPR: %v", err)
 	}
-	if mergeCalled.Load() != 0 {
-		t.Fatalf("tick 1: merge called %d times, want 0 — B must not merge ahead of A", mergeCalled.Load())
+	if mergeCalled.Load() != 1 {
+		t.Fatalf("merge called %d times, want 1 — a StageFailed base must never hold a descendant hostage", mergeCalled.Load())
 	}
 	pr17, ok := c.GetPRState(17)
 	if !ok {
 		t.Fatal("PR 17 should still be tracked")
 	}
-	if !pr17.Parked {
-		t.Error("tick 1: Parked should be true")
-	}
-	if !strings.Contains(pr17.EscalationReason, "PR #16") {
-		t.Errorf("tick 1: EscalationReason = %q, want it to name PR #16", pr17.EscalationReason)
-	}
-	if pr17.Stage != StageMerging {
-		t.Errorf("tick 1: Stage = %s, want %s (parked, not merged)", pr17.Stage, StageMerging)
-	}
-	if len(sink.events) != 1 {
-		t.Fatalf("tick 1: alerts fired %d times, want 1", len(sink.events))
-	}
-
-	// A merges: it is no longer tracked as an open autopilot PR, mirroring
-	// the real lifecycle where a fully finalized PR is removed from
-	// activePRs (controller.go deletes the entry once handleMerged/the
-	// external-merge path finishes with it).
-	c.mu.Lock()
-	delete(c.activePRs, 16)
-	c.mu.Unlock()
-
-	// Tick 2: A is gone — B must un-park and proceed to merge.
-	if err := c.ProcessPR(ctx, 17, ghPR17); err != nil {
-		t.Fatalf("tick 2: ProcessPR: %v", err)
-	}
-	if mergeCalled.Load() != 1 {
-		t.Fatalf("tick 2: merge called %d times, want 1 — B must merge once A is gone", mergeCalled.Load())
-	}
-	pr17, ok = c.GetPRState(17)
-	if !ok {
-		t.Fatal("PR 17 should still be tracked")
+	if pr17.Parked {
+		t.Errorf("Parked should be false — a StageFailed base is not a valid stacked-superset candidate, got reason=%q", pr17.EscalationReason)
 	}
 	if pr17.Stage != StageMerged {
-		t.Errorf("tick 2: Stage = %s, want %s — B should have proceeded through to a completed merge", pr17.Stage, StageMerged)
+		t.Errorf("Stage = %s, want %s", pr17.Stage, StageMerged)
 	}
-	// No new escalation should fire on the way through — un-parking is not
-	// itself an event.
-	if len(sink.events) != 1 {
-		t.Errorf("tick 2: alerts fired %d times total, want 1 (no new escalation on un-park)", len(sink.events))
+	if len(sink.events) != 0 {
+		t.Fatalf("alerts fired %d times, want 0 — merging past a StageFailed base must not escalate", len(sink.events))
 	}
 }
 
