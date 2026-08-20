@@ -739,6 +739,13 @@ Examples:
 				// producer-source citations for wire-contract changes.
 				gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
 
+				// GH-5022: wire the content fetcher the gate uses to
+				// independently verify citations. Without this, the lookup
+				// above finds configured dependencies but every citation
+				// hard-fails as fetch_error (Runner.SetContractContentFetcher
+				// fails closed on a nil fetcher, never silently passes).
+				gwRunner.SetContractContentFetcher(newGitHubContractContentFetcher(cfg))
+
 				// Set up team project access checker if configured (GH-635)
 				if gwTeamCleanup := wireProjectAccessChecker(gwRunner, cfg); gwTeamCleanup != nil {
 					defer gwTeamCleanup()
@@ -1090,6 +1097,7 @@ Examples:
 				gwRunner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 				gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
 				gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
+				gwRunner.SetContractContentFetcher(newGitHubContractContentFetcher(cfg))
 			}
 
 			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
@@ -1257,6 +1265,10 @@ Examples:
 			// GH-5013: wire the Contract Evidence gate's dependency lookup
 			// for webhook/orchestrator mode, mirroring the quality gate wiring above.
 			p.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
+
+			// GH-5022: wire the content fetcher for webhook/orchestrator
+			// mode, mirroring the dependency-lookup wiring immediately above.
+			p.SetContractContentFetcher(newGitHubContractContentFetcher(cfg))
 
 			// GH-4864: surface the running process's compiled-in version on
 			// /health, /api/v1/status, and the pilot_build_info metric — the
@@ -2103,6 +2115,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// GH-5013: wire the Contract Evidence gate's dependency lookup for
 	// polling mode, mirroring the quality gate wiring above.
 	runner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
+
+	// GH-5022: wire the content fetcher for polling mode, mirroring the
+	// dependency-lookup wiring immediately above.
+	runner.SetContractContentFetcher(newGitHubContractContentFetcher(cfg))
 
 	// Set up team project access checker if configured (GH-635)
 	if teamCleanup := wireProjectAccessChecker(runner, cfg); teamCleanup != nil {

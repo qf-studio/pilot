@@ -245,6 +245,19 @@ func newProjectContractDependencyLookup(cfg *config.Config) executor.ContractDep
 	}
 }
 
+// newGitHubContractContentFetcher builds an executor.ContractContentFetcher
+// backed by the in-tree GitHub client (GH-5011/GH-5022): *github.Client's
+// GetFileContent method (added in PR#5015) matches the interface exactly,
+// so no adapter struct is needed — this just names the construction for
+// each Contract Evidence gate wiring call site, mirroring
+// newProjectContractDependencyLookup above. Uses newGitHubClient(cfg)
+// rather than a shared instance so the fetcher gets the same
+// token-re-resolution-per-request and 401-invalidation wiring (GH-4747/
+// GH-4754) as every other in-tree GitHub client construction in cmd/pilot.
+func newGitHubContractContentFetcher(cfg *config.Config) executor.ContractContentFetcher {
+	return newGitHubClient(cfg)
+}
+
 // Check implements executor.QualityChecker by delegating to quality.Executor
 // and converting the result type
 func (w *qualityCheckerWrapper) Check(ctx context.Context) (*executor.QualityOutcome, error) {

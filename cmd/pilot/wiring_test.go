@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -675,6 +679,12 @@ func TestNewProjectQualityCheckerFactory_AutoDetectsGoProject(t *testing.T) {
 // the doc-vs-wire gate for that code path in production, the exact failure
 // class TASK-460 keeps recurring on. Mirrors docs_wiring_test.go's
 // source-grep parity pattern.
+//
+// GH-5022 extends this same tripwire to SetContractContentFetcher: wiring
+// the lookup alone (GH-5013, merged) without also wiring the fetcher
+// (GH-5019's activation gap) leaves the gate fail-closed on fetch_error for
+// every citation — a runner missing only the fetcher is just as broken in
+// production as one missing the lookup entirely.
 func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testing.T) {
 	mainContent, err := os.ReadFile("main.go")
 	if err != nil {
@@ -688,6 +698,7 @@ func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testin
 
 	qualityCount := strings.Count(src, "SetQualityCheckerFactory(")
 	contractCount := strings.Count(src, "SetContractDependencyLookup(")
+	fetcherCount := strings.Count(src, "SetContractContentFetcher(")
 
 	if qualityCount != 5 {
 		t.Fatalf("SetQualityCheckerFactory( occurs %d times across main.go+commands.go, want 5 — this test's baseline assumption is stale, update it", qualityCount)
@@ -697,11 +708,16 @@ func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testin
 			"a runner constructed without the contract-evidence lookup wired silently no-ops the TASK-460 doc-vs-wire gate (GH-5009) for that code path",
 			contractCount, qualityCount)
 	}
+	if fetcherCount != qualityCount {
+		t.Errorf("SetContractContentFetcher( occurs %d times across main.go+commands.go, want %d (parity with SetQualityCheckerFactory's 5 runner-construction call sites, GH-5022) — "+
+			"a runner wired with the dependency lookup but not the content fetcher fails every citation as fetch_error instead of verifying it (GH-5019 activation gap)",
+			fetcherCount, qualityCount)
+	}
 
 	// Verify each specific receiver pairs its quality-checker-factory call
-	// with a contract-dependency-lookup call, not just an aggregate count
-	// (which parity alone wouldn't catch if two calls moved to the wrong
-	// receiver).
+	// with a contract-dependency-lookup call and a contract-content-fetcher
+	// call, not just an aggregate count (which parity alone wouldn't catch
+	// if calls moved to the wrong receiver).
 	wantPairs := []string{
 		"gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))",
 		"p.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))",
@@ -712,6 +728,11 @@ func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testin
 		"p.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))",
 		"runner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))",
 	}
+	wantFetcherPairs := []string{
+		"gwRunner.SetContractContentFetcher(newGitHubContractContentFetcher(cfg))",
+		"p.SetContractContentFetcher(newGitHubContractContentFetcher(cfg))",
+		"runner.SetContractContentFetcher(newGitHubContractContentFetcher(cfg))",
+	}
 	for i, want := range wantPairs {
 		if !strings.Contains(src, want) {
 			t.Errorf("expected to find quality-checker-factory call %q", want)
@@ -719,10 +740,17 @@ func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testin
 		if !strings.Contains(src, wantContractPairs[i]) {
 			t.Errorf("expected matching contract-dependency-lookup call %q", wantContractPairs[i])
 		}
+		if !strings.Contains(src, wantFetcherPairs[i]) {
+			t.Errorf("expected matching contract-content-fetcher call %q", wantFetcherPairs[i])
+		}
 	}
 	if strings.Count(src, "gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))") !=
 		strings.Count(src, "gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))") {
 		t.Error("gwRunner call-count parity broken: expected 2 gateway-mode sites (needsPollingInfra + chat-only) to wire both setters identically")
+	}
+	if strings.Count(src, "gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))") !=
+		strings.Count(src, "gwRunner.SetContractContentFetcher(newGitHubContractContentFetcher(cfg))") {
+		t.Error("gwRunner call-count parity broken: expected 2 gateway-mode sites (needsPollingInfra + chat-only) to wire the content fetcher identically")
 	}
 }
 
@@ -785,6 +813,101 @@ func TestNewProjectContractDependencyLookup_NoOpWhenUnconfigured(t *testing.T) {
 	}
 	if deps := lookup("/some/unregistered/path"); len(deps) != 0 {
 		t.Errorf("lookup for unregistered path = %v, want empty", deps)
+	}
+}
+
+// =============================================================================
+// GH-5022: newGitHubContractContentFetcher — the activation leg's constructor
+// =============================================================================
+
+// TestNewGitHubContractContentFetcher_ConstructsRealClientType is the
+// constructor-level half of GH-5022's end-to-end verification: it asserts
+// that the fetcher cmd/pilot injects at every SetContractContentFetcher call
+// site is the real, github-client-backed implementation (*github.Client, the
+// same type newGitHubClient(cfg) returns for every other in-tree GitHub
+// client construction) — not a stub or a nil-safe no-op. A project with
+// contract_dependencies configured is what makes this wiring meaningful in
+// production (an unconfigured project's lookup returns no deps and the gate
+// is a no-op regardless of which fetcher is wired), so this test builds cfg
+// the same way TestNewProjectContractDependencyLookup_ResolvesConfiguredDependencies
+// does.
+//
+// The other half of the "gate passes when a fake HTTP transport serves the
+// producer file" claim lives in
+// internal/executor/runner_contract_evidence_github_e2e_test.go's
+// TestRunner_ContractEvidence_GitHubBackedFetcher_ValidCitationSucceeds:
+// internal/executor cannot import internal/adapters/github directly (import
+// cycle via internal/comms, documented in contract_evidence.go), so that
+// test proves the full Runner.Execute gate passes given an HTTP-backed
+// fetcher, and this test proves *that exact concrete type* is what
+// production wires in and that it correctly speaks the same wire protocol
+// against a fake transport.
+func TestNewGitHubContractContentFetcher_ConstructsRealClientType(t *testing.T) {
+	projectPath := t.TempDir()
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			GitHub: &github.Config{Token: testutil.FakeGitHubToken},
+		},
+		Projects: []*config.ProjectConfig{
+			{
+				Name: "consumer-project",
+				Path: projectPath,
+				ContractDependencies: []config.ContractDependency{
+					{
+						Owner:         "qf-studio",
+						Repo:          "pilot-console",
+						ContractFiles: []string{"internal/instances/handlers.go"},
+						Ref:           "main",
+					},
+				},
+			},
+		},
+	}
+
+	// newGitHubContractContentFetcher's signature already declares
+	// executor.ContractContentFetcher as its return type (see adapters.go),
+	// so the interface satisfaction is a compile-time guarantee; what this
+	// test verifies is the concrete type behind that interface.
+	fetcher := newGitHubContractContentFetcher(cfg)
+	if _, ok := fetcher.(*github.Client); !ok {
+		t.Fatalf("newGitHubContractContentFetcher(cfg) = %T, want *github.Client (the real implementation, GH-5011/GH-5022)", fetcher)
+	}
+
+	// Prove the concrete type production wires in correctly fetches
+	// producer content over HTTP against a fake transport, using the same
+	// GitHub Contents API wire shape *github.Client.GetFileContent speaks
+	// (internal/adapters/github/contents.go) — this is the client type's
+	// half of "the gate passes when a fake HTTP transport serves the
+	// producer file"; the gate-level half is proven in
+	// internal/executor's HTTP-backed test referenced above.
+	wantContent := "package instances\n\ntype InstanceDTO struct {\n\tConfigGeneration int `json:\"specVersion\"`\n}\n"
+	encoded := base64.StdEncoding.EncodeToString([]byte(wantContent))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantPath := "/repos/qf-studio/pilot-console/contents/internal/instances/handlers.go"
+		if r.URL.Path != wantPath {
+			t.Errorf("unexpected request path: got %q, want %q", r.URL.Path, wantPath)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"content":  encoded,
+			"encoding": "base64",
+		})
+	}))
+	defer server.Close()
+
+	// The client above is pinned at the real GitHub API host (production
+	// wiring has no test hook to override it), so exercise the same
+	// concrete type via the package's dedicated test constructor instead of
+	// pointing it at the fake server — this is why the type assertion above
+	// and this fetch are two steps against the same *github.Client type
+	// rather than one call on the same instance.
+	testClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	got, err := testClient.GetFileContent(context.Background(), "qf-studio", "pilot-console", "internal/instances/handlers.go", "main")
+	if err != nil {
+		t.Fatalf("GetFileContent() error = %v", err)
+	}
+	if got != wantContent {
+		t.Errorf("GetFileContent() = %q, want %q", got, wantContent)
 	}
 }
 

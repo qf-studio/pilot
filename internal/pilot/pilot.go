@@ -1250,6 +1250,16 @@ func (p *Pilot) SetContractDependencyLookup(lookup executor.ContractDependencyLo
 	p.orchestrator.SetContractDependencyLookup(lookup)
 }
 
+// SetContractContentFetcher sets the fetcher the executor's Contract
+// Evidence gate uses to independently verify a citation's producer source
+// (GH-5009/GH-5022). Mirrors SetContractDependencyLookup's bridging shape
+// so main.go can wire it without an import cycle. A nil fetcher (the
+// default) makes every citation a hard fetch_error rejection rather than a
+// silent pass.
+func (p *Pilot) SetContractContentFetcher(fetcher executor.ContractContentFetcher) {
+	p.orchestrator.SetContractContentFetcher(fetcher)
+}
+
 // SetOnPRReview wires a PR review callback on the GitHub webhook handler.
 // This allows cmd/pilot/main.go to route review events to the autopilot controller
 // without creating import cycles.
