@@ -1587,14 +1587,14 @@
         "title": "Delivery-evidence audit \u2014 green CI is not proof the requested change shipped (false-success class)",
         "status": "dispatched",
         "concepts": [
-          "authentication",
-          "knowledge",
-          "database",
-          "theory of mind",
+          "api",
           "deployment",
           "context",
+          "knowledge",
+          "authentication",
           "frontend",
-          "api",
+          "theory of mind",
+          "database",
           "testing"
         ]
       },
@@ -1811,15 +1811,15 @@
         "title": "Console rail implementation program \u2014 11 approved designs \u2192 shipped surfaces",
         "status": "completed",
         "concepts": [
-          "testing",
-          "workflow",
-          "context",
-          "database",
           "frontend",
-          "deployment",
-          "authentication",
           "api",
-          "theory of mind"
+          "theory of mind",
+          "deployment",
+          "testing",
+          "authentication",
+          "database",
+          "workflow",
+          "context"
         ]
       },
       "TASK-479": {
@@ -8070,7 +8070,7 @@
       "apply-script-silent-rollback-causes"
     ]
   },
-  "last_updated": "2026-08-20T13:44:01.395936+00:00",
+  "last_updated": "2026-08-20T14:47:03.675485+00:00",
   "stats": {
     "total_nodes": 433,
     "total_edges": 354,
