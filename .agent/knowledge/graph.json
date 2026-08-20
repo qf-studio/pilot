@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-08-18T17:34:55+00:00",
+  "updated": "2026-08-20",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -1587,14 +1587,14 @@
         "title": "Delivery-evidence audit \u2014 green CI is not proof the requested change shipped (false-success class)",
         "status": "dispatched",
         "concepts": [
+          "deployment",
           "context",
+          "theory of mind",
           "knowledge",
           "api",
           "testing",
-          "theory of mind",
-          "database",
-          "deployment",
-          "authentication"
+          "authentication",
+          "database"
         ]
       },
       "TASK-461": {
@@ -4998,6 +4998,13 @@
         "file": ".agent/knowledge/memories/pitfalls/merged-feature-dead-callback-not-bridged-onprcreated.md",
         "created": "2026-08-19",
         "last_validated": "2026-08-19"
+      },
+      "consumer-docblock-trusted-over-producer-wire-source": {
+        "type": "pitfall",
+        "summary": "ui PR#113 (4th TASK-460 incident) shipped green while inverting a wire field's semantics \u2014 trusted a stale consumer-side types.ts docblock (specVersion = applied gen) over the producer source (pilot-console handlers.go:141 sends the TARGET, inst.ConfigGeneration) and over the issue's own incident evidence; rewrote comments+tests to enshrine the wrong reading. New evidence shape: doc-vs-wire. Structural fix dispatched: pilot#5009 (Contract Evidence gate, daemon-verified producer citations via Contents API) + console#195 (raw-body CI gate for json-tagged DTO changes). Rule: a field's semantics come from the code that PRODUCES the value, never a consumer-side comment.",
+        "file": ".agent/knowledge/memories/pitfalls/consumer-docblock-trusted-over-producer-wire-source.md",
+        "created": "2026-08-20",
+        "last_validated": "2026-08-20"
       }
     }
   },
@@ -8059,10 +8066,10 @@
       "apply-script-silent-rollback-causes"
     ]
   },
-  "last_updated": "2026-08-20T09:27:10.541493+00:00",
+  "last_updated": "2026-08-20T11:57:50.971766+00:00",
   "stats": {
-    "total_nodes": 432,
+    "total_nodes": 433,
     "total_edges": 354,
-    "memory_count": 234
+    "memory_count": 235
   }
 }
