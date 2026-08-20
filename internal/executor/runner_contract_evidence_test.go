@@ -47,6 +47,55 @@ func (b *contractFileBackend) Execute(ctx context.Context, opts ExecuteOptions) 
 	return &BackendResult{Success: true, Output: "done"}, nil
 }
 
+// diffErrorBackend simulates a Claude Code invocation that commits a file
+// (same as contractFileBackend) and then severs the repo's ability to
+// resolve a diff against the base branch: it deletes the local base-branch
+// ref and removes the "origin" remote entirely. By the time this runs the
+// task branch is already checked out (branch creation happens before the
+// backend runs), so neither deletion disturbs execution up to this point —
+// but any later git.GetDiffAgainstOrigin(ctx, baseBranch) call (the Contract
+// Evidence gate, GH-5021) fails both its origin/<base> and local <base>
+// fallbacks, exactly reproducing a "can't compute the diff" failure.
+type diffErrorBackend struct {
+	path       string
+	content    string
+	baseBranch string
+}
+
+func (b *diffErrorBackend) Name() string      { return "diff-error-backend" }
+func (b *diffErrorBackend) IsAvailable() bool { return true }
+
+func (b *diffErrorBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	full := filepath.Join(opts.ProjectPath, b.path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(full, []byte(b.content), 0o644); err != nil {
+		return nil, err
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", "touch contract file"}} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = opts.ProjectPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git %v: %v (%s)", args, err, out)
+		}
+	}
+
+	base := b.baseBranch
+	if base == "" {
+		base = "main"
+	}
+	for _, args := range [][]string{{"branch", "-D", base}, {"remote", "remove", "origin"}} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = opts.ProjectPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git %v: %v (%s)", args, err, out)
+		}
+	}
+
+	return &BackendResult{Success: true, Output: "done"}, nil
+}
+
 // newContractGateTestRunner sets up a Runner against a real local+origin
 // repo pair (so GetDiffAgainstOrigin behaves exactly as in production),
 // wired to skip preflight/recording noise and with CreatePR=false so
@@ -392,6 +441,151 @@ func TestRunner_ContractEvidence_ValidCitationsSucceed(t *testing.T) {
 	}
 	if fetcher.calls == 0 {
 		t.Errorf("expected the fetcher to be called to verify the citation")
+	}
+}
+
+// TestRunner_ContractEvidence_DiffErrorWithDepsConfigured_FailsGate covers
+// GH-5021(a): a GetDiffAgainstOrigin failure on a project that DOES have
+// contract dependencies configured must route through the standard
+// contract-evidence failure sequence (alert + webhook + recorder,
+// result.Success=false) instead of fail-opening with a Warn log. The error
+// is induced by diffErrorBackend, which deletes the local base branch and
+// removes the "origin" remote after committing, so the gate's
+// GetDiffAgainstOrigin call fails both its fallbacks.
+func TestRunner_ContractEvidence_DiffErrorWithDepsConfigured_FailsGate(t *testing.T) {
+	backend := &diffErrorBackend{
+		path:    "src/lib/api/types.ts",
+		content: "export interface Instance {\n  specVersion: number;\n}\n",
+	}
+	runner, task := newContractGateTestRunner(t, backend)
+
+	recordingsDir := t.TempDir()
+	runner.SetRecordingsPath(recordingsDir)
+	runner.SetRecordingEnabled(true)
+
+	deps := []ContractDependency{{Owner: "qf-studio", Repo: "pilot-console", ContractFiles: []string{"*.ts"}}}
+	runner.SetContractDependencyLookup(func(projectPath string) []ContractDependency { return deps })
+
+	alerts := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(alerts)
+	wr := newWebhookRecorder()
+	defer wr.close()
+	runner.SetWebhookManager(wr.manager)
+
+	result, err := runner.Execute(contractGateExecCtx(t), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failure when the diff can't be computed for a project with configured deps, got %+v", result)
+	}
+	if result.Error == "" {
+		t.Errorf("expected non-empty result.Error")
+	}
+
+	var sawTaskFailed bool
+	for _, e := range alerts.events {
+		if e.Type == AlertEventTypeTaskFailed {
+			sawTaskFailed = true
+		}
+	}
+	if !sawTaskFailed {
+		t.Errorf("expected an AlertEventTypeTaskFailed event, got %+v", alerts.events)
+	}
+	if !wr.received(string(webhooks.EventTaskFailed)) {
+		t.Errorf("expected a dispatched %s webhook, got events %v", webhooks.EventTaskFailed, wr.events)
+	}
+
+	entries, err := os.ReadDir(recordingsDir)
+	if err != nil {
+		t.Fatalf("ReadDir(recordingsDir): %v", err)
+	}
+	var foundFailedStatus bool
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(recordingsDir, e.Name(), "metadata.json"))
+		if readErr != nil {
+			continue
+		}
+		var meta struct {
+			Status string `json:"status"`
+		}
+		if jsonErr := json.Unmarshal(data, &meta); jsonErr != nil {
+			t.Fatalf("unmarshal metadata.json for %s: %v", e.Name(), jsonErr)
+		}
+		if meta.Status == "failed" {
+			foundFailedStatus = true
+		}
+	}
+	if !foundFailedStatus {
+		t.Errorf("expected a recording with status=failed under %s, entries=%v", recordingsDir, entries)
+	}
+}
+
+// TestRunner_ContractEvidence_DiffErrorWithoutDeps_Unchanged covers
+// GH-5021(a)'s preserved branch: the exact same diff-compute failure on a
+// project with a configured lookup but zero declared dependencies must keep
+// the pre-GH-5021 skip-and-warn behavior — the gate would have been a no-op
+// even with a working diff, so a diff error here must not block the task.
+func TestRunner_ContractEvidence_DiffErrorWithoutDeps_Unchanged(t *testing.T) {
+	backend := &diffErrorBackend{
+		path:    "src/lib/api/types.ts",
+		content: "export interface Instance {\n  specVersion: number;\n}\n",
+	}
+	runner, task := newContractGateTestRunner(t, backend)
+
+	runner.SetContractDependencyLookup(func(projectPath string) []ContractDependency {
+		return nil // configured, but this project declares no dependencies
+	})
+
+	result, err := runner.Execute(contractGateExecCtx(t), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected success (unchanged skip-and-warn behavior) when no deps are configured, got %+v", result)
+	}
+}
+
+// TestRunner_ContractEvidence_ZeroExtractedFields_NoLLMCall covers
+// GH-5021(b): a diff that touches a configured contract file but adds no
+// line matching either field-token regex (detectTouchedContractFields
+// reports required=true, fields=nil) must short-circuit before
+// getContractEvidence — zero LLM/structured-output subprocess calls — and
+// let the task proceed as passed.
+func TestRunner_ContractEvidence_ZeroExtractedFields_NoLLMCall(t *testing.T) {
+	backend := &contractFileBackend{
+		path:    "src/lib/api/types.ts",
+		content: "export interface Instance {\n  // specVersion tracked upstream, no field token on this line\n}\n",
+	}
+	runner, task := newContractGateTestRunner(t, backend)
+
+	deps := []ContractDependency{{Owner: "qf-studio", Repo: "pilot-console", ContractFiles: []string{"*.ts"}}}
+	runner.SetContractDependencyLookup(func(projectPath string) []ContractDependency { return deps })
+
+	var fetchCalls int
+	runner.contractEvidenceFetchFn = func(ctx context.Context, dir string, fields []string) ([]ContractEvidence, error) {
+		fetchCalls++
+		return nil, nil
+	}
+
+	result, err := runner.Execute(contractGateExecCtx(t), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected success when zero contract fields are extracted, got %+v", result)
+	}
+	if fetchCalls != 0 {
+		t.Errorf("expected 0 LLM/structured-output calls when zero fields were extracted, got %d", fetchCalls)
+	}
+	if result.ContractEvidence == nil || result.ContractEvidence.Required {
+		t.Errorf("expected a ContractEvidence outcome with Required=false, got %+v", result.ContractEvidence)
+	}
+	if !result.ContractEvidence.Passed {
+		t.Errorf("expected the zero-fields outcome to be recorded as passed, got %+v", result.ContractEvidence)
 	}
 }
 
