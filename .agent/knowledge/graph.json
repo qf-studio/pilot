@@ -1587,15 +1587,15 @@
         "title": "Delivery-evidence audit \u2014 green CI is not proof the requested change shipped (false-success class)",
         "status": "dispatched",
         "concepts": [
-          "knowledge",
-          "database",
-          "frontend",
-          "context",
-          "deployment",
-          "authentication",
-          "theory of mind",
           "testing",
-          "api"
+          "authentication",
+          "knowledge",
+          "frontend",
+          "database",
+          "api",
+          "theory of mind",
+          "deployment",
+          "context"
         ]
       },
       "TASK-461": {
@@ -8070,7 +8070,7 @@
       "apply-script-silent-rollback-causes"
     ]
   },
-  "last_updated": "2026-08-20T15:30:18.013043+00:00",
+  "last_updated": "2026-08-20T23:27:24.126694+00:00",
   "stats": {
     "total_nodes": 433,
     "total_edges": 354,
