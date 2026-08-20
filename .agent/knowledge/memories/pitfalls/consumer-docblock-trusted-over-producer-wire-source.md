@@ -39,6 +39,15 @@ when citations are missing, irrelevant, or don't verify) · **console#195** —
 producer-side grep CI gate requiring raw-body assertions for `json:`-tagged
 DTO changes.
 
+**Recurrence (2026-08-20, 5th class incident, pre-dated the class discovery).**
+Dashboard Shipped Activity chart shipped empty-with-data in UI-6/PR#61
+(08-14): ui `types.ts:383` docblock claimed `byProject` keys are project
+*names*; the producer (`dashboardapi/dto.go:46` + its pinned test) keys by
+`projectDTO.Key` (connection UUID). Chart looked up by name → zero bars;
+name-keyed fixtures kept the suite green. Exposed only when the first real
+shipped cards landed. Fix: ui#118. Confirms `src/lib/api/types.ts` belongs in
+ui's `contract_files` when pilot#5009 lands.
+
 **Rules.**
 1. A wire field's semantics come from the code that PRODUCES the value
    (server handler / serializer / DB write) — never from a consumer-side
