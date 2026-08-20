@@ -4279,6 +4279,43 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		}
 	}
 
+	// GH-5027/GH-5030: guard against merging a PR that is stacked on another
+	// still-open PR's unmerged head (the #5016/#5017 incident shape — a PR
+	// with base==defaultBranch whose head was nonetheless built on top of a
+	// sibling open PR's branch). The base guard above already confirmed
+	// target == defaultBranch, so this only needs to gate on the second,
+	// cheaper precondition: skip the probe entirely when no other open
+	// autopilot PR is tracked for this repo (GH-5027 requirement 4 — zero
+	// added cost in the common case). detectStackedSuperset (GH-5029) is
+	// itself the source of truth for the symmetric case: when prState is
+	// the ANCESTOR/base of another open PR's stack, it returns nil, so that
+	// direction is never held here — only a PR that is a strict DESCENDANT
+	// of another open PR's head is.
+	c.mu.RLock()
+	hasOtherOpenPRs := len(c.activePRs) > 1
+	c.mu.RUnlock()
+	if hasOtherOpenPRs {
+		stackedOn, err := c.detectStackedSuperset(ctx, prState)
+		if err != nil {
+			// GH-5027 requirement 5: detection failure fails OPEN. This is a
+			// toil-reducing guard, not a correctness gate — handleMergeConflict
+			// already recovers a stacked PR that slips through, at the cost of
+			// one operator recovery cycle — so a broken ancestry probe must
+			// never wedge merging.
+			c.log.Warn("handleMerging: stacked-superset ancestry check failed, proceeding with merge (fail-open)",
+				"pr", prState.PRNumber, "error", err)
+		} else if stackedOn != nil {
+			// Hold this tick without merging; re-checked (and re-detected)
+			// on the next tick once the stacked-on PR merges. Reusing the
+			// parkForBaseMismatch pattern (label + alert + PR comment naming
+			// the base PR) instead of a bare hold is GH-5031's separately
+			// scoped follow-on.
+			c.log.Warn("handleMerging: PR is stacked on another open PR's unmerged head — holding merge",
+				"pr", prState.PRNumber, "stacked_on_pr", stackedOn.PRNumber)
+			return nil
+		}
+	}
+
 	prState.MergeAttempts++
 
 	c.log.Info("handleMerging: attempting merge",
