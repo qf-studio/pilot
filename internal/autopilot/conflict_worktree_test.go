@@ -152,3 +152,91 @@ func TestAttemptLocalMerge_CleansUpWorktree(t *testing.T) {
 		t.Fatalf("expected worktree %s to be removed, stat err: %v", worktreePath, statErr)
 	}
 }
+
+// TestGitIsStrictAncestor_StrictDescendant covers the core GH-5027 shape:
+// feature/child was branched from feature/parent and carries an extra
+// commit on top, so feature/parent's head is a strict ancestor of
+// feature/child's head.
+func TestGitIsStrictAncestor_StrictDescendant(t *testing.T) {
+	local := newFixtureRepo(t)
+	ctx := context.Background()
+
+	runFixtureGit(t, local, "checkout", "-b", "feature/parent")
+	writeFixtureFile(t, local, "parent.txt", "from parent\n")
+	runFixtureGit(t, local, "add", "parent.txt")
+	runFixtureGit(t, local, "commit", "-m", "parent commit")
+	runFixtureGit(t, local, "push", "origin", "feature/parent")
+	parentSHA := strings.TrimSpace(runFixtureGit(t, local, "rev-parse", "HEAD"))
+
+	runFixtureGit(t, local, "checkout", "-b", "feature/child")
+	writeFixtureFile(t, local, "child.txt", "from child\n")
+	runFixtureGit(t, local, "add", "child.txt")
+	runFixtureGit(t, local, "commit", "-m", "child commit stacked on parent")
+	runFixtureGit(t, local, "push", "origin", "feature/child")
+	childSHA := strings.TrimSpace(runFixtureGit(t, local, "rev-parse", "HEAD"))
+
+	isAncestor, err := gitIsStrictAncestor(ctx, local, "feature/parent", parentSHA, "feature/child", childSHA)
+	if err != nil {
+		t.Fatalf("gitIsStrictAncestor: %v", err)
+	}
+	if !isAncestor {
+		t.Fatal("expected feature/parent's head to be a strict ancestor of feature/child's head")
+	}
+
+	// Symmetric direction must be false: the parent's head is not a
+	// descendant of the child's head.
+	reversed, err := gitIsStrictAncestor(ctx, local, "feature/child", childSHA, "feature/parent", parentSHA)
+	if err != nil {
+		t.Fatalf("gitIsStrictAncestor (reversed): %v", err)
+	}
+	if reversed {
+		t.Fatal("expected feature/child's head NOT to be an ancestor of feature/parent's head")
+	}
+}
+
+// TestGitIsStrictAncestor_Unrelated covers two branches with disjoint
+// histories off main — neither head is an ancestor of the other.
+func TestGitIsStrictAncestor_Unrelated(t *testing.T) {
+	local := newFixtureRepo(t)
+	ctx := context.Background()
+
+	runFixtureGit(t, local, "checkout", "-b", "feature/a")
+	writeFixtureFile(t, local, "a.txt", "from a\n")
+	runFixtureGit(t, local, "add", "a.txt")
+	runFixtureGit(t, local, "commit", "-m", "add a.txt")
+	runFixtureGit(t, local, "push", "origin", "feature/a")
+	aSHA := strings.TrimSpace(runFixtureGit(t, local, "rev-parse", "HEAD"))
+
+	runFixtureGit(t, local, "checkout", "main")
+	runFixtureGit(t, local, "checkout", "-b", "feature/b")
+	writeFixtureFile(t, local, "b.txt", "from b\n")
+	runFixtureGit(t, local, "add", "b.txt")
+	runFixtureGit(t, local, "commit", "-m", "add b.txt")
+	runFixtureGit(t, local, "push", "origin", "feature/b")
+	bSHA := strings.TrimSpace(runFixtureGit(t, local, "rev-parse", "HEAD"))
+
+	isAncestor, err := gitIsStrictAncestor(ctx, local, "feature/a", aSHA, "feature/b", bSHA)
+	if err != nil {
+		t.Fatalf("gitIsStrictAncestor: %v", err)
+	}
+	if isAncestor {
+		t.Fatal("expected unrelated branches to report no ancestry relationship")
+	}
+}
+
+// TestGitIsStrictAncestor_SameCommit covers the identical-SHA case, which
+// must report false (not a STRICT ancestor of itself) without even
+// shelling out to git.
+func TestGitIsStrictAncestor_SameCommit(t *testing.T) {
+	local := newFixtureRepo(t)
+	ctx := context.Background()
+	headSHA := strings.TrimSpace(runFixtureGit(t, local, "rev-parse", "HEAD"))
+
+	isAncestor, err := gitIsStrictAncestor(ctx, local, "main", headSHA, "main", headSHA)
+	if err != nil {
+		t.Fatalf("gitIsStrictAncestor: %v", err)
+	}
+	if isAncestor {
+		t.Fatal("expected identical SHAs to report no strict-ancestry relationship")
+	}
+}
