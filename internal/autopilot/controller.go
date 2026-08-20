@@ -667,6 +667,13 @@ type Controller struct {
 	// wrong base doesn't re-alert every poll tick while it stays unresolved.
 	alertedBaseMismatches map[string]bool
 
+	// alertedStackedSupersets deduplicates the stacked-superset escalation
+	// alert (GH-5027/GH-5031) per "PRNumber:stackedOnPRNumber", guarded by
+	// mu. parkForStackedSuperset fires this the first time a PR is held for
+	// being built stacked on another still-open PR's unmerged head, mirroring
+	// alertedBaseMismatches so a parked PR doesn't re-alert every poll tick.
+	alertedStackedSupersets map[string]bool
+
 	// alertedBranchDeleteHolds deduplicates the branch-delete-held escalation
 	// alert (GH-4872) per branch name, guarded by mu — safeDeleteBranch is
 	// called from four independent cleanup sites and a long-lived stacked
@@ -1687,6 +1694,130 @@ const baseMismatchReasonPrefix = "base branch mismatch:"
 // non-default base outside autopilot's own guarded merge path (external
 // merge, or discovered by the recently-merged-PR scanner).
 const basePivotCommentMarker = "<!-- pilot-base-pivot -->"
+
+// stackedSupersetCommentMarker identifies the GH-5027/GH-5031 stacked-superset
+// PR comment posted by postStackedSupersetComment, mirroring
+// baseMismatchCommentMarker so a re-parked tick doesn't re-post it.
+const stackedSupersetCommentMarker = "<!-- pilot-stacked-superset -->"
+
+// stackedSupersetReasonPrefix identifies an EscalationReason set by
+// parkForStackedSuperset, as opposed to any other cause that shares the same
+// Parked flag (e.g. parkForBaseMismatch, or submitAsyncApprovalRequest's
+// misconfig park) — mirrors baseMismatchReasonPrefix.
+const stackedSupersetReasonPrefix = "stacked on open PR:"
+
+// parkForStackedSuperset holds a PR at StageMerging without merging when
+// detectStackedSuperset (GH-5029) finds its head is a strict descendant of
+// another still-open PR's head — i.e. this PR was built stacked on top of
+// stackedOn's unmerged branch rather than off the default branch directly
+// (GH-5027, the #5016/#5017 2026-08-20 incident shape). Reuses the
+// parkForBaseMismatch pattern verbatim (GH-5031): hold + label + alert + PR
+// comment naming the base PR, with no new state-machine states — Parked and
+// EscalationReason are the same fields parkForBaseMismatch uses, just with a
+// distinct reason prefix so the two causes never clobber each other's
+// one-time side effects (mirrors GH-4909's reason-prefix disambiguation).
+// Idempotent via prState.Parked plus prState.EscalationReason, same as
+// parkForBaseMismatch.
+func (c *Controller) parkForStackedSuperset(ctx context.Context, prState *PRState, stackedOn *PRState) {
+	reason := fmt.Sprintf(
+		stackedSupersetReasonPrefix+" PR #%d is stacked on open PR #%d — merge that first",
+		prState.PRNumber, stackedOn.PRNumber,
+	)
+	alreadyParkedForThisStack := prState.Parked && prState.EscalationReason == reason
+	prState.EscalationReason = reason
+	if alreadyParkedForThisStack {
+		// Already logged/commented/alerted on a prior tick — stay parked quietly.
+		return
+	}
+	prState.Parked = true
+	c.log.Warn("handleMerging: PR is stacked on another open PR's unmerged head — holding instead of auto-merging",
+		"pr", prState.PRNumber, "stacked_on_pr", stackedOn.PRNumber)
+
+	if prState.IssueNumber > 0 {
+		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{labelParkedAwaitingApproval}); err != nil {
+			c.log.Warn("failed to apply parked-awaiting-approval label for stacked superset",
+				"issue", prState.IssueNumber, "pr", prState.PRNumber, "error", err)
+		}
+	}
+	c.alertStackedSupersetOnce(prState.PRNumber, prState.IssueNumber, stackedOn.PRNumber)
+	c.postStackedSupersetComment(ctx, prState, stackedOn.PRNumber)
+}
+
+// alertStackedSupersetOnce fires an escalation alert the first time autopilot
+// holds a pilot/GH-* PR because it is stacked on another still-open PR's
+// unmerged head (GH-5027/GH-5031). Deduplicated per "PRNumber:stackedOnPR"
+// via alertedStackedSupersets (same pattern as alertBaseMismatchOnce).
+func (c *Controller) alertStackedSupersetOnce(prNumber, issueNumber, stackedOnPR int) {
+	key := fmt.Sprintf("%d:%d", prNumber, stackedOnPR)
+
+	c.mu.Lock()
+	if c.alertedStackedSupersets == nil {
+		c.alertedStackedSupersets = make(map[string]bool)
+	}
+	if c.alertedStackedSupersets[key] {
+		c.mu.Unlock()
+		return
+	}
+	c.alertedStackedSupersets[key] = true
+	c.mu.Unlock()
+
+	msg := fmt.Sprintf(
+		"PR #%d (%s) is stacked on open PR #%d — merge that first; auto-merge is held to avoid squash-absorbing #%d's unmerged content",
+		prNumber, c.repoKey(), stackedOnPR, stackedOnPR,
+	)
+	if c.alertsEngine == nil {
+		c.log.Error("stacked_superset alert not delivered: SetAlertsEngine was never called",
+			"pr", prNumber, "stacked_on_pr", stackedOnPR)
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeEscalation,
+		TaskID:    fmt.Sprintf("pr-%d-stacked-superset", prNumber),
+		TaskTitle: fmt.Sprintf("PR #%d stacked on open PR #%d", prNumber, stackedOnPR),
+		Project:   c.repoKey(),
+		Error:     msg,
+		Timestamp: time.Now(),
+		Metadata: map[string]string{
+			"repo":          c.repoKey(),
+			"pr":            strconv.Itoa(prNumber),
+			"issue":         strconv.Itoa(issueNumber),
+			"stacked_on_pr": strconv.Itoa(stackedOnPR),
+		},
+	})
+}
+
+// postStackedSupersetComment posts a single explanatory comment on the PR
+// naming the base PR it is stacked on (GH-5027/GH-5031), idempotent via
+// stackedSupersetCommentMarker so a PR re-checked every poll tick while
+// parked only gets the one-time side effect once (mirrors
+// postBaseMismatchComment).
+func (c *Controller) postStackedSupersetComment(ctx context.Context, prState *PRState, stackedOnPR int) {
+	existing, err := c.ghClient.ListIssueComments(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		c.log.Warn("postStackedSupersetComment: failed to list PR comments, will post anyway",
+			"pr", prState.PRNumber, "error", err)
+	} else {
+		for _, cmt := range existing {
+			if strings.Contains(cmt.Body, stackedSupersetCommentMarker) {
+				c.log.Debug("postStackedSupersetComment: already posted, skipping", "pr", prState.PRNumber)
+				return
+			}
+		}
+	}
+
+	body := fmt.Sprintf(`%s
+🚧 **Merge blocked: stacked on open PR #%d — merge that first**
+
+This PR's branch was built on top of PR #%d's still-open, unmerged branch, rather than off the default branch directly. Auto-merge refuses to land it out of order — merging this PR first would squash-absorb #%d's entire content under this PR's history, exactly the shape that orphaned commit history in a prior incident.
+
+Merge PR #%d first; this PR will resume automatically once that lands.`,
+		stackedSupersetCommentMarker, stackedOnPR, stackedOnPR, stackedOnPR, stackedOnPR)
+
+	if _, postErr := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, body); postErr != nil {
+		c.log.Warn("postStackedSupersetComment: failed to post PR comment",
+			"pr", prState.PRNumber, "error", postErr)
+	}
+}
 
 // parkForBaseMismatch holds a PR at StageMerging without merging when its
 // base branch is not the repo's default (GH-4872). Root incident,
@@ -4276,6 +4407,40 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, labelParkedAwaitingApproval); err != nil {
 				c.log.Debug("parked-awaiting-approval label cleanup on un-park", "issue", prState.IssueNumber, "error", err)
 			}
+		}
+	}
+
+	// GH-5027/GH-5031: guard against merging a PR that is stacked on another
+	// still-open PR's unmerged head (the #5016/#5017 2026-08-20 incident
+	// shape — a PR with base==defaultBranch whose head was nonetheless built
+	// on top of a sibling open PR's branch). The base guard above already
+	// confirmed target == defaultBranch, so this only needs to gate on the
+	// second, cheaper precondition: skip the probe entirely when no other
+	// open autopilot PR is tracked for this repo (GH-5027 requirement 4 —
+	// zero added cost in the common case). detectStackedSuperset (GH-5029)
+	// is itself the source of truth for the symmetric case: when prState is
+	// the ANCESTOR/base of another open PR's stack, it returns nil, so that
+	// direction is never held here — only a PR that is a strict DESCENDANT
+	// of another open PR's head is. On a positive detection, park via
+	// parkForStackedSuperset (GH-5031) — the parkForBaseMismatch pattern
+	// reused verbatim (hold + label + alert + PR comment naming the base
+	// PR), not a bare hold.
+	c.mu.RLock()
+	hasOtherOpenPRs := len(c.activePRs) > 1
+	c.mu.RUnlock()
+	if hasOtherOpenPRs {
+		stackedOn, err := c.detectStackedSuperset(ctx, prState)
+		if err != nil {
+			// GH-5027 requirement 5: detection failure fails OPEN. This is a
+			// toil-reducing guard, not a correctness gate — handleMergeConflict
+			// already recovers a stacked PR that slips through, at the cost of
+			// one operator recovery cycle — so a broken ancestry probe must
+			// never wedge merging.
+			c.log.Warn("handleMerging: stacked-superset ancestry check failed, proceeding with merge (fail-open)",
+				"pr", prState.PRNumber, "error", err)
+		} else if stackedOn != nil {
+			c.parkForStackedSuperset(ctx, prState, stackedOn)
+			return nil
 		}
 	}
 
