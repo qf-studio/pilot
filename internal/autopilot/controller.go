@@ -4428,8 +4428,11 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	c.mu.RLock()
 	hasOtherOpenPRs := len(c.activePRs) > 1
 	c.mu.RUnlock()
+	var stackedOn *PRState
+	detectionFailed := false
 	if hasOtherOpenPRs {
-		stackedOn, err := c.detectStackedSuperset(ctx, prState)
+		var err error
+		stackedOn, err = c.detectStackedSuperset(ctx, prState)
 		if err != nil {
 			// GH-5027 requirement 5: detection failure fails OPEN. This is a
 			// toil-reducing guard, not a correctness gate — handleMergeConflict
@@ -4438,9 +4441,38 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			// never wedge merging.
 			c.log.Warn("handleMerging: stacked-superset ancestry check failed, proceeding with merge (fail-open)",
 				"pr", prState.PRNumber, "error", err)
-		} else if stackedOn != nil {
-			c.parkForStackedSuperset(ctx, prState, stackedOn)
-			return nil
+			detectionFailed = true
+		}
+	}
+	if stackedOn != nil {
+		c.parkForStackedSuperset(ctx, prState, stackedOn)
+		return nil
+	}
+
+	// GH-5032: mirror the GH-4911 base-mismatch un-park pattern for the
+	// stacked-superset park (GH-5031/GH-5029) — the mechanism that resumes a
+	// PR held for base mismatch (line ~4401 above) clears Parked/
+	// EscalationReason/label once its guard passes again on a later tick;
+	// this PR's guard is detectStackedSuperset, which stops returning
+	// stackedOn once the blocking PR merges (removed from c.activePRs) or is
+	// otherwise no longer an ancestor. Without this, a PR parked for
+	// stacked-superset would merge successfully below (the check above
+	// already let it through) but keep Parked=true and a stale
+	// EscalationReason/label — the exact "residual park wedges as dead
+	// state" failure GH-4911 fixed for base mismatch, just for the sibling
+	// cause. Skipped when detection errored this tick (fail-open above is
+	// about the merge, not a verdict that the park is resolved) so a flaky
+	// probe can never masquerade as resolution and clobber a still-active
+	// hold.
+	if !detectionFailed && prState.Parked && strings.HasPrefix(prState.EscalationReason, stackedSupersetReasonPrefix) {
+		c.log.Info("handleMerging: un-parking PR — stacked-superset resolved, blocking PR no longer open",
+			"pr", prState.PRNumber, "issue", prState.IssueNumber, "prior_reason", prState.EscalationReason)
+		prState.Parked = false
+		prState.EscalationReason = ""
+		if prState.IssueNumber > 0 {
+			if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, labelParkedAwaitingApproval); err != nil {
+				c.log.Debug("parked-awaiting-approval label cleanup on un-park", "issue", prState.IssueNumber, "error", err)
+			}
 		}
 	}
 
