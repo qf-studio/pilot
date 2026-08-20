@@ -4,21 +4,23 @@ import "fmt"
 
 // ContractDependency declares that this project's implementation depends on
 // a contract (interface/schema/API shape) defined in another repository
-// (GH-5010). Executor and wiring layers consume this to know which external
-// files to check for drift before trusting a contract as stable — e.g. a
-// console project depending on pilot's gateway API contract files.
+// (GH-5010). Executor and wiring layers consume this to know which local
+// changes should trigger a contract-drift check against Owner/Repo — e.g. a
+// console project gating on changes to the files that consume pilot's
+// gateway API contract.
 type ContractDependency struct {
 	// Owner is the GitHub org/user that owns the dependency repo (required).
 	Owner string `yaml:"owner"`
 	// Repo is the dependency repo name (required).
 	Repo string `yaml:"repo"`
-	// ContractFiles lists the paths (within Repo) that define the contract
-	// this project depends on — e.g. OpenAPI specs, generated types, schema
-	// files. Must contain at least one entry.
+	// ContractFiles is a glob allowlist of paths in the consuming project
+	// (this repo, not Owner/Repo) whose changes trigger the contract-drift
+	// gate — e.g. generated clients, type bindings, or other files that
+	// consume the dependency's contract. Must contain at least one entry.
 	ContractFiles []string `yaml:"contract_files"`
-	// Ref is the git ref (branch, tag, or SHA) to read ContractFiles from.
-	// Optional — an empty Ref lets the caller fall back to the dependency
-	// repo's default branch.
+	// Ref is the git ref (branch, tag, or SHA) in the dependency repo to
+	// check for drift when the gate fires. Optional — an empty Ref lets the
+	// caller fall back to the dependency repo's default branch.
 	Ref string `yaml:"ref,omitempty"`
 }
 

@@ -92,14 +92,14 @@ func TestConfig_Validate_ContractDependencies(t *testing.T) {
 		{
 			name: "valid deps",
 			deps: []ContractDependency{
-				{Owner: "qf-studio", Repo: "pilot", ContractFiles: []string{"internal/gateway/api.go"}},
+				{Owner: "qf-studio", Repo: "pilot", ContractFiles: []string{"src/lib/pilotClient.ts"}},
 			},
 			wantErr: false,
 		},
 		{
 			name: "invalid entry surfaces indexed error",
 			deps: []ContractDependency{
-				{Owner: "qf-studio", Repo: "pilot", ContractFiles: []string{"internal/gateway/api.go"}},
+				{Owner: "qf-studio", Repo: "pilot", ContractFiles: []string{"src/lib/pilotClient.ts"}},
 				{Owner: "", Repo: "console", ContractFiles: []string{"api/types.ts"}},
 			},
 			wantErr:   true,
