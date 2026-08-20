@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -98,6 +99,58 @@ func conflictedFiles(ctx context.Context, dir string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// gitIsStrictAncestor fetches ancestorBranch and descendantBranch from
+// origin into a scratch worktree of repoPath — reusing attemptLocalMerge's
+// fetch + `git worktree add --detach` shape above, so this read-only
+// ancestry probe never touches repoPath's own working tree/index while some
+// other goroutine may have it checked out for an unrelated operation (e.g.
+// attemptMechanicalConflictResolution running on the same merging-time
+// path) — and reports whether ancestorSHA is a STRICT ancestor of
+// descendantSHA: reachable via `git merge-base --is-ancestor`, and not the
+// same commit. Used by Controller.headIsStrictDescendant (controller.go)
+// for the GH-5027 stacked-superset ancestry check.
+func gitIsStrictAncestor(ctx context.Context, repoPath, ancestorBranch, ancestorSHA, descendantBranch, descendantSHA string) (bool, error) {
+	if ancestorSHA == descendantSHA {
+		return false, nil
+	}
+
+	if err := runGitCmd(ctx, repoPath, "fetch", "origin", ancestorBranch, descendantBranch); err != nil {
+		return false, fmt.Errorf("fetch origin %s %s: %w", ancestorBranch, descendantBranch, err)
+	}
+
+	worktreePath, err := os.MkdirTemp("", "pilot-ancestry-check-*")
+	if err != nil {
+		return false, fmt.Errorf("create scratch worktree dir: %w", err)
+	}
+	// See attemptLocalMerge above: `git worktree add` refuses to target an
+	// existing directory, so drop the MkdirTemp placeholder first.
+	if err := os.Remove(worktreePath); err != nil {
+		return false, fmt.Errorf("remove scratch worktree placeholder: %w", err)
+	}
+	defer func() {
+		_ = runGitCmd(ctx, repoPath, "worktree", "remove", "--force", worktreePath)
+		_ = os.RemoveAll(worktreePath)
+	}()
+
+	if err := runGitCmd(ctx, repoPath, "worktree", "add", "--detach", worktreePath, "origin/"+descendantBranch); err != nil {
+		return false, fmt.Errorf("worktree add for origin/%s: %w", descendantBranch, err)
+	}
+
+	if _, err := gitOutput(ctx, worktreePath, "merge-base", "--is-ancestor", ancestorSHA, descendantSHA); err != nil {
+		// `--is-ancestor` communicates its answer entirely via exit code:
+		// 0 = ancestor, 1 = not-an-ancestor (a normal, expected answer, not
+		// a detection failure), and anything else (bad revision, missing
+		// object, network) is a genuine error the caller must not silently
+		// treat as "not stacked".
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("merge-base --is-ancestor %s %s: %w", ancestorSHA, descendantSHA, err)
+	}
+	return true, nil
 }
 
 func runGitCmd(ctx context.Context, dir string, args ...string) error {

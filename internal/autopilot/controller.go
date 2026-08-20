@@ -6229,6 +6229,137 @@ func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, pr
 	return true, nil
 }
 
+// detectStackedSuperset is the GH-5027 stacked-superset ancestry probe: for
+// prState — a PR whose own base is already the repo's default branch (a PR
+// with an explicit non-default Base.Ref is instead caught by the separate,
+// cheaper GH-4872 check at handleMerging:4254, and is not re-checked here)
+// — it walks every OTHER currently-open autopilot PR tracked by this
+// controller and asks whether prState's head commit is a STRICT descendant
+// of that PR's head: i.e. prState's branch was built on top of that PR's
+// still-unmerged content rather than off the default branch directly.
+//
+// This is the detection primitive behind the 2026-08-20 incident GH-5027
+// traces to: PR#5017 was built stacked on PR#5016's branch (same working
+// tree, sequential execution, no `Depends on:` marker so no
+// wait_for_merge). Autopilot merged #5017 first purely on CI/approval
+// timing and squash-absorbed #5016's entire content under #5017's history;
+// #5016 then went CONFLICTING against content already on main.
+//
+// Returns the other PRState prState is stacked on (nil if prState is not a
+// descendant of any other open PR's head — including the normal case of no
+// relationship, and the symmetric case where prState is itself the BASE of
+// a stack, i.e. an ANCESTOR of another open PR's head: merging the base is
+// correct and must never be blocked by this check), or a non-nil error if
+// ancestry could not be determined for at least one candidate.
+//
+// This function is detection ONLY: it never mutates prState or any other
+// PRState. Wiring the result into handleMerging's merge gate (park + label
+// + comment, mirroring parkForBaseMismatch) is the parent issue's remaining
+// scope (GH-5027) and is deliberately NOT done here — see that issue's
+// scope fence. Per GH-5027's acceptance criteria, any future caller that
+// DOES wire this in must fail OPEN on a non-nil error: this is a
+// toil-reducing guard, not a correctness gate, and handleMergeConflict
+// downstream already recovers a stacked PR that slips through, at the cost
+// of one operator recovery cycle.
+func (c *Controller) detectStackedSuperset(ctx context.Context, prState *PRState) (*PRState, error) {
+	if prState == nil || prState.HeadSHA == "" {
+		return nil, nil
+	}
+	if defaultBranch := c.resolveMainBranchName(); prState.TargetBranch != "" && prState.TargetBranch != defaultBranch {
+		return nil, nil
+	}
+
+	// Collect live pointers under c.mu, then release it before touching any
+	// individual prState.mu — mirrors GetActivePRs/SetApprovalDecision above
+	// (TASK-324 no-deadlock invariant: never hold c.mu while taking a
+	// prState.mu). The caller of detectStackedSuperset (ProcessPR) already
+	// holds prState.mu for the PR being evaluated; the per-candidate
+	// other.mu lock below is taken and released one at a time, exactly as
+	// GetActivePRs does, and is safe to nest under the caller's prState.mu
+	// because ProcessPR only ever runs one PR at a time on this controller
+	// (processAllPRs's per-PR loop is sequential, not concurrent) — so no
+	// second goroutine can ever hold a candidate's mu while waiting on
+	// prState's.
+	c.mu.RLock()
+	candidates := make([]*PRState, 0, len(c.activePRs))
+	for _, other := range c.activePRs {
+		candidates = append(candidates, other)
+	}
+	c.mu.RUnlock()
+
+	for _, other := range candidates {
+		if other.PRNumber == prState.PRNumber {
+			continue
+		}
+		other.mu.Lock()
+		otherHead := other.HeadSHA
+		otherBranch := other.BranchName
+		otherNumber := other.PRNumber
+		other.mu.Unlock()
+		if otherHead == "" {
+			continue
+		}
+
+		isDescendant, err := c.headIsStrictDescendant(ctx, prState.BranchName, prState.HeadSHA, otherBranch, otherHead)
+		if err != nil {
+			return nil, fmt.Errorf("ancestry check: pr #%d against pr #%d: %w", prState.PRNumber, otherNumber, err)
+		}
+		if isDescendant {
+			return other, nil
+		}
+	}
+	return nil, nil
+}
+
+// headIsStrictDescendant reports whether descendantSHA (on descendantBranch)
+// is a strict descendant of ancestorSHA (on ancestorBranch) — i.e. ancestorSHA
+// is reachable from descendantSHA but they are not the same commit.
+//
+// Local-git-first: gitIsStrictAncestor (`git merge-base --is-ancestor` in a
+// scratch worktree of c.projectPath, reusing attemptLocalMerge's
+// fetch/worktree primitives from conflict_worktree.go) is tried before the
+// GitHub compare API for two reasons, both about the caller's shape
+// (detectStackedSuperset calls this once per OTHER open PR):
+//  1. Cost: for a repo with N open PRs this is N local `merge-base` calls
+//     behind two `git fetch`es total, versus N GitHub REST round-trips (the
+//     compare API has no batch form) — git's local object-graph walk is far
+//     cheaper than N HTTP calls, and this controller already pays an
+//     equivalent fetch+worktree cost on the same merging-time path
+//     (attemptMechanicalConflictResolution, just above).
+//  2. Consistency: attemptMechanicalConflictResolution already trusts local
+//     git for the adjacent "does this PR's content conflict with base"
+//     ancestry-shaped question on this exact code path, so operators only
+//     need to understand one ancestry-detection failure mode here, not two.
+//
+// The GitHub compare API (CompareStatus — used elsewhere in this file,
+// checkPRWorkOnMain, for the identical "is X an ancestor of Y" question) is
+// kept as the FALLBACK for the one case local git cannot serve:
+// c.projectPath unset (no local clone available on this daemon/test
+// environment), or a local git error (network, corrupt fetch, missing
+// object). It is a fallback, not a substitute — a transient local-git
+// failure alone never silently resolves to "not stacked"; it falls through
+// to the API instead, and only a failure of BOTH is surfaced as an error.
+func (c *Controller) headIsStrictDescendant(ctx context.Context, descendantBranch, descendantSHA, ancestorBranch, ancestorSHA string) (bool, error) {
+	if descendantSHA == ancestorSHA {
+		return false, nil
+	}
+
+	if c.projectPath != "" && descendantBranch != "" && ancestorBranch != "" {
+		isAncestor, err := gitIsStrictAncestor(ctx, c.projectPath, ancestorBranch, ancestorSHA, descendantBranch, descendantSHA)
+		if err == nil {
+			return isAncestor, nil
+		}
+		c.log.Warn("headIsStrictDescendant: local ancestry check failed, falling back to GitHub compare API",
+			"descendant_branch", descendantBranch, "ancestor_branch", ancestorBranch, "error", err)
+	}
+
+	status, err := c.ghClient.CompareStatus(ctx, c.owner, c.repo, ancestorSHA, descendantSHA)
+	if err != nil {
+		return false, fmt.Errorf("compare status fallback %s...%s: %w", ShortSHA(ancestorSHA), ShortSHA(descendantSHA), err)
+	}
+	return status == "ahead", nil
+}
+
 // checkPRWorkOnMain reports whether prState.HeadSHA's changes are already
 // present on the repo's base branch. GH-4696: the GH-4657 closed-issue
 // short-circuit below assumed "source issue closed" always means "a sibling
