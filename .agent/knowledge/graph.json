@@ -1665,10 +1665,12 @@
         "title": "Console Docs page \u2014 surface Navigator `.agent/` docs, later make them manageable",
         "status": "completed",
         "concepts": [
-          "context",
-          "knowledge",
           "deployment",
-          "testing"
+          "testing",
+          "context",
+          "authentication",
+          "knowledge",
+          "markers"
         ]
       },
       "TASK-467": {
@@ -7091,7 +7093,8 @@
       "TASK-469",
       "TASK-476",
       "TASK-478",
-      "TASK-481"
+      "TASK-481",
+      "TASK-466"
     ],
     "testing": [
       "TASK-386",
@@ -7455,7 +7458,8 @@
       "TASK-405",
       "TASK-480",
       "TASK-481",
-      "TASK-452"
+      "TASK-452",
+      "TASK-466"
     ],
     "database": [
       "TASK-387",
@@ -8055,7 +8059,7 @@
       "apply-script-silent-rollback-causes"
     ]
   },
-  "last_updated": "2026-08-19T15:46:44.010892+00:00",
+  "last_updated": "2026-08-20T09:19:28.480813+00:00",
   "stats": {
     "total_nodes": 432,
     "total_edges": 354,
