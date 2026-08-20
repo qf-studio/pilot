@@ -733,6 +733,12 @@ Examples:
 				// falling back to the global config, then auto-detection).
 				gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
 
+				// Set up the Contract Evidence gate's dependency lookup
+				// (GH-5009/GH-5013): resolves each task's project's
+				// configured contract_dependencies so the gate can enforce
+				// producer-source citations for wire-contract changes.
+				gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
+
 				// Set up team project access checker if configured (GH-635)
 				if gwTeamCleanup := wireProjectAccessChecker(gwRunner, cfg); gwTeamCleanup != nil {
 					defer gwTeamCleanup()
@@ -1083,6 +1089,7 @@ Examples:
 				gwRunner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 				gwRunner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 				gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
+				gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
 			}
 
 			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
@@ -1246,6 +1253,10 @@ Examples:
 			// config, then auto-detection.
 			p.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
 			logging.WithComponent("start").Info("quality gates enabled for webhook mode")
+
+			// GH-5013: wire the Contract Evidence gate's dependency lookup
+			// for webhook/orchestrator mode, mirroring the quality gate wiring above.
+			p.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
 
 			// GH-4864: surface the running process's compiled-in version on
 			// /health, /api/v1/status, and the pilot_build_info metric — the
@@ -2088,6 +2099,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// back to the global config, then auto-detection.
 	runner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
 	logging.WithComponent("start").Info("quality gates enabled for polling mode")
+
+	// GH-5013: wire the Contract Evidence gate's dependency lookup for
+	// polling mode, mirroring the quality gate wiring above.
+	runner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
 
 	// Set up team project access checker if configured (GH-635)
 	if teamCleanup := wireProjectAccessChecker(runner, cfg); teamCleanup != nil {

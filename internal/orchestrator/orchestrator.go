@@ -39,15 +39,16 @@ type Orchestrator struct {
 	monitor  *executor.Monitor
 	notifier *slack.Notifier
 
-	taskQueue             chan *Task
-	running               map[string]bool
-	progressCallback      func(taskID, phase string, progress int, message string)
-	completionCallback    func(taskID, prURL string, success bool, errMsg string)
-	qualityCheckerFactory executor.QualityCheckerFactory
-	mu                    sync.Mutex
-	wg                    sync.WaitGroup
-	ctx                   context.Context
-	cancel                context.CancelFunc
+	taskQueue                chan *Task
+	running                  map[string]bool
+	progressCallback         func(taskID, phase string, progress int, message string)
+	completionCallback       func(taskID, prURL string, success bool, errMsg string)
+	qualityCheckerFactory    executor.QualityCheckerFactory
+	contractDependencyLookup executor.ContractDependencyLookup
+	mu                       sync.Mutex
+	wg                       sync.WaitGroup
+	ctx                      context.Context
+	cancel                   context.CancelFunc
 }
 
 // Task represents a task to be processed
@@ -401,6 +402,18 @@ func (o *Orchestrator) SetQualityCheckerFactory(factory executor.QualityCheckerF
 	o.qualityCheckerFactory = factory
 	// Also set on the runner for direct execution
 	o.runner.SetQualityCheckerFactory(factory)
+}
+
+// SetContractDependencyLookup sets the lookup used by the executor's
+// Contract Evidence gate (GH-5009/GH-5013) to resolve a task's project's
+// configured contract dependencies. Mirrors SetQualityCheckerFactory's
+// bridging shape so main.go can wire it without an import cycle.
+func (o *Orchestrator) SetContractDependencyLookup(lookup executor.ContractDependencyLookup) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.contractDependencyLookup = lookup
+	// Also set on the runner for direct execution
+	o.runner.SetContractDependencyLookup(lookup)
 }
 
 // extractLabelNames extracts label names from Linear labels

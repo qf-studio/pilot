@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -657,6 +658,133 @@ func TestNewProjectQualityCheckerFactory_AutoDetectsGoProject(t *testing.T) {
 	}
 	if checker == nil {
 		t.Fatal("expected a non-nil checker")
+	}
+}
+
+// =============================================================================
+// GH-5013: newProjectContractDependencyLookup + fail-when-unwired guardrail
+// =============================================================================
+
+// TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite is a
+// GH-5013 regression tripwire: the Contract Evidence gate's dependency
+// lookup (executor.ContractDependencyLookup, GH-5009) must be wired via
+// SetContractDependencyLookup at every one of the runner-construction sites
+// that also call SetQualityCheckerFactory across main.go and commands.go.
+// The two gates are set up together deliberately (same cfg, same runner
+// instance) — a runner constructed without the lookup wired silently no-ops
+// the doc-vs-wire gate for that code path in production, the exact failure
+// class TASK-460 keeps recurring on. Mirrors docs_wiring_test.go's
+// source-grep parity pattern.
+func TestContractDependencyLookupWiredAtEveryQualityCheckerFactorySite(t *testing.T) {
+	mainContent, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	commandsContent, err := os.ReadFile("commands.go")
+	if err != nil {
+		t.Fatalf("read commands.go: %v", err)
+	}
+	src := string(mainContent) + string(commandsContent)
+
+	qualityCount := strings.Count(src, "SetQualityCheckerFactory(")
+	contractCount := strings.Count(src, "SetContractDependencyLookup(")
+
+	if qualityCount != 5 {
+		t.Fatalf("SetQualityCheckerFactory( occurs %d times across main.go+commands.go, want 5 — this test's baseline assumption is stale, update it", qualityCount)
+	}
+	if contractCount != qualityCount {
+		t.Errorf("SetContractDependencyLookup( occurs %d times across main.go+commands.go, want %d (parity with SetQualityCheckerFactory's 5 runner-construction call sites, GH-5013) — "+
+			"a runner constructed without the contract-evidence lookup wired silently no-ops the TASK-460 doc-vs-wire gate (GH-5009) for that code path",
+			contractCount, qualityCount)
+	}
+
+	// Verify each specific receiver pairs its quality-checker-factory call
+	// with a contract-dependency-lookup call, not just an aggregate count
+	// (which parity alone wouldn't catch if two calls moved to the wrong
+	// receiver).
+	wantPairs := []string{
+		"gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))",
+		"p.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))",
+		"runner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))",
+	}
+	wantContractPairs := []string{
+		"gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))",
+		"p.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))",
+		"runner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))",
+	}
+	for i, want := range wantPairs {
+		if !strings.Contains(src, want) {
+			t.Errorf("expected to find quality-checker-factory call %q", want)
+		}
+		if !strings.Contains(src, wantContractPairs[i]) {
+			t.Errorf("expected matching contract-dependency-lookup call %q", wantContractPairs[i])
+		}
+	}
+	if strings.Count(src, "gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))") !=
+		strings.Count(src, "gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))") {
+		t.Error("gwRunner call-count parity broken: expected 2 gateway-mode sites (needsPollingInfra + chat-only) to wire both setters identically")
+	}
+}
+
+// TestNewProjectContractDependencyLookup_ResolvesConfiguredDependencies
+// verifies the config.ContractDependency -> executor.ContractDependency
+// bridge (GH-5013): a project with contract_dependencies configured yields
+// the translated executor-local slice for its own path.
+func TestNewProjectContractDependencyLookup_ResolvesConfiguredDependencies(t *testing.T) {
+	projectPath := t.TempDir()
+
+	cfg := &config.Config{
+		Projects: []*config.ProjectConfig{
+			{
+				Name: "consumer-project",
+				Path: projectPath,
+				ContractDependencies: []config.ContractDependency{
+					{
+						Owner:         "qf-studio",
+						Repo:          "pilot",
+						ContractFiles: []string{"internal/instances/handlers.go"},
+						Ref:           "main",
+					},
+				},
+			},
+		},
+	}
+
+	lookup := newProjectContractDependencyLookup(cfg)
+	deps := lookup(projectPath)
+
+	if len(deps) != 1 {
+		t.Fatalf("lookup(%q) returned %d deps, want 1", projectPath, len(deps))
+	}
+	got := deps[0]
+	if got.Owner != "qf-studio" || got.Repo != "pilot" || got.Ref != "main" {
+		t.Errorf("lookup(%q)[0] = %+v, want Owner=qf-studio Repo=pilot Ref=main", projectPath, got)
+	}
+	if len(got.ContractFiles) != 1 || got.ContractFiles[0] != "internal/instances/handlers.go" {
+		t.Errorf("lookup(%q)[0].ContractFiles = %v, want [internal/instances/handlers.go]", projectPath, got.ContractFiles)
+	}
+}
+
+// TestNewProjectContractDependencyLookup_NoOpWhenUnconfigured verifies the
+// gate's first acceptance criterion (GH-5009): a project with no
+// contract_dependencies configured (or no matching project) yields an empty
+// slice, so the executor's gate short-circuits without any GitHub API calls.
+func TestNewProjectContractDependencyLookup_NoOpWhenUnconfigured(t *testing.T) {
+	projectPath := t.TempDir()
+
+	cfg := &config.Config{
+		Projects: []*config.ProjectConfig{
+			{Name: "no-contracts", Path: projectPath}, // no ContractDependencies set
+		},
+	}
+
+	lookup := newProjectContractDependencyLookup(cfg)
+
+	if deps := lookup(projectPath); len(deps) != 0 {
+		t.Errorf("lookup(%q) = %v, want empty for a project with no contract_dependencies configured", projectPath, deps)
+	}
+	if deps := lookup("/some/unregistered/path"); len(deps) != 0 {
+		t.Errorf("lookup for unregistered path = %v, want empty", deps)
 	}
 }
 
