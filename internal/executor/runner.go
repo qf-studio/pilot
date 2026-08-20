@@ -4889,9 +4889,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// hard-blocks tasks whose diff touches a configured contract_files
 		// path unless the executor cited real, fetch-verified producer
 		// source for every touched field. Skipped entirely (zero new GitHub
-		// API calls) when no lookup is configured or the diff doesn't touch
-		// a contract file — same failure shape as the QualityChecker gate
-		// above (~:4344-4394), spliced after self-review/intent judge
+		// API calls) when no lookup is configured or the project declares no
+		// contract dependencies — same failure shape as the QualityChecker
+		// gate above (~:4344-4394), spliced after self-review/intent judge
 		// (wg.Wait() above) and before the DirectCommit/CreatePR branch
 		// below.
 		if r.contractDependencyLookup != nil {
@@ -4902,20 +4902,57 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					contractBaseBranch = "main"
 				}
 			}
+			// GH-5021: deps is resolved before the diff so a diff error can be
+			// judged against whether this project actually has anything to
+			// gate — a project with zero configured dependencies keeps the
+			// original skip-and-warn behavior below regardless of the diff
+			// outcome, since the gate would have been a no-op either way.
+			deps := r.contractDependencyLookup(task.ProjectPath)
 			contractDiff, _, diffErr := git.GetDiffAgainstOrigin(ctx, contractBaseBranch)
 			if diffErr != nil {
-				log.Warn("Contract evidence: failed to compute diff, skipping gate",
-					slog.String("task_id", task.ID), slog.Any("error", diffErr))
+				if len(deps) == 0 {
+					log.Warn("Contract evidence: failed to compute diff, skipping gate",
+						slog.String("task_id", task.ID), slog.Any("error", diffErr))
+				} else {
+					// GH-5021: closes the fail-open crack — a project WITH
+					// configured contract dependencies can't tell "diff
+					// unreadable" apart from "diff clean of contract files"
+					// downstream, so a mere Warn+skip here would silently let
+					// citation-less changes through whenever GetDiffAgainstOrigin
+					// failed (transient git error, unreachable origin, etc).
+					// Fail closed through the same sequence as a rejected
+					// citation outcome instead.
+					errMsg := fmt.Sprintf("contract evidence gate failed: unable to compute diff against %s: %v", contractBaseBranch, diffErr)
+					r.failContractEvidenceGate(ctx, task, result, recorder, state, start, log, errMsg)
+					return result, nil
+				}
 			} else {
-				deps := r.contractDependencyLookup(task.ProjectPath)
 				contractRequired, contractFields := detectTouchedContractFields(contractDiff, deps)
 				if contractRequired {
-					r.reportProgress(task.ID, "Contract Evidence", 97, "Verifying wire-contract citations...")
+					var evidence []ContractEvidence
+					var evErr error
+					if len(contractFields) == 0 {
+						// GH-5021: the diff touched a contract file but
+						// detectTouchedContractFields extracted zero field
+						// tokens from it (e.g. a change that isn't a field
+						// add/rename, like a comment-only or field-removal
+						// diff) — there is nothing to ask an LLM to cite, so
+						// skip the getContractEvidence structured-output
+						// subprocess call entirely. Passing the empty field
+						// list straight to verifyContractEvidence reuses its
+						// existing len(requiredFields)==0 short-circuit,
+						// which reports Required=false/Passed=true — keeping
+						// ContractEvidence.Required consistent with the
+						// verified-call path rather than diverging based on
+						// which branch produced the outcome.
+					} else {
+						r.reportProgress(task.ID, "Contract Evidence", 97, "Verifying wire-contract citations...")
 
-					evidence, evErr := r.getContractEvidence(ctx, executionPath, contractFields)
-					if evErr != nil {
-						log.Warn("Contract evidence: fetch failed, treating as zero evidence",
-							slog.String("task_id", task.ID), slog.Any("error", evErr))
+						evidence, evErr = r.getContractEvidence(ctx, executionPath, contractFields)
+						if evErr != nil {
+							log.Warn("Contract evidence: fetch failed, treating as zero evidence",
+								slog.String("task_id", task.ID), slog.Any("error", evErr))
+						}
 					}
 
 					contractOutcome := verifyContractEvidence(ctx, r.contractContentFetcher, deps, contractFields, evidence)
@@ -4923,35 +4960,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					r.recordContractEvidenceEvent(task.LogExecutionID(), contractOutcome)
 
 					if !contractOutcome.Passed {
-						result.Success = false
-						result.Error = contractOutcome.Summary()
-						r.reportProgress(task.ID, "Contract Evidence Failed", 100, result.Error)
-
-						r.emitAlertEvent(AlertEvent{
-							Type:      AlertEventTypeTaskFailed,
-							TaskID:    task.ID,
-							TaskTitle: task.Title,
-							Project:   task.ProjectPath,
-							Error:     result.Error,
-							Timestamp: time.Now(),
-						})
-
-						r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
-							TaskID:   task.ID,
-							Title:    task.Title,
-							Project:  task.ProjectPath,
-							Duration: time.Since(start),
-							Error:    result.Error,
-							Phase:    "Contract Evidence",
-						})
-
-						if recorder != nil {
-							recorder.SetModel(result.ModelName)
-							recorder.SetNavigator(state.hasNavigator)
-							if finErr := recorder.Finish("failed"); finErr != nil {
-								log.Warn("Failed to finish recording", slog.Any("error", finErr))
-							}
-						}
+						r.failContractEvidenceGate(ctx, task, result, recorder, state, start, log, contractOutcome.Summary())
 						return result, nil
 					}
 				}
@@ -6780,6 +6789,47 @@ func (r *Runner) recordQualityGateEvents(executionID string, outcome *QualityOut
 		return
 	}
 	r.recordExecutionEvent(executionID, memory.StageQualityGate, string(summary))
+}
+
+// failContractEvidenceGate runs the standard Contract Evidence gate failure
+// sequence (progress + alert + webhook + recorder.Finish("failed")) and
+// marks result as failed with errMsg. Shared by every hard-fail path in the
+// gate: a rejected/missing-citation outcome, and, as of GH-5021, a
+// diff-computation error on a project with configured contract
+// dependencies — both must produce identical externally-visible failure
+// behavior (AlertEventTypeTaskFailed, webhooks.EventTaskFailed, a
+// status=failed recording), same shape as the QualityChecker gate's
+// failure sequence.
+func (r *Runner) failContractEvidenceGate(ctx context.Context, task *Task, result *ExecutionResult, recorder *replay.Recorder, state *progressState, start time.Time, log *slog.Logger, errMsg string) {
+	result.Success = false
+	result.Error = errMsg
+	r.reportProgress(task.ID, "Contract Evidence Failed", 100, result.Error)
+
+	r.emitAlertEvent(AlertEvent{
+		Type:      AlertEventTypeTaskFailed,
+		TaskID:    task.ID,
+		TaskTitle: task.Title,
+		Project:   task.ProjectPath,
+		Error:     result.Error,
+		Timestamp: time.Now(),
+	})
+
+	r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+		TaskID:   task.ID,
+		Title:    task.Title,
+		Project:  task.ProjectPath,
+		Duration: time.Since(start),
+		Error:    result.Error,
+		Phase:    "Contract Evidence",
+	})
+
+	if recorder != nil {
+		recorder.SetModel(result.ModelName)
+		recorder.SetNavigator(state.hasNavigator)
+		if finErr := recorder.Finish("failed"); finErr != nil {
+			log.Warn("Failed to finish recording", slog.Any("error", finErr))
+		}
+	}
 }
 
 // recordContractEvidenceEvent persists the Contract Evidence gate's outcome

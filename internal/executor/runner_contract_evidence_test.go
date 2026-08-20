@@ -455,3 +455,176 @@ func TestRunner_ContractEvidence_UIPR113SyntheticFixture(t *testing.T) {
 		t.Errorf("expected 0 fetch calls when the citation's repo isn't configured, got %d", fetcher.calls)
 	}
 }
+
+// TestRunner_ContractEvidence_DiffErrorConfiguredProjectFails covers GH-5021
+// (a): a project with configured contract dependencies can't distinguish "the
+// diff failed to compute" from "the diff is clean of contract files" once the
+// gate is skipped, so a GetDiffAgainstOrigin error must route through the
+// same failure sequence as a rejected citation (alert + webhook + recorder),
+// not a Warn+skip. task.Branch is deliberately left empty so the earlier
+// branch-creation step (runner.go ~3095, which also reads task.BaseBranch)
+// doesn't hard-fail before execution ever reaches the Contract Evidence gate
+// — task.BaseBranch is set to a branch that exists nowhere (local or
+// origin), which is what actually forces GetDiffAgainstOrigin's
+// resolveMergeBaseSHA to error.
+func TestRunner_ContractEvidence_DiffErrorConfiguredProjectFails(t *testing.T) {
+	backend := &contractFileBackend{
+		path:    "src/lib/api/types.ts",
+		content: "export interface Instance {\n  specVersion: number;\n}\n",
+	}
+	runner, task := newContractGateTestRunner(t, backend)
+	task.Branch = ""
+	task.BaseBranch = "gh-5021-nonexistent-base-branch"
+
+	deps := []ContractDependency{{Owner: "qf-studio", Repo: "pilot-console", ContractFiles: []string{"*.ts"}}}
+	runner.SetContractDependencyLookup(func(projectPath string) []ContractDependency { return deps })
+	var fetchCalls int
+	runner.contractEvidenceFetchFn = func(ctx context.Context, dir string, fields []string) ([]ContractEvidence, error) {
+		fetchCalls++
+		return nil, nil
+	}
+
+	alerts := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(alerts)
+	wr := newWebhookRecorder()
+	defer wr.close()
+	runner.SetWebhookManager(wr.manager)
+
+	recordingsDir := t.TempDir()
+	runner.SetRecordingsPath(recordingsDir)
+	runner.SetRecordingEnabled(true)
+
+	result, err := runner.Execute(contractGateExecCtx(t), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failure for a configured project when the diff computation errors, got %+v", result)
+	}
+	if result.Error == "" {
+		t.Errorf("expected non-empty result.Error")
+	}
+	// The gate never got a diff to extract fields from, so getContractEvidence
+	// must never be invoked on this path.
+	if fetchCalls != 0 {
+		t.Errorf("expected 0 getContractEvidence calls when the diff itself failed to compute, got %d", fetchCalls)
+	}
+
+	var sawTaskFailed bool
+	for _, e := range alerts.events {
+		if e.Type == AlertEventTypeTaskFailed {
+			sawTaskFailed = true
+		}
+	}
+	if !sawTaskFailed {
+		t.Errorf("expected an AlertEventTypeTaskFailed event, got %+v", alerts.events)
+	}
+	if !wr.received(string(webhooks.EventTaskFailed)) {
+		t.Errorf("expected a dispatched %s webhook, got events %v", webhooks.EventTaskFailed, wr.events)
+	}
+
+	entries, err := os.ReadDir(recordingsDir)
+	if err != nil {
+		t.Fatalf("ReadDir(recordingsDir): %v", err)
+	}
+	var foundFailedStatus bool
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(recordingsDir, e.Name(), "metadata.json"))
+		if readErr != nil {
+			continue
+		}
+		var meta struct {
+			Status string `json:"status"`
+		}
+		if jsonErr := json.Unmarshal(data, &meta); jsonErr != nil {
+			t.Fatalf("unmarshal metadata.json for %s: %v", e.Name(), jsonErr)
+		}
+		if meta.Status == "failed" {
+			foundFailedStatus = true
+		}
+	}
+	if !foundFailedStatus {
+		t.Errorf("expected a recording with status=failed under %s, entries=%v", recordingsDir, entries)
+	}
+}
+
+// TestRunner_ContractEvidence_DiffErrorNoDependenciesConfigured_Unchanged
+// covers the other half of GH-5021 (a): a project with a lookup configured
+// but zero contract dependencies must keep the original skip-and-warn
+// behavior on a diff-computation error — the gate would have been a no-op
+// for this project regardless of whether the diff succeeded, so there's
+// nothing to fail closed over.
+func TestRunner_ContractEvidence_DiffErrorNoDependenciesConfigured_Unchanged(t *testing.T) {
+	backend := &contractFileBackend{
+		path:    "src/lib/api/types.ts",
+		content: "export interface Instance {\n  specVersion: number;\n}\n",
+	}
+	runner, task := newContractGateTestRunner(t, backend)
+	task.Branch = ""
+	task.BaseBranch = "gh-5021-nonexistent-base-branch"
+
+	runner.SetContractDependencyLookup(func(projectPath string) []ContractDependency {
+		return nil // configured, but this project declares no dependencies
+	})
+	var fetchCalls int
+	runner.contractEvidenceFetchFn = func(ctx context.Context, dir string, fields []string) ([]ContractEvidence, error) {
+		fetchCalls++
+		return nil, nil
+	}
+
+	result, err := runner.Execute(contractGateExecCtx(t), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected success (skip-and-warn preserved) for a project with no configured dependencies, got %+v", result)
+	}
+	if fetchCalls != 0 {
+		t.Errorf("expected 0 getContractEvidence calls, got %d", fetchCalls)
+	}
+}
+
+// TestRunner_ContractEvidence_ZeroExtractedFields_NoLLMCall covers GH-5021
+// (b): a diff that touches a configured contract file but yields zero
+// extracted field tokens (detectTouchedContractFields' required=true,
+// len(fields)==0 case — e.g. a change that isn't a field add/rename) must
+// short-circuit before getContractEvidence's structured-output subprocess
+// call, not pay for an LLM round trip whose answer is always a trivial pass.
+func TestRunner_ContractEvidence_ZeroExtractedFields_NoLLMCall(t *testing.T) {
+	backend := &contractFileBackend{
+		path:    "src/lib/api/version.ts",
+		content: "export const CONTRACT_VERSION = 1;\n", // matches "*.ts" but has no json:"..." tag or `field: type` interface member for the extractor to find
+	}
+	runner, task := newContractGateTestRunner(t, backend)
+
+	deps := []ContractDependency{{Owner: "qf-studio", Repo: "pilot-console", ContractFiles: []string{"*.ts"}}}
+	runner.SetContractDependencyLookup(func(projectPath string) []ContractDependency { return deps })
+	var fetchCalls int
+	runner.contractEvidenceFetchFn = func(ctx context.Context, dir string, fields []string) ([]ContractEvidence, error) {
+		fetchCalls++
+		return nil, nil
+	}
+
+	result, err := runner.Execute(contractGateExecCtx(t), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected success when zero field tokens were extracted, got %+v", result)
+	}
+	if fetchCalls != 0 {
+		t.Errorf("expected 0 getContractEvidence calls for a diff with zero extracted field tokens, got %d", fetchCalls)
+	}
+	if result.ContractEvidence == nil {
+		t.Fatalf("expected a ContractEvidence outcome to be recorded")
+	}
+	if result.ContractEvidence.Required {
+		t.Errorf("expected Required=false for zero extracted fields, got %+v", result.ContractEvidence)
+	}
+	if !result.ContractEvidence.Passed {
+		t.Errorf("expected Passed=true for zero extracted fields, got %+v", result.ContractEvidence)
+	}
+}
