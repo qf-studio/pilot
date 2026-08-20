@@ -618,6 +618,11 @@ type ExecutionResult struct {
 	ComplexityLevel string
 	// QualityGates contains the results of quality gate checks (if enabled)
 	QualityGates *QualityGatesResult
+	// ContractEvidence contains the outcome of the Contract Evidence gate
+	// (TASK-460 doc-vs-wire leg, GH-5009/GH-5012), when the gate ran. Nil
+	// when no ContractDependencyLookup is configured or the diff touched no
+	// contract_files-matching path.
+	ContractEvidence *ContractEvidenceOutcome
 	// IsEpic indicates this result is from epic planning (not execution)
 	IsEpic bool
 	// EpicPlan contains the planning result for epic tasks (GH-405)
@@ -856,6 +861,19 @@ type Runner struct {
 	// audit (auditGithubSideEffects becomes a no-op) — set via
 	// SetGithubSideEffectSearcher (sideeffect_audit.go).
 	githubSideEffectSearcher GithubSideEffectSearcher
+	// GH-5009/GH-5012: Contract Evidence gate (TASK-460 doc-vs-wire leg).
+	// contractDependencyLookup returns a project's configured contract
+	// dependencies; nil disables the gate entirely (no-op, zero new GitHub
+	// API calls). Set via SetContractDependencyLookup.
+	contractDependencyLookup ContractDependencyLookup
+	// contractContentFetcher independently fetches producer source to
+	// verify citations; nil makes every citation a hard fetch_error
+	// rejection rather than a silent pass. Set via SetContractContentFetcher.
+	contractContentFetcher ContractContentFetcher
+	// contractEvidenceFetchFn overrides getContractEvidence for testing, so
+	// tests can supply fake evidence without shelling out to the real
+	// `claude` CLI. nil uses the real getContractEvidence implementation.
+	contractEvidenceFetchFn func(ctx context.Context, dir string, fields []string) ([]ContractEvidence, error)
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
@@ -1202,6 +1220,24 @@ func (r *Runner) SetWebhookManager(mgr *webhooks.Manager) {
 // that runs quality gates (build, test, lint) before PR creation.
 func (r *Runner) SetQualityCheckerFactory(factory QualityCheckerFactory) {
 	r.qualityCheckerFactory = factory
+}
+
+// SetContractDependencyLookup sets the lookup used by the Contract
+// Evidence gate (TASK-460 doc-vs-wire leg, GH-5009/GH-5012) to determine a
+// project's configured contract dependencies. A nil lookup (the default)
+// disables the gate entirely: ExecuteTask makes zero new GitHub API calls
+// and never blocks on missing/unverified citations.
+func (r *Runner) SetContractDependencyLookup(lookup ContractDependencyLookup) {
+	r.contractDependencyLookup = lookup
+}
+
+// SetContractContentFetcher sets the fetcher the Contract Evidence gate
+// uses to independently verify a citation's producer source (GH-5009
+// Requirement 5c). A nil fetcher (the default) makes every citation a hard
+// fetch_error rejection rather than a silent pass, so partially wiring the
+// gate (lookup set, fetcher not yet set) fails closed, not open.
+func (r *Runner) SetContractContentFetcher(fetcher ContractContentFetcher) {
+	r.contractContentFetcher = fetcher
 }
 
 // SetModelRouter sets the model router for complexity-based model and timeout selection.
@@ -4848,6 +4884,80 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				}
 			}
 		}
+
+		// Contract Evidence gate (TASK-460 doc-vs-wire leg, GH-5009/GH-5012):
+		// hard-blocks tasks whose diff touches a configured contract_files
+		// path unless the executor cited real, fetch-verified producer
+		// source for every touched field. Skipped entirely (zero new GitHub
+		// API calls) when no lookup is configured or the diff doesn't touch
+		// a contract file — same failure shape as the QualityChecker gate
+		// above (~:4344-4394), spliced after self-review/intent judge
+		// (wg.Wait() above) and before the DirectCommit/CreatePR branch
+		// below.
+		if r.contractDependencyLookup != nil {
+			contractBaseBranch := task.BaseBranch
+			if contractBaseBranch == "" {
+				contractBaseBranch, _ = git.GetDefaultBranch(ctx)
+				if contractBaseBranch == "" {
+					contractBaseBranch = "main"
+				}
+			}
+			contractDiff, _, diffErr := git.GetDiffAgainstOrigin(ctx, contractBaseBranch)
+			if diffErr != nil {
+				log.Warn("Contract evidence: failed to compute diff, skipping gate",
+					slog.String("task_id", task.ID), slog.Any("error", diffErr))
+			} else {
+				deps := r.contractDependencyLookup(task.ProjectPath)
+				contractRequired, contractFields := detectTouchedContractFields(contractDiff, deps)
+				if contractRequired {
+					r.reportProgress(task.ID, "Contract Evidence", 97, "Verifying wire-contract citations...")
+
+					evidence, evErr := r.getContractEvidence(ctx, executionPath, contractFields)
+					if evErr != nil {
+						log.Warn("Contract evidence: fetch failed, treating as zero evidence",
+							slog.String("task_id", task.ID), slog.Any("error", evErr))
+					}
+
+					contractOutcome := verifyContractEvidence(ctx, r.contractContentFetcher, deps, contractFields, evidence)
+					result.ContractEvidence = contractOutcome
+					r.recordContractEvidenceEvent(task.LogExecutionID(), contractOutcome)
+
+					if !contractOutcome.Passed {
+						result.Success = false
+						result.Error = contractOutcome.Summary()
+						r.reportProgress(task.ID, "Contract Evidence Failed", 100, result.Error)
+
+						r.emitAlertEvent(AlertEvent{
+							Type:      AlertEventTypeTaskFailed,
+							TaskID:    task.ID,
+							TaskTitle: task.Title,
+							Project:   task.ProjectPath,
+							Error:     result.Error,
+							Timestamp: time.Now(),
+						})
+
+						r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+							TaskID:   task.ID,
+							Title:    task.Title,
+							Project:  task.ProjectPath,
+							Duration: time.Since(start),
+							Error:    result.Error,
+							Phase:    "Contract Evidence",
+						})
+
+						if recorder != nil {
+							recorder.SetModel(result.ModelName)
+							recorder.SetNavigator(state.hasNavigator)
+							if finErr := recorder.Finish("failed"); finErr != nil {
+								log.Warn("Failed to finish recording", slog.Any("error", finErr))
+							}
+						}
+						return result, nil
+					}
+				}
+			}
+		}
+
 		if task.DirectCommit {
 			r.reportProgress(task.ID, "Pushing", 96, "Pushing to main...")
 
@@ -6672,6 +6782,59 @@ func (r *Runner) recordQualityGateEvents(executionID string, outcome *QualityOut
 	r.recordExecutionEvent(executionID, memory.StageQualityGate, string(summary))
 }
 
+// recordContractEvidenceEvent persists the Contract Evidence gate's outcome
+// (TASK-460 doc-vs-wire leg, GH-5009/GH-5012) as execution_events: one row
+// per evaluated field carrying its citation/verification/rejection status,
+// plus a trailing summary row — same detail-JSON convention as
+// recordQualityGateEvents.
+func (r *Runner) recordContractEvidenceEvent(executionID string, outcome *ContractEvidenceOutcome) {
+	if outcome == nil || !outcome.Required {
+		return
+	}
+
+	verified := make(map[string]bool, len(outcome.Verified))
+	for _, f := range outcome.Verified {
+		verified[f] = true
+	}
+	rejectionByField := make(map[string]ContractFieldRejection, len(outcome.Rejections))
+	for _, rej := range outcome.Rejections {
+		rejectionByField[rej.Field] = rej
+	}
+
+	for _, field := range outcome.Fields {
+		rej, rejected := rejectionByField[field]
+		detail, err := json.Marshal(struct {
+			Field           string `json:"field"`
+			Cited           bool   `json:"cited"`
+			Verified        bool   `json:"verified"`
+			RejectionReason string `json:"rejection_reason,omitempty"`
+		}{
+			Field:           field,
+			Cited:           verified[field] || rejected,
+			Verified:        verified[field],
+			RejectionReason: string(rej.Reason),
+		})
+		if err != nil {
+			continue
+		}
+		r.recordExecutionEvent(executionID, memory.StageContractEvidence, string(detail))
+	}
+
+	summary, err := json.Marshal(struct {
+		Required   bool `json:"required"`
+		Passed     bool `json:"passed"`
+		FieldCount int  `json:"field_count"`
+	}{
+		Required:   outcome.Required,
+		Passed:     outcome.Passed,
+		FieldCount: len(outcome.Fields),
+	})
+	if err != nil {
+		return
+	}
+	r.recordExecutionEvent(executionID, memory.StageContractEvidence, string(summary))
+}
+
 // simpleQualityChecker is a minimal quality checker for auto-enabled build gates (GH-363).
 // Used when quality gates aren't explicitly configured but we still want basic build verification.
 type simpleQualityChecker struct {
@@ -6765,6 +6928,57 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context, dir string) (*Post
 	}
 
 	return &summary, nil
+}
+
+// getContractEvidence runs a structured-output query eliciting per-field
+// producer citations for the Contract Evidence gate (TASK-460 doc-vs-wire
+// leg, GH-5009 Requirement 7). It mirrors getPostExecutionSummary's shape
+// (same --json-schema mechanism, same dir-pinned subprocess) but is only
+// ever invoked when detectTouchedContractFields reports required=true, and
+// asks specifically for producer-source citations rather than git state.
+//
+// contractEvidenceFetchFn overrides this for testing so callers don't need
+// to shell out to the real `claude` CLI.
+func (r *Runner) getContractEvidence(ctx context.Context, dir string, fields []string) ([]ContractEvidence, error) {
+	if r.contractEvidenceFetchFn != nil {
+		return r.contractEvidenceFetchFn(ctx, dir, fields)
+	}
+
+	if r.config == nil || r.config.ClaudeCode == nil {
+		return nil, fmt.Errorf("claude code backend not configured")
+	}
+
+	prompt := buildContractEvidencePrompt(fields)
+
+	claudeCmd := "claude"
+	if r.config.ClaudeCode.Command != "" {
+		claudeCmd = r.config.ClaudeCode.Command
+	}
+	cmd := exec.CommandContext(ctx, claudeCmd,
+		"--print",
+		"-p", prompt,
+		"--model", r.config.ResolveModel("claude-haiku-4-5-20251001"),
+		"--output-format", "json",
+		"--json-schema", ContractEvidenceSchema,
+	)
+	cmd.Dir = dir
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("claude command failed: %w", err)
+	}
+
+	structuredOutput, err := extractStructuredOutput(output)
+	if err != nil {
+		return nil, fmt.Errorf("extract structured output: %w", err)
+	}
+
+	var resp contractEvidenceResponse
+	if err := json.Unmarshal(structuredOutput, &resp); err != nil {
+		return nil, fmt.Errorf("parse contract evidence: %w", err)
+	}
+
+	return resp.Evidence, nil
 }
 
 // runWorkflowHook executes a workflow lifecycle hook, logging output and warning on failure.
