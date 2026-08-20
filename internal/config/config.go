@@ -295,6 +295,10 @@ type ProjectConfig struct {
 	// metrics hydrator, and dashboard history, so re-enabling the canary cron
 	// cannot contaminate production telemetry.
 	Canary bool `yaml:"canary,omitempty"`
+	// ContractDependencies declares other repos' contract files this
+	// project depends on (GH-5010). Gives the executor and wiring layers a
+	// stable type to consume for contract-drift checks before dispatch.
+	ContractDependencies []ContractDependency `yaml:"contract_dependencies,omitempty"`
 }
 
 // ResolveBaseBranch returns the branch that Pilot should branch from and
@@ -1146,6 +1150,18 @@ func (c *Config) Validate() error {
 		source := string(*p.Approval.ApprovalSource)
 		if !approval.ApprovalSourceValues[source] {
 			return fmt.Errorf("projects[%d].approval.approval_source must be \"telegram\", \"slack\", or \"github-review\", got %q", i, source)
+		}
+	}
+
+	// GH-5010: Validate each project's contract_dependencies entries.
+	for i, p := range c.Projects {
+		if p == nil {
+			continue
+		}
+		for j := range p.ContractDependencies {
+			if err := p.ContractDependencies[j].Validate(); err != nil {
+				return fmt.Errorf("projects[%d].contract_dependencies[%d]: %w", i, j, err)
+			}
 		}
 	}
 
