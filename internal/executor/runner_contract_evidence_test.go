@@ -459,6 +459,10 @@ func TestRunner_ContractEvidence_DiffErrorWithDepsConfigured_FailsGate(t *testin
 	}
 	runner, task := newContractGateTestRunner(t, backend)
 
+	recordingsDir := t.TempDir()
+	runner.SetRecordingsPath(recordingsDir)
+	runner.SetRecordingEnabled(true)
+
 	deps := []ContractDependency{{Owner: "qf-studio", Repo: "pilot-console", ContractFiles: []string{"*.ts"}}}
 	runner.SetContractDependencyLookup(func(projectPath string) []ContractDependency { return deps })
 
@@ -490,6 +494,33 @@ func TestRunner_ContractEvidence_DiffErrorWithDepsConfigured_FailsGate(t *testin
 	}
 	if !wr.received(string(webhooks.EventTaskFailed)) {
 		t.Errorf("expected a dispatched %s webhook, got events %v", webhooks.EventTaskFailed, wr.events)
+	}
+
+	entries, err := os.ReadDir(recordingsDir)
+	if err != nil {
+		t.Fatalf("ReadDir(recordingsDir): %v", err)
+	}
+	var foundFailedStatus bool
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(recordingsDir, e.Name(), "metadata.json"))
+		if readErr != nil {
+			continue
+		}
+		var meta struct {
+			Status string `json:"status"`
+		}
+		if jsonErr := json.Unmarshal(data, &meta); jsonErr != nil {
+			t.Fatalf("unmarshal metadata.json for %s: %v", e.Name(), jsonErr)
+		}
+		if meta.Status == "failed" {
+			foundFailedStatus = true
+		}
+	}
+	if !foundFailedStatus {
+		t.Errorf("expected a recording with status=failed under %s, entries=%v", recordingsDir, entries)
 	}
 }
 

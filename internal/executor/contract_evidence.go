@@ -268,6 +268,42 @@ func matchesAnyContractGlob(path string, deps []ContractDependency) bool {
 	return false
 }
 
+// shortCircuitEmptyContractFields decides, from detectTouchedContractFields'
+// required/fields output, whether the getContractEvidence LLM/structured-
+// output subprocess call is needed at all (GH-5021b).
+//
+// A contract file can be touched (required=true) by a hunk that adds no
+// line matching either field-token regex — e.g. a comment-only or
+// non-field change inside an allow-listed file. There is nothing to cite in
+// that case, so calling out to getContractEvidence would spend a real LLM
+// invocation on an empty field set for no reason. This short-circuits
+// before that call: it builds the outcome directly via
+// verifyContractEvidence's existing empty-fields behavior (nil evidence,
+// empty requiredFields), which reports Required=false/Passed=true —
+// deliberately reusing that path rather than hand-building an equivalent
+// trivial outcome, so the two "nothing to verify" cases (no contract file
+// touched at all vs. touched-but-fieldless) stay consistent.
+//
+// Returns a non-nil outcome (and needsLLM=false) when the caller should
+// skip getContractEvidence and use the outcome as-is; returns a nil outcome
+// with needsLLM=true when the caller must still call getContractEvidence
+// and run its result through verifyContractEvidence itself.
+func shortCircuitEmptyContractFields(
+	ctx context.Context,
+	fetcher ContractContentFetcher,
+	deps []ContractDependency,
+	required bool,
+	fields []string,
+) (outcome *ContractEvidenceOutcome, needsLLM bool) {
+	if !required {
+		return nil, false
+	}
+	if len(fields) == 0 {
+		return verifyContractEvidence(ctx, fetcher, deps, fields, nil), false
+	}
+	return nil, true
+}
+
 // verifyContractEvidence enforces all four rejection rules from GH-5009
 // Requirement 5:
 //

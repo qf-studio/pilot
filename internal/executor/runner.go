@@ -4960,36 +4960,34 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				}
 			} else {
 				contractRequired, contractFields := detectTouchedContractFields(contractDiff, deps)
-				if contractRequired {
-					if len(contractFields) == 0 {
-						// GH-5021: a contract file was touched but no field
-						// tokens were extracted (e.g. a non-field hunk
-						// inside an allow-listed file) — there is nothing to
-						// cite, so skip the LLM/structured-output
-						// subprocess call entirely. verifyContractEvidence
-						// already reports Required=false/Passed=true for an
-						// empty field set, so reuse it directly rather than
-						// hand-building an equivalent outcome.
-						contractOutcome := verifyContractEvidence(ctx, r.contractContentFetcher, deps, contractFields, nil)
-						result.ContractEvidence = contractOutcome
-						r.recordContractEvidenceEvent(task.LogExecutionID(), contractOutcome)
-					} else {
-						r.reportProgress(task.ID, "Contract Evidence", 97, "Verifying wire-contract citations...")
 
-						evidence, evErr := r.getContractEvidence(ctx, executionPath, contractFields)
-						if evErr != nil {
-							log.Warn("Contract evidence: fetch failed, treating as zero evidence",
-								slog.String("task_id", task.ID), slog.Any("error", evErr))
-						}
+				// GH-5021: a contract file can be touched with zero field
+				// tokens extracted (e.g. a non-field hunk inside an
+				// allow-listed file) — shortCircuitEmptyContractFields
+				// decides whether that means there is nothing to cite, in
+				// which case it hands back the trivial outcome directly and
+				// the getContractEvidence LLM/structured-output subprocess
+				// call below is skipped entirely.
+				contractOutcome, needsContractLLM := shortCircuitEmptyContractFields(ctx, r.contractContentFetcher, deps, contractRequired, contractFields)
+				if contractOutcome != nil {
+					result.ContractEvidence = contractOutcome
+					r.recordContractEvidenceEvent(task.LogExecutionID(), contractOutcome)
+				} else if needsContractLLM {
+					r.reportProgress(task.ID, "Contract Evidence", 97, "Verifying wire-contract citations...")
 
-						contractOutcome := verifyContractEvidence(ctx, r.contractContentFetcher, deps, contractFields, evidence)
-						result.ContractEvidence = contractOutcome
-						r.recordContractEvidenceEvent(task.LogExecutionID(), contractOutcome)
+					evidence, evErr := r.getContractEvidence(ctx, executionPath, contractFields)
+					if evErr != nil {
+						log.Warn("Contract evidence: fetch failed, treating as zero evidence",
+							slog.String("task_id", task.ID), slog.Any("error", evErr))
+					}
 
-						if !contractOutcome.Passed {
-							failContractEvidenceGate(contractOutcome.Summary())
-							return result, nil
-						}
+					contractOutcome := verifyContractEvidence(ctx, r.contractContentFetcher, deps, contractFields, evidence)
+					result.ContractEvidence = contractOutcome
+					r.recordContractEvidenceEvent(task.LogExecutionID(), contractOutcome)
+
+					if !contractOutcome.Passed {
+						failContractEvidenceGate(contractOutcome.Summary())
+						return result, nil
 					}
 				}
 			}
