@@ -6443,6 +6443,22 @@ func (c *Controller) attemptMechanicalConflictResolution(ctx context.Context, pr
 // timing and squash-absorbed #5016's entire content under #5017's history;
 // #5016 then went CONFLICTING against content already on main.
 //
+// GH-5049 (GH-5032 residual, items 1-2): candidates are additionally
+// filtered by Stage via isStackBaseCandidateStage — a PR that has already
+// reached StageMerged (and the post-merge bookkeeping stages that follow it,
+// StagePostMergeCI/StageReleasing, while still tracked in activePRs) no
+// longer holds "still-unmerged content" in the sense this function's own
+// doc above describes, so it must stop counting as a stack base the instant
+// it merges rather than only once handleMerged/handleReleasing finishes and
+// evicts it from activePRs — the old behavior added resume latency in the
+// normal case and risked a PERMANENT park if the base ever wedged tracked
+// in one of those terminal-ish stages post-merge. A PR at StageFailed will
+// never merge at all, so it can never legitimately be "merge that first"
+// either (PR#5035 review). Filtering the candidate set here — rather than,
+// say, only checking activePRs membership at resume time — is the single
+// mechanism behind both the detection (park) and resume (un-park) sides of
+// this check, since both read through detectStackedSuperset.
+//
 // Returns the other PRState prState is stacked on (nil if prState is not a
 // descendant of any other open PR's head — including the normal case of no
 // relationship, and the symmetric case where prState is itself the BASE of
@@ -6493,8 +6509,12 @@ func (c *Controller) detectStackedSuperset(ctx context.Context, prState *PRState
 		otherHead := other.HeadSHA
 		otherBranch := other.BranchName
 		otherNumber := other.PRNumber
+		otherStage := other.Stage
 		other.mu.Unlock()
 		if otherHead == "" {
+			continue
+		}
+		if !isStackBaseCandidateStage(otherStage) {
 			continue
 		}
 
@@ -6507,6 +6527,31 @@ func (c *Controller) detectStackedSuperset(ctx context.Context, prState *PRState
 		}
 	}
 	return nil, nil
+}
+
+// isStackBaseCandidateStage reports whether a PR at the given stage can
+// still legitimately hold a descendant parked as its "stacked on" base
+// (GH-5049, GH-5032 residual items 1-2). Excluded:
+//   - StageMerged, StagePostMergeCI, StageReleasing: the PR has already
+//     landed on the default branch — it may still be tracked in activePRs
+//     while post-merge CI/release bookkeeping runs, but its content is no
+//     longer "still-unmerged" in the sense a descendant needs to wait on.
+//     Requirement 1: this is what makes resume happen the instant the base
+//     reaches StageMerged, not only once it's fully finalized and evicted.
+//   - StageFailed: a terminal failure that will never merge. Holding a
+//     descendant hostage to a base that is never landing (PR#5035 review)
+//     is worse than the resume-latency case above — it's a permanent park.
+//
+// Every other stage (including StageMerging itself — the base may be
+// mid-merge-attempt on this very tick) still represents genuinely open,
+// unmerged content and remains a valid stack base.
+func isStackBaseCandidateStage(stage PRStage) bool {
+	switch stage {
+	case StageMerged, StagePostMergeCI, StageReleasing, StageFailed:
+		return false
+	default:
+		return true
+	}
 }
 
 // headIsStrictDescendant reports whether descendantSHA (on descendantBranch)
