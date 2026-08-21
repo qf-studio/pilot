@@ -8640,6 +8640,21 @@ func (c *Controller) evictNotFoundPR(prNumber int) {
 // Returns true if the PR was removed from tracking, false otherwise.
 // Accepts cached ghPR to avoid redundant API calls.
 func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRState, ghPR *github.PullRequest) bool {
+	// GH-5073: snapshot the pre-transition stage once, at entry, the same
+	// way ProcessPR's own transition detector does (previousStage local,
+	// see the switch there) — never re-derive it from prState.Stage at the
+	// recordExecutionEvent call site below. The guards immediately below
+	// already return early for StagePostMergeCI/StageReleasing/StageMerged,
+	// and the only other mutations of prState.Stage in this function
+	// (StagePostMergeCI/StageReleasing further down) each return
+	// immediately after, so today this snapshot is always identical to a
+	// re-read at the call site — but a re-read is one stray line away from
+	// silently observing this function's own StagePostMergeCI/StageReleasing
+	// write instead of the true previous stage, which would wrongly suppress
+	// (or wrongly allow) the StageFailed reclassify guard in
+	// recordExecutionEvent for an externally-merged PR.
+	previousStage := prState.Stage
+
 	// GH-3990: this PRState is a scope-release carrier, not the real PR entry
 	// for prState.PRNumber (its anchor is an already-merged member PR reused
 	// as the release vehicle). The external-merge hijack must never touch it —
@@ -8823,7 +8838,7 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		if prURL == "" {
 			prURL = prState.PRURL
 		}
-		c.recordExecutionEvent(prState, prState.Stage, memory.StageMerged,
+		c.recordExecutionEvent(prState, previousStage, memory.StageMerged,
 			fmt.Sprintf("pr #%d: merged externally (%s)", prState.PRNumber, prURL))
 
 		// GH-5071: same stacked-PR resume loop closed on the internal
