@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/qf-studio/pilot/internal/retryladder"
 )
 
 // GH-2363: After the 2nd consecutive rejection for the same title, stop
@@ -26,17 +28,21 @@ const titleRejectionMaxCount = 2
 // labelPilotFailed mirrors adapters/github.LabelFailed, defined locally for
 // the same import-cycle reason as labelPilotSuperseded (issue_state.go):
 // adapters/github imports internal/comms, which imports internal/executor.
-const labelPilotFailed = "pilot-failed"
+// Aliased to retryladder.LabelFailed (GH-5098) rather than a separate string
+// literal so the value has a single source of truth despite the local name
+// duplication.
+const labelPilotFailed = retryladder.LabelFailed
 
 // GH-5077: pilot-failed-retry-N ladder labels mirror
 // adapters/github.LabelFailedRetry1/2/Exhausted (types.go:159-161), defined
 // locally for the same import-cycle reason as labelPilotSuperseded
 // (issue_state.go). Escalation order matches
-// adapters/github.FailedRetryStateLabels (types.go:169).
+// adapters/github.FailedRetryStateLabels (types.go:169). Aliased to
+// retryladder's constants (GH-5098) rather than separate string literals.
 const (
-	labelPilotFailedRetry1         = "pilot-failed-retry-1"
-	labelPilotFailedRetry2         = "pilot-failed-retry-2"
-	labelPilotFailedRetryExhausted = "pilot-failed-retry-exhausted"
+	labelPilotFailedRetry1         = retryladder.LabelFailedRetry1
+	labelPilotFailedRetry2         = retryladder.LabelFailedRetry2
+	labelPilotFailedRetryExhausted = retryladder.LabelFailedRetryExhausted
 )
 
 // nextFailedRetryLabel computes the pilot-failed-retry-N ladder mutation
@@ -56,25 +62,14 @@ const (
 // issue that's already failed is a duplicate fail-label event and must not
 // advance the ladder again. See postTitleRejectionEscalation's
 // already-failed guard.
+//
+// GH-5098: thin wrapper over retryladder.NextRung, the package-independent
+// rung-computation routine every pilot-failed call site (executor,
+// autopilot, adapters/github, cmd/pilot) can reach without an import cycle.
+// Kept here under its original name/signature so this package's own tests
+// (gh5077/gh5079/gh5080) stay byte-identical.
 func nextFailedRetryLabel(currentLabels []string) (add, remove string) {
-	has := func(name string) bool {
-		for _, l := range currentLabels {
-			if strings.EqualFold(l, name) {
-				return true
-			}
-		}
-		return false
-	}
-	switch {
-	case has(labelPilotFailedRetryExhausted):
-		return "", ""
-	case has(labelPilotFailedRetry2):
-		return labelPilotFailedRetryExhausted, labelPilotFailedRetry2
-	case has(labelPilotFailedRetry1):
-		return labelPilotFailedRetry2, labelPilotFailedRetry1
-	default:
-		return labelPilotFailedRetry1, ""
-	}
+	return retryladder.NextRung(currentLabels)
 }
 
 // titleRejection tracks consecutive rejections for a single issue.
@@ -297,14 +292,19 @@ func (r *Runner) postTitleRejectionEscalation(ctx context.Context, task *Task) e
 	// pilot-failed: a repeat escalation for an already-failed issue (e.g. the
 	// same non-conventional title rejected a 3rd, 4th... time) is a duplicate
 	// fail-label event and must not advance the ladder again.
+	// GH-5098: retryladder.Advance is the reusable stamp+advance-in-one-
+	// mutation helper — it folds the already-failed guard in above (returns
+	// "","",false when hasFailed) so this callsite only needs to gate on the
+	// state read having succeeded, matching the original inline behavior
+	// byte-for-byte.
 	var exhausted bool
-	if stateErr == nil && !state.HasLabel(labelPilotFailed) {
-		if add, remove := nextFailedRetryLabel(state.Labels); add != "" {
+	if stateErr == nil {
+		if add, remove, exh := retryladder.Advance(state.Labels, state.HasLabel(labelPilotFailed)); add != "" {
 			addLabels = append(addLabels, add)
 			if remove != "" {
 				removeLabels = append(removeLabels, remove)
 			}
-			exhausted = add == labelPilotFailedRetryExhausted
+			exhausted = exh
 		}
 	}
 	// GH-5079: the ladder reaching its terminal rung means the retry budget
