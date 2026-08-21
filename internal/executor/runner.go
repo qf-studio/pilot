@@ -4415,7 +4415,26 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					r.saveLogEntry(task.LogExecutionID(), "info", "Running tests...")
 
 					checker := r.qualityCheckerFactory(task.ID, executionPath)
-					outcome, qErr := checker.Check(ctx)
+
+					// GH-5060: the first-pass gate check (retryAttempt == 0) stays on
+					// the attempt ctx - correct, it should not outlive the attempt.
+					// But retry-pass re-checks (retryAttempt > 0) must not run on that
+					// same ctx: GH-4876 gave the reset (line ~4523) and re-invoke (line
+					// ~4593) legs fresh contexts so an exhausted attempt deadline can't
+					// doom an otherwise-recoverable retry, but the gate re-check itself
+					// was left on the old ctx. A ctx-respecting checker whose deadline
+					// already passed by the time the fresh-ctx re-invoke completes would
+					// die here with "context deadline exceeded", producing a false
+					// task_failed right after a successful retry.
+					var outcome *QualityOutcome
+					var qErr error
+					if retryAttempt > 0 {
+						checkCtx, checkCancel := context.WithTimeout(context.Background(), timeout)
+						outcome, qErr = checker.Check(checkCtx)
+						checkCancel()
+					} else {
+						outcome, qErr = checker.Check(ctx)
+					}
 					if qErr != nil {
 						log.Error("Quality gate check error", slog.Any("error", qErr))
 						result.Success = false
