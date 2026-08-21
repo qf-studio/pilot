@@ -808,6 +808,12 @@ type Runner struct {
 	// PR-creation preflight guards.
 	issueStateCheckers   map[string]IssueStateChecker
 	issueStateCheckersMu sync.RWMutex
+	// GH-5045/GH-5052: basePresenceProbes holds startup-registered per-repo
+	// BasePresenceProbes keyed "adapter:owner/repo" — same key shape and
+	// registration timing as issueStateCheckers above (see base_presence.go).
+	// Used by checkBasePresence for the dispatch claim-path guard.
+	basePresenceProbes   map[string]BasePresenceProbe
+	basePresenceProbesMu sync.RWMutex
 	// GH-2211: SubIssueLinker for native GitHub sub-issue API linking
 	subIssueLinker SubIssueLinker // Optional linker for native GitHub parent→child wiring
 	// GH-1599: Execution log store for milestone entries
