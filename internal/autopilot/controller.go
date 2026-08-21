@@ -1989,20 +1989,21 @@ A human needs to check whether `+"`%s`"+` still needs to be merged into `+"`%s`"
 }
 
 // branchIsBaseOfOpenPR reports whether branchName is currently the base
-// ("Base.Ref") of any open PR in this repo (GH-4872). ListPullRequests has
-// no base= filter, so this is a client-side scan over all open PRs — cheap
-// at Pilot's PR volumes.
-func (c *Controller) branchIsBaseOfOpenPR(ctx context.Context, branchName string) (bool, error) {
+// ("Base.Ref") of any open PR in this repo (GH-4872), and if so, that PR's
+// number (GH-5065: callers need to name the blocking PR in their alert, not
+// just report "held"). ListPullRequests has no base= filter, so this is a
+// client-side scan over all open PRs — cheap at Pilot's PR volumes.
+func (c *Controller) branchIsBaseOfOpenPR(ctx context.Context, branchName string) (bool, int, error) {
 	openPRs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	for _, pr := range openPRs {
 		if pr.Base.Ref == branchName {
-			return true, nil
+			return true, pr.Number, nil
 		}
 	}
-	return false, nil
+	return false, 0, nil
 }
 
 // safeDeleteBranch deletes branchName unless it is currently the base of
@@ -2020,7 +2021,7 @@ func (c *Controller) safeDeleteBranch(ctx context.Context, branchName string, pr
 	if branchName == "" {
 		return false, nil
 	}
-	isBase, checkErr := c.branchIsBaseOfOpenPR(ctx, branchName)
+	isBase, blockingPR, checkErr := c.branchIsBaseOfOpenPR(ctx, branchName)
 	if checkErr != nil {
 		c.log.Warn("safeDeleteBranch: failed to check whether branch is the base of an open PR — skipping delete this cycle (fail-closed)",
 			"branch", branchName, "pr", prNumber, "error", checkErr)
@@ -2028,8 +2029,8 @@ func (c *Controller) safeDeleteBranch(ctx context.Context, branchName string, pr
 	}
 	if isBase {
 		c.log.Warn("safeDeleteBranch: refusing to delete branch — it is the base of another open PR",
-			"branch", branchName, "pr", prNumber)
-		c.alertBranchDeleteHeldOnce(branchName, prNumber)
+			"branch", branchName, "pr", prNumber, "blocking_pr", blockingPR)
+		c.alertBranchDeleteHeldOnce(branchName, prNumber, blockingPR)
 		return false, nil
 	}
 	if err := c.ghClient.DeleteBranch(ctx, c.owner, c.repo, branchName); err != nil {
@@ -2043,8 +2044,11 @@ func (c *Controller) safeDeleteBranch(ctx context.Context, branchName string, pr
 // of another open PR (GH-4872), deduplicated per branch name via
 // alertedBranchDeleteHolds — safeDeleteBranch is called from four
 // independent cleanup sites, any of which could re-offer the same branch
-// for deletion before the underlying stack is resolved.
-func (c *Controller) alertBranchDeleteHeldOnce(branchName string, prNumber int) {
+// for deletion before the underlying stack is resolved. blockingPR is the
+// open PR currently based on branchName (from branchIsBaseOfOpenPR) — named
+// explicitly (GH-5065) so the alert tells a human which PR to look at
+// instead of just naming the cleanup PR that got held.
+func (c *Controller) alertBranchDeleteHeldOnce(branchName string, prNumber, blockingPR int) {
 	c.mu.Lock()
 	if c.alertedBranchDeleteHolds == nil {
 		c.alertedBranchDeleteHolds = make(map[string]bool)
@@ -2057,11 +2061,11 @@ func (c *Controller) alertBranchDeleteHeldOnce(branchName string, prNumber int) 
 	c.mu.Unlock()
 
 	msg := fmt.Sprintf(
-		"refused to delete branch %q (from PR #%d cleanup) because it is the base of another open PR in %s — deleting it would orphan that PR's content the same way GH-4872 did",
-		branchName, prNumber, c.repoKey(),
+		"refused to delete branch %q (from PR #%d cleanup) because it is the base of open PR #%d in %s — deleting it would orphan that PR's content the same way GH-4872 did",
+		branchName, prNumber, blockingPR, c.repoKey(),
 	)
 	if c.alertsEngine == nil {
-		c.log.Error("branch_delete_held alert not delivered: SetAlertsEngine was never called", "branch", branchName, "pr", prNumber)
+		c.log.Error("branch_delete_held alert not delivered: SetAlertsEngine was never called", "branch", branchName, "pr", prNumber, "blocking_pr", blockingPR)
 		return
 	}
 	c.alertsEngine.ProcessEvent(alerts.Event{
@@ -2072,9 +2076,10 @@ func (c *Controller) alertBranchDeleteHeldOnce(branchName string, prNumber int) 
 		Error:     msg,
 		Timestamp: time.Now(),
 		Metadata: map[string]string{
-			"repo":   c.repoKey(),
-			"branch": branchName,
-			"pr":     strconv.Itoa(prNumber),
+			"repo":        c.repoKey(),
+			"branch":      branchName,
+			"pr":          strconv.Itoa(prNumber),
+			"blocking_pr": strconv.Itoa(blockingPR),
 		},
 	})
 }

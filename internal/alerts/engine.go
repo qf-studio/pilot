@@ -1437,12 +1437,34 @@ func (e *Engine) handleEvalRegression(ctx context.Context, event Event) {
 
 // handleEscalation processes escalation events (GH-885).
 // These are critical alerts that should route to PagerDuty.
+//
+// EventTypeEscalation is shared by every escalation emitter in the codebase,
+// but only the circuit-breaker trip emitter (metrics_alerter.go
+// emitEscalationAlert) populates the trips_in_hour/escalation_threshold/
+// last_pr/last_reason metadata this handler used to render exclusively. The
+// autopilot emitters (alertStackedSupersetOnce, alertBaseMismatchOnce,
+// alertBranchDeleteHeldOnce, alertUnresolvableBaseOnce) put their real
+// diagnostic text in event.Error instead — this handler never read it, so
+// every non-circuit-breaker escalation rendered a blank template (GH-5065,
+// incident a695c90e: alertBranchDeleteHeldOnce fired correctly but Slack
+// delivered "Circuit breaker escalation:  trips in 1 hour (threshold: ).
+// Last: PR # -"). Fall back to event.Error whenever the circuit-breaker
+// metadata is absent so those emitters' messages actually reach the alert.
 func (e *Engine) handleEscalation(ctx context.Context, event Event) {
 	for _, rule := range e.config.Rules {
 		if !rule.Enabled || rule.Type != AlertTypeEscalation {
 			continue
 		}
 
+		// NOTE (GH-5065 item 3): this 1h cooldown is keyed globally by
+		// rule.Name ("escalation") in e.lastAlertTimes (shouldFire below,
+		// engine.go ~1062), so a circuit-breaker trip and an unrelated
+		// autopilot escalation (stacked-superset, base-mismatch,
+		// branch-delete-held, unresolvable-base) share one bucket — whichever
+		// fires first can suppress the other for up to an hour even though
+		// they're unrelated conditions. Left as-is per GH-5065 (flag-only;
+		// splitting the cooldown key per-source is a follow-up if this proves
+		// to actually suppress a real escalation).
 		if !e.shouldFire(rule) {
 			continue
 		}
@@ -1452,10 +1474,20 @@ func (e *Engine) handleEscalation(ctx context.Context, event Event) {
 		lastPR := event.Metadata["last_pr"]
 		lastReason := event.Metadata["last_reason"]
 
-		message := fmt.Sprintf(
-			"Circuit breaker escalation: %s trips in 1 hour (threshold: %s). Last: PR #%s - %s",
-			tripsInHour, threshold, lastPR, lastReason,
-		)
+		var message string
+		switch {
+		case tripsInHour != "" || threshold != "":
+			// Circuit-breaker path — keep byte-identical to the pre-GH-5065
+			// template when this metadata is present.
+			message = fmt.Sprintf(
+				"Circuit breaker escalation: %s trips in 1 hour (threshold: %s). Last: PR #%s - %s",
+				tripsInHour, threshold, lastPR, lastReason,
+			)
+		case event.Error != "":
+			message = event.Error
+		default:
+			message = fmt.Sprintf("Escalation event received for %s with no message content", event.TaskTitle)
+		}
 
 		alert := e.createAlert(rule, event, message)
 		// Force critical severity for escalations
