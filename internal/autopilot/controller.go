@@ -2898,6 +2898,27 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 
 	if deadlineExceeded {
 		waited := time.Since(prState.CIWaitStartedAt)
+		// GH-5066: a PR stacked on a non-default base (sibling pilot/GH-*
+		// branch) never reaches handleMerging's parkForBaseMismatch guard
+		// when the repo's CI workflow is scoped to the default branch only
+		// (this repo's own ci.yml:6-7, `pull_request: branches: [main]`) —
+		// zero checks ever run for it, so CI-wait always exhausts this
+		// deadline. Before this fix that fell straight through to the
+		// terminal branch below (StageFailed, a dead end per
+		// `case StageFailed: return nil` in ProcessPR) even though the PR
+		// might merge cleanly once its base lands. Incident 2026-08-21:
+		// PR#5055 (base pilot/GH-5052) died this way; the founder's merge of
+		// the base PR retargeted #5055 to main on GitHub, but a StageFailed
+		// PR never re-enters ProcessPR's body, so recovery was fully manual.
+		// Park exactly as handleMerging's stacked path does instead, so the
+		// existing resume-on-merge path (GH-5049/PR#5051: base reaches
+		// StageMerged → descendant un-parks) handles the rest for free.
+		if defaultBranch := c.resolveMainBranchName(); prState.TargetBranch != "" && prState.TargetBranch != defaultBranch {
+			c.log.Warn("handleWaitingCI: CI-wait deadline exceeded on a non-default base — parking instead of failing",
+				"pr", prState.PRNumber, "target_branch", prState.TargetBranch, "default_branch", defaultBranch, "waited", waited, "last_status", status)
+			c.parkForBaseMismatch(ctx, prState, prState.TargetBranch, defaultBranch)
+			return nil
+		}
 		c.log.Warn("CI timeout confirmed by same-tick poll",
 			"pr", prState.PRNumber, "waited", waited, "last_status", status)
 		prState.Stage = StageFailed
