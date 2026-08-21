@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -296,19 +297,60 @@ func (r *Runner) postTitleRejectionEscalation(ctx context.Context, task *Task) e
 	// pilot-failed: a repeat escalation for an already-failed issue (e.g. the
 	// same non-conventional title rejected a 3rd, 4th... time) is a duplicate
 	// fail-label event and must not advance the ladder again.
+	var exhausted bool
 	if stateErr == nil && !state.HasLabel(labelPilotFailed) {
 		if add, remove := nextFailedRetryLabel(state.Labels); add != "" {
 			addLabels = append(addLabels, add)
 			if remove != "" {
 				removeLabels = append(removeLabels, remove)
 			}
+			exhausted = add == labelPilotFailedRetryExhausted
 		}
+	}
+	// GH-5079: the ladder reaching its terminal rung means the retry budget
+	// declared for this issue is spent — park it under pilot-needs-human
+	// (GH-5056's admission check, handlers.go:751, then refuses to
+	// re-dispatch it) in the same mutation, mirroring escalateBasePresenceHold
+	// (dispatcher.go) and autopilot's escalateAndHold: sheds pilot-retry-ready
+	// too, enforcing the GH-5042/PR#5048 never-coexist invariant at this site.
+	if exhausted {
+		addLabels = append(addLabels, labelPilotNeedsHuman)
+		removeLabels = append(removeLabels, labelPilotRetryReady)
 	}
 
 	// Best-effort; log but don't fail.
 	if err := ghEditLabels(ctx, task.ProjectPath, issueNum, addLabels, removeLabels); err != nil {
 		r.log.Warn("title-rejection: failed to add labels",
 			"task_id", task.ID, "issue", issueNum, "error", err)
+	}
+
+	// GH-5079: fire the exhaustion escalation regardless of whether the label
+	// mutation above succeeded — mirrors escalateBasePresenceHold's stance
+	// (dispatcher.go) that operator visibility must not rest entirely on a
+	// gh CLI call that can itself fail. Routes as alerts.EventTypeEscalation
+	// (AlertEventTypeEscalation) so it renders through the PR#5069
+	// event.Error fallback in handleEscalation, rather than the blank
+	// circuit-breaker template.
+	if exhausted {
+		reason := fmt.Sprintf(
+			"issue #%s exhausted its pilot-failed-retry ladder (%s) after repeated non-conventional-title rejections — parked pilot-needs-human",
+			issueNum, labelPilotFailedRetryExhausted,
+		)
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeEscalation,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Error:     reason,
+			Timestamp: time.Now(),
+			Metadata: map[string]string{
+				"task_id": task.ID,
+				"issue":   issueNum,
+				"project": task.ProjectPath,
+				"reason":  reason,
+				"label":   labelPilotNeedsHuman,
+			},
+		})
 	}
 	return nil
 }

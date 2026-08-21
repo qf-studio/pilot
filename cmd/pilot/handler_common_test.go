@@ -699,10 +699,14 @@ func waitForAlertCount(t *testing.T, ch *testAlertChannel, n int, timeout time.D
 
 // TestHandleIssueGeneric_LoopBreakerAlert_FiresOnceAtThreshold is the GH-4469
 // deliverable-4 regression test: repeatedly hitting the same gate (here, the
-// terminal-completion re-check) must fire exactly one
-// AlertTypeDispatchLoopBreaker WARNING when the consecutive-drop count first
-// reaches repickLoopBreakerThreshold (10) — not before, and not again on
-// every subsequent tick past it.
+// terminal-completion re-check) must fire exactly one escalation alert when
+// the consecutive-drop count first reaches repickLoopBreakerThreshold (10) —
+// not before, and not again on every subsequent tick past it. GH-5079:
+// fireLoopBreakerAlert now routes through alerts.EventTypeEscalation rather
+// than the dispatch-loop-breaker-specific event type (see that function's
+// doc comment) — this test registers the "escalation" rule and asserts the
+// delivered alert actually carries the consecutive-drop reason via
+// event.Error (the PR#5069 fallback), not a blank template.
 func TestHandleIssueGeneric_LoopBreakerAlert_FiresOnceAtThreshold(t *testing.T) {
 	taskID := "GH-4469-LOOP-BREAKER"
 	projectPath := "/tmp/pilot-gh-4469-loop-breaker-does-not-exist"
@@ -733,8 +737,8 @@ func TestHandleIssueGeneric_LoopBreakerAlert_FiresOnceAtThreshold(t *testing.T) 
 		},
 		Rules: []alerts.AlertRule{
 			{
-				Name:     "dispatch_loop_breaker",
-				Type:     alerts.AlertTypeDispatchLoopBreaker,
+				Name:     "escalation",
+				Type:     alerts.AlertTypeEscalation,
 				Enabled:  true,
 				Severity: alerts.SeverityWarning,
 				Channels: []string{"test-channel"},
@@ -786,6 +790,19 @@ func TestHandleIssueGeneric_LoopBreakerAlert_FiresOnceAtThreshold(t *testing.T) 
 	waitForAlertCount(t, testCh, 1, 2*time.Second)
 	if got := testCh.count(); got != 1 {
 		t.Fatalf("expected exactly 1 alert at the threshold, got %d", got)
+	}
+	// GH-5079: the rerouted escalation must render via the PR#5069
+	// event.Error fallback, not the blank circuit-breaker template
+	// (handleEscalation's default case: "Escalation event received for ...
+	// with no message content").
+	testCh.mu.Lock()
+	msg := testCh.alerts[0].Message
+	testCh.mu.Unlock()
+	if !strings.Contains(msg, taskID) || !strings.Contains(msg, "consecutive") {
+		t.Errorf("expected alert message to name the task and the consecutive-drop reason, got: %q", msg)
+	}
+	if strings.Contains(msg, "no message content") {
+		t.Errorf("alert rendered the blank circuit-breaker template instead of event.Error, got: %q", msg)
 	}
 
 	// An 11th drop must not fire a second alert.

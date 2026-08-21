@@ -78,6 +78,18 @@ const (
 	AlertEventTypeDeadManAttempt AlertEventType = "dead_man_attempt"
 	AlertEventTypeDeadManSuccess AlertEventType = "dead_man_success"
 	AlertEventTypeDeadManFailure AlertEventType = "dead_man_failure"
+
+	// AlertEventTypeEscalation (GH-5079) mirrors alerts.EventTypeEscalation
+	// ("escalation") byte-for-byte — EngineAdapter.ProcessEvent forwards
+	// AlertEventType values across the executor/alerts package boundary via a
+	// direct string cast (adapter.go), so this value must match exactly.
+	// Routes through alerts.Engine.handleEscalation, which (post-PR#5069)
+	// falls back to rendering event.Error when the circuit-breaker-only
+	// metadata (trips_in_hour/escalation_threshold/last_pr/last_reason) is
+	// absent — every non-circuit-breaker escalation emitter, including the
+	// pilot-failed-retry-exhausted hook (title_rejection.go), populates
+	// Error rather than that metadata.
+	AlertEventTypeEscalation AlertEventType = "escalation"
 )
 
 // SelfReviewDeadManTrackerName is the alerts.DeadManTracker registration
