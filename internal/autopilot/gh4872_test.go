@@ -586,6 +586,55 @@ func TestSafeDeleteBranch_HeldAlertsOncePerBranch(t *testing.T) {
 	}
 }
 
+// TestSafeDeleteBranch_HeldAlertNamesBlockingPR is the GH-5065 regression:
+// alertBranchDeleteHeldOnce's alert used to name only the held cleanup PR,
+// leaving a human to go find which open PR was actually blocking the delete.
+// branchIsBaseOfOpenPR already knows that PR's number — it must be threaded
+// into both the alert Metadata (blocking_pr) and the message text.
+func TestSafeDeleteBranch_HeldAlertNamesBlockingPR(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/pulls" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_ = writeJSON(w, []*github.PullRequest{
+				{Number: 5055, State: "open", Head: github.PRRef{Ref: "pilot/GH-5053"}, Base: github.PRRef{Ref: "pilot/GH-5052"}},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	sink := &fakeAlertSink{}
+	c.SetAlertsEngine(sink)
+
+	deleted, err := c.safeDeleteBranch(context.Background(), "pilot/GH-5052", 5054)
+	if err != nil {
+		t.Fatalf("safeDeleteBranch returned error: %v", err)
+	}
+	if deleted {
+		t.Fatal("expected delete to be held (branch is the base of an open PR)")
+	}
+
+	if len(sink.events) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(sink.events))
+	}
+	event := sink.events[0]
+	if got := event.Metadata["blocking_pr"]; got != "5055" {
+		t.Errorf("Metadata[blocking_pr] = %q, want %q", got, "5055")
+	}
+	if got := event.Metadata["pr"]; got != "5054" {
+		t.Errorf("Metadata[pr] = %q, want %q (the held cleanup PR, unchanged)", got, "5054")
+	}
+	if !strings.Contains(event.Error, "open PR #5055") {
+		t.Errorf("alert message must name the blocking PR #5055, got %q", event.Error)
+	}
+}
+
 // writeJSON is a small test helper to encode a JSON response body while
 // satisfying errcheck on the Write/Encode call.
 func writeJSON(w http.ResponseWriter, v interface{}) error {
