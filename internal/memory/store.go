@@ -3759,9 +3759,14 @@ func (s *Store) GetLifetimeTokens(projectPath string) (*LifetimeTokens, error) {
 // outcomes (no-op, stalled, declined, rate-limited, infra, skipped) are broken
 // out separately so the dashboard does not inflate the failed count.
 type LifetimeTaskCounts struct {
-	Total       int
-	Succeeded   int
-	Failed      int
+	Total     int
+	Succeeded int
+	Failed    int
+	// Declined counts both dispatched-then-declined rows (status='declined')
+	// and pre-flight-declined rows (status='declined-preflight', GH-4845
+	// fold-in) — a decline is a decline for volume/fleet purposes regardless
+	// of which stage caught it, and folding it into the existing bucket
+	// avoids a 10th column just for a rarer sub-case.
 	Declined    int
 	NoOp        int
 	Stalled     int
@@ -3785,7 +3790,7 @@ func (s *Store) GetLifetimeTaskCounts(projectPath string) (*LifetimeTaskCounts, 
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status IN ('declined', 'declined-preflight') THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'no_op' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'stalled' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END), 0),
@@ -3846,7 +3851,7 @@ type WindowedStats struct {
 	// in the same query/population as everything above. These are per-attempt
 	// row counts, not deduped-by-issue like IssuesAttempted/IssuesDelivered.
 	AttemptTotal       int // all executions in window (canary-excluded), any status
-	AttemptDeclined    int
+	AttemptDeclined    int // status IN ('declined', 'declined-preflight') — GH-4845 fold-in, see GetLifetimeTaskCounts.Declined
 	AttemptNoOp        int
 	AttemptStalled     int
 	AttemptRateLimited int
@@ -3868,7 +3873,7 @@ func (s *Store) GetWindowedStats(projectPath string, since time.Time) (WindowedS
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status IN ('declined', 'declined-preflight') THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'no_op' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'stalled' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END), 0),
