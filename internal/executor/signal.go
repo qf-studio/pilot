@@ -79,6 +79,19 @@ func (p *SignalParser) ParseSignals(text string) []PilotSignal {
 		signals = append(signals, signal)
 	}
 
+	// Models also emit payloads as bare lines outside a fence; fenced blocks are removed first so nothing parses twice.
+	for _, line := range strings.Split(signalBlockRegex.ReplaceAllString(text, ""), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, `{"v":`) || !strings.HasSuffix(trimmed, "}") {
+			continue
+		}
+		var signal PilotSignal
+		if err := json.Unmarshal([]byte(trimmed), &signal); err != nil {
+			continue
+		}
+		signals = append(signals, p.validateSignal(signal))
+	}
+
 	return signals
 }
 
