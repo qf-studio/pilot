@@ -712,6 +712,27 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	taskID := ev.SequenceID // "GH-42"; already prefixed by the SDK adapter — do NOT re-prefix
 	title := ev.Title
 
+	// GH-5056: admission backstop — an issue carrying pilot-needs-human must
+	// never be (re-)admitted through this chokepoint, no matter what
+	// unmarked it. The SDK poller's own candidate filter (studio-sdk
+	// poller.go:742-815) checks pilot-in-progress/done/blocked/needs-
+	// clarification/failed/retry-ready but never pilot-needs-human — and a
+	// park (escalateBasePresenceHold, autopilot's escalateAndHold) strips
+	// pilot-in-progress while leaving the pilot trigger label standing, so
+	// once isTaskStillQueued goes false the poller unmarks and re-dispatches
+	// after its 5-min grace: re-hold, re-escalate, on a slow loop that
+	// re-blocks this project's queue head each cycle. Checked before any
+	// other side effect (spec-guard, pilot-in-progress label/comment, task
+	// construction, dispatch) so a re-admitted needs-human issue costs
+	// nothing beyond this one check.
+	if githubEventHasNeedsHumanLabel(ev.Labels) {
+		logging.WithComponent("github").Info("SDK-dispatch: skipping admission, issue carries pilot-needs-human",
+			slog.String("task_id", taskID),
+			slog.String("reason", labelPilotNeedsHumanSDK),
+		)
+		return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: "needs_human"}, nil
+	}
+
 	taskDesc := fmt.Sprintf("GitHub Issue %s: %s\n\n%s", taskID, title, ev.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
@@ -963,6 +984,25 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	}
 
 	return issueResult, execErr
+}
+
+// labelPilotNeedsHumanSDK mirrors internal/executor's labelPilotNeedsHuman
+// and internal/autopilot's labelNeedsHuman, defined locally here for the
+// same import-cycle-avoidance reason both of those document — cmd/pilot is
+// the one place all three can't simply share one package-level constant
+// without introducing a dependency between the other two.
+const labelPilotNeedsHumanSDK = "pilot-needs-human"
+
+// githubEventHasNeedsHumanLabel reports whether labels carries
+// pilot-needs-human (GH-5056). See handleGithubIssueEventSDK's call site
+// for the re-admission loop this check exists to close.
+func githubEventHasNeedsHumanLabel(labels []string) bool {
+	for _, l := range labels {
+		if l == labelPilotNeedsHumanSDK {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchGithubIssueForSDKTask fetches the real issue via the studio-sdk GitHub client so

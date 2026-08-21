@@ -3178,6 +3178,18 @@ func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.St
 // labeling failure is logged, not fatal — the caller parks the row
 // (ExecStatusSkipped) and clears the hold counter regardless, so a stuck
 // GitHub call here never wedges the hold accounting itself.
+//
+// GH-5056: two residuals from the PR#5054 review closed here. (1) sheds
+// pilot-retry-ready in the same `gh issue edit` mutation that applies
+// pilot-needs-human — mirrors autopilot's escalateAndHold (controller.go),
+// which enforces the GH-5042/PR#5048 never-coexist invariant identically;
+// without this, a retry-ready re-arm that landed before this escalation
+// fired would sit alongside the needs-human hold unpollable (the GH-5032
+// incident class this site had not been hardened against). (2) fires the
+// alerts-engine equivalent of escalateAndHold's alert — before this,
+// operator visibility into a base-presence escalation rested entirely on
+// label-watching (EmitProgress's "NeedsHuman" phase is dashboard-only, not
+// alerts-engine-routed).
 func (w *ProjectWorker) escalateBasePresenceHold(ctx context.Context, task *Task, reason string) {
 	if task.SourceAdapter != "" && task.SourceAdapter != "github" {
 		return
@@ -3193,15 +3205,32 @@ func (w *ProjectWorker) escalateBasePresenceHold(ctx context.Context, task *Task
 	labelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	if err := ghEditLabels(labelCtx, task.ProjectPath, issueNum, []string{labelPilotNeedsHuman}, nil); err != nil {
+	if err := ghEditLabels(labelCtx, task.ProjectPath, issueNum, []string{labelPilotNeedsHuman}, []string{labelPilotRetryReady}); err != nil {
 		w.log.Warn("base-presence hold escalation: failed to apply label",
 			slog.String("task_id", task.ID), slog.Any("error", err))
-		return
+	} else {
+		w.log.Info("base-presence hold escalation: applied pilot-needs-human label",
+			slog.String("task_id", task.ID),
+			slog.String("reason", reason),
+		)
 	}
-	w.log.Info("base-presence hold escalation: applied pilot-needs-human label",
-		slog.String("task_id", task.ID),
-		slog.String("reason", reason),
-	)
+
+	if w.runner != nil {
+		w.runner.EmitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeTaskFailed,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Error:     reason,
+			Timestamp: time.Now(),
+			Metadata: map[string]string{
+				"task_id": task.ID,
+				"project": task.ProjectPath,
+				"reason":  reason,
+				"label":   labelPilotNeedsHuman,
+			},
+		})
+	}
 }
 
 // hasTerminalSuccessLedger reports whether the TASK-394 execution ledger
