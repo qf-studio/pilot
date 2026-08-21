@@ -38,3 +38,21 @@ incident, audit the whole file** (`git config --list --show-origin | grep
 'file:.git/config'`), not just the key that broke — and note the in-tree
 executor tests are properly `-C`-scoped and use `test@test.com`, so the
 `test@example.com` signature rules them out as the writer.
+
+**Update 2026-08-21 — ROOT CAUSE SOLVED after 3rd occurrence (GH-5063).**
+The writer is the repo's own test suite, run by the pre-push gate. git
+exports `GIT_DIR` when invoking hooks; `pre-push-gate.sh` never scrubs it;
+and `GIT_DIR` env OVERRIDES cwd/`-C` repo discovery — so the earlier
+"-C-scoped, therefore ruled out" reasoning was wrong. Under the hook,
+every scratch-repo git call targets the real `.git`: `git init --bare`
+tests (runner_git_test.go:28, worktree_test.go:332) write core.bare=true;
+`git config user.*` tests write their fake identities (07-28 poison
+`Test User`/`test@example.com` = the runGit family; 08-21 poison
+`Pilot Test`/`test@pilot.local` = runner_test.go:4059 +
+handler_common_test.go:1416 — exact string matches). SIGTERM asymmetry:
+a completed suite mostly self-repairs core.bare (later plain `git init`
+overwrites false) but nothing overwrites identity keys — hence bare shows
+up only on killed pushes while identity survived 10 days. Fix filed in
+GH-5063: `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+GIT_COMMON_DIR` at the top of the gate + scrub `GIT_*` in test git
+helpers. Recovery recipe unchanged (config repair + full-file audit).
