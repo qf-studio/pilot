@@ -13,6 +13,68 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
+// linearStatusLabels are the pilot-* labels the SDK poller creates/uses for
+// lifecycle tracking (see studio-sdk's Poller.cacheLabelIDs). They degrade to
+// Warn-and-continue mid-poll if misconfigured, unlike the trigger label.
+var linearStatusLabels = []string{"pilot-in-progress", "pilot-done", "pilot-failed"}
+
+// linearLabelClassifier abstracts studio-sdk's *linear.Client.ClassifyLabel
+// so the preflight can be exercised with a stub in tests.
+type linearLabelClassifier interface {
+	ClassifyLabel(ctx context.Context, teamRef, labelName string) (*linearSDK.LabelClassificationResult, error)
+}
+
+// preflightLinearLabels classifies the trigger label and every pilot-*
+// status label for one workspace, once at poller startup, and logs a line
+// for any label that isn't cleanly team-scoped (GH-5092).
+//
+// The trigger label is logged at Error, immediately above the existing
+// startup-death log that fires when the SDK poller's own GetLabelByName
+// check fails inside Start() — this preflight does not change that failure
+// path, it only names the remedy ahead of it. Status labels are logged at
+// Warn, since they already degrade to Warn-and-continue mid-poll; the
+// startup line just explains why before the poll loop begins.
+//
+// If the classification call itself errors (network/API failure), that is
+// logged at Warn and the label is skipped — the preflight must never block
+// startup on its own failure.
+func preflightLinearLabels(ctx context.Context, log *slog.Logger, classifier linearLabelClassifier, teamRef, triggerLabel string, statusLabels []string) {
+	classify := func(label string, isTrigger bool) {
+		result, err := classifier.ClassifyLabel(ctx, teamRef, label)
+		if err != nil {
+			log.Warn("Linear label preflight: classification call failed, skipping",
+				slog.String("label", label),
+				slog.Any("error", err),
+			)
+			return
+		}
+
+		if result.Classification == linearSDK.LabelTeamScoped {
+			return
+		}
+
+		if isTrigger {
+			log.Error("Linear trigger label is not team-scoped; poller startup will fail",
+				slog.String("label", label),
+				slog.String("classification", string(result.Classification)),
+				slog.String("remedy", result.Remedy),
+			)
+			return
+		}
+
+		log.Warn("Linear status label is not team-scoped; label will fail mid-poll",
+			slog.String("label", label),
+			slog.String("classification", string(result.Classification)),
+			slog.String("remedy", result.Remedy),
+		)
+	}
+
+	classify(triggerLabel, true)
+	for _, label := range statusLabels {
+		classify(label, false)
+	}
+}
+
 func newSDKLinearWorkspace(name, apiKey, teamID, triggerLabel string, projectIDs, projects []string, interval time.Duration) *linearSDK.WorkspaceConfig {
 	return &linearSDK.WorkspaceConfig{
 		Name:         name,
@@ -59,6 +121,12 @@ func linearPollerRegistration() PollerRegistration {
 				if ws.Polling != nil && ws.Polling.Interval > 0 {
 					wsInterval = ws.Polling.Interval
 				}
+
+				// GH-5092: classify the trigger label and every pilot-*
+				// status label once at startup, before the SDK poller's
+				// own (opaque) label lookups run.
+				preflightLinearLabels(ctx, logging.WithComponent("linear"), linearSDK.NewClient(ws.APIKey), ws.TeamID, triggerLabel, linearStatusLabels)
+
 				sdkWorkspaces = append(sdkWorkspaces, newSDKLinearWorkspace(ws.Name, ws.APIKey, ws.TeamID, triggerLabel, ws.ProjectIDs, ws.Projects, wsInterval))
 				notifiersByTeamID[ws.TeamID] = linearSDK.NewNotifier(linearSDK.NewClient(ws.APIKey))
 			}
