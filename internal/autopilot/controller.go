@@ -2774,6 +2774,37 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	}
 	deadlineExceeded := time.Since(prState.CIWaitStartedAt) > ciTimeout
 
+	// GH-5066 (parent title clause 2, "no re-arm on base retarget"): a PR
+	// parked below via parkForBaseMismatch stays in StageWaitingCI, so it
+	// never reaches handleMerging's own un-park guard (GH-4911,
+	// controller.go ~line 4422) — that only runs once Stage reaches
+	// StageMerging. ProcessPR already refreshes TargetBranch from
+	// ghPR.Base.Ref unconditionally every tick (GH-4909 defect 1) before
+	// this handler runs, so a GitHub-side retarget (e.g. the base branch
+	// merged and was deleted) is visible here. Without this guard, a
+	// retargeted-but-still-Parked PR fell straight into the stale
+	// deadlineExceeded branch below on the very next tick — the CI-wait
+	// clock was never reset — reproducing the exact terminal StageFailed
+	// dead end this park exists to avoid. Mirror the handleMerging pattern:
+	// once TargetBranch resolves back to the default branch, clear the
+	// park and re-arm the wait clock so the PR gets a fresh CI-wait window
+	// against its corrected base instead of an instant re-fail.
+	if prState.Parked && strings.HasPrefix(prState.EscalationReason, baseMismatchReasonPrefix) {
+		if defaultBranch := c.resolveMainBranchName(); prState.TargetBranch == defaultBranch {
+			c.log.Info("handleWaitingCI: un-parking PR — base mismatch resolved, retargeted to default branch",
+				"pr", prState.PRNumber, "issue", prState.IssueNumber, "prior_reason", prState.EscalationReason)
+			prState.Parked = false
+			prState.EscalationReason = ""
+			prState.CIWaitStartedAt = time.Now()
+			deadlineExceeded = false
+			if prState.IssueNumber > 0 {
+				if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, labelParkedAwaitingApproval); err != nil {
+					c.log.Debug("parked-awaiting-approval label cleanup on un-park", "issue", prState.IssueNumber, "error", err)
+				}
+			}
+		}
+	}
+
 	// GH-419, GH-457: Always refresh HeadSHA from GitHub before checking CI.
 	// Self-review or other post-creation commits can change the HEAD,
 	// and OnPRCreated may have been called with an empty or stale CommitSHA.

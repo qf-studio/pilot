@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -514,5 +515,217 @@ func TestController_HandleMerging_StackedSuperset_DetectionErrorFailsOpen(t *tes
 	}
 	if len(sink.events) != 0 {
 		t.Fatalf("alerts fired %d times, want 0 — a detection error is not itself an escalation", len(sink.events))
+	}
+}
+
+// TestController_HandleWaitingCI_BaseMismatchPark_UnparksAfterBaseMerges_GH5066
+// extends this suite (GH-5066, subtask 2/4) to the OTHER park entry point:
+// GH-5066/PR (commit 802366ef) taught handleWaitingCI's confirmed-CI-timeout
+// branch to park a non-default-base PR (via parkForBaseMismatch) instead of
+// failing terminally — but that park leaves the PR in StageWaitingCI, never
+// StageMerging. TestController_HandleMerging_StackedSuperset_UnparksAfterBaseMerges
+// above proves the resume path for a PR parked INSIDE handleMerging (already
+// in StageMerging); this test proves — or disproves — the analogous claim
+// for a PR parked from handleWaitingCI: does it, too, un-park and proceed
+// once its base (A) reaches StageMerged, exactly as the parent GH-5066 title's
+// "no re-arm on base retarget" clause asks?
+func TestController_HandleWaitingCI_BaseMismatchPark_UnparksAfterBaseMerges_GH5066(t *testing.T) {
+	const sha = "gh5066resume01"
+	const baseSHA = "gh5066base01"
+	const prNumber = 17
+	const baseNumber = 16
+
+	var ciResolved atomic.Bool
+	var mergeCalled, labelApplied, labelRemoved atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/"+sha+"/check-runs":
+			// CI never resolves while still stacked on the sibling branch —
+			// mirrors the PR#5055 incident, where the repo's workflow is
+			// scoped to the default branch only so a stacked PR's checks
+			// never run. Once retargeted to main (ciResolved flips below),
+			// a fresh check run can actually complete.
+			status := github.CheckRunInProgress
+			conclusion := ""
+			if ciResolved.Load() {
+				status = github.CheckRunCompleted
+				conclusion = github.ConclusionSuccess
+			}
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{Name: "ci", Status: status, Conclusion: conclusion}},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/repos/owner/repo/pulls/17/files":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		case r.URL.Path == "/repos/owner/repo/issues/17" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"number":17,"title":"GH-17 work, stacked on GH-16"}`))
+		case r.URL.Path == "/repos/owner/repo/pulls/17/merge" && r.Method == http.MethodPut:
+			mergeCalled.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"sha":"mergedSHA","merged":true,"message":"merged"}`))
+		case strings.HasSuffix(r.URL.Path, "/issues/17/comments") && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		case strings.HasSuffix(r.URL.Path, "/issues/17/comments") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1,"body":"posted"}`))
+		case r.URL.Path == "/repos/owner/repo/issues/17/labels" && r.Method == http.MethodPost:
+			labelApplied.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		case r.URL.Path == "/repos/owner/repo/issues/17/labels/"+labelParkedAwaitingApproval && r.Method == http.MethodDelete:
+			labelRemoved.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/17/labels/") && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	sink := &fakeAlertSink{}
+	c.SetAlertsEngine(sink)
+
+	c.mu.Lock()
+	c.activePRs[baseNumber] = &PRState{
+		PRNumber:     baseNumber,
+		BranchName:   "pilot/GH-16",
+		HeadSHA:      baseSHA,
+		TargetBranch: "main",
+		Stage:        StageWaitingCI, // A hasn't cleared CI yet
+		CreatedAt:    time.Now(),
+	}
+	c.activePRs[prNumber] = &PRState{
+		PRNumber:     prNumber,
+		IssueNumber:  prNumber,
+		BranchName:   "pilot/GH-17",
+		HeadSHA:      sha,
+		TargetBranch: "pilot/GH-16", // stacked on A's still-open branch
+		Stage:        StageWaitingCI,
+		CIStatus:     CIPending,
+		// Deadline already exceeded, mirroring the PR#5055 incident: CI never
+		// ran because this repo's workflow is scoped to the default branch.
+		CIWaitStartedAt: time.Now().Add(-45 * time.Minute),
+		CreatedAt:       time.Now(),
+	}
+	c.mu.Unlock()
+
+	ghPRStacked := &github.PullRequest{
+		Number: prNumber,
+		Head:   github.PRRef{SHA: sha},
+		Base:   github.PRRef{Ref: "pilot/GH-16"},
+	}
+
+	// Tick 1: A is still open, B's CI never ran and the wait deadline has
+	// passed — B must park via parkForBaseMismatch (GH-5066) rather than
+	// fail terminally.
+	if err := c.ProcessPR(context.Background(), prNumber, ghPRStacked); err != nil {
+		t.Fatalf("tick 1: ProcessPR: %v", err)
+	}
+	pr17, ok := c.GetPRState(prNumber)
+	if !ok {
+		t.Fatal("PR 17 should still be tracked")
+	}
+	if pr17.Stage != StageWaitingCI {
+		t.Fatalf("tick 1: Stage = %s, want %s (parked, not failed)", pr17.Stage, StageWaitingCI)
+	}
+	if !pr17.Parked {
+		t.Fatal("tick 1: Parked should be true")
+	}
+	if !strings.HasPrefix(pr17.EscalationReason, baseMismatchReasonPrefix) {
+		t.Fatalf("tick 1: EscalationReason = %q, want prefix %q", pr17.EscalationReason, baseMismatchReasonPrefix)
+	}
+	if labelApplied.Load() != 1 {
+		t.Fatalf("tick 1: parked-awaiting-approval label applied %d times, want 1", labelApplied.Load())
+	}
+
+	// A merges: modeled exactly as
+	// TestController_HandleMerging_StackedSuperset_UnparksAfterBaseMerges
+	// models it above — a stage transition to StageMerged while STILL
+	// tracked in activePRs (GH-5049 requirement 3), plus the GitHub-side
+	// consequence of a merged-and-deleted base branch: the PR is auto-
+	// retargeted to A's own base ("main"), which ProcessPR refreshes into
+	// TargetBranch unconditionally every tick (GH-4909 defect 1, line
+	// ~2614) before any stage handler runs.
+	c.mu.Lock()
+	c.activePRs[baseNumber].Stage = StageMerged
+	c.mu.Unlock()
+	ghPRRetargeted := &github.PullRequest{
+		Number: prNumber,
+		Head:   github.PRRef{SHA: sha},
+		Base:   github.PRRef{Ref: "main"},
+	}
+
+	// Tick 2: A has merged and B has been retargeted to main — B must
+	// un-park (base mismatch resolved) and get a fresh CI-wait window
+	// instead of falling into the stale-deadline StageFailed branch it was
+	// parked to avoid.
+	if err := c.ProcessPR(context.Background(), prNumber, ghPRRetargeted); err != nil {
+		t.Fatalf("tick 2: ProcessPR: %v", err)
+	}
+	pr17, ok = c.GetPRState(prNumber)
+	if !ok {
+		t.Fatal("PR 17 should still be tracked")
+	}
+	if pr17.Parked {
+		t.Error("tick 2: Parked should be false — the base-mismatch park must clear once the PR is retargeted to the default branch")
+	}
+	if pr17.EscalationReason != "" {
+		t.Errorf("tick 2: EscalationReason = %q, want empty — cleared alongside Parked", pr17.EscalationReason)
+	}
+	if pr17.Stage != StageWaitingCI {
+		t.Fatalf("tick 2: Stage = %s, want %s — un-parking must not itself fail or skip stages, just resume the normal CI wait", pr17.Stage, StageWaitingCI)
+	}
+	if labelRemoved.Load() != 1 {
+		t.Errorf("tick 2: parked-awaiting-approval label removed %d times, want 1", labelRemoved.Load())
+	}
+
+	// Now let CI actually resolve against the corrected base (main), exactly
+	// as it would in reality once the PR is properly retargeted. B must
+	// proceed all the way through to a completed merge — driving ProcessPR
+	// repeatedly, same as the real poll loop, since each call advances at
+	// most one stage.
+	ciResolved.Store(true)
+	const maxTicks = 6
+	for i := 0; i < maxTicks; i++ {
+		if err := c.ProcessPR(context.Background(), prNumber, ghPRRetargeted); err != nil {
+			t.Fatalf("post-resume tick %d: ProcessPR: %v", i, err)
+		}
+		pr17, ok = c.GetPRState(prNumber)
+		if !ok {
+			t.Fatal("PR 17 should still be tracked")
+		}
+		if pr17.Stage == StageFailed || pr17.Stage == StageCIFailed {
+			t.Fatalf("post-resume tick %d: Stage = %s — B must merge cleanly once retargeted, CI passing", i, pr17.Stage)
+		}
+		if pr17.Stage == StageMerged {
+			break
+		}
+	}
+	pr17, ok = c.GetPRState(prNumber)
+	if !ok {
+		t.Fatal("PR 17 should still be tracked")
+	}
+	if pr17.Stage != StageMerged {
+		t.Fatalf("Stage = %s, want %s — B should have proceeded through to a completed merge", pr17.Stage, StageMerged)
+	}
+	if pr17.Parked {
+		t.Error("Parked should still be false after merging")
+	}
+	if mergeCalled.Load() != 1 {
+		t.Errorf("merge called %d times, want 1 — B must merge exactly once after un-parking", mergeCalled.Load())
 	}
 }
