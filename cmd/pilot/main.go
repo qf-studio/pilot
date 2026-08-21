@@ -4200,10 +4200,19 @@ func (c terminalCompletionChecker) InvalidateCompletion(taskID, projectPath stri
 	return c.store.InvalidateCompletion(taskID, projectPath)
 }
 
-// storeExecutionSaver adapts *memory.Store to the github.ExecutionSaver interface.
-// GH-2802: Persists pre-flight rejection records for observability.
+// storeExecutionSaver adapts *memory.Store to the sdk core.ExecutionSaver /
+// core.ExecutionSaverV2 interfaces. GH-2802: Persists pre-flight rejection
+// records for observability. Must stay a VALUE receiver — the poller wires a
+// value (poller_github.go), and a pointer receiver would silently satisfy
+// only core.ExecutionSaver, dropping back to the legacy repo-blind path
+// (see var _ core.ExecutionSaverV2 assertion below).
 type storeExecutionSaver struct {
 	store *memory.Store
+	// cfg resolves the declined issue's owning project (GH-4845), same
+	// precedence idiom as handleIssueGeneric's canary stamp fix (GH-4833).
+	// Nil is tolerated — IsCanary then stays false, matching pre-GH-4845
+	// behavior.
+	cfg *config.Config
 	// controller is optional (nil for a repo with no autopilot controller
 	// wired) — when set, a preflight decline of a Pilot-spawned fix issue
 	// reacts via the owner-death path (GH-4842) instead of only being
@@ -4213,36 +4222,83 @@ type storeExecutionSaver struct {
 
 // ownerDeathReactTimeout bounds the synchronous owner-death reaction
 // (GitHub issue fetch + label/comment writes) fired from inside
-// SaveDeclinedExecution, which the SDK poller calls inline on every
+// SaveDeclinedExecutionRecord, which the SDK poller calls inline on every
 // pre-flight decline.
 const ownerDeathReactTimeout = 15 * time.Second
 
-func (s storeExecutionSaver) SaveDeclinedExecution(taskID, projectPath, status, reason string) error {
+// SaveDeclinedExecutionRecord implements sdkCore.ExecutionSaverV2
+// (studio-sdk v0.35.0+, sdk PR#112). rec carries the declined issue's repo
+// identity (RepoOwner/RepoName) — the SDK poller passes it on every
+// pre-flight decline — which lets us resolve the owning project via
+// FindProjectByRepo and stamp IsCanary correctly (GH-4845). Before this, the
+// legacy SaveDeclinedExecution only had ProjectPath, which collides across
+// projects sharing a local checkout (the same GH-4833 collision that
+// corrupted canary attribution for dispatched tasks, fixed for those in
+// handleIssueGeneric by PR#4837). An empty RepoOwner/RepoName (e.g. the
+// legacy SaveDeclinedExecution delegation below) falls back to the
+// path-only lookup, preserving prior behavior byte-for-byte.
+func (s storeExecutionSaver) SaveDeclinedExecutionRecord(rec sdkCore.DeclinedExecutionRecord) error {
 	now := time.Now()
+
+	isCanary := false
+	if s.cfg != nil {
+		var proj *config.ProjectConfig
+		if rec.RepoOwner != "" && rec.RepoName != "" {
+			proj = s.cfg.FindProjectByRepo(fmt.Sprintf("%s/%s", rec.RepoOwner, rec.RepoName))
+		}
+		if proj == nil {
+			proj = s.cfg.GetProject(rec.ProjectPath)
+		}
+		if proj != nil {
+			isCanary = proj.Canary
+		}
+	}
+
 	err := s.store.SaveExecution(&memory.Execution{
-		ID:          fmt.Sprintf("%s-preflight-%d", taskID, now.UnixNano()),
-		TaskID:      taskID,
-		ProjectPath: projectPath,
-		Status:      status,
-		Error:       reason,
+		ID:          fmt.Sprintf("%s-preflight-%d", rec.TaskID, now.UnixNano()),
+		TaskID:      rec.TaskID,
+		ProjectPath: rec.ProjectPath,
+		Status:      rec.Status,
+		Error:       rec.Reason,
 		CreatedAt:   now,
 		CompletedAt: &now,
+		IsCanary:    isCanary,
 	})
 
 	// GH-4842: a preflight decline is owner death for a Pilot-spawned fix
 	// issue — react (re-arm/escalate its source) using the same signal the
 	// SDK already produces here, instead of adding a new poller.
-	if status == "declined-preflight" && s.controller != nil {
+	if rec.Status == "declined-preflight" && s.controller != nil {
 		var issueNum int
-		if _, scanErr := fmt.Sscanf(taskID, "GH-%d", &issueNum); scanErr == nil && issueNum > 0 {
+		if _, scanErr := fmt.Sscanf(rec.TaskID, "GH-%d", &issueNum); scanErr == nil && issueNum > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), ownerDeathReactTimeout)
-			s.controller.ReactToDeclinedFixIssue(ctx, issueNum, reason)
+			s.controller.ReactToDeclinedFixIssue(ctx, issueNum, rec.Reason)
 			cancel()
 		}
 	}
 
 	return err
 }
+
+// SaveDeclinedExecution implements the legacy sdkCore.ExecutionSaver
+// interface, kept for interface compatibility with any caller that only
+// knows the narrower type. Delegates to SaveDeclinedExecutionRecord with an
+// empty repo identity, which falls back to the path-only project lookup —
+// identical to this method's pre-GH-4845 behavior.
+func (s storeExecutionSaver) SaveDeclinedExecution(taskID, projectPath, status, reason string) error {
+	return s.SaveDeclinedExecutionRecord(sdkCore.DeclinedExecutionRecord{
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      status,
+		Reason:      reason,
+	})
+}
+
+// var _ sdkCore.ExecutionSaverV2 assertion: fail the build if
+// storeExecutionSaver ever stops satisfying ExecutionSaverV2, so the SDK
+// poller's type-assert (poller.go handlePreFlightReject) can never silently
+// regress to the repo-blind legacy path (GH-4845 fail-when-unwired guard).
+var _ sdkCore.ExecutionSaverV2 = storeExecutionSaver{}
 
 // warnIfMetricsScopeEmpty logs a startup warning when a configured
 // dashboard.metrics_scope_path matches zero executions in the store. This is
