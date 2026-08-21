@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // Engine is the core alerting engine that processes events and triggers alerts
@@ -71,6 +72,15 @@ type Engine struct {
 	// repeated registration (e.g. a per-repo wrapper rebuilt each poll
 	// cycle) shares one set of counters instead of resetting them.
 	deadManTrackers map[string]*DeadManTracker
+
+	// activeAlertStore persists activeAlerts through fire/resolve so a
+	// condition that recovers while the daemon is down still emits its
+	// resolution once the daemon restarts (GH-4890). nil (the default,
+	// unless WithActiveAlertStore is passed) makes every persistence call a
+	// no-op — the engine then behaves exactly as it did before this store
+	// existed. Writes are best-effort and off the alerting path: a store
+	// error is logged and the alert still fires/resolves.
+	activeAlertStore ActiveAlertStore
 }
 
 // minOrphanEvictionThreshold floors evaluateStuckTasks' orphan-eviction window
@@ -257,6 +267,20 @@ func (e *Engine) WireLifecycleAlertProcessor(processor executor.AlertEventProces
 	e.lifecycle.SetAlertProcessor(processor)
 }
 
+// WithActiveAlertStore wires the optional persistence store for currently-firing
+// alerts (GH-4890). When set, the engine writes through to the store on fire
+// (markActive) and resolve (handleConfigHealthy), and NewEngine rehydrates the
+// in-memory activeAlerts map from it — so an alert that recovered while the
+// daemon was down still emits its resolution, to the exact channels the
+// original alert was delivered to, once the daemon restarts. Omitting this
+// option (the default) makes the engine behave exactly as before: active-alert
+// state lives only in the in-memory map and is lost on restart.
+func WithActiveAlertStore(store ActiveAlertStore) EngineOption {
+	return func(e *Engine) {
+		e.activeAlertStore = store
+	}
+}
+
 // NewEngine creates a new alerting engine
 func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 	e := &Engine{
@@ -281,7 +305,100 @@ func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 		opt(e)
 	}
 
+	e.rehydrateActiveAlerts()
+
 	return e
+}
+
+// rehydrateActiveAlerts loads persisted active-alert rows (if a store was
+// wired via WithActiveAlertStore) and re-seeds the in-memory activeAlerts map
+// (GH-4890). Runs once, at construction, so a restart during an outage
+// doesn't lose the record that something is still firing. A load failure is
+// logged and treated as "nothing to rehydrate" — best-effort, off the
+// alerting path, matching persistActiveAlert/deletePersistedActiveAlert.
+func (e *Engine) rehydrateActiveAlerts() {
+	if e.activeAlertStore == nil {
+		return
+	}
+	rows, err := e.activeAlertStore.LoadActiveAlerts()
+	if err != nil {
+		e.logger.Warn("failed to rehydrate active alerts from store", "error", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+
+	e.mu.Lock()
+	for _, row := range rows {
+		e.activeAlerts[activeAlertKey(row.RuleName, row.Source)] = &activeAlert{
+			rule: AlertRule{Name: row.RuleName},
+			alert: &Alert{
+				ID:          row.AlertID,
+				Type:        AlertType(row.AlertType),
+				Title:       row.Title,
+				Message:     row.Message,
+				Source:      row.Source,
+				ProjectPath: row.ProjectPath,
+				Metadata:    row.Metadata,
+				CreatedAt:   row.CreatedAt,
+			},
+			// channels is the set the original alert was delivered to — carried
+			// through so the rehydrated resolution reaches those exact
+			// destinations instead of being re-filtered by its own info
+			// severity (dispatchResolution dispatches directly to
+			// active.channels, bypassing resolveChannels).
+			channels: row.Channels,
+		}
+	}
+	e.mu.Unlock()
+
+	e.logger.Info("rehydrated active alerts from store", "count", len(rows))
+}
+
+// persistActiveAlert writes active through to the store, if one is wired
+// (GH-4890). Best-effort and off the alerting path: a store error is logged,
+// never returned or surfaced — the alert has already fired by the time this
+// runs (called from markActive after the in-memory map is updated).
+func (e *Engine) persistActiveAlert(active *activeAlert) {
+	if e.activeAlertStore == nil {
+		return
+	}
+	row := &memory.ActiveAlert{
+		RuleName:    active.rule.Name,
+		Source:      active.alert.Source,
+		AlertID:     active.alert.ID,
+		AlertType:   string(active.alert.Type),
+		Title:       active.alert.Title,
+		Message:     active.alert.Message,
+		ProjectPath: active.alert.ProjectPath,
+		Metadata:    active.alert.Metadata,
+		Channels:    active.channels,
+		CreatedAt:   active.alert.CreatedAt,
+	}
+	if err := e.activeAlertStore.UpsertActiveAlert(row); err != nil {
+		e.logger.Warn("failed to persist active alert",
+			"rule", active.rule.Name,
+			"source", active.alert.Source,
+			"error", err,
+		)
+	}
+}
+
+// deletePersistedActiveAlert removes the persisted row on resolution, if a
+// store is wired (GH-4890). Best-effort and off the alerting path: a store
+// error is logged, never returned — the resolution still dispatches.
+func (e *Engine) deletePersistedActiveAlert(ruleName, source string) {
+	if e.activeAlertStore == nil {
+		return
+	}
+	if err := e.activeAlertStore.DeleteActiveAlert(ruleName, source); err != nil {
+		e.logger.Warn("failed to delete persisted active alert",
+			"rule", ruleName,
+			"source", source,
+			"error", err,
+		)
+	}
 }
 
 // Start starts the alerting engine
@@ -669,13 +786,18 @@ func (e *Engine) markActive(rule AlertRule, alert *Alert) {
 	}
 	channels := e.resolveChannels(rule, alert)
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.activeAlerts[activeAlertKey(rule.Name, alert.Source)] = &activeAlert{
+	active := &activeAlert{
 		rule:     rule,
 		alert:    alert,
 		channels: channels,
 	}
+
+	e.mu.Lock()
+	e.activeAlerts[activeAlertKey(rule.Name, alert.Source)] = active
+	e.mu.Unlock()
+
+	// GH-4890: persist off the alerting path — the alert has already fired.
+	e.persistActiveAlert(active)
 }
 
 func (e *Engine) handleConfigHealthy(ctx context.Context, event Event) {
@@ -698,6 +820,9 @@ func (e *Engine) handleConfigHealthy(ctx context.Context, event Event) {
 		if !ok {
 			continue
 		}
+		// GH-4890: delete off the alerting path before dispatching, so the
+		// persisted row can never outlive the in-memory state it mirrors.
+		e.deletePersistedActiveAlert(rule.Name, event.Source)
 		e.dispatchResolution(ctx, active)
 	}
 }
