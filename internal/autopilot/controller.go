@@ -18,6 +18,7 @@ import (
 	"github.com/qf-studio/pilot/internal/ghbudget"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/retryladder"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
@@ -9267,29 +9268,77 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		if issueAlreadyClosed {
 			c.log.Info("skipping issue label correction: issue already closed", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 		} else {
-			addLabels := []string{issueLabel}
-			// GH-5042/GH-5032: pilot-retry-ready must always imply pollable —
-			// ensure the pilot label is present in the very same mutation
-			// instead of trusting it survived whatever state the issue was
-			// already in. GH-5032's live incident: an escalateAndHold hold
-			// had left `pilot` absent, so setting pilot-retry-ready alone
-			// stranded a "ready to retry" issue the poller could never see
-			// for 2+ hours.
-			if issueLabel == github.LabelRetryReady {
-				addLabels = append(addLabels, github.LabelPilot)
+			// GH-5099 precedence rule: exhaustion outranks close-supersedes-hold.
+			// GH-5079 parks an issue under pilot-needs-human once its
+			// pilot-failed-retry ladder reaches the terminal
+			// pilot-failed-retry-exhausted rung. A second/stale PR for the same
+			// issue closing later must not silently un-park it — without this
+			// check, the "close always supersedes hold" rule below would strip
+			// pilot-needs-human and re-arm pilot-retry-ready (+ pilot) the
+			// moment any PR for the issue closes, undoing GH-5079's terminal
+			// park. issue/err are the pilot-done-guard fetch above (line
+			// ~9162); err != nil there already fails open, so only a clean
+			// read counts as positive evidence of exhaustion.
+			issueExhausted := err == nil && issue != nil && github.HasLabel(issue, github.LabelFailedRetryExhausted)
+
+			var addLabels []string
+			if issueLabel == github.LabelRetryReady && issueExhausted {
+				// Exhaustion wins: do not re-arm retry-ready or its implied
+				// pilot label on an exhausted+parked issue.
+			} else {
+				addLabels = []string{issueLabel}
+				// GH-5042/GH-5032: pilot-retry-ready must always imply pollable —
+				// ensure the pilot label is present in the very same mutation
+				// instead of trusting it survived whatever state the issue was
+				// already in. GH-5032's live incident: an escalateAndHold hold
+				// had left `pilot` absent, so setting pilot-retry-ready alone
+				// stranded a "ready to retry" issue the poller could never see
+				// for 2+ hours.
+				if issueLabel == github.LabelRetryReady {
+					addLabels = append(addLabels, github.LabelPilot)
+				}
 			}
 			// GH-5042: whatever this close resolves to — retry-ready,
-			// superseded, or failed-owned-elsewhere — it always supersedes
+			// superseded, or failed-owned-elsewhere — it normally supersedes
 			// any escalation hold still standing on the issue (the hold
 			// existed for a PR that is now closed; there is nothing left
 			// for it to hold). Strip pilot-needs-human/needs-manual-rebase
-			// here unconditionally, mirroring escalateAndHold's reverse
-			// direction (needs-human supersedes retry-ready).
-			removeLabels := []string{github.LabelInProgress, labelNeedsHuman, labelNeedsManualRebase}
+			// here, mirroring escalateAndHold's reverse direction
+			// (needs-human supersedes retry-ready) — except pilot-needs-human
+			// is left standing when issueExhausted (GH-5099: exhaustion
+			// outranks close-supersedes-hold, see above).
+			removeLabels := []string{github.LabelInProgress, labelNeedsManualRebase}
+			if !issueExhausted {
+				removeLabels = append(removeLabels, labelNeedsHuman)
+			}
 			if issueLabel != github.LabelFailed {
 				// Remove stale pilot-failed label (GH-1302 gap) — only when we're not
 				// the ones setting it above.
 				removeLabels = append(removeLabels, github.LabelFailed)
+			}
+			// GH-5099: when this close resolves to pilot-failed, fold the
+			// pilot-failed-retry-N ladder advance into this same mutation
+			// (subtask GH-5098's shared internal/retryladder helper) instead
+			// of a separate label write — mirrors the executor's
+			// title-rejection escalation call site
+			// (internal/executor/title_rejection.go, GH-5077/GH-5098).
+			// currentLabels reflects the issue's state immediately before
+			// this mutation (the same pilot-done-guard fetch above), so a
+			// fresh pilot-failed application here advances the rung exactly
+			// once, and a repeat application (issue already carries
+			// pilot-failed) is a no-op per retryladder.Advance.
+			if issueLabel == github.LabelFailed && err == nil && issue != nil {
+				currentLabels := make([]string, len(issue.Labels))
+				for i, l := range issue.Labels {
+					currentLabels[i] = l.Name
+				}
+				hasFailed := github.HasLabel(issue, github.LabelFailed)
+				if add, remove, _ := retryladder.Advance(currentLabels, hasFailed); add != "" {
+					addLabels = append(addLabels, add)
+					if remove != "" {
+						removeLabels = append(removeLabels, remove)
+					}
+				}
 			}
 			c.mutateIssueLabels(ctx, prState.IssueNumber, addLabels, removeLabels)
 		}
