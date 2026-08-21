@@ -375,6 +375,7 @@ func TestDirectPath_QualityGateRetryEndToEnd(t *testing.T) {
 		Description: "First check fails and retries, second check passes",
 		ProjectPath: t.TempDir(),
 		LocalMode:   true,
+		CreatePR:    true,
 	}
 	if err := store.SaveExecution(&memory.Execution{ID: task.LogExecutionID(), TaskID: task.ID, Status: "running"}); err != nil {
 		t.Fatalf("SaveExecution failed: %v", err)

@@ -3569,6 +3569,7 @@ func TestLocalModeRunsQualityGates(t *testing.T) {
 		Description: "Quality gates should run in LocalMode",
 		ProjectPath: projectDir,
 		LocalMode:   true,
+		CreatePR:    true,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -508,6 +508,15 @@ type Task struct {
 	// canary parent's descendants stay canary even if project config changes
 	// mid-run.
 	IsCanary bool
+	// SkipQualityGates marks this task as read-only Q&A/analysis with no code
+	// produced by design (GH-4876): comms question/research/planning/chat
+	// tasks explicitly instructed "DO NOT make any changes". CreatePR==false
+	// is NOT a reliable proxy for this — direct-commit and other non-PR code
+	// tasks also have CreatePR==false but do write files and must still run
+	// gates. Only set this for task-construction sites that are certain no
+	// code will be written; it skips both the GH-363 build/test auto-enable
+	// and any explicitly configured quality checker.
+	SkipQualityGates bool
 }
 
 // LogExecutionID returns the ID that runner-side writes (execution_logs.execution_id,
@@ -4333,71 +4342,384 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			}
 		}
 
-		// Auto-enable minimal build gate if not configured (GH-363)
-		// This ensures broken code never becomes a PR, even without explicit quality config
-		if r.qualityCheckerFactory == nil {
-			buildCmd := quality.DetectBuildCommand(executionPath)
-			testCmd := quality.DetectTestCommand(executionPath)
-			if buildCmd != "" {
-				log.Info("Auto-enabling build gate (no quality config)",
-					slog.String("command", buildCmd),
-				)
-
-				// Create minimal quality checker with auto-detected build command
-				minimalConfig := quality.MinimalBuildGate()
-				minimalConfig.Gates[0].Command = buildCmd
-
-				// GH-2398: also auto-enable a test gate when a test runner is
-				// detectable. Empty testCmd → skip the gate entirely instead of
-				// failing it on workspaces that lack a Makefile / test harness.
-				if testCmd != "" {
-					log.Info("Auto-enabling test gate", slog.String("command", testCmd))
-					minimalConfig.Gates = append(minimalConfig.Gates, &quality.Gate{
-						Name:        "test",
-						Type:        quality.GateTest,
-						Command:     testCmd,
-						Required:    true,
-						Timeout:     5 * time.Minute,
-						MaxRetries:  1,
-						RetryDelay:  3 * time.Second,
-						FailureHint: "Fix failing tests in the changed files",
-					})
-				}
-
-				r.qualityCheckerFactory = func(taskID, projectPath string) QualityChecker {
-					return &simpleQualityChecker{
-						config:      minimalConfig,
-						projectPath: projectPath,
-						taskID:      taskID,
-					}
-				}
-			}
-		}
-
 		// Track if quality gates passed for self-review decision (GH-1079)
 		qualityGatesPassed := false
 
-		// Run quality gates if configured.
-		// Previously skipped in LocalMode (v25 OOM concern), re-enabled since
-		// deps are now pre-installed and gate runs pytest only (bounded cost).
-		if r.qualityCheckerFactory != nil {
-			const maxAutoRetries = 2 // Circuit breaker to prevent infinite loops
+		// GH-4876: quality gates only make sense for tasks that actually
+		// produce code changes. Read-only comms tasks (question/research/
+		// planning/chat) are explicitly instructed not to touch files and
+		// stamp task.SkipQualityGates at construction (internal/comms/
+		// handler.go) — running gates against them fails deterministically
+		// (nothing to lint/test) and triggers a doomed retry cycle against a
+		// working tree that was never set up for code work.
+		//
+		// Deliberately NOT gated on task.CreatePR: that flag only tracks
+		// whether a PR gets opened. Direct-commit and other non-PR code
+		// tasks also have CreatePR==false but do write files, so they must
+		// still run quality gates.
+		if !task.SkipQualityGates {
 
-			// Track quality gate results across retries (GH-209)
-			var finalOutcome *QualityOutcome
-			var totalQualityRetries int
+			// Auto-enable minimal build gate if not configured (GH-363)
+			// This ensures broken code never becomes a PR, even without explicit quality config
+			if r.qualityCheckerFactory == nil {
+				buildCmd := quality.DetectBuildCommand(executionPath)
+				testCmd := quality.DetectTestCommand(executionPath)
+				if buildCmd != "" {
+					log.Info("Auto-enabling build gate (no quality config)",
+						slog.String("command", buildCmd),
+					)
 
-			for retryAttempt := 0; retryAttempt <= maxAutoRetries; retryAttempt++ {
-				r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
-				r.saveLogEntry(task.LogExecutionID(), "info", "Running tests...")
+					// Create minimal quality checker with auto-detected build command
+					minimalConfig := quality.MinimalBuildGate()
+					minimalConfig.Gates[0].Command = buildCmd
 
-				checker := r.qualityCheckerFactory(task.ID, executionPath)
-				outcome, qErr := checker.Check(ctx)
-				if qErr != nil {
-					log.Error("Quality gate check error", slog.Any("error", qErr))
+					// GH-2398: also auto-enable a test gate when a test runner is
+					// detectable. Empty testCmd → skip the gate entirely instead of
+					// failing it on workspaces that lack a Makefile / test harness.
+					if testCmd != "" {
+						log.Info("Auto-enabling test gate", slog.String("command", testCmd))
+						minimalConfig.Gates = append(minimalConfig.Gates, &quality.Gate{
+							Name:        "test",
+							Type:        quality.GateTest,
+							Command:     testCmd,
+							Required:    true,
+							Timeout:     5 * time.Minute,
+							MaxRetries:  1,
+							RetryDelay:  3 * time.Second,
+							FailureHint: "Fix failing tests in the changed files",
+						})
+					}
+
+					r.qualityCheckerFactory = func(taskID, projectPath string) QualityChecker {
+						return &simpleQualityChecker{
+							config:      minimalConfig,
+							projectPath: projectPath,
+							taskID:      taskID,
+						}
+					}
+				}
+			}
+
+			// Run quality gates if configured.
+			// Previously skipped in LocalMode (v25 OOM concern), re-enabled since
+			// deps are now pre-installed and gate runs pytest only (bounded cost).
+			if r.qualityCheckerFactory != nil {
+				const maxAutoRetries = 2 // Circuit breaker to prevent infinite loops
+
+				// Track quality gate results across retries (GH-209)
+				var finalOutcome *QualityOutcome
+				var totalQualityRetries int
+
+				for retryAttempt := 0; retryAttempt <= maxAutoRetries; retryAttempt++ {
+					r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
+					r.saveLogEntry(task.LogExecutionID(), "info", "Running tests...")
+
+					checker := r.qualityCheckerFactory(task.ID, executionPath)
+					outcome, qErr := checker.Check(ctx)
+					if qErr != nil {
+						log.Error("Quality gate check error", slog.Any("error", qErr))
+						result.Success = false
+						result.Error = fmt.Sprintf("quality gate error: %v", qErr)
+						r.reportProgress(task.ID, "Quality Failed", 100, result.Error)
+
+						// Emit task failed event
+						r.emitAlertEvent(AlertEvent{
+							Type:      AlertEventTypeTaskFailed,
+							TaskID:    task.ID,
+							TaskTitle: task.Title,
+							Project:   task.ProjectPath,
+							Error:     result.Error,
+							Timestamp: time.Now(),
+						})
+
+						// Dispatch webhook for task failed
+						r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+							TaskID:   task.ID,
+							Title:    task.Title,
+							Project:  task.ProjectPath,
+							Duration: time.Since(start),
+							Error:    result.Error,
+							Phase:    "Quality Gates",
+						})
+
+						if recorder != nil {
+							recorder.SetModel(result.ModelName)
+							recorder.SetNavigator(state.hasNavigator)
+							if finErr := recorder.Finish("failed"); finErr != nil {
+								log.Warn("Failed to finish recording", slog.Any("error", finErr))
+							}
+						}
+						return result, nil
+					}
+
+					// Quality gates passed - exit retry loop
+					if outcome.Passed {
+						finalOutcome = outcome
+						qualityGatesPassed = true
+						r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
+
+						// Run simplification phase if enabled (GH-995)
+						if r.config != nil && r.config.Simplification != nil && r.config.Simplification.Enabled {
+							r.reportProgress(task.ID, "Simplifying", 95, "Simplifying code...")
+							simplified, simplifyErr := SimplifyModifiedFiles(executionPath, r.config.Simplification)
+							if simplifyErr != nil {
+								log.Warn("Simplification error", slog.Any("error", simplifyErr))
+								// Continue anyway - simplification is advisory
+							} else if len(simplified) > 0 {
+								log.Info("Simplified files", slog.Int("count", len(simplified)), slog.Any("files", simplified))
+							}
+						}
+
+						// Note: Self-review now runs in parallel with intent judge after quality gates (GH-1079)
+
+						break
+					}
+					// Track this outcome for potential failure reporting
+					finalOutcome = outcome
+
+					// Quality gates failed
+					log.Warn("Quality gates failed",
+						slog.Bool("should_retry", outcome.ShouldRetry),
+						slog.Int("attempt", outcome.Attempt),
+						slog.Int("retry_attempt", retryAttempt),
+					)
+
+					// Check if we should retry with Claude Code
+					if outcome.ShouldRetry && retryAttempt < maxAutoRetries {
+						totalQualityRetries++ // Track total retries across all gates (GH-209)
+						r.recordRetryAttemptEvent(task.LogExecutionID(), "quality_gate_retry", totalQualityRetries)
+						r.reportProgress(task.ID, "Quality Retry", 92,
+							fmt.Sprintf("Fixing issues (attempt %d/%d)...", retryAttempt+1, maxAutoRetries))
+
+						// GH-1066: Record correction for drift detection
+						if r.driftDetector != nil {
+							r.driftDetector.RecordCorrection("quality_gate_retry", fmt.Sprintf("Quality gate failure: %s, Retry attempt: %d", outcome.RetryFeedback, retryAttempt+1))
+						}
+
+						// Emit retry event
+						r.emitAlertEvent(AlertEvent{
+							Type:      AlertEventTypeTaskRetry,
+							TaskID:    task.ID,
+							TaskTitle: task.Title,
+							Project:   task.ProjectPath,
+							Metadata: map[string]string{
+								"attempt":  strconv.Itoa(retryAttempt + 1),
+								"feedback": truncateText(outcome.RetryFeedback, 500),
+							},
+							Timestamp: time.Now(),
+						})
+
+						// GH-4594: hard-reset the direct-mode clone to the pre-attempt
+						// baseline before re-invoking Claude, so this retry starts from a
+						// clean state instead of stacking its edits onto the previous
+						// (rejected) attempt's leftovers. preAttemptSHA is only set for
+						// direct-mode (non-worktree) execution — worktree mode is already
+						// isolated and this is a no-op there.
+						if preAttemptSHA != "" {
+							// GH-4876: use a fresh context for the reset instead of the
+							// (possibly exhausted) attempt ctx, matching the dirt-discard
+							// reset pattern — a parent deadline that has already run out
+							// must not doom a retry that is otherwise recoverable.
+							resetCtx, resetCancel := context.WithTimeout(context.Background(), 30*time.Second)
+							resetErr := git.ResetHardToCommit(resetCtx, preAttemptSHA)
+							resetCancel()
+							if resetErr != nil {
+								// GH-4876: a failed pre-retry reset means the working tree is
+								// left in an unknown state — re-invoking Claude on top of it
+								// would silently stack edits onto a rejected attempt instead
+								// of retrying cleanly. Abort the retry rather than proceeding
+								// non-fatally.
+								result.Success = false
+								result.Error = fmt.Sprintf("failed to reset to pre-attempt state before quality-gate retry: %v", resetErr)
+
+								log.Error("Aborting quality-gate retry: reset to pre-attempt state failed",
+									slog.String("task_id", task.ID),
+									slog.Int("retry_attempt", retryAttempt+1),
+									slog.Any("error", resetErr),
+								)
+								r.reportProgress(task.ID, "Quality Retry Failed", 100, result.Error)
+
+								r.emitAlertEvent(AlertEvent{
+									Type:      AlertEventTypeTaskFailed,
+									TaskID:    task.ID,
+									TaskTitle: task.Title,
+									Project:   task.ProjectPath,
+									Error:     result.Error,
+									Metadata: map[string]string{
+										"error_category": "reset_failed",
+										"phase":          "quality_retry",
+									},
+									Timestamp: time.Now(),
+								})
+
+								r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+									TaskID:   task.ID,
+									Title:    task.Title,
+									Project:  task.ProjectPath,
+									Duration: time.Since(start),
+									Error:    result.Error,
+									Phase:    "Quality Retry",
+								})
+
+								if recorder != nil {
+									recorder.SetModel(result.ModelName)
+									recorder.SetNavigator(state.hasNavigator)
+									if finErr := recorder.Finish("failed"); finErr != nil {
+										log.Warn("Failed to finish recording", slog.Any("error", finErr))
+									}
+								}
+								return result, nil
+							}
+							log.Info("Reset clone to pre-attempt state before quality-gate retry",
+								slog.String("task_id", task.ID),
+								slog.Int("retry_attempt", retryAttempt+1),
+								slog.String("sha", preAttemptSHA),
+							)
+						}
+
+						// Build retry prompt with feedback
+						retryPrompt := r.buildRetryPrompt(task, outcome.RetryFeedback, retryAttempt+1)
+
+						log.Info("Re-invoking Claude Code with retry feedback",
+							slog.String("task_id", task.ID),
+							slog.Int("retry_attempt", retryAttempt+1),
+						)
+
+						// Re-invoke backend with retry prompt. GH-4876: use a fresh
+						// context (mirroring the smart-retry pattern) rather than the
+						// attempt ctx, which may already be exhausted by the time the
+						// quality-gate retry loop reaches this point.
+						feedbackAllowed, feedbackMCP := r.executionToolOptions()
+						retryCtx, retryCancel := context.WithTimeout(context.Background(), timeout)
+						retryResult, retryErr := r.backendExecute(retryCtx, task, executionPath, ExecuteOptions{
+							Prompt:         retryPrompt,
+							TaskID:         task.ID,
+							Verbose:        task.Verbose,
+							Model:          selectedModel,
+							Effort:         selectedEffort,
+							LivenessPolicy: policy, // GH-4691/GH-4715
+							AllowedTools:   feedbackAllowed,
+							MCPConfigPath:  feedbackMCP,
+							SourceRepo:     task.SourceRepo,    // GH-4671: gh-guard task identity
+							SourceIssueID:  task.SourceIssueID, // GH-4671
+							Branch:         task.Branch,        // GH-4671
+							EventHandler: func(event BackendEvent) {
+								if recorder != nil {
+									if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
+										log.Warn("Failed to record retry event", slog.Any("error", recErr))
+									}
+								}
+								r.processBackendEvent(task.ID, event, state)
+							},
+						})
+						retryCancel()
+						r.ingestGhGuardDenials(task, retryResult) // GH-4671
+
+						if retryErr != nil {
+							result.Success = false
+
+							// GH-917: Check for classified backend error types in retry
+							alertType := AlertEventTypeTaskFailed
+							errorCategory := "unknown"
+
+							if beErr, ok := retryErr.(BackendError); ok {
+								result.Error = fmt.Sprintf("retry execution failed: %v", beErr)
+
+								switch beErr.ErrorType() {
+								case "rate_limit":
+									alertType = AlertEventTypeRateLimit
+									errorCategory = "rate_limit"
+									log.Warn("Retry hit rate limit",
+										slog.String("task_id", task.ID),
+										slog.Int("retry_attempt", retryAttempt+1),
+									)
+									r.reportProgress(task.ID, "Rate Limited", 100, "Retry hit rate limit")
+								case "invalid_config":
+									alertType = AlertEventTypeConfigError
+									errorCategory = "invalid_config"
+									log.Error("Retry failed: invalid config", slog.String("message", beErr.ErrorMessage()))
+									r.reportProgress(task.ID, "Config Error", 100, beErr.ErrorMessage())
+								case "api_error":
+									alertType = AlertEventTypeAPIError
+									errorCategory = "api_error"
+									log.Error("Retry failed: API error", slog.String("message", beErr.ErrorMessage()))
+									r.reportProgress(task.ID, "API Error", 100, beErr.ErrorMessage())
+								case "oom_killed":
+									// GH-2332: surface OOM kills distinctly in the retry path too.
+									alertType = AlertEventTypeOOMKilled
+									errorCategory = "oom_killed"
+									log.Error("Retry failed: OOM-killed", slog.String("message", beErr.ErrorMessage()))
+									r.reportProgress(task.ID, "OOM Killed", 100, beErr.ErrorMessage())
+								default:
+									log.Error("Retry execution failed", slog.Any("error", retryErr))
+									r.reportProgress(task.ID, "Retry Failed", 100, result.Error)
+								}
+							} else {
+								result.Error = fmt.Sprintf("retry execution failed: %v", retryErr)
+								log.Error("Retry execution failed", slog.Any("error", retryErr))
+								r.reportProgress(task.ID, "Retry Failed", 100, result.Error)
+							}
+
+							r.emitAlertEvent(AlertEvent{
+								Type:      alertType,
+								TaskID:    task.ID,
+								TaskTitle: task.Title,
+								Project:   task.ProjectPath,
+								Error:     result.Error,
+								Metadata: map[string]string{
+									"error_category": errorCategory,
+									"phase":          "quality_retry",
+								},
+								Timestamp: time.Now(),
+							})
+
+							// Dispatch webhook for task failed
+							r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+								TaskID:   task.ID,
+								Title:    task.Title,
+								Project:  task.ProjectPath,
+								Duration: time.Since(start),
+								Error:    result.Error,
+								Phase:    "Quality Retry",
+							})
+
+							if recorder != nil {
+								recorder.SetModel(result.ModelName)
+								recorder.SetNavigator(state.hasNavigator)
+								if finErr := recorder.Finish("failed"); finErr != nil {
+									log.Warn("Failed to finish recording", slog.Any("error", finErr))
+								}
+							}
+							return result, nil
+						}
+
+						// Update result with retry execution stats
+						result.TokensInput += retryResult.TokensInput
+						result.TokensOutput += retryResult.TokensOutput
+						result.TokensTotal = result.TokensInput + result.TokensOutput
+						if retryResult.Model != "" {
+							result.ModelName = retryResult.Model
+						}
+
+						// Extract new commit SHA if any
+						if len(state.commitSHAs) > 0 {
+							result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1]
+						}
+
+						// Continue to next iteration to re-check quality gates
+						r.reportProgress(task.ID, "Re-testing", 93, "Re-running quality gates...")
+						continue
+					}
+
+					// No more retries allowed - fail the task
 					result.Success = false
-					result.Error = fmt.Sprintf("quality gate error: %v", qErr)
-					r.reportProgress(task.ID, "Quality Failed", 100, result.Error)
+					if retryAttempt >= maxAutoRetries {
+						result.Error = fmt.Sprintf("quality gates failed after %d auto-retries", maxAutoRetries)
+					} else {
+						result.Error = "quality gates failed, max retries exhausted"
+					}
+
+					r.reportProgress(task.ID, "Quality Failed", 100, "Quality gates did not pass")
 
 					// Emit task failed event
 					r.emitAlertEvent(AlertEvent{
@@ -4429,259 +4751,14 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					return result, nil
 				}
 
-				// Quality gates passed - exit retry loop
-				if outcome.Passed {
-					finalOutcome = outcome
-					qualityGatesPassed = true
-					r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
-
-					// Run simplification phase if enabled (GH-995)
-					if r.config != nil && r.config.Simplification != nil && r.config.Simplification.Enabled {
-						r.reportProgress(task.ID, "Simplifying", 95, "Simplifying code...")
-						simplified, simplifyErr := SimplifyModifiedFiles(executionPath, r.config.Simplification)
-						if simplifyErr != nil {
-							log.Warn("Simplification error", slog.Any("error", simplifyErr))
-							// Continue anyway - simplification is advisory
-						} else if len(simplified) > 0 {
-							log.Info("Simplified files", slog.Int("count", len(simplified)), slog.Any("files", simplified))
-						}
-					}
-
-					// Note: Self-review now runs in parallel with intent judge after quality gates (GH-1079)
-
-					break
+				// Populate quality gate results in ExecutionResult (GH-209)
+				if finalOutcome != nil {
+					result.QualityGates = r.buildQualityGatesResult(finalOutcome, totalQualityRetries)
+					r.recordQualityGateEvents(task.LogExecutionID(), finalOutcome)
 				}
-				// Track this outcome for potential failure reporting
-				finalOutcome = outcome
-
-				// Quality gates failed
-				log.Warn("Quality gates failed",
-					slog.Bool("should_retry", outcome.ShouldRetry),
-					slog.Int("attempt", outcome.Attempt),
-					slog.Int("retry_attempt", retryAttempt),
-				)
-
-				// Check if we should retry with Claude Code
-				if outcome.ShouldRetry && retryAttempt < maxAutoRetries {
-					totalQualityRetries++ // Track total retries across all gates (GH-209)
-					r.recordRetryAttemptEvent(task.LogExecutionID(), "quality_gate_retry", totalQualityRetries)
-					r.reportProgress(task.ID, "Quality Retry", 92,
-						fmt.Sprintf("Fixing issues (attempt %d/%d)...", retryAttempt+1, maxAutoRetries))
-
-					// GH-1066: Record correction for drift detection
-					if r.driftDetector != nil {
-						r.driftDetector.RecordCorrection("quality_gate_retry", fmt.Sprintf("Quality gate failure: %s, Retry attempt: %d", outcome.RetryFeedback, retryAttempt+1))
-					}
-
-					// Emit retry event
-					r.emitAlertEvent(AlertEvent{
-						Type:      AlertEventTypeTaskRetry,
-						TaskID:    task.ID,
-						TaskTitle: task.Title,
-						Project:   task.ProjectPath,
-						Metadata: map[string]string{
-							"attempt":  strconv.Itoa(retryAttempt + 1),
-							"feedback": truncateText(outcome.RetryFeedback, 500),
-						},
-						Timestamp: time.Now(),
-					})
-
-					// GH-4594: hard-reset the direct-mode clone to the pre-attempt
-					// baseline before re-invoking Claude, so this retry starts from a
-					// clean state instead of stacking its edits onto the previous
-					// (rejected) attempt's leftovers. preAttemptSHA is only set for
-					// direct-mode (non-worktree) execution — worktree mode is already
-					// isolated and this is a no-op there.
-					if preAttemptSHA != "" {
-						if resetErr := git.ResetHardToCommit(ctx, preAttemptSHA); resetErr != nil {
-							log.Warn("Failed to reset clone to pre-attempt state before quality-gate retry",
-								slog.String("task_id", task.ID),
-								slog.Int("retry_attempt", retryAttempt+1),
-								slog.Any("error", resetErr),
-							)
-						} else {
-							log.Info("Reset clone to pre-attempt state before quality-gate retry",
-								slog.String("task_id", task.ID),
-								slog.Int("retry_attempt", retryAttempt+1),
-								slog.String("sha", preAttemptSHA),
-							)
-						}
-					}
-
-					// Build retry prompt with feedback
-					retryPrompt := r.buildRetryPrompt(task, outcome.RetryFeedback, retryAttempt+1)
-
-					log.Info("Re-invoking Claude Code with retry feedback",
-						slog.String("task_id", task.ID),
-						slog.Int("retry_attempt", retryAttempt+1),
-					)
-
-					// Re-invoke backend with retry prompt
-					feedbackAllowed, feedbackMCP := r.executionToolOptions()
-					retryResult, retryErr := r.backendExecute(ctx, task, executionPath, ExecuteOptions{
-						Prompt:         retryPrompt,
-						TaskID:         task.ID,
-						Verbose:        task.Verbose,
-						Model:          selectedModel,
-						Effort:         selectedEffort,
-						LivenessPolicy: policy, // GH-4691/GH-4715
-						AllowedTools:   feedbackAllowed,
-						MCPConfigPath:  feedbackMCP,
-						SourceRepo:     task.SourceRepo,    // GH-4671: gh-guard task identity
-						SourceIssueID:  task.SourceIssueID, // GH-4671
-						Branch:         task.Branch,        // GH-4671
-						EventHandler: func(event BackendEvent) {
-							if recorder != nil {
-								if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
-									log.Warn("Failed to record retry event", slog.Any("error", recErr))
-								}
-							}
-							r.processBackendEvent(task.ID, event, state)
-						},
-					})
-					r.ingestGhGuardDenials(task, retryResult) // GH-4671
-
-					if retryErr != nil {
-						result.Success = false
-
-						// GH-917: Check for classified backend error types in retry
-						alertType := AlertEventTypeTaskFailed
-						errorCategory := "unknown"
-
-						if beErr, ok := retryErr.(BackendError); ok {
-							result.Error = fmt.Sprintf("retry execution failed: %v", beErr)
-
-							switch beErr.ErrorType() {
-							case "rate_limit":
-								alertType = AlertEventTypeRateLimit
-								errorCategory = "rate_limit"
-								log.Warn("Retry hit rate limit",
-									slog.String("task_id", task.ID),
-									slog.Int("retry_attempt", retryAttempt+1),
-								)
-								r.reportProgress(task.ID, "Rate Limited", 100, "Retry hit rate limit")
-							case "invalid_config":
-								alertType = AlertEventTypeConfigError
-								errorCategory = "invalid_config"
-								log.Error("Retry failed: invalid config", slog.String("message", beErr.ErrorMessage()))
-								r.reportProgress(task.ID, "Config Error", 100, beErr.ErrorMessage())
-							case "api_error":
-								alertType = AlertEventTypeAPIError
-								errorCategory = "api_error"
-								log.Error("Retry failed: API error", slog.String("message", beErr.ErrorMessage()))
-								r.reportProgress(task.ID, "API Error", 100, beErr.ErrorMessage())
-							case "oom_killed":
-								// GH-2332: surface OOM kills distinctly in the retry path too.
-								alertType = AlertEventTypeOOMKilled
-								errorCategory = "oom_killed"
-								log.Error("Retry failed: OOM-killed", slog.String("message", beErr.ErrorMessage()))
-								r.reportProgress(task.ID, "OOM Killed", 100, beErr.ErrorMessage())
-							default:
-								log.Error("Retry execution failed", slog.Any("error", retryErr))
-								r.reportProgress(task.ID, "Retry Failed", 100, result.Error)
-							}
-						} else {
-							result.Error = fmt.Sprintf("retry execution failed: %v", retryErr)
-							log.Error("Retry execution failed", slog.Any("error", retryErr))
-							r.reportProgress(task.ID, "Retry Failed", 100, result.Error)
-						}
-
-						r.emitAlertEvent(AlertEvent{
-							Type:      alertType,
-							TaskID:    task.ID,
-							TaskTitle: task.Title,
-							Project:   task.ProjectPath,
-							Error:     result.Error,
-							Metadata: map[string]string{
-								"error_category": errorCategory,
-								"phase":          "quality_retry",
-							},
-							Timestamp: time.Now(),
-						})
-
-						// Dispatch webhook for task failed
-						r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
-							TaskID:   task.ID,
-							Title:    task.Title,
-							Project:  task.ProjectPath,
-							Duration: time.Since(start),
-							Error:    result.Error,
-							Phase:    "Quality Retry",
-						})
-
-						if recorder != nil {
-							recorder.SetModel(result.ModelName)
-							recorder.SetNavigator(state.hasNavigator)
-							if finErr := recorder.Finish("failed"); finErr != nil {
-								log.Warn("Failed to finish recording", slog.Any("error", finErr))
-							}
-						}
-						return result, nil
-					}
-
-					// Update result with retry execution stats
-					result.TokensInput += retryResult.TokensInput
-					result.TokensOutput += retryResult.TokensOutput
-					result.TokensTotal = result.TokensInput + result.TokensOutput
-					if retryResult.Model != "" {
-						result.ModelName = retryResult.Model
-					}
-
-					// Extract new commit SHA if any
-					if len(state.commitSHAs) > 0 {
-						result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1]
-					}
-
-					// Continue to next iteration to re-check quality gates
-					r.reportProgress(task.ID, "Re-testing", 93, "Re-running quality gates...")
-					continue
-				}
-
-				// No more retries allowed - fail the task
-				result.Success = false
-				if retryAttempt >= maxAutoRetries {
-					result.Error = fmt.Sprintf("quality gates failed after %d auto-retries", maxAutoRetries)
-				} else {
-					result.Error = "quality gates failed, max retries exhausted"
-				}
-
-				r.reportProgress(task.ID, "Quality Failed", 100, "Quality gates did not pass")
-
-				// Emit task failed event
-				r.emitAlertEvent(AlertEvent{
-					Type:      AlertEventTypeTaskFailed,
-					TaskID:    task.ID,
-					TaskTitle: task.Title,
-					Project:   task.ProjectPath,
-					Error:     result.Error,
-					Timestamp: time.Now(),
-				})
-
-				// Dispatch webhook for task failed
-				r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
-					TaskID:   task.ID,
-					Title:    task.Title,
-					Project:  task.ProjectPath,
-					Duration: time.Since(start),
-					Error:    result.Error,
-					Phase:    "Quality Gates",
-				})
-
-				if recorder != nil {
-					recorder.SetModel(result.ModelName)
-					recorder.SetNavigator(state.hasNavigator)
-					if finErr := recorder.Finish("failed"); finErr != nil {
-						log.Warn("Failed to finish recording", slog.Any("error", finErr))
-					}
-				}
-				return result, nil
 			}
-
-			// Populate quality gate results in ExecutionResult (GH-209)
-			if finalOutcome != nil {
-				result.QualityGates = r.buildQualityGatesResult(finalOutcome, totalQualityRetries)
-				r.recordQualityGateEvents(task.LogExecutionID(), finalOutcome)
-			}
+		} else {
+			log.Debug("Quality gates skipped: task.SkipQualityGates=true", slog.String("task_id", task.ID))
 		}
 
 		r.reportProgress(task.ID, "Finalizing", 95, "Preparing for completion")
