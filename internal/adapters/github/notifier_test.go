@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -446,6 +447,139 @@ func TestNotifyTaskFailed(t *testing.T) {
 				t.Errorf("NotifyTaskFailed() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestNotifyTaskFailed_LadderAdvance covers GH-5100: NotifyTaskFailed must
+// fold the pilot-failed-retry-N ladder advance into the same label mutation
+// as the pilot-failed stamp (retryladder.Advance), matching
+// postTitleRejectionEscalation's semantics (title_rejection.go,
+// GH-5077/GH-5098). It runs a stateful mock GitHub server that tracks the
+// issue's live label set across calls — GET reads it, POST /labels adds to
+// it, DELETE /labels/{name} removes from it — so each NotifyTaskFailed call
+// observes the label state left by the previous one, the same way the real
+// GitHub API would.
+func TestNotifyTaskFailed_LadderAdvance(t *testing.T) {
+	var mu sync.Mutex
+	labels := map[string]bool{}
+
+	hasLabel := func(name string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return labels[strings.ToLower(name)]
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/42"):
+			mu.Lock()
+			issue := Issue{Number: 42}
+			for name := range labels {
+				issue.Labels = append(issue.Labels, Label{Name: name})
+			}
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(issue)
+
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels"):
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			for _, l := range body["labels"] {
+				labels[strings.ToLower(l)] = true
+			}
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/labels/"):
+			parts := strings.Split(r.URL.Path, "/labels/")
+			name := parts[len(parts)-1]
+			mu.Lock()
+			delete(labels, strings.ToLower(name))
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(Comment{ID: 123})
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	notifier := NewNotifier(client, "pilot")
+	ctx := context.Background()
+
+	// Call 1: fresh failure, no ladder label yet -> rung advances to retry-1.
+	if err := notifier.NotifyTaskFailed(ctx, "owner", "repo", 42, "first failure"); err != nil {
+		t.Fatalf("call 1: NotifyTaskFailed() error = %v", err)
+	}
+	if !hasLabel(LabelFailed) || !hasLabel(LabelFailedRetry1) {
+		t.Fatalf("call 1: expected %s + %s, got labels=%v", LabelFailed, LabelFailedRetry1, labels)
+	}
+
+	// Between failures, the retry cycle clears pilot-failed (as the real
+	// admission flow does) but leaves the ladder rung label in place — that's
+	// the signal the next NotifyTaskFailed call reads to advance the rung.
+	mu.Lock()
+	delete(labels, strings.ToLower(LabelFailed))
+	mu.Unlock()
+
+	// Call 2: repeated failure -> rung advances retry-1 -> retry-2.
+	if err := notifier.NotifyTaskFailed(ctx, "owner", "repo", 42, "second failure"); err != nil {
+		t.Fatalf("call 2: NotifyTaskFailed() error = %v", err)
+	}
+	if !hasLabel(LabelFailed) || !hasLabel(LabelFailedRetry2) {
+		t.Fatalf("call 2: expected %s + %s, got labels=%v", LabelFailed, LabelFailedRetry2, labels)
+	}
+	if hasLabel(LabelFailedRetry1) {
+		t.Fatalf("call 2: expected %s removed when the ladder advances, got labels=%v", LabelFailedRetry1, labels)
+	}
+
+	mu.Lock()
+	delete(labels, strings.ToLower(LabelFailed))
+	mu.Unlock()
+
+	// Call 3: repeated failure -> rung advances retry-2 -> exhausted.
+	if err := notifier.NotifyTaskFailed(ctx, "owner", "repo", 42, "third failure"); err != nil {
+		t.Fatalf("call 3: NotifyTaskFailed() error = %v", err)
+	}
+	if !hasLabel(LabelFailed) || !hasLabel(LabelFailedRetryExhausted) {
+		t.Fatalf("call 3: expected %s + %s, got labels=%v", LabelFailed, LabelFailedRetryExhausted, labels)
+	}
+	if hasLabel(LabelFailedRetry2) {
+		t.Fatalf("call 3: expected %s removed when the ladder advances, got labels=%v", LabelFailedRetry2, labels)
+	}
+
+	// Call 4: single-shot guard — pilot-failed is still present (a duplicate
+	// fail-label event, e.g. a second failure notification for the same
+	// already-failed run), so the ladder must NOT advance again: the
+	// exhausted rung stays put and no further label mutation happens for it.
+	origLabels := map[string]bool{}
+	mu.Lock()
+	for k, v := range labels {
+		origLabels[k] = v
+	}
+	mu.Unlock()
+
+	if err := notifier.NotifyTaskFailed(ctx, "owner", "repo", 42, "duplicate failure"); err != nil {
+		t.Fatalf("call 4: NotifyTaskFailed() error = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(labels) != len(origLabels) {
+		t.Fatalf("call 4: single-shot mutation must not change the ladder label set, before=%v after=%v", origLabels, labels)
+	}
+	for k := range origLabels {
+		if !labels[k] {
+			t.Fatalf("call 4: label %s unexpectedly removed by a duplicate fail-label event, after=%v", k, labels)
+		}
+	}
+	if !labels[strings.ToLower(LabelFailedRetryExhausted)] {
+		t.Fatalf("call 4: expected %s to remain the terminal rung, got labels=%v", LabelFailedRetryExhausted, labels)
 	}
 }
 
