@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -1245,6 +1246,143 @@ func TestCleaner_StartupRecover_NoIssues(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("StartupRecover() returned %d, want 0", n)
+	}
+}
+
+// TestCleaner_Cleanup_FailedRetryLadderInteraction covers GH-5078: the 24h
+// failedThreshold janitor must never re-admit an issue that has exhausted the
+// pilot-failed retry ladder (pilot-failed-retry-exhausted) — such an issue
+// must stay parked forever instead of having pilot-failed silently cleared
+// and the issue re-picked. Non-exhausted rungs (retry-1, retry-2) and
+// non-laddered issues must continue to be cleared normally on staleness, and
+// in every case the ladder label itself must never be touched by this path
+// (clearing pilot-failed and clearing/advancing the ladder are separate
+// concerns — this janitor only ever removes pilot-failed).
+func TestCleaner_Cleanup_FailedRetryLadderInteraction(t *testing.T) {
+	staleTime := time.Now().Add(-25 * time.Hour) // over the 24h failedThreshold
+
+	tests := []struct {
+		name              string
+		issueNumber       int
+		labels            []Label
+		wantFailedRemoved bool
+	}{
+		{
+			name:        "exhausted issue skipped, stays parked",
+			issueNumber: 5078,
+			labels: []Label{
+				{Name: LabelFailed},
+				{Name: LabelFailedRetryExhausted},
+			},
+			wantFailedRemoved: false,
+		},
+		{
+			name:        "retry-1 issue cleared normally, ladder untouched",
+			issueNumber: 5079,
+			labels: []Label{
+				{Name: LabelFailed},
+				{Name: LabelFailedRetry1},
+			},
+			wantFailedRemoved: true,
+		},
+		{
+			name:        "retry-2 issue cleared normally, ladder untouched",
+			issueNumber: 5080,
+			labels: []Label{
+				{Name: LabelFailed},
+				{Name: LabelFailedRetry2},
+			},
+			wantFailedRemoved: true,
+		},
+		{
+			name:        "non-laddered issue cleared unchanged",
+			issueNumber: 5081,
+			labels: []Label{
+				{Name: LabelFailed},
+			},
+			wantFailedRemoved: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := createTestStore(t)
+			defer func() { _ = store.Close() }()
+
+			issues := []*Issue{
+				{
+					Number:    tt.issueNumber,
+					Title:     tt.name,
+					Labels:    tt.labels,
+					UpdatedAt: staleTime,
+				},
+			}
+
+			var (
+				mu                 sync.Mutex
+				failedLabelRemoved bool
+				ladderLabelRemoved bool
+				removedLabelPaths  []string
+			)
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+
+				w.Header().Set("Content-Type", "application/json")
+
+				if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+					_ = json.NewEncoder(w).Encode(issues)
+					return
+				}
+
+				if r.Method == http.MethodDelete {
+					removedLabelPaths = append(removedLabelPaths, r.URL.Path)
+					if r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/labels/%s", tt.issueNumber, LabelFailed) {
+						failedLabelRemoved = true
+					}
+					for _, ladder := range FailedRetryStateLabels {
+						if r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/labels/%s", tt.issueNumber, ladder) {
+							ladderLabelRemoved = true
+						}
+					}
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+
+				if r.Method == http.MethodPost && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d/comments", tt.issueNumber) {
+					_ = json.NewEncoder(w).Encode(&Comment{ID: 1, Body: "cleanup"})
+					return
+				}
+
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+				Enabled:         true,
+				Interval:        30 * time.Minute,
+				Threshold:       1 * time.Hour,
+				FailedThreshold: 24 * time.Hour,
+			})
+
+			if err := cleaner.Cleanup(context.Background()); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if failedLabelRemoved != tt.wantFailedRemoved {
+				t.Errorf("pilot-failed removed = %v, want %v (DELETE calls seen: %v)",
+					failedLabelRemoved, tt.wantFailedRemoved, removedLabelPaths)
+			}
+			if ladderLabelRemoved {
+				t.Errorf("ladder label must never be touched by the failedThreshold janitor (DELETE calls seen: %v)",
+					removedLabelPaths)
+			}
+		})
 	}
 }
 
