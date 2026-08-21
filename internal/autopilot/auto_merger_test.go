@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1018,6 +1020,103 @@ func TestAutoMerger_PostMisconfigComment_Idempotent(t *testing.T) {
 	}
 	if listCallCount != 2 {
 		t.Errorf("listCallCount = %d, want 2", listCallCount)
+	}
+}
+
+// GH-5080 (a): pins auto_merger.go:112's behavior of stripping the full
+// pilot-failed-retry-N ladder (github.FailedRetryStateLabels) on every
+// successful merge, regardless of which single rung the linked issue
+// actually carries. GH-3715 introduced this so a future regression on the
+// same issue starts its retry budget from zero again — this test covers
+// each rung (retry-1, retry-2, exhausted) plus the no-rung-label case, and
+// confirms the GH-2432 plain-retry ladder (github.RetryStateLabels) is
+// stripped in the same merge, unconditionally of the pilot-failed ladder's
+// state.
+func TestAutoMerger_MergePR_StripsFailedRetryLadder_AtEachRung(t *testing.T) {
+	tests := []struct {
+		name           string
+		existingLabels []string // labels actually present on the linked issue
+	}{
+		{name: "retry-1 rung", existingLabels: []string{github.LabelFailedRetry1}},
+		{name: "retry-2 rung", existingLabels: []string{github.LabelFailedRetry2}},
+		{name: "exhausted rung", existingLabels: []string{github.LabelFailedRetryExhausted}},
+		{name: "no ladder label present", existingLabels: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			has := func(label string) bool {
+				for _, l := range tt.existingLabels {
+					if l == label {
+						return true
+					}
+				}
+				return false
+			}
+
+			var mu sync.Mutex
+			var deletedLabels []string
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/repos/owner/repo/pulls/99/merge":
+					w.WriteHeader(http.StatusOK)
+				case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/99/labels/"):
+					label := strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/issues/99/labels/")
+					mu.Lock()
+					deletedLabels = append(deletedLabels, label)
+					mu.Unlock()
+					if has(label) {
+						w.WriteHeader(http.StatusOK)
+					} else {
+						// RemoveLabel treats 404 as a benign no-op (client.go:382-384) —
+						// the ladder-strip loop is unconditional and best-effort, so a
+						// rung the issue never reached must not abort the others.
+						w.WriteHeader(http.StatusNotFound)
+					}
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.Environment = EnvDev
+			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
+
+			prState := &PRState{PRNumber: 99, IssueNumber: 99}
+			if err := merger.MergePR(context.Background(), prState); err != nil {
+				t.Fatalf("MergePR() error = %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			deleted := func(label string) bool {
+				for _, l := range deletedLabels {
+					if l == label {
+						return true
+					}
+				}
+				return false
+			}
+
+			// The full pilot-failed-retry-N ladder must be attempted regardless
+			// of which single rung was actually present.
+			for _, label := range github.FailedRetryStateLabels {
+				if !deleted(label) {
+					t.Errorf("expected DELETE for failed-retry ladder label %q, got deletes: %v", label, deletedLabels)
+				}
+			}
+			// GH-2432's plain retry ladder is stripped in the same merge,
+			// independent of the pilot-failed ladder's state.
+			for _, label := range github.RetryStateLabels {
+				if !deleted(label) {
+					t.Errorf("expected DELETE for retry ladder label %q, got deletes: %v", label, deletedLabels)
+				}
+			}
+		})
 	}
 }
 
