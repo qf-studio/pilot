@@ -10104,7 +10104,7 @@ func TestController_RecordExecutionEvent_StageFailed_RespectsTerminalRow(t *test
 	c.memoryStore = mock
 
 	prState := &PRState{PRNumber: 43, IssueNumber: 11}
-	c.recordExecutionEvent(prState, memory.StageFailed, "pr #43: pr_created -> failed")
+	c.recordExecutionEvent(prState, StagePRCreated, memory.StageFailed, "pr #43: pr_created -> failed")
 
 	if got := mock.execStatus["exec-2"]; got != "cancelled" {
 		t.Errorf("execution row status = %q, want %q (terminal row must not be overwritten)", got, "cancelled")
@@ -10163,7 +10163,7 @@ func TestController_RecordExecutionEvent_StageFailed_ReclassifiesLedgerRow(t *te
 	c.memoryStore = store
 
 	prState := &PRState{PRNumber: 55, IssueNumber: 55}
-	c.recordExecutionEvent(prState, memory.StageFailed, "pr #55: waiting_ci -> failed (max CI retries)")
+	c.recordExecutionEvent(prState, StageWaitingCI, memory.StageFailed, "pr #55: waiting_ci -> failed (max CI retries)")
 
 	if completed, err := store.HasCompletedExecution("GH-55", ""); err != nil {
 		t.Fatalf("HasCompletedExecution (post-check): %v", err)
@@ -10175,6 +10175,66 @@ func TestController_RecordExecutionEvent_StageFailed_ReclassifiesLedgerRow(t *te
 		t.Fatalf("HasTerminalCompletion (post-check): %v", err)
 	} else if terminal {
 		t.Error("GH-5067: HasTerminalCompletion still true after StageFailed — a label-clear retry would still no-op at the dispatch guard")
+	}
+}
+
+// TestController_RecordExecutionEvent_StageFailed_PostMergeCI_DoesNotReclassify
+// is the GH-5073 regression (PR#5070 review follow-up): PR#5070 fired
+// ReclassifyCompletionAsFailed on EVERY StageFailed entry, including the
+// post-merge ones — a StagePostMergeCI failure (CI failed/timeout/config
+// mismatch after merge) demoted the ledger row of a PR that already
+// shipped. Unlike TestController_RecordExecutionEvent_StageFailed_
+// ReclassifiesLedgerRow above (previousStage=StageWaitingCI, a genuine
+// pre-merge death), a StagePostMergeCI -> StageFailed transition must leave
+// the "completed" row untouched: the work merged, so HasCompletedExecution
+// must keep vouching for it. Drives the real store (real SQLite), per the
+// acceptance criteria.
+func TestController_RecordExecutionEvent_StageFailed_PostMergeCI_DoesNotReclassify(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Seed a genuine "completed" row exactly as the merged PR would have
+	// left it: status=completed, no error, a PR URL deliverable.
+	if err := store.SaveExecution(&memory.Execution{
+		ID:     "exec-gh-56",
+		TaskID: "GH-56",
+		Status: "completed",
+		PRUrl:  "https://github.com/owner/repo/pull/56",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	// Sanity: confirm the seeded row genuinely counts as completed before
+	// the StageFailed transition — otherwise this test would trivially pass.
+	if completed, err := store.HasCompletedExecution("GH-56", ""); err != nil {
+		t.Fatalf("HasCompletedExecution (pre-check): %v", err)
+	} else if !completed {
+		t.Fatal("expected seeded row to count as completed before the StageFailed transition")
+	}
+
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.memoryStore = store
+
+	prState := &PRState{PRNumber: 56, IssueNumber: 56}
+	c.recordExecutionEvent(prState, StagePostMergeCI, memory.StageFailed,
+		"pr #56: post_merge_ci -> failed (post-merge CI failed)")
+
+	if completed, err := store.HasCompletedExecution("GH-56", ""); err != nil {
+		t.Fatalf("HasCompletedExecution (post-check): %v", err)
+	} else if !completed {
+		t.Error("GH-5073: HasCompletedExecution false after StagePostMergeCI -> StageFailed — reclassify must not fire for already-merged work")
+	}
+
+	if status, err := store.GetExecution("exec-gh-56"); err != nil {
+		t.Fatalf("GetExecution (post-check): %v", err)
+	} else if status.Status != "completed" {
+		t.Errorf("execution row status = %q, want %q (StagePostMergeCI -> StageFailed must not reclassify a merged PR's row)", status.Status, "completed")
 	}
 }
 
@@ -10198,7 +10258,7 @@ func TestController_RecordExecutionEvent_StageFailed_MissingLedgerRow(t *testing
 	prState := &PRState{PRNumber: 77, IssueNumber: 77}
 
 	// Must not panic and must not attempt either finalize call.
-	c.recordExecutionEvent(prState, memory.StageFailed, "pr #77: waiting_ci -> failed")
+	c.recordExecutionEvent(prState, StageWaitingCI, memory.StageFailed, "pr #77: waiting_ci -> failed")
 
 	if len(mock.statusUpdateCalls) != 0 {
 		t.Errorf("expected no UpdateExecutionStatusIfNotTerminal calls when the ledger row is missing, got %d", len(mock.statusUpdateCalls))
@@ -10232,7 +10292,7 @@ func TestController_RecordExecutionEvent_NonStageFailed_NoReclassify(t *testing.
 	c.memoryStore = mock
 
 	prState := &PRState{PRNumber: 88, IssueNumber: 88}
-	c.recordExecutionEvent(prState, memory.StageMerged, "pr #88: merging -> merged")
+	c.recordExecutionEvent(prState, StageMerging, memory.StageMerged, "pr #88: merging -> merged")
 
 	if len(mock.reclassifyCalls) != 0 {
 		t.Errorf("expected no ReclassifyCompletionAsFailed calls on the merged path, got %d: %+v",

@@ -2335,7 +2335,14 @@ func executionEventStageFor(prStage PRStage) (memory.Stage, bool) {
 // are logged and swallowed: the audit trail is a diagnostic aid, not load-
 // bearing for the state machine, so a lookup miss must never fail the PR's
 // processing cycle.
-func (c *Controller) recordExecutionEvent(prState *PRState, stage memory.Stage, detail string) {
+//
+// previousStage is the PR's stage immediately before this transition, as
+// captured by the caller's own transition detector (ProcessPR's
+// previousStage local, see the switch above) — never re-derived from
+// prState.Stage here, since by call time prState.Stage has already been
+// mutated to the new stage. GH-5073: it gates the StageFailed reclassify
+// below to pre-merge transitions only.
+func (c *Controller) recordExecutionEvent(prState *PRState, previousStage PRStage, stage memory.Stage, detail string) {
 	if c.memoryStore == nil {
 		return
 	}
@@ -2386,7 +2393,25 @@ func (c *Controller) recordExecutionEvent(prState *PRState, stage memory.Stage, 
 		// issue) heals it back via SelfHealExecutionAfterMerge, same as the
 		// GH-3818/D10 notifyExternalClose reclassify this mirrors for PRs
 		// that die without ever being closed on GitHub.
-		if err := c.memoryStore.ReclassifyCompletionAsFailed(taskID, c.projectPath, detail); err != nil {
+		//
+		// GH-5073: PR#5070 fired this unconditionally on every StageFailed
+		// entry, including the post-merge ones — StagePostMergeCI CI
+		// failures/timeouts/config mismatches and a failed release
+		// (escalateReleasingFailed). Those demote the ledger row of a PR
+		// that already merged: the work shipped, and a post-merge pipeline
+		// failure is a different fact than delivery failure (already
+		// alerted on its own paths). Self-healing exists
+		// (ScanRecentlyMergedPRs' 30-min ticker, the startup 72h sweep) but
+		// leaves a transient reverse-direction honesty gap outside that
+		// window — HasCompletedExecution/history would report undelivered
+		// for work that is, in fact, merged. Skip the reclassify (not the
+		// CAS finalize above, which keeps its GH-4620 behavior unchanged)
+		// whenever the PR was already past merge before this StageFailed
+		// transition.
+		if previousStage == StageMerged || previousStage == StagePostMergeCI || previousStage == StageReleasing {
+			c.log.Info("execution audit trail: skipping ledger reclassify on StageFailed — PR already shipped (post-merge stage)",
+				"pr", prState.PRNumber, "task_id", taskID, "previous_stage", previousStage)
+		} else if err := c.memoryStore.ReclassifyCompletionAsFailed(taskID, c.projectPath, detail); err != nil {
 			c.log.Warn("execution audit trail: failed to reclassify completed ledger row on StageFailed",
 				"pr", prState.PRNumber, "task_id", taskID, "error", err)
 		}
@@ -2800,7 +2825,7 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 		// audit trail. Best-effort — see recordExecutionEvent.
 		if eventStage, ok := executionEventStageFor(prState.Stage); ok {
 			detail := fmt.Sprintf("pr #%d: %s -> %s", prNumber, previousStage, prState.Stage)
-			c.recordExecutionEvent(prState, eventStage, detail)
+			c.recordExecutionEvent(prState, previousStage, eventStage, detail)
 		}
 	}
 
@@ -3237,7 +3262,7 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		}
 		if testEvidenceHeld {
 			c.postTestEvidenceHoldComment(ctx, prState, escalateReason)
-			c.recordExecutionEvent(prState, memory.StageAwaitingApproval,
+			c.recordExecutionEvent(prState, StageCIPassed, memory.StageAwaitingApproval,
 				fmt.Sprintf("test_evidence_hold: %s", escalateReason))
 		}
 		return nil
@@ -6078,7 +6103,7 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	// successful release never changes prState.Stage (it stays StageReleasing
 	// until removePR below), so it can't be caught by ProcessPR's stage-diff
 	// hook — record it explicitly here instead.
-	c.recordExecutionEvent(prState, memory.StageReleased,
+	c.recordExecutionEvent(prState, StageReleasing, memory.StageReleased,
 		fmt.Sprintf("pr #%d: released %s (tag %s)", prState.PRNumber, prState.ReleaseVersion, tagName))
 
 	if isScope {
@@ -8798,7 +8823,7 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		if prURL == "" {
 			prURL = prState.PRURL
 		}
-		c.recordExecutionEvent(prState, memory.StageMerged,
+		c.recordExecutionEvent(prState, prState.Stage, memory.StageMerged,
 			fmt.Sprintf("pr #%d: merged externally (%s)", prState.PRNumber, prURL))
 
 		// GH-5071: same stacked-PR resume loop closed on the internal
