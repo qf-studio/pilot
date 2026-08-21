@@ -9880,6 +9880,12 @@ type mockApprovalPersister struct {
 	// rejects the write instead of being overwritten.
 	execStatus        map[string]string
 	statusUpdateCalls []struct{ id, status, detail string }
+
+	// reclassifyCalls records every ReclassifyCompletionAsFailed call
+	// (GH-5067) so tests can assert the StageFailed transition demotes a
+	// genuine "completed" row via task_id, independent of execStatus (which
+	// UpdateExecutionStatusIfNotTerminal already CAS-guards against).
+	reclassifyCalls []struct{ taskID, projectPath, reason string }
 }
 
 // mockTerminalExecStatuses mirrors memory.terminalExecutionStatuses (private
@@ -9947,6 +9953,25 @@ func (m *mockApprovalPersister) HasExecutionEventStage(executionID string, stage
 		}
 	}
 	return false, nil
+}
+
+// ReclassifyCompletionAsFailed emulates memory.Store's demote-to-failed
+// (GH-5067): records the call and, if execByTask resolves taskID to a row
+// currently "completed" in execStatus, flips it to "failed" — mirroring the
+// real store's WHERE status = 'completed' guard closely enough for tests to
+// assert the ledger row stops vouching for the task after this fires.
+func (m *mockApprovalPersister) ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error {
+	m.reclassifyCalls = append(m.reclassifyCalls, struct{ taskID, projectPath, reason string }{taskID, projectPath, reason})
+
+	if id, ok := m.execByTask[taskID]; ok {
+		if m.execStatus == nil {
+			m.execStatus = map[string]string{}
+		}
+		if m.execStatus[id] == "completed" {
+			m.execStatus[id] = "failed"
+		}
+	}
+	return nil
 }
 
 // TestController_SetApprovalDecision_PersistsToMemoryStore verifies that
@@ -10059,8 +10084,14 @@ func TestController_ProcessPR_StageFailed_FinalizesRunningExecutionRow(t *testin
 
 // TestController_RecordExecutionEvent_StageFailed_RespectsTerminalRow verifies
 // the GH-4620 finalize is CAS-guarded: an execution row already at a terminal
-// status (e.g. "completed" from another writer) must not be clobbered by the
-// StageFailed transition's finalize.
+// status must not be clobbered by the StageFailed transition's finalize.
+//
+// Uses "cancelled" (not "completed") as the seed status so this test stays
+// scoped to UpdateExecutionStatusIfNotTerminal's CAS guard specifically —
+// GH-5067's ReclassifyCompletionAsFailed call (also fired on this path, see
+// TestController_RecordExecutionEvent_StageFailed_ReclassifiesLedgerRow)
+// only ever touches rows exactly at status='completed', so a "cancelled" row
+// is untouched by either call and isolates the invariant this test targets.
 func TestController_RecordExecutionEvent_StageFailed_RespectsTerminalRow(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()
@@ -10068,18 +10099,147 @@ func TestController_RecordExecutionEvent_StageFailed_RespectsTerminalRow(t *test
 
 	mock := &mockApprovalPersister{
 		execByTask: map[string]string{"GH-11": "exec-2"},
-		execStatus: map[string]string{"exec-2": "completed"},
+		execStatus: map[string]string{"exec-2": "cancelled"},
 	}
 	c.memoryStore = mock
 
 	prState := &PRState{PRNumber: 43, IssueNumber: 11}
 	c.recordExecutionEvent(prState, memory.StageFailed, "pr #43: pr_created -> failed")
 
-	if got := mock.execStatus["exec-2"]; got != "completed" {
-		t.Errorf("execution row status = %q, want %q (terminal row must not be overwritten)", got, "completed")
+	if got := mock.execStatus["exec-2"]; got != "cancelled" {
+		t.Errorf("execution row status = %q, want %q (terminal row must not be overwritten)", got, "cancelled")
 	}
 	if len(mock.statusUpdateCalls) != 1 {
 		t.Fatalf("expected 1 UpdateExecutionStatusIfNotTerminal call, got %d", len(mock.statusUpdateCalls))
+	}
+}
+
+// TestController_RecordExecutionEvent_StageFailed_ReclassifiesLedgerRow is
+// the GH-5067 regression: a genuine "completed" execution row (opening a PR
+// is enough — HasCompletedExecution does not require a merge) must be
+// demoted the moment the PR that carried it reaches StageFailed, so a
+// subsequent HasCompletedExecution/HasTerminalCompletion check stops
+// vouching for a PR that will never merge. Drives the real store (real
+// SQLite), per the acceptance criteria — the mock's Reclassify emulation is
+// exercised separately below, but this is the end-to-end proof.
+//
+// Incident: GH-5053's PR died in autopilot; the ledger row still said
+// "completed" from having opened the PR, so a label-clear retry (the
+// operator's standard recovery) silently no-op'd at the dispatch guard
+// (daemon.log 07:51/07:54/07:59Z "Skipping re-dispatch — completed execution
+// exists").
+func TestController_RecordExecutionEvent_StageFailed_ReclassifiesLedgerRow(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Seed a genuine "completed" row: status=completed, no error, a PR URL
+	// deliverable — exactly what opening a PR (without merging) leaves
+	// behind. project_path left empty to match the controller's default
+	// (unscoped) projectPath below.
+	if err := store.SaveExecution(&memory.Execution{
+		ID:     "exec-gh-55",
+		TaskID: "GH-55",
+		Status: "completed",
+		PRUrl:  "https://github.com/owner/repo/pull/55",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	// Sanity: confirm the seeded row genuinely counts as completed before
+	// the StageFailed transition — otherwise this test would trivially pass.
+	if completed, err := store.HasCompletedExecution("GH-55", ""); err != nil {
+		t.Fatalf("HasCompletedExecution (pre-check): %v", err)
+	} else if !completed {
+		t.Fatal("expected seeded row to count as completed before the StageFailed transition")
+	}
+
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.memoryStore = store
+
+	prState := &PRState{PRNumber: 55, IssueNumber: 55}
+	c.recordExecutionEvent(prState, memory.StageFailed, "pr #55: waiting_ci -> failed (max CI retries)")
+
+	if completed, err := store.HasCompletedExecution("GH-55", ""); err != nil {
+		t.Fatalf("HasCompletedExecution (post-check): %v", err)
+	} else if completed {
+		t.Error("GH-5067: HasCompletedExecution still true after StageFailed — reclassify did not fire")
+	}
+
+	if terminal, err := store.HasTerminalCompletion("GH-55", ""); err != nil {
+		t.Fatalf("HasTerminalCompletion (post-check): %v", err)
+	} else if terminal {
+		t.Error("GH-5067: HasTerminalCompletion still true after StageFailed — a label-clear retry would still no-op at the dispatch guard")
+	}
+}
+
+// TestController_RecordExecutionEvent_StageFailed_MissingLedgerRow verifies
+// the GH-5067 fail-open contract: when no execution row exists for the
+// PR's task_id (e.g. the ledger row was pruned, or this PR predates ledger
+// tracking), recordExecutionEvent must log at WARN and return without
+// attempting either finalize call — never blocking the StageFailed
+// transition itself, which has already happened by the time this runs.
+func TestController_RecordExecutionEvent_StageFailed_MissingLedgerRow(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithLogger(logger))
+
+	mock := &mockApprovalPersister{} // no execByTask entries — GetLatestExecutionByTaskID misses
+	c.memoryStore = mock
+
+	prState := &PRState{PRNumber: 77, IssueNumber: 77}
+
+	// Must not panic and must not attempt either finalize call.
+	c.recordExecutionEvent(prState, memory.StageFailed, "pr #77: waiting_ci -> failed")
+
+	if len(mock.statusUpdateCalls) != 0 {
+		t.Errorf("expected no UpdateExecutionStatusIfNotTerminal calls when the ledger row is missing, got %d", len(mock.statusUpdateCalls))
+	}
+	if len(mock.reclassifyCalls) != 0 {
+		t.Errorf("expected no ReclassifyCompletionAsFailed calls when the ledger row is missing, got %d", len(mock.reclassifyCalls))
+	}
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, "level=WARN") {
+		t.Errorf("expected a WARN-level log for the missing ledger row, got: %s", logged)
+	}
+	if !strings.Contains(logged, "no execution row for task") {
+		t.Errorf("expected the missing-ledger-row log message, got: %s", logged)
+	}
+}
+
+// TestController_RecordExecutionEvent_NonStageFailed_NoReclassify verifies
+// GH-5067's ReclassifyCompletionAsFailed call only fires on the StageFailed
+// path — a completed row must survive every other durable-milestone
+// transition (here, the merged path) untouched.
+func TestController_RecordExecutionEvent_NonStageFailed_NoReclassify(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	mock := &mockApprovalPersister{
+		execByTask: map[string]string{"GH-88": "exec-88"},
+		execStatus: map[string]string{"exec-88": "completed"},
+	}
+	c.memoryStore = mock
+
+	prState := &PRState{PRNumber: 88, IssueNumber: 88}
+	c.recordExecutionEvent(prState, memory.StageMerged, "pr #88: merging -> merged")
+
+	if len(mock.reclassifyCalls) != 0 {
+		t.Errorf("expected no ReclassifyCompletionAsFailed calls on the merged path, got %d: %+v",
+			len(mock.reclassifyCalls), mock.reclassifyCalls)
+	}
+	if got := mock.execStatus["exec-88"]; got != "completed" {
+		t.Errorf("execution row status = %q, want %q (non-StageFailed transition must not touch completion status)", got, "completed")
 	}
 }
 
@@ -10111,6 +10271,10 @@ func (m *errApprovalPersister) HasExecutionEventStage(_ string, _ memory.Stage) 
 
 func (m *errApprovalPersister) UpdateExecutionStatusIfNotTerminal(_, _ string, _ ...string) (bool, error) {
 	return false, nil
+}
+
+func (m *errApprovalPersister) ReclassifyCompletionAsFailed(_, _, _ string) error {
+	return nil
 }
 
 // TestController_ApprovalPersistMiss_RequestID verifies that a sql.ErrNoRows from

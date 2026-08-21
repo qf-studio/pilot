@@ -67,6 +67,18 @@ type approvalPersister interface {
 	// execution row without racing/overwriting a writer that already moved
 	// it to a terminal status.
 	UpdateExecutionStatusIfNotTerminal(id, status string, errorMsg ...string) (applied bool, err error)
+	// ReclassifyCompletionAsFailed demotes a genuine "completed" execution
+	// row (status='completed', no error, commit/PR deliverable present) to
+	// "failed". GH-5067: unlike UpdateExecutionStatusIfNotTerminal above,
+	// "completed" IS itself a terminal status, so the CAS-guarded finalize
+	// never touches a row that reached "completed" merely by opening a PR
+	// (HasCompletedExecution's definition doesn't require a merge). Without
+	// this, a PR that later dies in autopilot (StageFailed) leaves that row
+	// vouching for delivered work forever, and a label-clear retry silently
+	// no-ops at the dispatch guard (HasCompletedExecution/HasTerminalCompletion
+	// keep returning true). Used by recordExecutionEvent's StageFailed branch,
+	// the single chokepoint every StageFailed transition passes through.
+	ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error
 }
 
 // projectBoardSyncer abstracts GitHub Projects V2 board status updates.
@@ -2258,6 +2270,26 @@ func (c *Controller) recordExecutionEvent(prState *PRState, stage memory.Stage, 
 		if _, err := c.memoryStore.UpdateExecutionStatusIfNotTerminal(exec.ID, "failed", detail); err != nil {
 			c.log.Warn("execution audit trail: failed to finalize execution row on StageFailed",
 				"pr", prState.PRNumber, "execution_id", exec.ID, "error", err)
+		}
+
+		// GH-5067: a row that already reached "completed" (opening a PR is
+		// enough per HasCompletedExecution's definition — merging is not
+		// required) survives the CAS-guarded finalize above untouched, since
+		// "completed" is itself a terminal status. Left alone, that row keeps
+		// vouching for delivered work forever: confirmed live 2026-08-21 when
+		// GH-5053's label-clear retry silently no-op'd at the dispatch guard
+		// because HasCompletedExecution/HasTerminalCompletion still trusted
+		// the stale "completed" row from the PR that later died in autopilot.
+		// ReclassifyCompletionAsFailed only touches genuine completed rows
+		// (status='completed', no error, commit/PR deliverable) — a no-op
+		// when the row was already reclassified or never reached "completed"
+		// in the first place. A later merge (human recovery PR, retried
+		// issue) heals it back via SelfHealExecutionAfterMerge, same as the
+		// GH-3818/D10 notifyExternalClose reclassify this mirrors for PRs
+		// that die without ever being closed on GitHub.
+		if err := c.memoryStore.ReclassifyCompletionAsFailed(taskID, c.projectPath, detail); err != nil {
+			c.log.Warn("execution audit trail: failed to reclassify completed ledger row on StageFailed",
+				"pr", prState.PRNumber, "task_id", taskID, "error", err)
 		}
 	}
 }
