@@ -608,6 +608,13 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 		// PR creator, on the same sdkClient — in-process, ghbudget-visible
 		// reads for the pickup-time and PR-creation preflight guards.
 		deps.Runner.RegisterIssueStateChecker("github:"+target.repoFullName, sdkshim.NewGitHubIssueStateChecker(sdkClient))
+		// GH-5053: register the in-tree github adapter (github_base_presence_probe.go)
+		// as this repo's base-presence probe — an in-process
+		// FileExistsOnDefaultBranch/IssueOrPRState/LinkedPRNumbers implementation for
+		// the GH-5052 dispatcher claim-path hold check, replacing the gh-CLI shellout
+		// fallback (ghCLIBasePresenceProbe, base_presence.go) that only applies when
+		// no probe is registered for a repo.
+		deps.Runner.RegisterBasePresenceProbe("github:"+target.repoFullName, newGitHubBasePresenceProbe(deps.Cfg))
 	}
 
 	// TASK-461 Leg 2: WithAdapterClient injects the shared TokenFunc-backed
