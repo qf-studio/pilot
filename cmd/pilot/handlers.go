@@ -712,6 +712,29 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	taskID := ev.SequenceID // "GH-42"; already prefixed by the SDK adapter — do NOT re-prefix
 	title := ev.Title
 
+	// GH-5072: PR#5064 residual — the needs-human skip below holds the park,
+	// but the studio-sdk bridge drops Skipped/SkipReason converting
+	// core.IssueResult -> github.IssueResult (sdk adapter.go:98-113), so the
+	// vendor poller reads the skip as "failed without PR" and unmarks the
+	// issue for retry (poller.go:1169-1175) — every subsequent poll tick
+	// re-enters this function. Arming handler_common.go:198's shared repick
+	// backoff on the skip can't reach into the vendor's own dispatch loop
+	// (GetIssue refresh + preflight judge run before this function is even
+	// called — sdk leg, deferred per GH-5072 non-goals), but it DOES close
+	// the host's own hole: consult it here, before repeating the GH-4050
+	// issue fetch, spec-guard, and pilot-in-progress label/comment writes
+	// this function would otherwise redo every ~30s while parked.
+	if dispatcher != nil {
+		repickBackoff.setPersister(dispatcher)
+	}
+	backoffKey := repickBackoffKey(projectPath, taskID)
+	if dispatcher != nil && !repickBackoff.allow(backoffKey) {
+		logging.WithComponent("github").Debug("SDK-dispatch: repick backoff window still active for needs-human park, skipping",
+			slog.String("task_id", taskID),
+		)
+		return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: skipReasonNeedsHuman}, nil
+	}
+
 	// GH-5056: admission backstop — an issue carrying pilot-needs-human must
 	// never be (re-)admitted through this chokepoint, no matter what
 	// unmarked it. The SDK poller's own candidate filter (studio-sdk
@@ -730,7 +753,17 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 			slog.String("task_id", taskID),
 			slog.String("reason", labelPilotNeedsHumanSDK),
 		)
-		return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: "needs_human"}, nil
+		// GH-5072: arm the backoff so a re-pick within the cooldown window is
+		// caught by the allow() check above instead of repeating this skip's
+		// cost every poll tick. recordClaimLostDrop (not recordDrop) —
+		// mirrors the HasTerminalCompletion re-check idiom (handler_common.go)
+		// this is a deliberate park, not a failed dispatch attempt, so it
+		// grows the cooldown window without counting toward
+		// dispatcherRepickHardCap.
+		if dispatcher != nil {
+			repickBackoff.recordClaimLostDrop(backoffKey)
+		}
+		return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: skipReasonNeedsHuman}, nil
 	}
 
 	taskDesc := fmt.Sprintf("GitHub Issue %s: %s\n\n%s", taskID, title, ev.Body)
@@ -992,6 +1025,14 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 // the one place all three can't simply share one package-level constant
 // without introducing a dependency between the other two.
 const labelPilotNeedsHumanSDK = "pilot-needs-human"
+
+// skipReasonNeedsHuman is the sdkcore.IssueResult.SkipReason value for the
+// needs-human admission park (GH-5056). sdkcore's registry.go documents
+// SkipReason as "a reason constant from sdk/util/skipreason" — pilot-needs-
+// human is a host-only concept with no such constant there, so this local
+// const stands in until (if ever) the field survives the studio-sdk bridge
+// (GH-5072 nit fold-in).
+const skipReasonNeedsHuman = "needs_human"
 
 // githubEventHasNeedsHumanLabel reports whether labels carries
 // pilot-needs-human (GH-5056). See handleGithubIssueEventSDK's call site
