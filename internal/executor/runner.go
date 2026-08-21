@@ -4506,20 +4506,60 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							// reset pattern — a parent deadline that has already run out
 							// must not doom a retry that is otherwise recoverable.
 							resetCtx, resetCancel := context.WithTimeout(context.Background(), 30*time.Second)
-							if resetErr := git.ResetHardToCommit(resetCtx, preAttemptSHA); resetErr != nil {
-								log.Warn("Failed to reset clone to pre-attempt state before quality-gate retry",
+							resetErr := git.ResetHardToCommit(resetCtx, preAttemptSHA)
+							resetCancel()
+							if resetErr != nil {
+								// GH-4876: a failed pre-retry reset means the working tree is
+								// left in an unknown state — re-invoking Claude on top of it
+								// would silently stack edits onto a rejected attempt instead
+								// of retrying cleanly. Abort the retry rather than proceeding
+								// non-fatally.
+								result.Success = false
+								result.Error = fmt.Sprintf("failed to reset to pre-attempt state before quality-gate retry: %v", resetErr)
+
+								log.Error("Aborting quality-gate retry: reset to pre-attempt state failed",
 									slog.String("task_id", task.ID),
 									slog.Int("retry_attempt", retryAttempt+1),
 									slog.Any("error", resetErr),
 								)
-							} else {
-								log.Info("Reset clone to pre-attempt state before quality-gate retry",
-									slog.String("task_id", task.ID),
-									slog.Int("retry_attempt", retryAttempt+1),
-									slog.String("sha", preAttemptSHA),
-								)
+								r.reportProgress(task.ID, "Quality Retry Failed", 100, result.Error)
+
+								r.emitAlertEvent(AlertEvent{
+									Type:      AlertEventTypeTaskFailed,
+									TaskID:    task.ID,
+									TaskTitle: task.Title,
+									Project:   task.ProjectPath,
+									Error:     result.Error,
+									Metadata: map[string]string{
+										"error_category": "reset_failed",
+										"phase":          "quality_retry",
+									},
+									Timestamp: time.Now(),
+								})
+
+								r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+									TaskID:   task.ID,
+									Title:    task.Title,
+									Project:  task.ProjectPath,
+									Duration: time.Since(start),
+									Error:    result.Error,
+									Phase:    "Quality Retry",
+								})
+
+								if recorder != nil {
+									recorder.SetModel(result.ModelName)
+									recorder.SetNavigator(state.hasNavigator)
+									if finErr := recorder.Finish("failed"); finErr != nil {
+										log.Warn("Failed to finish recording", slog.Any("error", finErr))
+									}
+								}
+								return result, nil
 							}
-							resetCancel()
+							log.Info("Reset clone to pre-attempt state before quality-gate retry",
+								slog.String("task_id", task.ID),
+								slog.Int("retry_attempt", retryAttempt+1),
+								slog.String("sha", preAttemptSHA),
+							)
 						}
 
 						// Build retry prompt with feedback

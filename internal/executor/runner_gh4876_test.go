@@ -2,9 +2,12 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -180,5 +183,95 @@ func TestQualityGateRetry_UsesFreshContextForResetAndReinvoke(t *testing.T) {
 	}
 	if calls := backend.callCount(); calls < 2 {
 		t.Fatalf("expected the retry to actually re-invoke the backend on a fresh context (>=2 calls), got %d", calls)
+	}
+}
+
+// gitRepoDeletingBackend commits a new file on each call, and after its
+// first commit deletes .git entirely — simulating a working tree that is
+// left in a genuinely broken state (not merely a context timeout) so that
+// the subsequent pre-retry reset must fail for real.
+type gitRepoDeletingBackend struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (b *gitRepoDeletingBackend) Name() string      { return "git-repo-deleting" }
+func (b *gitRepoDeletingBackend) IsAvailable() bool { return true }
+
+func (b *gitRepoDeletingBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	b.mu.Lock()
+	b.calls++
+	n := b.calls
+	b.mu.Unlock()
+
+	fname := filepath.Join(opts.ProjectPath, fmt.Sprintf("attempt_%d.txt", n))
+	if err := os.WriteFile(fname, []byte("x"), 0o644); err != nil {
+		return nil, err
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", fmt.Sprintf("attempt %d", n)}} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = opts.ProjectPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git %v: %v (%s)", args, err, out)
+		}
+	}
+
+	if n == 1 {
+		if err := os.RemoveAll(filepath.Join(opts.ProjectPath, ".git")); err != nil {
+			return nil, fmt.Errorf("remove .git: %v", err)
+		}
+	}
+
+	return &BackendResult{Success: true, Output: "done"}, nil
+}
+
+func (b *gitRepoDeletingBackend) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+// TestQualityGateRetry_AbortsOnFailedReset is the GH-4876 regression guard
+// for secondary fix #2: a failed pre-retry reset must abort the retry
+// (task fails with a clear error) instead of logging a warning and
+// proceeding to re-invoke the backend on top of an unknown working-tree
+// state. The backend deletes .git after its first commit, guaranteeing the
+// reset genuinely fails; if the retry proceeded anyway, the backend would
+// be invoked a second time.
+func TestQualityGateRetry_AbortsOnFailedReset(t *testing.T) {
+	localRepo, remoteRepo := setupTestRepoWithRemote(t)
+	defer func() { _ = os.RemoveAll(localRepo) }()
+	defer func() { _ = os.RemoveAll(remoteRepo) }()
+
+	backend := &gitRepoDeletingBackend{}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{UseWorktree: false}
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+		return &failingQualityChecker{}
+	})
+
+	task := &Task{
+		ID:          "GH-4876-ABORT",
+		Title:       "failed pre-retry reset must abort the retry",
+		Description: "gates always fail; the repo is corrupted after the first attempt",
+		ProjectPath: localRepo,
+		Branch:      "pilot/GH-4876-abort",
+		CreatePR:    true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	result, _ := runner.Execute(ctx, task)
+	if result == nil || result.Success {
+		t.Fatalf("expected task failure (reset failed, retry aborted), got %+v", result)
+	}
+	if !strings.Contains(result.Error, "failed to reset to pre-attempt state") {
+		t.Errorf("result.Error = %q, want it to mention the failed reset", result.Error)
+	}
+	if calls := backend.callCount(); calls != 1 {
+		t.Errorf("backend called %d times, want exactly 1 (retry must be aborted, not re-invoked, after a failed reset)", calls)
 	}
 }
