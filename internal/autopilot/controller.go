@@ -2774,6 +2774,37 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	}
 	deadlineExceeded := time.Since(prState.CIWaitStartedAt) > ciTimeout
 
+	// GH-5066 (parent title clause 2, "no re-arm on base retarget"): a PR
+	// parked below via parkForBaseMismatch stays in StageWaitingCI, so it
+	// never reaches handleMerging's own un-park guard (GH-4911,
+	// controller.go ~line 4422) — that only runs once Stage reaches
+	// StageMerging. ProcessPR already refreshes TargetBranch from
+	// ghPR.Base.Ref unconditionally every tick (GH-4909 defect 1) before
+	// this handler runs, so a GitHub-side retarget (e.g. the base branch
+	// merged and was deleted) is visible here. Without this guard, a
+	// retargeted-but-still-Parked PR fell straight into the stale
+	// deadlineExceeded branch below on the very next tick — the CI-wait
+	// clock was never reset — reproducing the exact terminal StageFailed
+	// dead end this park exists to avoid. Mirror the handleMerging pattern:
+	// once TargetBranch resolves back to the default branch, clear the
+	// park and re-arm the wait clock so the PR gets a fresh CI-wait window
+	// against its corrected base instead of an instant re-fail.
+	if prState.Parked && strings.HasPrefix(prState.EscalationReason, baseMismatchReasonPrefix) {
+		if defaultBranch := c.resolveMainBranchName(); prState.TargetBranch == defaultBranch {
+			c.log.Info("handleWaitingCI: un-parking PR — base mismatch resolved, retargeted to default branch",
+				"pr", prState.PRNumber, "issue", prState.IssueNumber, "prior_reason", prState.EscalationReason)
+			prState.Parked = false
+			prState.EscalationReason = ""
+			prState.CIWaitStartedAt = time.Now()
+			deadlineExceeded = false
+			if prState.IssueNumber > 0 {
+				if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, labelParkedAwaitingApproval); err != nil {
+					c.log.Debug("parked-awaiting-approval label cleanup on un-park", "issue", prState.IssueNumber, "error", err)
+				}
+			}
+		}
+	}
+
 	// GH-419, GH-457: Always refresh HeadSHA from GitHub before checking CI.
 	// Self-review or other post-creation commits can change the HEAD,
 	// and OnPRCreated may have been called with an empty or stale CommitSHA.
@@ -2898,6 +2929,27 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 
 	if deadlineExceeded {
 		waited := time.Since(prState.CIWaitStartedAt)
+		// GH-5066: a PR stacked on a non-default base (sibling pilot/GH-*
+		// branch) never reaches handleMerging's parkForBaseMismatch guard
+		// when the repo's CI workflow is scoped to the default branch only
+		// (this repo's own ci.yml:6-7, `pull_request: branches: [main]`) —
+		// zero checks ever run for it, so CI-wait always exhausts this
+		// deadline. Before this fix that fell straight through to the
+		// terminal branch below (StageFailed, a dead end per
+		// `case StageFailed: return nil` in ProcessPR) even though the PR
+		// might merge cleanly once its base lands. Incident 2026-08-21:
+		// PR#5055 (base pilot/GH-5052) died this way; the founder's merge of
+		// the base PR retargeted #5055 to main on GitHub, but a StageFailed
+		// PR never re-enters ProcessPR's body, so recovery was fully manual.
+		// Park exactly as handleMerging's stacked path does instead, so the
+		// existing resume-on-merge path (GH-5049/PR#5051: base reaches
+		// StageMerged → descendant un-parks) handles the rest for free.
+		if defaultBranch := c.resolveMainBranchName(); prState.TargetBranch != "" && prState.TargetBranch != defaultBranch {
+			c.log.Warn("handleWaitingCI: CI-wait deadline exceeded on a non-default base — parking instead of failing",
+				"pr", prState.PRNumber, "target_branch", prState.TargetBranch, "default_branch", defaultBranch, "waited", waited, "last_status", status)
+			c.parkForBaseMismatch(ctx, prState, prState.TargetBranch, defaultBranch)
+			return nil
+		}
 		c.log.Warn("CI timeout confirmed by same-tick poll",
 			"pr", prState.PRNumber, "waited", waited, "last_status", status)
 		prState.Stage = StageFailed
@@ -6937,6 +6989,97 @@ func (c *Controller) reAdoptHeldRebasePR(ctx context.Context, prState *PRState, 
 	}
 }
 
+// redriveFailedPRForBaseRetarget is GH-5066's second leg for a PR that
+// already reached the terminal StageFailed: mirrors reAdoptHeldRebasePR's
+// revival shape (GH-4610) immediately above, but the resolving signal is a
+// base retarget rather than a new push, and there is no explicit hold flag
+// to narrow on (RebaseHoldActive/BreakerHoldActive have no equivalent here).
+//
+// A PR that reached StageFailed while its TargetBranch was NOT the repo's
+// default branch implicates a base mismatch rather than a genuine,
+// unrecoverable failure. handleMerging's own base guard (controller.go
+// ~4437) already refuses to let a non-default-base PR reach ANY of its
+// terminal branches (merge-attempt cap, etc.) — it parks via
+// parkForBaseMismatch instead, which is not terminal. So the only ways a
+// StageFailed PR ends up with a stale non-default TargetBranch are paths
+// that fail without checking the base at all: a pre-fix straggler (a row
+// already sitting in StageFailed before subtask 1/2 of GH-5066 landed:
+// commits 802366ef/f837ed14 only guard handleWaitingCI's confirmed-timeout
+// branch and handleWaitingCI's own re-park, not every StageFailed exit),
+// plus two still-unguarded base-agnostic exits: the consecutive-CI-API-
+// failure branch (controller.go ~2881) and applyCIOutcome's CIConfigMismatch
+// branch (~3000). If GitHub has since retargeted the PR back to the default
+// branch — typically because its base PR merged and GitHub auto-retargets
+// orphaned PRs — give it one more shot at CI rather than leaving it dead
+// forever requiring a fully manual rebase+push+merge (the GH-5066 root
+// incident, PR#5055, 2026-08-21 07:54Z-08:11Z).
+//
+// Decision — "no checks after retarget" (GH-5066 acceptance criterion 3):
+// a bare retarget does not guarantee GitHub runs a fresh check. This repo's
+// own ci.yml (and any repo scoped `pull_request: branches: [<default>]`
+// without an explicit `types:` list) triggers only on the default
+// pull_request action types (opened, synchronize, reopened) — NOT "edited",
+// which is the action GitHub fires for a base-branch change with no new
+// commit. So this function does not attempt to force a fresh check run (no
+// synthetic synchronize, no pre-redrive CI-existence probe) — it simply
+// re-enters StageWaitingCI with a fresh CIWaitStartedAt, identically to
+// parkForBaseMismatch's own un-park path (handleWaitingCI, GH-5066 leg 2a,
+// commit f837ed14). Two outcomes follow, both already handled correctly by
+// the existing state machine with no further change needed:
+//   - A later push (or a check that fires for an unrelated reason) resolves
+//     CI normally, and the PR proceeds like any other.
+//   - CI never posts, and the wait times out again — but by then
+//     TargetBranch already equals the default branch, so the timeout falls
+//     through to the pre-existing GENUINE-timeout branch (handleWaitingCI's
+//     deadlineExceeded block, TargetBranch == default — controller.go
+//     ~2953), not back into this function, whose precondition (a stale
+//     non-default TargetBranch) no longer holds once this function itself
+//     has updated it. That is a normal, once-only re-fail, not an infinite
+//     loop: the narrowing signal is consumed by the very update that fires
+//     it, so — unlike ReadoptCount/BreakerReadoptCount above — no readopt-
+//     attempt cap is needed here.
+func (c *Controller) redriveFailedPRForBaseRetarget(ctx context.Context, prState *PRState, ghPR *github.PullRequest) {
+	if ghPR == nil || prState.Stage != StageFailed {
+		return
+	}
+	defaultBranch := c.resolveMainBranchName()
+	if prState.TargetBranch == "" || prState.TargetBranch == defaultBranch {
+		// This failure doesn't implicate a base mismatch — a genuine
+		// terminal failure (real CI failure, merge-attempt cap, rebase cap,
+		// config mismatch against the correct base, etc.) must stay parked
+		// for a human regardless of what GitHub's base field says now.
+		return
+	}
+	newBase := ghPR.Base.Ref
+	if newBase == "" || newBase != defaultBranch {
+		// Not yet retargeted to the default branch — nothing to do.
+		return
+	}
+
+	prevTarget := prState.TargetBranch
+	prevError := prState.Error
+	prState.TargetBranch = newBase
+	prState.Stage = StageWaitingCI
+	prState.CIWaitStartedAt = time.Now()
+	prState.TerminalLabel = ""
+	prState.Error = ""
+
+	c.log.Info("redriveFailedPRForBaseRetarget: StageFailed PR retargeted to default branch, re-entering pipeline",
+		"pr", prState.PRNumber, "issue", prState.IssueNumber,
+		"prior_target", prevTarget, "new_target", newBase, "prior_error", prevError,
+	)
+
+	if prState.IssueNumber > 0 {
+		comment := fmt.Sprintf(
+			"🔄 **Re-driven**: this PR failed while targeting `%s`; GitHub has since retargeted it to the default branch `%s` — autopilot is re-entering the pipeline for a fresh CI wait.",
+			prevTarget, newBase,
+		)
+		if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+			c.log.Warn("redriveFailedPRForBaseRetarget: failed to post PR comment", "pr", prState.PRNumber, "error", err)
+		}
+	}
+}
+
 // maxBreakerReadoptAttempts caps how many times ReDriveBreakerHeldPRs
 // (GH-4792) may revive a single PR from a platform-outage breaker hold.
 // Mirrors maxReadoptAttempts's reasoning above: a PR whose own failure
@@ -8230,6 +8373,14 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 			// ProcessPR, which treats StageFailed as terminal and would never
 			// look at this PR again otherwise.
 			c.reAdoptHeldRebasePR(ctx, pr, ghPR)
+
+			// GH-5066 leg 2b: revive a StageFailed PR whose failure implicated
+			// a non-default base once GitHub has retargeted it back to the
+			// default branch — a no-op for every PR whose TargetBranch was
+			// already the default (a genuine, unrelated terminal failure). Must
+			// also run before ProcessPR for the same reason as reAdoptHeldRebasePR
+			// above.
+			c.redriveFailedPRForBaseRetarget(ctx, pr, ghPR)
 
 			// Detect changes_requested reviews in polling mode (webhook mode uses OnReviewRequested).
 			// Only check PRs that haven't already been transitioned to review_requested.
