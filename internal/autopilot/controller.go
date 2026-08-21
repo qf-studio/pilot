@@ -9304,7 +9304,23 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 			// for it to hold). Strip pilot-needs-human/needs-manual-rebase
 			// here unconditionally, mirroring escalateAndHold's reverse
 			// direction (needs-human supersedes retry-ready).
-			removeLabels := []string{github.LabelInProgress, labelNeedsHuman, labelNeedsManualRebase}
+			removeLabels := []string{github.LabelInProgress, labelNeedsManualRebase}
+			// GH-5115: broaden GH-5099's exhaustion-outranks-close-supersedes-hold
+			// rule (see exhaustedParked above, which only covers the
+			// issueLabel == LabelRetryReady resolution and fully skips this
+			// whole block) to every close resolution that still reaches here,
+			// including a TerminalLabel-driven close (pilot-failed/
+			// pilot-superseded/etc). An issue already parked at
+			// pilot-failed-retry-exhausted is a stronger signal than an
+			// ordinary hold no matter what this particular stale PR's close
+			// resolves to: pilot-needs-human must stay standing so the issue
+			// doesn't silently un-park. pilot-in-progress still clears
+			// unconditionally above so the issue doesn't render as stuck
+			// mid-execution.
+			exhaustedLabelPresent := err == nil && issue != nil && github.HasLabel(issue, github.LabelFailedRetryExhausted)
+			if !exhaustedLabelPresent {
+				removeLabels = append(removeLabels, labelNeedsHuman)
+			}
 			if issueLabel != github.LabelFailed {
 				// Remove stale pilot-failed label (GH-1302 gap) — only when we're not
 				// the ones setting it above.
