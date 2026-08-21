@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/retryladder"
 )
 
 // Notifier handles status updates to GitHub issues
@@ -123,9 +125,38 @@ func (n *Notifier) NotifyTaskFailed(ctx context.Context, owner, repo string, iss
 		_ = err // intentionally ignored: label may not exist
 	}
 
-	// Add failed label
-	if err := n.client.AddLabels(ctx, owner, repo, issueNum, []string{LabelFailed}); err != nil {
+	// GH-5100: fold the pilot-failed-retry-N ladder advance into the same
+	// label mutation as the pilot-failed stamp, matching
+	// postTitleRejectionEscalation's semantics (title_rejection.go,
+	// GH-5077/GH-5098). Read the issue's current labels immediately before
+	// mutating so retryladder.Advance can distinguish a fresh failure
+	// (advance the rung) from a repeat pilot-failed application on an
+	// already-failed issue (single-shot: do not advance again). Fail open on
+	// the read — mirrors the title-rejection call site's stateErr handling —
+	// so an unrelated GitHub read failure never blocks stamping pilot-failed.
+	addLabels := []string{LabelFailed}
+	var removeRungLabel string
+	if issue, err := n.client.GetIssue(ctx, owner, repo, issueNum); err == nil {
+		currentLabels := make([]string, len(issue.Labels))
+		for i, l := range issue.Labels {
+			currentLabels[i] = l.Name
+		}
+		if add, remove, _ := retryladder.Advance(currentLabels, HasLabel(issue, LabelFailed)); add != "" {
+			addLabels = append(addLabels, add)
+			removeRungLabel = remove
+		}
+	}
+
+	// Add failed label (+ ladder rung, in the same label mutation)
+	if err := n.client.AddLabels(ctx, owner, repo, issueNum, addLabels); err != nil {
 		return fmt.Errorf("failed to add failed label: %w", err)
+	}
+
+	// Remove the superseded rung label, if the ladder advanced past it.
+	if removeRungLabel != "" {
+		if err := n.client.RemoveLabel(ctx, owner, repo, issueNum, removeRungLabel); err != nil {
+			_ = err // best-effort: a stale rung label left behind is non-critical
+		}
 	}
 
 	// Post failure comment
