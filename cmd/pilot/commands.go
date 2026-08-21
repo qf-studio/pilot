@@ -35,6 +35,7 @@ import (
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
 	"github.com/qf-studio/pilot/internal/replay"
+	"github.com/qf-studio/pilot/internal/retryladder"
 	"github.com/qf-studio/pilot/internal/singleton"
 	"github.com/qf-studio/pilot/internal/upgrade"
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -1281,6 +1282,49 @@ func parseInt64(s string) (int64, error) {
 	return id, err
 }
 
+// stampPilotFailedWithLadder applies the pilot-failed label to issueNum and
+// advances the pilot-failed-retry-N ladder in the same mutation (GH-5101),
+// mirroring postTitleRejectionEscalation's GH-5077/GH-5098 pattern for the
+// `pilot github run` one-shot execute path's two failure sites in
+// newGitHubRunCmd (runner.Execute error, and the no-commit/no-PR outcome).
+// Without this, both sites stamped a bare pilot-failed with no rung
+// advance, so the ladder never progressed for issues driven through this
+// CLI path — only issues failed via the poller/executor's own retry loop
+// ever reached pilot-failed-retry-2/exhausted.
+//
+// Fetches the issue's live labels immediately before mutating: the `issue`
+// read at the top of newGitHubRunCmd is stale by the time execution
+// finishes, potentially long after that read. Best-effort throughout —
+// failures are logged via logGitHubAPIError, never returned, matching every
+// other label call at these two sites.
+func stampPilotFailedWithLadder(ctx context.Context, client *github.Client, owner, repoName string, issueNum int) {
+	addLabels := []string{github.LabelFailed}
+	var removeLabel string
+
+	issue, err := client.GetIssue(ctx, owner, repoName, issueNum)
+	if err != nil {
+		// Fail open on the ladder computation (mirrors
+		// postTitleRejectionEscalation's fetchIssueState fail-open stance) —
+		// still stamp pilot-failed itself, just without advancing the rung.
+		logGitHubAPIError("GetIssue", owner, repoName, issueNum, err)
+	} else {
+		hasFailed := github.HasLabel(issue, github.LabelFailed)
+		if add, remove, _ := retryladder.Advance(extractGitHubLabelNames(issue), hasFailed); add != "" {
+			addLabels = append(addLabels, add)
+			removeLabel = remove
+		}
+	}
+
+	if err := client.AddLabels(ctx, owner, repoName, issueNum, addLabels); err != nil {
+		logGitHubAPIError("AddLabels", owner, repoName, issueNum, err)
+	}
+	if removeLabel != "" {
+		if err := client.RemoveLabel(ctx, owner, repoName, issueNum, removeLabel); err != nil {
+			logGitHubAPIError("RemoveLabel", owner, repoName, issueNum, err)
+		}
+	}
+}
+
 func newGitHubCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "github",
@@ -1503,10 +1547,9 @@ Examples:
 
 			result, err := runner.Execute(ctx, task)
 			if err != nil {
-				// Add failed label
-				if labelErr := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-failed"}); labelErr != nil {
-					logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), labelErr)
-				}
+				// Add failed label, advancing the pilot-failed-retry-N ladder
+				// in the same mutation (GH-5101).
+				stampPilotFailedWithLadder(ctx, client, owner, repoName, int(issueNum))
 				if labelErr := client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-in-progress"); labelErr != nil {
 					logGitHubAPIError("RemoveLabel", owner, repoName, int(issueNum), labelErr)
 				}
@@ -1533,10 +1576,9 @@ Examples:
 			// — inferring failure from artifact absence alone here ignores the
 			// classification runner.Execute already computed.
 			if !result.IsEpic && result.CommitSHA == "" && result.PRUrl == "" && !executor.IsNoArtifactExplainedOutcome(result.Outcome) {
-				// No commits and no PR - mark as failed
-				if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-failed"}); err != nil {
-					logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
-				}
+				// No commits and no PR - mark as failed, advancing the
+				// pilot-failed-retry-N ladder in the same mutation (GH-5101).
+				stampPilotFailedWithLadder(ctx, client, owner, repoName, int(issueNum))
 
 				comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
 					result.Duration, branchName)
