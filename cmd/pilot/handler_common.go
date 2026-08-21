@@ -478,17 +478,35 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	return hr, execErr
 }
 
-// fireLoopBreakerAlert emits AlertTypeDispatchLoopBreaker exactly once per
-// storm — the tick where consecutive first reaches repickLoopBreakerThreshold
-// (GH-4469). consecutive strictly increases while a task keeps dropping and
-// is reset by repickBackoff.recordSuccess on the first genuine dispatch, so
-// comparing for equality (rather than >=) fires the alert once without
-// needing separate dedup state; a nil AlertsEngine (e.g. in tests without one
-// wired) is a no-op.
+// fireLoopBreakerAlert emits an escalation exactly once per storm — the tick
+// where consecutive first reaches repickLoopBreakerThreshold (GH-4469).
+// consecutive strictly increases while a task keeps dropping and is reset by
+// repickBackoff.recordSuccess on the first genuine dispatch, so comparing
+// for equality (rather than >=) fires the alert once without needing
+// separate dedup state; a nil AlertsEngine (e.g. in tests without one wired)
+// is a no-op.
+//
+// GH-5079: this call sits on the HasTerminalCompletion skip (the block right
+// above this function's call site) whose main real-world trigger — an
+// opened-but-never-merged PR that later dies leaving the ledger vouching for
+// it forever (label-clear retries silently no-op'ing) — was fixed at the
+// root by #5070's StageFailed reclassification, so a genuine 10-consecutive
+// storm through this specific skip is not expected to recur. Rather than
+// dropping the alert coverage outright, this reroutes it onto the same
+// EventTypeEscalation pathway the new pilot-failed-retry-exhausted hook uses
+// (title_rejection.go): the underlying condition here — a task GitHub keeps
+// re-admitting that this dispatcher chokepoint keeps having to refuse — is
+// the same "stuck, needs a human to look" signal, just from a different
+// gate, so it renders through the PR#5069 event.Error fallback rather than
+// the dedicated (and now effectively idle) AlertTypeDispatchLoopBreaker rule.
 func fireLoopBreakerAlert(deps HandlerDeps, taskID, title, projectPath string, consecutive int) {
 	if consecutive != repickLoopBreakerThreshold {
 		return
 	}
+	reason := fmt.Sprintf(
+		"task %s rejected %d+ consecutive times at the terminal-completion dispatch gate, stopping until operator action or backoff expiry",
+		taskID, consecutive,
+	)
 	logging.WithComponent("dispatch").Warn(
 		"dispatch loop breaker: task rejected 10+ consecutive times, stopping until operator action or backoff expiry",
 		slog.String("task_id", taskID), slog.Int("consecutive_drops", consecutive))
@@ -496,12 +514,14 @@ func fireLoopBreakerAlert(deps HandlerDeps, taskID, title, projectPath string, c
 		return
 	}
 	deps.AlertsEngine.ProcessEvent(alerts.Event{
-		Type:      alerts.EventTypeDispatchLoopBreaker,
+		Type:      alerts.EventTypeEscalation,
 		TaskID:    taskID,
 		TaskTitle: title,
 		Project:   projectPath,
+		Error:     reason,
 		Metadata: map[string]string{
 			"consecutive_drops": fmt.Sprintf("%d", consecutive),
+			"reason":            reason,
 		},
 		Timestamp: time.Now(),
 	})
