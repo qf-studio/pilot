@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,5 +111,74 @@ func TestQuestionTaskDoesNotAutoEnableQualityGates(t *testing.T) {
 	}
 	if runner.qualityCheckerFactory != nil {
 		t.Errorf("GH-363 auto-enable wired a quality checker factory for a CreatePR=false question task; it must stay nil")
+	}
+}
+
+// sleepThenFailQualityChecker always fails with ShouldRetry, and sleeps on
+// its first call so tests can force a parent context to expire before the
+// quality-gate retry loop reaches the reset/re-invoke step.
+type sleepThenFailQualityChecker struct {
+	sleep time.Duration
+	calls int
+}
+
+func (c *sleepThenFailQualityChecker) Check(_ context.Context) (*QualityOutcome, error) {
+	c.calls++
+	if c.calls == 1 {
+		time.Sleep(c.sleep)
+	}
+	return &QualityOutcome{
+		Passed:        false,
+		ShouldRetry:   true,
+		RetryFeedback: "synthetic gate failure",
+		Attempt:       c.calls,
+	}, nil
+}
+
+// TestQualityGateRetry_UsesFreshContextForResetAndReinvoke is the GH-4876
+// regression guard for secondary fix #1: the pre-retry reset and the retry
+// backend re-invoke must run on a fresh context.Background()-derived
+// deadline, not the (possibly already-exhausted) attempt ctx. We force the
+// outer ctx to expire before the gate check returns by sleeping past its
+// timeout in the quality checker; if the reset/retry still depended on the
+// exhausted ctx, both would fail immediately with "context deadline
+// exceeded" and the backend would never be re-invoked.
+func TestQualityGateRetry_UsesFreshContextForResetAndReinvoke(t *testing.T) {
+	localRepo, remoteRepo := setupTestRepoWithRemote(t)
+	defer func() { _ = os.RemoveAll(localRepo) }()
+	defer func() { _ = os.RemoveAll(remoteRepo) }()
+
+	backend := &stackingAttemptBackend{}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{UseWorktree: false}
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+
+	checker := &sleepThenFailQualityChecker{sleep: 1200 * time.Millisecond}
+	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+		return checker
+	})
+
+	task := &Task{
+		ID:          "GH-4876-CTX",
+		Title:       "quality retry must not reuse an exhausted parent context",
+		Description: "gates always fail; the outer ctx expires before the first retry",
+		ProjectPath: localRepo,
+		Branch:      "pilot/GH-4876-ctx",
+		CreatePR:    true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+
+	result, _ := runner.Execute(ctx, task)
+	if result == nil {
+		t.Fatal("Execute() returned nil result")
+	}
+	if strings.Contains(result.Error, "context deadline exceeded") {
+		t.Fatalf("quality-gate retry failed against the exhausted parent context's deadline instead of a fresh one: %s", result.Error)
+	}
+	if calls := backend.callCount(); calls < 2 {
+		t.Fatalf("expected the retry to actually re-invoke the backend on a fresh context (>=2 calls), got %d", calls)
 	}
 }

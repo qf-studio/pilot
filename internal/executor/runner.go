@@ -4501,7 +4501,12 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						// direct-mode (non-worktree) execution — worktree mode is already
 						// isolated and this is a no-op there.
 						if preAttemptSHA != "" {
-							if resetErr := git.ResetHardToCommit(ctx, preAttemptSHA); resetErr != nil {
+							// GH-4876: use a fresh context for the reset instead of the
+							// (possibly exhausted) attempt ctx, matching the dirt-discard
+							// reset pattern — a parent deadline that has already run out
+							// must not doom a retry that is otherwise recoverable.
+							resetCtx, resetCancel := context.WithTimeout(context.Background(), 30*time.Second)
+							if resetErr := git.ResetHardToCommit(resetCtx, preAttemptSHA); resetErr != nil {
 								log.Warn("Failed to reset clone to pre-attempt state before quality-gate retry",
 									slog.String("task_id", task.ID),
 									slog.Int("retry_attempt", retryAttempt+1),
@@ -4514,6 +4519,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 									slog.String("sha", preAttemptSHA),
 								)
 							}
+							resetCancel()
 						}
 
 						// Build retry prompt with feedback
@@ -4524,9 +4530,13 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							slog.Int("retry_attempt", retryAttempt+1),
 						)
 
-						// Re-invoke backend with retry prompt
+						// Re-invoke backend with retry prompt. GH-4876: use a fresh
+						// context (mirroring the smart-retry pattern) rather than the
+						// attempt ctx, which may already be exhausted by the time the
+						// quality-gate retry loop reaches this point.
 						feedbackAllowed, feedbackMCP := r.executionToolOptions()
-						retryResult, retryErr := r.backendExecute(ctx, task, executionPath, ExecuteOptions{
+						retryCtx, retryCancel := context.WithTimeout(context.Background(), timeout)
+						retryResult, retryErr := r.backendExecute(retryCtx, task, executionPath, ExecuteOptions{
 							Prompt:         retryPrompt,
 							TaskID:         task.ID,
 							Verbose:        task.Verbose,
@@ -4547,6 +4557,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 								r.processBackendEvent(task.ID, event, state)
 							},
 						})
+						retryCancel()
 						r.ingestGhGuardDenials(task, retryResult) // GH-4671
 
 						if retryErr != nil {
