@@ -13,6 +13,77 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
+// linearStatusLabels lists every "pilot-*" label the SDK poller manages
+// mid-poll (poller.go's cacheLabelIDs/hasStatusLabel) beyond the trigger
+// label itself.
+var linearStatusLabels = []string{"pilot-in-progress", "pilot-done", "pilot-failed"}
+
+// linearLabelClassifier abstracts *linearSDK.Client.ClassifyLabel so the
+// startup preflight can be exercised against a stub in tests without a real
+// Linear API call.
+type linearLabelClassifier interface {
+	ClassifyLabel(ctx context.Context, teamRef, labelName string) (*linearSDK.LabelClassificationResult, error)
+}
+
+// classifyWorkspaceLabels runs the SDK's label classifier once at poller
+// startup (GH-5092) for a workspace's trigger label and every pilot-*
+// status label, logging one line per label that isn't cleanly team-scoped
+// so the specific remedy is visible before the poll loop begins.
+//
+// Runtime behavior is unchanged by this preflight:
+//   - The trigger label still fails closed — cacheLabelIDs' GetLabelByName
+//     call inside Start() dies the poller exactly as before. This preflight
+//     just logs the classified remedy at Error immediately above that
+//     failure, and returns the same diagnosis as an error so callers/tests
+//     can observe it without acting on it.
+//   - Status labels still degrade to Warn-and-continue mid-poll via
+//     GetOrCreateLabel inside cacheLabelIDs. This preflight logs WARN
+//     naming why each one will fail before that happens.
+//   - A classifier error (network/API failure) is itself WARN-logged and
+//     never blocks startup — the preflight is diagnostics-only.
+func classifyWorkspaceLabels(ctx context.Context, logger *slog.Logger, classifier linearLabelClassifier, wsName, teamID, triggerLabel string) error {
+	var triggerErr error
+
+	if result, err := classifier.ClassifyLabel(ctx, teamID, triggerLabel); err != nil {
+		logger.Warn("Trigger label classification preflight failed; continuing without it",
+			slog.String("workspace", wsName),
+			slog.String("label", triggerLabel),
+			slog.Any("error", err),
+		)
+	} else if result.Classification != linearSDK.LabelTeamScoped {
+		logger.Error("Trigger label is not cleanly team-scoped; poller will fail closed at startup",
+			slog.String("workspace", wsName),
+			slog.String("label", triggerLabel),
+			slog.String("classification", string(result.Classification)),
+			slog.String("remedy", result.Remedy),
+		)
+		triggerErr = fmt.Errorf("workspace %s: trigger label %q is %s: %s", wsName, triggerLabel, result.Classification, result.Remedy)
+	}
+
+	for _, label := range linearStatusLabels {
+		result, err := classifier.ClassifyLabel(ctx, teamID, label)
+		if err != nil {
+			logger.Warn("Status label classification preflight failed; continuing without it",
+				slog.String("workspace", wsName),
+				slog.String("label", label),
+				slog.Any("error", err),
+			)
+			continue
+		}
+		if result.Classification == linearSDK.LabelTeamScoped {
+			continue
+		}
+		logger.Warn("Status label is not cleanly team-scoped; it will fail to sync mid-poll",
+			slog.String("workspace", wsName),
+			slog.String("label", label),
+			slog.String("classification", string(result.Classification)),
+			slog.String("remedy", result.Remedy),
+		)
+	}
+
+	return triggerErr
+}
+
 func newSDKLinearWorkspace(name, apiKey, teamID, triggerLabel string, projectIDs, projects []string, interval time.Duration) *linearSDK.WorkspaceConfig {
 	return &linearSDK.WorkspaceConfig{
 		Name:         name,
@@ -61,6 +132,14 @@ func linearPollerRegistration() PollerRegistration {
 				}
 				sdkWorkspaces = append(sdkWorkspaces, newSDKLinearWorkspace(ws.Name, ws.APIKey, ws.TeamID, triggerLabel, ws.ProjectIDs, ws.Projects, wsInterval))
 				notifiersByTeamID[ws.TeamID] = linearSDK.NewNotifier(linearSDK.NewClient(ws.APIKey))
+
+				// GH-5092: classify the trigger label and every pilot-*
+				// status label against this workspace's team before the
+				// poller starts, so a misconfigured label's remedy is in
+				// the log ahead of (trigger label) the fail-closed error
+				// or (status labels) the mid-poll Warn it will otherwise
+				// cause. Diagnostics-only -- does not change what starts.
+				_ = classifyWorkspaceLabels(ctx, logging.WithComponent("linear"), linearSDK.NewClient(ws.APIKey), ws.Name, ws.TeamID, triggerLabel)
 			}
 
 			sdkCfg := &linearSDK.Config{
