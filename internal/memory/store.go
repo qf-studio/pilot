@@ -468,6 +468,28 @@ func (s *Store) migrate() error {
 		// Empty-string default keeps pre-migration rows attributing via the
 		// join exactly as before (no backfill — they expire within 24h).
 		`ALTER TABLE approval_pending ADD COLUMN project TEXT DEFAULT ''`,
+		// GH-4890: currently-firing alerts, so a condition that recovers while
+		// the daemon is down still emits its resolution once the daemon
+		// restarts (follow-up to #4886's resolution-notifications work).
+		// Delete-on-resolve keeps this bounded to alerts that are actually
+		// still active — unlike approval_pending/execution_events this is not
+		// a history table, so there is no expiry sweep to write. Metadata and
+		// Channels are JSON-encoded TEXT columns, mirroring approval_pending's
+		// metadata/approvers columns. Primary key mirrors the in-memory
+		// activeAlerts map key (alerts.activeAlertKey: rule name + source).
+		`CREATE TABLE IF NOT EXISTS active_alerts (
+			rule_name TEXT NOT NULL,
+			source TEXT NOT NULL,
+			alert_id TEXT NOT NULL,
+			alert_type TEXT NOT NULL,
+			title TEXT NOT NULL,
+			message TEXT NOT NULL,
+			project_path TEXT DEFAULT '',
+			metadata TEXT DEFAULT '',
+			channels TEXT DEFAULT '',
+			created_at DATETIME NOT NULL,
+			PRIMARY KEY (rule_name, source)
+		)`,
 	}
 
 	for _, migration := range migrations {
