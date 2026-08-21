@@ -61,6 +61,14 @@ func resolveOwnerRepoForBasePresence(ctx context.Context, task *Task, projectPat
 // documented there.
 const labelPilotNeedsHuman = "pilot-needs-human"
 
+// labelPilotRetryReady mirrors adapters/github.LabelRetryReady, defined
+// locally for the same import-cycle reason as labelPilotNeedsHuman above.
+// GH-5056: escalateBasePresenceHold must strip this label in the same
+// mutation that applies labelPilotNeedsHuman — the GH-5042/PR#5048
+// never-coexist invariant autopilot's escalateAndHold (controller.go)
+// already enforces for its own escalation path.
+const labelPilotRetryReady = "pilot-retry-ready"
+
 // BasePresenceProbe is the narrow read surface basePresenceChecker needs:
 // one lookup for a referenced issue/PR's live state, one lookup for the PR
 // number(s) attached to a referenced issue (the "Depends on: #N" where #N is
