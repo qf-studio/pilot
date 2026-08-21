@@ -74,6 +74,54 @@ func TestSignalParser_ParseSignals(t *testing.T) {
 			expectedProg:  -1, // No status signal, so GetLatestProgress returns -1
 			expectedExit:  true,
 		},
+		{
+			name:          "bare exit signal outside a fence",
+			input:         "Task complete.\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true}\nDone.",
+			expectedCount: 1,
+			expectedPhase: "",
+			expectedProg:  -1,
+			expectedExit:  true,
+		},
+		{
+			name:          "bare status signal outside a fence",
+			input:         "{\"v\":2,\"type\":\"status\",\"phase\":\"IMPL\",\"progress\":40}",
+			expectedCount: 1,
+			expectedPhase: "IMPL",
+			expectedProg:  40,
+			expectedExit:  false,
+		},
+		{
+			name:          "fenced signal is not double-counted by the bare scan",
+			input:         "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true}\n```",
+			expectedCount: 1,
+			expectedPhase: "",
+			expectedProg:  -1,
+			expectedExit:  true,
+		},
+		{
+			name:          "fenced and bare signals both parse once each",
+			input:         "```pilot-signal\n{\"v\":2,\"type\":\"status\",\"phase\":\"RESEARCH\",\"progress\":25}\n```\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true}",
+			expectedCount: 2,
+			expectedPhase: "RESEARCH",
+			expectedProg:  25,
+			expectedExit:  true,
+		},
+		{
+			name:          "bare line with invalid JSON is skipped",
+			input:         "{\"v\":2,\"type\":\"exit\",",
+			expectedCount: 0,
+			expectedPhase: "",
+			expectedProg:  -1,
+			expectedExit:  false,
+		},
+		{
+			name:          "bare JSON line without the v prefix is ignored",
+			input:         "{\"type\":\"exit\",\"exit_signal\":true}",
+			expectedCount: 0,
+			expectedPhase: "",
+			expectedProg:  -1,
+			expectedExit:  false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -256,6 +304,18 @@ func TestSignalParser_NoOpExitReason(t *testing.T) {
 			input:        "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true,\"no_op\":true,\"reason\":\"watch ticket unchanged\"}\n```",
 			expectedOK:   true,
 			expectedText: "watch ticket unchanged",
+		},
+		{
+			name:         "bare unfenced no_op with reason is valid",
+			input:        "{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true,\"no_op\":true,\"reason\":\"watch ticket unchanged\"}",
+			expectedOK:   true,
+			expectedText: "watch ticket unchanged",
+		},
+		{
+			name:         "bare unfenced mandatory exit signal is never a no-op",
+			input:        "{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true}",
+			expectedOK:   false,
+			expectedText: "",
 		},
 		{
 			name:         "no_op with empty reason is rejected",
