@@ -3,6 +3,7 @@ package alerts
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -195,5 +196,63 @@ func TestActiveAlertPersistence_RehydrateAcrossRestart(t *testing.T) {
 	}
 	if len(remaining) != 0 {
 		t.Fatalf("expected persisted row deleted after resolve, got %d remaining", len(remaining))
+	}
+}
+
+// TestActiveAlertPersistence_RehydrateSeedsCooldown is the GH-5095 fold-in
+// acceptance test: rehydrateActiveAlerts must seed lastAlertTimes[rule.Name]
+// from the persisted row's CreatedAt, so a restart while an alert is still
+// actively firing does not reset its cooldown clock to "never fired" — which
+// would let the still-firing condition re-fire and re-notify immediately
+// post-restart instead of respecting the rule's configured Cooldown.
+func TestActiveAlertPersistence_RehydrateSeedsCooldown(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	firedAt := time.Now().Add(-1 * time.Minute).UTC().Truncate(time.Second)
+	if err := store.UpsertActiveAlert(&memory.ActiveAlert{
+		RuleName:  "config-error",
+		Source:    "adapter:github",
+		AlertID:   "test-alert-id",
+		AlertType: string(AlertTypeServiceUnhealthy),
+		Title:     "config error",
+		Message:   "adapter:github verification failed",
+		CreatedAt: firedAt,
+	}); err != nil {
+		t.Fatalf("UpsertActiveAlert: %v", err)
+	}
+
+	// Cooldown (10m) comfortably outlasts the 1m-ago firedAt above, so a
+	// freshly-constructed engine must still treat the rule as within
+	// cooldown if (and only if) rehydration seeded lastAlertTimes.
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []AlertRule{
+			{Name: "config-error", Type: AlertTypeServiceUnhealthy, Enabled: true, Severity: SeverityWarning, Cooldown: 10 * time.Minute},
+		},
+	}
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(newMockChannel("test-channel", "webhook"))
+	engine := NewEngine(config, WithDispatcher(dispatcher), WithActiveAlertStore(store))
+
+	engine.mu.RLock()
+	got, ok := engine.lastAlertTimes["config-error"]
+	engine.mu.RUnlock()
+	if !ok {
+		t.Fatal("expected rehydrateActiveAlerts to seed lastAlertTimes[\"config-error\"] from the persisted row")
+	}
+	if !got.Equal(firedAt) {
+		t.Errorf("lastAlertTimes[\"config-error\"] = %v, want %v (persisted CreatedAt)", got, firedAt)
+	}
+
+	if engine.shouldFire(config.Rules[0]) {
+		t.Error("shouldFire returned true immediately after rehydration — cooldown should still be in effect " +
+			"since the persisted alert fired only 1m ago against a 10m cooldown")
 	}
 }
