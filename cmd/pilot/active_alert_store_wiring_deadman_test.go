@@ -39,7 +39,7 @@ func TestRunPollingMode_WiresActiveAlertStore(t *testing.T) {
 		t.Fatal("expected the `if store != nil` guard, WithExecutionLifecycle, WithActiveAlertStore, and the " +
 			"alerts.NewEngine(alertsCfg, engineOpts...) call all present in runPollingMode")
 	}
-	if !(ifStoreIdx < lifecycleIdx && lifecycleIdx < activeAlertIdx && activeAlertIdx < newEngineIdx) {
+	if ifStoreIdx >= lifecycleIdx || lifecycleIdx >= activeAlertIdx || activeAlertIdx >= newEngineIdx {
 		t.Error("expected WithActiveAlertStore(store) to be appended inside the `if store != nil` block, after " +
 			"WithExecutionLifecycle and before the engineOpts are consumed by alerts.NewEngine")
 	}
