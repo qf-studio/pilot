@@ -28,12 +28,27 @@ type linearLabelClassifier interface {
 // status label for one workspace, once at poller startup, and logs a line
 // for any label that isn't cleanly team-scoped (GH-5092).
 //
-// The trigger label is logged at Error, immediately above the existing
-// startup-death log that fires when the SDK poller's own GetLabelByName
-// check fails inside Start() — this preflight does not change that failure
-// path, it only names the remedy ahead of it. Status labels are logged at
-// Warn, since they already degrade to Warn-and-continue mid-poll; the
-// startup line just explains why before the poll loop begins.
+// Message/severity matrix — pinned to studio-sdk v0.36.0's label-lookup
+// behavior (sdk/integrations/linear/client.go: GetLabelByName's workspace
+// fallback via getWorkspaceLabelByName, and GetOrCreateLabel's auto-create).
+// Re-derive this matrix against the new lookup code whenever the studio-sdk
+// pin moves — v0.35.2 and earlier had neither the workspace fallback nor
+// the auto-create, so a workspace-scoped trigger label was ERROR and a
+// missing status label was WARN under that version (GH-5118 follow-up to
+// PR#5113).
+//
+//	classification    | trigger label                    | status label
+//	------------------|-----------------------------------|------------------------------------
+//	team_scoped       | OK, silent                        | OK, silent
+//	workspace_scoped  | WARN — GetLabelByName's workspace  | WARN — GetOrCreateLabel resolves
+//	                  | fallback resolves it; still no     | it via the same fallback; still
+//	                  | team-scope precedence              | no team-scope precedence
+//	another_team      | ERROR — the fallback only matches  | WARN — GetLabelByName fails the
+//	                  | a label with a nil team, so this   | same way, so GetOrCreateLabel
+//	                  | never resolves; startup will fail  | falls through to CreateLabel and
+//	                  |                                     | mints a duplicate under this team
+//	missing           | ERROR — no label anywhere;         | INFO — GetOrCreateLabel
+//	                  | startup will fail                  | auto-creates it on first use
 //
 // If the classification call itself errors (network/API failure), that is
 // logged at Warn and the label is skipped — the preflight must never block
@@ -53,20 +68,29 @@ func preflightLinearLabels(ctx context.Context, log *slog.Logger, classifier lin
 			return
 		}
 
-		if isTrigger {
-			log.Error("Linear trigger label is not team-scoped; poller startup will fail",
-				slog.String("label", label),
-				slog.String("classification", string(result.Classification)),
-				slog.String("remedy", result.Remedy),
-			)
-			return
-		}
-
-		log.Warn("Linear status label is not team-scoped; label will fail mid-poll",
+		fields := []any{
 			slog.String("label", label),
 			slog.String("classification", string(result.Classification)),
 			slog.String("remedy", result.Remedy),
-		)
+		}
+
+		if isTrigger {
+			if result.Classification == linearSDK.LabelWorkspaceScoped {
+				log.Warn("Linear trigger label is workspace-scoped; resolves via workspace fallback but has no team-scope precedence", fields...)
+				return
+			}
+			log.Error("Linear trigger label is not team-scoped; poller startup will fail", fields...)
+			return
+		}
+
+		switch result.Classification {
+		case linearSDK.LabelMissing:
+			log.Info("Linear status label does not exist yet; will be auto-created on first use", fields...)
+		case linearSDK.LabelWorkspaceScoped:
+			log.Warn("Linear status label is workspace-scoped; resolves via workspace fallback but has no team-scope precedence", fields...)
+		default: // LabelAnotherTeam
+			log.Warn("Linear status label belongs to another team; a duplicate will be created under this team instead of reusing it", fields...)
+		}
 	}
 
 	classify(triggerLabel, true)
