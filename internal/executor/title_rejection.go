@@ -22,6 +22,60 @@ import (
 // second failure (same title) escalates.
 const titleRejectionMaxCount = 2
 
+// labelPilotFailed mirrors adapters/github.LabelFailed, defined locally for
+// the same import-cycle reason as labelPilotSuperseded (issue_state.go):
+// adapters/github imports internal/comms, which imports internal/executor.
+const labelPilotFailed = "pilot-failed"
+
+// GH-5077: pilot-failed-retry-N ladder labels mirror
+// adapters/github.LabelFailedRetry1/2/Exhausted (types.go:159-161), defined
+// locally for the same import-cycle reason as labelPilotSuperseded
+// (issue_state.go). Escalation order matches
+// adapters/github.FailedRetryStateLabels (types.go:169).
+const (
+	labelPilotFailedRetry1         = "pilot-failed-retry-1"
+	labelPilotFailedRetry2         = "pilot-failed-retry-2"
+	labelPilotFailedRetryExhausted = "pilot-failed-retry-exhausted"
+)
+
+// nextFailedRetryLabel computes the pilot-failed-retry-N ladder mutation
+// (none -> pilot-failed-retry-1 -> pilot-failed-retry-2 ->
+// pilot-failed-retry-exhausted) for a single, fresh pilot-failed
+// application. currentLabels is the issue's live label set read immediately
+// before this event's mutation. Returns the label to add and (if any) the
+// label to remove — the ladder holds exactly one rung label at a time, so
+// advancing always removes the previous rung.
+//
+// Both return values are empty once the issue has already reached the
+// terminal pilot-failed-retry-exhausted rung: GH-5077 requires no further
+// advancement past exhaustion.
+//
+// Callers must only invoke this for a fresh pilot-failed application (the
+// issue did not already carry pilot-failed) — a repeat escalation for an
+// issue that's already failed is a duplicate fail-label event and must not
+// advance the ladder again. See postTitleRejectionEscalation's
+// already-failed guard.
+func nextFailedRetryLabel(currentLabels []string) (add, remove string) {
+	has := func(name string) bool {
+		for _, l := range currentLabels {
+			if strings.EqualFold(l, name) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case has(labelPilotFailedRetryExhausted):
+		return "", ""
+	case has(labelPilotFailedRetry2):
+		return labelPilotFailedRetryExhausted, labelPilotFailedRetry2
+	case has(labelPilotFailedRetry1):
+		return labelPilotFailedRetry2, labelPilotFailedRetry1
+	default:
+		return labelPilotFailedRetry1, ""
+	}
+}
+
 // titleRejection tracks consecutive rejections for a single issue.
 type titleRejection struct {
 	hash  string // sha256 of the rejected title (hex)
@@ -216,9 +270,10 @@ func (r *Runner) postTitleRejectionEscalation(ctx context.Context, task *Task) e
 	// positive evidence the issue is already closed (fail open on lookup
 	// error — never block the existing best-effort path on an unrelated
 	// GitHub read failure).
-	if state, err := fetchIssueState(ctx, r, task, task.ProjectPath); err != nil {
+	state, stateErr := fetchIssueState(ctx, r, task, task.ProjectPath)
+	if stateErr != nil {
 		r.log.Warn("title-rejection escalation: failed to check issue state before labeling; proceeding (fail-open)",
-			"task_id", task.ID, "issue", issueNum, "error", err)
+			"task_id", task.ID, "issue", issueNum, "error", stateErr)
 	} else if state.Closed {
 		r.log.Info("title-rejection escalation: issue already closed, skipping comment and labels",
 			"task_id", task.ID, "issue", issueNum)
@@ -230,8 +285,28 @@ func (r *Runner) postTitleRejectionEscalation(ctx context.Context, task *Task) e
 	if err := ghIssueComment(ctx, task.ProjectPath, issueNum, comment); err != nil {
 		return fmt.Errorf("post comment: %w", err)
 	}
-	// Both labels are best-effort; log but don't fail.
-	if err := ghAddLabels(ctx, task.ProjectPath, issueNum, []string{"pilot-failed", "pilot-title-rejected"}); err != nil {
+
+	addLabels := []string{labelPilotFailed, "pilot-title-rejected"}
+	var removeLabels []string
+	// GH-5077: advance the pilot-failed-retry-N ladder in the same label
+	// mutation as the pilot-failed application itself — a separate follow-up
+	// call would leave a race window where another reader observes
+	// pilot-failed without its ladder rung. Only advance when the state read
+	// above succeeded (stateErr == nil) and the issue did not already carry
+	// pilot-failed: a repeat escalation for an already-failed issue (e.g. the
+	// same non-conventional title rejected a 3rd, 4th... time) is a duplicate
+	// fail-label event and must not advance the ladder again.
+	if stateErr == nil && !state.HasLabel(labelPilotFailed) {
+		if add, remove := nextFailedRetryLabel(state.Labels); add != "" {
+			addLabels = append(addLabels, add)
+			if remove != "" {
+				removeLabels = append(removeLabels, remove)
+			}
+		}
+	}
+
+	// Best-effort; log but don't fail.
+	if err := ghEditLabels(ctx, task.ProjectPath, issueNum, addLabels, removeLabels); err != nil {
 		r.log.Warn("title-rejection: failed to add labels",
 			"task_id", task.ID, "issue", issueNum, "error", err)
 	}
