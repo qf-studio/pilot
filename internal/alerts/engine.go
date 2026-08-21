@@ -350,6 +350,15 @@ func (e *Engine) rehydrateActiveAlerts() {
 			// active.channels, bypassing resolveChannels).
 			channels: row.Channels,
 		}
+		// GH-5095: seed the cooldown clock (shouldFire, keyed by rule.Name
+		// alone) from the persisted fire time — without this, a restart
+		// while a rule is still actively firing resets its cooldown to
+		// "never fired", letting the same condition re-fire and re-notify
+		// immediately post-restart instead of respecting the rule's
+		// configured Cooldown.
+		if existing, ok := e.lastAlertTimes[row.RuleName]; !ok || row.CreatedAt.After(existing) {
+			e.lastAlertTimes[row.RuleName] = row.CreatedAt
+		}
 	}
 	e.mu.Unlock()
 

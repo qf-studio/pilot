@@ -1663,6 +1663,10 @@ func (p *Pilot) initAlerts(cfg *config.Config) {
 		// task's still-alive execution row instead of silently dropping the
 		// tracker entry and leaving a live-looking claim behind.
 		alerts.WithExecutionLifecycle(executor.NewExecutionLifecycle(p.store)),
+		// GH-5095: wire active-alert persistence (GH-4890/PR#5090) — the
+		// legacy orchestrator/webhook-mode path's alert engine construction
+		// site, same dead-plumbing gap as the two cmd/pilot sites (GH-4716).
+		alerts.WithActiveAlertStore(p.store),
 	)
 
 	// Wire alerts engine to executor via adapter

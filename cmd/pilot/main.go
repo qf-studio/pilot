@@ -1036,6 +1036,10 @@ Examples:
 						// task's still-alive execution row instead of silently dropping
 						// the tracker entry and leaving a live-looking claim behind.
 						gwEngineOpts = append(gwEngineOpts, alerts.WithExecutionLifecycle(executor.NewExecutionLifecycle(gwStore)))
+						// GH-5095: wire active-alert persistence (GH-4890/PR#5090) —
+						// gateway mode's alert engine construction site, same
+						// dead-plumbing gap as the polling-mode site above (GH-4716).
+						gwEngineOpts = append(gwEngineOpts, alerts.WithActiveAlertStore(gwStore))
 					}
 					gwAlertsEngine = alerts.NewEngine(alertsCfg, gwEngineOpts...)
 					if alertErr := gwAlertsEngine.Start(ctx); alertErr != nil {
@@ -3078,6 +3082,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// task's still-alive execution row instead of silently dropping
 			// the tracker entry and leaving a live-looking claim behind.
 			engineOpts = append(engineOpts, alerts.WithExecutionLifecycle(executor.NewExecutionLifecycle(store)))
+			// GH-5095: wire active-alert persistence (GH-4890/PR#5090) — without
+			// this, WithActiveAlertStore is never called on the polling-mode
+			// daemon's only alert engine, so a real restart loses all
+			// currently-firing alert state despite the persistence layer
+			// existing and being fully tested (GH-4716 dead-plumbing class).
+			engineOpts = append(engineOpts, alerts.WithActiveAlertStore(store))
 		}
 		alertsEngine = alerts.NewEngine(alertsCfg, engineOpts...)
 		if err := alertsEngine.Start(ctx); err != nil {
