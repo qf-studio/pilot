@@ -314,6 +314,22 @@ func (c *Cleaner) cleanupLabel(ctx context.Context, label string, threshold time
 			continue
 		}
 
+		// GH-5078: never clear pilot-failed on an issue that has exhausted the
+		// pilot-failed-retry ladder. That label is the durable, restart-proof
+		// cap on the slow-retry cycle (GH-3715/GH-5074) — re-admitting an
+		// exhausted issue via the 24h staleness janitor would defeat the cap
+		// and let it retry indefinitely. Issues still on retry-1/retry-2 are
+		// unaffected: clearing pilot-failed there is the normal retry path,
+		// and only the pilot-failed label itself is removed, leaving the
+		// ladder rung label intact.
+		if label == LabelFailed && HasLabel(issue, LabelFailedRetryExhausted) {
+			c.logger.Debug("Issue has exhausted failed-retry ladder, skipping",
+				slog.Int("issue", issue.Number),
+				slog.String("label", label),
+			)
+			continue
+		}
+
 		// Check if the issue's label update is older than threshold
 		if time.Since(issue.UpdatedAt) < threshold {
 			c.logger.Debug("Issue recently updated, skipping",
