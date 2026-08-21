@@ -102,22 +102,16 @@ func nextLadderState(current []string, add, remove []string) []string {
 // end-to-end simulation of three consecutive fail-label events for the same
 // issue (repeated non-conventional-title rejections — the only production
 // path that advances the ladder, per postTitleRejectionEscalation), asserting
-// the ladder advances retry-1 -> retry-2 -> exhausted one rung per cycle, and
-// that a 4th fail-label event on an already-exhausted issue never creates a
-// new rung or removes the terminal one — the ladder is a hard cap, not a
-// rolling window.
-//
-// Scope note: this test covers the ladder-advancement and terminal-cap
-// contract that exists on main today (GH-5077, PR#5081, merged). It does not
-// assert the "parked under pilot-needs-human + escalation alert emitted"
-// half of acceptance criterion (b) — that wiring is GH-5079 (PR#5084 at the
-// time this test was written: open, CI-green, mergeable, not yet merged to
-// main). Once #5084 lands, extend cycle 4 below to also assert the
-// pilot-needs-human label and an emitted AlertEventTypeEscalation event. The
-// admission-side half of that contract — that an issue carrying
-// pilot-needs-human is never re-admitted for dispatch — is already
-// independently covered by
-// cmd/pilot/gh5056_needs_human_admission_test.go.
+// the ladder advances retry-1 -> retry-2 -> exhausted one rung per cycle,
+// that the exhausted transition (cycle 3) parks the issue under
+// pilot-needs-human and fires an escalation alert in that same mutation
+// (GH-5079, composed here through the same fake-gh/alert-processor seams as
+// gh5079_exhaustion_escalation_test.go), and that a 4th fail-label event on
+// an already-exhausted issue never creates a new rung, removes the terminal
+// one, or re-fires the escalation — the ladder is a hard cap, not a rolling
+// window. The admission-side half of the park contract — that an issue
+// carrying pilot-needs-human is never re-admitted for dispatch — is already
+// independently covered by cmd/pilot/gh5056_needs_human_admission_test.go.
 func TestLadderThreeCycle_EndToEnd_AdvancesThenNeverReAdmits(t *testing.T) {
 	const issueNum = 9301
 	var ladder []string // durable GitHub label state, threaded across cycles
@@ -144,26 +138,60 @@ func TestLadderThreeCycle_EndToEnd_AdvancesThenNeverReAdmits(t *testing.T) {
 		t.Fatalf("cycle 2: expected ladder state [%s], got %v", labelPilotFailedRetry2, ladder)
 	}
 
-	// Cycle 3: retry-2 -> exhausted.
-	calls = runPostTitleRejectionEscalation(t, issueNum, ladder)
+	// Cycle 3: retry-2 -> exhausted. GH-5079: this is also the mutation that
+	// parks the issue under pilot-needs-human (shedding pilot-retry-ready)
+	// and fires the escalation alert — assert both here, through the same
+	// fake-gh/alert-processor seam gh5079's unit tests use
+	// (runPostTitleRejectionEscalationWithAlerts), so the e2e flow proves the
+	// park+alert contract actually composes with the 3-cycle ladder
+	// advancement rather than living only in isolated unit tests.
+	calls, cycle3Events := runPostTitleRejectionEscalationWithAlerts(t, issueNum, ladder)
 	add, remove = parseIssueEditLabels(t, calls)
 	if !containsLabel(add, labelPilotFailedRetryExhausted) || !containsLabel(remove, labelPilotFailedRetry2) {
 		t.Fatalf("cycle 3: expected %s added and %s removed, got calls:\n%s", labelPilotFailedRetryExhausted, labelPilotFailedRetry2, calls)
+	}
+	if !containsLabel(add, labelPilotNeedsHuman) {
+		t.Errorf("cycle 3: expected %s added in the same mutation as the exhausted rung, got calls:\n%s", labelPilotNeedsHuman, calls)
+	}
+	if !containsLabel(remove, labelPilotRetryReady) {
+		t.Errorf("cycle 3: expected %s removed in the same mutation (GH-5042/PR#5048 never-coexist invariant), got calls:\n%s", labelPilotRetryReady, calls)
+	}
+	if len(cycle3Events) != 1 {
+		t.Fatalf("cycle 3: expected exactly 1 escalation alert on the exhausted transition, got %d: %+v", len(cycle3Events), cycle3Events)
+	}
+	if cycle3Events[0].Type != AlertEventTypeEscalation {
+		t.Errorf("cycle 3: event.Type = %q, want %q", cycle3Events[0].Type, AlertEventTypeEscalation)
+	}
+	if !strings.Contains(cycle3Events[0].Error, strconv.Itoa(issueNum)) {
+		t.Errorf("cycle 3: event.Error should name the issue, got: %q", cycle3Events[0].Error)
+	}
+	if !strings.Contains(cycle3Events[0].Error, labelPilotFailedRetryExhausted) {
+		t.Errorf("cycle 3: event.Error should name the exhausted rung, got: %q", cycle3Events[0].Error)
 	}
 	ladder = nextLadderState(ladder, add, remove)
 	if !containsLabel(ladder, labelPilotFailedRetryExhausted) || len(ladder) != 1 {
 		t.Fatalf("cycle 3: expected ladder state [%s], got %v", labelPilotFailedRetryExhausted, ladder)
 	}
 
-	// Cycle 4: exhausted is terminal — no new rung is ever created and the
-	// terminal rung is never removed by a further fail-label event.
-	calls = runPostTitleRejectionEscalation(t, issueNum, ladder)
+	// Cycle 4: exhausted is terminal — no new rung is ever created, the
+	// terminal rung is never removed by a further fail-label event, and the
+	// park+escalation from cycle 3 must not be duplicated: pilot-needs-human
+	// is already applied and the alert already fired once, so a repeat
+	// fail-label event on an already-parked issue must add nothing further
+	// and emit no additional alert.
+	calls, cycle4Events := runPostTitleRejectionEscalationWithAlerts(t, issueNum, ladder)
 	add, remove = parseIssueEditLabels(t, calls)
 	if containsLabel(add, labelPilotFailedRetry1) || containsLabel(add, labelPilotFailedRetry2) {
 		t.Errorf("cycle 4: no new rung should ever be created past exhaustion, add=%v", add)
 	}
+	if containsLabel(add, labelPilotNeedsHuman) {
+		t.Errorf("cycle 4: pilot-needs-human must not be re-applied — it was already applied on the exhausted transition (cycle 3), add=%v", add)
+	}
 	if len(remove) != 0 {
 		t.Errorf("cycle 4: exhausted rung must never be removed by a fail-label event, remove=%v", remove)
+	}
+	if len(cycle4Events) != 0 {
+		t.Errorf("cycle 4: escalation alert must not re-fire once already parked, got %d: %+v", len(cycle4Events), cycle4Events)
 	}
 	ladder = nextLadderState(ladder, add, remove)
 	if !containsLabel(ladder, labelPilotFailedRetryExhausted) || len(ladder) != 1 {
