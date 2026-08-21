@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -718,6 +719,142 @@ func TestCleaner_Cleanup_RecentFailedIssuesSkipped(t *testing.T) {
 
 	if removeLabelCalled {
 		t.Error("RemoveLabel should NOT have been called for recent failed issue")
+	}
+}
+
+// GH-5078: the stale-label janitor must honor the pilot-failed-retry ladder.
+// An issue that has exhausted the ladder (pilot-failed-retry-exhausted) is
+// parked deliberately — clearing pilot-failed on it would re-admit it into
+// the queue and defeat the durable, restart-proof retry cap (GH-3715/GH-5074).
+// Issues still on retry-1/retry-2 must continue to be cleared normally, and
+// in every case the ladder label itself must never be touched by the janitor
+// — only pilot-failed is removed.
+func TestCleaner_Cleanup_FailedLadderHonored(t *testing.T) {
+	tests := []struct {
+		name              string
+		issueNumber       int
+		extraLabel        string // ladder label present alongside pilot-failed, if any
+		wantFailedRemoved bool
+		wantLadderRemoved bool // whether a DELETE for the ladder label itself should occur
+	}{
+		{
+			name:              "exhausted issue skipped",
+			issueNumber:       5078,
+			extraLabel:        LabelFailedRetryExhausted,
+			wantFailedRemoved: false,
+			wantLadderRemoved: false,
+		},
+		{
+			name:              "retry-1 issue cleared normally, ladder untouched",
+			issueNumber:       5079,
+			extraLabel:        LabelFailedRetry1,
+			wantFailedRemoved: true,
+			wantLadderRemoved: false,
+		},
+		{
+			name:              "retry-2 issue cleared normally, ladder untouched",
+			issueNumber:       5080,
+			extraLabel:        LabelFailedRetry2,
+			wantFailedRemoved: true,
+			wantLadderRemoved: false,
+		},
+		{
+			name:              "non-laddered issue cleared unchanged",
+			issueNumber:       5081,
+			extraLabel:        "",
+			wantFailedRemoved: true,
+			wantLadderRemoved: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := createTestStore(t)
+			defer func() { _ = store.Close() }()
+
+			staleTime := time.Now().Add(-25 * time.Hour)
+			labels := []Label{{Name: LabelFailed}}
+			if tt.extraLabel != "" {
+				labels = append(labels, Label{Name: tt.extraLabel})
+			}
+			allIssues := []*Issue{
+				{
+					Number:    tt.issueNumber,
+					Title:     tt.name,
+					Labels:    labels,
+					UpdatedAt: staleTime,
+				},
+			}
+
+			var (
+				mu             sync.Mutex
+				failedRemoved  bool
+				ladderRemoved  bool
+				onFailedCalled bool
+			)
+
+			path := fmt.Sprintf("/repos/owner/repo/issues/%d", tt.issueNumber)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+
+				w.Header().Set("Content-Type", "application/json")
+
+				if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+					_ = json.NewEncoder(w).Encode(allIssues)
+					return
+				}
+
+				if r.Method == http.MethodDelete && r.URL.Path == path+"/labels/"+LabelFailed {
+					failedRemoved = true
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+
+				if tt.extraLabel != "" && r.Method == http.MethodDelete && r.URL.Path == path+"/labels/"+tt.extraLabel {
+					ladderRemoved = true
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+
+				if r.Method == http.MethodPost && r.URL.Path == path+"/comments" {
+					_ = json.NewEncoder(w).Encode(&Comment{ID: 1, Body: "cleanup"})
+					return
+				}
+
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+				Enabled:         true,
+				Interval:        30 * time.Minute,
+				Threshold:       1 * time.Hour,
+				FailedThreshold: 24 * time.Hour,
+			}, WithOnFailedCleaned(func(_ int) {
+				mu.Lock()
+				onFailedCalled = true
+				mu.Unlock()
+			}))
+
+			if err := cleaner.Cleanup(context.Background()); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if failedRemoved != tt.wantFailedRemoved {
+				t.Errorf("pilot-failed removed = %v, want %v", failedRemoved, tt.wantFailedRemoved)
+			}
+			if onFailedCalled != tt.wantFailedRemoved {
+				t.Errorf("OnFailedCleaned fired = %v, want %v", onFailedCalled, tt.wantFailedRemoved)
+			}
+			if ladderRemoved != tt.wantLadderRemoved {
+				t.Errorf("ladder label removed = %v, want %v (janitor must never touch ladder labels)", ladderRemoved, tt.wantLadderRemoved)
+			}
+		})
 	}
 }
 
