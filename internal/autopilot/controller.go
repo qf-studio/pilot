@@ -2051,6 +2051,105 @@ func (c *Controller) safeDeleteBranch(ctx context.Context, branchName string, pr
 	return true, nil
 }
 
+// retargetDescendants closes the stacked-PR resume loop (GH-5071 — PR#5068
+// residual): GitHub only auto-retargets a child PR onto the repo's default
+// branch when its current base branch is DELETED, but safeDeleteBranch
+// (GH-4872, just above) refuses that delete while any open PR still targets
+// the branch. In a fully autopilot-managed stack that's a deadlock: base
+// merges -> branch delete refused (descendant still targets it) -> no
+// GitHub-side retarget ever fires -> the descendant's WaitingCI un-park
+// guard (which watches TargetBranch) never sees a change and the PR parks
+// forever, waiting for a human to intervene. The 2026-08-21 incident only
+// recovered because an operator merged the base by hand and GitHub happened
+// to retarget on the branch delete that followed.
+//
+// Call this BEFORE safeDeleteBranch on any branch that has just genuinely
+// merged: it retargets every open PR based on branchName onto
+// defaultBranch, so safeDeleteBranch's own branchIsBaseOfOpenPR check finds
+// no dependents left and the delete proceeds normally.
+//
+// Scoped to any open PR with this base, not just activePRs-tracked ones —
+// an untracked descendant would otherwise permanently block the branch
+// delete the same way, which defeats the point of this fix.
+//
+// Best-effort / fail-open: a retarget failure is logged as a WARN and
+// otherwise ignored here — the caller's subsequent safeDeleteBranch call
+// re-checks independently and will refuse the delete + fire the existing
+// blocking_pr alert (PR#5069) exactly as it did before this fix, so a
+// flaky retarget degrades to today's behavior rather than forcing a delete
+// that would orphan the still-blocked descendant's content.
+func (c *Controller) retargetDescendants(ctx context.Context, branchName, defaultBranch string) {
+	if branchName == "" || defaultBranch == "" || branchName == defaultBranch {
+		return
+	}
+	openPRs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
+	if err != nil {
+		c.log.Warn("retargetDescendants: failed to list open PRs — skipping retarget this cycle, safeDeleteBranch will fail-closed as before",
+			"branch", branchName, "error", err)
+		return
+	}
+	for _, pr := range openPRs {
+		if pr.Base.Ref != branchName {
+			continue
+		}
+		if err := c.retargetPR(ctx, pr.Number, defaultBranch); err != nil {
+			c.log.Warn("retargetDescendants: failed to retarget descendant PR off merged base branch — safeDeleteBranch will refuse the delete and alert as before",
+				"branch", branchName, "descendant_pr", pr.Number, "default_branch", defaultBranch, "error", err)
+			continue
+		}
+		c.log.Info("retargetDescendants: retargeted descendant PR off merged base branch",
+			"branch", branchName, "descendant_pr", pr.Number, "default_branch", defaultBranch)
+	}
+}
+
+// retargetPR moves an open PR onto newBase via GitHub's updatePullRequest
+// GraphQL mutation. The studio-sdk client this controller is built against
+// (ghClient) has no REST helper for changing a PR's base branch, so this
+// goes directly through the already-exported ExecuteGraphQL path the same
+// client uses elsewhere (epic_reconcile.go's sub-issue linking, the project
+// board sync). It first resolves the PR's own GraphQL node ID with a plain
+// query by number — deliberately not reusing GetIssueNodeID's REST
+// issues-endpoint lookup (built for actual issues, not PRs) — then issues
+// the mutation. Both round trips share ctx's deadline/cancellation.
+func (c *Controller) retargetPR(ctx context.Context, prNumber int, newBase string) error {
+	const idQuery = `query($owner: String!, $repo: String!, $number: Int!) {
+		repository(owner: $owner, name: $repo) {
+			pullRequest(number: $number) { id }
+		}
+	}`
+	var idResult struct {
+		Repository struct {
+			PullRequest struct {
+				ID string `json:"id"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if err := c.ghClient.ExecuteGraphQL(ctx, idQuery, map[string]interface{}{
+		"owner":  c.owner,
+		"repo":   c.repo,
+		"number": prNumber,
+	}, &idResult); err != nil {
+		return fmt.Errorf("resolve node id for PR #%d: %w", prNumber, err)
+	}
+	nodeID := idResult.Repository.PullRequest.ID
+	if nodeID == "" {
+		return fmt.Errorf("PR #%d returned empty node id", prNumber)
+	}
+
+	const mutation = `mutation($id: ID!, $base: String!) {
+		updatePullRequest(input: {pullRequestId: $id, baseRefName: $base}) {
+			pullRequest { number }
+		}
+	}`
+	if err := c.ghClient.ExecuteGraphQL(ctx, mutation, map[string]interface{}{
+		"id":   nodeID,
+		"base": newBase,
+	}, nil); err != nil {
+		return fmt.Errorf("retarget PR #%d to %q: %w", prNumber, newBase, err)
+	}
+	return nil
+}
+
 // alertBranchDeleteHeldOnce fires an escalation alert the first time
 // safeDeleteBranch refuses to delete a given branch because it is the base
 // of another open PR (GH-4872), deduplicated per branch name via
@@ -4748,6 +4847,10 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	// Branch is safe to delete — it's fully merged. If GitHub already deleted it
 	// (delete_branch_on_merge setting), the API returns 404/422 which we ignore.
 	if prState.BranchName != "" {
+		// GH-5071: retarget any stacked descendant off this branch BEFORE
+		// attempting the delete — see retargetDescendants for why this can't
+		// be left to GitHub's own delete-triggered auto-retarget here.
+		c.retargetDescendants(ctx, prState.BranchName, c.resolveMainBranchName())
 		if deleted, err := c.safeDeleteBranch(ctx, prState.BranchName, prState.PRNumber); err != nil {
 			c.log.Warn("failed to delete branch after merge", "branch", prState.BranchName, "pr", prState.PRNumber, "error", err)
 		} else if deleted {
@@ -8697,6 +8800,15 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		}
 		c.recordExecutionEvent(prState, memory.StageMerged,
 			fmt.Sprintf("pr #%d: merged externally (%s)", prState.PRNumber, prURL))
+
+		// GH-5071: same stacked-PR resume loop closed on the internal
+		// handleMerging path above — an externally merged base (a human ran
+		// `gh pr merge`, or GitHub's UI) hits the exact same
+		// safeDeleteBranch(GH-4872) deadlock via removePR below, so retarget
+		// any stacked descendant before removePR attempts the branch delete.
+		if prState.BranchName != "" {
+			c.retargetDescendants(ctx, prState.BranchName, c.resolveMainBranchName())
+		}
 
 		c.removePR(prState.PRNumber)
 		return true
