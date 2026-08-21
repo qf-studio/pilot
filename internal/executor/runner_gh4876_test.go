@@ -12,21 +12,27 @@ import (
 	"time"
 )
 
-// TestQualityGatesRespectCreatePR is the GH-4876 regression guard for the
-// primary defect: quality gates used to run unconditionally, including for
-// read-only question tasks (CreatePR=false, no branch, no files written by
+// TestQualityGatesRespectSkipQualityGates is the GH-4876 regression guard
+// for the primary defect: quality gates used to run unconditionally,
+// including for read-only question tasks (no branch, no files written by
 // design). Running gates against those failed deterministically and
 // triggered a doomed retry cycle against a working tree never set up for
-// code work. Gates must now be skipped entirely when task.CreatePR is
-// false, and behavior for CreatePR=true tasks must be unchanged.
-func TestQualityGatesRespectCreatePR(t *testing.T) {
+// code work.
+//
+// The gate is task.SkipQualityGates, NOT task.CreatePR: CreatePR only
+// tracks whether a PR gets opened, and plenty of legitimate code tasks
+// (direct-commit, etc.) have CreatePR=false while still writing files that
+// need linting/testing. Only task construction sites that are certain no
+// code will be written (comms question/research/planning/chat handlers)
+// set SkipQualityGates.
+func TestQualityGatesRespectSkipQualityGates(t *testing.T) {
 	tests := []struct {
-		name        string
-		createPR    bool
-		wantGateRun bool
+		name             string
+		skipQualityGates bool
+		wantGateRun      bool
 	}{
-		{name: "question task (CreatePR=false) skips quality gates", createPR: false, wantGateRun: false},
-		{name: "code task (CreatePR=true) still runs quality gates", createPR: true, wantGateRun: true},
+		{name: "read-only task (SkipQualityGates=true) skips quality gates", skipQualityGates: true, wantGateRun: false},
+		{name: "code task (SkipQualityGates=false) still runs quality gates", skipQualityGates: false, wantGateRun: true},
 	}
 
 	for _, tt := range tests {
@@ -46,12 +52,13 @@ func TestQualityGatesRespectCreatePR(t *testing.T) {
 			})
 
 			task := &Task{
-				ID:          "GH-4876-CREATEPR",
-				Title:       "quality gate CreatePR guard test",
-				Description: "test",
-				ProjectPath: projectDir,
-				LocalMode:   true,
-				CreatePR:    tt.createPR,
+				ID:               "GH-4876-SKIPGATES",
+				Title:            "quality gate SkipQualityGates guard test",
+				Description:      "test",
+				ProjectPath:      projectDir,
+				LocalMode:        true,
+				CreatePR:         false, // deliberately false for both cases: CreatePR must not drive gating
+				SkipQualityGates: tt.skipQualityGates,
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -65,7 +72,7 @@ func TestQualityGatesRespectCreatePR(t *testing.T) {
 				t.Fatalf("Execute() not successful: %s", result.Error)
 			}
 			if gateCalled != tt.wantGateRun {
-				t.Errorf("quality checker factory called = %v, want %v (CreatePR=%v)", gateCalled, tt.wantGateRun, tt.createPR)
+				t.Errorf("quality checker factory called = %v, want %v (SkipQualityGates=%v)", gateCalled, tt.wantGateRun, tt.skipQualityGates)
 			}
 		})
 	}
@@ -76,8 +83,8 @@ func TestQualityGatesRespectCreatePR(t *testing.T) {
 // configured QualityCheckerFactory): a question task's project directory
 // may contain detectable build/test commands (here, a go.mod with no .go
 // files, so a real `go build ./...` would fail with "no Go files in .").
-// For a CreatePR=false task, gates must never be auto-enabled or run, so
-// the answer succeeds and the factory stays nil.
+// For a SkipQualityGates=true task, gates must never be auto-enabled or
+// run, so the answer succeeds and the factory stays nil.
 func TestQuestionTaskDoesNotAutoEnableQualityGates(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module gh4876question\n\ngo 1.21\n"), 0o644); err != nil {
@@ -94,12 +101,13 @@ func TestQuestionTaskDoesNotAutoEnableQualityGates(t *testing.T) {
 	// from the go.mod in projectDir and wire up a build gate on its own.
 
 	task := &Task{
-		ID:          "Q-GH-4876-AUTOGATE",
-		Title:       "Question: what does this module do?",
-		Description: "Answer this question about the codebase. DO NOT make any changes, only read and analyze.",
-		ProjectPath: projectDir,
-		LocalMode:   true,
-		CreatePR:    false,
+		ID:               "Q-GH-4876-AUTOGATE",
+		Title:            "Question: what does this module do?",
+		Description:      "Answer this question about the codebase. DO NOT make any changes, only read and analyze.",
+		ProjectPath:      projectDir,
+		LocalMode:        true,
+		CreatePR:         false,
+		SkipQualityGates: true,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

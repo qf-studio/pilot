@@ -508,6 +508,15 @@ type Task struct {
 	// canary parent's descendants stay canary even if project config changes
 	// mid-run.
 	IsCanary bool
+	// SkipQualityGates marks this task as read-only Q&A/analysis with no code
+	// produced by design (GH-4876): comms question/research/planning/chat
+	// tasks explicitly instructed "DO NOT make any changes". CreatePR==false
+	// is NOT a reliable proxy for this — direct-commit and other non-PR code
+	// tasks also have CreatePR==false but do write files and must still run
+	// gates. Only set this for task-construction sites that are certain no
+	// code will be written; it skips both the GH-363 build/test auto-enable
+	// and any explicitly configured quality checker.
+	SkipQualityGates bool
 }
 
 // LogExecutionID returns the ID that runner-side writes (execution_logs.execution_id,
@@ -4336,13 +4345,19 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// Track if quality gates passed for self-review decision (GH-1079)
 		qualityGatesPassed := false
 
-		// GH-4876: quality gates only make sense for tasks that produce a
-		// PR/commit. Question tasks (CreatePR=false) are read-only Q&A with
-		// no branch and no files written by design — running gates against
-		// them fails deterministically (nothing to lint/test) and triggers a
-		// doomed retry cycle against a working tree that was never set up
-		// for code work.
-		if task.CreatePR {
+		// GH-4876: quality gates only make sense for tasks that actually
+		// produce code changes. Read-only comms tasks (question/research/
+		// planning/chat) are explicitly instructed not to touch files and
+		// stamp task.SkipQualityGates at construction (internal/comms/
+		// handler.go) — running gates against them fails deterministically
+		// (nothing to lint/test) and triggers a doomed retry cycle against a
+		// working tree that was never set up for code work.
+		//
+		// Deliberately NOT gated on task.CreatePR: that flag only tracks
+		// whether a PR gets opened. Direct-commit and other non-PR code
+		// tasks also have CreatePR==false but do write files, so they must
+		// still run quality gates.
+		if !task.SkipQualityGates {
 
 			// Auto-enable minimal build gate if not configured (GH-363)
 			// This ensures broken code never becomes a PR, even without explicit quality config
@@ -4743,7 +4758,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				}
 			}
 		} else {
-			log.Debug("Quality gates skipped: CreatePR=false", slog.String("task_id", task.ID))
+			log.Debug("Quality gates skipped: task.SkipQualityGates=true", slog.String("task_id", task.ID))
 		}
 
 		r.reportProgress(task.ID, "Finalizing", 95, "Preparing for completion")

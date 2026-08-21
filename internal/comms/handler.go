@@ -411,14 +411,15 @@ If the question is too broad, ask for clarification instead of exploring everyth
 	taskID := fmt.Sprintf("Q-%d", time.Now().Unix())
 	questionProjectPath := h.getActiveProjectPath(contextID)
 	task := &executor.Task{
-		ID:          taskID,
-		Title:       "Question: " + TruncateText(question, 40),
-		Description: prompt,
-		ProjectPath: questionProjectPath,
-		LocalMode:   true,
-		CreatePR:    false,
-		Verbose:     false,
-		IsCanary:    h.isCanaryProject(questionProjectPath),
+		ID:               taskID,
+		Title:            "Question: " + TruncateText(question, 40),
+		Description:      prompt,
+		ProjectPath:      questionProjectPath,
+		LocalMode:        true,
+		CreatePR:         false,
+		Verbose:          false,
+		IsCanary:         h.isCanaryProject(questionProjectPath),
+		SkipQualityGates: true, // GH-4876: read-only Q&A, nothing to lint/test
 	}
 
 	h.log.Debug("Answering question", slog.String("task_id", taskID), slog.String("context_id", contextID))
@@ -458,10 +459,11 @@ Provide findings in a structured format with:
 - Recommendations
 
 DO NOT make any code changes. This is a read-only research task.`, query),
-		ProjectPath: researchProjectPath,
-		LocalMode:   true,
-		CreatePR:    false,
-		IsCanary:    h.isCanaryProject(researchProjectPath),
+		ProjectPath:      researchProjectPath,
+		LocalMode:        true,
+		CreatePR:         false,
+		IsCanary:         h.isCanaryProject(researchProjectPath),
+		SkipQualityGates: true, // GH-4876: read-only research, nothing to lint/test
 	}
 
 	researchCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -505,9 +507,10 @@ Explore the codebase and propose a detailed plan. Include:
 4. Potential risks or considerations
 
 DO NOT make any code changes. Only explore and plan.`, request),
-		ProjectPath: planProjectPath,
-		CreatePR:    false,
-		IsCanary:    h.isCanaryProject(planProjectPath),
+		ProjectPath:      planProjectPath,
+		CreatePR:         false,
+		IsCanary:         h.isCanaryProject(planProjectPath),
+		SkipQualityGates: true, // GH-4876: read-only planning, nothing to lint/test
 	}
 
 	planTimeout := 2 * time.Minute
@@ -600,10 +603,11 @@ Respond helpfully and conversationally. You can reference project knowledge but 
 Be concise - this is a chat conversation, not a report. Keep response under 500 words.
 
 User message: %s`, chatProjectPath, message),
-		ProjectPath: chatProjectPath,
-		LocalMode:   true,
-		CreatePR:    false,
-		IsCanary:    h.isCanaryProject(chatProjectPath),
+		ProjectPath:      chatProjectPath,
+		LocalMode:        true,
+		CreatePR:         false,
+		SkipQualityGates: true, // GH-4876: read-only chat, nothing to lint/test
+		IsCanary:         h.isCanaryProject(chatProjectPath),
 	}
 
 	chatCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
