@@ -283,3 +283,59 @@ func TestIsIssueIntakeRequest(t *testing.T) {
 		}
 	}
 }
+
+// TestHandleIssueIntake_AlreadyDrafting covers the in-flight guard and asserts
+// the warning goes back to the originating thread.
+func TestHandleIssueIntake_AlreadyDrafting(t *testing.T) {
+	responder, _ := newMockResponder(`{"title":"feat(x): y","body":"b","labels":["pilot"]}`, "")
+	messenger := &mockMessenger{}
+	h := &Handler{
+		messenger:     messenger,
+		responder:     responder,
+		issueCreator:  &mockIssueCreator{url: "https://example.test/issues/1"},
+		pendingIssues: map[string]*IssueDraft{"ctx1": {}},
+		log:           slog.Default(),
+	}
+
+	h.handleIssueIntake(context.Background(), "ctx1", threadIDUnderTest, "file a ticket")
+
+	if len(messenger.messages) != 1 {
+		t.Fatalf("expected 1 message, got %v", messenger.messages)
+	}
+	if !strings.Contains(messenger.messages[0], "already being drafted") {
+		t.Errorf("expected in-flight warning, got %q", messenger.messages[0])
+	}
+	if messenger.threadIDs[0] != threadIDUnderTest {
+		t.Errorf("threadID = %q, want %q", messenger.threadIDs[0], threadIDUnderTest)
+	}
+}
+
+// TestHandleIssueIntake_DraftFailure covers the LLM draft failure reply.
+func TestHandleIssueIntake_DraftFailure(t *testing.T) {
+	a := &mockAnswerer{err: errors.New("llm down")}
+	messenger := &mockMessenger{}
+	h := &Handler{
+		messenger:     messenger,
+		responder:     &Responder{client: a, answerModel: "claude-haiku-4-5-20251001"},
+		issueCreator:  &mockIssueCreator{url: "https://example.test/issues/1"},
+		pendingIssues: make(map[string]*IssueDraft),
+		log:           slog.Default(),
+	}
+
+	h.handleIssueIntake(context.Background(), "ctx1", threadIDUnderTest, "file a ticket")
+
+	found := false
+	for _, msg := range messenger.messages {
+		if strings.Contains(msg, "Failed to draft issue") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected draft failure message, got %v", messenger.messages)
+	}
+	for i, got := range messenger.threadIDs {
+		if got != threadIDUnderTest {
+			t.Errorf("message %d sent with threadID %q, want %q", i, got, threadIDUnderTest)
+		}
+	}
+}
