@@ -355,7 +355,7 @@ GoReleaser in CI, which builds binaries and uploads them as release
 assets. Pilot itself does not build release artifacts on the daemon
 host.
 
-When `autopilot.release.auto_release: true`, Pilot tags the merge
+When `autopilot.release.enabled: true`, Pilot tags the merge
 commit automatically; otherwise the maintainer pushes the tag manually.
 The docs site picks up the new version via the
 `<CurrentVersion/>` component bumped by the release workflow.
@@ -437,4 +437,4 @@ runs in foreign trees.
 | `autopilot.ci_poll_interval` | config | 12 | CI poll cadence |
 | `autopilot.rebase.*` | config | 13 | Auto-rebase enable + per-PR budget |
 | `autopilot.auto_merge` | config | 14 | Allow auto-merge in this environment |
-| `autopilot.release.auto_release` | config | 15 | Tag the merge commit automatically |
+| `autopilot.release.enabled` | config | 15 | Tag the merge commit automatically |
