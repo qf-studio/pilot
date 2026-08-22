@@ -20,7 +20,6 @@ pilot start [flags]
 | `--discord` | Enable Discord bot (overrides config) |
 | `--plane` | Enable Plane polling (overrides config) |
 | `--env=ENV` | Enable autopilot: `dev`, `stage`, `prod` |
-| `--auto-release` | Enable tag-based release automation (requires `--env=prod`) |
 | `--dashboard` | Show TUI dashboard for real-time task monitoring |
 | `-p`, `--project` | Project path (default: config default or cwd) |
 | `--replace` | Kill existing bot instance before starting |
@@ -46,8 +45,8 @@ pilot start --telegram --github --dashboard
 # Sequential execution (wait for merge before next)
 pilot start --github --sequential
 
-# Production with auto-release
-pilot start --github --env=prod --auto-release
+# Production (release automation is config-only: autopilot.release.auto_release)
+pilot start --github --env=prod
 
 # With JSON logging for aggregation systems
 pilot start --github --log-format=json

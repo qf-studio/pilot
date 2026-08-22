@@ -23,6 +23,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapterhealth"
 	"github.com/qf-studio/pilot/internal/adapters/discord"
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
@@ -416,6 +417,7 @@ func newStartCmd() *cobra.Command {
 		enableSlack    bool
 		enablePlane    bool
 		enableDiscord  bool
+		enableGitlab   bool
 		// Mode flags
 		noGateway      bool   // Lightweight mode: polling only, no HTTP gateway
 		sequential     bool   // Sequential execution mode (one issue at a time)
@@ -465,7 +467,7 @@ Examples:
 			}
 
 			// Apply flag overrides to config
-			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableSlack, enableTunnel, enablePlane, enableDiscord)
+			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableSlack, enableTunnel, enablePlane, enableDiscord, enableGitlab)
 
 			// GH-3826: warn loudly when Telegram will send approval requests
 			// but has no inbound polling to receive the approve/reject tap —
@@ -1560,6 +1562,7 @@ Examples:
 	cmd.Flags().BoolVar(&enableSlack, "slack", false, "Enable Slack Socket Mode (overrides config)")
 	cmd.Flags().BoolVar(&enablePlane, "plane", false, "Enable Plane.so polling (overrides config)")
 	cmd.Flags().BoolVar(&enableDiscord, "discord", false, "Enable Discord bot (overrides config)")
+	cmd.Flags().BoolVar(&enableGitlab, "gitlab", false, "Enable GitLab polling (overrides config)")
 	cmd.Flags().BoolVar(&enableTunnel, "tunnel", false, "Enable public tunnel for webhook ingress (Cloudflare/ngrok)")
 	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
@@ -1583,6 +1586,7 @@ func validateAdapterFlags(cfg *config.Config, cmd *cobra.Command) error {
 		{"linear", cfg.Adapters != nil && cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled, cfg.Adapters != nil && cfg.Adapters.Linear != nil},
 		{"plane", cfg.Adapters != nil && cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled, cfg.Adapters != nil && cfg.Adapters.Plane != nil},
 		{"discord", cfg.Adapters != nil && cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled, cfg.Adapters != nil && cfg.Adapters.Discord != nil},
+		{"gitlab", cfg.Adapters != nil && cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled, cfg.Adapters != nil && cfg.Adapters.GitLab != nil},
 	}
 	for _, a := range adapters {
 		if !cmd.Flags().Changed(a.flag) {
@@ -1603,7 +1607,7 @@ func validateAdapterFlags(cfg *config.Config, cmd *cobra.Command) error {
 
 // applyInputOverrides applies CLI flag overrides to config
 // Uses cmd.Flags().Changed() to only apply flags that were explicitly set
-func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag, slackFlag, tunnelFlag, planeFlag, discordFlag bool) {
+func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag, slackFlag, tunnelFlag, planeFlag, discordFlag, gitlabFlag bool) {
 	if cmd.Flags().Changed("telegram") {
 		if cfg.Adapters.Telegram == nil {
 			cfg.Adapters.Telegram = telegram.DefaultConfig()
@@ -1655,6 +1659,16 @@ func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, g
 			cfg.Adapters.Discord = discord.DefaultConfig()
 		}
 		cfg.Adapters.Discord.Enabled = discordFlag
+	}
+	if cmd.Flags().Changed("gitlab") {
+		if cfg.Adapters.GitLab == nil {
+			cfg.Adapters.GitLab = gitlab.DefaultConfig()
+		}
+		cfg.Adapters.GitLab.Enabled = gitlabFlag
+		if cfg.Adapters.GitLab.Polling == nil {
+			cfg.Adapters.GitLab.Polling = &gitlab.PollingConfig{}
+		}
+		cfg.Adapters.GitLab.Polling.Enabled = gitlabFlag
 	}
 }
 
