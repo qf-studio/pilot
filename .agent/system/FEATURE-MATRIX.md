@@ -113,7 +113,7 @@
 | GitHub polling | ✅ | adapters/github | `pilot start --github` | `adapters.github.polling` | 30s interval |
 | GitHub run issue | ✅ | adapters/github | `pilot github run` | `adapters.github` | Manual trigger |
 | GitLab polling | ✅ | adapters/gitlab | `pilot start --gitlab` | `adapters.gitlab` | Full adapter with webhook support |
-| Azure DevOps | ✅ | adapters/azuredevops | `pilot start --azuredevops` | `adapters.azuredevops` | Full adapter with webhook support |
+| Azure DevOps | ✅ | adapters/azuredevops | `-` | `adapters.azure_devops` | Config-only (no CLI flag); full adapter with webhook support |
 | Linear webhooks | ✅ | adapters/linear | - | `adapters.linear` | Wired in pilot.go, gateway route + handler registered |
 | Linear sub-issue creation | ✅ | adapters/linear | - | `adapters.linear` | CreateIssue GraphQL mutation for epic decomposition (v1.27.0) |
 | Jira webhooks | ✅ | adapters/jira | - | `adapters.jira` | Wired in pilot.go, gateway route + handler + orchestrator |

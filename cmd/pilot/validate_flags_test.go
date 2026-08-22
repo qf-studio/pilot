@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/config"
 )
@@ -100,5 +101,55 @@ func TestValidateAdapterFlags_LinearDisabled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "adapters.linear.enabled is false") {
 		t.Errorf("error = %q, want mention of 'adapters.linear.enabled is false'", err.Error())
+	}
+}
+
+// GH-5122: --gitlab with no adapter block must fail loudly (docs promised
+// this flag since dd9a2086 but it was never registered).
+func TestValidateAdapterFlags_GitlabMissingBlock(t *testing.T) {
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{},
+	}
+	cmd := newTestStartCmd(t, "gitlab")
+
+	err := validateAdapterFlags(cfg, cmd)
+	if err == nil {
+		t.Fatal("expected error when --gitlab set and adapter block missing")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "--gitlab") || !strings.Contains(msg, "missing") {
+		t.Errorf("error = %q, want mention of --gitlab and 'missing'", msg)
+	}
+}
+
+// GH-5122: --gitlab with adapter block disabled must fail loudly.
+func TestValidateAdapterFlags_GitlabDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			GitLab: &gitlab.Config{Enabled: false},
+		},
+	}
+	cmd := newTestStartCmd(t, "gitlab")
+
+	err := validateAdapterFlags(cfg, cmd)
+	if err == nil {
+		t.Fatal("expected error when --gitlab set and adapter disabled")
+	}
+	if !strings.Contains(err.Error(), "adapters.gitlab.enabled is false") {
+		t.Errorf("error = %q, want mention of 'adapters.gitlab.enabled is false'", err.Error())
+	}
+}
+
+// GH-5122: --gitlab with adapter enabled passes validation.
+func TestValidateAdapterFlags_GitlabEnabled(t *testing.T) {
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			GitLab: &gitlab.Config{Enabled: true},
+		},
+	}
+	cmd := newTestStartCmd(t, "gitlab")
+
+	if err := validateAdapterFlags(cfg, cmd); err != nil {
+		t.Errorf("unexpected error: %v", err)
 	}
 }

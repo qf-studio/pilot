@@ -866,19 +866,22 @@ func TestApplyTeamOverrides_OverridesExistingConfig(t *testing.T) {
 
 func TestApplyInputOverrides(t *testing.T) {
 	tests := []struct {
-		name          string
-		setFlags      map[string]string // flags to mark as "changed"
-		telegram      bool
-		github        bool
-		linear        bool
-		slack         bool
-		tunnel        bool
-		checkTelegram *bool // expected Telegram.Enabled (nil = skip check)
-		checkGitHub   *bool
-		checkLinear   *bool
-		checkSlack    *bool
-		checkSocket   *bool // expected Slack.SocketMode
-		checkTunnel   *bool
+		name               string
+		setFlags           map[string]string // flags to mark as "changed"
+		telegram           bool
+		github             bool
+		linear             bool
+		slack              bool
+		tunnel             bool
+		gitlab             bool
+		checkTelegram      *bool // expected Telegram.Enabled (nil = skip check)
+		checkGitHub        *bool
+		checkLinear        *bool
+		checkSlack         *bool
+		checkSocket        *bool // expected Slack.SocketMode
+		checkTunnel        *bool
+		checkGitLab        *bool // expected GitLab.Enabled
+		checkGitLabPolling *bool // expected GitLab.Polling.Enabled
 	}{
 		{
 			name:     "no flags changed — config untouched",
@@ -938,6 +941,22 @@ func TestApplyInputOverrides(t *testing.T) {
 			checkSlack:  boolPtr(true),
 			checkSocket: boolPtr(true),
 		},
+		{
+			// GH-5122: --gitlab must set BOTH Enabled and Polling.Enabled —
+			// the poller's Enabled predicate (poller_gitlab.go) requires both.
+			name:               "gitlab flag enables gitlab and polling",
+			setFlags:           map[string]string{"gitlab": "true"},
+			gitlab:             true,
+			checkGitLab:        boolPtr(true),
+			checkGitLabPolling: boolPtr(true),
+		},
+		{
+			name:               "gitlab flag false disables gitlab and polling",
+			setFlags:           map[string]string{"gitlab": "false"},
+			gitlab:             false,
+			checkGitLab:        boolPtr(false),
+			checkGitLabPolling: boolPtr(false),
+		},
 	}
 
 	for _, tt := range tests {
@@ -950,12 +969,13 @@ func TestApplyInputOverrides(t *testing.T) {
 			cmd.Flags().Bool("linear", false, "")
 			cmd.Flags().Bool("slack", false, "")
 			cmd.Flags().Bool("tunnel", false, "")
+			cmd.Flags().Bool("gitlab", false, "")
 
 			for k, v := range tt.setFlags {
 				_ = cmd.Flags().Set(k, v)
 			}
 
-			applyInputOverrides(cfg, cmd, tt.telegram, tt.github, tt.linear, tt.slack, tt.tunnel, false, false)
+			applyInputOverrides(cfg, cmd, tt.telegram, tt.github, tt.linear, tt.slack, tt.tunnel, false, false, tt.gitlab)
 
 			if tt.checkTelegram != nil {
 				if cfg.Adapters.Telegram == nil {
@@ -1003,6 +1023,22 @@ func TestApplyInputOverrides(t *testing.T) {
 				}
 				if cfg.Tunnel.Enabled != *tt.checkTunnel {
 					t.Errorf("Tunnel.Enabled = %v, want %v", cfg.Tunnel.Enabled, *tt.checkTunnel)
+				}
+			}
+			if tt.checkGitLab != nil {
+				if cfg.Adapters.GitLab == nil {
+					t.Fatal("expected GitLab config to be created")
+				}
+				if cfg.Adapters.GitLab.Enabled != *tt.checkGitLab {
+					t.Errorf("GitLab.Enabled = %v, want %v", cfg.Adapters.GitLab.Enabled, *tt.checkGitLab)
+				}
+			}
+			if tt.checkGitLabPolling != nil {
+				if cfg.Adapters.GitLab == nil || cfg.Adapters.GitLab.Polling == nil {
+					t.Fatal("expected GitLab.Polling config to be created")
+				}
+				if cfg.Adapters.GitLab.Polling.Enabled != *tt.checkGitLabPolling {
+					t.Errorf("GitLab.Polling.Enabled = %v, want %v", cfg.Adapters.GitLab.Polling.Enabled, *tt.checkGitLabPolling)
 				}
 			}
 		})
