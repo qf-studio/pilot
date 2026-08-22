@@ -18,6 +18,7 @@ build:
         -f docker/Dockerfile \
         .
     - docker push "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_NAME}"
+    - docker image prune -af --filter "until=168h" || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
@@ -31,6 +32,7 @@ build:
     - docker rm -f pilot-docs || true
     - docker compose -f docker-compose.prod.yml pull
     - docker compose -f docker-compose.prod.yml up -d --force-recreate
+    - docker image prune -af --filter "until=168h" || true
 
 deploy-prod:
   stage: deploy-prod
@@ -44,3 +46,30 @@ deploy-prod:
     - if: '$CI_COMMIT_TAG =~ /^prod-[0-9]+\.[0-9]+\.[0-9]+/'
       when: on_success
   <<: *deployment
+
+# Registry cleanup: bulk-deletes old prod-* image tags via the GitLab API,
+# keeping the newest 5 and anything pushed in the last 7 days. Requires a
+# CI/CD variable CLEANUP_TOKEN (maintainer-scope project access token, `api`
+# scope) — see .agent/sops/integrations/gitlab-space-reclaim.md Step 3.
+# Degrades gracefully (allow_failure) if CLEANUP_TOKEN is unset.
+#
+# Uses curlimages/curl instead of the top-level docker:latest image: verified
+# docker:latest's busybox wget (v1.37.0) has no --method flag at all (GET/POST
+# only), so it cannot issue the DELETE this job needs.
+cleanup-registry:
+  stage: deploy-prod
+  image: curlimages/curl:latest
+  needs: ["deploy-prod"]
+  tags:
+    - devops
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^prod-[0-9]+\.[0-9]+\.[0-9]+/'
+  script:
+    - |
+      if [ -z "${CLEANUP_TOKEN}" ]; then
+        echo "WARN: CLEANUP_TOKEN not set — skipping registry tag cleanup. See .agent/sops/integrations/gitlab-space-reclaim.md Step 3."
+        exit 0
+      fi
+    - REPO_ID=$(curl -sS --header "PRIVATE-TOKEN: ${CLEANUP_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/registry/repositories" | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
+    - curl -sS -X DELETE --header "PRIVATE-TOKEN: ${CLEANUP_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/registry/repositories/${REPO_ID}/tags?name_regex_delete=.*&keep_n=5&older_than=7d" || true
