@@ -92,6 +92,18 @@ Approval prompts addressed to an individual approver (where `approvers[0]` is a
 chat ID) go to that chat directly and ignore this setting. Alert channels take
 their own `message_thread_id` — see [Alerts](/features/alerts).
 
+### Replies follow the conversation
+
+Replies to a message you sent — answers, plans, task confirmations, results —
+go back to the topic that message came from, whichever topic that is.
+`message_thread_id` is the default for messages Pilot starts on its own (task
+lifecycle notifications and alerts), not a ceiling on where replies can go.
+
+Messages sent in a forum's General thread are answered in General. In a
+supergroup *without* Topics enabled, replies are unaffected — the Bot API only
+accepts a topic for forum supergroups, so Pilot deliberately ignores the thread
+id of an ordinary reply chain rather than sending one that would be rejected.
+
 ## Chat Modes
 
 Pilot automatically detects your intent and responds in one of five modes:

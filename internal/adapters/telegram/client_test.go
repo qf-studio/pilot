@@ -730,3 +730,64 @@ func TestClientSendsMessageThreadID(t *testing.T) {
 		})
 	}
 }
+
+func TestMessageTopicThreadID(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  *Message
+		want string
+	}{
+		{
+			name: "forum topic message",
+			msg:  &Message{MessageThreadID: 42, IsTopicMessage: true},
+			want: "42",
+		},
+		{
+			name: "General thread in a forum carries no topic",
+			msg:  &Message{},
+			want: "",
+		},
+		{
+			name: "supergroup reply chain is not a forum topic",
+			msg:  &Message{MessageThreadID: 42},
+			want: "",
+		},
+		{
+			name: "flagged topic without an id",
+			msg:  &Message{IsTopicMessage: true},
+			want: "",
+		},
+		{
+			name: "nil message",
+			msg:  nil,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.msg.topicThreadID(); got != tt.want {
+				t.Errorf("topicThreadID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMessageUnmarshalsTopicFields(t *testing.T) {
+	raw := `{"message_id":7,"message_thread_id":42,"is_topic_message":true,"chat":{"id":-100123,"type":"supergroup"},"text":"hi"}`
+
+	var msg Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if msg.MessageThreadID != 42 {
+		t.Errorf("MessageThreadID = %d, want 42", msg.MessageThreadID)
+	}
+	if !msg.IsTopicMessage {
+		t.Error("IsTopicMessage = false, want true")
+	}
+	if got := msg.topicThreadID(); got != "42" {
+		t.Errorf("topicThreadID() = %q, want %q", got, "42")
+	}
+}

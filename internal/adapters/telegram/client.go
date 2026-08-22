@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -95,14 +96,23 @@ type InlineKeyboardButton struct {
 
 // Message represents a Telegram message
 type Message struct {
-	MessageID int64        `json:"message_id"`
-	From      *User        `json:"from,omitempty"`
-	Chat      *Chat        `json:"chat"`
-	Date      int64        `json:"date"`
-	Text      string       `json:"text,omitempty"`
-	Photo     []*PhotoSize `json:"photo,omitempty"`
-	Voice     *Voice       `json:"voice,omitempty"`
-	Caption   string       `json:"caption,omitempty"`
+	MessageID       int64        `json:"message_id"`
+	MessageThreadID int64        `json:"message_thread_id,omitempty"`
+	IsTopicMessage  bool         `json:"is_topic_message,omitempty"`
+	From            *User        `json:"from,omitempty"`
+	Chat            *Chat        `json:"chat"`
+	Date            int64        `json:"date"`
+	Text            string       `json:"text,omitempty"`
+	Photo           []*PhotoSize `json:"photo,omitempty"`
+	Voice           *Voice       `json:"voice,omitempty"`
+	Caption         string       `json:"caption,omitempty"`
+}
+
+func (m *Message) topicThreadID() string {
+	if m == nil || !m.IsTopicMessage || m.MessageThreadID == 0 {
+		return ""
+	}
+	return strconv.FormatInt(m.MessageThreadID, 10)
 }
 
 // Voice represents a voice message
