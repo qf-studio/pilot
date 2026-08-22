@@ -100,7 +100,11 @@ glab api -X DELETE "projects/$PROJ/registry/repositories/<repo-id>/tags" \
    `PUT /projects/:id` with `container_expiration_policy_attributes`.
 3. **Tag pruning in the pipeline**: extend `sync-docs.yml` (GitHub side) to
    delete `prod-*` tags older than the newest ~10 after pushing the new one —
-   turns 2a from manual into automatic. (File as a pilot issue when picked up.)
+   turns 2a from manual into automatic. (Filed 2026-08-22 as
+   [#5132](https://github.com/qf-studio/pilot/issues/5132), together with
+   post-deploy `docker image prune` and a registry cleanup job — the deploy
+   also strands one uniquely-tagged image per release on BOTH the registry
+   and the prod-server disk; see the issue for the full mechanism.)
 4. Delete the dead `gitlab:` token block from `~/.pilot/config.yaml` (~line
    79) — it masks the real auth state.
 
@@ -113,6 +117,10 @@ glab api -X DELETE "projects/$PROJ/registry/repositories/<repo-id>/tags" \
 
 ## History
 
+- 2026-08-22: recurrence #3 (failing pipelines, image bloat suspected by
+  founder — confirmed from in-tree `docs/.gitlab-ci.yml`: unique image tag
+  per deploy, `--no-cache`, no prune anywhere). glab 401 blocked diagnosis
+  AGAIN (third time). Prevention finally filed: #5132.
 - 2026-07-06: SOP created during recurrence #2; glab 401 blocked diagnosis —
   Step 0 written first for a reason.
 - #3380: original ops backlog entry (registry retention, access-gated).
