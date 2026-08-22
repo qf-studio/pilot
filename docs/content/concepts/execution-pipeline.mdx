@@ -114,7 +114,9 @@ The score drives two downstream decisions:
 
 **Knobs**:
 
-- `executor.complexity.*` — classifier model and threshold tuning.
+- `executor.model_routing.*` / `executor.effort_routing.*` — the classifier
+  output selects a tier, but the tier-to-model and tier-to-effort mappings
+  are what's actually tunable (see step 4).
 - `claude_code.disable_navigator_for_epic` — force-skip Navigator on
   oversized epics that would otherwise OOM (GH-2332).
 
@@ -330,7 +332,8 @@ attempts an auto-rebase before falling back to a full re-execution.
   issue is re-queued and re-implemented from a fresh branch off
   latest `main`.
 
-**Knobs**: `autopilot.rebase.*` — enable/disable, per-PR retry budget.
+**Knobs**: `orchestrator.autopilot.max_rebase_attempts` — per-PR cap on
+successful auto-rebases before escalating to a human (default 3).
 
 ## 14. Auto-merge [#14-auto-merge]
 
@@ -355,8 +358,12 @@ GoReleaser in CI, which builds binaries and uploads them as release
 assets. Pilot itself does not build release artifacts on the daemon
 host.
 
-When `autopilot.release.auto_release: true`, Pilot tags the merge
-commit automatically; otherwise the maintainer pushes the tag manually.
+When `orchestrator.autopilot.release.enabled: true` and
+`orchestrator.autopilot.release.trigger: "on_merge"` (the default trigger),
+Pilot tags the merge commit automatically; otherwise the maintainer pushes
+the tag manually. Other `trigger` values (`manual`, `on_scope_close`,
+`on_schedule`) hold the tag for a different condition instead of firing
+per-merge.
 The docs site picks up the new version via the
 `<CurrentVersion/>` component bumped by the release workflow.
 
@@ -424,17 +431,17 @@ runs in foreign trees.
 | `pilot-done` | label | 1 | Completed — skip |
 | `pilot-retry-1` / `-2` / `-exhausted` | label | 1 | Persistent retry counter |
 | `~/.pilot/data/pilot.db` | path | 2 | ProcessedStore database |
-| `executor.complexity.*` | config | 3 | Complexity classifier tuning |
+| `executor.effort_routing.*` | config | 3, 4 | Reasoning-effort tier tuning per complexity class |
 | `claude_code.disable_navigator_for_epic` | config | 3, 6 | Skip Navigator on epics (OOM mitigation) |
 | `CLAUDE_CODE_EFFORT_LEVEL` | env | 3, 4 | **Do not set** — overrides routing |
 | `planning.model` | config | 4 | Planning-tier model |
-| `model_routing.{trivial,simple,medium,complex}` | config | 4 | Execution-tier model per complexity |
+| `executor.model_routing.{trivial,simple,medium,complex}` | config | 4 | Execution-tier model per complexity |
 | `executor.navigator.auto_init` | config | 6 | Scaffold `.agent/` if missing |
 | `--local` | CLI flag | 1, 6, 10 | LocalMode: skip intake, plain prompt, no PR |
-| `executor.backend` | config | 7 | `claude-code` / `opencode` / `qwen` |
+| `executor.type` | config | 7 | `claude-code` / `opencode` / `qwen-code` |
 | `quality.gates.*` | config | 8 | Per-gate enable, command, retries |
-| `autopilot.environment` | config | 12, 14 | `dev` / `stage` / `prod` |
-| `autopilot.ci_poll_interval` | config | 12 | CI poll cadence |
-| `autopilot.rebase.*` | config | 13 | Auto-rebase enable + per-PR budget |
-| `autopilot.auto_merge` | config | 14 | Allow auto-merge in this environment |
-| `autopilot.release.auto_release` | config | 15 | Tag the merge commit automatically |
+| `orchestrator.autopilot.environment` | config | 12, 14 | `dev` / `stage` / `prod` |
+| `orchestrator.autopilot.ci_poll_interval` | config | 12 | CI poll cadence |
+| `orchestrator.autopilot.max_rebase_attempts` | config | 13 | Per-PR cap on successful auto-rebases before escalating to a human (default 3) |
+| `orchestrator.autopilot.auto_merge` | config | 14 | Allow auto-merge in this environment |
+| `orchestrator.autopilot.release.enabled` | config | 15 | Tag the merge commit automatically |
