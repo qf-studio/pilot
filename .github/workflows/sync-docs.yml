@@ -66,4 +66,20 @@ jobs:
             git tag "$DEPLOY_TAG"
             git push origin "$DEPLOY_TAG"
             echo "Tagged ${DEPLOY_TAG} to trigger deploy"
+
+            # Prune old prod-* tags on GitLab, keeping the newest 10 (SOP
+            # gitlab-space-reclaim.md Step 3) — never the tag just pushed.
+            # The trailing `|| true` covers the whole pipeline, not just the
+            # push: GitHub Actions runs steps with `set -eo pipefail`, and
+            # `grep -v` exits 1 whenever it filters out every line (e.g. the
+            # very first sync, before 10 old tags exist) — without this the
+            # step would abort before the loop even runs.
+            git ls-remote --tags origin 'refs/tags/prod-*' \
+              | awk -F/ '{print $3}' \
+              | grep -v "^${DEPLOY_TAG}\$" \
+              | sort -V | head -n -10 \
+              | while read -r t; do
+                  echo "Pruning stale GitLab tag: ${t}"
+                  git push origin ":refs/tags/${t}" || true
+                done || true
           fi
