@@ -115,12 +115,37 @@ glab api -X DELETE "projects/$PROJ/registry/repositories/<repo-id>/tags" \
   green, site version bumps (see reference_docs_deploy_pipeline.md § recovery
   if not).
 
+## Runner host (the OTHER disk — checked first next time)
+
+The `devops` runner (`DEPLOY_DEVOPS_RUNNER`) runs ON the docs prod server:
+Hetzner box `49.13.105.67` (= `pilot.quantflow.studio` DNS), root SSH with
+the default key (no `~/.ssh/config` alias as of 2026-08-22). Recurrence #3
+proved this disk, not the GitLab namespace, is the actual pipeline killer:
+
+- **Signature**: runner heartbeats `online`, jobs die `server_timeout_running`
+  with a completely EMPTY trace (same class as pitfall
+  `go-caches-on-root-volume-fill-disk`: service pings fine, disk can't write).
+- **Dominant consumer is Docker BUILD CACHE, not images**: `--no-cache`
+  builds never read cache but still write it — 224GB/1417 entries vs 16GB
+  images at recurrence #3. `docker system df` first (fast), skip `du`.
+- **Fix**: `docker builder prune -af` + `docker image prune -af --filter
+  "until=168h"` (running containers incl. traefik/postgres untouched), then
+  cancel wedged pipelines and re-fire via `gh workflow run sync-docs.yml`.
+- **Deploy failures are SILENT from GitHub's side** — sync-docs stays green
+  while the site serves a stale version (recurrence #3: 7 weeks on
+  prod-2.203.1). Check the running container's image tag vs latest release.
+
 ## History
 
-- 2026-08-22: recurrence #3 (failing pipelines, image bloat suspected by
-  founder — confirmed from in-tree `docs/.gitlab-ci.yml`: unique image tag
-  per deploy, `--no-cache`, no prune anywhere). glab 401 blocked diagnosis
-  AGAIN (third time). Prevention finally filed: #5132.
+- 2026-08-22: recurrence #3 RESOLVED same-day (failing pipelines, image bloat
+  suspected by founder). True killer = runner-host disk 100% (251G): 224GB
+  build cache + 13GB stranded images (see § Runner host). Namespace side also
+  reclaimed: git prod tags 458→10, registry 110→5 tags (3.18GB), artifacts
+  purged, housekeeping run, **registry cleanup policy ENABLED** (keep 5, 7d,
+  daily — closes the #3380 gap). glab 401 blocked diagnosis AGAIN (third
+  time) until founder re-authed via `glab auth login --web`. Prevention
+  finally filed: #5132 (+ builder-prune addendum). Site verified back on
+  v2.266.0.
 - 2026-07-06: SOP created during recurrence #2; glab 401 blocked diagnosis —
   Step 0 written first for a reason.
 - #3380: original ops backlog entry (registry retention, access-gated).
