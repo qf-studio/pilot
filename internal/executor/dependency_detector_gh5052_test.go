@@ -137,6 +137,35 @@ func TestExtractReferencedPaths(t *testing.T) {
 			body: "See `internal/foo.go` and again `internal/foo.go`.",
 			want: []string{"internal/foo.go"},
 		},
+		{
+			// GH-5133: the incident body citing `cmd/pilot/*.go` — a plain
+			// single-star glob — as a natural way to reference "the Go
+			// files under cmd/pilot". Must never be treated as a
+			// checkable prerequisite path.
+			name: "excludes a plain single-star glob (GH-5133 incident shape)",
+			body: "See the Go files under `cmd/pilot/*.go` for context.",
+			want: nil,
+		},
+		{
+			name: "excludes a recursive double-star glob",
+			body: "Touches everything under `internal/**/*_test.go`.",
+			want: nil,
+		},
+		{
+			name: "excludes a brace-set glob",
+			body: "Update both `pkg/{a,b}/main.go` files.",
+			want: nil,
+		},
+		{
+			name: "excludes a character-class glob",
+			body: "Applies to `file[0-9].go` variants.",
+			want: nil,
+		},
+		{
+			name: "glob and real path together: only the real path is extracted",
+			body: "Fix `cmd/pilot/*.go` callers of `internal/executor/runner.go`.",
+			want: []string{"internal/executor/runner.go"},
+		},
 	}
 
 	for _, tt := range tests {
