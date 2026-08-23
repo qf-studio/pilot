@@ -139,20 +139,33 @@ var pathLineRefSuffixRe = regexp.MustCompile(`:\d+(?:-\d+)?$`)
 // contain slashes and a dot.
 var referencedPathIgnorePrefixes = []string{"http://", "https://"}
 
+// globMetacharacters is every character that turns a backtick-quoted span
+// from a checkable file path into a *description of files* — a glob pattern
+// (GH-5133): asterisk/question-mark wildcards, character classes (`[...]`),
+// and brace sets (`{...}`). A glob is never itself a file on disk, so
+// probing it via FileExistsOnDefaultBranch (base_presence.go) always 404s
+// and always produces a false-positive hold — the GH-5133 incident's root
+// cause, where a perfectly natural citation like `cmd/pilot/*.go` wedged the
+// dispatch queue for 3 hours on a phantom "prerequisite not on main".
+const globMetacharacters = "*?[]{}"
+
 // ExtractReferencedPaths returns every backtick-quoted repo-relative file
 // path mentioned in body, in first-seen order with duplicates removed
 // (GH-5045/GH-5052).
 //
 // Heuristic, validated by hand against real issue bodies (GH-5021, ui
 // GH-120/124/139): backtick content counts as a path when it (1) is not a
-// URL, (2) contains a "/", (3) contains no whitespace, and (4) ends in a
+// URL, (2) contains a "/", (3) contains no whitespace, (4) contains no glob
+// metacharacter (GH-5133: `*`, `?`, `[`, `]`, `{`, `}` — a glob names a set
+// of files, not one checkable prerequisite), and (5) ends in a
 // dot-extension once an optional trailing ":<line>" or ":<start>-<end>"
 // line-ref suffix is stripped. This is intentionally conservative — it
 // catches genuine file citations (`internal/boardapi/dto.go`,
 // `internal/fleet/tenantres.go:42`) while excluding shell commands
 // (`aws s3 cp`, `make test`), bare API routes with no extension
-// (`/api/v1/orgs`), and extensionless filenames with no path separator
-// (`0008_board.up.sql`).
+// (`/api/v1/orgs`), extensionless filenames with no path separator
+// (`0008_board.up.sql`), and glob patterns (`cmd/pilot/*.go`,
+// `internal/**/*_test.go`, `pkg/{a,b}/main.go`, `file[0-9].go`).
 func ExtractReferencedPaths(body string) []string {
 	if body == "" {
 		return nil
@@ -173,6 +186,10 @@ func ExtractReferencedPaths(body string) []string {
 			}
 		}
 		if isURL || !strings.Contains(candidate, "/") {
+			continue
+		}
+
+		if strings.ContainsAny(candidate, globMetacharacters) {
 			continue
 		}
 

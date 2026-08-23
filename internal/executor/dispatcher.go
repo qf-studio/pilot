@@ -501,7 +501,9 @@ func (d *Dispatcher) checkTelemetryGap() {
 }
 
 // runStaleRecoveryLoop ticks every StaleRecoveryInterval and calls
-// recoverStaleTasks. It stops when ctx is cancelled or the dispatcher stops.
+// recoverStaleTasks, then wakes every live project worker (wakeHeldWorkers)
+// so a held queue head gets re-evaluated even when nothing new is ever
+// dispatched. It stops when ctx is cancelled or the dispatcher stops.
 func (d *Dispatcher) runStaleRecoveryLoop(ctx context.Context) {
 	defer d.wg.Done()
 
@@ -521,7 +523,45 @@ func (d *Dispatcher) runStaleRecoveryLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			d.recoverStaleTasks()
+			d.wakeHeldWorkers()
 		}
+	}
+}
+
+// wakeHeldWorkers signals every currently-live project worker (GH-5133).
+//
+// Before this, ProjectWorker.processQueue only ever ran in response to a
+// fresh QueueTask/ensureWorker call (see Signal's call sites) — a
+// base-presence-held queue head (base_presence.go /
+// DispatcherConfig.BasePresenceHoldMaxCycles) is only re-evaluated, and its
+// hold_count only advances, on the next such wake. Once an executions row
+// already exists for the held task, every subsequent poller re-pickup drops
+// pre-dispatch as "dispatch claim lost" (cmd/pilot/handler_common.go)
+// WITHOUT ever reaching QueueTask/ensureWorker — so in an otherwise quiet
+// project queue, a held head could sit forever: the escalation path
+// (pilot-needs-human + park, GH-5052 F2) was unreachable, and every
+// genuinely innocent task queued behind it starved right along with it
+// (the GH-5133 incident: a 3-hour wedge from a false hold that could never
+// unstick itself).
+//
+// Reusing the existing StaleRecoveryInterval tick (rather than adding a
+// second ticker) is deliberate: Signal is a cheap, idempotent, non-blocking
+// buffered-channel send (a no-op if a signal is already pending), so waking
+// every worker on every stale-recovery tick costs nothing extra for the
+// overwhelming majority of ticks where nothing is held, and bounds a
+// genuine hold to at most BasePresenceHoldMaxCycles * StaleRecoveryInterval
+// before it escalates and parks — mirroring ResumeAdmissionFor's identical
+// signal-every-worker pattern below.
+func (d *Dispatcher) wakeHeldWorkers() {
+	d.mu.RLock()
+	workers := make([]*ProjectWorker, 0, len(d.workers))
+	for _, w := range d.workers {
+		workers = append(workers, w)
+	}
+	d.mu.RUnlock()
+
+	for _, w := range workers {
+		w.Signal()
 	}
 }
 
@@ -3190,6 +3230,21 @@ func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.St
 // operator visibility into a base-presence escalation rested entirely on
 // label-watching (EmitProgress's "NeedsHuman" phase is dashboard-only, not
 // alerts-engine-routed).
+//
+// GH-5133 (Defect 3) NO-OP RATIONALE: the incident's dispatch-loop breaker
+// (cmd/pilot/handler_common.go fireLoopBreakerAlert, driven by
+// repickBackoff.recordClaimLostDrop) fired a content-free critical alert
+// every ~30min for 3+ hours because the held row kept getting re-picked and
+// dropped as "dispatch claim lost" with no terminal state ever reached. That
+// loop needs no additional plumbing here: once this function's label lands
+// and the caller parks the row (ExecStatusSkipped, below), the next GitHub
+// poll admits the issue through cmd/pilot/handlers.go's
+// githubEventHasNeedsHumanLabel backstop, which skips pilot-needs-human-
+// labeled issues before they ever reach the claim-lost/breaker path again —
+// so fixing Defect 2 (wakeHeldWorkers, this file) already ends the breaker
+// loop at exactly one content-bearing alert (this escalation's own
+// AlertEventTypeTaskFailed, reason-populated) with no separate Defect 3 code
+// change required.
 func (w *ProjectWorker) escalateBasePresenceHold(ctx context.Context, task *Task, reason string) {
 	if task.SourceAdapter != "" && task.SourceAdapter != "github" {
 		return
