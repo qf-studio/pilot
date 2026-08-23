@@ -19,6 +19,7 @@ build:
         .
     - docker push "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_NAME}"
     - docker image prune -af --filter "until=168h" || true
+    - docker builder prune -af --filter "until=168h" || true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
@@ -33,6 +34,7 @@ build:
     - docker compose -f docker-compose.prod.yml pull
     - docker compose -f docker-compose.prod.yml up -d --force-recreate
     - docker image prune -af --filter "until=168h" || true
+    - docker builder prune -af --filter "until=168h" || true
 
 deploy-prod:
   stage: deploy-prod
