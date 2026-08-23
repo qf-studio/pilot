@@ -894,10 +894,10 @@ Display patterns learned from successful and failed executions.
 
 | Flag | Description |
 |------|-------------|
-| `--limit` | Maximum number of patterns to show (default: 50) |
+| `--limit` | Maximum number of patterns to show (default: 20) |
 | `--min-confidence` | Minimum confidence score (0.0-1.0, default: 0.5) |
 | `--type` | Pattern type filter (success, error, tool-usage) |
-| `--show-anti` | Include anti-patterns (things to avoid) |
+| `--anti` | Include anti-patterns (things to avoid) |
 
 #### Examples
 
@@ -909,10 +909,10 @@ pilot patterns list
 pilot patterns list --min-confidence 0.8
 
 # Show anti-patterns
-pilot patterns list --show-anti
+pilot patterns list --anti
 
 # Limit results
-pilot patterns list --limit 20
+pilot patterns list --limit 10
 ```
 
 ### pilot patterns search
@@ -980,32 +980,33 @@ Manage budget settings and enforcement.
 pilot budget <subcommand>
 ```
 
-Configure and monitor budget limits to control AI usage costs across projects.
+Configure and monitor budget limits to control AI usage costs.
 
 #### Subcommands
 
 | Subcommand | Description |
 |------------|-------------|
 | `status` | Show current budget status and usage |
-| `config` | Configure budget limits and alerts |
-| `reset` | Reset budget counters for current period |
+| `config` | Show current budget configuration (read-only) |
+| `set` | Set daily/monthly budget limits |
+| `alert` | Configure alert thresholds and exceed actions |
+| `reset` | Reset the blocked-tasks counter |
 
 ### pilot budget status
 
-Show current budget status and usage across projects.
+Show current budget status and usage.
 
 ```bash
 pilot budget status [flags]
 ```
 
-Displays budget consumption, remaining limits, and project-wise breakdown.
+Displays daily/monthly spend, remaining limits, and enforcement settings as a progress-bar TUI.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--json` | Output as JSON |
-| `--project` | Filter by specific project |
+| `--user` | Filter by user ID |
 
 #### Examples
 
@@ -1013,96 +1014,124 @@ Displays budget consumption, remaining limits, and project-wise breakdown.
 # Show budget status
 pilot budget status
 
-# Show as JSON
-pilot budget status --json
-
-# Show for specific project
-pilot budget status --project pilot
-```
-
-#### Sample Output
-
-```
-📊 Budget Status (January 2026)
-─────────────────────────────────────
-Monthly Limit: $100.00
-Used:          $23.45 (23%)
-Remaining:     $76.55
-
-Projects:
-  • pilot:    $15.20 (65%)
-  • webapp:   $8.25 (35%)
-
-Alerts: ✓ 50% threshold, ✓ 75% threshold
+# Show for a specific user
+pilot budget status --user alice
 ```
 
 ### pilot budget config
 
-Configure budget limits, thresholds, and alert settings.
+Show the current budget configuration.
 
 ```bash
-pilot budget config [flags]
+pilot budget config
 ```
 
-Set monthly/daily limits and configure alerts for budget monitoring.
+Read-only: prints the active `enabled`/limits/per-task/on-exceed/threshold settings along with
+a YAML template you can copy into `~/.pilot/config.yaml`. Takes no flags — to change limits, use
+`pilot budget set` or `pilot budget alert`.
+
+#### Examples
+
+```bash
+# Show current budget configuration
+pilot budget config
+```
+
+### pilot budget set
+
+Set daily/monthly budget limits.
+
+```bash
+pilot budget set [flags]
+```
+
+Updates budget limits in `~/.pilot/config.yaml`. Only the flags you pass are changed;
+omitted flags leave the existing value untouched.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--monthly` | Set monthly budget limit (e.g., $100) |
-| `--daily` | Set daily budget limit (e.g., $5) |
-| `--alert-threshold` | Alert threshold percentage (default: 75) |
-| `--project-limit` | Set per-project budget limit |
-| `--disable` | Disable budget enforcement |
+| `--daily` | Daily budget limit (USD) |
+| `--monthly` | Monthly budget limit (USD) |
+| `--enabled` | Enable budget enforcement |
 
 #### Examples
 
 ```bash
-# Set monthly budget
-pilot budget config --monthly $100
+# Set daily limit to $50
+pilot budget set --daily 50
 
-# Set daily limit
-pilot budget config --daily $5
+# Set monthly limit to $500
+pilot budget set --monthly 500
 
-# Configure alert threshold
-pilot budget config --alert-threshold 80
+# Enable budget enforcement
+pilot budget set --enabled
 
-# Set project-specific limit
-pilot budget config --project pilot --monthly $50
+# Set both limits and enable enforcement
+pilot budget set --daily 100 --monthly 1000 --enabled
+```
 
-# Disable budget enforcement
-pilot budget config --disable
+### pilot budget alert
+
+Configure alert thresholds and actions when budget limits are approached or exceeded.
+
+```bash
+pilot budget alert [flags]
+```
+
+With no flags, prints the current alert configuration. Actions: `warn` (log but continue),
+`pause` (stop accepting new tasks, finish current), `stop` (terminate immediately).
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--warn-at` | Warning threshold percentage (e.g., 80) |
+| `--on-daily` | Action when daily limit exceeded (`warn`, `pause`, `stop`) |
+| `--on-monthly` | Action when monthly limit exceeded (`warn`, `pause`, `stop`) |
+
+#### Examples
+
+```bash
+# Warn at 80% usage
+pilot budget alert --warn-at 80
+
+# Pause on daily limit
+pilot budget alert --on-daily pause
+
+# Stop on monthly limit
+pilot budget alert --on-monthly stop
+
+# Late warning, warn only
+pilot budget alert --warn-at 90 --on-daily warn
 ```
 
 ### pilot budget reset
 
-Reset budget counters for the current period.
+Reset the blocked-tasks counter and resume execution if paused due to daily limits.
 
 ```bash
 pilot budget reset [flags]
 ```
 
-Clears usage counters while preserving configured limits and settings.
+Clears the blocked-tasks counter and daily-pause status. Requires `--confirm`; without it,
+prints a warning and makes no changes.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--force` | Skip confirmation prompt |
-| `--project` | Reset specific project only |
+| `--confirm` | Confirm the reset operation |
 
 #### Examples
 
 ```bash
-# Reset all budget counters
+# Preview what reset would do (no changes made)
 pilot budget reset
 
-# Reset without confirmation
-pilot budget reset --force
-
-# Reset specific project
-pilot budget reset --project pilot
+# Reset the blocked-tasks counter
+pilot budget reset --confirm
 ```
 
 ### pilot metrics
@@ -1132,46 +1161,26 @@ Show high-level metrics summary for recent activity.
 pilot metrics summary [flags]
 ```
 
-Displays key performance indicators and usage statistics.
+Displays execution, duration, token, cost, and code-change statistics.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--period` | Time period: 7d, 30d, 90d (default: 30d) |
-| `--json` | Output as JSON |
+| `--days` | Number of days to include (default: 7) |
+| `--projects` | Filter by project paths (comma-separated) |
 
 #### Examples
 
 ```bash
-# Show 30-day summary
+# Show 7-day summary
 pilot metrics summary
 
-# Show weekly summary
-pilot metrics summary --period 7d
+# Show 30-day summary
+pilot metrics summary --days 30
 
-# Export as JSON
-pilot metrics summary --json
-```
-
-#### Sample Output
-
-```
-📈 Metrics Summary (30 days)
-─────────────────────────────────────
-Tasks Completed: 127
-Success Rate:     94.5%
-Avg Duration:     4m 32s
-
-Token Usage:
-  Input:  1,234,567 tokens
-  Output:   567,890 tokens
-  Total:  1,802,457 tokens
-
-Top Projects:
-  1. pilot (45 tasks)
-  2. webapp (32 tasks)
-  3. api (28 tasks)
+# Filter by project
+pilot metrics summary --projects /path/to/pilot,/path/to/webapp
 ```
 
 ### pilot metrics daily
@@ -1188,18 +1197,14 @@ View daily activity patterns and identify usage trends.
 
 | Flag | Description |
 |------|-------------|
-| `--days` | Number of days to show (default: 14) |
-| `--chart` | Show ASCII chart visualization |
-| `--json` | Output as JSON |
+| `--days` | Number of days to include (default: 7) |
+| `--projects` | Filter by project paths (comma-separated) |
 
 #### Examples
 
 ```bash
-# Show 14-day daily breakdown
+# Show 7-day daily breakdown
 pilot metrics daily
-
-# Show with ASCII charts
-pilot metrics daily --chart
 
 # Show last 30 days
 pilot metrics daily --days 30
@@ -1219,8 +1224,8 @@ Compare performance and usage across different projects.
 
 | Flag | Description |
 |------|-------------|
-| `--sort` | Sort by: tasks, tokens, duration, success (default: tasks) |
-| `--json` | Output as JSON |
+| `--days` | Number of days to include (default: 30) |
+| `--limit` | Maximum projects to show (default: 10) |
 
 #### Examples
 
@@ -1228,11 +1233,11 @@ Compare performance and usage across different projects.
 # Show project metrics
 pilot metrics projects
 
-# Sort by token usage
-pilot metrics projects --sort tokens
+# Show over last 7 days
+pilot metrics projects --days 7
 
-# Sort by success rate
-pilot metrics projects --sort success
+# Show top 5 projects
+pilot metrics projects --limit 5
 ```
 
 ### pilot metrics export
@@ -1243,31 +1248,31 @@ Export metrics data for external analysis.
 pilot metrics export [flags]
 ```
 
-Export metrics in various formats for reporting and analysis.
+Export metrics in JSON or CSV format for reporting and analysis.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--format` | Export format: csv, json, excel (default: csv) |
-| `--output` | Output file path |
-| `--period` | Time period: 7d, 30d, 90d, all (default: 30d) |
-| `--include-raw` | Include raw event data |
+| `--days` | Number of days to include (default: 30) |
+| `--projects` | Filter by project paths (comma-separated) |
+| `--format` | Output format: `json` or `csv` (default: json) |
+| `--output`, `-o` | Output file (`-` for stdout) |
 
 #### Examples
 
 ```bash
-# Export as CSV
+# Export as JSON to stdout
 pilot metrics export
 
-# Export as JSON with raw data
-pilot metrics export --format json --include-raw
+# Export as CSV
+pilot metrics export --format csv
 
-# Export to specific file
-pilot metrics export --output metrics-jan2026.csv
+# Export to a specific file
+pilot metrics export --format csv --output metrics-jan2026.csv
 
-# Export all historical data
-pilot metrics export --period all --format excel
+# Export last 90 days for specific projects
+pilot metrics export --days 90 --projects /path/to/pilot
 ```
 
 ### pilot usage
@@ -1298,45 +1303,27 @@ Show usage summary with cost breakdown.
 pilot usage summary [flags]
 ```
 
-Overview of usage patterns and associated costs.
+Overview of task, token, compute, storage, and API-call costs, plus a grand total.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--period` | Time period: 7d, 30d, 90d (default: 30d) |
-| `--breakdown` | Show detailed cost breakdown |
-| `--json` | Output as JSON |
+| `--days` | Number of days to include (default: 30) |
+| `--user` | Filter by user ID |
+| `--project` | Filter by project ID |
 
 #### Examples
 
 ```bash
-# Show usage summary
+# Show 30-day usage summary
 pilot usage summary
 
-# Show with cost breakdown
-pilot usage summary --breakdown
-
 # Show weekly usage
-pilot usage summary --period 7d
-```
+pilot usage summary --days 7
 
-#### Sample Output
-
-```
-💰 Usage Summary (30 days)
-─────────────────────────────────────
-Total Cost:       $45.67
-Token Cost:       $38.92 (85%)
-Infrastructure:   $6.75 (15%)
-
-API Calls:        2,847
-Tokens Processed: 1,802,457
-Avg Cost/Task:    $0.36
-
-Model Usage:
-  Claude-4.6:     $32.15 (84%)
-  Claude-4.5:     $6.77 (16%)
+# Filter by user and project
+pilot usage summary --user alice --project pilot
 ```
 
 ### pilot usage daily
@@ -1353,18 +1340,15 @@ Analyze daily usage patterns to optimize costs and identify trends.
 
 | Flag | Description |
 |------|-------------|
-| `--days` | Number of days to show (default: 14) |
-| `--chart` | Show ASCII cost chart |
-| `--json` | Output as JSON |
+| `--days` | Number of days to include (default: 7) |
+| `--user` | Filter by user ID |
+| `--project` | Filter by project ID |
 
 #### Examples
 
 ```bash
 # Show daily usage
 pilot usage daily
-
-# Show with cost charts
-pilot usage daily --chart
 
 # Show last 30 days
 pilot usage daily --days 30
@@ -1384,9 +1368,8 @@ Compare usage patterns and costs across different projects.
 
 | Flag | Description |
 |------|-------------|
-| `--sort` | Sort by: cost, tokens, calls, efficiency (default: cost) |
-| `--json` | Output as JSON |
-| `--efficiency` | Show cost efficiency metrics |
+| `--days` | Number of days to include (default: 30) |
+| `--user` | Filter by user ID |
 
 #### Examples
 
@@ -1394,11 +1377,11 @@ Compare usage patterns and costs across different projects.
 # Show project usage
 pilot usage projects
 
-# Sort by efficiency
-pilot usage projects --sort efficiency --efficiency
+# Show over last 7 days
+pilot usage projects --days 7
 
-# Show detailed metrics
-pilot usage projects --efficiency
+# Filter by user
+pilot usage projects --user alice
 ```
 
 ### pilot usage events
@@ -1409,17 +1392,17 @@ Show detailed usage events and API calls.
 pilot usage events [flags]
 ```
 
-View individual API calls, tokens, and costs for detailed analysis.
+View individual usage events (task/token/compute) for detailed analysis.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--limit` | Number of events to show (default: 50) |
-| `--project` | Filter by project |
-| `--model` | Filter by AI model |
-| `--min-cost` | Filter by minimum cost |
-| `--json` | Output as JSON |
+| `--days` | Number of days to include (default: 7) |
+| `--user` | Filter by user ID |
+| `--project` | Filter by project ID |
+| `--type` | Filter by event type: `task`, `token`, or `compute` |
+| `--limit` | Maximum events to show (default: 50) |
 
 #### Examples
 
@@ -1430,11 +1413,11 @@ pilot usage events
 # Show events for specific project
 pilot usage events --project pilot
 
-# Show expensive calls only
-pilot usage events --min-cost 1.00
+# Show only token events
+pilot usage events --type token
 
-# Show events for specific model
-pilot usage events --model claude-4.6
+# Show last 100 events
+pilot usage events --limit 100
 ```
 
 ### pilot usage export
@@ -1445,241 +1428,183 @@ Export detailed usage data for billing and analysis.
 pilot usage export [flags]
 ```
 
-Export usage data in billing-friendly formats.
+Export usage events in JSON or CSV format.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--format` | Export format: csv, json, billing (default: csv) |
-| `--output` | Output file path |
-| `--period` | Time period: 7d, 30d, 90d, all (default: 30d) |
-| `--group-by` | Group by: day, project, model (default: day) |
-| `--include-metadata` | Include task metadata |
+| `--days` | Number of days to include (default: 30) |
+| `--user` | Filter by user ID |
+| `--project` | Filter by project ID |
+| `--format` | Output format: `json` or `csv` (default: json) |
+| `--output` | Output file (`-` for stdout) |
 
 #### Examples
 
 ```bash
-# Export usage data
+# Export usage data as JSON to stdout
 pilot usage export
 
-# Export in billing format
-pilot usage export --format billing
+# Export as CSV
+pilot usage export --format csv
 
-# Export grouped by project
-pilot usage export --group-by project
+# Export to a specific file
+pilot usage export --format csv --output usage-jan2026.csv
 
-# Export with metadata
-pilot usage export --include-metadata --format json
+# Export for a specific user and project
+pilot usage export --user alice --project pilot
 ```
 
 ### pilot webhooks
 
-Webhook management and integration.
+Manage outbound webhooks.
 
 ```bash
 pilot webhooks <subcommand>
 ```
 
-Manage webhooks for GitHub, GitLab, Linear, and other integrations.
+Outbound webhooks let external systems receive real-time HMAC-signed HTTP notifications
+when Pilot tasks start, progress, complete, fail, or time out, when a PR is created, or
+when a budget threshold is reached. This is not inbound webhook registration for
+GitHub/GitLab/Linear — see [Webhooks](/getting-started/configuration#webhooks) in the
+configuration reference for the full endpoint schema.
+
+Supported events: `task.started`, `task.progress`, `task.completed`, `task.failed`,
+`task.timeout`, `pr.created`, `budget.warning`.
 
 #### Subcommands
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List configured webhooks |
-| `add` | Add new webhook endpoint |
-| `remove` | Remove webhook endpoint |
-| `test` | Test webhook delivery |
-| `events` | Show webhook event history |
+| `list` | List configured webhook endpoints |
+| `add` | Add a new webhook endpoint |
+| `remove` | Remove a webhook endpoint |
+| `test` | Send a test event to webhook endpoint(s) |
+| `events` | List available webhook event types |
 
 ### pilot webhooks list
 
-List all configured webhook endpoints.
+List configured webhook endpoints.
 
 ```bash
 pilot webhooks list [flags]
 ```
 
-Display active webhooks with their configuration and status.
+Displays each endpoint's status, ID, URL, subscribed events, and a masked secret suffix.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--service` | Filter by service: github, gitlab, linear, slack |
-| `--status` | Filter by status: active, inactive, error |
 | `--json` | Output as JSON |
 
 #### Examples
 
 ```bash
-# List all webhooks
+# List configured endpoints
 pilot webhooks list
 
-# List GitHub webhooks only
-pilot webhooks list --service github
-
-# List inactive webhooks
-pilot webhooks list --status inactive
-```
-
-#### Sample Output
-
-```
-🔗 Configured Webhooks
-─────────────────────────────────────
-GitHub:
-  ✓ https://pilot.example.com/api/webhooks/github
-    Events: issues, pull_requests
-    Last ping: 2 hours ago
-
-Linear:
-  ✓ https://pilot.example.com/api/webhooks/linear
-    Events: issue.create, issue.update
-    Last ping: 15 minutes ago
-
-GitLab:
-  ⚠ https://pilot.example.com/api/webhooks/gitlab
-    Events: issues, merge_requests
-    Status: Connection error
+# Output as JSON
+pilot webhooks list --json
 ```
 
 ### pilot webhooks add
 
-Add a new webhook endpoint for service integration.
+Add a new webhook endpoint.
 
 ```bash
-pilot webhooks add <service> [flags]
+pilot webhooks add [flags]
 ```
 
-Configure webhook endpoints for GitHub, GitLab, Linear, or Slack.
+Registers an outbound endpoint in `~/.pilot/config.yaml`. There is no positional service
+argument — endpoints are generic delivery targets, not per-service integrations.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--url` | Webhook URL (auto-generated if not specified) |
-| `--events` | Comma-separated list of events to subscribe to |
-| `--secret` | Webhook secret for verification |
-| `--repo` | Repository for GitHub/GitLab (owner/repo) |
-| `--project` | Local project to associate webhook with |
+| `--name` | Endpoint name (defaults to the URL's host if omitted) |
+| `--url` | Webhook URL (required) |
+| `--secret` | HMAC-SHA256 signing secret |
+| `--events` | Comma-separated event types to subscribe to (default: all) |
+| `--enabled` | Enable the endpoint (default: true) |
 
 #### Examples
 
 ```bash
-# Add GitHub webhook
-pilot webhooks add github --repo owner/repo
+# Subscribe to all events
+pilot webhooks add --url https://example.com/hook --secret $SECRET
 
-# Add with specific events
-pilot webhooks add github --repo owner/repo --events issues,pull_requests
+# Subscribe to specific events
+pilot webhooks add --url https://example.com/hook --secret $SECRET \
+  --events task.completed,task.failed,pr.created
 
-# Add Linear webhook
-pilot webhooks add linear
-
-# Add with custom URL
-pilot webhooks add github --url https://custom.example.com/hook
+# Add with a custom name
+pilot webhooks add --name "Slack Integration" --url https://hooks.slack.com/... --secret $SECRET
 ```
 
 ### pilot webhooks remove
 
-Remove webhook endpoint from service.
+Remove a webhook endpoint.
 
 ```bash
-pilot webhooks remove <service> [flags]
+pilot webhooks remove <endpoint-id>
 ```
 
-Remove webhook configuration from the service and local config.
-
-#### Flags
-
-| Flag | Description |
-|------|-------------|
-| `--repo` | Repository for GitHub/GitLab (owner/repo) |
-| `--force` | Skip confirmation prompt |
-| `--keep-config` | Remove from service but keep local config |
+Takes a positional endpoint ID (as shown by `pilot webhooks list`). No flags.
 
 #### Examples
 
 ```bash
-# Remove GitHub webhook
-pilot webhooks remove github --repo owner/repo
-
-# Remove without confirmation
-pilot webhooks remove linear --force
-
-# Remove from service only
-pilot webhooks remove github --repo owner/repo --keep-config
+# Remove an endpoint
+pilot webhooks remove ep_abc123
 ```
 
 ### pilot webhooks test
 
-Test webhook delivery and configuration.
+Send a test event to webhook endpoint(s).
 
 ```bash
-pilot webhooks test <service> [flags]
+pilot webhooks test [endpoint-id] [flags]
 ```
 
-Send test events to verify webhook configuration and connectivity.
+If no endpoint ID is given, sends to all enabled endpoints.
 
 #### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--repo` | Repository for GitHub/GitLab (owner/repo) |
-| `--event` | Specific event type to test |
-| `--verbose` | Show detailed test output |
+| `--event` | Event type to test (default: `task.completed`) |
 
 #### Examples
 
 ```bash
-# Test GitHub webhook
-pilot webhooks test github --repo owner/repo
+# Test all enabled endpoints
+pilot webhooks test
 
-# Test specific event
-pilot webhooks test github --repo owner/repo --event issues
+# Test a specific endpoint
+pilot webhooks test ep_abc123
 
-# Test with verbose output
-pilot webhooks test linear --verbose
+# Test with a specific event type
+pilot webhooks test --event task.failed
 ```
 
 ### pilot webhooks events
 
-Show webhook event history and delivery status.
+List available webhook event types.
 
 ```bash
-pilot webhooks events [flags]
+pilot webhooks events
 ```
 
-View recent webhook events, delivery status, and processing results.
-
-#### Flags
-
-| Flag | Description |
-|------|-------------|
-| `--limit` | Number of events to show (default: 50) |
-| `--service` | Filter by service: github, gitlab, linear, slack |
-| `--status` | Filter by status: success, failed, pending |
-| `--since` | Show events since timestamp (e.g., "2h", "1d") |
-| `--json` | Output as JSON |
+Prints the supported task, PR, and budget event types with descriptions. Takes no flags.
 
 #### Examples
 
 ```bash
-# Show recent webhook events
+# List available event types
 pilot webhooks events
-
-# Show GitHub events only
-pilot webhooks events --service github
-
-# Show failed events
-pilot webhooks events --status failed
-
-# Show events from last 2 hours
-pilot webhooks events --since 2h
-
-# Show last 100 events
-pilot webhooks events --limit 100
 ```
 
 ---
