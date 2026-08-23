@@ -40,6 +40,15 @@ func TestAnthropicBackend_Name(t *testing.T) {
 }
 
 func TestAnthropicBackend_IsAvailable(t *testing.T) {
+	// NewAnthropicBackend resolves its key from the ambient environment
+	// (see backend_anthropic.go). Clear every credential var it checks so
+	// this test is hermetic even when run under a Claude Code agent
+	// session, which always has CLAUDE_CODE_OAUTH_TOKEN set for its own
+	// auth — without this the "no key" case never actually occurs here.
+	for _, key := range []string{"ANTHROPIC_API_KEY", "PILOT_ENGINE_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		t.Setenv(key, "")
+	}
+
 	noKey := NewAnthropicBackend(nil)
 	if noKey.IsAvailable() {
 		t.Error("IsAvailable() should be false without a key")
