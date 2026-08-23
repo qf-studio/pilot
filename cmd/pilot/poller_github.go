@@ -467,6 +467,14 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	if deps.Cfg.Orchestrator.MaxConcurrent > 0 {
 		pollerDeps.MaxConcurrent = deps.Cfg.Orchestrator.MaxConcurrent
 	}
+	// orchestrator.execution.mode was validated in config but never reached
+	// the SDK poller, so sequential configs silently ran in auto (parallel)
+	// mode while the startup banner claimed "waiting for PR merge". Pass the
+	// configured mode through; the SDK maps it to the GitHub poller option.
+	// Empty mode keeps the SDK default (auto), matching prior behavior.
+	if deps.Cfg.Orchestrator.Execution != nil && deps.Cfg.Orchestrator.Execution.Mode != "" {
+		pollerDeps.ExecutionMode = deps.Cfg.Orchestrator.Execution.Mode
+	}
 
 	// M7 4d.2b: per-repo autopilot controller (keyed owner/repo). The default repo
 	// falls back to the backwards-compat singular controller. When autopilot is
