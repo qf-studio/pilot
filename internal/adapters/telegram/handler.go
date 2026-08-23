@@ -526,14 +526,20 @@ func (h *Handler) handlePhoto(ctx context.Context, chatID string, msg *Message) 
 	logging.WithComponent("telegram").Debug("Received photo",
 		slog.String("chat_id", chatID), slog.Int("width", photo.Width), slog.Int("height", photo.Height))
 
+	// GH-5130: carry the originating topic's thread through the ack, the
+	// download-failure message, and the eventual task dispatch so photo
+	// replies land back in the topic the message came from.
+	threadID := msg.topicThreadID()
+	threadIDInt := parseThreadID(threadID)
+
 	// Send acknowledgment
-	_, _ = h.client.SendMessage(ctx, chatID, "📷 Processing image...", "", 0)
+	_, _ = h.client.SendMessage(ctx, chatID, "📷 Processing image...", "", threadIDInt)
 
 	// Download the image
 	imagePath, err := h.downloadImage(ctx, photo.FileID)
 	if err != nil {
 		logging.WithComponent("telegram").Warn("Failed to download image", slog.Any("error", err))
-		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to download image. Please try again.", "", 0)
+		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to download image. Please try again.", "", threadIDInt)
 		return
 	}
 	defer func() {
@@ -541,6 +547,13 @@ func (h *Handler) handlePhoto(ctx context.Context, chatID string, msg *Message) 
 		_ = os.Remove(imagePath)
 	}()
 
+	h.dispatchImageTask(ctx, chatID, threadID, msg, imagePath)
+}
+
+// dispatchImageTask sends a downloaded image to commsHandler as a direct
+// task, carrying ThreadID so the task dispatch and its replies land back in
+// the topic the photo came from (GH-5130).
+func (h *Handler) dispatchImageTask(ctx context.Context, chatID, threadID string, msg *Message, imagePath string) {
 	// Build prompt with image context
 	prompt := msg.Caption
 	if prompt == "" {
@@ -550,7 +563,7 @@ func (h *Handler) handlePhoto(ctx context.Context, chatID string, msg *Message) 
 	// Execute with image via commsHandler
 	taskID := fmt.Sprintf("IMG-%d", time.Now().Unix())
 	if h.commsHandler != nil {
-		h.commsHandler.ExecuteDirectTask(ctx, chatID, "", taskID, prompt, &comms.DirectTaskOpts{
+		h.commsHandler.ExecuteDirectTask(ctx, chatID, threadID, taskID, prompt, &comms.DirectTaskOpts{
 			ImagePath: imagePath,
 		})
 	}
@@ -571,11 +584,17 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 		}
 	}
 
+	// GH-5130: carry the originating topic's thread through every ack/error
+	// reply and the eventual transcript delivery so voice replies land back
+	// in the topic the message came from.
+	threadID := msg.topicThreadID()
+	threadIDInt := parseThreadID(threadID)
+
 	// Check if transcription is available
 	if h.transcriber == nil {
 		logging.WithComponent("telegram").Debug("Voice message received but transcription not configured")
-		msg := h.voiceNotAvailableMessage()
-		_, _ = h.client.SendMessage(ctx, chatID, msg, "", 0)
+		notAvailable := h.voiceNotAvailableMessage()
+		_, _ = h.client.SendMessage(ctx, chatID, notAvailable, "", threadIDInt)
 		return
 	}
 
@@ -584,13 +603,13 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 		slog.String("chat_id", chatID), slog.Int("duration", voice.Duration))
 
 	// Send acknowledgment
-	_, _ = h.client.SendMessage(ctx, chatID, "🎤 Transcribing voice message...", "", 0)
+	_, _ = h.client.SendMessage(ctx, chatID, "🎤 Transcribing voice message...", "", threadIDInt)
 
 	// Download the voice file
 	audioPath, err := h.downloadAudio(ctx, voice.FileID)
 	if err != nil {
 		logging.WithComponent("telegram").Warn("Failed to download voice", slog.Any("error", err))
-		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to download voice message. Please try again.", "", 0)
+		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to download voice message. Please try again.", "", threadIDInt)
 		return
 	}
 	defer func() {
@@ -604,15 +623,22 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 	result, err := h.transcriber.Transcribe(transcribeCtx, audioPath)
 	if err != nil {
 		logging.WithComponent("telegram").Warn("Transcription failed", slog.Any("error", err))
-		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to transcribe voice message. Please try again or send as text.", "", 0)
+		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to transcribe voice message. Please try again or send as text.", "", threadIDInt)
 		return
 	}
 
 	if result.Text == "" {
-		_, _ = h.client.SendMessage(ctx, chatID, "🤷 Couldn't understand the voice message. Please try again or send as text.", "", 0)
+		_, _ = h.client.SendMessage(ctx, chatID, "🤷 Couldn't understand the voice message. Please try again or send as text.", "", threadIDInt)
 		return
 	}
 
+	h.deliverVoiceTranscript(ctx, chatID, msg, threadID, threadIDInt, result)
+}
+
+// deliverVoiceTranscript echoes the transcript back to the chat and
+// delegates the transcribed text to commsHandler, both carrying ThreadID so
+// voice replies land back in the topic the message came from (GH-5130).
+func (h *Handler) deliverVoiceTranscript(ctx context.Context, chatID string, msg *Message, threadID string, threadIDInt int64, result *transcription.Result) {
 	// Show the transcription to the user
 	langInfo := ""
 	if result.Language != "" && result.Language != "unknown" {
@@ -620,7 +646,7 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 	}
 
 	transcriptMsg := fmt.Sprintf("🎤 Transcribed%s:\n%s", langInfo, result.Text)
-	_, _ = h.client.SendMessage(ctx, chatID, transcriptMsg, "", 0)
+	_, _ = h.client.SendMessage(ctx, chatID, transcriptMsg, "", threadIDInt)
 
 	// Delegate transcribed text to commsHandler
 	text := strings.TrimSpace(result.Text)
@@ -636,6 +662,7 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 			SenderID:  senderID,
 			Text:      text,
 			VoiceText: text,
+			ThreadID:  threadID,
 			Platform:  "telegram",
 			Timestamp: time.Now(),
 		})
