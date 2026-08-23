@@ -117,3 +117,8 @@ pilot-bench/jobs/
 .agent/.nav-runtime-state.lock
 .agent/.nav-v6-state.bak/
 deploy/grafana/*.bak
+
+# Navigator "ask a question" scratch docs (leaked into .agent/tasks, dirty
+# the shared repo root and trip finish_tripwire_root_clean — GH-5147).
+# Anchored to .agent/tasks only so .agent/tasks/archive/q-*.md stays tracked.
+/.agent/tasks/q-*.md

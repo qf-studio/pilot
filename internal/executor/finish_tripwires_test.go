@@ -128,6 +128,56 @@ func TestCheckRootClean(t *testing.T) {
 			t.Error("expected violation for a repo with an unstaged diff")
 		}
 	})
+
+	// GH-5147 regression: a leftover Navigator "ask a question" scratch doc
+	// (q-<epoch>.md) in .agent/tasks used to leave the shared root
+	// perpetually dirty and spam finish_tripwire_root_clean. The durable fix
+	// is a repo-root .gitignore rule (/.agent/tasks/q-*.md); this test
+	// mirrors that rule in a synthetic repo and asserts the ignored scratch
+	// file no longer trips the tripwire, while a genuine tracked-file diff
+	// still does.
+	t.Run("gitignored query-scratch doc passes, genuine diff still fails", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitRepo(t, dir)
+
+		gitignorePath := filepath.Join(dir, ".gitignore")
+		if err := os.WriteFile(gitignorePath, []byte("/.agent/tasks/q-*.md\n"), 0o644); err != nil {
+			t.Fatalf("write .gitignore: %v", err)
+		}
+		cmd := exec.Command("git", "add", ".gitignore")
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git add .gitignore failed: %v\n%s", err, out)
+		}
+		cmd = exec.Command("git", "commit", "-q", "-m", "add gitignore")
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git commit .gitignore failed: %v\n%s", err, out)
+		}
+
+		tasksDir := filepath.Join(dir, ".agent", "tasks")
+		if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+			t.Fatalf("mkdir .agent/tasks: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(tasksDir, "q-1787504539.md"), []byte("scratch\n"), 0o644); err != nil {
+			t.Fatalf("write query-scratch doc: %v", err)
+		}
+
+		result := checkRootClean(&memory.Execution{ID: "exec-5", ProjectPath: dir})
+		if result.violated {
+			t.Errorf("expected no violation with only a gitignored query-scratch doc present, got %+v", result)
+		}
+
+		// A genuine diff to a tracked file must still trip the tripwire —
+		// the gitignore rule must not blind checkRootClean to real dirt.
+		if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("hello\nmodified\n"), 0o644); err != nil {
+			t.Fatalf("modify README: %v", err)
+		}
+		result = checkRootClean(&memory.Execution{ID: "exec-6", ProjectPath: dir})
+		if !result.violated {
+			t.Error("expected violation for a repo with a genuine tracked-file diff alongside the ignored scratch doc")
+		}
+	})
 }
 
 func TestCheckLabelLifecycle(t *testing.T) {
