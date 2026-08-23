@@ -8,14 +8,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/transcription"
 )
 
 // noopMessenger is a no-op implementation of comms.Messenger for tests.
@@ -1855,6 +1858,166 @@ func TestProcessUpdatePropagatesTopicThreadID(t *testing.T) {
 			called, got := msgr.seen()
 			if !called {
 				t.Fatal("expected an outbound messenger call carrying a thread id")
+			}
+			if got != tt.wantThreadID {
+				t.Errorf("threadID = %q, want %q", got, tt.wantThreadID)
+			}
+		})
+	}
+}
+
+// TestDeliverVoiceTranscriptPropagatesThreadID covers GH-5130: handleVoice's
+// interim replies and its delegated IncomingMessage must carry the
+// originating topic's thread, mirroring TestProcessUpdatePropagatesTopicThreadID
+// (PR#5120) for the voice path.
+func TestDeliverVoiceTranscriptPropagatesThreadID(t *testing.T) {
+	tests := []struct {
+		name            string
+		messageThreadID int64
+		isTopicMessage  bool
+		wantThreadID    string
+	}{
+		{
+			name:            "topic voice message threads transcript and reply back to the topic",
+			messageThreadID: 42,
+			isTopicMessage:  true,
+			wantThreadID:    "42",
+		},
+		{
+			name:         "general thread voice message carries no topic",
+			wantThreadID: "",
+		},
+		{
+			name:            "supergroup reply chain is not treated as a topic",
+			messageThreadID: 42,
+			wantThreadID:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sentThreadID interface{}
+			var sawKey bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var raw map[string]interface{}
+				_ = json.NewDecoder(r.Body).Decode(&raw)
+				sentThreadID, sawKey = raw["message_thread_id"]
+				_ = json.NewEncoder(w).Encode(SendMessageResponse{OK: true, Result: &Result{MessageID: 1}})
+			}))
+			defer server.Close()
+
+			msgr := &threadRecordingMessenger{}
+			h := &Handler{
+				client: NewClientWithBaseURL(testutil.FakeTelegramBotToken, server.URL),
+				commsHandler: comms.NewHandler(&comms.HandlerConfig{
+					Messenger:    msgr,
+					TaskIDPrefix: "TG",
+				}),
+			}
+
+			msg := &Message{
+				MessageID:       7,
+				MessageThreadID: tt.messageThreadID,
+				IsTopicMessage:  tt.isTopicMessage,
+				Chat:            &Chat{ID: -100123, Type: "supergroup"},
+				From:            &User{ID: 55, FirstName: "Ada"},
+			}
+			threadID := msg.topicThreadID()
+
+			h.deliverVoiceTranscript(context.Background(), "-100123", msg, threadID, parseThreadID(threadID), &transcription.Result{
+				Text: "implement rate limiting for the API",
+			})
+
+			wantKey := tt.wantThreadID != ""
+			if sawKey != wantKey {
+				t.Fatalf("transcript echo message_thread_id present = %v, want %v (value: %v)", sawKey, wantKey, sentThreadID)
+			}
+			if wantKey {
+				want, _ := strconv.ParseInt(tt.wantThreadID, 10, 64)
+				if sentThreadID != float64(want) {
+					t.Errorf("transcript echo message_thread_id = %v, want %d", sentThreadID, want)
+				}
+			}
+
+			called, got := msgr.seen()
+			if !called {
+				t.Fatal("expected the delegated IncomingMessage to trigger an outbound messenger call")
+			}
+			if got != tt.wantThreadID {
+				t.Errorf("delegated threadID = %q, want %q", got, tt.wantThreadID)
+			}
+		})
+	}
+}
+
+// noopImageBackend is a fast, no-op executor.Backend for exercising
+// dispatchImageTask's ExecuteDirectTask call without spawning a real
+// process, mirroring noopChatBackend in internal/comms/handler_lifecycle_test.go.
+type noopImageBackend struct{}
+
+func (b *noopImageBackend) Name() string      { return "noop-image-backend" }
+func (b *noopImageBackend) IsAvailable() bool { return true }
+func (b *noopImageBackend) Execute(_ context.Context, _ executor.ExecuteOptions) (*executor.BackendResult, error) {
+	return &executor.BackendResult{Success: true, Output: "a photo"}, nil
+}
+
+// TestDispatchImageTaskPropagatesThreadID covers GH-5130: handlePhoto's
+// ExecuteDirectTask call must carry the originating topic's thread so the
+// task dispatch and its replies (rendered via comms.Handler's
+// executeTaskCore -> SendResult) land back in that topic.
+func TestDispatchImageTaskPropagatesThreadID(t *testing.T) {
+	tests := []struct {
+		name            string
+		messageThreadID int64
+		isTopicMessage  bool
+		wantThreadID    string
+	}{
+		{
+			name:            "topic photo threads task dispatch back to the topic",
+			messageThreadID: 42,
+			isTopicMessage:  true,
+			wantThreadID:    "42",
+		},
+		{
+			name:         "non-topic photo carries no thread",
+			wantThreadID: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := executor.NewRunnerWithBackend(&noopImageBackend{})
+			runner.SetSkipPreflightChecks(true)
+			runner.SetRecordingEnabled(false)
+
+			msgr := &threadRecordingMessenger{}
+			h := &Handler{
+				commsHandler: comms.NewHandler(&comms.HandlerConfig{
+					Messenger:    msgr,
+					Runner:       runner,
+					ProjectPath:  t.TempDir(),
+					TaskIDPrefix: "TG",
+				}),
+			}
+
+			msg := &Message{
+				MessageThreadID: tt.messageThreadID,
+				IsTopicMessage:  tt.isTopicMessage,
+				Chat:            &Chat{ID: -100123, Type: "supergroup"},
+				Caption:         "describe this screenshot",
+			}
+			threadID := msg.topicThreadID()
+
+			imagePath := filepath.Join(t.TempDir(), "photo.jpg")
+			if err := os.WriteFile(imagePath, []byte("fake-image-bytes"), 0o600); err != nil {
+				t.Fatalf("write temp image: %v", err)
+			}
+
+			h.dispatchImageTask(context.Background(), "-100123", threadID, msg, imagePath)
+
+			called, got := msgr.seen()
+			if !called {
+				t.Fatal("expected ExecuteDirectTask to trigger an outbound messenger call carrying a thread id")
 			}
 			if got != tt.wantThreadID {
 				t.Errorf("threadID = %q, want %q", got, tt.wantThreadID)
