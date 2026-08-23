@@ -21,6 +21,7 @@ pilot start [flags]
 | `--plane` | Enable Plane polling (overrides config) |
 | `--env=ENV` | Enable autopilot: `dev`, `stage`, `prod` |
 | `--dashboard` | Show TUI dashboard for real-time task monitoring |
+| `--dashboard-scope` | Scope dashboard metrics: `project` (current project only) or `all` (all projects) (default: `project`) |
 | `-p`, `--project` | Project path (default: config default or cwd) |
 | `--replace` | Kill existing bot instance before starting |
 | `--no-gateway` | Run polling adapters only (no HTTP gateway) |
@@ -29,6 +30,7 @@ pilot start [flags]
 | `--team` | Team ID or name for project access scoping |
 | `--team-member` | Member email for team access scoping |
 | `--log-format` | Log output format: `text` or `json` (default: text) |
+| `--i-know-this-is-an-archive` | Override the refusal to start against a ledger marked archived (`LEDGER-ARCHIVED` sentinel) |
 
 ### Examples
 
@@ -60,6 +62,14 @@ pilot start --plane --github
 # Full stack: all adapters
 pilot start --telegram --github --discord --plane --slack --dashboard
 ```
+
+#### Archived-ledger recovery
+
+`--i-know-this-is-an-archive` overrides Pilot's refusal to start against a
+memory store whose ledger is marked `LEDGER-ARCHIVED`. This flag is
+forensics/recovery-only — it exists to let an operator inspect or extract
+data from an archived ledger, not for routine startup. Do not set it
+outside a deliberate recovery investigation.
 
 ## pilot task
 
@@ -98,6 +108,49 @@ pilot task "Implement caching" --budget
 
 # Scoped to specific team
 pilot task "Update API docs" --team=backend
+```
+
+### pilot task cancel
+
+Cancel a task so it stops being re-picked.
+
+```bash
+pilot task cancel <task-id> [flags]
+```
+
+Marks the task's latest execution row terminal (`status=canceled`) so the
+dispatcher never grants it a fresh generation and the poller never
+re-dispatches it. This is distinct from the `stalled` status: `stalled`
+means "the owning process died, retry this" and is deliberately re-armed
+with a fresh generation.
+
+If the task's latest execution is currently `RUNNING`, cancel refuses
+rather than killing the backend process — it prints the execution ID so
+you can investigate/stop it manually.
+
+For GitHub-backed tasks, a genuine reopen or (re-)label event on the issue
+**after** the cancel re-admits the task for a fresh dispatch — merely
+leaving the issue open/labeled does not. For every other adapter, cancel
+is permanent for that task ID; file a new issue/task to re-run the work.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-p`, `--project` | Project path (default: current directory) |
+| `--reason` | Operator reason recorded on the cancelled execution |
+
+#### Examples
+
+```bash
+# Cancel a task
+pilot task cancel TASK-12345
+
+# Cancel with a reason
+pilot task cancel TASK-12345 --reason "duplicate of TASK-12300"
+
+# Cancel a task in a specific project
+pilot task cancel TASK-12345 --project /path/to/project
 ```
 
 ## pilot upgrade
@@ -306,6 +359,51 @@ Projects:
 
 ---
 
+## pilot stop
+
+Stop the running Pilot daemon.
+
+```bash
+pilot stop
+```
+
+SIGTERMs the running daemon (found via its single-instance lock file) and
+waits (up to 30s) until the lock is confirmed released. Takes no flags.
+
+### Examples
+
+```bash
+# Stop the running daemon
+pilot stop
+```
+
+## pilot restart
+
+Restart the Pilot daemon (stop the running instance, then start).
+
+```bash
+pilot restart [-- start-flags...]
+```
+
+Stops the running Pilot daemon (same as `pilot stop`) and, once its
+single-instance lock is confirmed released, execs into `pilot start` in
+the current process — taking over the current terminal exactly as a fresh
+`pilot start` would. Because of this, `pilot restart` needs a real TTY and
+should be run in the operator's own terminal, not a background/assistant
+shell.
+
+Flags after `restart` (or after `--`) are forwarded verbatim to
+`pilot start`.
+
+### Examples
+
+```bash
+# Restart with the same adapters as before
+pilot restart --dashboard --github --telegram --replace
+```
+
+---
+
 ## Setup & Configuration
 
 ### pilot setup
@@ -348,6 +446,26 @@ pilot setup --tunnel
 
 # Disable Mac sleep for always-on server
 pilot setup --no-sleep
+```
+
+### pilot onboard
+
+Interactive onboarding wizard.
+
+```bash
+pilot onboard
+```
+
+Guides you through configuring Pilot for your workflow: persona selection
+(Solo, Team, Enterprise), project setup, ticket source configuration,
+notification settings, and optional features (for Team/Enterprise). Takes
+no flags.
+
+#### Examples
+
+```bash
+# Start interactive onboarding
+pilot onboard
 ```
 
 ### pilot config
@@ -591,6 +709,88 @@ pilot version
 
 ---
 
+## pilot backend
+
+Manage execution backends (Claude Code, Qwen Code, OpenCode).
+
+```bash
+pilot backend <subcommand>
+```
+
+List supported backends, check their status, and switch the active
+backend.
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all supported backends |
+| `status` | Show current backend configuration |
+| `set` | Set active backend |
+
+### pilot backend list
+
+List all supported backends and whether their CLI is installed.
+
+```bash
+pilot backend list
+```
+
+Takes no flags.
+
+#### Examples
+
+```bash
+pilot backend list
+# Backend        Status      Command    Config
+# claude-code    ✓ installed claude     (default)
+# qwen-code      ✗ missing   qwen
+# opencode       ✓ installed opencode
+```
+
+### pilot backend status
+
+Show current backend configuration and health.
+
+```bash
+pilot backend status
+```
+
+Takes no flags.
+
+#### Examples
+
+```bash
+pilot backend status
+# Active backend: claude-code
+# Command: claude
+# Version: 1.0.26
+# Status: ✓ ready
+```
+
+### pilot backend set
+
+Set the active backend.
+
+```bash
+pilot backend set <type>
+```
+
+Valid types: `claude-code`, `qwen-code`, `opencode`. Updates
+`executor.type` in the config file and verifies the corresponding CLI is
+installed.
+
+#### Examples
+
+```bash
+# Switch to Qwen Code
+pilot backend set qwen-code
+# Updated executor.type to "qwen-code" in ~/.pilot/config.yaml
+# Verified: qwen CLI found at /usr/local/bin/qwen
+```
+
+---
+
 ## Execution & Review
 
 Commands for executing tasks and reviewing work history.
@@ -660,6 +860,45 @@ pilot brief --now
 
 # Generate a weekly summary
 pilot brief --weekly
+```
+
+### pilot trace
+
+Render the stage-transition timeline for a task's executions.
+
+```bash
+pilot trace <task-id> [flags]
+```
+
+Renders the stage-transition timeline recorded in `execution_events` for
+every execution of a task, newest execution first. Retries are rendered as
+separate blocks; each stage line shows a UTC timestamp and the duration
+since the previous stage.
+
+`task_id` is not unique across projects, so the trace is scoped to a
+single project: `--project` if given, otherwise the current directory if
+it matches one of the task's projects, otherwise (when the task ID only
+ever ran in one project) that project. If the task ID collides across
+multiple projects and neither of those resolves it, the candidate
+projects are listed instead of merged.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-p`, `--project` | Project path to scope the trace to (default: current directory, auto-resolved if unambiguous) |
+
+#### Examples
+
+```bash
+# Show the stage timeline for task GH-42
+pilot trace GH-42
+
+# Show the stage timeline for a Navigator task ID
+pilot trace TASK-379
+
+# Scope to a specific project
+pilot trace GH-1 --project /path/to/repo
 ```
 
 ### pilot replay
@@ -879,6 +1118,8 @@ View, search, and manage learned patterns across projects.
 | `list` | List discovered patterns |
 | `search` | Search patterns by keyword |
 | `stats` | Show pattern statistics |
+| `apply` | Apply a pattern to a project |
+| `ignore` | Ignore a pattern |
 
 ### pilot patterns list
 
@@ -964,6 +1205,62 @@ pilot patterns stats
 # Success patterns: 198
 # Anti-patterns: 49
 # Projects covered: 12
+```
+
+### pilot patterns apply
+
+Apply a pattern to a project.
+
+```bash
+pilot patterns apply <pattern-id> [flags]
+```
+
+Links a pattern to a project so it will be considered during task
+execution.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-p`, `--project` | Project path (default: current directory) |
+
+#### Examples
+
+```bash
+# Apply a pattern to the current project
+pilot patterns apply pattern-abc123
+
+# Apply a pattern to a specific project
+pilot patterns apply pattern-abc123 --project /path/to/project
+```
+
+### pilot patterns ignore
+
+Ignore a pattern.
+
+```bash
+pilot patterns ignore <pattern-id> [flags]
+```
+
+By default, ignores the pattern for the current project only (records
+negative feedback). Use `--global` to ignore it across all projects,
+which deletes the pattern entirely.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-p`, `--project` | Project path (default: current directory) |
+| `--global` | Ignore across all projects (deletes the pattern) |
+
+#### Examples
+
+```bash
+# Ignore a pattern for the current project
+pilot patterns ignore pattern-abc123
+
+# Delete a pattern globally
+pilot patterns ignore pattern-abc123 --global
 ```
 
 ---
@@ -1609,6 +1906,145 @@ pilot webhooks events
 
 ---
 
+## pilot eval
+
+Evaluation and regression testing commands.
+
+```bash
+pilot eval <subcommand>
+```
+
+Commands for managing eval tasks and checking for regressions between eval
+runs.
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `run` | Run eval tasks for a repository |
+| `list` | List eval tasks |
+| `stats` | Print eval pass@1 metrics and model comparisons |
+| `check` | Check for eval regressions between two runs |
+
+### pilot eval run
+
+Run eval tasks for a repository.
+
+```bash
+pilot eval run --repo <owner/name> [flags]
+```
+
+Loads eval tasks from the store and re-executes them as benchmarks.
+Selects tasks by repository, optionally overriding the model used.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--repo` | Repository (owner/name) to evaluate (required) |
+| `--project` | Filter by project path |
+| `--model` | Model to use for evaluation (default: config model) |
+| `--limit` | Maximum number of tasks to run (default: 100) |
+
+#### Examples
+
+```bash
+# Run eval tasks for a repo
+pilot eval run --repo owner/repo
+
+# Override the model
+pilot eval run --repo owner/repo --model claude-opus-4-6
+```
+
+### pilot eval list
+
+List eval tasks.
+
+```bash
+pilot eval list [flags]
+```
+
+Displays eval tasks from the store with optional filters.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--repo` | Filter by repository (owner/name) |
+| `--project` | Filter by project path |
+| `--limit` | Maximum number of tasks to show (default: 100) |
+| `--success` | Show only successful tasks |
+| `--failed` | Show only failed tasks |
+
+#### Examples
+
+```bash
+# List eval tasks for a repo
+pilot eval list --repo owner/repo
+
+# List only failed tasks
+pilot eval list --repo owner/repo --failed
+```
+
+### pilot eval stats
+
+Print eval pass@1 metrics and model comparisons.
+
+```bash
+pilot eval stats [flags]
+```
+
+Computes and displays pass@1/pass@k metrics from stored eval tasks, with
+per-repository breakdown and overall statistics.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--repo` | Filter by repository (owner/name) |
+| `--project` | Filter by project path |
+
+#### Examples
+
+```bash
+# Show eval statistics across all repos
+pilot eval stats
+
+# Show stats for a single repo
+pilot eval stats --repo owner/repo
+```
+
+### pilot eval check
+
+Check for eval regressions between two runs.
+
+```bash
+pilot eval check --baseline <run-id> --current <run-id> [flags]
+```
+
+Compares pass@1 rates between a baseline and current eval run. Exits with
+code 1 if a regression is detected (CI-friendly).
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--baseline` | Baseline run ID (execution_id) (required) |
+| `--current` | Current run ID (execution_id) (required) |
+| `--threshold` | Regression threshold in percentage points |
+
+#### Examples
+
+```bash
+# Compare two eval runs
+pilot eval check --baseline exec-abc --current exec-def
+
+# Use a custom regression threshold
+pilot eval check --baseline exec-abc --current exec-def --threshold 5
+```
+
+---
+
 ## Team Management
 
 Commands for managing teams, members, and role-based access control.
@@ -2041,6 +2477,11 @@ Adds a new project to Pilot configuration with automatic detection of GitHub rem
 | `-b`, `--branch` | Default branch (auto-detected) |
 | `--navigator` | Enable context intelligence (auto-detected) |
 | `-d`, `--set-default` | Set as default project |
+| `--no-wizard` | Force flag-driven mode (skip interactive wizard) |
+
+Without flags on an interactive terminal, `pilot project add` launches an
+interactive wizard that detects your `gh` CLI auth, lets you pick a repo,
+and prefills settings. `--no-wizard` forces flag mode even on a TTY.
 
 #### Auto-detection
 
@@ -2052,8 +2493,11 @@ Adds a new project to Pilot configuration with automatic detection of GitHub rem
 #### Examples
 
 ```bash
-# Add project from current directory (auto-detect settings)
-pilot project add --name my-app
+# Interactive wizard (TTY only)
+pilot project add
+
+# Force flag mode
+pilot project add --no-wizard --name my-app
 
 # Add with explicit GitHub repository
 pilot project add --name my-app --github owner/repo
@@ -2439,6 +2883,9 @@ Commands for viewing and managing autopilot PR tracking and automation.
 | Subcommand | Description |
 |------------|-------------|
 | `status` | Show tracked PRs and their current stage |
+| `list` | List all configured autopilot environments |
+| `enable` | Enable autopilot in configuration |
+| `disable` | Disable autopilot in configuration |
 
 ### pilot autopilot status
 
@@ -2492,6 +2939,92 @@ pilot autopilot status
 
 # JSON output
 pilot autopilot status --json
+```
+
+### pilot autopilot list
+
+List all configured autopilot environments.
+
+```bash
+pilot autopilot list [flags]
+```
+
+Displays all configured autopilot environments and their settings — both
+built-in environments (`dev`, `stage`, `prod`) and any custom environments
+defined in the config file under `autopilot.environments`.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# List configured environments
+pilot autopilot list
+
+# JSON output
+pilot autopilot list --json
+```
+
+### pilot autopilot enable
+
+Enable autopilot in configuration.
+
+```bash
+pilot autopilot enable [flags]
+```
+
+Enables autopilot mode in the Pilot configuration file. You must restart
+Pilot for changes to take effect.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--env` | Environment: `dev`, `stage`, `prod` (default: `dev`) |
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Enable with default (dev) environment
+pilot autopilot enable
+
+# Enable with staging environment
+pilot autopilot enable --env=stage
+
+# Enable with production environment
+pilot autopilot enable --env=prod
+```
+
+### pilot autopilot disable
+
+Disable autopilot in configuration.
+
+```bash
+pilot autopilot disable [flags]
+```
+
+Disables autopilot mode in the Pilot configuration file. You must restart
+Pilot for changes to take effect.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Disable autopilot
+pilot autopilot disable
+
+# Output as JSON
+pilot autopilot disable --json
 ```
 
 ### pilot release
