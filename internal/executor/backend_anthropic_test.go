@@ -40,6 +40,16 @@ func TestAnthropicBackend_Name(t *testing.T) {
 }
 
 func TestAnthropicBackend_IsAvailable(t *testing.T) {
+	// Hermetic: NewAnthropicBackend(nil) falls back to reading these env vars
+	// (see NewAnthropicBackend), so any of them being set in the ambient
+	// environment — e.g. CLAUDE_CODE_OAUTH_TOKEN when the test runner is
+	// itself a Claude Code process — makes IsAvailable() true regardless of
+	// what this test passed in, flaking the "should be false without a key"
+	// assertion. Clear them all so the test only exercises the nil-config path.
+	for _, key := range []string{"ANTHROPIC_API_KEY", "PILOT_ENGINE_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
+		t.Setenv(key, "")
+	}
+
 	noKey := NewAnthropicBackend(nil)
 	if noKey.IsAvailable() {
 		t.Error("IsAvailable() should be false without a key")

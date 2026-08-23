@@ -292,6 +292,20 @@ type Comment struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// IssueEvent represents one entry of a GitHub issue's timeline (the
+// `/issues/{number}/events` endpoint) — labeled/unlabeled/closed/reopened
+// and others. GH-5139: this is how a genuine "operator relabeled or reopened
+// this issue" gesture is distinguished from "the label/open-state merely
+// still happens to be set" — an Issue's plain State/Labels fields (fetched
+// via GetIssue) carry no timestamp for when they last changed.
+type IssueEvent struct {
+	ID        int64     `json:"id"`
+	Event     string    `json:"event"` // "labeled", "unlabeled", "closed", "reopened", ...
+	CreatedAt time.Time `json:"created_at"`
+	// Label is only populated by GitHub for "labeled"/"unlabeled" events.
+	Label *Label `json:"label,omitempty"`
+}
+
 // doRequest performs an HTTP request to the GitHub API with automatic retry on
 // transient errors (429, 5xx, network failures). The request body is buffered
 // once before the retry loop so it can be replayed on each attempt.
@@ -396,6 +410,21 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, numb
 		return nil, err
 	}
 	return comments, nil
+}
+
+// ListIssueEvents returns an issue's timeline events (labeled, unlabeled,
+// closed, reopened, ...), oldest first. Single page at the max per_page
+// (100) — GH-5139's only caller probes a specific, individually-cancelled
+// task's issue, a rare/manual code path rather than a hot poll loop, so
+// full pagination for issues with >100 lifecycle events is not pursued;
+// document the limitation at the call site if it ever matters in practice.
+func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, number int) ([]*IssueEvent, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/events?per_page=100", owner, repo, number)
+	var events []*IssueEvent
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &events); err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 // AddComment adds a comment to an issue

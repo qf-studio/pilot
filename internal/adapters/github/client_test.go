@@ -4137,3 +4137,43 @@ func TestGetTagForSHA_ExhaustivePagination(t *testing.T) {
 	}
 }
 
+// TestListIssueEvents_ParsesLabeledAndReopenedEvents is GH-5139's ListIssueEvents
+// coverage — the re-arm probe (cmd/pilot/rearm_canceled.go) relies on this
+// endpoint returning real timestamps for labeled/reopened events, unlike
+// Issue.UpdatedAt (which bumps on any activity, e.g. a comment).
+func TestListIssueEvents_ParsesLabeledAndReopenedEvents(t *testing.T) {
+	var receivedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path + "?" + r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"id": 1, "event": "labeled", "created_at": "2026-08-01T10:00:00Z", "label": {"name": "pilot"}},
+			{"id": 2, "event": "unlabeled", "created_at": "2026-08-10T10:00:00Z", "label": {"name": "pilot"}},
+			{"id": 3, "event": "reopened", "created_at": "2026-08-20T10:00:00Z"},
+			{"id": 4, "event": "labeled", "created_at": "2026-08-20T10:05:00Z", "label": {"name": "pilot"}}
+		]`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	events, err := client.ListIssueEvents(context.Background(), "owner", "repo", 5139)
+	if err != nil {
+		t.Fatalf("ListIssueEvents() error = %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events, got %d", len(events))
+	}
+	if events[3].Event != "labeled" || events[3].Label == nil || events[3].Label.Name != "pilot" {
+		t.Errorf("expected last event to be a labeled event naming 'pilot', got %+v", events[3])
+	}
+	wantCreated := time.Date(2026, 8, 20, 10, 5, 0, 0, time.UTC)
+	if !events[3].CreatedAt.Equal(wantCreated) {
+		t.Errorf("CreatedAt = %v, want %v", events[3].CreatedAt, wantCreated)
+	}
+	if events[2].Event != "reopened" || events[2].Label != nil {
+		t.Errorf("expected reopened event with no label, got %+v", events[2])
+	}
+	if receivedPath != "/repos/owner/repo/issues/5139/events?per_page=100" {
+		t.Errorf("unexpected request path: %s", receivedPath)
+	}
+}

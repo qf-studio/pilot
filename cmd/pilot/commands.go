@@ -1122,7 +1122,7 @@ func newTaskCancelCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "cancel <task-id>",
-		Short: "Cancel a task so it is never re-picked",
+		Short: "Cancel a task so it stops being re-picked",
 		Long: `Cancel marks a task's latest execution row terminal (status=canceled) so
 the dispatcher never grants it a fresh generation and the poller never
 re-dispatches it.
@@ -1136,6 +1136,11 @@ If the task's latest execution is currently RUNNING, cancel refuses rather
 than killing the backend process (v1: no PID/handle is tracked anywhere to
 safely stop one) — it prints the execution ID so you can investigate/stop it
 manually.
+
+For GitHub-backed tasks (GH-5139), a genuine reopen or (re-)label event on
+the issue AFTER this cancel re-admits the task_id for a fresh dispatch —
+merely leaving the issue open/labeled does not. For every other adapter,
+cancel is permanent for this task_id; file a new issue/task to re-run.
 
 Examples:
   pilot task cancel TASK-12345
@@ -1209,7 +1214,17 @@ func runTaskCancelCLI(store *memory.Store, taskID, projectPath, reason string, o
 	if reason != "" {
 		_, _ = fmt.Fprintf(out, "Reason: %s\n", reason)
 	}
-	_, _ = fmt.Fprintln(out, "This task will not be re-picked by the dispatcher or poller unless its issue is reopened/relabeled.")
+	// GH-5139: the re-arm probe (terminalCompletionChecker.tryRearmCanceled,
+	// cmd/pilot/rearm_canceled.go) is wired only for the GitHub SDK poller, and
+	// only fires once GitHub shows a reopen or (re-)label event AFTER this
+	// cancel — not merely "the issue happens to still be open/labeled" (that
+	// promise was false; see GH-5127/5129). For every other adapter, and for
+	// GitHub if no such event ever lands, cancel is permanent for this task_id.
+	if strings.HasPrefix(taskID, "GH-") {
+		_, _ = fmt.Fprintln(out, "This task will be re-picked only if its GitHub issue is reopened or (re-)labeled with the trigger label AFTER this cancel — merely leaving it open/labeled does not re-admit it. Otherwise, file a new issue to re-run this work.")
+	} else {
+		_, _ = fmt.Fprintln(out, "This cancel is permanent for this task-id — re-arm via reopen/relabel is only wired for GitHub issues. To re-run this work, file a new issue/task.")
+	}
 	return nil
 }
 

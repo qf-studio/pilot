@@ -1251,9 +1251,18 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 // a legitimate completion — the same definition childCompletionEvidence
 // uses in internal/executor/dispatcher.go for decomposed-child evidence),
 // or a canceled row (GH-4678: an operator ran `pilot task cancel` — that is
-// a deliberate, permanent "stop dispatching this" decision, not a failure to
-// retry; unlike the no_op branch this one does NOT require an empty error,
-// since Cancel always records the operator's reason in the error column).
+// a deliberate "stop dispatching this" decision, not a failure to retry;
+// unlike the no_op branch this one does NOT require an empty error, since
+// Cancel always records the operator's reason in the error column).
+//
+// GH-5139: "canceled" here is a default, not an unconditional forever — the
+// GitHub admission path (cmd/pilot's terminalCompletionChecker) independently
+// probes for genuine re-arm evidence (issue relabeled/reopened after the
+// cancel) and, when found, calls ReclassifyCanceledForRearm to demote the row
+// to 'failed' BEFORE this ever runs again, so a re-armed task_id naturally
+// stops counting as terminal here too — this function itself never consults
+// GitHub state and keeps treating a still-canceled row as done, which is the
+// correct default for every caller that has no re-arm evidence of its own.
 //
 // GH-4347: deliberately an ANY-row check, unlike childCompletionEvidence's
 // no_op fallback (which inspects only GetLatestExecutionByTaskID's most
@@ -1284,6 +1293,61 @@ func (s *Store) HasTerminalCompletion(taskID, projectPath string) (bool, error) 
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// LatestCanceledExecution returns the most recent status='canceled' row for
+// taskID/projectPath — exact task_id match, mirroring HasTerminalCompletion's
+// own query rather than GetLatestExecutionByTaskID's fuzzy LIKE fallback,
+// since a caller uses this to act on precisely the row that query counted.
+// found=false when no canceled row exists — e.g. the caller's terminal
+// evidence came from a genuine completed/no_op row instead, which GH-5139's
+// re-arm path must never touch.
+//
+// completed_at on the returned row is the cancel timestamp
+// (UpdateExecutionStatusIfNotTerminal stamps it CURRENT_TIMESTAMP on every
+// terminal transition, cancel included) — the reference point GH-5139 compares
+// GitHub issue-event timestamps against to decide whether a relabel/reopen
+// happened AFTER the cancel, not before it.
+func (s *Store) LatestCanceledExecution(taskID, projectPath string) (exec *Execution, found bool, err error) {
+	row := s.db.QueryRow(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE task_id = ? AND project_path = ? AND status = 'canceled'
+		ORDER BY completed_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, projectPath)
+	exec, err = scanExecutionDetail(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return exec, true, nil
+}
+
+// ReclassifyCanceledForRearm demotes every status='canceled' row for
+// taskID/projectPath to 'failed' with reason recorded, GH-5139's re-arm
+// counterpart to ReclassifyCompletionAsFailed's "demote, don't delete" idiom
+// — the row (and its history) stays visible to `pilot trace`, but a 'failed'
+// row is not terminal per HasTerminalCompletion, so the ordinary
+// nextRetryGeneration retry-with-backoff/hard-cap path (internal/executor/
+// dispatcher.go) grants the next generation exactly the way it would for any
+// other post-failure retry — no bespoke bypass of those invariants.
+//
+// Callers must independently confirm GitHub-side re-arm evidence (issue
+// open + carries the trigger label + a labeled/reopened event after the
+// cancel timestamp LatestCanceledExecution returned) before calling this —
+// it does not itself decide re-arm eligibility.
+func (s *Store) ReclassifyCanceledForRearm(taskID, projectPath, reason string) error {
+	return s.withRetry("ReclassifyCanceledForRearm", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
+			WHERE task_id = ? AND project_path = ? AND status = 'canceled'
+		`, reason, taskID, projectPath)
+		return err
+	})
 }
 
 // decomposedChildRefRegex extracts "#123"-style issue references from a
