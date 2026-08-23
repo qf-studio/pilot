@@ -5727,3 +5727,149 @@ func TestUpdateExecutionStatusIfNotTerminal_RejectsWhenAlreadyCanceled(t *testin
 		t.Errorf("expected status to remain 'canceled', got %q", exec.Status)
 	}
 }
+
+// TestLatestCanceledExecution_FindsMostRecentCanceledRow is GH-5139's coverage
+// for the lookup the re-arm probe (cmd/pilot/rearm_canceled.go) uses to find
+// the cancel timestamp it compares GitHub issue-event times against.
+func TestLatestCanceledExecution_FindsMostRecentCanceledRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-5139-LCE", "/project-lce"
+
+	_, found, err := store.LatestCanceledExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestCanceledExecution (before any row): %v", err)
+	}
+	if found {
+		t.Fatal("expected found=false before any execution row exists")
+	}
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-completed-first", TaskID: taskID, ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/o/r/pull/1",
+	}); err != nil {
+		t.Fatalf("SaveExecution (completed): %v", err)
+	}
+	_, found, err = store.LatestCanceledExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestCanceledExecution (only a completed row): %v", err)
+	}
+	if found {
+		t.Fatal("expected found=false when the only row is completed, not canceled")
+	}
+
+	// CompletedAt is set explicitly here to mirror production: a real cancel
+	// goes through ExecutionLifecycle.Cancel -> UpdateExecutionStatusIfNotTerminal,
+	// which stamps completed_at = CURRENT_TIMESTAMP on every terminal
+	// transition (that stamp becomes the "cancel timestamp" the GH-5139 re-arm
+	// probe compares GitHub event times against) — SaveExecution itself does
+	// not default it.
+	cancelTime := time.Now()
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-canceled", TaskID: taskID, ProjectPath: projectPath,
+		Status: "canceled", Error: "operator: duplicate ticket", CompletedAt: &cancelTime,
+	}); err != nil {
+		t.Fatalf("SaveExecution (canceled): %v", err)
+	}
+
+	exec, found, err := store.LatestCanceledExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestCanceledExecution (after cancel): %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true once a canceled row exists")
+	}
+	if exec.ID != "exec-canceled" {
+		t.Errorf("expected the canceled row, got %q", exec.ID)
+	}
+	if exec.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set (the cancel timestamp) on the canceled row")
+	}
+
+	// Different task_id / project_path must not match (exact-key isolation,
+	// mirroring HasTerminalCompletion's own query).
+	if _, found, err := store.LatestCanceledExecution("GH-OTHER", projectPath); err != nil || found {
+		t.Errorf("expected no match for a different task_id, found=%v err=%v", found, err)
+	}
+	if _, found, err := store.LatestCanceledExecution(taskID, "/other-project"); err != nil || found {
+		t.Errorf("expected no match for a different project_path, found=%v err=%v", found, err)
+	}
+}
+
+// TestReclassifyCanceledForRearm_DemotesToFailedAndUnblocksRetry is GH-5139's
+// coverage for the "demote don't delete" re-arm write: after reclassifying, the
+// row must no longer count as terminal (HasTerminalCompletion), so the ordinary
+// nextRetryGeneration retry path can grant the next generation — no bespoke
+// bypass of the retry/backoff/hard-cap machinery.
+func TestReclassifyCanceledForRearm_DemotesToFailedAndUnblocksRetry(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-5139-RCFR", "/project-rcfr"
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-canceled-rcfr", TaskID: taskID, ProjectPath: projectPath,
+		Status: "canceled", Error: "operator: wedged, canceled to unwedge",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	done, err := store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (before reclassify): %v", err)
+	}
+	if !done {
+		t.Fatal("expected done=true before reclassify — the canceled row is terminal")
+	}
+
+	reason := "GH-5139: re-armed by issue #5139 reopened event"
+	if err := store.ReclassifyCanceledForRearm(taskID, projectPath, reason); err != nil {
+		t.Fatalf("ReclassifyCanceledForRearm: %v", err)
+	}
+
+	exec, err := store.GetExecution("exec-canceled-rcfr")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected status=failed after reclassify, got %q", exec.Status)
+	}
+	if exec.Error != reason {
+		t.Errorf("expected error=%q, got %q", reason, exec.Error)
+	}
+
+	done, err = store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (after reclassify): %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false after reclassify — a failed row is not terminal, unblocking the normal retry path")
+	}
+
+	// A different task_id's canceled row must be untouched (exact-key
+	// isolation, mirroring ReclassifyCompletionAsFailed's own cross-task test).
+	otherTaskID := "GH-5139-RCFR-OTHER"
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-canceled-other", TaskID: otherTaskID, ProjectPath: projectPath,
+		Status: "canceled", Error: "operator: unrelated",
+	}); err != nil {
+		t.Fatalf("SaveExecution (other task): %v", err)
+	}
+	if err := store.ReclassifyCanceledForRearm(taskID, projectPath, "unrelated reclassify"); err != nil {
+		t.Fatalf("ReclassifyCanceledForRearm (second call): %v", err)
+	}
+	otherExec, err := store.GetExecution("exec-canceled-other")
+	if err != nil {
+		t.Fatalf("GetExecution (other task): %v", err)
+	}
+	if otherExec.Status != "canceled" {
+		t.Errorf("expected the other task's canceled row to remain untouched, got status %q", otherExec.Status)
+	}
+}

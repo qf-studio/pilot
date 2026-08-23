@@ -494,7 +494,16 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	// method under-recognizes a no_op outcome as "done".
 	if deps.Store != nil {
 		pollerDeps.TaskChecker = storeTaskChecker{store: deps.Store, projectPath: target.projectPath}
-		pollerDeps.ExecutionChecker = terminalCompletionChecker{store: deps.Store}
+		// GH-5139: ghClient/repoOwner/repoName/triggerLabel let
+		// terminalCompletionChecker probe GitHub for a genuine post-cancel
+		// relabel/reopen and re-arm the task-id — see its doc comment.
+		pollerDeps.ExecutionChecker = terminalCompletionChecker{
+			store:        deps.Store,
+			ghClient:     newGitHubClient(deps.Cfg),
+			repoOwner:    repoOwner,
+			repoName:     repoName,
+			triggerLabel: pilotLabel,
+		}
 	}
 
 	// GH-2802: pre-flight judge (CC subprocess, no API key) — mirrors the

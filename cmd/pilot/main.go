@@ -4200,19 +4200,63 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 // look identical to an already-completed one to the poller: it's skipped via
 // recordSkip(ReasonCompletedExecution) with zero further API calls, judge
 // runs, or claim rows until next_allowed_at passes.
+//
+// GH-5139: also owns the GitHub-specific re-arm probe for operator-canceled
+// task_ids (`pilot task cancel`'s hint promises a reopen/relabel re-admits
+// the task — GH-5127/5129 proved that false since nothing ever checked for
+// it). ghClient/repoOwner/repoName/triggerLabel are set by the GitHub SDK
+// poller wiring (poller_github.go); left zero-value by any other
+// constructor (including every pre-GH-5139 test) falls back byte-for-byte to
+// the old "canceled is permanent" behavior — see the nil-ghClient branch in
+// HasCompletedExecution.
 type terminalCompletionChecker struct {
 	store *memory.Store
+
+	ghClient     *github.Client
+	repoOwner    string
+	repoName     string
+	triggerLabel string
 }
 
 func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath string) (bool, error) {
-	if gated, shouldLog := repickBackoff.gateStatus(repickBackoffKey(projectPath, taskID)); gated {
+	key := repickBackoffKey(projectPath, taskID)
+	if gated, shouldLog := repickBackoff.gateStatus(key); gated {
 		if shouldLog {
 			logging.WithComponent("dispatch").Debug("task in repick backoff window, skipping poller candidacy entirely",
 				slog.String("task_id", taskID))
 		}
 		return true, nil
 	}
-	return executor.HasTerminalCompletion(c.store, taskID, projectPath)
+
+	done, err := executor.HasTerminalCompletion(c.store, taskID, projectPath)
+	if err != nil || !done {
+		return done, err
+	}
+
+	// GH-5139: `done` may be a genuine completed/no_op row (never re-arm — no
+	// GitHub probe, no throttling change) or an operator cancel, which alone
+	// among the terminal reasons is documented as re-armable via GitHub
+	// reopen/relabel. tryRearmCanceled tells the two apart internally (via
+	// LatestCanceledExecution) and only spends an API call on the latter.
+	if c.ghClient == nil {
+		return true, nil
+	}
+	rearmed, probeErr := c.tryRearmCanceled(taskID, projectPath, key)
+	if probeErr != nil {
+		logging.WithComponent("dispatch").Warn("GH-5139 re-arm probe failed — treating canceled task as still terminal",
+			slog.String("task_id", taskID), slog.Any("error", probeErr))
+		repickBackoff.recordClaimLostDrop(key)
+		return true, nil
+	}
+	if !rearmed {
+		// Either no canceled row (nothing to probe) or no re-arm evidence yet.
+		// Throttle via the same repick-backoff window GH-4469 already built,
+		// so an open+labeled-but-not-yet-relabeled canceled issue does not
+		// pay for a GetIssue+ListIssueEvents call on every ~30s poll tick.
+		repickBackoff.recordClaimLostDrop(key)
+		return true, nil
+	}
+	return false, nil
 }
 
 // InvalidateCompletion delegates to the store unchanged — GH-4347 only

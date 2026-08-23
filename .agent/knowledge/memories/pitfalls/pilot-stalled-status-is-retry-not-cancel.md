@@ -33,12 +33,25 @@ again") have no representation in the status vocabulary at all — hence #4678.
   [--reason "..."]` instead.** It writes a NEW terminal status, `canceled` (single-L —
   distinct from the older, confirmed-dead `cancelled` double-L value store.go's
   terminal-status list keeps only for historical defensiveness), through the
-  `ExecutionLifecycle.Cancel` chokepoint. A `canceled` row is never re-picked
-  (`nextRetryGeneration` treats it as terminal-and-done, no generation+1, no
+  `ExecutionLifecycle.Cancel` chokepoint. A `canceled` row is never re-picked by
+  accident (`nextRetryGeneration` treats it as terminal-and-done, no generation+1, no
   hard-cap exemption) and `HasTerminalCompletion` counts it as done, so the poller's
   "unmarking for retry" path leaves it alone too. If the task's latest execution is
   currently RUNNING, cancel refuses (names the execution id) rather than killing the
   backend process — v1, no PID/handle is tracked to do that safely yet.
+- **Update (2026-08-23, #5139 shipped): for GitHub-backed tasks, cancel IS
+  deliberately re-armable, and the CLI's old "never re-picked" hint was false —
+  GH-5127/5129 recovery found neither relabel-in-place nor close+reopen actually
+  re-admitted a canceled task_id, because nothing ever checked for it.** Fixed by
+  having the poller's admission gate (`terminalCompletionChecker.tryRearmCanceled`,
+  `cmd/pilot/rearm_canceled.go`) probe the GitHub issue-events timeline: it re-arms
+  (demotes the row to `failed` via `Store.ReclassifyCanceledForRearm`, letting the
+  ordinary `nextRetryGeneration` retry-with-backoff/hard-cap path grant generation+1
+  normally) only when the issue is CURRENTLY open+labeled AND the timeline shows a
+  `reopened` or matching `labeled` event timestamped AFTER the cancel — merely
+  leaving the label/open-state as-is does not qualify, by design, so this can't
+  become an #4655-style automatic retry loop. Non-GitHub-adapter cancels remain
+  permanent (no re-arm probe wired for them).
 - The BOTH-close-and-stall workaround below is now only relevant for a task from
   BEFORE #4678 shipped, or in an environment running an older binary. Prefer
   `pilot task cancel` whenever it's available. Old workaround: close the issue
