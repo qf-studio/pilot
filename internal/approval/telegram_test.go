@@ -1922,6 +1922,62 @@ func TestTelegramHandler_HandleCallback_UnrestrictedWhenNoApproversOrAllowlist(t
 	}
 }
 
+// TestTelegramHandler_Rehydrate_ApproverGatedCallback covers GH-5162:
+// authorization gating (Request.Approvers) must still apply to a request
+// restored by Rehydrate after a restart — Rehydrate reconstructs Approvers
+// from the persisted row (see Rehydrate), so an unauthorized tap on a
+// rehydrated, approver-gated request must be refused just like a live one,
+// and the listed approver must still be able to decide it afterwards.
+func TestTelegramHandler_Rehydrate_ApproverGatedCallback(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-gated", TaskID: "T-RG", Stage: "pre_merge",
+		Title: "Rehydrated Gated", Approvers: []string{"67890"},
+		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewTelegramHandler(client, "chat123", 0).WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	// An unauthorized tap on the rehydrated, approver-gated request must be
+	// refused without mutating any state.
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:rehy-gated", "intruder", "intruder")
+	if !handled {
+		t.Error("expected callback to be handled (even when unauthorized)")
+	}
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 || cbs[0].Text != "⛔ Not an approver" {
+		t.Fatalf("expected unauthorized answer text, got: %+v", cbs)
+	}
+
+	handler.mu.RLock()
+	_, stillPending := handler.pending["rehy-gated"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected rehydrated request to remain pending after an unauthorized tap")
+	}
+
+	// The listed approver can still decide it after the refused tap.
+	handled = handler.HandleCallback(context.Background(), "cb2", "approve:rehy-gated", "67890", "approver")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+	cbs = client.getAnsweredCallbacks()
+	if len(cbs) != 2 || cbs[1].Text != "Approved!" {
+		t.Fatalf("expected approved answer text, got: %+v", cbs)
+	}
+
+	handler.mu.RLock()
+	_, stillPendingAfterApproval := handler.pending["rehy-gated"]
+	handler.mu.RUnlock()
+	if stillPendingAfterApproval {
+		t.Error("expected request to be removed from pending after an authorized decision")
+	}
+}
+
 // TestTelegramHandler_Rehydrate_ResendsFreshPromptPerPendingRequest is the
 // GH-4159 regression test: after a restart, Rehydrate must send a fresh,
 // actionable prompt for each restored request (same request_id/buttons) so
