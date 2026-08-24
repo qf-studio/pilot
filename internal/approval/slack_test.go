@@ -1124,3 +1124,274 @@ func TestSlackHandler_HandleInteraction_UnrestrictedWhenNoApproversOrAllowlist(t
 		t.Fatal("timeout waiting for response")
 	}
 }
+
+// TestSlackHandler_HandleInteraction_ApproverAccepted covers GH-5163: a user
+// whose ID is present in Request.Approvers must be able to decide the
+// request, receiving a DecisionApproved response and being removed from
+// pending.
+func TestSlackHandler_HandleInteraction_ApproverAccepted(t *testing.T) {
+	client := &mockSlackClient{}
+	handler := NewSlackHandler(client, "#approvals")
+
+	req := &Request{
+		ID:        "req-approver-accepted",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		Approvers: []string{"U-allowed-1", "U-allowed-2"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-approver-accepted", "U-allowed-2", "approver", "")
+	if !handled {
+		t.Error("expected interaction to be handled")
+	}
+
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-approver-accepted"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected request to be removed from pending after an authorized decision")
+	}
+}
+
+// TestSlackHandler_HandleInteraction_NonApproverRefused covers GH-5163: a tap
+// from a user not present in Request.Approvers must be refused via an
+// ephemeral "not authorized" response, must log at WARN, must not mutate any
+// state (pending map stays populated, no message update, no decision
+// recorded), and the listed approver must still be able to decide the
+// request afterwards.
+func TestSlackHandler_HandleInteraction_NonApproverRefused(t *testing.T) {
+	client := &mockSlackClient{}
+	logger, buf := newCapturingLogger()
+	recorder := &mockDecisionRecorder{}
+	handler := NewSlackHandler(client, "#approvals").WithDecisionRecorder(recorder)
+	handler.log = logger
+
+	req := &Request{
+		ID:        "req-non-approver-refused",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		Approvers: []string{"U-allowed"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	const responseURL = "https://hooks.slack.com/actions/T000/B000/xyz"
+
+	// Refusal response.
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-non-approver-refused", "intruder", "intruder", responseURL)
+	if !handled {
+		t.Error("expected interaction to be handled (even when unauthorized)")
+	}
+	if len(client.ephemeralCalls) != 1 {
+		t.Fatalf("expected 1 ephemeral response, got %d", len(client.ephemeralCalls))
+	}
+	if !containsString(client.ephemeralCalls[0].Text, "not authorized") {
+		t.Errorf("ephemeral text = %q, want it to mention not being authorized", client.ephemeralCalls[0].Text)
+	}
+
+	// Warn log.
+	out := buf.String()
+	if !containsString(out, "level=WARN") {
+		t.Errorf("log output = %q, want a WARN-level record", out)
+	}
+	if !containsString(out, "request_id=req-non-approver-refused") || !containsString(out, "user_id=intruder") {
+		t.Errorf("log output = %q, want request_id/user_id attrs", out)
+	}
+
+	// No mutation: no decision recorded, no message update, nothing on
+	// respCh, request stays pending.
+	if calls := recorder.getCalls(); len(calls) != 0 {
+		t.Errorf("expected RecordDecision NOT to be called for an unauthorized click, got %d calls", len(calls))
+	}
+	if len(client.updateCalls) != 0 {
+		t.Fatalf("expected no message update for an unauthorized click, got %d", len(client.updateCalls))
+	}
+	select {
+	case resp := <-respCh:
+		t.Fatalf("expected no response for unauthorized click, got: %+v", resp)
+	default:
+	}
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-non-approver-refused"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized click")
+	}
+
+	// Subsequent authorized tap still works.
+	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-non-approver-refused", "U-allowed", "approver", "")
+	if !handled {
+		t.Error("expected interaction to be handled")
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
+// TestSlackHandler_HandleInteraction_FallbackAllowlistMemberAcceptedNonMemberRefused
+// covers GH-5163 / GH-5157: when Request.Approvers is empty, authorization
+// falls back to the handler-scoped allowlist set via WithAllowedIDs — a
+// member of that allowlist is accepted, and a non-member is refused.
+func TestSlackHandler_HandleInteraction_FallbackAllowlistMemberAcceptedNonMemberRefused(t *testing.T) {
+	client := &mockSlackClient{}
+	handler := NewSlackHandler(client, "#approvals").WithAllowedIDs([]string{"U-allowed"})
+
+	req := &Request{
+		ID:        "req-fallback-both-1",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Non-member of the fallback allowlist -> refused.
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-fallback-both-1", "not-allowed", "someone", "")
+	if !handled {
+		t.Error("expected interaction to be handled (even when unauthorized)")
+	}
+	if len(client.updateCalls) != 0 {
+		t.Fatalf("expected no message update for an unauthorized click, got %d", len(client.updateCalls))
+	}
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-fallback-both-1"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized click")
+	}
+
+	// Member of the fallback allowlist -> accepted.
+	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-fallback-both-1", "U-allowed", "someone-else", "")
+	if !handled {
+		t.Error("expected interaction to be handled")
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
+// TestSlackHandler_HandleInteraction_BothListsEmptyUnrestricted covers
+// GH-5163 / GH-5157: when both Request.Approvers and the handler-scoped
+// allowlist are empty, authorization is unrestricted — any user may decide
+// the request, preserving prior behavior.
+func TestSlackHandler_HandleInteraction_BothListsEmptyUnrestricted(t *testing.T) {
+	client := &mockSlackClient{}
+	handler := NewSlackHandler(client, "#approvals")
+
+	req := &Request{
+		ID:        "req-both-empty-unrestricted",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-both-empty-unrestricted", "anyone", "anyone", "")
+	if !handled {
+		t.Error("expected interaction to be handled")
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
+// TestSlackHandler_Rehydrate_ApproversGate covers the GH-5163 combination of
+// GH-4411 (restart-survival) and GH-5157 (identity-gated approval): the
+// persisted PendingApproval row carries Approvers, so a request reconstructed
+// by Rehydrate must still enforce that gate — a non-approver tap after
+// restart must be rejected (no mutation), while the listed approver can still
+// decide it via a DecisionRecorder since the original waiter goroutine died
+// with the pre-restart process.
+func TestSlackHandler_Rehydrate_ApproversGate(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+	recorder := &mockDecisionRecorder{}
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID:               "rehy-gate",
+		TaskID:           "T-RG",
+		Stage:            "pre_merge",
+		Title:            "Rehydrated gated",
+		Approvers:        []string{"U-allowed"},
+		PreferredChannel: "slack",
+		CreatedAt:        time.Now(),
+		ExpiresAt:        time.Now().Add(time.Hour),
+	})
+
+	handler := NewSlackHandler(client, "#approvals").WithStore(store).WithDecisionRecorder(recorder)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	// A non-approver tap after rehydrate must be rejected without mutating state.
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:rehy-gate", "intruder", "intruder", "")
+	if !handled {
+		t.Error("expected interaction to be handled (even when unauthorized)")
+	}
+	if len(client.updateCalls) != 0 {
+		t.Fatalf("expected no message update for an unauthorized click, got %d", len(client.updateCalls))
+	}
+	if calls := recorder.getCalls(); len(calls) != 0 {
+		t.Fatalf("expected no decision recorded for an unauthorized click, got %d", len(calls))
+	}
+	handler.mu.RLock()
+	_, stillPending := handler.pending["rehy-gate"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized click")
+	}
+
+	// The listed approver can still decide it after rehydrate — recorded
+	// directly via DecisionRecorder since no waiter reads the rebuilt channel.
+	handled = handler.HandleInteraction(context.Background(), "approve", "approve:rehy-gate", "U-allowed", "approver", "")
+	if !handled {
+		t.Error("expected interaction to be handled")
+	}
+	calls := recorder.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected decision to be recorded directly after rehydrate, got %d calls", len(calls))
+	}
+	if calls[0].requestID != "rehy-gate" || calls[0].decision != DecisionApproved || calls[0].by != "approver" {
+		t.Errorf("unexpected recorded decision: %+v", calls[0])
+	}
+}
