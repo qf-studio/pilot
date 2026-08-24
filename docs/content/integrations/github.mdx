@@ -111,7 +111,7 @@ orchestrator:
 Pilot respects issue dependencies declared in the issue body:
 
 ```markdown
-## Summary
+## Context
 Add user authentication
 
 ## Depends on
@@ -126,8 +126,9 @@ Issues with open dependencies are skipped until their dependencies are closed.
 <Callout type="info">
 **Polling is the primary, recommended mode** for GitHub. It is the path exercised
 by the production daemon (`pilot start --github`), runs on the studio-sdk poller,
-and supports the full lifecycle (spec-guard, epic decomposition, SDK PR-create,
-autopilot). Webhook mode is the legacy gateway path (`internal/pilot`); it
+and supports the full lifecycle ([spec-guard](/features/quality-gates#issue-spec-guard-pre-dispatch),
+epic decomposition, SDK PR-create, autopilot). Webhook mode is the legacy
+gateway path (`internal/pilot`); it
 delivers lower-latency issue detection but does **not** run the SDK dispatch
 pipeline. Prefer polling unless you specifically need webhook-driven latency.
 </Callout>

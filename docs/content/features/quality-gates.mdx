@@ -105,6 +105,74 @@ Run project-specific checks:
 - API contract verification
 - Database migration validation
 
+## Issue Spec Guard (pre-dispatch)
+
+Before Pilot dispatches a `pilot`-labeled issue for execution, it runs a
+separate check — the **spec guard** — that validates the issue body is
+detailed enough to implement against. This runs at intake, ahead of the
+[quality gates](#gate-types) above, which validate code after
+implementation.
+
+An issue body must satisfy all of the following to pass:
+
+- **A recognized section header.** The body must contain at least one of
+  these seven headers, matched in English regardless of the issue's other
+  content:
+  - `Acceptance`
+  - `Implementation`
+  - `Context`
+  - `Background`
+  - `Approach`
+  - `Design`
+  - `Refs`
+
+  The match is an exact, case-sensitive English word (e.g. `## Context`) —
+  headers like `## Problem`, `## Summary`, or `## Goal` are **not**
+  recognized, even though they read as reasonable section titles.
+
+- **H2–H6 scope.** The header must be a Markdown H2 through H6
+  (`##` to `######`). An H1 (`#`) does not satisfy the check — issue titles
+  and top-level headers are ignored.
+
+- **Any-language body content.** Only the header text itself must match
+  English; the content underneath the heading can be written in any
+  language.
+
+- **A minimum body length.** The trimmed issue body must be at least
+  **100 characters**. A short body fails even if it contains a recognized
+  header.
+
+<Callout type="info">
+  A body consisting solely of a `Parent: GH-NNN` reference line also fails
+  the guard. Decomposer-generated sub-issues are exempt: if a sub-issue's
+  parent already passes the spec guard, the sub-issue inherits that pass.
+</Callout>
+
+### Two-Strike Flow
+
+The spec guard escalates over two poll cycles rather than blocking on the
+first failure:
+
+1. **First strike**: an issue that fails validation is labeled
+   `pilot-spec-incomplete` and Pilot posts a comment explaining what's
+   missing, with a suggested template. Dispatch is skipped for this cycle.
+2. **Second strike**: on the next poll, if the body is unchanged (or still
+   fails after a fresh re-check), Pilot escalates by labeling the issue
+   `pilot-blocked` and posting a follow-up comment. Dispatch remains
+   skipped.
+
+If the body is edited to pass validation between strikes, the guard clears
+automatically on the next poll — no manual label removal is needed. To
+retry manually, edit the issue body and remove the `pilot-spec-incomplete`
+and/or `pilot-blocked` labels.
+
+### Skip-Label Opt-Out
+
+Add the `pilot-skip-spec-check` label to an issue to bypass the spec guard
+entirely — useful for trivial, well-understood micro-issues that don't
+warrant a structured body. Use sparingly; prefer fixing the body so future
+readers (and Pilot) have the context.
+
 ## Configuration
 
 Enable quality gates in `~/.pilot/config.yaml`:
