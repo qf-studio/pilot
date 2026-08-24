@@ -23,6 +23,11 @@ type SlackClient interface {
 	// message — e.g. telling an unauthorized clicker they aren't an
 	// approver, mirroring TelegramHandler's AnswerCallback toast.
 	PostEphemeral(ctx context.Context, responseURL, text string) error
+	// PostEphemeralToUser is the response_url-less fallback (GH-5189): posts
+	// an ephemeral message to user in channel via the bot-token-authenticated
+	// chat.postEphemeral API. Used when responseURL is empty — the Socket
+	// Mode path, where the SDK event carries no ResponseURL field.
+	PostEphemeralToUser(ctx context.Context, channel, user, text string) error
 }
 
 // SlackInteractiveMessage represents a Slack message with interactive buttons
@@ -68,6 +73,12 @@ type SlackActionsBlock struct {
 	BlockID  string               `json:"block_id,omitempty"`
 	Elements []SlackButtonElement `json:"elements"`
 }
+
+// unauthorizedApproverText is the ephemeral refusal shown to a clicker who
+// isn't in the request's approver list. Unified with TelegramHandler's
+// AnswerCallback toast text (GH-5189) so the refusal reads the same across
+// both adapters.
+const unauthorizedApproverText = "⛔ Not an approver"
 
 // SlackHandler handles approval requests via Slack
 type SlackHandler struct {
@@ -495,8 +506,20 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 			slog.String("decision", string(decision)),
 			slog.String("user", username),
 			slog.String("user_id", userID))
+		// GH-5189: on Socket Mode (the primary deployment path) the SDK's
+		// core.MessageEvent has no ResponseURL field, so responseURL arrives
+		// empty here and the response_url branch below can never fire. Fall
+		// back to the bot-token-authenticated chat.postEphemeral API using
+		// the channel + clicker user ID, both already known at this call
+		// site — otherwise the authorization guard holds but the unauthorized
+		// clicker gets silence instead of feedback.
 		if responseURL != "" {
-			if err := h.client.PostEphemeral(ctx, responseURL, "You are not authorized to decide this request"); err != nil {
+			if err := h.client.PostEphemeral(ctx, responseURL, unauthorizedApproverText); err != nil {
+				h.log.Warn("failed to send unauthorized approval ephemeral response",
+					slog.String("request_id", requestID), slog.Any("error", err))
+			}
+		} else if pending.Channel != "" && userID != "" {
+			if err := h.client.PostEphemeralToUser(ctx, pending.Channel, userID, unauthorizedApproverText); err != nil {
 				h.log.Warn("failed to send unauthorized approval ephemeral response",
 					slog.String("request_id", requestID), slog.Any("error", err))
 			}

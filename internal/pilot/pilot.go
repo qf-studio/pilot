@@ -115,6 +115,10 @@ func (a *slackApprovalClientAdapter) PostEphemeral(ctx context.Context, response
 	return a.adapter.PostEphemeral(ctx, responseURL, text)
 }
 
+func (a *slackApprovalClientAdapter) PostEphemeralToUser(ctx context.Context, channel, user, text string) error {
+	return a.adapter.PostEphemeralToUser(ctx, channel, user, text)
+}
+
 // linearTaskInfo tracks Linear issue info for completion callbacks (GH-391)
 type linearTaskInfo struct {
 	IssueID       string

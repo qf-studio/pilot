@@ -280,6 +280,11 @@ func (a *SlackClientAdapter) PostEphemeral(ctx context.Context, responseURL, tex
 	return a.client.PostEphemeral(ctx, responseURL, text)
 }
 
+// PostEphemeralToUser implements approval.SlackClient
+func (a *SlackClientAdapter) PostEphemeralToUser(ctx context.Context, channel, user, text string) error {
+	return a.client.PostEphemeralToUser(ctx, channel, user, text)
+}
+
 // SlackApprovalMessage mirrors the approval package's message type
 type SlackApprovalMessage struct {
 	Channel string        `json:"channel"`

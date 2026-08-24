@@ -1320,3 +1320,74 @@ func TestClientPostEphemeralErrorStatus(t *testing.T) {
 		t.Errorf("error = %q, want it to contain the response body", err.Error())
 	}
 }
+
+// TestClientPostEphemeralToUser covers GH-5189: PostEphemeralToUser POSTs to
+// the bot-token-authenticated chat.postEphemeral API (unlike PostEphemeral,
+// which uses the pre-authenticated response_url) with channel/user/text.
+func TestClientPostEphemeralToUser(t *testing.T) {
+	var gotAuth, gotContentType, gotPath string
+	var gotBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &gotBody); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeSlackBotToken, server.URL)
+	ctx := context.Background()
+	if err := client.PostEphemeralToUser(ctx, "#approvals", "U-intruder", "⛔ Not an approver"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotPath != "/chat.postEphemeral" {
+		t.Errorf("path = %q, want /chat.postEphemeral", gotPath)
+	}
+	if gotAuth != "Bearer "+testutil.FakeSlackBotToken {
+		t.Errorf("Authorization = %q, want bot-token bearer", gotAuth)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+	if gotBody["channel"] != "#approvals" {
+		t.Errorf("channel = %v, want #approvals", gotBody["channel"])
+	}
+	if gotBody["user"] != "U-intruder" {
+		t.Errorf("user = %v, want U-intruder", gotBody["user"])
+	}
+	if gotBody["text"] != "⛔ Not an approver" {
+		t.Errorf("text = %v, want the refusal message", gotBody["text"])
+	}
+}
+
+// TestClientPostEphemeralToUserAPIError covers the ok:false path: Slack's
+// chat.postEphemeral returns 200 with an error code in the body on failure
+// (unlike the response_url variant, which uses HTTP status).
+func TestClientPostEphemeralToUserAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":false,"error":"channel_not_found"}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeSlackBotToken, server.URL)
+	err := client.PostEphemeralToUser(context.Background(), "#bogus", "U-intruder", "test")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "channel_not_found") {
+		t.Errorf("error = %q, want it to contain the Slack error code", err.Error())
+	}
+}

@@ -23,6 +23,12 @@ type mockSlackClient struct {
 	// assert an unauthorized click gets answered via response_url (GH-5161).
 	ephemeralCalls []mockSlackEphemeralCall
 	ephemeralError error
+
+	// ephemeralToUserCalls records every PostEphemeralToUser invocation so
+	// tests can assert the responseURL-less (Socket Mode) fallback fires
+	// with the right channel + user (GH-5189).
+	ephemeralToUserCalls []mockSlackEphemeralToUserCall
+	ephemeralToUserError error
 }
 
 type mockSlackUpdateCall struct {
@@ -35,6 +41,12 @@ type mockSlackUpdateCall struct {
 type mockSlackEphemeralCall struct {
 	ResponseURL string
 	Text        string
+}
+
+type mockSlackEphemeralToUserCall struct {
+	Channel string
+	User    string
+	Text    string
 }
 
 func (m *mockSlackClient) PostInteractiveMessage(ctx context.Context, msg *SlackInteractiveMessage) (*SlackPostMessageResponse, error) {
@@ -57,6 +69,11 @@ func (m *mockSlackClient) UpdateInteractiveMessage(ctx context.Context, channel,
 func (m *mockSlackClient) PostEphemeral(ctx context.Context, responseURL, text string) error {
 	m.ephemeralCalls = append(m.ephemeralCalls, mockSlackEphemeralCall{ResponseURL: responseURL, Text: text})
 	return m.ephemeralError
+}
+
+func (m *mockSlackClient) PostEphemeralToUser(ctx context.Context, channel, user, text string) error {
+	m.ephemeralToUserCalls = append(m.ephemeralToUserCalls, mockSlackEphemeralToUserCall{Channel: channel, User: user, Text: text})
+	return m.ephemeralToUserError
 }
 
 func TestSlackHandler_Name(t *testing.T) {
@@ -1057,8 +1074,8 @@ func TestSlackHandler_HandleInteraction_UnauthorizedSendsEphemeralAndWarns(t *te
 	if got := client.ephemeralCalls[0].ResponseURL; got != responseURL {
 		t.Errorf("ephemeral response_url = %q, want %q", got, responseURL)
 	}
-	if !containsString(client.ephemeralCalls[0].Text, "not authorized") {
-		t.Errorf("ephemeral text = %q, want it to mention not being authorized", client.ephemeralCalls[0].Text)
+	if client.ephemeralCalls[0].Text != unauthorizedApproverText {
+		t.Errorf("ephemeral text = %q, want %q", client.ephemeralCalls[0].Text, unauthorizedApproverText)
 	}
 
 	// (2) warn log with request_id/user attrs.
@@ -1081,6 +1098,74 @@ func TestSlackHandler_HandleInteraction_UnauthorizedSendsEphemeralAndWarns(t *te
 	// (4) request left pending.
 	handler.mu.RLock()
 	_, stillPending := handler.pending["req-ephemeral-refusal"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized click")
+	}
+	select {
+	case resp := <-respCh:
+		t.Fatalf("expected no response for unauthorized click, got: %+v", resp)
+	default:
+	}
+}
+
+// TestSlackHandler_HandleInteraction_UnauthorizedEmptyResponseURLFallsBackToPostEphemeralToUser
+// covers GH-5189: on Socket Mode the bridge passes responseURL="" (the SDK's
+// core.MessageEvent has no ResponseURL field), so HandleInteraction must fall
+// back to the bot-token-authenticated chat.postEphemeral API using the
+// pending request's channel + clicker user ID — otherwise the unauthorized
+// clicker gets silence instead of a refusal. Must not call RecordDecision.
+func TestSlackHandler_HandleInteraction_UnauthorizedEmptyResponseURLFallsBackToPostEphemeralToUser(t *testing.T) {
+	client := &mockSlackClient{}
+	recorder := &mockDecisionRecorder{}
+	handler := NewSlackHandler(client, "#approvals").WithDecisionRecorder(recorder)
+
+	req := &Request{
+		ID:        "req-socketmode-refusal",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		Approvers: []string{"U-allowed"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-socketmode-refusal", "intruder", "intruder", "")
+	if !handled {
+		t.Error("expected interaction to be handled (even when unauthorized)")
+	}
+
+	// response_url path must not fire — responseURL was empty.
+	if len(client.ephemeralCalls) != 0 {
+		t.Fatalf("expected no PostEphemeral (response_url) calls, got %d", len(client.ephemeralCalls))
+	}
+
+	// chat.postEphemeral fallback invoked with channel + clicker user.
+	if len(client.ephemeralToUserCalls) != 1 {
+		t.Fatalf("expected 1 PostEphemeralToUser call, got %d", len(client.ephemeralToUserCalls))
+	}
+	call := client.ephemeralToUserCalls[0]
+	if call.Channel != "#approvals" {
+		t.Errorf("ephemeral channel = %q, want %q", call.Channel, "#approvals")
+	}
+	if call.User != "intruder" {
+		t.Errorf("ephemeral user = %q, want %q", call.User, "intruder")
+	}
+	if call.Text != unauthorizedApproverText {
+		t.Errorf("ephemeral text = %q, want %q", call.Text, unauthorizedApproverText)
+	}
+
+	// No decision recorded for an unauthorized click.
+	if calls := recorder.getCalls(); len(calls) != 0 {
+		t.Fatalf("expected RecordDecision NOT to be called for an unauthorized click, got %d calls", len(calls))
+	}
+
+	// Request left pending.
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-socketmode-refusal"]
 	handler.mu.RUnlock()
 	if !stillPending {
 		t.Fatal("expected request to remain pending after an unauthorized click")
@@ -1204,8 +1289,8 @@ func TestSlackHandler_HandleInteraction_NonApproverRefused(t *testing.T) {
 	if len(client.ephemeralCalls) != 1 {
 		t.Fatalf("expected 1 ephemeral response, got %d", len(client.ephemeralCalls))
 	}
-	if !containsString(client.ephemeralCalls[0].Text, "not authorized") {
-		t.Errorf("ephemeral text = %q, want it to mention not being authorized", client.ephemeralCalls[0].Text)
+	if client.ephemeralCalls[0].Text != unauthorizedApproverText {
+		t.Errorf("ephemeral text = %q, want %q", client.ephemeralCalls[0].Text, unauthorizedApproverText)
 	}
 
 	// Warn log.

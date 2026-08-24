@@ -331,6 +331,55 @@ func (c *Client) PostEphemeral(ctx context.Context, responseURL, text string) er
 	return nil
 }
 
+// PostEphemeralToUser sends a message visible only to user in channel via
+// the bot-token-authenticated chat.postEphemeral API (GH-5189). Unlike
+// PostEphemeral (which POSTs to a per-interaction response_url), this works
+// whenever a channel + user ID are known even when no response_url was
+// supplied — the case on the Socket Mode path, where the SDK's
+// core.MessageEvent carries no ResponseURL field.
+func (c *Client) PostEphemeralToUser(ctx context.Context, channel, user, text string) error {
+	payload := struct {
+		Channel string `json:"channel"`
+		User    string `json:"user"`
+		Text    string `json:"text"`
+	}{
+		Channel: channel,
+		User:    user,
+		Text:    text,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal ephemeral response: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat.postEphemeral", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.botToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to post ephemeral response: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+	if !result.OK {
+		return fmt.Errorf("slack API error: %s", result.Error)
+	}
+
+	return nil
+}
+
 // UpdateInteractiveMessage updates an existing message (removes buttons, updates text)
 func (c *Client) UpdateInteractiveMessage(ctx context.Context, channel, ts string, blocks []interface{}, text string) error {
 	payload := struct {
