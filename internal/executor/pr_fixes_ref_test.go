@@ -93,6 +93,26 @@ func TestExtraFixesKeyword(t *testing.T) {
 			ownIssueNum: "5165",
 			want:        "\nFixes #789",
 		},
+		{
+			// GH-5198: a quoted marker with no line-anchor and no
+			// imperative cue ("include"/"add") preceding it must not be
+			// promoted, even when the surrounding sentence is itself a
+			// negated instruction not to write the marker.
+			name:        "negated instruction wrapping a quoted marker is not promoted",
+			description: `Do not write "closes #123" in the PR body.`,
+			ownIssueNum: "5165",
+			want:        "",
+		},
+		{
+			// GH-5198: a line-anchored marker followed by a comma and
+			// trailing prose must not be promoted — the terminator after
+			// the ref must be end-of-line or a bare period, not any
+			// punctuation character.
+			name:        "line-anchored marker with trailing prose after comma is not promoted",
+			description: "Closes #123, but only partially — needs follow-up",
+			ownIssueNum: "5165",
+			want:        "",
+		},
 	}
 
 	for _, tt := range tests {

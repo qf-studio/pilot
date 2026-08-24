@@ -21,18 +21,36 @@ import (
 // original version matched the keyword+number pair anywhere in prose, which
 // promoted incidental, quoted, negated, or descriptive mentions ("this bug
 // closes #123 prematurely", "the old fix resolves #99 only partially") into
-// live auto-close keywords on the generated PR. A structured marker is one
-// that stands alone as its own unit rather than being embedded mid-sentence:
-//   - at the start of a line (optionally after a "-"/"*"/"•" list bullet,
-//     e.g. a "## Refs" section entry), terminated by end-of-line, sentence
-//     punctuation, or a closing bracket, OR
-//   - wrapped in quotes with nothing else inside them (the GH-5165 repro:
-//     body text reading "Ensure the PR body includes 'Fixes #5149'.").
+// live auto-close keywords on the generated PR. GH-5198 tightened this
+// further: GH-5191's line-anchored shape used a single-character terminator
+// class (any of `.,;:!?)`) that only checked the character immediately
+// after the number, so "Closes #123, but only partially — needs follow-up"
+// still matched even though real prose followed the comma; and the
+// unconditional quoted shape promoted a quoted marker regardless of
+// surrounding context, so "Do not write 'closes #123' in the PR body" (a
+// negated instruction) still matched. A structured marker is now one of
+// exactly three shapes:
+//   - line-anchored: at the start of a line (optionally after a
+//     "-"/"*"/"•" list bullet, e.g. a "## Refs" section entry), terminated
+//     by end-of-line or a single bare trailing period — NOT by a comma,
+//     semicolon, colon, or other punctuation that could introduce trailing
+//     prose ("Closes #123, but only partially" no longer matches), OR
+//   - line-anchored and quoted: a quoted marker that itself starts the
+//     line (optionally after a bullet), with nothing else inside the
+//     quotes, OR
+//   - cue-prefixed and quoted: a quoted marker immediately preceded by an
+//     imperative cue ("include"/"includes"/"including"/"add"/"adds"/
+//     "adding") — the GH-5165 repro, "Ensure the PR body includes 'Fixes
+//     #5149'.". A quoted marker with no line-anchor and no imperative cue
+//     ("Do not write 'closes #123' in the PR body") matches none of the
+//     three shapes and is intentionally left as plain text, since the cue
+//     requirement is what distinguishes "insert this marker" instructions
+//     from "don't write/never say this marker" negations.
 //
 // Free-standing narrative usage — the keyword appearing after a subject
-// ("this bug closes #123...") — matches neither shape and is intentionally
-// left as plain text.
-var fixesRefRe = regexp.MustCompile(`(?im)(?:^[ \t]*(?:[-*•]\s+)?|['"“‘])(?:fixes|closes|resolves)\s+#(\d+)(?:['"”’]|[.,;:!?)]|[ \t]*$)`)
+// ("this bug closes #123...") — matches none of the three shapes and is
+// intentionally left as plain text.
+var fixesRefRe = regexp.MustCompile(`(?im)(?:^[ \t]*(?:[-*•]\s+)?(?:fixes|closes|resolves)\s+#(\d+)(?:\.|[ \t]*$)|^[ \t]*(?:[-*•]\s+)?['"“‘](?:fixes|closes|resolves)\s+#(\d+)['"”’]|(?:includes?|including|adds?|adding)\s+['"“‘](?:fixes|closes|resolves)\s+#(\d+)['"”’])`)
 
 // extraFixesKeyword scans description for fixesRefRe matches and returns a
 // "\nFixes #N" line for each referenced issue number distinct from
@@ -60,7 +78,16 @@ func extraFixesKeyword(description, ownIssueNum string) string {
 	seen := map[string]bool{ownIssueNum: true}
 	var b strings.Builder
 	for _, m := range matches {
+		// fixesRefRe has three alternative shapes, each with its own
+		// capture group (line-anchored, line-anchored+quoted,
+		// cue-prefixed+quoted) — exactly one is non-empty per match.
 		n := m[1]
+		if n == "" {
+			n = m[2]
+		}
+		if n == "" {
+			n = m[3]
+		}
 		if seen[n] {
 			continue
 		}
