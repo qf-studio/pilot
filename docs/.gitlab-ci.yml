@@ -73,5 +73,7 @@ cleanup-registry:
         echo "WARN: CLEANUP_TOKEN not set — skipping registry tag cleanup. See .agent/sops/integrations/gitlab-space-reclaim.md Step 3."
         exit 0
       fi
-    - REPO_ID=$(curl -sS --header "PRIVATE-TOKEN: ${CLEANUP_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/registry/repositories" | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
-    - curl -sS -X DELETE --header "PRIVATE-TOKEN: ${CLEANUP_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/registry/repositories/${REPO_ID}/tags?name_regex_delete=.*&keep_n=5&older_than=7d" || true
+    - |
+      REPO_ID=$(curl -sS --header "PRIVATE-TOKEN: ${CLEANUP_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/registry/repositories" | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
+    - |
+      curl -sS -X DELETE --header "PRIVATE-TOKEN: ${CLEANUP_TOKEN}" "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/registry/repositories/${REPO_ID}/tags?name_regex_delete=.*&keep_n=5&older_than=7d" || true

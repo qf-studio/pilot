@@ -46,6 +46,12 @@ jobs:
       - name: Check knowledge-graph drift
         run: python3 scripts/check-graph.py
 
+      - name: Install pyyaml
+        run: pip install --quiet pyyaml
+
+      - name: Check docs/.gitlab-ci.yml script YAML validity
+        run: python3 scripts/check-gitlab-ci-yaml.py
+
       - name: Run checker tests
         run: python3 -m unittest discover -s scripts -p "*_test.py"
 
