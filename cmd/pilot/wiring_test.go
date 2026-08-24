@@ -1086,3 +1086,85 @@ func TestAutopilotProviderAdapter_ImplementsInterface(t *testing.T) {
 	// (if the interface signature changes, this file will fail to compile)
 	_ = &autopilotProviderAdapter{}
 }
+
+// =============================================================================
+// GH-5158: Telegram approval allowlist wiring
+// =============================================================================
+
+// TestTelegramAllowedUserIDStrings verifies the []int64 -> []string decimal
+// conversion used to feed approval.TelegramHandler.WithAllowedUsers, which
+// compares by plain string equality (GH-5155).
+func TestTelegramAllowedUserIDStrings(t *testing.T) {
+	tests := []struct {
+		name string
+		ids  []int64
+		want []string
+	}{
+		{name: "nil", ids: nil, want: nil},
+		{name: "empty", ids: []int64{}, want: nil},
+		{name: "single", ids: []int64{123456789}, want: []string{"123456789"}},
+		{name: "multiple", ids: []int64{111, -222, 333}, want: []string{"111", "-222", "333"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := telegramAllowedUserIDStrings(tt.ids)
+			if len(got) != len(tt.want) {
+				t.Fatalf("telegramAllowedUserIDStrings(%v) = %v, want %v", tt.ids, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("telegramAllowedUserIDStrings(%v)[%d] = %q, want %q", tt.ids, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestTelegramApprovalAllowlistWiredAtBothConstructionSites verifies that
+// every approval.NewTelegramHandler(...) call site in main.go also wires
+// WithAllowedUsers(telegramAllowedUserIDStrings(cfg.Adapters.Telegram.AllowedIDs))
+// (GH-5158). Without this, an approval request whose own Request.Approvers
+// is empty falls back to h.allowedUsers, which is nil/unrestricted for both
+// the gateway-mode and chat-mode (polling) handlers — any tapper could
+// decide it.
+func TestTelegramApprovalAllowlistWiredAtBothConstructionSites(t *testing.T) {
+	mainContent, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := string(mainContent)
+
+	constructCount := strings.Count(src, "approval.NewTelegramHandler(")
+	wireCount := strings.Count(src, "WithAllowedUsers(telegramAllowedUserIDStrings(cfg.Adapters.Telegram.AllowedIDs))")
+
+	if constructCount != 2 {
+		t.Fatalf("approval.NewTelegramHandler( occurs %d times in main.go, want 2 — this test's baseline assumption is stale, update it", constructCount)
+	}
+	if wireCount != constructCount {
+		t.Errorf("WithAllowedUsers(telegramAllowedUserIDStrings(...)) occurs %d times in main.go, want %d (parity with approval.NewTelegramHandler's %d construction sites, GH-5158) — "+
+			"a Telegram approval handler constructed without the allowlist wired leaves fallback approver checks unrestricted",
+			wireCount, constructCount, constructCount)
+	}
+
+	wantPairs := []string{
+		"gwTgApprovalHandler.WithAllowedUsers(telegramAllowedUserIDStrings(cfg.Adapters.Telegram.AllowedIDs))",
+		"tgApprovalHandlerImpl.WithAllowedUsers(telegramAllowedUserIDStrings(cfg.Adapters.Telegram.AllowedIDs))",
+	}
+	for _, want := range wantPairs {
+		if !strings.Contains(src, want) {
+			t.Errorf("expected to find allowlist wiring call %q", want)
+		}
+	}
+}
+
+// TestTelegramApprovalHandler_WithAllowedUsersChains verifies that wiring
+// the allowlist via the same helper used in main.go still returns the
+// handler for chaining with the other builder calls at each construction
+// site (WithDecisionRecorder, WithStore).
+func TestTelegramApprovalHandler_WithAllowedUsersChains(t *testing.T) {
+	handler := approval.NewTelegramHandler(nil, "chat123", 0).
+		WithAllowedUsers(telegramAllowedUserIDStrings([]int64{123456789}))
+	if handler == nil {
+		t.Fatal("WithAllowedUsers returned nil, want chainable *TelegramHandler")
+	}
+}

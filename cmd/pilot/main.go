@@ -819,6 +819,10 @@ Examples:
 					(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 					tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 					gwTgApprovalHandler = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID, cfg.Adapters.Telegram.MessageThreadID)
+					// GH-5158: fall back to the configured allowlist for requests
+					// whose own Request.Approvers is empty, instead of leaving
+					// decisions unrestricted to any tapper.
+					gwTgApprovalHandler.WithAllowedUsers(telegramAllowedUserIDStrings(cfg.Adapters.Telegram.AllowedIDs))
 					// GH-3825: persist decisions directly to PRState via the manager so a
 					// button tap on a Rehydrate-restored request isn't lost when no
 					// waiter goroutine survived the restart.
@@ -2166,6 +2170,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 		tgApprovalClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 		tgApprovalHandlerImpl = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgApprovalClient}, cfg.Adapters.Telegram.ChatID, cfg.Adapters.Telegram.MessageThreadID)
+		// GH-5158: fall back to the configured allowlist for requests whose
+		// own Request.Approvers is empty, instead of leaving decisions
+		// unrestricted to any tapper.
+		tgApprovalHandlerImpl.WithAllowedUsers(telegramAllowedUserIDStrings(cfg.Adapters.Telegram.AllowedIDs))
 		// GH-3825: persist decisions directly to PRState via the manager so a
 		// button tap on a Rehydrate-restored request isn't lost when no waiter
 		// goroutine survived the restart.
