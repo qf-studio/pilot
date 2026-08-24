@@ -17,13 +17,14 @@ import (
 )
 
 type specGuardFake struct {
-	server           *httptest.Server
-	mu               sync.Mutex
-	existing         []string // comment bodies returned by ListIssueComments
-	labelsAdded      []string
-	commentsAdded    []string
-	freshIssueBody   string // JSON body returned for the single-issue GET (GH-4634 pre-escalation re-fetch)
-	freshIssueStatus int    // HTTP status for the single-issue GET; 0 means default 200
+	server             *httptest.Server
+	mu                 sync.Mutex
+	existing           []string // comment bodies returned by ListIssueComments
+	labelsAdded        []string
+	commentsAdded      []string
+	freshIssueBody     string // JSON body returned for the single-issue GET (GH-4634 pre-escalation re-fetch)
+	freshIssueStatus   int    // HTTP status for the single-issue GET; 0 means default 200
+	listCommentsStatus int    // HTTP status for ListIssueComments; 0 means default 200
 }
 
 func newSpecGuardFake(existingComments ...string) *specGuardFake {
@@ -32,6 +33,13 @@ func newSpecGuardFake(existingComments ...string) *specGuardFake {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			f.mu.Lock()
+			status := f.listCommentsStatus
+			f.mu.Unlock()
+			if status != 0 && status != http.StatusOK {
+				w.WriteHeader(status)
+				return
+			}
 			type c struct {
 				Body string `json:"body"`
 			}
@@ -112,6 +120,35 @@ func TestApplySpecGuardSDK_FirstStrike(t *testing.T) {
 	wantFingerprint := specBodyFingerprint(issue.Body)
 	if len(f.commentsAdded) != 1 || !strings.Contains(f.commentsAdded[0], ghissue.BuildSpecCommentMarker(wantFingerprint)) {
 		t.Errorf("first-strike comment missing fingerprinted marker; comments = %v", f.commentsAdded)
+	}
+}
+
+// TestApplySpecGuardSDK_ListCommentsErrorDefersDispatch covers GH-5178: if
+// ListIssueComments itself errors, the guard cannot tell whether this issue
+// has ever been struck before, so it must defer dispatch to the next poll
+// tick (return true) rather than silently letting a possibly-thin issue
+// through (which the old `return false` did). No strike is recorded either:
+// zero labels added, zero comments posted.
+func TestApplySpecGuardSDK_ListCommentsErrorDefersDispatch(t *testing.T) {
+	f := newSpecGuardFake()
+	defer f.server.Close()
+	f.listCommentsStatus = http.StatusInternalServerError
+
+	client := githubSDK.NewClientWithBaseURL(testutil.FakeGitHubToken, f.server.URL)
+	issue := &githubSDK.Issue{Number: 7, Title: "thin", Body: "too thin"}
+
+	skipped := applySpecGuardSDK(context.Background(), client, "o", "r", issue, []string{"body too short"})
+	if !skipped {
+		t.Fatal("guard must defer dispatch (return true) when ListIssueComments errors")
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.labelsAdded) != 0 {
+		t.Errorf("labels added = %v, want none (list-comments error must not record a strike)", f.labelsAdded)
+	}
+	if len(f.commentsAdded) != 0 {
+		t.Errorf("comments added = %v, want none (list-comments error must not record a strike)", f.commentsAdded)
 	}
 }
 
