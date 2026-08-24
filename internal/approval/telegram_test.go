@@ -1922,6 +1922,225 @@ func TestTelegramHandler_HandleCallback_UnrestrictedWhenNoApproversOrAllowlist(t
 	}
 }
 
+// TestTelegramHandler_HandleCallback_ApproverAccepted covers GH-5162: a user
+// whose ID is present in Request.Approvers must be able to decide the
+// request, receiving the "Approved!" callback answer and a DecisionApproved
+// response on the channel.
+func TestTelegramHandler_HandleCallback_ApproverAccepted(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123", 0)
+
+	req := &Request{
+		ID:        "req-approver-accepted",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		Approvers: []string{"12345", "67890"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-approver-accepted", "67890", "approver")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 || cbs[0].Text != "Approved!" {
+		t.Fatalf("expected approved answer text, got: %+v", cbs)
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-approver-accepted"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected request to be removed from pending after an authorized decision")
+	}
+}
+
+// TestTelegramHandler_HandleCallback_NonApproverRefused covers GH-5162: a tap
+// from a user not present in Request.Approvers must be refused with the
+// "⛔ Not an approver" answer text, must log a WARN-level line, must not
+// mutate any state (pending map stays populated, no decision recorded), and
+// the listed approver must still be able to decide the request afterwards.
+func TestTelegramHandler_HandleCallback_NonApproverRefused(t *testing.T) {
+	client := &mockTelegramClient{}
+	logger, buf := newCapturingLogger()
+	recorder := &mockDecisionRecorder{}
+	handler := NewTelegramHandler(client, "chat123", 0).WithDecisionRecorder(recorder)
+	handler.log = logger
+
+	req := &Request{
+		ID:        "req-non-approver-refused",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		Approvers: []string{"67890"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Refusal message.
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-non-approver-refused", "intruder", "intruder")
+	if !handled {
+		t.Error("expected callback to be handled (even when unauthorized)")
+	}
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 || cbs[0].Text != "⛔ Not an approver" {
+		t.Fatalf("expected unauthorized answer text, got: %+v", cbs)
+	}
+
+	// Warn log.
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "Approval callback from unauthorized user") {
+		t.Errorf("expected WARN-level unauthorized log line, got: %s", out)
+	}
+	if !strings.Contains(out, "request_id=req-non-approver-refused") || !strings.Contains(out, "user=intruder") {
+		t.Errorf("expected request_id/user attrs on unauthorized log line, got: %s", out)
+	}
+
+	// No mutation: no decision recorded, nothing on respCh, request stays pending.
+	if calls := recorder.getCalls(); len(calls) != 0 {
+		t.Errorf("expected RecordDecision NOT to be called for an unauthorized tap, got %d calls", len(calls))
+	}
+	select {
+	case resp := <-respCh:
+		t.Fatalf("expected no response for unauthorized tap, got: %+v", resp)
+	default:
+	}
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-non-approver-refused"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized tap")
+	}
+
+	// Subsequent authorized tap still works.
+	handled = handler.HandleCallback(context.Background(), "cb2", "approve:req-non-approver-refused", "67890", "approver")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+	cbs = client.getAnsweredCallbacks()
+	if len(cbs) != 2 || cbs[1].Text != "Approved!" {
+		t.Fatalf("expected approved answer text, got: %+v", cbs)
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
+// TestTelegramHandler_HandleCallback_FallbackAllowlistMemberAcceptedNonMemberRefused
+// covers GH-5162 / GH-5155: when Request.Approvers is empty, authorization
+// falls back to the handler-scoped allowlist set via WithAllowedUsers — a
+// member of that allowlist is accepted, and a non-member is refused.
+func TestTelegramHandler_HandleCallback_FallbackAllowlistMemberAcceptedNonMemberRefused(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123", 0).WithAllowedUsers([]string{"allowed-1"})
+
+	req := &Request{
+		ID:        "req-fallback-allowlist",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Non-member of the fallback allowlist -> refused.
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-fallback-allowlist", "not-allowed", "someone")
+	if !handled {
+		t.Error("expected callback to be handled (even when unauthorized)")
+	}
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 || cbs[0].Text != "⛔ Not an approver" {
+		t.Fatalf("expected unauthorized answer text, got: %+v", cbs)
+	}
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-fallback-allowlist"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized tap")
+	}
+
+	// Member of the fallback allowlist -> accepted.
+	handled = handler.HandleCallback(context.Background(), "cb2", "approve:req-fallback-allowlist", "allowed-1", "someone-else")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+	cbs = client.getAnsweredCallbacks()
+	if len(cbs) != 2 || cbs[1].Text != "Approved!" {
+		t.Fatalf("expected approved answer text, got: %+v", cbs)
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
+// TestTelegramHandler_HandleCallback_BothListsEmptyUnrestricted covers
+// GH-5162 / GH-5155: when both Request.Approvers and the handler-scoped
+// allowlist are empty, authorization is unrestricted — any user may decide
+// the request, preserving prior behavior.
+func TestTelegramHandler_HandleCallback_BothListsEmptyUnrestricted(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123", 0)
+
+	req := &Request{
+		ID:        "req-both-empty-unrestricted",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-both-empty-unrestricted", "anyone", "anyone")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 || cbs[0].Text != "Approved!" {
+		t.Fatalf("expected approved answer text, got: %+v", cbs)
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
 // TestTelegramHandler_Rehydrate_ApproverGatedCallback covers GH-5162:
 // authorization gating (Request.Approvers) must still apply to a request
 // restored by Rehydrate after a restart — Rehydrate reconstructs Approvers
