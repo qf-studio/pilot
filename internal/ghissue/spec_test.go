@@ -81,12 +81,12 @@ func TestValidateSpec_NoSectionHeader(t *testing.T) {
 	}
 	foundHeader := false
 	for _, r := range result.FailureReasons {
-		if strings.Contains(r, "structural section header") {
+		if strings.Contains(r, "structural section header") && strings.Contains(r, "H1 is not accepted") && strings.Contains(r, "any language") {
 			foundHeader = true
 		}
 	}
 	if !foundHeader {
-		t.Errorf("expected 'structural section header' reason, got %v", result.FailureReasons)
+		t.Errorf("expected reason explaining H2-H6 range, H1 rejection, and any-language body content, got %v", result.FailureReasons)
 	}
 }
 
@@ -187,11 +187,11 @@ func TestValidateSpec_H3ToH6SectionHeaders(t *testing.T) {
 	}
 	foundHeader := false
 	for _, r := range result.FailureReasons {
-		if strings.Contains(r, "structural section header") {
+		if strings.Contains(r, "structural section header") && strings.Contains(r, "H1 is not accepted") {
 			foundHeader = true
 		}
 	}
 	if !foundHeader {
-		t.Errorf("expected 'structural section header' failure reason for H1 body, got %v", result.FailureReasons)
+		t.Errorf("expected reason explaining H1 rejection for H1 body, got %v", result.FailureReasons)
 	}
 }
