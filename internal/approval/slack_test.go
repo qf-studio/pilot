@@ -18,6 +18,11 @@ type mockSlackClient struct {
 	// can assert on the text/blocks a race-loss vs. a real decision produces
 	// (GH-4777).
 	updateCalls []mockSlackUpdateCall
+
+	// ephemeralCalls records every PostEphemeral invocation so tests can
+	// assert an unauthorized click gets answered via response_url (GH-5161).
+	ephemeralCalls []mockSlackEphemeralCall
+	ephemeralError error
 }
 
 type mockSlackUpdateCall struct {
@@ -25,6 +30,11 @@ type mockSlackUpdateCall struct {
 	TS      string
 	Blocks  []interface{}
 	Text    string
+}
+
+type mockSlackEphemeralCall struct {
+	ResponseURL string
+	Text        string
 }
 
 func (m *mockSlackClient) PostInteractiveMessage(ctx context.Context, msg *SlackInteractiveMessage) (*SlackPostMessageResponse, error) {
@@ -42,6 +52,11 @@ func (m *mockSlackClient) PostInteractiveMessage(ctx context.Context, msg *Slack
 func (m *mockSlackClient) UpdateInteractiveMessage(ctx context.Context, channel, ts string, blocks []interface{}, text string) error {
 	m.updateCalls = append(m.updateCalls, mockSlackUpdateCall{Channel: channel, TS: ts, Blocks: blocks, Text: text})
 	return m.updateError
+}
+
+func (m *mockSlackClient) PostEphemeral(ctx context.Context, responseURL, text string) error {
+	m.ephemeralCalls = append(m.ephemeralCalls, mockSlackEphemeralCall{ResponseURL: responseURL, Text: text})
+	return m.ephemeralError
 }
 
 func TestSlackHandler_Name(t *testing.T) {
@@ -1001,6 +1016,79 @@ func TestSlackHandler_HandleInteraction_AllowlistFallback(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for response")
+	}
+}
+
+// TestSlackHandler_HandleInteraction_UnauthorizedSendsEphemeralAndWarns
+// covers GH-5161: on refusal HandleInteraction must (1) send the ephemeral
+// "not an approver" response via the interaction's response_url, (2) log a
+// warn with request_id/user attrs, (3) skip RecordDecision, (4) leave the
+// request pending, and (5) still report the interaction as consumed.
+func TestSlackHandler_HandleInteraction_UnauthorizedSendsEphemeralAndWarns(t *testing.T) {
+	client := &mockSlackClient{}
+	recorder := &mockDecisionRecorder{}
+	handler := NewSlackHandler(client, "#approvals").WithDecisionRecorder(recorder)
+	logger, logBuf := newCapturingLogger()
+	handler.log = logger
+
+	req := &Request{
+		ID:        "req-ephemeral-refusal",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		Approvers: []string{"U-allowed"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	const responseURL = "https://hooks.slack.com/actions/T000/B000/xyz"
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-ephemeral-refusal", "intruder", "intruder", responseURL)
+	if !handled {
+		t.Error("expected interaction to be handled (even when unauthorized)")
+	}
+
+	// (1) ephemeral response sent to the response_url.
+	if len(client.ephemeralCalls) != 1 {
+		t.Fatalf("expected 1 ephemeral response, got %d", len(client.ephemeralCalls))
+	}
+	if got := client.ephemeralCalls[0].ResponseURL; got != responseURL {
+		t.Errorf("ephemeral response_url = %q, want %q", got, responseURL)
+	}
+	if !containsString(client.ephemeralCalls[0].Text, "not authorized") {
+		t.Errorf("ephemeral text = %q, want it to mention not being authorized", client.ephemeralCalls[0].Text)
+	}
+
+	// (2) warn log with request_id/user attrs.
+	logOut := logBuf.String()
+	if !containsString(logOut, "level=WARN") {
+		t.Errorf("log output = %q, want a WARN-level record", logOut)
+	}
+	if !containsString(logOut, "request_id=req-ephemeral-refusal") {
+		t.Errorf("log output = %q, want request_id attr", logOut)
+	}
+	if !containsString(logOut, "user_id=intruder") {
+		t.Errorf("log output = %q, want user_id attr", logOut)
+	}
+
+	// (3) RecordDecision skipped.
+	if len(recorder.getCalls()) != 0 {
+		t.Fatalf("expected no decision recorded for an unauthorized click, got %d", len(recorder.getCalls()))
+	}
+
+	// (4) request left pending.
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-ephemeral-refusal"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized click")
+	}
+	select {
+	case resp := <-respCh:
+		t.Fatalf("expected no response for unauthorized click, got: %+v", resp)
+	default:
 	}
 }
 

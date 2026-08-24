@@ -111,6 +111,10 @@ func (a *slackApprovalClientAdapter) UpdateInteractiveMessage(ctx context.Contex
 	return a.adapter.UpdateInteractiveMessage(ctx, channel, ts, blocks, text)
 }
 
+func (a *slackApprovalClientAdapter) PostEphemeral(ctx context.Context, responseURL, text string) error {
+	return a.adapter.PostEphemeral(ctx, responseURL, text)
+}
+
 // linearTaskInfo tracks Linear issue info for completion callbacks (GH-391)
 type linearTaskInfo struct {
 	IssueID       string
