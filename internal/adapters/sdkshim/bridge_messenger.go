@@ -26,6 +26,7 @@ func MessengerToBridge(b core.ChatBridge) comms.Messenger {
 func (m *bridgeMessenger) SendText(ctx context.Context, contextID, threadID, text string) error {
 	_, err := m.bridge.Send(ctx, core.OutboundMessage{
 		ChannelID: contextID,
+		ThreadID:  threadID,
 		Text:      text,
 	})
 	return err
