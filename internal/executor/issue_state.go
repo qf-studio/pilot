@@ -33,9 +33,17 @@ const labelPilotSuperseded = "pilot-superseded"
 // IssueState is the live GitHub issue state fetched by IssueStateChecker —
 // just enough to decide whether a queued or in-flight execution's issue has
 // been closed/superseded out from under it.
+//
+// Body (GH-5193) is the issue's current body text. Populated on a
+// best-effort basis: implementations that can't cheaply fetch it (or that
+// error before reaching it) leave it "", and callers must treat "" as "no
+// live body available" rather than "body is empty" — see
+// dispatcher.go's base-presence hold re-check, which falls back to the
+// execution row's cached TaskDescription when Body is "".
 type IssueState struct {
 	Closed bool
 	Labels []string
+	Body   string
 }
 
 // HasLabel reports whether name is present in Labels (case-insensitive).
@@ -76,9 +84,10 @@ type IssueStateChecker interface {
 type ghCLIIssueStateChecker struct{}
 
 // GetIssueState implements IssueStateChecker via `gh issue view --repo
-// owner/repo <number> --json state,labels`, one process invocation (one
-// GitHub API call). Never shells out during `go test` — tests override
-// fetchIssueState (or inject a fake IssueStateChecker via
+// owner/repo <number> --json state,labels,body` (body added GH-5193 so the
+// base-presence hold re-check tracks live body edits), one process
+// invocation (one GitHub API call). Never shells out during `go test` —
+// tests override fetchIssueState (or inject a fake IssueStateChecker via
 // RegisterIssueStateChecker) instead of exercising this path.
 func (ghCLIIssueStateChecker) GetIssueState(ctx context.Context, owner, repo string, number int) (IssueState, error) {
 	if testing.Testing() {
@@ -87,7 +96,7 @@ func (ghCLIIssueStateChecker) GetIssueState(ctx context.Context, owner, repo str
 	args := []string{
 		"issue", "view", strconv.Itoa(number),
 		"--repo", owner + "/" + repo,
-		"--json", "state,labels",
+		"--json", "state,labels,body",
 	}
 	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	var stdout, stderr bytes.Buffer
@@ -99,6 +108,7 @@ func (ghCLIIssueStateChecker) GetIssueState(ctx context.Context, owner, repo str
 
 	var resp struct {
 		State  string `json:"state"`
+		Body   string `json:"body"`
 		Labels []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
@@ -114,6 +124,7 @@ func (ghCLIIssueStateChecker) GetIssueState(ctx context.Context, owner, repo str
 	return IssueState{
 		Closed: strings.EqualFold(strings.TrimSpace(resp.State), "closed"),
 		Labels: labels,
+		Body:   resp.Body,
 	}, nil
 }
 

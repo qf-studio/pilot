@@ -2898,6 +2898,21 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// that closing the held issue out from under a base-presence hold
 		// always releases it on the very next tick — a hold must never make
 		// this revalidation unreachable.
+		//
+		// GH-5193: presenceCheckBody defaults to the execution row's
+		// queue-time TaskDescription snapshot, then is overridden below with
+		// the live issue body fetched by this SAME revalidation call — no
+		// extra GitHub round trip. Before this, ExtractDependencyRefs/
+		// ExtractReferencedPaths (below) always re-parsed the frozen
+		// snapshot, so an operator editing the live issue body to remove a
+		// phantom prerequisite (a cross-repo path, a deleted file) could
+		// never clear an active hold — verified live on GH-5189: the body
+		// was fixed at 14:46Z, but the tick at 14:48Z still held on the
+		// removed path because task.Description never changes for a given
+		// execution row. Falls back to task.Description when Body is ""
+		// (non-github source adapters, or a probe that fails/doesn't
+		// populate it) — identical to the pre-GH-5193 behavior in that case.
+		presenceCheckBody := task.Description
 		if task.SourceAdapter == "" || task.SourceAdapter == "github" {
 			if state, ghErr := fetchIssueState(ctx, w.runner, task, exec.ProjectPath); ghErr != nil {
 				w.log.Warn("Failed to revalidate issue state before pickup; proceeding (fail-open)",
@@ -2929,6 +2944,10 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				}
 				w.currentTaskID.Store("")
 				continue
+			} else if state.Body != "" {
+				// GH-5193: prefer the live body just fetched above over the
+				// queue-time snapshot for this tick's ref/path extraction.
+				presenceCheckBody = state.Body
 			}
 		}
 
@@ -2939,9 +2958,16 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// an issue whose attached PR is still open-unmerged), or a
 		// backtick-quoted file path missing from the target repo's default
 		// branch — have actually landed on main yet. When neither refs nor
-		// paths are extracted this whole block is skipped: zero probe
-		// calls, byte-identical to the pre-GH-5045 pickup path.
-		if refs, paths := ExtractDependencyRefs(task.Description), ExtractReferencedPaths(task.Description); len(refs) > 0 || len(paths) > 0 {
+		// paths are extracted, checkBasePresence is never called — zero
+		// probe calls, byte-identical to the pre-GH-5045 pickup path (GH-5193
+		// only adds the cheap hold-count reset below on this branch, never a
+		// probe/checkBasePresence call).
+		//
+		// GH-5193: extracted from presenceCheckBody (the live issue body
+		// when available, set above), not the raw task.Description, so a
+		// body edit that removes the offending ref/path is honored on this
+		// very tick instead of the queue-time snapshot forever re-matching.
+		if refs, paths := ExtractDependencyRefs(presenceCheckBody), ExtractReferencedPaths(presenceCheckBody); len(refs) > 0 || len(paths) > 0 {
 			key := repickBackoffKey(exec.ProjectPath, exec.TaskID)
 			hold, checkErr := checkBasePresence(ctx, w.runner, task, exec.ProjectPath, refs, paths)
 			if checkErr != nil {
@@ -3025,6 +3051,29 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 						w.log.Warn("base-presence hold: failed to reset hold count on natural release",
 							slog.String("execution_id", exec.ID), slog.Any("error", clrErr))
 					}
+				}
+			}
+		} else {
+			// GH-5193: nothing extracted this tick — most commonly a task
+			// that never had a ref/path (the common case, matching the
+			// pre-GH-5045 path above), but also the self-heal case: a body
+			// edit removed the last extracted ref/path that had this row
+			// held on a prior tick. Reset any stale hold count so a later,
+			// unrelated hold starts counting from zero instead of inheriting
+			// a count run up against a since-resolved prerequisite — the
+			// same gap the "if" branch's natural-release reset closes for
+			// held-then-released tasks, just reached via the fast path
+			// instead. One cheap local read (+ conditional write only when a
+			// nonzero count is actually found) — no probe/checkBasePresence
+			// call, so the zero-probe-calls guarantee above is unaffected.
+			key := repickBackoffKey(exec.ProjectPath, exec.TaskID)
+			if count, found, cErr := w.store.GetBasePresenceHoldCount(key); cErr != nil {
+				w.log.Warn("base-presence hold: failed to read hold count for fast-path reset",
+					slog.String("execution_id", exec.ID), slog.Any("error", cErr))
+			} else if found && count != 0 {
+				if clrErr := w.store.SetBasePresenceHoldCount(key, 0); clrErr != nil {
+					w.log.Warn("base-presence hold: failed to reset hold count on fast-path release",
+						slog.String("execution_id", exec.ID), slog.Any("error", clrErr))
 				}
 			}
 		}
