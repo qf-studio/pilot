@@ -479,6 +479,145 @@ func TestProcessQueue_BasePresence_EscalatesOnceThenQueueHeadAdvances(t *testing
 	}
 }
 
+// (2b) GH-5193 acceptance: a task whose body cites a path that can never
+// land on this repo's default branch (the GH-5189/GH-5145 incident shape —
+// a cross-repo path, e.g. a studio-sdk file mentioned as context, not an
+// actual this-repo prerequisite) escalates within a bounded number of
+// holds instead of holding forever. Mirrors
+// TestProcessQueue_BasePresence_EscalatesOnceThenQueueHeadAdvances exactly,
+// except the extracted prerequisite is a path (never satisfied) rather
+// than a ref — pinning that the bounded-escalation cap applies uniformly
+// to both dependency-ref shapes and the path shape the two live incidents
+// actually hit.
+func TestProcessQueue_BasePresence_NeverSatisfiablePathEscalatesWithinBoundedHolds(t *testing.T) {
+	logFile := setupFakeGhCLI(t)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	projectPath := setupPRGuardRepo(t, "pilot/GH-9304", false)
+
+	const phantomPath = "studio-sdk/internal/example.go"
+	held := &memory.Execution{
+		ID:              "exec-gh5193-path-escalate-held",
+		TaskID:          "GH-9303",
+		ProjectPath:     projectPath,
+		Status:          "queued",
+		TaskBranch:      "pilot/GH-9303",
+		TaskCreatePR:    true,
+		TaskDescription: "See `" + phantomPath + "` for context.",
+	}
+	if err := store.SaveExecution(held); err != nil {
+		t.Fatalf("SaveExecution(held): %v", err)
+	}
+	// A second task queued after the held one for the SAME project — it
+	// must become reachable once the first is parked.
+	second := &memory.Execution{
+		ID:              "exec-gh5193-path-escalate-second",
+		TaskID:          "GH-9304",
+		ProjectPath:     projectPath,
+		Status:          "queued",
+		TaskBranch:      "pilot/GH-9304",
+		TaskCreatePR:    true,
+		TaskDescription: "No dependency markers here.",
+	}
+	if err := store.SaveExecution(second); err != nil {
+		t.Fatalf("SaveExecution(second): %v", err)
+	}
+
+	// The live body always still cites the phantom path — an operator who
+	// never edits the issue (unlike the self-heal scenario covered by
+	// TestProcessQueue_BasePresence_BodyEditRemovingPathClearsHoldAcrossTicks)
+	// must still see the hold bounded rather than wedge forever. Scoped to
+	// the held task's ID: returning held's body unconditionally for every
+	// task (including the second, unrelated task) would leak the phantom
+	// path into the second task's presence check too, since dispatcher.go
+	// prefers a non-empty live Body over task.Description for ANY task this
+	// stub is consulted for.
+	stubFetchIssueState(t, func(_ context.Context, _ *Runner, task *Task, _ string) (IssueState, error) {
+		if task.ID == "GH-9303" {
+			return IssueState{Closed: false, Body: held.TaskDescription}, nil
+		}
+		return IssueState{Closed: false}, nil
+	})
+	origMergedPR := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	t.Cleanup(func() { mergedPRPreflightCheck = origMergedPR })
+
+	stubCheckBasePresence(t, func(_ context.Context, _ *Runner, task *Task, _ string, _ []int, paths []string) (BasePresenceHold, error) {
+		if task.ID != "GH-9303" {
+			t.Fatalf("checkBasePresence unexpectedly called for task %q", task.ID)
+		}
+		for _, p := range paths {
+			if p == phantomPath {
+				return BasePresenceHold{Held: true, Reason: "referenced path \"" + p + "\" not found on default branch"}, nil
+			}
+		}
+		t.Fatalf("checkBasePresence called without the phantom path in paths %v", paths)
+		return BasePresenceHold{}, nil
+	})
+
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "should only run for the second task"}}
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
+	worker.setBasePresenceHoldMaxCycles(2)
+
+	// Tick 1: held, not yet escalated (count reaches 1 < max=2).
+	worker.processQueue(context.Background())
+
+	backend.mu.Lock()
+	count := backend.execCount
+	backend.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("expected zero backend invocations before escalation, got %d", count)
+	}
+	if data, err := os.ReadFile(logFile); err == nil && strings.Contains(string(data), "issue edit") {
+		t.Fatalf("expected no escalation before the max-cycles threshold, got gh CLI log: %q", string(data))
+	}
+
+	// Tick 2: count reaches 2 == max, escalates, parks the row, then the SAME
+	// tick advances to the second queued task and executes it — the queue
+	// head must not wedge on a never-satisfiable path forever.
+	worker.processQueue(context.Background())
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read gh CLI log: %v", err)
+	}
+	log := string(data)
+	if got := strings.Count(log, "issue edit 9303"); got != 1 {
+		t.Errorf("expected exactly one `gh issue edit 9303` escalation call, got %d (log: %q)", got, log)
+	}
+	if !strings.Contains(log, "--add-label pilot-needs-human") {
+		t.Errorf("expected the escalation call to add the pilot-needs-human label, got log: %q", log)
+	}
+
+	heldExec, err := store.GetExecution(held.ID)
+	if err != nil {
+		t.Fatalf("GetExecution(held): %v", err)
+	}
+	if heldExec.Status != string(ExecStatusSkipped) {
+		t.Errorf("expected the escalated row to be parked as %q, got %q", ExecStatusSkipped, heldExec.Status)
+	}
+
+	backend.mu.Lock()
+	count = backend.execCount
+	backend.mu.Unlock()
+	if count == 0 {
+		t.Errorf("expected the queue head to advance to the second task within the same tick and execute it, got %d backend invocations", count)
+	}
+
+	secondExec, err := store.GetExecution(second.ID)
+	if err != nil {
+		t.Fatalf("GetExecution(second): %v", err)
+	}
+	if secondExec.Status == "queued" {
+		t.Errorf("expected the second task to have been picked up off the queue, got status %q", secondExec.Status)
+	}
+}
+
 // (3) closing the held issue releases the hold across ticks — the GH-4656
 // revalidation must run even while a row is held, not be short-circuited by
 // the hold path's early return.
@@ -711,7 +850,112 @@ func TestProcessQueue_BasePresence_FastPathSkipsCheckWhenNothingExtracted(t *tes
 	}
 }
 
-// (6) ledger event + log + progress observability: a held cycle records a
+// (6) GH-5193: editing the live issue body to remove the offending
+// cross-repo/nonexistent path reference clears an active hold on the very
+// next tick — no cancel/relabel cycle required. Pins the fix for the cache
+// defect verified live on GH-5189: the issue body was fixed at 14:46Z but
+// the tick at 14:48Z still held on the removed path, because refs/paths
+// were always re-extracted from the execution row's frozen TaskDescription
+// snapshot (never updated after the row is queued) rather than the live
+// issue body fetchIssueState already fetches on every tick.
+func TestProcessQueue_BasePresence_BodyEditRemovingPathClearsHoldAcrossTicks(t *testing.T) {
+	const branch = "pilot/GH-9206"
+	dir := setupPRGuardRepo(t, branch, false)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const phantomPath = "studio-sdk/internal/example.go"
+	const staleBody = "See `" + phantomPath + "` for context."
+	const fixedBody = "No file citation here anymore."
+
+	exec := &memory.Execution{
+		ID:           "exec-gh5193-body-edit-clears-hold",
+		TaskID:       "GH-9206",
+		ProjectPath:  dir,
+		Status:       "queued",
+		TaskBranch:   branch,
+		TaskCreatePR: true,
+		// GH-5193: the execution row's snapshot is frozen at queue time —
+		// the fix must consult the live body stubbed via fetchIssueState
+		// below (once available), not this field, on every tick.
+		TaskDescription: staleBody,
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	var mu sync.Mutex
+	liveBody := staleBody
+	stubFetchIssueState(t, func(_ context.Context, _ *Runner, _ *Task, _ string) (IssueState, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return IssueState{Closed: false, Body: liveBody}, nil
+	})
+	origMergedPR := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	t.Cleanup(func() { mergedPRPreflightCheck = origMergedPR })
+
+	stubCheckBasePresence(t, func(_ context.Context, _ *Runner, _ *Task, _ string, _ []int, paths []string) (BasePresenceHold, error) {
+		for _, p := range paths {
+			if p == phantomPath {
+				return BasePresenceHold{Held: true, Reason: "referenced path \"" + p + "\" not found on default branch"}, nil
+			}
+		}
+		return BasePresenceHold{}, nil
+	})
+
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "done"}}
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	worker := NewProjectWorker(dir, store, runner, slog.Default())
+
+	// Tick 1: live body still carries the cross-repo path -> held.
+	worker.processQueue(context.Background())
+
+	backend.mu.Lock()
+	count := backend.execCount
+	backend.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("expected zero backend invocations while held, got %d", count)
+	}
+	got, err := store.GetExecution(exec.ID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if got.Status != "queued" {
+		t.Errorf("expected status to remain queued while held, got %q", got.Status)
+	}
+
+	// Operator edits the issue body to drop the phantom cross-repo path —
+	// the execution row's TaskDescription is untouched, mirroring GH-5189's
+	// reality: nothing rewrites the stored snapshot on a live body edit.
+	mu.Lock()
+	liveBody = fixedBody
+	mu.Unlock()
+
+	// Tick 2: must clear on THIS tick, without any cancel/relabel cycle.
+	worker.processQueue(context.Background())
+
+	backend.mu.Lock()
+	count = backend.execCount
+	backend.mu.Unlock()
+	if count == 0 {
+		t.Error("expected the backend to run once the live body no longer references the missing path — a body edit must self-heal the hold on the next tick")
+	}
+
+	key := repickBackoffKey(dir, "GH-9206")
+	holdCount, found, err := store.GetBasePresenceHoldCount(key)
+	if err != nil {
+		t.Fatalf("GetBasePresenceHoldCount: %v", err)
+	}
+	if !found || holdCount != 0 {
+		t.Errorf("expected the hold count to reset to 0 once the body edit released the hold, got %d (found=%v)", holdCount, found)
+	}
+}
+
+// (7) ledger event + log + progress observability: a held cycle records a
 // StageBasePresenceHeld execution event carrying the unmet-prerequisite
 // reason.
 func TestProcessQueue_BasePresence_RecordsLedgerEventOnHold(t *testing.T) {

@@ -28,7 +28,9 @@ func NewGitHubIssueStateChecker(client *githubSDK.Client) *GitHubIssueStateCheck
 }
 
 // GetIssueState fetches the live state of issue number via a single GetIssue
-// call.
+// call — including the current body text (GH-5193), so dispatcher.go's
+// base-presence hold re-check can re-extract refs/paths from the live issue
+// instead of the execution row's queue-time snapshot.
 func (g *GitHubIssueStateChecker) GetIssueState(ctx context.Context, owner, repo string, number int) (executor.IssueState, error) {
 	issue, err := g.client.GetIssue(ctx, owner, repo, number)
 	if err != nil {
@@ -41,5 +43,6 @@ func (g *GitHubIssueStateChecker) GetIssueState(ctx context.Context, owner, repo
 	return executor.IssueState{
 		Closed: strings.EqualFold(strings.TrimSpace(issue.State), "closed"),
 		Labels: labels,
+		Body:   issue.Body,
 	}, nil
 }
