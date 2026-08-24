@@ -10,15 +10,17 @@ import (
 
 // TelegramNotifier sends autopilot notifications to Telegram.
 type TelegramNotifier struct {
-	client *telegram.Client
-	chatID string
+	client          *telegram.Client
+	chatID          string
+	messageThreadID int64
 }
 
 // NewTelegramNotifier creates a Telegram notifier for autopilot events.
-func NewTelegramNotifier(client *telegram.Client, chatID string) *TelegramNotifier {
+func NewTelegramNotifier(client *telegram.Client, chatID string, messageThreadID int64) *TelegramNotifier {
 	return &TelegramNotifier{
-		client: client,
-		chatID: chatID,
+		client:          client,
+		chatID:          chatID,
+		messageThreadID: messageThreadID,
 	}
 }
 
@@ -52,7 +54,7 @@ func (n *TelegramNotifier) NotifyMerged(ctx context.Context, prState *PRState) e
 		"Method: squash",
 		envPrefix(prState), prState.PRNumber, prDetail(prState))
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
 	return err
 }
 
@@ -71,7 +73,7 @@ func (n *TelegramNotifier) NotifyCIFailed(ctx context.Context, prState *PRState,
 	msg := fmt.Sprintf("%s❌ *CI Failed* for PR #%d%s\n\n%s",
 		envPrefix(prState), prState.PRNumber, prDetail(prState), checks)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
 	return err
 }
 
@@ -83,7 +85,7 @@ func (n *TelegramNotifier) NotifyApprovalRequired(ctx context.Context, prState *
 		envPrefix(prState), prState.PRNumber, prDetail(prState),
 		prState.PRNumber, prState.PRNumber)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
 	return err
 }
 
@@ -94,7 +96,7 @@ func (n *TelegramNotifier) NotifyFixIssueCreated(ctx context.Context, prState *P
 		"Pilot will pick this up automatically.",
 		envPrefix(prState), issueNumber, prState.PRNumber)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
 	return err
 }
 
@@ -103,7 +105,7 @@ func (n *TelegramNotifier) NotifyPipelineComplete(ctx context.Context, prState *
 	msg := fmt.Sprintf("%s🏁 *Pipeline complete* for GH-%d — PR #%d merged%s",
 		envPrefix(prState), prState.IssueNumber, prState.PRNumber, prDetail(prState))
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
 	return err
 }
 
@@ -140,7 +142,7 @@ func (n *TelegramNotifier) NotifyReleased(ctx context.Context, prState *PRState,
 		releaseURL,
 	)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", 0)
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
 	return err
 }
 

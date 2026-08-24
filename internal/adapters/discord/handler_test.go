@@ -49,7 +49,7 @@ type sentResult struct {
 }
 type sentChunk struct{ contextID, threadID, content, prefix string }
 
-func (n *noopMessenger) SendText(_ context.Context, contextID, text string) error {
+func (n *noopMessenger) SendText(_ context.Context, contextID, threadID, text string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.texts = append(n.texts, sentText{contextID, text})
@@ -664,7 +664,7 @@ func TestMessengerImplementation(t *testing.T) {
 	ctx := context.Background()
 
 	// Test: SendText
-	err := messenger.SendText(ctx, "chan123", "Hello")
+	err := messenger.SendText(ctx, "chan123", "", "Hello")
 	if err != nil {
 		t.Fatalf("SendText failed: %v", err)
 	}

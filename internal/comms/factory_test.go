@@ -150,8 +150,8 @@ func TestBuildHandler_NilClassifierConfig(t *testing.T) {
 // are exercised via BuildHandler and produce consistent fields.
 func TestBuildHandler_AdapterParity(t *testing.T) {
 	cases := []struct {
-		name         string
-		prefix       string
+		name          string
+		prefix        string
 		hasClassifier bool
 	}{
 		{"telegram-main", "TG", true},

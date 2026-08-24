@@ -41,7 +41,7 @@ func TestTelegramMessenger_SendText(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(SendMessageResponse{OK: true, Result: &Result{MessageID: 1}})
 	})
 
-	err := m.SendText(context.Background(), "123", "hello world")
+	err := m.SendText(context.Background(), "123", "", "hello world")
 	if err != nil {
 		t.Fatalf("SendText returned error: %v", err)
 	}

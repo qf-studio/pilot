@@ -21,10 +21,11 @@ func NewMessenger(client *Client) *SlackMessenger {
 }
 
 // SendText sends a plain text message to the given channel.
-func (m *SlackMessenger) SendText(ctx context.Context, contextID, text string) error {
+func (m *SlackMessenger) SendText(ctx context.Context, contextID, threadID, text string) error {
 	msg := &Message{
-		Channel: contextID,
-		Text:    text,
+		Channel:  contextID,
+		Text:     text,
+		ThreadTS: threadID,
 	}
 	_, err := m.client.PostMessage(ctx, msg)
 	return err

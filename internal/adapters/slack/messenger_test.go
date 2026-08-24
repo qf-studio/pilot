@@ -42,12 +42,50 @@ func TestSlackMessenger_SendText(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(PostMessageResponse{OK: true, TS: "1234.5678", Channel: msg.Channel})
 	})
 
-	err := m.SendText(context.Background(), "C123", "hello slack")
+	err := m.SendText(context.Background(), "C123", "", "hello slack")
 	if err != nil {
 		t.Fatalf("SendText returned error: %v", err)
 	}
 	if captured != "hello slack" {
 		t.Errorf("expected text %q, got %q", "hello slack", captured)
+	}
+}
+
+// TestSlackMessenger_SendTextThreadTS asserts the wire payload: a threaded
+// SendText must put the thread id in the raw JSON `thread_ts` field (the
+// entire Slack leg of GH-4888 is this one field), and an unthreaded send
+// must omit the key entirely (`omitempty` — Slack rejects an empty string).
+func TestSlackMessenger_SendTextThreadTS(t *testing.T) {
+	tests := []struct {
+		name         string
+		threadID     string
+		wantKey      bool
+		wantThreadTS string
+	}{
+		{name: "threaded send carries thread_ts on the wire", threadID: "1111.2222", wantKey: true, wantThreadTS: "1111.2222"},
+		{name: "unthreaded send omits thread_ts", threadID: "", wantKey: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]interface{}
+			m := newTestSlackMessenger(t, func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&raw)
+				_ = json.NewEncoder(w).Encode(PostMessageResponse{OK: true, TS: "1234.5678", Channel: "C123"})
+			})
+
+			if err := m.SendText(context.Background(), "C123", tt.threadID, "hello slack"); err != nil {
+				t.Fatalf("SendText returned error: %v", err)
+			}
+
+			got, ok := raw["thread_ts"]
+			if ok != tt.wantKey {
+				t.Fatalf("thread_ts present = %v, want %v (value: %v)", ok, tt.wantKey, got)
+			}
+			if tt.wantKey && got != tt.wantThreadTS {
+				t.Errorf("thread_ts = %v, want %q", got, tt.wantThreadTS)
+			}
+		})
 	}
 }
 

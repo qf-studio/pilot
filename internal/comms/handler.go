@@ -195,7 +195,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	// Rate limit check
 	if !h.rateLimit.AllowMessage(contextID) {
 		h.log.Warn("Message rate limit exceeded", slog.String("context_id", contextID))
-		_ = h.messenger.SendText(ctx, contextID, "⚠️ Rate limit exceeded. Please wait before sending more messages.")
+		_ = h.messenger.SendText(ctx, contextID, msg.ThreadID, "⚠️ Rate limit exceeded. Please wait before sending more messages.")
 		return
 	}
 
@@ -218,7 +218,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 			h.log.Warn("unknown callback action_id reached comms",
 				slog.String("context_id", contextID),
 				slog.String("action_id", msg.ActionID))
-			_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("Unknown action: %s", msg.ActionID))
+			_ = h.messenger.SendText(ctx, contextID, msg.ThreadID, fmt.Sprintf("Unknown action: %s", msg.ActionID))
 		}
 		return
 	}
@@ -245,9 +245,9 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	// Dispatch
 	switch detected {
 	case intent.IntentGreeting:
-		h.handleGreeting(ctx, contextID)
+		h.handleGreeting(ctx, contextID, msg.ThreadID)
 	case intent.IntentCommand:
-		h.handleCommand(ctx, contextID, text)
+		h.handleCommand(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentOperational:
 		h.handleOperational(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentQuestion:
@@ -264,7 +264,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 		h.handleIssueIntake(ctx, contextID, msg.ThreadID, text)
 	default:
 		// Unknown intent — clarify rather than auto-creating a task.
-		_ = h.messenger.SendText(ctx, contextID, "I didn't quite catch that — try /help, or rephrase your request.")
+		_ = h.messenger.SendText(ctx, contextID, msg.ThreadID, "I didn't quite catch that — try /help, or rephrase your request.")
 	}
 }
 
@@ -330,20 +330,20 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 
 // ---------- intent handlers ----------
 
-func (h *Handler) handleGreeting(ctx context.Context, contextID string) {
+func (h *Handler) handleGreeting(ctx context.Context, contextID, threadID string) {
 	if h.responder != nil {
-		_ = h.messenger.SendText(ctx, contextID, h.responder.Greeting())
+		_ = h.messenger.SendText(ctx, contextID, threadID, h.responder.Greeting())
 		return
 	}
-	_ = h.messenger.SendText(ctx, contextID, "👋 Hello! I'm Pilot — send me a task, question, or say /help.")
+	_ = h.messenger.SendText(ctx, contextID, threadID, "👋 Hello! I'm Pilot — send me a task, question, or say /help.")
 }
 
-func (h *Handler) handleCommand(ctx context.Context, contextID, text string) {
+func (h *Handler) handleCommand(ctx context.Context, contextID, threadID, text string) {
 	if h.cmdHandler == nil {
-		_ = h.messenger.SendText(ctx, contextID, "I didn't quite catch that — try /help, or rephrase your request.")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "I didn't quite catch that — try /help, or rephrase your request.")
 		return
 	}
-	h.cmdHandler.HandleCommand(ctx, contextID, text)
+	h.cmdHandler.HandleCommand(ctx, contextID, threadID, text)
 }
 
 func (h *Handler) handleOperational(ctx context.Context, contextID, threadID, text string) {
@@ -354,21 +354,21 @@ func (h *Handler) handleOperational(ctx context.Context, contextID, threadID, te
 
 	running, err := h.store.GetActiveExecutions()
 	if err != nil {
-		_ = h.messenger.SendText(ctx, contextID, "❌ Failed to fetch queue status")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "❌ Failed to fetch queue status")
 		return
 	}
 
 	queued, err := h.store.GetQueuedTasks(10)
 	if err != nil {
-		_ = h.messenger.SendText(ctx, contextID, "❌ Failed to fetch queue status")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "❌ Failed to fetch queue status")
 		return
 	}
 
-	_ = h.messenger.SendText(ctx, contextID, formatQueueSummary(running, queued))
+	_ = h.messenger.SendText(ctx, contextID, threadID, formatQueueSummary(running, queued))
 }
 
 func (h *Handler) handleQuestion(ctx context.Context, contextID, threadID, question string) {
-	_ = h.messenger.SendText(ctx, contextID, "🔍 Looking into that...")
+	_ = h.messenger.SendText(ctx, contextID, threadID, "🔍 Looking into that...")
 
 	// Fast path: retrieval-grounded LLM answer (~2-4s, cites real file paths).
 	if h.responder != nil {
@@ -394,7 +394,7 @@ func (h *Handler) handleQuestion(ctx context.Context, contextID, threadID, quest
 	}
 
 	if h.runner == nil {
-		_ = h.messenger.SendText(ctx, contextID, "I couldn't answer that question.")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "I couldn't answer that question.")
 		return
 	}
 
@@ -427,9 +427,9 @@ If the question is too broad, ask for clarification instead of exploring everyth
 
 	if err != nil {
 		if questionCtx.Err() == context.DeadlineExceeded {
-			_ = h.messenger.SendText(ctx, contextID, "⏱ Question timed out. Try asking something more specific.")
+			_ = h.messenger.SendText(ctx, contextID, threadID, "⏱ Question timed out. Try asking something more specific.")
 		} else {
-			_ = h.messenger.SendText(ctx, contextID, "❌ Sorry, I couldn't answer that question. Try rephrasing it.")
+			_ = h.messenger.SendText(ctx, contextID, threadID, "❌ Sorry, I couldn't answer that question. Try rephrasing it.")
 		}
 		return
 	}
@@ -443,7 +443,7 @@ If the question is too broad, ask for clarification instead of exploring everyth
 }
 
 func (h *Handler) handleResearch(ctx context.Context, contextID, threadID, query string) {
-	_ = h.messenger.SendText(ctx, contextID, "🔬 Researching...")
+	_ = h.messenger.SendText(ctx, contextID, threadID, "🔬 Researching...")
 
 	taskID := fmt.Sprintf("RES-%d", time.Now().Unix())
 	researchProjectPath := h.getActiveProjectPath(contextID)
@@ -474,16 +474,16 @@ DO NOT make any code changes. This is a read-only research task.`, query),
 
 	if err != nil {
 		if researchCtx.Err() == context.DeadlineExceeded {
-			_ = h.messenger.SendText(ctx, contextID, "⏱ Research timed out. Try a more specific query.")
+			_ = h.messenger.SendText(ctx, contextID, threadID, "⏱ Research timed out. Try a more specific query.")
 		} else {
-			_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("❌ Research failed: %s", err.Error()))
+			_ = h.messenger.SendText(ctx, contextID, threadID, fmt.Sprintf("❌ Research failed: %s", err.Error()))
 		}
 		return
 	}
 
 	content := CleanInternalSignals(result.Output)
 	if content == "" {
-		_ = h.messenger.SendText(ctx, contextID, "Research completed but produced no output.")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "Research completed but produced no output.")
 		return
 	}
 
@@ -491,7 +491,7 @@ DO NOT make any code changes. This is a read-only research task.`, query),
 }
 
 func (h *Handler) handlePlanning(ctx context.Context, contextID, threadID, request string) {
-	_ = h.messenger.SendText(ctx, contextID, "📐 Drafting plan...")
+	_ = h.messenger.SendText(ctx, contextID, threadID, "📐 Drafting plan...")
 
 	taskID := fmt.Sprintf("PLAN-%d", time.Now().Unix())
 	planProjectPath := h.getActiveProjectPath(contextID)
@@ -525,16 +525,16 @@ DO NOT make any code changes. Only explore and plan.`, request),
 
 	if err != nil {
 		if planCtx.Err() == context.DeadlineExceeded {
-			_ = h.messenger.SendText(ctx, contextID, "⏱ Planning timed out. Try a simpler request.")
+			_ = h.messenger.SendText(ctx, contextID, threadID, "⏱ Planning timed out. Try a simpler request.")
 		} else {
-			_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("❌ Planning failed: %s", err.Error()))
+			_ = h.messenger.SendText(ctx, contextID, threadID, fmt.Sprintf("❌ Planning failed: %s", err.Error()))
 		}
 		return
 	}
 
 	planContent := CleanInternalSignals(result.Output)
 	if planContent == "" {
-		_ = h.messenger.SendText(ctx, contextID, "Planning completed but produced no output.")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "Planning completed but produced no output.")
 		return
 	}
 
@@ -556,7 +556,7 @@ DO NOT make any code changes. Only explore and plan.`, request),
 	if err != nil {
 		h.log.Warn("Failed to send plan confirmation, falling back to text", slog.Any("error", err))
 		_ = h.messenger.SendChunked(ctx, contextID, threadID, planContent, "📋 Implementation Plan")
-		_ = h.messenger.SendText(ctx, contextID, "Reply yes to execute or no to cancel.")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "Reply yes to execute or no to cancel.")
 	}
 }
 
@@ -570,7 +570,7 @@ func (h *Handler) handleChat(ctx context.Context, contextID, threadID, message s
 		response, err := h.responder.Chat(ctx, history, message)
 		if err != nil {
 			h.log.Warn("responder.Chat failed", slog.Any("error", err))
-			_ = h.messenger.SendText(ctx, contextID, "Sorry, I couldn't process that. Try rephrasing?")
+			_ = h.messenger.SendText(ctx, contextID, threadID, "Sorry, I couldn't process that. Try rephrasing?")
 			return
 		}
 		if response == "" {
@@ -580,7 +580,7 @@ func (h *Handler) handleChat(ctx context.Context, contextID, threadID, message s
 		if maxLen > 0 && len(response) > maxLen {
 			response = response[:maxLen-3] + "..."
 		}
-		_ = h.messenger.SendText(ctx, contextID, response)
+		_ = h.messenger.SendText(ctx, contextID, threadID, response)
 		if h.convStore != nil {
 			h.convStore.Add(contextID, "assistant", TruncateText(response, 500))
 		}
@@ -588,7 +588,7 @@ func (h *Handler) handleChat(ctx context.Context, contextID, threadID, message s
 	}
 
 	// Fallback: executor path (unchanged behavior when bot is disabled).
-	_ = h.messenger.SendText(ctx, contextID, "💬 Thinking...")
+	_ = h.messenger.SendText(ctx, contextID, threadID, "💬 Thinking...")
 
 	taskID := fmt.Sprintf("CHAT-%d", time.Now().Unix())
 	chatProjectPath := h.getActiveProjectPath(contextID)
@@ -618,9 +618,9 @@ User message: %s`, chatProjectPath, message),
 
 	if err != nil {
 		if chatCtx.Err() == context.DeadlineExceeded {
-			_ = h.messenger.SendText(ctx, contextID, "⏱ Took too long to respond. Try a simpler question.")
+			_ = h.messenger.SendText(ctx, contextID, threadID, "⏱ Took too long to respond. Try a simpler question.")
 		} else {
-			_ = h.messenger.SendText(ctx, contextID, "Sorry, I couldn't process that. Try rephrasing?")
+			_ = h.messenger.SendText(ctx, contextID, threadID, "Sorry, I couldn't process that. Try rephrasing?")
 		}
 		return
 	}
@@ -636,7 +636,7 @@ User message: %s`, chatProjectPath, message),
 		response = response[:maxLen-3] + "..."
 	}
 
-	_ = h.messenger.SendText(ctx, contextID, response)
+	_ = h.messenger.SendText(ctx, contextID, threadID, response)
 
 	// Record in conversation history
 	if h.convStore != nil {
@@ -648,7 +648,7 @@ func (h *Handler) handleTask(ctx context.Context, contextID, threadID, descripti
 	// Task rate limit
 	if !h.rateLimit.AllowTask(contextID) {
 		h.log.Warn("Task rate limit exceeded", slog.String("context_id", contextID))
-		_ = h.messenger.SendText(ctx, contextID,
+		_ = h.messenger.SendText(ctx, contextID, threadID,
 			"⚠️ Task rate limit exceeded. You've submitted too many tasks recently. Please wait before submitting more.")
 		return
 	}
@@ -657,7 +657,7 @@ func (h *Handler) handleTask(ctx context.Context, contextID, threadID, descripti
 	h.mu.Lock()
 	if existing, exists := h.pendingTasks[contextID]; exists {
 		h.mu.Unlock()
-		_ = h.messenger.SendText(ctx, contextID,
+		_ = h.messenger.SendText(ctx, contextID, threadID,
 			fmt.Sprintf("⚠️ You already have a pending task: %s\n\nReply yes to execute or no to cancel.", existing.TaskID))
 		return
 	}
@@ -679,7 +679,7 @@ func (h *Handler) handleTask(ctx context.Context, contextID, threadID, descripti
 	_, err := h.messenger.SendConfirmation(ctx, contextID, threadID, taskID, description, h.getActiveProjectPath(contextID))
 	if err != nil {
 		h.log.Warn("Failed to send task confirmation", slog.Any("error", err))
-		_ = h.messenger.SendText(ctx, contextID,
+		_ = h.messenger.SendText(ctx, contextID, threadID,
 			fmt.Sprintf("📋 Task %s\n\n%s\n\nReply yes to execute or no to cancel.",
 				taskID, TruncateText(description, 500)))
 	}
@@ -731,12 +731,12 @@ func (h *Handler) handleConfirmation(ctx context.Context, contextID, threadID st
 	h.mu.Unlock()
 
 	if !exists {
-		_ = h.messenger.SendText(ctx, contextID, "No pending task to confirm.")
+		_ = h.messenger.SendText(ctx, contextID, threadID, "No pending task to confirm.")
 		return
 	}
 
 	if !confirmed {
-		_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("❌ Task %s cancelled.", pending.TaskID))
+		_ = h.messenger.SendText(ctx, contextID, threadID, fmt.Sprintf("❌ Task %s cancelled.", pending.TaskID))
 		return
 	}
 
@@ -758,7 +758,7 @@ func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, task
 	msgRef, err := h.messenger.SendProgress(ctx, contextID, "", taskID, "Starting"+prNote, 0, "Initializing...")
 	if err != nil {
 		h.log.Warn("Failed to send progress start", slog.Any("error", err))
-		_ = h.messenger.SendText(ctx, contextID, detail)
+		_ = h.messenger.SendText(ctx, contextID, threadID, detail)
 	}
 
 	// Track running task
@@ -767,6 +767,7 @@ func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, task
 	h.runningTasks[contextID] = &RunningTask{
 		TaskID:    taskID,
 		ContextID: contextID,
+		ThreadID:  threadID,
 		StartedAt: time.Now(),
 		Cancel:    taskCancel,
 	}
@@ -838,7 +839,7 @@ func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, task
 	execID, lifeErr := lifecycle.Begin(task, executor.ExecStatusRunning)
 	if lifeErr != nil {
 		if errors.Is(lifeErr, executor.ErrClaimLost) {
-			_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("⚠️ %s is already being executed by another Pilot process.", taskID))
+			_ = h.messenger.SendText(ctx, contextID, threadID, fmt.Sprintf("⚠️ %s is already being executed by another Pilot process.", taskID))
 			if h.runner != nil {
 				h.runner.RemoveProgressCallback(callbackName)
 			}
@@ -1001,11 +1002,11 @@ func (h *Handler) CancelTask(ctx context.Context, contextID string) error {
 	h.mu.Unlock()
 
 	if hasPending {
-		_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("❌ Cancelled pending task %s", pending.TaskID))
+		_ = h.messenger.SendText(ctx, contextID, pending.ThreadID, fmt.Sprintf("❌ Cancelled pending task %s", pending.TaskID))
 		return nil
 	}
 	if hasRunning {
-		_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("🛑 Stopping task %s", running.TaskID))
+		_ = h.messenger.SendText(ctx, contextID, running.ThreadID, fmt.Sprintf("🛑 Stopping task %s", running.TaskID))
 		return nil
 	}
 	return fmt.Errorf("no task to cancel")
@@ -1031,18 +1032,19 @@ func (h *Handler) CleanupLoop(ctx context.Context) {
 
 func (h *Handler) cleanupExpiredTasks(ctx context.Context) {
 	h.mu.Lock()
-	var expired []string
+	type expiredTask struct{ contextID, threadID string }
+	var expired []expiredTask
 	for id, task := range h.pendingTasks {
 		if time.Since(task.CreatedAt) > 5*time.Minute {
-			expired = append(expired, id)
+			expired = append(expired, expiredTask{contextID: id, threadID: task.ThreadID})
 		}
 	}
-	for _, id := range expired {
-		delete(h.pendingTasks, id)
+	for _, e := range expired {
+		delete(h.pendingTasks, e.contextID)
 	}
 	h.mu.Unlock()
 
-	for _, id := range expired {
-		_ = h.messenger.SendText(ctx, id, "⏰ Pending task expired (5 min timeout). Send a new request.")
+	for _, e := range expired {
+		_ = h.messenger.SendText(ctx, e.contextID, e.threadID, "⏰ Pending task expired (5 min timeout). Send a new request.")
 	}
 }

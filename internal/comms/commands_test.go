@@ -2,6 +2,7 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,13 +10,17 @@ import (
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
+var errNoSuchProject = errors.New("no such project")
+
 // mockMessenger captures messages sent by the command handler.
 type mockMessenger struct {
-	messages []string
+	messages  []string
+	threadIDs []string
 }
 
-func (m *mockMessenger) SendText(ctx context.Context, contextID, text string) error {
+func (m *mockMessenger) SendText(ctx context.Context, contextID, threadID, text string) error {
 	m.messages = append(m.messages, text)
+	m.threadIDs = append(m.threadIDs, threadID)
 	return nil
 }
 
@@ -33,6 +38,7 @@ func (m *mockMessenger) SendResult(ctx context.Context, contextID, threadID, tas
 
 func (m *mockMessenger) SendChunked(ctx context.Context, contextID, threadID, content, prefix string) error {
 	m.messages = append(m.messages, content)
+	m.threadIDs = append(m.threadIDs, threadID)
 	return nil
 }
 
@@ -50,7 +56,7 @@ func TestCommandHandler_HandleHelp(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/help")
+	cmd.HandleCommand(ctx, "chat1", "", "/help")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -79,7 +85,7 @@ func TestCommandHandler_HandleStart(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/start")
+	cmd.HandleCommand(ctx, "chat1", "", "/start")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -122,7 +128,7 @@ func TestCommandHandler_HandleStatus(t *testing.T) {
 			tt.setupFunc(cmd)
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", "/status")
+			cmd.HandleCommand(ctx, "chat1", "", "/status")
 
 			if len(tt.messenger.messages) == 0 {
 				t.Fatal("no messages sent")
@@ -162,7 +168,7 @@ func TestCommandHandler_HandleQueue(t *testing.T) {
 			cmd := NewCommandHandler(tt.messenger, tt.store)
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", "/queue")
+			cmd.HandleCommand(ctx, "chat1", "", "/queue")
 
 			if len(tt.messenger.messages) == 0 {
 				t.Fatal("no messages sent")
@@ -182,7 +188,7 @@ func TestCommandHandler_HandleProjects(t *testing.T) {
 
 	// No projects function configured
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/projects")
+	cmd.HandleCommand(ctx, "chat1", "", "/projects")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -200,7 +206,7 @@ func TestCommandHandler_HandleTasks(t *testing.T) {
 
 	// No list function configured
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/tasks")
+	cmd.HandleCommand(ctx, "chat1", "", "/tasks")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -217,7 +223,7 @@ func TestCommandHandler_HandleCancel(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/cancel")
+	cmd.HandleCommand(ctx, "chat1", "", "/cancel")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -234,7 +240,7 @@ func TestCommandHandler_HandleStop(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/stop")
+	cmd.HandleCommand(ctx, "chat1", "", "/stop")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -251,7 +257,7 @@ func TestCommandHandler_HandleBudget(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/budget")
+	cmd.HandleCommand(ctx, "chat1", "", "/budget")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -268,7 +274,7 @@ func TestCommandHandler_HandleHistory(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/history")
+	cmd.HandleCommand(ctx, "chat1", "", "/history")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -285,7 +291,7 @@ func TestCommandHandler_HandleBrief(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/brief")
+	cmd.HandleCommand(ctx, "chat1", "", "/brief")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -332,12 +338,12 @@ func TestCommandHandler_HandleRun(t *testing.T) {
 			if tt.hasHandler {
 				cmd.SetRunCommandFunc(func(ctx context.Context, contextID, taskID string) {
 					// Just mark that handler was called
-					_ = messenger.SendText(ctx, contextID, "Handler called with "+taskID)
+					_ = messenger.SendText(ctx, contextID, "", "Handler called with "+taskID)
 				})
 			}
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", tt.input)
+			cmd.HandleCommand(ctx, "chat1", "", tt.input)
 
 			if len(messenger.messages) == 0 {
 				t.Fatal("no messages sent")
@@ -386,7 +392,7 @@ func TestCommandHandler_HandleSwitch(t *testing.T) {
 			tt.setupFunc(cmd)
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", tt.input)
+			cmd.HandleCommand(ctx, "chat1", "", tt.input)
 
 			if len(messenger.messages) == 0 {
 				t.Fatal("no messages sent")
@@ -405,7 +411,7 @@ func TestCommandHandler_HandleUnknown(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/unknown")
+	cmd.HandleCommand(ctx, "chat1", "", "/unknown")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -426,7 +432,7 @@ func TestCommandHandler_HandleNoPR(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/nopr create a new feature")
+	cmd.HandleCommand(ctx, "chat1", "", "/nopr create a new feature")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -443,7 +449,7 @@ func TestCommandHandler_HandlePR(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/pr create a new feature")
+	cmd.HandleCommand(ctx, "chat1", "", "/pr create a new feature")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -487,7 +493,7 @@ func TestCommandHandler_CommandParsing(t *testing.T) {
 			cmd := NewCommandHandler(messenger, nil)
 
 			ctx := context.Background()
-			cmd.HandleCommand(ctx, "chat1", tt.input)
+			cmd.HandleCommand(ctx, "chat1", "", tt.input)
 
 			tt.verify(t, messenger.messages)
 		})
@@ -500,7 +506,7 @@ func TestCommandHandler_ListAlias(t *testing.T) {
 	cmd := NewCommandHandler(messenger, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/list")
+	cmd.HandleCommand(ctx, "chat1", "", "/list")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -518,7 +524,7 @@ func TestCommandHandler_ProjectAlias(t *testing.T) {
 
 	ctx := context.Background()
 	// /project without args should show current project
-	cmd.HandleCommand(ctx, "chat1", "/project")
+	cmd.HandleCommand(ctx, "chat1", "", "/project")
 
 	if len(messenger.messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messenger.messages))
@@ -643,4 +649,256 @@ func mustCreateMemoryStore(t *testing.T) *memory.Store {
 		t.Fatalf("failed to create memory store: %v", err)
 	}
 	return store
+}
+
+// threadIDUnderTest is a non-empty forum topic ID: asserting on it (rather than
+// the empty string) proves the thread is actually threaded through, not merely
+// defaulted away.
+const threadIDUnderTest = "42"
+
+type stubProject struct {
+	name string
+	path string
+}
+
+func (p stubProject) GetName() string   { return p.name }
+func (p stubProject) GetPath() string   { return p.path }
+func (p stubProject) IsNavigator() bool { return true }
+
+// mustCreateTempMemoryStore builds a per-test store on disk; ":memory:" is a
+// shared-cache handle here, so seeded rows leak between subtests.
+func mustCreateTempMemoryStore(t *testing.T) *memory.Store {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create memory store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func mustCreateClosedMemoryStore(t *testing.T) *memory.Store {
+	store := mustCreateTempMemoryStore(t)
+	if err := store.Close(); err != nil {
+		t.Fatalf("failed to close memory store: %v", err)
+	}
+	return store
+}
+
+func mustCreateSeededMemoryStore(t *testing.T) *memory.Store {
+	store := mustCreateTempMemoryStore(t)
+	err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-1",
+		TaskID:      "GH-1",
+		ProjectPath: "/tmp/project",
+		Status:      "completed",
+		PRUrl:       "https://example.test/pr/1",
+		DurationMs:  1500,
+		CreatedAt:   time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("failed to seed execution: %v", err)
+	}
+	return store
+}
+
+// TestCommandHandler_SendsToOriginatingThread asserts every command reply
+// carries the caller's threadID down to the messenger.
+func TestCommandHandler_SendsToOriginatingThread(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		store    func(t *testing.T) *memory.Store
+		setup    func(cmd *CommandHandler)
+		wantText string
+	}{
+		{
+			name:     "nopr without args",
+			input:    "/nopr",
+			wantText: "Usage: /nopr",
+		},
+		{
+			name:     "pr without args",
+			input:    "/pr",
+			wantText: "Usage: /pr",
+		},
+		{
+			name:     "draft-issue without args",
+			input:    "/draft-issue",
+			wantText: "Usage: /draft-issue",
+		},
+		{
+			name:     "draft-issue without intake func",
+			input:    "/draft-issue add response caching",
+			wantText: "Issue intake is not available",
+		},
+		{
+			name:     "queue fetch error",
+			input:    "/queue",
+			store:    mustCreateClosedMemoryStore,
+			wantText: "Failed to fetch queue",
+		},
+		{
+			name:  "projects configured but empty",
+			input: "/projects",
+			setup: func(cmd *CommandHandler) {
+				cmd.SetProjectListFunc(func() []interface{} { return nil })
+			},
+			wantText: "No projects configured",
+		},
+		{
+			name:  "projects listed",
+			input: "/projects",
+			setup: func(cmd *CommandHandler) {
+				cmd.SetProjectListFunc(func() []interface{} {
+					return []interface{}{stubProject{name: "alpha", path: "/tmp/alpha"}}
+				})
+				cmd.SetActiveProjectFunc(func(string) (string, string) { return "alpha", "/tmp/alpha" })
+			},
+			wantText: "alpha",
+		},
+		{
+			name:  "switch to unknown project",
+			input: "/switch ghost",
+			setup: func(cmd *CommandHandler) {
+				cmd.SetSetProjectFunc(func(string, string) error { return errNoSuchProject })
+			},
+			wantText: "not found",
+		},
+		{
+			name:  "current project",
+			input: "/project",
+			setup: func(cmd *CommandHandler) {
+				cmd.SetActiveProjectFunc(func(string) (string, string) { return "alpha", "/tmp/alpha" })
+			},
+			wantText: "Active",
+		},
+		{
+			name:     "history fetch error",
+			input:    "/history",
+			store:    mustCreateClosedMemoryStore,
+			wantText: "Failed to fetch history",
+		},
+		{
+			name:     "history empty",
+			input:    "/history",
+			store:    mustCreateTempMemoryStore,
+			wantText: "No task history yet",
+		},
+		{
+			name:     "history listed",
+			input:    "/history",
+			store:    mustCreateSeededMemoryStore,
+			wantText: "Recent Tasks",
+		},
+		{
+			name:     "budget fetch error",
+			input:    "/budget",
+			store:    mustCreateClosedMemoryStore,
+			wantText: "Failed to fetch usage data",
+		},
+		{
+			name:     "budget summary",
+			input:    "/budget",
+			store:    mustCreateTempMemoryStore,
+			wantText: "Usage This Month",
+		},
+		{
+			name:  "tasks none",
+			input: "/tasks",
+			setup: func(cmd *CommandHandler) {
+				cmd.SetListTasksFunc(func() string { return "" })
+			},
+			wantText: "No tasks found",
+		},
+		{
+			name:  "tasks listed",
+			input: "/tasks",
+			setup: func(cmd *CommandHandler) {
+				cmd.SetListTasksFunc(func() string { return "• TASK-01" })
+			},
+			wantText: "Task Backlog",
+		},
+		{
+			name:     "brief without generator",
+			input:    "/brief",
+			store:    mustCreateTempMemoryStore,
+			wantText: "Brief generation not configured",
+		},
+		{
+			name:  "nopr with description",
+			input: "/nopr add response caching",
+			setup: func(cmd *CommandHandler) {
+				cmd.SetRunCommandFunc(func(context.Context, string, string) {})
+			},
+			wantText: "Executing without PR",
+		},
+		{
+			name:  "pr with description",
+			input: "/pr add response caching",
+			setup: func(cmd *CommandHandler) {
+				cmd.SetRunCommandFunc(func(context.Context, string, string) {})
+			},
+			wantText: "Executing with PR",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messenger := &mockMessenger{}
+			var store *memory.Store
+			if tt.store != nil {
+				store = tt.store(t)
+			}
+			cmd := NewCommandHandler(messenger, store)
+			if tt.setup != nil {
+				tt.setup(cmd)
+			}
+
+			cmd.HandleCommand(context.Background(), "chat1", threadIDUnderTest, tt.input)
+
+			if len(messenger.messages) == 0 {
+				t.Fatal("no messages sent")
+			}
+			found := false
+			for _, msg := range messenger.messages {
+				if strings.Contains(msg, tt.wantText) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("no message contains %q: %v", tt.wantText, messenger.messages)
+			}
+			for i, got := range messenger.threadIDs {
+				if got != threadIDUnderTest {
+					t.Errorf("message %d sent with threadID %q, want %q", i, got, threadIDUnderTest)
+				}
+			}
+		})
+	}
+}
+
+// TestCommandHandler_DraftIssueRoutesToIntake covers the /draft-issue branch
+// that delegates to the issue intake func instead of replying itself.
+func TestCommandHandler_DraftIssueRoutesToIntake(t *testing.T) {
+	messenger := &mockMessenger{}
+	cmd := NewCommandHandler(messenger, nil)
+
+	var gotContextID, gotText string
+	cmd.SetIssueIntakeFunc(func(_ context.Context, contextID, text string) {
+		gotContextID = contextID
+		gotText = text
+	})
+
+	cmd.HandleCommand(context.Background(), "chat1", threadIDUnderTest, "/draft-issue add response caching")
+
+	if gotContextID != "chat1" {
+		t.Errorf("intake contextID = %q, want %q", gotContextID, "chat1")
+	}
+	if gotText != "add response caching" {
+		t.Errorf("intake text = %q, want %q", gotText, "add response caching")
+	}
+	if len(messenger.messages) != 0 {
+		t.Errorf("expected no direct reply when intake is wired, got %v", messenger.messages)
+	}
 }

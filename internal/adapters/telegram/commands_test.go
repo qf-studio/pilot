@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -82,7 +87,7 @@ func TestCommandHandler_HandleHelp(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "123", "/help")
+	cmd.HandleCommand(ctx, "123", "", "/help")
 
 	// Check that message was formatted (we can't check exact content due to mock server)
 	// The handler will try to send but the mock server won't match URLs
@@ -112,7 +117,7 @@ func TestCommandHandler_HandleStatus(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// This will fail to send (no real Telegram) but should not panic
-			cmd.HandleCommand(ctx, tt.chatID, "/status")
+			cmd.HandleCommand(ctx, tt.chatID, "", "/status")
 		})
 	}
 }
@@ -139,7 +144,7 @@ func TestCommandHandler_HandleCancel(t *testing.T) {
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd.HandleCommand(ctx, tt.chatID, "/cancel")
+			cmd.HandleCommand(ctx, tt.chatID, "", "/cancel")
 			// Verify no panic; cancel state managed by commsHandler
 		})
 	}
@@ -173,7 +178,7 @@ func TestCommandHandler_HandleQueue(t *testing.T) {
 				cmd = NewCommandHandler(h, nil)
 			}
 
-			cmd.HandleCommand(ctx, "chat1", "/queue")
+			cmd.HandleCommand(ctx, "chat1", "", "/queue")
 			// Just verify no panic
 		})
 	}
@@ -212,7 +217,7 @@ func TestCommandHandler_HandleProjects(t *testing.T) {
 			h := newTestHandlerForCommands(tt.projects, "/default/path")
 			cmd := NewCommandHandler(h, nil)
 
-			cmd.HandleCommand(ctx, "chat1", "/projects")
+			cmd.HandleCommand(ctx, "chat1", "", "/projects")
 			// Just verify no panic
 		})
 	}
@@ -255,7 +260,7 @@ func TestCommandHandler_HandleSwitch(t *testing.T) {
 	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd.HandleCommand(ctx, "chat1", tt.command)
+			cmd.HandleCommand(ctx, "chat1", "", tt.command)
 
 			path := h.getActiveProjectPath("chat1")
 			if path != tt.wantPath {
@@ -289,7 +294,7 @@ func TestCommandHandler_HandleHistory(t *testing.T) {
 				cmd = NewCommandHandler(h, nil)
 			}
 
-			cmd.HandleCommand(ctx, "chat1", "/history")
+			cmd.HandleCommand(ctx, "chat1", "", "/history")
 			// Just verify no panic
 		})
 	}
@@ -301,7 +306,7 @@ func TestCommandHandler_HandleBudget(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/budget")
+	cmd.HandleCommand(ctx, "chat1", "", "/budget")
 	// Just verify no panic
 }
 
@@ -311,7 +316,7 @@ func TestCommandHandler_HandleTasks(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/tasks")
+	cmd.HandleCommand(ctx, "chat1", "", "/tasks")
 	// Just verify no panic
 }
 
@@ -321,7 +326,7 @@ func TestCommandHandler_UnknownCommand(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	ctx := context.Background()
-	cmd.HandleCommand(ctx, "chat1", "/unknown_command")
+	cmd.HandleCommand(ctx, "chat1", "", "/unknown_command")
 	// Just verify no panic
 }
 
@@ -428,7 +433,7 @@ func TestCommandHandler_HandleCallbackSwitch(t *testing.T) {
 	// Set initial project
 	_ = h.commsHandler.SetActiveProject("chat1", "project-a")
 
-	cmd.HandleCallbackSwitch(ctx, "chat1", "project-b")
+	cmd.HandleCallbackSwitch(ctx, "chat1", "", "project-b")
 
 	path := h.getActiveProjectPath("chat1")
 	if path != "/path/b" {
@@ -468,7 +473,7 @@ func TestCommandRouting(t *testing.T) {
 	for _, command := range commands {
 		t.Run(command, func(t *testing.T) {
 			// Should not panic
-			cmd.HandleCommand(ctx, "chat1", command)
+			cmd.HandleCommand(ctx, "chat1", "", command)
 		})
 	}
 }
@@ -501,4 +506,292 @@ func TestSplitCommandMention(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Forum-topic threading: every command reply must carry message_thread_id.
+// ---------------------------------------------------------------------------
+
+// threadIDUnderTest is a non-empty forum topic ID: asserting on it (rather than
+// the empty string) proves the thread is actually threaded through, not merely
+// defaulted away.
+const threadIDUnderTest = "42"
+
+type capturedSend struct {
+	text     string
+	threadID int64
+}
+
+// threadCapturingServer records the text and message_thread_id of every
+// sendMessage call.
+type threadCapturingServer struct {
+	server *httptest.Server
+	mu     sync.Mutex
+	sends  []capturedSend
+}
+
+func newThreadCapturingServer(t *testing.T) *threadCapturingServer {
+	t.Helper()
+	s := &threadCapturingServer{}
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/sendMessage") {
+			var req SendMessageRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+				s.mu.Lock()
+				s.sends = append(s.sends, capturedSend{text: req.Text, threadID: req.MessageThreadID})
+				s.mu.Unlock()
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(SendMessageResponse{OK: true, Result: &Result{MessageID: 123, ChatID: 456}})
+	}))
+	t.Cleanup(s.server.Close)
+	return s
+}
+
+func (s *threadCapturingServer) captured() []capturedSend {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]capturedSend, len(s.sends))
+	copy(out, s.sends)
+	return out
+}
+
+func (s *threadCapturingServer) assertAllSentToThread(t *testing.T, wantText string) {
+	t.Helper()
+	sends := s.captured()
+	if len(sends) == 0 {
+		t.Fatal("no messages sent")
+	}
+	found := false
+	for _, send := range sends {
+		if strings.Contains(send.text, wantText) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no message contains %q: %v", wantText, sends)
+	}
+	want := parseThreadID(threadIDUnderTest)
+	for i, send := range sends {
+		if send.threadID != want {
+			t.Errorf("message %d sent with message_thread_id %d, want %d", i, send.threadID, want)
+		}
+	}
+}
+
+// mustCreateTelegramStore builds a per-test store on disk; ":memory:" is a
+// shared-cache handle here, so seeded rows leak between subtests.
+func mustCreateTelegramStore(t *testing.T) *memory.Store {
+	t.Helper()
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create memory store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func mustCreateClosedTelegramStore(t *testing.T) *memory.Store {
+	t.Helper()
+	store := mustCreateTelegramStore(t)
+	if err := store.Close(); err != nil {
+		t.Fatalf("failed to close memory store: %v", err)
+	}
+	return store
+}
+
+func mustCreateQueuedTelegramStore(t *testing.T) *memory.Store {
+	t.Helper()
+	store := mustCreateTelegramStore(t)
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-queued",
+		TaskID:      "GH-1",
+		ProjectPath: "/tmp/project",
+		Status:      "queued",
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("failed to seed queued execution: %v", err)
+	}
+	return store
+}
+
+func mustCreateHistoryTelegramStore(t *testing.T) *memory.Store {
+	t.Helper()
+	store := mustCreateTelegramStore(t)
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-done",
+		TaskID:      "GH-2",
+		ProjectPath: "/tmp/project",
+		Status:      "completed",
+		PRUrl:       "https://example.test/pr/2",
+		DurationMs:  1500,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("failed to seed completed execution: %v", err)
+	}
+	return store
+}
+
+func mustCreateTasksDir(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	tasksDir := filepath.Join(root, ".agent", "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir tasks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "TASK-01-demo.md"), []byte("# TASK-01: Demo task\n"), 0o644); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	return root
+}
+
+// TestCommandHandler_SendsToOriginatingTopic asserts every Telegram command
+// reply carries the forum topic the command arrived in.
+func TestCommandHandler_SendsToOriginatingTopic(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		store       func(t *testing.T) *memory.Store
+		projectPath func(t *testing.T) string
+		noComms     bool
+		seedPending bool
+		wantText    string
+	}{
+		{name: "run without args", input: "/run", wantText: "Usage: /run"},
+		{name: "nopr without args", input: "/nopr", wantText: "Usage: /nopr"},
+		{name: "pr without args", input: "/pr", wantText: "Usage: /pr"},
+		{name: "unknown command", input: "/frobnicate", wantText: "Unknown command"},
+		{name: "nopr with description", input: "/nopr add response caching", noComms: true, wantText: "Executing without PR"},
+		{name: "pr with description", input: "/pr add response caching", noComms: true, wantText: "Executing with PR"},
+		{name: "cancel with nothing pending", input: "/cancel", wantText: "No task to cancel."},
+		{name: "cancel without comms handler", input: "/cancel", noComms: true, wantText: "No task to cancel."},
+		{name: "stop with nothing running", input: "/stop", wantText: "No task is currently running."},
+		{name: "stop without comms handler", input: "/stop", noComms: true, wantText: "No task is currently running."},
+		{name: "status", input: "/status", wantText: "Status"},
+		{name: "brief without store", input: "/brief", wantText: "Brief not available"},
+		{name: "brief generated", input: "/brief", store: mustCreateTelegramStore, wantText: "Generating brief"},
+		{name: "queue fetch error", input: "/queue", store: mustCreateClosedTelegramStore, wantText: "Failed to fetch queue"},
+		{name: "queue empty", input: "/queue", store: mustCreateTelegramStore, wantText: "Queue is empty"},
+		{name: "queue empty with pending confirmation", input: "/queue", store: mustCreateTelegramStore, seedPending: true, wantText: "pending confirmation"},
+		{name: "queue listed", input: "/queue", store: mustCreateQueuedTelegramStore, wantText: "Task Queue"},
+		{name: "history fetch error", input: "/history", store: mustCreateClosedTelegramStore, wantText: "Failed to fetch history"},
+		{name: "history empty", input: "/history", store: mustCreateTelegramStore, wantText: "No task history yet"},
+		{name: "history listed", input: "/history", store: mustCreateHistoryTelegramStore, wantText: "Recent Tasks"},
+		{name: "budget fetch error", input: "/budget", store: mustCreateClosedTelegramStore, wantText: "Failed to fetch usage data"},
+		{name: "budget summary", input: "/budget", store: mustCreateTelegramStore, wantText: "Usage This Month"},
+		{name: "tasks none", input: "/tasks", wantText: "No tasks found"},
+		{name: "tasks listed", input: "/tasks", projectPath: mustCreateTasksDir, wantText: "Task Backlog"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newThreadCapturingServer(t)
+
+			projectPath := "/test/path"
+			if tt.projectPath != nil {
+				projectPath = tt.projectPath(t)
+			}
+
+			h := &Handler{
+				client:      NewClientWithBaseURL(testutil.FakeTelegramBotToken, srv.server.URL),
+				projectPath: projectPath,
+			}
+			if !tt.noComms {
+				h.commsHandler = comms.NewHandler(&comms.HandlerConfig{
+					Messenger:    &noopMessenger{},
+					ProjectPath:  projectPath,
+					TaskIDPrefix: "TG",
+				})
+			}
+
+			var store *memory.Store
+			if tt.store != nil {
+				store = tt.store(t)
+			}
+			cmd := NewCommandHandler(h, store)
+
+			ctx := context.Background()
+			if tt.seedPending {
+				h.commsHandler.HandleMessage(ctx, &comms.IncomingMessage{
+					ContextID: "123",
+					SenderID:  "u1",
+					Text:      "Add a rate limiter to the gateway",
+				})
+				if h.commsHandler.GetPendingTask("123") == nil {
+					t.Fatal("failed to seed a pending task")
+				}
+			}
+
+			cmd.HandleCommand(ctx, "123", threadIDUnderTest, tt.input)
+
+			srv.assertAllSentToThread(t, tt.wantText)
+		})
+	}
+}
+
+// blockingBackend parks until the execution context is cancelled, so a test can
+// observe a genuinely in-flight task.
+type blockingBackend struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingBackend) Name() string      { return "blocking" }
+func (b *blockingBackend) IsAvailable() bool { return true }
+
+func (b *blockingBackend) Execute(ctx context.Context, _ executor.ExecuteOptions) (*executor.BackendResult, error) {
+	b.once.Do(func() { close(b.started) })
+	<-ctx.Done()
+	return &executor.BackendResult{Success: false, Error: "cancelled"}, ctx.Err()
+}
+
+// TestCommandHandler_StopRunningTaskSendsToOriginatingTopic covers the /stop
+// branch that reports a task it actually stopped.
+func TestCommandHandler_StopRunningTaskSendsToOriginatingTopic(t *testing.T) {
+	srv := newThreadCapturingServer(t)
+
+	backend := &blockingBackend{started: make(chan struct{})}
+	runner := executor.NewRunnerWithBackend(backend)
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+
+	projectPath := t.TempDir()
+	h := &Handler{
+		client:      NewClientWithBaseURL(testutil.FakeTelegramBotToken, srv.server.URL),
+		projectPath: projectPath,
+		commsHandler: comms.NewHandler(&comms.HandlerConfig{
+			Messenger:    &noopMessenger{},
+			Runner:       runner,
+			ProjectPath:  projectPath,
+			TaskIDPrefix: "TG",
+		}),
+	}
+	cmd := NewCommandHandler(h, nil)
+
+	ctx := context.Background()
+	forcePR := false
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.commsHandler.ExecuteDirectTask(ctx, "123", threadIDUnderTest, "TG-stop-me", "serve the docs site",
+			&comms.DirectTaskOpts{ForcePR: &forcePR})
+	}()
+
+	select {
+	case <-backend.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("backend never started")
+	}
+
+	cmd.HandleCommand(ctx, "123", threadIDUnderTest, "/stop")
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("task did not stop")
+	}
+
+	srv.assertAllSentToThread(t, "Stopped task")
 }

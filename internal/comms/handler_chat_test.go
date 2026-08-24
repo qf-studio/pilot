@@ -147,7 +147,7 @@ func TestHandleGreeting_ResponderPath_UsesPersona(t *testing.T) {
 	m := &handlerMock{}
 	h, _ := newHandlerWithResponder(m, "", "I am your Go assistant.")
 
-	h.handleGreeting(context.Background(), "ch1")
+	h.handleGreeting(context.Background(), "ch1", "")
 
 	texts := m.getTexts()
 	if len(texts) == 0 {
@@ -163,7 +163,7 @@ func TestHandleGreeting_NilResponder_StaticText(t *testing.T) {
 	m := &handlerMock{}
 	h := newTestHandler(m)
 
-	h.handleGreeting(context.Background(), "ch1")
+	h.handleGreeting(context.Background(), "ch1", "")
 
 	texts := m.getTexts()
 	if len(texts) == 0 {

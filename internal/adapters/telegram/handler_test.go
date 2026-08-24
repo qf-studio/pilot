@@ -24,7 +24,7 @@ import (
 // noopMessenger is a no-op implementation of comms.Messenger for tests.
 type noopMessenger struct{}
 
-func (n *noopMessenger) SendText(context.Context, string, string) error { return nil }
+func (n *noopMessenger) SendText(context.Context, string, string, string) error { return nil }
 func (n *noopMessenger) SendConfirmation(context.Context, string, string, string, string, string) (string, error) {
 	return "", nil
 }
@@ -2022,6 +2022,64 @@ func TestDispatchImageTaskPropagatesThreadID(t *testing.T) {
 			if got != tt.wantThreadID {
 				t.Errorf("threadID = %q, want %q", got, tt.wantThreadID)
 			}
+		})
+	}
+}
+
+// TestForumTopicRepliesReturnToTopic asserts an incoming forum-topic message and
+// a topic-scoped callback both route their replies back into that topic.
+func TestForumTopicRepliesReturnToTopic(t *testing.T) {
+	topicMessage := func() *Message {
+		return &Message{
+			MessageID:       7,
+			MessageThreadID: 42,
+			IsTopicMessage:  true,
+			Chat:            &Chat{ID: -100123, Type: "supergroup"},
+			From:            &User{ID: 55},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		invoke   func(h *Handler, ctx context.Context)
+		wantText string
+	}{
+		{
+			name: "slash command from a topic",
+			invoke: func(h *Handler, ctx context.Context) {
+				msg := topicMessage()
+				msg.Text = "/help"
+				h.processUpdate(ctx, &Update{UpdateID: 1, Message: msg})
+			},
+			wantText: "Pilot Bot",
+		},
+		{
+			name: "project switch callback from a topic",
+			invoke: func(h *Handler, ctx context.Context) {
+				h.handleCallback(ctx, &CallbackQuery{
+					ID:      "cb-1",
+					From:    &User{ID: 55},
+					Data:    "switch_ghost",
+					Message: topicMessage(),
+				})
+			},
+			wantText: "not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newThreadCapturingServer(t)
+
+			h := &Handler{
+				client:       NewClientWithBaseURL(testutil.FakeTelegramBotToken, srv.server.URL),
+				commsHandler: newTestCommsHandler(),
+			}
+			h.cmdHandler = NewCommandHandler(h, nil)
+
+			tt.invoke(h, context.Background())
+
+			srv.assertAllSentToThread(t, tt.wantText)
 		})
 	}
 }

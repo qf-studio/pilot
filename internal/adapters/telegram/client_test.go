@@ -791,3 +791,58 @@ func TestMessageUnmarshalsTopicFields(t *testing.T) {
 		t.Errorf("topicThreadID() = %q, want %q", got, "42")
 	}
 }
+
+func TestSendBriefMessagePassesMessageThreadID(t *testing.T) {
+	tests := []struct {
+		name            string
+		messageThreadID int64
+		apiOK           bool
+		wantErr         bool
+	}{
+		{name: "topic message", messageThreadID: 42, apiOK: true},
+		{name: "no topic", messageThreadID: 0, apiOK: true},
+		{name: "api error", messageThreadID: 42, apiOK: false, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&raw)
+				if !tt.apiOK {
+					_ = json.NewEncoder(w).Encode(SendMessageResponse{OK: false, Description: "topic closed", ErrorCode: 400})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(SendMessageResponse{OK: true, Result: &Result{MessageID: 9}})
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeTelegramBotToken, server.URL)
+			resp, err := client.SendBriefMessage(context.Background(), "123456", "daily brief", "", tt.messageThreadID)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error from a failed send")
+				}
+				if resp != nil {
+					t.Errorf("resp = %v, want nil on error", resp)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SendBriefMessage: %v", err)
+			}
+			if resp == nil || resp.MessageID != 9 {
+				t.Fatalf("resp = %v, want MessageID 9", resp)
+			}
+
+			got, ok := raw["message_thread_id"]
+			if ok != (tt.messageThreadID != 0) {
+				t.Fatalf("message_thread_id present = %v, want %v", ok, tt.messageThreadID != 0)
+			}
+			if tt.messageThreadID != 0 && got != float64(tt.messageThreadID) {
+				t.Errorf("message_thread_id = %v, want %d", got, tt.messageThreadID)
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -17,17 +18,19 @@ import (
 
 // handlerMock records all Messenger calls for assertion in handler tests.
 type handlerMock struct {
-	mu       sync.Mutex
-	texts    []hSentText
-	confirms []hSentConfirm
-	results  []hSentResult
-	chunks   []hSentChunk
-	progress []hSentProgress
-	acks     []string
+	mu          sync.Mutex
+	texts       []hSentText
+	confirms    []hSentConfirm
+	results     []hSentResult
+	chunks      []hSentChunk
+	progress    []hSentProgress
+	acks        []string
+	confirmErr  error
+	progressErr error
 }
 
 type hSentText struct {
-	contextID, text string
+	contextID, threadID, text string
 }
 type hSentConfirm struct {
 	contextID, threadID, taskID, desc, project string
@@ -44,10 +47,10 @@ type hSentProgress struct {
 	progress                                 int
 }
 
-func (m *handlerMock) SendText(_ context.Context, contextID, text string) error {
+func (m *handlerMock) SendText(_ context.Context, contextID, threadID, text string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.texts = append(m.texts, hSentText{contextID, text})
+	m.texts = append(m.texts, hSentText{contextID, threadID, text})
 	return nil
 }
 
@@ -55,6 +58,9 @@ func (m *handlerMock) SendConfirmation(_ context.Context, contextID, threadID, t
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.confirms = append(m.confirms, hSentConfirm{contextID, threadID, taskID, desc, project})
+	if m.confirmErr != nil {
+		return "", m.confirmErr
+	}
 	return "msg-ref-1", nil
 }
 
@@ -62,6 +68,9 @@ func (m *handlerMock) SendProgress(_ context.Context, contextID, msgRef, taskID,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.progress = append(m.progress, hSentProgress{contextID, msgRef, taskID, phase, detail, progress})
+	if m.progressErr != nil {
+		return "", m.progressErr
+	}
 	return msgRef, nil
 }
 
@@ -1279,5 +1288,354 @@ func TestSendTaskResult_NotDeclined(t *testing.T) {
 	res := m.results[0]
 	if !res.success || res.prURL != "https://github.com/qf-studio/pilot/pull/123" || res.output != "done" {
 		t.Errorf("unexpected SendResult contents: %+v", res)
+	}
+}
+
+type threadCapturingMessenger struct {
+	mockMessenger
+	mu      sync.Mutex
+	threads []string
+}
+
+func (m *threadCapturingMessenger) SendText(_ context.Context, _, threadID, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.threads = append(m.threads, threadID)
+	return nil
+}
+
+func (m *threadCapturingMessenger) SendConfirmation(_ context.Context, _, threadID, _, _, _ string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.threads = append(m.threads, threadID)
+	return "1", nil
+}
+
+func (m *threadCapturingMessenger) seen() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.threads...)
+}
+
+func TestRepliesReturnToOriginatingThread(t *testing.T) {
+	tests := []struct {
+		name     string
+		threadID string
+		text     string
+	}{
+		{name: "task intent from a topic", threadID: "42", text: "implement rate limiting for the API"},
+		{name: "greeting from a topic", threadID: "42", text: "hi"},
+		{name: "command from a topic", threadID: "42", text: "/status"},
+		{name: "general thread carries no topic", threadID: "", text: "implement rate limiting for the API"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgr := &threadCapturingMessenger{}
+			h := NewHandler(&HandlerConfig{Messenger: msgr, TaskIDPrefix: "TG"})
+
+			h.HandleMessage(context.Background(), &IncomingMessage{
+				ContextID: "chat-1",
+				SenderID:  "user-1",
+				Text:      tt.text,
+				ThreadID:  tt.threadID,
+				Platform:  "telegram",
+			})
+
+			got := msgr.seen()
+			if len(got) == 0 {
+				t.Fatal("expected at least one outbound message")
+			}
+			for i, threadID := range got {
+				if threadID != tt.threadID {
+					t.Errorf("outbound %d threadID = %q, want %q", i, threadID, tt.threadID)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Forum-topic threading: every reply must land in the thread it came from.
+// ---------------------------------------------------------------------------
+
+// scriptedBackend returns a canned backend result so executor-backed intent
+// handlers can be driven through their success, empty and error branches.
+type scriptedBackend struct {
+	output string
+	err    error
+}
+
+func (b *scriptedBackend) Name() string      { return "scripted" }
+func (b *scriptedBackend) IsAvailable() bool { return true }
+
+func (b *scriptedBackend) Execute(_ context.Context, _ executor.ExecuteOptions) (*executor.BackendResult, error) {
+	if b.err != nil {
+		return nil, b.err
+	}
+	return &executor.BackendResult{Success: true, Output: b.output}, nil
+}
+
+func newScriptedRunner(backend executor.Backend) *executor.Runner {
+	runner := executor.NewRunnerWithBackend(backend)
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+	return runner
+}
+
+func (m *handlerMock) allSends() (bodies []string, threadIDs []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.texts {
+		bodies = append(bodies, s.text)
+		threadIDs = append(threadIDs, s.threadID)
+	}
+	for _, s := range m.chunks {
+		bodies = append(bodies, s.content)
+		threadIDs = append(threadIDs, s.threadID)
+	}
+	for _, s := range m.confirms {
+		bodies = append(bodies, s.desc)
+		threadIDs = append(threadIDs, s.threadID)
+	}
+	for _, s := range m.results {
+		bodies = append(bodies, s.output)
+		threadIDs = append(threadIDs, s.threadID)
+	}
+	return bodies, threadIDs
+}
+
+func assertAllSentToThread(t *testing.T, m *handlerMock, wantText string) {
+	t.Helper()
+	bodies, threadIDs := m.allSends()
+	if len(bodies) == 0 {
+		t.Fatal("no messages sent")
+	}
+	found := false
+	for _, body := range bodies {
+		if strings.Contains(body, wantText) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no message contains %q: %v", wantText, bodies)
+	}
+	for i, got := range threadIDs {
+		if got != threadIDUnderTest {
+			t.Errorf("message %d sent with threadID %q, want %q", i, got, threadIDUnderTest)
+		}
+	}
+}
+
+// TestHandler_OperationalQueueError_UsesThread covers the queue-status fetch
+// failure reply in handleOperational.
+func TestHandler_OperationalQueueError_UsesThread(t *testing.T) {
+	m := &handlerMock{}
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		Store:        mustCreateClosedMemoryStore(t),
+		TaskIDPrefix: "TEST",
+	})
+
+	h.handleOperational(context.Background(), "ch1", threadIDUnderTest, "what's queued?")
+
+	assertAllSentToThread(t, m, "Failed to fetch queue status")
+}
+
+// TestHandler_ExecutorIntents_UseThread drives the question / research /
+// planning / chat handlers through their empty-output and success branches and
+// asserts every reply carries the originating thread.
+func TestHandler_ExecutorIntents_UseThread(t *testing.T) {
+	tests := []struct {
+		name       string
+		backend    *scriptedBackend
+		confirmErr error
+		invoke     func(h *Handler, ctx context.Context)
+		wantText   string
+	}{
+		{
+			name:    "question answered",
+			backend: &scriptedBackend{output: "auth lives in internal/auth"},
+			invoke: func(h *Handler, ctx context.Context) {
+				h.handleQuestion(ctx, "ch1", threadIDUnderTest, "where is auth?")
+			},
+			wantText: "auth lives in internal/auth",
+		},
+		{
+			name:     "research produces no output",
+			backend:  &scriptedBackend{output: ""},
+			invoke:   func(h *Handler, ctx context.Context) { h.handleResearch(ctx, "ch1", threadIDUnderTest, "caching") },
+			wantText: "no output",
+		},
+		{
+			name:     "research succeeds",
+			backend:  &scriptedBackend{output: "findings: use an LRU"},
+			invoke:   func(h *Handler, ctx context.Context) { h.handleResearch(ctx, "ch1", threadIDUnderTest, "caching") },
+			wantText: "findings: use an LRU",
+		},
+		{
+			name:     "planning produces no output",
+			backend:  &scriptedBackend{output: ""},
+			invoke:   func(h *Handler, ctx context.Context) { h.handlePlanning(ctx, "ch1", threadIDUnderTest, "add caching") },
+			wantText: "no output",
+		},
+		{
+			name:     "planning sends confirmation",
+			backend:  &scriptedBackend{output: "step 1: add an LRU"},
+			invoke:   func(h *Handler, ctx context.Context) { h.handlePlanning(ctx, "ch1", threadIDUnderTest, "add caching") },
+			wantText: "step 1: add an LRU",
+		},
+		{
+			name:       "planning falls back to a confirm prompt",
+			backend:    &scriptedBackend{output: "step 1: add an LRU"},
+			confirmErr: errors.New("no inline keyboards here"),
+			invoke:     func(h *Handler, ctx context.Context) { h.handlePlanning(ctx, "ch1", threadIDUnderTest, "add caching") },
+			wantText:   "Reply yes to execute",
+		},
+		{
+			name:     "chat responds",
+			backend:  &scriptedBackend{output: "doing fine"},
+			invoke:   func(h *Handler, ctx context.Context) { h.handleChat(ctx, "ch1", threadIDUnderTest, "how are you?") },
+			wantText: "doing fine",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &handlerMock{confirmErr: tt.confirmErr}
+			h := NewHandler(&HandlerConfig{
+				Messenger:    m,
+				Runner:       newScriptedRunner(tt.backend),
+				ProjectPath:  t.TempDir(),
+				TaskIDPrefix: "TEST",
+			})
+
+			tt.invoke(h, context.Background())
+
+			assertAllSentToThread(t, m, tt.wantText)
+		})
+	}
+}
+
+// TestHandler_ChatResponderError_UsesThread covers the responder failure reply.
+func TestHandler_ChatResponderError_UsesThread(t *testing.T) {
+	m := &handlerMock{}
+	a := &mockAnswerer{err: errors.New("llm down")}
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		Responder:    &Responder{client: a, answerModel: "claude-haiku-4-5-20251001"},
+		TaskIDPrefix: "TEST",
+	})
+
+	h.handleChat(context.Background(), "ch1", threadIDUnderTest, "hey")
+
+	assertAllSentToThread(t, m, "couldn't process that")
+}
+
+// TestHandler_TaskConfirmationFallback_UsesThread covers the text fallback when
+// the platform cannot render a confirmation control.
+func TestHandler_TaskConfirmationFallback_UsesThread(t *testing.T) {
+	m := &handlerMock{confirmErr: errors.New("no inline keyboards here")}
+	h := newTestHandler(m)
+
+	h.handleTask(context.Background(), "ch1", threadIDUnderTest, "add response caching", "u1")
+
+	assertAllSentToThread(t, m, "Reply yes to execute")
+}
+
+// TestHandler_ProgressStartFallback_UsesThread covers the text fallback when the
+// progress control cannot be created.
+func TestHandler_ProgressStartFallback_UsesThread(t *testing.T) {
+	m := &handlerMock{progressErr: errors.New("no progress messages here")}
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		Runner:       newScriptedRunner(&scriptedBackend{output: "done"}),
+		ProjectPath:  t.TempDir(),
+		TaskIDPrefix: "TEST",
+	})
+
+	h.executeTask(context.Background(), "ch1", threadIDUnderTest, "TEST-1", "add response caching")
+
+	assertAllSentToThread(t, m, "Starting TEST-1")
+}
+
+// TestHandler_ClaimLost_UsesThread covers the "already executing" reply when
+// another process holds the execution claim.
+func TestHandler_ClaimLost_UsesThread(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	projectPath := t.TempDir()
+	taskID := "TEST-claimed"
+	if _, err := executor.NewExecutionLifecycle(store).Begin(
+		&executor.Task{ID: taskID, ProjectPath: projectPath}, executor.ExecStatusRunning); err != nil {
+		t.Fatalf("pre-claim Begin: %v", err)
+	}
+
+	m := &handlerMock{}
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		Runner:       newScriptedRunner(&scriptedBackend{output: "done"}),
+		Store:        store,
+		ProjectPath:  projectPath,
+		TaskIDPrefix: "TEST",
+	})
+
+	h.executeTask(context.Background(), "ch1", threadIDUnderTest, taskID, "add response caching")
+
+	assertAllSentToThread(t, m, "already being executed")
+}
+
+// TestHandler_CancelTaskUsesStoredThread asserts cancellation replies go to the
+// thread the task was started from — CancelTask has no caller thread to use.
+func TestHandler_CancelTaskUsesStoredThread(t *testing.T) {
+	tests := []struct {
+		name     string
+		seed     func(h *Handler)
+		wantText string
+	}{
+		{
+			name: "pending task",
+			seed: func(h *Handler) {
+				h.pendingTasks["ch1"] = &PendingTask{
+					TaskID:    "TEST-1",
+					ContextID: "ch1",
+					ThreadID:  threadIDUnderTest,
+					CreatedAt: time.Now(),
+				}
+			},
+			wantText: "Cancelled pending task TEST-1",
+		},
+		{
+			name: "running task",
+			seed: func(h *Handler) {
+				h.runningTasks["ch1"] = &RunningTask{
+					TaskID:    "TEST-2",
+					ContextID: "ch1",
+					ThreadID:  threadIDUnderTest,
+					StartedAt: time.Now(),
+					Cancel:    func() {},
+				}
+			},
+			wantText: "Stopping task TEST-2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &handlerMock{}
+			h := newTestHandler(m)
+			tt.seed(h)
+
+			if err := h.CancelTask(context.Background(), "ch1"); err != nil {
+				t.Fatalf("CancelTask: %v", err)
+			}
+
+			assertAllSentToThread(t, m, tt.wantText)
+		})
 	}
 }
