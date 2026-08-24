@@ -6703,10 +6703,30 @@ func modelPricing(model string) (inputPrice, outputPrice float64) {
 		// Haiku 4.5
 		haikuInputPrice  = 1.00
 		haikuOutputPrice = 5.00
+		// Claude 5 Fable/Mythos
+		fableInputPrice  = 10.00
+		fableOutputPrice = 50.00
 	)
 
 	modelLower := strings.ToLower(model)
 	switch {
+	case strings.Contains(modelLower, "fable") || strings.Contains(modelLower, "mythos"):
+		// Claude 5 Fable/Mythos ($10/$50) — without this, these match nothing
+		// below and silently fall through to the Sonnet default, a 3.3x
+		// underestimate.
+		return fableInputPrice, fableOutputPrice
+	case strings.Contains(modelLower, "opus-5"):
+		// Claude Opus 5 ($5/$25). This already lands correctly via the
+		// generic "opus" case below, but is made explicit — ahead of the
+		// opus-4-1 legacy check — so a future default change can't silently
+		// reprice it.
+		return opusInputPrice, opusOutputPrice
+	case strings.Contains(modelLower, "sonnet-5"):
+		// Claude Sonnet 5 ($3/$15) — same as the standard default today.
+		// Kept explicit (rather than relying on fallthrough to default) so a
+		// future default change can't silently reprice it. Do NOT encode the
+		// 2026-08-31 intro pricing here.
+		return sonnetInputPrice, sonnetOutputPrice
 	case strings.Contains(modelLower, "opus-4-1") || strings.Contains(modelLower, "opus-4-0") || model == "claude-opus-4":
 		// Legacy Opus 4.1/4.0
 		return opus41InputPrice, opus41OutputPrice

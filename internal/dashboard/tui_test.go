@@ -212,8 +212,16 @@ func TestRenderTokenCard_CacheBreakdown(t *testing.T) {
 	if !strings.Contains(out, "105.0K") {
 		t.Errorf("renderTokenCard: expected grand total 105.0K in output, got:\n%s", out)
 	}
-	if !strings.Contains(out, "90.0K cached") {
-		t.Errorf("renderTokenCard: expected '90.0K cached' detail in output, got:\n%s", out)
+	// Detail = cache read + write (95_000), matching the headline's
+	// composition (GH-5192) — not CacheReadTokens alone.
+	if !strings.Contains(out, "95.0K cached") {
+		t.Errorf("renderTokenCard: expected '95.0K cached' detail in output, got:\n%s", out)
+	}
+	// Window label: full "· all-time" on wide cards, terse "· all" once the
+	// card is too narrow to fit the whole word — either way "· all" is a
+	// substring, so this assertion holds regardless of card width.
+	if !strings.Contains(out, "· all") {
+		t.Errorf("renderTokenCard: expected a '· all[-time]' window label in output, got:\n%s", out)
 	}
 }
 
