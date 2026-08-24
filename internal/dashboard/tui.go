@@ -1944,7 +1944,11 @@ func truncateVisual(s string, targetWidth int) string {
 	return result + "..."
 }
 
-// formatCompact formats a number in compact form: 0, 999, 1.0K, 57.3K, 1.2M.
+// formatCompact formats a number in compact form: 0, 999, 1.0K, 57.3K, 1.2M,
+// 6.7B. The B tier matters at production scale (GH-5197): without it, a
+// count like 6,745,700,000 renders as "6745.7M", which blows the token
+// card's 19-char detail budget and silently drops the "· all[-time]"
+// window-label suffix (renderTokenCard's suffix-only-if-it-fits loop).
 func formatCompact(n int) string {
 	if n < 1000 {
 		return fmt.Sprintf("%d", n)
@@ -1952,7 +1956,10 @@ func formatCompact(n int) string {
 	if n < 1_000_000 {
 		return fmt.Sprintf("%.1fK", float64(n)/1000)
 	}
-	return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	if n < 1_000_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	return fmt.Sprintf("%.1fB", float64(n)/1_000_000_000)
 }
 
 // --- Stat card renderers (grom demo gallery row-1 style) ---

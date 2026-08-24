@@ -27,6 +27,8 @@ func TestFormatCompact(t *testing.T) {
 		{57300, "57.3K"},
 		{1000000, "1.0M"},
 		{1234567, "1.2M"},
+		{1_000_000_000, "1.0B"},
+		{6_745_700_000, "6.7B"},
 	}
 
 	for _, tt := range tests {
@@ -222,6 +224,36 @@ func TestRenderTokenCard_CacheBreakdown(t *testing.T) {
 	// substring, so this assertion holds regardless of card width.
 	if !strings.Contains(out, "· all") {
 		t.Errorf("renderTokenCard: expected a '· all[-time]' window label in output, got:\n%s", out)
+	}
+}
+
+// TestRenderTokenCard_ProductionScale guards GH-5197: at production
+// (billions-of-tokens) magnitude, formatCompact used to top out at an "M"
+// tier, so "6745.7M cached" (14 chars) plus the " · all" suffix (6 chars)
+// blew the 19-char detail budget (cardWidth 23, inner width cw-4) and the
+// window label silently dropped — K-scale fixtures like
+// TestRenderTokenCard_CacheBreakdown never caught this because they never
+// crossed the M/B boundary.
+func TestRenderTokenCard_ProductionScale(t *testing.T) {
+	m := NewModel("test")
+	m.metricsCard = MetricsCardData{
+		TotalTokens:      100_000_000,
+		InputTokens:      70_000_000,
+		OutputTokens:     30_000_000,
+		CacheReadTokens:  6_700_000_000,
+		CacheWriteTokens: 45_700_000,
+		TokenHistory:     []int64{100, 200, 300, 400, 500, 600, 700},
+	}
+
+	out := m.renderTokenCard(cardWidth)
+
+	// Cache total = 6_700_000_000 + 45_700_000 = 6_745_700_000 -> "6.7B".
+	if !strings.Contains(out, "6.7B cached") {
+		t.Errorf("renderTokenCard production-scale: expected '6.7B cached' detail in output, got:\n%s", out)
+	}
+	// The window label must survive at this magnitude, not be width-dropped.
+	if !strings.Contains(out, "· all") {
+		t.Errorf("renderTokenCard production-scale: expected a '· all[-time]' window label in output, got:\n%s", out)
 	}
 }
 
