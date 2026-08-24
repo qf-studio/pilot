@@ -29,6 +29,10 @@ func (f *fakeRestartSlackClient) PostEphemeral(_ context.Context, _, _ string) e
 	return nil
 }
 
+func (f *fakeRestartSlackClient) PostEphemeralToUser(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
 // TestRestartApprovalFlow_Slack_WritesExecutionDecisionAndResumesMerge is the
 // Slack counterpart of TestRestartApprovalFlow_WritesExecutionDecisionAndResumesMerge
 // (GH-3825's Telegram regression test). It exercises the GH-4411 chain

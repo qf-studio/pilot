@@ -443,9 +443,11 @@ executor:
 #   pre_merge:
 #     enabled: false
 #     # Per-user authorization (isAuthorizedApprover in telegram.go/slack.go)
-#     # matches the tapping user's numeric ID against these entries via exact
-#     # string equality — use numeric chat/user IDs here, not "@handle"s, or
-#     # nobody will ever be recognized as an authorized approver.
+#     # matches the tapping user's ID against these entries via exact string
+#     # equality — use the platform's real user/chat ID here (Telegram:
+#     # numeric chat ID; Slack: alphanumeric user ID like "U0123ABCD"), not
+#     # an "@handle", or nobody will ever be recognized as an authorized
+#     # approver.
 #     # A "@handle" entry is still accepted, but only acts as a destination
 #     # override: TelegramHandler.resolveDestChatID sends the approval prompt
 #     # to approvers[0] instead of the handler's configured chat_id when it
