@@ -205,9 +205,6 @@ func (s sdkRateLimitScheduler) QueueRetryIfRateLimited(taskID, title, body, errT
 // parsed off adapters.github.use_sdk_poller for backward-compat config loading
 // but no longer gates anything here (see config.CheckDeprecations for the
 // startup warning).
-//
-// Known 4b limitation: the SDK adapter runs ExecutionModeAuto only —
-// execution.mode=sequential configs are not supported.
 func githubPollerRegistration() PollerRegistration {
 	return PollerRegistration{
 		Name: "github",
