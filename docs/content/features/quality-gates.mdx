@@ -126,9 +126,11 @@ An issue body must satisfy all of the following to pass:
   - `Design`
   - `Refs`
 
-  The match is an exact, case-sensitive English word (e.g. `## Context`) —
-  headers like `## Problem`, `## Summary`, or `## Goal` are **not**
-  recognized, even though they read as reasonable section titles.
+  The match is case-insensitive and only requires the heading to **start**
+  with one of these words — trailing words are allowed (e.g. `## Acceptance
+  Criteria` or `## context`) — but headers like `## Problem`, `## Summary`,
+  or `## Goal` are **not** recognized, even though they read as reasonable
+  section titles.
 
 - **H2–H6 scope.** The header must be a Markdown H2 through H6
   (`##` to `######`). An H1 (`#`) does not satisfy the check — issue titles

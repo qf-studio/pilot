@@ -108,7 +108,7 @@ func ValidateSpec(issue *github.Issue, parentResolver func(int) (*github.Issue, 
 
 	if !sectionHeaderRe.MatchString(body) {
 		reasons = append(reasons,
-			"no structural section header (need one of Acceptance, Implementation, Context, Background, Approach, Design, or Refs as an H2–H6 header — H1 is not accepted; only the heading text is checked, and it must match one of these words exactly in English — the body content underneath the heading may be written in any language)")
+			"no structural section header (need one of Acceptance, Implementation, Context, Background, Approach, Design, or Refs as an H2–H6 header — H1 is not accepted; only the heading text is checked, matching is case-insensitive and the heading must start with one of these English words (trailing words allowed, e.g. \"## Acceptance Criteria\") — the body content underneath the heading may be written in any language)")
 	}
 
 	return SpecValidationResult{
