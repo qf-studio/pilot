@@ -1124,3 +1124,63 @@ func TestSlackHandler_HandleInteraction_UnrestrictedWhenNoApproversOrAllowlist(t
 		t.Fatal("timeout waiting for response")
 	}
 }
+
+// TestSlackHandler_Rehydrate_ApproversGate covers the GH-5163 combination of
+// GH-4411 (restart-survival) and GH-5157 (identity-gated approval): the
+// persisted PendingApproval row carries Approvers, so a request reconstructed
+// by Rehydrate must still enforce that gate — a non-approver tap after
+// restart must be rejected (no mutation), while the listed approver can still
+// decide it via a DecisionRecorder since the original waiter goroutine died
+// with the pre-restart process.
+func TestSlackHandler_Rehydrate_ApproversGate(t *testing.T) {
+	client := &mockSlackClient{}
+	store := newMockPendingStore()
+	recorder := &mockDecisionRecorder{}
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID:               "rehy-gate",
+		TaskID:           "T-RG",
+		Stage:            "pre_merge",
+		Title:            "Rehydrated gated",
+		Approvers:        []string{"U-allowed"},
+		PreferredChannel: "slack",
+		CreatedAt:        time.Now(),
+		ExpiresAt:        time.Now().Add(time.Hour),
+	})
+
+	handler := NewSlackHandler(client, "#approvals").WithStore(store).WithDecisionRecorder(recorder)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	// A non-approver tap after rehydrate must be rejected without mutating state.
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:rehy-gate", "intruder", "intruder", "")
+	if !handled {
+		t.Error("expected interaction to be handled (even when unauthorized)")
+	}
+	if len(client.updateCalls) != 0 {
+		t.Fatalf("expected no message update for an unauthorized click, got %d", len(client.updateCalls))
+	}
+	if calls := recorder.getCalls(); len(calls) != 0 {
+		t.Fatalf("expected no decision recorded for an unauthorized click, got %d", len(calls))
+	}
+	handler.mu.RLock()
+	_, stillPending := handler.pending["rehy-gate"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized click")
+	}
+
+	// The listed approver can still decide it after rehydrate — recorded
+	// directly via DecisionRecorder since no waiter reads the rebuilt channel.
+	handled = handler.HandleInteraction(context.Background(), "approve", "approve:rehy-gate", "U-allowed", "approver", "")
+	if !handled {
+		t.Error("expected interaction to be handled")
+	}
+	calls := recorder.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected decision to be recorded directly after rehydrate, got %d calls", len(calls))
+	}
+	if calls[0].requestID != "rehy-gate" || calls[0].decision != DecisionApproved || calls[0].by != "approver" {
+		t.Errorf("unexpected recorded decision: %+v", calls[0])
+	}
+}
