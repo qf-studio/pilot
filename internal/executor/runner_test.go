@@ -953,6 +953,40 @@ func TestEstimateCostWithCache(t *testing.T) {
 	})
 }
 
+// TestModelPricing is a table-driven check of modelPricing across the
+// Claude model families, including the Claude 5 entries added in GH-5192:
+// sonnet-5 and opus-5 were previously reachable only via fallback/generic
+// "opus" matching, and fable/mythos matched nothing at all — silently
+// pricing at the Sonnet rate, a 3.3x underestimate.
+func TestModelPricing(t *testing.T) {
+	tests := []struct {
+		name            string
+		model           string
+		wantInputPrice  float64
+		wantOutputPrice float64
+	}{
+		{"sonnet-5", "claude-sonnet-5", 3.00, 15.00},
+		{"opus-5", "claude-opus-5", 5.00, 25.00},
+		{"fable-5", "claude-fable-5", 10.00, 50.00},
+		{"mythos-5", "claude-mythos-5", 10.00, 50.00},
+		{"haiku", "claude-haiku-4-5", 1.00, 5.00},
+		{"legacy opus-4-1", "claude-opus-4-1", 15.00, 75.00},
+		{"unknown falls back to default (sonnet)", "some-unknown-model", 3.00, 15.00},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputPrice, outputPrice := modelPricing(tt.model)
+			if inputPrice != tt.wantInputPrice {
+				t.Errorf("modelPricing(%q) inputPrice = %f, want %f", tt.model, inputPrice, tt.wantInputPrice)
+			}
+			if outputPrice != tt.wantOutputPrice {
+				t.Errorf("modelPricing(%q) outputPrice = %f, want %f", tt.model, outputPrice, tt.wantOutputPrice)
+			}
+		})
+	}
+}
+
 func TestUsageInfoCacheFields(t *testing.T) {
 	// Verify UsageInfo correctly unmarshals cache token fields from stream-json
 	jsonStr := `{"input_tokens": 1000, "output_tokens": 500, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 800}`

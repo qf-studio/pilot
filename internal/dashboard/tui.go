@@ -3,6 +3,7 @@ package dashboard
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -1959,21 +1960,48 @@ func formatCompact(n int) string {
 // renderTokenCard renders the tokens stat card: grand total (input + output +
 // cache read/write), cached share detail, 7-day stacked braille trend —
 // dim accent base = cached volume, bright accent cap = fresh input+output.
-// The detail line doubles as the color key ("cached" in the base tone).
+// The detail line doubles as the color key ("cached" in the base tone) and
+// carries a "· all-time" window label since this card is a lifetime total,
+// unlike the cost card's rolling window (GH-4735) — without the label the
+// two are easy to mentally divide into a nonsense rate.
 func (m Model) renderTokenCard(cw int) string {
+	ciw := cw - 4 // inner width; mirrors buildStatCardStacked's InnerSize(cw, statCardHeight)
 	grandTotal := m.metricsCard.TotalTokens + m.metricsCard.CacheReadTokens + m.metricsCard.CacheWriteTokens
 	value := boldLabelStyle.Render(formatCompact(grandTotal))
-	cachedTone := render.Dim(gromTheme.Accent, 0.45)
+	// 0.65 (was 0.45): at 0.45 the cached band reads as empty against the
+	// dark background, defeating its purpose as the base of the stack.
+	cachedTone := render.Dim(gromTheme.Accent, 0.65)
 	cachedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(cachedTone))
-	detail := cachedStyle.Render(fmt.Sprintf("%s cached", formatCompact(m.metricsCard.CacheReadTokens)))
+	// Cached total matches the composition of the headline grand total
+	// (read+write), not just CacheReadTokens.
+	cachedTotal := m.metricsCard.CacheReadTokens + m.metricsCard.CacheWriteTokens
+	base := fmt.Sprintf("%s cached", formatCompact(cachedTotal))
+	// The full "· all-time" label plus "cached" and a realistic (5-6 digit)
+	// token count doesn't fit the card's default inner width (19 cols) — try
+	// the full label first for wide cards, degrade to the terser "· all" tag
+	// so the window is still marked at the default width, matching the
+	// suffix-only-if-it-fits pattern already used by the queue card
+	// (nonFailureSuffix) rather than truncating mid-word.
+	detailText := base
+	for _, suffix := range []string{" · all-time", " · all"} {
+		if candidate := base + suffix; lipgloss.Width(candidate) <= ciw {
+			detailText = candidate
+			break
+		}
+	}
+	detail := cachedStyle.Render(detailText)
 
+	// Real-world cache ratios routinely exceed 95%, which degenerates a
+	// linearly-stacked sparkline: the minority band's dot-height rounds to
+	// zero. sqrt-compress each series before stacking so a nonzero minority
+	// band still occupies visible dot rows instead of vanishing.
 	cached := make([]float64, len(m.metricsCard.CachedTokenHistory))
 	for i, v := range m.metricsCard.CachedTokenHistory {
-		cached[i] = float64(v)
+		cached[i] = math.Sqrt(float64(v))
 	}
 	fresh := make([]float64, len(m.metricsCard.TokenHistory))
 	for i, v := range m.metricsCard.TokenHistory {
-		fresh[i] = float64(v)
+		fresh[i] = math.Sqrt(float64(v))
 	}
 	return buildStatCardStacked("tokens", value, detail,
 		[][]float64{cached, fresh}, []string{cachedTone, gromTheme.Accent}, cw)
@@ -2032,6 +2060,14 @@ func nonFailureSuffix(c MetricsCardData) string {
 // suffix when the whole line fits the card — otherwise show just the headline.
 // Truncating a styled multi-segment string blanks the line (the empty "failed"
 // row seen on v2.166.10).
+//
+// GH-5192: the card title used to read "queue depth" for all three rows, but
+// only the headline is an instantaneous queue depth — the ✓/✗ detail is a
+// windowed lifetime total and the sparkline is succeeded/failed *per day*
+// over 7 days, not depth over time (no queue-depth time series exists in the
+// store; sampling one is out of scope here). An operator misread the failed
+// band as live queue problems. The title now names what the graph actually
+// plots ("· outcomes") so headline and chart don't imply the same metric.
 func (m Model) renderTaskCard(cw int) string {
 	ciw := cw - 4
 	activeCount := 0
@@ -2061,7 +2097,7 @@ func (m Model) renderTaskCard(cw int) string {
 	for i, v := range m.metricsCard.FailedHistory {
 		failed[i] = float64(v)
 	}
-	return buildStatCardStacked("queue depth", value, detail,
+	return buildStatCardStacked("queue · outcomes", value, detail,
 		[][]float64{succeeded, failed}, []string{gromTheme.Success, gromTheme.Error}, cw)
 }
 

@@ -65,7 +65,7 @@ func TestFullDashboardRender_WidthInvariants(t *testing.T) {
 	// Grom chrome landmarks: lowercase titles, legend in the queue border.
 	plain := stripANSI(out)
 	for _, want := range []string{
-		"╭─ tokens ", "╭─ cost ", "╭─ queue depth ",
+		"╭─ tokens ", "╭─ cost ", "╭─ queue · outcomes ",
 		"┤ ● 1 running  ● gh  ● tg  ○ 1 idle ├", "╭─ autopilot ", "╭─ history ", "╭─ logs ",
 		" pilot ●",
 		"✓ GH-4018", "■■■■■■■ released", "✗ GH-4008", "■■■■■■■ ci_failed",
