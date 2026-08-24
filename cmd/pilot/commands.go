@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1295,6 +1296,21 @@ func parseInt64(s string) (int64, error) {
 	var id int64
 	_, err := fmt.Sscanf(s, "%d", &id)
 	return id, err
+}
+
+// telegramAllowedUserIDStrings converts cfg.Adapters.Telegram.AllowedIDs
+// (numeric Telegram user/chat IDs) to decimal strings, for use with
+// approval.TelegramHandler.WithAllowedUsers, which compares by plain string
+// equality against Approvers entries (GH-5158).
+func telegramAllowedUserIDStrings(ids []int64) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	strs := make([]string, len(ids))
+	for i, id := range ids {
+		strs[i] = strconv.FormatInt(id, 10)
+	}
+	return strs
 }
 
 // stampPilotFailedWithLadder applies the pilot-failed label to issueNum and
