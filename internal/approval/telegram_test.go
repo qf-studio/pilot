@@ -2403,3 +2403,45 @@ func TestTelegramHandlerMessageThreadID(t *testing.T) {
 		})
 	}
 }
+
+// TestTelegramHandler_WithAllowedIDs_AliasesWithAllowedUsers covers GH-5157:
+// WithAllowedIDs is an alternate-named builder for the same allowlist as
+// WithAllowedUsers, so it must gate HandleCallback identically.
+func TestTelegramHandler_WithAllowedIDs_AliasesWithAllowedUsers(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123", 0).WithAllowedIDs([]string{"allowed-1"})
+
+	req := &Request{
+		ID:        "req-with-allowed-ids",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-with-allowed-ids", "not-allowed", "someone")
+	if !handled {
+		t.Error("expected callback to be handled (even when unauthorized)")
+	}
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 || cbs[0].Text != "You are not authorized to decide this request" {
+		t.Fatalf("expected unauthorized answer text, got: %+v", cbs)
+	}
+
+	handled = handler.HandleCallback(context.Background(), "cb2", "approve:req-with-allowed-ids", "allowed-1", "someone-else")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
