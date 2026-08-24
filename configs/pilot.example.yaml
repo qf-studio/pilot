@@ -442,6 +442,15 @@ executor:
 #   default_action: rejected    # "approved" or "rejected" on timeout
 #   pre_merge:
 #     enabled: false
+#     # Per-user authorization (isAuthorizedApprover in telegram.go/slack.go)
+#     # matches the tapping user's numeric ID against these entries via exact
+#     # string equality — use numeric chat/user IDs here, not "@handle"s, or
+#     # nobody will ever be recognized as an authorized approver.
+#     # A "@handle" entry is still accepted, but only acts as a destination
+#     # override: TelegramHandler.resolveDestChatID sends the approval prompt
+#     # to approvers[0] instead of the handler's configured chat_id when it
+#     # looks like a valid Telegram destination (numeric ID or "@handle").
+#     # It does not grant that handle authorization to decide the request.
 #     approvers:
 #       - "${TELEGRAM_APPROVER_CHAT_ID}"   # Chat ID of the approver
 #     timeout: 24h
