@@ -81,6 +81,21 @@ type Engine struct {
 	// existed. Writes are best-effort and off the alerting path: a store
 	// error is logged and the alert still fires/resolves.
 	activeAlertStore ActiveAlertStore
+
+	// lastSeenCounters is the in-memory checkpoint of level-triggered
+	// stats-event counters (e.g. circuit_breaker_trips), keyed by
+	// activeAlertKey(ruleName, eventSource). counterDelta reads and updates
+	// this on every stats event; counterStore (if wired) mirrors it to disk
+	// so a restart rehydrates from the pre-restart value instead of treating
+	// the standing counter as a fresh trip (GH-5209).
+	lastSeenCounters map[string]int
+
+	// counterStore persists lastSeenCounters across restarts (GH-5209). nil
+	// (the default, unless WithAlertCounterStore is passed) makes every
+	// persistence call a no-op — checkpoints then live only in memory and a
+	// restart re-baselines on the first post-restart observation, same as an
+	// engine that never had this store wired.
+	counterStore AlertCounterStore
 }
 
 // minOrphanEvictionThreshold floors evaluateStuckTasks' orphan-eviction window
@@ -281,6 +296,20 @@ func WithActiveAlertStore(store ActiveAlertStore) EngineOption {
 	}
 }
 
+// WithAlertCounterStore wires the optional persistence store for
+// level-triggered stats-event counter checkpoints (GH-5209). When set, the
+// engine writes through to the store every time a tracked counter (e.g.
+// circuit_breaker_trips) changes, and NewEngine rehydrates the in-memory
+// lastSeenCounters map from it — so a restart resumes from the pre-restart
+// counter value instead of re-baselining and, worse, instead of the old
+// level-triggered behavior re-firing the whole standing backlog. Omitting
+// this option (the default) keeps checkpoint state in memory only.
+func WithAlertCounterStore(store AlertCounterStore) EngineOption {
+	return func(e *Engine) {
+		e.counterStore = store
+	}
+}
+
 // NewEngine creates a new alerting engine
 func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 	e := &Engine{
@@ -299,6 +328,7 @@ func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 		dispatchCh:          make(chan dispatchJob, dispatchBacklog),
 		recentAlerts:        make(map[string]time.Time),
 		metrics:             NewAlertMetrics(),
+		lastSeenCounters:    make(map[string]int),
 	}
 
 	for _, opt := range opts {
@@ -306,6 +336,7 @@ func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 	}
 
 	e.rehydrateActiveAlerts()
+	e.rehydrateAlertCounters()
 
 	return e
 }
@@ -408,6 +439,83 @@ func (e *Engine) deletePersistedActiveAlert(ruleName, source string) {
 			"error", err,
 		)
 	}
+}
+
+// rehydrateAlertCounters loads persisted counter checkpoints (if a store was
+// wired via WithAlertCounterStore) into lastSeenCounters (GH-5209). Runs
+// once, at construction, so a restart resumes edge-triggering from the
+// pre-restart counter value instead of re-baselining on the first
+// post-restart stats event (which would itself be harmless — see
+// counterDelta — but would also discard a genuine in-flight increase that
+// happened to land exactly at restart). A load failure is logged and
+// treated as "nothing to rehydrate" — best-effort, off the alerting path.
+func (e *Engine) rehydrateAlertCounters() {
+	if e.counterStore == nil {
+		return
+	}
+	rows, err := e.counterStore.LoadAlertCounters()
+	if err != nil {
+		e.logger.Warn("failed to rehydrate alert counters from store", "error", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+
+	e.mu.Lock()
+	for _, row := range rows {
+		e.lastSeenCounters[activeAlertKey(row.RuleName, row.Source)] = row.LastValue
+	}
+	e.mu.Unlock()
+
+	e.logger.Info("rehydrated alert counters from store", "count", len(rows))
+}
+
+// persistAlertCounter writes a counter checkpoint through to the store, if
+// one is wired (GH-5209). Best-effort and off the alerting path: a store
+// error is logged, never returned — the in-memory checkpoint (and any alert
+// decision made from it) is unaffected.
+func (e *Engine) persistAlertCounter(ruleName, source string, value int) {
+	if e.counterStore == nil {
+		return
+	}
+	if err := e.counterStore.UpsertAlertCounter(ruleName, source, value); err != nil {
+		e.logger.Warn("failed to persist alert counter",
+			"rule", ruleName,
+			"source", source,
+			"error", err,
+		)
+	}
+}
+
+// counterDelta makes a level-triggered stats-event counter (e.g.
+// circuit_breaker_trips) edge-triggered (GH-5209): it reports increased=true
+// only when value is strictly greater than the last value this method
+// observed for (ruleName, eventSource(event)) — never merely because value
+// is nonzero. The very first observation for a given key — whether this is
+// the first stats event this process has ever seen, or the first one after
+// a restart with no persisted checkpoint — always returns increased=false;
+// it only establishes the baseline. That is deliberate: a counter that was
+// already nonzero before this code (or before this process) started is a
+// standing value, not a fresh trip, and must not be reported as one.
+//
+// The checkpoint always advances to the latest value (even when it
+// decreases, e.g. a windowed counter's window rolling over), so a later
+// increase is measured against the true last-seen value rather than a stale
+// high-water mark that would otherwise suppress it.
+func (e *Engine) counterDelta(ruleName string, event Event, value int) (increased bool) {
+	key := activeAlertKey(ruleName, eventSource(event))
+
+	e.mu.Lock()
+	last, seen := e.lastSeenCounters[key]
+	changed := !seen || value != last
+	e.lastSeenCounters[key] = value
+	e.mu.Unlock()
+
+	if changed {
+		e.persistAlertCounter(ruleName, eventSource(event), value)
+	}
+	return seen && value > last
 }
 
 // Start starts the alerting engine
@@ -1209,12 +1317,24 @@ func (e *Engine) shouldFire(rule AlertRule) bool {
 	return time.Since(lastFired) >= rule.Cooldown
 }
 
+// eventSource returns the key used to scope per-source engine state (active
+// alerts, counter checkpoints) for an event: event.Source when set, else a
+// "task:<TaskID>" fallback. Shared by createAlert (Alert.Source) and
+// counterDelta (GH-5209) so counter checkpoints line up with the alerts they
+// gate.
+func eventSource(event Event) string {
+	if event.Source != "" {
+		return event.Source
+	}
+	if event.TaskID != "" {
+		return fmt.Sprintf("task:%s", event.TaskID)
+	}
+	return ""
+}
+
 // createAlert creates an alert from a rule and event
 func (e *Engine) createAlert(rule AlertRule, event Event, message string) *Alert {
-	source := event.Source
-	if source == "" && event.TaskID != "" {
-		source = fmt.Sprintf("task:%s", event.TaskID)
-	}
+	source := eventSource(event)
 
 	return &Alert{
 		ID:          uuid.New().String(),
@@ -1465,8 +1585,16 @@ func (e *Engine) handleAutopilotMetrics(ctx context.Context, event Event) {
 				e.fireAlert(ctx, rule, alert)
 			}
 
+		// GH-5209: circuit_breaker_trips is a windowed/cumulative counter
+		// seeded periodically by the metrics hydrator, not a per-event
+		// "did it trip just now" flag — evaluating rule.Condition against
+		// "cbTrips > 0" is level-triggered and fires every cooldown period
+		// forever once the counter goes nonzero, even with zero live trips
+		// and nothing to clear. counterDelta makes this edge-triggered:
+		// alert only on an increase since the last-observed value, never on
+		// a standing nonzero count.
 		case AlertTypeCircuitBreakerTrip:
-			if cbTrips > 0 && e.shouldFire(rule) {
+			if e.counterDelta(rule.Name, event, cbTrips) && e.shouldFire(rule) {
 				alert := e.createAlert(rule, event,
 					fmt.Sprintf("Autopilot circuit breaker tripped (%d trips)", cbTrips))
 				e.fireAlert(ctx, rule, alert)
