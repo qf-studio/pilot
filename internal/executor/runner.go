@@ -2019,7 +2019,7 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 
 	// Create the parent PR with a GitHub auto-close keyword.
 	epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
-	prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
+	prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, extraFixesKeyword(task.Description, epicIssueNum), task.Description)
 
 	// GH-4220 (b): route the epic parent's title through the same
 	// autoPrefixTitle/inferConventionalPrefix machinery as the direct path
@@ -5385,7 +5385,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			}
 			if ghSDKCreator != nil {
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
-				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
+				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 				var createErr error
 				for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
 					prURL, createErr = ghSDKCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
@@ -5413,7 +5413,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// Include "Closes #N" keyword so GitLab auto-closes the source issue on merge
 				closeKeyword := ""
 				if task.SourceIssueID != "" {
-					closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
+					closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID) + extraFixesKeyword(task.Description, task.SourceIssueID)
 				}
 				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
 				// Retry MR creation before giving up (GH-3785): the branch is
@@ -5444,7 +5444,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			} else {
 				// GitHub: use gh CLI with auto-close keyword
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
-				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
+				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 				// Retry PR creation before giving up (GH-3785): same rationale as
 				// the MR-creator branch above — the branch is already pushed.
 				var createErr error

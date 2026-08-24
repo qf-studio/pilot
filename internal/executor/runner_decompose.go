@@ -545,7 +545,7 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 	}
 	switch {
 	case ghSDKCreator != nil:
-		prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
+		prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 		for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
 			prURL, createErr = ghSDKCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
 			if createErr == nil {
@@ -564,7 +564,7 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 	case r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github":
 		closeKeyword := ""
 		if task.SourceIssueID != "" {
-			closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
+			closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID) + extraFixesKeyword(task.Description, task.SourceIssueID)
 		}
 		prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
 		for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
@@ -583,7 +583,7 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 			}
 		}
 	default:
-		prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
+		prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 		for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
 			prURL, createErr = git.CreatePR(ctx, prTitle, prBody, baseBranch)
 			if createErr == nil {
