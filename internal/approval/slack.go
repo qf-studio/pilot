@@ -72,6 +72,13 @@ type SlackHandler struct {
 	log      *slog.Logger
 	store    PendingApprovalStore // optional; enables restart persistence (GH-4411)
 	recorder DecisionRecorder     // optional; persists decisions directly (restart-safe, GH-4411)
+
+	// allowedUsers is a handler-scoped fallback allowlist consulted by
+	// isAuthorizedApprover when a request's own Request.Approvers is empty
+	// (GH-5156, mirrors Telegram's GH-5155). Set via WithAllowedUsers.
+	// Nil/empty means unrestricted — any clicker may decide a request that
+	// carries no configured approvers.
+	allowedUsers []string
 }
 
 // slackPending tracks a pending Slack approval request
@@ -177,6 +184,47 @@ func (h *SlackHandler) WithStore(store PendingApprovalStore) *SlackHandler {
 func (h *SlackHandler) WithDecisionRecorder(recorder DecisionRecorder) *SlackHandler {
 	h.recorder = recorder
 	return h
+}
+
+// WithAllowedUsers attaches a handler-scoped allowlist of user IDs permitted
+// to decide approval requests whose own Request.Approvers is empty
+// (GH-5156, mirrors Telegram's GH-5155). Requests that do carry Approvers
+// are gated by that list instead — this fallback only applies when
+// Approvers is unset. Returns h to allow builder-style chaining.
+func (h *SlackHandler) WithAllowedUsers(users []string) *SlackHandler {
+	h.allowedUsers = users
+	return h
+}
+
+// isAuthorizedApprover reports whether userID may decide a request via this
+// handler (GH-5156, mirrors Telegram's GH-5155). When approvers (the
+// request's own Request.Approvers) is non-empty it is the authoritative
+// allowlist — userID must exactly match one of its entries via plain string
+// equality, since Approvers already carries whatever identity format the
+// operator configured for this channel (e.g. Slack user ids). When
+// approvers is empty, control falls back to the handler-scoped allowedUsers
+// set (see WithAllowedUsers) so a channel can still restrict who may decide
+// requests that didn't specify their own approver list. Both empty means
+// unrestricted — any user may decide, preserving behavior for callers that
+// never configured either.
+func (h *SlackHandler) isAuthorizedApprover(userID string, approvers []string) bool {
+	if len(approvers) > 0 {
+		for _, a := range approvers {
+			if a == userID {
+				return true
+			}
+		}
+		return false
+	}
+	if len(h.allowedUsers) == 0 {
+		return true
+	}
+	for _, u := range h.allowedUsers {
+		if u == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // Rehydrate loads persisted pending approvals from the store and re-inserts them
@@ -413,8 +461,16 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 
 	h.mu.Lock()
 	pending, exists := h.pending[requestID]
+	// GH-5156: decide authorization inside the same critical section as the
+	// lookup, and only delete from h.pending when authorized — an
+	// unauthorized click must not mutate any state (pending map, store,
+	// resolved decision), just like the not-found/expired paths below.
+	authorized := true
 	if exists {
-		delete(h.pending, requestID)
+		authorized = h.isAuthorizedApprover(userID, pending.Request.Approvers)
+		if authorized {
+			delete(h.pending, requestID)
+		}
 	}
 	h.mu.Unlock()
 
@@ -424,6 +480,15 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 			slog.String("decision", string(decision)),
 			slog.String("user", username))
 		return true // Still handled, just expired
+	}
+
+	if !authorized {
+		h.log.Info("Approval interaction from unauthorized user",
+			slog.String("request_id", requestID),
+			slog.String("decision", string(decision)),
+			slog.String("user", username),
+			slog.String("user_id", userID))
+		return true // Still handled — request stays pending for the real approver
 	}
 
 	if h.store != nil {
