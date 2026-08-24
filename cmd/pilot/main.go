@@ -850,6 +850,10 @@ Examples:
 							slackChannel = cfg.Adapters.Slack.Channel
 						}
 						gwSlackApprovalHandler = approval.NewSlackHandler(&slackApprovalClientAdapter{adapter: slackAdapter}, slackChannel)
+						// GH-5159: fallback allowlist consulted by isAuthorizedApprover
+						// when a request's own Approvers is empty (mirrors the Telegram
+						// wiring from cfg.Adapters.Telegram.AllowedIDs, GH-5158).
+						gwSlackApprovalHandler.WithAllowedIDs(cfg.Adapters.Slack.AllowedUsers)
 						// GH-4411: persist decisions directly to PRState via the manager so a
 						// button click on a Rehydrate-restored request isn't lost when no
 						// waiter goroutine survived the restart (mirrors GH-3825's Telegram fix).
@@ -2195,6 +2199,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				slackChannel = cfg.Adapters.Slack.Channel
 			}
 			slackApprovalHandlerImpl = approval.NewSlackHandler(&slackApprovalClientAdapter{adapter: slackAdapter}, slackChannel)
+			// GH-5159: fallback allowlist consulted by isAuthorizedApprover
+			// when a request's own Approvers is empty (mirrors the Telegram
+			// wiring from cfg.Adapters.Telegram.AllowedIDs, GH-5158).
+			slackApprovalHandlerImpl.WithAllowedIDs(cfg.Adapters.Slack.AllowedUsers)
 			// GH-4411: persist decisions directly to PRState via the manager so a
 			// button click on a Rehydrate-restored request isn't lost when no
 			// waiter goroutine survived the restart (mirrors GH-3825's Telegram fix).

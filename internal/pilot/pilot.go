@@ -272,6 +272,10 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 				&slackApprovalClientAdapter{adapter: slackAdapter},
 				approvalChannel,
 			)
+			// GH-5159: fallback allowlist consulted by isAuthorizedApprover
+			// when a request's own Approvers is empty (mirrors the Telegram
+			// wiring from cfg.Adapters.Telegram.AllowedIDs, GH-5158).
+			p.slackApprovalHdlr.WithAllowedIDs(cfg.Adapters.Slack.AllowedUsers)
 			// GH-4411: persist decisions directly to PRState via the manager so a
 			// button click on a Rehydrate-restored request isn't lost when no
 			// waiter goroutine survived the restart (mirrors GH-3825's Telegram fix).
