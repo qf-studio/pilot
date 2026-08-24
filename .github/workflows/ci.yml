@@ -80,7 +80,16 @@ jobs:
         run: go build -v $(go list ./... | grep -v /desktop)
 
       - name: Test
-        run: go test -v -race -coverprofile=coverage.out $(go list ./... | grep -v /desktop)
+        # GH-5185: `go test`'s default -timeout is 10m (600s) per package
+        # test binary. internal/memory and internal/executor are large
+        # -race suites (subprocess/worktree-heavy) that run close to that
+        # wall on shared/slow runners, so main intermittently flapped red
+        # on a plain 600.0xxs kill with no code at fault (runs 32727733048,
+        # 32733207554 — both post-merge, diffs untouched the failing
+        # packages). Budget: 20m gives ~2x headroom over the observed
+        # worst case without masking a real hang (CI would still catch a
+        # runaway test well before 20m).
+        run: go test -v -race -timeout 20m -coverprofile=coverage.out $(go list ./... | grep -v /desktop)
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
