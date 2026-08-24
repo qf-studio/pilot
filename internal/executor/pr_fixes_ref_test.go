@@ -8,6 +8,12 @@ import "testing"
 // generated PR body as a real "Fixes #N" line — the actual repro that
 // motivated this: GH-5165's own body reads "Ensure the PR body includes
 // 'Fixes #5149'."
+//
+// GH-5191: it must NOT promote prose occurrences of the same keywords —
+// quoted-but-embedded, negated, or merely descriptive mentions of "closes
+// #N"/"fixes #N"/"resolves #N" mid-sentence must stay plain text, since
+// promoting them would silently attach an unrelated auto-close keyword to
+// the generated PR.
 func TestExtraFixesKeyword(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -50,6 +56,42 @@ func TestExtraFixesKeyword(t *testing.T) {
 			description: "",
 			ownIssueNum: "5165",
 			want:        "",
+		},
+		{
+			name:        "descriptive mid-sentence usage is not promoted",
+			description: "this bug closes #123 prematurely, which is itself the defect",
+			ownIssueNum: "5165",
+			want:        "",
+		},
+		{
+			name:        "descriptive mid-sentence usage with resolves is not promoted",
+			description: "the old fix resolves #99 only partially and needs revisiting",
+			ownIssueNum: "5165",
+			want:        "",
+		},
+		{
+			name:        "negated narrative usage is not promoted",
+			description: "It never really fixes #42, that ticket needs separate follow-up work.",
+			ownIssueNum: "5165",
+			want:        "",
+		},
+		{
+			name:        "quoted marker with trailing words is not promoted",
+			description: `The changelog says "this closes #123 in theory" but actually doesn't.`,
+			ownIssueNum: "5165",
+			want:        "",
+		},
+		{
+			name:        "structured marker still promoted alongside descriptive noise",
+			description: "This description mentions that the bug closes #123 prematurely, but the real fix is:\nFixes #456",
+			ownIssueNum: "5165",
+			want:        "\nFixes #456",
+		},
+		{
+			name:        "bullet-list Refs-style marker is promoted",
+			description: "## Refs\n\n- Closes #789\n- Related to the epic, not a closer: fixes #999 in another package though",
+			ownIssueNum: "5165",
+			want:        "\nFixes #789",
 		},
 	}
 

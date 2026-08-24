@@ -16,10 +16,23 @@ import (
 	"strings"
 )
 
-// fixesRefRe matches an explicit GitHub closing-keyword reference ("Fixes
-// #N", "Closes #N", "Resolves #N", case-insensitive) anywhere in an issue
-// body.
-var fixesRefRe = regexp.MustCompile(`(?i)\b(?:fixes|closes|resolves)\s+#(\d+)\b`)
+// fixesRefRe matches a *structured* GitHub closing-keyword marker ("Fixes
+// #N", "Closes #N", "Resolves #N", case-insensitive) — GH-5191: the
+// original version matched the keyword+number pair anywhere in prose, which
+// promoted incidental, quoted, negated, or descriptive mentions ("this bug
+// closes #123 prematurely", "the old fix resolves #99 only partially") into
+// live auto-close keywords on the generated PR. A structured marker is one
+// that stands alone as its own unit rather than being embedded mid-sentence:
+//   - at the start of a line (optionally after a "-"/"*"/"•" list bullet,
+//     e.g. a "## Refs" section entry), terminated by end-of-line, sentence
+//     punctuation, or a closing bracket, OR
+//   - wrapped in quotes with nothing else inside them (the GH-5165 repro:
+//     body text reading "Ensure the PR body includes 'Fixes #5149'.").
+//
+// Free-standing narrative usage — the keyword appearing after a subject
+// ("this bug closes #123...") — matches neither shape and is intentionally
+// left as plain text.
+var fixesRefRe = regexp.MustCompile(`(?im)(?:^[ \t]*(?:[-*•]\s+)?|['"“‘])(?:fixes|closes|resolves)\s+#(\d+)(?:['"”’]|[.,;:!?)]|[ \t]*$)`)
 
 // extraFixesKeyword scans description for fixesRefRe matches and returns a
 // "\nFixes #N" line for each referenced issue number distinct from
@@ -29,6 +42,15 @@ var fixesRefRe = regexp.MustCompile(`(?i)\b(?:fixes|closes|resolves)\s+#(\d+)\b`
 // the external report a decomposed epic ultimately resolves) carries that
 // reference forward as a real closing keyword on the generated PR — not
 // merely as quoted text inside the copied description.
+//
+// GH-5191: the emitted "Fixes #N" line is GitHub closing-keyword syntax.
+// Callers on non-GitHub PR/MR creation paths (GitLab MRs and, per the
+// PRCreator interface's own doc comment, any future Azure DevOps/Jira/
+// Linear implementation) must NOT call this — the referenced #N could be a
+// same-project GitLab IID, a GitHub issue number quoted from an epic's
+// original report, or something else entirely, and there is no reliable way
+// to tell which without adapter-specific context. Those paths should either
+// skip promotion or build their own adapter-native equivalent.
 func extraFixesKeyword(description, ownIssueNum string) string {
 	matches := fixesRefRe.FindAllStringSubmatch(description, -1)
 	if len(matches) == 0 {
