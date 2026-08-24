@@ -131,3 +131,56 @@ jobs:
           # (#4956/#4958/#4960/#4969/#4971/#4973 chain). Fresh-cache runs are
           # deterministically green. Trade ~1min of lint time for correctness.
           skip-cache: true
+          # GH-5087: `verify: true` (the action's default) runs
+          # `golangci-lint config verify`, which fetches the JSON schema
+          # from https://golangci-lint.run at runtime. On 2026-08-21 that
+          # fetch hit `context deadline exceeded` and failed lint on
+          # PR#5082 whose code was never actually linted — autopilot closed
+          # the green PR and spawned a phantom fix issue (#5083). Config
+          # verification is only load-bearing when .golangci.yml changes,
+          # so it now runs in the separate `config-verify` job below
+          # instead of on every PR's hot path.
+          verify: false
+
+  # GH-5087: schema verification for .golangci.yml, split out of the
+  # per-PR lint job (see the `verify: false` note above). Only runs when
+  # .golangci.yml itself changes, so the remote schema-host dependency
+  # can no longer fail unrelated PRs — but a config change still gets
+  # verified before merge.
+  config-verify:
+    name: golangci-lint Config Verify
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check whether .golangci.yml changed
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          if git diff --name-only "$base" "${{ github.sha }}" -- .golangci.yml | grep -qx '.golangci.yml'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Go
+        if: steps.changed.outputs.changed == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: golangci-lint config verify
+        if: steps.changed.outputs.changed == 'true'
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.8.0
+          args: --timeout=5m
+          skip-cache: true
