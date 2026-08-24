@@ -106,6 +106,10 @@ func (a *slackApprovalClientAdapter) UpdateInteractiveMessage(ctx context.Contex
 	return a.adapter.UpdateInteractiveMessage(ctx, channel, ts, blocks, text)
 }
 
+func (a *slackApprovalClientAdapter) PostEphemeral(ctx context.Context, responseURL, text string) error {
+	return a.adapter.PostEphemeral(ctx, responseURL, text)
+}
+
 // wireProjectAccessChecker creates and wires a team-based project access checker on the runner (GH-635).
 // It opens the teams DB, resolves the configured member, and returns a cleanup function.
 // Returns nil cleanup if team config is absent or disabled.

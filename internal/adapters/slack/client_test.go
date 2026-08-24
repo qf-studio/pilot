@@ -1248,3 +1248,75 @@ func TestClientUpdateMessageInvalidJSON(t *testing.T) {
 		t.Errorf("error = %q, want to contain 'failed to parse response'", err.Error())
 	}
 }
+
+// TestClientPostEphemeral covers GH-5161: PostEphemeral POSTs directly to
+// the given response_url (not the botToken-authenticated Slack API base
+// URL) with an ephemeral, non-replacing payload.
+func TestClientPostEphemeral(t *testing.T) {
+	var gotAuth, gotContentType, gotMethod string
+	var gotBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &gotBody); err != nil {
+			t.Fatalf("failed to parse request body: %v", err)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClient(testutil.FakeSlackBotToken)
+	ctx := context.Background()
+	if err := client.PostEphemeral(ctx, server.URL, "You are not authorized to decide this request"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+	// response_url requests are pre-authenticated by Slack; no bot token
+	// should be sent.
+	if gotAuth != "" {
+		t.Errorf("Authorization = %q, want empty (response_url is pre-authenticated)", gotAuth)
+	}
+	if gotBody["response_type"] != "ephemeral" {
+		t.Errorf("response_type = %v, want ephemeral", gotBody["response_type"])
+	}
+	if gotBody["text"] != "You are not authorized to decide this request" {
+		t.Errorf("text = %v, want the refusal message", gotBody["text"])
+	}
+	if gotBody["replace_original"] != false {
+		t.Errorf("replace_original = %v, want false (original message must stay clickable)", gotBody["replace_original"])
+	}
+}
+
+// TestClientPostEphemeralErrorStatus covers the non-200 response_url path
+// (GH-5161): Slack returns a plain-text error body on failure, which
+// PostEphemeral must surface rather than silently succeed.
+func TestClientPostEphemeralErrorStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte("expired_url"))
+	}))
+	defer server.Close()
+
+	client := NewClient(testutil.FakeSlackBotToken)
+	err := client.PostEphemeral(context.Background(), server.URL, "test")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "expired_url") {
+		t.Errorf("error = %q, want it to contain the response body", err.Error())
+	}
+}

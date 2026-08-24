@@ -17,6 +17,12 @@ import (
 type SlackClient interface {
 	PostInteractiveMessage(ctx context.Context, msg *SlackInteractiveMessage) (*SlackPostMessageResponse, error)
 	UpdateInteractiveMessage(ctx context.Context, channel, ts string, blocks []interface{}, text string) error
+	// PostEphemeral sends a message visible only to the user who triggered
+	// the interaction, delivered via the interaction's response_url
+	// (GH-5161). Used to answer a click without mutating the original
+	// message — e.g. telling an unauthorized clicker they aren't an
+	// approver, mirroring TelegramHandler's AnswerCallback toast.
+	PostEphemeral(ctx context.Context, responseURL, text string) error
 }
 
 // SlackInteractiveMessage represents a Slack message with interactive buttons
@@ -484,11 +490,17 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 	}
 
 	if !authorized {
-		h.log.Info("Approval interaction from unauthorized user",
+		h.log.Warn("Approval interaction from unauthorized user",
 			slog.String("request_id", requestID),
 			slog.String("decision", string(decision)),
 			slog.String("user", username),
 			slog.String("user_id", userID))
+		if responseURL != "" {
+			if err := h.client.PostEphemeral(ctx, responseURL, "You are not authorized to decide this request"); err != nil {
+				h.log.Warn("failed to send unauthorized approval ephemeral response",
+					slog.String("request_id", requestID), slog.Any("error", err))
+			}
+		}
 		return true
 	}
 

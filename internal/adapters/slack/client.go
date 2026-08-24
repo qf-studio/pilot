@@ -289,6 +289,48 @@ func (c *Client) PostInteractiveMessage(ctx context.Context, msg *InteractiveMes
 	return &result, nil
 }
 
+// PostEphemeral sends a message visible only to the triggering user by
+// POSTing to a Slack interaction's response_url (GH-5161). response_url
+// requests are pre-authenticated by Slack, so — unlike PostMessage/
+// PostInteractiveMessage — no bot token is sent. replace_original is left
+// false so the original message (and its buttons, for the real approver)
+// stays intact.
+func (c *Client) PostEphemeral(ctx context.Context, responseURL, text string) error {
+	payload := struct {
+		ResponseType    string `json:"response_type"`
+		Text            string `json:"text"`
+		ReplaceOriginal bool   `json:"replace_original"`
+	}{
+		ResponseType:    "ephemeral",
+		Text:            text,
+		ReplaceOriginal: false,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal ephemeral response: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responseURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to post ephemeral response: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("slack response_url returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
 // UpdateInteractiveMessage updates an existing message (removes buttons, updates text)
 func (c *Client) UpdateInteractiveMessage(ctx context.Context, channel, ts string, blocks []interface{}, text string) error {
 	payload := struct {
