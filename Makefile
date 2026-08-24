@@ -129,7 +129,8 @@ install-hooks:
 check-secrets:
 	@./scripts/check-secret-patterns.sh
 
-# Check for argument-discarding Backend.Execute mocks in test files (TASK-441 L1 / GH-4708)
+# Check for argument-discarding mocks in test files: Backend.Execute
+# (TASK-441 L1 / GH-4708) and QualityChecker.Check (TASK-460 / GH-5062)
 check-mocks:
 	@./scripts/check-mocks.sh
 
@@ -290,7 +291,7 @@ help:
 	@echo "  make install-global Install to /usr/local/bin"
 	@echo "  make install-hooks  Install git pre-commit/pre-push hooks"
 	@echo "  make check-secrets  Check for secret patterns in tests"
-	@echo "  make check-mocks    Check for argument-discarding Backend.Execute mocks"
+	@echo "  make check-mocks    Check for argument-discarding mocks (Backend.Execute, QualityChecker.Check)"
 	@echo "  make check-destructive  Check for destructive-call-gate bypasses"
 	@echo "  make check-graph    Check knowledge-graph drift (graph.json vs disk)"
 	@echo "  make check-integration  Check for orphan code"
