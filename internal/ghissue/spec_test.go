@@ -170,7 +170,8 @@ func TestValidateSpec_SectionHeaderVariants(t *testing.T) {
 	}
 
 	// A translated (non-English) heading is not recognized — the heading
-	// text itself must match one of the accepted words exactly in English.
+	// text itself must start with one of the accepted English words
+	// (matching is case-insensitive, but not language-insensitive).
 	translatedHeader := strings.Repeat("x", 80) + "\n\n## Aceptación\n\nsome content here and there\n"
 	issue = &github.Issue{Number: 8, Body: translatedHeader}
 	result = ValidateSpec(issue, nil)
@@ -179,12 +180,12 @@ func TestValidateSpec_SectionHeaderVariants(t *testing.T) {
 	}
 	foundHeader := false
 	for _, r := range result.FailureReasons {
-		if strings.Contains(r, "structural section header") && strings.Contains(r, "H1 is not accepted") && strings.Contains(r, "exactly in English") && strings.Contains(r, "any language") {
+		if strings.Contains(r, "structural section header") && strings.Contains(r, "H1 is not accepted") && strings.Contains(r, "case-insensitive") && strings.Contains(r, "any language") {
 			foundHeader = true
 		}
 	}
 	if !foundHeader {
-		t.Errorf("expected reason explaining exact-English heading match and any-language body content, got %v", result.FailureReasons)
+		t.Errorf("expected reason explaining case-insensitive English heading match and any-language body content, got %v", result.FailureReasons)
 	}
 }
 
