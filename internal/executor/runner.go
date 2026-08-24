@@ -5410,10 +5410,15 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				}
 			} else if r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github" {
 				// Non-GitHub adapter: use PRCreator (e.g., GitLab MR API)
-				// Include "Closes #N" keyword so GitLab auto-closes the source issue on merge
+				// Include "Closes #N" keyword so GitLab auto-closes the source issue on merge.
+				// GH-5191: deliberately skip extraFixesKeyword here — it emits
+				// GitHub closing-keyword syntax ("Fixes #N"), and any extra
+				// issue numbers named in the description aren't guaranteed to
+				// be same-project GitLab IIDs (or valid at all for whatever
+				// non-GitHub adapter is wired to r.prCreator).
 				closeKeyword := ""
 				if task.SourceIssueID != "" {
-					closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID) + extraFixesKeyword(task.Description, task.SourceIssueID)
+					closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
 				}
 				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
 				// Retry MR creation before giving up (GH-3785): the branch is

@@ -562,9 +562,11 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 			}
 		}
 	case r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github":
+		// GH-5191: no extraFixesKeyword here — see the comment on the
+		// sibling non-GitHub branch in executeWithOptions (runner.go).
 		closeKeyword := ""
 		if task.SourceIssueID != "" {
-			closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID) + extraFixesKeyword(task.Description, task.SourceIssueID)
+			closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
 		}
 		prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
 		for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
