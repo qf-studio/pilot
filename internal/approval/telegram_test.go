@@ -1761,7 +1761,7 @@ func TestTelegramHandler_HandleCallback_ApproversGate(t *testing.T) {
 	}
 
 	cbs := client.getAnsweredCallbacks()
-	if len(cbs) != 1 || cbs[0].Text != "You are not authorized to decide this request" {
+	if len(cbs) != 1 || cbs[0].Text != "⛔ Not an approver" {
 		t.Fatalf("expected unauthorized answer text, got: %+v", cbs)
 	}
 	select {
@@ -1792,6 +1792,59 @@ func TestTelegramHandler_HandleCallback_ApproversGate(t *testing.T) {
 	}
 }
 
+// TestTelegramHandler_HandleCallback_UnauthorizedTap_LogsWarn covers GH-5160:
+// the refusal path on an unauthorized tap must log at WARN (not INFO) with
+// request_id/user attrs, answer the callback with the "⛔ Not an approver"
+// text, skip RecordDecision, and leave the pending map untouched.
+func TestTelegramHandler_HandleCallback_UnauthorizedTap_LogsWarn(t *testing.T) {
+	client := &mockTelegramClient{}
+	logger, buf := newCapturingLogger()
+	recorder := &mockDecisionRecorder{}
+	handler := NewTelegramHandler(client, "chat123", 0).WithDecisionRecorder(recorder)
+	handler.log = logger
+
+	req := &Request{
+		ID:        "req-warn-log",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		Approvers: []string{"12345"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-warn-log", "intruder", "intruder")
+	if !handled {
+		t.Error("expected callback to be handled (even when unauthorized)")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "Approval callback from unauthorized user") {
+		t.Errorf("expected WARN-level unauthorized log line, got: %s", out)
+	}
+	if !strings.Contains(out, "request_id=req-warn-log") || !strings.Contains(out, "user=intruder") {
+		t.Errorf("expected request_id/user attrs on unauthorized log line, got: %s", out)
+	}
+
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 || cbs[0].Text != "⛔ Not an approver" {
+		t.Fatalf("expected refusal answer text, got: %+v", cbs)
+	}
+
+	if calls := recorder.getCalls(); len(calls) != 0 {
+		t.Errorf("expected RecordDecision NOT to be called for an unauthorized tap, got %d calls", len(calls))
+	}
+
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-warn-log"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized tap")
+	}
+}
+
 // TestTelegramHandler_HandleCallback_AllowlistFallback covers the GH-5155
 // fallback path: when Request.Approvers is empty, authorization falls back
 // to the handler-scoped allowlist set via WithAllowedUsers.
@@ -1817,7 +1870,7 @@ func TestTelegramHandler_HandleCallback_AllowlistFallback(t *testing.T) {
 		t.Error("expected callback to be handled (even when unauthorized)")
 	}
 	cbs := client.getAnsweredCallbacks()
-	if len(cbs) != 1 || cbs[0].Text != "You are not authorized to decide this request" {
+	if len(cbs) != 1 || cbs[0].Text != "⛔ Not an approver" {
 		t.Fatalf("expected unauthorized answer text, got: %+v", cbs)
 	}
 
@@ -2428,7 +2481,7 @@ func TestTelegramHandler_WithAllowedIDs_AliasesWithAllowedUsers(t *testing.T) {
 		t.Error("expected callback to be handled (even when unauthorized)")
 	}
 	cbs := client.getAnsweredCallbacks()
-	if len(cbs) != 1 || cbs[0].Text != "You are not authorized to decide this request" {
+	if len(cbs) != 1 || cbs[0].Text != "⛔ Not an approver" {
 		t.Fatalf("expected unauthorized answer text, got: %+v", cbs)
 	}
 

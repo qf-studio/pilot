@@ -570,12 +570,12 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	}
 
 	if !authorized {
-		h.log.Info("Approval callback from unauthorized user",
+		h.log.Warn("Approval callback from unauthorized user",
 			slog.String("request_id", requestID),
 			slog.String("decision", string(decision)),
 			slog.String("user", username),
 			slog.String("user_id", userID))
-		if err := h.client.AnswerCallback(ctx, callbackID, "You are not authorized to decide this request"); err != nil {
+		if err := h.client.AnswerCallback(ctx, callbackID, "⛔ Not an approver"); err != nil {
 			h.log.Warn("failed to answer unauthorized approval callback",
 				slog.String("request_id", requestID), slog.Any("error", err))
 		}
