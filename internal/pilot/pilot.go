@@ -1679,6 +1679,10 @@ func (p *Pilot) initAlerts(cfg *config.Config) {
 		// legacy orchestrator/webhook-mode path's alert engine construction
 		// site, same dead-plumbing gap as the two cmd/pilot sites (GH-4716).
 		alerts.WithActiveAlertStore(p.store),
+		// GH-5209: wire counter-checkpoint persistence so level-triggered
+		// stats-event rules (circuit_breaker_trip) survive a restart without
+		// replaying their pre-restart standing counter as a fresh alert.
+		alerts.WithAlertCounterStore(p.store),
 	)
 
 	// Wire alerts engine to executor via adapter

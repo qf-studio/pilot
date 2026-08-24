@@ -490,6 +490,21 @@ func (s *Store) migrate() error {
 			created_at DATETIME NOT NULL,
 			PRIMARY KEY (rule_name, source)
 		)`,
+		// GH-5209: last-seen checkpoint for level-triggered stats-event alert
+		// rules (e.g. circuit_breaker_trip) that must fire on an INCREASE of a
+		// windowed/cumulative counter, not on the counter simply being
+		// nonzero. Without a persisted checkpoint, a restart forgets the
+		// pre-restart counter value and the next stats event — which still
+		// carries the old, already-alerted-on count — reads as a fresh
+		// increase and replays the entire backlog as new alerts. Primary key
+		// mirrors active_alerts: rule name + source (alerts.activeAlertKey).
+		`CREATE TABLE IF NOT EXISTS alert_counters (
+			rule_name TEXT NOT NULL,
+			source TEXT NOT NULL,
+			last_value INTEGER NOT NULL DEFAULT 0,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (rule_name, source)
+		)`,
 	}
 
 	for _, migration := range migrations {

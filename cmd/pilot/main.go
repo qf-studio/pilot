@@ -1050,6 +1050,11 @@ Examples:
 						// gateway mode's alert engine construction site, same
 						// dead-plumbing gap as the polling-mode site above (GH-4716).
 						gwEngineOpts = append(gwEngineOpts, alerts.WithActiveAlertStore(gwStore))
+						// GH-5209: wire counter-checkpoint persistence so
+						// level-triggered stats-event rules (circuit_breaker_trip)
+						// survive a restart without replaying their pre-restart
+						// standing counter as a fresh alert.
+						gwEngineOpts = append(gwEngineOpts, alerts.WithAlertCounterStore(gwStore))
 					}
 					gwAlertsEngine = alerts.NewEngine(alertsCfg, gwEngineOpts...)
 					if alertErr := gwAlertsEngine.Start(ctx); alertErr != nil {
@@ -3118,6 +3123,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// currently-firing alert state despite the persistence layer
 			// existing and being fully tested (GH-4716 dead-plumbing class).
 			engineOpts = append(engineOpts, alerts.WithActiveAlertStore(store))
+			// GH-5209: wire counter-checkpoint persistence so level-triggered
+			// stats-event rules (circuit_breaker_trip) survive a restart
+			// without replaying their pre-restart standing counter as a
+			// fresh alert.
+			engineOpts = append(engineOpts, alerts.WithAlertCounterStore(store))
 		}
 		alertsEngine = alerts.NewEngine(alertsCfg, engineOpts...)
 		if err := alertsEngine.Start(ctx); err != nil {
