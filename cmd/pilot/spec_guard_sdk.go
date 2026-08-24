@@ -32,9 +32,9 @@ import (
 func applySpecGuardSDK(ctx context.Context, client *githubSDK.Client, owner, repo string, issue *githubSDK.Issue, reasons []string) bool {
 	comments, err := client.ListIssueComments(ctx, owner, repo, issue.Number)
 	if err != nil {
-		slog.Warn("spec-guard(sdk): failed to list comments, skipping guard",
+		slog.Warn("spec-guard(sdk): failed to list comments — deferring dispatch to next tick, no strike",
 			slog.Int("issue", issue.Number), slog.Any("error", err))
-		return false
+		return true
 	}
 
 	// Walk in order and keep the last marker seen — if the guard has fired
