@@ -81,12 +81,12 @@ func TestValidateSpec_NoSectionHeader(t *testing.T) {
 	}
 	foundHeader := false
 	for _, r := range result.FailureReasons {
-		if strings.Contains(r, "structural section header") {
+		if strings.Contains(r, "structural section header") && strings.Contains(r, "H1 is not accepted") && strings.Contains(r, "any language") {
 			foundHeader = true
 		}
 	}
 	if !foundHeader {
-		t.Errorf("expected 'structural section header' reason, got %v", result.FailureReasons)
+		t.Errorf("expected reason explaining H2-H6 range, H1 rejection, and any-language body content, got %v", result.FailureReasons)
 	}
 }
 
@@ -159,6 +159,33 @@ func TestValidateSpec_SectionHeaderVariants(t *testing.T) {
 			t.Errorf("header %q should make body valid, got reasons=%v", h, result.FailureReasons)
 		}
 	}
+
+	// Body content underneath a valid English header may be written in any
+	// language — only the heading text itself is checked.
+	nonEnglishBodyContent := strings.Repeat("x", 80) + "\n\n## Acceptance\n\nContenido de aceptación en español aquí.\n"
+	issue := &github.Issue{Number: 8, Body: nonEnglishBodyContent}
+	result := ValidateSpec(issue, nil)
+	if !result.Valid {
+		t.Errorf("non-English body content under a valid English header should still be valid, got reasons=%v", result.FailureReasons)
+	}
+
+	// A translated (non-English) heading is not recognized — the heading
+	// text itself must match one of the accepted words exactly in English.
+	translatedHeader := strings.Repeat("x", 80) + "\n\n## Aceptación\n\nsome content here and there\n"
+	issue = &github.Issue{Number: 8, Body: translatedHeader}
+	result = ValidateSpec(issue, nil)
+	if result.Valid {
+		t.Error("translated (non-English) heading '## Aceptación' should NOT be accepted as a structural section header")
+	}
+	foundHeader := false
+	for _, r := range result.FailureReasons {
+		if strings.Contains(r, "structural section header") && strings.Contains(r, "H1 is not accepted") && strings.Contains(r, "exactly in English") && strings.Contains(r, "any language") {
+			foundHeader = true
+		}
+	}
+	if !foundHeader {
+		t.Errorf("expected reason explaining exact-English heading match and any-language body content, got %v", result.FailureReasons)
+	}
 }
 
 func TestValidateSpec_H3ToH6SectionHeaders(t *testing.T) {
@@ -187,11 +214,11 @@ func TestValidateSpec_H3ToH6SectionHeaders(t *testing.T) {
 	}
 	foundHeader := false
 	for _, r := range result.FailureReasons {
-		if strings.Contains(r, "structural section header") {
+		if strings.Contains(r, "structural section header") && strings.Contains(r, "H1 is not accepted") {
 			foundHeader = true
 		}
 	}
 	if !foundHeader {
-		t.Errorf("expected 'structural section header' failure reason for H1 body, got %v", result.FailureReasons)
+		t.Errorf("expected reason explaining H1 rejection for H1 body, got %v", result.FailureReasons)
 	}
 }
