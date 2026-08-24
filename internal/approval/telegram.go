@@ -209,6 +209,15 @@ func (h *TelegramHandler) WithAllowedUsers(users []string) *TelegramHandler {
 	return h
 }
 
+// WithAllowedIDs is an alias for WithAllowedUsers, sharing the same
+// underlying allowlist (GH-5157). It exists so callers wiring up multiple
+// approval channels (Telegram, Slack) can use one consistently-named
+// builder method regardless of handler type, matching
+// SlackHandler.WithAllowedIDs. Returns h to allow builder-style chaining.
+func (h *TelegramHandler) WithAllowedIDs(ids []string) *TelegramHandler {
+	return h.WithAllowedUsers(ids)
+}
+
 // isAuthorizedApprover reports whether userID may decide a request via this
 // handler (GH-5155). When approvers (the request's own Request.Approvers)
 // is non-empty it is the authoritative allowlist — userID must exactly
