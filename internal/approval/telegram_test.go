@@ -1113,7 +1113,10 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		handler.HandleCallback(context.Background(), "cb1", "approve:req-edit-routing", "user", "tester")
+		// userID must match the configured Approvers entry (GH-5155) for the
+		// callback to be authorized — this test exercises routing, not
+		// authorization, so it uses the approver identity itself.
+		handler.HandleCallback(context.Background(), "cb1", "approve:req-edit-routing", "99999", "tester")
 
 		edited := client.getEditedMessages()
 		if len(edited) != 1 {
@@ -1729,6 +1732,143 @@ func TestTelegramHandler_HandleCallback_ExpiredButPending_AnswerCallbackError_Lo
 	}
 }
 
+// TestTelegramHandler_HandleCallback_ApproversGate covers the GH-5155
+// identity check: when Request.Approvers is non-empty, only a userID that
+// exactly matches one of its entries may decide the request. A rejected tap
+// must not mutate any state — the request stays pending so the real
+// approver can still act.
+func TestTelegramHandler_HandleCallback_ApproversGate(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123", 0)
+
+	req := &Request{
+		ID:        "req-approvers-gate",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		Approvers: []string{"12345", "67890"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A user not in Approvers must be rejected without consuming the request.
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-approvers-gate", "intruder", "intruder")
+	if !handled {
+		t.Error("expected callback to be handled (even when unauthorized)")
+	}
+
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 || cbs[0].Text != "You are not authorized to decide this request" {
+		t.Fatalf("expected unauthorized answer text, got: %+v", cbs)
+	}
+	select {
+	case resp := <-respCh:
+		t.Fatalf("expected no response for unauthorized tap, got: %+v", resp)
+	default:
+	}
+
+	handler.mu.RLock()
+	_, stillPending := handler.pending["req-approvers-gate"]
+	handler.mu.RUnlock()
+	if !stillPending {
+		t.Fatal("expected request to remain pending after an unauthorized tap")
+	}
+
+	// The listed approver can still decide it afterwards.
+	handled = handler.HandleCallback(context.Background(), "cb2", "approve:req-approvers-gate", "67890", "approver")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
+// TestTelegramHandler_HandleCallback_AllowlistFallback covers the GH-5155
+// fallback path: when Request.Approvers is empty, authorization falls back
+// to the handler-scoped allowlist set via WithAllowedUsers.
+func TestTelegramHandler_HandleCallback_AllowlistFallback(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123", 0).WithAllowedUsers([]string{"allowed-1"})
+
+	req := &Request{
+		ID:        "req-allowlist-fallback",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Not in the handler allowlist -> rejected.
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-allowlist-fallback", "not-allowed", "someone")
+	if !handled {
+		t.Error("expected callback to be handled (even when unauthorized)")
+	}
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 || cbs[0].Text != "You are not authorized to decide this request" {
+		t.Fatalf("expected unauthorized answer text, got: %+v", cbs)
+	}
+
+	// In the handler allowlist -> authorized.
+	handled = handler.HandleCallback(context.Background(), "cb2", "approve:req-allowlist-fallback", "allowed-1", "someone-else")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
+// TestTelegramHandler_HandleCallback_UnrestrictedWhenNoApproversOrAllowlist
+// covers the GH-5155 default: empty Approvers and no handler allowlist means
+// any user may decide the request (preserves prior behavior).
+func TestTelegramHandler_HandleCallback_UnrestrictedWhenNoApproversOrAllowlist(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123", 0)
+
+	req := &Request{
+		ID:        "req-unrestricted",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb1", "approve:req-unrestricted", "anyone", "anyone")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+	select {
+	case resp := <-respCh:
+		if resp.Decision != DecisionApproved {
+			t.Errorf("expected approved, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
 // TestTelegramHandler_Rehydrate_ResendsFreshPromptPerPendingRequest is the
 // GH-4159 regression test: after a restart, Rehydrate must send a fresh,
 // actionable prompt for each restored request (same request_id/buttons) so
@@ -2101,7 +2241,9 @@ func TestTelegramHandler_NotifyMerged_SendsFollowUpInSameChat(t *testing.T) {
 	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	handler.HandleCallback(context.Background(), "cb1", "approve:req-merged", "u1", "tester")
+	// userID must match the configured Approvers entry (GH-5155) for the
+	// callback to be authorized.
+	handler.HandleCallback(context.Background(), "cb1", "approve:req-merged", "99999", "tester")
 
 	sentBefore := len(client.getSentMessages())
 

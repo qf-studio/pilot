@@ -69,6 +69,12 @@ type TelegramHandler struct {
 	// destination" warning per bad value (GH-4380), so a persistently
 	// misconfigured Approvers entry logs once instead of once per tick.
 	warnedInvalidDest map[string]bool
+
+	// allowedUsers is a handler-scoped fallback allowlist consulted by
+	// isAuthorizedApprover when a request's own Request.Approvers is empty
+	// (GH-5155). Set via WithAllowedUsers. Nil/empty means unrestricted —
+	// any tapper may decide a request that carries no configured approvers.
+	allowedUsers []string
 }
 
 // telegramPending tracks a pending Telegram approval request
@@ -191,6 +197,47 @@ func (h *TelegramHandler) WithStore(store PendingApprovalStore) *TelegramHandler
 func (h *TelegramHandler) WithDecisionRecorder(recorder DecisionRecorder) *TelegramHandler {
 	h.recorder = recorder
 	return h
+}
+
+// WithAllowedUsers attaches a handler-scoped allowlist of user IDs permitted
+// to decide approval requests whose own Request.Approvers is empty
+// (GH-5155). Requests that do carry Approvers are gated by that list
+// instead — this fallback only applies when Approvers is unset. Returns h
+// to allow builder-style chaining.
+func (h *TelegramHandler) WithAllowedUsers(users []string) *TelegramHandler {
+	h.allowedUsers = users
+	return h
+}
+
+// isAuthorizedApprover reports whether userID may decide a request via this
+// handler (GH-5155). When approvers (the request's own Request.Approvers)
+// is non-empty it is the authoritative allowlist — userID must exactly
+// match one of its entries via plain string equality, since Approvers
+// already carries whatever identity format the operator configured for
+// this channel (e.g. Telegram numeric user ids). When approvers is empty,
+// control falls back to the handler-scoped allowedUsers set (see
+// WithAllowedUsers) so a channel can still restrict who may decide requests
+// that didn't specify their own approver list. Both empty means
+// unrestricted — any user may decide, preserving behavior for callers that
+// never configured either.
+func (h *TelegramHandler) isAuthorizedApprover(userID string, approvers []string) bool {
+	if len(approvers) > 0 {
+		for _, a := range approvers {
+			if a == userID {
+				return true
+			}
+		}
+		return false
+	}
+	if len(h.allowedUsers) == 0 {
+		return true
+	}
+	for _, u := range h.allowedUsers {
+		if u == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // Rehydrate loads persisted pending approvals from the store and re-inserts them
@@ -485,8 +532,16 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 
 	h.mu.Lock()
 	pending, exists := h.pending[requestID]
+	// GH-5155: decide authorization inside the same critical section as the
+	// lookup, and only delete from h.pending when authorized — an
+	// unauthorized tap must not mutate any state (pending map, store,
+	// resolved decision), just like the not-found/expired paths below.
+	authorized := true
 	if exists {
-		delete(h.pending, requestID)
+		authorized = h.isAuthorizedApprover(userID, pending.Request.Approvers)
+		if authorized {
+			delete(h.pending, requestID)
+		}
 	}
 	h.mu.Unlock()
 
@@ -500,6 +555,19 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 			slog.String("user", username))
 		if err := h.client.AnswerCallback(ctx, callbackID, "Request expired or already processed"); err != nil {
 			h.log.Warn("failed to answer unknown-request approval callback",
+				slog.String("request_id", requestID), slog.Any("error", err))
+		}
+		return true
+	}
+
+	if !authorized {
+		h.log.Info("Approval callback from unauthorized user",
+			slog.String("request_id", requestID),
+			slog.String("decision", string(decision)),
+			slog.String("user", username),
+			slog.String("user_id", userID))
+		if err := h.client.AnswerCallback(ctx, callbackID, "You are not authorized to decide this request"); err != nil {
+			h.log.Warn("failed to answer unauthorized approval callback",
 				slog.String("request_id", requestID), slog.Any("error", err))
 		}
 		return true
