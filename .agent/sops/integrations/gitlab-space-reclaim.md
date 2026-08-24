@@ -135,8 +135,37 @@ proved this disk, not the GitLab namespace, is the actual pipeline killer:
   while the site serves a stale version (recurrence #3: 7 weeks on
   prod-2.203.1). Check the running container's image tag vs latest release.
 
+## Recurrence #4 addendum (2026-08-24): NOT space — two stacked non-space causes
+
+When "GitLab failing" now, check pipeline **failureReason via GraphQL first** —
+REST shows `yaml_errors: null` and zero jobs even for config errors:
+
+```bash
+glab api graphql -f query='query { project(fullPath: "quant-flow/pilot-docs") { pipeline(iid: "<iid>") { failureReason errorMessages { nodes { content } } } } }'
+```
+
+- **Cause 1 — invalid CI YAML from #5134's own prevention**: `cleanup-registry`
+  script lines with unquoted `PRIVATE-TOKEN: ${...}` (colon-space → YAML
+  mapping). Every pipeline 08-22 19:56 → 08-24 16:44 failed at validation,
+  zero jobs, site pinned to prod-2.266.0, GitHub sync-docs green (silent-mode
+  again). Signature: **failed pipeline with ZERO jobs + yaml_errors null**.
+  Hot-fixed on pilot-docs main (427bd845, literal blocks); source fix in
+  qf-studio/pilot docs/.gitlab-ci.yml = issue #5203 — MUST merge before next
+  release or sync re-breaks it.
+- **Cause 2 — stale Docker Hub creds on the runner host**: `/root/.docker/
+  config.json` held expired index.docker.io access/refresh tokens → job-image
+  pulls died `unauthorized` reported as `runner_system_failure`. Fix: back up
+  config, empty `auths` (anonymous pulls suffice), retry job. Backup:
+  `config.json.bak-20260824`.
+- Recovery pattern for tag deploys: tag pipelines pin the tag's OWN sha —
+  re-running an old tag replays the broken config. Fix main, then cut a fresh
+  `prod-X.Y.Z-$(date +%s)` tag on the fixed commit.
+- Verified: deploy prod-2.268.0-1787589883 green, container serving it.
+
 ## History
 
+- 2026-08-24: recurrence #4 — see addendum above (config YAML + Docker Hub
+  creds, not space). Disk healthy (6%, 2.4GB cache — #5134 pruning works).
 - 2026-08-22: recurrence #3 RESOLVED same-day (failing pipelines, image bloat
   suspected by founder). True killer = runner-host disk 100% (251G): 224GB
   build cache + 13GB stranded images (see § Runner host). Namespace side also

@@ -526,6 +526,21 @@
         "name": "Forensics",
         "aliases": [],
         "domain": "general"
+      },
+      "authentication": {
+        "name": "Authentication",
+        "aliases": [],
+        "domain": "general"
+      },
+      "oauth": {
+        "name": "Oauth",
+        "aliases": [],
+        "domain": "general"
+      },
+      "stalled": {
+        "name": "Stalled",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -1861,6 +1876,42 @@
           "context",
           "knowledge",
           "testing"
+        ]
+      },
+      "TASK-482": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-482-approval-callback-authorization.md",
+        "title": "Authorize approval decisions \u2014 Telegram callback + Slack interaction (fixes #5149)",
+        "status": "dispatched",
+        "concepts": [
+          "context",
+          "authentication",
+          "api",
+          "deployment",
+          "testing"
+        ]
+      },
+      "TASK-483": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-483-spec-guard-hardening-docs.md",
+        "title": "Spec-guard hardening + intake-gate docs (fixes #5150, #5152)",
+        "status": "dispatched",
+        "concepts": [
+          "context",
+          "testing",
+          "deployment"
+        ]
+      },
+      "TASK-484": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-484-dashboard-metrics-cards-honesty.md",
+        "title": "Dashboard metrics cards \u2014 honest labeling, legible cached band, Claude 5 pricing",
+        "status": "dispatched",
+        "concepts": [
+          "deployment",
+          "context",
+          "api",
+          "knowledge",
+          "testing",
+          "markers",
+          "authentication"
         ]
       }
     },
@@ -5007,6 +5058,99 @@
         "file": ".agent/knowledge/memories/pitfalls/consumer-docblock-trusted-over-producer-wire-source.md",
         "created": "2026-08-20",
         "last_validated": "2026-08-20"
+      },
+      "mem-171": {
+        "type": "pitfall",
+        "summary": "Box Claude OAuth token expiry silently wedges the headless daemon. Signature: daemon log shows only 'claude command failed: signal: killed' on classifiers + 'Backend execution failed error=unknown: exit status 1' with a CLEAN init in stdout_tail (session_id + tool list present) then death ~5min in; the real 401 authentication_error lives ONLY in stream recordings (~/.pilot/recordings/*/stream.jsonl), never daemon.log. All queued tasks burn generations to the repick cap and flip stalled. Two-part re-arm (restart-proof): (1) founder 'claude setup-token' (1yr) -> CLAUDE_CODE_OAUTH_TOKEN env in start-pilot.sh (env token beats dead 8h .credentials.json; verify sed didn't fuse export into exec line via cat -A); (2) remove pilot-blocked labels AND flip cap-stalled rows->failed by exact execution ID AND zero repick_backoff. Fixed 2026-08-23.",
+        "path": "memories/pitfalls/mem-171.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dispatcher",
+          "executor",
+          "authentication",
+          "oauth",
+          "stalled"
+        ],
+        "created": "2026-08-23",
+        "last_validated": "2026-08-23"
+      },
+      "mem-172": {
+        "type": "pitfall",
+        "summary": "Backticked glob paths in a pilot issue body poison dispatch pre-v2.267. ExtractReferencedPaths accepts globs (e.g. cmd/pilot/*.go in backticks), the base-presence probe 404s on the literal glob, and the task is held at the queue HEAD -> starves everything behind it (breaker alerts every 30min; queue only re-evaluates on NEW dispatch, so claim-lost re-pickups never wake held workers). Fix shipped #5133/PR#5135 (glob exclusion + wakeHeldWorkers on stale-recovery tick). Until v2.267 is on the box, do NOT put backticked glob paths in issue bodies; cite concrete files or plain text.",
+        "path": "memories/pitfalls/mem-172.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dispatch",
+          "dispatcher",
+          "github",
+          "workflow-discipline"
+        ],
+        "created": "2026-08-23",
+        "last_validated": "2026-08-23"
+      },
+      "mem-173": {
+        "type": "learning",
+        "summary": "Post-dispatch spec changes for a pilot task MUST be BODY edits + a label cycle, never issue comments. The executor reads only issue title+body; comments are invisible to it. Bit twice 2026-08-23: the #5132 docker-builder-prune addendum was a comment (ignored -> re-filed #5136), and the false cancel re-arm hint. To change what Pilot builds after dispatch: edit the body, then remove+re-add the pilot label to re-admit.",
+        "path": "memories/learnings/mem-173.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dispatch",
+          "github",
+          "workflow-discipline",
+          "silent-failure"
+        ],
+        "created": "2026-08-23",
+        "last_validated": "2026-08-23"
+      },
+      "mem-174": {
+        "type": "pattern",
+        "summary": "Cap-stalled task re-arm (operator recipe, restart-proof). When tasks hit the repick cap and flip stalled (escalate-and-hold) after an outage, a plain daemon restart does NOT re-admit them. Three required steps: (1) remove any pilot-blocked labels; (2) flip cap-stalled execution rows stalled->failed by EXACT execution ID with an audit note; (3) zero the repick_backoff counters. Next dispatcher tick then grants fresh generations and re-picks. Verified during 2026-08-23 OAuth outage recovery; pairs with the OAuth-expiry pitfall (mem-171).",
+        "path": "memories/patterns/mem-174.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dispatcher",
+          "stalled",
+          "executor",
+          "retry",
+          "labels"
+        ],
+        "created": "2026-08-23",
+        "last_validated": "2026-08-23"
+      },
+      "mem-175": {
+        "type": "pitfall",
+        "summary": "Base-presence hold caches referenced paths on the execution row at CREATION \u2014 editing a wedged issue's body does NOT clear the hold. On 2026-08-23 #5145 wedged because its body had backtick-quoted example paths (q-<epoch>.md, q-1786987124.md) the base-presence guard (internal/executor/base_presence.go) extracted and probed on main; not found -> permanent 'prerequisite not on main' hold, hold_count climbed, escalated pilot-needs-human, execution marked skipped/terminal, poller then 'Skipping re-dispatch \u2014 completed execution exists'. Rewriting the body + label-cycle did NOT help: dispatcher kept holding the SAME execution_id citing the OLD cached path. Recovery that works: CLOSE the issue and REFILE fresh (new issue = new execution, reads the corrected body) \u2014 verified, #5147 dispatched clean. IMPORTANT: v2.267 glob-exclusion only spares wildcard paths (q-*.md); a literal/placeholder backtick path with no wildcard (q-<epoch>.md) still wedges. Never put backtick-quoted non-existent example paths in an issue body.",
+        "path": "memories/pitfalls/mem-175.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dispatch",
+          "dispatcher",
+          "github",
+          "workflow-discipline"
+        ],
+        "created": "2026-08-23",
+        "last_validated": "2026-08-23"
+      },
+      "external-contributor-vetting-verify-claims-not-profile": {
+        "type": "learning",
+        "summary": "Scam-vetting external reporters \u2014 verify technical claims against code, scan for attack vectors; profile sparseness is not a signal",
+        "file": ".agent/knowledge/memories/learnings/learning_external-contributor-vetting-verify-claims-not-profile.md",
+        "created": "2026-08-24",
+        "last_validated": "2026-08-24"
+      },
+      "github-issues-search-returns-prs": {
+        "type": "learning",
+        "summary": "GitHub's issues-search API returns PRs too \u2014 a \"filed an issue\" classification can hide an unreviewed open PR for days",
+        "file": ".agent/knowledge/memories/learnings/learning_github-issues-search-returns-prs.md",
+        "created": "2026-08-24",
+        "last_validated": "2026-08-24"
+      },
+      "open-model-executor-research-2026-08": {
+        "type": "learning",
+        "summary": "2026-08-24 deep research \u2014 swapping Pilot's executor to open-weight models (DeepSeek/Qwen/Kimi/Nemotron). Verdict \u2014 self-hosting is a 50-150x cost INCREASE at current scale; the real lever is supplier-switch via official Anthropic-compatible endpoints; quality gap on agentic failure modes still favors Sonnet 5.",
+        "file": ".agent/knowledge/memories/learnings/open-model-executor-research-2026-08.md",
+        "created": "2026-08-24",
+        "last_validated": "2026-08-24"
       }
     }
   },
@@ -6780,6 +6924,31 @@
       "from": "golangci-action-cache-self-poisoning-sa5011",
       "to": "poller-labels-in-progress-before-dispatcher-claim-wedge",
       "type": "relates_to"
+    },
+    {
+      "from": "TASK-482",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-482",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-483",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-484",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-484",
+      "to": "authentication",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -6792,7 +6961,10 @@
     ],
     "workflow-discipline": [
       "TASK-386",
-      "mem-152"
+      "mem-152",
+      "mem-172",
+      "mem-173",
+      "mem-175"
     ],
     "executor": [
       "TASK-387",
@@ -6807,7 +6979,9 @@
       "claude-cli-refuses-root-hosted-units",
       "oauth-ssm-params-rot-live-credentials-source-of-truth",
       "shared-oauth-session-strands-second-machine",
-      "pilot-issue-missing-no-decompose-fragments-single-fix"
+      "pilot-issue-missing-no-decompose-fragments-single-fix",
+      "mem-171",
+      "mem-174"
     ],
     "claude-code-integration": [
       "TASK-387"
@@ -6908,7 +7082,8 @@
       "TASK-476",
       "TASK-477",
       "TASK-479",
-      "TASK-481"
+      "TASK-481",
+      "TASK-484"
     ],
     "deployment": [
       "TASK-386",
@@ -7037,7 +7212,10 @@
       "TASK-478",
       "TASK-479",
       "TASK-480",
-      "TASK-481"
+      "TASK-481",
+      "TASK-482",
+      "TASK-483",
+      "TASK-484"
     ],
     "authentication": [
       "TASK-386",
@@ -7103,7 +7281,10 @@
       "TASK-476",
       "TASK-478",
       "TASK-481",
-      "TASK-466"
+      "TASK-466",
+      "mem-171",
+      "TASK-482",
+      "TASK-484"
     ],
     "testing": [
       "TASK-386",
@@ -7229,7 +7410,10 @@
       "TASK-478",
       "TASK-479",
       "TASK-480",
-      "TASK-481"
+      "TASK-481",
+      "TASK-482",
+      "TASK-483",
+      "TASK-484"
     ],
     "api": [
       "TASK-386",
@@ -7329,7 +7513,9 @@
       "TASK-480",
       "TASK-481",
       "TASK-460",
-      "TASK-466"
+      "TASK-466",
+      "TASK-482",
+      "TASK-484"
     ],
     "context": [
       "TASK-386",
@@ -7439,7 +7625,10 @@
       "TASK-479",
       "TASK-480",
       "TASK-481",
-      "TASK-466"
+      "TASK-466",
+      "TASK-482",
+      "TASK-483",
+      "TASK-484"
     ],
     "markers": [
       "TASK-387",
@@ -7468,7 +7657,8 @@
       "TASK-480",
       "TASK-481",
       "TASK-452",
-      "TASK-466"
+      "TASK-466",
+      "TASK-484"
     ],
     "database": [
       "TASK-387",
@@ -7719,12 +7909,17 @@
       "mem-100"
     ],
     "labels": [
-      "mem-100"
+      "mem-100",
+      "mem-174"
     ],
     "dispatcher": [
       "mem-101",
       "stall-status-reused-as-hold-marker",
-      "pilot-stalled-status-is-retry-not-cancel"
+      "pilot-stalled-status-is-retry-not-cancel",
+      "mem-171",
+      "mem-172",
+      "mem-174",
+      "mem-175"
     ],
     "concurrency": [
       "mem-101",
@@ -7782,7 +7977,10 @@
     "dispatch": [
       "mem-139",
       "board-sourced-repo-ignores-labeled-issues",
-      "stall-status-reused-as-hold-marker"
+      "stall-status-reused-as-hold-marker",
+      "mem-172",
+      "mem-173",
+      "mem-175"
     ],
     "dashboard": [
       "mem-142",
@@ -7795,7 +7993,8 @@
       "claude-cli-refuses-root-hosted-units"
     ],
     "retry": [
-      "mem-142"
+      "mem-142",
+      "mem-174"
     ],
     "alerts": [
       "mem-142"
@@ -7813,7 +8012,10 @@
       "mem-143",
       "ci-infra-failure-misclassified-as-code",
       "required-checks-allowlist-makes-other-gates-decorative",
-      "commit-message-hyphenated-close-keyword-autocloses-issues"
+      "commit-message-hyphenated-close-keyword-autocloses-issues",
+      "mem-172",
+      "mem-173",
+      "mem-175"
     ],
     "dedup": [
       "mem-143"
@@ -7964,7 +8166,8 @@
       "mem-160"
     ],
     "silent-failure": [
-      "mem-160"
+      "mem-160",
+      "mem-173"
     ],
     "git": [
       "mem-161",
@@ -8007,7 +8210,9 @@
       "pilot-stalled-status-is-retry-not-cancel"
     ],
     "stalled": [
-      "pilot-stalled-status-is-retry-not-cancel"
+      "pilot-stalled-status-is-retry-not-cancel",
+      "mem-171",
+      "mem-174"
     ],
     "ops": [
       "pilot-stalled-status-is-retry-not-cancel",
@@ -8068,12 +8273,15 @@
     ],
     "forensics": [
       "apply-script-silent-rollback-causes"
+    ],
+    "oauth": [
+      "mem-171"
     ]
   },
-  "last_updated": "2026-08-20T23:27:24.126694+00:00",
+  "last_updated": "2026-08-24T14:43:14.869317+00:00",
   "stats": {
-    "total_nodes": 433,
-    "total_edges": 354,
-    "memory_count": 235
+    "total_nodes": 444,
+    "total_edges": 359,
+    "memory_count": 240
   }
 }
