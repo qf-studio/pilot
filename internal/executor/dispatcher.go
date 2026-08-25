@@ -1418,6 +1418,34 @@ func (d *Dispatcher) priorClaimWasInfra(taskID, projectPath string) bool {
 	return exec.Status == string(ExecStatusInfra)
 }
 
+// priorClaimWasEnvClassFailure reports whether (taskID, projectPath)'s
+// currently claimed execution — the one nextRetryGeneration just examined to
+// grant this retry — failed (status "failed") with a credential/environment
+// signature corroborated by the execution's own structural fields (zero
+// tokens, no commit, no PR, sub-threshold duration — see
+// executor.IsEnvClassFailure). GH-5211: a missing ANTHROPIC_API_KEY
+// reproduces byte-identically on every retry — 0 tokens, no diff, ~4s —
+// which otherwise trips priorClaimsHadIdenticalFailureStreak after just
+// consecutiveIdenticalFailureThreshold attempts and escalates a pure
+// infrastructure problem as if the task's own code were broken. Mirrors
+// priorClaimWasStalled/priorClaimWasInfra: errors are treated as "not
+// env-class" — the caller falls through to the ordinary backoff/hard-cap
+// path, which is the safe default.
+func (d *Dispatcher) priorClaimWasEnvClassFailure(taskID, projectPath string) bool {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil || exec == nil {
+		return false
+	}
+	if exec.Status != string(ExecStatusFailed) {
+		return false
+	}
+	return IsEnvClassFailure(exec.Error, exec.TokensTotal, exec.CommitSHA, exec.PRUrl, time.Duration(exec.DurationMs)*time.Millisecond)
+}
+
 // consecutiveIdenticalFailureThreshold is N in "the last N consecutive
 // generations for the same (task_id, project_path) failed with the exact
 // same error string" (GH-4586). A single failure could be any kind of
@@ -1685,13 +1713,33 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 		return "", nil
 	}
 
-	// GH-4586: independent of error class, the last consecutiveIdenticalFailureThreshold
-	// consecutive generations failing with the exact same error string means
-	// the retry changed nothing about the outcome — the task is durably
-	// stuck, not transiently unlucky. Route to the same operator-attention
-	// path rather than burning another generation reproducing it a third
-	// time.
-	if hadStreak, errStr := d.priorClaimsHadIdenticalFailureStreak(task.ID, task.ProjectPath); hadStreak {
+	// GH-5211: an env-class (credential/environment) failure is not evidence
+	// the task's own code is broken — the process never got far enough to
+	// even attempt the task. Left uncarved-out, a missing ANTHROPIC_API_KEY
+	// reproduces byte-identically on every retry and trips the SAME
+	// identical-failure-streak escalation a genuine deterministic code
+	// failure does, below, escalating pure infrastructure to stalled +
+	// pilot-blocked after just consecutiveIdenticalFailureThreshold
+	// attempts. Checked immediately before the streak check so an env-class
+	// streak never reaches escalateIdenticalFailureStreak; unlike the
+	// stall/infra carve-outs, this does not mint free retries against a
+	// separate drop counter — it simply falls through to the ordinary
+	// backoff/hard-cap path below, retrying via nextRetryGeneration with the
+	// existing repick backoff pacing.
+	if d.priorClaimWasEnvClassFailure(task.ID, task.ProjectPath) {
+		d.log.Info("dispatch re-pick: prior claim was an env-class (credential/environment) failure — exempt from identical-failure streak escalation",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Int("generation", gen),
+		)
+	} else if hadStreak, errStr := d.priorClaimsHadIdenticalFailureStreak(task.ID, task.ProjectPath); hadStreak {
+		// GH-4586: independent of error class, the last
+		// consecutiveIdenticalFailureThreshold consecutive generations
+		// failing with the exact same error string means the retry changed
+		// nothing about the outcome — the task is durably stuck, not
+		// transiently unlucky. Route to the same operator-attention path
+		// rather than burning another generation reproducing it a third
+		// time.
 		d.escalateIdenticalFailureStreak(task, gen, errStr)
 		return "", nil
 	}
