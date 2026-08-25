@@ -141,6 +141,7 @@ func TestIsInitialized(t *testing.T) {
 }
 
 func TestInitialize(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 
 	// Create a go.mod for project detection
@@ -228,6 +229,7 @@ go 1.21
 }
 
 func TestInitialize_Idempotent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 
 	initializer, err := NewNavigatorInitializer(logging.WithComponent("test"))
@@ -291,6 +293,7 @@ Detected: ${DETECTED_FROM}
 // from the generated DEVELOPMENT-README.md. Before this fix, the shipped
 // template contained none of those headers, so this always returned "".
 func TestInitialize_ProjectContextInjectionActivates(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 
 	initializer, err := NewNavigatorInitializer(logging.WithComponent("test"))
@@ -321,6 +324,7 @@ func TestInitialize_ProjectContextInjectionActivates(t *testing.T) {
 // the "## Core Execution" table (anchor-based insertion), not appended past
 // unrelated trailing content — i.e. not the fallback-append branch.
 func TestInitialize_FeatureMatrixSeededAndUpdatable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 
 	initializer, err := NewNavigatorInitializer(logging.WithComponent("test"))
@@ -391,6 +395,7 @@ func TestInitialize_FeatureMatrixSeededAndUpdatable(t *testing.T) {
 // takes the parse path instead (still returns empty, since there are no
 // concepts/memories yet, but via a successful unmarshal).
 func TestInitialize_KnowledgeGraphSeededForRecall(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 
 	initializer, err := NewNavigatorInitializer(logging.WithComponent("test"))
@@ -435,6 +440,7 @@ func TestInitialize_KnowledgeGraphSeededForRecall(t *testing.T) {
 // /nav-loop, /nav-compact — Navigator-plugin slash commands that don't exist
 // in a plain executor session (removed from public docs in commit 4b47e7a3).
 func TestGeneratedReadme_NoNavCommandInstructions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 
 	initializer, err := NewNavigatorInitializer(logging.WithComponent("test"))
@@ -506,6 +512,112 @@ func TestFindTemplatesPath_VersionSelection(t *testing.T) {
 				t.Errorf("FindTemplatesPath() = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// TestInitialize_ContextSectionsGuaranteedForPluginTemplate is the GH-5221
+// regression test: the installed Navigator plugin's own
+// DEVELOPMENT-README.md template (verified against 6.18.1) carries none of
+// the three headers loadProjectContext() extracts, so on any machine with
+// the plugin cache present (FindTemplatesPath wins over the embedded
+// fallback), context injection stayed a permanent no-op even after the
+// GH-5216 fix to the embedded template. This fabricates a plugin cache
+// whose template lacks all three headers and asserts Initialize() still
+// guarantees them via ensureContextSections.
+func TestInitialize_ContextSectionsGuaranteedForPluginTemplate(t *testing.T) {
+	home := t.TempDir()
+	projectDir := t.TempDir()
+
+	pluginTemplatesDir := filepath.Join(home, ".claude", "plugins", "cache", "navigator-marketplace", "navigator", "9.0.0", "templates")
+	if err := os.MkdirAll(pluginTemplatesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fabricated plugin template missing "### Key Components", "## Key
+	// Files" and "## Project Structure" — mirrors the real plugin template's
+	// shape.
+	pluginReadme := `# [Project Name] - Development Navigator
+
+**Project**: [Brief project description]
+**Tech Stack**: [Your tech stack]
+
+## Quick Start
+
+Some quick start instructions with no context-injection anchors.
+`
+	if err := os.WriteFile(filepath.Join(pluginTemplatesDir, "DEVELOPMENT-README.md"), []byte(pluginReadme), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", home)
+
+	initializer, err := NewNavigatorInitializer(logging.WithComponent("test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if initializer.templatesPath == "" {
+		t.Fatal("expected NewNavigatorInitializer to pick up the fabricated plugin templates path, got embedded fallback")
+	}
+
+	if err := initializer.Initialize(projectDir); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	agentDir := filepath.Join(projectDir, ".agent")
+	got := loadProjectContext(agentDir)
+	if got == "" {
+		t.Fatal("expected loadProjectContext to return non-empty context even when the winning template lacks context-injection headers, got empty string")
+	}
+
+	for _, header := range []string{"Key Files", "Project Structure"} {
+		if !strings.Contains(got, header) {
+			t.Errorf("expected injected context to include a %q section, got:\n%s", header, got)
+		}
+	}
+}
+
+// TestEnsureContextSections_IdempotentWhenHeadersPresent asserts
+// ensureContextSections is a true no-op — byte-for-byte — when a README
+// already carries all three context-injection headers, so it never
+// duplicates or reorders existing content on repeat auto-init runs.
+func TestEnsureContextSections_IdempotentWhenHeadersPresent(t *testing.T) {
+	tmpDir := t.TempDir()
+	readmePath := filepath.Join(tmpDir, "DEVELOPMENT-README.md")
+
+	content := `# Project
+
+## Quick Start
+
+Some instructions.
+
+### Key Components
+
+Some components.
+
+## Key Files
+
+Some files.
+
+## Project Structure
+
+Some structure.
+`
+	if err := os.WriteFile(readmePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureContextSections(readmePath); err != nil {
+		t.Fatalf("ensureContextSections failed: %v", err)
+	}
+
+	got, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(got) != content {
+		t.Errorf("expected ensureContextSections to be a byte-for-byte no-op when all headers are already present\nwant:\n%s\ngot:\n%s", content, got)
 	}
 }
 
