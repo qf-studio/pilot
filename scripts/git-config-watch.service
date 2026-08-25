@@ -1,0 +1,51 @@
+# GH-5218: git-config-watch.sh (GH-5063) packaged as a systemd --user
+# service — for the founder box, where pushes originate from autopilot and
+# no tmux pane survives to keep the ad hoc watcher armed.
+#
+# SHIPPED DISABLED. Copying this file into place does not start anything —
+# `systemctl --user enable --now` below is the explicit, manual,
+# operator-initiated step that arms it. Nothing in this repo installs or
+# enables this unit automatically.
+#
+# Install (operator step):
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/git-config-watch.service ~/.config/systemd/user/
+#   # Edit ExecStart below if your checkout isn't at the box's standard
+#   # path (TASK-409: /var/lib/pilot/repos/startups/pilot).
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now git-config-watch.service   # <- arms it
+#   # The founder box has no persistent interactive login session (pushes
+#   # come from autopilot), so the user manager would normally stop when
+#   # the last session ends. Keep it running across logout/boot with:
+#   loginctl enable-linger "$(whoami)"
+#
+# Disarm:
+#   systemctl --user disable --now git-config-watch.service
+#
+# Status / forensic log:
+#   systemctl --user status git-config-watch.service
+#   tail -f ~/.pilot/git-config-watch.log
+#
+# Syntax check (manual operator step; not run in CI):
+#   systemd-analyze verify ~/.config/systemd/user/git-config-watch.service
+#
+# Single-instance guard: the script itself refuses a second concurrent
+# launch (lockfile at GCW_LOCK_FILE, default ~/.pilot/git-config-watch.lock
+# below), so this unit and a stray manual tmux copy of the script can
+# coexist safely — whichever started first keeps the lock, the other exits
+# non-zero naming the running pid instead of double-healing core.bare.
+
+[Unit]
+Description=GH-5063 forensic tripwire for core.bare false->true flips
+After=default.target
+
+[Service]
+Type=simple
+Environment=GCW_LOG_FILE=%h/.pilot/git-config-watch.log
+Environment=GCW_LOCK_FILE=%h/.pilot/git-config-watch.lock
+ExecStart=/var/lib/pilot/repos/startups/pilot/scripts/git-config-watch.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
