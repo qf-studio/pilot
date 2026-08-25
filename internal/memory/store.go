@@ -1365,6 +1365,71 @@ func (s *Store) ReclassifyCanceledForRearm(taskID, projectPath, reason string) e
 	})
 }
 
+// LatestStalledExecution returns the most recent status='stalled' row for
+// taskID/projectPath — GH-5212's counterpart to LatestCanceledExecution,
+// extending GH-5139's re-arm pattern from operator-canceled rows to
+// escalate-and-hold stalls (repick hard cap / identical-failure streak,
+// internal/executor/dispatcher.go's escalateStalledTask). Exact task_id +
+// status match, same as LatestCanceledExecution: filtering on the literal
+// status='stalled' column is what keeps this safe against the GH-4347
+// ordering trap (a fresh 'queued' row for the same task_id sitting alongside
+// the old stalled one) — a queued row simply never matches this WHERE
+// clause, so it can never be mistaken for the stalled row callers act on.
+// found=false when no stalled row exists.
+//
+// completed_at on the returned row is the stall timestamp
+// (escalateStalledTask's UpdateExecutionStatus stamps it CURRENT_TIMESTAMP,
+// same as every other terminal transition) — the reference point the GH-5212
+// re-arm probe compares GitHub issue-event timestamps against to decide
+// whether a relabel/reopen happened AFTER the stall, not before it.
+func (s *Store) LatestStalledExecution(taskID, projectPath string) (exec *Execution, found bool, err error) {
+	row := s.db.QueryRow(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE task_id = ? AND project_path = ? AND status = 'stalled'
+		ORDER BY completed_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, projectPath)
+	exec, err = scanExecutionDetail(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return exec, true, nil
+}
+
+// ReclassifyStalledForRearm demotes every status='stalled' row for
+// taskID/projectPath to 'failed' with reason recorded — GH-5212's
+// counterpart to ReclassifyCanceledForRearm, same "demote, don't delete"
+// idiom: the row (and its history) stays visible to `pilot trace`, but a
+// 'failed' row is not terminal per HasTerminalCompletion, so the ordinary
+// nextRetryGeneration retry-with-backoff/hard-cap path
+// (internal/executor/dispatcher.go) grants the next generation exactly the
+// way it would for any other post-failure retry — no bespoke bypass of
+// those invariants. The UPDATE's own `status = 'stalled'` filter is what
+// protects against the GH-4347 ordering trap (see LatestStalledExecution):
+// a fresh 'queued' row for the same task_id is never touched by this call.
+//
+// Callers must independently confirm GitHub-side re-arm evidence (issue
+// open + carries the trigger label + a labeled/reopened event after the
+// stall timestamp LatestStalledExecution returned) before calling this, AND
+// must remove the pilot-blocked label from the issue themselves — this
+// method only ever touches the store side. A surviving pilot-blocked label
+// keeps the poller excluding the issue from candidacy regardless of this
+// row's status.
+func (s *Store) ReclassifyStalledForRearm(taskID, projectPath, reason string) error {
+	return s.withRetry("ReclassifyStalledForRearm", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
+			WHERE task_id = ? AND project_path = ? AND status = 'stalled'
+		`, reason, taskID, projectPath)
+		return err
+	})
+}
+
 // decomposedChildRefRegex extracts "#123"-style issue references from a
 // StageDecomposed execution_events detail string, e.g. "decomposed into 2
 // children: #4212, #4213" (see executor.formatDecomposedChildrenSummary).

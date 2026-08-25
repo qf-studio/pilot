@@ -497,18 +497,26 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	// GH-4347: terminalCompletionChecker wraps deps.Store rather than passing
 	// it directly — see its doc comment for why the raw Store.HasCompletedExecution
 	// method under-recognizes a no_op outcome as "done".
+	//
+	// execChecker is also kept as a local (not just handed to pollerDeps) so
+	// GH-5212's stalled re-arm sweep can be started against the same
+	// store/ghClient/repo/triggerLabel wiring below — that sweep runs
+	// outside the SDK poller's own admission path (see runStalledRearmSweepLoop's
+	// doc comment for why), so it can't simply reuse pollerDeps.ExecutionChecker.
+	var execChecker terminalCompletionChecker
 	if deps.Store != nil {
 		pollerDeps.TaskChecker = storeTaskChecker{store: deps.Store, projectPath: target.projectPath}
 		// GH-5139: ghClient/repoOwner/repoName/triggerLabel let
 		// terminalCompletionChecker probe GitHub for a genuine post-cancel
 		// relabel/reopen and re-arm the task-id — see its doc comment.
-		pollerDeps.ExecutionChecker = terminalCompletionChecker{
+		execChecker = terminalCompletionChecker{
 			store:        deps.Store,
 			ghClient:     newGitHubClient(deps.Cfg),
 			repoOwner:    repoOwner,
 			repoName:     repoName,
 			triggerLabel: pilotLabel,
 		}
+		pollerDeps.ExecutionChecker = execChecker
 	}
 
 	// GH-2802: pre-flight judge (CC subprocess, no API key) — mirrors the
@@ -663,5 +671,18 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 			)
 		}
 	})
+
+	// GH-5212: stalled-row re-arm sweep, run alongside (not inside) the SDK
+	// poller's own admission loop — see runStalledRearmSweepLoop's doc
+	// comment for why a pilot-blocked issue can never reach that loop's
+	// ExecutionChecker hook directly. Same cadence as the poller itself so a
+	// relabel/reopen is noticed on a comparable timescale, throttled
+	// per-issue via the shared repickBackoff window so it never becomes a
+	// hot per-tick GitHub API loop.
+	if execChecker.ghClient != nil {
+		deps.SafeAdapterGo(ctx, "github:"+target.repoFullName+":stalled-rearm", func() {
+			runStalledRearmSweepLoop(ctx, execChecker, target.projectPath, interval, repoLog)
+		})
+	}
 	return true
 }
