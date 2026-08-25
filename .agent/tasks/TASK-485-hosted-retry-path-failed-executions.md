@@ -1,6 +1,6 @@
 # TASK-485: Hosted retry path for failed executions (#5008)
 
-**Status**: 🚧 In Progress (planning)
+**Status**: 🚀 Legs 1+2 DISPATCHED 2026-08-25 — [#5211](https://github.com/qf-studio/pilot/issues/5211) (env-class classifier, Phase 1) + [#5212](https://github.com/qf-studio/pilot/issues/5212) (stalled re-arm probe, Phase 2), both `pilot`-labeled; sequential mode runs 5211 first. Leg 3 (console C8, Phase 3) held until Phase 2 rides a train to the box. Review each PR when Pilot lands it.
 **Created**: 2026-08-25
 **Assignee**: Pilot (via `pilot`-labeled issues)
 
