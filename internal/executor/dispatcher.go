@@ -1418,6 +1418,81 @@ func (d *Dispatcher) priorClaimWasInfra(taskID, projectPath string) bool {
 	return exec.Status == string(ExecStatusInfra)
 }
 
+// priorClaimWasEnvClassFailure reports whether (taskID, projectPath)'s
+// currently claimed execution — the one nextRetryGeneration just examined to
+// grant this retry — failed (status "failed") with a credential/environment
+// signature corroborated by the execution's own structural fields (zero
+// tokens, no commit, no PR, sub-threshold duration — see
+// executor.IsEnvClassFailure). GH-5211: a missing ANTHROPIC_API_KEY
+// reproduces byte-identically on every retry — 0 tokens, no diff, ~4s —
+// which otherwise trips priorClaimsHadIdenticalFailureStreak after just
+// consecutiveIdenticalFailureThreshold attempts and escalates a pure
+// infrastructure problem as if the task's own code were broken. Mirrors
+// priorClaimWasStalled/priorClaimWasInfra: errors are treated as "not
+// env-class" — the caller falls through to the ordinary backoff/hard-cap
+// path, which is the safe default.
+// Returns the claimed execution's error string alongside the bool (GH-5217)
+// so the caller can derive the matched credential/env signature
+// (MatchedEnvClassFailureSignature) for the failure-streak alert without a
+// second store round-trip.
+func (d *Dispatcher) priorClaimWasEnvClassFailure(taskID, projectPath string) (bool, string) {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false, ""
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil || exec == nil {
+		return false, ""
+	}
+	if exec.Status != string(ExecStatusFailed) {
+		return false, ""
+	}
+	if !IsEnvClassFailure(exec.Error, exec.TokensTotal, exec.CommitSHA, exec.PRUrl, time.Duration(exec.DurationMs)*time.Millisecond) {
+		return false, ""
+	}
+	return true, exec.Error
+}
+
+// envClassFailureStreakThreshold is N in "N consecutive env-class
+// (credential/environment) failures in a row for the same (task_id,
+// project_path)" (GH-5217). GH-5211 exempted env-class failures from the
+// identical-failure streak escalation so they retry forever via ordinary
+// backoff — correct (a broken credential is not evidence the task's own
+// code is wrong), by founder decision, but it left a silent infinite retry
+// loop announced only by an Info log line (PR#5214 review note 1). At this
+// threshold, beginWithGenerationRetry emits a warning alert — purely
+// additive; retries continue exactly as before — so a persistent
+// credential break pages an operator instead of retrying invisibly
+// forever.
+const envClassFailureStreakThreshold = 5
+
+// consecutiveEnvClassFailures counts how many of the most recent executions
+// for (taskID, projectPath) — read newest-first via ListExecutionsForTask,
+// the same recent-claims scan shape priorClaimsHadIdenticalFailureStreak
+// uses below — are consecutive env-class (credential/environment) failures
+// per IsEnvClassFailure. The scan stops at the first row that doesn't
+// match (a success, a non-env-class failure, or any other status), so a
+// successful or non-env-class generation resets the count to 0 on the very
+// next call — no separate reset bookkeeping needed. GH-5217. Errors are
+// treated as "no streak" (count 0), the safe default.
+func (d *Dispatcher) consecutiveEnvClassFailures(taskID, projectPath string) int {
+	execs, err := d.store.ListExecutionsForTask(taskID, projectPath)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, exec := range execs {
+		if exec.Status != string(ExecStatusFailed) {
+			break
+		}
+		if !IsEnvClassFailure(exec.Error, exec.TokensTotal, exec.CommitSHA, exec.PRUrl, time.Duration(exec.DurationMs)*time.Millisecond) {
+			break
+		}
+		count++
+	}
+	return count
+}
+
 // consecutiveIdenticalFailureThreshold is N in "the last N consecutive
 // generations for the same (task_id, project_path) failed with the exact
 // same error string" (GH-4586). A single failure could be any kind of
@@ -1685,13 +1760,65 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 		return "", nil
 	}
 
-	// GH-4586: independent of error class, the last consecutiveIdenticalFailureThreshold
-	// consecutive generations failing with the exact same error string means
-	// the retry changed nothing about the outcome — the task is durably
-	// stuck, not transiently unlucky. Route to the same operator-attention
-	// path rather than burning another generation reproducing it a third
-	// time.
-	if hadStreak, errStr := d.priorClaimsHadIdenticalFailureStreak(task.ID, task.ProjectPath); hadStreak {
+	// GH-5211: an env-class (credential/environment) failure is not evidence
+	// the task's own code is broken — the process never got far enough to
+	// even attempt the task. Left uncarved-out, a missing ANTHROPIC_API_KEY
+	// reproduces byte-identically on every retry and trips the SAME
+	// identical-failure-streak escalation a genuine deterministic code
+	// failure does, below, escalating pure infrastructure to stalled +
+	// pilot-blocked after just consecutiveIdenticalFailureThreshold
+	// attempts. Checked immediately before the streak check so an env-class
+	// streak never reaches escalateIdenticalFailureStreak; unlike the
+	// stall/infra carve-outs, this does not mint free retries against a
+	// separate drop counter — it simply falls through to the ordinary
+	// backoff/hard-cap path below, retrying via nextRetryGeneration with the
+	// existing repick backoff pacing.
+	if wasEnvClass, envErrStr := d.priorClaimWasEnvClassFailure(task.ID, task.ProjectPath); wasEnvClass {
+		streak := d.consecutiveEnvClassFailures(task.ID, task.ProjectPath)
+		d.log.Info("dispatch re-pick: prior claim was an env-class (credential/environment) failure — exempt from identical-failure streak escalation",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Int("generation", gen),
+			slog.Int("consecutive_env_class_failures", streak),
+		)
+
+		// GH-5217: retries continue exactly as above (this branch falls
+		// through to the ordinary backoff path below, unchanged) — the
+		// alert is purely additive. It closes the silence gap PR#5214's
+		// review flagged: without it, a hosted tenant with a persistently
+		// broken credential retries forever announced only by the Info
+		// line above. Fires once the streak crosses
+		// envClassFailureStreakThreshold and again on any later crossing
+		// call that clears the rule's cooldown (alerts.Engine
+		// handleEnvClassFailureStreak) while the streak persists; a
+		// successful or non-env-class generation resets the count to 0 on
+		// the very next call, so the alert stops on its own once the
+		// credential is fixed.
+		if streak >= envClassFailureStreakThreshold && d.runner != nil {
+			signature := MatchedEnvClassFailureSignature(envErrStr)
+			d.runner.EmitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeEnvClassFailureStreak,
+				TaskID:    task.ID,
+				TaskTitle: task.Title,
+				Project:   task.ProjectPath,
+				Error:     envErrStr,
+				Metadata: map[string]string{
+					"task_id":              task.ID,
+					"project":              task.ProjectPath,
+					"consecutive_failures": fmt.Sprintf("%d", streak),
+					"credential_signature": signature,
+				},
+				Timestamp: time.Now(),
+			})
+		}
+	} else if hadStreak, errStr := d.priorClaimsHadIdenticalFailureStreak(task.ID, task.ProjectPath); hadStreak {
+		// GH-4586: independent of error class, the last
+		// consecutiveIdenticalFailureThreshold consecutive generations
+		// failing with the exact same error string means the retry changed
+		// nothing about the outcome — the task is durably stuck, not
+		// transiently unlucky. Route to the same operator-attention path
+		// rather than burning another generation reproducing it a third
+		// time.
 		d.escalateIdenticalFailureStreak(task, gen, errStr)
 		return "", nil
 	}

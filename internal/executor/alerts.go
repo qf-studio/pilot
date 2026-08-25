@@ -90,6 +90,21 @@ const (
 	// pilot-failed-retry-exhausted hook (title_rejection.go), populates
 	// Error rather than that metadata.
 	AlertEventTypeEscalation AlertEventType = "escalation"
+
+	// AlertEventTypeEnvClassFailureStreak (GH-5217) mirrors
+	// alerts.EventTypeEnvClassFailureStreak ("env_class_failure_streak")
+	// byte-for-byte — EngineAdapter.ProcessEvent forwards AlertEventType
+	// values across the executor/alerts package boundary via a direct
+	// string cast, so this value must match exactly. GH-5211 exempted
+	// env-class (credential/environment) failures from the
+	// identical-failure streak escalation so they retry forever via
+	// ordinary backoff — correct, by founder decision, but it left a
+	// silent infinite retry loop announced only by an Info log line
+	// (PR#5214 review note 1). Dispatcher.beginWithGenerationRetry emits
+	// this once the consecutive env-class failure count reaches
+	// envClassFailureStreakThreshold, purely additive to the existing
+	// retry behavior.
+	AlertEventTypeEnvClassFailureStreak AlertEventType = "env_class_failure_streak"
 )
 
 // SelfReviewDeadManTrackerName is the alerts.DeadManTracker registration

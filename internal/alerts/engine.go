@@ -206,6 +206,18 @@ const (
 	// until it was caught while diagnosing GH-4648. Metadata carries repo
 	// and consecutive_failures.
 	EventTypeIntentJudgeFailureStreak EventType = "intent_judge_failure_streak"
+
+	// Env-class failure streak events (GH-5217): fired by
+	// Dispatcher.beginWithGenerationRetry (internal/executor/dispatcher.go,
+	// the GH-5211 carve-out branch) when a task's consecutive env-class
+	// (credential/environment) failure count reaches
+	// envClassFailureStreakThreshold. GH-5211 exempted env-class failures
+	// from the identical-failure streak escalation so they retry forever
+	// via ordinary backoff — this event is the only thing that surfaces a
+	// persistent credential break to an operator instead of it retrying
+	// silently forever. Metadata carries task_id, project,
+	// consecutive_failures, and credential_signature.
+	EventTypeEnvClassFailureStreak EventType = "env_class_failure_streak"
 )
 
 const (
@@ -697,6 +709,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleGithubSideEffect(ctx, event)
 	case EventTypeIntentJudgeFailureStreak:
 		e.handleIntentJudgeFailureStreak(ctx, event)
+	case EventTypeEnvClassFailureStreak:
+		e.handleEnvClassFailureStreak(ctx, event)
 	case EventTypeDeadManAttempt:
 		e.handleDeadManAttempt(event)
 	case EventTypeDeadManSuccess:
@@ -1092,6 +1106,39 @@ func (e *Engine) handleIntentJudgeFailureStreak(ctx context.Context, event Event
 	if !matched {
 		e.logger.Warn("intent judge failure streak event has no matching rule — alert dropped silently",
 			slog.String("repo", event.Metadata["repo"]),
+			slog.String("consecutive_failures", event.Metadata["consecutive_failures"]))
+	}
+}
+
+// handleEnvClassFailureStreak fires AlertTypeEnvClassFailureStreak rules
+// when a task's consecutive env-class (credential/environment) failure
+// streak reaches the caller's threshold (GH-5217). The caller
+// (Dispatcher.beginWithGenerationRetry, the GH-5211 carve-out branch)
+// already computed and gated on the exact threshold
+// (envClassFailureStreakThreshold) before emitting this event — mirroring
+// handleDispatchLoopBreaker/handleIntentJudgeFailureStreak — so no
+// Condition-based counting happens here. GH-5211 exempted env-class
+// failures from the identical-failure streak escalation so retries never
+// stop on their own; this rule is the only thing that pages an operator
+// about a persistent credential break instead of it retrying invisibly
+// forever behind an Info log line (PR#5214 review note 1).
+func (e *Engine) handleEnvClassFailureStreak(ctx context.Context, event Event) {
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeEnvClassFailureStreak {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			message := fmt.Sprintf("Task %s has failed %s consecutive times with an env-class (credential/environment) signature (%s) — retries continue automatically, but no attempt has reached the model backend",
+				event.TaskID, event.Metadata["consecutive_failures"], event.Metadata["credential_signature"])
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("env-class failure streak event has no matching rule — alert dropped silently",
+			slog.String("task_id", event.TaskID),
 			slog.String("consecutive_failures", event.Metadata["consecutive_failures"]))
 	}
 }

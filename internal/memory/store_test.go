@@ -5873,3 +5873,214 @@ func TestReclassifyCanceledForRearm_DemotesToFailedAndUnblocksRetry(t *testing.T
 		t.Errorf("expected the other task's canceled row to remain untouched, got status %q", otherExec.Status)
 	}
 }
+
+// TestLatestStalledExecution_FindsMostRecentStalledRow is GH-5212's coverage
+// for LatestStalledExecution — mirrors TestLatestCanceledExecution_FindsMostRecentCanceledRow
+// exactly, for status='stalled' instead of 'canceled'.
+func TestLatestStalledExecution_FindsMostRecentStalledRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-5212-LSE", "/project-lse"
+
+	_, found, err := store.LatestStalledExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestStalledExecution (before any row): %v", err)
+	}
+	if found {
+		t.Fatal("expected found=false before any execution row exists")
+	}
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-completed-first-lse", TaskID: taskID, ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/o/r/pull/1",
+	}); err != nil {
+		t.Fatalf("SaveExecution (completed): %v", err)
+	}
+	_, found, err = store.LatestStalledExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestStalledExecution (only a completed row): %v", err)
+	}
+	if found {
+		t.Fatal("expected found=false when the only row is completed, not stalled")
+	}
+
+	// CompletedAt is set explicitly here to mirror production: escalateStalledTask's
+	// UpdateExecutionStatus stamps completed_at = CURRENT_TIMESTAMP on the stall
+	// transition (that stamp becomes the "stall timestamp" the GH-5212 re-arm
+	// probe compares GitHub event times against) — SaveExecution itself does
+	// not default it.
+	stallTime := time.Now()
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-stalled", TaskID: taskID, ProjectPath: projectPath,
+		Status: "stalled", Error: "consecutive identical failures (will not retry): boom", CompletedAt: &stallTime,
+	}); err != nil {
+		t.Fatalf("SaveExecution (stalled): %v", err)
+	}
+
+	exec, found, err := store.LatestStalledExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestStalledExecution (after stall): %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true once a stalled row exists")
+	}
+	if exec.ID != "exec-stalled" {
+		t.Errorf("expected the stalled row, got %q", exec.ID)
+	}
+	if exec.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set (the stall timestamp) on the stalled row")
+	}
+
+	// Different task_id / project_path must not match (exact-key isolation,
+	// mirroring LatestCanceledExecution's own test).
+	if _, found, err := store.LatestStalledExecution("GH-OTHER", projectPath); err != nil || found {
+		t.Errorf("expected no match for a different task_id, found=%v err=%v", found, err)
+	}
+	if _, found, err := store.LatestStalledExecution(taskID, "/other-project"); err != nil || found {
+		t.Errorf("expected no match for a different project_path, found=%v err=%v", found, err)
+	}
+}
+
+// TestLatestStalledExecution_FreshQueuedRowAlongsideStalledRow_GH4347 is
+// acceptance criterion 4: a fresh 'queued' row for the same task_id created
+// alongside the old stalled row (e.g. a duplicate pickup race, or a manual
+// re-queue) must not confuse LatestStalledExecution — it filters on the
+// literal status='stalled' column, so the queued row simply never matches,
+// and the stalled row is still found correctly.
+func TestLatestStalledExecution_FreshQueuedRowAlongsideStalledRow_GH4347(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-5212-ORDERING", "/project-ordering"
+	stallTime := time.Now().Add(-time.Hour)
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-stalled-old", TaskID: taskID, ProjectPath: projectPath,
+		Status: "stalled", Error: "consecutive identical failures (will not retry): boom", CompletedAt: &stallTime,
+	}); err != nil {
+		t.Fatalf("SaveExecution (stalled): %v", err)
+	}
+
+	// A fresh queued row for the SAME task_id, created after the stall (the
+	// GH-4347 ordering trap shape: a duplicate pickup or manual re-queue
+	// racing against the escalation).
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-queued-fresh", TaskID: taskID, ProjectPath: projectPath,
+		Status: "queued",
+	}); err != nil {
+		t.Fatalf("SaveExecution (queued): %v", err)
+	}
+
+	exec, found, err := store.LatestStalledExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestStalledExecution: %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true — the stalled row must still be found despite a fresher queued row for the same task_id")
+	}
+	if exec.ID != "exec-stalled-old" {
+		t.Errorf("expected the stalled row (not the queued one), got %q", exec.ID)
+	}
+
+	// ReclassifyStalledForRearm must likewise leave the queued row untouched.
+	if err := store.ReclassifyStalledForRearm(taskID, projectPath, "GH-5212: re-armed by issue reopened event"); err != nil {
+		t.Fatalf("ReclassifyStalledForRearm: %v", err)
+	}
+	queuedExec, err := store.GetExecution("exec-queued-fresh")
+	if err != nil {
+		t.Fatalf("GetExecution (queued): %v", err)
+	}
+	if queuedExec.Status != "queued" {
+		t.Errorf("expected the queued row to remain untouched, got status %q", queuedExec.Status)
+	}
+	stalledExec, err := store.GetExecution("exec-stalled-old")
+	if err != nil {
+		t.Fatalf("GetExecution (stalled): %v", err)
+	}
+	if stalledExec.Status != "failed" {
+		t.Errorf("expected the stalled row to be demoted to failed, got status %q", stalledExec.Status)
+	}
+}
+
+// TestReclassifyStalledForRearm_DemotesToFailedAndUnblocksRetry is GH-5212's
+// coverage for the "demote don't delete" re-arm write, mirroring
+// TestReclassifyCanceledForRearm_DemotesToFailedAndUnblocksRetry: after
+// reclassifying, the row must no longer count as terminal
+// (HasTerminalCompletion already never counted 'stalled' as terminal either,
+// but the 'failed' status it demotes to must also stay non-terminal), so the
+// ordinary nextRetryGeneration retry path can grant the next generation.
+func TestReclassifyStalledForRearm_DemotesToFailedAndUnblocksRetry(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-5212-RSFR", "/project-rsfr"
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-stalled-rsfr", TaskID: taskID, ProjectPath: projectPath,
+		Status: "stalled", Error: "consecutive identical failures (will not retry): boom",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	done, err := store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (before reclassify): %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false before reclassify — HasTerminalCompletion never counts 'stalled' as terminal")
+	}
+
+	reason := "GH-5212: re-armed by issue #5212 reopened event"
+	if err := store.ReclassifyStalledForRearm(taskID, projectPath, reason); err != nil {
+		t.Fatalf("ReclassifyStalledForRearm: %v", err)
+	}
+
+	exec, err := store.GetExecution("exec-stalled-rsfr")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected status=failed after reclassify, got %q", exec.Status)
+	}
+	if exec.Error != reason {
+		t.Errorf("expected error=%q, got %q", reason, exec.Error)
+	}
+
+	done, err = store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (after reclassify): %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false after reclassify — a failed row is not terminal, unblocking the normal retry path")
+	}
+
+	// A different task_id's stalled row must be untouched (exact-key
+	// isolation, mirroring ReclassifyCanceledForRearm's own cross-task test).
+	otherTaskID := "GH-5212-RSFR-OTHER"
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-stalled-other", TaskID: otherTaskID, ProjectPath: projectPath,
+		Status: "stalled", Error: "unrelated",
+	}); err != nil {
+		t.Fatalf("SaveExecution (other task): %v", err)
+	}
+	if err := store.ReclassifyStalledForRearm(taskID, projectPath, "unrelated reclassify"); err != nil {
+		t.Fatalf("ReclassifyStalledForRearm (second call): %v", err)
+	}
+	otherExec, err := store.GetExecution("exec-stalled-other")
+	if err != nil {
+		t.Fatalf("GetExecution (other task): %v", err)
+	}
+	if otherExec.Status != "stalled" {
+		t.Errorf("expected the other task's stalled row to remain untouched, got status %q", otherExec.Status)
+	}
+}
