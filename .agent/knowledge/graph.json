@@ -1913,6 +1913,22 @@
           "markers",
           "authentication"
         ]
+      },
+      "TASK-485": {
+        "path": ".agent/tasks/TASK-485-hosted-retry-path-failed-executions.md",
+        "title": "Hosted retry path for failed executions (#5008)",
+        "status": "in-progress",
+        "concepts": [
+          "workflow",
+          "database",
+          "theory of mind",
+          "api",
+          "testing",
+          "deployment",
+          "context",
+          "knowledge",
+          "authentication"
+        ]
       }
     },
     "memories": {
@@ -5151,6 +5167,21 @@
         "file": ".agent/knowledge/memories/learnings/open-model-executor-research-2026-08.md",
         "created": "2026-08-24",
         "last_validated": "2026-08-24"
+      },
+      "mem-176": {
+        "type": "learning",
+        "summary": "Failed-execution wedge is the identical-failure streak (threshold 2 -> stalled + pilot-blocked label, silent poller exclusion), NOT HasTerminalCompletion \u2014 bare failed rows retry normally (#4372). Diagnose at the streak/label layer first. GH-5139 rearm covers canceled only.",
+        "path": "memories/learnings/mem-176.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dispatch",
+          "retry",
+          "stalled",
+          "dispatcher",
+          "labels"
+        ],
+        "created": "2026-08-25",
+        "last_validated": "2026-08-25"
       }
     }
   },
@@ -6949,6 +6980,26 @@
       "from": "TASK-484",
       "to": "authentication",
       "type": "implements"
+    },
+    {
+      "from": "TASK-485",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-485",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-485",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "mem-176",
+      "to": "TASK-485",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -7083,7 +7134,8 @@
       "TASK-477",
       "TASK-479",
       "TASK-481",
-      "TASK-484"
+      "TASK-484",
+      "TASK-485"
     ],
     "deployment": [
       "TASK-386",
@@ -7215,7 +7267,8 @@
       "TASK-481",
       "TASK-482",
       "TASK-483",
-      "TASK-484"
+      "TASK-484",
+      "TASK-485"
     ],
     "authentication": [
       "TASK-386",
@@ -7284,7 +7337,8 @@
       "TASK-466",
       "mem-171",
       "TASK-482",
-      "TASK-484"
+      "TASK-484",
+      "TASK-485"
     ],
     "testing": [
       "TASK-386",
@@ -7413,7 +7467,8 @@
       "TASK-481",
       "TASK-482",
       "TASK-483",
-      "TASK-484"
+      "TASK-484",
+      "TASK-485"
     ],
     "api": [
       "TASK-386",
@@ -7515,7 +7570,8 @@
       "TASK-460",
       "TASK-466",
       "TASK-482",
-      "TASK-484"
+      "TASK-484",
+      "TASK-485"
     ],
     "context": [
       "TASK-386",
@@ -7628,7 +7684,8 @@
       "TASK-466",
       "TASK-482",
       "TASK-483",
-      "TASK-484"
+      "TASK-484",
+      "TASK-485"
     ],
     "markers": [
       "TASK-387",
@@ -7715,7 +7772,8 @@
       "TASK-467",
       "TASK-478",
       "TASK-481",
-      "TASK-460"
+      "TASK-460",
+      "TASK-485"
     ],
     "workflow": [
       "TASK-387",
@@ -7790,7 +7848,8 @@
       "TASK-473",
       "TASK-475",
       "TASK-478",
-      "TASK-479"
+      "TASK-479",
+      "TASK-485"
     ],
     "simplification": [
       "TASK-387",
@@ -7887,7 +7946,8 @@
       "TASK-461",
       "TASK-467",
       "TASK-478",
-      "TASK-481"
+      "TASK-481",
+      "TASK-485"
     ],
     "autopilot": [
       "mem-100",
@@ -7910,7 +7970,8 @@
     ],
     "labels": [
       "mem-100",
-      "mem-174"
+      "mem-174",
+      "mem-176"
     ],
     "dispatcher": [
       "mem-101",
@@ -7919,7 +7980,8 @@
       "mem-171",
       "mem-172",
       "mem-174",
-      "mem-175"
+      "mem-175",
+      "mem-176"
     ],
     "concurrency": [
       "mem-101",
@@ -7980,7 +8042,8 @@
       "stall-status-reused-as-hold-marker",
       "mem-172",
       "mem-173",
-      "mem-175"
+      "mem-175",
+      "mem-176"
     ],
     "dashboard": [
       "mem-142",
@@ -7994,7 +8057,8 @@
     ],
     "retry": [
       "mem-142",
-      "mem-174"
+      "mem-174",
+      "mem-176"
     ],
     "alerts": [
       "mem-142"
@@ -8212,7 +8276,8 @@
     "stalled": [
       "pilot-stalled-status-is-retry-not-cancel",
       "mem-171",
-      "mem-174"
+      "mem-174",
+      "mem-176"
     ],
     "ops": [
       "pilot-stalled-status-is-retry-not-cancel",
@@ -8278,10 +8343,10 @@
       "mem-171"
     ]
   },
-  "last_updated": "2026-08-24T14:43:14.869317+00:00",
+  "last_updated": "2026-08-25T13:47:49.495378+00:00",
   "stats": {
-    "total_nodes": 444,
-    "total_edges": 359,
-    "memory_count": 240
+    "total_nodes": 449,
+    "total_edges": 363,
+    "memory_count": 244
   }
 }
