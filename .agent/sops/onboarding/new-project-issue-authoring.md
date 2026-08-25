@@ -30,6 +30,10 @@ The poller's dependency gate (`ParseDependencies`, poller.go) only matches `Bloc
 
 Flow: file the scaffold issue first → capture its number → every dependent body carries `Blocked by: #<that number>`.
 
+### Rule 3b — Backtick only paths that exist on main
+
+The dispatcher's referenced-path prerequisite gate treats backticked repo-path-like spans in the issue body as prerequisite files and holds the task ("Task held: prerequisite not on main", re-checked every poll, indefinitely) if any is missing from the default branch. 2026-08-25 incident (GH-5221): a *fabricated test-fixture path* written in backticks (`navigator/9.0.0/templates/DEVELOPMENT-README.md` — intentionally fake) held the task for 12+ cycles until the body was reworded. Describe hypothetical/fixture/to-be-created paths in prose, not backticks; the hold clears automatically on the next poll after `gh issue edit`.
+
 ## Rule 4 — Serialize anything that touches shared root files
 
 The parallel scope-overlap guard keys on **directories** named in issue bodies; two issues that both create root files (`package.json`, `tsconfig.json`, lockfiles) are NOT detected as overlapping. Until that's fixed in code, chain such issues with `Blocked by: #N` so they run one at a time.
