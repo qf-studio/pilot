@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph gate check-integration test-prepush-fastpath auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph gate check-integration test-prepush-fastpath auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
 
 # Variables
 BINARY_NAME=pilot
@@ -124,6 +124,13 @@ test-orchestrator:
 # Install git hooks (pre-commit for secret pattern detection)
 install-hooks:
 	@./scripts/install-hooks.sh
+
+# Arm the git-config-watch forensic tripwire (GH-5063/GH-5218) in the
+# foreground. Operator-initiated only — nothing starts this automatically.
+# Thin wrapper: execs the script directly so it inherits GCW_* env vars
+# (GCW_POLL_INTERVAL, GCW_LOG_FILE, GCW_LOCK_FILE) from your shell.
+watch-git-config:
+	@exec ./scripts/git-config-watch.sh
 
 # Check for realistic secret patterns in test files
 check-secrets:

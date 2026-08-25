@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  GH-5218: git-config-watch.sh (GH-5063) packaged as a launchd LaunchAgent —
+  for the laptop, the macOS interactive push context.
+
+  SHIPPED DISABLED. Copying this file into ~/Library/LaunchAgents/ does not
+  start anything by itself — `launchctl load` below is the explicit,
+  manual, operator-initiated step that arms it (RunAtLoad is false, so even
+  a `launchctl load` at login time won't fire it without also asking
+  launchd to start it). Nothing in this repo installs or loads this agent
+  automatically.
+
+  Install (operator step):
+    cp scripts/com.pilot.git-config-watch.plist ~/Library/LaunchAgents/
+    # Edit the ProgramArguments path below to your actual checkout path
+    # (this template ships with a placeholder, not a real path).
+    launchctl load ~/Library/LaunchAgents/com.pilot.git-config-watch.plist
+    launchctl start com.pilot.git-config-watch   # <- arms it (RunAtLoad is false)
+
+  Disarm:
+    launchctl stop com.pilot.git-config-watch
+    launchctl unload ~/Library/LaunchAgents/com.pilot.git-config-watch.plist
+
+  Status / forensic log:
+    launchctl list | grep com.pilot.git-config-watch
+    tail -f /tmp/git-config-watch.log
+
+  Syntax check (manual operator step; macOS only, not run in this repo's
+  Linux CI runners):
+    plutil -lint ~/Library/LaunchAgents/com.pilot.git-config-watch.plist
+
+  Single-instance guard: the script itself refuses a second concurrent
+  launch (lockfile at GCW_LOCK_FILE below), so this agent and a stray
+  manual tmux copy of the script can coexist safely — whichever started
+  first keeps the lock, the other exits non-zero naming the running pid
+  instead of double-healing core.bare.
+
+  KeepAlive/SuccessfulExit=false means launchd restarts the watcher if it
+  exits with a non-zero status (e.g. crash), mirroring the systemd unit's
+  Restart=on-failure — but does NOT restart it after a clean exit (Ctrl-C
+  equivalent via `launchctl stop`), matching operator-initiated intent.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pilot.git-config-watch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/path/to/your/pilot/checkout/scripts/git-config-watch.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>GCW_LOG_FILE</key>
+        <string>/tmp/git-config-watch.log</string>
+        <key>GCW_LOCK_FILE</key>
+        <string>/tmp/git-config-watch.lock</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/git-config-watch.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/git-config-watch.stderr.log</string>
+</dict>
+</plist>
