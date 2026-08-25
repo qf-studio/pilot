@@ -152,6 +152,26 @@ func IsEnvClassFailure(errStr string, tokensTotal int64, commitSHA, prURL string
 	return tokensTotal == 0 && commitSHA == "" && prURL == "" && duration < EnvClassFailureDurationThreshold
 }
 
+// MatchedEnvClassFailureSignature returns the first envClassFailureSignatures
+// entry found in errStr (case-insensitive, the same matching logic
+// IsEnvClassFailureText's containsAny uses), or "" if none match. GH-5217:
+// the dispatcher's env-class failure streak alert names which
+// credential/env signature is recurring (e.g. "ANTHROPIC_API_KEY") so an
+// operator can tell which credential rotted without reading the raw error
+// text.
+func MatchedEnvClassFailureSignature(errStr string) string {
+	if errStr == "" {
+		return ""
+	}
+	textLower := toLowerASCII(errStr)
+	for _, sig := range envClassFailureSignatures {
+		if containsSubstr(textLower, toLowerASCII(sig)) {
+			return sig
+		}
+	}
+	return ""
+}
+
 // reapErrorSignatures are substrings written by the dispatcher's stale-task
 // recovery (dispatcher.go recoverStaleRunningTasks / recoverStaleQueuedTasks)
 // when a daemon restart orphans a running or queued execution row. These

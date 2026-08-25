@@ -79,6 +79,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeFinishTripwireFailureStreak: {"finish_tripwire_failure_streak", true},
 		// Push-retry-exhausted dead-man tracker (GH-4866)
 		AlertTypePushRetryExhaustedFailureStreak: {"push_retry_exhausted_failure_streak", true},
+		// Env-class failure streak (GH-5217)
+		AlertTypeEnvClassFailureStreak: {"env_class_failure_streak", true},
 	}
 
 	if len(rules) != len(expectedRules) {

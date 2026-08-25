@@ -4006,6 +4006,37 @@ func TestIsEnvClassFailure(t *testing.T) {
 	}
 }
 
+// TestMatchedEnvClassFailureSignature verifies MatchedEnvClassFailureSignature
+// (GH-5217) names the specific credential/env signature matched in an error
+// string, for use in the dispatcher's env-class failure streak alert.
+func TestMatchedEnvClassFailureSignature(t *testing.T) {
+	tests := []struct {
+		name   string
+		errStr string
+		want   string
+	}{
+		{"empty string", "", ""},
+		{"ANTHROPIC_API_KEY", "no ANTHROPIC_API_KEY set in environment", "ANTHROPIC_API_KEY"},
+		{"PILOT_ENGINE_API_KEY", "PILOT_ENGINE_API_KEY is missing", "PILOT_ENGINE_API_KEY"},
+		{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN invalid", "ANTHROPIC_AUTH_TOKEN"},
+		{"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN expired", "CLAUDE_CODE_OAUTH_TOKEN"},
+		{"no API key configured", "no API key configured for anthropic-api backend", "no API key configured"},
+		{"requires an API key", "openai backend requires an API key: set OPENAI_API_KEY", "requires an API key"},
+		{"case-insensitive match", "no anthropic_api_key set in environment", "ANTHROPIC_API_KEY"},
+		{"no match", "quality gate failed: 3 lint errors", ""},
+		{"first-match-wins order", "ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN both missing", "ANTHROPIC_API_KEY"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchedEnvClassFailureSignature(tt.errStr)
+			if got != tt.want {
+				t.Errorf("MatchedEnvClassFailureSignature(%q) = %q, want %q", tt.errStr, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestRunnerFallbackModelName verifies that the telemetry fallback model name
 // reflects the configured backend, not a hardcoded default. GH-2428.
 func TestRunnerFallbackModelName(t *testing.T) {
