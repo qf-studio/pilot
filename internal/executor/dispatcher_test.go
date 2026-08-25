@@ -4713,6 +4713,171 @@ func TestDispatcher_BeginWithGenerationRetry_IdenticalFailureStreakStopsRetrying
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_EnvClassFailureExemptFromStreakEscalation
+// is the GH-5211 acceptance test: an execution that fails repeatedly with an
+// env-class (credential/environment) signature — identical error text, 0
+// tokens, no deliverable, near-instant duration — must never be marked
+// stalled and must never trip the identical-failure streak escalation,
+// regardless of how many consecutive attempts reproduce it. It retries
+// ordinarily via nextRetryGeneration instead. Live repro: a missing
+// ANTHROPIC_API_KEY failed in ~4s with 0 tokens on every retry and was
+// wrongly escalated to stalled + pilot-blocked after just
+// consecutiveIdenticalFailureThreshold (2) attempts.
+func TestDispatcher_BeginWithGenerationRetry_EnvClassFailureExemptFromStreakEscalation(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-5211-ENV", ProjectPath: "/project-5211-env", Title: "Env-class exempt task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	lifecycle := NewExecutionLifecycle(store)
+
+	const envErr = "no API key configured for anthropic-api backend"
+
+	// markEnvClassFailed writes a failed execution row that is BOTH a
+	// text-signature match AND structurally corroborated (0 tokens, no
+	// commit, no PR, well under EnvClassFailureDurationThreshold).
+	markEnvClassFailed := func(execID string) {
+		if err := store.UpdateExecutionStatus(execID, "failed", envErr); err != nil {
+			t.Fatalf("setup: failed to mark %s as failed: %v", execID, err)
+		}
+		if err := store.UpdateExecutionResult(execID, "", "", 4000); err != nil {
+			t.Fatalf("setup: failed to set duration for %s: %v", execID, err)
+		}
+		if err := store.SaveExecutionMetrics(&memory.ExecutionMetrics{ExecutionID: execID, TokensTotal: 0}); err != nil {
+			t.Fatalf("setup: failed to zero tokens for %s: %v", execID, err)
+		}
+	}
+
+	// Generation 0 and 1: identical env-class failure, twice in a row —
+	// exactly the shape that trips priorClaimsHadIdenticalFailureStreak for
+	// an ordinary code failure at consecutiveIdenticalFailureThreshold.
+	gen0ExecID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin gen0: %v", err)
+	}
+	markEnvClassFailed(gen0ExecID)
+
+	gen1ExecID, err := lifecycle.Begin(task, ExecStatusRunning, 1)
+	if err != nil {
+		t.Fatalf("setup Begin gen1: %v", err)
+	}
+	markEnvClassFailed(gen1ExecID)
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry (after 2 identical env-class failures): %v", err)
+	}
+	if retryExecID == "" {
+		t.Fatal("expected a fresh generation to be granted — env-class failures must be exempt from the identical-failure streak escalation")
+	}
+
+	gen1Exec, err := store.GetExecution(gen1ExecID)
+	if err != nil {
+		t.Fatalf("GetExecution gen1: %v", err)
+	}
+	if gen1Exec.Status != "failed" {
+		t.Errorf("expected generation 1's execution to stay 'failed' (not stalled), got status=%q", gen1Exec.Status)
+	}
+	if len(processor.events) != 0 {
+		t.Fatalf("expected no alert events for an env-class streak, got %d: %+v", len(processor.events), processor.events)
+	}
+
+	// Push a THIRD consecutive identical env-class failure — "regardless of
+	// attempt count" means the exemption must keep holding, not just for the
+	// first repick past the threshold. Clear the ordinary repick backoff
+	// window first so this assertion isolates the streak-exemption behavior
+	// from the (separately tested) backoff pacing itself.
+	markEnvClassFailed(retryExecID)
+	if err := dispatcher.ClearRepickBackoffState(repickBackoffKey(task.ProjectPath, task.ID)); err != nil {
+		t.Fatalf("setup: failed to clear repick backoff state: %v", err)
+	}
+
+	retryExecID2, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry (after 3 identical env-class failures): %v", err)
+	}
+	if retryExecID2 == "" {
+		t.Fatal("expected another fresh generation to be granted on a third consecutive env-class failure")
+	}
+	if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	} else if !found || genCheck != 3 {
+		t.Errorf("expected generation 3 to be claimed, found=%v generation=%d", found, genCheck)
+	}
+	if len(processor.events) != 0 {
+		t.Fatalf("expected still no alert events after a third env-class failure, got %d: %+v", len(processor.events), processor.events)
+	}
+}
+
+// TestDispatcher_BeginWithGenerationRetry_EnvClassTextMatchAloneStillEscalates
+// is the GH-5211 negative-case acceptance test: matching an env-class
+// signature in the error text is NOT sufficient on its own. When the
+// execution record shows tokens were produced (structural corroboration
+// fails), the failure is an ordinary one and the identical-failure streak
+// escalation must still fire at the existing threshold — proving the
+// structural check, not just the text match, gates the carve-out.
+func TestDispatcher_BeginWithGenerationRetry_EnvClassTextMatchAloneStillEscalates(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-5211-TEXT-ONLY", ProjectPath: "/project-5211-text-only", Title: "Env-class text-only task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	lifecycle := NewExecutionLifecycle(store)
+
+	// Error text matches an env-class signature, but tokens > 0 — a genuine
+	// code failure whose output happened to mention the env var name (e.g.
+	// while inspecting config), not a credential/env failure.
+	const textOnlyErr = "quality gate failed: config test references ANTHROPIC_API_KEY incorrectly"
+
+	markTextOnlyFailed := func(execID string) {
+		if err := store.UpdateExecutionStatus(execID, "failed", textOnlyErr); err != nil {
+			t.Fatalf("setup: failed to mark %s as failed: %v", execID, err)
+		}
+		if err := store.SaveExecutionMetrics(&memory.ExecutionMetrics{ExecutionID: execID, TokensTotal: 15000}); err != nil {
+			t.Fatalf("setup: failed to set tokens for %s: %v", execID, err)
+		}
+	}
+
+	gen0ExecID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin gen0: %v", err)
+	}
+	markTextOnlyFailed(gen0ExecID)
+
+	gen1ExecID, err := lifecycle.Begin(task, ExecStatusRunning, 1)
+	if err != nil {
+		t.Fatalf("setup Begin gen1: %v", err)
+	}
+	markTextOnlyFailed(gen1ExecID)
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatalf("expected the identical-failure streak to still stop retrying (text match alone is not env-class), got fresh execID %q", retryExecID)
+	}
+
+	gen1Exec, err := store.GetExecution(gen1ExecID)
+	if err != nil {
+		t.Fatalf("GetExecution gen1: %v", err)
+	}
+	if gen1Exec.Status != "stalled" {
+		t.Errorf("expected generation 1's execution to be escalated to stalled, got status=%q", gen1Exec.Status)
+	}
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event for the ordinary identical-failure streak, got %d: %+v", len(processor.events), processor.events)
+	}
+}
+
 // TestRepickBackoffKey_FormatMatchesCmdPilotPackage is the GH-4394 subtask 4
 // counterpart to cmd/pilot's TestRepickBackoffKey_FormatMatchesDispatcherPackage.
 // cmd/pilot cannot import internal/executor's unexported repickBackoffKey (and

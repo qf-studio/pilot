@@ -87,6 +87,71 @@ func IsDeterministicFailure(errStr string) bool {
 	return strings.HasPrefix(strings.TrimSpace(errStr), deterministicFailurePrefix)
 }
 
+// envClassFailureSignatures are substrings in error messages that indicate
+// the executor process itself could not authenticate to its model backend —
+// a missing or invalid credential/env var, or a backend construction
+// failure because none of the recognized credential env vars were set (see
+// AnthropicBackend.IsAvailable, backend_anthropic.go:71, and the env var
+// priority list at backend_anthropic.go:59-64) — rather than a genuine code
+// failure. GH-5211: a missing ANTHROPIC_API_KEY reproduces byte-identically
+// on every retry (same error text, 0 tokens, no diff, ~4s), which otherwise
+// trips the dispatcher's identical-failure streak escalation
+// (dispatcher.go priorClaimsHadIdenticalFailureStreak) after just
+// consecutiveIdenticalFailureThreshold attempts, treating pure
+// infrastructure as if the task's own code were broken.
+var envClassFailureSignatures = []string{
+	"ANTHROPIC_API_KEY",
+	"PILOT_ENGINE_API_KEY",
+	"ANTHROPIC_AUTH_TOKEN",
+	"CLAUDE_CODE_OAUTH_TOKEN",
+	// Backend-not-available construction errors — backend_anthropic.go:547
+	// ("no API key configured for anthropic-api backend"), the analogous
+	// backend_openai.go message, and preflight.go's checkOpenAIAPIKey
+	// ("<type> backend requires an API key: ...") all phrase the failure
+	// this way regardless of which specific env var was missing.
+	"no API key configured",
+	"requires an API key",
+}
+
+// EnvClassFailureDurationThreshold bounds how short an execution's duration
+// must be for a text-matching failure to additionally qualify as env-class
+// (IsEnvClassFailure). A genuine code failure that happens to mention one of
+// these env var names (e.g. quoting a diff or config file) still takes real
+// wall-clock time and produces tokens/output; a credential/env failure fails
+// at process-start, before any model call completes. GH-5211.
+const EnvClassFailureDurationThreshold = 60 * time.Second
+
+// IsEnvClassFailureText reports whether errStr matches a credential/env
+// signature. Text alone is NOT sufficient to classify a failure as
+// env-class — see IsEnvClassFailure, which additionally requires structural
+// corroboration from the execution record. GH-5211.
+func IsEnvClassFailureText(errStr string) bool {
+	if errStr == "" {
+		return false
+	}
+	return containsAny(errStr, envClassFailureSignatures)
+}
+
+// IsEnvClassFailure reports whether a failed execution represents a
+// credential/environment failure — infrastructure the executor could not
+// even start against, not a genuine code failure — and should therefore be
+// exempt from the dispatcher's identical-failure streak escalation. GH-5211.
+// Both text and structural corroboration must hold:
+//   - errStr matches a credential/env signature (IsEnvClassFailureText)
+//   - the execution produced zero total tokens, no commit SHA, no PR URL,
+//     and finished inside EnvClassFailureDurationThreshold
+//
+// The structural check guards against a genuine code failure that merely
+// mentions one of these env var names (e.g. in output or a diff) — which
+// would still have tokens and/or a deliverable — from being waved through
+// as infrastructure.
+func IsEnvClassFailure(errStr string, tokensTotal int64, commitSHA, prURL string, duration time.Duration) bool {
+	if !IsEnvClassFailureText(errStr) {
+		return false
+	}
+	return tokensTotal == 0 && commitSHA == "" && prURL == "" && duration < EnvClassFailureDurationThreshold
+}
+
 // reapErrorSignatures are substrings written by the dispatcher's stale-task
 // recovery (dispatcher.go recoverStaleRunningTasks / recoverStaleQueuedTasks)
 // when a daemon restart orphans a running or queued execution row. These

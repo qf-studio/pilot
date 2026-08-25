@@ -3935,6 +3935,77 @@ func TestIsInfraNoise(t *testing.T) {
 	}
 }
 
+// TestIsEnvClassFailureText verifies the text-only signature match used by
+// IsEnvClassFailure. Text alone is intentionally permissive — structural
+// corroboration (tokens/commit/PR/duration) is layered on separately by
+// IsEnvClassFailure, exercised in TestIsEnvClassFailure below. GH-5211.
+func TestIsEnvClassFailureText(t *testing.T) {
+	tests := []struct {
+		name string
+		err  string
+		want bool
+	}{
+		{"empty string", "", false},
+		{"missing ANTHROPIC_API_KEY", "no API key configured for anthropic-api backend", true},
+		{"missing PILOT_ENGINE_API_KEY mentioned", "PILOT_ENGINE_API_KEY not set", true},
+		{"missing ANTHROPIC_AUTH_TOKEN mentioned", "invalid ANTHROPIC_AUTH_TOKEN", true},
+		{"missing CLAUDE_CODE_OAUTH_TOKEN mentioned", "CLAUDE_CODE_OAUTH_TOKEN expired", true},
+		{"preflight requires-an-api-key phrasing", "anthropic-api backend requires an API key: set OPENAI_API_KEY (or configure executor.openai.api_key)", true},
+		{"case-insensitive match", "no api key configured for anthropic-api backend", true},
+		{"genuine code failure", "quality gate failed: 3 lint errors", false},
+		{"genuine planning failure", "unknown: exit status 1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsEnvClassFailureText(tt.err); got != tt.want {
+				t.Errorf("IsEnvClassFailureText(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsEnvClassFailure is the GH-5211 acceptance test: a credential/env
+// signature is env-class ONLY when corroborated by the execution's own
+// structural fields (zero tokens, no commit, no PR, sub-threshold
+// duration). Text match alone — with tokens produced or a deliverable
+// present — must NOT classify as env-class, otherwise a genuine code
+// failure that happens to quote one of these env var names (e.g. in a diff)
+// would be waved through as infrastructure.
+func TestIsEnvClassFailure(t *testing.T) {
+	const envErr = "no API key configured for anthropic-api backend"
+
+	tests := []struct {
+		name        string
+		errStr      string
+		tokensTotal int64
+		commitSHA   string
+		prURL       string
+		duration    time.Duration
+		want        bool
+	}{
+		{"env-class: all structural signals corroborate", envErr, 0, "", "", 4 * time.Second, true},
+		{"env-class: duration just under threshold", envErr, 0, "", "", EnvClassFailureDurationThreshold - time.Second, true},
+		{"not env-class: duration at threshold", envErr, 0, "", "", EnvClassFailureDurationThreshold, false},
+		{"not env-class: duration over threshold", envErr, 0, "", "", 2 * time.Minute, false},
+		{"not env-class: tokens produced despite matching text", envErr, 1200, "", "", 4 * time.Second, false},
+		{"not env-class: commit SHA present despite matching text", envErr, 0, "abc1234", "", 4 * time.Second, false},
+		{"not env-class: PR URL present despite matching text", envErr, 0, "", "https://github.com/qf-studio/pilot/pull/1", 4 * time.Second, false},
+		{"not env-class: text does not match at all", "quality gate failed: 3 lint errors", 0, "", "", 4 * time.Second, false},
+		{"not env-class: empty error text", "", 0, "", "", 4 * time.Second, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsEnvClassFailure(tt.errStr, tt.tokensTotal, tt.commitSHA, tt.prURL, tt.duration)
+			if got != tt.want {
+				t.Errorf("IsEnvClassFailure(%q, tokens=%d, sha=%q, pr=%q, dur=%v) = %v, want %v",
+					tt.errStr, tt.tokensTotal, tt.commitSHA, tt.prURL, tt.duration, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestRunnerFallbackModelName verifies that the telemetry fallback model name
 // reflects the configured backend, not a hardcoded default. GH-2428.
 func TestRunnerFallbackModelName(t *testing.T) {
