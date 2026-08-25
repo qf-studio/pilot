@@ -13,6 +13,24 @@
 
 set -e
 
+# Scrub git-injected environment variables (GH-5223 — root cause of 5
+# core.bare-flip incidents, GH-5063). Git exports GIT_DIR (and friends)
+# into the pre-push hook's environment; from a LINKED WORKTREE, GIT_DIR is
+# an ABSOLUTE path into the shared .git dir, and an absolute GIT_DIR
+# overrides `git -C <dir>` discovery entirely. Left unscrubbed, this gate's
+# own git invocations — and every `git` subprocess spawned by `go test`
+# below, including test fixtures that git-init/commit/push against temp
+# dirs — silently retarget the REAL repo instead of the intended one.
+# Unset everything git-injected except intentional identity overrides so
+# every git call in this script (and its child processes) re-resolves from
+# CWD.
+while IFS='=' read -r _gh_var _; do
+    case "$_gh_var" in
+        GIT_AUTHOR_*|GIT_COMMITTER_*) ;;
+        GIT_*) unset "$_gh_var" ;;
+    esac
+done < <(env)
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 

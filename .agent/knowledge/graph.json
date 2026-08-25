@@ -5185,7 +5185,7 @@
       },
       "mem-177": {
         "type": "pitfall",
-        "summary": "core.bare flips ROOT-CAUSED (all 5 occurrences): git exports GIT_DIR to pre-push hooks; from a linked worktree it is ABSOLUTE and overrides git -C, so the gate's go test runs executor git_test.go fixtures against the REAL repo \u2014 init --bare flips core.bare, fixture commits/pushes hit real branches and the real remote (phantom counter/greeter PRs). Root pushes immune (relative .git). SIGTERM was never the trigger. Fix: #5223 (scrub GIT_* in gate + tests). Until merged: never push from a linked worktree without --no-verify or a scrubbed env.",
+        "summary": "core.bare flips ROOT-CAUSED (all 5 occurrences): git exports GIT_DIR to pre-push hooks; from a linked worktree it is ABSOLUTE and overrides git -C, so the gate's go test runs executor git_test.go fixtures against the REAL repo \u2014 init --bare flips core.bare, fixture commits/pushes hit real branches and the real remote (phantom counter/greeter PRs). Root pushes immune (relative .git). SIGTERM was never the trigger. FIXED by #5223: pre-push-gate.sh scrubs GIT_* env; TestMain in executor/autopilot/orchestrator/desktop/cmd-pilot calls testutil.UnsetLeakedGitEnv; regression pin TestGitFixtures_ImmuneToLeakedGITDIR proves decoy repo untouched under a leaked absolute GIT_DIR.",
         "path": "memories/pitfalls/mem-177.md",
         "confidence": 0.98,
         "concepts": [
