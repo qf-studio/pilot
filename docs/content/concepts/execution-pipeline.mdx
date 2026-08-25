@@ -181,14 +181,14 @@ LocalMode, and the task was not flagged trivial-skip in step 3):
 - A `PILOT EXECUTION MODE` header instructs the agent to ignore any
   CLAUDE.md rules that forbid writing code or committing — those rules
   apply to interactive Navigator sessions, not Pilot executor runs.
-- The prompt engages the `/nav-loop` contract: PLAN → EXECUTE →
+- The prompt engages the Navigator loop contract: PLAN → EXECUTE →
   VERIFY → DOCUMENT → COMPLETE, with the agent expected to emit phase
   signals.
 </Callout>
 
 <Callout type="info">
 **Without Navigator**: a plain task prompt with workflow instructions
-only. No project context injection, no `/nav-loop` contract, no
+only. No project context injection, no Navigator loop contract, no
 DOCUMENT phase. The agent is told to make the change, run tests, and
 commit.
 </Callout>
@@ -208,7 +208,7 @@ LocalMode regardless of config (GH-2108).
 ## 7. Execution [#7-execution]
 
 The agent runs the task. With Navigator engaged, this expands into the
-five `/nav-loop` phases:
+five Navigator loop phases:
 
 1. **PLAN** — sketch the change set, identify affected files.
 2. **EXECUTE** — make edits, run iterative checks.
@@ -285,7 +285,7 @@ human to inspect.
 ## 11. Post-execution Navigator updates [#11-post-execution-navigator-updates]
 
 This step runs **only in Navigator mode**. It corresponds to the
-DOCUMENT phase of `/nav-loop` (originating issue: GH-1388).
+DOCUMENT phase of the Navigator loop (originating issue: GH-1388).
 
 - **Feature matrix update**: a row is added or updated in
   `.agent/system/FEATURE-MATRIX.md` with the current version and

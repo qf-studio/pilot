@@ -92,6 +92,14 @@ API currently has no rate limiting. See ARCHITECTURE.md for endpoint list.
 
 This way, the context engine loads the index + one task doc and has full context (~5k tokens total).
 
+<Callout type="info">
+  Task docs feed directly into GitHub issue bodies for Pilot. Before dispatch, the
+  [issue spec guard](/features/quality-gates#issue-spec-guard-pre-dispatch) requires at
+  least one recognized H2 header (`Context`, `Acceptance`, `Implementation`, …) and
+  dependencies written inline as `Depends on: #N` / `Blocked by: #N` — see
+  [Issue Format](/features/github#issue-format).
+</Callout>
+
 ## Knowledge Graph Usage
 
 ### Capture Decisions When They're Made
@@ -102,8 +110,9 @@ Non-obvious technical decisions should be recorded immediately:
 - Why an approach was rejected
 - Trade-offs that were consciously accepted
 
-The context engine captures these automatically during `/nav-task archive`, but you can also
-trigger manual capture via `/nav-graph`.
+The context engine captures these automatically when a task is archived. You can also
+record one manually by adding a memory entry under `.agent/` — it will be indexed into
+the knowledge graph.
 
 ### Document Pitfalls After Every Bug
 
@@ -127,36 +136,27 @@ The knowledge graph grows over time. Periodically review entries to:
 
 ### Create Markers Before Risky Changes
 
-Before refactors, dependency upgrades, or architectural changes:
-
-```
-/nav-marker "Before auth system refactor"
-```
-
-This creates a checkpoint in `.context-markers/` that you can resume from
-if the change goes wrong.
+Before refactors, dependency upgrades, or architectural changes, write a
+checkpoint file to `.agent/.context-markers/` (format:
+`YYYY-MM-DD-HHMM_description.md`) summarizing the current state and intent.
+The next session resumes from it if the change goes wrong. Pilot creates
+these automatically at execution checkpoints.
 
 ### Compact After Each Task
 
-After completing a task, clear the conversation context:
+After completing a task, clear the conversation context and start the next
+task in a fresh session. This preserves knowledge in the graph while freeing
+context window tokens. Without compaction, context accumulates and efficiency
+drops. Pilot does this by design — every autonomous execution starts clean and
+loads only the index plus the task at hand.
 
-```
-/nav-compact
-```
+### Loop Phases for Multi-Step Work
 
-This preserves knowledge in the graph while freeing context window tokens
-for the next task. Without compaction, context accumulates and efficiency drops.
-
-### Use Loop Mode for Multi-Step Work
-
-For tasks requiring iteration (implement → test → fix → test), use loop mode:
-
-```
-/nav-loop "Implement and verify rate limiting"
-```
-
-Loop mode runs in phases (Research → Implement → Verify) with
-automatic completion detection. It prevents premature task completion.
+For tasks requiring iteration (implement → test → fix → test), Pilot engages
+the Navigator loop contract automatically: phases run
+Research → Implement → Verify with structured completion signals. It prevents
+premature task completion — see the
+[execution pipeline](/concepts/execution-pipeline#7-execution).
 
 ## Documentation Loading Budget
 
@@ -177,12 +177,12 @@ or your docs need restructuring.
 | Anti-Pattern | Problem | Correct Approach |
 |-------------|---------|-----------------|
 | Inline everything in index | 150k tokens per session, exhausted in 5 exchanges | Link to detailed docs, keep index under 500 words |
-| Skip task documentation | No context for future tasks, repeated discovery | Always create task docs with `/nav-task` |
+| Skip task documentation | No context for future tasks, repeated discovery | Always create a task doc in `tasks/` before implementation |
 | Ignore knowledge graph | Known pitfalls rediscovered, decisions forgotten | Let the context engine capture automatically, review monthly |
-| Let context grow unbounded | Token efficiency drops below 50% after 10+ exchanges | Compact after each task with `/nav-compact` |
+| Let context grow unbounded | Token efficiency drops below 50% after 10+ exchanges | Compact after each task; start the next one in a fresh session |
 | Load all docs at session start | Wastes 40k+ tokens before any work begins | Use lazy loading — load on demand only |
 | Large code blocks in docs | Each block costs 100-500 tokens every load | Reference file paths instead: `see src/api/auth.ts:45` |
-| Manual context markers | Inconsistent format, missed metadata | Use `/nav-marker` — auto-formats with timestamp and state |
+| Free-form context markers | Inconsistent format, missed metadata | Follow the `YYYY-MM-DD-HHMM_description.md` marker format with state + intent |
 | No architecture docs | Every task requires full codebase exploration | Write `ARCHITECTURE.md` once, update incrementally |
 | Monolithic task docs | Single 2000-word task doc loaded for unrelated tasks | One file per task, archive when done |
 | Skipping workflow check | Tasks jump to implementation without planning | The context engine enforces this — don't override |

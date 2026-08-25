@@ -174,13 +174,14 @@ Add context intelligence instructions to your project's `CLAUDE.md`:
 ## Context Intelligence
 
 This project uses structured context management.
-Documentation lives in `.agent/`.
-
-### Quick Commands
-- `/nav-start` — Start or resume context session
-- `/nav-task "description"` — Plan a new task
-- `/nav-compact` — Clear context when done with a task
+Documentation lives in `.agent/`:
+- `DEVELOPMENT-README.md` — index, read this first
+- `tasks/` — implementation plans (archive when done)
+- `system/` — architecture docs
 ```
+
+For interactive planning workflows on top of this structure, see the
+[Navigator plugin](https://github.com/alekspetrov/navigator) for Claude Code.
 
 ### Verify the setup
 
@@ -227,7 +228,7 @@ These are loaded on demand when tasks touch architecture.
 
 ### `tasks/` (Recommended)
 
-Task implementation plans created by `/nav-task`. Each task gets a markdown file with:
+Task implementation plans. Each task gets a markdown file with:
 - Requirements analysis
 - Implementation steps
 - Affected files
@@ -303,5 +304,5 @@ if `.agent/` exists in the project path.
 | `Context: not found` in output | Missing `.agent/` directory | Run `mkdir -p .agent` and create index |
 | Context engine loads but burns tokens | Index document too large | Keep `DEVELOPMENT-README.md` under 500 words |
 | Knowledge graph empty | No memories captured yet | Memories accumulate automatically over tasks |
-| Context markers missing | First session | Markers created when using `/nav-marker` or `/nav-compact` |
+| Context markers missing | First session | Markers are created at session checkpoints; they accumulate as tasks run |
 | Phase progress stuck | Context signals not detected | Verify execution backend is configured correctly |

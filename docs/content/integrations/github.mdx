@@ -108,16 +108,22 @@ orchestrator:
 
 ### Dependency Resolution
 
-Pilot respects issue dependencies declared in the issue body:
+Pilot respects issue dependencies declared in the issue body. A dependency
+must be written **inline** as one of these phrases followed by a numeric
+issue reference:
 
 ```markdown
 ## Context
-Add user authentication
+Add user authentication.
 
-## Depends on
-- #123
-- #124
+Depends on: #123
+Blocked by: #124
 ```
+
+Recognized phrases (case-insensitive): `Depends on: #N`, `Blocked by: #N`,
+`Requires: #N`. The `#N` must follow the phrase on the same line — list
+items under a `## Depends on` header or prose like `Depends on: the auth
+scaffold` are **not** detected, and the issue dispatches immediately.
 
 Issues with open dependencies are skipped until their dependencies are closed.
 

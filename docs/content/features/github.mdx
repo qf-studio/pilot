@@ -41,23 +41,27 @@ gh issue create \
 
 ## Issue Format
 
-For best results, structure issues like this:
+Before dispatch, the [issue spec guard](/features/quality-gates#issue-spec-guard-pre-dispatch)
+checks that the body contains at least one recognized section header:
+`Acceptance`, `Implementation`, `Context`, `Background`, `Approach`,
+`Design`, or `Refs` (H2–H6, case-insensitive, trailing words allowed —
+`## Acceptance Criteria` passes). Structure issues like this:
 
 ```markdown
-## Description
-[What needs to be done]
-
-## Requirements
-- [ ] Requirement 1
-- [ ] Requirement 2
-
 ## Context
-[Any relevant context or links]
+[What needs to be done and why, links]
 
-## Acceptance Criteria
+## Implementation
+- [ ] Step 1
+- [ ] Step 2
+
+## Acceptance
 - [ ] Tests pass
 - [ ] Documentation updated
 ```
+
+Dependencies on other issues go inline as `Depends on: #N` / `Blocked by: #N` —
+see [Dependency Resolution](/integrations/github#dependency-resolution).
 
 ## Pull Request Flow
 

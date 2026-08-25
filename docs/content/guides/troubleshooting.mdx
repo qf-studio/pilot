@@ -107,7 +107,7 @@ Pilot delegates all AI execution to Claude Code. If `claude -p "hello"` works in
 
 ### PR quality is low
 
-1. **Initialize context intelligence** — run `claude /nav-init` inside Claude Code in your project
+1. **Initialize context intelligence** — Pilot auto-creates `.agent/` on first task; see [Context Intelligence setup](/navigator/setup) to tailor the index and docs
 2. **Add CLAUDE.md** — describe your code standards, patterns, and conventions
 3. **Write better tickets** — treat them like briefings for a junior developer. Include context, requirements, and expected behavior
 4. **Configure quality gates** — auto-detected or in config. Failed gates get retried with error feedback

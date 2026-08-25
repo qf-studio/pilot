@@ -6,6 +6,16 @@ Pilot's context intelligence layer transforms raw AI sessions into structured, e
 workflows. It auto-detects your project's `.agent/` directory and uses it to dramatically
 reduce token waste while maintaining full project awareness.
 
+<Callout type="info">
+  Context intelligence is built on [Navigator](https://github.com/alekspetrov/navigator) —
+  a context-engineering plugin for Claude Code that defines the `.agent/` documentation
+  structure, knowledge graph, and session workflow. Pilot ships the automated side out of
+  the box: it scaffolds `.agent/` on first task and drives the Navigator session contract
+  during autonomous execution — no plugin install required. Installing the Navigator plugin
+  is optional and adds interactive planning workflows for humans working in the same
+  `.agent/` structure.
+</Callout>
+
 ## The Challenge
 
 Every AI coding session starts from scratch. Without context engineering, the AI loads
