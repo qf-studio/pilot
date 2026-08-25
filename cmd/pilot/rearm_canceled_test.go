@@ -26,6 +26,10 @@ func newRearmTestServer(t *testing.T, issue *github.Issue, events []*github.Issu
 			_ = json.NewEncoder(w).Encode(issue)
 		case r.URL.Path == "/repos/owner/repo/issues/5139/events" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(events)
+		case r.URL.Path == "/repos/owner/repo/issues/5139/labels/"+github.LabelBlocked && r.Method == http.MethodDelete:
+			// Only exercised by GH-5212 stalled-rearm tests (tryRearmCanceled
+			// never removes labels) — kept here since this fixture is shared.
+			w.WriteHeader(http.StatusOK)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
