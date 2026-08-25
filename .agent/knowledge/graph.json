@@ -1915,19 +1915,19 @@
         ]
       },
       "TASK-485": {
-        "path": ".agent/tasks/TASK-485-hosted-retry-path-failed-executions.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-485-hosted-retry-path-failed-executions.md",
         "title": "Hosted retry path for failed executions (#5008)",
-        "status": "in-progress",
+        "status": "blocked",
         "concepts": [
-          "workflow",
           "database",
-          "theory of mind",
-          "api",
-          "testing",
-          "deployment",
-          "context",
           "knowledge",
-          "authentication"
+          "context",
+          "workflow",
+          "testing",
+          "api",
+          "authentication",
+          "deployment",
+          "theory of mind"
         ]
       }
     },
@@ -5182,6 +5182,21 @@
         ],
         "created": "2026-08-25",
         "last_validated": "2026-08-25"
+      },
+      "mem-177": {
+        "type": "pitfall",
+        "summary": "core.bare flips ROOT-CAUSED (all 5 occurrences): git exports GIT_DIR to pre-push hooks; from a linked worktree it is ABSOLUTE and overrides git -C, so the gate's go test runs executor git_test.go fixtures against the REAL repo \u2014 init --bare flips core.bare, fixture commits/pushes hit real branches and the real remote (phantom counter/greeter PRs). Root pushes immune (relative .git). SIGTERM was never the trigger. Fix: #5223 (scrub GIT_* in gate + tests). Until merged: never push from a linked worktree without --no-verify or a scrubbed env.",
+        "path": "memories/pitfalls/mem-177.md",
+        "confidence": 0.98,
+        "concepts": [
+          "git",
+          "worktree",
+          "pre-push-gate",
+          "testing",
+          "forensics"
+        ],
+        "created": "2026-08-25",
+        "last_validated": "2026-08-25"
       }
     }
   },
@@ -7000,6 +7015,11 @@
       "from": "mem-176",
       "to": "TASK-485",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-177",
+      "to": "TASK-485",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -7468,7 +7488,8 @@
       "TASK-482",
       "TASK-483",
       "TASK-484",
-      "TASK-485"
+      "TASK-485",
+      "mem-177"
     ],
     "api": [
       "TASK-386",
@@ -7993,7 +8014,8 @@
     ],
     "worktree": [
       "mem-102",
-      "mem-161"
+      "mem-161",
+      "mem-177"
     ],
     "release": [
       "mem-103",
@@ -8235,10 +8257,12 @@
     ],
     "git": [
       "mem-161",
-      "apply-script-silent-rollback-causes"
+      "apply-script-silent-rollback-causes",
+      "mem-177"
     ],
     "pre-push-gate": [
-      "mem-161"
+      "mem-161",
+      "mem-177"
     ],
     "go-build": [
       "mem-161"
@@ -8337,16 +8361,17 @@
       "apply-script-silent-rollback-causes"
     ],
     "forensics": [
-      "apply-script-silent-rollback-causes"
+      "apply-script-silent-rollback-causes",
+      "mem-177"
     ],
     "oauth": [
       "mem-171"
     ]
   },
-  "last_updated": "2026-08-25T13:47:49.495378+00:00",
+  "last_updated": "2026-08-25T17:39:32.336246+00:00",
   "stats": {
-    "total_nodes": 449,
-    "total_edges": 363,
-    "memory_count": 244
+    "total_nodes": 450,
+    "total_edges": 364,
+    "memory_count": 245
   }
 }
