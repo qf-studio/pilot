@@ -224,8 +224,12 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 	// Copy and customize templates — continue on individual failures
 	var initErrors []string
 
-	if err := n.copyTemplate("DEVELOPMENT-README.md", filepath.Join(agentDir, "DEVELOPMENT-README.md"), info); err != nil {
+	readmePath := filepath.Join(agentDir, "DEVELOPMENT-README.md")
+	if err := n.copyTemplate("DEVELOPMENT-README.md", readmePath, info); err != nil {
 		n.log.Warn("Failed to copy DEVELOPMENT-README.md", slog.Any("error", err))
+		initErrors = append(initErrors, err.Error())
+	} else if err := ensureContextSections(readmePath); err != nil {
+		n.log.Warn("Failed to ensure context-injection sections in DEVELOPMENT-README.md", slog.Any("error", err))
 		initErrors = append(initErrors, err.Error())
 	}
 
@@ -317,6 +321,91 @@ func (n *NavigatorInitializer) customizeTemplate(content string, info *ProjectIn
 	}
 
 	return result
+}
+
+// contextSection pairs a section header with the skeleton placeholder body
+// the embedded template (templates/DEVELOPMENT-README.md) carries for it.
+type contextSection struct {
+	header string
+	body   string
+}
+
+// contextInjectionSections are the three headers loadProjectContext()
+// (prompt_builder.go) extracts from DEVELOPMENT-README.md to build the
+// context Pilot injects into every task prompt.
+var contextInjectionSections = []contextSection{
+	{
+		header: "### Key Components",
+		body:   "\n_Describe the major components/services and their responsibilities — fill in\nduring the first task session._\n",
+	},
+	{
+		header: "## Key Files",
+		body:   "\n_List the files a new session should read first — fill in as the project grows._\n",
+	},
+	{
+		header: "## Project Structure",
+		body:   "\n```\n[Project Name]/\n└── .agent/              ← Navigator docs (this directory)\n```\n\n_Fill in the real source tree above during the first task session._\n",
+	},
+}
+
+// hasContextSectionHeader reports whether header appears on its own line
+// (with optional trailing whitespace), so "## Key Files" doesn't false-match
+// inside a longer or differently-leveled header like "### Key Files" or
+// "## Key Files Extended".
+func hasContextSectionHeader(text, header string) bool {
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(header) + `\s*$`)
+	return re.MatchString(text)
+}
+
+// ensureContextSections guarantees that the generated DEVELOPMENT-README.md
+// contains the three headers loadProjectContext() extracts, regardless of
+// which template source (installed Navigator plugin vs embedded fallback)
+// produced it.
+//
+// GH-5221: Initialize() prefers the installed plugin's templates
+// (FindTemplatesPath) over the embedded one added for GH-5216, and the
+// plugin's own DEVELOPMENT-README.md template (verified against 6.18.1)
+// carries none of these headers — so context injection stayed a permanent
+// no-op on any machine with the plugin installed, including production.
+// This guarantees Pilot's own consumption contract independent of which
+// template source wins: append skeleton sections for whichever headers are
+// missing, without touching content that's already present. Idempotent —
+// running it again on a README that already has all three headers is a
+// no-op (exact-header check, append-only, never reorders existing content).
+func ensureContextSections(readmePath string) error {
+	content, err := os.ReadFile(readmePath)
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", readmePath, err)
+	}
+
+	text := string(content)
+	var toAppend strings.Builder
+
+	for _, section := range contextInjectionSections {
+		if hasContextSectionHeader(text, section.header) {
+			continue
+		}
+		toAppend.WriteString("\n")
+		toAppend.WriteString(section.header)
+		toAppend.WriteString("\n")
+		toAppend.WriteString(section.body)
+	}
+
+	if toAppend.Len() == 0 {
+		return nil
+	}
+
+	f, err := os.OpenFile(readmePath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open %s for append: %w", readmePath, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if _, err := f.WriteString(toAppend.String()); err != nil {
+		return fmt.Errorf("failed to append context sections to %s: %w", readmePath, err)
+	}
+
+	return nil
 }
 
 // createNavConfig creates the .nav-config.json file.
