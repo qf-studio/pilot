@@ -18,8 +18,15 @@
 ```
 .agent/
 ├── DEVELOPMENT-README.md     ← You are here
-├── tasks/                    ← Implementation plans
-├── system/                   ← Architecture docs
+├── tasks/                    ← Implementation plans (archive/ when done)
+├── system/                   ← Architecture docs, incl. FEATURE-MATRIX.md
+├── knowledge/                ← Knowledge graph consumed every session
+│   ├── graph.json            ← Indexed concept/memory nodes
+│   └── memories/             ← One markdown file per memory
+│       ├── patterns/
+│       ├── pitfalls/
+│       ├── decisions/
+│       └── learnings/
 └── sops/                     ← Standard Operating Procedures
     ├── integrations/
     ├── debugging/
@@ -29,12 +36,25 @@
 
 ---
 
-## Navigator Commands
+## Project Structure
 
-- `/nav-start` - Load project context
-- `/nav-task` - Plan implementation
-- `/nav-loop` - Run until complete
-- `/nav-compact` - Clear context
+```
+[Project Name]/
+└── .agent/              ← Navigator docs (this directory)
+```
+
+_Fill in the real source tree above during the first task session._
+
+## Key Files
+
+_List the files a new session should read first — fill in as the project grows._
+
+## Architecture
+
+### Key Components
+
+_Describe the major components/services and their responsibilities — fill in
+during the first task session._
 
 ---
 

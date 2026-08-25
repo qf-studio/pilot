@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -79,10 +80,11 @@ func FindTemplatesPath() (string, error) {
 
 	var latestVersion string
 	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "6.") {
-			if entry.Name() > latestVersion {
-				latestVersion = entry.Name()
-			}
+		if !entry.IsDir() || !isVersionDirName(entry.Name()) {
+			continue
+		}
+		if latestVersion == "" || compareVersions(entry.Name(), latestVersion) > 0 {
+			latestVersion = entry.Name()
 		}
 	}
 
@@ -96,6 +98,39 @@ func FindTemplatesPath() (string, error) {
 	}
 
 	return templatesPath, nil
+}
+
+// versionDirRe matches semver-shaped plugin version directory names (e.g.
+// "6.18.1", "7.0.0") of any major version.
+var versionDirRe = regexp.MustCompile(`^\d+(\.\d+)*$`)
+
+func isVersionDirName(name string) bool {
+	return versionDirRe.MatchString(name)
+}
+
+// compareVersions compares two dot-separated numeric version strings
+// segment-by-segment (numeric, not lexicographic). Returns >0 if a>b, <0 if
+// a<b, 0 if equal.
+//
+// GH-5216: the previous string comparison (`entry.Name() > latestVersion`)
+// ranked "6.9.0" above "6.18.1" because '9' > '1' lexicographically, and the
+// hardcoded "6." prefix filter meant no 7.x+ release would ever be found.
+func compareVersions(a, b string) int {
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var av, bv int
+		if i < len(as) {
+			av, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			bv, _ = strconv.Atoi(bs[i])
+		}
+		if av != bv {
+			return av - bv
+		}
+	}
+	return 0
 }
 
 // IsInitialized checks if .agent/ exists and has valid structure.
@@ -141,6 +176,8 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 
 	// Create directory structure
 	agentDir := filepath.Join(projectPath, ".agent")
+	knowledgeDir := filepath.Join(agentDir, "knowledge")
+	memoriesDir := filepath.Join(knowledgeDir, "memories")
 	dirs := []string{
 		agentDir,
 		filepath.Join(agentDir, "tasks"),
@@ -150,6 +187,11 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 		filepath.Join(agentDir, "sops", "debugging"),
 		filepath.Join(agentDir, "sops", "development"),
 		filepath.Join(agentDir, "sops", "deployment"),
+		knowledgeDir,
+		filepath.Join(memoriesDir, "patterns"),
+		filepath.Join(memoriesDir, "pitfalls"),
+		filepath.Join(memoriesDir, "decisions"),
+		filepath.Join(memoriesDir, "learnings"),
 	}
 
 	for _, dir := range dirs {
@@ -158,14 +200,18 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 		}
 	}
 
-	// Create .gitkeep files for empty directories
+	// Create .gitkeep files for empty directories. "system" is excluded since
+	// it's seeded with FEATURE-MATRIX.md below.
 	gitkeepDirs := []string{
 		filepath.Join(agentDir, "tasks"),
-		filepath.Join(agentDir, "system"),
 		filepath.Join(agentDir, "sops", "integrations"),
 		filepath.Join(agentDir, "sops", "debugging"),
 		filepath.Join(agentDir, "sops", "development"),
 		filepath.Join(agentDir, "sops", "deployment"),
+		filepath.Join(memoriesDir, "patterns"),
+		filepath.Join(memoriesDir, "pitfalls"),
+		filepath.Join(memoriesDir, "decisions"),
+		filepath.Join(memoriesDir, "learnings"),
 	}
 
 	for _, dir := range gitkeepDirs {
@@ -180,6 +226,22 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 
 	if err := n.copyTemplate("DEVELOPMENT-README.md", filepath.Join(agentDir, "DEVELOPMENT-README.md"), info); err != nil {
 		n.log.Warn("Failed to copy DEVELOPMENT-README.md", slog.Any("error", err))
+		initErrors = append(initErrors, err.Error())
+	}
+
+	// GH-5216: seed system/FEATURE-MATRIX.md so UpdateFeatureMatrix (docs.go)
+	// has a "## Core Execution" anchor to insert rows into instead of being a
+	// permanent no-op on auto-inited repos.
+	if err := n.createFeatureMatrix(filepath.Join(agentDir, "system"), info); err != nil {
+		n.log.Warn("Failed to create system/FEATURE-MATRIX.md", slog.Any("error", err))
+		initErrors = append(initErrors, err.Error())
+	}
+
+	// GH-5216: seed knowledge/graph.json so graphrecall.RecallRelevant parses
+	// a valid (if empty) graph instead of hitting its read-error fail-open
+	// path on every executor session.
+	if err := n.createKnowledgeGraph(knowledgeDir); err != nil {
+		n.log.Warn("Failed to create knowledge/graph.json", slog.Any("error", err))
 		initErrors = append(initErrors, err.Error())
 	}
 
@@ -258,20 +320,17 @@ func (n *NavigatorInitializer) customizeTemplate(content string, info *ProjectIn
 }
 
 // createNavConfig creates the .nav-config.json file.
+//
+// GH-5216: this used to hardcode "version": "6.1.0" (a lie the moment any
+// other plugin version is installed) plus keys from an outdated Navigator
+// config schema (auto_load_navigator, compact_strategy) that nothing in
+// Pilot reads. Kept minimal: only the keys Pilot itself relies on.
 func (n *NavigatorInitializer) createNavConfig(agentDir string, info *ProjectInfo) error {
 	config := map[string]interface{}{
-		"version":             "6.1.0",
-		"project_name":        info.Name,
-		"tech_stack":          info.TechStack,
-		"project_management":  "github", // Pilot uses GitHub by default
-		"task_prefix":         "GH",
-		"team_chat":           "none",
-		"auto_load_navigator": true,
-		"compact_strategy":    "conservative",
-		"auto_update": map[string]interface{}{
-			"enabled":              true,
-			"check_interval_hours": 1,
-		},
+		"project_name":       info.Name,
+		"tech_stack":         info.TechStack,
+		"project_management": "github", // Pilot uses GitHub by default
+		"task_prefix":        "GH",
 	}
 
 	data, err := json.MarshalIndent(config, "", "  ")
@@ -280,6 +339,44 @@ func (n *NavigatorInitializer) createNavConfig(agentDir string, info *ProjectInf
 	}
 
 	return os.WriteFile(filepath.Join(agentDir, ".nav-config.json"), data, 0644)
+}
+
+// createFeatureMatrix seeds system/FEATURE-MATRIX.md with a "## Core
+// Execution" table so UpdateFeatureMatrix (docs.go) has an anchor to insert
+// rows into.
+func (n *NavigatorInitializer) createFeatureMatrix(systemDir string, info *ProjectInfo) error {
+	content := fmt.Sprintf(`# %s Feature Matrix
+
+**Last Updated:** %s
+
+## Core Execution
+
+| Feature | Status | Version | Notes | Docs | Task |
+|---------|--------|---------|-------|------|------|
+`, info.Name, time.Now().Format("2006-01-02"))
+
+	return os.WriteFile(filepath.Join(systemDir, "FEATURE-MATRIX.md"), []byte(content), 0644)
+}
+
+// createKnowledgeGraph seeds knowledge/graph.json with the minimal valid
+// shape graphrecall.RecallRelevant expects, so recall takes the parse path
+// (empty result) instead of the read-error fail-open path.
+func (n *NavigatorInitializer) createKnowledgeGraph(knowledgeDir string) error {
+	graph := map[string]interface{}{
+		"version": 1,
+		"nodes": map[string]interface{}{
+			"concepts": map[string]interface{}{},
+			"memories": map[string]interface{}{},
+		},
+		"edges": []interface{}{},
+	}
+
+	data, err := json.MarshalIndent(graph, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(filepath.Join(knowledgeDir, "graph.json"), data, 0644)
 }
 
 // DetectProjectInfo extracts project name and tech stack from config files.
