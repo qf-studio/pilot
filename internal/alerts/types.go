@@ -110,6 +110,18 @@ const (
 	// failed, retrying" WARN lines with no dead-man coverage at all (the
 	// GH-4866 kill-drill's unwired-seam finding).
 	AlertTypePushRetryExhaustedFailureStreak AlertType = "push_retry_exhausted_failure_streak"
+
+	// AlertTypeEnvClassFailureStreak (GH-5217): a task's consecutive
+	// env-class (credential/environment) failure count — see
+	// executor.IsEnvClassFailure and the GH-5211 carve-out in
+	// Dispatcher.beginWithGenerationRetry — has reached the dispatcher's
+	// alert threshold (envClassFailureStreakThreshold). GH-5211 made
+	// env-class failures exempt from the identical-failure streak
+	// escalation so they retry forever via ordinary backoff; this type is
+	// the only thing that surfaces a persistent credential break to an
+	// operator instead of it retrying silently forever (PR#5214 review
+	// note 1).
+	AlertTypeEnvClassFailureStreak AlertType = "env_class_failure_streak"
 )
 
 // HandlerEmittedAlertTypes lists every AlertType whose handler
@@ -132,6 +144,7 @@ var HandlerEmittedAlertTypes = []AlertType{
 	AlertTypeSelfReviewFailureStreak,
 	AlertTypeFinishTripwireFailureStreak,
 	AlertTypePushRetryExhaustedFailureStreak,
+	AlertTypeEnvClassFailureStreak,
 }
 
 // CoverageGaps returns the subset of HandlerEmittedAlertTypes that cfg has
@@ -610,6 +623,28 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when the git-push retry loop exhausts all attempts N+ consecutive times without a success",
+		},
+		// Env-class failure streak (GH-5217): caller
+		// (Dispatcher.beginWithGenerationRetry, the GH-5211 carve-out
+		// branch) does its own threshold counting
+		// (consecutiveEnvClassFailures) and fires the event once the
+		// streak reaches envClassFailureStreakThreshold, so no Condition
+		// field is needed here — mirrors dispatch_loop_breaker/
+		// intent_judge_failure_streak. Severity is Warning (not Critical):
+		// GH-5211 deliberately exempted env-class failures from stall
+		// escalation by founder decision — this rule closes the resulting
+		// silence gap (PR#5214 review) without treating a broken
+		// credential as page-critical the way a silently dead subsystem
+		// is.
+		{
+			Name:        "env_class_failure_streak",
+			Type:        AlertTypeEnvClassFailureStreak,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when a task accumulates N+ consecutive env-class (credential/environment) failures without any attempt reaching the model backend",
 		},
 	}
 }

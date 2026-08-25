@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-08-24 (GH-5095)
+**Last Updated:** 2026-08-25 (GH-5217)
 
 ## Legend
 
@@ -199,6 +199,7 @@
 | Rate limit detection | ✅ | executor | - | - | Detect GitHub API rate limits, pause + resume at reset time (v0.34.0) |
 | GitHub token fallback + live validation | ✅ | cmd/pilot, health | `pilot doctor` | `adapters.github.token` | config → `GITHUB_TOKEN` env → `gh auth token` fallback; authenticated startup check logs ERROR + fires `config_error` alert on a dead/expired token (GH-3718) |
 | GitHub App installation-token auth | ✅ | adapters/github, cmd/pilot, executor | - | `adapters.github.app` | Opt-in `{app_id, installation_id, private_key_path}` block, validated eagerly at `Config.Validate()` (partial block errors naming the missing field). `github.TokenSource` (`apptoken.go`) mints an installation token via a hand-rolled RS256 JWT (no new go.mod dep) → `POST /app/installations/{id}/access_tokens`, caches it, and refreshes proactively 5min before the ~1h expiry. Sits ahead of the config-token/`GITHUB_TOKEN`/gh-CLI chain in `resolveGitHubToken`; on mint failure logs loudly and falls through to that chain rather than failing the caller. The same minted token authenticates pilot-worktree git push/fetch via a `GIT_ASKPASS` helper (`internal/executor/git_credentials.go`) that only ever passes the token through a child process's `PILOT_GIT_TOKEN` env var — never argv or a log line — installed once at daemon startup via `executor.SetGitCredentialProvider`. Kills the single-OAuth-grant SPOF and moves the daemon off the shared per-user 5000/hr rate pool onto a per-installation one (see `.agent/sops/config/github-token-architecture.md`). Known scope boundaries left for follow-up: `gh` CLI subprocess calls (PR creation, issue comments) still ride ambient `GITHUB_TOKEN`/gh-CLI login, not this token (GH-4743). Daemon-lifetime studio-sdk clients now hot-rotate too: `newGitHubSDKClient` (`cmd/pilot/main.go`) resolves per request via `githubSDK.NewClientWithTokenFunc`, and the SDK poller's adapter is injected with one shared instance via `githubSDK.WithAdapterClient` so the Poller/MergeWaiter/board sync all inherit it (TASK-461 Leg 2, GH-4824, sdk PR#108/PR#110) |
+| Env-class failure streak alert | ✅ | executor/alerts | - | - | GH-5211 made env-class (credential/environment) failures — missing/invalid credential, 0 tokens, no deliverable, instant exit — exempt from the identical-failure streak escalation so they retry forever via ordinary backoff (~16min window), correct by founder decision but previously announced only by an Info log line (PR#5214 review note). `Dispatcher.consecutiveEnvClassFailures` (`dispatcher.go`) scans the same recent-claims shape `priorClaimsHadIdenticalFailureStreak` uses, counting consecutive most-recent `IsEnvClassFailure` (`runner.go`, GH-5211) generations for (task, project); at `envClassFailureStreakThreshold` (5) fires `AlertEventTypeEnvClassFailureStreak` via the existing `Runner.EmitAlertEvent` seam, naming the task and the matched credential/env signature (`MatchedEnvClassFailureSignature`, e.g. `ANTHROPIC_API_KEY`). New `AlertTypeEnvClassFailureStreak` default rule (warning, 30m cooldown) mirrors the `AlertTypeSelfReviewFailureStreak`/`AlertTypeLabelLifecycleFailureStreak` rule shape but is caller-gated like `dispatch_loop_breaker`/`intent_judge_failure_streak` — the dispatcher computes and gates the exact threshold itself rather than delegating to a `DeadManTracker`. Purely additive: retry admission is unaffected, and a success or non-env-class generation resets the count naturally via the scan (v2.269.0, GH-5217) |
 
 ## Quality Gates
 
@@ -506,7 +507,7 @@
 | Intelligence | 15 | 0 | 0 | 0 |
 | Input Adapters | 35 | 0 | 0 | 0 |
 | Output/Notifications | 18 | 0 | 0 | 0 |
-| Alerts & Monitoring | 14 | 0 | 0 | 0 |
+| Alerts & Monitoring | 15 | 0 | 0 | 0 |
 | Quality Gates | 5 | 0 | 1 | 0 |
 | Memory & Learning | 23 | 0 | 0 | 0 |
 | Dashboard | 24 | 0 | 0 | 0 |

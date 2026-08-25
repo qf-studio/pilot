@@ -1731,6 +1731,237 @@ func TestHandleIntentJudgeFailureStreak(t *testing.T) {
 	})
 }
 
+// TestHandleEnvClassFailureStreak covers the GH-5217 env-class-failure-streak
+// rule: the emitting side (Dispatcher.beginWithGenerationRetry, the GH-5211
+// carve-out branch) does its own threshold counting
+// (consecutiveEnvClassFailures) and fires the event once the streak reaches
+// envClassFailureStreakThreshold, so this test only needs to verify the
+// event turns into an alert carrying the task/count/signature metadata and
+// respects cooldown — mirroring TestHandleDispatchLoopBreaker/
+// TestHandleIntentJudgeFailureStreak above.
+func TestHandleEnvClassFailureStreak(t *testing.T) {
+	newEvent := func(taskID, consecutiveFailures, signature string) Event {
+		return Event{
+			Type:   EventTypeEnvClassFailureStreak,
+			TaskID: taskID,
+			Metadata: map[string]string{
+				"task_id":              taskID,
+				"consecutive_failures": consecutiveFailures,
+				"credential_signature": signature,
+			},
+			Timestamp: time.Now(),
+		}
+	}
+
+	t.Run("fires with task_id, consecutive_failures, and credential_signature metadata", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "env_class_failure_streak",
+					Type:     AlertTypeEnvClassFailureStreak,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5217-TASK", "5", "ANTHROPIC_API_KEY"))
+
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].Type != AlertTypeEnvClassFailureStreak {
+			t.Errorf("expected alert type %s, got %s", AlertTypeEnvClassFailureStreak, alerts[0].Type)
+		}
+		if alerts[0].Severity != SeverityWarning {
+			t.Errorf("expected severity warning, got %s", alerts[0].Severity)
+		}
+		if !strings.Contains(alerts[0].Message, "GH-5217-TASK") || !strings.Contains(alerts[0].Message, "5") || !strings.Contains(alerts[0].Message, "ANTHROPIC_API_KEY") {
+			t.Errorf("expected alert message to mention the task, consecutive count, and signature, got %q", alerts[0].Message)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "env_class_failure_streak",
+					Type:     AlertTypeEnvClassFailureStreak,
+					Enabled:  false,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 0,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5217-TASK", "5", "ANTHROPIC_API_KEY"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+
+	// An event that matches zero configured rules must not panic and must
+	// not fire — mirrors TestHandleDispatchLoopBreaker/
+	// TestHandleIntentJudgeFailureStreak's no-match subtest.
+	t.Run("no matching rule does not fire and does not panic", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "unrelated_rule",
+					Type:     AlertTypeTaskFailed,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5217-TASK", "5", "ANTHROPIC_API_KEY"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (no matching rule), got %d", got)
+		}
+	})
+
+	// GH-5217 acceptance: N consecutive env-class failures fires once;
+	// further crossings within the cooldown window are suppressed even
+	// though the streak count keeps climbing — mirrors TestHandleLaneStarvation's
+	// "cooldown suppresses repeat fires" subtest below.
+	t.Run("cooldown suppresses repeat fires", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "env_class_failure_streak",
+					Type:     AlertTypeEnvClassFailureStreak,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 30 * time.Minute,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5217-TASK", "5", "ANTHROPIC_API_KEY"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		// The streak persists past the threshold on the next retry (6
+		// consecutive failures) — still within cooldown, must be
+		// suppressed.
+		engine.ProcessEvent(newEvent("GH-5217-TASK", "6", "ANTHROPIC_API_KEY"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 1 {
+			t.Errorf("expected 1 alert (second suppressed by cooldown), got %d", got)
+		}
+	})
+
+	// GH-5217 acceptance: once the cooldown window elapses, a persisting
+	// streak fires again — proving the alert is cooldown-*paced*, not a
+	// one-shot that goes silent forever once fired.
+	t.Run("fires again after cooldown expiry while streak persists", func(t *testing.T) {
+		config := &AlertConfig{
+			Enabled: true,
+			Channels: []ChannelConfig{
+				{Name: "test-channel", Type: "webhook", Enabled: true},
+			},
+			Rules: []AlertRule{
+				{
+					Name:     "env_class_failure_streak",
+					Type:     AlertTypeEnvClassFailureStreak,
+					Enabled:  true,
+					Severity: SeverityWarning,
+					Channels: []string{"test-channel"},
+					Cooldown: 50 * time.Millisecond,
+				},
+			},
+		}
+
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5217-TASK", "5", "ANTHROPIC_API_KEY"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		time.Sleep(75 * time.Millisecond)
+
+		engine.ProcessEvent(newEvent("GH-5217-TASK", "6", "ANTHROPIC_API_KEY"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		if got := len(mockCh.getAlerts()); got != 2 {
+			t.Errorf("expected 2 alerts (cooldown expired before the second crossing), got %d", got)
+		}
+	})
+}
+
 // TestHandleLaneStarvation covers the GH-4454 lane-starvation rule: the
 // emitting side (autopilot.Controller.reconcileLaneStarvation) does no
 // threshold filtering of its own and sends the raw streak on every starved
