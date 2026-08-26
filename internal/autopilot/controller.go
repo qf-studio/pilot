@@ -5472,7 +5472,47 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 			ciTimeout = envCITimeout
 		}
 		if time.Since(prState.PostMergeCIStartedAt) > ciTimeout {
-			c.log.Warn("post-merge CI timeout", "pr", prState.PRNumber, "waited", time.Since(prState.PostMergeCIStartedAt))
+			waited := time.Since(prState.PostMergeCIStartedAt)
+			c.log.Warn("post-merge CI timeout", "pr", prState.PRNumber, "waited", waited)
+
+			// GH-5238: mirror handleWaitingCI's GH-5236 breaker feed — a
+			// post-merge CI wait that times out (checks stuck pending, or a
+			// SHA that never produced one despite this repo's history — the
+			// same shape checkAutoDiscoveredRuns/HasAnyCIConfigured now hold
+			// rather than resolve, per the GH-5238 fix above) is platform
+			// evidence exactly like its pre-merge counterpart. Before this,
+			// the post-merge rung never called Observe/ObserveTimeout at
+			// all, despite gating tagging/releasing/deploy rather than mere
+			// merging — and there is no revert path anywhere in this
+			// package, so a false confirmation here is strictly worse than
+			// one before merge.
+			corroborated := false
+			if c.platformBreaker != nil && !c.platformBreaker.IsOpen() {
+				// Same gating as handleWaitingCI: only pay the
+				// githubstatus.com round-trip when the breaker is wired up
+				// and not already open.
+				corroborated = ProbeGitHubStatus(c.log) == PlatformProbeCorroborating
+			}
+			platformBreakerResult := c.platformBreaker.ObserveTimeout(prState.PRNumber, c.repoKey(), corroborated)
+			c.metrics.SetPlatformBreakerOpen(platformBreakerResult.Open)
+			c.alertPlatformBreakerTransition(platformBreakerResult)
+
+			if platformBreakerResult.Open {
+				// Hold rather than confirm: while the breaker is open, a
+				// post-merge timeout must not re-queue the scope release,
+				// mark it failed/parked, or spawn a fix issue — none of
+				// that machinery has any evidence to act on during a
+				// platform outage. redriveBreakerHeldPRLocked re-enters this
+				// PR at StagePostMergeCI with a fresh timer once the breaker
+				// closes (mirrors ReDriveBreakerHeldPRs' pre-merge revival).
+				c.metrics.RecordPlatformBreakerTrip()
+				c.log.Warn("platform-outage breaker open — holding post-merge PR instead of confirming CI timeout",
+					"pr", prState.PRNumber, "waited", waited)
+				prState.BreakerHoldActive = true
+				prState.Stage = StageFailed
+				return nil
+			}
+
 			if prState.ScopeKey != "" {
 				// GH-3990: re-queue the scope for a fresh carrier attempt instead of
 				// leaving this one wedged at StageFailed forever — drain it now so the
@@ -7346,8 +7386,22 @@ func (c *Controller) redriveBreakerHeldPRLocked(ctx context.Context, prState *PR
 
 	prState.BreakerReadoptCount++
 	prState.BreakerHoldActive = false
-	prState.Stage = StageWaitingCI
-	prState.CIWaitStartedAt = time.Now()
+
+	// GH-5238: a PR held from a POST-merge CI timeout must re-enter
+	// StagePostMergeCI, not StageWaitingCI — it is already merged, so a
+	// pre-merge CI wait has nothing to poll (its head branch is typically
+	// gone) and would never resolve. PostMergeSHA is only ever set once, on
+	// first entry to handlePostMergeCI (controller.go's mainSHA capture),
+	// so its presence reliably distinguishes a post-merge hold from a
+	// pre-merge one at this point in the PR's lifecycle: a PR held from a
+	// pre-merge timeout can never have reached post-merge yet.
+	if prState.PostMergeSHA != "" {
+		prState.Stage = StagePostMergeCI
+		prState.PostMergeCIStartedAt = time.Now()
+	} else {
+		prState.Stage = StageWaitingCI
+		prState.CIWaitStartedAt = time.Now()
+	}
 	prState.Error = ""
 
 	c.log.Info("ReDriveBreakerHeldPRs: platform-outage breaker closed, re-entering pipeline",
