@@ -4713,6 +4713,105 @@ func TestDispatcher_BeginWithGenerationRetry_IdenticalFailureStreakStopsRetrying
 	}
 }
 
+// TestDispatcher_BeginWithGenerationRetry_RefusalDoesNotEscalateToStalled is
+// the GH-5232 acceptance test: a model refusal — the SAME refusal error
+// string twice in a row, exactly the shape that trips
+// priorClaimsHadIdenticalFailureStreak for an ordinary code failure at
+// consecutiveIdenticalFailureThreshold — must never be marked "stalled" and
+// must never receive the pilot-blocked label. Retrying cannot fix a
+// deliberate model decision, so it terminates cleanly (status "declined")
+// on the very first occurrence instead of waiting for a second identical
+// failure, and stays idempotent (no re-escalation, no duplicate alert) on
+// every later poll tick.
+func TestDispatcher_BeginWithGenerationRetry_RefusalDoesNotEscalateToStalled(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-5232-REFUSAL", ProjectPath: "/project-5232-refusal", Title: "Refused task"}
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+	dispatcher := NewDispatcher(store, runner, nil)
+	lifecycle := NewExecutionLifecycle(store)
+
+	const refusalErr = "refusal: model declined to continue (category: cyber): appears to violate our Usage Policy"
+
+	// Generation 0 and 1: the SAME refusal, twice in a row.
+	gen0ExecID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin gen0: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(gen0ExecID, "failed", refusalErr); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	gen1ExecID, err := lifecycle.Begin(task, ExecStatusRunning, 1)
+	if err != nil {
+		t.Fatalf("setup Begin gen1: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(gen1ExecID, "failed", refusalErr); err != nil {
+		t.Fatalf("setup: failed to mark generation 1 as failed: %v", err)
+	}
+
+	freshTask := &Task{ID: task.ID, ProjectPath: task.ProjectPath, Title: task.Title}
+	retryExecID, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry: %v", err)
+	}
+	if retryExecID != "" {
+		t.Fatalf("expected a refusal to terminate cleanly without granting a fresh generation, got execID %q", retryExecID)
+	}
+
+	// No new generation was claimed.
+	if genCheck, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath); err != nil {
+		t.Fatalf("LatestClaimGeneration: %v", err)
+	} else if !found || genCheck != 1 {
+		t.Errorf("expected no generation-2 claim, found=%v generation=%d", found, genCheck)
+	}
+
+	declinedExec, err := store.GetExecution(gen1ExecID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if declinedExec.Status == "stalled" {
+		t.Fatal("a refusal must never be marked stalled")
+	}
+	if declinedExec.Status != "declined" {
+		t.Errorf("expected the claimed generation-1 execution to be marked declined, got status=%q", declinedExec.Status)
+	}
+	if declinedExec.Error != refusalErr {
+		t.Errorf("expected the original refusal error text (category+explanation) to be preserved unchanged, got %q", declinedExec.Error)
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("expected exactly 1 alert event, got %d: %+v", len(processor.events), processor.events)
+	}
+	if processor.events[0].Metadata["reason"] != "model_refusal" {
+		t.Errorf("expected alert metadata reason=model_refusal, got %q", processor.events[0].Metadata["reason"])
+	}
+
+	// A subsequent poll tick must stay pinned to the "already escalated"
+	// refusal path — idempotent, no new alert, still never stalled.
+	retryExecID2, err := dispatcher.beginWithGenerationRetry(freshTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("beginWithGenerationRetry (second tick): %v", err)
+	}
+	if retryExecID2 != "" {
+		t.Fatalf("expected the second poll tick to stay pinned to the refusal escalation, got execID %q", retryExecID2)
+	}
+	if len(processor.events) != 1 {
+		t.Fatalf("expected the second poll tick to be idempotent (no new alert), got %d: %+v", len(processor.events), processor.events)
+	}
+
+	declinedExecAfter, err := store.GetExecution(gen1ExecID)
+	if err != nil {
+		t.Fatalf("GetExecution (after second tick): %v", err)
+	}
+	if declinedExecAfter.Status == "stalled" {
+		t.Fatal("a refusal must never be marked stalled, even after a later poll tick")
+	}
+}
+
 // TestDispatcher_BeginWithGenerationRetry_EnvClassFailureExemptFromStreakEscalation
 // is the GH-5211 acceptance test: an execution that fails repeatedly with an
 // env-class (credential/environment) signature — identical error text, 0

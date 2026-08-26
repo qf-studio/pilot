@@ -1601,6 +1601,65 @@ func (d *Dispatcher) priorClaimWasEscalatedForOperatorAttention(taskID, projectP
 	return false, ""
 }
 
+// priorClaimWasRefusal reports whether (taskID, projectPath)'s currently
+// claimed execution — the one nextRetryGeneration just examined to grant
+// this retry — failed (status "failed") with a model refusal per
+// IsRefusalFailure (an explicit stop_reason "refusal" observed during
+// streaming, formatted by backend_claudecode.go as "refusal: <category>:
+// <explanation>"). GH-5232: unlike an env-class or transient failure, a
+// refusal reproduces identically on every retry — the model already made a
+// deliberate policy decision, and no amount of retrying changes that; only
+// revising the task's own text can. Mirrors priorClaimWasDeterministicFailure
+// in shape, but the caller (beginWithGenerationRetry) routes matches to
+// escalateRefusal instead of escalateStalledTask, since a refusal must
+// terminate cleanly WITHOUT the stalled status or pilot-blocked label that
+// escalateStalledTask always applies — see escalateRefusal's doc comment.
+// Returns the prior error string alongside the bool so the caller can
+// surface it verbatim in the issue comment. Errors are treated as "not a
+// refusal" — the caller falls through to the ordinary backoff/hard-cap path,
+// the safe default.
+func (d *Dispatcher) priorClaimWasRefusal(taskID, projectPath string) (bool, string) {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false, ""
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil || exec == nil {
+		return false, ""
+	}
+	if exec.Status != string(ExecStatusFailed) || !IsRefusalFailure(exec.Error) {
+		return false, ""
+	}
+	return true, exec.Error
+}
+
+// priorClaimWasEscalatedRefusal reports whether (taskID, projectPath)'s
+// currently claimed execution was already routed to escalateRefusal by a
+// previous call (status "declined", with the original "refusal: ..." error
+// text left unchanged — escalateRefusal only flips the status, never
+// rewrites the diagnostic text). GH-5232: consulted BEFORE priorClaimWasRefusal
+// so a later poll tick — which would otherwise see status "declined" and no
+// longer match priorClaimWasRefusal's "failed" status check, falling through
+// to the ordinary backoff path and minting a fresh generation against a task
+// that can never succeed on retry — instead stays pinned to "already
+// escalated, do not retry, do not re-comment". Mirrors the ordering
+// discipline priorClaimWasEscalatedForOperatorAttention established for the
+// stalled/pilot-blocked escalation path.
+func (d *Dispatcher) priorClaimWasEscalatedRefusal(taskID, projectPath string) (bool, string) {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return false, ""
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil || exec == nil {
+		return false, ""
+	}
+	if exec.Status != string(ExecStatusDeclined) || !IsRefusalFailure(exec.Error) {
+		return false, ""
+	}
+	return true, exec.Error
+}
+
 // nextRetryGeneration inspects the highest execution_claims generation
 // currently held for (taskID, projectPath) and reports whether a fresh
 // Begin(..., generation+1) is warranted (GH-4372). Three outcomes:
@@ -1743,6 +1802,27 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 	// priorClaimWasStalled already exists to prevent for that escalation).
 	if wasEscalated, reason := d.priorClaimWasEscalatedForOperatorAttention(task.ID, task.ProjectPath); wasEscalated {
 		d.escalateStalledTask(task, gen, 0, reason, nil)
+		return "", nil
+	}
+
+	// GH-5232: a prior poll tick already escalated this claim as a model
+	// refusal (escalateRefusal below marks it "declined") — recognized here,
+	// before any other check runs, so the task stays pinned to "will not
+	// retry" instead of falling through to the ordinary backoff path once its
+	// status no longer matches priorClaimWasRefusal's "failed" check.
+	if wasEscalated, _ := d.priorClaimWasEscalatedRefusal(task.ID, task.ProjectPath); wasEscalated {
+		return "", nil
+	}
+
+	// GH-5232: a model refusal (explicit stop_reason "refusal", classified by
+	// IsRefusalFailure) reproduces identically on every retry — the model
+	// already made a deliberate policy decision about the task as written, and
+	// only revising the task text can change that. Route straight to
+	// escalateRefusal on the very first occurrence, same as a deterministic
+	// failure, but WITHOUT ever touching escalateStalledTask — a refusal must
+	// not be marked "stalled" or labeled "pilot-blocked" (see escalateRefusal).
+	if wasRefusal, errStr := d.priorClaimWasRefusal(task.ID, task.ProjectPath); wasRefusal {
+		d.escalateRefusal(task, errStr)
 		return "", nil
 	}
 
@@ -2125,6 +2205,122 @@ func (d *Dispatcher) escalateIdenticalFailureStreak(task *Task, gen int, errStr 
 		"consecutive_count": fmt.Sprintf("%d", consecutiveIdenticalFailureThreshold),
 		"prior_error":       errStr,
 	})
+}
+
+// escalateRefusal marks (taskID, projectPath)'s currently claimed execution
+// "declined" and posts an explanatory comment to the originating issue —
+// GH-5232. Deliberately does NOT go through escalateStalledTask: a refusal is
+// not evidence of a stalled/broken environment (which is why the task should
+// stop winning scope-overlap dispatch priority via pilot-blocked), it's the
+// model declining the task as written. Marking it "stalled" and applying
+// pilot-blocked would misdescribe why Pilot stopped and route the operator
+// toward the wrong fix (environment/credential triage instead of rewriting
+// the issue).
+//
+// "declined" is otherwise used for Claude's own DECLINED:<reason> marker
+// (finishDeclined) but fits identically here: both mean "the model would not
+// proceed", and declined is not on isTerminalExecutionStatus's live-owner
+// path, so nextRetryGeneration still offers gen+1 on the very next poll
+// tick — priorClaimWasEscalatedRefusal (checked earlier in
+// beginWithGenerationRetry, before this function is ever reached again) is
+// what actually stops that gen+1 from being granted, exactly the ordering
+// discipline priorClaimWasEscalatedForOperatorAttention already established
+// for the stalled/pilot-blocked path.
+//
+// The original "refusal: <category>: <explanation>" error text (written by
+// backend_claudecode.go at execution time) is left completely unchanged —
+// only the status flips — so the ledger alone still names the refusal and
+// carries its category/explanation for as long as the row exists.
+func (d *Dispatcher) escalateRefusal(task *Task, errStr string) {
+	_, execID, found, err := d.store.LatestClaimGeneration(task.ID, task.ProjectPath)
+	if err != nil || !found || execID == "" {
+		d.log.Warn("model refusal detected but no claimed execution found to mark declined",
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+			slog.Any("error", err))
+		return
+	}
+
+	if uerr := d.store.UpdateExecutionStatus(execID, string(ExecStatusDeclined), errStr); uerr != nil {
+		d.log.Warn("failed to mark execution declined after model refusal",
+			slog.String("task_id", task.ID), slog.String("execution_id", execID), slog.Any("error", uerr))
+	}
+
+	d.recordExecutionEvent(execID, memory.StageFailed, errStr)
+	d.log.Warn("model refused the task — marked declined, no further automatic retries",
+		slog.String("task_id", task.ID),
+		slog.String("project", task.ProjectPath),
+		slog.String("error", errStr),
+	)
+	d.surfaceRefusalIssue(task, errStr)
+	if d.runner != nil {
+		d.runner.EmitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeTaskFailed,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Error:     errStr,
+			Metadata: map[string]string{
+				"reason": "model_refusal",
+			},
+			Timestamp: time.Now(),
+		})
+	}
+}
+
+// surfaceRefusalIssue posts a comment to a refused task's GitHub issue
+// explaining that the model declined the request and the issue text needs
+// revision — GH-5232. Unlike surfaceStalledIssue, this never touches labels
+// (no pilot-blocked): a refusal isn't infrastructure contention the operator
+// needs to deprioritize against sibling issues, it's a request the model
+// itself won't act on until the text changes.
+//
+// Best-effort and GitHub-only: a comment failure is logged, not fatal — the
+// store-side "declined" status escalateRefusal already wrote is the durable
+// source of truth regardless of whether this side channel succeeds.
+func (d *Dispatcher) surfaceRefusalIssue(task *Task, errStr string) {
+	if task.SourceAdapter != "" && task.SourceAdapter != "github" {
+		return
+	}
+	issueNum := strings.TrimPrefix(task.ID, "GH-")
+	if task.SourceIssueID != "" {
+		issueNum = task.SourceIssueID
+	}
+	if issueNum == "" {
+		return
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(issueNum, "%d", &parsed); err != nil || parsed <= 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	defer cancel()
+
+	// GH-4817-style fail-open: a closed issue has already left the poller's
+	// candidate set, so commenting on it reaches no one who can act — skip on
+	// positive evidence of closed; a lookup error fails open (proceed).
+	if state, err := fetchIssueState(ctx, d.runner, task, task.ProjectPath); err != nil {
+		d.log.Warn("refusal surfacing: failed to check issue state before commenting; proceeding (fail-open)",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+	} else if state.Closed {
+		d.log.Info("refusal surfacing: issue already closed, skipping comment",
+			slog.String("task_id", task.ID))
+		return
+	}
+
+	comment := fmt.Sprintf(
+		"Pilot's model declined this task rather than erroring out: %s\n\n"+
+			"Retrying will not help — the model already made a deliberate decision "+
+			"about the request as written. Please revise the issue text (e.g. add "+
+			"authorization/defensive context if the request is security-related) "+
+			"and re-open or re-queue it.",
+		errStr,
+	)
+	if err := ghIssueComment(ctx, task.ProjectPath, issueNum, comment); err != nil {
+		d.log.Warn("refusal surfacing: failed to post comment",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+	}
 }
 
 // escalateStalledTask marks (taskID, projectPath)'s currently claimed

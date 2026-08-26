@@ -99,9 +99,37 @@ const (
 	// ErrorTypeDeclined indicates Claude explicitly declined the task as unactionable,
 	// emitting a structured DECLINED:<reason> marker in its response. GH-2777.
 	ErrorTypeDeclined ClaudeCodeErrorType = "declined"
+	// ErrorTypeRefusal indicates the model reported an explicit stop_reason
+	// "refusal" during streaming (a message_delta carrying stop_details with
+	// a category and explanation) — a deliberate policy decline, not a
+	// subprocess/API failure. Distinct from ErrorTypeNoChanges/ErrorTypeDeclined,
+	// which infer a refusal from output text/markers; this classification is
+	// derived from the API's own structured signal and takes precedence over
+	// classifyClaudeCodeError's stderr-based cascade, which would otherwise
+	// fall through to ErrorTypeUnknown ("unknown: exit status 1") since a
+	// refusal typically exits with empty stderr. GH-5232.
+	ErrorTypeRefusal ClaudeCodeErrorType = "refusal"
 	// ErrorTypeUnknown indicates an unclassified error
 	ErrorTypeUnknown ClaudeCodeErrorType = "unknown"
 )
+
+// formatRefusalMessage builds a ClaudeCodeError message for a model refusal
+// that names both the structured category and explanation from stop_details,
+// so the execution ledger's Error text alone is sufficient to diagnose why
+// the model declined — without it, a refusal is indistinguishable from any
+// other empty-stderr failure. GH-5232.
+func formatRefusalMessage(category, explanation string) string {
+	switch {
+	case category != "" && explanation != "":
+		return fmt.Sprintf("model declined to continue (category: %s): %s", category, explanation)
+	case explanation != "":
+		return fmt.Sprintf("model declined to continue: %s", explanation)
+	case category != "":
+		return fmt.Sprintf("model declined to continue (category: %s)", category)
+	default:
+		return "model declined to continue"
+	}
+}
 
 // ClaudeCodeError represents a classified error from Claude Code.
 type ClaudeCodeError struct {
@@ -959,6 +987,19 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 					if event.Model != "" {
 						result.Model = event.Model
 					}
+
+					// GH-5232: a message_delta carrying stop_reason "refusal"
+					// is a deliberate model decline, not a subprocess/API
+					// failure — it otherwise exits with empty stderr and a
+					// generic exit code, surfacing as an undiagnosable
+					// "unknown: exit status 1". Latch the first occurrence;
+					// don't let a later non-refusal delta on the same stream
+					// clear it.
+					if event.IsRefusal && !result.Refused {
+						result.Refused = true
+						result.RefusalCategory = event.RefusalCategory
+						result.RefusalExplanation = event.RefusalExplanation
+					}
 				}
 			}
 
@@ -1126,7 +1167,27 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 			}
 		}
 
-		ccErr := parseClaudeCodeError(stderr, err, ctxCancelled, selfKillReason, kernelOOMConfirmed).(*ClaudeCodeError)
+		var ccErr *ClaudeCodeError
+		if result.Refused {
+			// GH-5232: an explicit stop_reason "refusal" observed during
+			// streaming is a stronger, unambiguous signal than any stderr
+			// text heuristic — classify directly from it instead of running
+			// classifyClaudeCodeError's cascade, which would otherwise fall
+			// through to ErrorTypeUnknown (empty stderr, generic exit code)
+			// and produce the undiagnosable "unknown: exit status 1".
+			ccErr = &ClaudeCodeError{
+				Type:    ErrorTypeRefusal,
+				Message: formatRefusalMessage(result.RefusalCategory, result.RefusalExplanation),
+				Stderr:  strings.TrimSpace(stderr),
+			}
+			b.log.Warn("Claude Code model refused the task",
+				slog.String("error_type", string(ccErr.Type)),
+				slog.String("refusal_category", result.RefusalCategory),
+				slog.String("refusal_explanation", result.RefusalExplanation),
+			)
+		} else {
+			ccErr = parseClaudeCodeError(stderr, err, ctxCancelled, selfKillReason, kernelOOMConfirmed).(*ClaudeCodeError)
+		}
 
 		// GH-2328: surface the raw stderr + classification so the runner can
 		// write them to execution_logs. Without this, "unknown: exit status 1"
@@ -1147,7 +1208,8 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				slog.String("message", ccErr.Message),
 				slog.String("stderr", ccErr.Stderr),
 			)
-		} else {
+		} else if ccErr.Type != ErrorTypeRefusal {
+			// GH-5232: refusal already logged above with its own fields.
 			b.log.Warn("Claude Code execution failed",
 				slog.String("error_type", string(ccErr.Type)),
 				slog.String("message", ccErr.Message),
@@ -1155,8 +1217,14 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 			)
 		}
 
-		// Store classified error info in result
-		if result.Error == "" {
+		// Store classified error info in result. GH-5232: a refusal's
+		// formatted category+explanation always wins over whatever text (if
+		// any) a "result" stream event already wrote to result.Error — the
+		// ledger's Error field must name the refusal and carry its
+		// structured details on its own, since that stream event's raw text
+		// is not guaranteed to be present or descriptive (and per the
+		// original incident, frequently isn't captured at all).
+		if result.Error == "" || result.Refused {
 			result.Error = ccErr.Error()
 		}
 
@@ -1256,6 +1324,21 @@ func (b *ClaudeCodeBackend) parseStreamEvent(line string) BackendEvent {
 		event.Type = EventTypeStreamDelta
 		if streamEvent.Event != nil {
 			event.Message = streamEvent.Event.Type
+
+			// GH-5232: a "message_delta" inner event carrying
+			// stop_reason "refusal" means the model declined to
+			// continue — a structured, explicit signal from the API
+			// itself (category + explanation in stop_details), far
+			// stronger than any stderr/exit-code text heuristic. This
+			// otherwise exits with empty stderr and surfaces as an
+			// undiagnosable "unknown: exit status 1".
+			if delta := streamEvent.Event.Delta; delta != nil && delta.StopReason == "refusal" {
+				event.IsRefusal = true
+				if delta.StopDetails != nil {
+					event.RefusalCategory = delta.StopDetails.Category
+					event.RefusalExplanation = delta.StopDetails.Explanation
+				}
+			}
 		}
 
 	case "system":

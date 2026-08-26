@@ -87,6 +87,32 @@ func IsDeterministicFailure(errStr string) bool {
 	return strings.HasPrefix(strings.TrimSpace(errStr), deterministicFailurePrefix)
 }
 
+// refusalErrorPrefix marks an execution error as a model refusal — the
+// backend observed an explicit stop_reason "refusal" in the stream (not a
+// text heuristic on the final error string) and formatted the resulting
+// ClaudeCodeError as "refusal: <category>: <explanation>"
+// (backend_claudecode.go, ErrorTypeRefusal). GH-5232: unlike env-class or
+// deterministic failures, no execution-row structural corroboration is
+// needed here — an explicit stop_reason is a stronger, unambiguous signal,
+// so the dispatcher-side re-detection from persisted history (which only has
+// exec.Error free text, no structural ErrorType column) can rely on prefix
+// matching alone, mirroring deterministicFailurePrefix.
+const refusalErrorPrefix = "refusal:"
+
+// IsRefusalFailure reports whether an error message represents a model
+// refusal (the model explicitly declined to continue the task via
+// stop_reason "refusal") rather than a subprocess/API failure. Refusals are
+// exempt from the dispatcher's identical-failure streak escalation
+// (dispatcher.go priorClaimWasRefusal) because retrying reproduces the same
+// decline every time — no amount of retrying fixes a policy-declined
+// request; only revising the task text can. GH-5232.
+func IsRefusalFailure(errStr string) bool {
+	if errStr == "" {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(errStr), refusalErrorPrefix)
+}
+
 // envClassFailureSignatures are substrings in error messages that indicate
 // the executor process itself could not authenticate to its model backend —
 // a missing or invalid credential/env var, or a backend construction
@@ -416,8 +442,34 @@ type StreamEvent struct {
 // inner type (message_start, content_block_delta, message_delta, ...) and is
 // intentionally not modeled here — these chunks exist to reset the stall
 // watchdog's idle clock, not to be re-parsed as complete assistant output.
+//
+// Delta is the one exception: for a "message_delta" inner event, the model
+// may report StopReason "refusal" — a deliberate decline to continue that is
+// otherwise invisible outside the raw stream recording and surfaces as an
+// undiagnosable "unknown: exit status 1" (empty stderr, generic exit code).
+// GH-5232.
 type StreamEventInner struct {
-	Type string `json:"type"`
+	Type  string            `json:"type"`
+	Delta *StreamEventDelta `json:"delta,omitempty"`
+}
+
+// StreamEventDelta captures the fields of a "message_delta" inner stream
+// event needed to detect a model refusal. GH-5232.
+type StreamEventDelta struct {
+	// StopReason is "refusal" when the model declined to continue the task.
+	StopReason string `json:"stop_reason,omitempty"`
+	// StopDetails carries the structured refusal category/explanation when
+	// StopReason is "refusal".
+	StopDetails *StreamStopDetails `json:"stop_details,omitempty"`
+}
+
+// StreamStopDetails is the structured payload accompanying a refusal
+// stop_reason: a category (e.g. "cyber") and a human-readable explanation.
+// GH-5232.
+type StreamStopDetails struct {
+	Type        string `json:"type,omitempty"`
+	Category    string `json:"category,omitempty"`
+	Explanation string `json:"explanation,omitempty"`
 }
 
 // UsageInfo represents token usage in stream events
@@ -3799,6 +3851,21 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						slog.Duration("duration", duration),
 					)
 					r.reportProgress(task.ID, "OOM Killed", 100, beErr.ErrorMessage())
+
+				case "refusal":
+					// GH-5232: the model explicitly declined to continue
+					// (stop_reason "refusal") — a deliberate policy decision,
+					// not infrastructure. Distinct category so this never
+					// gets buried in the generic "unknown" bucket that made
+					// the original incident undiagnosable; retrying cannot
+					// help, so smart-retry's default case (no entry for
+					// "refusal") already declines to retry.
+					errorCategory = "refusal"
+					log.Warn("Backend model refused the task",
+						slog.String("task_id", task.ID),
+						slog.String("message", beErr.ErrorMessage()),
+					)
+					r.reportProgress(task.ID, "Refused", 100, beErr.ErrorMessage())
 
 				default:
 					// GH-917-5: Log stderr for process errors and unknown errors too

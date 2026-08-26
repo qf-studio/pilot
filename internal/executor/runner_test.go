@@ -3901,6 +3901,34 @@ func TestIsDeterministicFailure(t *testing.T) {
 	}
 }
 
+// TestIsRefusalFailure verifies the "refusal:" prefix classifier used by the
+// dispatcher's streak carve-out (priorClaimWasRefusal/
+// priorClaimWasEscalatedRefusal) — GH-5232. Only backend_claudecode.go's
+// ErrorTypeRefusal path produces this exact prefix, so an ordinary failure
+// that happens to mention the word "refusal" mid-sentence must not match.
+func TestIsRefusalFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  string
+		want bool
+	}{
+		{"empty string", "", false},
+		{"refusal prefix with category and explanation", "refusal: model declined to continue (category: cyber): appears to violate our Usage Policy", true},
+		{"leading whitespace before refusal: prefix", "  refusal: model declined to continue", true},
+		{"refusal mentioned mid-sentence, not a prefix", "quality gate rejected the diff after a refusal to follow instructions", false},
+		{"ordinary unknown failure", "unknown: exit status 1", false},
+		{"deterministic failure, unrelated", "blocked: intent judge rejected diff", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRefusalFailure(tt.err); got != tt.want {
+				t.Errorf("IsRefusalFailure(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIsInfraNoise verifies that restart-reap rows, rate limiting, infra
 // plumbing failures, and boot-window preflight failures are classified as
 // operational noise — not genuine execution failures — so callers that cap
