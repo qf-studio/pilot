@@ -811,6 +811,23 @@ func (m *CIMonitor) HasAnyCIConfigured(ctx context.Context, sha string) (bool, e
 	if checkRuns.TotalCount > 0 {
 		return true, nil
 	}
+	// GH-5238: zero check-runs for THIS sha is not evidence this repo has no
+	// CI when it has produced check-runs before, for some OTHER sha, during
+	// this monitor's lifetime (m.everSeenCheckRuns — the same cross-SHA
+	// history guard GH-5233 added to checkAutoDiscoveredRuns for the
+	// pre-merge discovery path). It's an anomaly instead — a platform
+	// outage, a workflow that hasn't triggered yet, etc — and the
+	// combined-status fallback below would just rubber-stamp the same wrong
+	// answer, since Actions-only repos legitimately report empty statuses
+	// too. Report CI as configured so handlePostMergeCI's no-workflow probe
+	// falls through to its normal timeout+poll wait (which itself now holds
+	// this shape at CIPending via checkAutoDiscoveredRuns) instead of
+	// short-circuiting straight to CISuccess. A repo that has never produced
+	// a check-run at all is unaffected — it still falls through to the
+	// combined-status check below, exactly as before.
+	if m.hasEverSeenCheckRuns() {
+		return true, nil
+	}
 	combined, err := m.ghClient.GetCombinedStatus(ctx, m.owner, m.repo, sha)
 	if err != nil {
 		return false, err
