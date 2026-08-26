@@ -5640,7 +5640,7 @@
       },
       "model-refusal-looks-like-exit-status-1": {
         "type": "pitfall",
-        "summary": "A backend model refusal surfaces as 'unknown: exit status 1' with empty stderr and ~0 tokens; the real cause (stop_reason=refusal, category=cyber) lives ONLY in the stream recording. Being deterministic it then trips consecutiveIdenticalFailureThreshold=2 -> stalled + pilot-blocked, silently. Root cause is framing: the executor's model sees only the issue body, so security-boundary work must carry its authorization context in the body (infra#31 passed with it, the terse remediation refile did not). Framing parity, not bypass. Fix dispatched as pilot#5232.",
+        "summary": "A backend model refusal surfaces as 'unknown: exit status 1' with empty stderr and ~0 tokens; the real cause (stop_reason=refusal, category=cyber) lives ONLY in the stream recording, and being deterministic it trips the streak threshold -> stalled + pilot-blocked silently. PROVEN 2026-08-26 across three attempts that framing is NOT the cause: infra#36 contained zero security-probe content (signal handling, assignment ordering, a test fake) and was still refused, while infra#31 wrote all six probes and passed. The trigger is the package/surrounding context (isolationharness), so splitting or reframing does not help — that package is off-limits to the executor. Stop after ONE reframing attempt; repeated rewording is circumvention. Fix for the observability half: pilot#5232 (merged PR#5234).",
         "file": ".agent/knowledge/memories/pitfalls/model-refusal-looks-like-exit-status-1.md",
         "concepts": [
           "executor",
