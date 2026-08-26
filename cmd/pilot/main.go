@@ -4235,6 +4235,15 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 // constructor (including every pre-GH-5139 test) falls back byte-for-byte to
 // the old "canceled is permanent" behavior — see the nil-ghClient branch in
 // HasCompletedExecution.
+//
+// GH-5230: "looks identical to the poller" above is deliberate and stays
+// that way — dispatch behavior (this function still returns true, still
+// gates the same tasks) is unchanged. What changed is the OPERATOR-facing
+// side: the backoff branch now also emits its own unconditional INFO log
+// line naming the real reason (cooldown, not completion) before returning,
+// so the SDK's "completed execution exists" message is never the only
+// explanation on offer. See the backoff branch below for the log line
+// itself.
 type terminalCompletionChecker struct {
 	store *memory.Store
 
@@ -4251,6 +4260,35 @@ func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath str
 			logging.WithComponent("dispatch").Debug("task in repick backoff window, skipping poller candidacy entirely",
 				slog.String("task_id", taskID))
 		}
+		// GH-5230: returning true here makes the vendored SDK poller log
+		// "Skipping re-dispatch — completed execution exists" on THIS tick
+		// and every tick until the window expires — that message is false;
+		// there is no completed execution row, only a cooldown. The debug
+		// line above fires once per window and never says how long the gate
+		// lasts, so an operator reading only the poller's log sees a
+		// misleading "completed" verdict repeated with nothing to correct
+		// it (confirmed on pilot-cloud-infra GH-33: three ledger rows —
+		// stalled, failed, stalled — no commit, no PR, no completed status,
+		// yet the misleading message was the only thing in the log). Emit
+		// an unconditional INFO line, every gated tick, naming the real
+		// reason plus the remaining cooldown and drop counts, so the truth
+		// always precedes the SDK's misleading message rather than being
+		// buried in a once-per-window DEBUG line.
+		remaining, consecutiveDrops, claimLostDrops, ok := repickBackoff.gateDetail(key)
+		attrs := []any{
+			slog.String("task_id", taskID),
+			slog.String("project_path", projectPath),
+		}
+		if ok {
+			attrs = append(attrs,
+				slog.Duration("backoff_remaining", remaining),
+				slog.Int("consecutive_drops", consecutiveDrops),
+				slog.Int("claim_lost_drops", claimLostDrops),
+			)
+		}
+		logging.WithComponent("dispatch").Info(
+			"skip reason: repick-backoff cooldown, NOT a completed execution — the SDK poller's next log line (\"completed execution exists\") is misleading for this task",
+			attrs...)
 		return true, nil
 	}
 
