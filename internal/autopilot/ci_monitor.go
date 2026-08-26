@@ -53,6 +53,18 @@ type CIMonitor struct {
 	discoveredChecks map[string][]string  // sha -> check names
 	discoveryStart   map[string]time.Time // sha -> when discovery started
 	mu               sync.RWMutex
+
+	// everSeenCheckRuns records whether this repository has produced ANY
+	// check-run, for ANY SHA, during this monitor's lifetime (GH-5233). It's
+	// the cheap, reliable signal checkAutoDiscoveredRuns uses to tell "this
+	// repo genuinely has no CI" (the flag never flips true; the existing
+	// combined-status fallback stays load-bearing) apart from "this repo has
+	// CI and it simply didn't report for this SHA" (the flag is already
+	// true, so zero check-runs here is an anomaly, not a config). Recording
+	// it per-monitor (one CIMonitor per owner/repo) rather than per-SHA is
+	// deliberate: the whole point is comparing THIS sha's silence against
+	// what OTHER shas on the same repo have done.
+	everSeenCheckRuns bool
 }
 
 // NewCIMonitor creates a CI monitor with configuration from Config.
@@ -258,6 +270,16 @@ func (m *CIMonitor) checkStatus(ctx context.Context, sha string, skipGrace bool)
 
 	// Store discovered check names for later retrieval (filtered by exclusions in auto mode)
 	if len(checkRuns.CheckRuns) > 0 {
+		// GH-5233: record, independent of required-checks/exclude scoping,
+		// that this repo has produced a check-run at all. This is the raw
+		// "does this repo's CI infrastructure exist" signal
+		// checkAutoDiscoveredRuns needs — deliberately not gated on the same
+		// filters as discoveredChecks below, since even an excluded/
+		// non-required check run still proves Actions is wired up here.
+		m.mu.Lock()
+		m.everSeenCheckRuns = true
+		m.mu.Unlock()
+
 		m.mu.RLock()
 		_, hasDiscovered := m.discoveredChecks[sha]
 		m.mu.RUnlock()
@@ -523,16 +545,45 @@ func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, che
 			m.mu.Unlock()
 		}
 
+		// GH-5233: this repo has produced at least one check-run for SOME sha
+		// during this monitor's lifetime, so its CI is demonstrably wired up
+		// (an Actions workflow exists and has fired before). Zero check-runs
+		// for THIS sha after the grace period is therefore not "no CI
+		// configured" — the combined-status fallback below exists for that
+		// case, and legitimately returns empty for every Actions-only repo —
+		// it's a trigger/platform anomaly (workflow didn't fire, Actions
+		// outage, etc). Observed live 2026-08-26: qf-studio/pilot-console
+		// PR#221 sat with zero check-runs of any kind while sibling PRs
+		// opened minutes later each had three; the combined-status fallback
+		// mapped its silence to CISuccess and it was eligible to auto-merge
+		// a red down-migration test on a false green. Hold as CIPending —
+		// never consult combined-status, which would just rubber-stamp the
+		// same wrong answer — and let WaitForCI's existing timeout surface
+		// the anomaly instead of merging on it.
+		if m.hasEverSeenCheckRuns() {
+			m.log.Warn("CI checks never reported for this SHA on a repository with prior observed check runs on other SHAs — holding rather than treating as no-CI success",
+				"sha", ShortSHA(sha),
+				"owner", m.owner,
+				"repo", m.repo,
+			)
+			return CIPending, nil
+		}
+
 		// Grace period expired (or skipped) with no check runs — query commit-status
 		// API before concluding that no CI is configured. Providers like CircleCI,
 		// Jenkins, Travis, and Buildkite report exclusively via the statuses API.
 		combined, err := m.ghClient.GetCombinedStatus(ctx, m.owner, m.repo, sha)
 		if err != nil {
-			m.log.Warn("grace period expired; combined-status lookup failed, treating as no CI",
+			// GH-5233: an API error is not evidence CI passed — it's evidence
+			// we don't know. This used to return CISuccess ("treating as no
+			// CI"), making a transient GitHub API failure the one path that
+			// could unblock a merge without CI ever actually reporting. Hold
+			// instead; WaitForCI's timeout still applies on top of this.
+			m.log.Warn("grace period expired; combined-status lookup failed, holding rather than treating as no CI",
 				"sha", ShortSHA(sha),
 				"error", err,
 			)
-			return CISuccess, nil
+			return CIPending, nil
 		}
 		status := m.mapCombinedStatus(combined)
 		m.log.Info("grace period expired with no check runs; using commit-status API",
@@ -573,6 +624,15 @@ func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, che
 		return CIPending, nil
 	}
 	return CISuccess, nil
+}
+
+// hasEverSeenCheckRuns reports whether this repository has produced any
+// check-run, for any SHA, during this monitor's lifetime (GH-5233) — see
+// everSeenCheckRuns.
+func (m *CIMonitor) hasEverSeenCheckRuns() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.everSeenCheckRuns
 }
 
 // mapCombinedStatus converts a GitHub combined commit-status response into CIStatus.
