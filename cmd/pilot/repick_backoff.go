@@ -170,6 +170,28 @@ func (t *repickBackoffTracker) gateStatus(key string) (gated bool, shouldLog boo
 	return false, false
 }
 
+// gateDetail returns the diagnostic detail behind a gated key — how long the
+// cooldown has left and the drop counters that grew it — for callers that
+// need to explain WHY a backoff-gated skip happened, not just that it did
+// (GH-5230). It is a pure read: it does not touch gateLogged or persist
+// state, so it is safe to call every time gateStatus reports gated, on every
+// poll tick, without disturbing gateStatus's own once-per-window bookkeeping.
+// ok is false if key has no in-memory entry (already expired/cleared, or
+// never armed) — callers should treat that as "nothing to report".
+func (t *repickBackoffTracker) gateDetail(key string) (remaining time.Duration, consecutiveDrops int, claimLostDrops int, ok bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, found := t.entries[key]
+	if !found {
+		return 0, 0, 0, false
+	}
+	remaining = time.Until(e.nextAllowedAt)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining, e.consecutiveDrops, e.claimLostDrops, true
+}
+
 // recordDrop registers a dropped pickup for key, extending its backoff window
 // exponentially (capped), and returns the new consecutive-drop count so the
 // caller can decide whether to escalate its log level / fire a metric.
