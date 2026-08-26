@@ -47,9 +47,29 @@ expected-denial assertion." The remediation issue was written tersely — straig
 into "three boundaries cannot fail" and how to make probes work — and read cold
 as offensive tooling.
 
-**How to apply**: any issue about security boundaries, isolation testing,
-credential handling or exfiltration paths must carry its defensive context
-*in the body*: who authorizes it, whose estate it targets, and that assertions
-pass on denial. This is **framing parity, not bypass** — state the true nature
-of the work accurately (see [[guard-research-framing-parity-not-bypass]]). If a
-security-shaped task dies fast with no output, suspect refusal before infra.
+## Framing was NOT the cause — proven by a third attempt
+
+Initial reading blamed terse framing. **That was wrong.** Three attempts:
+
+| Attempt | Framing | Content | Result |
+|---|---|---|---|
+| infra#31 (original) | full authorization context | wrote ALL SIX boundary probes, 2637 lines | **PASSED** |
+| infra#33/#34 | terse, then fully contextualised | probe remediation | refused ×3 |
+| **infra#36** | ordinary bug-fix framing | **zero probe content** — signal-aware teardown, moving two assignments before an error check, a test fake | **REFUSED** (999 tokens) |
+
+infra#36 contained nothing security-shaped and was still declined. So the
+refusal keys on the **package and its surrounding context**
+(`isolationharness`, tenant-isolation boundaries, the hostile-ticket framing
+in adjacent code and docs) — not on what a given task asks for, and not on how
+it is worded. Splitting the work does not help; reframing does not help.
+
+**How to apply**: **the autonomous executor cannot work in this package at
+all** — do not dispatch against it; each attempt burns two execution slots
+then silently stalls. Route it to a human or an authorized path. More
+generally: if a task dies fast with 0 tokens and empty stderr, **read the
+stream recording before touching infrastructure**, and if it is a refusal,
+stop after ONE reframing attempt — repeated rewording to get past a refusal is
+circumvention, not debugging (cf.
+[[guard-research-framing-parity-not-bypass]]). Note infra#31 passing means
+this is narrower than "security work is refused"; what changed between #31 and
+#33 is not established.
