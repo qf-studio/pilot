@@ -301,8 +301,10 @@ type PlatformBreakerConfig struct {
 	// re-evaluates the time-based close condition. Also the trigger interval
 	// for the advisory corroboration probe fired just before the breaker
 	// opens. Zero/unset falls back to DefaultPlatformBreakerProbeInterval
-	// (5m). The probe result is advisory only — see ProbeGitHubStatus's doc
-	// comment — it never gates open/close.
+	// (5m). The probe result never vetoes correlation and never gates
+	// close — see ProbeGitHubStatus's doc comment. GH-5236: on the
+	// CI-wait-timeout path specifically, a corroborating probe result CAN
+	// accelerate open (fewer distinct PRs required), one direction only.
 	ProbeInterval time.Duration `yaml:"probe_interval"`
 	// PauseAdmission controls whether new executor dispatch is paused while
 	// the breaker is open (GH-4792): stops burning executor spend on work
