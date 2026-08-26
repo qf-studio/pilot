@@ -173,6 +173,22 @@ type BackendEvent struct {
 	// BackgroundTaskStatus carries the terminal status ("completed", "failed",
 	// or "stopped") on EventTypeTaskNotification events (GH-4357).
 	BackgroundTaskStatus string
+
+	// IsRefusal indicates this stream_delta carried a message_delta with
+	// stop_reason "refusal" — the model declined to continue the task rather
+	// than erroring out. Distinct from IsError: a refusal is a deliberate
+	// model decision, not a subprocess/API failure, and exits with no
+	// stderr, which otherwise surfaces as an undiagnosable
+	// "unknown: exit status 1". GH-5232.
+	IsRefusal bool
+
+	// RefusalCategory carries stop_details.category from the refusal
+	// message_delta (e.g. "cyber"). Empty if IsRefusal is false. GH-5232.
+	RefusalCategory string
+
+	// RefusalExplanation carries stop_details.explanation from the refusal
+	// message_delta. Empty if IsRefusal is false. GH-5232.
+	RefusalExplanation string
 }
 
 // BackendError is implemented by all backend-specific error types (ClaudeCodeError,
@@ -311,6 +327,22 @@ type BackendResult struct {
 	// trail for the case that audit cannot see: a call that never reached
 	// GitHub because gh-guard blocked it first.
 	GhGuardDenials []ghguard.JournalEntry
+
+	// Refused indicates the model declined to continue the task via an
+	// explicit stop_reason "refusal" (observed in a message_delta stream
+	// event), rather than the subprocess erroring out. When true, ErrorType
+	// is "refusal" and Error/RefusalCategory/RefusalExplanation describe why,
+	// so the failure is diagnosable from the execution ledger alone instead
+	// of surfacing as "unknown: exit status 1". GH-5232.
+	Refused bool
+
+	// RefusalCategory is the stop_details.category from the refusal signal
+	// (e.g. "cyber"). Empty unless Refused is true. GH-5232.
+	RefusalCategory string
+
+	// RefusalExplanation is the stop_details.explanation from the refusal
+	// signal. Empty unless Refused is true. GH-5232.
+	RefusalExplanation string
 }
 
 // BackendConfig contains configuration for executor backends.

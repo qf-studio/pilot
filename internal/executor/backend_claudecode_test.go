@@ -272,6 +272,49 @@ func TestClaudeCodeBackendParsePartialMessageStreamEvent(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeBackendParseStreamEventRefusal verifies parseStreamEvent
+// extracts a model refusal (stop_reason "refusal" plus structured
+// stop_details) from a message_delta stream_event — GH-5232. This is the
+// exact shape observed in the pilot-cloud-infra GH-33/GH-34 incident: the
+// refusal is only visible in this partial-message delta, never in stderr or
+// exit code.
+func TestClaudeCodeBackendParseStreamEventRefusal(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+
+	line := `{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"This request appears to violate our Usage Policy."}}},"session_id":"s1","uuid":"u6"}`
+	event := backend.parseStreamEvent(line)
+
+	if event.Type != EventTypeStreamDelta {
+		t.Fatalf("Type = %q, want %q", event.Type, EventTypeStreamDelta)
+	}
+	if !event.IsRefusal {
+		t.Fatal("expected IsRefusal=true for a message_delta with stop_reason=refusal")
+	}
+	if event.RefusalCategory != "cyber" {
+		t.Errorf("RefusalCategory = %q, want %q", event.RefusalCategory, "cyber")
+	}
+	if event.RefusalExplanation != "This request appears to violate our Usage Policy." {
+		t.Errorf("RefusalExplanation = %q, want the stop_details explanation", event.RefusalExplanation)
+	}
+}
+
+// TestClaudeCodeBackendParseStreamEventOrdinaryStopReasonNotRefusal verifies
+// a normal end_turn stop_reason (the overwhelming common case) is NOT
+// misclassified as a refusal — GH-5232 regression guard.
+func TestClaudeCodeBackendParseStreamEventOrdinaryStopReasonNotRefusal(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+
+	line := `{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":14}},"session_id":"s1","uuid":"u6"}`
+	event := backend.parseStreamEvent(line)
+
+	if event.IsRefusal {
+		t.Fatal("expected IsRefusal=false for an ordinary end_turn stop_reason")
+	}
+	if event.RefusalCategory != "" || event.RefusalExplanation != "" {
+		t.Errorf("expected empty refusal fields, got category=%q explanation=%q", event.RefusalCategory, event.RefusalExplanation)
+	}
+}
+
 // TestClaudeCodeBackendPartialDeltasDoNotDuplicateCompleteMessage covers
 // GH-4501's double-processing requirement: a realistic interleaved sequence
 // (partial deltas for a turn, followed by the complete "assistant" event for
@@ -1752,6 +1795,133 @@ exit 1
 	}
 	if !strings.Contains(result.StdoutTail, "last tool: Bash(go test ./...)") {
 		t.Errorf("StdoutTail missing second diagnostic line, got: %q", result.StdoutTail)
+	}
+}
+
+// TestClaudeCodeBackendRefusalClassifiedDistinctly is the GH-5232 acceptance
+// test: a stream carrying a message_delta with stop_reason "refusal" —
+// followed by a "result" event with is_error=true and a nonzero exit, empty
+// stderr, reproducing the exact pilot-cloud-infra GH-33/GH-34 incident shape
+// — must be classified as ErrorTypeRefusal, NOT ErrorTypeUnknown. The
+// resulting error text must name the refusal and carry its category and
+// explanation, so the execution ledger alone is sufficient to diagnose
+// instead of the undiagnosable "unknown: exit status 1".
+func TestClaudeCodeBackendRefusalClassifiedDistinctly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	script := tmpDir + "/fake-claude"
+
+	body := `#!/bin/sh
+echo '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber","explanation":"This request appears to violate our Usage Policy."}}}}'
+echo '{"type":"result","is_error":true,"result":"I cannot help with this request."}'
+exit 1
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	opts := ExecuteOptions{
+		Prompt:       "hello",
+		ProjectPath:  tmpDir,
+		EventHandler: func(BackendEvent) {},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := backend.Execute(ctx, opts)
+	if err == nil {
+		t.Fatal("expected error from a refused task, got nil")
+	}
+	ccErr, ok := err.(*ClaudeCodeError)
+	if !ok {
+		t.Fatalf("expected *ClaudeCodeError, got %T: %v", err, err)
+	}
+	if ccErr.Type != ErrorTypeRefusal {
+		t.Fatalf("expected ErrorTypeRefusal, got %q", ccErr.Type)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result even on failure")
+	}
+	if !result.Refused {
+		t.Error("expected result.Refused=true")
+	}
+	if result.RefusalCategory != "cyber" {
+		t.Errorf("result.RefusalCategory = %q, want %q", result.RefusalCategory, "cyber")
+	}
+	if result.RefusalExplanation != "This request appears to violate our Usage Policy." {
+		t.Errorf("result.RefusalExplanation = %q, want the stop_details explanation", result.RefusalExplanation)
+	}
+	if result.ErrorType != string(ErrorTypeRefusal) {
+		t.Errorf("result.ErrorType = %q, want %q", result.ErrorType, ErrorTypeRefusal)
+	}
+
+	// Ledger diagnosability: the error text alone must name the refusal and
+	// carry its category and explanation.
+	if !IsRefusalFailure(result.Error) {
+		t.Errorf("expected result.Error to be classified by IsRefusalFailure, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "cyber") {
+		t.Errorf("expected result.Error to name the refusal category, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "This request appears to violate our Usage Policy.") {
+		t.Errorf("expected result.Error to carry the refusal explanation, got %q", result.Error)
+	}
+}
+
+// TestClaudeCodeBackendNonRefusalFailureUnaffected is the GH-5232 regression
+// guard: an ordinary failure with no refusal signal in the stream must
+// classify EXACTLY as it did before this change — ErrorTypeUnknown, empty
+// stderr, and neither Refused nor IsRefusalFailure ever true. Same fake-CLI
+// shape as TestClaudeCodeBackendStdoutTailOnEmptyStderrFailure.
+func TestClaudeCodeBackendNonRefusalFailureUnaffected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	script := tmpDir + "/fake-claude"
+
+	body := `#!/bin/sh
+echo "internal error: worker crashed before producing a result event"
+exit 1
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	opts := ExecuteOptions{
+		Prompt:       "hello",
+		ProjectPath:  tmpDir,
+		EventHandler: func(BackendEvent) {},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := backend.Execute(ctx, opts)
+	if err == nil {
+		t.Fatal("expected error from fake CLI exiting 1, got nil")
+	}
+	ccErr, ok := err.(*ClaudeCodeError)
+	if !ok {
+		t.Fatalf("expected *ClaudeCodeError, got %T: %v", err, err)
+	}
+	if ccErr.Type != ErrorTypeUnknown {
+		t.Fatalf("expected ErrorTypeUnknown (no regression), got %q", ccErr.Type)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result even on failure")
+	}
+	if result.Refused {
+		t.Error("expected result.Refused=false for a non-refusal failure")
+	}
+	if IsRefusalFailure(result.Error) {
+		t.Errorf("expected result.Error to NOT classify as a refusal, got %q", result.Error)
 	}
 }
 
