@@ -5255,6 +5255,16 @@
           "issue-authoring",
           "error-classification"
         ]
+      },
+      "outage-shape-is-jobs-never-run-not-jobs-fail": {
+        "type": "pitfall",
+        "summary": "A CI-platform outage manifests as jobs that NEVER RUN (30m waiting_ci timeouts, zero check-runs, startup_failure, run conclusion=failure while all jobs sit queued) — not as failing jobs. GitHub Actions major outage 2026-08-26 15:11:58Z was the single root cause of PR#5231/#221/#218 anomalies. The platform-outage breaker stayed CLOSED because platformBreaker.Observe is fed only from the CI-failure path; the CI-timeout path sets StageFailed directly and a zero-check SHA never reaches it (fix: pilot#5236). Two dangerous shapes: checks never appear -> CISuccess -> auto-merge (pilot#5233); checks time out -> PR blamed for good code. Check githubstatus.com before diagnosing multi-PR CI weirdness individually.",
+        "file": ".agent/knowledge/memories/pitfalls/outage-shape-is-jobs-never-run-not-jobs-fail.md",
+        "concepts": [
+          "autopilot",
+          "ci-gate",
+          "incident-diagnosis"
+        ]
       }
     }
   },
@@ -8438,10 +8448,10 @@
       "mem-171"
     ]
   },
-  "last_updated": "2026-08-26T16:45:00.000000+00:00",
+  "last_updated": "2026-08-26T18:00:00.000000+00:00",
   "stats": {
-    "total_nodes": 455,
+    "total_nodes": 456,
     "total_edges": 365,
-    "memory_count": 250
+    "memory_count": 251
   }
 }
