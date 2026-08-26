@@ -3112,8 +3112,57 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 			c.parkForBaseMismatch(ctx, prState, prState.TargetBranch, defaultBranch)
 			return nil
 		}
+
+		// GH-5236: a CI wait that expires with checks still pending, or a
+		// SHA that never produced a single check-run despite this repo
+		// having produced them before (ci_monitor.go's
+		// checkAutoDiscoveredRuns holds THAT shape at CIPending forever
+		// rather than resolving CISuccess — GH-5233 — so it also reaches
+		// this same deadline-expired branch, distinguishable here by
+		// prState.DiscoveredChecks staying empty for the whole wait), is
+		// evidence about the platform, not the code: nothing failed, the
+		// run simply never completed or never started. Record it for the
+		// same cross-PR correlation handleCIFailed already feeds
+		// (platform_breaker.go) BEFORE the stage transition below, so a
+		// burst of these across distinct PRs opens the breaker exactly like
+		// a burst of infra/unknown-class CI failures does. 2026-08-26
+		// GitHub Actions outage: PR#5231 sat with all eight jobs `queued`
+		// and never started, exhausted this exact 30-minute wait with
+		// last_status pending, and hit StageFailed directly — this path
+		// never called Observe, so the breaker never saw it.
+		missingChecks := len(prState.DiscoveredChecks) == 0
+		corroborated := false
+		if c.platformBreaker != nil && !c.platformBreaker.IsOpen() {
+			// Only pay the githubstatus.com round-trip when the breaker is
+			// actually wired up (feature enabled) and not already open —
+			// a nil breaker means this PR's ObserveTimeout call below is a
+			// pure no-op anyway, and once already open there's nothing left
+			// to accelerate. Never gates the correlation-only path —
+			// ObserveTimeout still opens on minDistinctPRs distinct PRs with
+			// corroborated=false.
+			corroborated = ProbeGitHubStatus(c.log) == PlatformProbeCorroborating
+		}
+		platformBreakerResult := c.platformBreaker.ObserveTimeout(prState.PRNumber, c.repoKey(), corroborated)
+		c.metrics.SetPlatformBreakerOpen(platformBreakerResult.Open)
+		c.alertPlatformBreakerTransition(platformBreakerResult)
+
+		if platformBreakerResult.Open {
+			// GH-5236: mirrors handleCIFailed's own breaker-open suppression
+			// (controller.go ~3471) — hold via BreakerHoldActive instead of
+			// confirming a terminal timeout, spawning a fix issue, or
+			// closing anything. ReDriveBreakerHeldPRs re-enters this PR into
+			// StageWaitingCI with a fresh wait clock once the breaker
+			// closes.
+			c.metrics.RecordPlatformBreakerTrip()
+			c.log.Warn("platform-outage breaker open — holding PR instead of confirming CI timeout",
+				"pr", prState.PRNumber, "waited", waited, "last_status", status, "missing_checks", missingChecks)
+			prState.BreakerHoldActive = true
+			prState.Stage = StageFailed
+			return nil
+		}
+
 		c.log.Warn("CI timeout confirmed by same-tick poll",
-			"pr", prState.PRNumber, "waited", waited, "last_status", status)
+			"pr", prState.PRNumber, "waited", waited, "last_status", status, "missing_checks", missingChecks)
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("CI timeout after %v (last confirmed status: %s)", ciTimeout, status)
 		// GH-4851: without a TerminalLabel here, a later external close of

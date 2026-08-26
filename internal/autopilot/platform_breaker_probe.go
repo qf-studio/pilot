@@ -8,13 +8,21 @@ import (
 )
 
 // GH-4792 (TASK-458 part 2): advisory corroboration probe against GitHub's
-// own official Statuspage API. This NEVER gates PlatformBreaker's
-// open/close decision — that is driven exclusively by cross-PR CI-failure
-// correlation (platform_breaker.go). The probe only enriches the
+// own official Statuspage API. This NEVER VETOES PlatformBreaker's
+// open/close decision — that stays driven exclusively by cross-PR
+// correlation (platform_breaker.go), which is always sufficient on its own.
+// Called from alertPlatformBreakerTransition, the probe only enriches the
 // operator-facing open/close alert with independent evidence, and a green
 // result must never veto an already-correlated signal: status pages lag
 // reality, confirmed during the 2026-08-06 outage this whole feature exists
 // to catch.
+//
+// GH-5236 (2026-08-26 outage): also consulted from the CI-wait-timeout path
+// (controller.go's handleWaitingCI, via PlatformBreaker.ObserveTimeout) as
+// a one-directional ACCELERANT — a corroborating verdict there can only
+// lower the distinct-PR threshold required to open (down to a single
+// timeout), never raise it or block opening. A green/unknown verdict never
+// prevents correlation-only opening; it just means no shortcut was taken.
 //
 // Endpoint choice: component-scoped, not the coarse page-level
 // status.json. componentsURL finds the "Actions" component's own status;

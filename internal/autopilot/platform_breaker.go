@@ -18,8 +18,21 @@ import (
 // independent regressions. PlatformBreaker adds that signal.
 //
 // Part 1 scope: correlation + suppression of destructive actions only. Part
-// 2 (deferred) adds the external githubstatus.com probe, admission pause,
-// and held-PR re-drive on close.
+// 2 (TASK-458 part 2, GH-4792) added the external githubstatus.com probe
+// (advisory alert enrichment), admission pause, and held-PR re-drive on
+// close.
+//
+// GH-5236 (2026-08-26 outage): correlation was fed exclusively from the
+// CI-failure path (handleCIFailed's Observe call below). An Actions outage
+// most often does not produce a CI failure at all — a wait simply expires
+// with checks still pending, or a SHA never produces a single check-run.
+// Neither shape reached this breaker. ObserveTimeout adds that signal to
+// the SAME correlation store, and lets the githubstatus.com probe act as a
+// genuine (positive-only) accelerant for that shape specifically: when the
+// probe corroborates, a single timeout observation opens the breaker
+// instead of waiting for minDistinctPRs independent ~30-minute waits to
+// each expire in turn. Observe's own correlation-only behavior (and the
+// probe's role there, purely alert enrichment) is unchanged.
 
 // DefaultPlatformBreakerMinCorrelatedPRs, DefaultPlatformBreakerCorrelationWindow,
 // and DefaultPlatformBreakerQuietPeriod are GH-4791's part-1 defaults, used
@@ -144,7 +157,49 @@ func (b *PlatformBreaker) Observe(pr int, repo string, class FailureClass) Platf
 	if b == nil {
 		return PlatformBreakerResult{}
 	}
+	relevant := class.IsInfra() || class == FailureClassUnknown
+	return b.record(pr, repo, relevant, false)
+}
 
+// ObserveTimeout records one CI-wait-timeout or missing-checks observation
+// (GH-5236) — platform evidence that carries no FailureClass at all,
+// because nothing failed: a CI wait simply expired with checks still
+// pending, or a SHA never produced a single check-run despite this
+// repository having produced them before (ci_monitor.go's
+// checkAutoDiscoveredRuns holds that shape at CIPending forever rather than
+// resolving CISuccess/CIFailure — GH-5233 — so it surfaces to the caller as
+// an expired wait too). Feeds the SAME correlation store as Observe: a
+// distinct-PR count that mixes timeouts and infra/unknown-class failures is
+// exactly right, since the 2026-08-26 outage produced both shapes across
+// the fleet at once.
+//
+// corroborated is the caller's own up-to-date read of ProbeGitHubStatus
+// (platform_breaker_probe.go), taken OUTSIDE this call so no network I/O
+// ever runs under this breaker's mutex. When true and the breaker is not
+// yet open, this single observation alone is enough to open it — an
+// accelerant so the fleet isn't left unprotected while minDistinctPRs
+// independent ~30-minute waits each expire in turn before anyone notices.
+// corroborated=false (no probe run, or it came back green/unknown) opens
+// the breaker exactly as Observe does: on minDistinctPRs distinct
+// observations within the window. This only ever lowers the bar to open —
+// it can never keep the breaker open longer or veto an already-correlated
+// signal, matching ProbeGitHubStatus's own doc: status pages lag reality.
+//
+// A nil receiver always reports closed (Open: false, no transition).
+func (b *PlatformBreaker) ObserveTimeout(pr int, repo string, corroborated bool) PlatformBreakerResult {
+	if b == nil {
+		return PlatformBreakerResult{}
+	}
+	return b.record(pr, repo, true, corroborated)
+}
+
+// record is the shared implementation behind Observe and ObserveTimeout.
+// relevant reports whether this observation feeds correlation at all
+// (Observe: class.IsInfra()||Unknown; ObserveTimeout: always true).
+// corroborated (only ever non-false from ObserveTimeout) lowers the
+// distinct-PR threshold required to open to a single observation — see
+// ObserveTimeout's doc.
+func (b *PlatformBreaker) record(pr int, repo string, relevant, corroborated bool) PlatformBreakerResult {
 	now := time.Now
 	if b.now != nil {
 		now = b.now
@@ -161,7 +216,7 @@ func (b *PlatformBreaker) Observe(pr int, repo string, class FailureClass) Platf
 	// open a brand-new episode below in the same call.
 	result := b.closeIfQuietLocked(t)
 
-	if relevant := class.IsInfra() || class == FailureClassUnknown; relevant {
+	if relevant {
 		key := platformBreakerKey(repo, pr)
 		b.lastInfraAt = t
 		b.observations = append(b.observations, platformFailureObservation{key: key, at: t})
@@ -174,14 +229,20 @@ func (b *PlatformBreaker) Observe(pr int, repo string, class FailureClass) Platf
 			b.correlated[key] = true
 		} else {
 			distinct := b.distinctKeysLocked()
-			if len(distinct) >= b.minDistinctPRs {
+			threshold := b.minDistinctPRs
+			if corroborated && threshold > 1 {
+				threshold = 1
+			}
+			if len(distinct) >= threshold {
 				b.open = true
 				b.correlated = distinct
 				result.JustOpened = true
 				result.CorrelatedPRs = sortedKeys(distinct)
-				b.log.Warn("platform-outage breaker opened — correlated infra/unknown-class CI failures across distinct PRs, suspected platform outage",
+				b.log.Warn("platform-outage breaker opened — correlated infra/unknown-class CI failures and/or CI timeouts across distinct PRs, suspected platform outage",
 					"distinct_prs", len(distinct),
 					"min_distinct_prs", b.minDistinctPRs,
+					"threshold_used", threshold,
+					"probe_corroborated", corroborated,
 					"correlation_window", b.correlationWindow,
 					"correlated_prs", result.CorrelatedPRs,
 				)
