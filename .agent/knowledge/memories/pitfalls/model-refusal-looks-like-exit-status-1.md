@@ -39,13 +39,12 @@ The model **declined the task**. Nothing about the box was wrong.
 
 ## The actual cause: framing parity in the issue body
 
-The executor's model sees **only the issue body** — not our intent, not the
-repo's purpose. The original harness issue (infra#31) passed because it opened
-with the authorization context: "authorized security verification of our own
-AWS estate… a verification harness, not offensive tooling… every probe is an
-expected-denial assertion." The remediation issue was written tersely — straight
-into "three boundaries cannot fail" and how to make probes work — and read cold
-as offensive tooling.
+**Initial hypothesis, later falsified — recorded so it is not re-derived.**
+The first reading was that the executor's model sees only the issue body, and
+that infra#31 passed because it opened with authorization context ("authorized
+security verification of our own AWS estate… a verification harness, not
+offensive tooling") while the remediation issue was terse. That looked
+convincing. It was wrong — see the next section.
 
 ## Framing was NOT the cause — proven by a third attempt
 
