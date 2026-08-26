@@ -1615,7 +1615,10 @@ func TestCIMonitor_CommitStatusFallback(t *testing.T) {
 }
 
 func TestCIMonitor_CommitStatusFallback_APIError(t *testing.T) {
-	// When GetCombinedStatus fails, treat as no CI configured (success).
+	// GH-5233: a failed combined-status lookup is not evidence CI passed —
+	// it must hold (CIPending), not resolve to CISuccess. Before this fix, an
+	// API error was the one path that could unblock a merge without CI ever
+	// actually reporting.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/owner/repo/commits/abc1234/check-runs":
@@ -1643,13 +1646,125 @@ func TestCIMonitor_CommitStatusFallback_APIError(t *testing.T) {
 	_, _ = monitor.CheckCI(context.Background(), "abc1234")
 	time.Sleep(30 * time.Millisecond)
 
-	// After grace period, status API fails → treat as no CI (success)
+	// After grace period, status API fails → hold, do not resolve to success.
+	status, err := monitor.CheckCI(context.Background(), "abc1234")
+	if err != nil {
+		t.Fatalf("CheckCI() error = %v", err)
+	}
+	if status != CIPending {
+		t.Errorf("CheckCI() on status API error = %s, want %s (must not resolve to success on an API error)", status, CIPending)
+	}
+}
+
+// TestCIMonitor_NoCIRepo_StillResolvesSuccess is the "unaffected" control for
+// GH-5233: a repository that has never produced a check-run for ANY sha
+// during the monitor's lifetime must keep resolving a checkless SHA to
+// CISuccess after the grace period, exactly as it did before this fix.
+func TestCIMonitor_NoCIRepo_StillResolvesSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{TotalCount: 0, CheckRuns: []github.CheckRun{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/commits/abc1234/status":
+			resp := github.CombinedStatus{State: github.StatusPending, TotalCount: 0, Statuses: []github.CommitStatus{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.CIWaitTimeout = 1 * time.Second
+	cfg.RequiredChecks = nil
+	cfg.CIChecks = &CIChecksConfig{
+		Mode:                 "auto",
+		DiscoveryGracePeriod: 20 * time.Millisecond,
+	}
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	_, _ = monitor.CheckCI(context.Background(), "abc1234")
+	time.Sleep(30 * time.Millisecond)
+
 	status, err := monitor.CheckCI(context.Background(), "abc1234")
 	if err != nil {
 		t.Fatalf("CheckCI() error = %v", err)
 	}
 	if status != CISuccess {
-		t.Errorf("CheckCI() on status API error = %s, want %s (degrade gracefully)", status, CISuccess)
+		t.Errorf("CheckCI() for a repo that never produced a check-run = %s, want %s (no-CI behavior must be unaffected)", status, CISuccess)
+	}
+}
+
+// TestCIMonitor_CIBearingRepo_MissingChecksHeld is the GH-5233 regression
+// test: once this repo has produced check-runs for SOME sha, a DIFFERENT sha
+// that reports zero check-runs after the grace period must be held
+// (CIPending), never resolved to CISuccess via the combined-status fallback —
+// reproducing qf-studio/pilot-console PR#221 (2026-08-26), where a CI trigger
+// failure on a CI-bearing repo let a red PR look green.
+func TestCIMonitor_CIBearingRepo_MissingChecksHeld(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/withchecks/check-runs":
+			resp := github.CheckRunsResponse{TotalCount: 1, CheckRuns: []github.CheckRun{
+				{ID: 1, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+			}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/commits/nochecks/check-runs":
+			resp := github.CheckRunsResponse{TotalCount: 0, CheckRuns: []github.CheckRun{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/commits/nochecks/status":
+			// Actions-only repo: combined-status legitimately reports empty.
+			resp := github.CombinedStatus{State: github.StatusPending, TotalCount: 0, Statuses: []github.CommitStatus{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.CIWaitTimeout = 1 * time.Second
+	cfg.RequiredChecks = nil
+	cfg.CIChecks = &CIChecksConfig{
+		Mode:                 "auto",
+		DiscoveryGracePeriod: 20 * time.Millisecond,
+	}
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	// A sibling SHA on this repo has produced check-runs — this is the
+	// repo's own recent-history signal that CI is wired up here.
+	status, err := monitor.CheckCI(context.Background(), "withchecks")
+	if err != nil {
+		t.Fatalf("CheckCI(withchecks) error = %v", err)
+	}
+	if status != CISuccess {
+		t.Fatalf("CheckCI(withchecks) = %s, want %s", status, CISuccess)
+	}
+
+	// Now a different SHA on the same repo reports zero check-runs. Start
+	// the grace period and let it expire.
+	status, _ = monitor.CheckCI(context.Background(), "nochecks")
+	if status != CIPending {
+		t.Fatalf("first CheckCI(nochecks) = %s, want %s", status, CIPending)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	status, err = monitor.CheckCI(context.Background(), "nochecks")
+	if err != nil {
+		t.Fatalf("CheckCI(nochecks) error = %v", err)
+	}
+	if status != CIPending {
+		t.Errorf("CheckCI(nochecks) after grace period on a CI-bearing repo = %s, want %s (must hold, not resolve to success)", status, CIPending)
 	}
 }
 
