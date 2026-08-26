@@ -37,7 +37,7 @@ The model **declined the task**. Nothing about the box was wrong.
    [[pilot#5232]] (classify refusals, exempt from the streak, comment on the
    issue).
 
-## The actual cause: framing parity in the issue body
+## What we first thought the cause was
 
 **Initial hypothesis, later falsified — recorded so it is not re-derived.**
 The first reading was that the executor's model sees only the issue body, and
