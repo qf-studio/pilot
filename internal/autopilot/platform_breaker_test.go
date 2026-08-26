@@ -182,6 +182,93 @@ func TestPlatformBreaker_DistinctRepos(t *testing.T) {
 	}
 }
 
+// TestPlatformBreaker_ObserveTimeout_CorrelatesLikeObserve (GH-5236) verifies
+// ObserveTimeout feeds the SAME correlation store as Observe: minDistinctPRs
+// distinct timeout/missing-check observations (corroborated=false, the
+// uncorroborated/common case) open the breaker exactly like a burst of
+// infra/unknown-class CI failures does — neither more nor less eagerly.
+func TestPlatformBreaker_ObserveTimeout_CorrelatesLikeObserve(t *testing.T) {
+	b, _ := newTestPlatformBreaker(3, 15*time.Minute, 20*time.Minute)
+
+	r1 := b.ObserveTimeout(1, "owner/repo", false)
+	if r1.Open || r1.JustOpened {
+		t.Fatalf("after 1 distinct PR timeout: Open=%v JustOpened=%v, want both false", r1.Open, r1.JustOpened)
+	}
+	r2 := b.ObserveTimeout(2, "owner/repo", false)
+	if r2.Open || r2.JustOpened {
+		t.Fatalf("after 2 distinct PR timeouts: Open=%v JustOpened=%v, want both false", r2.Open, r2.JustOpened)
+	}
+	r3 := b.ObserveTimeout(3, "owner/repo", false)
+	if !r3.Open || !r3.JustOpened {
+		t.Fatalf("after 3 distinct PR timeouts: Open=%v JustOpened=%v, want both true", r3.Open, r3.JustOpened)
+	}
+	wantPRs := []string{"owner/repo#1", "owner/repo#2", "owner/repo#3"}
+	if !equalStringSlices(r3.CorrelatedPRs, wantPRs) {
+		t.Errorf("CorrelatedPRs = %v, want %v", r3.CorrelatedPRs, wantPRs)
+	}
+}
+
+// TestPlatformBreaker_ObserveTimeout_MixesWithObserve (GH-5236) verifies a
+// timeout observation and a CI-failure observation on distinct PRs count
+// toward the SAME correlation threshold — the 2026-08-26 outage produced
+// both shapes across the fleet at once, and neither alone should have to
+// independently reach minDistinctPRs.
+func TestPlatformBreaker_ObserveTimeout_MixesWithObserve(t *testing.T) {
+	b, _ := newTestPlatformBreaker(3, 15*time.Minute, 20*time.Minute)
+
+	b.Observe(1, "owner/repo", FailureClassInfra)
+	b.ObserveTimeout(2, "owner/repo", false)
+	r3 := b.ObserveTimeout(3, "owner/repo", false)
+
+	if !r3.Open || !r3.JustOpened {
+		t.Fatalf("mixed CI-failure + timeout observations: Open=%v JustOpened=%v, want both true", r3.Open, r3.JustOpened)
+	}
+}
+
+// TestPlatformBreaker_ObserveTimeout_CorroboratedOpensOnFirstObservation
+// (GH-5236) verifies the probe-corroboration accelerant: when the caller
+// passes corroborated=true, a SINGLE timeout observation is enough to open
+// the breaker, rather than waiting for minDistinctPRs independent
+// ~30-minute waits to each expire in turn.
+func TestPlatformBreaker_ObserveTimeout_CorroboratedOpensOnFirstObservation(t *testing.T) {
+	b, _ := newTestPlatformBreaker(3, 15*time.Minute, 20*time.Minute)
+
+	r := b.ObserveTimeout(1, "owner/repo", true)
+	if !r.Open || !r.JustOpened {
+		t.Fatalf("single corroborated timeout: Open=%v JustOpened=%v, want both true", r.Open, r.JustOpened)
+	}
+	if !equalStringSlices(r.CorrelatedPRs, []string{"owner/repo#1"}) {
+		t.Errorf("CorrelatedPRs = %v, want [owner/repo#1]", r.CorrelatedPRs)
+	}
+}
+
+// TestPlatformBreaker_ObserveTimeout_CorroboratedNeverVetoesOrReopensAlreadyOpen
+// (GH-5236) verifies corroboration only ever lowers the bar to OPEN — it
+// must never affect an already-open breaker's state, and a
+// corroborated=false single observation must NOT open (no accidental
+// always-on accelerant).
+func TestPlatformBreaker_ObserveTimeout_CorroboratedNeverVetoesOrReopensAlreadyOpen(t *testing.T) {
+	b, _ := newTestPlatformBreaker(3, 15*time.Minute, 20*time.Minute)
+
+	uncorroborated := b.ObserveTimeout(1, "owner/repo", false)
+	if uncorroborated.Open {
+		t.Fatalf("single uncorroborated timeout: Open=%v, want false (no accelerant applied)", uncorroborated.Open)
+	}
+
+	b.ObserveTimeout(2, "owner/repo", false)
+	opened := b.ObserveTimeout(3, "owner/repo", false)
+	if !opened.Open {
+		t.Fatal("test setup: breaker should open on the 3rd correlation-only observation")
+	}
+
+	// A further corroborated call while already open must not re-fire
+	// JustOpened or otherwise disturb the existing episode.
+	again := b.ObserveTimeout(4, "owner/repo", true)
+	if !again.Open || again.JustOpened {
+		t.Errorf("corroborated observation on an already-open breaker: Open=%v JustOpened=%v, want Open=true JustOpened=false", again.Open, again.JustOpened)
+	}
+}
+
 // TestPlatformBreaker_NilReceiverIsNoOp verifies the disabled-by-config path
 // is a byte-identical no-op: a nil *PlatformBreaker always reports closed
 // with no transition, regardless of how many observations are fed in.
@@ -192,6 +279,15 @@ func TestPlatformBreaker_NilReceiverIsNoOp(t *testing.T) {
 		r := b.Observe(pr, "owner/repo", FailureClassInfra)
 		if r.Open || r.JustOpened || r.JustClosed || r.CorrelatedPRs != nil {
 			t.Fatalf("nil breaker Observe(%d) = %+v, want zero value", pr, r)
+		}
+	}
+	// GH-5236: ObserveTimeout must be equally nil-safe, including with the
+	// corroborated=true accelerant — a nil breaker (disabled by config) must
+	// never open regardless.
+	for pr := 1; pr <= 10; pr++ {
+		r := b.ObserveTimeout(pr, "owner/repo", true)
+		if r.Open || r.JustOpened || r.JustClosed || r.CorrelatedPRs != nil {
+			t.Fatalf("nil breaker ObserveTimeout(%d) = %+v, want zero value", pr, r)
 		}
 	}
 	if b.IsOpen() {
