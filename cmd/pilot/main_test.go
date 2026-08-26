@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -12,6 +13,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/teams"
 )
@@ -1193,5 +1195,117 @@ func TestTerminalCompletionChecker_RecognizesNoOp(t *testing.T) {
 	}
 	if rawCompleted {
 		t.Error("expected raw Store.HasCompletedExecution to stay strict (no_op has no deliverable) — if this now passes, the invariant this test pins has changed")
+	}
+}
+
+// TestHasCompletedExecution_SkipReasonDiffersByCause is the GH-5230
+// regression: HasCompletedExecution returns true (bool) for two very
+// different underlying reasons — a genuine completed/no_op execution row,
+// and a task merely cooling down in the repick-backoff window — and the
+// vendored SDK poller logs the SAME "completed execution exists" message for
+// both. Diagnosing a stalled task cost real operator time (pilot-cloud-infra
+// GH-33: ledger showed stalled/failed/stalled, no commit, no PR, no
+// completed status, yet the log insisted a completed execution existed)
+// because the two cases were indistinguishable in the logs. This pins that
+// the backoff-gated branch now emits its own INFO line naming the real
+// reason plus the remaining cooldown and drop counts, and that a genuine
+// completion does NOT emit that line — so the two causes are distinguishable
+// by grepping the log, without changing what HasCompletedExecution returns.
+func TestHasCompletedExecution_SkipReasonDiffersByCause(t *testing.T) {
+	tests := []struct {
+		name string
+		// setup seeds whatever state makes HasCompletedExecution return true
+		// for this case's reason.
+		setup func(t *testing.T, store *memory.Store, taskID, projectPath, key string)
+		// wantReasonSubstr must appear in the log emitted for this case; ""
+		// means this case must NOT emit the backoff reason line at all (see
+		// backoffReasonSubstr check below).
+		wantReasonSubstr string
+	}{
+		{
+			name: "backoff-gated skip: not a completed execution",
+			setup: func(t *testing.T, _ *memory.Store, _, _, key string) {
+				t.Helper()
+				repickBackoff.recordDrop(key)
+				t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+			},
+			wantReasonSubstr: "repick-backoff cooldown, NOT a completed execution",
+		},
+		{
+			name: "genuine terminal completion",
+			setup: func(t *testing.T, store *memory.Store, taskID, projectPath, _ string) {
+				t.Helper()
+				if err := store.SaveExecution(&memory.Execution{
+					ID:          "exec-" + taskID,
+					TaskID:      taskID,
+					ProjectPath: projectPath,
+					Status:      "completed",
+					PRUrl:       "https://github.com/qf-studio/pilot/pull/1",
+				}); err != nil {
+					t.Fatalf("SaveExecution: %v", err)
+				}
+			},
+			wantReasonSubstr: "", // genuine completion emits no GH-5230 reason line at all
+		},
+	}
+
+	const backoffReasonSubstr = "repick-backoff cooldown, NOT a completed execution"
+	logs := make(map[string]string, len(tests))
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := memory.NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("memory.NewStore: %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+
+			taskID := "GH-5230-" + strings.ReplaceAll(tc.name, " ", "-")
+			projectPath := "/tmp/pilot-gh-5230-skip-reason-test-does-not-exist"
+			key := repickBackoffKey(projectPath, taskID)
+
+			tc.setup(t, store, taskID, projectPath, key)
+
+			logPath := filepath.Join(tmpDir, "skip-reason.log")
+			if err := logging.Init(&logging.Config{Level: "info", Format: "json", Output: logPath}); err != nil {
+				t.Fatalf("logging.Init: %v", err)
+			}
+			t.Cleanup(func() { _ = logging.Init(logging.DefaultConfig()) })
+
+			checker := terminalCompletionChecker{store: store}
+			done, err := checker.HasCompletedExecution(taskID, projectPath)
+			if err != nil {
+				t.Fatalf("HasCompletedExecution: %v", err)
+			}
+			if !done {
+				t.Fatalf("expected HasCompletedExecution to return true for %q", tc.name)
+			}
+
+			data, readErr := os.ReadFile(logPath)
+			if readErr != nil && !os.IsNotExist(readErr) {
+				t.Fatalf("ReadFile: %v", readErr)
+			}
+			got := string(data)
+			logs[tc.name] = got
+
+			if tc.wantReasonSubstr != "" && !strings.Contains(got, tc.wantReasonSubstr) {
+				t.Errorf("expected log to contain %q, got:\n%s", tc.wantReasonSubstr, got)
+			}
+			if tc.wantReasonSubstr == "" && strings.Contains(got, backoffReasonSubstr) {
+				t.Errorf("genuine completion must NOT emit the backoff skip-reason line, got:\n%s", got)
+			}
+		})
+	}
+
+	// The core GH-5230 assertion: the two causes must produce genuinely
+	// different logs, not the same message twice.
+	gatedLog := logs["backoff-gated skip: not a completed execution"]
+	genuineLog := logs["genuine terminal completion"]
+	if gatedLog == genuineLog {
+		t.Fatalf("expected backoff-gated and genuine-completion logs to differ, both were:\n%s", gatedLog)
+	}
+	if !strings.Contains(gatedLog, "backoff_remaining") || !strings.Contains(gatedLog, "consecutive_drops") {
+		t.Errorf("expected backoff-gated log to include remaining cooldown and drop count, got:\n%s", gatedLog)
 	}
 }
