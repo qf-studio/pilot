@@ -176,6 +176,26 @@ Fix the failing test while preserving the original feature behavior.
 
 This lets you trace the chain: original issue → PR → CI failure → fix issue → fix PR. GitHub also renders `#142` as a clickable cross-reference, so the original issue shows all related fix attempts in its timeline.
 
+### CI Fix Iteration Limit
+
+Controls how many chained CI-fix issues autopilot will spawn for the same PR before giving up, preventing infinite fix-issue-creates-fix-issue cascades. The counter lives in each fix issue's `<!-- autopilot-meta branch:... pr:... iteration:N -->` marker (see [Review Feedback](#review-feedback) below for the exact format) and is compared against this limit on the next CI failure.
+
+```yaml
+# ~/.pilot/config.yaml
+autopilot:
+  max_ci_fix_iterations: 3  # Maximum CI fix cycles before giving up (default: 3)
+```
+
+This is a CI-monitor safety guard, but the key itself is **not** nested under a separate `ci_monitor:` block — `internal/autopilot/types.go:144-147` places `MaxCIFixIterations` as a flat, top-level field on the `autopilot` config struct (`yaml:"max_ci_fix_iterations"`), a sibling of `max_failures` rather than a child of `review_feedback`-style sub-config.
+
+| Guard | Description |
+|-------|-------------|
+| Iteration limit | Controlled by `max_ci_fix_iterations` (default: `3`, `internal/autopilot/types.go:144-147`). Closure semantics when the limit is reached depend on `orchestrator.execution.mode`: under `sequential`, the PR is closed to unblock the queue. Under any other mode (including the default `auto`), the PR is held open with the `pilot-needs-human` label and the branch left intact for manual continuation. |
+
+<Callout type="info">
+  `max_ci_fix_iterations: N` produces exactly N fix issues for a given PR — the Nth fix PR's own CI failure hits the limit and gets no further fix cycle.
+</Callout>
+
 ## Stagnation Monitor
 
 Detects stuck executions by tracking state changes and escalating through progressive intervention levels.
@@ -295,10 +315,12 @@ autopilot:
 
 | Guard | Description |
 |-------|-------------|
-| Iteration limit | Controlled by `max_iterations` (default: 3). After reaching the limit, the PR is closed and marked as failed. Prevents infinite review-fix cycles. |
+| Iteration limit | Controlled by `max_iterations` (default: 3). Prevents infinite review-fix cycles. Closure semantics when the limit is reached depend on `orchestrator.execution.mode`: under `sequential`, the PR is closed to unblock the queue. Under any other mode (including the default `auto`), the PR is held open with the `pilot-needs-human` label and the branch left intact for manual continuation. |
 | Self-review filter | Bot reviews (usernames containing `[bot]` or ending in `-bot`) are excluded from change-request detection. Pilot's own self-review won't trigger a revision loop. |
 | Per-reviewer tracking | Only the latest review state per reviewer is considered. If a reviewer approves after previously requesting changes, the change request is resolved. |
 
 <Callout type="info">
-  The iteration limit reuses the same counter mechanism as CI fix iterations. Each revision issue body includes an `Autopilot-Iteration: N` marker that the controller parses to track the current cycle.
+  The iteration limit reuses the same counter mechanism as CI fix iterations. Each revision issue body includes an `<!-- autopilot-meta branch:pilot/GH-N pr:M iteration:K -->` marker that the controller parses to track the current cycle.
+
+  Because the counter increments once per continuation issue, `max_iterations: N` produces exactly N revision issues for a given PR — the Nth revision PR's own change request hits the limit and gets no further revision cycle.
 </Callout>
