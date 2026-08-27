@@ -193,6 +193,18 @@ func (s *ownerDeathGHServer) hasAddLabel(issue int, label string) bool {
 	return false
 }
 
+func (s *ownerDeathGHServer) hasRemoveLabel(issue int, label string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := fmt.Sprintf("%d:%s", issue, label)
+	for _, c := range s.removeLabelCalls {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestController_ReactToDeadFixIssue covers item 2 of GH-4842: react to a
 // dead designated fix issue by either re-arming its source for retry, or
 // escalating to needs-human when the source's retries are already
@@ -202,11 +214,12 @@ func TestController_ReactToDeadFixIssue(t *testing.T) {
 	fixIssueBody := "Fixes CI failure.\n\nDepends on: #100\n\n<!-- autopilot-meta branch:pilot/GH-100 pr:7 iteration:1 -->"
 
 	tests := []struct {
-		name           string
-		sourceIssue    *github.Issue
-		wantRearm      bool
-		wantEscalate   bool
-		wantNoReaction bool
+		name             string
+		sourceIssue      *github.Issue
+		wantRearm        bool
+		wantEscalate     bool
+		wantNoReaction   bool
+		wantRemoveLabels []string // GH-5249: labels rearmDeadOwnerSource must strip
 	}{
 		{
 			name: "source open with pilot-failed and no retry-exhausted — rearmed",
@@ -216,6 +229,22 @@ func TestController_ReactToDeadFixIssue(t *testing.T) {
 				Labels: []github.Label{{Name: github.LabelFailed}},
 			},
 			wantRearm: true,
+		},
+		{
+			// GH-5249: a source can carry pilot-failed AND pilot-superseded at
+			// once — e.g. a prior hand-off superseded it, then a later
+			// designated fix issue (from a subsequent failure on the same
+			// source) died. rearmDeadOwnerSource must strip BOTH, not just
+			// pilot-failed, so the re-armed issue doesn't carry a
+			// contradictory {pilot-retry-ready, pilot-superseded} state.
+			name: "source open with pilot-failed and pilot-superseded — rearmed, both labels stripped",
+			sourceIssue: &github.Issue{
+				Number: 100,
+				State:  github.StateOpen,
+				Labels: []github.Label{{Name: github.LabelFailed}, {Name: github.LabelSuperseded}},
+			},
+			wantRearm:        true,
+			wantRemoveLabels: []string{github.LabelFailed, github.LabelSuperseded},
 		},
 		{
 			name: "source open with pilot-failed and retry-exhausted — escalated",
@@ -269,6 +298,11 @@ func TestController_ReactToDeadFixIssue(t *testing.T) {
 				}
 				if len(sink.events) != 1 {
 					t.Errorf("expected exactly 1 alert, got %d", len(sink.events))
+				}
+				for _, label := range tt.wantRemoveLabels {
+					if !srv.hasRemoveLabel(100, label) {
+						t.Errorf("expected %q to be removed from source #100, calls=%v", label, srv.removeLabelCalls)
+					}
 				}
 			case tt.wantEscalate:
 				if !srv.hasAddLabel(100, labelNeedsHuman) {
