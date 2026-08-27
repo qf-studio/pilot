@@ -123,8 +123,14 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 	if !prClosed {
 		t.Fatal("expected the source PR to be closed once the fix issue was spawned")
 	}
-	if seedPR.TerminalLabel != github.LabelFailed {
-		t.Fatalf("prState.TerminalLabel = %q, want %q before the simulated crash", seedPR.TerminalLabel, github.LabelFailed)
+	// GH-5247: a successful spawn is a healthy hand-off, so the in-memory
+	// designation is LabelSuperseded, not LabelFailed. The durable fallback
+	// exercised after the simulated crash below is unaffected by GH-5247 —
+	// it still hardcodes LabelFailed (accepted residual: a restart loses
+	// TerminalLabel entirely, so the fallback cannot distinguish a lost
+	// hand-off designation from a lost failure designation).
+	if seedPR.TerminalLabel != github.LabelSuperseded {
+		t.Fatalf("prState.TerminalLabel = %q, want %q before the simulated crash", seedPR.TerminalLabel, github.LabelSuperseded)
 	}
 	// Deliberately do NOT call controllerA.persistPRState(seedPR) here — this
 	// is the crash.
@@ -257,8 +263,10 @@ func TestGH4841_ReviewRequestedCrashWindow_RetryNotArmedAfterRestart(t *testing.
 	if !prClosed {
 		t.Fatal("expected the source PR to be closed once the revision issue was spawned")
 	}
-	if seedPR.TerminalLabel != github.LabelFailed {
-		t.Fatalf("prState.TerminalLabel = %q, want %q before the simulated crash", seedPR.TerminalLabel, github.LabelFailed)
+	// GH-5247: healthy hand-off — see the matching comment in the CI-failure
+	// crash-window test above.
+	if seedPR.TerminalLabel != github.LabelSuperseded {
+		t.Fatalf("prState.TerminalLabel = %q, want %q before the simulated crash", seedPR.TerminalLabel, github.LabelSuperseded)
 	}
 	// Simulated crash: no persistPRState call.
 

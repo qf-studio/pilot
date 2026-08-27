@@ -3389,10 +3389,20 @@ func ciFailedChecksSummary(failedChecks []string) string {
 // having to remember it on its own:
 //
 //   - CreateFailureIssue succeeds (issueNum > 0, err == nil): the fix issue
-//     now owns recovery — prState.TerminalLabel is set to github.LabelFailed
-//     so notifyExternalClose (GH-3806) marks the source issue pilot-failed
+//     now owns recovery — prState.TerminalLabel is set to github.LabelSuperseded
+//     so notifyExternalClose (GH-3806) marks the source issue pilot-superseded
 //     instead of pilot-retry-ready, and it is never re-queued alongside the
-//     fix issue that already continues the work.
+//     fix issue that already continues the work. GH-5247: this is a HEALTHY
+//     hand-off (the source PR is being closed by design because a fix issue
+//     now continues the work), not a terminal failure — it must not be
+//     classified or metered as one. Before GH-5247 this branch set
+//     github.LabelFailed, which fed the source PR into notifyExternalClose's
+//     failure path (ReclassifyCompletionAsFailed + monitor.Fail) even though
+//     nothing failed; every routine revision cycle was overcounted as a
+//     pipeline failure. LabelSuperseded already carries the "closed on
+//     purpose, not a defect" semantics GH-4657/GH-4701 built for the sibling
+//     conflict-close path, and notifyExternalClose already branches on it via
+//     supersededClose — reusing it here needed no new plumbing.
 //   - CreateFailureIssue declines or fails (dedup/budget claim in flight,
 //     GH-4307; or a transient create error): no fix issue exists to own the
 //     work, so prState.TerminalLabel is left untouched — the source retry
@@ -3405,7 +3415,7 @@ func ciFailedChecksSummary(failedChecks []string) string {
 func (c *Controller) spawnFailureIssue(ctx context.Context, prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int) (int, error) {
 	issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, failureType, failedChecks, logs, iteration)
 	if err == nil && issueNum > 0 {
-		prState.TerminalLabel = github.LabelFailed
+		prState.TerminalLabel = github.LabelSuperseded
 	}
 	return issueNum, err
 }
@@ -3778,14 +3788,19 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 
 	// GH-3806/GH-4826: name the reason (and the follow-up issue that now owns
 	// this work) so notifyExternalClose can post the audit-trail comments and
-	// mark this issue pilot-failed instead of leaving it stranded on a stale
-	// label. prState.TerminalLabel itself was already set by spawnFailureIssue
-	// above the moment CreateFailureIssue succeeded — it is not set here, so
-	// this rung cannot forget it the way the post-merge rung once did.
+	// mark this issue pilot-superseded instead of leaving it stranded on a
+	// stale label. prState.TerminalLabel itself was already set by
+	// spawnFailureIssue above the moment CreateFailureIssue succeeded — it is
+	// not set here, so this rung cannot forget it the way the post-merge rung
+	// once did. GH-5247: this is a healthy hand-off, not a pipeline failure —
+	// c.metrics.RecordPRFailed()/RecordPRFailedClass() are deliberately NOT
+	// called here (they overcounted every routine revision cycle as a
+	// defect). c.recordCIFailVerdict is kept: the CI run genuinely failed,
+	// which is an orthogonal, still-true fact tracked independently of
+	// whether the resulting PR close is classified as a failure or a
+	// hand-off.
 	prState.Stage = StageFailed
 	prState.Error = fmt.Sprintf("%s; fix issue #%d created to continue this work%s", ciFailedChecksSummary(failedChecks), issueNum, infraNote)
-	c.metrics.RecordPRFailed()
-	c.metrics.RecordPRFailedClass(failureClass)
 	c.recordCIFailVerdict(failureClass)
 	return nil
 }
@@ -4012,11 +4027,15 @@ func (c *Controller) logCIFailureClassification(prState *PRState, checks []Faile
 // GH-4826 fixed for CI failures, reintroduced on this sibling path. Routing
 // through this seam instead means the designation happens the moment
 // CreateReviewIssue actually returns a live issue, strictly before the PR is
-// ever closed, matching spawnFailureIssue's ordering exactly.
+// ever closed, matching spawnFailureIssue's ordering exactly. GH-5247: on
+// success this is a healthy hand-off (a revision issue now continues the
+// work), so TerminalLabel is set to github.LabelSuperseded rather than
+// github.LabelFailed — see spawnFailureIssue's doc comment for the full
+// rationale, which applies identically here.
 func (c *Controller) spawnReviewIssue(ctx context.Context, prState *PRState, reviews []*github.PullRequestReview, comments []*github.PRReviewComment, iteration int) (int, error) {
 	issueNum, err := c.feedbackLoop.CreateReviewIssue(ctx, prState, reviews, comments, iteration)
 	if err == nil && issueNum > 0 {
-		prState.TerminalLabel = github.LabelFailed
+		prState.TerminalLabel = github.LabelSuperseded
 	}
 	return issueNum, err
 }
@@ -4166,10 +4185,13 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	// audit-trail comments. prState.TerminalLabel itself was already set by
 	// spawnReviewIssue above the moment CreateReviewIssue succeeded — it is
 	// not set here, so this rung cannot forget it (mirrors the matching
-	// comment on handleCIFailed's main CI-fail branch).
+	// comment on handleCIFailed's main CI-fail branch). GH-5247: a revision
+	// issue was spawned successfully, so this is a healthy hand-off rather
+	// than a pipeline failure — c.metrics.RecordPRFailed() is deliberately
+	// NOT called here (see spawnFailureIssue's doc comment for the full
+	// rationale).
 	prState.Stage = StageFailed
 	prState.Error = fmt.Sprintf("changes requested by reviewer; revision issue #%d created to continue this work", issueNum)
-	c.metrics.RecordPRFailed()
 	return nil
 }
 
@@ -9268,7 +9290,14 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 	// (subtask 1 only rescues Running/Queued/Pending cards). Without this
 	// event-driven call the card is left showing "done" indefinitely even
 	// though the PR it shipped was discarded unmerged.
-	if c.monitor != nil && prState.IssueNumber > 0 {
+	//
+	// GH-5247: skip this for a supersededClose — the card's existing
+	// StatusCompleted (set by monitor.Complete() above) already reflects a
+	// healthy hand-off; there is no dedicated "superseded" Monitor status, so
+	// leaving the card at Completed rather than flipping it to Failed is the
+	// accurate outcome (mirrors the same supersededClose split used for the
+	// evalStore reclassify calls above).
+	if c.monitor != nil && prState.IssueNumber > 0 && !supersededClose {
 		c.monitor.Fail(fmt.Sprintf("GH-%d", prState.IssueNumber), reason)
 	}
 

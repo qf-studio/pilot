@@ -110,29 +110,31 @@ internal/autopilot/controller.go:1234:6: Error return value of c.ghClient.CloseP
 	// The core invariant: the spawn seam must have marked the source PR
 	// state terminal so the source issue is not left eligible for a
 	// competing retry re-queue. This is recorded controller state, not a
-	// mock echo.
-	if prState.TerminalLabel != github.LabelFailed {
-		t.Fatalf("prState.TerminalLabel = %q, want %q (fix issue now owns recovery)", prState.TerminalLabel, github.LabelFailed)
+	// mock echo. GH-5247: a successful spawn is a healthy hand-off, not a
+	// pipeline failure, so the recorded label is LabelSuperseded rather than
+	// LabelFailed.
+	if prState.TerminalLabel != github.LabelSuperseded {
+		t.Fatalf("prState.TerminalLabel = %q, want %q (fix issue now owns recovery)", prState.TerminalLabel, github.LabelSuperseded)
 	}
 
 	// Downstream: notifyExternalClose (GH-3806) must read that recorded
-	// state and label the source issue pilot-failed, never
+	// state and label the source issue pilot-superseded, never
 	// pilot-retry-ready — the exact #4818 shape where both fix-issue and
 	// source-retry chains armed simultaneously.
 	c.notifyExternalClose(context.Background(), prState)
 
-	foundFailed := false
+	foundSuperseded := false
 	foundRetryReady := false
 	for _, l := range issueLabelsAdded {
-		if l == github.LabelFailed {
-			foundFailed = true
+		if l == github.LabelSuperseded {
+			foundSuperseded = true
 		}
 		if l == github.LabelRetryReady {
 			foundRetryReady = true
 		}
 	}
-	if !foundFailed {
-		t.Errorf("expected source issue to be labeled %q, got labels added: %v", github.LabelFailed, issueLabelsAdded)
+	if !foundSuperseded {
+		t.Errorf("expected source issue to be labeled %q, got labels added: %v", github.LabelSuperseded, issueLabelsAdded)
 	}
 	if foundRetryReady {
 		t.Errorf("source issue must NOT be labeled %q once a fix issue owns recovery — this is the #4818 dual-arm shape; labels added: %v", github.LabelRetryReady, issueLabelsAdded)
@@ -316,9 +318,11 @@ func TestGH4826_TerminalLabelOwnershipLivesAtSpawnSeam(t *testing.T) {
 		t.Errorf("the single direct CreateFailureIssue call must be inside spawnFailureIssue (bytes %d-%d), found at byte %d", seamStart, seamEnd, directCalls[0][0])
 	}
 
-	// The TerminalLabel = github.LabelFailed assignment that fires on spawn
-	// success must appear exactly once inside that same seam.
-	spawnSuccessAssignRe := regexp.MustCompile(`prState\.TerminalLabel = github\.LabelFailed`)
+	// The TerminalLabel = github.LabelSuperseded assignment that fires on
+	// spawn success must appear exactly once inside that same seam. GH-5247:
+	// a successful spawn is a healthy hand-off, not a pipeline failure, so
+	// the seam marks the source LabelSuperseded rather than LabelFailed.
+	spawnSuccessAssignRe := regexp.MustCompile(`prState\.TerminalLabel = github\.LabelSuperseded`)
 	allAssigns := spawnSuccessAssignRe.FindAllStringIndex(text, -1)
 	inSeam := 0
 	for _, m := range allAssigns {
@@ -327,7 +331,7 @@ func TestGH4826_TerminalLabelOwnershipLivesAtSpawnSeam(t *testing.T) {
 		}
 	}
 	if inSeam != 1 {
-		t.Errorf("expected exactly 1 `prState.TerminalLabel = github.LabelFailed` assignment inside spawnFailureIssue, found %d", inSeam)
+		t.Errorf("expected exactly 1 `prState.TerminalLabel = github.LabelSuperseded` assignment inside spawnFailureIssue, found %d", inSeam)
 	}
 
 	// Both known CI-failure rungs must call the seam, not the raw method.
