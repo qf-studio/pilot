@@ -155,8 +155,8 @@ func TestHandleReviewRequested_CreateIssueErrors_EscalatesInsteadOfClosing(t *te
 	if !branchDeleted.Load() {
 		t.Error("expected branch to be deleted once the review issue was successfully created on retry")
 	}
-	if prState.TerminalLabel != github.LabelFailed {
-		t.Errorf("TerminalLabel = %q, want %q after a successful review-issue create", prState.TerminalLabel, github.LabelFailed)
+	if prState.TerminalLabel != github.LabelSuperseded {
+		t.Errorf("TerminalLabel = %q, want %q after a successful review-issue create (GH-5247: healthy hand-off, not a failure)", prState.TerminalLabel, github.LabelSuperseded)
 	}
 }
 
