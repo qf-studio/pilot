@@ -186,6 +186,8 @@ autopilot:
   max_ci_fix_iterations: 3  # Maximum CI fix cycles before giving up (default: 3)
 ```
 
+This is a CI-monitor safety guard, but the key itself is **not** nested under a separate `ci_monitor:` block — `internal/autopilot/types.go:144-147` places `MaxCIFixIterations` as a flat, top-level field on the `autopilot` config struct (`yaml:"max_ci_fix_iterations"`), a sibling of `max_failures` rather than a child of `review_feedback`-style sub-config.
+
 | Guard | Description |
 |-------|-------------|
 | Iteration limit | Controlled by `max_ci_fix_iterations` (default: `3`, `internal/autopilot/types.go:144-147`). Closure semantics when the limit is reached depend on `orchestrator.execution.mode`: under `sequential`, the PR is closed to unblock the queue. Under any other mode (including the default `auto`), the PR is held open with the `pilot-needs-human` label and the branch left intact for manual continuation. |
