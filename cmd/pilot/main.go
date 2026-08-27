@@ -4319,11 +4319,13 @@ func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath str
 		return done, err
 	}
 
-	// GH-5139: `done` may be a genuine completed/no_op row (never re-arm — no
-	// GitHub probe, no throttling change) or an operator cancel, which alone
-	// among the terminal reasons is documented as re-armable via GitHub
-	// reopen/relabel. tryRearmCanceled tells the two apart internally (via
-	// LatestCanceledExecution) and only spends an API call on the latter.
+	// GH-5139/GH-5249: `done` may be a genuine completed/no_op row (never
+	// re-arm — no GitHub probe, no throttling change), an operator cancel, or
+	// a hand-off supersede — the latter two alone among the terminal reasons
+	// are documented as re-armable via GitHub reopen/relabel.
+	// tryRearmCanceled/tryRearmSuperseded each tell their case apart
+	// internally (via LatestCanceledExecution/LatestSupersededExecution) and
+	// only spend an API call when their own row type is present.
 	if c.ghClient == nil {
 		return true, nil
 	}
@@ -4334,11 +4336,22 @@ func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath str
 		repickBackoff.recordClaimLostDrop(key)
 		return true, nil
 	}
+	if rearmed {
+		return false, nil
+	}
+	rearmed, probeErr = c.tryRearmSuperseded(taskID, projectPath, key)
+	if probeErr != nil {
+		logging.WithComponent("dispatch").Warn("GH-5249 re-arm probe failed — treating superseded task as still terminal",
+			slog.String("task_id", taskID), slog.Any("error", probeErr))
+		repickBackoff.recordClaimLostDrop(key)
+		return true, nil
+	}
 	if !rearmed {
-		// Either no canceled row (nothing to probe) or no re-arm evidence yet.
+		// Neither probe found a matching row + fresh re-arm evidence.
 		// Throttle via the same repick-backoff window GH-4469 already built,
-		// so an open+labeled-but-not-yet-relabeled canceled issue does not
-		// pay for a GetIssue+ListIssueEvents call on every ~30s poll tick.
+		// so an open+labeled-but-not-yet-relabeled canceled/superseded issue
+		// does not pay for a GetIssue+ListIssueEvents call on every ~30s poll
+		// tick.
 		repickBackoff.recordClaimLostDrop(key)
 		return true, nil
 	}

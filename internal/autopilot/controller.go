@@ -3778,8 +3778,14 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		c.log.Info("closed failed PR", "pr", prState.PRNumber, "fix_issue", issueNum)
 	}
 
-	// GH-1870: Sync board card to "Failed" column on CI failure
-	if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
+	// GH-1870/GH-5249: Sync board card to "Failed" column on CI failure —
+	// but never when this rung already handed off to a fix issue. By this
+	// point (past the err != nil || issueNum <= 0 guard above) that hand-off
+	// always succeeded, so prState.TerminalLabel is always LabelSuperseded
+	// (set by spawnFailureIssue) — moving the card to the fail column here
+	// would contradict the healthy-hand-off treatment the rest of this rung
+	// already gives it (no RecordPRFailed, no c.monitor.Fail equivalent).
+	if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" && prState.TerminalLabel != github.LabelSuperseded {
 		if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
 			c.log.Warn("board sync on CI fail failed", "pr", prState.PRNumber, "error", err)
 			c.alertBoardSyncScopeFailureOnce(err)
@@ -9058,7 +9064,13 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		// GH-4475: Sync board card to the failed status on external close
 		// (unmerged) — mirrors the Done sync above for external merge, and
 		// the failStatus syncs used on internal execution failures.
-		if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
+		//
+		// GH-5249: skip when notifyExternalClose (just above) classified this
+		// as a supersededClose — a healthy hand-off to a fix/revision issue,
+		// not a failure. Moving the card to the fail column here would
+		// contradict the ledger, which notifyExternalClose already reclassified
+		// as 'superseded' rather than 'failed' for exactly this case.
+		if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" && prState.TerminalLabel != github.LabelSuperseded {
 			if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
 				c.log.Warn("board sync on external close failed", "pr", prState.PRNumber, "error", err)
 				c.alertBoardSyncScopeFailureOnce(err)

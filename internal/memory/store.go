@@ -1265,19 +1265,39 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 // deliverable), a no_op row with no error ("nothing to change" is itself
 // a legitimate completion — the same definition childCompletionEvidence
 // uses in internal/executor/dispatcher.go for decomposed-child evidence),
-// or a canceled row (GH-4678: an operator ran `pilot task cancel` — that is
+// a canceled row (GH-4678: an operator ran `pilot task cancel` — that is
 // a deliberate "stop dispatching this" decision, not a failure to retry;
 // unlike the no_op branch this one does NOT require an empty error, since
-// Cancel always records the operator's reason in the error column).
+// Cancel always records the operator's reason in the error column), or a
+// superseded row (GH-5249: see below).
 //
-// GH-5139: "canceled" here is a default, not an unconditional forever — the
-// GitHub admission path (cmd/pilot's terminalCompletionChecker) independently
-// probes for genuine re-arm evidence (issue relabeled/reopened after the
-// cancel) and, when found, calls ReclassifyCanceledForRearm to demote the row
-// to 'failed' BEFORE this ever runs again, so a re-armed task_id naturally
-// stops counting as terminal here too — this function itself never consults
-// GitHub state and keeps treating a still-canceled row as done, which is the
-// correct default for every caller that has no re-arm evidence of its own.
+// GH-5249: a 'superseded' row is written by notifyExternalClose's
+// supersededClose branch (controller.go, GH-5247/PR#5248) when a healthy
+// continuation hand-off closes a PR without merging — a fix/revision issue
+// now owns the work, and the source is left OPEN carrying pilot-superseded
+// rather than being retried under its own number ("this issue will not be
+// retried automatically under its own number", per the hand-off comment).
+// Before this branch existed, that OPEN+pilot-superseded issue had no
+// terminal ledger evidence at all: the SDK poller's label-rung skip list has
+// no entry for pilot-superseded on the issue itself (only pilot-failed
+// routes to a bounded retry budget), so once the ~5min processed-grace
+// window expired the poller re-dispatched the source — concurrently with
+// the fix issue that already continues the work (the #4818 dual-arm class),
+// unbounded, since spawn dedup is keyed per-PR and the source body carries
+// no iteration meta for the cascade limit to read. Counting 'superseded' as
+// terminal here closes that gap; the hand-off comment's promise and the
+// ledger now agree.
+//
+// GH-5139/GH-5249: "canceled"/"superseded" here are defaults, not an
+// unconditional forever — the GitHub admission path (cmd/pilot's
+// terminalCompletionChecker) independently probes for genuine re-arm
+// evidence (issue relabeled/reopened after the cancel/supersede) and, when
+// found, calls ReclassifyCanceledForRearm/ReclassifySupersededForRearm to
+// demote the row to 'failed' BEFORE this ever runs again, so a re-armed
+// task_id naturally stops counting as terminal here too — this function
+// itself never consults GitHub state and keeps treating a still-canceled or
+// still-superseded row as done, which is the correct default for every
+// caller that has no re-arm evidence of its own.
 //
 // GH-4347: deliberately an ANY-row check, unlike childCompletionEvidence's
 // no_op fallback (which inspects only GetLatestExecutionByTaskID's most
@@ -1302,6 +1322,7 @@ func (s *Store) HasTerminalCompletion(taskID, projectPath string) (bool, error) 
 		WHERE task_id = ? AND project_path = ? AND (
 			(status = 'no_op' AND (error IS NULL OR error = ''))
 			OR status = 'canceled'
+			OR status = 'superseded'
 		)
 	`, taskID, projectPath).Scan(&count)
 	if err != nil {
@@ -1425,6 +1446,70 @@ func (s *Store) ReclassifyStalledForRearm(taskID, projectPath, reason string) er
 			UPDATE executions
 			SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
 			WHERE task_id = ? AND project_path = ? AND status = 'stalled'
+		`, reason, taskID, projectPath)
+		return err
+	})
+}
+
+// LatestSupersededExecution returns the most recent status='superseded' row
+// for taskID/projectPath — GH-5249's counterpart to LatestCanceledExecution,
+// extending the GH-5139 re-arm pattern from operator-canceled rows to
+// hand-off supersede closes (notifyExternalClose's supersededClose branch,
+// controller.go, GH-5247/PR#5248). Exact task_id + status match, same as
+// LatestCanceledExecution: filtering on the literal status='superseded'
+// column is what keeps this safe against the GH-4347 ordering trap (a fresh
+// 'queued' row for the same task_id sitting alongside the old superseded
+// one). found=false when no superseded row exists.
+//
+// completed_at on the returned row is the supersede timestamp
+// (UpdateExecutionStatusIfNotTerminal stamps it CURRENT_TIMESTAMP on every
+// terminal transition, supersede included) — the reference point a GH-5249
+// re-arm probe compares GitHub issue-event timestamps against to decide
+// whether a relabel/reopen happened AFTER the supersede, not before it.
+func (s *Store) LatestSupersededExecution(taskID, projectPath string) (exec *Execution, found bool, err error) {
+	row := s.db.QueryRow(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE task_id = ? AND project_path = ? AND status = 'superseded'
+		ORDER BY completed_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, projectPath)
+	exec, err = scanExecutionDetail(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return exec, true, nil
+}
+
+// ReclassifySupersededForRearm demotes every status='superseded' row for
+// taskID/projectPath to 'failed' with reason recorded — GH-5249's
+// counterpart to ReclassifyCanceledForRearm, same "demote, don't delete"
+// idiom: the row (and its history) stays visible to `pilot trace`, but a
+// 'failed' row is not terminal per HasTerminalCompletion, so the ordinary
+// nextRetryGeneration retry-with-backoff/hard-cap path
+// (internal/executor/dispatcher.go) grants the next generation exactly the
+// way it would for any other post-failure retry — no bespoke bypass of
+// those invariants. The UPDATE's own `status = 'superseded'` filter is what
+// protects against the GH-4347 ordering trap (see LatestSupersededExecution):
+// a fresh 'queued' row for the same task_id is never touched by this call.
+//
+// Callers must independently confirm GitHub-side re-arm evidence (issue
+// open + carries the trigger label + a labeled/reopened event after the
+// supersede timestamp LatestSupersededExecution returned) before calling
+// this — it does not itself decide re-arm eligibility. Unlike
+// ReclassifyStalledForRearm's pilot-blocked label, a surviving
+// pilot-superseded label does not exclude the issue from poller candidacy
+// (that is the root defect GH-5249 fixes), so removing it is a hygiene step
+// for the caller, not a correctness requirement of this method.
+func (s *Store) ReclassifySupersededForRearm(taskID, projectPath, reason string) error {
+	return s.withRetry("ReclassifySupersededForRearm", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
+			WHERE task_id = ? AND project_path = ? AND status = 'superseded'
 		`, reason, taskID, projectPath)
 		return err
 	})

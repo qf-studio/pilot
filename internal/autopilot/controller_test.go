@@ -11681,7 +11681,16 @@ func TestHandleCIFailed_IterationLimit_ExecutionModeGate(t *testing.T) {
 }
 
 // TestController_handleCIFailed_BoardSync_Regression_NormalPath is a regression guard
-// that verifies the existing normal CI failure board sync (non-iteration-limit) still fires.
+// for the normal (non-iteration-limit) CI failure board sync in handleCIFailed.
+//
+// GH-5249: this fixture's spawnFailureIssue call succeeds (POST /issues ->
+// {"number":99}), so by the time board sync is reached prState.TerminalLabel
+// is always github.LabelSuperseded — this is the same healthy hand-off
+// TestController_HandleCIFailed_BoardSyncSkipsFailColumnOnHandoff
+// (gh5249_test.go) covers. Before GH-5249 this test asserted the board sync
+// fired unconditionally on every CI failure, including this hand-off case;
+// that was exactly the bug (card moved to the fail column on a healthy
+// hand-off). It now asserts the corrected behavior: no sync call at all.
 func TestController_handleCIFailed_BoardSync_Regression_NormalPath(t *testing.T) {
 	const issueNodeID = "IssueNodeID_normal"
 	mock := &mockBoardSyncer{}
@@ -11730,19 +11739,15 @@ func TestController_handleCIFailed_BoardSync_Regression_NormalPath(t *testing.T)
 		BranchName:  "pilot/GH-10",
 	}
 
-	// handleCIFailed should reach the normal path and fire board sync with failStatus.
+	// handleCIFailed should reach the normal path, successfully hand off to a
+	// fix issue, and skip the fail-column board sync (GH-5249).
 	_ = c.handleCIFailed(context.Background(), prState)
 
-	// The normal path fires one board sync call with failStatus.
-	found := false
 	for _, call := range mock.calls {
 		if call.issueNodeID == issueNodeID && call.statusName == "Blocked" {
-			found = true
+			t.Errorf("expected no board sync call to %q on a healthy hand-off (GH-5249), got calls: %+v",
+				"Blocked", mock.calls)
 		}
-	}
-	if !found {
-		t.Errorf("expected board sync call with issueNodeID=%q statusName=%q, got calls: %+v",
-			issueNodeID, "Blocked", mock.calls)
 	}
 }
 
