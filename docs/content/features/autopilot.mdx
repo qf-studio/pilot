@@ -22,15 +22,16 @@ See [Autopilot Environments](/features/autopilot-environments) for detailed beha
 
 ```yaml
 # ~/.pilot/config.yaml
-autopilot:
-  enabled: true
-  environment: stage
-  auto_merge: true
-  require_ci: true
-  merge_delay: 5m  # Wait before merging (stage only)
-  protected_branches:
-    - main
-    - production
+orchestrator:
+  autopilot:
+    enabled: true
+    environment: stage
+    auto_merge: true
+    require_ci: true
+    merge_delay: 5m  # Wait before merging (stage only)
+    protected_branches:
+      - main
+      - production
 ```
 
 ## Usage
@@ -146,13 +147,14 @@ Auto-rebase avoids ~$8–15 per full re-execution for conflicts that are trivial
 
 ```yaml
 # ~/.pilot/config.yaml
-autopilot:
-  enabled: true
-  conflict_handling:
-    auto_rebase: true        # Enable auto-rebase via GitHub API (default: true)
-    close_on_failure: true   # Close PR if rebase fails (default: true)
-    requeue_on_failure: true # Re-queue issue for fresh execution (default: true)
-    max_rebase_attempts: 1   # Attempts before falling back to close (default: 1)
+orchestrator:
+  autopilot:
+    enabled: true
+    conflict_handling:
+      auto_rebase: true        # Enable auto-rebase via GitHub API (default: true)
+      close_on_failure: true   # Close PR if rebase fails (default: true)
+      requeue_on_failure: true # Re-queue issue for fresh execution (default: true)
+      max_rebase_attempts: 1   # Attempts before falling back to close (default: 1)
 ```
 
 Set `auto_rebase: false` to skip the rebase attempt and immediately close-and-requeue on any conflict. This is useful if your CI is fast and re-execution is cheaper than debugging merge artifacts.
@@ -182,15 +184,16 @@ Controls how many chained CI-fix issues autopilot will spawn for the same PR bef
 
 ```yaml
 # ~/.pilot/config.yaml
-autopilot:
-  max_ci_fix_iterations: 3  # Maximum CI fix cycles before giving up (default: 3)
+orchestrator:
+  autopilot:
+    max_ci_fix_iterations: 3  # Maximum CI fix cycles before giving up (default: 3)
 ```
 
-This is a CI-monitor safety guard, but the key itself is **not** nested under a separate `ci_monitor:` block — `internal/autopilot/types.go:144-147` places `MaxCIFixIterations` as a flat, top-level field on the `autopilot` config struct (`yaml:"max_ci_fix_iterations"`), a sibling of `max_failures` rather than a child of `review_feedback`-style sub-config.
+This is a CI-monitor safety guard, but the key itself is **not** nested under a separate `ci_monitor:` block — `autopilot.Config.MaxCIFixIterations` (`internal/autopilot/types.go`) is a flat, top-level field on the `autopilot` config struct (`yaml:"max_ci_fix_iterations"`), a sibling of `max_failures` rather than a child of `review_feedback`-style sub-config.
 
 | Guard | Description |
 |-------|-------------|
-| Iteration limit | Controlled by `max_ci_fix_iterations` (default: `3`, `internal/autopilot/types.go:144-147`). Closure semantics when the limit is reached depend on `orchestrator.execution.mode`: under `sequential`, the PR is closed to unblock the queue. Under any other mode (including the default `auto`), the PR is held open with the `pilot-needs-human` label and the branch left intact for manual continuation. |
+| Iteration limit | Controlled by `max_ci_fix_iterations` (default: `3`, `autopilot.Config.MaxCIFixIterations` in `internal/autopilot/types.go`). Closure semantics when the limit is reached depend on `orchestrator.execution.mode`: under `sequential`, the PR is closed to unblock the queue. Under any other mode (including the default `auto`), the PR is held open with the `pilot-needs-human` label and the branch left intact for manual continuation. |
 
 <Callout type="info">
   `max_ci_fix_iterations: N` produces exactly N fix issues for a given PR — the Nth fix PR's own CI failure hits the limit and gets no further fix cycle.
@@ -305,10 +308,11 @@ Review feedback works in both operational modes:
 
 ```yaml
 # ~/.pilot/config.yaml
-autopilot:
-  review_feedback:
-    enabled: true
-    max_iterations: 3  # Maximum revision cycles before giving up (default: 3)
+orchestrator:
+  autopilot:
+    review_feedback:
+      enabled: true
+      max_iterations: 3  # Maximum revision cycles before giving up (default: 3)
 ```
 
 ### Safety Guards

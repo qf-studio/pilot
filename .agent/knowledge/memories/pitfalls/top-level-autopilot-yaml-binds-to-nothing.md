@@ -6,6 +6,17 @@ type: pitfall
 
 # Top-level `autopilot:` binds to nothing; without `--env` autopilot never starts
 
+**Status (2026-08-27, GH-5251):** leg 1 (silent-drop) is fixed. `config.Load`
+now detects a top-level `autopilot:` block via `liftTopLevelAutopilot`
+(`internal/config/config.go`): if `orchestrator.autopilot` is absent it lifts
+the top-level block into it (with a `DEPRECATED:` log), and if both are
+present it logs a `WARNING:` that the top-level duplicate is ignored in favor
+of the nested block. `configs/pilot.example.yaml` and every snippet in
+`docs/content/features/autopilot.mdx` were re-nested under `orchestrator:` —
+the dead top-level shape referenced in point 3 below no longer exists in
+either. This does not change the `enabled`-not-emitted (pilot-console
+renderer) or missing-`--env` legs below — those are separate mechanisms.
+
 **What happened (2026-07-24 → 07-26):** the hosted canary tenant
 (`i-0decbc0dcf225cf18`) executed issues with real tool-use and opened green PRs
 #103/#105 on `pilot-canary-sandbox` — which then sat OPEN and unmerged for two
