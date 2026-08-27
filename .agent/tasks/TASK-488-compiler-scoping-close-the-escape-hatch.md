@@ -1,6 +1,6 @@
 # feat(fleet): move the unscoped store behind an explicitly-named type so org scoping is genuinely compiler-enforced
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ SHIPPED + REVIEWED 2026-08-27 — console#232 → PR#234 merged 11:44Z, **APPROVE-w-notes** (verdict on the PR). The split is real: `Store` = {Close, ForOrg, CrossOrg} only; all 23 raw-id methods behind `CrossOrgStore`; `SetDesiredState` now carries `AND org_id = $3`; bypass construction failed (no interface confusion, no handle escape, all 8 prod constructions via `fleet.Open`); tautological `ForOrg(inst.OrgID)` eliminated repo-wide; CI guard `check-fleet-org-scoping` with self-tested re-widening attacks. **Unscoped sites 22 → 14** (6 consolectl + 8 main.go composition root, zero in handlers, all spelling `CrossOrg` explicitly). Notes: method-set guard scans only `store.go` (a `*Store` method in another fleet file evades it — cheap follow-up) · boardapi/chatapi/orgs org-parameterized but not compiler-bound (explicitly deferred) · 2 stale comments. Runtime suites green vs real Postgres from detached worktree.
 **Created**: 2026-08-27
 **Last Updated**: 2026-08-27
 **Target repo**: qf-studio/pilot-console

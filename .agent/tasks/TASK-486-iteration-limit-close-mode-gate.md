@@ -1,6 +1,6 @@
 # TASK-486: Mode-gate the iteration-limit PR closes + document both limit fields (GH-5227)
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ SHIPPED + REVIEWED 2026-08-27 — #5241 → PR#5244 (mode threading + gated closes) + PR#5245 (docs), both merged ~11:30–11:57Z, both **APPROVE-w-notes** (verdicts on the PRs). Mode genuinely threaded (all 3 `NewController` sites assign from loaded config; `--sequential` override reaches the gate); both limit branches gated; `escalateAndHold` terminal/loop-free (`pilot-needs-human` + GH-5072 admission skip); normal revision close untouched. Notes: board fail-column sync skips held PRs · main.go wiring untested (`wiring/harness.go` not updated). Docs review surfaced a systemic pre-existing bug → **[#5246](https://github.com/qf-studio/pilot/issues/5246) filed**: every documented top-level `autopilot:` block is silently ignored (loader reads only `orchestrator.autopilot`). Fix rides the next train (v2.270.0 still latest at review time). Leg 2 (StageFailed-on-healthy-handoff, TASK-460 feed) still deliberately deferred.
 **Created**: 2026-08-27
 **Assignee**: Pilot
 

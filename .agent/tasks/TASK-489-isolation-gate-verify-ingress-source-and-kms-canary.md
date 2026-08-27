@@ -1,6 +1,6 @@
 # test(tenantbase): verify the ingress source and give the KMS check a canary, so the isolation gate cannot pass vacuously
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ SHIPPED + REVIEWED 2026-08-27 — infra#39 → PR#40 merged 11:26Z, **APPROVE-w-notes** (verdict on the PR). Both cannot-fail checks genuinely fixed, proven by live mutation testing (each vacuity mutation killed by a new test). SG check compares source **value** against the control-plane template's own export (cross-template provenance, not the PR#32 self-assertion class; fails closed on 0/2+ matches and `Ref` sources). KMS check gained a `kms:DescribeKey` ARN-validation canary (spec option 2; simulator-evaluates-policy proof carried by `CheckSSMOwnTenantAllowed` through the same path — docs argue this honestly). Zero AWS mutation (DescribeKey read-only; gate stays behind `PILOT_TENANT_BOUNDARY_CHECK`, out of CI). Notes: docs omit the new `kms:DescribeKey` credential requirement · `service/kms` still `// indirect` in go.mod · RunAll partial-summary path untested.
 **Created**: 2026-08-27
 **Last Updated**: 2026-08-27
 **Target repo**: qf-studio/pilot-cloud-infra
