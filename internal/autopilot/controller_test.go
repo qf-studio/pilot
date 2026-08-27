@@ -3067,8 +3067,8 @@ func TestHandleCIFailed_InfraFailure_RetryBudgetExhausted(t *testing.T) {
 	if got := snap.CIRuns["fail"]; got != 0 {
 		t.Errorf("CIRuns[fail] = %d, want 0 (budget-exhausted infra failure records infra_fail)", got)
 	}
-	if got := snap.PRFailureClasses["infra"]; got != 1 {
-		t.Errorf("PRFailureClasses[infra] = %d, want 1", got)
+	if got := snap.PRFailureClasses["infra"]; got != 0 {
+		t.Errorf("PRFailureClasses[infra] = %d, want 0 (GH-5247: a fix issue was spawned — this is a healthy hand-off, not a pipeline failure)", got)
 	}
 }
 
@@ -3393,8 +3393,8 @@ internal/autopilot/controller.go:1234:6: Error return value of c.ghClient.CloseP
 	if got := snap.CIRuns["infra_fail"]; got != 0 {
 		t.Errorf("CIRuns[infra_fail] = %d, want 0", got)
 	}
-	if got := snap.PRFailureClasses["code"]; got != 1 {
-		t.Errorf("PRFailureClasses[code] = %d, want 1", got)
+	if got := snap.PRFailureClasses["code"]; got != 0 {
+		t.Errorf("PRFailureClasses[code] = %d, want 0 (GH-5247: a fix issue was spawned — this is a healthy hand-off, not a pipeline failure)", got)
 	}
 }
 
