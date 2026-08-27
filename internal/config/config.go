@@ -807,6 +807,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
+	// GH-5251: every documented autopilot YAML example nests the block
+	// under orchestrator.autopilot, but yaml.v3 silently drops unknown
+	// top-level keys — a config with a top-level `autopilot:` block (an
+	// easy copy-paste mistake, and the same footgun that once bound
+	// platform_breaker.enabled to nothing) loads with no error and no
+	// effect. Detect it and either lift it into orchestrator.autopilot
+	// or warn loudly that it's being ignored in favor of the nested block.
+	if err := liftTopLevelAutopilot(expanded, config); err != nil {
+		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
 	// Expand paths
 	if config.Memory != nil {
 		config.Memory.Path = expandPath(config.Memory.Path)
@@ -844,6 +855,45 @@ func Load(path string) (*Config, error) {
 	applyLedgerStalenessThreshold(config)
 
 	return config, nil
+}
+
+// liftTopLevelAutopilot detects a documented-but-misplaced top-level
+// `autopilot:` block (GH-5251). yaml.Unmarshal into Config silently drops
+// it because Config has no top-level Autopilot field — the only field that
+// binds is orchestrator.autopilot. A probe-decode into a throwaway struct
+// with both shapes tells us whether a top-level block is present and
+// whether orchestrator.autopilot was also explicitly set in the same file.
+//
+//   - Top-level only: lift it into orchestrator.autopilot so the documented
+//     snippets (configs/pilot.example.yaml, docs/content/features/autopilot.mdx)
+//     work when copy-pasted verbatim, and warn so the user fixes the nesting.
+//   - Both present: the main Unmarshal above already merged the nested block
+//     into config.Orchestrator.Autopilot correctly; warn that the top-level
+//     duplicate is being ignored rather than silently overwriting it.
+//   - Neither/nested-only: nothing to do.
+func liftTopLevelAutopilot(expanded string, config *Config) error {
+	var probe struct {
+		Autopilot    *autopilot.Config `yaml:"autopilot"`
+		Orchestrator struct {
+			Autopilot *autopilot.Config `yaml:"autopilot"`
+		} `yaml:"orchestrator"`
+	}
+	if err := yaml.Unmarshal([]byte(expanded), &probe); err != nil {
+		return err
+	}
+	if probe.Autopilot == nil {
+		return nil
+	}
+	if probe.Orchestrator.Autopilot != nil {
+		log.Printf("WARNING: config: top-level `autopilot:` block is ignored because orchestrator.autopilot is also set in this file — remove the top-level block or merge its keys into orchestrator.autopilot")
+		return nil
+	}
+	log.Printf("DEPRECATED: config: top-level `autopilot:` block found — nest it under orchestrator.autopilot instead (see configs/pilot.example.yaml); loading it for now")
+	if config.Orchestrator == nil {
+		config.Orchestrator = &OrchestratorConfig{}
+	}
+	config.Orchestrator.Autopilot = probe.Autopilot
+	return nil
 }
 
 // applyLedgerStalenessThreshold wires config.Ledger.StalenessWarnAfter

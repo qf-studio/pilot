@@ -291,6 +291,233 @@ orchestrator:
     poll_interval: 30s         # How often to check PR status
     pr_timeout: 1h             # Max time to wait for PR merge
 
+  # Autopilot settings
+  autopilot:
+    enabled: false
+    # Default environment used when --env is not specified (default: stage)
+    default_environment: "stage"
+    # Global autopilot settings
+    auto_merge: true
+    merge_method: "squash"
+    ci_wait_timeout: 30m
+    ci_poll_interval: 30s
+    approval_source: "telegram"   # telegram, slack, or github-review
+
+    # GH-4391: shared GitHub rate-limit budget. The GitHub primary rate limit
+    # is pooled per authenticated user across every client/session that user
+    # holds, so a startup burst of wide scans across many repos can silently
+    # starve the issue pollers even though `gh api rate_limit` looks fine from
+    # a different token/session's view of the same pool. These three settings
+    # bound that burst; defaults match the incident-driven values below.
+    #
+    # startup_merged_pr_scan_window: lookback for the one-time boot catch-up
+    # sweep (self-heal + board write-back for PRs merged while the daemon was
+    # down). Down from a hardcoded 720h (30d) — a restart minutes after the
+    # last startup scan doesn't need to re-walk a month of history; it also
+    # shrinks further on restart via a persisted per-repo cursor.
+    startup_merged_pr_scan_window: 72h
+    # rate_limit_floor_pct: once remaining/limit on the shared budget drops
+    # below this fraction, background scans (merged-PR scans, orphan-PR
+    # sweeps, reconciler evidence fetches) pause until headroom recovers.
+    # Issue pollers and active-PR CI watches are never gated — they're the
+    # highest-value consumer and must always get the reserve.
+    rate_limit_floor_pct: 0.15
+    # scan_stagger_interval: average delay between per-repo startup scans
+    # (jittered +/- 25%), so N repos' scans spread out over roughly
+    # N * scan_stagger_interval instead of all firing back-to-back at boot.
+    scan_stagger_interval: 3s
+
+    # Automatic release creation on PR merge (GH-3926).
+    release:
+      enabled: false
+      # Release cadence (GH-3989):
+      #   on_merge       (default) - cut a release for every merged PR.
+      #   manual         - never auto-release.
+      #   on_scope_close - hold merges belonging to an open epic (parent issue)
+      #                    or a shared "scope:"-prefixed label; standalone
+      #                    merges still release per-merge. The scope releases
+      #                    once when it completes (scope-close reconciler ships
+      #                    in a follow-up issue; this issue is config + hold
+      #                    semantics only - held work is fully reconstructable
+      #                    from GitHub in the meantime).
+      #   on_schedule    - hold every merge for a cron release train (see
+      #                    `schedule` below). At each tick, everything merged
+      #                    since the last tag is batched into one validated
+      #                    release (GH-3993). Restart across a tick still fires
+      #                    it exactly once (missed-tick recovery, bounded by
+      #                    `scope_lookback` below); a miss older than that
+      #                    window needs a manual re-trigger. DST transitions
+      #                    follow robfig/cron/v3's cron.WithLocation semantics
+      #                    (no special-casing). Urgent hotfix under
+      #                    `on_schedule`: everything still waits for the next
+      #                    tick by design - flip `trigger` to `on_merge`
+      #                    temporarily (config reload) if it can't wait.
+      #
+      # `on_scope_close`/`on_schedule` release notes (GH-3992): the aggregated
+      # scope body (headline, grouped Features/Fixes/Other with #PR + GH-issue
+      # links, breaking changes, What's New, compare footer) is only composed
+      # for `publish: api` or `publish: workflow` — `tag_only` never creates a
+      # release object, so there is nothing to attach notes to.
+      trigger: on_merge
+      # scope_label_prefix: "scope:"       # on_scope_close only; default "scope:"
+      # schedule: "0 21 * * FRI"           # on_schedule only; robfig/cron/v3 standard (5-field) syntax
+      # schedule_timezone: "Europe/Berlin" # on_schedule only; empty = daemon local time
+      # scope_lookback: 24h                # on_scope_close AND on_schedule; also bounds missed-tick recovery
+      version_strategy: conventional_commits
+      tag_prefix: "v"
+      generate_changelog: true
+      notify_on_release: true
+      # require_ci: wait for post-merge CI on the target branch before releasing.
+      # Gates every release path — the webhook-driven merge handler AND the
+      # polled external-merge/scan-recovery paths (GH-3994) — by routing through
+      # the same StagePostMergeCI wait; set false to release immediately on merge.
+      require_ci: true
+      # generate_summary prepends an LLM (Haiku) "## What's New" summary to the
+      # release body. Requires ANTHROPIC_API_KEY in the daemon's environment —
+      # unset means the summary step is silently skipped (releases still ship,
+      # just without it). Has no effect under `publish: tag_only` (GH-3992).
+      generate_summary: true
+      # Who actually publishes the GitHub Release once the tag is created:
+      #   workflow  (default when empty) - Pilot only creates the tag; the repo's
+      #             own tag-triggered CI (e.g. GoReleaser) publishes the release.
+      #             Preserves existing behavior byte-for-byte.
+      #   api       - Pilot publishes the GitHub Release itself via the API
+      #             immediately after tagging. Only use this on repos with NO
+      #             tag-triggered release workflow of their own (see the
+      #             per-project `release.publish: api` example under `projects:`
+      #             for the full warning on why this must not be combined with
+      #             GoReleaser).
+      #   tag_only  - the tag is created and nothing publishes a release; use
+      #             for repos with an intentionally manual release process.
+      publish: workflow
+      # Opt-in: also consider merged PRs whose head branch is NOT pilot/* for
+      # release tagging (GH-3928). Default false - zero behavior change; only
+      # pilot/* branches are scanned. When true, ScanRecentlyMergedPRs also
+      # picks up human-authored PRs merged into the environment's default
+      # branch. Whether a release is actually cut still depends entirely on
+      # conventional-commit hygiene: squash-merge means the PR TITLE becomes
+      # the commit subject, so a `feat: ...`/`fix: ...` title bumps a version
+      # and a non-conventional title (or `docs:`/`chore:`/`refactor:`) produces
+      # no release. Merge metrics, self-heal, and board sync are unaffected -
+      # those remain Pilot-PR-only regardless of this flag.
+      tag_human_merges: false
+
+    # Define named environment configurations
+    # Each environment can have different branch, approval, and CI settings
+    environments:
+      # Development environment: fast feedback, auto-merge
+      dev:
+        branch: develop
+        require_approval: false
+        ci_timeout: 5m
+        skip_post_merge_ci: true
+        post_merge:
+          action: "none"
+
+      # Staging environment: wait for CI, then auto-merge
+      staging:
+        branch: staging
+        require_approval: false
+        ci_timeout: 30m
+        skip_post_merge_ci: false
+        post_merge:
+          action: "none"
+
+      # Production environment: requires human approval
+      prod:
+        branch: main
+        require_approval: true
+        approval_source: "telegram"
+        approval_timeout: 1h
+        ci_timeout: 30m
+        skip_post_merge_ci: false
+        merge_method: "squash"
+        post_merge:
+          action: "tag"
+          # For webhook action:
+          # webhook_url: "https://example.com/deploy"
+          # webhook_secret: "${DEPLOY_WEBHOOK_SECRET}"
+
+    # Approval configuration (per-environment override possible)
+    github_review:
+      poll_interval: 30s
+
+    # CI Check Discovery (v0.34+)
+    ci_checks:
+      mode: auto                    # auto | manual (default: auto)
+      exclude:                      # Check names to ignore in auto mode
+        - "codecov/*"              # Glob patterns supported
+        - "*-optional"
+      # required: []                # Allowlist; when non-empty, scopes status/failure
+      #                              # attribution to exactly these checks even in auto
+      #                              # mode (GH-4307) — use this to shield against
+      #                              # unrelated scheduled/canary checks landing on the
+      #                              # same SHA instead of enumerating them in `exclude`.
+      #                              # Precedence (GH-4333): a non-empty `required` here
+      #                              # always wins. If empty, the deprecated top-level
+      #                              # `required_checks` is used as a fallback (with a
+      #                              # startup WARN). If both are empty, no allowlist is
+      #                              # active and ALL non-excluded checks gate CI status.
+      discovery_grace_period: 60s   # Wait for CI to start
+
+    # Test-evidence gate (GH-4329): escalate-only, same pattern as the
+    # scope-drift/size-floor gates above. Green CI proves a check concluded
+    # "success" — it does NOT prove tests actually ran. When enabled, autopilot
+    # fetches the completed test job's log for the merge SHA and holds
+    # auto-merge (requiring human approval + posts a PR comment) if it looks
+    # like CI verified nothing: zero tests ran, or the skip ratio exceeds
+    # max_skip_ratio, on a PR that touches production source.
+    # Default off — enable per-project once canaried (pilot repo + pilot-console first).
+    test_evidence:
+      enabled: false
+      min_tests: 1        # escalate if fewer than this many tests ran
+      max_skip_ratio: 0.5  # escalate if skipped/(run+skipped) exceeds this
+
+    # Cross-PR platform-outage breaker (GH-4791, TASK-458 part 1). The
+    # per-PR circuit breaker above is deliberately scoped to one PR at a
+    # time ("so one bad PR doesn't block others") and cannot see a
+    # platform-wide outage by construction — each affected PR looks like a
+    # normal individual failure. This breaker correlates CI-failure
+    # observations across PRs (and repos, when multiple are configured):
+    # when min_correlated_prs distinct PRs observe an infra-or-unknown-class
+    # CI failure within correlation_window, it opens and suppresses
+    # destructive CI-failure actions (auto-close, fix-issue creation,
+    # escalate-and-hold) — affected PRs simply stay parked and are
+    # re-examined on a later tick. It closes again after quiet_period
+    # elapses with no further infra/unknown-class failure. One process-wide
+    # breaker shared by every controller (like the rate-limit budget
+    # tracker), since an outage is not scoped to a single repo.
+    # Default off.
+    #
+    # GH-4792 (TASK-458 part 2) adds, on top of part 1's correlation/suppression:
+    #   - an advisory githubstatus.com corroboration probe fired once per open
+    #     transition (never gates open/close — status pages lag reality)
+    #   - pausing new-work admission while open (pause_admission)
+    #   - suppressing merges of already-green PRs while open (CI signal is
+    #     untrustworthy during a platform incident)
+    #   - re-driving PRs the breaker parked back into StageWaitingCI once it
+    #     closes, up to a capped number of re-adoption attempts
+    platform_breaker:
+      enabled: false
+      min_correlated_prs: 3   # distinct PRs observing infra/unknown failures to open the breaker
+      correlation_window: 15m # how far back distinct-PR observations count toward the threshold
+      quiet_period: 20m       # how long with no new infra/unknown failure before it closes again
+      probe_interval: 5m      # how often the periodic monitor re-checks close + re-drives held PRs
+                               # during a quiet spell with no CI activity anywhere to trigger it
+      pause_admission: true   # pause new-work admission (Dispatcher) while the breaker is open;
+                               # set false to keep dispatching new tasks even during a suspected
+                               # platform outage (merge suppression and PR-parking still apply)
+
+    # CI fix iteration cap (GH-1566): chained fix(ci) issues per PR before giving up.
+    # sequential mode closes the PR to unblock the queue; any other mode holds it open with pilot-needs-human, branch intact.
+    max_ci_fix_iterations: 3  # Set to 0 to disable the limit
+
+    # Review-feedback handling: auto-creates a revision issue on CHANGES_REQUESTED.
+    review_feedback:
+      enabled: true
+      # Revision iteration cap, same closure semantics as max_ci_fix_iterations above.
+      max_iterations: 3  # Set to 0 to disable the limit
+
 # Executor settings
 executor:
   type: "claude-code"          # "claude-code", "opencode", "anthropic-api", or "openai-api"
@@ -670,233 +897,6 @@ projects:
   #     owner: "qf-studio"
   #     repo: "pilot-canary-sandbox"
   #   canary: true
-
-# Autopilot settings
-autopilot:
-  enabled: false
-  # Default environment used when --env is not specified (default: stage)
-  default_environment: "stage"
-  # Global autopilot settings
-  auto_merge: true
-  merge_method: "squash"
-  ci_wait_timeout: 30m
-  ci_poll_interval: 30s
-  approval_source: "telegram"   # telegram, slack, or github-review
-
-  # GH-4391: shared GitHub rate-limit budget. The GitHub primary rate limit
-  # is pooled per authenticated user across every client/session that user
-  # holds, so a startup burst of wide scans across many repos can silently
-  # starve the issue pollers even though `gh api rate_limit` looks fine from
-  # a different token/session's view of the same pool. These three settings
-  # bound that burst; defaults match the incident-driven values below.
-  #
-  # startup_merged_pr_scan_window: lookback for the one-time boot catch-up
-  # sweep (self-heal + board write-back for PRs merged while the daemon was
-  # down). Down from a hardcoded 720h (30d) — a restart minutes after the
-  # last startup scan doesn't need to re-walk a month of history; it also
-  # shrinks further on restart via a persisted per-repo cursor.
-  startup_merged_pr_scan_window: 72h
-  # rate_limit_floor_pct: once remaining/limit on the shared budget drops
-  # below this fraction, background scans (merged-PR scans, orphan-PR
-  # sweeps, reconciler evidence fetches) pause until headroom recovers.
-  # Issue pollers and active-PR CI watches are never gated — they're the
-  # highest-value consumer and must always get the reserve.
-  rate_limit_floor_pct: 0.15
-  # scan_stagger_interval: average delay between per-repo startup scans
-  # (jittered +/- 25%), so N repos' scans spread out over roughly
-  # N * scan_stagger_interval instead of all firing back-to-back at boot.
-  scan_stagger_interval: 3s
-
-  # Automatic release creation on PR merge (GH-3926).
-  release:
-    enabled: false
-    # Release cadence (GH-3989):
-    #   on_merge       (default) - cut a release for every merged PR.
-    #   manual         - never auto-release.
-    #   on_scope_close - hold merges belonging to an open epic (parent issue)
-    #                    or a shared "scope:"-prefixed label; standalone
-    #                    merges still release per-merge. The scope releases
-    #                    once when it completes (scope-close reconciler ships
-    #                    in a follow-up issue; this issue is config + hold
-    #                    semantics only - held work is fully reconstructable
-    #                    from GitHub in the meantime).
-    #   on_schedule    - hold every merge for a cron release train (see
-    #                    `schedule` below). At each tick, everything merged
-    #                    since the last tag is batched into one validated
-    #                    release (GH-3993). Restart across a tick still fires
-    #                    it exactly once (missed-tick recovery, bounded by
-    #                    `scope_lookback` below); a miss older than that
-    #                    window needs a manual re-trigger. DST transitions
-    #                    follow robfig/cron/v3's cron.WithLocation semantics
-    #                    (no special-casing). Urgent hotfix under
-    #                    `on_schedule`: everything still waits for the next
-    #                    tick by design - flip `trigger` to `on_merge`
-    #                    temporarily (config reload) if it can't wait.
-    #
-    # `on_scope_close`/`on_schedule` release notes (GH-3992): the aggregated
-    # scope body (headline, grouped Features/Fixes/Other with #PR + GH-issue
-    # links, breaking changes, What's New, compare footer) is only composed
-    # for `publish: api` or `publish: workflow` — `tag_only` never creates a
-    # release object, so there is nothing to attach notes to.
-    trigger: on_merge
-    # scope_label_prefix: "scope:"       # on_scope_close only; default "scope:"
-    # schedule: "0 21 * * FRI"           # on_schedule only; robfig/cron/v3 standard (5-field) syntax
-    # schedule_timezone: "Europe/Berlin" # on_schedule only; empty = daemon local time
-    # scope_lookback: 24h                # on_scope_close AND on_schedule; also bounds missed-tick recovery
-    version_strategy: conventional_commits
-    tag_prefix: "v"
-    generate_changelog: true
-    notify_on_release: true
-    # require_ci: wait for post-merge CI on the target branch before releasing.
-    # Gates every release path — the webhook-driven merge handler AND the
-    # polled external-merge/scan-recovery paths (GH-3994) — by routing through
-    # the same StagePostMergeCI wait; set false to release immediately on merge.
-    require_ci: true
-    # generate_summary prepends an LLM (Haiku) "## What's New" summary to the
-    # release body. Requires ANTHROPIC_API_KEY in the daemon's environment —
-    # unset means the summary step is silently skipped (releases still ship,
-    # just without it). Has no effect under `publish: tag_only` (GH-3992).
-    generate_summary: true
-    # Who actually publishes the GitHub Release once the tag is created:
-    #   workflow  (default when empty) - Pilot only creates the tag; the repo's
-    #             own tag-triggered CI (e.g. GoReleaser) publishes the release.
-    #             Preserves existing behavior byte-for-byte.
-    #   api       - Pilot publishes the GitHub Release itself via the API
-    #             immediately after tagging. Only use this on repos with NO
-    #             tag-triggered release workflow of their own (see the
-    #             per-project `release.publish: api` example under `projects:`
-    #             for the full warning on why this must not be combined with
-    #             GoReleaser).
-    #   tag_only  - the tag is created and nothing publishes a release; use
-    #             for repos with an intentionally manual release process.
-    publish: workflow
-    # Opt-in: also consider merged PRs whose head branch is NOT pilot/* for
-    # release tagging (GH-3928). Default false - zero behavior change; only
-    # pilot/* branches are scanned. When true, ScanRecentlyMergedPRs also
-    # picks up human-authored PRs merged into the environment's default
-    # branch. Whether a release is actually cut still depends entirely on
-    # conventional-commit hygiene: squash-merge means the PR TITLE becomes
-    # the commit subject, so a `feat: ...`/`fix: ...` title bumps a version
-    # and a non-conventional title (or `docs:`/`chore:`/`refactor:`) produces
-    # no release. Merge metrics, self-heal, and board sync are unaffected -
-    # those remain Pilot-PR-only regardless of this flag.
-    tag_human_merges: false
-
-  # Define named environment configurations
-  # Each environment can have different branch, approval, and CI settings
-  environments:
-    # Development environment: fast feedback, auto-merge
-    dev:
-      branch: develop
-      require_approval: false
-      ci_timeout: 5m
-      skip_post_merge_ci: true
-      post_merge:
-        action: "none"
-
-    # Staging environment: wait for CI, then auto-merge
-    staging:
-      branch: staging
-      require_approval: false
-      ci_timeout: 30m
-      skip_post_merge_ci: false
-      post_merge:
-        action: "none"
-
-    # Production environment: requires human approval
-    prod:
-      branch: main
-      require_approval: true
-      approval_source: "telegram"
-      approval_timeout: 1h
-      ci_timeout: 30m
-      skip_post_merge_ci: false
-      merge_method: "squash"
-      post_merge:
-        action: "tag"
-        # For webhook action:
-        # webhook_url: "https://example.com/deploy"
-        # webhook_secret: "${DEPLOY_WEBHOOK_SECRET}"
-
-  # Approval configuration (per-environment override possible)
-  github_review:
-    poll_interval: 30s
-
-  # CI Check Discovery (v0.34+)
-  ci_checks:
-    mode: auto                    # auto | manual (default: auto)
-    exclude:                      # Check names to ignore in auto mode
-      - "codecov/*"              # Glob patterns supported
-      - "*-optional"
-    # required: []                # Allowlist; when non-empty, scopes status/failure
-    #                              # attribution to exactly these checks even in auto
-    #                              # mode (GH-4307) — use this to shield against
-    #                              # unrelated scheduled/canary checks landing on the
-    #                              # same SHA instead of enumerating them in `exclude`.
-    #                              # Precedence (GH-4333): a non-empty `required` here
-    #                              # always wins. If empty, the deprecated top-level
-    #                              # `required_checks` is used as a fallback (with a
-    #                              # startup WARN). If both are empty, no allowlist is
-    #                              # active and ALL non-excluded checks gate CI status.
-    discovery_grace_period: 60s   # Wait for CI to start
-
-  # Test-evidence gate (GH-4329): escalate-only, same pattern as the
-  # scope-drift/size-floor gates above. Green CI proves a check concluded
-  # "success" — it does NOT prove tests actually ran. When enabled, autopilot
-  # fetches the completed test job's log for the merge SHA and holds
-  # auto-merge (requiring human approval + posts a PR comment) if it looks
-  # like CI verified nothing: zero tests ran, or the skip ratio exceeds
-  # max_skip_ratio, on a PR that touches production source.
-  # Default off — enable per-project once canaried (pilot repo + pilot-console first).
-  test_evidence:
-    enabled: false
-    min_tests: 1        # escalate if fewer than this many tests ran
-    max_skip_ratio: 0.5  # escalate if skipped/(run+skipped) exceeds this
-
-  # Cross-PR platform-outage breaker (GH-4791, TASK-458 part 1). The
-  # per-PR circuit breaker above is deliberately scoped to one PR at a
-  # time ("so one bad PR doesn't block others") and cannot see a
-  # platform-wide outage by construction — each affected PR looks like a
-  # normal individual failure. This breaker correlates CI-failure
-  # observations across PRs (and repos, when multiple are configured):
-  # when min_correlated_prs distinct PRs observe an infra-or-unknown-class
-  # CI failure within correlation_window, it opens and suppresses
-  # destructive CI-failure actions (auto-close, fix-issue creation,
-  # escalate-and-hold) — affected PRs simply stay parked and are
-  # re-examined on a later tick. It closes again after quiet_period
-  # elapses with no further infra/unknown-class failure. One process-wide
-  # breaker shared by every controller (like the rate-limit budget
-  # tracker), since an outage is not scoped to a single repo.
-  # Default off.
-  #
-  # GH-4792 (TASK-458 part 2) adds, on top of part 1's correlation/suppression:
-  #   - an advisory githubstatus.com corroboration probe fired once per open
-  #     transition (never gates open/close — status pages lag reality)
-  #   - pausing new-work admission while open (pause_admission)
-  #   - suppressing merges of already-green PRs while open (CI signal is
-  #     untrustworthy during a platform incident)
-  #   - re-driving PRs the breaker parked back into StageWaitingCI once it
-  #     closes, up to a capped number of re-adoption attempts
-  platform_breaker:
-    enabled: false
-    min_correlated_prs: 3   # distinct PRs observing infra/unknown failures to open the breaker
-    correlation_window: 15m # how far back distinct-PR observations count toward the threshold
-    quiet_period: 20m       # how long with no new infra/unknown failure before it closes again
-    probe_interval: 5m      # how often the periodic monitor re-checks close + re-drives held PRs
-                             # during a quiet spell with no CI activity anywhere to trigger it
-    pause_admission: true   # pause new-work admission (Dispatcher) while the breaker is open;
-                             # set false to keep dispatching new tasks even during a suspected
-                             # platform outage (merge suppression and PR-parking still apply)
-
-  # CI fix iteration cap (GH-1566): chained fix(ci) issues per PR before giving up.
-  # sequential mode closes the PR to unblock the queue; any other mode holds it open with pilot-needs-human, branch intact.
-  max_ci_fix_iterations: 3  # Set to 0 to disable the limit
-
-  # Review-feedback handling: auto-creates a revision issue on CHANGES_REQUESTED.
-  review_feedback:
-    enabled: true
-    # Revision iteration cap, same closure semantics as max_ci_fix_iterations above.
-    max_iterations: 3  # Set to 0 to disable the limit
 
 # Dashboard settings
 dashboard:

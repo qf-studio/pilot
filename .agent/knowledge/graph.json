@@ -4904,7 +4904,7 @@
       },
       "mem-160": {
         "type": "pitfall",
-        "summary": "Top-level autopilot: YAML binds to nothing (only orchestrator.autopilot) and Enabled is set only by --env \u2014 daemon opens PRs while no CI monitor or merger exists; tell is a missing autopilot_pr_state table",
+        "summary": "Top-level autopilot: YAML binds to nothing (only orchestrator.autopilot) and Enabled is set only by --env \u2014 daemon opens PRs while no CI monitor or merger exists; tell is a missing autopilot_pr_state table. GH-5251 (2026-08-27) fixed the silent-drop leg: Load() now lifts a top-level autopilot block into orchestrator.autopilot with a loud warning, and the example config/docs no longer document the dead top-level shape. The enabled-not-emitted and missing-`--env` legs are unchanged.",
         "path": "memories/pitfalls/top-level-autopilot-yaml-binds-to-nothing.md",
         "confidence": 0.98,
         "concepts": [
@@ -4918,7 +4918,7 @@
           "silent-failure"
         ],
         "created": "2026-07-26",
-        "last_validated": "2026-07-26"
+        "last_validated": "2026-08-27"
       },
       "stale-ledger-misdiagnosis": {
         "type": "learning",
