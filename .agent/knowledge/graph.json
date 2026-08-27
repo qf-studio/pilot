@@ -2304,11 +2304,11 @@
         "status": "dispatched",
         "concepts": [
           "testing",
-          "api",
           "markers",
-          "deployment",
           "workflow",
           "context",
+          "deployment",
+          "api",
           "theory of mind"
         ]
       },
@@ -9632,7 +9632,7 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-27T17:16:36.578303+00:00",
+  "last_updated": "2026-08-27T20:32:27.250498+00:00",
   "stats": {
     "total_nodes": 493,
     "total_edges": 392,
