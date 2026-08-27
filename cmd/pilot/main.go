@@ -67,9 +67,12 @@ var (
 var quietMode bool
 
 // executionMode mirrors the execution-mode enum the (now-deleted, GH-4191)
-// in-tree github.Poller used to expose. Kept locally since it now only drives
-// the startup "sequential mode" display decision below — GitHub polling is
-// SDK-only and the SDK adapter runs ExecutionModeAuto unconditionally.
+// in-tree github.Poller used to expose. Kept locally since it still drives
+// the startup "sequential mode" display decision below. GitHub polling is
+// SDK-only, but as of PR #5207 orchestrator.execution.mode IS wired through
+// to the SDK poller (see poller_github.go's pollerDeps.ExecutionMode) — the
+// mode is no longer dropped on the floor; only an empty/unset mode falls
+// back to the SDK's own default (auto).
 type executionMode string
 
 const (
@@ -930,6 +933,15 @@ Examples:
 								if proj.Approval != nil {
 									gwBoardOpts = append(gwBoardOpts, autopilot.WithApprovalOverride(proj.Approval))
 								}
+							}
+							// GH-5242/TASK-486: thread the execution mode through so the
+							// iteration-limit close-vs-hold branch in controller.go can see
+							// it — cfg.Orchestrator.Autopilot is a *Config pointer shared by
+							// every controller this process constructs, so this assignment
+							// is visible to all of them, but it's set at each call site to
+							// keep the wiring obvious at each construction point.
+							if cfg.Orchestrator.Execution != nil {
+								cfg.Orchestrator.Autopilot.ExecutionMode = cfg.Orchestrator.Execution.Mode
 							}
 							gwAutopilotController = autopilot.NewController(
 								cfg.Orchestrator.Autopilot,
@@ -2369,6 +2381,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							ctrlOpts = append(ctrlOpts, autopilot.WithApprovalOverride(proj.Approval))
 						}
 					}
+					// GH-5242/TASK-486: thread the execution mode through so the
+					// iteration-limit close-vs-hold branch in controller.go can see it.
+					if cfg.Orchestrator.Execution != nil {
+						cfg.Orchestrator.Autopilot.ExecutionMode = cfg.Orchestrator.Execution.Mode
+					}
 					controller := autopilot.NewController(
 						cfg.Orchestrator.Autopilot,
 						apGHClient,
@@ -2434,6 +2451,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				// gate and ApprovalSource channel).
 				if proj.Approval != nil {
 					ctrlOpts = append(ctrlOpts, autopilot.WithApprovalOverride(proj.Approval))
+				}
+				// GH-5242/TASK-486: thread the execution mode through so the
+				// iteration-limit close-vs-hold branch in controller.go can see it.
+				if cfg.Orchestrator.Execution != nil {
+					cfg.Orchestrator.Autopilot.ExecutionMode = cfg.Orchestrator.Execution.Mode
 				}
 				controller := autopilot.NewController(
 					cfg.Orchestrator.Autopilot,
