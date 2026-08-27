@@ -1,6 +1,6 @@
 # fix(db): make row-level-security dormancy honest and stop the test suite leaking a login role
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ SHIPPED + REVIEWED 2026-08-27 — console#231 → PR#233 merged 11:17Z, **APPROVE-w-notes** (verdict on the PR). Dormancy honest at every surface (0014 DORMANT header, README section, unconditional `main.go` startup warn); credential leak fixed and validated against live Postgres (per-run crypto/rand password, NOLOGIN cleanup on failure/panic, package-level `pg_roles` leak check, non-loopback refusal); no migration collision (0014 edited in place). Notes: loopback allowlist is a heuristic (tunnels pass) · `SetOrgContext` doc lacks dormancy pointer. **PR#218 + issue #214 CLOSED as fully superseded** (activation substance deferred by plan C; branch unmergeable — 0015 collision + fleet-store conflicts; kept as reference for hosted-go-live activation, which should be a fresh full-coverage implementation).
 **Created**: 2026-08-27
 **Last Updated**: 2026-08-27
 **Target repo**: qf-studio/pilot-console

@@ -2301,14 +2301,14 @@
       "TASK-486": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-486-iteration-limit-close-mode-gate.md",
         "title": "Mode-gate the iteration-limit PR closes + document both limit fields (GH-5227)",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
+          "api",
+          "theory of mind",
+          "markers",
           "workflow",
           "testing",
-          "api",
           "context",
-          "markers",
-          "theory of mind",
           "deployment"
         ]
       },
@@ -5788,6 +5788,57 @@
         ],
         "created": "2026-08-27",
         "last_validated": "2026-08-27"
+      },
+      "mem-180": {
+        "type": "decision",
+        "summary": "Mode visibility: `Config` field (option acceptable) - It's configuration, not a dependency; 3 call sites",
+        "path": "memories/decisions/mem-180.md",
+        "confidence": 0.95,
+        "concepts": [
+          "api",
+          "theory of mind",
+          "markers",
+          "workflow",
+          "testing",
+          "context",
+          "deployment"
+        ],
+        "created": "2026-08-27",
+        "last_validated": "2026-08-27"
+      },
+      "mem-181": {
+        "type": "decision",
+        "summary": "Non-sequential limit behavior: Hold + `pilot-needs-human` - Nothing is blocked in auto mode; closing discards healthy work; `escalateAndHold` idiom exists",
+        "path": "memories/decisions/mem-181.md",
+        "confidence": 0.95,
+        "concepts": [
+          "api",
+          "theory of mind",
+          "markers",
+          "workflow",
+          "testing",
+          "context",
+          "deployment"
+        ],
+        "created": "2026-08-27",
+        "last_validated": "2026-08-27"
+      },
+      "mem-182": {
+        "type": "decision",
+        "summary": "Sequential behavior: Keep close - Preserves queue-unblocking optimization; zero behavior change for sequential operators",
+        "path": "memories/decisions/mem-182.md",
+        "confidence": 0.95,
+        "concepts": [
+          "api",
+          "theory of mind",
+          "markers",
+          "workflow",
+          "testing",
+          "context",
+          "deployment"
+        ],
+        "created": "2026-08-27",
+        "last_validated": "2026-08-27"
       }
     }
   },
@@ -7731,6 +7782,21 @@
       "from": "TASK-489",
       "to": "knowledge",
       "type": "implements"
+    },
+    {
+      "from": "mem-180",
+      "to": "TASK-486",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-181",
+      "to": "TASK-486",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-182",
+      "to": "TASK-486",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -7869,7 +7935,10 @@
       "mem-169",
       "mem-170",
       "TASK-486",
-      "TASK-488"
+      "TASK-488",
+      "mem-180",
+      "mem-181",
+      "mem-182"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -8197,7 +8266,10 @@
       "TASK-486",
       "TASK-487",
       "TASK-488",
-      "TASK-489"
+      "TASK-489",
+      "mem-180",
+      "mem-181",
+      "mem-182"
     ],
     "conversational-bot": [
       "mem-036",
@@ -8447,7 +8519,10 @@
       "TASK-486",
       "TASK-487",
       "TASK-488",
-      "TASK-489"
+      "TASK-489",
+      "mem-180",
+      "mem-181",
+      "mem-182"
     ],
     "dispatch": [
       "board-sourced-repo-ignores-labeled-issues",
@@ -8902,7 +8977,10 @@
       "TASK-480",
       "TASK-481",
       "TASK-484",
-      "TASK-486"
+      "TASK-486",
+      "mem-180",
+      "mem-181",
+      "mem-182"
     ],
     "memory": [
       "TASK-358",
@@ -9310,7 +9388,10 @@
       "TASK-486",
       "TASK-487",
       "TASK-488",
-      "TASK-489"
+      "TASK-489",
+      "mem-180",
+      "mem-181",
+      "mem-182"
     ],
     "testing-quality": [
       "TASK-384",
@@ -9460,7 +9541,10 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "TASK-486"
+      "TASK-486",
+      "mem-180",
+      "mem-181",
+      "mem-182"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -9514,7 +9598,10 @@
     ],
     "theory of mind": [
       "TASK-486",
-      "TASK-489"
+      "TASK-489",
+      "mem-180",
+      "mem-181",
+      "mem-182"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -9539,10 +9626,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-27T11:03:15.305178+00:00",
+  "last_updated": "2026-08-27T14:00:45.712015+00:00",
   "stats": {
-    "total_nodes": 490,
-    "total_edges": 388,
-    "memory_count": 254
+    "total_nodes": 493,
+    "total_edges": 391,
+    "memory_count": 257
   }
 }
