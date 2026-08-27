@@ -229,6 +229,17 @@ func (c *Controller) rearmDeadOwnerSource(ctx context.Context, source *github.Is
 	if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, source.Number, github.LabelFailed); err != nil {
 		c.log.Debug("owner-death: failed to remove pilot-failed label (may not exist)", "issue", source.Number, "error", err)
 	}
+	// GH-5249: also strip pilot-superseded — the durable-claim fallback above
+	// means `designated` can now be reached via a source that hand off (not
+	// pilot-failed) designated to the dead fix issue, which carries
+	// pilot-superseded rather than pilot-failed. Leaving it on would land the
+	// re-armed issue in a contradictory {pilot-retry-ready, pilot-superseded}
+	// state — the SDK poller has no skip rung for pilot-superseded (that's
+	// the GH-5249 root defect), but a human reading the labels would still
+	// see "superseded" and "retry-ready" fighting each other.
+	if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, source.Number, github.LabelSuperseded); err != nil {
+		c.log.Debug("owner-death: failed to remove pilot-superseded label (may not exist)", "issue", source.Number, "error", err)
+	}
 	comment := fmt.Sprintf(
 		"\U0001F501 **Owner-death recovery**: %s. Re-armed for automatic retry (`%s` restored).",
 		reasonMsg, github.LabelRetryReady,

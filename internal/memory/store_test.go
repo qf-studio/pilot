@@ -6084,3 +6084,192 @@ func TestReclassifyStalledForRearm_DemotesToFailedAndUnblocksRetry(t *testing.T)
 		t.Errorf("expected the other task's stalled row to remain untouched, got status %q", otherExec.Status)
 	}
 }
+
+// TestHasTerminalCompletion_CountsSupersededRow is GH-5249's regression test
+// for HasTerminalCompletion's "superseded" branch: a healthy hand-off close
+// (notifyExternalClose's supersededClose branch, controller.go, GH-5247/
+// PR#5248) must count as done — the same "never re-dispatch" signal a
+// genuine completion, no_op, or operator cancel already provides — closing
+// the gap where an OPEN issue carrying pilot-superseded had no terminal
+// ledger evidence at all and was re-dispatched unbounded after processed-
+// grace expired.
+func TestHasTerminalCompletion_CountsSupersededRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-5249-HTC", "/project-htc-superseded"
+
+	done, err := store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (before any row): %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false before any execution row exists")
+	}
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-superseded", TaskID: taskID, ProjectPath: projectPath,
+		Status: "superseded", Error: "GH-5247: healthy hand-off to fix issue #5250",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	done, err = store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (after supersede): %v", err)
+	}
+	if !done {
+		t.Error("expected done=true once a superseded row exists — this is the primary GH-5249 defect fix")
+	}
+}
+
+// TestLatestSupersededExecution_FindsMostRecentSupersededRow is GH-5249's
+// coverage for the lookup the re-arm probe (cmd/pilot/rearm_superseded.go)
+// uses to find the supersede timestamp it compares GitHub issue-event times
+// against — mirrors TestLatestCanceledExecution_FindsMostRecentCanceledRow
+// exactly, for status='superseded' instead of 'canceled'.
+func TestLatestSupersededExecution_FindsMostRecentSupersededRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-5249-LSE", "/project-lse-superseded"
+
+	_, found, err := store.LatestSupersededExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestSupersededExecution (before any row): %v", err)
+	}
+	if found {
+		t.Fatal("expected found=false before any execution row exists")
+	}
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-completed-first", TaskID: taskID, ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/o/r/pull/1",
+	}); err != nil {
+		t.Fatalf("SaveExecution (completed): %v", err)
+	}
+	_, found, err = store.LatestSupersededExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestSupersededExecution (only a completed row): %v", err)
+	}
+	if found {
+		t.Fatal("expected found=false when the only row is completed, not superseded")
+	}
+
+	// CompletedAt is set explicitly here to mirror production:
+	// UpdateExecutionStatusIfNotTerminal stamps completed_at =
+	// CURRENT_TIMESTAMP on every terminal transition (that stamp becomes the
+	// "supersede timestamp" the GH-5249 re-arm probe compares GitHub event
+	// times against) — SaveExecution itself does not default it.
+	supersedeTime := time.Now()
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-superseded", TaskID: taskID, ProjectPath: projectPath,
+		Status: "superseded", Error: "GH-5247: healthy hand-off to fix issue #5250", CompletedAt: &supersedeTime,
+	}); err != nil {
+		t.Fatalf("SaveExecution (superseded): %v", err)
+	}
+
+	exec, found, err := store.LatestSupersededExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("LatestSupersededExecution (after supersede): %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true once a superseded row exists")
+	}
+	if exec.ID != "exec-superseded" {
+		t.Errorf("expected the superseded row, got %q", exec.ID)
+	}
+	if exec.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set (the supersede timestamp) on the superseded row")
+	}
+
+	// Different task_id / project_path must not match (exact-key isolation,
+	// mirroring HasTerminalCompletion's own query).
+	if _, found, err := store.LatestSupersededExecution("GH-OTHER", projectPath); err != nil || found {
+		t.Errorf("expected no match for a different task_id, found=%v err=%v", found, err)
+	}
+	if _, found, err := store.LatestSupersededExecution(taskID, "/other-project"); err != nil || found {
+		t.Errorf("expected no match for a different project_path, found=%v err=%v", found, err)
+	}
+}
+
+// TestReclassifySupersededForRearm_DemotesToFailedAndUnblocksRetry is
+// GH-5249's coverage for the "demote don't delete" re-arm write: after
+// reclassifying, the row must no longer count as terminal
+// (HasTerminalCompletion), so the ordinary nextRetryGeneration retry path
+// can grant the next generation — no bespoke bypass of the retry/backoff/
+// hard-cap machinery.
+func TestReclassifySupersededForRearm_DemotesToFailedAndUnblocksRetry(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-5249-RSFR", "/project-rsfr-superseded"
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-superseded-rsfr", TaskID: taskID, ProjectPath: projectPath,
+		Status: "superseded", Error: "GH-5247: healthy hand-off to fix issue #5250",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	done, err := store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (before reclassify): %v", err)
+	}
+	if !done {
+		t.Fatal("expected done=true before reclassify — the superseded row is terminal")
+	}
+
+	reason := "GH-5249: re-armed by issue #5249 reopened event"
+	if err := store.ReclassifySupersededForRearm(taskID, projectPath, reason); err != nil {
+		t.Fatalf("ReclassifySupersededForRearm: %v", err)
+	}
+
+	exec, err := store.GetExecution("exec-superseded-rsfr")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected status=failed after reclassify, got %q", exec.Status)
+	}
+	if exec.Error != reason {
+		t.Errorf("expected error=%q, got %q", reason, exec.Error)
+	}
+
+	done, err = store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (after reclassify): %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false after reclassify — a failed row is not terminal, unblocking the normal retry path")
+	}
+
+	// A different task_id's superseded row must be untouched (exact-key
+	// isolation, mirroring ReclassifyCanceledForRearm's own cross-task test).
+	otherTaskID := "GH-5249-RSFR-OTHER"
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-superseded-other", TaskID: otherTaskID, ProjectPath: projectPath,
+		Status: "superseded", Error: "unrelated",
+	}); err != nil {
+		t.Fatalf("SaveExecution (other task): %v", err)
+	}
+	if err := store.ReclassifySupersededForRearm(taskID, projectPath, "unrelated reclassify"); err != nil {
+		t.Fatalf("ReclassifySupersededForRearm (second call): %v", err)
+	}
+	otherExec, err := store.GetExecution("exec-superseded-other")
+	if err != nil {
+		t.Fatalf("GetExecution (other task): %v", err)
+	}
+	if otherExec.Status != "superseded" {
+		t.Errorf("expected the other task's superseded row to remain untouched, got status %q", otherExec.Status)
+	}
+}
