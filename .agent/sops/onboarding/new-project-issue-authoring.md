@@ -34,6 +34,14 @@ Flow: file the scaffold issue first → capture its number → every dependent b
 
 The dispatcher's referenced-path prerequisite gate treats backticked repo-path-like spans in the issue body as prerequisite files and holds the task ("Task held: prerequisite not on main", re-checked every poll, indefinitely) if any is missing from the default branch. 2026-08-25 incident (GH-5221): a *fabricated test-fixture path* written in backticks (`navigator/9.0.0/templates/DEVELOPMENT-README.md` — intentionally fake) held the task for 12+ cycles until the body was reworded. Describe hypothetical/fixture/to-be-created paths in prose, not backticks; the hold clears automatically on the next poll after `gh issue edit`.
 
+The class is broader than fake fixtures — everything backticked that is not literally a file on the repo's default branch trips it:
+
+- **Home-directory / user-config paths** (2026-08-27 incident, GH-5246 → refiled #5251): a backticked user-home config path held the task 20 cycles across TWO `pilot-needs-human` escalations; a home-dir path can never exist on main. Write "config.yaml in the pilot home directory" in prose.
+- **Globs** (`docs/pages/**/name.mdx`) — not a literal path, same hold.
+- **Go type refs** (`pkg.Type`) — 2026-08-27, GH-5241 held 12 cycles over a backticked type name.
+
+Recovery depends on state: if no execution row exists yet, `gh issue edit` clears it next poll (GH-5216 healed live). Once the gate has escalated (label churn + `pilot-needs-human`, execution finalized `skipped`), the paths are cached on the execution row and a body edit does NOT clear it — **close + refile** (mem-175; GH-5145, GH-5246). A gate-held task also shows a done-looking `skipped` row in the queue history — that row is the hold finalization, not delivered work.
+
 ## Rule 4 — Serialize anything that touches shared root files
 
 The parallel scope-overlap guard keys on **directories** named in issue bodies; two issues that both create root files (`package.json`, `tsconfig.json`, lockfiles) are NOT detected as overlapping. Until that's fixed in code, chain such issues with `Blocked by: #N` so they run one at a time.
