@@ -6285,6 +6285,9 @@ type mockEvalStore struct {
 	lastExcludeTaskIDs []string                   // last exclude set FindOrphanedRunningExecutions was called with
 	resolvedOrphans    []resolveOrphanCall        // ResolveOrphanedRunningExecution calls
 	executionEvents    map[string][]*memory.Event // ListExecutionEvents responses keyed by execution ID
+
+	// GH-5252: ReclassifySupersededForRearm call log for owner-death re-arm assertions.
+	reclassifiedSupersededForRearm []reclassifyCall
 }
 
 // resolveOrphanCall records one ResolveOrphanedRunningExecution invocation. TASK-399/GH-4209.
@@ -6400,6 +6403,12 @@ func (m *mockEvalStore) ResolveOrphanedRunningExecution(id, prURL string) error 
 // or nil (no heartbeat) for an unconfigured ID. TASK-399/GH-4209.
 func (m *mockEvalStore) ListExecutionEvents(executionID string) ([]*memory.Event, error) {
 	return m.executionEvents[executionID], nil
+}
+
+// ReclassifySupersededForRearm records the call for assertions. GH-5252.
+func (m *mockEvalStore) ReclassifySupersededForRearm(taskID, projectPath, reason string) error {
+	m.reclassifiedSupersededForRearm = append(m.reclassifiedSupersededForRearm, reclassifyCall{TaskID: taskID, ProjectPath: projectPath, Reason: reason})
+	return nil
 }
 
 // TestHandleMerged_ExtractsEvalTask verifies that handleMerged extracts and saves
