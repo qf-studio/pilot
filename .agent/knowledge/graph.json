@@ -2304,12 +2304,13 @@
         "status": "completed",
         "concepts": [
           "api",
-          "theory of mind",
-          "markers",
-          "workflow",
           "testing",
+          "theory of mind",
           "context",
-          "deployment"
+          "knowledge",
+          "deployment",
+          "markers",
+          "workflow"
         ]
       },
       "TASK-487": {
@@ -7797,6 +7798,11 @@
       "from": "mem-182",
       "to": "TASK-486",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-486",
+      "to": "knowledge",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -8920,7 +8926,8 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "TASK-489"
+      "TASK-489",
+      "TASK-486"
     ],
     "labels": [
       "mem-100",
@@ -9626,10 +9633,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-27T14:00:45.712015+00:00",
+  "last_updated": "2026-08-27T14:26:41.008634+00:00",
   "stats": {
     "total_nodes": 493,
-    "total_edges": 391,
+    "total_edges": 392,
     "memory_count": 257
   }
 }
