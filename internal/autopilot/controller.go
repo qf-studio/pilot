@@ -3586,36 +3586,51 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				"issue", prState.IssueNumber,
 				"iteration", iteration,
 				"max", c.config.MaxCIFixIterations,
+				"execution_mode", c.config.ExecutionMode,
 			)
 
-			// Close the failed PR so the sequential poller can unblock
-			if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
-				c.log.Warn("failed to close failed PR", "pr", prState.PRNumber, "error", err)
-			}
-
-			// GH-3260: Sync board card to "Blocked/Failed" column on execution failure (iteration limit).
-			if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
-				if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
-					c.log.Warn("board sync on exec failure (iteration limit) failed", "pr", prState.PRNumber, "error", err)
-					c.alertBoardSyncScopeFailureOnce(err)
-				}
-			}
-
-			// GH-3806: name the reason and terminal outcome so notifyExternalClose
-			// (which fires on the next poll once it sees this PR closed) can post a
-			// PR/issue comment and correct the issue's labels instead of silently
-			// leaving a stale pilot-in-progress/pilot-done on discarded work.
 			reason := fmt.Sprintf("CI fix iteration limit reached (%d/%d): stopping cascade to prevent infinite loop", iteration, c.config.MaxCIFixIterations)
 			if len(failedChecks) > 0 {
 				reason = fmt.Sprintf("%s (failing checks: %s)", reason, strings.Join(failedChecks, ", "))
 			}
-			prState.Stage = StageFailed
-			prState.Error = reason
-			prState.TerminalLabel = github.LabelFailed
+
+			if c.config.ExecutionMode == executionModeSequential {
+				// Close the failed PR so the sequential poller can unblock
+				if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+					c.log.Warn("failed to close failed PR", "pr", prState.PRNumber, "error", err)
+				}
+
+				// GH-3260: Sync board card to "Blocked/Failed" column on execution failure (iteration limit).
+				if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
+					if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
+						c.log.Warn("board sync on exec failure (iteration limit) failed", "pr", prState.PRNumber, "error", err)
+						c.alertBoardSyncScopeFailureOnce(err)
+					}
+				}
+
+				// GH-3806: name the reason and terminal outcome so notifyExternalClose
+				// (which fires on the next poll once it sees this PR closed) can post a
+				// PR/issue comment and correct the issue's labels instead of silently
+				// leaving a stale pilot-in-progress/pilot-done on discarded work.
+				prState.Stage = StageFailed
+				prState.Error = reason
+				prState.TerminalLabel = github.LabelFailed
+				c.metrics.RecordIssueProcessed("failed")
+			} else {
+				// GH-5227/TASK-486: under any non-sequential mode (including
+				// empty/unset, which defaults to auto) nothing is blocked
+				// waiting on this PR to close — the SDK poller dispatches
+				// independently — so closing here would discard the branch
+				// and any salvageable work for no benefit. Hold for a human
+				// instead, mirroring the other escalateAndHold branches in
+				// this function; notifyExternalClose only fires on an
+				// actual close, so the comment is posted inline here.
+				comment := fmt.Sprintf("%s No further automated CI-fix attempts will be made.", reason)
+				c.escalateAndHold(ctx, prState, reason, []string{labelNeedsHuman}, comment)
+			}
 			c.metrics.RecordPRFailed()
 			c.metrics.RecordPRFailedClass(failureClass)
 			c.recordCIFailVerdict(failureClass)
-			c.metrics.RecordIssueProcessed("failed")
 			return nil
 		}
 	}
@@ -4041,18 +4056,30 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 				"pr", prState.PRNumber,
 				"iteration", iteration,
 				"max", c.config.ReviewFeedback.MaxIterations,
+				"execution_mode", c.config.ExecutionMode,
 			)
 
-			if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
-				c.log.Warn("failed to close PR", "pr", prState.PRNumber, "error", err)
-			}
+			reason := fmt.Sprintf("review feedback iteration limit reached (%d/%d)", iteration, c.config.ReviewFeedback.MaxIterations)
 
 			// GH-3806: see the matching comment on handleCIFailed's iteration-limit branch.
-			prState.Stage = StageFailed
-			prState.Error = fmt.Sprintf("review feedback iteration limit reached (%d/%d)", iteration, c.config.ReviewFeedback.MaxIterations)
-			prState.TerminalLabel = github.LabelFailed
+			if c.config.ExecutionMode == executionModeSequential {
+				if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+					c.log.Warn("failed to close PR", "pr", prState.PRNumber, "error", err)
+				}
+
+				prState.Stage = StageFailed
+				prState.Error = reason
+				prState.TerminalLabel = github.LabelFailed
+				c.metrics.RecordIssueProcessed("failed")
+			} else {
+				// GH-5227/TASK-486: see the matching comment on handleCIFailed's
+				// iteration-limit branch — nothing is blocked waiting on this PR
+				// to close under non-sequential dispatch, so hold for a human
+				// instead of discarding the branch.
+				comment := fmt.Sprintf("%s No further automated revision attempts will be made.", reason)
+				c.escalateAndHold(ctx, prState, reason, []string{labelNeedsHuman}, comment)
+			}
 			c.metrics.RecordPRFailed()
-			c.metrics.RecordIssueProcessed("failed")
 			return nil
 		}
 	}
