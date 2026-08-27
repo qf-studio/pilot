@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -287,6 +288,12 @@ func TestController_ReactToDeadFixIssue(t *testing.T) {
 			c := NewController(cfg, ghClient, nil, "owner", "repo")
 			sink := &fakeAlertSink{}
 			c.SetAlertsEngine(sink)
+			// GH-5252: wire an evalStore so rearmDeadOwnerSource's ledger
+			// demote call is observable — the pre-fix behavior only ever
+			// touched labels, leaving a superseded row (if any) terminal
+			// forever.
+			evalMock := &mockEvalStore{}
+			c.SetEvalStore(evalMock)
 
 			deadIssue := &github.Issue{Number: 200, State: github.StateClosed, Body: fixIssueBody}
 			c.reactToDeadFixIssue(context.Background(), deadIssue, "closed without shipping")
@@ -304,6 +311,16 @@ func TestController_ReactToDeadFixIssue(t *testing.T) {
 						t.Errorf("expected %q to be removed from source #100, calls=%v", label, srv.removeLabelCalls)
 					}
 				}
+				// GH-5252: rearm must also demote the ledger row for this
+				// source — not just strip labels — so a superseded terminal
+				// row (if any) stops blocking dispatch.
+				if len(evalMock.reclassifiedSupersededForRearm) != 1 {
+					t.Fatalf("expected exactly 1 ReclassifySupersededForRearm call, got %d: %v",
+						len(evalMock.reclassifiedSupersededForRearm), evalMock.reclassifiedSupersededForRearm)
+				}
+				if got := evalMock.reclassifiedSupersededForRearm[0].TaskID; got != "GH-100" {
+					t.Errorf("ReclassifySupersededForRearm task_id = %q, want %q", got, "GH-100")
+				}
 			case tt.wantEscalate:
 				if !srv.hasAddLabel(100, labelNeedsHuman) {
 					t.Errorf("expected %s to be added to source #100, calls=%v", labelNeedsHuman, srv.addLabelCalls)
@@ -314,12 +331,20 @@ func TestController_ReactToDeadFixIssue(t *testing.T) {
 				if len(sink.events) != 1 {
 					t.Errorf("expected exactly 1 alert, got %d", len(sink.events))
 				}
+				// GH-5252: no dual-arm — escalation must never demote the
+				// ledger row, only rearm does.
+				if len(evalMock.reclassifiedSupersededForRearm) != 0 {
+					t.Errorf("expected no ReclassifySupersededForRearm calls on escalation, got %v", evalMock.reclassifiedSupersededForRearm)
+				}
 			case tt.wantNoReaction:
 				if len(srv.addLabelCalls) != 0 {
 					t.Errorf("expected no label writes, got %v", srv.addLabelCalls)
 				}
 				if len(sink.events) != 0 {
 					t.Errorf("expected no alerts, got %d", len(sink.events))
+				}
+				if len(evalMock.reclassifiedSupersededForRearm) != 0 {
+					t.Errorf("expected no ReclassifySupersededForRearm calls, got %v", evalMock.reclassifiedSupersededForRearm)
 				}
 			}
 		})
@@ -454,5 +479,84 @@ func TestFeedbackLoop_CreateFailureIssue_DedupOwnerHealth(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestController_RearmDeadOwnerSource_DemotesSupersededLedgerRow is GH-5252's
+// end-to-end coverage: before this fix, rearmDeadOwnerSource only stripped
+// labels, so a source whose latest terminal evidence was a 'superseded'
+// execution row (reached via the GH-4852 durable-claim fallback designating
+// a hand-off, not a pilot-failed, source) stayed HasTerminalCompletion=true
+// forever — the re-arm comment posts and a retry-budget label is consumed,
+// but the SDK poller's dispatch chokepoint (which reads the ledger, not
+// labels) never admits it again. This asserts the ledger flip itself, not
+// just the label writes the existing table test (TestController_
+// ReactToDeadFixIssue) already covers.
+func TestController_RearmDeadOwnerSource_DemotesSupersededLedgerRow(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const projectPath = "/proj/pilot-gh5252"
+	taskID := "GH-100"
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-gh5252-superseded", TaskID: taskID, ProjectPath: projectPath,
+		Status: "superseded", Error: "GH-5247: healthy hand-off to fix issue #200",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	done, err := store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (before re-arm): %v", err)
+	}
+	if !done {
+		t.Fatal("expected done=true before re-arm — the superseded row is terminal")
+	}
+
+	sourceIssue := &github.Issue{
+		Number: 100,
+		State:  github.StateOpen,
+		Labels: []github.Label{{Name: github.LabelFailed}, {Name: github.LabelSuperseded}},
+	}
+	srv := newOwnerDeathGHServer()
+	srv.issues[100] = sourceIssue
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, ts.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithProjectPath(projectPath))
+	c.SetAlertsEngine(&fakeAlertSink{})
+	c.SetEvalStore(store)
+
+	fixIssueBody := "Fixes CI failure.\n\nDepends on: #100\n\n<!-- autopilot-meta branch:pilot/GH-100 pr:7 iteration:1 -->"
+	deadIssue := &github.Issue{Number: 200, State: github.StateClosed, Body: fixIssueBody}
+	c.reactToDeadFixIssue(context.Background(), deadIssue, "closed without shipping")
+
+	if !srv.hasAddLabel(100, github.LabelRetryReady) {
+		t.Fatalf("expected pilot-retry-ready to be added to source #100, calls=%v", srv.addLabelCalls)
+	}
+
+	// The acceptance-critical assertion: the ledger, not just the labels,
+	// must reflect the re-arm — the next SDK poll's dispatch chokepoint
+	// reads HasTerminalCompletion, which never consults GitHub labels.
+	done, err = store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (after re-arm): %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false after owner-death re-arm — the superseded row must be demoted so the next poll dispatches this source")
+	}
+
+	exec, err := store.GetExecution("exec-gh5252-superseded")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected status=failed after re-arm demote, got %q", exec.Status)
 	}
 }

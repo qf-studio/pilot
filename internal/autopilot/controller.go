@@ -261,6 +261,16 @@ type EvalStore interface {
 	// orphan-running sweep (a fresh event means the execution is still
 	// actively progressing even if the Monitor set missed it). TASK-399/GH-4209.
 	ListExecutionEvents(executionID string) ([]*memory.Event, error)
+	// ReclassifySupersededForRearm demotes a status='superseded' row to
+	// 'failed' so HasTerminalCompletion stops treating it as terminal and the
+	// ordinary retry-generation grant resumes. GH-5249 introduced this for
+	// the poller re-arm probe (cmd/pilot/rearm_superseded.go); GH-5252 adds a
+	// second caller — rearmDeadOwnerSource — since the durable-claim
+	// fallback in reactToDeadFixIssue can re-arm a source whose latest
+	// terminal evidence is a superseded row, not a pilot-failed label. The
+	// underlying UPDATE is filtered on status='superseded', so calling this
+	// when no such row exists is a safe no-op.
+	ReclassifySupersededForRearm(taskID, projectPath, reason string) error
 }
 
 // ControllerOption is a functional option for Controller configuration.

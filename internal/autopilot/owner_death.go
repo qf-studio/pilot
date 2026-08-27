@@ -240,6 +240,25 @@ func (c *Controller) rearmDeadOwnerSource(ctx context.Context, source *github.Is
 	if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, source.Number, github.LabelSuperseded); err != nil {
 		c.log.Debug("owner-death: failed to remove pilot-superseded label (may not exist)", "issue", source.Number, "error", err)
 	}
+	// GH-5252: the label strip above is cosmetic only — HasTerminalCompletion
+	// reads the ledger, not labels. If this source's latest terminal evidence
+	// is a 'superseded' execution row (the durable-claim fallback above can
+	// reach a hand-off-designated source, not just a pilot-failed one), that
+	// row survives the SDK poller's retry-ready rung (InvalidateCompletion
+	// only deletes 'completed' rows) and keeps HasTerminalCompletion=true
+	// forever — the re-arm comment posts, the retry-budget label is
+	// consumed, and dispatch never fires. Demote it here exactly like the
+	// GH-5249 poller probe does (tryRearmSuperseded), instead of requiring a
+	// second, separate re-arm gesture the owner-death path never emits. The
+	// underlying UPDATE only touches status='superseded' rows, so this is a
+	// no-op when the terminal evidence was pilot-failed instead.
+	if c.evalStore != nil {
+		taskID := fmt.Sprintf("GH-%d", source.Number)
+		reclassifyReason := fmt.Sprintf("GH-5252: owner-death re-arm (%s)", reasonMsg)
+		if err := c.evalStore.ReclassifySupersededForRearm(taskID, c.projectPath, reclassifyReason); err != nil {
+			c.log.Warn("owner-death: failed to demote superseded ledger row for re-arm", "issue", source.Number, "error", err)
+		}
+	}
 	comment := fmt.Sprintf(
 		"\U0001F501 **Owner-death recovery**: %s. Re-armed for automatic retry (`%s` restored).",
 		reasonMsg, github.LabelRetryReady,
