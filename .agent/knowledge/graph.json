@@ -2311,6 +2311,18 @@
           "theory of mind",
           "deployment"
         ]
+      },
+      "TASK-487": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-487-rls-dormancy-honesty-and-test-credential-cleanup.md",
+        "title": "Task 487 Rls Dormancy Honesty And Test Credential Cleanup",
+        "status": "backlog",
+        "concepts": [
+          "database",
+          "deployment",
+          "context",
+          "testing",
+          "authentication"
+        ]
       }
     },
     "memories": {
@@ -7625,6 +7637,31 @@
       "from": "review-limit-close-keeps-branch-normal-close-deletes-it",
       "to": "TASK-486",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-487",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-487",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-487",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-487",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-487",
+      "to": "authentication",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -7839,7 +7876,8 @@
       "mem-121",
       "mem-122",
       "mem-171",
-      "unwired-config-field-validated-but-dead"
+      "unwired-config-field-validated-but-dead",
+      "TASK-487"
     ],
     "auto-merge": [
       "mem-103"
@@ -8086,7 +8124,8 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "TASK-486"
+      "TASK-486",
+      "TASK-487"
     ],
     "conversational-bot": [
       "mem-036",
@@ -8187,7 +8226,8 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "timestamp-hardening-parse-then-compare-in-go"
+      "timestamp-hardening-parse-then-compare-in-go",
+      "TASK-487"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -8331,7 +8371,8 @@
       "oauth-ssm-params-rot-live-credentials-source-of-truth",
       "ready-gate-couples-credential-validity",
       "shared-oauth-session-strands-second-machine",
-      "TASK-486"
+      "TASK-486",
+      "TASK-487"
     ],
     "dispatch": [
       "board-sourced-repo-ignores-labeled-issues",
@@ -9190,7 +9231,8 @@
       "mem-177",
       "mem-179",
       "sqlite-memory-dsn-serializes-to-one-conn",
-      "TASK-486"
+      "TASK-486",
+      "TASK-487"
     ],
     "testing-quality": [
       "TASK-384",
@@ -9418,10 +9460,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-27T10:17:56.851652+00:00",
+  "last_updated": "2026-08-27T10:22:32.459566+00:00",
   "stats": {
-    "total_nodes": 487,
-    "total_edges": 374,
+    "total_nodes": 488,
+    "total_edges": 379,
     "memory_count": 254
   }
 }
