@@ -1788,6 +1788,89 @@ adapters:
 	}
 }
 
+// TestLoadWithTopLevelAutopilot covers GH-5251: every documented autopilot
+// YAML example (configs/pilot.example.yaml, docs/content/features/autopilot.mdx)
+// nests the block under orchestrator.autopilot, but yaml.v3 silently drops
+// unknown top-level keys — a config with a top-level `autopilot:` block used
+// to load with no error and no effect. Load must now lift it into
+// orchestrator.autopilot so the values actually take effect.
+func TestLoadWithTopLevelAutopilot(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	configContent := `
+version: "1.0"
+autopilot:
+  enabled: true
+  max_ci_fix_iterations: 7
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	originalOutput := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(originalOutput)
+
+	config, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if config.Orchestrator == nil || config.Orchestrator.Autopilot == nil {
+		t.Fatal("Orchestrator.Autopilot is nil, want the top-level block lifted into it")
+	}
+	if !config.Orchestrator.Autopilot.Enabled {
+		t.Errorf("Orchestrator.Autopilot.Enabled = false, want true (lifted from top-level autopilot block)")
+	}
+	if config.Orchestrator.Autopilot.MaxCIFixIterations != 7 {
+		t.Errorf("Orchestrator.Autopilot.MaxCIFixIterations = %d, want 7 (lifted from top-level autopilot block)", config.Orchestrator.Autopilot.MaxCIFixIterations)
+	}
+	if !strings.Contains(logBuf.String(), "orchestrator.autopilot") {
+		t.Errorf("expected a warning log naming orchestrator.autopilot, got: %q", logBuf.String())
+	}
+}
+
+// TestLoadWithTopLevelAndNestedAutopilot covers the case where both a
+// top-level `autopilot:` block AND the correctly-nested orchestrator.autopilot
+// block are present in the same file (e.g. a partial migration). The nested
+// block must win — it's the one that actually binds — and the top-level
+// duplicate must be flagged as ignored rather than silently overwriting it.
+func TestLoadWithTopLevelAndNestedAutopilot(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	configContent := `
+version: "1.0"
+autopilot:
+  max_ci_fix_iterations: 7
+orchestrator:
+  autopilot:
+    max_ci_fix_iterations: 2
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	originalOutput := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(originalOutput)
+
+	config, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if config.Orchestrator.Autopilot.MaxCIFixIterations != 2 {
+		t.Errorf("Orchestrator.Autopilot.MaxCIFixIterations = %d, want 2 (the nested block must win over the ignored top-level duplicate)", config.Orchestrator.Autopilot.MaxCIFixIterations)
+	}
+	if !strings.Contains(logBuf.String(), "is ignored") {
+		t.Errorf("expected a warning log noting the top-level block is ignored, got: %q", logBuf.String())
+	}
+}
+
 func TestLoadTeamConfig(t *testing.T) {
 	t.Run("team config from YAML", func(t *testing.T) {
 		tmpDir := t.TempDir()
