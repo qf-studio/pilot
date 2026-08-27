@@ -78,6 +78,12 @@ type PostMergeConfig struct {
 	DeployBranch string `yaml:"deploy_branch,omitempty"`
 }
 
+// executionModeSequential is the one config.ExecutionConfig.Mode value the
+// controller branches on directly (GH-5242/TASK-486): see Config.ExecutionMode.
+// Mirrors cmd/pilot/main.go's local executionMode enum, kept as a plain
+// string here since the two packages intentionally don't share that type.
+const executionModeSequential = "sequential"
+
 // Config holds autopilot configuration for automated PR handling.
 type Config struct {
 	// Enabled controls whether autopilot mode is active.
@@ -141,6 +147,19 @@ type Config struct {
 	// Safety
 	// MaxFailures is the circuit breaker threshold before pausing autopilot.
 	MaxFailures int `yaml:"max_failures"`
+	// ExecutionMode mirrors config.ExecutionConfig.Mode ("sequential",
+	// "parallel", "auto", or "" for unset/default) — threaded in from
+	// cmd/pilot/main.go's three NewController call sites (GH-5242/TASK-486)
+	// rather than read from this struct's own YAML block, since it is really
+	// orchestrator.execution.mode, a config sibling of orchestrator.autopilot.
+	// The controller only branches on it in one place today: the CI-fix and
+	// review-feedback iteration-limit handlers close the failed PR under
+	// "sequential" (unblocking the SDK poller's per-PR MergeWaiter, which
+	// would otherwise wait on a PR that will never merge) but hold it for a
+	// human under any other value, including empty/unset — nothing is
+	// blocked on this PR closing under parallel/auto dispatch, so closing
+	// there would discard salvageable work for no benefit.
+	ExecutionMode string `yaml:"-"`
 	// MaxCIFixIterations limits how many CI fix issues can be chained before giving up.
 	// Prevents infinite fix cascades where each fix creates a new issue that also fails CI.
 	// Default: 3. Set to 0 to disable the limit.

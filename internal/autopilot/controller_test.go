@@ -4563,6 +4563,10 @@ func TestController_CIFixCascadeLimit(t *testing.T) {
 	cfg.CIPollInterval = 10 * time.Millisecond
 	cfg.CIWaitTimeout = 1 * time.Second
 	cfg.MaxCIFixIterations = 3
+	// GH-5242/TASK-486: this test exercises the sequential close-at-limit
+	// behavior; non-sequential modes hold instead (see
+	// TestHandleCIFailed_IterationLimit_ExecutionModeGate).
+	cfg.ExecutionMode = "sequential"
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
@@ -4693,6 +4697,10 @@ func TestController_CIFailedClose_PostsCommentsAndCorrectsLabels(t *testing.T) {
 	cfg.CIPollInterval = 10 * time.Millisecond
 	cfg.CIWaitTimeout = 1 * time.Second
 	cfg.MaxCIFixIterations = 3
+	// GH-5242/TASK-486: this test targets the sequential close + notifyExternalClose
+	// audit trail; non-sequential modes hold instead (see
+	// TestHandleCIFailed_IterationLimit_ExecutionModeGate).
+	cfg.ExecutionMode = "sequential"
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
@@ -6620,6 +6628,104 @@ func TestController_HandleReviewRequested_IterationLimit(t *testing.T) {
 	}
 	if !strings.Contains(pr.Error, "iteration limit") {
 		t.Errorf("error should mention iteration limit: %s", pr.Error)
+	}
+}
+
+// TestHandleReviewRequested_IterationLimit_ExecutionModeGate is GH-5242/
+// TASK-486: mirrors TestHandleCIFailed_IterationLimit_ExecutionModeGate for
+// the review-feedback iteration-limit branch — "sequential" closes the PR,
+// every other mode (including empty/unset, which defaults to auto) holds it
+// for a human instead, and no continuation revision issue is ever spawned
+// once the limit is hit.
+func TestHandleReviewRequested_IterationLimit_ExecutionModeGate(t *testing.T) {
+	tests := []struct {
+		name          string
+		executionMode string
+		wantClose     bool
+		wantLabel     string
+	}{
+		{name: "sequential closes and labels failed", executionMode: "sequential", wantClose: true, wantLabel: github.LabelFailed},
+		{name: "auto holds, no close", executionMode: "auto", wantClose: false, wantLabel: ""},
+		{name: "parallel holds, no close", executionMode: "parallel", wantClose: false, wantLabel: ""},
+		{name: "unset (empty) holds, no close", executionMode: "", wantClose: false, wantLabel: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var closeCalled bool
+			var revisionIssueSpawned bool
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/repos/owner/repo/pulls/42/reviews":
+					resp := []*github.PullRequestReview{
+						{ID: 1, User: github.User{Login: "alice"}, Body: "Still broken", State: "CHANGES_REQUESTED"},
+					}
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(mustJSON(t, resp))
+				case r.URL.Path == "/repos/owner/repo/pulls/42/comments":
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[]"))
+				case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
+					// Return issue with iteration=3 metadata (at limit)
+					resp := github.Issue{
+						Number: 10,
+						Body:   "some body\n<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:3 -->",
+					}
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(mustJSON(t, resp))
+				case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == http.MethodPatch:
+					closeCalled = true
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(mustJSON(t, github.PullRequest{Number: 42, State: "closed"}))
+				case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues":
+					revisionIssueSpawned = true
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"number":99}`))
+				default:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("{}"))
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.ReviewFeedback = &ReviewFeedbackConfig{Enabled: true, MaxIterations: 3}
+			cfg.ExecutionMode = tt.executionMode
+
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+			c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
+
+			c.mu.Lock()
+			c.activePRs[42].Stage = StageReviewRequested
+			c.mu.Unlock()
+
+			err := c.ProcessPR(context.Background(), 42, nil)
+			if err != nil {
+				t.Fatalf("ProcessPR error: %v", err)
+			}
+
+			pr, ok := c.GetPRState(42)
+			if !ok {
+				t.Fatal("PR should still be tracked")
+			}
+			if pr.Stage != StageFailed {
+				t.Errorf("stage = %s, want %s", pr.Stage, StageFailed)
+			}
+			if !strings.Contains(pr.Error, "review feedback iteration limit reached") {
+				t.Errorf("error should mention the review feedback iteration limit: %s", pr.Error)
+			}
+			if pr.TerminalLabel != tt.wantLabel {
+				t.Errorf("TerminalLabel = %q, want %q", pr.TerminalLabel, tt.wantLabel)
+			}
+			if closeCalled != tt.wantClose {
+				t.Errorf("ClosePullRequest called = %v, want %v", closeCalled, tt.wantClose)
+			}
+			if revisionIssueSpawned {
+				t.Error("no continuation revision issue should be spawned when the review-feedback iteration limit is hit")
+			}
+		})
 	}
 }
 
@@ -10508,6 +10614,11 @@ func TestController_IssuesProcessed_TerminalFailure(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
 	cfg.MaxCIFixIterations = 3
+	// GH-5242/TASK-486: RecordIssueProcessed("failed") only fires on the
+	// sequential close path today, matching the sibling escalateAndHold
+	// branches in handleCIFailed (zero-evidence, size guard, preflight
+	// declined), none of which record it either.
+	cfg.ExecutionMode = "sequential"
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	c.OnPRCreated(55, "https://github.com/owner/repo/pull/55", 20, "failsha1", "pilot/GH-20", "")
 	pr, _ := c.GetPRState(55)
@@ -11437,6 +11548,10 @@ func TestController_handleCIFailed_BoardSync_IterationLimit(t *testing.T) {
 			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			cfg := DefaultConfig()
 			cfg.MaxCIFixIterations = 3 // iteration = 3 >= MaxCIFixIterations = 3 → limit hit
+			// GH-5242/TASK-486: the close + board-sync behavior this test
+			// exercises only happens under execution_mode "sequential" —
+			// other modes hold instead (see TestHandleCIFailed_IterationLimit_ExecutionModeGate).
+			cfg.ExecutionMode = "sequential"
 
 			opt := withBoardSyncerForTest(mock, "Done", tt.failStatus, "In Review", "")
 			c := NewController(cfg, ghClient, nil, "owner", "repo", opt)
@@ -11468,6 +11583,98 @@ func TestController_handleCIFailed_BoardSync_IterationLimit(t *testing.T) {
 				if got.statusName != tt.failStatus {
 					t.Errorf("statusName = %q, want %q", got.statusName, tt.failStatus)
 				}
+			}
+		})
+	}
+}
+
+// TestHandleCIFailed_IterationLimit_ExecutionModeGate is GH-5242/TASK-486:
+// under execution_mode "sequential" the CI-fix iteration-limit branch closes
+// the PR (unblocking the sequential poller's per-PR MergeWaiter, which would
+// otherwise wait on a PR that will never merge). Under any other mode —
+// "auto", "parallel", or empty/unset (which defaults to auto) — nothing is
+// blocked waiting on this PR to close, so it must hold the PR for a human
+// (escalateAndHold) instead of discarding the branch. Either way no
+// continuation fix issue is spawned once the limit is hit.
+func TestHandleCIFailed_IterationLimit_ExecutionModeGate(t *testing.T) {
+	tests := []struct {
+		name          string
+		executionMode string
+		wantClose     bool
+		wantLabel     string
+	}{
+		{name: "sequential closes and labels failed", executionMode: "sequential", wantClose: true, wantLabel: github.LabelFailed},
+		{name: "auto holds, no close", executionMode: "auto", wantClose: false, wantLabel: ""},
+		{name: "parallel holds, no close", executionMode: "parallel", wantClose: false, wantLabel: ""},
+		{name: "unset (empty) holds, no close", executionMode: "", wantClose: false, wantLabel: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var closeCalled bool
+			var fixIssueSpawned bool
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/issues/") && !strings.Contains(r.URL.Path, "/comments"):
+					// Iteration counter at the limit (3).
+					_, _ = fmt.Fprintf(w, `{"number":10,"body":"<!-- autopilot-meta iteration:3 -->"}`)
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/check-runs"):
+					// GH-4779: a genuine code failure so classifyPRFailure sees
+					// positive evidence and reaches the iteration-limit check
+					// instead of short-circuiting into the zero-evidence guard.
+					_, _ = fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":200,"name":"test","status":"completed","conclusion":"failure"}]}`)
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/actions/jobs/200/logs"):
+					_, _ = w.Write([]byte("--- FAIL: TestSomething\nassertion failed: expected true, got false"))
+				case r.Method == http.MethodPatch && r.URL.Path == "/repos/owner/repo/pulls/42":
+					// ClosePullRequest issues a PATCH {"state":"closed"}, not a DELETE.
+					closeCalled = true
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"number":42,"state":"closed"}`))
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/repos/owner/repo/issues"):
+					fixIssueSpawned = true
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"number":99}`))
+				default:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("{}"))
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.MaxCIFixIterations = 3 // iteration = 3 >= 3 → limit hit
+			cfg.ExecutionMode = tt.executionMode
+
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			prState := &PRState{
+				PRNumber:    42,
+				IssueNumber: 10,
+				HeadSHA:     "abc123",
+				BranchName:  "pilot/GH-10",
+			}
+
+			err := c.handleCIFailed(context.Background(), prState)
+			if err != nil {
+				t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+			}
+
+			if prState.Stage != StageFailed {
+				t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+			}
+			if !strings.Contains(prState.Error, "CI fix iteration limit reached") {
+				t.Errorf("Error = %q, want it to mention the CI fix iteration limit", prState.Error)
+			}
+			if prState.TerminalLabel != tt.wantLabel {
+				t.Errorf("TerminalLabel = %q, want %q", prState.TerminalLabel, tt.wantLabel)
+			}
+			if closeCalled != tt.wantClose {
+				t.Errorf("ClosePullRequest called = %v, want %v", closeCalled, tt.wantClose)
+			}
+			if fixIssueSpawned {
+				t.Error("no continuation fix issue should be spawned when the CI-fix iteration limit is hit")
 			}
 		})
 	}
