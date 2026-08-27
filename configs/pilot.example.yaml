@@ -888,6 +888,16 @@ autopilot:
                              # set false to keep dispatching new tasks even during a suspected
                              # platform outage (merge suppression and PR-parking still apply)
 
+  # CI fix iteration cap (GH-1566): chained fix(ci) issues per PR before giving up.
+  # sequential mode closes the PR to unblock the queue; any other mode holds it open with pilot-needs-human, branch intact.
+  max_ci_fix_iterations: 3  # Set to 0 to disable the limit
+
+  # Review-feedback handling: auto-creates a revision issue on CHANGES_REQUESTED.
+  review_feedback:
+    enabled: true
+    # Revision iteration cap, same closure semantics as max_ci_fix_iterations above.
+    max_iterations: 3  # Set to 0 to disable the limit
+
 # Dashboard settings
 dashboard:
   refresh_interval: 1000     # ms
