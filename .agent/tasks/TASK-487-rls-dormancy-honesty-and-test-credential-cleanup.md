@@ -1,7 +1,8 @@
 # fix(db): make row-level-security dormancy honest and stop the test suite leaking a login role
 
-**Status**: 📋 Ready to dispatch
+**Status**: 🚀 Dispatched to Pilot
 **Created**: 2026-08-27
+**Last Updated**: 2026-08-27
 **Target repo**: qf-studio/pilot-console
 **Decision context**: founder decision 2026-08-27 — "plan C": compiler-enforced org scoping becomes the primary tenant-isolation control; row-level security stays as a **dormant, honestly-labelled** second layer, with the database role/connection cutover deferred until hosted multi-tenancy goes live.
 
@@ -47,6 +48,8 @@ Do not attempt to activate them, do not revoke the bypass, do not introduce a se
 - Existing tests continue to pass.
 
 ## Refs
+
+- Pilot issue: https://github.com/qf-studio/pilot-console/issues/231
 
 - Superseded PR: qf-studio/pilot-console#218 (attempted activation — close in favour of this)
 - Superseded issue: qf-studio/pilot-console#214
