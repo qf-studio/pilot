@@ -2323,6 +2323,30 @@
           "testing",
           "authentication"
         ]
+      },
+      "TASK-488": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-488-compiler-scoping-close-the-escape-hatch.md",
+        "title": "Task 488 Compiler Scoping Close The Escape Hatch",
+        "status": "backlog",
+        "concepts": [
+          "database",
+          "context",
+          "api",
+          "testing",
+          "deployment"
+        ]
+      },
+      "TASK-489": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-489-isolation-gate-verify-ingress-source-and-kms-canary.md",
+        "title": "Task 489 Isolation Gate Verify Ingress Source And Kms Canary",
+        "status": "backlog",
+        "concepts": [
+          "testing",
+          "context",
+          "theory of mind",
+          "deployment",
+          "knowledge"
+        ]
       }
     },
     "memories": {
@@ -7662,6 +7686,51 @@
       "from": "TASK-487",
       "to": "authentication",
       "type": "implements"
+    },
+    {
+      "from": "TASK-488",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-488",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-488",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-488",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-488",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-489",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-489",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-489",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-489",
+      "to": "knowledge",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -7799,7 +7868,8 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "TASK-486"
+      "TASK-486",
+      "TASK-488"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -8125,7 +8195,9 @@
       "mem-169",
       "mem-170",
       "TASK-486",
-      "TASK-487"
+      "TASK-487",
+      "TASK-488",
+      "TASK-489"
     ],
     "conversational-bot": [
       "mem-036",
@@ -8227,7 +8299,8 @@
       "mem-169",
       "mem-170",
       "timestamp-hardening-parse-then-compare-in-go",
-      "TASK-487"
+      "TASK-487",
+      "TASK-488"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -8372,7 +8445,9 @@
       "ready-gate-couples-credential-validity",
       "shared-oauth-session-strands-second-machine",
       "TASK-486",
-      "TASK-487"
+      "TASK-487",
+      "TASK-488",
+      "TASK-489"
     ],
     "dispatch": [
       "board-sourced-repo-ignores-labeled-issues",
@@ -8769,7 +8844,8 @@
       "mem-167",
       "mem-168",
       "mem-169",
-      "mem-170"
+      "mem-170",
+      "TASK-489"
     ],
     "labels": [
       "mem-100",
@@ -9232,7 +9308,9 @@
       "mem-179",
       "sqlite-memory-dsn-serializes-to-one-conn",
       "TASK-486",
-      "TASK-487"
+      "TASK-487",
+      "TASK-488",
+      "TASK-489"
     ],
     "testing-quality": [
       "TASK-384",
@@ -9435,7 +9513,8 @@
       "mem-160"
     ],
     "theory of mind": [
-      "TASK-486"
+      "TASK-486",
+      "TASK-489"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -9460,10 +9539,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-27T10:22:32.459566+00:00",
+  "last_updated": "2026-08-27T11:03:15.305178+00:00",
   "stats": {
-    "total_nodes": 488,
-    "total_edges": 379,
+    "total_nodes": 490,
+    "total_edges": 388,
     "memory_count": 254
   }
 }
