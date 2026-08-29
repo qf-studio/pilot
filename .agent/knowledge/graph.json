@@ -2301,15 +2301,15 @@
       "TASK-486": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-486-iteration-limit-close-mode-gate.md",
         "title": "Mode-gate the iteration-limit PR closes + document both limit fields (GH-5227)",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "testing",
-          "markers",
-          "workflow",
           "context",
-          "deployment",
           "api",
-          "theory of mind"
+          "workflow",
+          "markers",
+          "theory of mind",
+          "deployment"
         ]
       },
       "TASK-487": {
@@ -9632,7 +9632,7 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-27T20:32:27.250498+00:00",
+  "last_updated": "2026-08-29T14:20:46.572142+00:00",
   "stats": {
     "total_nodes": 493,
     "total_edges": 392,
