@@ -2287,14 +2287,14 @@
         "title": "Hosted retry path for failed executions (#5008)",
         "status": "blocked",
         "concepts": [
-          "testing",
-          "authentication",
-          "database",
-          "workflow",
-          "knowledge",
-          "theory of mind",
-          "context",
           "deployment",
+          "knowledge",
+          "authentication",
+          "testing",
+          "theory of mind",
+          "database",
+          "context",
+          "workflow",
           "api"
         ]
       },
@@ -2303,13 +2303,13 @@
         "title": "Mode-gate the iteration-limit PR closes + document both limit fields (GH-5227)",
         "status": "completed",
         "concepts": [
-          "testing",
-          "context",
-          "api",
-          "workflow",
-          "markers",
           "theory of mind",
-          "deployment"
+          "markers",
+          "testing",
+          "workflow",
+          "context",
+          "deployment",
+          "api"
         ]
       },
       "TASK-487": {
@@ -2337,15 +2337,16 @@
         ]
       },
       "TASK-489": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-489-isolation-gate-verify-ingress-source-and-kms-canary.md",
-        "title": "Task 489 Isolation Gate Verify Ingress Source And Kms Canary",
-        "status": "backlog",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-489-receipts-digest.md",
+        "title": "Task 489 Receipts Digest",
+        "status": "unknown",
         "concepts": [
-          "testing",
-          "context",
-          "theory of mind",
+          "api",
+          "markers",
+          "knowledge",
           "deployment",
-          "knowledge"
+          "database",
+          "testing"
         ]
       }
     },
@@ -7827,6 +7828,21 @@
       "from": "TASK-485",
       "to": "api",
       "type": "implements"
+    },
+    {
+      "from": "TASK-489",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-489",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-489",
+      "to": "api",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -7968,7 +7984,8 @@
       "TASK-488",
       "mem-180",
       "mem-181",
-      "mem-182"
+      "mem-182",
+      "TASK-489"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -8402,7 +8419,8 @@
       "mem-170",
       "timestamp-hardening-parse-then-compare-in-go",
       "TASK-487",
-      "TASK-488"
+      "TASK-488",
+      "TASK-489"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -9011,7 +9029,8 @@
       "TASK-486",
       "mem-180",
       "mem-181",
-      "mem-182"
+      "mem-182",
+      "TASK-489"
     ],
     "memory": [
       "TASK-358",
@@ -9658,10 +9677,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-29T14:41:48.732588+00:00",
+  "last_updated": "2026-08-29T17:24:56.875147+00:00",
   "stats": {
     "total_nodes": 493,
-    "total_edges": 397,
+    "total_edges": 400,
     "memory_count": 257
   }
 }
