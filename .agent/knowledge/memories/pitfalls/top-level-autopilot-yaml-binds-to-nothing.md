@@ -6,16 +6,36 @@ type: pitfall
 
 # Top-level `autopilot:` binds to nothing; without `--env` autopilot never starts
 
-**Status (2026-08-27, GH-5251):** leg 1 (silent-drop) is fixed. `config.Load`
-now detects a top-level `autopilot:` block via `liftTopLevelAutopilot`
-(`internal/config/config.go`): if `orchestrator.autopilot` is absent it lifts
-the top-level block into it (with a `DEPRECATED:` log), and if both are
-present it logs a `WARNING:` that the top-level duplicate is ignored in favor
-of the nested block. `configs/pilot.example.yaml` and every snippet in
+**Status (2026-08-27, GH-5251; defaults-loss closed 2026-08-29, GH-5255):**
+leg 1 (silent-drop) is fixed. `config.Load` now detects a top-level
+`autopilot:` block via `liftTopLevelAutopilot` (`internal/config/config.go`):
+if `orchestrator.autopilot` is absent it lifts the top-level block into it
+(with a `DEPRECATED:` log), and if both are present it logs a `WARNING:`
+that the top-level duplicate is ignored in favor of the nested block.
+`configs/pilot.example.yaml` and every snippet in
 `docs/content/features/autopilot.mdx` were re-nested under `orchestrator:` —
 the dead top-level shape referenced in point 3 below no longer exists in
 either. This does not change the `enabled`-not-emitted (pilot-console
 renderer) or missing-`--env` legs below — those are separate mechanisms.
+
+The GH-5251 fix itself shipped a subtler regression (GH-5255, PR#5253
+post-merge review): the original `liftTopLevelAutopilot` decoded the
+top-level block into a **fresh zero-value** `*autopilot.Config` and replaced
+`config.Orchestrator.Autopilot` wholesale, discarding every field
+`DefaultConfig()` seeds on the nested path (`MaxCIFixIterations`,
+`MaxFailures`, `MaxMergeAttempts`, `MergeMethod`, `ReviewFeedback`, …) — a
+lifted `{enabled: true, auto_merge: true}` block ran with the CI-fix cap and
+per-PR circuit breaker both disabled (`0` reads as "no limit"/"trip
+immediately" depending on the comparison direction), silently recreating a
+subtler version of the exact bug GH-5251 was filed to kill. Fixed by probing
+presence with a raw `yaml.Node` (`node.IsZero()`) instead of decoding into
+`*autopilot.Config` directly, then calling `node.Decode(config.Orchestrator.Autopilot)`
+— decoding onto the pointer already populated by `DefaultConfig()`, which is
+exactly how the nested path gets its defaults via yaml.v3's merge-onto-struct
+semantics. **Lesson: decoding an optional/deprecated YAML shape into a fresh
+pointer and swapping it in is never equivalent to decoding onto the
+default-populated struct — even when the fresh-decode path "works" for the
+fields the test happens to set.**
 
 **What happened (2026-07-24 → 07-26):** the hosted canary tenant
 (`i-0decbc0dcf225cf18`) executed issues with real tool-use and opened green PRs

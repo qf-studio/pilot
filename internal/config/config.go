@@ -864,6 +864,17 @@ func Load(path string) (*Config, error) {
 // with both shapes tells us whether a top-level block is present and
 // whether orchestrator.autopilot was also explicitly set in the same file.
 //
+// The top-level block is probed as a raw yaml.Node rather than decoded
+// straight into *autopilot.Config: decoding into a fresh pointer produces a
+// zero-value struct populated only with the keys the file happens to set,
+// discarding every default DefaultConfig() would otherwise seed (GH-5255).
+// Instead, once presence is confirmed, node.Decode is applied directly onto
+// config.Orchestrator.Autopilot — already populated by DefaultConfig() and,
+// in the nested-only case, further merged by the main Unmarshal above — so
+// yaml.v3 merges just the keys present in the top-level block onto that
+// struct and leaves every unset key at its default, matching the nested
+// path byte-for-byte.
+//
 //   - Top-level only: lift it into orchestrator.autopilot so the documented
 //     snippets (configs/pilot.example.yaml, docs/content/features/autopilot.mdx)
 //     work when copy-pasted verbatim, and warn so the user fixes the nesting.
@@ -873,7 +884,7 @@ func Load(path string) (*Config, error) {
 //   - Neither/nested-only: nothing to do.
 func liftTopLevelAutopilot(expanded string, config *Config) error {
 	var probe struct {
-		Autopilot    *autopilot.Config `yaml:"autopilot"`
+		Autopilot    yaml.Node `yaml:"autopilot"`
 		Orchestrator struct {
 			Autopilot *autopilot.Config `yaml:"autopilot"`
 		} `yaml:"orchestrator"`
@@ -881,7 +892,7 @@ func liftTopLevelAutopilot(expanded string, config *Config) error {
 	if err := yaml.Unmarshal([]byte(expanded), &probe); err != nil {
 		return err
 	}
-	if probe.Autopilot == nil {
+	if probe.Autopilot.IsZero() {
 		return nil
 	}
 	if probe.Orchestrator.Autopilot != nil {
@@ -892,7 +903,12 @@ func liftTopLevelAutopilot(expanded string, config *Config) error {
 	if config.Orchestrator == nil {
 		config.Orchestrator = &OrchestratorConfig{}
 	}
-	config.Orchestrator.Autopilot = probe.Autopilot
+	if config.Orchestrator.Autopilot == nil {
+		config.Orchestrator.Autopilot = autopilot.DefaultConfig()
+	}
+	if err := probe.Autopilot.Decode(config.Orchestrator.Autopilot); err != nil {
+		return err
+	}
 	return nil
 }
 
