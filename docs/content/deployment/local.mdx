@@ -64,11 +64,12 @@ executor:
   type: "claude-code"
   auto_create_pr: true
 
-autopilot:
-  enabled: true
-  auto_merge: true
-  merge_method: "squash"
-  ci_wait_timeout: 30m
+orchestrator:
+  autopilot:
+    enabled: true
+    auto_merge: true
+    merge_method: "squash"
+    ci_wait_timeout: 30m
 ```
 
 ---

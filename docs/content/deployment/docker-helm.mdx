@@ -309,8 +309,15 @@ config:
       enabled: true
       repo: "your-org/your-repo"
   autopilot:
-    enabled: true
-    auto_merge: false
+    # Rendered as a literal top-level `autopilot:` key in the generated
+    # config.yaml (deploy/helm/pilot/templates/configmap.yaml) — the chart
+    # does not nest it under `orchestrator:`. Only `mode` is templated here,
+    # and it doesn't bind to any autopilot.Config field (there is no `mode`
+    # yaml tag — only `environment`). The environment is actually applied
+    # via the `--autopilot=<mode>` CLI flag appended to the container's
+    # start args (templates/_helpers.tpl), a hidden alias for `--env` — this
+    # ConfigMap block does not otherwise configure autopilot behavior.
+    mode: "stage"  # dev | stage | prod
 
 # Secrets — injected as env vars
 secrets:
@@ -384,9 +391,10 @@ data:
         token: "${GITHUB_TOKEN}"
         repo: "your-org/your-repo"
         project_path: "/workspace"
-    autopilot:
-      enabled: true
-      auto_merge: true
+    orchestrator:
+      autopilot:
+        enabled: true
+        auto_merge: true
 ```
 
 <Callout type="warning">

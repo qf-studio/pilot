@@ -207,8 +207,9 @@ Each failed execution bumps the persistent retry counter (`pilot-retry-1` → `p
 Pilot supports all GitHub merge methods:
 
 ```yaml
-autopilot:
-  merge_method: squash   # "merge", "squash", or "rebase"
+orchestrator:
+  autopilot:
+    merge_method: squash   # "merge", "squash", or "rebase"
 ```
 
 | Method | Description |
@@ -245,12 +246,12 @@ Pilot monitors both commit statuses and check runs:
 With Autopilot enabled, Pilot can automatically merge PRs after checks pass:
 
 ```yaml
-autopilot:
-  enabled: true
-  environment: dev
-  auto_merge: true
-  require_approval: false
-  max_failures: 3
+orchestrator:
+  autopilot:
+    enabled: true
+    environment: dev
+    auto_merge: true
+    max_failures: 3
 ```
 
 ### Auto-Merge Flow
@@ -267,9 +268,14 @@ autopilot:
 
 ### Approval Requirements
 
+`require_approval` is a per-environment setting — it lives on each entry under `orchestrator.autopilot.environments`, not on the autopilot block directly. The built-in `prod` environment already defaults to `require_approval: true`; override any environment explicitly like this:
+
 ```yaml
-autopilot:
-  require_approval: true
+orchestrator:
+  autopilot:
+    environments:
+      prod:
+        require_approval: true
 ```
 
 When enabled, Pilot waits for a human approval review before auto-merging.
