@@ -1667,6 +1667,111 @@ func TestGetExecutionsInPeriod(t *testing.T) {
 	}
 }
 
+// TestGetExecutionsForReceipts covers GH-5257's receipts digest query:
+// full column completeness (cost/diff-size/source-issue fields), terminal
+// status filtering, canary exclusion, and period boundaries.
+func TestGetExecutionsForReceipts(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now()
+
+	execs := []*Execution{
+		{
+			ID: "receipt-completed", TaskID: "GH-5214", ProjectPath: "/p", Status: "completed",
+			CreatedAt: now, DurationMs: 840000, EstimatedCostUSD: 2.75,
+			FilesChanged: 4, LinesAdded: 88, LinesRemoved: 15,
+			TaskSourceAdapter: "github", TaskSourceIssueID: "5214",
+		},
+		{
+			ID: "receipt-failed", TaskID: "GH-5215", ProjectPath: "/p", Status: "failed",
+			CreatedAt: now, DurationMs: 30000, EstimatedCostUSD: 0.42,
+			FilesChanged: 1, LinesAdded: 3, LinesRemoved: 1,
+			TaskSourceAdapter: "github", TaskSourceIssueID: "5215",
+		},
+		{
+			// Non-terminal: must be excluded.
+			ID: "receipt-running", TaskID: "GH-5216", ProjectPath: "/p", Status: "running",
+			CreatedAt: now, EstimatedCostUSD: 0.10,
+		},
+		{
+			// Canary: must be excluded even though terminal and in-period.
+			ID: "receipt-canary", TaskID: "GH-5217", ProjectPath: "/p", Status: "completed",
+			CreatedAt: now, EstimatedCostUSD: 1.00, IsCanary: true,
+		},
+		{
+			// Outside the period: must be excluded.
+			ID: "receipt-yesterday", TaskID: "GH-5218", ProjectPath: "/p", Status: "completed",
+			CreatedAt: now.Add(-48 * time.Hour), EstimatedCostUSD: 5.00,
+		},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.ID, err)
+		}
+	}
+
+	query := BriefQuery{
+		Start: now.Add(-1 * time.Hour),
+		End:   now.Add(1 * time.Hour),
+	}
+
+	rows, err := store.GetExecutionsForReceipts(query)
+	if err != nil {
+		t.Fatalf("GetExecutionsForReceipts: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows (completed + failed, excluding running/canary/out-of-period), got %d", len(rows))
+	}
+
+	byID := map[string]*Execution{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+
+	if _, ok := byID["receipt-running"]; ok {
+		t.Error("expected running execution to be excluded")
+	}
+	if _, ok := byID["receipt-canary"]; ok {
+		t.Error("expected canary execution to be excluded")
+	}
+	if _, ok := byID["receipt-yesterday"]; ok {
+		t.Error("expected out-of-period execution to be excluded")
+	}
+
+	completed, ok := byID["receipt-completed"]
+	if !ok {
+		t.Fatal("expected receipt-completed row")
+	}
+	if completed.EstimatedCostUSD != 2.75 {
+		t.Errorf("EstimatedCostUSD = %v, want 2.75", completed.EstimatedCostUSD)
+	}
+	if completed.LinesAdded != 88 || completed.LinesRemoved != 15 {
+		t.Errorf("LinesAdded/LinesRemoved = %d/%d, want 88/15", completed.LinesAdded, completed.LinesRemoved)
+	}
+	if completed.FilesChanged != 4 {
+		t.Errorf("FilesChanged = %d, want 4", completed.FilesChanged)
+	}
+	if completed.TaskSourceAdapter != "github" || completed.TaskSourceIssueID != "5214" {
+		t.Errorf("TaskSourceAdapter/TaskSourceIssueID = %q/%q, want github/5214", completed.TaskSourceAdapter, completed.TaskSourceIssueID)
+	}
+
+	failed, ok := byID["receipt-failed"]
+	if !ok {
+		t.Fatal("expected receipt-failed row")
+	}
+	if failed.Status != "failed" {
+		t.Errorf("Status = %q, want failed", failed.Status)
+	}
+	if failed.EstimatedCostUSD != 0.42 {
+		t.Errorf("EstimatedCostUSD = %v, want 0.42 (failed runs still cost money)", failed.EstimatedCostUSD)
+	}
+}
+
 func TestGetBriefMetrics(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()
@@ -2790,15 +2895,17 @@ func TestBriefHistory(t *testing.T) {
 		name          string
 		setup         func(*Store)
 		channel       string
+		queryType     string
 		wantNil       bool
 		wantBriefType string
 		wantRecipient string
 	}{
 		{
-			name:    "empty table returns nil",
-			setup:   func(s *Store) {},
-			channel: "telegram",
-			wantNil: true,
+			name:      "empty table returns nil",
+			setup:     func(s *Store) {},
+			channel:   "telegram",
+			queryType: "daily",
+			wantNil:   true,
 		},
 		{
 			name: "single insert returns that record",
@@ -2811,6 +2918,7 @@ func TestBriefHistory(t *testing.T) {
 				})
 			},
 			channel:       "telegram",
+			queryType:     "daily",
 			wantNil:       false,
 			wantBriefType: "daily",
 			wantRecipient: "user123",
@@ -2825,7 +2933,8 @@ func TestBriefHistory(t *testing.T) {
 					BriefType: "daily",
 					Recipient: "old-user",
 				})
-				// Insert newer record
+				// Insert newer record of a different brief type — must not
+				// be picked up by a "daily" query (GH-5257).
 				_ = s.RecordBriefSent(&BriefRecord{
 					SentAt:    time.Now().Add(-1 * time.Hour),
 					Channel:   "slack",
@@ -2841,6 +2950,7 @@ func TestBriefHistory(t *testing.T) {
 				})
 			},
 			channel:       "slack",
+			queryType:     "daily",
 			wantNil:       false,
 			wantBriefType: "daily",
 			wantRecipient: "latest-user",
@@ -2862,6 +2972,7 @@ func TestBriefHistory(t *testing.T) {
 				})
 			},
 			channel:       "telegram",
+			queryType:     "daily",
 			wantNil:       false,
 			wantBriefType: "daily",
 			wantRecipient: "tg-user",
@@ -2875,8 +2986,58 @@ func TestBriefHistory(t *testing.T) {
 					BriefType: "daily",
 				})
 			},
-			channel: "email",
-			wantNil: true,
+			channel:   "email",
+			queryType: "daily",
+			wantNil:   true,
+		},
+		{
+			// GH-5257: two brief types sharing a channel must not
+			// cross-contaminate — a "receipts" digest sent more recently on
+			// the same Telegram channel must not shadow the "daily" brief's
+			// own last-sent record (and vice versa), or catch-up logic for
+			// one brief type would fire/skip based on the other's history.
+			name: "filters by brief_type on shared channel",
+			setup: func(s *Store) {
+				_ = s.RecordBriefSent(&BriefRecord{
+					SentAt:    time.Now().Add(-1 * time.Hour),
+					Channel:   "telegram",
+					BriefType: "daily",
+					Recipient: "daily-recipient",
+				})
+				_ = s.RecordBriefSent(&BriefRecord{
+					SentAt:    time.Now(),
+					Channel:   "telegram",
+					BriefType: "receipts",
+					Recipient: "receipts-recipient",
+				})
+			},
+			channel:       "telegram",
+			queryType:     "daily",
+			wantNil:       false,
+			wantBriefType: "daily",
+			wantRecipient: "daily-recipient",
+		},
+		{
+			name: "reads its own type when the other type is older",
+			setup: func(s *Store) {
+				_ = s.RecordBriefSent(&BriefRecord{
+					SentAt:    time.Now().Add(-1 * time.Hour),
+					Channel:   "telegram",
+					BriefType: "daily",
+					Recipient: "daily-recipient",
+				})
+				_ = s.RecordBriefSent(&BriefRecord{
+					SentAt:    time.Now(),
+					Channel:   "telegram",
+					BriefType: "receipts",
+					Recipient: "receipts-recipient",
+				})
+			},
+			channel:       "telegram",
+			queryType:     "receipts",
+			wantNil:       false,
+			wantBriefType: "receipts",
+			wantRecipient: "receipts-recipient",
 		},
 	}
 
@@ -2891,7 +3052,7 @@ func TestBriefHistory(t *testing.T) {
 
 			tt.setup(store)
 
-			record, err := store.GetLastBriefSent(tt.channel)
+			record, err := store.GetLastBriefSent(tt.channel, tt.queryType)
 			if err != nil {
 				t.Fatalf("GetLastBriefSent: %v", err)
 			}

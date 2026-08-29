@@ -1765,7 +1765,7 @@ var ErrApprovalAlreadyDecided = errors.New("approval already decided")
 // SetApprovalDecision records an approval decision on the execution linked to requestID.
 // It sets approval_decision, approval_decision_at, and approval_decision_by on the row
 // whose approval_request_id matches. The UPDATE is guarded by
-// `AND approval_decision = ''` so two racing callers (e.g. a POST racing a
+// `AND approval_decision = ”` so two racing callers (e.g. a POST racing a
 // Telegram/Slack button tap, or two concurrent POSTs) can never both win: only
 // the first writer's UPDATE matches a row, the second affects zero rows and
 // gets ErrApprovalAlreadyDecided rather than silently overwriting the first
@@ -2121,6 +2121,53 @@ func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 		executions = append(executions, &exec)
 	}
 
+	return executions, rows.Err()
+}
+
+// GetExecutionsForReceipts retrieves terminal (completed or failed) executions
+// within the specified time period for the daily receipts digest (GH-5257).
+// Unlike GetExecutionsInPeriod, it selects the full executionDetailColumns
+// set so callers can read cost/diff-size/source-issue fields, and it
+// excludes canary rows (COALESCE(is_canary,0)=0, matching GetBriefMetrics)
+// so synthetic sandbox runs never contaminate the digest or its totals.
+// Failed rows are included deliberately — a failed run still spent money and
+// the digest marks it as such rather than hiding its cost from the total.
+func (s *Store) GetExecutionsForReceipts(query BriefQuery) ([]*Execution, error) {
+	var args []interface{}
+	whereClause := "WHERE created_at >= ? AND created_at < ? AND status IN ('completed', 'failed') AND COALESCE(is_canary, 0) = 0"
+	args = append(args, query.Start, query.End)
+
+	if len(query.Projects) > 0 {
+		placeholders := ""
+		for i, p := range query.Projects {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += "?"
+			args = append(args, p)
+		}
+		whereClause += " AND project_path IN (" + placeholders + ")"
+	}
+
+	rows, err := s.db.Query(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		`+whereClause+`
+		ORDER BY created_at ASC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		exec, err := scanExecutionDetail(rows)
+		if err != nil {
+			return nil, err
+		}
+		executions = append(executions, exec)
+	}
 	return executions, rows.Err()
 }
 
@@ -5171,16 +5218,21 @@ func (s *Store) GetLogsByExecutionID(executionID string, limit int) ([]*LogEntry
 	return entries, nil
 }
 
-// GetLastBriefSent returns the most recent brief record for a given channel.
-// Returns nil if no brief has been sent to the channel.
-func (s *Store) GetLastBriefSent(channel string) (*BriefRecord, error) {
+// GetLastBriefSent returns the most recent brief record for a given channel
+// and brief type. Returns nil if no matching brief has been sent.
+//
+// GH-5257: briefType is a required filter, not just channel — brief_history
+// rows from a second scheduled brief type (e.g. "receipts") on the same
+// Telegram channel would otherwise satisfy a channel-only lookup and corrupt
+// the other brief type's catch-up logic (false catch-up fires / false skips).
+func (s *Store) GetLastBriefSent(channel, briefType string) (*BriefRecord, error) {
 	row := s.db.QueryRow(`
 		SELECT id, sent_at, channel, brief_type, COALESCE(recipient, '')
 		FROM brief_history
-		WHERE channel = ?
+		WHERE channel = ? AND brief_type = ?
 		ORDER BY sent_at DESC
 		LIMIT 1
-	`, channel)
+	`, channel, briefType)
 
 	var record BriefRecord
 	err := row.Scan(&record.ID, &record.SentAt, &record.Channel, &record.BriefType, &record.Recipient)
