@@ -1830,6 +1830,30 @@ autopilot:
 	if !strings.Contains(logBuf.String(), "orchestrator.autopilot") {
 		t.Errorf("expected a warning log naming orchestrator.autopilot, got: %q", logBuf.String())
 	}
+
+	// GH-5255: keys the top-level block leaves unset must retain the same
+	// defaults the nested orchestrator.autopilot path gets from
+	// DefaultConfig() — the lift must merge onto the default-populated
+	// struct, not replace it with a fresh zero-value one.
+	ap := config.Orchestrator.Autopilot
+	if ap.MaxFailures != 3 {
+		t.Errorf("Orchestrator.Autopilot.MaxFailures = %d, want 3 (default, unset by top-level block)", ap.MaxFailures)
+	}
+	if ap.MaxMergeAttempts != 5 {
+		t.Errorf("Orchestrator.Autopilot.MaxMergeAttempts = %d, want 5 (default, unset by top-level block)", ap.MaxMergeAttempts)
+	}
+	if ap.MergeMethod != "squash" {
+		t.Errorf("Orchestrator.Autopilot.MergeMethod = %q, want %q (default, unset by top-level block)", ap.MergeMethod, "squash")
+	}
+	if ap.ReviewFeedback == nil || !ap.ReviewFeedback.Enabled {
+		t.Errorf("Orchestrator.Autopilot.ReviewFeedback = %+v, want non-nil with Enabled=true (default, unset by top-level block)", ap.ReviewFeedback)
+	}
+	if !ap.NotifyOnFailure {
+		t.Errorf("Orchestrator.Autopilot.NotifyOnFailure = false, want true (default, unset by top-level block)")
+	}
+	if !ap.AutoCreateIssues {
+		t.Errorf("Orchestrator.Autopilot.AutoCreateIssues = false, want true (default, unset by top-level block)")
+	}
 }
 
 // TestLoadWithTopLevelAndNestedAutopilot covers the case where both a
