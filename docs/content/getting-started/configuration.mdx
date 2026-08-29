@@ -507,7 +507,6 @@ orchestrator:
     environment: "stage"                  # dev, stage, prod
     approval_source: "telegram"           # telegram, slack, github-review
 
-    auto_review: true                     # self-review before PR
     auto_merge: true                      # merge after CI passes
     merge_method: "squash"                # squash, merge, rebase
 
@@ -546,7 +545,6 @@ orchestrator:
 | `enabled` | bool | `false` | Enable autopilot mode |
 | `environment` | string | `"stage"` | Environment: `dev`, `stage`, `prod` |
 | `approval_source` | string | `"telegram"` | Where to get approvals: `telegram`, `slack`, `github-review` |
-| `auto_review` | bool | `true` | Run self-review before creating PR |
 | `auto_merge` | bool | `true` | Auto-merge after CI passes |
 | `merge_method` | string | `"squash"` | Git merge strategy |
 | `ci_wait_timeout` | duration | `30m` | Max time to wait for CI |

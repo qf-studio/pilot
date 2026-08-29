@@ -216,10 +216,10 @@ Epic subtasks work seamlessly with autopilot mode:
 
 ```yaml
 # Each subtask PR is tracked independently
-autopilot:
-  enabled: true
-  environment: stage
-  merge_delay: 5m  # Applied to each subtask PR
+orchestrator:
+  autopilot:
+    enabled: true
+    environment: stage
 ```
 
 ### Callback Registration

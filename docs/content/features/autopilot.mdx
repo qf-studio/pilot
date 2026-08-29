@@ -27,11 +27,6 @@ orchestrator:
     enabled: true
     environment: stage
     auto_merge: true
-    require_ci: true
-    merge_delay: 5m  # Wait before merging (stage only)
-    protected_branches:
-      - main
-      - production
 ```
 
 ## Usage
@@ -56,15 +51,6 @@ Autopilot always waits for CI to pass:
 ```
 Task → PR → CI Running → CI Passes → Merge
                       ↘ CI Fails → Notify, No Merge
-```
-
-### Merge Delay (Stage)
-
-In `stage` mode, there's a configurable delay:
-
-```
-CI Passes → 5min delay → Check for comments → Merge
-                       ↘ Comments found → Notify, No Merge
 ```
 
 ### Protected Branches
@@ -150,14 +136,10 @@ Auto-rebase avoids ~$8–15 per full re-execution for conflicts that are trivial
 orchestrator:
   autopilot:
     enabled: true
-    conflict_handling:
-      auto_rebase: true        # Enable auto-rebase via GitHub API (default: true)
-      close_on_failure: true   # Close PR if rebase fails (default: true)
-      requeue_on_failure: true # Re-queue issue for fresh execution (default: true)
-      max_rebase_attempts: 1   # Attempts before falling back to close (default: 1)
+    max_rebase_attempts: 3   # Attempts before falling back to close+requeue (default: 3)
 ```
 
-Set `auto_rebase: false` to skip the rebase attempt and immediately close-and-requeue on any conflict. This is useful if your CI is fast and re-execution is cheaper than debugging merge artifacts.
+Auto-rebase itself is not a toggle — autopilot always attempts an API rebase on conflict, then closes-and-requeues on failure (see the flow above). `max_rebase_attempts` (`autopilot.Config.MaxRebaseAttempts` in `internal/autopilot/types.go`) is a flat, top-level field on the `autopilot` config struct — not nested under a `conflict_handling:` block — and is the only part of this behavior that's configurable today.
 
 ## CI Fix Dependencies
 
