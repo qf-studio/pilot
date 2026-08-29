@@ -342,7 +342,7 @@ func formatReceiptsTotal(rows []*memory.Execution) string {
 func formatReceiptsDigest(rows []*memory.Execution, day time.Time) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("🧾 *Receipts — %s*\n", day.Format("Jan 2, 2006")))
+	fmt.Fprintf(&sb, "🧾 *Receipts — %s*\n", day.Format("Jan 2, 2006"))
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━\n")
 
 	for _, exec := range rows {
@@ -351,7 +351,7 @@ func formatReceiptsDigest(rows []*memory.Execution, day time.Time) string {
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("*Total:* %s", formatReceiptsTotal(rows)))
+	fmt.Fprintf(&sb, "*Total:* %s", formatReceiptsTotal(rows))
 
 	return sb.String()
 }
