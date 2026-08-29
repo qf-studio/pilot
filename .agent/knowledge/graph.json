@@ -2287,15 +2287,15 @@
         "title": "Hosted retry path for failed executions (#5008)",
         "status": "blocked",
         "concepts": [
-          "database",
-          "knowledge",
-          "context",
-          "workflow",
           "testing",
-          "api",
           "authentication",
+          "database",
+          "workflow",
+          "knowledge",
+          "theory of mind",
+          "context",
           "deployment",
-          "theory-of-mind"
+          "api"
         ]
       },
       "TASK-486": {
@@ -7802,6 +7802,31 @@
       "from": "TASK-486",
       "to": "knowledge",
       "type": "implements"
+    },
+    {
+      "from": "TASK-485",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-485",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-485",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-485",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-485",
+      "to": "api",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -9607,7 +9632,8 @@
       "TASK-489",
       "mem-180",
       "mem-181",
-      "mem-182"
+      "mem-182",
+      "TASK-485"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -9632,10 +9658,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-29T14:20:46.572142+00:00",
+  "last_updated": "2026-08-29T14:41:48.732588+00:00",
   "stats": {
     "total_nodes": 493,
-    "total_edges": 392,
+    "total_edges": 397,
     "memory_count": 257
   }
 }
