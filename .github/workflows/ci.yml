@@ -142,6 +142,66 @@ jobs:
           # instead of on every PR's hot path.
           verify: false
 
+  # GH-5267: the Helm chart had no CI coverage at all — a phantom top-level
+  # `autopilot:` block (GH-5251) and doc/values drift (PR#5265, GH-5267)
+  # both landed unnoticed. Lints + renders the chart, and greps the render
+  # for the exact regression class GH-5251 fixed: a top-level `autopilot:`
+  # key inside the generated config.yaml, which silently binds to nothing.
+  helm-chart:
+    name: Helm Lint + Template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check whether the chart or its docs page changed
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          if git diff --name-only "$base" "${{ github.sha }}" -- deploy/helm/ docs/content/deployment/docker-helm.mdx | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Helm
+        if: steps.changed.outputs.changed == 'true'
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: helm lint
+        if: steps.changed.outputs.changed == 'true'
+        run: helm lint deploy/helm/pilot
+
+      - name: helm template (default values)
+        if: steps.changed.outputs.changed == 'true'
+        run: helm template pilot deploy/helm/pilot --show-only templates/configmap.yaml > /tmp/pilot-configmap.yaml
+
+      - name: Fail if a top-level autopilot key renders into config.yaml (GH-5251)
+        if: steps.changed.outputs.changed == 'true'
+        run: |
+          if grep -qE '^\s{4}autopilot:' /tmp/pilot-configmap.yaml; then
+            echo "::error::rendered config.yaml contains a top-level 'autopilot:' key — it binds to nothing (see GH-5251); only orchestrator.autopilot binds"
+            exit 1
+          fi
+
+      - name: helm template (existingSecret + adapters.github.repo overrides)
+        if: steps.changed.outputs.changed == 'true'
+        run: |
+          helm template pilot deploy/helm/pilot \
+            --set existingSecret=pilot-secrets \
+            --set adapters.github.repo=your-org/your-repo > /tmp/pilot-rendered-overrides.yaml
+          if grep -qE '^kind: Secret$' /tmp/pilot-rendered-overrides.yaml; then
+            echo "::error::existingSecret was set but the chart still rendered its own Secret"
+            exit 1
+          fi
+
   # GH-5087: schema verification for .golangci.yml, split out of the
   # per-PR lint job (see the `verify: false` note above). Only runs when
   # .golangci.yml itself changes, so the remote schema-host dependency

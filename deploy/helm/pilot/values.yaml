@@ -51,6 +51,9 @@ gateway:
 adapters:
   github:
     enabled: true
+    # Default "owner/repo" pilot polls for issues labeled `pilot`.
+    # Leave empty to configure it another way (e.g. a custom configmap).
+    repo: ""
   telegram:
     enabled: false
   slack:
@@ -62,8 +65,16 @@ autopilot:
   # dev | stage | prod
   mode: "stage"
 
+# Name of a pre-existing Kubernetes Secret to use instead of the one this
+# chart creates from `secrets` below. Must define the same keys as
+# templates/secret.yaml: anthropic-api-key, github-token, slack-bot-token,
+# slack-app-token, telegram-bot-token, linear-api-key. Leave empty to have
+# the chart create and manage the Secret itself.
+existingSecret: ""
+
 # API tokens and secrets — provide via --set or an external secret manager.
 # Leave empty strings here; never commit real tokens.
+# Ignored when existingSecret is set.
 secrets:
   # Required
   anthropicApiKey: ""

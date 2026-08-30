@@ -62,6 +62,14 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
+Return the name of the Secret to mount — an externally-managed Secret
+when .Values.existingSecret is set, otherwise the chart-managed one.
+*/}}
+{{- define "pilot.secretName" -}}
+{{- .Values.existingSecret | default (include "pilot.fullname" .) }}
+{{- end }}
+
+{{/*
 Return the image tag — defaults to Chart.appVersion.
 */}}
 {{- define "pilot.imageTag" -}}
