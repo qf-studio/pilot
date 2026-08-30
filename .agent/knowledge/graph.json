@@ -1970,15 +1970,15 @@
         "title": "Delivery-evidence audit \u2014 green CI is not proof the requested change shipped (false-success class)",
         "status": "dispatched",
         "concepts": [
-          "testing",
           "authentication",
-          "knowledge",
+          "testing",
+          "context",
           "frontend",
-          "database",
-          "api",
-          "theory-of-mind",
+          "knowledge",
           "deployment",
-          "context"
+          "theory of mind",
+          "database",
+          "api"
         ]
       },
       "TASK-461": {
@@ -2287,15 +2287,15 @@
         "title": "Hosted retry path for failed executions (#5008)",
         "status": "blocked",
         "concepts": [
-          "deployment",
-          "knowledge",
-          "authentication",
-          "testing",
-          "theory of mind",
           "database",
+          "deployment",
+          "theory of mind",
+          "authentication",
           "context",
+          "knowledge",
+          "api",
           "workflow",
-          "api"
+          "testing"
         ]
       },
       "TASK-486": {
@@ -2341,12 +2341,13 @@
         "title": "Task 489 Receipts Digest",
         "status": "unknown",
         "concepts": [
+          "testing",
           "api",
-          "markers",
-          "knowledge",
           "deployment",
-          "database",
-          "testing"
+          "knowledge",
+          "workflow",
+          "markers",
+          "database"
         ]
       }
     },
@@ -5840,6 +5841,20 @@
         ],
         "created": "2026-08-27",
         "last_validated": "2026-08-27"
+      },
+      "pilot-never-reads-gh-comments-by-design": {
+        "type": "decision",
+        "summary": "Pilot never reads GH comments by design \u2014 founder REQUEST-CHANGES must be delivered as a pilot-labeled revision issue (autopilot-meta footer: branch/pr/iteration) + PR draft-block to hold auto-merge; the revision loop keys only on formal changes_requested reviews, impossible on same-account PRs. Never propose comment-parsing triggers; automation must be label- or issue-based.",
+        "file": ".agent/knowledge/memories/decisions/pilot-never-reads-gh-comments-by-design.md",
+        "concepts": [
+          "autopilot",
+          "workflow-discipline",
+          "dispatch",
+          "pr-close",
+          "labels"
+        ],
+        "confidence": 0.95,
+        "created": "2026-08-30"
       }
     }
   },
@@ -7843,6 +7858,46 @@
       "from": "TASK-489",
       "to": "api",
       "type": "implements"
+    },
+    {
+      "from": "TASK-489",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-460",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-460",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-460",
+      "to": "frontend",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-460",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-460",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-460",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-460",
+      "to": "api",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -8126,7 +8181,8 @@
       "sqlite-memory-dsn-serializes-to-one-conn",
       "stagefailed-conflates-healthy-handoff-with-terminal-failure",
       "close-rationale-cites-mode-the-component-cannot-see",
-      "review-limit-close-keeps-branch-normal-close-deletes-it"
+      "review-limit-close-keeps-branch-normal-close-deletes-it",
+      "pilot-never-reads-gh-comments-by-design"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -8589,7 +8645,8 @@
       "pilot-stalled-status-is-retry-not-cancel",
       "poller-labels-removed-log-means-never-applied",
       "sequential-gates-on-execution-not-merge-fastfollow-misbase",
-      "stall-status-reused-as-hold-marker"
+      "stall-status-reused-as-hold-marker",
+      "pilot-never-reads-gh-comments-by-design"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -8977,7 +9034,8 @@
       "mem-174",
       "mem-176",
       "poller-labels-in-progress-before-dispatcher-claim-wedge",
-      "poller-labels-removed-log-means-never-applied"
+      "poller-labels-removed-log-means-never-applied",
+      "pilot-never-reads-gh-comments-by-design"
     ],
     "ledger": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -9594,7 +9652,8 @@
       "TASK-486",
       "mem-180",
       "mem-181",
-      "mem-182"
+      "mem-182",
+      "TASK-489"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -9628,7 +9687,8 @@
       "no-decompose-spec-sizing-one-subsystem",
       "no-stripe-local-first-s3-testing",
       "review-before-approval-ordering",
-      "s6-lite-cutover-recipe"
+      "s6-lite-cutover-recipe",
+      "pilot-never-reads-gh-comments-by-design"
     ],
     "worktree": [
       "drift-gate-red-means-worktree-deleted-memories",
@@ -9652,7 +9712,8 @@
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-485"
+      "TASK-485",
+      "TASK-460"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -9665,7 +9726,8 @@
     ],
     "pr-close": [
       "close-rationale-cites-mode-the-component-cannot-see",
-      "review-limit-close-keeps-branch-normal-close-deletes-it"
+      "review-limit-close-keeps-branch-normal-close-deletes-it",
+      "pilot-never-reads-gh-comments-by-design"
     ],
     "controller": [
       "close-rationale-cites-mode-the-component-cannot-see"
@@ -9677,10 +9739,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-29T17:24:56.875147+00:00",
+  "last_updated": "2026-08-30T13:52:06.104808+00:00",
   "stats": {
-    "total_nodes": 493,
-    "total_edges": 400,
-    "memory_count": 257
+    "total_nodes": 494,
+    "total_edges": 408,
+    "memory_count": 258
   }
 }
