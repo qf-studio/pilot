@@ -257,82 +257,88 @@ helm upgrade pilot ./helm/pilot --reuse-values \
 
 ### values.yaml Reference
 
+This mirrors the chart's actual (flat) `deploy/helm/pilot/values.yaml` schema — there is no `config:` or `strategy:` wrapper key; every field below is set directly at the top level:
+
 ```yaml
 # Image
 image:
   repository: ghcr.io/qf-studio/pilot
-  tag: v2.151.0           # pin to a specific version in production
+  tag: ""                 # defaults to Chart.appVersion; pin explicitly in production
   pullPolicy: IfNotPresent
 
-# Replica count — always 1 (SQLite constraint)
+# Replica count — MUST remain 1 (SQLite constraint)
 replicaCount: 1
-
-# Deployment strategy — Recreate ensures clean shutdown before pod restart
-strategy:
-  type: Recreate
 
 # Service
 service:
   type: ClusterIP
   port: 9090
 
-# Ingress — enable for webhook reception
-ingress:
-  enabled: false
-  className: nginx
-  host: pilot.example.com
-  tls: true
+# Gateway — must bind 0.0.0.0 in containers, not 127.0.0.1
+gateway:
+  host: "0.0.0.0"
+  port: 9090
+
+# Adapter toggles — enable only what you need
+adapters:
+  github:
+    enabled: true
+  telegram:
+    enabled: false
+  slack:
+    enabled: false
+  linear:
+    enabled: false
+
+# Autopilot mode (dev | stage | prod). NOT rendered into the generated
+# config.yaml — applied as the container's `--autopilot=<mode>` start arg
+# (templates/_helpers.tpl), a hidden alias for `--env` (GH-5262).
+autopilot:
+  mode: "stage"
+
+# API tokens and secrets — provide via --set or an external secret manager
+secrets:
+  anthropicApiKey: ""
+  githubToken: ""
+  slackBotToken: ""
+  slackAppToken: ""
+  telegramBotToken: ""
+  linearApiKey: ""
+
+# Persistence — required for SQLite state
+persistence:
+  enabled: true
+  storageClass: ""        # use cluster default
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  existingClaim: ""        # leave empty to create a new PVC
 
 # Resource requests and limits
 resources:
   requests:
     memory: "256Mi"
-    cpu: "100m"
+    cpu: "250m"
   limits:
     memory: "1Gi"
-    cpu: "1000m"
+    cpu: "1"
 
-# Persistence — required for SQLite state
-persistence:
-  enabled: true
-  size: 1Gi
-  storageClass: ""        # use cluster default
-  accessMode: ReadWriteOnce
-
-# Pilot config — rendered into a ConfigMap
-config:
-  gateway:
-    host: "0.0.0.0"       # required in container: listen on all interfaces
-    port: 9090
-  adapters:
-    github:
-      enabled: true
-      repo: "your-org/your-repo"
-  autopilot:
-    # Rendered as a literal top-level `autopilot:` key in the generated
-    # config.yaml (deploy/helm/pilot/templates/configmap.yaml) — the chart
-    # does not nest it under `orchestrator:`. Only `mode` is templated here,
-    # and it doesn't bind to any autopilot.Config field (there is no `mode`
-    # yaml tag — only `environment`). The environment is actually applied
-    # via the `--autopilot=<mode>` CLI flag appended to the container's
-    # start args (templates/_helpers.tpl), a hidden alias for `--env` — this
-    # ConfigMap block does not otherwise configure autopilot behavior.
-    mode: "stage"  # dev | stage | prod
-
-# Secrets — injected as env vars
-secrets:
-  githubToken: ""
-  anthropicApiKey: ""
-  telegramBotToken: ""
-  slackBotToken: ""
-
-# Reference an existing Kubernetes Secret instead of creating one
-existingSecret: ""
-
-# Prometheus ServiceMonitor
-serviceMonitor:
+# Ingress — enable for webhook reception
+ingress:
   enabled: false
-  interval: 30s
+  className: nginx
+  hosts:
+    - host: pilot.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Prometheus metrics + optional ServiceMonitor (requires the Prometheus Operator)
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+    interval: 30s
 
 # Pod security context
 podSecurityContext:
@@ -350,13 +356,13 @@ helm upgrade pilot ./helm/pilot --set image.tag=v2.151.0
 # Enable ingress
 helm upgrade pilot ./helm/pilot \
   --set ingress.enabled=true \
-  --set ingress.host=pilot.mycompany.com
+  --set ingress.hosts[0].host=pilot.mycompany.com
 
 # Scale up persistence
 helm upgrade pilot ./helm/pilot --set persistence.size=5Gi
 
 # Enable Prometheus ServiceMonitor
-helm upgrade pilot ./helm/pilot --set serviceMonitor.enabled=true
+helm upgrade pilot ./helm/pilot --set metrics.serviceMonitor.enabled=true
 ```
 
 ---
@@ -576,7 +582,7 @@ spec:
 Enable via Helm:
 
 ```bash
-helm upgrade pilot ./helm/pilot --set serviceMonitor.enabled=true
+helm upgrade pilot ./helm/pilot --set metrics.serviceMonitor.enabled=true
 ```
 
 ### Key Metrics
@@ -648,10 +654,17 @@ Enable via Helm values:
 ingress:
   enabled: true
   className: nginx
-  host: pilot.example.com
-  tls: true
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: pilot.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: pilot-tls
+      hosts:
+        - pilot.example.com
 ```
 
 ### Webhook URLs

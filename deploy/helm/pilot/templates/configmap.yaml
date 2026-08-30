@@ -23,8 +23,14 @@ data:
       linear:
         enabled: {{ .Values.adapters.linear.enabled }}
 
-    autopilot:
-      mode: {{ .Values.autopilot.mode | quote }}
+    # Autopilot mode is NOT set here — a top-level `autopilot:` block only
+    # binds to config.Orchestrator.Autopilot.Environment via the deprecated
+    # top-level lift (internal/config/config.go liftTopLevelAutopilot), and
+    # that field is unconditionally overridden by the `--autopilot=<mode>`
+    # start arg below (a hidden alias for `--env`, GH-5262) — so rendering it
+    # here would only trigger a DEPRECATED config log with zero effect.
+    # .Values.autopilot.mode is applied via the container's start args
+    # instead (see templates/_helpers.tpl pilot.startArgs).
 
     storage:
       # SQLite database lives on the PVC so it survives pod restarts
