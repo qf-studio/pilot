@@ -195,7 +195,14 @@ func (s *ReceiptsScheduler) runDigest(ctx context.Context) error {
 
 	if delivered && s.store != nil {
 		record := &memory.BriefRecord{
-			SentAt:    time.Now(),
+			// SentAt is stamped with the same `now` used as the query's End
+			// bound (not a fresh time.Now()) so consecutive digest windows
+			// tile exactly as [prev.End, now) with no gap. Stamping with a
+			// later time.Now() here would leave a sub-second (End, SentAt)
+			// window — anything completing during Telegram delivery latency
+			// would fall after this digest's End and before the next
+			// digest's start, and never get receipted (GH-5268).
+			SentAt:    now,
 			Channel:   receiptsRepresentativeChannel,
 			BriefType: receiptsBriefType,
 		}
