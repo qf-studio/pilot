@@ -210,7 +210,7 @@ func (s *Scheduler) maybeCatchUp(ctx context.Context) {
 
 	// Get the most recent brief sent for any channel
 	// We use "telegram" as a representative channel since it's the primary delivery mechanism
-	lastRecord, err := s.store.GetLastBriefSent("telegram")
+	lastRecord, err := s.store.GetLastBriefSent("telegram", "daily")
 	if err != nil {
 		s.logger.Warn("catch-up: failed to get last brief sent", "error", err)
 		return

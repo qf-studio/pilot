@@ -3835,6 +3835,50 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 	}
 
+	// Start receipts digest scheduler if enabled (GH-5257): a second,
+	// independently-scheduled Telegram-only brief listing one line per
+	// terminal execution (issue ref, diff size, duration, cost) plus a day
+	// total. Sibling to the daily brief block above rather than sharing its
+	// Scheduler — see internal/briefs/receipts.go's doc comment.
+	var receiptsScheduler *briefs.ReceiptsScheduler
+	if cfg.Orchestrator.ReceiptsDigest != nil && cfg.Orchestrator.ReceiptsDigest.Enabled {
+		receiptsCfg := cfg.Orchestrator.ReceiptsDigest
+
+		receiptsConfig := &briefs.ReceiptsConfig{
+			Enabled:  receiptsCfg.Enabled,
+			Schedule: receiptsCfg.Schedule,
+			Timezone: receiptsCfg.Timezone,
+		}
+		for _, ch := range receiptsCfg.Channels {
+			receiptsConfig.Channels = append(receiptsConfig.Channels, briefs.ChannelConfig{
+				Type:       ch.Type,
+				Channel:    ch.Channel,
+				Recipients: ch.Recipients,
+			})
+		}
+
+		if store != nil {
+			var sender briefs.TelegramSender
+			if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled {
+				tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+				sender = &telegramBriefAdapter{client: tgClient, messageThreadID: cfg.Adapters.Telegram.MessageThreadID}
+			}
+
+			receiptsScheduler = briefs.NewReceiptsScheduler(store, sender, receiptsConfig, slog.Default())
+			if err := receiptsScheduler.Start(ctx); err != nil {
+				logging.WithComponent("start").Warn("Failed to start receipts digest scheduler", slog.Any("error", err))
+				receiptsScheduler = nil
+			} else {
+				logging.WithComponent("start").Info("receipts digest scheduler started",
+					slog.String("schedule", receiptsCfg.Schedule),
+					slog.String("timezone", receiptsCfg.Timezone),
+				)
+			}
+		} else {
+			logging.WithComponent("start").Warn("Receipts digest scheduler requires memory store, skipping")
+		}
+	}
+
 	// Dashboard mode: run TUI and handle shutdown via TUI quit
 	if dashboardMode && program != nil {
 		fmt.Println("\n● starting tui dashboard...")
@@ -4143,6 +4187,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		if briefScheduler != nil {
 			briefScheduler.Stop()
 		}
+		if receiptsScheduler != nil {
+			receiptsScheduler.Stop()
+		}
 		return nil
 	}
 
@@ -4165,6 +4212,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 	if briefScheduler != nil {
 		briefScheduler.Stop()
+	}
+	if receiptsScheduler != nil {
+		receiptsScheduler.Stop()
 	}
 
 	return nil

@@ -304,6 +304,7 @@
 | Weekly briefs | ✅ | briefs | `pilot brief --weekly` | - | Manual trigger |
 | Slack delivery | ✅ | briefs | - | `orchestrator.daily_brief.channels` | - |
 | Metrics summary | ✅ | briefs | - | `orchestrator.daily_brief.content.include_metrics` | - |
+| Receipts digest | ✅ | briefs | - | `orchestrator.receipts_digest` | GH-5257: end-of-day Telegram-only per-execution cost lines (issue ref, diff size, duration, $cost) + day total. Own schedule/scheduler (`ReceiptsScheduler`), default 18:00 America/New_York; empty day sends nothing. Fixed `GetLastBriefSent` to filter by `brief_type` so it can't cross-contaminate catch-up with `daily_brief` on a shared channel |
 
 ## Cost Controls
 
