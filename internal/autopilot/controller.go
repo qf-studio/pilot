@@ -4670,6 +4670,47 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		return nil
 	}
 
+	// GH-5263: never attempt to merge a draft PR or one with an outstanding
+	// changes-requested review. Root incident, PR#5258 (2026-08-30): CI went
+	// green, then a REQUEST-CHANGES review landed and the founder-review-flow
+	// drafted the PR + spawned a revision issue (#5261) — but nothing in this
+	// stage checked either signal, so the very next tick called MergePR blind.
+	// verifyCIBeforeMerge only verifies CI; it has no opinion on draft/review
+	// state, so every attempt was a guaranteed GitHub 405 ("still a draft")
+	// that burned the MergeAttempts budget and fed the per-PR circuit breaker
+	// for what was a deliberate, healthy hold — not a failure. On this repo
+	// (no branch protection) the draft flag was ALSO the only thing stopping a
+	// PR carrying an outstanding CHANGES_REQUESTED review from auto-merging
+	// over the reviewer's objection; a race, a manual review without the
+	// revision trigger phrase, or a revision-spawn failure would leave a
+	// non-draft PR with unaddressed feedback exposed to the next green tick.
+	// Both checks below are a plain `return nil` — like the platformBreaker
+	// guard above — not a park via prState.Parked: no label, no alert, no
+	// escalation comment. This is routine review-cycle state, not an incident
+	// requiring human attention, and it self-resolves the moment the PR is
+	// marked ready or re-reviewed/dismissed — both poll-visible fields
+	// re-checked fresh every tick, so no new event plumbing is needed.
+	// MergeAttempts is not incremented and recordPRFailure is never reached
+	// (ProcessPR only calls it when this handler returns a non-nil error), so
+	// neither check can trip the breaker. Fails open on a GetPullRequest
+	// error (mirrors the CI re-validation fail-open just below): a transient
+	// API error must not wedge a legitimate merge forever — the existing
+	// 405-on-draft failure path remains as a backstop, now unreachable in the
+	// common case.
+	if ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+		c.log.Warn("handleMerging: could not fetch PR to check draft/review hold, proceeding (fail-open)",
+			"pr", prState.PRNumber, "error", err)
+	} else if ghPR.Draft {
+		c.log.Info("handleMerging: PR is a draft — holding merge until marked ready for review",
+			"pr", prState.PRNumber)
+		return nil
+	}
+	if c.hasChangesRequested(ctx, prState) {
+		c.log.Info("handleMerging: PR has an outstanding changes-requested review — holding merge until re-reviewed or dismissed",
+			"pr", prState.PRNumber)
+		return nil
+	}
+
 	// GH-4477: re-validate CI live at the merge chokepoint instead of trusting
 	// the ci_status frozen by handleCIPassed/handleWaitingCI. Once a PR
 	// reaches StageAwaitApproval, ci_status is never touched again — a
