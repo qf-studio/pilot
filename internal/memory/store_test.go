@@ -1670,6 +1670,9 @@ func TestGetExecutionsInPeriod(t *testing.T) {
 // TestGetExecutionsForReceipts covers GH-5257's receipts digest query:
 // full column completeness (cost/diff-size/source-issue fields), terminal
 // status filtering, canary exclusion, and period boundaries.
+// TestGetExecutionsForReceipts is GH-5261 (PR#5258 review): the receipts
+// digest window is keyed on completed_at, not created_at, so an in-flight
+// run at digest time still gets receipted once it finishes.
 func TestGetExecutionsForReceipts(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -1678,34 +1681,46 @@ func TestGetExecutionsForReceipts(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	now := time.Now()
+	inWindow := now
+	outOfWindow := now.Add(-48 * time.Hour)
 
 	execs := []*Execution{
 		{
 			ID: "receipt-completed", TaskID: "GH-5214", ProjectPath: "/p", Status: "completed",
-			CreatedAt: now, DurationMs: 840000, EstimatedCostUSD: 2.75,
+			CreatedAt: now, CompletedAt: &inWindow, DurationMs: 840000, EstimatedCostUSD: 2.75,
 			FilesChanged: 4, LinesAdded: 88, LinesRemoved: 15,
 			TaskSourceAdapter: "github", TaskSourceIssueID: "5214",
 		},
 		{
 			ID: "receipt-failed", TaskID: "GH-5215", ProjectPath: "/p", Status: "failed",
-			CreatedAt: now, DurationMs: 30000, EstimatedCostUSD: 0.42,
+			CreatedAt: now, CompletedAt: &inWindow, DurationMs: 30000, EstimatedCostUSD: 0.42,
 			FilesChanged: 1, LinesAdded: 3, LinesRemoved: 1,
 			TaskSourceAdapter: "github", TaskSourceIssueID: "5215",
 		},
 		{
-			// Non-terminal: must be excluded.
+			// Non-terminal (no CompletedAt yet): must be excluded.
 			ID: "receipt-running", TaskID: "GH-5216", ProjectPath: "/p", Status: "running",
 			CreatedAt: now, EstimatedCostUSD: 0.10,
 		},
 		{
 			// Canary: must be excluded even though terminal and in-period.
 			ID: "receipt-canary", TaskID: "GH-5217", ProjectPath: "/p", Status: "completed",
-			CreatedAt: now, EstimatedCostUSD: 1.00, IsCanary: true,
+			CreatedAt: now, CompletedAt: &inWindow, EstimatedCostUSD: 1.00, IsCanary: true,
 		},
 		{
-			// Outside the period: must be excluded.
+			// Completed outside the period: must be excluded.
 			ID: "receipt-yesterday", TaskID: "GH-5218", ProjectPath: "/p", Status: "completed",
-			CreatedAt: now.Add(-48 * time.Hour), EstimatedCostUSD: 5.00,
+			CreatedAt: outOfWindow, CompletedAt: &outOfWindow, EstimatedCostUSD: 5.00,
+		},
+		{
+			// GH-5261: created well before the window opened (e.g. started
+			// before the previous digest ran) but finished inside the
+			// window — must be included. This is the "in-flight at digest
+			// time" case the created_at-keyed window used to drop forever.
+			ID: "receipt-in-flight-at-digest", TaskID: "GH-5219", ProjectPath: "/p", Status: "completed",
+			CreatedAt: outOfWindow, CompletedAt: &inWindow, EstimatedCostUSD: 3.30,
+			LinesAdded: 20, LinesRemoved: 5,
+			TaskSourceAdapter: "github", TaskSourceIssueID: "5219",
 		},
 	}
 	for _, e := range execs {
@@ -1724,8 +1739,8 @@ func TestGetExecutionsForReceipts(t *testing.T) {
 		t.Fatalf("GetExecutionsForReceipts: %v", err)
 	}
 
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows (completed + failed, excluding running/canary/out-of-period), got %d", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows (completed + failed + in-flight-at-digest, excluding running/canary/out-of-period), got %d", len(rows))
 	}
 
 	byID := map[string]*Execution{}
@@ -1769,6 +1784,14 @@ func TestGetExecutionsForReceipts(t *testing.T) {
 	}
 	if failed.EstimatedCostUSD != 0.42 {
 		t.Errorf("EstimatedCostUSD = %v, want 0.42 (failed runs still cost money)", failed.EstimatedCostUSD)
+	}
+
+	inFlight, ok := byID["receipt-in-flight-at-digest"]
+	if !ok {
+		t.Fatal("expected receipt-in-flight-at-digest row (created before window, completed inside it)")
+	}
+	if inFlight.EstimatedCostUSD != 3.30 {
+		t.Errorf("EstimatedCostUSD = %v, want 3.30", inFlight.EstimatedCostUSD)
 	}
 }
 

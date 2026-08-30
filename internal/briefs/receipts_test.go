@@ -2,6 +2,7 @@ package briefs
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -147,6 +148,34 @@ func TestFormatReceiptsDigest(t *testing.T) {
 	}
 }
 
+// TestFormatReceiptsDigest_TruncatesLongList is the optional Telegram
+// 4096-char guard: a per-run list long enough to blow the digest past
+// maxReceiptsDigestLen is truncated with a "… +N more runs" line, and the
+// total line still reflects every row, not just the ones shown.
+func TestFormatReceiptsDigest_TruncatesLongList(t *testing.T) {
+	var rows []*memory.Execution
+	for i := 0; i < 200; i++ {
+		rows = append(rows, &memory.Execution{
+			TaskID: fmt.Sprintf("GH-%d", 5000+i), TaskSourceAdapter: "github",
+			Status: "completed", LinesAdded: 10, LinesRemoved: 2,
+			DurationMs: 60000, EstimatedCostUSD: 1.00,
+		})
+	}
+	day := time.Date(2026, 8, 29, 18, 0, 0, 0, time.UTC)
+
+	got := formatReceiptsDigest(rows, day)
+
+	if len(got) > 4096 {
+		t.Errorf("formatReceiptsDigest() length = %d, must stay under Telegram's 4096 limit", len(got))
+	}
+	if !strings.Contains(got, "more runs") {
+		t.Errorf("expected a truncation marker in a 200-row digest, got:\n%s", got)
+	}
+	if !strings.Contains(got, "*Total:* 200 runs · +2000 −400 · $200.00") {
+		t.Errorf("expected total to reflect all 200 rows regardless of truncation, got:\n%s", got)
+	}
+}
+
 func TestNewReceiptsScheduler(t *testing.T) {
 	store, cleanup := setupSchedulerTestStore(t)
 	defer cleanup()
@@ -224,6 +253,7 @@ func TestReceiptsSchedulerRunNow_DeliversAndRecordsOwnBriefType(t *testing.T) {
 		ProjectPath:       "/tmp/proj",
 		Status:            "completed",
 		CreatedAt:         now,
+		CompletedAt:       &now,
 		LinesAdded:        88,
 		LinesRemoved:      15,
 		EstimatedCostUSD:  2.75,
@@ -273,5 +303,96 @@ func TestReceiptsSchedulerRunNow_DeliversAndRecordsOwnBriefType(t *testing.T) {
 	}
 	if record.BriefType != receiptsBriefType {
 		t.Errorf("BriefType = %q, want %q", record.BriefType, receiptsBriefType)
+	}
+}
+
+// TestReceiptsSchedulerRunNow_InFlightRunAppearsInNextDigest is GH-5261
+// (PR#5258 review): a run still "running" at one digest's send time must be
+// receipted in the NEXT digest once it completes — never dropped, and never
+// receipted twice. Windowing on completed_at since the last digest sent
+// (rather than a fixed calendar day keyed on created_at) is what makes this
+// possible.
+func TestReceiptsSchedulerRunNow_InFlightRunAppearsInNextDigest(t *testing.T) {
+	store, cleanup := setupSchedulerTestStore(t)
+	defer cleanup()
+
+	// exec-early: created and completed well before the first digest fires —
+	// must appear in digest 1 and never again.
+	early := time.Now().Add(-2 * time.Hour)
+	if err := store.SaveExecution(&memory.Execution{
+		ID:                "exec-early",
+		TaskID:            "GH-5300",
+		ProjectPath:       "/tmp/proj",
+		Status:            "completed",
+		CreatedAt:         early,
+		CompletedAt:       &early,
+		EstimatedCostUSD:  1.00,
+		TaskSourceAdapter: "github",
+	}); err != nil {
+		t.Fatalf("SaveExecution (early): %v", err)
+	}
+
+	// exec-inflight: created before the first digest but still "running" at
+	// that point — must be excluded from digest 1 and included in digest 2
+	// once it completes.
+	startedBeforeDigest1 := time.Now().Add(-90 * time.Minute)
+	if err := store.SaveExecution(&memory.Execution{
+		ID:                "exec-inflight",
+		TaskID:            "GH-5301",
+		ProjectPath:       "/tmp/proj",
+		Status:            "running",
+		CreatedAt:         startedBeforeDigest1,
+		EstimatedCostUSD:  0,
+		TaskSourceAdapter: "github",
+	}); err != nil {
+		t.Fatalf("SaveExecution (inflight): %v", err)
+	}
+
+	sender := &mockTelegramSender{}
+	config := &ReceiptsConfig{
+		Enabled:  true,
+		Schedule: "0 18 * * *",
+		Timezone: "UTC",
+		Channels: []ChannelConfig{{Type: "telegram", Channel: "@test"}},
+	}
+	scheduler := NewReceiptsScheduler(store, sender, config, nil)
+
+	// Digest 1: only exec-early is terminal.
+	if err := scheduler.RunNow(context.Background()); err != nil {
+		t.Fatalf("RunNow (digest 1) failed: %v", err)
+	}
+	if len(sender.calls) != 1 {
+		t.Fatalf("expected 1 send after digest 1, got %d", len(sender.calls))
+	}
+	if !strings.Contains(sender.calls[0].text, "#5300") {
+		t.Errorf("digest 1 should mention #5300, got: %s", sender.calls[0].text)
+	}
+	if strings.Contains(sender.calls[0].text, "#5301") {
+		t.Errorf("digest 1 must NOT mention still-running #5301, got: %s", sender.calls[0].text)
+	}
+
+	// exec-inflight finishes after digest 1 fired. The sleep guarantees
+	// completed_at (CURRENT_TIMESTAMP, second precision) lands in a distinct
+	// second from digest 1's brief_history SentAt (sub-second Go precision),
+	// avoiding a same-second boundary flake in the completed_at >= start
+	// comparison.
+	time.Sleep(1100 * time.Millisecond)
+	if err := store.MarkExecutionCompleted("exec-inflight", "", "", 1000); err != nil {
+		t.Fatalf("MarkExecutionCompleted: %v", err)
+	}
+
+	// Digest 2: exec-inflight must now appear, and exec-early must NOT
+	// reappear (already receipted in digest 1).
+	if err := scheduler.RunNow(context.Background()); err != nil {
+		t.Fatalf("RunNow (digest 2) failed: %v", err)
+	}
+	if len(sender.calls) != 2 {
+		t.Fatalf("expected 2 sends after digest 2, got %d", len(sender.calls))
+	}
+	if !strings.Contains(sender.calls[1].text, "#5301") {
+		t.Errorf("digest 2 should mention now-completed #5301, got: %s", sender.calls[1].text)
+	}
+	if strings.Contains(sender.calls[1].text, "#5300") {
+		t.Errorf("digest 2 must NOT re-mention already-receipted #5300, got: %s", sender.calls[1].text)
 	}
 }

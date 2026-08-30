@@ -141,9 +141,16 @@ func (s *ReceiptsScheduler) RunNow(ctx context.Context) error {
 	return s.runDigest(ctx)
 }
 
-// runDigest generates the day's receipts digest and delivers it to every
-// configured Telegram channel. An empty day (no terminal executions) skips
-// the send entirely — no "0 runs" noise.
+// runDigest generates the receipts digest for every terminal execution
+// completed since the last digest was sent, and delivers it to every
+// configured Telegram channel. Windowing on the last-sent digest (rather than
+// a fixed calendar day) is deliberate (GH-5261 / PR#5258 review): a run
+// started before 18:00 but still in flight at digest time — or any run
+// created after 18:00 — would otherwise sit outside every digest's
+// created_at-scoped window and never get receipted. Keying the window on
+// completed_at and resuming exactly where the last digest left off
+// guarantees every terminal execution is receipted exactly once. An empty
+// window (no terminal executions) skips the send entirely — no "0 runs" noise.
 func (s *ReceiptsScheduler) runDigest(ctx context.Context) error {
 	s.logger.Info("generating receipts digest")
 
@@ -152,7 +159,16 @@ func (s *ReceiptsScheduler) runDigest(ctx context.Context) error {
 		loc = time.UTC
 	}
 	now := time.Now().In(loc)
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+
+	start := now.Add(-24 * time.Hour)
+	if s.store != nil {
+		lastRecord, err := s.store.GetLastBriefSent(receiptsRepresentativeChannel, receiptsBriefType)
+		if err != nil {
+			s.logger.Warn("receipts digest: failed to get last digest sent, falling back to 24h window", "error", err)
+		} else if lastRecord != nil {
+			start = lastRecord.SentAt.In(loc)
+		}
+	}
 
 	rows, err := s.store.GetExecutionsForReceipts(memory.BriefQuery{Start: start, End: now})
 	if err != nil {
@@ -161,7 +177,7 @@ func (s *ReceiptsScheduler) runDigest(ctx context.Context) error {
 	}
 
 	if len(rows) == 0 {
-		s.logger.Info("receipts digest: no terminal executions today, skipping send")
+		s.logger.Info("receipts digest: no terminal executions since last digest, skipping send")
 		return nil
 	}
 
@@ -337,21 +353,30 @@ func formatReceiptsTotal(rows []*memory.Execution) string {
 	return fmt.Sprintf("%d runs · +%d −%d · $%.2f", len(rows), linesAdded, linesRemoved, costUSD)
 }
 
+// maxReceiptsDigestLen caps the per-run list so the digest stays comfortably
+// under Telegram's 4096-char message limit; the total line always reflects
+// every row regardless of how much of the list got truncated.
+const maxReceiptsDigestLen = 3900
+
 // formatReceiptsDigest formats the full Telegram digest message: a header,
-// one line per terminal execution, and a day total line.
+// one line per terminal execution, and a day total line. If the per-run list
+// would push the message past maxReceiptsDigestLen, it's truncated with a
+// final "… +N more runs" line — the total line (computed over every row, not
+// just the shown ones) is always included in full.
 func formatReceiptsDigest(rows []*memory.Execution, day time.Time) string {
-	var sb strings.Builder
+	header := fmt.Sprintf("🧾 *Receipts — %s*\n━━━━━━━━━━━━━━━━━━━━━\n", day.Format("Jan 2, 2006"))
+	totalLine := fmt.Sprintf("\n*Total:* %s", formatReceiptsTotal(rows))
 
-	fmt.Fprintf(&sb, "🧾 *Receipts — %s*\n", day.Format("Jan 2, 2006"))
-	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━\n")
-
-	for _, exec := range rows {
-		sb.WriteString(formatReceiptLine(exec))
-		sb.WriteString("\n")
+	var lines strings.Builder
+	for i, exec := range rows {
+		line := formatReceiptLine(exec) + "\n"
+		budgetExceeded := len(header)+lines.Len()+len(line)+len(totalLine) > maxReceiptsDigestLen
+		if budgetExceeded && i > 0 {
+			fmt.Fprintf(&lines, "… +%d more runs\n", len(rows)-i)
+			break
+		}
+		lines.WriteString(line)
 	}
 
-	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "*Total:* %s", formatReceiptsTotal(rows))
-
-	return sb.String()
+	return header + lines.String() + totalLine
 }

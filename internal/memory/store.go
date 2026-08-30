@@ -1765,7 +1765,7 @@ var ErrApprovalAlreadyDecided = errors.New("approval already decided")
 // SetApprovalDecision records an approval decision on the execution linked to requestID.
 // It sets approval_decision, approval_decision_at, and approval_decision_by on the row
 // whose approval_request_id matches. The UPDATE is guarded by
-// `AND approval_decision = ”` so two racing callers (e.g. a POST racing a
+// `AND approval_decision = ''` so two racing callers (e.g. a POST racing a
 // Telegram/Slack button tap, or two concurrent POSTs) can never both win: only
 // the first writer's UPDATE matches a row, the second affects zero rows and
 // gets ErrApprovalAlreadyDecided rather than silently overwriting the first
@@ -2125,16 +2125,21 @@ func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 }
 
 // GetExecutionsForReceipts retrieves terminal (completed or failed) executions
-// within the specified time period for the daily receipts digest (GH-5257).
-// Unlike GetExecutionsInPeriod, it selects the full executionDetailColumns
-// set so callers can read cost/diff-size/source-issue fields, and it
-// excludes canary rows (COALESCE(is_canary,0)=0, matching GetBriefMetrics)
-// so synthetic sandbox runs never contaminate the digest or its totals.
-// Failed rows are included deliberately — a failed run still spent money and
-// the digest marks it as such rather than hiding its cost from the total.
+// whose completed_at falls within the specified time period, for the daily
+// receipts digest (GH-5257 / GH-5261). It windows on completed_at rather than
+// created_at deliberately: a run's cost is only knowable once it finishes, and
+// windowing on created_at let a run started before a digest boundary but
+// finishing after it (still "running" at digest time) fall permanently outside
+// every digest's window (GH-5261 / PR#5258 review). Unlike GetExecutionsInPeriod,
+// it selects the full executionDetailColumns set so callers can read
+// cost/diff-size/source-issue fields, and it excludes canary rows
+// (COALESCE(is_canary,0)=0, matching GetBriefMetrics) so synthetic sandbox runs
+// never contaminate the digest or its totals. Failed rows are included
+// deliberately — a failed run still spent money and the digest marks it as such
+// rather than hiding its cost from the total.
 func (s *Store) GetExecutionsForReceipts(query BriefQuery) ([]*Execution, error) {
 	var args []interface{}
-	whereClause := "WHERE created_at >= ? AND created_at < ? AND status IN ('completed', 'failed') AND COALESCE(is_canary, 0) = 0"
+	whereClause := "WHERE completed_at >= ? AND completed_at < ? AND status IN ('completed', 'failed') AND COALESCE(is_canary, 0) = 0"
 	args = append(args, query.Start, query.End)
 
 	if len(query.Projects) > 0 {
@@ -2153,7 +2158,7 @@ func (s *Store) GetExecutionsForReceipts(query BriefQuery) ([]*Execution, error)
 		SELECT `+executionDetailColumns+`
 		FROM executions
 		`+whereClause+`
-		ORDER BY created_at ASC
+		ORDER BY completed_at ASC
 	`, args...)
 	if err != nil {
 		return nil, err
