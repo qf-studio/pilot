@@ -4212,15 +4212,46 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 }
 
 // hasChangesRequested checks if a PR has unresolved "changes requested" reviews.
-// It filters out bot reviews and only considers reviews submitted after the PR was created.
-func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState) bool {
+// It filters out bot reviews and only considers reviews submitted after the PR
+// was created.
+//
+// ghPR is the caller's already-fetched live PR object (may be nil if the
+// caller's own GetPullRequest fetch failed and it is proceeding fail-open) —
+// GH-5266: it supplies the review-hold cutoff via ghPR.CreatedAt (the PR's
+// real, durable GitHub creation time) in preference to prState.CreatedAt.
+// prState.CreatedAt is set to time.Now() both by OnPRCreated (fresh
+// registration) and by the reconciler's orphan-PR sweep (re-adoption after a
+// daemon restart or an executor callback miss) — so using it as the cutoff
+// blinded the hold exactly when it mattered most: a standing
+// CHANGES_REQUESTED review submitted before a restart became invisible the
+// moment the PR was re-adopted, because every review now looked "older than
+// tracking" (#5263's race/revision-spawn-failure scenario, N1 from the
+// PR#5264 review). Falls back to prState.CreatedAt only when ghPR is nil or
+// its CreatedAt fails to parse, preserving the original no-permanent-park
+// intent (never hold on a review that predates the PR itself) in that
+// degraded case.
+func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState, ghPR *github.PullRequest) bool {
 	reviews, err := c.ghClient.ListPullRequestReviews(ctx, c.owner, c.repo, prState.PRNumber)
 	if err != nil {
 		c.log.Warn("failed to fetch reviews for changes_requested check", "pr", prState.PRNumber, "error", err)
 		return false
 	}
 
-	// Track latest review state per user (only non-bot users)
+	cutoff := prState.CreatedAt
+	if ghPR != nil && ghPR.CreatedAt != "" {
+		if parsed, perr := time.Parse(time.RFC3339, ghPR.CreatedAt); perr == nil {
+			cutoff = parsed
+		}
+	}
+
+	// Track latest review state per user (only non-bot users). GH-5266 (N2
+	// from the PR#5264 review): a plain "last review wins" map let a later
+	// COMMENTED review from the same reviewer silently clear a standing
+	// CHANGES_REQUESTED — GitHub's own review model does not treat a
+	// comment-only review as superseding a change request, only a fresh
+	// APPROVED or an explicit DISMISSED does. So once a user's latest
+	// recorded state is CHANGES_REQUESTED, only APPROVED/DISMISSED are
+	// allowed to overwrite it; COMMENTED (or any other state) is ignored.
 	latestState := make(map[string]string)
 	for _, r := range reviews {
 		// Skip bot reviews (self-review)
@@ -4229,13 +4260,16 @@ func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState) 
 		}
 
 		// Only consider reviews submitted after the PR entered tracking
-		if r.SubmittedAt != "" && !prState.CreatedAt.IsZero() {
+		if r.SubmittedAt != "" && !cutoff.IsZero() {
 			submittedAt, err := time.Parse(time.RFC3339, r.SubmittedAt)
-			if err == nil && submittedAt.Before(prState.CreatedAt) {
+			if err == nil && submittedAt.Before(cutoff) {
 				continue
 			}
 		}
 
+		if latestState[r.User.Login] == "CHANGES_REQUESTED" && r.State != "APPROVED" && r.State != "DISMISSED" {
+			continue
+		}
 		latestState[r.User.Login] = r.State
 	}
 
@@ -4697,15 +4731,19 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	// API error must not wedge a legitimate merge forever — the existing
 	// 405-on-draft failure path remains as a backstop, now unreachable in the
 	// common case.
-	if ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+	ghPRForHold, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
 		c.log.Warn("handleMerging: could not fetch PR to check draft/review hold, proceeding (fail-open)",
 			"pr", prState.PRNumber, "error", err)
-	} else if ghPR.Draft {
+	} else if ghPRForHold.Draft {
 		c.log.Info("handleMerging: PR is a draft — holding merge until marked ready for review",
 			"pr", prState.PRNumber)
 		return nil
 	}
-	if c.hasChangesRequested(ctx, prState) {
+	// GH-5266: pass the freshly-fetched ghPRForHold (nil on a fail-open fetch
+	// error) through so hasChangesRequested can anchor its review-hold cutoff
+	// on the PR's own GitHub creation time rather than prState.CreatedAt.
+	if c.hasChangesRequested(ctx, prState, ghPRForHold) {
 		c.log.Info("handleMerging: PR has an outstanding changes-requested review — holding merge until re-reviewed or dismissed",
 			"pr", prState.PRNumber)
 		return nil
@@ -4853,7 +4891,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		"method", c.config.MergeMethod,
 	)
 
-	err := c.autoMerger.MergePR(ctx, prState)
+	err = c.autoMerger.MergePR(ctx, prState)
 	if err != nil {
 		c.log.Error("handleMerging: merge failed",
 			"pr", prState.PRNumber,
@@ -8761,7 +8799,12 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 			// Only check PRs that haven't already been transitioned to review_requested.
 			if pr.Stage != StageReviewRequested && pr.Stage != StageFailed &&
 				c.config.ReviewFeedback != nil && c.config.ReviewFeedback.Enabled {
-				if c.hasChangesRequested(ctx, pr) {
+				// GH-5266: ghPR is the same live fetch used above for
+				// checkExternalMergeOrClose/reAdoptHeldRebasePR — reuse it so the
+				// review-hold cutoff anchors on the PR's own GitHub creation time,
+				// which stays correct across a reconciler re-adoption (unlike
+				// pr.CreatedAt, which the reconciler resets to time.Now()).
+				if c.hasChangesRequested(ctx, pr, ghPR) {
 					c.log.Info("detected changes_requested review in polling mode",
 						"pr", pr.PRNumber,
 						"stage", pr.Stage,
