@@ -16,6 +16,9 @@ data:
     adapters:
       github:
         enabled: {{ .Values.adapters.github.enabled }}
+        {{- if .Values.adapters.github.repo }}
+        repo: {{ .Values.adapters.github.repo | quote }}
+        {{- end }}
       telegram:
         enabled: {{ .Values.adapters.telegram.enabled }}
       slack:
@@ -23,14 +26,18 @@ data:
       linear:
         enabled: {{ .Values.adapters.linear.enabled }}
 
-    # Autopilot mode is NOT set here — a top-level `autopilot:` block only
-    # binds to config.Orchestrator.Autopilot.Environment via the deprecated
-    # top-level lift (internal/config/config.go liftTopLevelAutopilot), and
-    # that field is unconditionally overridden by the `--autopilot=<mode>`
-    # start arg below (a hidden alias for `--env`, GH-5262) — so rendering it
-    # here would only trigger a DEPRECATED config log with zero effect.
-    # .Values.autopilot.mode is applied via the container's start args
-    # instead (see templates/_helpers.tpl pilot.startArgs).
+    # Autopilot mode is NOT set here — a top-level `autopilot:` block gets
+    # lifted wholesale onto config.Orchestrator.Autopilot (internal/config/
+    # config.go liftTopLevelAutopilot decodes the raw block's keys straight
+    # onto that struct), but the struct's field is yaml-tagged `environment`,
+    # not `mode` — so a `mode:` key (the shape this chart's own
+    # .Values.autopilot.mode implies) would decode to nothing even after
+    # the lift. And a correctly-named `environment:` key would still be
+    # moot: it's unconditionally overridden by the `--autopilot=<mode>`
+    # start arg below (a hidden alias for `--env`, GH-5262). So rendering
+    # anything here would only trigger a DEPRECATED config log with zero
+    # effect. .Values.autopilot.mode is applied via the container's start
+    # args instead (see templates/_helpers.tpl pilot.startArgs).
 
     storage:
       # SQLite database lives on the PVC so it survives pod restarts

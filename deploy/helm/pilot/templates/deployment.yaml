@@ -24,7 +24,9 @@ spec:
         {{- end }}
         # Force pod restart when ConfigMap or Secret changes
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.existingSecret }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
       labels:
         {{- include "pilot.selectorLabels" . | nindent 8 }}
     spec:
@@ -47,24 +49,24 @@ spec:
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pilot.fullname" . }}
+                  name: {{ include "pilot.secretName" . }}
                   key: anthropic-api-key
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pilot.fullname" . }}
+                  name: {{ include "pilot.secretName" . }}
                   key: github-token
             {{- if .Values.adapters.slack.enabled }}
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pilot.fullname" . }}
+                  name: {{ include "pilot.secretName" . }}
                   key: slack-bot-token
                   optional: true
             - name: SLACK_APP_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pilot.fullname" . }}
+                  name: {{ include "pilot.secretName" . }}
                   key: slack-app-token
                   optional: true
             {{- end }}
@@ -72,7 +74,7 @@ spec:
             - name: TELEGRAM_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pilot.fullname" . }}
+                  name: {{ include "pilot.secretName" . }}
                   key: telegram-bot-token
                   optional: true
             {{- end }}
@@ -80,7 +82,7 @@ spec:
             - name: LINEAR_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "pilot.fullname" . }}
+                  name: {{ include "pilot.secretName" . }}
                   key: linear-api-key
                   optional: true
             {{- end }}

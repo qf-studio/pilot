@@ -224,19 +224,20 @@ cd pilot
 helm install pilot ./helm/pilot \
   --set secrets.githubToken="ghp_..." \
   --set secrets.anthropicApiKey="sk-ant-..." \
-  --set config.adapters.github.repo="your-org/your-repo"
+  --set adapters.github.repo="your-org/your-repo"
 ```
 
 ```bash
-# Create secrets separately (recommended)
+# Create a secret with the keys the chart expects (see templates/secret.yaml)
 kubectl create secret generic pilot-secrets \
   --from-literal=github-token="ghp_..." \
   --from-literal=anthropic-api-key="sk-ant-..."
 
-# Install referencing existing secret
+# Install referencing the existing secret instead of chart-managed secrets —
+# the chart skips creating its own Secret when existingSecret is set
 helm install pilot ./helm/pilot \
   --set existingSecret=pilot-secrets \
-  --set config.adapters.github.repo="your-org/your-repo"
+  --set adapters.github.repo="your-org/your-repo"
 ```
 
 ```bash
@@ -283,6 +284,7 @@ gateway:
 adapters:
   github:
     enabled: true
+    repo: ""                # "owner/repo" pilot polls for `pilot`-labeled issues
   telegram:
     enabled: false
   slack:
@@ -296,7 +298,13 @@ adapters:
 autopilot:
   mode: "stage"
 
-# API tokens and secrets — provide via --set or an external secret manager
+# Name of a pre-existing Secret to use instead of the one this chart
+# creates. Must define the same keys as templates/secret.yaml. Leave
+# empty to have the chart create and manage the Secret itself.
+existingSecret: ""
+
+# API tokens and secrets — provide via --set or an external secret manager.
+# Ignored when existingSecret is set.
 secrets:
   anthropicApiKey: ""
   githubToken: ""
