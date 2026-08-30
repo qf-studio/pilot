@@ -6768,7 +6768,7 @@ func TestController_HandleReviewRequested_IgnoresSelfReview(t *testing.T) {
 	c.activePRs[42].CreatedAt = time.Date(2026, 3, 5, 9, 0, 0, 0, time.UTC)
 	c.mu.Unlock()
 
-	result := c.hasChangesRequested(context.Background(), prState)
+	result := c.hasChangesRequested(context.Background(), prState, nil)
 	if result {
 		t.Error("hasChangesRequested should return false for bot-only reviews")
 	}
@@ -6845,7 +6845,7 @@ func TestController_HasChangesRequested_FilterByTime(t *testing.T) {
 	c.mu.Unlock()
 
 	prState, _ := c.GetPRState(42)
-	result := c.hasChangesRequested(context.Background(), prState)
+	result := c.hasChangesRequested(context.Background(), prState, nil)
 	if result {
 		t.Error("hasChangesRequested should return false for reviews submitted before PR creation")
 	}
