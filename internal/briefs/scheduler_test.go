@@ -596,7 +596,7 @@ func TestSchedulerRunNowRecordsToHistory(t *testing.T) {
 	ctx := context.Background()
 
 	// Verify no brief history initially
-	lastRecord, err := store.GetLastBriefSent("telegram")
+	lastRecord, err := store.GetLastBriefSent("telegram", "daily")
 	if err != nil {
 		t.Fatalf("GetLastBriefSent failed: %v", err)
 	}
@@ -619,7 +619,7 @@ func TestSchedulerRunNowRecordsToHistory(t *testing.T) {
 	// But the important part is that if it had succeeded, it would have been recorded
 	if results[0].Success {
 		// If delivery succeeded (shouldn't in this test setup), verify it was recorded
-		lastRecord, err = store.GetLastBriefSent("telegram")
+		lastRecord, err = store.GetLastBriefSent("telegram", "daily")
 		if err != nil {
 			t.Fatalf("GetLastBriefSent failed after successful delivery: %v", err)
 		}
@@ -634,7 +634,7 @@ func TestSchedulerRunNowRecordsToHistory(t *testing.T) {
 		}
 	} else {
 		// Delivery failed (expected), so no record should be written
-		lastRecord, err = store.GetLastBriefSent("telegram")
+		lastRecord, err = store.GetLastBriefSent("telegram", "daily")
 		if err != nil {
 			t.Fatalf("GetLastBriefSent failed: %v", err)
 		}

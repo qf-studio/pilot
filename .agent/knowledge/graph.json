@@ -5855,6 +5855,21 @@
         ],
         "confidence": 0.95,
         "created": "2026-08-30"
+      },
+      "sandbox-gofmt-corrupts-double-single-quotes": {
+        "type": "pitfall",
+        "summary": "The gofmt binary in the Pilot-executor sandbox silently rewrites two adjacent straight single quotes ('') inside a Go comment into one smart quote (\u201d) \u2014 root cause of the GH-5257/PR#5258 SQL-guard comment corruption. Never run go fmt/gofmt -w/make fmt near a comment quoting an empty-string SQL literal.",
+        "file": ".agent/knowledge/memories/pitfalls/sandbox-gofmt-corrupts-double-single-quotes.md",
+        "concepts": [
+          "tooling",
+          "gofmt",
+          "sandbox",
+          "go-toolchain",
+          "code-review",
+          "data-corruption"
+        ],
+        "confidence": 0.95,
+        "created": "2026-08-30"
       }
     }
   },
@@ -9741,8 +9756,8 @@
   },
   "last_updated": "2026-08-30T13:52:06.104808+00:00",
   "stats": {
-    "total_nodes": 494,
+    "total_nodes": 495,
     "total_edges": 408,
-    "memory_count": 258
+    "memory_count": 259
   }
 }

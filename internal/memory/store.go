@@ -2124,6 +2124,58 @@ func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 	return executions, rows.Err()
 }
 
+// GetExecutionsForReceipts retrieves terminal (completed or failed) executions
+// whose completed_at falls within the specified time period, for the daily
+// receipts digest (GH-5257 / GH-5261). It windows on completed_at rather than
+// created_at deliberately: a run's cost is only knowable once it finishes, and
+// windowing on created_at let a run started before a digest boundary but
+// finishing after it (still "running" at digest time) fall permanently outside
+// every digest's window (GH-5261 / PR#5258 review). Unlike GetExecutionsInPeriod,
+// it selects the full executionDetailColumns set so callers can read
+// cost/diff-size/source-issue fields, and it excludes canary rows
+// (COALESCE(is_canary,0)=0, matching GetBriefMetrics) so synthetic sandbox runs
+// never contaminate the digest or its totals. Failed rows are included
+// deliberately — a failed run still spent money and the digest marks it as such
+// rather than hiding its cost from the total.
+func (s *Store) GetExecutionsForReceipts(query BriefQuery) ([]*Execution, error) {
+	var args []interface{}
+	whereClause := "WHERE completed_at >= ? AND completed_at < ? AND status IN ('completed', 'failed') AND COALESCE(is_canary, 0) = 0"
+	args = append(args, query.Start, query.End)
+
+	if len(query.Projects) > 0 {
+		placeholders := ""
+		for i, p := range query.Projects {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += "?"
+			args = append(args, p)
+		}
+		whereClause += " AND project_path IN (" + placeholders + ")"
+	}
+
+	rows, err := s.db.Query(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		`+whereClause+`
+		ORDER BY completed_at ASC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		exec, err := scanExecutionDetail(rows)
+		if err != nil {
+			return nil, err
+		}
+		executions = append(executions, exec)
+	}
+	return executions, rows.Err()
+}
+
 // GetActiveExecutions retrieves all executions with status "running".
 func (s *Store) GetActiveExecutions() ([]*Execution, error) {
 	rows, err := s.db.Query(`
@@ -5171,16 +5223,21 @@ func (s *Store) GetLogsByExecutionID(executionID string, limit int) ([]*LogEntry
 	return entries, nil
 }
 
-// GetLastBriefSent returns the most recent brief record for a given channel.
-// Returns nil if no brief has been sent to the channel.
-func (s *Store) GetLastBriefSent(channel string) (*BriefRecord, error) {
+// GetLastBriefSent returns the most recent brief record for a given channel
+// and brief type. Returns nil if no matching brief has been sent.
+//
+// GH-5257: briefType is a required filter, not just channel — brief_history
+// rows from a second scheduled brief type (e.g. "receipts") on the same
+// Telegram channel would otherwise satisfy a channel-only lookup and corrupt
+// the other brief type's catch-up logic (false catch-up fires / false skips).
+func (s *Store) GetLastBriefSent(channel, briefType string) (*BriefRecord, error) {
 	row := s.db.QueryRow(`
 		SELECT id, sent_at, channel, brief_type, COALESCE(recipient, '')
 		FROM brief_history
-		WHERE channel = ?
+		WHERE channel = ? AND brief_type = ?
 		ORDER BY sent_at DESC
 		LIMIT 1
-	`, channel)
+	`, channel, briefType)
 
 	var record BriefRecord
 	err := row.Scan(&record.ID, &record.SentAt, &record.Channel, &record.BriefType, &record.Recipient)

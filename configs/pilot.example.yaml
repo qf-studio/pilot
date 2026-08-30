@@ -291,6 +291,18 @@ orchestrator:
     poll_interval: 30s         # How often to check PR status
     pr_timeout: 1h             # Max time to wait for PR merge
 
+  # Daily receipts digest (GH-5257): an end-of-day Telegram-only summary,
+  # one line per terminal execution that day — issue ref, diff size,
+  # duration, dollar cost — plus a day total. Independent schedule from any
+  # daily_brief block; an empty day sends nothing.
+  receipts_digest:
+    enabled: false
+    schedule: "0 18 * * *"     # 6 PM daily (cron syntax)
+    timezone: "America/New_York"
+    channels:
+      - type: "telegram"
+        channel: "@your_chat_id"
+
   # Autopilot settings
   autopilot:
     enabled: false

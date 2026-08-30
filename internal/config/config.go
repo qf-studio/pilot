@@ -166,8 +166,15 @@ type OrchestratorConfig struct {
 	Model         string            `yaml:"model"`
 	MaxConcurrent int               `yaml:"max_concurrent"`
 	DailyBrief    *DailyBriefConfig `yaml:"daily_brief"`
-	Execution     *ExecutionConfig  `yaml:"execution"`
-	Autopilot     *autopilot.Config `yaml:"autopilot"`
+	// ReceiptsDigest configures the end-of-day per-run cost receipts digest
+	// (GH-5257) — a second, independently-scheduled Telegram brief listing one
+	// line per terminal execution (issue ref, diff size, duration, cost) plus
+	// a day total. Sibling to DailyBrief rather than a generalization of it:
+	// the digest's flat per-execution shape doesn't match Brief's
+	// Completed/InProgress/Blocked sections.
+	ReceiptsDigest *ReceiptsDigestConfig `yaml:"receipts_digest"`
+	Execution      *ExecutionConfig      `yaml:"execution"`
+	Autopilot      *autopilot.Config     `yaml:"autopilot"`
 }
 
 // ExecutionConfig holds settings for task execution mode.
@@ -201,6 +208,18 @@ type DailyBriefConfig struct {
 	Channels []BriefChannelConfig `yaml:"channels"`
 	Content  BriefContentConfig   `yaml:"content"`
 	Filters  BriefFilterConfig    `yaml:"filters"`
+}
+
+// ReceiptsDigestConfig holds settings for the daily receipts digest (GH-5257):
+// an end-of-day Telegram-only summary of per-execution cost receipts, on its
+// own schedule independent of DailyBriefConfig. No Time field (that's a
+// deprecated leftover on DailyBriefConfig) and no Content/Filters — the
+// digest has no content toggles in v1.
+type ReceiptsDigestConfig struct {
+	Enabled  bool                 `yaml:"enabled"`
+	Schedule string               `yaml:"schedule"` // Cron syntax: "0 18 * * *"
+	Timezone string               `yaml:"timezone"`
+	Channels []BriefChannelConfig `yaml:"channels"`
 }
 
 // BriefChannelConfig defines a delivery channel for daily briefs (Slack or email).
@@ -578,6 +597,12 @@ func DefaultConfig() *Config {
 				Filters: BriefFilterConfig{
 					Projects: []string{},
 				},
+			},
+			ReceiptsDigest: &ReceiptsDigestConfig{
+				Enabled:  false,
+				Schedule: "0 18 * * *", // 6 PM daily
+				Timezone: "America/New_York",
+				Channels: []BriefChannelConfig{},
 			},
 			Execution: DefaultExecutionConfig(),
 			Autopilot: autopilot.DefaultConfig(),
