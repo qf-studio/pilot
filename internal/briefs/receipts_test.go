@@ -396,3 +396,99 @@ func TestReceiptsSchedulerRunNow_InFlightRunAppearsInNextDigest(t *testing.T) {
 		t.Errorf("digest 2 must NOT re-mention already-receipted #5300, got: %s", sender.calls[1].text)
 	}
 }
+
+// TestReceiptsSchedulerRunNow_SentAtMatchesQueryEnd is GH-5268, a sibling of
+// InFlightRunAppearsInNextDigest: a run whose completed_at lands in the
+// sub-second gap between the executions query's End bound and the (formerly
+// later) post-delivery time.Now() used to stamp SentAt must still appear in
+// the next digest. The mock sender's onSend hook simulates that gap
+// directly — it inserts the completing execution mid-SendBriefMessage, i.e.
+// strictly after runDigest has already captured `now`/End and run the
+// executions query, but strictly before the (fixed) code stamps
+// brief_history.SentAt. Before the fix, SentAt was stamped with a fresh
+// time.Now() taken after delivery finished, later than this execution's
+// completed_at — putting it in the dead (End, SentAt) window that neither
+// digest 1 nor digest 2 would ever cover.
+func TestReceiptsSchedulerRunNow_SentAtMatchesQueryEnd(t *testing.T) {
+	store, cleanup := setupSchedulerTestStore(t)
+	defer cleanup()
+
+	// exec-seed: completed well before digest 1 fires — guarantees digest 1
+	// actually sends (a digest with zero rows skips delivery entirely, and
+	// then there'd be nothing to stamp a SentAt from).
+	seedCompleted := time.Now().Add(-2 * time.Hour)
+	if err := store.SaveExecution(&memory.Execution{
+		ID:                "exec-seed",
+		TaskID:            "GH-5400",
+		ProjectPath:       "/tmp/proj",
+		Status:            "completed",
+		CreatedAt:         seedCompleted,
+		CompletedAt:       &seedCompleted,
+		EstimatedCostUSD:  0.50,
+		TaskSourceAdapter: "github",
+	}); err != nil {
+		t.Fatalf("SaveExecution (seed): %v", err)
+	}
+
+	sender := &mockTelegramSender{}
+	sender.onSend = func() {
+		// Fires synchronously inside digest 1's SendBriefMessage call —
+		// after the executions query already ran (so exec-gap can't appear
+		// in digest 1) but before runDigest stamps SentAt after delivery.
+		completedDuringSend := time.Now()
+		if err := store.SaveExecution(&memory.Execution{
+			ID:                "exec-gap",
+			TaskID:            "GH-5401",
+			ProjectPath:       "/tmp/proj",
+			Status:            "completed",
+			CreatedAt:         completedDuringSend.Add(-time.Minute),
+			CompletedAt:       &completedDuringSend,
+			EstimatedCostUSD:  0.75,
+			TaskSourceAdapter: "github",
+		}); err != nil {
+			t.Fatalf("SaveExecution (gap): %v", err)
+		}
+	}
+
+	config := &ReceiptsConfig{
+		Enabled:  true,
+		Schedule: "0 18 * * *",
+		Timezone: "UTC",
+		Channels: []ChannelConfig{{Type: "telegram", Channel: "@test"}},
+	}
+	scheduler := NewReceiptsScheduler(store, sender, config, nil)
+
+	// Digest 1: only exec-seed exists at query time; exec-gap is inserted by
+	// the onSend hook mid-delivery.
+	if err := scheduler.RunNow(context.Background()); err != nil {
+		t.Fatalf("RunNow (digest 1) failed: %v", err)
+	}
+	if len(sender.calls) != 1 {
+		t.Fatalf("expected 1 send after digest 1, got %d", len(sender.calls))
+	}
+	if !strings.Contains(sender.calls[0].text, "#5400") {
+		t.Errorf("digest 1 should mention #5400, got: %s", sender.calls[0].text)
+	}
+	if strings.Contains(sender.calls[0].text, "#5401") {
+		t.Errorf("digest 1 must NOT mention #5401 (didn't exist at query time), got: %s", sender.calls[0].text)
+	}
+
+	sender.onSend = nil
+
+	// Digest 2 must still find exec-gap: SentAt was recorded as digest 1's
+	// query End (not a later post-delivery time.Now()), so digest 2's
+	// window starts exactly where digest 1's query left off — no (End,
+	// SentAt) gap for exec-gap's completed_at to fall into.
+	if err := scheduler.RunNow(context.Background()); err != nil {
+		t.Fatalf("RunNow (digest 2) failed: %v", err)
+	}
+	if len(sender.calls) != 2 {
+		t.Fatalf("expected 2 sends after digest 2, got %d", len(sender.calls))
+	}
+	if !strings.Contains(sender.calls[1].text, "#5401") {
+		t.Errorf("digest 2 should mention #5401 (completed during digest 1's delivery), got: %s", sender.calls[1].text)
+	}
+	if strings.Contains(sender.calls[1].text, "#5400") {
+		t.Errorf("digest 2 must NOT re-mention already-receipted #5400, got: %s", sender.calls[1].text)
+	}
+}

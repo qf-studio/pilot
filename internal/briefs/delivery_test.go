@@ -36,6 +36,11 @@ func (m *mockSlackClient) PostMessage(ctx context.Context, msg *slack.Message) (
 type mockTelegramSender struct {
 	calls         []telegramSendCall
 	failParseMode string // parse mode for which the send fails with a parse-entities error
+	// onSend, if set, runs synchronously inside SendBriefMessage before it
+	// returns — lets tests simulate state changes (e.g. an execution
+	// completing) that happen during delivery latency, after the caller's
+	// executions query already ran (GH-5268).
+	onSend func()
 }
 
 type telegramSendCall struct {
@@ -46,6 +51,9 @@ type telegramSendCall struct {
 
 func (m *mockTelegramSender) SendBriefMessage(ctx context.Context, chatID, text, parseMode string) (*TelegramMessageResponse, error) {
 	m.calls = append(m.calls, telegramSendCall{chatID: chatID, text: text, parseMode: parseMode})
+	if m.onSend != nil {
+		m.onSend()
+	}
 	if parseMode == m.failParseMode {
 		return nil, errors.New("telegram API error: Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 1090 (code: 400)")
 	}
