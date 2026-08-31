@@ -1,6 +1,6 @@
 # feat(controlplane): S4 unblock — minimal in-VPC console mode (no ALB/ACM/SES/SPA), SSM port-forward access
 
-🚀 ACTIVE 2026-08-31 — founder decision recorded (memory `s4-unblock-minimal-invpc-ec2-console`): the S4 exit week runs on a minimal EC2 console inside the fleet VPC control-plane SG; domain purchase stays deferred. Leg 1 dispatching to pilot-cloud-infra.
+🟢 CODE COMPLETE 2026-08-31, one-day cycle — **legs 1+1b+2 all shipped, reviewed, review debt zero; OPERATOR DEPLOY IS THE GATE NOW.** Full chain: 5 issues → 5 PRs merged+verdicts same day (infra#41→PR#42 REQUEST-CHANGES → infra#43→**PR#44 APPROVE** [access-path ARN fix mutation-verified; default synth byte-identical] · console#239→PR#240 APPROVE-w-notes · console#241→**PR#243 APPROVE** [tarball verified by execution] · console#242→**PR#244 APPROVE** [ordering-oracle test killed 2 mutants]). Founder decision memory: `s4-unblock-minimal-invpc-ec2-console`. Next: Leg 4a operator deploy (runbook in infra docs: make package → S3 upload → cdk deploy minimal → DB-URL SSM param → attach port-forward policy to an IAM user) → then Leg 3 tracker-rig dispatch → Leg 4 exit week.
 
 ## Problem
 
