@@ -2349,6 +2349,17 @@
           "knowledge",
           "deployment"
         ]
+      },
+      "TASK-490": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-490-s4-minimal-invpc-console.md",
+        "title": "Task 490 S4 Minimal Invpc Console",
+        "status": "unknown",
+        "concepts": [
+          "knowledge",
+          "deployment",
+          "api",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -5870,6 +5881,20 @@
         ],
         "confidence": 0.95,
         "created": "2026-08-30"
+      },
+      "s4-unblock-minimal-invpc-ec2-console": {
+        "type": "decision",
+        "summary": "Founder decision 2026-08-31 \u2014 S4 exit unblocked via a minimal EC2 console inside the fleet VPC control-plane SG (no ALB/ACM/SES/domain); laptop access via SSM port-forward to that one instance. Leg order: infra console deploy (gate) \u2192 deprovision-cascade fix (parallel) \u2192 second-tracker rig \u2192 operator exit week. Do not resurrect the domain purchase as an S4 blocker.",
+        "file": ".agent/knowledge/memories/decisions/s4-unblock-minimal-invpc-ec2-console.md",
+        "concepts": [
+          "deployment",
+          "saas",
+          "infrastructure",
+          "dashboard",
+          "workflow"
+        ],
+        "confidence": 0.95,
+        "created": "2026-08-31"
       }
     }
   },
@@ -7913,6 +7938,26 @@
       "from": "TASK-460",
       "to": "api",
       "type": "implements"
+    },
+    {
+      "from": "TASK-490",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-490",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-490",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-490",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -8055,7 +8100,8 @@
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-489"
+      "TASK-489",
+      "TASK-490"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -8641,7 +8687,8 @@
       "TASK-489",
       "mem-180",
       "mem-181",
-      "mem-182"
+      "mem-182",
+      "TASK-490"
     ],
     "dispatch": [
       "board-sourced-repo-ignores-labeled-issues",
@@ -9041,7 +9088,8 @@
       "mem-169",
       "mem-170",
       "TASK-489",
-      "TASK-486"
+      "TASK-486",
+      "TASK-490"
     ],
     "labels": [
       "mem-100",
@@ -9514,7 +9562,8 @@
       "TASK-489",
       "mem-180",
       "mem-181",
-      "mem-182"
+      "mem-182",
+      "TASK-490"
     ],
     "testing-quality": [
       "TASK-384",
@@ -9754,10 +9803,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-30T17:46:01.917379+00:00",
+  "last_updated": "2026-08-31T12:17:29.260039+00:00",
   "stats": {
-    "total_nodes": 495,
+    "total_nodes": 496,
     "total_edges": 408,
-    "memory_count": 259
+    "memory_count": 260
   }
 }
