@@ -2355,10 +2355,11 @@
         "title": "Task 490 S4 Minimal Invpc Console",
         "status": "unknown",
         "concepts": [
-          "knowledge",
-          "deployment",
           "api",
-          "testing"
+          "deployment",
+          "testing",
+          "database",
+          "knowledge"
         ]
       }
     },
@@ -7958,6 +7959,11 @@
       "from": "TASK-490",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-490",
+      "to": "database",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -8537,7 +8543,8 @@
       "timestamp-hardening-parse-then-compare-in-go",
       "TASK-487",
       "TASK-488",
-      "TASK-489"
+      "TASK-489",
+      "TASK-490"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -9803,10 +9810,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-31T12:17:29.260039+00:00",
+  "last_updated": "2026-08-31T12:31:05.613642+00:00",
   "stats": {
-    "total_nodes": 496,
-    "total_edges": 408,
+    "total_nodes": 497,
+    "total_edges": 413,
     "memory_count": 260
   }
 }
