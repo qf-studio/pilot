@@ -5896,6 +5896,19 @@
         ],
         "confidence": 0.95,
         "created": "2026-08-31"
+      },
+      "ses-identity-has-no-consumer-email-service-is-the-missing-middle": {
+        "type": "learning",
+        "summary": "ControlPlaneStack's SES domain identity has zero deployed consumers \u2014 auth-service emails via HTTPSender \u2192 the standalone email-service REST API (SMTP/SES/Mailgun/Resend, GitLab linear-invoices org), which is deployed nowhere in the stack. Launch email leg can use email-service's Resend/Mailgun transport, dropping the SES domain identity + sandbox-exit from the critical path (ACM/domain remain only for the public ALB). Irrelevant to S4 (email off by design).",
+        "file": ".agent/knowledge/memories/learnings/ses-identity-has-no-consumer-email-service-is-the-missing-middle.md",
+        "concepts": [
+          "saas",
+          "aws",
+          "deployment",
+          "adapters"
+        ],
+        "confidence": 0.95,
+        "created": "2026-08-31"
       }
     }
   },
