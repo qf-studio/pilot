@@ -2355,11 +2355,11 @@
         "title": "Task 490 S4 Minimal Invpc Console",
         "status": "unknown",
         "concepts": [
+          "testing",
+          "knowledge",
           "deployment",
           "api",
-          "authentication",
-          "testing",
-          "knowledge"
+          "authentication"
         ]
       }
     },
@@ -9816,7 +9816,7 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-31T13:29:33.493474+00:00",
+  "last_updated": "2026-08-31T14:02:28.276175+00:00",
   "stats": {
     "total_nodes": 497,
     "total_edges": 414,
