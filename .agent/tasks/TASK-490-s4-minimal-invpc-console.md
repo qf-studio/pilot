@@ -26,8 +26,21 @@ S4's exit clause is "operated dashboard-only for a full week across ≥2 tracker
 | 1 | pilot-cloud-infra | Minimal mode flag (no ALB/ACM/SES/SPA), 5432 rule, port-forward IAM policy + outputs, reconciler systemd unit, runbook section | ⚠️ #41 → **PR#42 MERGED 12:33Z same day** · post-merge review **REQUEST-CHANGES** (verdict on PR): port-forward policy renders the SSM document ARN WITH account id — AWS-owned docs authorize account-less, so StartSession = AccessDenied on minimal mode's ONLY access path; presence-only test couldn't catch it. Fix + 4 test/docs hardenings → [infra#43](https://github.com/qf-studio/pilot-cloud-infra/issues/43) (pilot-labeled). Held items in #43: 5432-rule tests don't pin GroupId (reversed rule passes) · policy test Action/Effect-only · user-data extracts only the pilot-console tar member (consolectl guard unsatisfiable) · runbook IAM-user + shell-session caveats |
 | 1b | pilot-console | Package consolectl into the console release tarball (producer side; infra#43 item 4 is the consumer) — repo has ZERO packaging machinery today, tarball is operator-hand-built | 🚀 dispatched → [console#241](https://github.com/qf-studio/pilot-console/issues/241) |
 | 2 | pilot-console | Deprovision cascade: connections rows + board children reaped at terminate, SSM param DeleteAll wired (zero prod callers today), syncingest terminated-org skip + status=error flagging | ✅ #239 → **PR#240 MERGED 13:00Z same day** · post-merge review **APPROVE-w-notes** (verdict on PR; reap order/skip/restore all mutation-verified — 3/3 test kills). Notes: settleDrift bypass = no reap on drift-terminate (layer 2 covers noise) · error flag couples to provisioning gate (transient 412 window) · latent DeleteAll pagination bug now live → follow-up [console#242](https://github.com/qf-studio/pilot-console/issues/242) (pilot-labeled) |
-| 3 | — | Second-tracker rig on a console-provisioned tenant (Jira/Linear; founder-box Jira does not count) | 📋 after Leg 1 live |
-| 4 | operator | Deploy minimal stack · place DB URL param · attach port-forward policy · run the S4 exit week | ⏸ after 1–3 |
+| 3a | pilot-console | Tenant config derivation for jira/linear — render adapter blocks (polling on pilot label), generation bump on non-github connection change, preflight secret gating. **THE rig blocker**: console sync plane is tri-tracker but tenant render is github-only → dispatching a jira card labels an issue NO daemon polls, silently | 🚀 dispatched → [console#245](https://github.com/qf-studio/pilot-console/issues/245) |
+| 3b | pilot-console | Require project_key/team_key at the connection write boundary — today PUT returns 200 "connected" then the row error-flips dead-on-arrival on the first tick | 🚀 dispatched → [console#246](https://github.com/qf-studio/pilot-console/issues/246) |
+| 4 | operator | Deploy minimal stack · place DB URL param · attach port-forward policy · rig setup (checklist below) · run the S4 exit week | ⏸ after 1–3 |
+
+## Leg 3 rig — operator checklist (research 2026-08-31, console origin/main ac779a8)
+
+Second connection enters via the API/UI only — consolectl has NO connection command (seed-secret writes SSM but not the connections row). One board per org is automatic (two connections converge on it; card_links unique per connection — no cross-tracker collisions).
+
+1. Seed the credential: JIRA_API_TOKEN (Atlassian API token) or LINEAR_API_KEY into the tenant SSM path (consolectl seed-secret works for this half).
+2. PUT /api/v1/connections/jira with base_url (https://SITE.atlassian.net), email, **project_key** — or linear with **team_key**. After #246 lands, missing keys 422 instead of silently error-flipping. Jira Cloud only (platform hardcoded).
+3. Status maps: jira/linear seed from OBSERVED states only (the github seed route 409s for them) — either drive real issue traffic through the tracker first, or PUT the statusmaps for the tracker with all 7 canonical rows manually. Without this, status write-back is a no-op and unmapped states freeze cards in backlog.
+4. Verify the connection stays status=connected after one poll interval (60s default) — an error flip = connector build failed.
+5. Accepted S4 degrades (documented, won't fix this leg): done-transition PR link github-only (jira/linear cards show no PR) · priority write-back no-op on github/jira (Linear-only round-trip) · Linear error classification is substring-heuristic with retry-everything fallback (watch for hot retry loops on novel Linear failures).
+
+Deferred (not S4): consolectl connection command for reproducible rigs · github-only provisioning readiness gate (fine for GitHub+X tenants) · jira/linear e2e fixtures beyond what #245 adds.
 
 ## Refs
 
