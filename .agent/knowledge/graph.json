@@ -2355,10 +2355,10 @@
         "title": "Task 490 S4 Minimal Invpc Console",
         "status": "unknown",
         "concepts": [
-          "api",
           "deployment",
+          "api",
+          "authentication",
           "testing",
-          "database",
           "knowledge"
         ]
       }
@@ -7964,6 +7964,11 @@
       "from": "TASK-490",
       "to": "database",
       "type": "implements"
+    },
+    {
+      "from": "TASK-490",
+      "to": "authentication",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -8185,7 +8190,8 @@
       "mem-122",
       "mem-171",
       "unwired-config-field-validated-but-dead",
-      "TASK-487"
+      "TASK-487",
+      "TASK-490"
     ],
     "auto-merge": [
       "mem-103"
@@ -9810,10 +9816,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-31T12:31:05.613642+00:00",
+  "last_updated": "2026-08-31T13:29:33.493474+00:00",
   "stats": {
     "total_nodes": 497,
-    "total_edges": 413,
+    "total_edges": 414,
     "memory_count": 260
   }
 }
