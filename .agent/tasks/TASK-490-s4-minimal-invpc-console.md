@@ -25,7 +25,7 @@ S4's exit clause is "operated dashboard-only for a full week across ≥2 tracker
 |---|------|------|--------|
 | 1 | pilot-cloud-infra | Minimal mode flag (no ALB/ACM/SES/SPA), 5432 rule, port-forward IAM policy + outputs, reconciler systemd unit, runbook section | 🚀 dispatched → issue #41 |
 | 1b | pilot-console | Package consolectl into the console release tarball (reconciler unit's binary source) | 📋 file after Leg 1 lands |
-| 2 | pilot-console | Deprovision cascade: terminated tenants keep connections rows after SSM params reaped → syncingest errors every 30s | 📋 parallel, must land before exit week |
+| 2 | pilot-console | Deprovision cascade: connections rows + board children reaped at terminate, SSM param DeleteAll wired (zero prod callers today), syncingest terminated-org skip + status=error flagging | 🚀 dispatched → [console#239](https://github.com/qf-studio/pilot-console/issues/239) (option A recommended: ordered transactional reap, no migration) |
 | 3 | — | Second-tracker rig on a console-provisioned tenant (Jira/Linear; founder-box Jira does not count) | 📋 after Leg 1 live |
 | 4 | operator | Deploy minimal stack · place DB URL param · attach port-forward policy · run the S4 exit week | ⏸ after 1–3 |
 
