@@ -2341,13 +2341,13 @@
         "title": "Task 489 Receipts Digest",
         "status": "unknown",
         "concepts": [
-          "testing",
           "api",
-          "deployment",
-          "knowledge",
-          "workflow",
           "markers",
-          "database"
+          "workflow",
+          "testing",
+          "database",
+          "knowledge",
+          "deployment"
         ]
       }
     },
@@ -9754,7 +9754,7 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-30T13:52:06.104808+00:00",
+  "last_updated": "2026-08-30T17:46:01.917379+00:00",
   "stats": {
     "total_nodes": 495,
     "total_edges": 408,
