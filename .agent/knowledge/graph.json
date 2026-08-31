@@ -2355,10 +2355,13 @@
         "title": "Task 490 S4 Minimal Invpc Console",
         "status": "unknown",
         "concepts": [
-          "testing",
-          "knowledge",
           "deployment",
+          "theory of mind",
+          "knowledge",
+          "testing",
           "api",
+          "workflow",
+          "context",
           "authentication"
         ]
       }
@@ -7982,6 +7985,16 @@
       "from": "TASK-490",
       "to": "authentication",
       "type": "implements"
+    },
+    {
+      "from": "TASK-490",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-490",
+      "to": "context",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -8458,7 +8471,8 @@
       "TASK-489",
       "mem-180",
       "mem-181",
-      "mem-182"
+      "mem-182",
+      "TASK-490"
     ],
     "conversational-bot": [
       "mem-036",
@@ -9743,7 +9757,8 @@
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-489"
+      "TASK-489",
+      "TASK-490"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -9803,7 +9818,8 @@
       "mem-181",
       "mem-182",
       "TASK-485",
-      "TASK-460"
+      "TASK-460",
+      "TASK-490"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -9829,10 +9845,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-31T14:02:28.276175+00:00",
+  "last_updated": "2026-08-31T15:32:20.252730+00:00",
   "stats": {
     "total_nodes": 497,
-    "total_edges": 414,
+    "total_edges": 416,
     "memory_count": 260
   }
 }
