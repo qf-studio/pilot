@@ -57,3 +57,11 @@ From there Aleks runs the runbook's 3-step validation (ready endpoint through th
 ## 7. Out of scope / explicitly NOT requested
 
 No domain, no ACM, no SES, no CloudFront, no IAM users created by the stack, no changes to tenant stacks or the founder box, no Secrets Manager grants to instances. The full public stack (ALB path) remains available later by redeploying without the flag.
+
+## 8. Supplement (2026-09-01, sent as DM #3)
+
+**Repo/config map**: pilot-cloud-infra = the CDK app, 4 stacks (FleetVpc → ControlPlane [only one changing] → TenantBase; DataLifecycle standalone; others already live) · pilot-console = tarball source, runtime env = every SSM param under /controlplane/pilot-console/* · auth-service = docker container on the instance + redis:7-alpine sidecar (public Docker Hub), env from /controlplane/auth-service/* · pilot-console-ui = local-only SPA · daemon/founder/tenant boxes untouched.
+
+**Finding 1 (boot blocker)**: default auth-service image ghcr.io/qf-studio/auth-service:latest is PRIVATE (anon pull 403, verified) and user-data does no registry login → auth-service units fail on first boot. Fix = [infra#45](https://github.com/qf-studio/pilot-cloud-infra/issues/45) (ECR pull path, pilot-labeled). **Deploy should wait for #45.**
+
+**Finding 2 (owed to Nelya)**: exact env-key list per service (pilot-console, auth-service) before she places SSM params — enumerate from each repo's config loading. `:latest` tag flagged for pinning.
