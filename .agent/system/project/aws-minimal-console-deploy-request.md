@@ -65,3 +65,15 @@ No domain, no ACM, no SES, no CloudFront, no IAM users created by the stack, no 
 **Finding 1 (boot blocker)**: default auth-service image ghcr.io/qf-studio/auth-service:latest is PRIVATE (anon pull 403, verified) and user-data does no registry login → auth-service units fail on first boot. Fix = [infra#45](https://github.com/qf-studio/pilot-cloud-infra/issues/45) (ECR pull path, pilot-labeled). **Deploy should wait for #45.**
 
 **Finding 2 (owed to Nelya)**: exact env-key list per service (pilot-console, auth-service) before she places SSM params — enumerate from each repo's config loading. `:latest` tag flagged for pinning.
+
+## 9. pilot-console-ui — deploy trajectory (added 2026-09-01, founder direction: it WILL be deployed)
+
+Today (minimal mode): SPA runs on the operator laptop against the port-forwarded API (API base http://localhost:8090) — nothing needed from infra. The stack already contains the future hosting path in code (S3 + CloudFront in the controlplane spa constructor), deliberately skipped by the minimal flag.
+
+Planned public deploy (when the domain lands) needs, in order:
+1. **Domain decision** (in flight — shortlist gathered 2026-09-01) → ACM cert (DNS-validated) for the UI origin + the API origin.
+2. **Asset publish pipeline — MISSING everywhere**: the CDK spa constructor creates bucket+distribution but no BucketDeployment, and pilot-console-ui has no CI publish step. Needs either a CDK BucketDeployment from a built dist, or a UI-repo CI job that builds (bun/vite) and syncs to the bucket + invalidates CloudFront. File as an issue pair (infra + ui) when the domain decision lands.
+3. **Origin/cookie architecture check before going public**: console sessions ride a __Host- prefixed cookie (same-origin HTTPS constraint). Full mode serves the SPA from CloudFront and the API from the ALB — different origins — so either front both under one domain (CloudFront behavior routing /api/* to the ALB) or rework the session cookie for cross-origin + CORS credentials (auth-service CORS_ALLOWED_ORIGINS must carry the UI origin either way). Decide at design time, not deploy time.
+4. auth-service OIDC issuer URL must be set to the real domain (defaults to a hardcoded auth.qf.studio — flagged in the env enumeration).
+
+Nothing in the current minimal-mode request changes; this section exists so the UI deploy is planned work, not a surprise.
