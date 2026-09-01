@@ -112,6 +112,15 @@ type DispatcherConfig struct {
 	// runs. Default: 5 minutes.
 	StaleRecoveryInterval time.Duration
 
+	// OrphanedClaimGraceWindow is how long an execution_claims row may sit
+	// with no matching executions row before it is reaped as orphaned
+	// (GH-5273). Must comfortably exceed the ordinary claim-then-write
+	// latency (ClaimExecution succeeding, then SaveExecution landing —
+	// normally microseconds) so a claim that is merely mid-write is never
+	// mistaken for one whose owner died before writing it. Default: 10
+	// minutes.
+	OrphanedClaimGraceWindow time.Duration
+
 	// BasePresenceHoldMaxCycles bounds how many consecutive claim-path
 	// held cycles (GH-5045/GH-5052: an explicit "Depends on: #N" ref still
 	// an open PR — directly, or via an issue whose attached PR is still
@@ -133,6 +142,7 @@ func DefaultDispatcherConfig() *DispatcherConfig {
 		StaleRunningThreshold:     30 * time.Minute,
 		StaleQueuedThreshold:      5 * time.Minute,
 		StaleRecoveryInterval:     5 * time.Minute,
+		OrphanedClaimGraceWindow:  10 * time.Minute,
 		BasePresenceHoldMaxCycles: 20,
 	}
 }
@@ -146,6 +156,9 @@ func (c *DispatcherConfig) resolveDefaults() {
 	}
 	if c.StaleRecoveryInterval == 0 {
 		c.StaleRecoveryInterval = 5 * time.Minute
+	}
+	if c.OrphanedClaimGraceWindow == 0 {
+		c.OrphanedClaimGraceWindow = 10 * time.Minute
 	}
 	if c.BasePresenceHoldMaxCycles == 0 {
 		c.BasePresenceHoldMaxCycles = 20
@@ -589,8 +602,47 @@ func (d *Dispatcher) Stop() {
 func (d *Dispatcher) recoverStaleTasks() int {
 	resetCount := d.recoverStaleRunningTasks()
 	resetCount += d.recoverStaleQueuedTasks()
+	d.reapOrphanedClaims()
 	d.log.Info("stale recovery complete, reset N tasks", slog.Int("count", resetCount))
 	return resetCount
+}
+
+// reapOrphanedClaims deletes execution_claims rows whose owner died before
+// ever writing the executions row Begin normally saves immediately after
+// winning the claim (GH-5273). Riding the existing stale-recovery tick
+// rather than a dedicated ticker mirrors wakeHeldWorkers' reasoning above: a
+// row-less claim is exceedingly rare (a crash landing in the exact window
+// between ClaimExecution and SaveExecution), so it does not need its own
+// cadence, and the two sweeps sharing one tick means an orphaned claim is
+// never wedged longer than one StaleRecoveryInterval past its grace window.
+//
+// A dispatch attempt for the same (task_id, project_path) that arrives
+// before this reaps the row keeps dropping as "dispatch claim lost" exactly
+// as it did during the incident this closes — the fix is the row's removal,
+// not a change to the drop path itself, so the next admission attempt after
+// this reaps it claims generation 0 fresh instead of colliding forever.
+func (d *Dispatcher) reapOrphanedClaims() {
+	orphans, err := d.store.ReapOrphanedClaims(d.config.OrphanedClaimGraceWindow)
+	if err != nil {
+		d.log.Warn("failed to reap orphaned execution claims", slog.Any("error", err))
+		return
+	}
+	for _, o := range orphans {
+		backoffKey := repickBackoffKey(o.ProjectPath, o.TaskID)
+		claimLostDrops, _, err := d.store.GetClaimLostDropCount(backoffKey)
+		if err != nil {
+			d.log.Warn("failed to read claim-lost drop count while logging reaped claim",
+				slog.String("task_id", o.TaskID), slog.Any("error", err))
+		}
+		d.log.Info("GH-5273: reaped orphaned execution claim — claim row had no execution row past the grace window, dispatch was permanently wedged colliding with it",
+			slog.String("task_id", o.TaskID),
+			slog.String("project", o.ProjectPath),
+			slog.Int("generation", o.Generation),
+			slog.String("execution_id", o.ExecutionID),
+			slog.Duration("age", o.Age),
+			slog.Int("claim_lost_drops", claimLostDrops),
+		)
+	}
 }
 
 // recoverStaleRunningTasks marks orphaned running tasks (crashed workers) as
