@@ -3437,6 +3437,102 @@ func (s *Store) LatestClaimGeneration(taskID, projectPath string) (generation in
 	return generation, executionID, true, nil
 }
 
+// OrphanedClaim describes one execution_claims row reaped by
+// ReapOrphanedClaims (GH-5273): a claim whose owner died before ever writing
+// the executions row Begin normally saves immediately after winning the
+// claim (ExecutionLifecycle.Begin in internal/executor/lifecycle.go). Unlike
+// GH-4409's dangling-claim fallthrough in nextRetryGeneration — which only
+// helps once a NEW dispatch attempt loses ErrClaimLost against the row —
+// this is the row itself being removed, so a future admission attempt for
+// (TaskID, ProjectPath) claims generation 0 fresh rather than colliding with
+// a permanently row-less claim forever.
+type OrphanedClaim struct {
+	TaskID      string
+	ProjectPath string
+	Generation  int
+	ExecutionID string
+	Age         time.Duration
+}
+
+// ReapOrphanedClaims deletes every execution_claims row older than
+// graceWindow whose claimed execution_id has no matching row in the
+// executions table at all — a claim whose owner crashed between winning
+// ClaimExecution and the immediately-following SaveExecution (GH-5273 live
+// incident: a generation-0 claim survived with no execution row behind it,
+// so every subsequent dispatch attempt's INSERT OR IGNORE collided with it
+// and dropped as "dispatch claim lost", 67 times over ~18 hours, with no
+// existing recovery mechanism able to see it — the stalled re-arm sweep
+// (GH-5212) and nextRetryGeneration's dangling-claim fallthrough (GH-4409)
+// both key off ledger/execution-row evidence that, by construction, does not
+// exist for this class).
+//
+// The grace window guards the legitimate claim-then-write race
+// (ClaimExecution succeeds, SaveExecution follows within the same call —
+// normally microseconds): a claim younger than graceWindow may simply be
+// mid-write, not orphaned, so it is left alone regardless of whether its
+// execution row exists yet. A claim whose (task_id, generation) DOES have a
+// matching executions row — running, queued, or any terminal status — is
+// never selected here regardless of age; only a claim with literally no
+// execution row is a candidate, matching Begin's own claim-then-immediately-
+// save contract (see ExecutionLifecycle.Begin's doc comment).
+//
+// Returns the reaped claims (possibly empty) for the caller to log —
+// deletion already happened by the time this returns.
+func (s *Store) ReapOrphanedClaims(graceWindow time.Duration) ([]OrphanedClaim, error) {
+	cutoff := time.Now().Add(-graceWindow)
+
+	rows, err := s.db.Query(`
+		SELECT task_id, project_path, generation, execution_id, created_at
+		FROM execution_claims
+		WHERE created_at < ?
+		AND execution_id NOT IN (SELECT id FROM executions)
+	`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("querying orphaned claims: %w", err)
+	}
+
+	type claimKey struct {
+		taskID      string
+		projectPath string
+		generation  int
+	}
+	var orphans []OrphanedClaim
+	var keys []claimKey
+	for rows.Next() {
+		var taskID, projectPath, executionID string
+		var generation int
+		var createdAt time.Time
+		if err := rows.Scan(&taskID, &projectPath, &generation, &executionID, &createdAt); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scanning orphaned claim: %w", err)
+		}
+		orphans = append(orphans, OrphanedClaim{
+			TaskID:      taskID,
+			ProjectPath: projectPath,
+			Generation:  generation,
+			ExecutionID: executionID,
+			Age:         time.Since(createdAt),
+		})
+		keys = append(keys, claimKey{taskID: taskID, projectPath: projectPath, generation: generation})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterating orphaned claims: %w", err)
+	}
+	_ = rows.Close()
+
+	for _, k := range keys {
+		if _, err := s.db.Exec(`
+			DELETE FROM execution_claims
+			WHERE task_id = ? AND project_path = ? AND generation = ?
+		`, k.taskID, k.projectPath, k.generation); err != nil {
+			return orphans, fmt.Errorf("deleting orphaned claim (task=%s, project=%s, generation=%d): %w", k.taskID, k.projectPath, k.generation, err)
+		}
+	}
+
+	return orphans, nil
+}
+
 // GetRepickBackoff returns the persisted repick-backoff cooldown state for
 // key (a "project_path|task_id" string minted by cmd/pilot's
 // repickBackoffKey). found is false when no drop has ever been recorded for

@@ -733,6 +733,145 @@ func TestClaimExecution_ProjectScoping(t *testing.T) {
 	}
 }
 
+// backdateClaim rewrites an execution_claims row's created_at directly via
+// SQL — ClaimExecution always stamps CURRENT_TIMESTAMP, so tests pinning the
+// grace-window boundary need a way to simulate a claim that has actually
+// aged past it.
+func backdateClaim(t *testing.T, store *Store, taskID, projectPath string, generation int, createdAt time.Time) {
+	t.Helper()
+	res, err := store.db.Exec(`
+		UPDATE execution_claims SET created_at = ?
+		WHERE task_id = ? AND project_path = ? AND generation = ?
+	`, createdAt, taskID, canonicalizeProjectPath(projectPath), generation)
+	if err != nil {
+		t.Fatalf("backdateClaim: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Fatalf("backdateClaim: expected to update exactly 1 row, updated %d", n)
+	}
+}
+
+// TestReapOrphanedClaims_RemovesRowlessClaimPastGraceWindow is GH-5273's core
+// acceptance case: a claim whose owner died before ever writing the
+// executions row Begin normally saves right after winning (the live
+// incident's exact shape — a generation-0 claim survived with no execution
+// row behind it, wedging every subsequent dispatch attempt against it
+// forever) is removed once it is older than the grace window.
+func TestReapOrphanedClaims_RemovesRowlessClaimPastGraceWindow(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	claimed, err := store.ClaimExecution("GH-249", "/project", 0, "exec-orphan")
+	if err != nil || !claimed {
+		t.Fatalf("expected orphan claim to win, claimed=%v err=%v", claimed, err)
+	}
+	backdateClaim(t, store, "GH-249", "/project", 0, time.Now().Add(-15*time.Minute))
+
+	orphans, err := store.ReapOrphanedClaims(10 * time.Minute)
+	if err != nil {
+		t.Fatalf("ReapOrphanedClaims failed: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("expected exactly 1 reaped orphan, got %d: %+v", len(orphans), orphans)
+	}
+	if orphans[0].TaskID != "GH-249" || orphans[0].Generation != 0 || orphans[0].ExecutionID != "exec-orphan" {
+		t.Errorf("unexpected reaped claim: %+v", orphans[0])
+	}
+
+	// The row must actually be gone — a fresh claim for the same key must be
+	// able to win generation 0 again.
+	claimed, err = store.ClaimExecution("GH-249", "/project", 0, "exec-fresh")
+	if err != nil {
+		t.Fatalf("ClaimExecution after reap failed: %v", err)
+	}
+	if !claimed {
+		t.Error("expected generation 0 to be claimable again after the orphan was reaped")
+	}
+}
+
+// TestReapOrphanedClaims_LeavesFreshClaimAlone pins the grace-window
+// boundary: a claim younger than graceWindow is never reaped even though it
+// has no execution row yet, since Begin's claim-then-write race is normally
+// microseconds, not minutes — reaping too eagerly would delete a
+// legitimately in-flight claim out from under its own owner.
+func TestReapOrphanedClaims_LeavesFreshClaimAlone(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	claimed, err := store.ClaimExecution("GH-250", "/project", 0, "exec-fresh")
+	if err != nil || !claimed {
+		t.Fatalf("expected fresh claim to win, claimed=%v err=%v", claimed, err)
+	}
+	// No backdating: created_at stays at "now", well inside a 10-minute grace
+	// window.
+
+	orphans, err := store.ReapOrphanedClaims(10 * time.Minute)
+	if err != nil {
+		t.Fatalf("ReapOrphanedClaims failed: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("expected fresh claim to survive the reap, got %d reaped: %+v", len(orphans), orphans)
+	}
+
+	// Confirm the row is still there: a second claim for the same key must
+	// still lose.
+	claimed, err = store.ClaimExecution("GH-250", "/project", 0, "exec-other")
+	if err != nil {
+		t.Fatalf("ClaimExecution failed: %v", err)
+	}
+	if claimed {
+		t.Error("expected the fresh claim to still hold generation 0 after the reap")
+	}
+}
+
+// TestReapOrphanedClaims_LeavesClaimWithExecutionRowAlone verifies existing
+// semantics are unchanged: a claim whose execution_id has a matching
+// executions row — running or terminal — is never reaped regardless of age.
+// This is the vast majority of claims in production; the reaper must only
+// ever touch the narrow row-less class.
+func TestReapOrphanedClaims_LeavesClaimWithExecutionRowAlone(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	for i, status := range []string{"running", "failed", "completed"} {
+		taskID := fmt.Sprintf("GH-%d", 300+i)
+		execID := fmt.Sprintf("exec-%d", i)
+
+		claimed, err := store.ClaimExecution(taskID, "/project", 0, execID)
+		if err != nil || !claimed {
+			t.Fatalf("expected claim to win for %s, claimed=%v err=%v", taskID, claimed, err)
+		}
+		backdateClaim(t, store, taskID, "/project", 0, time.Now().Add(-15*time.Minute))
+
+		if err := store.SaveExecution(&Execution{
+			ID:          execID,
+			TaskID:      taskID,
+			ProjectPath: "/project",
+			Status:      status,
+			CreatedAt:   time.Now().Add(-15 * time.Minute),
+		}); err != nil {
+			t.Fatalf("SaveExecution failed for %s: %v", taskID, err)
+		}
+	}
+
+	orphans, err := store.ReapOrphanedClaims(10 * time.Minute)
+	if err != nil {
+		t.Fatalf("ReapOrphanedClaims failed: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("expected no claims reaped when every claim has a matching execution row, got %d: %+v", len(orphans), orphans)
+	}
+}
+
 // TestRepickBackoff_PersistsAcrossStoreReopen is the GH-4394 regression test:
 // the whole point of persisting repick-backoff state (rather than keeping it
 // purely in-process, as it was under #4385) is that a fresh Store handle —

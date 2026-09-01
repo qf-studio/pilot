@@ -6213,3 +6213,139 @@ func TestDispatcher_QueueDecomposedTask_ClaimLostDropsSilently(t *testing.T) {
 		t.Errorf("expected winning execution to belong to %q, got %q", parent.ID, exec.TaskID)
 	}
 }
+
+// TestDispatcher_ReapOrphanedClaims_UnwedgesDispatch is the dispatcher-level
+// acceptance test for GH-5273: a claim whose owner died before ever writing
+// the executions row (ExecutionLifecycle.Begin's ClaimExecution-then-
+// SaveExecution window) must not wedge dispatch forever. It uses a
+// deliberately tiny OrphanedClaimGraceWindow plus a short sleep instead of
+// backdating the claim's created_at directly — the SQL-level backdating
+// helper (backdateClaim) lives in internal/memory's test file and is
+// unexported, so it isn't reachable from this package; aging the claim in
+// real time sidesteps that boundary entirely.
+//
+// Claiming generation 0 again (not generation 1) after the reap is the part
+// that actually proves the row was removed rather than merely bypassed —
+// nextRetryGeneration's existing dangling-claim fallthrough (GH-4409) can
+// independently grant a fresh generation for a dead claim, so a naive
+// "dispatch eventually succeeds" assertion alone wouldn't isolate the
+// reaper's own effect from that pre-existing path.
+func TestDispatcher_ReapOrphanedClaims_UnwedgesDispatch(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	config := DefaultDispatcherConfig()
+	config.OrphanedClaimGraceWindow = 10 * time.Millisecond
+	dispatcher := NewDispatcher(store, runner, config)
+
+	var buf bytes.Buffer
+	dispatcher.log = slog.New(slog.NewTextHandler(&buf, nil))
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	ctx := context.Background()
+	task := &Task{
+		ID:          "GH-249",
+		Title:       "orphaned claim regression",
+		ProjectPath: "/tmp/pilot-console-test-project",
+	}
+
+	// Simulate the incident: a claim wins generation 0 but its owner dies
+	// before ever calling SaveExecution — no executions row is ever created.
+	claimed, err := store.ClaimExecution(task.ID, task.ProjectPath, 0, "exec-dead-owner")
+	if err != nil || !claimed {
+		t.Fatalf("expected to seed the orphan claim, claimed=%v err=%v", claimed, err)
+	}
+
+	// Let the claim age past the (deliberately tiny, for this test) grace
+	// window without needing to touch created_at directly.
+	time.Sleep(20 * time.Millisecond)
+
+	// Run the reaper — this is exactly what the periodic stale-recovery tick
+	// calls (recoverStaleTasks -> reapOrphanedClaims).
+	dispatcher.reapOrphanedClaims()
+
+	if !strings.Contains(buf.String(), "GH-5273") || !strings.Contains(buf.String(), "reaped orphaned execution claim") {
+		t.Errorf("expected an info log reporting the reaped claim, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "task_id=GH-249") {
+		t.Errorf("expected the reap log to include the claim's task_id, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "generation=0") {
+		t.Errorf("expected the reap log to include the claim's generation, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "claim_lost_drops=") {
+		t.Errorf("expected the reap log to include the claim_lost_drops count, got: %s", buf.String())
+	}
+
+	// Dispatch must now succeed — the reap removed the row that was
+	// colliding with every retry.
+	execID, err := dispatcher.QueueTask(ctx, task)
+	if err != nil {
+		t.Fatalf("expected dispatch to succeed after the orphan was reaped, got error: %v", err)
+	}
+	if execID == "" {
+		t.Fatal("expected a non-empty execution ID after the orphan was reaped")
+	}
+
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if exec.TaskID != task.ID {
+		t.Errorf("expected task ID %s, got %s", task.ID, exec.TaskID)
+	}
+
+	gen, _, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("LatestClaimGeneration failed: %v", err)
+	}
+	if !found || gen != 0 {
+		t.Errorf("expected the fresh dispatch to claim generation 0 (proving the orphan row was removed, not just bypassed via generation-bump), got gen=%d found=%v", gen, found)
+	}
+}
+
+// TestDispatcher_ReapOrphanedClaims_LeavesFreshClaimWedgedForDuplicatePickup
+// pins the other side of the same acceptance criteria at the dispatcher
+// level: a claim inside the grace window must survive the reap untouched,
+// so an in-flight (not-yet-crashed) owner's duplicate-pickup drop path is
+// unaffected by GH-5273's reaper.
+func TestDispatcher_ReapOrphanedClaims_LeavesFreshClaimWedgedForDuplicatePickup(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	config := DefaultDispatcherConfig()
+	config.OrphanedClaimGraceWindow = 10 * time.Minute
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	task := &Task{
+		ID:          "GH-250",
+		Title:       "fresh claim must not be reaped",
+		ProjectPath: "/tmp/pilot-console-test-project-fresh",
+	}
+
+	claimed, err := store.ClaimExecution(task.ID, task.ProjectPath, 0, "exec-fresh-owner")
+	if err != nil || !claimed {
+		t.Fatalf("expected to seed the fresh claim, claimed=%v err=%v", claimed, err)
+	}
+
+	dispatcher.reapOrphanedClaims()
+
+	gen, execID, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("LatestClaimGeneration failed: %v", err)
+	}
+	if !found || gen != 0 || execID != "exec-fresh-owner" {
+		t.Fatalf("expected the fresh claim to survive the reap untouched, got gen=%d execID=%q found=%v", gen, execID, found)
+	}
+}
