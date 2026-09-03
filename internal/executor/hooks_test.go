@@ -10,8 +10,10 @@ import (
 func TestHooksConfig_Defaults(t *testing.T) {
 	config := DefaultHooksConfig()
 
-	if config.Enabled {
-		t.Error("Expected hooks to be disabled by default")
+	// GH-5280: hooks are enabled by default — the guard is a pattern-based
+	// speed bump, not a sandbox.
+	if !config.Enabled {
+		t.Error("Expected hooks to be enabled by default (GH-5280)")
 	}
 	// GH-2432: RunTestsOnStop default flipped to false to cut subprocess token spend.
 	if config.RunTestsOnStop == nil || *config.RunTestsOnStop {
