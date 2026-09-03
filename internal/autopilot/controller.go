@@ -9570,6 +9570,15 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 			// here unconditionally, mirroring escalateAndHold's reverse
 			// direction (needs-human supersedes retry-ready).
 			removeLabels := []string{github.LabelInProgress, labelNeedsManualRebase}
+			// GH-5298: pilot-superseded and pilot must never coexist on an
+			// open issue — pilot-superseded means another run already owns
+			// this scope, so leaving `pilot` standing lets the poller pick
+			// the issue back up and double-dispatch work that is already
+			// spoken for. Strip it in the same mutation that applies
+			// pilot-superseded rather than as a follow-up call.
+			if issueLabel == github.LabelSuperseded {
+				removeLabels = append(removeLabels, github.LabelPilot)
+			}
 			// GH-5115: broaden GH-5099's exhaustion-outranks-close-supersedes-hold
 			// rule (see exhaustedParked above, which only covers the
 			// issueLabel == LabelRetryReady resolution and fully skips this
