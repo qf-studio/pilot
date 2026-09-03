@@ -30,7 +30,27 @@ func (n *Notifier) Client() *Client {
 	return n.client
 }
 
-// NotifyTaskStarted posts a comment and adds in-progress label
+// NotifyTaskStarted posts a comment and adds in-progress label.
+//
+// GH-5300: this combined single-call form (label + "Pilot started working on
+// this issue" comment in one shot) is only safe for the legacy webhook
+// dispatch path (Pilot.handleGithubIssue, internal/pilot/pilot.go) that
+// calls it — that path invokes ProcessGithubTicket synchronously right
+// after, with no intervening dispatcher claim that can be dropped, so there
+// is nothing "started" can be posted ahead of.
+//
+// The SDK-poller dispatch path (cmd/pilot/handlers.go,
+// handleGithubIssueEventSDK) has a real claim/drop race — the studio-sdk
+// vendored Notifier.NotifyTaskStarted it used to call combined the same two
+// operations, so a pickup dropped by the dispatcher (repick backoff, claim
+// lost) still posted this comment before the claim was ever won (#5276: 3
+// duplicate comments in an hour). That path does NOT call this method: it
+// deliberately calls this package's Client directly, split into
+// applyGithubInProgressLabelSDK (pre-claim label) and
+// postGithubTaskStartedCommentSDK (comment, fired only from the dispatcher's
+// HandlerDeps.OnClaimed hook once a claim is actually won). See handlers.go
+// for that split. Do not "fix" the SDK path by routing it through this
+// method — the pre/post-claim split is the fix.
 func (n *Notifier) NotifyTaskStarted(ctx context.Context, owner, repo string, issueNum int, taskID string) error {
 	// Add in-progress label
 	if err := n.client.AddLabels(ctx, owner, repo, issueNum, []string{LabelInProgress}); err != nil {
