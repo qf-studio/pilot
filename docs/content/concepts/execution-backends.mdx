@@ -119,6 +119,7 @@ executor:
 - **Effort routing is silently skipped** — Pilot passes effort levels but Qwen ignores them
 - **No `--from-pr` support** — PR context cannot be passed to Qwen Code
 - **Session resume requires v0.1.0+** — Earlier versions don't support `--output-format stream-json`
+- **Ambient env is scrubbed** — like the other backends, the Qwen subprocess gets a filtered copy of Pilot's environment with adapter secrets removed. If Qwen (or a tool it shells out to) needs a credential that looks secret-shaped (`*_API_KEY`, `*_TOKEN`, ...), list it in `executor.claude_code.env_passthrough`.
 
 ### Strengths
 
@@ -188,6 +189,24 @@ executor:
 - **No PR context**: Cannot leverage `--from-pr` for targeted execution
 - **Raw HTTP**: Errors are not classified (rate limit, API, timeout all appear as HTTP errors)
 - **SSE streaming**: Uses HTTP Server-Sent Events instead of JSON streaming
+
+### Provider credentials
+
+The OpenCode server process is a model-controlled subprocess like any other Pilot-spawned backend, so its environment goes through the same ambient-secret scrub every Claude Code/OpenCode spawn does (adapter bot tokens, webhook secrets, etc. are stripped before the process starts). `ANTHROPIC_*` names survive that scrub automatically — nothing to configure for `provider: "anthropic"`.
+
+For any other `provider` (`openrouter`, `openai`, `groq`, ...), OpenCode reads that provider's credential from its own process environment (e.g. `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`) unless you've already run `opencode auth login`. Those names all match the scrub's `_API_KEY` deny rule, so **an env-configured non-Anthropic provider key is dropped on every server (re)start** unless you explicitly list it:
+
+```yaml
+executor:
+  claude_code:
+    env_passthrough:
+      - OPENROUTER_API_KEY   # matches the provider configured below
+  opencode:
+    provider: "openrouter"
+    model: "openrouter/some-model"
+```
+
+If you set a non-Anthropic `provider` without a matching `env_passthrough` entry, Pilot logs a WARN on server start naming the provider and the expected env var — treat that as a signal auth will fail, not just informational noise. The alternative is `opencode auth login`, which stores credentials outside the process environment entirely and isn't affected by the scrub.
 
 ### Attached Mode (multi-project / non-CWD execution)
 
