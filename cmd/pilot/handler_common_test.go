@@ -7,6 +7,7 @@ import (
 	osexec "os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -567,6 +568,160 @@ func TestHandleIssueGeneric_RepickDoesNotClearBackoff(t *testing.T) {
 	}
 	if !found || consecutive != 1 {
 		t.Errorf("expected persisted repick backoff consecutive_drops=1 after the re-pick, got found=%v consecutive=%d", found, consecutive)
+	}
+}
+
+// TestHandleIssueGeneric_OnClaimedFiresAfterGenuineClaim is the GH-5300
+// regression test proving HandlerDeps.OnClaimed fires exactly once a
+// dispatch attempt actually wins the claim (QueueTask returns a non-empty
+// execID), not before the attempt and not only after the entire execution
+// finishes. Reuses the TestHandleIssueGeneric_RepickDoesNotClearBackoff
+// seeding (a generation-0 failed/terminal-but-not-done execution forces a
+// genuine re-pick claim) and its short-lived-context trick so
+// WaitForExecution bails out quickly via ctx.Done() instead of blocking on a
+// real backend execution against a project path that doesn't exist.
+func TestHandleIssueGeneric_OnClaimedFiresAfterGenuineClaim(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-handler-onclaimed-fires-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+
+	taskID := "GH-5300-ONCLAIMED-FIRES"
+	projectPath := "/tmp/pilot-gh-5300-onclaimed-fires-does-not-exist"
+	backoffKey := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(backoffKey) })
+
+	// Generation 0: a failed (terminal, not done) execution — forces the
+	// second QueueTask call below through the genuine re-pick path rather
+	// than a fresh-task fast path, exercising the real claim-won call site.
+	seed := &executor.Task{ID: taskID, ProjectPath: projectPath}
+	seedExecID, err := executor.NewExecutionLifecycle(store).Begin(seed, executor.ExecStatusRunning, 0)
+	if err != nil {
+		t.Fatalf("setup: generation 0 Begin failed: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(seedExecID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	var onClaimedCalls int32
+	deps := HandlerDeps{
+		Dispatcher:  dispatcher,
+		Monitor:     executor.NewMonitor(),
+		ProjectPath: projectPath,
+		OnClaimed: func() {
+			atomic.AddInt32(&onClaimedCalls, 1)
+		},
+	}
+	info := IssueInfo{TaskID: taskID, Title: "onclaimed-fires", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "onclaimed-fires", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = handleIssueGeneric(ctx, deps, info, task)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleIssueGeneric hung waiting for the re-picked execution")
+	}
+
+	if got := atomic.LoadInt32(&onClaimedCalls); got != 1 {
+		t.Errorf("expected OnClaimed to fire exactly once after a genuine claim, got %d calls", got)
+	}
+}
+
+// TestHandleIssueGeneric_OnClaimedNotFiredOnGatedDrop is the GH-5300
+// regression test for the flip side: a dropped/gated pickup — no execution
+// ever claimed — must never invoke OnClaimed. Reuses the
+// TestHandleIssueGeneric_DroppedTerminalPickup_NoPhantomWaitError seeding (a
+// generation-0 execution already marked no_op, so the pickup is thrown out
+// before QueueTask is ever called) to reach the gated path deterministically.
+// This is the #5276 incident in miniature: previously the "started working"
+// comment posted unconditionally before the dispatch attempt, so even a
+// pickup dropped within seconds still posted a comment; OnClaimed must not
+// repeat that mistake.
+func TestHandleIssueGeneric_OnClaimedNotFiredOnGatedDrop(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-handler-onclaimed-gated-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+
+	taskID := "GH-5300-ONCLAIMED-GATED"
+	projectPath := "/tmp/pilot-gh-5300-onclaimed-gated-does-not-exist"
+
+	seed := &executor.Task{ID: taskID, ProjectPath: projectPath}
+	seedExecID, err := executor.NewExecutionLifecycle(store).Begin(seed, executor.ExecStatusRunning, 0)
+	if err != nil {
+		t.Fatalf("setup: generation 0 Begin failed: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(seedExecID, "no_op"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as no_op: %v", err)
+	}
+
+	var onClaimedCalls int32
+	deps := HandlerDeps{
+		Dispatcher:  dispatcher,
+		Monitor:     executor.NewMonitor(),
+		ProjectPath: projectPath,
+		OnClaimed: func() {
+			atomic.AddInt32(&onClaimedCalls, 1)
+		},
+	}
+	info := IssueInfo{TaskID: taskID, Title: "onclaimed-gated", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: taskID, Title: "onclaimed-gated", Branch: "pilot/" + taskID, ProjectPath: projectPath}
+
+	done := make(chan struct{})
+	var hr *HandlerResult
+	var hErr error
+	go func() {
+		hr, hErr = handleIssueGeneric(context.Background(), deps, info, task)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleIssueGeneric hung — likely stuck polling a phantom empty execID (GH-4372)")
+	}
+
+	if hErr != nil {
+		t.Fatalf("expected nil error for a dropped duplicate/terminal pickup, got: %v", hErr)
+	}
+	if hr.Success {
+		t.Error("expected Success=false for a dropped duplicate/terminal pickup")
+	}
+	if got := atomic.LoadInt32(&onClaimedCalls); got != 0 {
+		t.Errorf("expected OnClaimed to never fire on a gated drop, got %d calls", got)
 	}
 }
 
