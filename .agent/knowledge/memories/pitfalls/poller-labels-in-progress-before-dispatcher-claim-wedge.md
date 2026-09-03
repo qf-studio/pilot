@@ -35,7 +35,25 @@ the strip).
 [[pilot-issue-missing-no-decompose-fragments-single-fix]] / TASK-480 territory
 (duplicate-spec issues, safe no-op contract) is where this fires most.
 
-**Fix tracked:** pilot#4961 — unwind the label when the same dispatch attempt's
-claim is dropped, or apply the label only after `lifecycle.Begin` succeeds
-(mind the GH-4687 happy-path expectations and the label-lifecycle dead-man
-tracker semantics).
+**Fix shipped:** pilot#4961 — `shouldUnwindGithubInProgressLabel` +
+`unwindGithubStartedLabel` (`cmd/pilot/handlers.go`) unwind `pilot-in-progress`
+when the same dispatch attempt's claim is dropped and nothing else is
+genuinely active (checked via `dispatcher.IsActive`), preserving the GH-4687
+pre-claim label ordering on the happy path.
+
+**Follow-up (pilot#5300, parent #5297):** the unwind alone doesn't resolve a
+*recurring* drop — if the same task keeps getting re-offered and dropped
+(repick backoff / claim lost) every poll tick, unwind-and-wait just repeats
+forever (#5276: 9 label cycles and 3 duplicate "started working" comments in
+an hour, because the old combined `notifyTaskStartedSDK` posted a comment
+*before* the dispatch attempt on every one of those ticks). Fixed by: (1)
+splitting the pre-claim label apply (`applyGithubInProgressLabelSDK`) from
+the "started working" comment (`postGithubTaskStartedCommentSDK`), the latter
+now fired only from a new `HandlerDeps.OnClaimed` hook right after the
+dispatcher's `QueueTask` actually wins a claim — a dropped pickup posts
+nothing; (2) once `claimLostDrops` (read via `repickBackoff.gateDetail`)
+reaches `terminalDropPilotStripThreshold` (3) on an open, still pilot-labeled
+issue, `shouldStripPilotAfterTerminalDrops` stops unwinding and instead
+strips the `pilot` trigger label itself via `stripPilotLabelAndCommentSDK` —
+one explanatory comment, and pickups stop for good since the poller's
+candidate query requires the label.

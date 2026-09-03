@@ -899,9 +899,13 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		)
 		notifyAttempted = true
 		labelTracker.RecordAttempt()
-		if err := notifyTaskStartedSDK(ctx, specClient, pilotLabel, repoOwner, repoName, issueNum, taskID); err != nil {
+		// GH-5300: only the label applies pre-claim now — the "started
+		// working" comment moved to the OnClaimed hook below (deps
+		// construction) so it fires after the dispatch actually wins the
+		// claim, not before the attempt is even made.
+		if err := applyGithubInProgressLabelSDK(ctx, specClient, repoOwner, repoName, issueNum); err != nil {
 			labelTracker.RecordFailure(map[string]string{"repo": repoOwner + "/" + repoName})
-			logging.WithComponent("github").Warn("Failed to notify task started (SDK path)",
+			logging.WithComponent("github").Warn("Failed to apply pilot-in-progress label (SDK path)",
 				slog.String("task_id", taskID),
 				slog.Int("issue", issueNum),
 				slog.Any("error", err))
@@ -949,6 +953,23 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		Enforcer:     enforcer,
 		ProjectPath:  projectPath,
 		Metrics:      metrics,
+		// GH-5300: post the "started working" comment only once the dispatch
+		// claim is actually won (handleIssueGeneric invokes this right after
+		// QueueTask returns a non-empty execID) — a dropped pickup never
+		// reaches this callback, so it never posts. notifyAttempted mirrors
+		// the same "was pilot-in-progress actually applied this call" gate
+		// the pre-claim label write and the post-dispatch unwind both use.
+		OnClaimed: func() {
+			if !notifyAttempted || specClient == nil {
+				return
+			}
+			if err := postGithubTaskStartedCommentSDK(ctx, specClient, repoOwner, repoName, issueNum, taskID); err != nil {
+				logging.WithComponent("github").Warn("Failed to post task started comment (SDK path)",
+					slog.String("task_id", taskID),
+					slog.Int("issue", issueNum),
+					slog.Any("error", err))
+			}
+		},
 	}
 	if repoOwner != "" && repoName != "" {
 		// GH-4833: pass the already-resolved repo match through so
@@ -966,10 +987,10 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
-	// GH-4961: notifyTaskStartedSDK above applies pilot-in-progress BEFORE
-	// the dispatcher has actually claimed the task (preserving the GH-4687
-	// pre-claim ordering for the happy path). When the dispatcher instead
-	// drops this pickup — repick backoff, claim lost, or any other
+	// GH-4961: applyGithubInProgressLabelSDK above applies pilot-in-progress
+	// BEFORE the dispatcher has actually claimed the task (preserving the
+	// GH-4687 pre-claim ordering for the happy path). When the dispatcher
+	// instead drops this pickup — repick backoff, claim lost, or any other
 	// admission-gate decline surfaced as hr.IsDispatchGated() — and no other
 	// execution genuinely owns the task, the label just applied is the only
 	// evidence of "in progress" left behind with nothing running to clear it
@@ -988,22 +1009,51 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	// dereference if that invariant is ever violated.
 	dispatcherActive := dispatcher != nil && dispatcher.IsActive(taskID, projectPath)
 	if shouldUnwindGithubInProgressLabel(notifyAttempted, hr, dispatcherActive) {
-		labelTracker.RecordAttempt()
-		if err := unwindGithubStartedLabel(ctx, specClient, repoOwner, repoName, issueNum); err != nil {
-			// A failed unwind is a genuine label-lifecycle failure (the
-			// label is now stranded), unlike the unwind itself — which is a
-			// deliberate correction, not evidence the original apply/notify
-			// path is broken.
-			labelTracker.RecordFailure(map[string]string{"repo": repoOwner + "/" + repoName})
-			logging.WithComponent("github").Warn("Failed to unwind pilot-in-progress after dropped dispatch pickup",
-				slog.String("task_id", taskID),
-				slog.Int("issue", issueNum),
-				slog.Any("error", err))
+		// GH-5300: a claim_lost/already-terminal drop that keeps recurring
+		// (claim_lost_drops >= terminalDropPilotStripThreshold) on an open,
+		// pilot-labeled issue is not a transient wedge the unwind-and-wait
+		// correction can ever resolve — the poller keeps re-offering it and
+		// the dispatcher keeps refusing it, unwind or not (#5276: 9 label
+		// cycles and 3 duplicate "started working" comments inside an hour).
+		// Past the threshold, strip the pilot trigger label and post one
+		// explanatory comment instead of unwinding — removing pilotLabel
+		// itself suppresses further pickups, since the poller's own
+		// candidate query requires it.
+		_, _, claimLostDrops, _ := repickBackoff.gateDetail(backoffKey)
+		if shouldStripPilotAfterTerminalDrops(claimLostDrops, issueState, ev.Labels, pilotLabel) {
+			labelTracker.RecordAttempt()
+			if err := stripPilotLabelAndCommentSDK(ctx, specClient, repoOwner, repoName, issueNum, pilotLabel, claimLostDrops); err != nil {
+				labelTracker.RecordFailure(map[string]string{"repo": repoOwner + "/" + repoName})
+				logging.WithComponent("github").Warn("Failed to strip pilot label after repeated terminal drops",
+					slog.String("task_id", taskID),
+					slog.Int("issue", issueNum),
+					slog.Int("claim_lost_drops", claimLostDrops),
+					slog.Any("error", err))
+			} else {
+				labelTracker.RecordSuccess()
+				logging.WithComponent("github").Info("Removed pilot label after repeated terminal drops — suppressing further pickups",
+					slog.String("task_id", taskID),
+					slog.Int("issue", issueNum),
+					slog.Int("claim_lost_drops", claimLostDrops))
+			}
 		} else {
-			labelTracker.RecordSuccess()
-			logging.WithComponent("github").Info("Unwound pilot-in-progress label after dropped dispatch pickup",
-				slog.String("task_id", taskID),
-				slog.Int("issue", issueNum))
+			labelTracker.RecordAttempt()
+			if err := unwindGithubStartedLabel(ctx, specClient, repoOwner, repoName, issueNum); err != nil {
+				// A failed unwind is a genuine label-lifecycle failure (the
+				// label is now stranded), unlike the unwind itself — which is a
+				// deliberate correction, not evidence the original apply/notify
+				// path is broken.
+				labelTracker.RecordFailure(map[string]string{"repo": repoOwner + "/" + repoName})
+				logging.WithComponent("github").Warn("Failed to unwind pilot-in-progress after dropped dispatch pickup",
+					slog.String("task_id", taskID),
+					slog.Int("issue", issueNum),
+					slog.Any("error", err))
+			} else {
+				labelTracker.RecordSuccess()
+				logging.WithComponent("github").Info("Unwound pilot-in-progress label after dropped dispatch pickup",
+					slog.String("task_id", taskID),
+					slog.Int("issue", issueNum))
+			}
 		}
 	}
 
@@ -1038,8 +1088,15 @@ const skipReasonNeedsHuman = "needs_human"
 // pilot-needs-human (GH-5056). See handleGithubIssueEventSDK's call site
 // for the re-admission loop this check exists to close.
 func githubEventHasNeedsHumanLabel(labels []string) bool {
+	return githubEventHasLabel(labels, labelPilotNeedsHumanSDK)
+}
+
+// githubEventHasLabel reports whether labels contains an exact match for
+// label. Shared by the needs-human re-admission check above and the
+// terminal-drop pilot-strip guard (GH-5300, shouldStripPilotAfterTerminalDrops).
+func githubEventHasLabel(labels []string, label string) bool {
 	for _, l := range labels {
-		if l == labelPilotNeedsHumanSDK {
+		if l == label {
 			return true
 		}
 	}
@@ -1066,7 +1123,7 @@ func fetchGithubIssueForSDKTask(ctx context.Context, client *githubSDK.Client, o
 
 // labelLifecycleDeadManTrackerPrefix is the alerts.DeadManTracker
 // registration name prefix (TASK-441 L2, GH-4709) for the
-// notifyTaskStartedSDK call site above. GH-4866: per-repo, not global — a
+// applyGithubInProgressLabelSDK call site above. GH-4866: per-repo, not global — a
 // global shared counter let one repo's real, sustained label-lifecycle
 // failures get diluted by every other (healthy) repo's RecordSuccess calls
 // on the same tracker, so a single broken repo's streak could take far
@@ -1093,9 +1150,10 @@ func labelLifecycleDeadManTrackerName(repoFullName string) string {
 // per GH-4687's pre-claim ordering) must be removed again because the
 // dispatch that followed never actually claimed the task (GH-4961).
 //
-// notifyAttempted is true only when notifyTaskStartedSDK was actually called
-// for this event (skipped entirely for a closed issue, or when specClient
-// couldn't be built) — nothing to unwind if the label was never touched.
+// notifyAttempted is true only when applyGithubInProgressLabelSDK was
+// actually called for this event (skipped entirely for a closed issue, or
+// when specClient couldn't be built) — nothing to unwind if the label was
+// never touched.
 //
 // hr.IsDispatchGated() is true for every admission-gate decline
 // handleIssueGeneric can return with no execution having been claimed:
@@ -1119,14 +1177,16 @@ func shouldUnwindGithubInProgressLabel(notifyAttempted bool, hr *HandlerResult, 
 	return notifyAttempted && hr.IsDispatchGated() && !dispatcherActive
 }
 
-// unwindGithubStartedLabel removes exactly the label notifyTaskStartedSDK
-// applied — githubSDK.LabelInProgress ("pilot-in-progress") — never the
-// poller's own trigger label ("pilot", cfg.Adapters.GitHub.PilotLabel).
+// unwindGithubStartedLabel removes exactly the label
+// applyGithubInProgressLabelSDK applied — githubSDK.LabelInProgress
+// ("pilot-in-progress") — never the poller's own trigger label ("pilot",
+// cfg.Adapters.GitHub.PilotLabel).
 //
 // GH-5028: the unwind call at this call site used to remove pilotLabel (the
-// trigger label) instead of the label NotifyTaskStarted actually applies
-// (studio-sdk's Notifier.NotifyTaskStarted only ever adds the constant
-// LabelInProgress — the triggerLabel it's constructed with is never read).
+// trigger label) instead of the label the pre-claim step actually applies
+// (studio-sdk's Notifier.NotifyTaskStarted — which applyGithubInProgressLabelSDK
+// now supersedes for the label leg — only ever added the constant
+// LabelInProgress; the triggerLabel it was constructed with was never read).
 // A dispatch pickup dropped after the label went on (repick backoff, claim
 // lost) then had its "correction" strip the wrong label: the issue was left
 // with pilot-in-progress still on it but pilot gone, invisible to the next
@@ -1139,13 +1199,89 @@ func unwindGithubStartedLabel(ctx context.Context, client *githubSDK.Client, own
 	return client.RemoveLabel(ctx, owner, repo, issueNum, githubSDK.LabelInProgress)
 }
 
-// notifyTaskStartedSDK applies the pilot-in-progress label and posts the
-// task-started comment via studio-sdk's tested Notifier (GH-4687). Extracted
-// so the SDK-dispatch label wiring can be unit tested directly against a
-// mock GitHub server — handleGithubIssueEventSDK itself resolves a real
-// token/repo and can't be exercised end-to-end in a unit test.
-func notifyTaskStartedSDK(ctx context.Context, client *githubSDK.Client, pilotLabel, owner, repo string, issueNum int, taskID string) error {
-	return githubSDK.NewNotifier(client, pilotLabel).NotifyTaskStarted(ctx, owner, repo, issueNum, taskID)
+// applyGithubInProgressLabelSDK applies the pilot-in-progress label
+// (GH-4687's pre-claim ordering — the studio-sdk poller's orphan recovery on
+// restart depends on the label being present before the dispatch attempt is
+// even made). Extracted so the SDK-dispatch label wiring can be unit tested
+// directly against a mock GitHub server — handleGithubIssueEventSDK itself
+// resolves a real token/repo and can't be exercised end-to-end in a unit
+// test.
+//
+// GH-5300: this used to also post the "Pilot started working" comment
+// (studio-sdk's Notifier.NotifyTaskStarted did both in one call). The
+// comment now posts separately, from postGithubTaskStartedCommentSDK via the
+// HandlerDeps.OnClaimed hook, so it only fires once the dispatch actually
+// wins the claim — dropped pickups (repick backoff, claim lost) no longer
+// post a comment at all (previously up to 3 duplicate comments could land
+// for pickups dropped within seconds of each other; see #5276).
+func applyGithubInProgressLabelSDK(ctx context.Context, client *githubSDK.Client, owner, repo string, issueNum int) error {
+	return client.AddLabels(ctx, owner, repo, issueNum, []string{githubSDK.LabelInProgress})
+}
+
+// postGithubTaskStartedCommentSDK posts the "Pilot started working on this
+// issue" comment. Called only from HandlerDeps.OnClaimed (GH-5300), i.e.
+// only once a dispatch attempt has actually won the claim — never for a
+// dropped/gated pickup.
+func postGithubTaskStartedCommentSDK(ctx context.Context, client *githubSDK.Client, owner, repo string, issueNum int, taskID string) error {
+	comment := fmt.Sprintf(
+		"🤖 **Pilot started working on this issue**\n\nTask ID: `%s`\n\nI'll post updates as I make progress.",
+		taskID,
+	)
+	_, err := client.AddComment(ctx, owner, repo, issueNum, comment)
+	return err
+}
+
+// terminalDropPilotStripThreshold is the number of consecutive claim-lost /
+// already-terminal drops (repickBackoffTracker.claimLostDrops) after which
+// handleGithubIssueEventSDK gives up unwinding pilot-in-progress and instead
+// strips the pilot trigger label itself (GH-5300). Below this threshold the
+// existing GH-4961 unwind behavior applies unchanged — this only kicks in
+// once the same task has been repeatedly re-offered and dropped without ever
+// running, the wedge class documented in
+// poller-labels-in-progress-before-dispatcher-claim-wedge.md.
+const terminalDropPilotStripThreshold = 3
+
+// shouldStripPilotAfterTerminalDrops reports whether handleGithubIssueEventSDK
+// should stop unwinding pilot-in-progress and instead remove the pilot
+// trigger label (suppressing all further pickups — the poller's candidate
+// query requires the label) and post a single explanatory comment.
+//
+// claimLostDrops is the current repickBackoffTracker count for this task
+// (read via repickBackoff.gateDetail after handleIssueGeneric returns).
+// issueState/labels are the event's own issue snapshot: a closed issue or
+// one that has already lost the pilot label (e.g. a previous tick already
+// stripped it) must not re-fire — this keeps the strip a one-shot action
+// even though claimLostDrops keeps climbing on every subsequent dropped
+// tick.
+func shouldStripPilotAfterTerminalDrops(claimLostDrops int, issueState string, labels []string, pilotLabel string) bool {
+	if claimLostDrops < terminalDropPilotStripThreshold {
+		return false
+	}
+	if issueState == githubSDK.StateClosed {
+		return false
+	}
+	if pilotLabel == "" {
+		return false
+	}
+	return githubEventHasLabel(labels, pilotLabel)
+}
+
+// stripPilotLabelAndCommentSDK removes the pilot trigger label and posts
+// exactly one explanatory comment (GH-5300). Extracted so the behavior is
+// unit testable against a mock GitHub server without standing up the full
+// SDK dispatch path.
+func stripPilotLabelAndCommentSDK(ctx context.Context, client *githubSDK.Client, owner, repo string, issueNum int, pilotLabel string, claimLostDrops int) error {
+	if err := client.RemoveLabel(ctx, owner, repo, issueNum, pilotLabel); err != nil {
+		return fmt.Errorf("failed to remove pilot label: %w", err)
+	}
+	comment := fmt.Sprintf(
+		"⚠️ **Pilot stopped retrying this issue**\n\nThis issue was re-offered for dispatch %d times, but the claim was lost or the task was already marked terminal every time — no execution ever ran. Removing the `%s` label so it stops being repeatedly re-offered.\n\nTo retry, re-add the `%s` label (or close and reopen the issue).",
+		claimLostDrops, pilotLabel, pilotLabel,
+	)
+	if _, err := client.AddComment(ctx, owner, repo, issueNum, comment); err != nil {
+		return fmt.Errorf("failed to post terminal-drop comment: %w", err)
+	}
+	return nil
 }
 
 // githubIssueURL builds the HTML URL for a GitHub issue. It prefers the resolved

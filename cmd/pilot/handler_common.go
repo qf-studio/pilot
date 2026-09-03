@@ -120,6 +120,21 @@ type HandlerDeps struct {
 	// pilot_poller_skipped_total. Nil is tolerated — the admission gate and
 	// backoff still apply, just without the Prometheus counter bump.
 	Metrics *autopilot.Metrics
+
+	// OnClaimed fires synchronously the moment a dispatch attempt actually
+	// wins the claim — right after QueueTask returns a non-empty execID,
+	// before WaitForExecution starts polling (GH-5300). A dropped pickup
+	// (already-active/backoff/terminal-completion pre-checks, or QueueTask's
+	// own claim-lost/already-terminal silent drop) never reaches this point,
+	// so a callback wired here is guaranteed not to fire for work that never
+	// ran. The GitHub SDK-dispatch handler uses this to post the "Pilot
+	// started working on this issue" comment only once a real claim is won —
+	// previously that comment posted before the dispatch attempt (GH-4687
+	// pre-claim label ordering), so a dropped pickup still posted a "started
+	// working" comment for nothing (#5276: three posted in five minutes).
+	// Nil is tolerated — adapters that don't need a post-claim hook simply
+	// leave it unset.
+	OnClaimed func()
 }
 
 // handleIssueGeneric executes the common ~120-line flow shared by all adapter handlers:
@@ -392,6 +407,12 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			}
 			if deps.Program == nil {
 				fmt.Printf("   Queued as execution %s\n", execID[:8])
+			}
+			// GH-5300: the claim is won as of this QueueTask return — fire the
+			// post-claim hook before WaitForExecution starts polling (which can
+			// block for the entire task duration).
+			if deps.OnClaimed != nil {
+				deps.OnClaimed()
 			}
 			exec, waitErr := deps.Dispatcher.WaitForExecution(ctx, execID, time.Second)
 			if waitErr != nil {
