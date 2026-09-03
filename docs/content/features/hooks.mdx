@@ -9,7 +9,7 @@ Claude Code Hooks are inline quality gates that run during Claude Code execution
 </Callout>
 
 <Callout type="warning">
-  Hooks are disabled by default (`enabled: false`). You must explicitly enable them in your configuration.
+  Hooks are **on by default**. The PreToolUse guard (`block_destructive`) is a pattern-based speed bump that regex-matches common destructive Bash commands (e.g. `rm -rf /`, `git push --force`) — it is **not a sandbox or a security boundary**. It catches obvious footguns but can be bypassed by a determined agent. To opt out entirely, set `hooks.enabled: false` in your configuration.
 </Callout>
 
 ## Hook Types
@@ -28,7 +28,7 @@ Runs before Claude Code signals completion. Executes build and test commands, an
 
 ### PreToolUse Hook
 
-Runs before any Bash command executes. Inspects the command and blocks dangerous operations like `rm -rf /`, `git push --force`, or `DROP TABLE`. Returns a deny decision to Claude Code when a dangerous pattern is detected.
+Runs before any Bash command executes. Inspects the command and blocks dangerous operations like `rm -rf /`, `git push --force`, or `DROP TABLE`. Returns a deny decision to Claude Code when a dangerous pattern is detected. This is a pattern-based speed bump against common footguns, not a sandbox or security boundary — it matches known-dangerous command strings and can be bypassed by a determined agent.
 
 ### PostToolUse Hook
 
@@ -36,12 +36,12 @@ Runs after Edit or Write tools modify files. Auto-formats the changed file using
 
 ## Configuration
 
-Enable hooks in `~/.pilot/config.yaml`:
+Hooks are enabled by default. To opt out, set `enabled: false` in `~/.pilot/config.yaml`:
 
 ```yaml
 executor:
   hooks:
-    enabled: true              # Master switch (default: false)
+    enabled: false             # Master switch (default: true) — set false to opt out entirely
     run_tests_on_stop: true    # Stop hook — runs build/tests before completion
     block_destructive: true    # PreToolUse — blocks rm -rf, git push --force, DROP TABLE
     lint_on_save: false        # PostToolUse — runs linter after file edits (opt-in)
@@ -51,9 +51,9 @@ executor:
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `enabled` | `false` | Master switch to enable hooks |
-| `run_tests_on_stop` | `true` (when enabled) | Run build and tests before Claude finishes |
-| `block_destructive` | `true` (when enabled) | Block dangerous Bash commands |
+| `enabled` | `true` | Master switch for hooks. Set `false` to opt out entirely |
+| `run_tests_on_stop` | `false` | Run build and tests before Claude finishes |
+| `block_destructive` | `true` (when enabled) | Block dangerous Bash commands — a pattern-based speed bump, not a sandbox |
 | `lint_on_save` | `false` | Auto-format files after edits (opt-in) |
 
 ## How Hooks Work
