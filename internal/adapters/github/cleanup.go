@@ -2,6 +2,8 @@ package github
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,6 +13,26 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 )
+
+// pilotTerminalExecutionStatuses mirrors memory.terminalExecutionStatuses
+// (internal/memory/store.go) — that slice is unexported, and importing
+// internal/executor's IsTerminalStatus wrapper would introduce an
+// internal/adapters/github <-> internal/executor cross-package coupling
+// this codebase deliberately avoids elsewhere (see the cycle-avoidance
+// comment in internal/executor/contract_evidence.go). Duplicated here
+// rather than imported, same pattern.
+var pilotTerminalExecutionStatuses = []string{
+	"completed", "failed", "cancelled", "canceled", "declined", "stalled", "no_op", "rate_limited", "infra", "skipped",
+}
+
+func isPilotTerminalStatus(status string) bool {
+	for _, s := range pilotTerminalExecutionStatuses {
+		if status == s {
+			return true
+		}
+	}
+	return false
+}
 
 // Cleaner handles automatic cleanup of stale pilot labels (pilot-in-progress and pilot-failed).
 // When Pilot crashes or is killed, labels remain on issues. This cleaner
@@ -339,6 +361,43 @@ func (c *Cleaner) cleanupLabel(ctx context.Context, label string, threshold time
 				slog.String("label", label),
 			)
 			continue
+		}
+
+		// GH-5299: a pilot-in-progress issue that otherwise qualifies for
+		// staleness cleanup must still be left alone if either (a) it has
+		// since been marked pilot-superseded — a hand-off already owns the
+		// work under a different issue number, so re-admitting this one via
+		// the "available for processing again" comment would race the
+		// continuation — or (b) the task's latest execution already reached
+		// a terminal status, meaning the label is stale bookkeeping on an
+		// issue whose work is actually done/declined/etc, not a crash
+		// orphan. In either case, removing the label and posting the
+		// cleanup comment would misrepresent the issue's true state and
+		// could wrongly re-admit it into the dispatch queue.
+		if label == LabelInProgress {
+			if HasLabel(issue, LabelSuperseded) {
+				c.logger.Debug("Issue is superseded, leaving stale pilot-in-progress label alone",
+					slog.Int("issue", issue.Number),
+				)
+				continue
+			}
+
+			latest, latestErr := c.store.GetLatestExecutionByTaskID(taskID, "")
+			switch {
+			case latestErr == nil && isPilotTerminalStatus(latest.Status):
+				c.logger.Debug("Issue's latest execution is terminal, leaving stale pilot-in-progress label alone",
+					slog.Int("issue", issue.Number),
+					slog.String("task_id", taskID),
+					slog.String("status", latest.Status),
+				)
+				continue
+			case latestErr != nil && !errors.Is(latestErr, sql.ErrNoRows):
+				c.logger.Warn("Failed to look up latest execution for staleness gate",
+					slog.Int("issue", issue.Number),
+					slog.String("task_id", taskID),
+					slog.Any("error", latestErr),
+				)
+			}
 		}
 
 		// Remove the stale label
