@@ -229,6 +229,153 @@ func TestCleaner_Cleanup_StaleIssuesRemoved(t *testing.T) {
 	}
 }
 
+// TestCleaner_Cleanup_SupersededIssueLeftAlone is a GH-5299 regression test:
+// a stale pilot-in-progress issue that has since been marked
+// pilot-superseded (a hand-off already owns the work under a different
+// issue number) must not have its label removed or a cleanup comment
+// posted — doing so would misrepresent the issue as "available for
+// processing again" and race the continuation.
+func TestCleaner_Cleanup_SupersededIssueLeftAlone(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	staleTime := time.Now().Add(-2 * time.Hour)
+	issues := []*Issue{
+		{
+			Number:    321,
+			Title:     "Superseded Issue",
+			Labels:    []Label{{Name: LabelInProgress}, {Name: LabelSuperseded}},
+			UpdatedAt: staleTime,
+		},
+	}
+
+	var removeLabelCalled, addCommentCalled bool
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			_ = json.NewEncoder(w).Encode(issues)
+			return
+		}
+
+		if r.Method == http.MethodDelete {
+			removeLabelCalled = true
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/321/comments" {
+			addCommentCalled = true
+			_ = json.NewEncoder(w).Encode(&Comment{ID: 1, Body: "cleanup"})
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:   true,
+		Interval:  30 * time.Minute,
+		Threshold: 1 * time.Hour,
+	})
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Errorf("Cleanup() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if removeLabelCalled {
+		t.Error("RemoveLabel should NOT have been called for a superseded issue")
+	}
+	if addCommentCalled {
+		t.Error("AddComment should NOT have been called for a superseded issue")
+	}
+}
+
+// TestCleaner_Cleanup_TerminalExecutionIssueLeftAlone is a GH-5299
+// regression test: a stale pilot-in-progress issue whose task's latest
+// execution already reached a terminal status (e.g. "completed") must not
+// have its label removed or a cleanup comment posted — the label is stale
+// bookkeeping on finished work, not a crash orphan, and posting "available
+// for processing again" would misrepresent the issue's true state.
+func TestCleaner_Cleanup_TerminalExecutionIssueLeftAlone(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	exec := &memory.Execution{
+		ID:     "exec-terminal-001",
+		TaskID: "GH-654",
+		Status: "completed",
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("Failed to save execution: %v", err)
+	}
+
+	staleTime := time.Now().Add(-2 * time.Hour)
+	issues := []*Issue{
+		{
+			Number:    654,
+			Title:     "Issue With Terminal Execution",
+			Labels:    []Label{{Name: LabelInProgress}},
+			UpdatedAt: staleTime,
+		},
+	}
+
+	var removeLabelCalled, addCommentCalled bool
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			_ = json.NewEncoder(w).Encode(issues)
+			return
+		}
+
+		if r.Method == http.MethodDelete {
+			removeLabelCalled = true
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/654/comments" {
+			addCommentCalled = true
+			_ = json.NewEncoder(w).Encode(&Comment{ID: 1, Body: "cleanup"})
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:   true,
+		Interval:  30 * time.Minute,
+		Threshold: 1 * time.Hour,
+	})
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Errorf("Cleanup() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if removeLabelCalled {
+		t.Error("RemoveLabel should NOT have been called for an issue with a terminal execution")
+	}
+	if addCommentCalled {
+		t.Error("AddComment should NOT have been called for an issue with a terminal execution")
+	}
+}
+
 func TestCleaner_Cleanup_RecentIssuesSkipped(t *testing.T) {
 	store := createTestStore(t)
 	defer func() { _ = store.Close() }()
