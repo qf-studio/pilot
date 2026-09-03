@@ -759,6 +759,109 @@ func TestRestoreUsesCleanupInsteadOfBlindRestore(t *testing.T) {
 	}
 }
 
+func TestMergeWithExisting_PreservesUserHooksUnderDefaultConfig(t *testing.T) {
+	// GH-5283: GH-5280 flipped hooks.Enabled to true by default. Verify a
+	// project with a pre-existing .claude/settings.json containing a
+	// user-defined hook keeps that hook (and unrelated settings) intact
+	// after a real default-config pilot run merges its own hooks in.
+	tempDir := t.TempDir()
+	settingsPath := filepath.Join(tempDir, ".claude", "settings.json")
+
+	userScriptDir := t.TempDir()
+	userHookPath := filepath.Join(userScriptDir, "my-custom-hook.sh")
+	if err := os.WriteFile(userHookPath, []byte("#!/bin/sh\necho user hook\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existingJSON := `{"otherUserSetting":"keep-me","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"` +
+		userHookPath + `"}]}]}}`
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(existingJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a real default-config pilot run: DefaultHooksConfig(), not a
+	// hand-built HooksConfig, so this exercises the actual GH-5280 defaults
+	// (Enabled=true, BlockDestructive=true, RunTestsOnStop=false).
+	scriptDir := t.TempDir()
+	if err := WriteEmbeddedScripts(scriptDir); err != nil {
+		t.Fatalf("WriteEmbeddedScripts: %v", err)
+	}
+
+	config := DefaultHooksConfig()
+	pilotSettings := GenerateClaudeSettings(config, scriptDir)
+
+	restoreFunc, err := MergeWithExisting(settingsPath, pilotSettings)
+	if err != nil {
+		t.Fatalf("MergeWithExisting: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if parsed["otherUserSetting"] != "keep-me" {
+		t.Error("Expected unrelated user setting to be preserved after merge")
+	}
+
+	hooks, ok := parsed["hooks"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected hooks in merged settings")
+	}
+
+	preArr, ok := hooks["PreToolUse"].([]interface{})
+	if !ok {
+		t.Fatal("Expected PreToolUse hooks array")
+	}
+
+	var foundUserHook, foundPilotHook bool
+	for _, entry := range preArr {
+		m, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		cmd := extractCommandFromEntry(m)
+		if cmd == userHookPath {
+			foundUserHook = true
+		}
+		if isPilotManagedHook(cmd) {
+			foundPilotHook = true
+		}
+	}
+	if !foundUserHook {
+		t.Error("Expected pre-existing user hook to remain in merged PreToolUse entries")
+	}
+	if !foundPilotHook {
+		t.Error("Expected pilot bash-guard hook to be present in merged PreToolUse entries (BlockDestructive default true)")
+	}
+
+	// RunTestsOnStop defaults to false (GH-2432), so no Stop hook should be
+	// introduced by this default-config run.
+	if _, hasStop := hooks["Stop"]; hasStop {
+		t.Error("Expected no Stop hook under default config (RunTestsOnStop defaults to false)")
+	}
+
+	// Restoring should hand the project back its original settings, user
+	// hook included, byte-for-byte.
+	if err := restoreFunc(); err != nil {
+		t.Errorf("Restore failed: %v", err)
+	}
+	restoredData, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile after restore: %v", err)
+	}
+	if string(restoredData) != existingJSON {
+		t.Error("Expected restore to return the original settings with the user hook intact")
+	}
+}
+
 func boolPtr(b bool) *bool {
 	return &b
 }
