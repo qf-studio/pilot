@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -236,6 +237,72 @@ func TestOpenCodeBackendIsAvailable(t *testing.T) {
 	// This will depend on whether opencode is installed
 	// Just verify it doesn't panic
 	_ = backend.IsAvailable()
+}
+
+// TestProviderAPIKeyEnvVar covers GH-5302's provider-name -> env-var-name
+// derivation used by the non-Anthropic-provider-without-passthrough WARN.
+func TestProviderAPIKeyEnvVar(t *testing.T) {
+	tests := []struct {
+		provider string
+		want     string
+	}{
+		{"", ""},
+		{"anthropic", ""},
+		{"Anthropic", ""},
+		{"  anthropic  ", ""},
+		{"openrouter", "OPENROUTER_API_KEY"},
+		{"openai", "OPENAI_API_KEY"},
+		{"groq", "GROQ_API_KEY"},
+		{"  openai  ", "OPENAI_API_KEY"},
+		{"OpenAI", "OPENAI_API_KEY"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			got := providerAPIKeyEnvVar(tt.provider)
+			if got != tt.want {
+				t.Errorf("providerAPIKeyEnvVar(%q) = %q, want %q", tt.provider, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOpenCodeBackendWarnIfProviderCredentialsMayBeScrubbed covers GH-5302:
+// the server-start WARN must fire exactly when the configured provider is
+// non-Anthropic AND its conventional *_API_KEY name is missing from the
+// config-driven passthrough set (claude_code.env_passthrough) — otherwise
+// that provider's credential is silently scrubbed from the OpenCode server
+// subprocess env on every (re)start.
+func TestOpenCodeBackendWarnIfProviderCredentialsMayBeScrubbed(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		passthrough []string
+		wantWarn    bool
+	}{
+		{"anthropic provider never warns", "anthropic", nil, false},
+		{"empty provider never warns", "", nil, false},
+		{"non-anthropic without passthrough warns", "openrouter", nil, true},
+		{"non-anthropic with matching passthrough does not warn", "openrouter", []string{"OPENROUTER_API_KEY"}, false},
+		{"non-anthropic with unrelated passthrough still warns", "openrouter", []string{"OPENAI_API_KEY"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			SetModelEnvPassthrough(tt.passthrough)
+			t.Cleanup(func() { SetModelEnvPassthrough(nil) })
+
+			var buf bytes.Buffer
+			backend := NewOpenCodeBackend(&OpenCodeConfig{Provider: tt.provider})
+			backend.log = slog.New(slog.NewTextHandler(&buf, nil))
+
+			backend.warnIfProviderCredentialsMayBeScrubbed()
+
+			gotWarn := strings.Contains(buf.String(), "level=WARN")
+			if gotWarn != tt.wantWarn {
+				t.Errorf("warn emitted = %v, want %v; log output: %s", gotWarn, tt.wantWarn, buf.String())
+			}
+		})
+	}
 }
 
 func TestOpenCodeBackendStopServer(t *testing.T) {

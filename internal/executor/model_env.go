@@ -72,16 +72,19 @@ var modelEnvPassthroughMu sync.RWMutex
 
 // modelEnvPassthrough holds the config-driven escape hatch
 // (claude_code.env_passthrough in pilot config): names listed here survive
-// the scrub even though they'd otherwise be dropped. Wiring this from
-// loaded config is tracked separately (GH-5277); SetModelEnvPassthrough is
-// the seam that wiring calls into.
+// the scrub even though they'd otherwise be dropped. Wired from loaded
+// config inside NewRunnerWithConfig (runner.go, GH-5302) — every
+// runner-construction call site (daemon startup, `pilot task`,
+// `pilot github run`, orchestrator, interactive mode) funnels through
+// there, so this is set exactly once per config load regardless of entry
+// point. SetModelEnvPassthrough is the seam that wiring calls into.
 var modelEnvPassthrough map[string]bool
 
 // SetModelEnvPassthrough configures the set of environment variable names
 // that survive modelSubprocessEnv's scrub despite matching a deny rule.
-// Intended to be called once at startup from the loaded
-// claude_code.env_passthrough config value (GH-5277). A nil or empty names
-// slice clears the passthrough set.
+// Called from NewRunnerWithConfig (GH-5302) with the loaded
+// claude_code.env_passthrough config value. A nil or empty names slice
+// clears the passthrough set.
 func SetModelEnvPassthrough(names []string) {
 	m := make(map[string]bool, len(names))
 	for _, n := range names {
@@ -192,4 +195,16 @@ func modelSubprocessEnv(base []string) []string {
 	}
 
 	return out
+}
+
+// ModelSubprocessEnvForTest exposes modelSubprocessEnv to tests in other
+// packages that can't reach the unexported helper directly — e.g.
+// internal/config's end-to-end env_passthrough wiring test (GH-5302), which
+// needs to prove claude_code.env_passthrough actually reaches the scrub
+// after flowing through config.Load and NewRunnerWithConfig, not just that
+// it parses. Production code must call modelSubprocessEnv directly (or
+// route through a Backend that already does); this seam exists purely for
+// cross-package test assertions.
+func ModelSubprocessEnvForTest(base []string) []string {
+	return modelSubprocessEnv(base)
 }

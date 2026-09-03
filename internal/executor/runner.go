@@ -1097,6 +1097,18 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 			slog.String("type", config.Type),
 		)
 	}
+
+	// GH-5302: this is the single choke point every runner-construction path
+	// (daemon startup, `pilot task`, `pilot github run`, orchestrator,
+	// interactive mode) goes through before any model subprocess can spawn —
+	// wire claude_code.env_passthrough here rather than duplicating the call
+	// across each cmd/pilot call site. Without this, EnvPassthrough parses
+	// from config (GH-5277/PR#5288) but modelSubprocessEnv never sees it and
+	// every listed name is still scrubbed (GH-5302).
+	if config.ClaudeCode != nil {
+		SetModelEnvPassthrough(config.ClaudeCode.EnvPassthrough)
+	}
+
 	backend, err := NewBackend(config)
 	if err != nil {
 		return nil, err
