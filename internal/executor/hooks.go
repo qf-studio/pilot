@@ -26,7 +26,11 @@ var embeddedHookScripts embed.FS
 //	    lint_on_save: false       # PostToolUse hook runs linter after file changes
 type HooksConfig struct {
 	// Enabled controls whether Claude Code hooks are active.
-	// When false (default), hooks are not installed and execution proceeds normally.
+	// On by default (GH-5280): this installs a pattern-based speed bump —
+	// a PreToolUse hook that regex-matches and blocks common destructive
+	// Bash commands (e.g. "rm -rf /", "git push --force"). It is NOT a
+	// sandbox or a security boundary; it catches obvious footguns but can
+	// be bypassed by a determined agent. Set to false to disable entirely.
 	Enabled bool `yaml:"enabled"`
 
 	// RunTestsOnStop enables the Stop hook that runs build/tests before Claude finishes.
@@ -50,11 +54,15 @@ type HooksConfig struct {
 // long unproductive turns into the Claude session, inflating token cost
 // without comparable quality gain. Quality gates still run after the
 // subprocess exits.
+// GH-5280: Enabled flipped to true. The PreToolUse guard is a pattern-based
+// speed bump against common destructive Bash commands, not a sandbox —
+// worth having on by default since it's cheap and non-blocking for normal
+// work.
 func DefaultHooksConfig() *HooksConfig {
 	runTestsOnStop := false
 	blockDestructive := true
 	return &HooksConfig{
-		Enabled:          false, // Disabled by default, opt-in feature
+		Enabled:          true, // Enabled by default (GH-5280): pattern-based speed bump, not a sandbox
 		RunTestsOnStop:   &runTestsOnStop,
 		BlockDestructive: &blockDestructive,
 		LintOnSave:       false,
