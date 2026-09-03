@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-08-25T19:05:00.000000+00:00",
+  "updated": "2026-09-03T15:28:09.201031+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -5978,6 +5978,20 @@
         ],
         "confidence": 0.9,
         "created": "2026-09-03"
+      },
+      "go-time-cutoff-vs-sqlite-current-timestamp-timezone": {
+        "type": "pitfall",
+        "summary": "Binding a Go time.Now()-derived cutoff against a SQLite CURRENT_TIMESTAMP column compares local-time text to UTC text; grace windows break on non-UTC hosts (reaper reaped live claims on UTC+2, invisible on UTC box/CI). Rule: cutoff.UTC() or compare in Go; test under a non-UTC time.Local. pilot#5308.",
+        "file": ".agent/knowledge/memories/pitfalls/go-time-cutoff-vs-sqlite-current-timestamp-timezone.md",
+        "concepts": [
+          "sqlite",
+          "dispatch",
+          "claims",
+          "timezone",
+          "testing"
+        ],
+        "confidence": 0.95,
+        "created": "2026-09-03"
       }
     }
   },
@@ -8061,6 +8075,11 @@
       "from": "TASK-490",
       "to": "context",
       "type": "implements"
+    },
+    {
+      "from": "go-time-cutoff-vs-sqlite-current-timestamp-timezone",
+      "to": "absolute-state-paths-bypass-cutover-shim",
+      "type": "related"
     }
   ],
   "concept_index": {
@@ -9911,10 +9930,10 @@
       "review-limit-close-keeps-branch-normal-close-deletes-it"
     ]
   },
-  "last_updated": "2026-08-31T15:32:20.252730+00:00",
+  "last_updated": "2026-09-03T15:28:09.201031+00:00",
   "stats": {
-    "total_nodes": 507,
-    "total_edges": 416,
-    "memory_count": 264
+    "total_nodes": 508,
+    "total_edges": 417,
+    "memory_count": 265
   }
 }
