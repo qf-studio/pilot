@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -189,6 +190,9 @@ func (j *IntentJudge) defaultCmdRunner(ctx context.Context, args ...string) ([]b
 	args, prompt, hasPrompt := extractStdinPrompt(args)
 
 	cmd := exec.CommandContext(ctx, j.claudeCmd, args...)
+	// GH-5278: scrub the ambient environment before this model-controlled
+	// subprocess inherits it.
+	cmd.Env = modelSubprocessEnv(os.Environ())
 	var stdout bytes.Buffer
 	stderr := newBoundedBuffer(maxJudgeStderrCaptureBytes)
 	cmd.Stdout = &stdout
