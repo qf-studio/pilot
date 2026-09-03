@@ -2140,7 +2140,16 @@ func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 func (s *Store) GetExecutionsForReceipts(query BriefQuery) ([]*Execution, error) {
 	var args []interface{}
 	whereClause := "WHERE completed_at >= ? AND completed_at < ? AND status IN ('completed', 'failed') AND COALESCE(is_canary, 0) = 0"
-	args = append(args, query.Start, query.End)
+	// GH-5308: completed_at is only ever written as `completed_at =
+	// CURRENT_TIMESTAMP` (grep confirms no UPDATE binds it as a Go param) —
+	// SQLite's own UTC, offset-less text layout. ReceiptsScheduler.runDigest
+	// builds query.Start/End via time.Now().In(loc) using the digest's
+	// configured, non-UTC Timezone (default "America/New_York"), so the same
+	// local-vs-UTC text mismatch ReapOrphanedClaims had applies here too: on
+	// that default config the window silently excludes rows a UTC host would
+	// include (or vice versa, depending on the offset's sign). .UTC() aligns
+	// the bound text layout with completed_at's.
+	args = append(args, query.Start.UTC(), query.End.UTC())
 
 	if len(query.Projects) > 0 {
 		placeholders := ""
@@ -3498,7 +3507,25 @@ type OrphanedClaim struct {
 // Returns the reaped claims (possibly empty) for the caller to log —
 // deletion already happened by the time this returns.
 func (s *Store) ReapOrphanedClaims(graceWindow time.Duration) ([]OrphanedClaim, error) {
-	cutoff := time.Now().Add(-graceWindow)
+	// GH-5308: execution_claims.created_at is DATETIME DEFAULT CURRENT_TIMESTAMP
+	// (ClaimExecution never stamps it itself — see backdateClaim's comment in
+	// store_test.go), which SQLite/the DSN's _time_format=sqlite driver write
+	// as a UTC, offset-less text value ("2026-09-03 15:32:50"). A bare
+	// time.Now() cutoff is bound in the *local* zone with its offset appended
+	// ("2026-09-03 17:32:50+02:00" on a UTC+2 host), and `WHERE created_at <
+	// ?` is a plain SQLite TEXT/BINARY-collation comparison, not a
+	// timezone-aware one. On a host east of UTC that comparison makes every
+	// claim look hours older than it is, so a claim created moments ago reaps
+	// as soon as this runs, inside the grace window meant to protect it (the
+	// live class of bug this method exists to close, just misapplied to a
+	// still-live owner instead of a dead one). .UTC() makes the bound value's
+	// text layout match CURRENT_TIMESTAMP's own, restoring correct
+	// chronological ordering. See store.go's filterAndSortStale for the
+	// sibling pattern (GH-4392) of a Go-time-vs-driver-text mismatch, and this
+	// package's TestReapOrphanedClaims_LeavesFreshClaimAlone /
+	// internal/executor's TestDispatcher_ReapOrphanedClaims_LeavesFreshClaimWedgedForDuplicatePickup
+	// for the regression coverage under a fixed non-UTC time.Local.
+	cutoff := time.Now().Add(-graceWindow).UTC()
 
 	rows, err := s.db.Query(`
 		SELECT task_id, project_path, generation, execution_id, created_at
