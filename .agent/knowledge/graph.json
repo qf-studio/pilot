@@ -5981,7 +5981,7 @@
       },
       "go-time-cutoff-vs-sqlite-current-timestamp-timezone": {
         "type": "pitfall",
-        "summary": "Binding a Go time.Now()-derived cutoff against a SQLite CURRENT_TIMESTAMP column compares local-time text to UTC text; grace windows break on non-UTC hosts (reaper reaped live claims on UTC+2, invisible on UTC box/CI). Rule: cutoff.UTC() or compare in Go; test under a non-UTC time.Local. pilot#5308.",
+        "summary": "Binding a Go time.Now()-derived cutoff against a SQLite CURRENT_TIMESTAMP column compares local-time text to UTC text; grace windows break on non-UTC hosts (reaper reaped live claims on UTC+2, invisible on UTC box/CI). Rule: cutoff.UTC() or compare in Go; test under a non-UTC time.Local. pilot#5308. Follow-up audit (#5310) found the same local-vs-UTC split on other columns of the same row (executions.created_at/completed_at, sessions.started_at/ended_at) — fixed by normalizing every Go-written DB timestamp to UTC at the write boundary, not just cutoffs.",
         "file": ".agent/knowledge/memories/pitfalls/go-time-cutoff-vs-sqlite-current-timestamp-timezone.md",
         "concepts": [
           "sqlite",

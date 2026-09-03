@@ -5330,8 +5330,13 @@ func TestPruneExecutionLogs(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	old := time.Now().Add(-2 * time.Hour)
-	recent := time.Now().Add(-10 * time.Minute)
+	// GH-5310: execution_logs.timestamp is always written in UTC (SaveLogEntry
+	// normalizes it at bind time), so these direct inserts — which bypass
+	// SaveLogEntry — must normalize to UTC too, or they simulate a row shape
+	// production can no longer produce and the comparison against
+	// PruneExecutionLogs's UTC cutoff can misjudge on a non-UTC test host.
+	old := time.Now().Add(-2 * time.Hour).UTC()
+	recent := time.Now().Add(-10 * time.Minute).UTC()
 
 	// Insert two old entries and one recent entry directly.
 	_, err = store.db.Exec(`INSERT INTO execution_logs (timestamp, level, message, component) VALUES (?, 'info', 'old1', 'test')`, old)
@@ -6793,5 +6798,137 @@ func TestReclassifySupersededForRearm_DemotesToFailedAndUnblocksRetry(t *testing
 	}
 	if otherExec.Status != "superseded" {
 		t.Errorf("expected the other task's superseded row to remain untouched, got status %q", otherExec.Status)
+	}
+}
+
+// TestGH5310_UTCTimestamps_NonUTCHost is GH-5310's follow-up to the GH-5308
+// reaper/receipts fix: every Go-written DB timestamp in this package must be
+// stamped in UTC, not just the two sites #5309 fixed. Before this fix,
+// executions.created_at (SaveExecution's Go-side fallback and caller-supplied
+// paths), the BriefQuery/since bounds compared against it, execution_logs.timestamp,
+// and autopilot_metrics.snapshot_at were all bound in whatever zone
+// time.Local happened to be — while completed_at (via CURRENT_TIMESTAMP) was
+// always UTC. On a UTC host (CI, the founder box) that mismatch is invisible:
+// local time.Now() and its .UTC() equivalent format identically. Table-driven
+// across a positive (+2) and a negative (-7) offset so the fix isn't pinned
+// to only one side of UTC.
+func TestGH5310_UTCTimestamps_NonUTCHost(t *testing.T) {
+	for _, offset := range []int{2, -7} {
+		t.Run(fmt.Sprintf("offset=%+d", offset), func(t *testing.T) {
+			withFixedLocalOffset(t, offset)
+
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			now := time.Now() // local, offset by withFixedLocalOffset above
+			completedAt := now
+
+			// SaveExecution: CreatedAt left zero (exercises the Go time.Now()
+			// fallback) and a caller-supplied local CompletedAt — both must
+			// land on disk normalized to UTC.
+			if err := store.SaveExecution(&Execution{
+				ID: "gh5310-exec", TaskID: "GH-5310", ProjectPath: "/p",
+				Status: "completed", CompletedAt: &completedAt, EstimatedCostUSD: 1.00,
+			}); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			// GetExecutionsInPeriod: a +/-1h window around "now" must find the
+			// just-written row.
+			periodRows, err := store.GetExecutionsInPeriod(BriefQuery{
+				Start: now.Add(-1 * time.Hour), End: now.Add(1 * time.Hour),
+			})
+			if err != nil {
+				t.Fatalf("GetExecutionsInPeriod: %v", err)
+			}
+			if len(periodRows) != 1 || periodRows[0].ID != "gh5310-exec" {
+				t.Fatalf("GetExecutionsInPeriod: expected the just-written row inside a +/-1h window, got %d rows: %+v", len(periodRows), periodRows)
+			}
+
+			// GetBriefMetrics: same window must count it.
+			metrics, err := store.GetBriefMetrics(BriefQuery{
+				Start: now.Add(-1 * time.Hour), End: now.Add(1 * time.Hour),
+			})
+			if err != nil {
+				t.Fatalf("GetBriefMetrics: %v", err)
+			}
+			if metrics.TotalTasks != 1 {
+				t.Errorf("GetBriefMetrics: TotalTasks = %d, want 1", metrics.TotalTasks)
+			}
+
+			// GetWindowedStats: since = now - 1h must include it.
+			ws, err := store.GetWindowedStats("", now.Add(-1*time.Hour))
+			if err != nil {
+				t.Fatalf("GetWindowedStats: %v", err)
+			}
+			if ws.AttemptTotal != 1 {
+				t.Errorf("GetWindowedStats: AttemptTotal = %d, want 1", ws.AttemptTotal)
+			}
+
+			// Read-back: created_at and completed_at on this one row must be
+			// within seconds of each other. Pre-fix, created_at was stamped in
+			// the fixed-offset local zone while completed_at came from a
+			// caller-supplied local value too — normalizing only one side (as
+			// #5309 did for the two known sites) leaves this row's own two
+			// columns offset from each other by the full zone difference.
+			exec, err := store.GetExecution("gh5310-exec")
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if exec.CompletedAt == nil {
+				t.Fatal("expected CompletedAt to be set")
+			}
+			if d := exec.CompletedAt.Sub(exec.CreatedAt); d < -5*time.Second || d > 5*time.Second {
+				t.Errorf("created_at and completed_at differ by %v, want within a few seconds (offset=%+d)", d, offset)
+			}
+
+			// Log cleanup: a fresh entry must survive a 1h prune; a 2h-old one
+			// must not.
+			if err := store.SaveLogEntry(&LogEntry{ExecutionID: "gh5310-exec", Timestamp: now, Level: "info", Message: "fresh", Component: "test"}); err != nil {
+				t.Fatalf("SaveLogEntry (fresh): %v", err)
+			}
+			if err := store.SaveLogEntry(&LogEntry{ExecutionID: "gh5310-exec", Timestamp: now.Add(-2 * time.Hour), Level: "info", Message: "old", Component: "test"}); err != nil {
+				t.Fatalf("SaveLogEntry (old): %v", err)
+			}
+			deletedLogs, err := store.PruneExecutionLogs(time.Hour)
+			if err != nil {
+				t.Fatalf("PruneExecutionLogs: %v", err)
+			}
+			if deletedLogs != 1 {
+				t.Errorf("PruneExecutionLogs: deleted = %d, want 1 (only the 2h-old entry)", deletedLogs)
+			}
+			var remainingLogs int
+			if err := store.db.QueryRow(`SELECT COUNT(*) FROM execution_logs`).Scan(&remainingLogs); err != nil {
+				t.Fatalf("count execution_logs: %v", err)
+			}
+			if remainingLogs != 1 {
+				t.Errorf("remaining execution_logs = %d, want 1 (the fresh entry)", remainingLogs)
+			}
+
+			// Metrics cleanup: same shape, autopilot_metrics.snapshot_at.
+			if err := store.SaveAutopilotMetrics(&AutopilotMetricsRow{SnapshotAt: now}); err != nil {
+				t.Fatalf("SaveAutopilotMetrics (fresh): %v", err)
+			}
+			if err := store.SaveAutopilotMetrics(&AutopilotMetricsRow{SnapshotAt: now.Add(-2 * time.Hour)}); err != nil {
+				t.Fatalf("SaveAutopilotMetrics (old): %v", err)
+			}
+			deletedMetrics, err := store.PruneAutopilotMetrics(time.Hour)
+			if err != nil {
+				t.Fatalf("PruneAutopilotMetrics: %v", err)
+			}
+			if deletedMetrics != 1 {
+				t.Errorf("PruneAutopilotMetrics: deleted = %d, want 1 (only the 2h-old snapshot)", deletedMetrics)
+			}
+			var remainingMetrics int
+			if err := store.db.QueryRow(`SELECT COUNT(*) FROM autopilot_metrics`).Scan(&remainingMetrics); err != nil {
+				t.Fatalf("count autopilot_metrics: %v", err)
+			}
+			if remainingMetrics != 1 {
+				t.Errorf("remaining autopilot_metrics = %d, want 1 (the fresh snapshot)", remainingMetrics)
+			}
+		})
 	}
 }

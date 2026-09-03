@@ -34,3 +34,27 @@ the pattern anyway — the pitfall is not discoverable from the call site.
 - When reviewing: grep `store.go` for `_at\s*[<>]=?\s*\?` and check each
   param's construction. Related: [[absolute-state-paths-bypass-cutover-shim]]
   (another "correct on the box, wrong elsewhere" class).
+
+**Follow-up (GH-5310, 2026-09-03):** #5309 fixed only the two sites flagged in
+review (`ReapOrphanedClaims`, `GetExecutionsForReceipts`). A full audit of
+every Go-written DB timestamp in `store.go` found the underlying bug was
+broader than "cutoff vs `CURRENT_TIMESTAMP`": `executions.created_at`
+(Go-written) and `executions.completed_at` (`CURRENT_TIMESTAMP`-written) sat
+on the *same row*, one local one UTC — invisible today because no query joins
+them, but a landmine for any future duration/ordering query. The same pattern
+turned up independently in `sessions`: `started_at` was Go-`time.Now()` while
+`EndSession`'s `ended_at` is `CURRENT_TIMESTAMP` — nobody had flagged that one
+at all until this audit swept every `time.Now()` in the file, not just the
+ones already bound into a `WHERE` clause. Fix: normalize every Go-written DB
+timestamp to `.UTC()` at the write boundary (`SaveExecution`, `SaveLogEntry`,
+`SaveAutopilotMetrics`, `GetOrCreateDailySession`) *and* every read-side bound
+compared against those columns (`GetExecutionsInPeriod`, `GetBriefMetrics`,
+`GetWindowedStats`, `PruneExecutionLogs`, `PruneAutopilotMetrics`) in the same
+PR, so main never has a mixed-normalization window. One regression surfaced
+by this: `TestPruneExecutionLogs` inserted rows via direct SQL (bypassing
+`SaveLogEntry`'s new normalization) using local `time.Now()` — once the prune
+cutoff went UTC, the test's own fixture became the inconsistent one.
+**Corollary rule:** a raw `db.Exec(INSERT ...)` test fixture that stamps a
+timestamp column must match whatever normalization the real write path now
+applies, or the fixture silently drifts into simulating a row shape
+production can no longer produce.

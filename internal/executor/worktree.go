@@ -253,7 +253,7 @@ func (m *WorktreeManager) createPooledWorktree(ctx context.Context, index int) (
 
 	return &PooledWorktree{
 		Path:      worktreePath,
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now().UTC(),
 		InUse:     false,
 	}, nil
 }
