@@ -3476,6 +3476,25 @@ type OrphanedClaim struct {
 // execution row is a candidate, matching Begin's own claim-then-immediately-
 // save contract (see ExecutionLifecycle.Begin's doc comment).
 //
+// GH-5301: the match uses a correlated NOT EXISTS rather than
+// `execution_id NOT IN (SELECT id FROM executions)` deliberately. SQL's
+// three-valued logic makes NOT IN poison itself the moment the subquery
+// produces even one NULL: `x NOT IN (a, NULL)` evaluates to NULL (not true)
+// for every x that doesn't literally equal a, so a single NULL id anywhere
+// in the executions table would silently turn this reap into a permanent
+// no-op for every claim, forever, with no error surfaced (executions.id is
+// TEXT PRIMARY KEY, which SQLite does not implicitly enforce NOT NULL on
+// for non-INTEGER primary keys — a NULL row there is not the schema's
+// design intent, but nothing today would reject one on insert). NOT EXISTS
+// is immune to this: it is a per-row correlated check, so it correctly
+// reaps a claim regardless of what is or isn't in other rows of the
+// executions table, and independently covers a claim whose own
+// execution_id is empty — that also never matches, so it reaps exactly the
+// same as before. GH-257 (pilot-console): a claim created at admission with
+// no execution row ever written sat unreaped for 27+ hours despite the
+// periodic sweep ticking every StaleRecoveryInterval; this closes any
+// codepath through which that could reproduce.
+//
 // Returns the reaped claims (possibly empty) for the caller to log —
 // deletion already happened by the time this returns.
 func (s *Store) ReapOrphanedClaims(graceWindow time.Duration) ([]OrphanedClaim, error) {
@@ -3483,9 +3502,9 @@ func (s *Store) ReapOrphanedClaims(graceWindow time.Duration) ([]OrphanedClaim, 
 
 	rows, err := s.db.Query(`
 		SELECT task_id, project_path, generation, execution_id, created_at
-		FROM execution_claims
+		FROM execution_claims ec
 		WHERE created_at < ?
-		AND execution_id NOT IN (SELECT id FROM executions)
+		AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.id = ec.execution_id)
 	`, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("querying orphaned claims: %w", err)

@@ -2674,6 +2674,63 @@ func TestRunStaleRecoveryLoop_Periodic(t *testing.T) {
 	}
 }
 
+// TestRunStaleRecoveryLoop_ReapsOrphanedClaimPeriodically is GH-5301's core
+// acceptance case: the row-less-claim reaper (GH-5273/#5274) must fire on
+// the periodic tick, not only at Dispatcher.Start — an orphaned claim
+// created *after* boot must be reaped within one grace window + one tick,
+// with no daemon restart involved. Before this fix's test coverage existed,
+// every ReapOrphanedClaims test called dispatcher.reapOrphanedClaims()
+// directly, which exercises the query but never proves the ticker
+// (runStaleRecoveryLoop) actually drives it end to end — this test starts
+// the real dispatcher, waits for it to be running, only then creates the
+// orphaned claim, and asserts it disappears without ever calling Stop/Start
+// again. Mirrors TestRunStaleRecoveryLoop_Periodic's structure exactly.
+func TestRunStaleRecoveryLoop_ReapsOrphanedClaimPeriodically(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Very short interval and grace window so the loop ticks quickly and the
+	// claim is already past its grace window by the time it does.
+	config := &DispatcherConfig{
+		StaleRunningThreshold:    0,
+		StaleQueuedThreshold:     0,
+		StaleRecoveryInterval:    50 * time.Millisecond,
+		OrphanedClaimGraceWindow: 5 * time.Millisecond,
+	}
+	runner := NewRunner()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	dispatcher := NewDispatcher(store, runner, config)
+	if err := dispatcher.Start(ctx); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Create the orphaned claim AFTER Start() — simulating GH-257's shape,
+	// where the claim is created while the daemon is already running, long
+	// after any boot-time sweep has come and gone.
+	time.Sleep(20 * time.Millisecond)
+	claimed, err := store.ClaimExecution("GH-257", "/project", 0, "exec-gh257-orphan")
+	if err != nil || !claimed {
+		t.Fatalf("expected orphan claim to win, claimed=%v err=%v", claimed, err)
+	}
+
+	// Wait for the periodic loop to tick past the grace window and reap it —
+	// no restart, no direct reapOrphanedClaims() call.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, found, err := store.LatestClaimGeneration("GH-257", "/project"); err != nil {
+			t.Fatalf("LatestClaimGeneration failed: %v", err)
+		} else if !found {
+			return // reaped
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected the periodic stale-recovery loop to reap the orphaned claim created after Start(), but it was never reaped")
+}
+
 func TestRecoverStaleTasks_DeletesOrphanWhenCompleted(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
