@@ -6406,3 +6406,65 @@ func TestDispatcher_ReapOrphanedClaims_LeavesFreshClaimWedgedForDuplicatePickup(
 		t.Fatalf("expected the fresh claim to survive the reap untouched, got gen=%d execID=%q found=%v", gen, execID, found)
 	}
 }
+
+// withFixedLocalOffset temporarily replaces the process-wide time.Local with
+// a fixed positive UTC offset for the duration of the test, restoring it on
+// cleanup. GH-5308: CI and the founder box both run in UTC, so this test's
+// UTC-only sibling above can't distinguish a correctly-UTC-normalized reap
+// cutoff from a buggy local one — the two formats coincide when the host's
+// own zone already is UTC. Forcing a positive offset here reproduces the
+// host class the bug was actually found on (a CEST/+0200 laptop).
+func withFixedLocalOffset(t *testing.T, offsetHours int) {
+	t.Helper()
+	orig := time.Local
+	time.Local = time.FixedZone("test-fixed-offset", offsetHours*3600)
+	t.Cleanup(func() { time.Local = orig })
+}
+
+// TestDispatcher_ReapOrphanedClaims_LeavesFreshClaimWedgedForDuplicatePickup_NonUTCHost
+// is TestDispatcher_ReapOrphanedClaims_LeavesFreshClaimWedgedForDuplicatePickup
+// re-run under a fixed non-UTC time.Local (GH-5308). ReapOrphanedClaims used
+// to bind its grace-window cutoff as `time.Now().Add(-graceWindow)` without
+// normalizing to UTC; execution_claims.created_at is DB-stamped via DEFAULT
+// CURRENT_TIMESTAMP, always UTC text with no offset. On a UTC+ host that
+// mismatch makes a claim created moments ago compare as hours old, so it
+// gets reaped well inside the 10-minute grace window meant to protect a
+// still-live owner from a duplicate dispatch pickup — reproduced here
+// deterministically instead of depending on the test runner's own timezone.
+func TestDispatcher_ReapOrphanedClaims_LeavesFreshClaimWedgedForDuplicatePickup_NonUTCHost(t *testing.T) {
+	withFixedLocalOffset(t, 2)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	config := DefaultDispatcherConfig()
+	config.OrphanedClaimGraceWindow = 10 * time.Minute
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	task := &Task{
+		ID:          "GH-250",
+		Title:       "fresh claim must not be reaped under a non-UTC host clock",
+		ProjectPath: "/tmp/pilot-console-test-project-fresh-nonutc",
+	}
+
+	claimed, err := store.ClaimExecution(task.ID, task.ProjectPath, 0, "exec-fresh-owner")
+	if err != nil || !claimed {
+		t.Fatalf("expected to seed the fresh claim, claimed=%v err=%v", claimed, err)
+	}
+
+	dispatcher.reapOrphanedClaims()
+
+	gen, execID, found, err := store.LatestClaimGeneration(task.ID, task.ProjectPath)
+	if err != nil {
+		t.Fatalf("LatestClaimGeneration failed: %v", err)
+	}
+	if !found || gen != 0 || execID != "exec-fresh-owner" {
+		t.Fatalf("expected the fresh claim to survive the reap untouched under a non-UTC time.Local, got gen=%d execID=%q found=%v", gen, execID, found)
+	}
+}
