@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -2538,6 +2539,62 @@ executor:
 			}
 		}
 	})
+}
+
+// TestLoadClaudeCodeEnvPassthrough_WiresIntoScrub is the GH-5302 regression
+// guard. TestLoadClaudeCodeEnvPassthrough above only proves env_passthrough
+// parses out of YAML into the Config struct — it says nothing about whether
+// anything downstream actually reads it, and #5277/PR#5288 shipped with
+// SetModelEnvPassthrough having zero production callers despite that test
+// being green. This test walks the real path a daemon (or `pilot task`/
+// `pilot github run`) takes — config.Load, then
+// executor.NewRunnerWithConfig, the single choke point every
+// runner-construction call site funnels through — and asserts the
+// configured name survives modelSubprocessEnv's scrub. Deleting the
+// SetModelEnvPassthrough wiring inside NewRunnerWithConfig fails this test
+// even though TestLoadClaudeCodeEnvPassthrough still passes.
+func TestLoadClaudeCodeEnvPassthrough_WiresIntoScrub(t *testing.T) {
+	executor.SetModelEnvPassthrough(nil)
+	t.Cleanup(func() { executor.SetModelEnvPassthrough(nil) })
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	configContent := `
+version: "1.0"
+executor:
+  claude_code:
+    env_passthrough:
+      - FOO_API_KEY
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// This mirrors the daemon startup / CLI wiring: constructing a runner
+	// from the loaded config must, as a side effect, configure the
+	// passthrough set (GH-5302).
+	if _, err := executor.NewRunnerWithConfig(cfg.Executor); err != nil {
+		t.Fatalf("NewRunnerWithConfig failed: %v", err)
+	}
+
+	out := executor.ModelSubprocessEnvForTest([]string{"FOO_API_KEY=x", "LINEAR_API_KEY=still-denied"})
+
+	found := map[string]bool{}
+	for _, kv := range out {
+		name, _, _ := strings.Cut(kv, "=")
+		found[name] = true
+	}
+	if !found["FOO_API_KEY"] {
+		t.Errorf("expected FOO_API_KEY to survive the scrub via claude_code.env_passthrough wired at runner construction, got %v", out)
+	}
+	if found["LINEAR_API_KEY"] {
+		t.Errorf("expected LINEAR_API_KEY (not in env_passthrough) to remain scrubbed, got %v", out)
+	}
 }
 
 func TestResolvedHealthCheckInterval(t *testing.T) {

@@ -44,12 +44,15 @@ var modelBinaryLiterals = map[string]bool{
 // modelBackendReceivers are struct types whose methods spawn the model CLI
 // through a configured, non-literal command path (e.g. b.config.Command,
 // parts[0] parsed from a configured server command) rather than a string
-// literal containing "claude"/"opencode". QwenCodeBackend is deliberately
-// NOT listed — its spawn sites are out of scope for GH-5275/GH-5276/GH-5278
-// (see backend_qwencode.go; it was never in the enumerated site list).
+// literal containing "claude"/"opencode". QwenCodeBackend was originally
+// excluded here as out of scope for GH-5275/GH-5276/GH-5278, but GH-5302
+// closed that gap — it spawns the same kind of Bash-capable,
+// permissions-skipping model CLI and now routes through modelSubprocessEnv
+// too (backend_qwencode.go), so it belongs in this guard like the others.
 var modelBackendReceivers = map[string]bool{
 	"ClaudeCodeBackend": true,
 	"OpenCodeBackend":   true,
+	"QwenCodeBackend":   true,
 }
 
 // receiverTypeName returns the (de-pointered) receiver type name of fn, or

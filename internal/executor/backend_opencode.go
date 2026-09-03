@@ -108,6 +108,7 @@ func (b *OpenCodeBackend) startServer(ctx context.Context) error {
 	}
 
 	b.log.Info("Starting OpenCode server", slog.String("command", b.config.ServerCommand))
+	b.warnIfProviderCredentialsMayBeScrubbed()
 
 	// Parse server command
 	parts := strings.Fields(b.config.ServerCommand)
@@ -136,6 +137,38 @@ func (b *OpenCodeBackend) startServer(ctx context.Context) error {
 	}
 
 	return fmt.Errorf("OpenCode server failed to start within timeout")
+}
+
+// providerAPIKeyEnvVar returns the conventional environment variable name
+// OpenCode looks up for a given provider's API key (e.g. "openrouter" ->
+// "OPENROUTER_API_KEY"). Returns "" for an empty provider or "anthropic",
+// which survives the model-env scrub on its own via the ANTHROPIC_* keep
+// prefix (model_env.go) and needs no passthrough entry.
+func providerAPIKeyEnvVar(provider string) string {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p == "" || p == "anthropic" {
+		return ""
+	}
+	return strings.ToUpper(p) + "_API_KEY"
+}
+
+// warnIfProviderCredentialsMayBeScrubbed logs a WARN when the configured
+// OpenCode provider is not Anthropic and its conventional *_API_KEY name is
+// not in the config-driven passthrough set (claude_code.env_passthrough).
+// OpenCode reads provider credentials from its own process environment
+// unless `opencode auth login` has been run — every *_API_KEY name matches
+// the model-env scrub's deny suffix (GH-5275/GH-5278), so without this the
+// credential is silently dropped from the server subprocess env on every
+// (re)start (GH-5302).
+func (b *OpenCodeBackend) warnIfProviderCredentialsMayBeScrubbed() {
+	envVar := providerAPIKeyEnvVar(b.config.Provider)
+	if envVar == "" || isModelEnvPassthrough(envVar) {
+		return
+	}
+	b.log.Warn("OpenCode provider is non-Anthropic and its API key is not in claude_code.env_passthrough — the server subprocess env scrub will drop it on start; add it to claude_code.env_passthrough or run `opencode auth login`",
+		slog.String("provider", b.config.Provider),
+		slog.String("expected_env_var", envVar),
+	)
 }
 
 // Execute runs a prompt through OpenCode server.
