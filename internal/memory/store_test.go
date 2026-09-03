@@ -872,6 +872,81 @@ func TestReapOrphanedClaims_LeavesClaimWithExecutionRowAlone(t *testing.T) {
 	}
 }
 
+// TestReapOrphanedClaims_SurvivesNullIDInExecutionsTable is GH-5301's
+// regression case for the `NOT IN` SQL trap: SQL's three-valued logic makes
+// `x NOT IN (SELECT id FROM executions)` evaluate to NULL (not true) for
+// every claim, forever, the moment executions.id contains even one NULL row
+// — executions.id is a TEXT PRIMARY KEY, which SQLite does not implicitly
+// enforce NOT NULL on, so nothing rejects such a row on insert. This pins
+// the fix (a correlated NOT EXISTS instead of NOT IN): a genuine orphaned
+// claim must still be reaped even with a NULL-id row sitting in executions.
+func TestReapOrphanedClaims_SurvivesNullIDInExecutionsTable(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Plant a NULL-id row directly (SaveExecution's Execution.ID is a plain
+	// Go string and can never be nil, so this bypasses the normal write path
+	// on purpose — it's simulating the schema gap, not a real code path).
+	if _, err := store.db.Exec(`
+		INSERT INTO executions (id, task_id, project_path, status)
+		VALUES (NULL, 'GH-NULLROW', '/project', 'completed')
+	`); err != nil {
+		t.Fatalf("failed to plant NULL-id executions row: %v", err)
+	}
+
+	claimed, err := store.ClaimExecution("GH-257", "/project", 0, "exec-orphan-null-poisoned")
+	if err != nil || !claimed {
+		t.Fatalf("expected orphan claim to win, claimed=%v err=%v", claimed, err)
+	}
+	backdateClaim(t, store, "GH-257", "/project", 0, time.Now().Add(-15*time.Minute))
+
+	orphans, err := store.ReapOrphanedClaims(10 * time.Minute)
+	if err != nil {
+		t.Fatalf("ReapOrphanedClaims failed: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("expected the orphan to still be reaped despite the NULL-id row in executions, got %d: %+v", len(orphans), orphans)
+	}
+	if orphans[0].TaskID != "GH-257" {
+		t.Errorf("unexpected reaped claim: %+v", orphans[0])
+	}
+}
+
+// TestReapOrphanedClaims_ReapsClaimWithEmptyExecutionID covers a claim row
+// whose execution_id was never a real ID at all — the shape GH-257's own
+// incident produced (created at admission, the run died before Begin's
+// SaveExecution ever ran). execution_claims.execution_id is TEXT NOT NULL,
+// so the column can never hold SQL NULL, but an empty string is the
+// realistic worst case of "no execution row was ever associated" and must
+// be reaped exactly like a claim pointing at a real-but-missing ID.
+func TestReapOrphanedClaims_ReapsClaimWithEmptyExecutionID(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	claimed, err := store.ClaimExecution("GH-257", "/project", 0, "")
+	if err != nil || !claimed {
+		t.Fatalf("expected orphan claim to win, claimed=%v err=%v", claimed, err)
+	}
+	backdateClaim(t, store, "GH-257", "/project", 0, time.Now().Add(-15*time.Minute))
+
+	orphans, err := store.ReapOrphanedClaims(10 * time.Minute)
+	if err != nil {
+		t.Fatalf("ReapOrphanedClaims failed: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("expected the empty-execution_id claim to be reaped, got %d: %+v", len(orphans), orphans)
+	}
+	if orphans[0].TaskID != "GH-257" || orphans[0].ExecutionID != "" {
+		t.Errorf("unexpected reaped claim: %+v", orphans[0])
+	}
+}
+
 // TestRepickBackoff_PersistsAcrossStoreReopen is the GH-4394 regression test:
 // the whole point of persisting repick-backoff state (rather than keeping it
 // purely in-process, as it was under #4385) is that a fresh Store handle —

@@ -3684,6 +3684,21 @@ func (w *ProjectWorker) escalateBasePresenceHold(ctx context.Context, task *Task
 	labelCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// GH-5301: every pilot-needs-human application must post a comment
+	// naming the cause — without one, an operator sees a task silently
+	// parked with no explanation of why (the GH-257 incident evidence: a
+	// needs-human label with no accompanying comment). Best-effort like the
+	// label mutation below: a comment failure is logged, not fatal, and does
+	// not block the label or alert.
+	commentBody := fmt.Sprintf(
+		"Pilot parked this task under `pilot-needs-human`: %s\n\nThis escalation fired after the base-presence hold exceeded its max held cycles waiting on an unmet prerequisite. No further automatic retries will run until the label is cleared.",
+		reason,
+	)
+	if err := ghIssueComment(labelCtx, task.ProjectPath, issueNum, commentBody); err != nil {
+		w.log.Warn("base-presence hold escalation: failed to post explanatory comment",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+	}
+
 	if err := ghEditLabels(labelCtx, task.ProjectPath, issueNum, []string{labelPilotNeedsHuman}, []string{labelPilotRetryReady}); err != nil {
 		w.log.Warn("base-presence hold escalation: failed to apply label",
 			slog.String("task_id", task.ID), slog.Any("error", err))

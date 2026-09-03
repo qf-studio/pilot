@@ -67,6 +67,44 @@ func TestEscalateBasePresenceHold_ShedsRetryReadyInSameMutation(t *testing.T) {
 	}
 }
 
+// TestEscalateBasePresenceHold_PostsExplanatoryComment is GH-5301: before
+// this, escalateBasePresenceHold applied pilot-needs-human via a bare `gh
+// issue edit` with no accompanying comment — an operator looking at the
+// issue saw a silently frozen task with no explanation (the GH-257 incident
+// evidence). The escalation must post a comment naming the cause alongside
+// the label mutation.
+func TestEscalateBasePresenceHold_PostsExplanatoryComment(t *testing.T) {
+	logFile := setupFakeGhCLI(t)
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	worker := NewProjectWorker(t.TempDir(), store, runner, slog.Default())
+
+	task := &Task{
+		ID:            "GH-9503",
+		Title:         "escalation posts a comment",
+		ProjectPath:   t.TempDir(),
+		SourceAdapter: "github",
+	}
+	reason := "referenced PR #4 is still open (not merged)"
+
+	worker.escalateBasePresenceHold(context.Background(), task, reason)
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read gh CLI log: %v", err)
+	}
+	log := string(data)
+	if !strings.Contains(log, "issue comment 9503") {
+		t.Fatalf("expected a `gh issue comment 9503` call, got log: %q", log)
+	}
+	if !strings.Contains(log, reason) {
+		t.Errorf("expected the comment to name the escalation reason %q, got log: %q", reason, log)
+	}
+}
+
 // TestEscalateBasePresenceHold_EmitsAlertsEngineEvent covers defect 3: the
 // escalation must fire an alerts-engine event (mirroring escalateAndHold's
 // AlertEventTypeTaskFailed emission), not just label + log + EmitProgress.
