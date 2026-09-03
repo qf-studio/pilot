@@ -2478,6 +2478,68 @@ executor:
 	})
 }
 
+// TestLoadClaudeCodeEnvPassthrough verifies claude_code.env_passthrough (GH-5277)
+// flows from YAML through Config.Executor into the executor.ClaudeCodeConfig
+// struct that the Claude Code backend spawn reads directly.
+func TestLoadClaudeCodeEnvPassthrough(t *testing.T) {
+	t.Run("defaults to empty when unset", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		if err := os.WriteFile(configPath, []byte(`version: "1.0"`), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if cfg.Executor == nil || cfg.Executor.ClaudeCode == nil {
+			t.Fatal("Executor.ClaudeCode should not be nil")
+		}
+		if len(cfg.Executor.ClaudeCode.EnvPassthrough) != 0 {
+			t.Errorf("EnvPassthrough = %v, want empty by default", cfg.Executor.ClaudeCode.EnvPassthrough)
+		}
+	})
+
+	t.Run("explicit names are loaded", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+executor:
+  claude_code:
+    env_passthrough:
+      - MY_REPO_API_KEY
+      - SOME_OTHER_VAR
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if cfg.Executor == nil || cfg.Executor.ClaudeCode == nil {
+			t.Fatal("Executor.ClaudeCode should not be nil")
+		}
+		want := []string{"MY_REPO_API_KEY", "SOME_OTHER_VAR"}
+		got := cfg.Executor.ClaudeCode.EnvPassthrough
+		if len(got) != len(want) {
+			t.Fatalf("EnvPassthrough = %v, want %v", got, want)
+		}
+		for i, name := range want {
+			if got[i] != name {
+				t.Errorf("EnvPassthrough[%d] = %q, want %q", i, got[i], name)
+			}
+		}
+	})
+}
+
 func TestResolvedHealthCheckInterval(t *testing.T) {
 	tests := []struct {
 		name string

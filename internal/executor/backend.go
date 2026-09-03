@@ -837,6 +837,13 @@ type ClaudeCodeConfig struct {
 	// friction (e.g. `gh` used in ways this guard doesn't yet recognize);
 	// use GhGuardEnabled() to read, which treats unset as enabled.
 	GhGuard *bool `yaml:"gh_guard,omitempty"`
+
+	// EnvPassthrough lists environment variable names that survive the
+	// model-subprocess env scrub (GH-5275/GH-5276) even if they would
+	// otherwise be dropped as a secret-shaped name (e.g. an *_API_KEY a
+	// project's own test suite legitimately reads). Names only — never
+	// logged with values. Default: empty (no exceptions).
+	EnvPassthrough []string `yaml:"env_passthrough,omitempty"`
 }
 
 // GhGuardEnabled reports whether the gh-guard shim (GH-4671) should be
