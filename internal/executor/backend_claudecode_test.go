@@ -1548,8 +1548,11 @@ func TestSetProviderEnv(t *testing.T) {
 				t.Errorf("defaultModel = %q, want %q", b.defaultModel, tt.model)
 			}
 
-			// Mirror Execute()'s env-build logic.
-			env := []string{"PATH=/usr/bin", "PILOT_EXECUTOR=1"}
+			// Mirror Execute()'s env-build logic: route through the real
+			// modelSubprocessEnv scrub helper (GH-5278) instead of a
+			// hand-built slice, so this test tracks the actual spawn-site
+			// behavior rather than a stale copy of it.
+			env := append(modelSubprocessEnv([]string{"PATH=/usr/bin"}), "PILOT_EXECUTOR=1")
 			if b.apiBaseURL != "" {
 				env = append(env, "ANTHROPIC_BASE_URL="+b.apiBaseURL)
 			}
