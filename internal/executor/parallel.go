@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -265,6 +266,9 @@ func (p *ParallelRunner) executeSubagent(ctx context.Context, projectPath string
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = projectPath
+	// GH-5278: scrub the ambient environment before this model-controlled
+	// subprocess inherits it.
+	cmd.Env = modelSubprocessEnv(os.Environ())
 
 	// GH-4503: same fix as the primary backends — own process group so
 	// Cancel() and ctx-cancellation can reach any children this subagent

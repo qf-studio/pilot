@@ -7225,6 +7225,9 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context, dir string) (*Post
 		"--json-schema", PostExecutionSummarySchema,
 	)
 	cmd.Dir = dir
+	// GH-5278: scrub the ambient environment before this model-controlled
+	// subprocess inherits it.
+	cmd.Env = modelSubprocessEnv(os.Environ())
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -7276,6 +7279,9 @@ func (r *Runner) getContractEvidence(ctx context.Context, dir string, fields []s
 		"--json-schema", ContractEvidenceSchema,
 	)
 	cmd.Dir = dir
+	// GH-5278: scrub the ambient environment before this model-controlled
+	// subprocess inherits it.
+	cmd.Env = modelSubprocessEnv(os.Environ())
 
 	output, err := cmd.Output()
 	if err != nil {

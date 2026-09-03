@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -69,6 +70,9 @@ func NewComplexityClassifier() *ComplexityClassifier {
 // defaultCmdRunner executes the claude command.
 func (c *ComplexityClassifier) defaultCmdRunner(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	// GH-5278: scrub the ambient environment before this model-controlled
+	// subprocess inherits it.
+	cmd.Env = modelSubprocessEnv(os.Environ())
 	return cmd.Output()
 }
 
