@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -65,6 +66,9 @@ func newSubtaskParserWithRunner(runner func(ctx context.Context, args ...string)
 
 func (p *SubtaskParser) defaultRunner(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, p.claudeCmd, args...)
+	// GH-5278: scrub the ambient environment before this model-controlled
+	// subprocess inherits it.
+	cmd.Env = modelSubprocessEnv(os.Environ())
 	return cmd.Output()
 }
 
