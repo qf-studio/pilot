@@ -77,3 +77,12 @@ Planned public deploy (when the domain lands) needs, in order:
 4. auth-service OIDC issuer URL must be set to the real domain (defaults to a hardcoded auth.qf.studio — flagged in the env enumeration).
 
 Nothing in the current minimal-mode request changes; this section exists so the UI deploy is planned work, not a surprise.
+
+## 10. Supplement (2026-09-03) — blockers merged, manifest verified
+
+- Both 09-01 blockers are on `main`: PR#47 (ECR pull path for the private GHCR auth-service image) and PR#48 (JWT PEM materialized from SSM to a file; runbook's auth-service DB step corrected to discrete `POSTGRES_*`). Deploy from `main` tip.
+- PR#48 addendum applied before merge: the materialized key is `chown 1000:1000` (the image drops to `USER appuser` uid 1000 and reads it through a read-only bind mount); `fetch-secrets.sh` runs under `umask 077`; put the PEM with `--value file:///path/key.pem` so it stays out of shell history.
+- Per-service SSM manifest confirmed against auth-service `main` (2026-09-01): required = `APP_ENV` · `POSTGRES_{HOST,PORT,DB,USER,PASSWORD,SSLMODE}` · `REDIS_HOST` (bare host, no port) · `JWT_PRIVATE_KEY_PEM` (content; path is derived) · `SYSTEM_SECRETS` · `PASSWORD_PEPPER` · `CORS_ALLOWED_ORIGINS`. `EMAIL_*`, `SAML_*`, `OAUTH_STATE_SECRET` are only required when their `*_ENABLED`/provider flags are on — leave off. `OIDC_ISSUER_URL` to be set once the domain is picked (default is hardcoded to `auth.qf.studio`).
+- Post-deploy validation: auth-service now publishes an `auth-service-smoke` image per release (#505) built for live-deployment verification — use it as the first probe after the 3-step validation.
+- Still open on our side: domain pick (ACM/SES/OIDC issuer); UI asset-pipeline issues follow it.
+
