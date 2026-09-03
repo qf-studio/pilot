@@ -733,16 +733,41 @@ func TestClaimExecution_ProjectScoping(t *testing.T) {
 	}
 }
 
+// withFixedLocalOffset temporarily replaces the process-wide time.Local with
+// a fixed positive UTC offset for the duration of the test, restoring it on
+// cleanup. GH-5308: CI and the founder box both run in UTC, so any comparison
+// that quietly assumes time.Now() is already UTC never turns red there — a
+// self-hoster whose host clock is east of UTC is silently affected instead.
+// This reproduces that host class deterministically no matter which timezone
+// actually runs the test suite (it was found on a CEST/+0200 laptop).
+func withFixedLocalOffset(t *testing.T, offsetHours int) {
+	t.Helper()
+	orig := time.Local
+	time.Local = time.FixedZone("test-fixed-offset", offsetHours*3600)
+	t.Cleanup(func() { time.Local = orig })
+}
+
 // backdateClaim rewrites an execution_claims row's created_at directly via
 // SQL — ClaimExecution always stamps CURRENT_TIMESTAMP, so tests pinning the
 // grace-window boundary need a way to simulate a claim that has actually
 // aged past it.
+//
+// GH-5308: createdAt is normalized with .UTC() before binding. Production
+// never writes this column any other way (CURRENT_TIMESTAMP is always UTC,
+// offset-less text — see ReapOrphanedClaims's own cutoff.UTC() fix), so an
+// un-normalized local time.Time here would make this helper simulate a claim
+// shape that can't occur outside a test running under a fixed non-UTC
+// time.Local, and would misreport reaper behavior on such a host: two
+// distinct real offsets, both explicitly suffixed onto the stored text,
+// don't sort correctly against each other under SQLite's plain
+// BINARY-collation `<` (only offset-less UTC vs the reap cutoff's own
+// .UTC() do).
 func backdateClaim(t *testing.T, store *Store, taskID, projectPath string, generation int, createdAt time.Time) {
 	t.Helper()
 	res, err := store.db.Exec(`
 		UPDATE execution_claims SET created_at = ?
 		WHERE task_id = ? AND project_path = ? AND generation = ?
-	`, createdAt, taskID, canonicalizeProjectPath(projectPath), generation)
+	`, createdAt.UTC(), taskID, canonicalizeProjectPath(projectPath), generation)
 	if err != nil {
 		t.Fatalf("backdateClaim: %v", err)
 	}
@@ -827,6 +852,54 @@ func TestReapOrphanedClaims_LeavesFreshClaimAlone(t *testing.T) {
 	}
 	if claimed {
 		t.Error("expected the fresh claim to still hold generation 0 after the reap")
+	}
+}
+
+// TestReapOrphanedClaims_LeavesFreshClaimAlone_NonUTCHost is
+// TestReapOrphanedClaims_LeavesFreshClaimAlone's assertion re-run under a
+// fixed non-UTC time.Local (GH-5308). execution_claims.created_at is only
+// ever DB-stamped via DEFAULT CURRENT_TIMESTAMP, which SQLite writes as UTC
+// text with no offset; ReapOrphanedClaims's cutoff must be converted to UTC
+// before it's bound, or `WHERE created_at < ?` compares that UTC text
+// against a local-offset-suffixed cutoff and can misjudge a claim created
+// moments ago as hours old. On a UTC test host (CI, the founder box) the
+// original test above can't tell a missing `.UTC()` apart from a correct
+// fix — both a local time.Now() and its .UTC() equivalent format identically
+// when the process's own zone already is UTC. Forcing a positive offset here
+// closes that blind spot: this fails on the pre-fix code and passes once the
+// cutoff is normalized to UTC, regardless of host timezone.
+func TestReapOrphanedClaims_LeavesFreshClaimAlone_NonUTCHost(t *testing.T) {
+	withFixedLocalOffset(t, 2)
+
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	claimed, err := store.ClaimExecution("GH-250", "/project", 0, "exec-fresh")
+	if err != nil || !claimed {
+		t.Fatalf("expected fresh claim to win, claimed=%v err=%v", claimed, err)
+	}
+	// No backdating: created_at stays at "now" (DB-side UTC CURRENT_TIMESTAMP),
+	// well inside a 10-minute grace window regardless of the process's zone.
+
+	orphans, err := store.ReapOrphanedClaims(10 * time.Minute)
+	if err != nil {
+		t.Fatalf("ReapOrphanedClaims failed: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Fatalf("expected fresh claim to survive the reap under a non-UTC time.Local, got %d reaped: %+v", len(orphans), orphans)
+	}
+
+	// Confirm the row is still there: a second claim for the same key must
+	// still lose.
+	claimed, err = store.ClaimExecution("GH-250", "/project", 0, "exec-other")
+	if err != nil {
+		t.Fatalf("ClaimExecution failed: %v", err)
+	}
+	if claimed {
+		t.Error("expected the fresh claim to still hold generation 0 after the reap under a non-UTC time.Local")
 	}
 }
 
@@ -1894,7 +1967,12 @@ func TestGetExecutionsForReceipts(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	now := time.Now()
+	// GH-5308: normalized to UTC. Production never writes completed_at as a
+	// local-offset Go time — every real UPDATE sets it via CURRENT_TIMESTAMP
+	// (SQLite's own UTC, offset-less text) — so this test seeds it the same
+	// way GetExecutionsForReceipts's own query.Start/End are now normalized,
+	// instead of leaking the test host's local zone into stored data.
+	now := time.Now().UTC()
 	inWindow := now
 	outOfWindow := now.Add(-48 * time.Hour)
 
@@ -2006,6 +2084,52 @@ func TestGetExecutionsForReceipts(t *testing.T) {
 	}
 	if inFlight.EstimatedCostUSD != 3.30 {
 		t.Errorf("EstimatedCostUSD = %v, want 3.30", inFlight.EstimatedCostUSD)
+	}
+}
+
+// TestGetExecutionsForReceipts_NonUTCHost is GH-5308's regression case for
+// the receipts digest specifically: completed_at is set by UpdateExecutionStatus
+// via `completed_at = CURRENT_TIMESTAMP` (unlike TestGetExecutionsForReceipts
+// above, which sets it directly through SaveExecution's Go-bound insert path
+// and so never touches CURRENT_TIMESTAMP's UTC, offset-less text layout at
+// all). ReceiptsScheduler.runDigest builds its BriefQuery.Start/End with
+// time.Now().In(loc) using the digest's configured Timezone (default
+// "America/New_York", i.e. never UTC) — the exact same Go-local-vs-DB-UTC
+// mismatch ReapOrphanedClaims had. This forces a fixed non-UTC time.Local so
+// the mismatch reproduces deterministically regardless of the host running
+// the test, and pins GetExecutionsForReceipts's own query.Start.UTC()/
+// query.End.UTC() fix.
+func TestGetExecutionsForReceipts_NonUTCHost(t *testing.T) {
+	withFixedLocalOffset(t, 2)
+
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&Execution{
+		ID: "receipt-nonutc-completed", TaskID: "GH-5308", ProjectPath: "/p", Status: "running",
+		EstimatedCostUSD: 1.50,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	// Drive completed_at through the real production path (CURRENT_TIMESTAMP),
+	// not a Go-bound param, so this reproduces the actual stored text layout.
+	if err := store.UpdateExecutionStatus("receipt-nonutc-completed", "completed"); err != nil {
+		t.Fatalf("UpdateExecutionStatus: %v", err)
+	}
+
+	now := time.Now() // local, offset by withFixedLocalOffset above
+	rows, err := store.GetExecutionsForReceipts(BriefQuery{
+		Start: now.Add(-1 * time.Hour),
+		End:   now.Add(1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("GetExecutionsForReceipts: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != "receipt-nonutc-completed" {
+		t.Fatalf("expected the just-completed execution to fall inside a +/-1h window under a non-UTC time.Local, got %d rows: %+v", len(rows), rows)
 	}
 }
 
