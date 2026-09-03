@@ -672,6 +672,29 @@ executor:
   #                                # are journaled and surfaced as gh_guard_denied alerts. Set to false
   #                                # only if the guard blocks a legitimate `gh` usage pattern it doesn't
   #                                # yet recognize — prefer filing that as a policy gap over disabling.
+  #   # env_passthrough (GH-5277): names of environment variables that survive
+  #   # the model-subprocess env scrub (GH-5275/GH-5276) even though their name
+  #   # looks secret-shaped (matches *_TOKEN/*_SECRET/*_API_KEY/etc). The scrub
+  #   # exists so the Claude Code subprocess doesn't inherit adapter credentials
+  #   # (SLACK_BOT_TOKEN, LINEAR_API_KEY, ...) it has no business seeing; this is
+  #   # the escape hatch for a project's own test suite or build tooling that
+  #   # legitimately reads a like-named var. Names only — values are never
+  #   # logged. Default: empty (no exceptions).
+  #   env_passthrough:
+  #     - MY_REPO_API_KEY
+
+  # Claude Code hooks (executor.hooks) - inline quality gates during execution
+  # (Stop/PreToolUse/PostToolUse), distinct from the after-the-fact `quality:`
+  # gates above. On by default since GH-5280: the PreToolUse guard
+  # (block_destructive) is a pattern-based speed bump that regex-matches
+  # common destructive Bash commands (e.g. "rm -rf /", "git push --force") —
+  # it is NOT a sandbox or a security boundary, just a cheap, non-blocking
+  # footgun catcher. Set enabled: false below to opt out entirely.
+  # hooks:
+  #   enabled: true               # Master switch (default: true) - set false to opt out entirely
+  #   run_tests_on_stop: false    # Stop hook runs build/tests before Claude finishes (default: false)
+  #   block_destructive: true     # PreToolUse hook blocks dangerous Bash commands (default: true when enabled)
+  #   lint_on_save: false         # PostToolUse hook runs linter after Edit/Write tools (default: false)
 
 # Approval workflow settings
 # Pilot can require human approval before executing tasks, merging PRs, or retrying failures.
