@@ -1,6 +1,7 @@
 node_modules
 .next
 .git
+.github
 .gitignore
 Dockerfile
 .dockerignore
