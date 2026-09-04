@@ -2388,6 +2388,16 @@
           "context",
           "authentication"
         ]
+      },
+      "TASK-492": {
+        "title": "pilot-docs migration — GitLab → GitHub qf-studio/pilot-docs + AWS deploy (Nelya)",
+        "status": "in_progress",
+        "concepts": [
+          "deployment",
+          "workflow",
+          "ci",
+          "aws"
+        ]
       }
     },
     "memories": {
@@ -5997,6 +6007,34 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-03"
+      },
+      "docs-sync-wipes-target-tree-workflow-must-originate-in-docs": {
+        "type": "pitfall",
+        "summary": "sync-docs.yml replaces the whole target tree (except .git, docker/) from pilot/docs/ — target-only files (CI workflow) are deleted on next sync; source deploy-unit infra from pilot/docs/",
+        "path": "memories/pitfalls/docs-sync-wipes-target-tree-workflow-must-originate-in-docs.md",
+        "confidence": 0.95,
+        "concepts": [
+          "deployment",
+          "workflow",
+          "ci"
+        ],
+        "created": "2026-09-04",
+        "last_validated": "2026-09-04"
+      },
+      "qf-studio-org-deploy-keys-disabled-use-pat-or-app": {
+        "type": "learning",
+        "summary": "qf-studio org disables deploy keys (422); cross-repo Actions pushes need a fine-grained PAT (per-repo scope + Workflows r/w) or GitHub App token; PILOT_DOCS_PAT is scoped to qf-studio/pilot only",
+        "path": "memories/learnings/qf-studio-org-deploy-keys-disabled-use-pat-or-app.md",
+        "confidence": 0.95,
+        "concepts": [
+          "deployment",
+          "github",
+          "security",
+          "ci",
+          "authentication"
+        ],
+        "created": "2026-09-04",
+        "last_validated": "2026-09-04"
       }
     }
   },
@@ -8085,6 +8123,21 @@
       "from": "go-time-cutoff-vs-sqlite-current-timestamp-timezone",
       "to": "absolute-state-paths-bypass-cutover-shim",
       "type": "related"
+    },
+    {
+      "from": "docs-sync-wipes-target-tree-workflow-must-originate-in-docs",
+      "to": "qf-studio-org-deploy-keys-disabled-use-pat-or-app",
+      "type": "related"
+    },
+    {
+      "from": "docs-sync-wipes-target-tree-workflow-must-originate-in-docs",
+      "to": "TASK-492",
+      "type": "learned_from"
+    },
+    {
+      "from": "qf-studio-org-deploy-keys-disabled-use-pat-or-app",
+      "to": "TASK-492",
+      "type": "learned_from"
     }
   ],
   "concept_index": {
@@ -9952,5 +10005,6 @@
     "total_nodes": 508,
     "total_edges": 417,
     "memory_count": 265
-  }
+  },
+  "metadata": {}
 }
