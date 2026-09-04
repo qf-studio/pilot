@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-03T15:28:09.201031+00:00",
+  "updated": "2026-09-04T09:25:04.395206+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -5194,16 +5194,21 @@
       },
       "runselfreview-runs-in-repo-root-phantom-reimplementation": {
         "type": "pitfall",
-        "summary": "runSelfReview (runner.go:5223) spawns its subprocess in the daemon repo ROOT (task.ProjectPath) not the worktree (executionPath) — empty root diff + the prompt's FIX-missing-changes rule makes it re-implement the task's spec and stage a phantom copy in the shared root. 3rd recurrence of the TASK-323/GH-3577 class; fix GH-4702, chokepoint GH-4703. Dirty box root before rebuild = check STAGED changes, stash pathspec-limited.",
+        "summary": "runSelfReview ran its subprocess in the daemon repo ROOT (task.ProjectPath) not the worktree — empty root diff + 'fix missing changes' prompt made it re-implement the task and stage/commit a phantom copy into the shared root. Fixed #4706 (2026-08-04); 07-29 pilot-console/-ui root dirt confirmed as this class and repaired 2026-09-04 (backup branches + reset --hard origin/main).",
         "file": ".agent/knowledge/memories/pitfalls/runselfreview-runs-in-repo-root-phantom-reimplementation.md",
         "concepts": [
           "worktree",
           "executor",
           "security",
-          "git"
+          "git",
+          "self-review",
+          "root-corruption",
+          "finish-tripwire",
+          "box-operations"
         ],
-        "confidence": 0.85,
-        "created": "2026-08-04"
+        "confidence": 0.95,
+        "created": "2026-08-04",
+        "updated": "2026-09-04"
       },
       "localmode-tasks-never-get-worktree-qdocs-in-root": {
         "type": "pitfall",
@@ -9928,9 +9933,21 @@
     ],
     "recovery": [
       "review-limit-close-keeps-branch-normal-close-deletes-it"
+    ],
+    "self-review": [
+      "runselfreview-runs-in-repo-root-phantom-reimplementation"
+    ],
+    "root-corruption": [
+      "runselfreview-runs-in-repo-root-phantom-reimplementation"
+    ],
+    "finish-tripwire": [
+      "runselfreview-runs-in-repo-root-phantom-reimplementation"
+    ],
+    "box-operations": [
+      "runselfreview-runs-in-repo-root-phantom-reimplementation"
     ]
   },
-  "last_updated": "2026-09-03T15:28:09.201031+00:00",
+  "last_updated": "2026-09-04T09:25:04.395206+00:00",
   "stats": {
     "total_nodes": 508,
     "total_edges": 417,
