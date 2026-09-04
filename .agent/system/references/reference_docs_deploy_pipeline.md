@@ -4,6 +4,13 @@ description: How v* binary release auto-deploys pilot.quantflow.studio end-to-en
 type: reference
 originSessionId: 401056a8-07c0-4512-a11f-12384dcaa532
 ---
+> **MIGRATION IN PROGRESS (2026-09-04):** the docs repo is moving to GitHub
+> `qf-studio/pilot-docs` (history mirrored; GHCR image build live there).
+> Until Nelya's AWS deploy target exists, GitLab remains the deploy source
+> and the chain below stays authoritative. pilot#5312 makes the sync push to
+> both remotes. When AWS cutover is verified: retarget step 4/5 below, retire
+> the GitLab project + `devops` runner, archive `sops/integrations/gitlab-space-reclaim.md`.
+
 `pilot.quantflow.studio` deploys on a `prod-X.Y.Z-<ts>` tag pushed to the
 **GitLab** mirror — not GitHub. As of 2026-04-27 the chain is
 self-healing across binary releases.

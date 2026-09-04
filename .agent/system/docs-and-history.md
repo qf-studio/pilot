@@ -2,9 +2,10 @@
 
 ## Documentation & Docs Site
 
-### Docs Architecture (updated 2026-05-26)
+### Docs Architecture (updated 2026-09-04 — GitLab → GitHub migration IN TRANSITION)
+- **2026-09-04 migration**: docs repo moving to **GitHub `qf-studio/pilot-docs`** (created 09-04, full GitLab history mirrored, HEAD `ba193a0`; seed commit `8233e2c` adds a GHCR build workflow: image `ghcr.io/qf-studio/pilot-docs` on `main` push + `prod-*` tags). AWS deploy leg owned by Nelya — questions posted in Slack `#infrastructure` (C0BV37L87C1) 09-04. Transition = dual-push sync (pilot#5312); GitLab keeps deploying `pilot.quantflow.studio` until AWS serves it. **Operator step owed by founder**: extend `PILOT_DOCS_PAT` to `qf-studio/pilot-docs` (Contents r/w + Workflows r/w) — deploy keys are disabled by org policy. Retire GitLab (repo + `devops` runner + registry) only after AWS cutover is verified.
 - **Docs site**: Nextra v4 + Next.js 15, lives in `pilot/docs/`
-- **Separate GitLab repo**: `git@gitlab.com:quant-flow/pilot-docs.git`
+- **Legacy GitLab repo (still the deploy source until cutover)**: `git@gitlab.com:quant-flow/pilot-docs.git`
 - **Sync**: GitHub Action (`.github/workflows/sync-docs.yml`) clones GitLab, replaces content from `docs/`, normal push (no force)
 - **Deploy**: GitLab CI builds Docker image → **auto-deploy via `prod-{version}` tag** at `pilot.quantflow.studio`
 - **Trigger**: Any push to `main` touching `docs/**` or the workflow file
