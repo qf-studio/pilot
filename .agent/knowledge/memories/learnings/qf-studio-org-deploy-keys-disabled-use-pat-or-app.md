@@ -14,3 +14,5 @@ type: learning
 3. SSH deploy key — not possible on this org.
 
 **Pattern:** gate the leg on the secret with `env: HAS_PAT: ${{ secrets.X != '' }}` + shell `if`, never `if: ${{ secrets.X }}` (parse-time rejection — reference `reference_docs_deploy_pipeline.md`).
+
+**Setting the secret (09-05 saga, 3 failed attempts):** `! gh secret set X` from the Claude prompt has no stdin → writes an EMPTY secret (workflow gate reports `skipped`). `pbpaste | gh secret set` keeps the trailing newline → git/curl "URL rejected: Malformed input to a URL function". A wrong clipboard payload containing `/` → "Port number was not a decimal number". What worked: `gh auth token | gh secret set X --repo …` (no clipboard) — but the gh OAuth token lacked `workflow` scope because the `gh auth refresh -s workflow` device flow was interrupted; the push still passed because the workflow file was byte-identical (GitHub only enforces `workflow` scope on create/update of `.github/workflows/*`). Fine-grained PAT `pilot-docs-plot` (= `PILOT_DOCS_PAT`) had silently EXPIRED — the reference doc's "calendar reminder ~11 months" was never set. `pilot-saas` token: never used, expired, deletable.
