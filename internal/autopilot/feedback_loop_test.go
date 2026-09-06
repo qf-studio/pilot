@@ -69,6 +69,7 @@ func TestFeedbackLoop_CreateFailureIssue_CIFailed(t *testing.T) {
 		PRURL:       "https://github.com/owner/repo/pull/42",
 		IssueNumber: 10,
 		HeadSHA:     "abc1234567890",
+		BranchName:  "pilot/GH-10",
 	}
 
 	issueNum, err := fl.CreateFailureIssue(
@@ -125,9 +126,18 @@ func TestFeedbackLoop_CreateFailureIssue_CIFailed(t *testing.T) {
 	if !strings.Contains(capturedBody, "Fix the CI failures") {
 		t.Error("body should contain task instructions")
 	}
-	// GH-1798: Verify dependency annotation for parent issue
-	if !strings.Contains(capturedBody, "Depends on: #10") {
-		t.Error("body should contain dependency annotation for parent issue")
+	// GH-5336: a fix issue body must never contain a "Depends on:" line
+	// pointing at the original issue it supersedes — the SDK poller's
+	// hasPendingDependencies treats that as an unmet-dependency gate, and the
+	// original stays open (pilot-superseded) after hand-off, which
+	// permanently blocks this very fix issue from ever dispatching
+	// (#5321→#5322, #5324→#5325, 2026-09-06).
+	if strings.Contains(capturedBody, "Depends on:") {
+		t.Error("body must not contain a Depends on: line pointing at the superseded original (GH-5336)")
+	}
+	// The source issue is instead carried in the autopilot-meta comment.
+	if !strings.Contains(capturedBody, "source:10") {
+		t.Error("body should carry the source issue number in the autopilot-meta comment (GH-5336)")
 	}
 
 	// Verify labels
@@ -902,9 +912,10 @@ func TestFeedbackLoop_IssueBody_BranchMetadata(t *testing.T) {
 		t.Error("body should contain branch reference in context section")
 	}
 
-	// Should contain machine-readable metadata comment with branch, PR number, and iteration (GH-1267, GH-1566)
-	if !strings.Contains(capturedBody, "<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:0 -->") {
-		t.Error("body should contain autopilot-meta comment with branch, PR number, and iteration")
+	// Should contain machine-readable metadata comment with branch, PR number,
+	// iteration (GH-1267, GH-1566), and source issue (GH-5336).
+	if !strings.Contains(capturedBody, "<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:0 source:10 -->") {
+		t.Error("body should contain autopilot-meta comment with branch, PR number, iteration, and source")
 	}
 }
 
@@ -1229,6 +1240,15 @@ func TestCreateReviewIssue(t *testing.T) {
 	}
 	if !strings.Contains(createdBody, "autopilot-meta") {
 		t.Error("body should contain autopilot-meta")
+	}
+	// GH-5336: review-fix issues must not carry a "Depends on:" line pointing
+	// at the superseded original either (feedback_loop.go's CreateReviewIssue
+	// write site had the same deadlock as CreateFailureIssue's).
+	if strings.Contains(createdBody, "Depends on:") {
+		t.Error("body must not contain a Depends on: line pointing at the superseded original (GH-5336)")
+	}
+	if !strings.Contains(createdBody, "source:10") {
+		t.Error("body should carry the source issue number in the autopilot-meta comment (GH-5336)")
 	}
 }
 

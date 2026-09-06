@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
@@ -596,5 +599,74 @@ func TestTerminalCompletionChecker_LiveRunningExecution_NotReportedAsCompleted(t
 	if done {
 		t.Fatal("expected HasCompletedExecution = false for a task with only a live running execution row — " +
 			"reporting true here would make the poller skip re-checking a task that is not actually done")
+	}
+}
+
+// TestGithubPollerMetricsAdapter_RecordsMetricAndLogsPendingDependency is the
+// GH-5336 regression test for the host-side visibility gap: the SDK poller's
+// own log line for a pending_dependency skip only fires at Debug in its
+// parallel-mode path (poller.go:1072), invisible at production's `level:
+// info` — which is exactly why the #5322/#5325 fix-issue deadlock
+// (2026-09-06) produced zero daemon.log lines for over two hours. This test
+// verifies the adapter wired into pollerDeps.PollerMetrics both forwards the
+// skip to autopilot.Metrics (so pilot_poller_skipped_total is populated,
+// previously a silent no-op for the GitHub SDK poller since PollerMetrics
+// was never wired at all) AND emits its own INFO line for that specific
+// reason.
+func TestGithubPollerMetricsAdapter_RecordsMetricAndLogsPendingDependency(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	metrics := autopilot.NewMetrics()
+	adapter := newGithubPollerMetricsAdapter(metrics, log)
+
+	adapter.RecordPollerSkipped("owner/repo", skipreason.ReasonPendingDependency)
+
+	if got := metrics.PollerSkipped[struct {
+		Repo   string
+		Reason string
+	}{Repo: "owner/repo", Reason: skipreason.ReasonPendingDependency}]; got != 1 {
+		t.Errorf("PollerSkipped count = %d, want 1 (metric must still be recorded, not just logged)", got)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "level=INFO") {
+		t.Errorf("expected an INFO-level log line for a pending_dependency skip, got: %s", logged)
+	}
+	if !strings.Contains(logged, "pending dependency") {
+		t.Errorf("expected the log line to mention the pending dependency skip, got: %s", logged)
+	}
+	if !strings.Contains(logged, "owner/repo") {
+		t.Errorf("expected the log line to identify the repo, got: %s", logged)
+	}
+}
+
+// TestGithubPollerMetricsAdapter_OtherReasonsDoNotLog confirms the adapter
+// only adds its extra INFO line for pending_dependency skips — other skip
+// reasons still forward to the metric but must not spam daemon.log with a
+// duplicate, out-of-context INFO line the SDK doesn't already reason about.
+func TestGithubPollerMetricsAdapter_OtherReasonsDoNotLog(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	metrics := autopilot.NewMetrics()
+	adapter := newGithubPollerMetricsAdapter(metrics, log)
+
+	adapter.RecordPollerSkipped("owner/repo", skipreason.ReasonDone)
+	adapter.RecordPollerDispatched("owner/repo")
+	adapter.RecordPollerDeferredScopeOverlap("owner/repo")
+	adapter.RecordUnsourcedLabeledIssues("owner/repo", 3)
+
+	if buf.Len() != 0 {
+		t.Errorf("expected no log output for non-pending-dependency calls, got: %s", buf.String())
+	}
+	if metrics.PollerDispatched["owner/repo"] != 1 {
+		t.Errorf("PollerDispatched not forwarded")
+	}
+	if metrics.PollerDeferredScopeOverlap["owner/repo"] != 1 {
+		t.Errorf("PollerDeferredScopeOverlap not forwarded")
+	}
+	if metrics.UnsourcedLabeledIssues["owner/repo"] != 3 {
+		t.Errorf("RecordUnsourcedLabeledIssues not bridged to SetUnsourcedLabeledIssues correctly, got %d", metrics.UnsourcedLabeledIssues["owner/repo"])
 	}
 }

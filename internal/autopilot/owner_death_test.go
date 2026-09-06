@@ -71,7 +71,19 @@ func TestParseFixIssueSource(t *testing.T) {
 		wantOK  bool
 	}{
 		{
-			name:    "well-formed autopilot-spawned body",
+			name:    "GH-5336 current encoding: source:N in autopilot-meta, no Depends-on line",
+			body:    "Some intro text.\n\n<!-- autopilot-meta branch:pilot/GH-42 pr:42 iteration:1 source:123 -->",
+			wantNum: 123,
+			wantOK:  true,
+		},
+		{
+			name:    "source:N preferred over a stale/legacy Depends-on line if both somehow present",
+			body:    "Some intro text.\n\nDepends on: #999\n\n<!-- autopilot-meta branch:pilot/GH-42 pr:42 iteration:1 source:123 -->",
+			wantNum: 123,
+			wantOK:  true,
+		},
+		{
+			name:    "legacy pre-GH-5336 encoding: standalone Depends-on line, no source: in meta",
 			body:    "Some intro text.\n\nDepends on: #123\n\n<!-- autopilot-meta branch:pilot/GH-42 pr:42 iteration:1 -->",
 			wantNum: 123,
 			wantOK:  true,
@@ -83,7 +95,7 @@ func TestParseFixIssueSource(t *testing.T) {
 			wantOK:  false,
 		},
 		{
-			name:    "autopilot-meta present but no Depends-on line",
+			name:    "autopilot-meta present but no source: and no Depends-on line",
 			body:    "Some fix issue body.\n\n<!-- autopilot-meta branch:pilot/GH-42 pr:42 iteration:1 -->",
 			wantNum: 0,
 			wantOK:  false,
