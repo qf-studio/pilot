@@ -40,7 +40,7 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 | Q1 validation cache + gRPC CA/server-name | [#262](https://github.com/qf-studio/pilot-console/issues/262) |
 | Q4/Q8 consolectl in image + `prod-X.Y.Z` release → GHCR | [#263](https://github.com/qf-studio/pilot-console/issues/263) |
 | Q6/Q7 + SES region (later, batched) | [#264](https://github.com/qf-studio/pilot-console/issues/264) |
-| Q4 user-data `consolectl run` | pilot-cloud-infra (see Refs) |
+| Q4 user-data `consolectl run` | [pilot-cloud-infra#49](https://github.com/qf-studio/pilot-cloud-infra/issues/49) |
 
 ## Operator / founder items
 
@@ -59,7 +59,7 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 
 - Slack thread: `#infrastructure` C0BV37L87C1 `1788706191.406399` (her post) · our reply 2026-09-06
 - TASK-405 (SaaS program), TASK-490 (S4 minimal in-VPC console — superseded on the infra side by this transfer; code decisions stand)
-- pilot-cloud-infra user-data fix issue: filed 2026-09-06 (see GitHub, label `pilot`)
+- pilot-cloud-infra user-data fix: [infra#49](https://github.com/qf-studio/pilot-cloud-infra/issues/49)
 
 ---
 
