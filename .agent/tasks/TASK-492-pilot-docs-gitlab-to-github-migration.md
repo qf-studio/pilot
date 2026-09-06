@@ -54,6 +54,8 @@ curl -sS -D - -o /dev/null -H 'Accept-Encoding: gzip,br' https://pilot.quantflow
 
 ## Refs
 
+- auth-service asks filed 09-06 (not dispatched, no `pilot` label): [auth-service#506](https://github.com/qf-studio/auth-service/issues/506) per-app `aud` · [auth-service#507](https://github.com/qf-studio/auth-service/issues/507) `TLS_ENABLED` no-op
+- qf-website: [#18](https://github.com/qf-studio/qf-website/issues/18) headers + deploymentId + **delete all Vercel material** (founder 09-06) · #13 closed obsolete · #14 noted
 - Slack `#infrastructure` C0BV37L87C1 (Nelya + Aleks; created 09-04 for the AWS consolidation — also lists `quantflow.studio` → `qf-studio/qf-website`). DM copy: D0ADQMEBR6Y `1788529375.623299`.
 - GitHub: https://github.com/qf-studio/pilot-docs · GitLab: https://gitlab.com/quant-flow/pilot-docs
 - Docs commit `ffeaf0ff` (transition notes in reference/docs-and-history/SOP).
