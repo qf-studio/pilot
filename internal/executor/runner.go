@@ -4462,9 +4462,25 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					result.TokensTotal = result.TokensInput + result.TokensOutput
 				}
 
-				// Check again after retry
-				commitCount, _ = git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
-				if commitCount == 0 {
+				// Check again after retry.
+				//
+				// GH-5342: same anti-pattern as the finalize-path guards — a
+				// discarded count error here reads identically to a
+				// confirmed-empty branch, so a retry whose backend call ran the
+				// ctx past its deadline (yet landed real commits) used to be
+				// recorded as no_op below. A count failure means "unknown", not
+				// "confirmed zero": fall through to the success path (mirroring
+				// the pre-retry check above, which already warns-and-continues
+				// on error instead of failing) and let the finalize block's own
+				// fresh ctx (finalizeCtx) establish the real commit count before
+				// push/PR-create.
+				commitCount, countErr = git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
+				if countErr != nil {
+					log.Warn("Failed to re-verify commit count after no-commit retry, assuming retry succeeded",
+						slog.String("task_id", task.ID),
+						slog.Any("error", countErr),
+					)
+				} else if commitCount == 0 {
 					result.Success = false
 
 					// GH-2777: Collect the last assistant text from the retry response

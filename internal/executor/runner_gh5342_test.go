@@ -207,3 +207,72 @@ func TestFinalizeDecomposedParentPR_ExpiredTaskCtxWithCommits_StillPushesAndCrea
 		t.Errorf("expected branch %q to be pushed to origin, ls-remote returned nothing", branch)
 	}
 }
+
+// TestNoCommitRetry_PostRetryCommitCountFailure_NotRecordedAsNoOp is the
+// GH-5342 (subtask 2) regression guard for the no-commit-retry insertion
+// point (runner.go ~4477, the "Check again after retry" guard): a
+// commit-count check that FAILS — e.g. because the task ctx's deadline blew
+// while the GH-916 retry backend call was still running — must never be
+// read as "confirmed zero commits". Before this fix the count error was
+// silently discarded (guardCount always read as if it were 0 on error), so
+// a retry that legitimately committed real work — but only returned after
+// the outer ctx's deadline had already passed — was recorded as no_op and
+// its branch was never pushed (GH-263 x2).
+//
+// Mirrors TestFinalizeEpicBranchPR_ExpiredTaskCtxWithCommits above, but
+// exercises the earlier no-commit-retry insertion point (via the real
+// Runner.Execute() path) instead of the finalize-block call sites: only a
+// *confirmed* zero count may set no_op; a count failure must fall through
+// so the finalize block's own fresh ctx (finalizeCtx) gets a chance to
+// detect the real commit and push it.
+func TestNoCommitRetry_PostRetryCommitCountFailure_NotRecordedAsNoOp(t *testing.T) {
+	capturedTitleFile := setUpFakeGhPRCreatePATH(t)
+
+	const branch = "pilot/GH-5342-postretry"
+	dir, _ := setupFreshnessRepo(t)
+	runGit(t, dir, "checkout", "-b", branch)
+
+	backend := &mockGH4964Backend{
+		perCall: func(call int, _ ExecuteOptions) *BackendResult {
+			if call == 1 {
+				// Initial attempt: clean tree, no commit — triggers the GH-916 retry.
+				return &BackendResult{Success: true, Output: "looked at it, nothing yet"}
+			}
+			// Retry: lands a real commit, then keeps "running" long enough
+			// for the outer (short) task ctx to blow its deadline before
+			// returning — reproducing a backend call that legitimately used
+			// the remaining budget to land real work.
+			writeUncommittedFile(t, dir, "real-work.go")
+			runGit(t, dir, "add", "real-work.go")
+			runGit(t, dir, "commit", "-m", "real work from retry")
+			time.Sleep(1200 * time.Millisecond)
+			return &BackendResult{Success: true, Output: "done"}
+		},
+	}
+	runner := newGH4964Runner(backend)
+	task := newGH4964Task("GH-5342", branch, dir)
+	task.SkipQualityGates = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+	if result.Outcome == "no_op" {
+		t.Errorf("committed work must never be recorded as no_op because the post-retry commit-count check failed on an expired ctx, got Outcome=%q error=%q", result.Outcome, result.Error)
+	}
+	if !result.Success {
+		t.Fatalf("expected the branch's real commit to be detected via the finalize block's fresh ctx and result in success, got failure: %s", result.Error)
+	}
+	if result.PRUrl == "" {
+		t.Error("expected a PR URL")
+	}
+	if _, statErr := os.Stat(capturedTitleFile); statErr != nil {
+		t.Errorf("gh pr create was never invoked: %v", statErr)
+	}
+	if backend.callCount() != 2 {
+		t.Errorf("expected backend called twice (initial + GH-916 retry), got %d", backend.callCount())
+	}
+}
