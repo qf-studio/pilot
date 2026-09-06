@@ -2739,6 +2739,15 @@ func (c *Controller) OnReviewRequested(prNumber int, action, state, reviewer str
 	// c.mu has since been released, so taking prState.mu here keeps the no-deadlock
 	// invariant (prState.mu before c.mu, never the reverse).
 	prState.mu.Lock()
+	if !reviewTriggerEligible(prState.Stage) {
+		c.log.Debug("review trigger rejected: stage not eligible",
+			"pr", prNumber,
+			"stage", prState.Stage,
+			"reviewer", reviewer,
+		)
+		prState.mu.Unlock()
+		return
+	}
 	c.log.Warn("Changes requested on PR, transitioning to review_requested stage",
 		"pr", prNumber,
 		"reviewer", reviewer,
@@ -2747,6 +2756,40 @@ func (c *Controller) OnReviewRequested(prNumber int, action, state, reviewer str
 	prState.Stage = StageReviewRequested
 	c.persistPRState(prState)
 	prState.mu.Unlock()
+}
+
+// reviewTriggerEligible reports whether a PR at the given stage may be
+// transitioned to StageReviewRequested in response to a changes_requested
+// review — via either the webhook path (OnReviewRequested) or the
+// polling-mode hasChangesRequested check below. GH-5327: this is an
+// include-list, not an exclude-list, so a stage this switch doesn't
+// recognize (e.g. a new PRStage added later without updating this
+// function) fails closed and is rejected rather than silently treated as
+// eligible.
+//
+// Verified against every PRStage defined in types.go:
+//   - StagePRCreated, StageWaitingCI, StageCIPassed, StageCIFailed: eligible.
+//     The PR is still mid-pipeline, before any approval/merge/release
+//     decision has been made, so routing it to StageReviewRequested is safe.
+//   - StageAwaitApproval: excluded. A human approval decision is already
+//     in flight; rerouting here would race SetApprovalDecision.
+//   - StageMerging: excluded. handleMerging already holds merges on
+//     hasChangesRequested itself (#5264/#5269) — that is a hold check, not
+//     a transition, and is untouched by this guard.
+//   - StageReleasing, StageMerged, StagePostMergeCI: excluded (terminal —
+//     the PR has already landed on the default branch; review feedback can
+//     no longer change its content).
+//   - StageReviewRequested: excluded. Already there; re-triggering is a
+//     no-op at best.
+//   - StageFailed: excluded (terminal failure; ProcessPR treats it as a
+//     dead end).
+func reviewTriggerEligible(stage PRStage) bool {
+	switch stage {
+	case StagePRCreated, StageWaitingCI, StageCIPassed, StageCIFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 // ProcessPR processes a single PR through the state machine.
@@ -8838,8 +8881,9 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 			c.redriveFailedPRForBaseRetarget(ctx, pr, ghPR)
 
 			// Detect changes_requested reviews in polling mode (webhook mode uses OnReviewRequested).
-			// Only check PRs that haven't already been transitioned to review_requested.
-			if pr.Stage != StageReviewRequested && pr.Stage != StageFailed &&
+			// GH-5327: reviewTriggerEligible replaces the old two-stage exclusion with
+			// the same include-list guard OnReviewRequested uses.
+			if reviewTriggerEligible(pr.Stage) &&
 				c.config.ReviewFeedback != nil && c.config.ReviewFeedback.Enabled {
 				// GH-5266: ghPR is the same live fetch used above for
 				// checkExternalMergeOrClose/reAdoptHeldRebasePR — reuse it so the
