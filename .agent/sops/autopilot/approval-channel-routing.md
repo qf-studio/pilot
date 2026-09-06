@@ -64,3 +64,19 @@ site that constructs the object it's meant to influence
 struct field + YAML tag existing is not proof of wiring. This class of bug
 (field defined, never consumed) is easy to reintroduce during a refactor
 that moves the one call site that used to read it (as TASK-36 did here).
+
+## Destination (Slack) — decision 2026-09-06
+
+Platform routing above picks *which handler*; the Slack handler then posts to
+`adapters.slack.approval.channel` → fallback `adapters.slack.channel` → fallback DM to
+`Approvers[0]` (`internal/approval/slack.go resolveChannel`, GH-4772 — that fallback once
+made asks invisible: PR#4806 sat 50 min in an unwatched bot DM).
+
+**Founder decision 09-06:** asks go back to the founder's bot DM **explicitly** —
+`adapters.slack.approval.channel: 'D09HGS3BR4J'` on the box (not via the empty-key fallback,
+so the choice is visible in config). Alerts moved off `#pointer` to `#pilot-reports` at the
+same time so the DM/`#pointer` split is clean. Consequences:
+- Second approver (Nelya, `U0ADEMJ7J83`) does **not** see DM-routed asks. Founder-accepted.
+- Buttons in a DM work only because the box runs `socket_mode: false` (HTTP interactivity);
+  flipping to Socket Mode re-triggers pitfall `slack-approval-socket-mode-unroutable`.
+- Full channel map: `.agent/system/references/reference_slack_notifications_routing.md`.

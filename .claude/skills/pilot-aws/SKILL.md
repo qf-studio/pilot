@@ -18,6 +18,7 @@ PROFILE    quantflow                   # export AWS_PROFILE=quantflow for every 
 REGION     eu-central-1
 RUNNER     i-0147f5c24d234cdbb         # mgmt runner (AdministratorAccess) — IAM/privileged ops only
 DAEMON     tmux session "pilot" as ec2-user, wrapper /home/ec2-user/start-pilot.sh
+SLACK      alerts → #pilot-reports · merge asks → founder bot DM · chat → #pointer (3 config keys; restart to apply) — see .agent/system/references/reference_slack_notifications_routing.md
 BINARY     /var/lib/pilot/bin/pilot    # ec2-user-owned (self-upgrade works, #4470); /usr/local/bin/pilot is a SYMLINK to it — never `sudo install` over the symlink; rollback at pilot.prev
 STATE      /home/ec2-user/.pilot → /var/lib/pilot/pilot-home (200GB data volume)
 REPOS      /Users/aleks.petrov/Projects → /var/lib/pilot/repos (path shim — ledger keys
