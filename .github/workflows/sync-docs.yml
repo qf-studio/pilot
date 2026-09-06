@@ -1,14 +1,12 @@
-name: Sync Docs (GitLab + GitHub)
+name: Sync Docs (GitHub)
 
-# Docs deploy pipeline is migrating off GitLab (quant-flow/pilot-docs) to
-# GitHub (qf-studio/pilot-docs). During the transition this workflow
-# dual-pushes docs/ to both remotes: GitLab keeps deploying
-# pilot.quantflow.studio until the AWS deploy target exists; GitHub
-# receives the same content + prod tag so its GHCR image build
-# (qf-studio/pilot-docs .github/workflows/build.yml, sourced from
-# docs/.github/workflows/build.yml here) runs. Both legs are independent
-# steps — a failure in one does not hide a failure in the other, and the
-# job fails if either fails. Drop the GitLab leg once the AWS leg lands.
+# Docs content lives in pilot's docs/ and is synced to the standalone
+# qf-studio/pilot-docs repo, which is now the sole deploy target (GHCR
+# image build + hosting). Ownership is split: pilot owns docs content;
+# pilot-docs owns its own .github/ (workflows, e.g. the GHCR build) and
+# docker/ (Dockerfile/build context). This sync only ever touches docs
+# content in the target — .github/ and docker/ are preserved verbatim
+# from the target repo, never overwritten by pilot's docs/ tree.
 
 on:
   push:
@@ -27,33 +25,50 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup SSH for GitLab
+      - name: Check GitHub PAT
+        id: has_pat
+        env:
+          HAS_PAT: ${{ secrets.PILOT_DOCS_PAT != '' }}
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.GITLAB_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -t ed25519 gitlab.com >> ~/.ssh/known_hosts
+          echo "has_pat=$HAS_PAT" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::PILOT_DOCS_PAT not set — skipping GitHub docs sync (qf-studio/pilot-docs)"
+          fi
 
-      - name: Sync docs/ to GitLab
-        id: gitlab_sync
+      - name: Sync docs/ to GitHub
+        id: github_sync
+        if: steps.has_pat.outputs.has_pat == 'true'
+        env:
+          PILOT_DOCS_PAT: ${{ secrets.PILOT_DOCS_PAT }}
         run: |
           WORK=$(mktemp -d)
-          git clone git@gitlab.com:quant-flow/pilot-docs.git "$WORK"
+          git clone "https://x-access-token:${PILOT_DOCS_PAT}@github.com/qf-studio/pilot-docs.git" "$WORK"
 
-          # Preserve GitLab-only infrastructure files (Dockerfile may have
-          # GitLab-specific changes like apk add nodejs)
+          # Preserve pilot-docs-owned infrastructure: docker/ and .github/
+          # belong to the target repo, not to pilot's docs/ tree.
           BACKUP=$(mktemp -d)
           [ -d "$WORK/docker" ] && cp -a "$WORK/docker" "$BACKUP/docker"
+          [ -d "$WORK/.github" ] && cp -a "$WORK/.github" "$BACKUP/.github"
 
           # Remove old content (except .git), copy fresh docs
           find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
           cp -a docs/. "$WORK"/
 
-          # Remove dirs that should never be synced to GitLab
+          # docs/ ships its own .github/workflows/build.yml (the source the
+          # target's GHCR build workflow is copied from) — strip whatever
+          # cp -a just put in $WORK/.github so none of it lands in the
+          # target's real .github/, which is restored from BACKUP below.
+          rm -rf "$WORK/.github"
+
+          # Remove dirs that should never be synced to GitHub
           rm -rf "$WORK/.next" "$WORK/node_modules" "$WORK/.idea" "$WORK/~"
 
-          # Restore GitLab-only infrastructure files
+          # Restore pilot-docs-owned infrastructure. rm -rf before cp -a is
+          # required for both: cp -a src dst when dst already exists copies
+          # src *into* dst (nested docker/docker/), which is exactly the
+          # regression fixed in commit 01878a7.
           [ -d "$BACKUP/docker" ] && rm -rf "$WORK/docker" && cp -a "$BACKUP/docker" "$WORK/docker"
+          [ -d "$BACKUP/.github" ] && rm -rf "$WORK/.github" && cp -a "$BACKUP/.github" "$WORK/.github"
 
           cd "$WORK"
           git config user.name "Pilot CI"
@@ -68,96 +83,23 @@ jobs:
             git push origin main
           fi
 
-          # Always trigger GitLab deploy via unique prod tag
-          # GitLab ignores re-pushed tags, so each deploy needs a unique tag name
+          # Always trigger the GitHub image build via a unique prod tag
+          # GitHub ignores re-pushed tags, so each deploy needs a unique tag name
           VERSION=$(git -C "$GITHUB_WORKSPACE" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
           if [ -n "$VERSION" ]; then
             BUILD_NUM=$(date +%Y%m%d%H%M%S)
             DEPLOY_TAG="prod-${VERSION}-${BUILD_NUM}"
             git tag "$DEPLOY_TAG"
             git push origin "$DEPLOY_TAG"
-            echo "Tagged ${DEPLOY_TAG} to trigger deploy"
-            # Shared with the GitHub leg so the same tag lands on both remotes
-            echo "deploy_tag=${DEPLOY_TAG}" >> "$GITHUB_OUTPUT"
-
-            # Prune old prod-* tags on GitLab, keeping the newest 10 (SOP
-            # gitlab-space-reclaim.md Step 3) — never the tag just pushed.
-            # The trailing `|| true` covers the whole pipeline, not just the
-            # push: GitHub Actions runs steps with `set -eo pipefail`, and
-            # `grep -v` exits 1 whenever it filters out every line (e.g. the
-            # very first sync, before 10 old tags exist) — without this the
-            # step would abort before the loop even runs.
-            git ls-remote --tags origin 'refs/tags/prod-*' \
-              | awk -F/ '{print $3}' \
-              | grep -v "^${DEPLOY_TAG}\$" \
-              | sort -V | head -n -10 \
-              | while read -r t; do
-                  echo "Pruning stale GitLab tag: ${t}"
-                  git push origin ":refs/tags/${t}" || true
-                done || true
-          fi
-
-      - name: Check GitHub PAT
-        id: has_pat
-        if: always()
-        env:
-          HAS_PAT: ${{ secrets.PILOT_DOCS_PAT != '' }}
-        run: |
-          echo "has_pat=$HAS_PAT" >> "$GITHUB_OUTPUT"
-          if [ "$HAS_PAT" != "true" ]; then
-            echo "::warning::PILOT_DOCS_PAT not set — skipping GitHub docs sync leg (qf-studio/pilot-docs)"
-          fi
-
-      - name: Sync docs/ to GitHub
-        id: github_sync
-        if: always() && steps.has_pat.outputs.has_pat == 'true'
-        env:
-          PILOT_DOCS_PAT: ${{ secrets.PILOT_DOCS_PAT }}
-          DEPLOY_TAG: ${{ steps.gitlab_sync.outputs.deploy_tag }}
-        run: |
-          WORK=$(mktemp -d)
-          git clone "https://x-access-token:${PILOT_DOCS_PAT}@github.com/qf-studio/pilot-docs.git" "$WORK"
-
-          # Preserve GitHub-target-only infrastructure files (Dockerfile may
-          # diverge from the GitLab target's docker/ over time)
-          BACKUP=$(mktemp -d)
-          [ -d "$WORK/docker" ] && cp -a "$WORK/docker" "$BACKUP/docker"
-
-          # Remove old content (except .git), copy fresh docs
-          find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-          cp -a docs/. "$WORK"/
-
-          # Remove dirs that should never be synced to GitHub
-          rm -rf "$WORK/.next" "$WORK/node_modules" "$WORK/.idea" "$WORK/~"
-
-          # Restore GitHub-target-only infrastructure files
-          [ -d "$BACKUP/docker" ] && rm -rf "$WORK/docker" && cp -a "$BACKUP/docker" "$WORK/docker"
-
-          cd "$WORK"
-          git config user.name "Pilot CI"
-          git config user.email "ci@quantflow.studio"
-          git add -A
-
-          # Push content if there are changes
-          if git diff --cached --quiet; then
-            echo "No changes to sync"
-          else
-            git commit -m "sync: docs from pilot@${GITHUB_SHA::7}"
-            git push origin main
-          fi
-
-          # Push the same unique prod tag the GitLab leg used, so both
-          # remotes deploy/build off an identical tag. If the GitLab leg
-          # didn't run/didn't produce a tag (no v* tag found), skip.
-          if [ -n "$DEPLOY_TAG" ]; then
-            git tag "$DEPLOY_TAG"
-            git push origin "$DEPLOY_TAG"
             echo "Tagged ${DEPLOY_TAG} to trigger GitHub image build"
 
             # Prune old prod-* tags on GitHub, keeping the newest 10 — never
-            # the tag just pushed. Same `|| true` rationale as the GitLab
-            # leg: grep -v exits 1 when it filters out every line (e.g. the
-            # first sync, before 10 old tags exist).
+            # the tag just pushed. The trailing `|| true` covers the whole
+            # pipeline, not just the push: GitHub Actions runs steps with
+            # `set -eo pipefail`, and `grep -v` exits 1 whenever it filters
+            # out every line (e.g. the very first sync, before 10 old tags
+            # exist) — without this the step would abort before the loop
+            # even runs.
             git ls-remote --tags origin 'refs/tags/prod-*' \
               | awk -F/ '{print $3}' \
               | grep -v "^${DEPLOY_TAG}\$" \
