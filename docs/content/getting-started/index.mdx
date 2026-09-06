@@ -1,0 +1,37 @@
+import { Callout } from 'nextra/components'
+
+# Getting Started
+
+Everything you need to go from zero to your first Pilot-generated pull request.
+
+## Requirements
+
+To run Pilot, you need:
+
+| Requirement | Description |
+|-------------|-------------|
+| **Claude Code CLI** | Or alternative backend (Qwen Code, OpenCode) — see [Execution Backends](/concepts/execution-backends) |
+| **ANTHROPIC_API_KEY** | API key for Claude (or equivalent for your backend) |
+| **GITHUB_TOKEN** | Or equivalent for your PM adapter (GitLab, Azure DevOps, Linear, Jira) |
+| **Network access** | Outbound to GitHub/GitLab API + Anthropic API |
+
+## Steps
+
+Follow these guides in order:
+
+| Step | Guide | Description |
+|------|-------|-------------|
+| 1 | [Prerequisites](/getting-started/prerequisites) | Install Claude Code and set up a Git hosting token |
+| 2 | [Quick Start](/getting-started/quickstart) | Install Pilot and ship your first PR in 10 minutes |
+| 3 | [Installation](/getting-started/installation) | Detailed install methods — curl script, Homebrew, from source |
+| 4 | [Configuration](/getting-started/configuration) | Full `config.yaml` reference — auth, adapters, environment variables |
+
+<Callout type="info">
+New to Pilot? Start with [Prerequisites](/getting-started/prerequisites), then follow the [Quick Start](/getting-started/quickstart) guide to get a working setup end to end.
+</Callout>
+
+## Next Steps
+
+- [Deployment](/deployment) — Run Pilot in production (Docker, Kubernetes, cloud)
+- [Context Intelligence](/navigator) — Reduce token usage with structured context
+- [Autopilot](/features/autopilot) — Automatic CI monitoring and merge
