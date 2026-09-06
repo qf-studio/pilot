@@ -6173,6 +6173,21 @@
           "TASK-495"
         ],
         "captured": "2026-09-06"
+      },
+      "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human": {
+        "type": "pitfall",
+        "summary": "task_stuck re-fires every cooldown for tasks already at 100% (Completed/NeedsHuman) and lane_starvation counts pilot-needs-human/pilot-blocked issues as starved \u2014 ~30 false alerts/day on 09-06; the 2026-07-05 task_stuck fix (progress emission + dedup) does not cover terminal states. Config cooldowns (1h/2h) only dampen; fix belongs in engine.evaluateStuckTasks + handleLaneStarvation",
+        "path": "memories/pitfalls/task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human.md",
+        "confidence": 0.95,
+        "concepts": [
+          "alerts",
+          "needs-human",
+          "observability",
+          "ops-discipline",
+          "stalled"
+        ],
+        "created": "2026-09-06",
+        "last_validated": "2026-09-06"
       }
     }
   },
@@ -8430,7 +8445,8 @@
       "mem-142",
       "mem-146",
       "release-tick-retry-with-backoff-and-alert",
-      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat",
+      "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ],
     "ami": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
@@ -9673,7 +9689,8 @@
       "poller-labels-removed-log-means-never-applied",
       "shared-oauth-session-strands-second-machine",
       "stagefailed-conflates-healthy-handoff-with-terminal-failure",
-      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat",
+      "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ],
     "ops-discipline": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -9682,7 +9699,8 @@
       "pilot-stalled-status-is-retry-not-cancel",
       "rlimit-as-breaks-node-subprocesses",
       "ssm-runs-as-root-cli-reads-empty-ledger",
-      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat",
+      "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ],
     "orchestrator": [
       "TASK-02",
@@ -9870,7 +9888,8 @@
       "mem-171",
       "mem-174",
       "mem-176",
-      "pilot-stalled-status-is-retry-not-cancel"
+      "pilot-stalled-status-is-retry-not-cancel",
+      "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ],
     "studio-sdk": [
       "TASK-385",
@@ -10300,13 +10319,16 @@
     ],
     "box-operations": [
       "runselfreview-runs-in-repo-root-phantom-reimplementation"
+    ],
+    "needs-human": [
+      "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-06T20:46:01.644370+00:00",
+  "last_updated": "2026-09-06T22:03:26.269591+00:00",
   "stats": {
-    "total_nodes": 518,
+    "total_nodes": 520,
     "total_edges": 446,
-    "memory_count": 271
+    "memory_count": 273
   },
   "metadata": {}
 }
