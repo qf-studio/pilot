@@ -6509,7 +6509,12 @@ func TestController_HandleReviewRequested_CreatesIssue(t *testing.T) {
 		switch {
 		case r.URL.Path == "/repos/owner/repo/pulls/42/reviews":
 			resp := []*github.PullRequestReview{
-				{ID: 1, User: github.User{Login: "alice"}, Body: "Fix the nil check", State: "CHANGES_REQUESTED", SubmittedAt: "2026-03-05T10:00:00Z"},
+				// GH-5328: SubmittedAt must be after the PR's CreatedAt cutoff
+				// (OnPRCreated below stamps CreatedAt = time.Now()), or
+				// handleReviewRequested's triggeringReviewers filter — which
+				// mirrors hasChangesRequested's cutoff rule — excludes it and
+				// no revision issue is created.
+				{ID: 1, User: github.User{Login: "alice"}, Body: "Fix the nil check", State: "CHANGES_REQUESTED", SubmittedAt: time.Now().Add(time.Minute).Format(time.RFC3339)},
 			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(mustJSON(t, resp))
