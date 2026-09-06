@@ -36,8 +36,8 @@ while the actual fault is one rotted SSM parameter.
 2. Don't treat `/ready` as a binary provisioning gate in control-plane code.
    Distinguish *never came up* (no response / process dead) from *up but a
    credential is red* — they need different operator actions and different
-   alert routing. pilot-console#45 (ready-gate fix, slated for S3) is the
-   place this gets addressed.
+   alert routing. pilot-console#45 (ready-gate fix) is the place this gets addressed —
+   **re-specced + dispatched 2026-09-06** (option A: Ready returns {Process, Checks}; gates on Process; checks feed the org connections table).
 3. Credential rot is the most likely cause of a previously-green instance
    going 503 with no deploy in between. Check the credential's *validity*,
    not just its presence — the presence pre-check passes on a dead token by
