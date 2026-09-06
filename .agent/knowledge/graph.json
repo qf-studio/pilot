@@ -6070,6 +6070,25 @@
         ],
         "created": "2026-09-04",
         "last_validated": "2026-09-04"
+      },
+      "pilot-decomposes-parent-issues-one-pr-instructions-not-honored": {
+        "type": "pitfall",
+        "summary": "Pilot decomposes multi-phase issues into sequential children; 'ship in ONE PR' prose is not honored (GH-5315 \u2192 #5316..#5319): the sync rewrite merged alone and re-synced undeleted GitLab files; the deletion child failed on a stale CI step (ci.yml validates docs/.gitlab-ci.yml by name). Make phases order-independent or merge them; grep CI for deleted filenames; fix via the autopilot fix issue BODY.",
+        "file": ".agent/knowledge/memories/pitfalls/pilot-decomposes-parent-issues-one-pr-instructions-not-honored.md",
+        "concepts": [
+          "pilot-dispatch",
+          "decomposition",
+          "ci",
+          "docs-sync",
+          "workflow-discipline"
+        ],
+        "confidence": 95,
+        "created": "2026-08-30",
+        "related_tasks": [
+          "TASK-494",
+          "TASK-492"
+        ],
+        "captured": "2026-09-06"
       }
     }
   },
