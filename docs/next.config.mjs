@@ -10,8 +10,8 @@ export default withNextra({
   compress: false,
   // Docs ship static, pre-sized assets — the on-server image optimizer adds no
   // value but writes optimized variants to .next/cache/images, which is bind-
-  // mounted to a persistent host volume in prod (docker-compose.prod.yml) and
-  // grows unbounded, exhausting disk. Disable it so the runtime cache stays flat.
+  // mounted to a persistent host volume in prod and grows unbounded, exhausting
+  // disk. Disable it so the runtime cache stays flat.
   images: {
     unoptimized: true,
   },
