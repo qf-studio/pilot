@@ -1,6 +1,6 @@
 # TASK-495: Pilot Fleet TO-BE alignment — Nelya's control-plane transfer (CloudFormation, ECS console, central auth)
 
-**Status**: 🚀 Code asks DISPATCHED 2026-09-06 (pilot-console #259–#264, pilot-cloud-infra user-data fix); infra build on Nelya's side pending
+**Status**: 🟢 Code asks SHIPPED + REVIEWED 2026-09-06 (pilot-console PR#265–#269, cloud-infra PR#50 merged same day; #263 release workflow + #270 role-converge follow-up in flight); infra build on Nelya's side pending
 **Created**: 2026-09-06
 **Assignee**: Pilot (code) · Nelya (stacks) · founder (decisions)
 
@@ -41,6 +41,19 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 | Q4/Q8 consolectl in image + `prod-X.Y.Z` release → GHCR | [#263](https://github.com/qf-studio/pilot-console/issues/263) |
 | Q6/Q7 + SES region (later, batched) | [#264](https://github.com/qf-studio/pilot-console/issues/264) |
 | Q4 user-data `consolectl run` | [pilot-cloud-infra#49](https://github.com/qf-studio/pilot-cloud-infra/issues/49) |
+
+## Post-merge reviews (2026-09-06, verdicts on the PRs)
+
+| PR | Verdict | Follow-up |
+|---|---|---|
+| pilot-console #265 encryption | APPROVE-w-notes (root device name is a constant tied to the AL2023 golden AMI) | — |
+| pilot-console #266 SSM policy | **REQUEST-CHANGES** — converge only runs on provision/replace; pre-#266 tenants keep `AmazonSSMManagedInstanceCore` until replaced; live SSM check not recorded | [#270](https://github.com/qf-studio/pilot-console/issues/270) (pilot) |
+| pilot-console #267 tags | APPROVE (convergeTags has no diff guard; fine <100 tenants) | — |
+| pilot-console #268 auth cache + TLS opts | APPROVE | — |
+| pilot-console #269 idle/SES/preflight | APPROVE-w-notes (idle window inert: sleep adapters nil in both entrypoints) | — |
+| cloud-infra #50 user-data | APPROVE | — |
+| auth-service #509 per-app aud | APPROVE-w-notes — **refresh path drops per-client aud** (breaks on first refresh once enforcement is on) | [auth-service#512](https://github.com/qf-studio/auth-service/issues/512) (pilot, before any `JWT_AUDIENCE_ENFORCE=true`) |
+| auth-service #510 TLS_ENABLED removal | APPROVE-w-notes | [auth-service#513](https://github.com/qf-studio/auth-service/issues/513) reminder (no pilot label) |
 
 ## Operator / founder items
 
