@@ -6155,6 +6155,24 @@
         ],
         "created": "2026-09-06",
         "last_validated": "2026-09-06"
+      },
+      "backend-timeout-finalization-on-expired-ctx-discards-committed-work": {
+        "type": "pitfall",
+        "summary": "Backend timeout \u2192 finalization on the expired task ctx \u2192 commit count fails, PR guard reads zero, status no_op, branch never pushed; committed work discarded (pilot-console GH-263 \u00d73, 2026-09-06). Filed pilot#5342. Mitigation: 'Execution limits' in bodies of long tasks; salvage from the box worktree.",
+        "file": ".agent/knowledge/memories/pitfalls/backend-timeout-finalization-on-expired-ctx-discards-committed-work.md",
+        "concepts": [
+          "executor",
+          "timeout",
+          "dispatch",
+          "false-success",
+          "debugging"
+        ],
+        "confidence": 95,
+        "created": "2026-08-30",
+        "related_tasks": [
+          "TASK-495"
+        ],
+        "captured": "2026-09-06"
       }
     }
   },
