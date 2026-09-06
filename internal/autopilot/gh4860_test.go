@@ -103,7 +103,7 @@ func TestHandleReviewRequested_SeededClaimWithoutRecord_EscalatesAndHolds(t *tes
 		t.Fatalf("seed ClaimSpawnedFix failed: %v", err)
 	}
 
-	if err := c.handleReviewRequested(context.Background(), prState); err != nil {
+	if err := c.handleReviewRequested(context.Background(), prState, nil); err != nil {
 		t.Fatalf("handleReviewRequested returned unexpected error: %v", err)
 	}
 

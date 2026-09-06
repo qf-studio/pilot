@@ -254,7 +254,7 @@ func TestGH4841_ReviewRequestedCrashWindow_RetryNotArmedAfterRestart(t *testing.
 	controllerA := NewController(cfg, ghClient, nil, "owner", "repo")
 	controllerA.SetStateStore(store)
 
-	if err := controllerA.handleReviewRequested(context.Background(), seedPR); err != nil {
+	if err := controllerA.handleReviewRequested(context.Background(), seedPR, nil); err != nil {
 		t.Fatalf("handleReviewRequested returned unexpected error: %v", err)
 	}
 	if !issueCreated {

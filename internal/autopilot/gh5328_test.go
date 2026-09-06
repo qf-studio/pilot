@@ -87,7 +87,7 @@ func TestGH5328_HandleReviewRequested_FiltersToTriggeringReviewer(t *testing.T) 
 		CreatedAt:  time.Now().Add(-2 * time.Hour),
 	}
 
-	if err := c.handleReviewRequested(context.Background(), prState); err != nil {
+	if err := c.handleReviewRequested(context.Background(), prState, nil); err != nil {
 		t.Fatalf("handleReviewRequested returned unexpected error: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestGH5328_HandleReviewRequested_EmptyAfterFilter_SkipsIssueCreation(t *tes
 		CreatedAt:  time.Now().Add(-2 * time.Hour),
 	}
 
-	if err := c.handleReviewRequested(context.Background(), prState); err != nil {
+	if err := c.handleReviewRequested(context.Background(), prState, nil); err != nil {
 		t.Fatalf("handleReviewRequested returned unexpected error: %v", err)
 	}
 
