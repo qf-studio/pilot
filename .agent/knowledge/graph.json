@@ -6121,6 +6121,24 @@
           "TASK-494"
         ],
         "captured": "2026-09-06"
+      },
+      "operator-issue-bodies-must-pass-base-presence-check-before-filing": {
+        "type": "learning",
+        "summary": "Operator-authored issue bodies must pass the backtick-path check before filing: any backticked slash+extension span not on the TARGET repo's default branch (new files, other repos, SDK module paths) holds the task then parks it pilot-needs-human (pilot-console#263, pilot#5336 on 2026-09-06). Check with git cat-file -e origin/main:<path> in the target checkout; describe non-existent paths in prose.",
+        "file": ".agent/knowledge/memories/learnings/operator-issue-bodies-must-pass-base-presence-check-before-filing.md",
+        "concepts": [
+          "dispatch",
+          "issue-authoring",
+          "base-presence",
+          "workflow-discipline"
+        ],
+        "confidence": 95,
+        "created": "2026-08-30",
+        "related_tasks": [
+          "TASK-494",
+          "TASK-495"
+        ],
+        "captured": "2026-09-06"
       }
     }
   },
