@@ -54,7 +54,7 @@ curl -sS -D - -o /dev/null -H 'Accept-Encoding: gzip,br' https://pilot.quantflow
 
 ## Refs
 
-- auth-service asks filed 09-06 (not dispatched, no `pilot` label): [auth-service#506](https://github.com/qf-studio/auth-service/issues/506) per-app `aud` · [auth-service#507](https://github.com/qf-studio/auth-service/issues/507) `TLS_ENABLED` no-op
+- auth-service (central auth `auth.quantflow.studio`, products integrate one by one) — **DISPATCHED 09-06 (pilot label)** after nav-research: [#508](https://github.com/qf-studio/auth-service/issues/508) DPoP htu scheme = http behind ALB (the real "SSL not working": `c.Request.TLS==nil` → rejects https proofs; fix = `X-Forwarded-Proto` trust via `TRUSTED_PROXY_CIDRS`, Nelya must set the SSM param after merge) · [#507](https://github.com/qf-studio/auth-service/issues/507) remove `TLS_ENABLED` (confirmed no-op) · [#506](https://github.com/qf-studio/auth-service/issues/506) per-app `aud` + `JWT_AUDIENCE_ENFORCE` (default off; `aud` is currently never validated). #447 re-scoped (self-hosted runner in public repo now applies to Nelya's deploy workflow), infra-side, open.
 - qf-website: [#18](https://github.com/qf-studio/qf-website/issues/18) headers + deploymentId + **delete all Vercel material** (founder 09-06) · #13 closed obsolete · #14 noted
 - Slack `#infrastructure` C0BV37L87C1 (Nelya + Aleks; created 09-04 for the AWS consolidation — also lists `quantflow.studio` → `qf-studio/qf-website`). DM copy: D0ADQMEBR6Y `1788529375.623299`.
 - GitHub: https://github.com/qf-studio/pilot-docs · GitLab: https://gitlab.com/quant-flow/pilot-docs
