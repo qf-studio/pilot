@@ -14,8 +14,17 @@ To request changes on a Pilot PR: post verdict comment for the human record, con
 
 ## Related
 - TASK-489
+- TASK-493 (trigger hardening, #5228 declined)
 - `internal/autopilot/controller.go`
 - `internal/autopilot/feedback_loop.go`
+
+
+## Reaffirmed 2026-09-06 — security by design (issue #5228)
+Founder reaffirmed while triaging external proposal #5228 (opt-in `trigger_states` / `trusted_bot_reviewers` so bot `COMMENTED` reviews could start revision cycles): **DECLINED.**
+- Comments are never read by Pilot — this is a *security* boundary, not a convenience gap. Anyone with comment/review rights on a PR would otherwise be able to steer automated rewrites.
+- Comments are for humans and for history. To change what Pilot does, **change the issue body** — issue bodies are the only executable input.
+- A config knob that disables the boundary is still a boundary we would have to support and warn about; opt-in does not make it acceptable.
+- Consequences taken as TASK-493: the webhook path lacked the bot filter (policy hole), reviews pulled PRs out of `awaiting_approval`, exclusion was a name pattern rather than identity, and the revision-issue body ingested every review/comment from any author once a human triggered the loop. All four tightened; no new config.
 
 ---
 **Captured**: 2026-08-30
