@@ -54,10 +54,9 @@ jobs:
           find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
           cp -a docs/. "$WORK"/
 
-          # docs/ ships its own .github/workflows/build.yml (the source the
-          # target's GHCR build workflow is copied from) — strip whatever
-          # cp -a just put in $WORK/.github so none of it lands in the
-          # target's real .github/, which is restored from BACKUP below.
+          # docs/ carries no .github/ of its own — this strip is a safety net
+          # in case a future docs/ change adds one, so nothing ever lands in
+          # the target's real .github/, which is restored from BACKUP below.
           rm -rf "$WORK/.github"
 
           # Remove dirs that should never be synced to GitHub
