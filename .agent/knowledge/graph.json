@@ -2430,6 +2430,20 @@
           "database",
           "context"
         ]
+      },
+      "TASK-495": {
+        "path": ".agent/tasks/TASK-495-fleet-to-be-alignment-nelya.md",
+        "title": "Pilot Fleet TO-BE alignment \u2014 Nelya's control-plane transfer (CloudFormation, ECS console, central auth)",
+        "status": "in_progress",
+        "concepts": [
+          "context",
+          "api",
+          "workflow",
+          "authentication",
+          "deployment",
+          "testing",
+          "theory of mind"
+        ]
       }
     },
     "memories": {
@@ -8310,6 +8324,36 @@
       "from": "TASK-492",
       "to": "deployment",
       "type": "implements"
+    },
+    {
+      "from": "TASK-495",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-495",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-495",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-495",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-495",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-495",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -8456,7 +8500,8 @@
       "TASK-490",
       "TASK-493",
       "TASK-494",
-      "TASK-492"
+      "TASK-492",
+      "TASK-495"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -8538,7 +8583,8 @@
       "TASK-490",
       "TASK-493",
       "TASK-494",
-      "TASK-492"
+      "TASK-492",
+      "TASK-495"
     ],
     "auto-merge": [
       "mem-103"
@@ -8796,7 +8842,8 @@
       "TASK-490",
       "TASK-493",
       "TASK-494",
-      "TASK-492"
+      "TASK-492",
+      "TASK-495"
     ],
     "conversational-bot": [
       "mem-036",
@@ -9057,7 +9104,8 @@
       "TASK-490",
       "TASK-493",
       "TASK-494",
-      "TASK-492"
+      "TASK-492",
+      "TASK-495"
     ],
     "dispatch": [
       "board-sourced-repo-ignores-labeled-issues",
@@ -9937,7 +9985,8 @@
       "TASK-490",
       "TASK-493",
       "TASK-494",
-      "TASK-492"
+      "TASK-492",
+      "TASK-495"
     ],
     "testing-quality": [
       "TASK-384",
@@ -10093,7 +10142,8 @@
       "mem-182",
       "TASK-489",
       "TASK-490",
-      "TASK-493"
+      "TASK-493",
+      "TASK-495"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -10155,7 +10205,8 @@
       "TASK-485",
       "TASK-460",
       "TASK-490",
-      "TASK-493"
+      "TASK-493",
+      "TASK-495"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -10193,11 +10244,11 @@
       "runselfreview-runs-in-repo-root-phantom-reimplementation"
     ]
   },
-  "last_updated": "2026-09-06T11:31:32.325388+00:00",
+  "last_updated": "2026-09-06T15:02:39.086941+00:00",
   "stats": {
-    "total_nodes": 513,
-    "total_edges": 440,
-    "memory_count": 267
+    "total_nodes": 516,
+    "total_edges": 446,
+    "memory_count": 269
   },
   "metadata": {}
 }
