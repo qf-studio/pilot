@@ -72,7 +72,7 @@ func (c terminalCompletionChecker) tryRearmCanceled(taskID, projectPath, backoff
 	if err != nil {
 		return false, fmt.Errorf("listing issue #%d events: %w", issueNum, err)
 	}
-	rearmEvent := latestRearmEvent(events, c.triggerLabel, *exec.CompletedAt)
+	rearmEvent := latestRearmEvent(events, *exec.CompletedAt, c.triggerLabel)
 	if rearmEvent == nil {
 		// Open + labeled, but nothing in the timeline shows that state was
 		// reached AFTER the cancel — e.g. the label was already there before
@@ -92,13 +92,20 @@ func (c terminalCompletionChecker) tryRearmCanceled(taskID, projectPath, backoff
 }
 
 // latestRearmEvent scans events (as returned by ListIssueEvents, oldest
-// first) for the most recent "reopened" event, or "labeled" event naming
-// label, whose CreatedAt is strictly after since (the cancel timestamp).
-// Either event type alone is sufficient evidence of a deliberate operator
-// gesture post-cancel — the caller separately confirms the issue is
-// currently open AND labeled, so this only needs to establish that one of
-// those two state changes happened after the cancel, not both.
-func latestRearmEvent(events []*github.IssueEvent, label string, since time.Time) *github.IssueEvent {
+// first) for the most recent "reopened" event, or "labeled" event naming any
+// of labels, whose CreatedAt is strictly after since (the terminal-state
+// timestamp). Either event type alone is sufficient evidence of a deliberate
+// operator gesture post-terminal-state — the caller separately confirms
+// whatever "currently open (+labeled)" state it requires, so this only needs
+// to establish that one of those state changes happened after the terminal
+// timestamp, not both.
+//
+// labels is variadic so tryRearmStalled (GH-5272) can accept re-arm evidence
+// from any label in the pilot-retry-ready/-1/-2 family, on top of the base
+// trigger label tryRearmCanceled/tryRearmSuperseded pass alone — see
+// tryRearmStalled's doc comment for why a stalled task's documented re-arm
+// recipe never touches the base trigger label at all.
+func latestRearmEvent(events []*github.IssueEvent, since time.Time, labels ...string) *github.IssueEvent {
 	var latest *github.IssueEvent
 	for _, ev := range events {
 		if ev == nil || !ev.CreatedAt.After(since) {
@@ -107,7 +114,7 @@ func latestRearmEvent(events []*github.IssueEvent, label string, since time.Time
 		switch ev.Event {
 		case "reopened":
 		case "labeled":
-			if ev.Label == nil || !strings.EqualFold(ev.Label.Name, label) {
+			if ev.Label == nil || !containsLabelFold(labels, ev.Label.Name) {
 				continue
 			}
 		default:
@@ -118,4 +125,14 @@ func latestRearmEvent(events []*github.IssueEvent, label string, since time.Time
 		}
 	}
 	return latest
+}
+
+// containsLabelFold reports whether name matches any of labels, case-insensitively.
+func containsLabelFold(labels []string, name string) bool {
+	for _, l := range labels {
+		if strings.EqualFold(l, name) {
+			return true
+		}
+	}
+	return false
 }

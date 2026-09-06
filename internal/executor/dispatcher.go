@@ -2517,6 +2517,27 @@ func (d *Dispatcher) surfaceStalledIssue(task *Task, reason string) {
 	}
 }
 
+// blockingClaimLogAttrs returns slog attributes describing the claim that
+// caused a "dispatch claim lost" drop — the blocking claim's generation and
+// the status of the execution it is bound to — so an incident shaped like
+// GH-493's (stale claims bound to terminal executions winning every claim
+// race, with the log giving no clue why) is diagnosable from the log alone
+// instead of requiring a direct execution_claims/executions query (GH-5272
+// acceptance criterion 3). Best-effort: a lookup failure or a since-vanished
+// claim yields no extra attributes rather than failing the drop log itself.
+func (d *Dispatcher) blockingClaimLogAttrs(taskID, projectPath string) []any {
+	gen, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return nil
+	}
+	attrs := []any{slog.Int("blocking_claim_generation", gen)}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil {
+		return attrs
+	}
+	return append(attrs, slog.String("blocking_execution_status", exec.Status))
+}
+
 // queueDecomposedTask handles queuing a decomposed task and its subtasks.
 // The parent task is marked as "decomposed" and subtasks are queued in order.
 func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, result *DecomposeResult) (string, error) {
@@ -2542,8 +2563,10 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 		// either FK-787 (no executions row to reference) or start a
 		// genuine duplicate run.
 		d.log.Info("dispatch claim lost — decomposed parent already owned by another dispatch channel or already terminal, dropping duplicate pickup",
-			slog.String("task_id", parent.ID),
-			slog.String("project", parent.ProjectPath),
+			append([]any{
+				slog.String("task_id", parent.ID),
+				slog.String("project", parent.ProjectPath),
+			}, d.blockingClaimLogAttrs(parent.ID, parent.ProjectPath)...)...,
 		)
 		return "", nil
 	}
@@ -2607,8 +2630,10 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 		// exactly like an already-handled task, not a failure to log or
 		// retry.
 		d.log.Info("dispatch claim lost — task already owned by another dispatch channel or already terminal, dropping duplicate pickup",
-			slog.String("task_id", task.ID),
-			slog.String("project", task.ProjectPath),
+			append([]any{
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+			}, d.blockingClaimLogAttrs(task.ID, task.ProjectPath)...)...,
 		)
 		return "", nil
 	}
