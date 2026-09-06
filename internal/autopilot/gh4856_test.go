@@ -102,7 +102,7 @@ func TestHandleReviewRequested_CreateIssueErrors_EscalatesInsteadOfClosing(t *te
 	}
 
 	// First tick: CreatePilotIssue fails transiently.
-	if err := c.handleReviewRequested(context.Background(), prState); err != nil {
+	if err := c.handleReviewRequested(context.Background(), prState, nil); err != nil {
 		t.Fatalf("handleReviewRequested returned unexpected error: %v", err)
 	}
 
@@ -142,7 +142,7 @@ func TestHandleReviewRequested_CreateIssueErrors_EscalatesInsteadOfClosing(t *te
 	prState.Stage = StageReviewRequested
 	prState.Error = ""
 
-	if err := c.handleReviewRequested(context.Background(), prState); err != nil {
+	if err := c.handleReviewRequested(context.Background(), prState, nil); err != nil {
 		t.Fatalf("handleReviewRequested (retry) returned unexpected error: %v", err)
 	}
 
