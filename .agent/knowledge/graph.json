@@ -2390,13 +2390,16 @@
         ]
       },
       "TASK-492": {
-        "title": "pilot-docs migration \u2014 GitLab \u2192 GitHub qf-studio/pilot-docs + AWS deploy (Nelya)",
+        "path": ".agent/tasks/TASK-492-pilot-docs-gitlab-to-github-migration.md",
+        "title": "pilot-docs migration \u2014 GitLab \u2192 GitHub `qf-studio/pilot-docs` + AWS deploy (Nelya)",
         "status": "in_progress",
         "concepts": [
-          "deployment",
-          "workflow",
-          "ci",
-          "aws"
+          "context",
+          "database",
+          "testing",
+          "api",
+          "authentication",
+          "deployment"
         ]
       },
       "TASK-493": {
@@ -2412,6 +2415,20 @@
           "knowledge",
           "theory of mind",
           "workflow"
+        ]
+      },
+      "TASK-494": {
+        "path": ".agent/tasks/TASK-494-docs-sync-github-only-post-aws-cutover.md",
+        "title": "Docs sync post-AWS-cutover \u2014 GitHub-only leg, pilot-docs owns its workflows, GitLab files removed, /getting-started 404",
+        "status": "dispatched",
+        "concepts": [
+          "authentication",
+          "api",
+          "testing",
+          "deployment",
+          "knowledge",
+          "database",
+          "context"
         ]
       }
     },
@@ -8191,6 +8208,71 @@
       "from": "TASK-493",
       "to": "authentication",
       "type": "implements"
+    },
+    {
+      "from": "TASK-494",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-494",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-494",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-494",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-494",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-494",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-494",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-492",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-492",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-492",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-492",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-492",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-492",
+      "to": "deployment",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -8335,7 +8417,9 @@
       "mem-182",
       "TASK-489",
       "TASK-490",
-      "TASK-493"
+      "TASK-493",
+      "TASK-494",
+      "TASK-492"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -8415,7 +8499,9 @@
       "unwired-config-field-validated-but-dead",
       "TASK-487",
       "TASK-490",
-      "TASK-493"
+      "TASK-493",
+      "TASK-494",
+      "TASK-492"
     ],
     "auto-merge": [
       "mem-103"
@@ -8671,7 +8757,9 @@
       "mem-181",
       "mem-182",
       "TASK-490",
-      "TASK-493"
+      "TASK-493",
+      "TASK-494",
+      "TASK-492"
     ],
     "conversational-bot": [
       "mem-036",
@@ -8776,7 +8864,9 @@
       "TASK-487",
       "TASK-488",
       "TASK-489",
-      "TASK-490"
+      "TASK-490",
+      "TASK-494",
+      "TASK-492"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -8928,7 +9018,9 @@
       "mem-181",
       "mem-182",
       "TASK-490",
-      "TASK-493"
+      "TASK-493",
+      "TASK-494",
+      "TASK-492"
     ],
     "dispatch": [
       "board-sourced-repo-ignores-labeled-issues",
@@ -9330,7 +9422,8 @@
       "TASK-489",
       "TASK-486",
       "TASK-490",
-      "TASK-493"
+      "TASK-493",
+      "TASK-494"
     ],
     "labels": [
       "mem-100",
@@ -9805,7 +9898,9 @@
       "mem-181",
       "mem-182",
       "TASK-490",
-      "TASK-493"
+      "TASK-493",
+      "TASK-494",
+      "TASK-492"
     ],
     "testing-quality": [
       "TASK-384",
@@ -10061,10 +10156,10 @@
       "runselfreview-runs-in-repo-root-phantom-reimplementation"
     ]
   },
-  "last_updated": "2026-09-06T10:42:04.250450+00:00",
+  "last_updated": "2026-09-06T11:31:32.325388+00:00",
   "stats": {
-    "total_nodes": 512,
-    "total_edges": 427,
+    "total_nodes": 513,
+    "total_edges": 440,
     "memory_count": 267
   },
   "metadata": {}
