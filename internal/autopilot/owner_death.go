@@ -59,26 +59,48 @@ func classifyOwnerHealth(issue *github.Issue) ownerHealth {
 	return ownerDead
 }
 
-// fixIssueSourceRe extracts the source issue number embedded by
-// FeedbackLoop.generateBody/CreateReviewIssue ("Depends on: #123"). Anchored
-// to line start so it can't match unrelated inline "Depends on" prose.
-var fixIssueSourceRe = regexp.MustCompile(`(?m)^Depends on: #(\d+)\s*$`)
+// fixIssueSourceRe extracts the source issue number embedded in the
+// autopilot-meta comment ("source:123") by FeedbackLoop.generateBody/
+// CreateReviewIssue. GH-5336: the source number used to be carried via a
+// standalone "Depends on: #123" line, but the SDK poller's
+// hasPendingDependencies treats any such line as an unmet-dependency gate —
+// and the original issue stays open (pilot-superseded, never closed) after
+// hand-off, so that line permanently blocked the fix issue itself from ever
+// dispatching. The source number now lives inside autopilot-meta instead,
+// which the poller does not parse as a dependency marker.
+var fixIssueSourceRe = regexp.MustCompile(`<!-- autopilot-meta.*?source:(\d+).*?-->`)
+
+// fixIssueSourceLegacyRe is the pre-GH-5336 encoding: a standalone
+// "Depends on: #123" line, anchored to line start so it can't match
+// unrelated inline "Depends on" prose, with the autopilot-meta marker
+// required elsewhere in the body (checked by autopilotMetaMarkerRe). Fix
+// issues created before this fix shipped still use this shape — kept as a
+// fallback so in-flight owner-death tracking for those issues doesn't
+// regress.
+var fixIssueSourceLegacyRe = regexp.MustCompile(`(?m)^Depends on: #(\d+)\s*$`)
 
 // autopilotMetaMarkerRe requires the autopilot-meta marker to be present
-// before trusting a "Depends on" line as a Pilot-authored source reference —
-// distinguishes autopilot-spawned fix issues from unrelated uses of the same
-// phrase (e.g. epic decomposition in internal/executor/epic.go).
+// before trusting a legacy "Depends on" line as a Pilot-authored source
+// reference — distinguishes autopilot-spawned fix issues from unrelated uses
+// of the same phrase (e.g. epic decomposition in internal/executor/epic.go).
 var autopilotMetaMarkerRe = regexp.MustCompile(`<!--\s*autopilot-meta\b`)
 
 // parseFixIssueSource recovers the source issue number from a spawned fix
 // issue's body, without any new persistence (GH-4842 explicitly scopes
 // designation persistence out — this piggybacks on the existing body
-// convention instead).
+// convention instead). Tries the current source:N-in-meta encoding first,
+// then falls back to the legacy "Depends on: #N" line (GH-5336) so fix
+// issues spawned before that fix shipped keep working.
 func parseFixIssueSource(body string) (int, bool) {
+	if m := fixIssueSourceRe.FindStringSubmatch(body); len(m) >= 2 {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return n, true
+		}
+	}
 	if !autopilotMetaMarkerRe.MatchString(body) {
 		return 0, false
 	}
-	m := fixIssueSourceRe.FindStringSubmatch(body)
+	m := fixIssueSourceLegacyRe.FindStringSubmatch(body)
 	if len(m) < 2 {
 		return 0, false
 	}
@@ -96,7 +118,8 @@ var fixIssuePRRe = regexp.MustCompile(`<!-- autopilot-meta.*?pr:(\d+).*?-->`)
 
 // parseFixIssuePR recovers the originating PR number from a spawned fix
 // issue's body. Companion to parseFixIssueSource: the source issue is named
-// via "Depends on: #N", the PR via "pr:N" in the same autopilot-meta comment.
+// via "source:N" (or, pre-GH-5336, a standalone "Depends on: #N" line), the
+// PR via "pr:N" — both in the same autopilot-meta comment.
 // Used by reactToDeadFixIssue (GH-4852) to re-check the durable spawned-fix
 // claim as an alternate designation source when the pilot-failed label
 // hasn't landed yet.
