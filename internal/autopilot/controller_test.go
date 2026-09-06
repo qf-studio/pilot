@@ -6744,13 +6744,20 @@ func TestHandleReviewRequested_IterationLimit_ExecutionModeGate(t *testing.T) {
 }
 
 func TestController_HandleReviewRequested_IgnoresSelfReview(t *testing.T) {
-	// hasChangesRequested should skip bot reviews
+	// hasChangesRequested should skip bot reviews — both pattern-matched
+	// ("[bot]"/"-bot" suffix) and identity-matched (GH-5326/GH-5329: the
+	// authenticated Pilot login itself, via getBotLogin/cachedBotLogin, which
+	// need not follow either naming pattern).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/owner/repo/pulls/42/reviews":
 			resp := []*github.PullRequestReview{
 				{ID: 1, User: github.User{Login: "pilot[bot]"}, Body: "Self-review", State: "CHANGES_REQUESTED", SubmittedAt: "2026-03-05T10:00:00Z"},
 				{ID: 2, User: github.User{Login: "ci-bot"}, Body: "Bot review", State: "CHANGES_REQUESTED", SubmittedAt: "2026-03-05T10:00:00Z"},
+				// GH-5329: this login matches neither the "[bot]" nor "-bot"
+				// pattern, but IS the cached authenticated Pilot login set
+				// below — isTrustedReviewer must reject it via identity.
+				{ID: 3, User: github.User{Login: "autopilot-runner"}, Body: "Self-review via identity", State: "CHANGES_REQUESTED", SubmittedAt: "2026-03-05T10:00:00Z"},
 			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(mustJSON(t, resp))
@@ -6765,6 +6772,7 @@ func TestController_HandleReviewRequested_IgnoresSelfReview(t *testing.T) {
 	cfg.ReviewFeedback = &ReviewFeedbackConfig{Enabled: true, MaxIterations: 3}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.cachedBotLogin = "autopilot-runner"
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	prState, _ := c.GetPRState(42)
@@ -6775,7 +6783,7 @@ func TestController_HandleReviewRequested_IgnoresSelfReview(t *testing.T) {
 
 	result := c.hasChangesRequested(context.Background(), prState, nil)
 	if result {
-		t.Error("hasChangesRequested should return false for bot-only reviews")
+		t.Error("hasChangesRequested should return false for bot-only and self-identity reviews")
 	}
 }
 
