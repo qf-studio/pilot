@@ -1,6 +1,6 @@
 # TASK-493: Review-feedback trigger hardening — bot filter on webhook path, stage guard, identity-based exclusion, human-only feedback body
 
-**Status**: 🚀 Dispatched to Pilot — [#5314](https://github.com/qf-studio/pilot/issues/5314) (2026-09-06)
+**Status**: ✅ SHIPPED 2026-09-06 in **v2.273.0** — #5314 decomposed into #5326–#5330; code children merged as PR#5331 (predicate) · PR#5332 (stage guard) · PR#5333 (human-only body) · PR#5334 (tests); #5330 (verify+reply) no-op, closed by operator (reply to #5228 already posted). **Post-merge review: PENDING** (interactive rule: review every PR).
 **Created**: 2026-09-06
 **Assignee**: Pilot
 

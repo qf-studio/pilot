@@ -6089,6 +6089,24 @@
           "TASK-492"
         ],
         "captured": "2026-09-06"
+      },
+      "autopilot-fix-issue-depends-on-open-original-deadlock": {
+        "type": "pitfall",
+        "summary": "Autopilot CI-fix issues deadlock: fix body says 'Depends on: #original' while the original stays OPEN with only pilot-superseded; SDK poller hasPendingDependencies skips open deps at Debug \u2192 zero log lines. Seen 2026-09-06 (#5322/#5325 silent 2h+). Unblock: close the original. Durable fix filed as a pilot bug.",
+        "file": ".agent/knowledge/memories/pitfalls/autopilot-fix-issue-depends-on-open-original-deadlock.md",
+        "concepts": [
+          "autopilot",
+          "feedback-loop",
+          "dispatch",
+          "ci",
+          "debugging"
+        ],
+        "confidence": 95,
+        "created": "2026-08-30",
+        "related_tasks": [
+          "TASK-494"
+        ],
+        "captured": "2026-09-06"
       }
     }
   },
