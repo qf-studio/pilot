@@ -48,6 +48,8 @@ func TestReviewTriggerReviewerTrust_WebhookPollingParity(t *testing.T) {
 		{"dash-bot suffix rejected", "ci-bot", false},
 		{"own login rejected (identity, exact case)", "pilot-bot", false},
 		{"own login rejected (identity, case-insensitive)", "Pilot-Bot", false},
+		{"dash-bot suffix rejected (mixed case, GH-5337)", "Foo-Bot", false},
+		{"bracket-bot suffix rejected (mixed case, GH-5337)", "x[BOT]", false},
 		{"human reviewer accepted", "alice", true},
 	}
 
@@ -340,7 +342,7 @@ func TestReviewFeedbackBody_OnlyFirstHumanTriggeringReviewer(t *testing.T) {
 		CreatedAt:  time.Now().Add(-1 * time.Hour),
 	}
 
-	if err := c.handleReviewRequested(context.Background(), prState); err != nil {
+	if err := c.handleReviewRequested(context.Background(), prState, nil); err != nil {
 		t.Fatalf("handleReviewRequested returned unexpected error: %v", err)
 	}
 

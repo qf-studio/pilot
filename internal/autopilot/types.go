@@ -1105,6 +1105,16 @@ type PRState struct {
 	// issue relabel — while every other read that same minute showed it
 	// still open).
 	ClosedReadCount int
+	// ReviewFilterEmptyPasses tracks consecutive handleReviewRequested calls
+	// (GH-5337) that found no triggering reviewer feedback after
+	// isTrustedReviewer/cutoff filtering — whether because nothing was
+	// fetched at all or because everything fetched was filtered out (bot,
+	// self-review, or predates the cutoff). Reset to 0 the moment a pass
+	// finds triggering feedback. In-memory only: once it reaches
+	// reviewFilterEmptyEscalateThreshold, handleReviewRequested escalates via
+	// escalateAndHold instead of silently returning nil and leaving the PR
+	// stuck in StageReviewRequested forever.
+	ReviewFilterEmptyPasses int
 	// PersistFailureCount tracks consecutive SavePRState errors for this PR
 	// (e.g. a schema/ON CONFLICT mismatch on an adopted or otherwise
 	// irregular row). Reset to 0 on a successful persist. In-memory only:

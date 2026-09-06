@@ -2863,7 +2863,7 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 	case StagePostMergeCI:
 		err = c.handlePostMergeCI(ctx, prState)
 	case StageReviewRequested:
-		err = c.handleReviewRequested(ctx, prState)
+		err = c.handleReviewRequested(ctx, prState, ghPR)
 	case StageReleasing:
 		err = c.handleReleasing(ctx, prState)
 	case StageFailed:
@@ -4110,13 +4110,45 @@ func (c *Controller) spawnReviewIssue(ctx context.Context, prState *PRState, rev
 	return issueNum, err
 }
 
+// reviewFilterEmptyEscalateThreshold bounds how many consecutive
+// empty-after-filter passes handleReviewRequested tolerates before
+// escalating (GH-5337). A single empty pass can be a legitimate transient —
+// e.g. a bot-only CHANGES_REQUESTED review that isTrustedReviewer correctly
+// excludes, with no human feedback (yet) alongside it — so escalating on the
+// very first occurrence would fire on that ordinary case too. Repeated empty
+// passes across ticks, though, mean the same review state is being
+// re-evaluated every poll with nothing ever going to unblock it: no revision
+// issue is ever created, the stage never advances, and (before this
+// existed) nothing ever surfaced that to a human.
+const reviewFilterEmptyEscalateThreshold = 3
+
 // handleReviewRequested processes a PR that received "changes requested" review feedback.
 // It fetches reviews and comments, checks iteration limits, creates a revision issue,
 // learns from the review, then closes the PR and deletes the branch.
-func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState) error {
+//
+// ghPR is the caller's already-fetched live PR object (may be nil — see
+// reviewCutoff) and is threaded through from ProcessPR (GH-5337) so the
+// review-hold cutoff used here matches the one hasChangesRequested used to
+// decide this PR belongs in StageReviewRequested in the first place. Before
+// this, handleReviewRequested anchored solely on prState.CreatedAt, which
+// the reconciler's orphan-PR re-adoption (and OnPRCreated) always stamps to
+// time.Now() — so a PR re-adopted after a restart with a standing
+// CHANGES_REQUESTED review predating it could have hasChangesRequested (which
+// already preferred ghPR.CreatedAt) correctly flip the stage, only for this
+// handler to filter that very review out on its own, later cutoff, land on
+// the empty-after-filter branch below, and leave the PR stuck in
+// StageReviewRequested indefinitely — refetching every tick, no revision
+// issue, no escalation, the GH-5266 blind spot reopened one hop downstream.
+func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState, ghPR *github.PullRequest) error {
 	c.log.Info("handleReviewRequested: processing review feedback",
 		"pr", prState.PRNumber,
 	)
+
+	// GH-5337: warm cachedBotLogin here too, in case this stage is entered
+	// via the webhook path (OnReviewRequested) or resumed cold after a
+	// restart before hasChangesRequested's polling gate ever ran in this
+	// process.
+	c.getBotLogin(ctx)
 
 	// Fetch reviews and comments
 	reviews, err := c.ghClient.ListPullRequestReviews(ctx, c.owner, c.repo, prState.PRNumber)
@@ -4138,8 +4170,12 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	// APPROVED, bot/self-review noise, and unrelated commenters' line notes.
 	// triggeringReviewers mirrors hasChangesRequested's latest-state-per-
 	// trusted-reviewer logic (GH-5266 cutoff + COMMENTED-does-not-supersede
-	// rule) so the two paths agree on who is actually blocking.
-	triggers := c.triggeringReviewers(reviews, prState.CreatedAt)
+	// rule) so the two paths agree on who is actually blocking. GH-5337: the
+	// cutoff itself is now derived identically to hasChangesRequested's (via
+	// reviewCutoff), not prState.CreatedAt directly — see the doc comment
+	// above.
+	cutoff := reviewCutoff(prState, ghPR)
+	triggers := c.triggeringReviewers(reviews, cutoff)
 
 	triggeringReviews := make([]*github.PullRequestReview, 0, len(reviews))
 	for _, r := range reviews {
@@ -4156,13 +4192,29 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	}
 
 	if len(triggeringReviews) == 0 && len(triggeringComments) == 0 {
+		prState.ReviewFilterEmptyPasses++
 		c.log.Info("no triggering reviewer feedback survived filtering — skipping empty review issue",
 			"pr", prState.PRNumber,
 			"reviews_fetched", len(reviews),
 			"comments_fetched", len(comments),
+			"empty_passes", prState.ReviewFilterEmptyPasses,
 		)
+		// GH-5337: unconditionally returning nil here left a PR silently
+		// stuck in StageReviewRequested forever whenever every pass came up
+		// empty (e.g. a cutoff/filtering disagreement, or every review being
+		// bot/self-authored) — refetched every tick with no revision issue
+		// and no visibility. Escalate once this has happened
+		// reviewFilterEmptyEscalateThreshold times in a row so a genuinely
+		// stuck PR surfaces to a human instead of parking invisibly.
+		if prState.ReviewFilterEmptyPasses >= reviewFilterEmptyEscalateThreshold {
+			reason := fmt.Sprintf("review feedback empty after reviewer-trust filtering %d consecutive times", prState.ReviewFilterEmptyPasses)
+			comment := "Automated review processing repeatedly found no triggering reviewer feedback survives filtering on this PR — holding for manual review instead of leaving it stuck in review-requested."
+			c.escalateAndHold(ctx, prState, reason, []string{labelNeedsHuman}, comment)
+			c.metrics.RecordPRFailed()
+		}
 		return nil
 	}
+	prState.ReviewFilterEmptyPasses = 0
 
 	// Check iteration limit
 	iteration := 0
@@ -4315,9 +4367,12 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 // with no context.Context to thread through for an on-demand
 // getBotLogin(ctx) call. If the cache hasn't been populated yet, the bot-self
 // check is simply skipped for that call — the "[bot]"/"-bot" suffix check
-// still applies.
+// still applies. GH-5337: the suffix check is matched case-insensitively
+// (e.g. "Foo-Bot", "x[BOT]") since GitHub logins are case-insensitive and the
+// naming convention is not guaranteed to be lowercase.
 func (c *Controller) isTrustedReviewer(login string) bool {
-	if strings.Contains(login, "[bot]") || strings.HasSuffix(login, "-bot") {
+	lower := strings.ToLower(login)
+	if strings.Contains(lower, "[bot]") || strings.HasSuffix(lower, "-bot") {
 		return false
 	}
 	c.mu.RLock()
@@ -4329,20 +4384,40 @@ func (c *Controller) isTrustedReviewer(login string) bool {
 	return true
 }
 
-// triggeringReviewers returns the set of trusted reviewer logins whose latest
-// review since cutoff is CHANGES_REQUESTED — the identities actually
-// responsible for the state that drove (or is keeping) this PR in
-// StageReviewRequested. GH-5328: handleReviewRequested uses this to scope the
-// revision-issue body to only the feedback that triggered this run, instead
-// of every review/comment ever left on the PR.
-//
-// This mirrors hasChangesRequested's latest-state-per-trusted-reviewer logic
-// exactly (same GH-5266 cutoff semantics, same COMMENTED-does-not-supersede-
-// CHANGES_REQUESTED rule) so the two paths always agree on who is blocking —
-// duplicated rather than shared because hasChangesRequested fetches its own
-// reviews and returns a bool, while this needs the caller's already-fetched
-// reviews slice and the identities themselves.
-func (c *Controller) triggeringReviewers(reviews []*github.PullRequestReview, cutoff time.Time) map[string]bool {
+// reviewCutoff resolves the review-hold cutoff timestamp for a PR: it prefers
+// the GitHub PR's own, durable CreatedAt (GH-5266) and falls back to
+// prState.CreatedAt only when ghPR is nil or its CreatedAt fails to parse.
+// prState.CreatedAt is stamped to time.Now() by both OnPRCreated (fresh
+// registration) and the reconciler's orphan-PR re-adoption sweep, so on its
+// own it is never a safe cutoff once a restart is possible — a standing
+// review submitted before the restart would look "older than tracking" the
+// instant the PR is re-adopted. GH-5337: shared by hasChangesRequested (the
+// entry gate that flips a PR into StageReviewRequested) and
+// handleReviewRequested (the handler that acts on that same stage) so the
+// two can never derive different cutoffs from the same PR — the original
+// bug had handleReviewRequested anchor on prState.CreatedAt alone, so it
+// could filter out the very review that had just made the polling gate flip
+// the stage, land on the empty-after-filter branch, and leave the PR stuck
+// in StageReviewRequested indefinitely.
+func reviewCutoff(prState *PRState, ghPR *github.PullRequest) time.Time {
+	cutoff := prState.CreatedAt
+	if ghPR != nil && ghPR.CreatedAt != "" {
+		if parsed, err := time.Parse(time.RFC3339, ghPR.CreatedAt); err == nil {
+			cutoff = parsed
+		}
+	}
+	return cutoff
+}
+
+// latestTrustedReviewStates returns, per trusted reviewer login
+// (isTrustedReviewer), that reviewer's latest review state among reviews
+// submitted at or after cutoff. Applies the GH-5266 rule that a
+// CHANGES_REQUESTED state is only superseded by a fresh APPROVED or an
+// explicit DISMISSED — never by a COMMENTED, which GitHub's own review model
+// does not treat as clearing a standing change request. GH-5337: extracted
+// out of triggeringReviewers and hasChangesRequested, which previously
+// duplicated this exact loop, so the two callers cannot desync.
+func (c *Controller) latestTrustedReviewStates(reviews []*github.PullRequestReview, cutoff time.Time) map[string]string {
 	latestState := make(map[string]string)
 	for _, r := range reviews {
 		if !c.isTrustedReviewer(r.User.Login) {
@@ -4361,6 +4436,22 @@ func (c *Controller) triggeringReviewers(reviews []*github.PullRequestReview, cu
 		}
 		latestState[r.User.Login] = r.State
 	}
+	return latestState
+}
+
+// triggeringReviewers returns the set of trusted reviewer logins whose latest
+// review since cutoff is CHANGES_REQUESTED — the identities actually
+// responsible for the state that drove (or is keeping) this PR in
+// StageReviewRequested. GH-5328: handleReviewRequested uses this to scope the
+// revision-issue body to only the feedback that triggered this run, instead
+// of every review/comment ever left on the PR.
+//
+// This mirrors hasChangesRequested's latest-state-per-trusted-reviewer logic
+// exactly (same GH-5266 cutoff semantics, same COMMENTED-does-not-supersede-
+// CHANGES_REQUESTED rule) via the shared latestTrustedReviewStates helper
+// (GH-5337) so the two paths always agree on who is blocking.
+func (c *Controller) triggeringReviewers(reviews []*github.PullRequestReview, cutoff time.Time) map[string]bool {
+	latestState := c.latestTrustedReviewStates(reviews, cutoff)
 
 	triggers := make(map[string]bool)
 	for login, state := range latestState {
@@ -4390,49 +4481,33 @@ func (c *Controller) triggeringReviewers(reviews []*github.PullRequestReview, cu
 // its CreatedAt fails to parse, preserving the original no-permanent-park
 // intent (never hold on a review that predates the PR itself) in that
 // degraded case.
+//
+// GH-5337: also warms c.cachedBotLogin (via getBotLogin) on every call. This
+// is the entry gate evaluated on every polling tick for every
+// review-trigger-eligible PR, so it is the earliest, most reliable point to
+// populate the cache — previously the only warm-up was an unrelated side
+// path (getBotLogin inside notifyExternalClose, only reached on an external
+// PR close), so isTrustedReviewer's own-login half of the predicate could
+// stay dormant for a process's entire lifetime.
 func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState, ghPR *github.PullRequest) bool {
+	c.getBotLogin(ctx)
+
 	reviews, err := c.ghClient.ListPullRequestReviews(ctx, c.owner, c.repo, prState.PRNumber)
 	if err != nil {
 		c.log.Warn("failed to fetch reviews for changes_requested check", "pr", prState.PRNumber, "error", err)
 		return false
 	}
 
-	cutoff := prState.CreatedAt
-	if ghPR != nil && ghPR.CreatedAt != "" {
-		if parsed, perr := time.Parse(time.RFC3339, ghPR.CreatedAt); perr == nil {
-			cutoff = parsed
-		}
-	}
+	cutoff := reviewCutoff(prState, ghPR)
 
-	// Track latest review state per user (only non-bot users). GH-5266 (N2
-	// from the PR#5264 review): a plain "last review wins" map let a later
-	// COMMENTED review from the same reviewer silently clear a standing
+	// Track latest review state per trusted reviewer. GH-5266 (N2 from the
+	// PR#5264 review): a plain "last review wins" map let a later COMMENTED
+	// review from the same reviewer silently clear a standing
 	// CHANGES_REQUESTED — GitHub's own review model does not treat a
 	// comment-only review as superseding a change request, only a fresh
-	// APPROVED or an explicit DISMISSED does. So once a user's latest
-	// recorded state is CHANGES_REQUESTED, only APPROVED/DISMISSED are
-	// allowed to overwrite it; COMMENTED (or any other state) is ignored.
-	latestState := make(map[string]string)
-	for _, r := range reviews {
-		// GH-5326: skip bot reviews (self-review or other automation) via the
-		// shared isTrustedReviewer predicate.
-		if !c.isTrustedReviewer(r.User.Login) {
-			continue
-		}
-
-		// Only consider reviews submitted after the PR entered tracking
-		if r.SubmittedAt != "" && !cutoff.IsZero() {
-			submittedAt, err := time.Parse(time.RFC3339, r.SubmittedAt)
-			if err == nil && submittedAt.Before(cutoff) {
-				continue
-			}
-		}
-
-		if latestState[r.User.Login] == "CHANGES_REQUESTED" && r.State != "APPROVED" && r.State != "DISMISSED" {
-			continue
-		}
-		latestState[r.User.Login] = r.State
-	}
+	// APPROVED or an explicit DISMISSED does. GH-5337: extracted into
+	// latestTrustedReviewStates, shared with triggeringReviewers.
+	latestState := c.latestTrustedReviewStates(reviews, cutoff)
 
 	for _, state := range latestState {
 		if state == "CHANGES_REQUESTED" {
@@ -5668,6 +5743,15 @@ func (c *Controller) recoverStaleParentIssues(ctx context.Context) {
 
 // Start runs one-time startup recovery sweeps. Call before the main Run loop.
 func (c *Controller) Start(ctx context.Context) {
+	// GH-5337: warm cachedBotLogin at startup so isTrustedReviewer's
+	// own-login half is live from the controller's very first review-gate
+	// evaluation, rather than staying dormant (string-pattern-only) until
+	// notifyExternalClose's unrelated external-PR-close path happens to
+	// populate it first. Best-effort: getBotLogin already logs and returns
+	// "" on failure, which isTrustedReviewer treats as "skip the self-check"
+	// (fail open) exactly as before this warm-up existed.
+	c.getBotLogin(ctx)
+
 	c.recoverStaleParentIssues(ctx)
 	// GH-3990: claim any scope releases left pending (or re-drive any left
 	// 'releasing' with no live carrier) by a daemon restart.
