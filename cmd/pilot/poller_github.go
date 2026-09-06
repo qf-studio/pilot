@@ -15,12 +15,56 @@ import (
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 )
+
+// githubPollerMetricsAdapter bridges *autopilot.Metrics to the SDK's
+// sdkcore.PollerMetricsRecorder (GH-5336). autopilot.Metrics already
+// satisfies the narrower internal/adapters/skipreason.PollerMetricsRecorder
+// interface (used directly by the in-tree GitLab/AzureDevOps pollers), but
+// not the SDK's 4-method interface — the gauge method is named and typed
+// differently (SetUnsourcedLabeledIssues(repo string, count int64) vs
+// RecordUnsourcedLabeledIssues(repo string, count int)) — so this adapter
+// exists to bridge that gap for the GitHub SDK poller specifically.
+//
+// It also logs at INFO when a candidate is skipped for a pending dependency:
+// the SDK poller's own log line for that skip only fires at Debug in its
+// parallel-mode path (poller.go:1072), invisible at production's `level:
+// info`, which is exactly why the fix-issue deadlock (#5321→#5322,
+// #5324→#5325, 2026-09-06) produced zero daemon.log lines for over two
+// hours. This does not change the SDK's own log level or skip logic.
+type githubPollerMetricsAdapter struct {
+	metrics *autopilot.Metrics
+	log     *slog.Logger
+}
+
+func newGithubPollerMetricsAdapter(metrics *autopilot.Metrics, log *slog.Logger) githubPollerMetricsAdapter {
+	return githubPollerMetricsAdapter{metrics: metrics, log: log}
+}
+
+func (a githubPollerMetricsAdapter) RecordPollerSkipped(repo, reason string) {
+	a.metrics.RecordPollerSkipped(repo, reason)
+	if reason == skipreason.ReasonPendingDependency {
+		a.log.Info("GitHub SDK poller: skipping candidate with pending dependency", slog.String("repo", repo))
+	}
+}
+
+func (a githubPollerMetricsAdapter) RecordPollerDispatched(repo string) {
+	a.metrics.RecordPollerDispatched(repo)
+}
+
+func (a githubPollerMetricsAdapter) RecordPollerDeferredScopeOverlap(repo string) {
+	a.metrics.RecordPollerDeferredScopeOverlap(repo)
+}
+
+func (a githubPollerMetricsAdapter) RecordUnsourcedLabeledIssues(repo string, count int) {
+	a.metrics.SetUnsourcedLabeledIssues(repo, int64(count))
+}
 
 // githubOnPRCreatedHandler builds the callback wired into pollerDeps.OnPRCreated:
 // it forwards the SDK's PRCreatedEvent into Controller.OnPRCreated, the sole live
@@ -487,6 +531,16 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 		// so the autopilot controller's post-merge gates and board-sync-to-Review work.
 		pollerDeps.OnPRCreated = githubOnPRCreatedHandler(ctrl)
 		pollerDeps.IssueMetricsRecorder = ctrl.Metrics()
+		// GH-5336: wire poller skip/dispatch counters for the GitHub SDK path
+		// too — unlike the in-tree GitLab/AzureDevOps pollers, this was never
+		// hooked up, so recordSkip calls inside the SDK poller (poller.go:962)
+		// were silent no-ops here. Wiring it also gives us a place to add a
+		// host-side INFO log for the specific "pending_dependency" reason:
+		// the SDK only logs that one at Debug in its parallel-mode path
+		// (poller.go:1072), invisible at production's `level: info` — which
+		// is exactly why the #5322/#5325 deadlock (2026-09-06) left zero
+		// daemon.log lines for over two hours.
+		pollerDeps.PollerMetrics = newGithubPollerMetricsAdapter(ctrl.Metrics(), repoLog)
 	} else if len(deps.AutopilotControllers) > 0 {
 		repoLog.Error("GitHub SDK poller: no autopilot controller for repo — PRs from this repo will not be auto-merged; check projects[] vs autopilot config")
 	}
