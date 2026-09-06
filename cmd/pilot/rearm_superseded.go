@@ -70,7 +70,7 @@ func (c terminalCompletionChecker) tryRearmSuperseded(taskID, projectPath, backo
 	if err != nil {
 		return false, fmt.Errorf("listing issue #%d events: %w", issueNum, err)
 	}
-	rearmEvent := latestRearmEvent(events, c.triggerLabel, *exec.CompletedAt)
+	rearmEvent := latestRearmEvent(events, *exec.CompletedAt, c.triggerLabel)
 	if rearmEvent == nil {
 		// Open + labeled, but nothing in the timeline shows that state was
 		// reached AFTER the supersede — e.g. the label was already there
