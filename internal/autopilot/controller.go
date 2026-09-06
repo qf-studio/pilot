@@ -4087,6 +4087,40 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 		// Non-fatal: proceed with reviews only
 	}
 
+	// GH-5328: scope the revision-issue body to the reviewer(s) who actually
+	// drove this PR into StageReviewRequested, not every review/comment ever
+	// left on the PR. Without this, formatReviewFeedback (a pure grouper —
+	// all filtering now happens here, at the caller) mixed in stale
+	// CHANGES_REQUESTED reviews the reviewer later superseded with an
+	// APPROVED, bot/self-review noise, and unrelated commenters' line notes.
+	// triggeringReviewers mirrors hasChangesRequested's latest-state-per-
+	// trusted-reviewer logic (GH-5266 cutoff + COMMENTED-does-not-supersede
+	// rule) so the two paths agree on who is actually blocking.
+	triggers := c.triggeringReviewers(reviews, prState.CreatedAt)
+
+	triggeringReviews := make([]*github.PullRequestReview, 0, len(reviews))
+	for _, r := range reviews {
+		if triggers[r.User.Login] && r.State == "CHANGES_REQUESTED" {
+			triggeringReviews = append(triggeringReviews, r)
+		}
+	}
+
+	triggeringComments := make([]*github.PRReviewComment, 0, len(comments))
+	for _, cm := range comments {
+		if triggers[cm.User.Login] {
+			triggeringComments = append(triggeringComments, cm)
+		}
+	}
+
+	if len(triggeringReviews) == 0 && len(triggeringComments) == 0 {
+		c.log.Info("no triggering reviewer feedback survived filtering — skipping empty review issue",
+			"pr", prState.PRNumber,
+			"reviews_fetched", len(reviews),
+			"comments_fetched", len(comments),
+		)
+		return nil
+	}
+
 	// Check iteration limit
 	iteration := 0
 	if prState.IssueNumber > 0 && c.config.ReviewFeedback != nil && c.config.ReviewFeedback.MaxIterations > 0 {
@@ -4134,7 +4168,7 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	// spawnReviewIssue rather than calling feedbackLoop.CreateReviewIssue
 	// directly, so prState.TerminalLabel is designated the moment the issue
 	// exists — strictly before the ClosePullRequest call below.
-	issueNum, err := c.spawnReviewIssue(ctx, prState, reviews, comments, iteration+1)
+	issueNum, err := c.spawnReviewIssue(ctx, prState, triggeringReviews, triggeringComments, iteration+1)
 	// GH-4856/GH-4459: the PR must never be closed unless the revision issue
 	// actually cleared preflight admission — CreateReviewIssue's dedup guard
 	// can legitimately return (0, nil) when a claim is in flight but not yet
@@ -4250,6 +4284,48 @@ func (c *Controller) isTrustedReviewer(login string) bool {
 		return false
 	}
 	return true
+}
+
+// triggeringReviewers returns the set of trusted reviewer logins whose latest
+// review since cutoff is CHANGES_REQUESTED — the identities actually
+// responsible for the state that drove (or is keeping) this PR in
+// StageReviewRequested. GH-5328: handleReviewRequested uses this to scope the
+// revision-issue body to only the feedback that triggered this run, instead
+// of every review/comment ever left on the PR.
+//
+// This mirrors hasChangesRequested's latest-state-per-trusted-reviewer logic
+// exactly (same GH-5266 cutoff semantics, same COMMENTED-does-not-supersede-
+// CHANGES_REQUESTED rule) so the two paths always agree on who is blocking —
+// duplicated rather than shared because hasChangesRequested fetches its own
+// reviews and returns a bool, while this needs the caller's already-fetched
+// reviews slice and the identities themselves.
+func (c *Controller) triggeringReviewers(reviews []*github.PullRequestReview, cutoff time.Time) map[string]bool {
+	latestState := make(map[string]string)
+	for _, r := range reviews {
+		if !c.isTrustedReviewer(r.User.Login) {
+			continue
+		}
+
+		if r.SubmittedAt != "" && !cutoff.IsZero() {
+			submittedAt, err := time.Parse(time.RFC3339, r.SubmittedAt)
+			if err == nil && submittedAt.Before(cutoff) {
+				continue
+			}
+		}
+
+		if latestState[r.User.Login] == "CHANGES_REQUESTED" && r.State != "APPROVED" && r.State != "DISMISSED" {
+			continue
+		}
+		latestState[r.User.Login] = r.State
+	}
+
+	triggers := make(map[string]bool)
+	for login, state := range latestState {
+		if state == "CHANGES_REQUESTED" {
+			triggers[login] = true
+		}
+	}
+	return triggers
 }
 
 // hasChangesRequested checks if a PR has unresolved "changes requested" reviews.
