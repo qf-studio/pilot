@@ -1,0 +1,209 @@
+package executor
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestFinalizeCtx is the GH-5342 unit-level guard for finalizeCtx: a blown
+// deadline must get a fresh, bounded window (so finalization can still push
+// already-committed work), while an explicit cancellation or a still-live
+// deadline must be left untouched.
+func TestFinalizeCtx(t *testing.T) {
+	t.Run("expired deadline gets a fresh usable ctx", func(t *testing.T) {
+		parent, parentCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+		defer parentCancel()
+		if parent.Err() != context.DeadlineExceeded {
+			t.Fatalf("test setup: parent ctx should already be expired, got %v", parent.Err())
+		}
+
+		fresh, cancel := finalizeCtx(parent, time.Minute)
+		defer cancel()
+
+		if fresh.Err() != nil {
+			t.Errorf("expected the fresh ctx to still be usable, got Err()=%v", fresh.Err())
+		}
+		if deadline, ok := fresh.Deadline(); !ok || time.Until(deadline) < 30*time.Second {
+			t.Errorf("expected a fresh ~1m deadline, got ok=%v deadline=%v", ok, deadline)
+		}
+	})
+
+	t.Run("explicit cancellation is preserved, not overridden", func(t *testing.T) {
+		parent, parentCancel := context.WithCancel(context.Background())
+		parentCancel()
+		if parent.Err() != context.Canceled {
+			t.Fatalf("test setup: parent ctx should be canceled, got %v", parent.Err())
+		}
+
+		derived, cancel := finalizeCtx(parent, time.Minute)
+		defer cancel()
+
+		if derived.Err() != context.Canceled {
+			t.Errorf("a genuine cancellation must stay canceled, got Err()=%v", derived.Err())
+		}
+	})
+
+	t.Run("live ctx is passed through unaffected", func(t *testing.T) {
+		parent, parentCancel := context.WithTimeout(context.Background(), time.Hour)
+		defer parentCancel()
+
+		derived, cancel := finalizeCtx(parent, time.Minute)
+		defer cancel()
+
+		if derived.Err() != nil {
+			t.Errorf("expected a live ctx to remain usable, got Err()=%v", derived.Err())
+		}
+		deadline, ok := derived.Deadline()
+		if !ok {
+			t.Fatal("expected the derived ctx to inherit the parent's deadline")
+		}
+		if time.Until(deadline) < 30*time.Minute {
+			t.Errorf("expected the derived ctx to keep the parent's long deadline, got %v remaining", time.Until(deadline))
+		}
+	})
+}
+
+// TestFinalizeEpicBranchPR_ExpiredTaskCtxWithCommits_StillPushesAndCreatesPR
+// is the GH-5342 regression guard on the epic finalize path: a branch that
+// carries real commits must still get pushed and turned into a PR even when
+// the incoming ctx's deadline has already been blown by a backend run that
+// legitimately used the full task timeout — not silently misread as "zero
+// commits" (CountNewCommitsAgainstOrigin failing instantly on a dead ctx)
+// and recorded as no_op, discarding already-committed work (GH-263 x3).
+func TestFinalizeEpicBranchPR_ExpiredTaskCtxWithCommits_StillPushesAndCreatesPR(t *testing.T) {
+	capturedTitleFile := setUpFakeGhPRCreatePATH(t)
+
+	branch := "pilot/GH-5342-epic"
+	dir := initRepoWithRemoteAndFeatureBranch(t, branch)
+
+	r := newSilentRunnerTask359()
+	result := &ExecutionResult{TaskID: "GH-5342", Success: true, IsEpic: true}
+	task := &Task{
+		ID:          "GH-5342",
+		Title:       "fix: post-timeout finalization must not discard committed work",
+		Description: "d",
+		Branch:      branch,
+		BaseBranch:  "main",
+		CreatePR:    true,
+	}
+
+	// Simulate a task ctx whose deadline was already blown by the time
+	// finalization runs — the exact shape a full-length backend run that
+	// still landed real commits produces.
+	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+	if expiredCtx.Err() != context.DeadlineExceeded {
+		t.Fatalf("test setup: ctx should already be expired, got %v", expiredCtx.Err())
+	}
+
+	r.finalizeEpicBranchPR(expiredCtx, task, NewGitOperations(dir), result, nil)
+
+	if !result.Success {
+		t.Fatalf("expected Success=true, got false (error=%q)", result.Error)
+	}
+	if result.Outcome == "no_op" {
+		t.Errorf("committed work must never be recorded as no_op on an expired ctx, got Outcome=%q error=%q", result.Outcome, result.Error)
+	}
+	if result.PRUrl == "" {
+		t.Error("expected a PR URL, got none")
+	}
+	if _, err := os.Stat(capturedTitleFile); err != nil {
+		t.Errorf("gh pr create was never invoked: %v", err)
+	}
+
+	// The branch must have actually landed on the remote, not just locally —
+	// a fresh ctx that only ever timed out locally without reaching git would
+	// pass a weaker assertion but still leave the work stranded.
+	remoteBranches := gitOutput(t, dir, "ls-remote", "origin", branch)
+	if strings.TrimSpace(remoteBranches) == "" {
+		t.Errorf("expected branch %q to be pushed to origin, ls-remote returned nothing", branch)
+	}
+}
+
+// TestFinalizeEpicBranchPR_CanceledTaskCtx_FailsInsteadOfSilentlyProceeding
+// verifies the other half of finalizeCtx's contract: an explicit
+// cancellation (context.Canceled — a real stop request, not an exhausted
+// budget) must NOT be papered over with a fresh context. The guard's git
+// call fails on the canceled ctx, and that failure must surface as a hard
+// failure (never no_op), not a silently-granted extra 5 minutes to keep
+// working after being told to stop.
+func TestFinalizeEpicBranchPR_CanceledTaskCtx_FailsInsteadOfSilentlyProceeding(t *testing.T) {
+	setUpFakeGhPRCreatePATH(t)
+
+	branch := "pilot/GH-5342-epic-canceled"
+	dir := initRepoWithRemoteAndFeatureBranch(t, branch)
+
+	r := newSilentRunnerTask359()
+	result := &ExecutionResult{TaskID: "GH-5342", Success: true, IsEpic: true}
+	task := &Task{
+		ID:          "GH-5342",
+		Title:       "fix: post-timeout finalization must not discard committed work",
+		Description: "d",
+		Branch:      branch,
+		BaseBranch:  "main",
+		CreatePR:    true,
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r.finalizeEpicBranchPR(canceledCtx, task, NewGitOperations(dir), result, nil)
+
+	if result.Success {
+		t.Error("expected Success=false when the task ctx was explicitly canceled")
+	}
+	if result.Outcome == "no_op" {
+		t.Errorf("a canceled ctx's git failure must not be misread as no_op, got Outcome=%q error=%q", result.Outcome, result.Error)
+	}
+	if result.PRUrl != "" {
+		t.Errorf("expected no PR URL, got %q", result.PRUrl)
+	}
+}
+
+// TestFinalizeDecomposedParentPR_ExpiredTaskCtxWithCommits_StillPushesAndCreatesPR
+// mirrors the epic-path regression guard above for the decomposed-parent
+// finalize path (runner_decompose.go), which follows the identical
+// count-guard-then-push-then-CreatePR shape and had the identical bug.
+func TestFinalizeDecomposedParentPR_ExpiredTaskCtxWithCommits_StillPushesAndCreatesPR(t *testing.T) {
+	capturedTitleFile := setUpFakeGhPRCreatePATH(t)
+
+	branch := "pilot/GH-5342-decomposed"
+	dir := initRepoWithRemoteAndFeatureBranch(t, branch)
+
+	r := newSilentRunnerTask359()
+	result := &ExecutionResult{TaskID: "GH-5342", Success: true}
+	task := &Task{
+		ID:          "GH-5342",
+		Title:       "fix: post-timeout finalization must not discard committed work",
+		Description: "d",
+		Branch:      branch,
+		BaseBranch:  "main",
+		CreatePR:    true,
+	}
+
+	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+	if expiredCtx.Err() != context.DeadlineExceeded {
+		t.Fatalf("test setup: ctx should already be expired, got %v", expiredCtx.Err())
+	}
+
+	r.finalizeDecomposedParentPR(expiredCtx, task, NewGitOperations(dir), result)
+
+	if !result.Success {
+		t.Fatalf("expected Success=true, got false (error=%q)", result.Error)
+	}
+	if result.PRUrl == "" {
+		t.Error("expected a PR URL, got none")
+	}
+	if _, err := os.Stat(capturedTitleFile); err != nil {
+		t.Errorf("gh pr create was never invoked: %v", err)
+	}
+
+	remoteBranches := gitOutput(t, dir, "ls-remote", "origin", branch)
+	if strings.TrimSpace(remoteBranches) == "" {
+		t.Errorf("expected branch %q to be pushed to origin, ls-remote returned nothing", branch)
+	}
+}
