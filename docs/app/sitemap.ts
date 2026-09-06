@@ -5,6 +5,7 @@ const BASE = 'https://pilot.quantflow.studio'
 // Static priority map — high-traffic pages get higher priority
 const PRIORITY: Record<string, number> = {
   '': 1.0,
+  '/getting-started': 0.9,
   '/getting-started/prerequisites': 0.9,
   '/getting-started/quickstart': 0.9,
   '/getting-started/installation': 0.9,
@@ -17,6 +18,7 @@ const PRIORITY: Record<string, number> = {
 
 const ROUTES = [
   '',
+  '/getting-started',
   '/getting-started/prerequisites',
   '/getting-started/installation',
   '/getting-started/quickstart',
