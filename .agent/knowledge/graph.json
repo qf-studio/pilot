@@ -6139,6 +6139,22 @@
           "TASK-495"
         ],
         "captured": "2026-09-06"
+      },
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat": {
+        "type": "learning",
+        "summary": "Slack destinations come from exactly three config keys (alerts.channels[].slack.channel / adapters.slack.approval.channel / adapters.slack.channel); renaming the alert channel re-routes built-in rules; config-side AlertConditionConfig lacks lane/deadlock/pr_stuck fields \u2014 only lane_starvation and deadlock have zero fallbacks",
+        "path": "memories/learnings/slack-routing-three-keys-alerts-vs-approvals-vs-chat.md",
+        "confidence": 0.95,
+        "concepts": [
+          "alerts",
+          "approval",
+          "config",
+          "ops-discipline",
+          "adapters",
+          "observability"
+        ],
+        "created": "2026-09-06",
+        "last_validated": "2026-09-06"
       }
     }
   },
@@ -8384,7 +8400,8 @@
       "localmode-tasks-never-get-worktree-qdocs-in-root",
       "mem-144",
       "mem-149",
-      "slack-approval-socket-mode-unroutable"
+      "slack-approval-socket-mode-unroutable",
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
     ],
     "alerts": [
       "TASK-379",
@@ -8394,7 +8411,8 @@
       "mem-089",
       "mem-142",
       "mem-146",
-      "release-tick-retry-with-backoff-and-alert"
+      "release-tick-retry-with-backoff-and-alert",
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
     ],
     "ami": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
@@ -8524,7 +8542,8 @@
     "approval": [
       "approvals-off-stage-auto-merge",
       "require-approval-flip-doesnt-release-held-prs",
-      "slack-approval-socket-mode-unroutable"
+      "slack-approval-socket-mode-unroutable",
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
     ],
     "architecture": [
       "mem-148"
@@ -8735,7 +8754,8 @@
       "required-checks-allowlist-makes-other-gates-decorative",
       "unwired-config-field-validated-but-dead",
       "workflow-yaml-requires-front-matter",
-      "close-rationale-cites-mode-the-component-cannot-see"
+      "close-rationale-cites-mode-the-component-cannot-see",
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
     ],
     "config-push": [
       "apply-script-silent-rollback-causes"
@@ -9634,7 +9654,8 @@
       "mem-146",
       "poller-labels-removed-log-means-never-applied",
       "shared-oauth-session-strands-second-machine",
-      "stagefailed-conflates-healthy-handoff-with-terminal-failure"
+      "stagefailed-conflates-healthy-handoff-with-terminal-failure",
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
     ],
     "ops-discipline": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -9642,7 +9663,8 @@
       "confirm-before-destructive-act-fresh-reads",
       "pilot-stalled-status-is-retry-not-cancel",
       "rlimit-as-breaks-node-subprocesses",
-      "ssm-runs-as-root-cli-reads-empty-ledger"
+      "ssm-runs-as-root-cli-reads-empty-ledger",
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
     ],
     "orchestrator": [
       "TASK-02",
@@ -10262,11 +10284,11 @@
       "runselfreview-runs-in-repo-root-phantom-reimplementation"
     ]
   },
-  "last_updated": "2026-09-06T15:02:39.086941+00:00",
+  "last_updated": "2026-09-06T20:46:01.644370+00:00",
   "stats": {
-    "total_nodes": 516,
+    "total_nodes": 518,
     "total_edges": 446,
-    "memory_count": 269
+    "memory_count": 271
   },
   "metadata": {}
 }
