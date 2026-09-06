@@ -1,6 +1,6 @@
 # TASK-493: Review-feedback trigger hardening — bot filter on webhook path, stage guard, identity-based exclusion, human-only feedback body
 
-**Status**: ✅ SHIPPED 2026-09-06 in **v2.273.0** — #5314 decomposed into #5326–#5330; code children merged as PR#5331 (predicate) · PR#5332 (stage guard) · PR#5333 (human-only body) · PR#5334 (tests); #5330 (verify+reply) no-op, closed by operator (reply to #5228 already posted). **Post-merge review: PENDING** (interactive rule: review every PR).
+**Status**: ✅ SHIPPED 2026-09-06 in **v2.273.0** — #5314 decomposed into #5326–#5330; code children merged as PR#5331 (predicate) · PR#5332 (stage guard) · PR#5333 (human-only body) · PR#5334 (tests); #5330 (verify+reply) no-op, closed by operator (reply to #5228 already posted). **Post-merge review DONE 09-06 — APPROVE-w-notes** (verdict on PR#5333). Follow-up filed [#5337](https://github.com/qf-studio/pilot/issues/5337) (pilot): HIGH `handleReviewRequested` cutoff uses `prState.CreatedAt` → re-adoption blind spot parks PRs in `StageReviewRequested` with no escalation · MEDIUM bot-login cache dormant until an external close warms it · LOW pattern case-sensitive. Not filed: learning loop still ingests unfiltered reviews.
 **Created**: 2026-09-06
 **Assignee**: Pilot
 
