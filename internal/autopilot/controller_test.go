@@ -6810,6 +6810,68 @@ func TestController_OnReviewRequested_UntrackedPR(t *testing.T) {
 	}
 }
 
+func TestController_IsTrustedReviewer(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.cachedBotLogin = "pilot-bot"
+
+	tests := []struct {
+		name  string
+		login string
+		want  bool
+	}{
+		{"bracket bot suffix", "dependabot[bot]", false},
+		{"dash bot suffix", "ci-bot", false},
+		{"matches cached bot login exact case", "pilot-bot", false},
+		{"matches cached bot login case-insensitive", "Pilot-Bot", false},
+		{"human reviewer", "alice", true},
+		{"human reviewer resembling bot substring but not suffix", "robot-wrangler", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := c.isTrustedReviewer(tt.login); got != tt.want {
+				t.Errorf("isTrustedReviewer(%q) = %v, want %v", tt.login, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestController_OnReviewRequested_IgnoresBotReviewer(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	cfg.ReviewFeedback = &ReviewFeedbackConfig{Enabled: true, MaxIterations: 3}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.cachedBotLogin = "pilot-bot"
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
+
+	// A "[bot]" suffixed reviewer must not drive the PR into review_requested.
+	c.OnReviewRequested(42, "submitted", "changes_requested", "dependabot[bot]")
+	pr, ok := c.GetPRState(42)
+	if !ok {
+		t.Fatal("PR should be tracked")
+	}
+	if pr.Stage == StageReviewRequested {
+		t.Error("stage should NOT be review_requested for a [bot]-suffixed reviewer")
+	}
+
+	// The Pilot bot's own login (case-insensitive) must also be ignored.
+	c.OnReviewRequested(42, "submitted", "changes_requested", "Pilot-Bot")
+	pr, _ = c.GetPRState(42)
+	if pr.Stage == StageReviewRequested {
+		t.Error("stage should NOT be review_requested for the bot's own (cached) login")
+	}
+
+	// A trusted human reviewer should still drive the transition.
+	c.OnReviewRequested(42, "submitted", "changes_requested", "alice")
+	pr, _ = c.GetPRState(42)
+	if pr.Stage != StageReviewRequested {
+		t.Errorf("stage = %v, want %v for a trusted human reviewer", pr.Stage, StageReviewRequested)
+	}
+}
+
 func TestController_HasChangesRequested_FilterByTime(t *testing.T) {
 	// Reviews submitted before PR tracking should be ignored
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

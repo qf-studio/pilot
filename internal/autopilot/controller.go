@@ -2714,6 +2714,17 @@ func (c *Controller) OnReviewRequested(prNumber int, action, state, reviewer str
 		return
 	}
 
+	// GH-5326: ignore changes_requested from bot/self reviewers — only a
+	// trusted human reviewer's request should be able to drive the pipeline
+	// into StageReviewRequested.
+	if !c.isTrustedReviewer(reviewer) {
+		c.log.Info("ignoring changes_requested from untrusted reviewer",
+			"pr", prNumber,
+			"reviewer", reviewer,
+		)
+		return
+	}
+
 	// Check if review feedback handling is enabled
 	if c.config.ReviewFeedback == nil || !c.config.ReviewFeedback.Enabled {
 		c.log.Info("review feedback handling disabled, ignoring changes_requested",
@@ -4211,6 +4222,36 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	return nil
 }
 
+// isTrustedReviewer reports whether login belongs to a human reviewer whose
+// review state should be able to gate the pipeline (via hasChangesRequested)
+// or trigger the OnReviewRequested changes_requested transition. It returns
+// false for the authenticated Pilot bot itself — matched case-insensitively
+// against the cached login from getBotLogin, since GitHub login comparisons
+// are case-insensitive — and for any other automation account following
+// GitHub's "[bot]" suffix convention or the "-bot" naming convention. All
+// other logins are treated as trusted. GH-5326: this replaces the ad hoc
+// "[bot]"/"-bot" check that was previously duplicated at both call sites and
+// extends it to also exclude self-reviews from the Pilot bot's own login.
+//
+// Only the already-cached bot login is consulted (no network fetch): this
+// predicate is called from OnReviewRequested, a synchronous webhook handler
+// with no context.Context to thread through for an on-demand
+// getBotLogin(ctx) call. If the cache hasn't been populated yet, the bot-self
+// check is simply skipped for that call — the "[bot]"/"-bot" suffix check
+// still applies.
+func (c *Controller) isTrustedReviewer(login string) bool {
+	if strings.Contains(login, "[bot]") || strings.HasSuffix(login, "-bot") {
+		return false
+	}
+	c.mu.RLock()
+	botLogin := c.cachedBotLogin
+	c.mu.RUnlock()
+	if botLogin != "" && strings.EqualFold(login, botLogin) {
+		return false
+	}
+	return true
+}
+
 // hasChangesRequested checks if a PR has unresolved "changes requested" reviews.
 // It filters out bot reviews and only considers reviews submitted after the PR
 // was created.
@@ -4254,8 +4295,9 @@ func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState, 
 	// allowed to overwrite it; COMMENTED (or any other state) is ignored.
 	latestState := make(map[string]string)
 	for _, r := range reviews {
-		// Skip bot reviews (self-review)
-		if strings.Contains(r.User.Login, "[bot]") || strings.HasSuffix(r.User.Login, "-bot") {
+		// GH-5326: skip bot reviews (self-review or other automation) via the
+		// shared isTrustedReviewer predicate.
+		if !c.isTrustedReviewer(r.User.Login) {
 			continue
 		}
 
