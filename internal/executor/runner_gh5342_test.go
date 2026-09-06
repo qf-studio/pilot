@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -274,5 +275,77 @@ func TestNoCommitRetry_PostRetryCommitCountFailure_NotRecordedAsNoOp(t *testing.
 	}
 	if backend.callCount() != 2 {
 		t.Errorf("expected backend called twice (initial + GH-916 retry), got %d", backend.callCount())
+	}
+}
+
+// TestIntentJudgeRetry_ExpiredTaskCtx_SkipsReinvocation is the GH-5342
+// (subtask 3) regression guard on the intent-judge retry (runner.go
+// ~5174, "Handle intent judge result"): unlike the GH-916 no-commit
+// retry above — which is naturally gated by a git commit-count call that
+// shares ctx and fails fast on a dead one — nothing upstream of the
+// intent-judge retry decision shares ctx to fail first. A quality-gate
+// retry loop earlier in the same run always gets a fresh, ctx-independent
+// timeout (GH-4876) and can burn real wall-clock, so by the time the
+// intent judge flags a mismatch, this task's own ctx may already be
+// done. Before this fix, the retry unconditionally called
+// backendExecute(ctx, ...) — spawning a Claude Code process on an
+// already-done ctx that can't produce anything usable (exec.CommandContext
+// refuses to even start it), burning a real retry attempt for nothing.
+func TestIntentJudgeRetry_ExpiredTaskCtx_SkipsReinvocation(t *testing.T) {
+	capturedTitleFile := setUpFakeGhPRCreatePATH(t)
+
+	const branch = "pilot/GH-5342-intentretry"
+	dir, _ := setupFreshnessRepo(t)
+	runGit(t, dir, "checkout", "-b", branch)
+
+	backend := &mockGH4964Backend{
+		perCall: func(_ int, _ ExecuteOptions) *BackendResult {
+			// Every call (initial or retry) lands a real commit so a
+			// non-empty diff always reaches the intent judge; the retry
+			// must never actually be invoked, but if the guard regresses
+			// this keeps the test failure about the retry itself, not an
+			// unrelated no-commit path.
+			writeUncommittedFile(t, dir, fmt.Sprintf("work-%d.go", time.Now().UnixNano()))
+			runGit(t, dir, "add", ".")
+			runGit(t, dir, "commit", "-m", "real work")
+			return &BackendResult{Success: true, Output: "done"}
+		},
+	}
+	runner := newGH4964Runner(backend)
+
+	// The judge subprocess is mocked to sleep past the task ctx's short
+	// deadline before returning FAIL — reproducing a judge call that
+	// legitimately took real wall-clock time (GH-4669's measured judge
+	// subprocess latency) and returns only after ctx is already done.
+	runner.intentJudge = newIntentJudgeWithRunner(func(context.Context, ...string) ([]byte, error) {
+		time.Sleep(400 * time.Millisecond)
+		return []byte("VERDICT: FAIL\nThe diff adds unrelated scope.\nCONFIDENCE: 0.9"), nil
+	})
+
+	task := newGH4964Task("GH-5342", branch, dir)
+	task.SkipQualityGates = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+
+	if backend.callCount() != 1 {
+		t.Errorf("expected backend called once (initial only, intent-judge retry must be skipped on an already-done ctx), got %d", backend.callCount())
+	}
+	if result.IntentWarning == "" {
+		t.Error("expected IntentWarning to carry the judge's FAIL reason even though the retry was skipped")
+	}
+	if !result.Success {
+		t.Fatalf("expected the initial commit to still result in success (intent warning is advisory, not blocking), got failure: %s", result.Error)
+	}
+	if result.PRUrl == "" {
+		t.Error("expected a PR URL")
+	}
+	if _, statErr := os.Stat(capturedTitleFile); statErr != nil {
+		t.Errorf("gh pr create was never invoked: %v", statErr)
 	}
 }

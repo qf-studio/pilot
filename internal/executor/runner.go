@@ -5146,7 +5146,30 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					slog.Float64("confidence", intentVerdict.Confidence),
 				)
 
-				if !state.intentRetried {
+				if state.intentRetried {
+					result.IntentWarning = intentVerdict.Reason
+				} else if ctx.Err() != nil {
+					// GH-5342 (subtask 3): quality-gate retries above run on
+					// their own fresh, unbounded-relative-to-ctx timeout
+					// (GH-4876), so they can burn real wall-clock while this
+					// task's own ctx keeps ticking independently. By the time
+					// the intent judge flags a mismatch here, ctx may already
+					// be done (deadline exceeded, or an explicit cancel) —
+					// unlike the no-commit-retry above, nothing upstream of
+					// this branch shares ctx to fail fast on it first.
+					// Spawning another Claude Code process on an already-done
+					// ctx can't produce anything usable — backendExecute
+					// forwards ctx straight into exec.CommandContext, which
+					// refuses to even start the process on a ctx that's
+					// already Done — so skip the retry and keep the
+					// intent-judge warning instead of burning a doomed
+					// re-invocation.
+					log.Warn("Skipping intent-judge retry: task ctx already done",
+						slog.String("task_id", task.ID),
+						slog.Any("ctx_err", ctx.Err()),
+					)
+					result.IntentWarning = intentVerdict.Reason
+				} else {
 					state.intentRetried = true
 					r.recordRetryAttemptEvent(task.LogExecutionID(), "intent_judge_retry", 1)
 					r.reportProgress(task.ID, "Intent Retry", 80, "Retrying with intent feedback...")
@@ -5207,8 +5230,6 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					} else {
 						result.IntentWarning = intentVerdict.Reason
 					}
-				} else {
-					result.IntentWarning = intentVerdict.Reason
 				}
 			}
 		}
