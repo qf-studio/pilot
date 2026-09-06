@@ -54,6 +54,16 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 | cloud-infra #50 user-data | APPROVE | — |
 | auth-service #509 per-app aud | APPROVE-w-notes — **refresh path drops per-client aud** (breaks on first refresh once enforcement is on) | [auth-service#512](https://github.com/qf-studio/auth-service/issues/512) (pilot, before any `JWT_AUDIENCE_ENFORCE=true`) |
 | auth-service #510 TLS_ENABLED removal | APPROVE-w-notes | [auth-service#513](https://github.com/qf-studio/auth-service/issues/513) reminder (no pilot label) |
+| pilot-console #271 role converge on tick (follow-up to #266) | APPROVE-w-notes — live evidence impossible until first AWS boot; no backoff for a persistently failing org | → first-deploy checklist below |
+| auth-service #514 DPoP scheme, #515 refresh aud | reviewed by the auth-service agent (founder's call 09-06) | operator: set `TRUSTED_PROXY_CIDRS` SSM param (Nelya) |
+
+## First-deploy validation checklist (add to the runbook 3-step validation)
+
+- `aws iam list-attached-role-policies --role-name <tenant role>` on the re-created test tenant → no managed policy; SSM port-forward to the tenant still opens (proves #266/#271 narrowed policy).
+- Tenant volume + root device show `Encrypted=true` with `alias/pilot-fleet` (#265).
+- Tags `Environment=pilot-fleet`, `Relation`, `Project` on instance/volume/SG/role (#267).
+- Console → central auth: a session validates once per TTL (cache hit metric), gRPC dial with `PILOT_CONSOLE_AUTH_GRPC_CA_FILE`/`_SERVER_NAME` (#268).
+- ECS: reconciler task = `consolectl run`; API tasks have `PILOT_CONSOLE_FLEET_RECONCILE=false` (#263 image).
 
 ## Operator / founder items
 
