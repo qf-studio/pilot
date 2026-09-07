@@ -66,6 +66,13 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 - ECS: reconciler task = `entryPoint: ["/consolectl"], command: ["run"]` (NOT a command override — exec-form ENTRYPOINT); API tasks `entryPoint: ["/pilot-console"]` with `PILOT_CONSOLE_FLEET_RECONCILE=false` (#263/#274).
 - GHCR package `pilot-console` visibility/pull permission set once before the first ECS pull (created private).
 
+## Late 09-06 / 09-07 additions
+
+- **pilot-console#45 ready-gate decoupling** (blocked since 07-24 on headers) re-specced 22:00 → PR#272 merged 23:13 → review APPROVE-w-notes (transient github:false flips the connection to `error`; consider a separate health field).
+- **pilot-console#274** (pilot): README ECS contract wrong for the exec-form ENTRYPOINT + `latest`/dispatch guards. **#275** (pilot): `consolectl run` drops `TENANT_ROLE_BOUNDARY_ARN`, `IDLE_WINDOW`, `SECRETS_DRIVER` — boundary not applied on ECS until it merges.
+- **ECS env manifest sent to Nelya** 09-07 00:27Z (TO-BE thread): task shapes, secrets split, AWS values, task-role IAM, the two caveats.
+- **pilot#5342 executor false no-op**: PR#5345 pre-merge review **REQUEST-CHANGES** → drafted; revision issue [#5346](https://github.com/qf-studio/pilot/issues/5346) (autopilot-meta → same branch). pilot#5344 classifier OAuth 401 running.
+
 ## Operator / founder items
 
 - **Domain pick still parked** (Q9, phase 2 blocked on it).
