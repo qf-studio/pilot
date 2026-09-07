@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -17,23 +19,79 @@ import (
 // applied strictly after the original stall, could be permanently outrun by
 // the poller's own re-stamping and never satisfy "evidence after the stall".
 //
-// internal/executor's own GH-5353 test
-// (TestEscalateStalledTask_AlreadyStalledRepeatPickup_DoesNotRestampCompletedAt)
-// proves the row's completed_at now stays pinned at the FIRST stall
-// regardless of how many times escalateStalledTask is re-entered on the
-// alreadyStalled path. This test proves the sweep-side consequence of that
-// fix: seeded with a stall stamp (T0) that — per the fix — never moves no
-// matter how many interleaved poller pickups happen, a re-arm labeled event
-// at T1 > T0 still satisfies tryRearmStalled even though "now" (when this
-// probe actually runs, standing in for a later interleaved pickup at T2 >
-// T1) is later still.
+// Unlike a first draft of this test (comment-only "simulated poller pickup"
+// step, never actually calling into the dispatcher), this drives the real
+// race end to end through the same public entrypoint a poller uses —
+// executor.Dispatcher.QueueTask — twice:
+//  1. T0: a genuine, fresh escalation past the repick hard cap
+//     (QueueTask -> ... -> stallTaskAfterRepickHardCap -> escalateStalledTask)
+//     stalls the claim and stamps completed_at for the first time.
+//  2. T1 > T0: the operator's re-arm recipe produces a labeled event.
+//  3. T2 > T1: a second QueueTask call reproduces the SDK poller
+//     re-observing the same already-stalled claim first and re-entering
+//     escalateStalledTask on the identical (status, reason) —
+//     alreadyStalled — path.
+//
+// Before the GH-5353 fix, step 3's unconditional write re-stamped
+// completed_at to (approximately) T2, which is >= T1, so the sweep's
+// "event.CreatedAt > completed_at" check below would permanently fail and
+// this test would correctly fail with it. After the fix, step 3 performs no
+// write at all on the alreadyStalled path, so completed_at stays pinned at
+// T0 and the sweep can still re-arm.
 func TestTryRearmStalled_Interleaved_PickupBetweenStallAndRearmEvidence_StillRearms(t *testing.T) {
 	store := newTerminalCompletionCheckerTestStore(t)
 
-	// T0: the original, fresh stall — per the GH-5353 fix, this timestamp is
-	// what the row keeps forever, regardless of any later interleaved poller
-	// pickup re-entering escalateStalledTask on the alreadyStalled path.
-	t0 := time.Now().Add(-2 * time.Hour)
+	taskID, projectPath := "GH-5139", "/project-gh5353-interleave"
+	task := &executor.Task{ID: taskID, ProjectPath: projectPath}
+	runner := executor.NewRunner()
+	dispatcher := executor.NewDispatcher(store, runner, nil)
+	key := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+
+	// A prior claim eligible for a repick: a genuinely failed generation-0
+	// execution, distinct from the stall escalation itself.
+	execID, err := executor.NewExecutionLifecycle(store).Begin(task, executor.ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(execID, "failed"); err != nil {
+		t.Fatalf("setup: failed to mark generation 0 as failed: %v", err)
+	}
+
+	// Push consecutiveDrops safely past the repick hard cap so the very next
+	// repick attempt takes the stall-and-hold path, regardless of the cap's
+	// exact value (internal/executor's dispatcherRepickHardCap is
+	// unexported).
+	if err := dispatcher.SetRepickBackoffState(key, 1000, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("SetRepickBackoffState: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// T0: the genuine, fresh escalation through the real dispatcher
+	// entrypoint a poller uses.
+	if _, err := dispatcher.QueueTask(ctx, task); err != nil {
+		t.Fatalf("QueueTask (T0 escalation): %v", err)
+	}
+
+	stalled, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution after T0 escalation: %v", err)
+	}
+	if stalled.Status != "stalled" || stalled.CompletedAt == nil {
+		t.Fatalf("expected T0 escalation to mark the row stalled with completed_at set, got status=%q completed_at=%v", stalled.Status, stalled.CompletedAt)
+	}
+
+	// Backdate completed_at well into the past (mirrors seedStalledRow, and
+	// internal/executor's own GH-5353 race test) so T1's re-arm event and
+	// T2's possible bad re-stamp are observably ordered instead of comparing
+	// equal within the same wall-clock second a same-second test run would
+	// otherwise produce.
+	t0 := stalled.CompletedAt.Add(-2 * time.Hour).UTC()
+	if _, err := store.DB().Exec(`UPDATE executions SET completed_at = ? WHERE id = ?`, t0, execID); err != nil {
+		t.Fatalf("failed to backdate completed_at: %v", err)
+	}
+
 	// T1 > T0: the operator's re-arm recipe (documented by surfaceStalledIssue)
 	// lands strictly after the stall.
 	t1 := t0.Add(30 * time.Minute)
@@ -50,14 +108,19 @@ func TestTryRearmStalled_Interleaved_PickupBetweenStallAndRearmEvidence_StillRea
 		repoOwner: "owner", repoName: "repo", triggerLabel: "pilot",
 	}
 
-	taskID, projectPath := "GH-5139", "/project-gh5353-interleave"
-	seedStalledRow(t, store, "exec-stalled-gh5353-interleave", taskID, projectPath, t0)
-	key := repickBackoffKey(projectPath, taskID)
-	t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+	// T2 > T1: the SDK poller (unsynchronized, same ~30s cadence as the
+	// sweep) re-observes the same already-stalled claim first and re-enters
+	// the dispatcher's stall escalation via the same QueueTask call site a
+	// real repick would use — identical dropCount/cap, so an identical
+	// reason string and the alreadyStalled repeat path.
+	if _, err := dispatcher.QueueTask(ctx, task); err != nil {
+		t.Fatalf("QueueTask (T2 repeat escalation): %v", err)
+	}
 
-	// T2 (implicit): this probe itself runs well after T1, standing in for a
-	// second interleaved poller pickup that — pre-fix — would have re-stamped
-	// completed_at to roughly now and made this assertion fail.
+	// T3 (implicit, "now"): the sweep runs. Before the GH-5353 fix, T2's
+	// unconditional write would have re-stamped completed_at to
+	// (approximately) now, which is >= T1, permanently outrunning the re-arm
+	// evidence and making this assertion fail.
 	rearmed, err := checker.tryRearmStalled(taskID, projectPath, key)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -66,7 +129,7 @@ func TestTryRearmStalled_Interleaved_PickupBetweenStallAndRearmEvidence_StillRea
 		t.Fatal("expected rearmed=true — the re-arm evidence at T1 postdates the stall stamp T0 and must stay valid regardless of interleaved poller pickups")
 	}
 
-	exec, err := store.GetExecution("exec-stalled-gh5353-interleave")
+	exec, err := store.GetExecution(execID)
 	if err != nil {
 		t.Fatalf("GetExecution: %v", err)
 	}

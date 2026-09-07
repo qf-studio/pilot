@@ -62,7 +62,18 @@ func TestEscalateStalledTask_AlreadyStalledRepeatPickup_DoesNotRestampCompletedA
 	if exec0.CompletedAt == nil {
 		t.Fatal("expected completed_at to be set after first escalation")
 	}
-	t0 := *exec0.CompletedAt
+
+	// Backdate completed_at well into the past (mirrors seedStalledRow in
+	// cmd/pilot) so a repeat escalation that wrongly re-stamps it to
+	// CURRENT_TIMESTAMP is observably later, rather than comparing equal
+	// within the same wall-clock second a same-second test run would
+	// otherwise produce — CURRENT_TIMESTAMP has only second precision, so two
+	// calls made back-to-back in-process can land on the identical second and
+	// mask a re-stamp entirely.
+	t0 := exec0.CompletedAt.Add(-2 * time.Hour).UTC()
+	if _, err := store.DB().Exec(`UPDATE executions SET completed_at = ? WHERE id = ?`, t0, execID); err != nil {
+		t.Fatalf("failed to backdate completed_at: %v", err)
+	}
 
 	// T1: the operator's re-arm label event lands strictly after T0 — modeled
 	// here as a timestamp value (no GitHub call from this package), since
