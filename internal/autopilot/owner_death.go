@@ -135,8 +135,33 @@ func parseFixIssuePR(body string) (int, bool) {
 	return n, true
 }
 
-// verifyFixPRDeliversSourceScope guards GH-5348 subtask 3. spawnFailureIssue
-// (controller.go) marks a source issue pilot-superseded the moment its fix
+// fixIssueFailureTypeRe extracts the "**Failure Type**: <type>" line both
+// FeedbackLoop.generateBody (CreateFailureIssue) and CreateReviewIssue write
+// into the "## Context" section, near the top of the body, before any
+// attacker-controllable content (CI logs, review comments) — so the first
+// match is always the genuine one. CreateReviewIssue always writes
+// FailureReviewRequested; CreateFailureIssue writes one of the ci_*/
+// merge_conflict/deployment FailureType values.
+var fixIssueFailureTypeRe = regexp.MustCompile(`(?m)^-\s+\*\*Failure Type\*\*:\s+(\S+)\s*$`)
+
+// isReviewRevisionFixIssue reports whether a spawned fix issue's body
+// identifies it as a review-revision issue (CreateReviewIssue), as opposed
+// to a CI-fix continuation (CreateFailureIssue). GH-5362:
+// verifyFixPRDeliversSourceScope uses this to decide which of its two label
+// disciplines applies to a given source issue — spawnFailureIssue still
+// applies pilot-superseded eagerly at spawn time (unchanged, out of scope
+// for GH-5362), so the CI-fix path there still means "already labeled,
+// react only to a mismatch"; spawnReviewIssue no longer does, so the review
+// path means "never labeled yet, gate whether it ever is."
+func isReviewRevisionFixIssue(body string) bool {
+	m := fixIssueFailureTypeRe.FindStringSubmatch(body)
+	return len(m) >= 2 && m[1] == string(FailureReviewRequested)
+}
+
+// verifyFixPRDeliversSourceScope guards GH-5348 subtask 3 for the CI-fix
+// path, and — as of GH-5362 — gates whether pilot-superseded is ever applied
+// at all for the review-revision path. spawnFailureIssue (controller.go)
+// still marks a CI-fix source issue pilot-superseded the moment its fix
 // ISSUE is created — before that issue's own PR exists, let alone before its
 // diff is known. GH-5348 subtasks 1/2 fixed the one confirmed way that PR's
 // eventual diff could end up dropping the origin's real changes (a deleted
@@ -146,16 +171,32 @@ func parseFixIssuePR(body string) (int, bool) {
 // path. It runs once the fix PR actually merges, the one point its diff is
 // fully known, and compares its changed files against the origin PR it was
 // spawned to replace (source:N / pr:N, recorded in the fix issue body by
-// FeedbackLoop.generateBody/CreateReviewIssue). Zero file overlap means the
-// origin's real work was most likely never delivered: strip
-// pilot-superseded and escalate to pilot-needs-human instead of leaving the
-// source issue silently parked under a label that claims another PR already
-// delivered its scope.
+// FeedbackLoop.generateBody/CreateReviewIssue).
+//
+// GH-5362: spawnReviewIssue no longer applies pilot-superseded eagerly at
+// spawn time (the same pilot-console #275 false-success shape GH-5348/
+// GH-5351 fixed on the CI-fix path) — a review-revision's source issue
+// reaches here carrying no terminal label at all, and isReviewRevisionFixIssue
+// tells the two paths apart (CreateFailureIssue vs CreateReviewIssue leave a
+// different Failure Type marker in the fix issue body) so this function can
+// give each its own discipline without disturbing the other:
+//
+//   - CI-fix (isReviewRevisionFixIssue == false): unchanged GH-5348
+//     subtask-3 behavior — the label is already applied, so a source that
+//     isn't (still) carrying pilot-superseded has already been resolved some
+//     other way (re-armed, previously escalated) and is left alone; only a
+//     confirmed-superseded source with zero file overlap gets corrected
+//     (label stripped, escalated to pilot-needs-human).
+//   - Review-revision (isReviewRevisionFixIssue == true): GH-5362 gate — no
+//     label was ever applied, so this is the one place that decides whether
+//     one ever is. Confirmed overlap applies pilot-superseded for the first
+//     time; zero overlap escalates to pilot-needs-human without anything to
+//     strip.
 //
 // A no-op (fails open, logs a warning) whenever the merged PR isn't a
-// Pilot-spawned CI-fix continuation, or any GitHub read fails — this is a
-// detection backstop, not a gate that should ever block or delay a merge
-// that already landed.
+// Pilot-spawned CI-fix/revision continuation, or any GitHub read fails —
+// this is a detection backstop, not a gate that should ever block or delay
+// a merge that already landed.
 func (c *Controller) verifyFixPRDeliversSourceScope(ctx context.Context, prState *PRState) {
 	if prState.IssueNumber <= 0 {
 		return
@@ -168,7 +209,7 @@ func (c *Controller) verifyFixPRDeliversSourceScope(ctx context.Context, prState
 	}
 	sourceNum, ok := parseFixIssueSource(fixIssue.Body)
 	if !ok {
-		// Not a Pilot-spawned CI-fix issue — nothing to verify.
+		// Not a Pilot-spawned CI-fix/revision issue — nothing to verify.
 		return
 	}
 	originPR, ok := parseFixIssuePR(fixIssue.Body)
@@ -177,6 +218,7 @@ func (c *Controller) verifyFixPRDeliversSourceScope(ctx context.Context, prState
 			"issue", prState.IssueNumber, "source", sourceNum)
 		return
 	}
+	isReviewRevision := isReviewRevisionFixIssue(fixIssue.Body)
 
 	fixFiles, err := c.ghClient.ListPullRequestFiles(ctx, c.owner, c.repo, prState.PRNumber)
 	if err != nil {
@@ -190,10 +232,15 @@ func (c *Controller) verifyFixPRDeliversSourceScope(ctx context.Context, prState
 			"origin_pr", originPR, "error", err)
 		return
 	}
+	overlap := filesOverlap(fixFiles, originFiles)
 	// GH-4284-style caution: an origin PR with no recorded files (deleted
 	// commit history unreadable, or a genuinely empty diff) can't prove
-	// non-overlap either way — skip rather than escalate on a false positive.
-	if len(originFiles) == 0 || filesOverlap(fixFiles, originFiles) {
+	// overlap or non-overlap either way — skip rather than act on a false
+	// signal, whichever direction that action would take.
+	noEvidence := len(originFiles) == 0
+	if noEvidence {
+		c.log.Warn("verifyFixPRDeliversSourceScope: origin PR has no recorded files, skipping (fail-open)",
+			"source", sourceNum, "origin_pr", originPR)
 		return
 	}
 
@@ -203,31 +250,73 @@ func (c *Controller) verifyFixPRDeliversSourceScope(ctx context.Context, prState
 			"source", sourceNum, "error", err)
 		return
 	}
-	if source.State == github.StateClosed || !github.HasLabel(source, github.LabelSuperseded) {
-		// Already resolved some other way (closed, re-armed, previously
-		// escalated) — nothing left to correct.
+
+	if !isReviewRevision {
+		// Unchanged GH-5348 subtask-3 behavior for the CI-fix path.
+		if source.State == github.StateClosed || !github.HasLabel(source, github.LabelSuperseded) {
+			// Already resolved some other way (closed, re-armed, previously
+			// escalated) — nothing left to correct.
+			return
+		}
+		if overlap {
+			return
+		}
+		reasonMsg := fmt.Sprintf(
+			"its designated fix PR #%d merged but shares no changed files with the original PR #%d it was spawned to continue",
+			prState.PRNumber, originPR,
+		)
+		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, sourceNum, []string{labelNeedsHuman}); err != nil {
+			c.log.Warn("verifyFixPRDeliversSourceScope: failed to add needs-human label", "issue", sourceNum, "error", err)
+		}
+		if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, sourceNum, github.LabelSuperseded); err != nil {
+			c.log.Debug("verifyFixPRDeliversSourceScope: failed to remove pilot-superseded label (may not exist)", "issue", sourceNum, "error", err)
+		}
+		comment := fmt.Sprintf(
+			"\U0001F6A8 **Delivery mismatch detected (GH-5348)**: %s — the original changes may have been silently dropped. Marked `%s` for manual review instead of staying parked under `%s`.",
+			reasonMsg, labelNeedsHuman, github.LabelSuperseded,
+		)
+		if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, sourceNum, comment); err != nil {
+			c.log.Warn("verifyFixPRDeliversSourceScope: failed to post comment", "issue", sourceNum, "error", err)
+		}
+		c.fireOwnerDeathAlert(sourceNum, reasonMsg, "escalated")
+		c.log.Warn("verifyFixPRDeliversSourceScope: fix PR shares no files with origin PR — escalated source issue",
+			"source", sourceNum, "fix_issue", prState.IssueNumber, "fix_pr", prState.PRNumber, "origin_pr", originPR)
+		return
+	}
+
+	// GH-5362 gate for the review-revision path: no label was ever applied
+	// at spawn time, so decide here, once, whether one ever is.
+	if source.State == github.StateClosed || github.HasLabel(source, github.LabelSuperseded) {
+		// Already resolved (closed) or already gated by an earlier run of
+		// this function (e.g. a daemon restart mid-gate) — idempotent,
+		// nothing more to do.
+		return
+	}
+	if overlap {
+		if err := c.labeler.AddLabels(ctx, c.owner, c.repo, sourceNum, []string{github.LabelSuperseded}); err != nil {
+			c.log.Warn("verifyFixPRDeliversSourceScope: failed to add superseded label", "issue", sourceNum, "error", err)
+		}
+		c.log.Info("verifyFixPRDeliversSourceScope: revision PR confirmed to deliver origin scope — source issue marked superseded",
+			"source", sourceNum, "fix_issue", prState.IssueNumber, "fix_pr", prState.PRNumber, "origin_pr", originPR)
 		return
 	}
 
 	reasonMsg := fmt.Sprintf(
-		"its designated fix PR #%d merged but shares no changed files with the original PR #%d it was spawned to continue",
+		"its designated revision PR #%d merged but shares no changed files with the original PR #%d it was spawned to continue",
 		prState.PRNumber, originPR,
 	)
 	if err := c.labeler.AddLabels(ctx, c.owner, c.repo, sourceNum, []string{labelNeedsHuman}); err != nil {
 		c.log.Warn("verifyFixPRDeliversSourceScope: failed to add needs-human label", "issue", sourceNum, "error", err)
 	}
-	if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, sourceNum, github.LabelSuperseded); err != nil {
-		c.log.Debug("verifyFixPRDeliversSourceScope: failed to remove pilot-superseded label (may not exist)", "issue", sourceNum, "error", err)
-	}
 	comment := fmt.Sprintf(
-		"\U0001F6A8 **Delivery mismatch detected (GH-5348)**: %s — the original changes may have been silently dropped. Marked `%s` for manual review instead of staying parked under `%s`.",
+		"\U0001F6A8 **Delivery mismatch detected (GH-5362)**: %s — the original changes may have been silently dropped. Leaving this issue open under `%s` instead of marking it `%s`.",
 		reasonMsg, labelNeedsHuman, github.LabelSuperseded,
 	)
 	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, sourceNum, comment); err != nil {
 		c.log.Warn("verifyFixPRDeliversSourceScope: failed to post comment", "issue", sourceNum, "error", err)
 	}
 	c.fireOwnerDeathAlert(sourceNum, reasonMsg, "escalated")
-	c.log.Warn("verifyFixPRDeliversSourceScope: fix PR shares no files with origin PR — escalated source issue",
+	c.log.Warn("verifyFixPRDeliversSourceScope: revision PR shares no files with origin PR — escalated source issue",
 		"source", sourceNum, "fix_issue", prState.IssueNumber, "fix_pr", prState.PRNumber, "origin_pr", originPR)
 }
 

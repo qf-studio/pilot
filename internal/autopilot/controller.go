@@ -4116,17 +4116,25 @@ func (c *Controller) logCIFailureClassification(prState *PRState, checks []Faile
 // GH-4826 fixed for CI failures, reintroduced on this sibling path. Routing
 // through this seam instead means the designation happens the moment
 // CreateReviewIssue actually returns a live issue, strictly before the PR is
-// ever closed, matching spawnFailureIssue's ordering exactly. GH-5247: on
-// success this is a healthy hand-off (a revision issue now continues the
-// work), so TerminalLabel is set to github.LabelSuperseded rather than
-// github.LabelFailed — see spawnFailureIssue's doc comment for the full
-// rationale, which applies identically here.
+// ever closed, matching spawnFailureIssue's ordering exactly.
+//
+// GH-5362: this used to also set prState.TerminalLabel = github.LabelSuperseded
+// the instant CreateReviewIssue succeeded, which notifyExternalClose would
+// have read on the very next poll to mark the source issue pilot-superseded
+// — before the revision issue's own PR existed, let alone before its diff
+// was known (the same pilot-console #275 false-success shape GH-5348/GH-5351
+// fixed on the CI-fix path). That eager label write is gone: the PR this
+// revision issue was spawned to replace is now closed via markSelfClosed
+// (see handleReviewRequested below), which makes checkExternalMergeOrClose
+// skip notifyExternalClose for this close entirely, so pilot-superseded is
+// never written here. Instead, verifyFixPRDeliversSourceScope
+// (owner_death.go) applies it later, once the revision issue's PR actually
+// merges and its diff confirms it genuinely continues the origin PR's scope
+// — no separate origin-scope recording is needed here because the origin
+// PR (closed, not deleted) stays fetchable via ListPullRequestFiles for as
+// long as verifyFixPRDeliversSourceScope needs it.
 func (c *Controller) spawnReviewIssue(ctx context.Context, prState *PRState, reviews []*github.PullRequestReview, comments []*github.PRReviewComment, iteration int) (int, error) {
-	issueNum, err := c.feedbackLoop.CreateReviewIssue(ctx, prState, reviews, comments, iteration)
-	if err == nil && issueNum > 0 {
-		prState.TerminalLabel = github.LabelSuperseded
-	}
-	return issueNum, err
+	return c.feedbackLoop.CreateReviewIssue(ctx, prState, reviews, comments, iteration)
 }
 
 // reviewFilterEmptyEscalateThreshold bounds how many consecutive
@@ -4278,10 +4286,16 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 		}
 	}
 
-	// Create revision issue with review feedback. GH-4841: routed through
-	// spawnReviewIssue rather than calling feedbackLoop.CreateReviewIssue
-	// directly, so prState.TerminalLabel is designated the moment the issue
-	// exists — strictly before the ClosePullRequest call below.
+	// Create revision issue with review feedback. GH-4841 originally routed
+	// this through spawnReviewIssue so prState.TerminalLabel was designated
+	// the moment the issue existed, strictly before the ClosePullRequest call
+	// below. GH-5362: that eager labeling reproduced the #275 false-success
+	// shape (the source issue could be marked pilot-superseded before the
+	// revision issue's own PR existed, let alone merged) — spawnReviewIssue no
+	// longer sets TerminalLabel at all. verifyFixPRDeliversSourceScope
+	// (owner_death.go) now applies pilot-superseded to the source once the
+	// revision PR actually merges with confirmed file overlap. The wrapper
+	// itself stays, as the seam CreateReviewIssue is invoked through.
 	issueNum, err := c.spawnReviewIssue(ctx, prState, triggeringReviews, triggeringComments, iteration+1)
 	// GH-4856/GH-4459: the PR must never be closed unless the revision issue
 	// actually cleared preflight admission — CreateReviewIssue's dedup guard
@@ -4345,26 +4359,39 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 
 	c.log.Info("created revision issue for review feedback", "pr", prState.PRNumber, "issue", issueNum)
 
-	// Close the PR and delete the branch
+	// GH-5362: stamp the self-close marker BEFORE closing the PR, mirroring
+	// the pilot-console #275 fix GH-5348/GH-5351 applied to the CI-fix path.
+	// Without this, the very next poll's checkExternalMergeOrClose reads this
+	// close as an external (human) rejection: it runs notifyExternalClose
+	// (which — since spawnReviewIssue no longer eagerly labels the source —
+	// would re-arm it pilot-retry-ready alongside the revision issue that
+	// already continues the work, a double-arm) and finalizeExternalClose
+	// (which deletes prState.BranchName). Deleting the branch here is exactly
+	// the #275 shape: if the revision issue's own run ever needs to continue
+	// from this PR's commits, those commits are gone and the "fix" silently
+	// rebuilds from main. Stamping first means checkExternalMergeOrClose's
+	// consumeSelfClosedMarker short-circuits into
+	// removePRTracking(pr, false) instead — tracking stops, but the branch
+	// and its commits survive.
+	c.markSelfClosed(prState.PRNumber)
+
+	// Close the PR. The branch is deliberately left alone (see above) — it
+	// is no longer deleted here, and checkExternalMergeOrClose's self-close
+	// path never deletes it either.
 	if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
 		c.log.Warn("failed to close PR after review", "pr", prState.PRNumber, "error", err)
 	}
 
-	if prState.BranchName != "" {
-		if _, err := c.safeDeleteBranch(ctx, prState.BranchName, prState.PRNumber); err != nil {
-			c.log.Debug("branch cleanup after review", "branch", prState.BranchName, "error", err)
-		}
-	}
-
-	// GH-3806/GH-4841: name the reason so notifyExternalClose can post the
-	// audit-trail comments. prState.TerminalLabel itself was already set by
-	// spawnReviewIssue above the moment CreateReviewIssue succeeded — it is
-	// not set here, so this rung cannot forget it (mirrors the matching
-	// comment on handleCIFailed's main CI-fail branch). GH-5247: a revision
-	// issue was spawned successfully, so this is a healthy hand-off rather
-	// than a pipeline failure — c.metrics.RecordPRFailed() is deliberately
-	// NOT called here (see spawnFailureIssue's doc comment for the full
-	// rationale).
+	// GH-5362: prState.TerminalLabel is intentionally left unset here (unlike
+	// the pre-fix version of this rung). notifyExternalClose — the only code
+	// that ever read TerminalLabel to label the source issue — is now skipped
+	// entirely for this close by the self-close marker stamped above.
+	// verifyFixPRDeliversSourceScope (owner_death.go) applies pilot-superseded
+	// to the source issue later instead, once the revision issue's PR
+	// actually merges and its diff confirms it delivers this PR's scope.
+	// GH-5247: this is a healthy hand-off, not a pipeline failure —
+	// c.metrics.RecordPRFailed() is deliberately NOT called here (see
+	// spawnFailureIssue's doc comment for the full rationale).
 	prState.Stage = StageFailed
 	prState.Error = fmt.Sprintf("changes requested by reviewer; revision issue #%d created to continue this work", issueNum)
 	return nil

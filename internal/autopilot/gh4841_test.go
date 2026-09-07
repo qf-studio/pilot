@@ -263,12 +263,21 @@ func TestGH4841_ReviewRequestedCrashWindow_RetryNotArmedAfterRestart(t *testing.
 	if !prClosed {
 		t.Fatal("expected the source PR to be closed once the revision issue was spawned")
 	}
-	// GH-5247: healthy hand-off — see the matching comment in the CI-failure
-	// crash-window test above.
-	if seedPR.TerminalLabel != github.LabelSuperseded {
-		t.Fatalf("prState.TerminalLabel = %q, want %q before the simulated crash", seedPR.TerminalLabel, github.LabelSuperseded)
+	// GH-5362: unlike the CI-failure path above (spawnFailureIssue still sets
+	// TerminalLabel eagerly), spawnReviewIssue no longer designates
+	// pilot-superseded at spawn time — verifyFixPRDeliversSourceScope now
+	// applies it only once the revision PR merges with confirmed file
+	// overlap. TerminalLabel is expected to stay empty here, crash or no
+	// crash — it is no longer the mechanism this "in-memory designation
+	// didn't survive a crash" scenario is exercising for the review path.
+	if seedPR.TerminalLabel != "" {
+		t.Fatalf("prState.TerminalLabel = %q, want empty (GH-5362: no longer set eagerly at spawn time)", seedPR.TerminalLabel)
 	}
-	// Simulated crash: no persistPRState call.
+	// Simulated crash: no persistPRState call, and — since the self-close
+	// marker stamped by handleReviewRequested (GH-5362) lives only in
+	// controllerA's in-memory selfClosedPRs map — no way for controllerB
+	// (below) to see it either. Both are lost the same way a real process
+	// restart would lose them.
 
 	controllerB := NewController(cfg, ghClient, nil, "owner", "repo")
 	controllerB.SetStateStore(store)

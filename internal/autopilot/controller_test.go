@@ -6572,8 +6572,13 @@ func TestController_HandleReviewRequested_CreatesIssue(t *testing.T) {
 	if !prClosed {
 		t.Error("expected PR to be closed")
 	}
-	if !branchDeleted {
-		t.Error("expected branch to be deleted")
+	// GH-5362: the branch must survive this close — deleting it here is the
+	// #275 false-success shape (if the revision issue's own run ever needs to
+	// continue from this PR's commits, a deleted branch silently rebuilds
+	// from main instead). handleReviewRequested now stamps a self-close
+	// marker via markSelfClosed and leaves the branch alone.
+	if branchDeleted {
+		t.Error("branch must NOT be deleted on a successful review-issue create (GH-5362) — it must survive so the revision issue can continue from these commits")
 	}
 	if !notified {
 		t.Error("expected notification to be sent")
@@ -6585,6 +6590,16 @@ func TestController_HandleReviewRequested_CreatesIssue(t *testing.T) {
 	}
 	if pr.Stage != StageFailed {
 		t.Errorf("stage = %s, want %s", pr.Stage, StageFailed)
+	}
+	// GH-5362: TerminalLabel is no longer set eagerly at spawn time —
+	// verifyFixPRDeliversSourceScope (owner_death.go) now applies
+	// pilot-superseded to the source issue only once the revision PR merges
+	// with confirmed file overlap.
+	if pr.TerminalLabel != "" {
+		t.Errorf("TerminalLabel = %q, want empty (GH-5362: no longer set eagerly at spawn time)", pr.TerminalLabel)
+	}
+	if !c.consumeSelfClosedMarker(42) {
+		t.Error("expected a self-close marker to be stamped before the PR close (GH-5362) so the next external-close poll doesn't misread this as a human rejection")
 	}
 }
 
