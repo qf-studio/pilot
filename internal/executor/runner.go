@@ -270,6 +270,65 @@ const (
 	prCreateRetryDelay    = 300 * time.Millisecond
 )
 
+// finalizeGitTimeout bounds the fresh context finalizeCtx grants once the
+// backend has finished and the task's own timeout ctx has already expired.
+// Commit-count verification, push, and PR/MR creation never legitimately
+// need anywhere near the (up to 60m) ceiling given to a Claude Code session
+// — a handful of `git`/`gh` calls plus their small built-in retry loops
+// (gitPushRetryAttempts/prCreateRetryAttempts) comfortably fit in 5 minutes.
+const finalizeGitTimeout = 5 * time.Minute
+
+// finalizeCtx returns a context safe to run post-backend git/gh finalization
+// (commit-count guard, push, PR/MR create) on.
+//
+// GH-5342: the task ctx is deadline-bound to the complexity timeout
+// (executeWithOptions ~runner.go:3203) and stays in force across the whole
+// backend execution. When the backend legitimately uses the full timeout —
+// e.g. a long, successful Claude Code run that lands real commits right up
+// against the wall clock — ctx's deadline has already passed by the time
+// finalization runs. Every downstream git/gh call on that same ctx then
+// fails instantly with "context deadline exceeded", and (before this fix)
+// the no-commits guard immediately below treated that failure as "zero
+// commits" and recorded the task as no_op — discarding a fully committed,
+// never-pushed solution (GH-263 x3: same committed work, same false no_op,
+// three separate runs).
+//
+// A real cancellation (context.Canceled — explicit stop request or process
+// shutdown) is left untouched, since that's a genuine "stop now" signal, not
+// an exhausted budget on otherwise-complete work. Only a blown deadline gets
+// a fresh, bounded window to finish saving already-completed work.
+func finalizeCtx(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	if ctx.Err() == context.DeadlineExceeded {
+		return context.WithTimeout(context.Background(), budget)
+	}
+	return context.WithCancel(ctx)
+}
+
+// logGitCtxErr logs a post-backend git/gh call failure, downgrading to
+// Debug when the call ran on a ctx that was already Done() (deadline
+// blown or explicit cancellation) at the time it was made.
+//
+// GH-5342 (subtask 4): several classification-only git calls made right
+// after the backend returns — the no-commit-retry's pre/post commit-count
+// checks (runner.go ~4354/~4477) and the ghost-SHA / dirty-worktree
+// backstop checks (git_freshness.go) — deliberately keep sharing the
+// task's own ctx rather than getting a finalizeCtx-style fresh window,
+// because their fast failure on an already-exhausted ctx is exactly what
+// gates the retry/backstop logic that follows them (see GH-5342-3's
+// resolution note on the no-commit-retry gate). That's correct behavior,
+// but every one of those fast failures is a "context deadline exceeded"
+// (or context.Canceled) that used to log at Warn — daemon-log noise for an
+// expected, designed outcome, not evidence of an actual git/gh problem.
+// Warn is reserved for failures that aren't explained by the ctx already
+// being done.
+func logGitCtxErr(ctx context.Context, log *slog.Logger, msg string, attrs ...any) {
+	if ctx.Err() != nil {
+		log.Debug(msg, attrs...)
+		return
+	}
+	log.Warn(msg, attrs...)
+}
+
 // formatGitStepFailureWithRecovery builds the result.Error string for a
 // push or PR-create step that exhausted its retries while committed work
 // still sits in the worktree. It pins the current HEAD under a
@@ -2032,6 +2091,11 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 // ("completed", "no_op", ...); see evaluateEmptyBranchPRGuard (epic.go, GH-3779)
 // for how it's used to classify the parent when the branch guard trips.
 func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, childTerminalStates []string) {
+	// GH-5342: finalization (commit count, push, PR create) must not inherit
+	// an already-exhausted task ctx — see finalizeCtx's doc comment for why.
+	ctx, cancel := finalizeCtx(ctx, finalizeGitTimeout)
+	defer cancel()
+
 	// Determine base branch before the no-commits guard.
 	baseBranch := task.BaseBranch
 	if baseBranch == "" {
@@ -2052,7 +2116,28 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	//
 	// GH-4566: compares against origin/<base>, not the (possibly stale) local
 	// <base> ref — see CountNewCommitsAgainstOrigin's doc comment.
-	if guardCount, _ := git.CountNewCommitsAgainstOrigin(ctx, baseBranch); guardCount == 0 {
+	//
+	// GH-5342: a count failure is NOT evidence of zero commits — with the
+	// error silently discarded (guardCount always reads 0 on error), a
+	// "context deadline exceeded" from a stale ctx used to be indistinguishable
+	// from a genuinely empty branch, so a fully committed epic got recorded as
+	// no_op. Only trip the guard on a confirmed zero count; a real count
+	// failure is a hard failure that feeds the normal retry/escalation path.
+	guardCount, guardErr := git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
+	if guardErr != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("failed to verify epic branch commit count before PR creation: %v", guardErr)
+		r.log.Warn("Epic commit-count guard failed to verify commits",
+			slog.String("task_id", task.ID),
+			slog.String("base_branch", baseBranch),
+			slog.Any("error", guardErr),
+		)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		// GH-4561: see the push-failure sweep below — same abandoned-child risk.
+		r.sweepEpicChildrenOnAbort(task, result.Error)
+		return
+	}
+	if guardCount == 0 {
 		evaluateEmptyBranchPRGuard(true, childTerminalStates, result)
 		if result.Outcome == "no_op" {
 			r.log.Warn("Epic branch has no commits vs base and all children no-op'd, recording epic as no_op",
@@ -4293,7 +4378,10 @@ retrySucceeded:
 
 			commitCount, countErr := git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
 			if countErr != nil {
-				log.Warn("Failed to count commits for no-commit check",
+				// GH-5342 (subtask 4): logGitCtxErr downgrades to Debug when
+				// ctx is already Done() — that's the designed fast-fail gate
+				// (GH-5342-3), not a real git problem.
+				logGitCtxErr(ctx, log, "Failed to count commits for no-commit check",
 					slog.String("task_id", task.ID),
 					slog.Any("error", countErr),
 				)
@@ -4402,9 +4490,29 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					result.TokensTotal = result.TokensInput + result.TokensOutput
 				}
 
-				// Check again after retry
-				commitCount, _ = git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
-				if commitCount == 0 {
+				// Check again after retry.
+				//
+				// GH-5342: same anti-pattern as the finalize-path guards — a
+				// discarded count error here reads identically to a
+				// confirmed-empty branch, so a retry whose backend call ran the
+				// ctx past its deadline (yet landed real commits) used to be
+				// recorded as no_op below. A count failure means "unknown", not
+				// "confirmed zero": fall through to the success path (mirroring
+				// the pre-retry check above, which already warns-and-continues
+				// on error instead of failing) and let the finalize block's own
+				// fresh ctx (finalizeCtx) establish the real commit count before
+				// push/PR-create.
+				commitCount, countErr = git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
+				if countErr != nil {
+					// GH-5342 (subtask 4): same Debug downgrade as the
+					// pre-retry check above — an already-Done() ctx here is
+					// the retry's own backendExecute call having run the ctx
+					// past its deadline, not an unexpected git failure.
+					logGitCtxErr(ctx, log, "Failed to re-verify commit count after no-commit retry, assuming retry succeeded",
+						slog.String("task_id", task.ID),
+						slog.Any("error", countErr),
+					)
+				} else if commitCount == 0 {
 					result.Success = false
 
 					// GH-2777: Collect the last assistant text from the retry response
@@ -5070,7 +5178,30 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					slog.Float64("confidence", intentVerdict.Confidence),
 				)
 
-				if !state.intentRetried {
+				if state.intentRetried {
+					result.IntentWarning = intentVerdict.Reason
+				} else if ctx.Err() != nil {
+					// GH-5342 (subtask 3): quality-gate retries above run on
+					// their own fresh, unbounded-relative-to-ctx timeout
+					// (GH-4876), so they can burn real wall-clock while this
+					// task's own ctx keeps ticking independently. By the time
+					// the intent judge flags a mismatch here, ctx may already
+					// be done (deadline exceeded, or an explicit cancel) —
+					// unlike the no-commit-retry above, nothing upstream of
+					// this branch shares ctx to fail fast on it first.
+					// Spawning another Claude Code process on an already-done
+					// ctx can't produce anything usable — backendExecute
+					// forwards ctx straight into exec.CommandContext, which
+					// refuses to even start the process on a ctx that's
+					// already Done — so skip the retry and keep the
+					// intent-judge warning instead of burning a doomed
+					// re-invocation.
+					log.Warn("Skipping intent-judge retry: task ctx already done",
+						slog.String("task_id", task.ID),
+						slog.Any("ctx_err", ctx.Err()),
+					)
+					result.IntentWarning = intentVerdict.Reason
+				} else {
 					state.intentRetried = true
 					r.recordRetryAttemptEvent(task.LogExecutionID(), "intent_judge_retry", 1)
 					r.reportProgress(task.ID, "Intent Retry", 80, "Retrying with intent feedback...")
@@ -5131,8 +5262,6 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					} else {
 						result.IntentWarning = intentVerdict.Reason
 					}
-				} else {
-					result.IntentWarning = intentVerdict.Reason
 				}
 			}
 		}
@@ -5284,6 +5413,12 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// Create PR if requested and we have commits
 			r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")
 
+			// GH-5342: finalization (commit count, push, PR create) must not
+			// inherit an already-exhausted task ctx — see finalizeCtx's doc
+			// comment for why. Shadows ctx for the rest of this branch.
+			ctx, cancel := finalizeCtx(ctx, finalizeGitTimeout)
+			defer cancel()
+
 			// GH-4022: an already-merged branch short-circuits push+CreatePR —
 			// must run BEFORE the no-commits guard below and before push, since a
 			// merged branch may already be deleted on the remote (see
@@ -5313,7 +5448,28 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			//
 			// GH-4566: compares against origin/<base>, not the (possibly stale) local
 			// <base> ref — see CountNewCommitsAgainstOrigin's doc comment.
-			if guardCount, _ := git.CountNewCommitsAgainstOrigin(ctx, baseBranch); guardCount == 0 {
+			//
+			// GH-5342: a count failure is NOT evidence of zero commits. With the
+			// error silently discarded here, guardCount always reads 0 on error,
+			// so a "context deadline exceeded" from a stale ctx (backend used the
+			// full task timeout) was indistinguishable from a genuinely empty
+			// branch — a fully committed task got recorded as no_op and its
+			// branch was never pushed (GH-263 x3). Only trip the guard on a
+			// confirmed zero count; a real count failure is a hard failure that
+			// feeds the normal retry/escalation path instead.
+			guardCount, guardErr := git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
+			if guardErr != nil {
+				result.Success = false
+				result.Error = fmt.Sprintf("failed to verify commit count before PR creation: %v", guardErr)
+				log.Warn("Commit-count guard failed to verify commits",
+					slog.String("task_id", task.ID),
+					slog.String("base_branch", baseBranch),
+					slog.Any("error", guardErr),
+				)
+				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+				return result, nil
+			}
+			if guardCount == 0 {
 				evaluateEmptyBranchPRGuard(false, nil, result)
 				if backendResult != nil {
 					backendResult.ErrorType = string(ErrorTypeNoChanges)
