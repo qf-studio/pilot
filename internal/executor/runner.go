@@ -304,6 +304,31 @@ func finalizeCtx(ctx context.Context, budget time.Duration) (context.Context, co
 	return context.WithCancel(ctx)
 }
 
+// logGitCtxErr logs a post-backend git/gh call failure, downgrading to
+// Debug when the call ran on a ctx that was already Done() (deadline
+// blown or explicit cancellation) at the time it was made.
+//
+// GH-5342 (subtask 4): several classification-only git calls made right
+// after the backend returns — the no-commit-retry's pre/post commit-count
+// checks (runner.go ~4354/~4477) and the ghost-SHA / dirty-worktree
+// backstop checks (git_freshness.go) — deliberately keep sharing the
+// task's own ctx rather than getting a finalizeCtx-style fresh window,
+// because their fast failure on an already-exhausted ctx is exactly what
+// gates the retry/backstop logic that follows them (see GH-5342-3's
+// resolution note on the no-commit-retry gate). That's correct behavior,
+// but every one of those fast failures is a "context deadline exceeded"
+// (or context.Canceled) that used to log at Warn — daemon-log noise for an
+// expected, designed outcome, not evidence of an actual git/gh problem.
+// Warn is reserved for failures that aren't explained by the ctx already
+// being done.
+func logGitCtxErr(ctx context.Context, log *slog.Logger, msg string, attrs ...any) {
+	if ctx.Err() != nil {
+		log.Debug(msg, attrs...)
+		return
+	}
+	log.Warn(msg, attrs...)
+}
+
 // formatGitStepFailureWithRecovery builds the result.Error string for a
 // push or PR-create step that exhausted its retries while committed work
 // still sits in the worktree. It pins the current HEAD under a
@@ -4353,7 +4378,10 @@ retrySucceeded:
 
 			commitCount, countErr := git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
 			if countErr != nil {
-				log.Warn("Failed to count commits for no-commit check",
+				// GH-5342 (subtask 4): logGitCtxErr downgrades to Debug when
+				// ctx is already Done() — that's the designed fast-fail gate
+				// (GH-5342-3), not a real git problem.
+				logGitCtxErr(ctx, log, "Failed to count commits for no-commit check",
 					slog.String("task_id", task.ID),
 					slog.Any("error", countErr),
 				)
@@ -4476,7 +4504,11 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// push/PR-create.
 				commitCount, countErr = git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
 				if countErr != nil {
-					log.Warn("Failed to re-verify commit count after no-commit retry, assuming retry succeeded",
+					// GH-5342 (subtask 4): same Debug downgrade as the
+					// pre-retry check above — an already-Done() ctx here is
+					// the retry's own backendExecute call having run the ctx
+					// past its deadline, not an unexpected git failure.
+					logGitCtxErr(ctx, log, "Failed to re-verify commit count after no-commit retry, assuming retry succeeded",
 						slog.String("task_id", task.ID),
 						slog.Any("error", countErr),
 					)

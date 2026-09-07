@@ -42,7 +42,12 @@ func applyGhostSHAGuard(ctx context.Context, task *Task, result *ExecutionResult
 		}
 	}
 	if isNew, checkErr := commitSHAIsNew(ctx, executionPath, result.CommitSHA, ghostBase); checkErr != nil {
-		log.Warn("executor: ghost-SHA check skipped (will not block)",
+		// GH-5342 (subtask 4): logGitCtxErr downgrades to Debug when ctx was
+		// already Done() by the time this ran (a backend that legitimately
+		// used the full task timeout) — this check already fails open on
+		// any error, so a blown deadline here is expected noise, not a real
+		// git problem worth a daemon-log Warn.
+		logGitCtxErr(ctx, log, "executor: ghost-SHA check skipped (will not block)",
 			slog.String("task_id", task.ID),
 			slog.String("sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
 			slog.Any("error", checkErr),
@@ -92,6 +97,18 @@ func preserveDirtyWorktreeAsWIP(ctx context.Context, git *GitOperations, task *T
 	if task.Branch == "" {
 		return "", false
 	}
+
+	// GH-5342 (subtask 4): this commit+push is itself work-preservation —
+	// the exact thing finalizeCtx exists for (see its doc comment). Reusing
+	// an already-exhausted task ctx here would fail the commit instantly on
+	// "context deadline exceeded" and report real, uncommitted work as
+	// nothing-to-preserve, letting the deferred worktree cleanup delete it
+	// (the GH-4517 incident this backstop was built to prevent). A fresh,
+	// bounded window is granted only once the task ctx's deadline has
+	// actually blown; an explicit cancellation is left untouched.
+	ctx, cancel := finalizeCtx(ctx, finalizeGitTimeout)
+	defer cancel()
+
 	message := fmt.Sprintf("wip(%s): uncommitted session work (auto-preserved)", task.ID)
 	newSHA, commitErr := git.Commit(ctx, message)
 	if commitErr != nil {

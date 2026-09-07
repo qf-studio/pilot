@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -347,5 +349,61 @@ func TestIntentJudgeRetry_ExpiredTaskCtx_SkipsReinvocation(t *testing.T) {
 	}
 	if _, statErr := os.Stat(capturedTitleFile); statErr != nil {
 		t.Errorf("gh pr create was never invoked: %v", statErr)
+	}
+}
+
+// TestNoCommitRetry_PostRetryExpiredCtx_NoDeadlineExceededLogNoise is the
+// GH-5342 (subtask 4) regression guard: the daemon log for the finalization
+// phase must show no "context deadline exceeded" from git/gate calls after
+// a backend timeout.
+//
+// This drives the identical scenario as
+// TestNoCommitRetry_PostRetryCommitCountFailure_NotRecordedAsNoOp (subtask
+// 2: the GH-916 retry lands a real commit but returns only after the outer
+// task ctx's deadline has blown, so the post-retry commit-count re-check at
+// runner.go ~4477 fails on the dead ctx) but asserts on the *logged output*
+// instead of the result: subtask 2 already made sure this dead-ctx count
+// failure is never misread as a confirmed no_op, but it still logged the
+// failure at Warn with the raw "context deadline exceeded" error text —
+// exactly the kind of daemon-log noise that looks like a real problem for a
+// designed, expected outcome. logGitCtxErr (runner.go) downgrades this to
+// Debug once ctx is already Done(), so at the default (Info) log level the
+// message must not appear at all.
+func TestNoCommitRetry_PostRetryExpiredCtx_NoDeadlineExceededLogNoise(t *testing.T) {
+	setUpFakeGhPRCreatePATH(t)
+
+	const branch = "pilot/GH-5342-logquiet"
+	dir, _ := setupFreshnessRepo(t)
+	runGit(t, dir, "checkout", "-b", branch)
+
+	backend := &mockGH4964Backend{
+		perCall: func(call int, _ ExecuteOptions) *BackendResult {
+			if call == 1 {
+				return &BackendResult{Success: true, Output: "looked at it, nothing yet"}
+			}
+			writeUncommittedFile(t, dir, "real-work.go")
+			runGit(t, dir, "add", "real-work.go")
+			runGit(t, dir, "commit", "-m", "real work from retry")
+			time.Sleep(1200 * time.Millisecond)
+			return &BackendResult{Success: true, Output: "done"}
+		},
+	}
+	runner := newGH4964Runner(backend)
+
+	var logBuf bytes.Buffer
+	runner.log = slog.New(slog.NewTextHandler(&logBuf, nil)) // default level: Info — Debug entries must not appear
+
+	task := newGH4964Task("GH-5342", branch, dir)
+	task.SkipQualityGates = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+
+	if _, err := runner.Execute(ctx, task); err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+
+	if logged := logBuf.String(); strings.Contains(logged, "context deadline exceeded") {
+		t.Errorf("daemon log must not surface \"context deadline exceeded\" from the finalization-phase git/gate calls, got:\n%s", logged)
 	}
 }
