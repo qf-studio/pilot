@@ -6188,6 +6188,24 @@
         ],
         "created": "2026-09-06",
         "last_validated": "2026-09-06"
+      },
+      "ci-fix-continuation-rebuilds-branch-from-main-drops-original-commits": {
+        "type": "pitfall",
+        "summary": "CI-fix continuation rebuilds the branch from main when the failed PR's branch was deleted: fix PR carries only the flake fix, original commits vanish, original issue falsely marked pilot-superseded (pilot-console #275/#276/#277/#278, 2026-09-07). Check file-set overlap before accepting a superseded close; recover via the dangling sha.",
+        "file": ".agent/knowledge/memories/pitfalls/ci-fix-continuation-rebuilds-branch-from-main-drops-original-commits.md",
+        "concepts": [
+          "autopilot",
+          "feedback-loop",
+          "false-success",
+          "worktree",
+          "review"
+        ],
+        "confidence": 95,
+        "created": "2026-08-30",
+        "related_tasks": [
+          "TASK-495"
+        ],
+        "captured": "2026-09-06"
       }
     }
   },
