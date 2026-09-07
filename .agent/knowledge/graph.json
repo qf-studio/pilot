@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-07T12:44:17.365275+00:00",
+  "updated": "2026-09-07T15:42:28.313964+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6220,6 +6220,33 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-07"
+      },
+      "ci-fix-size-guard-holds-own-pr-on-one-lint-annotation": {
+        "type": "pitfall",
+        "summary": "autopilot CI-fix size guard keys on the failing PR's size, not the failure's: one lint annotation on an 880-line Pilot PR (#5356) → pilot-needs-human, no fix issue/comment/alert; run also mis-recorded no_op (merge-base unresolvable). Recovery = manual revision issue with autopilot-meta footer; fixes pilot#5359/#5360.",
+        "file": ".agent/knowledge/memories/pitfalls/ci-fix-size-guard-holds-own-pr-on-one-lint-annotation.md",
+        "concepts": [
+          "autopilot",
+          "ci-fix",
+          "lint",
+          "escalation",
+          "false-success"
+        ],
+        "confidence": 0.95,
+        "created": "2026-09-07"
+      },
+      "board-stalled-timestamp-is-created-at-after-self-upgrade-reconciliation": {
+        "type": "learning",
+        "summary": "pilot-board prints created_at as a stalled row's time; after a hot self-upgrade (v2.273.1, 14:19Z) boot reconciliation stalled 3 queued claims and the board made it look like instant post-pick kills. Verify in daemon.log; board fix = render completed_at.",
+        "file": ".agent/knowledge/memories/learnings/board-stalled-timestamp-is-created-at-after-self-upgrade-reconciliation.md",
+        "concepts": [
+          "dashboard",
+          "self-upgrade",
+          "stalled",
+          "operations"
+        ],
+        "confidence": 0.9,
+        "created": "2026-09-07"
       }
     }
   },
@@ -8478,6 +8505,36 @@
       "from": "poller-branch-lookup-marks-issue-done-from-another-issues-pr",
       "to": "TASK-495",
       "type": "discovered_in"
+    },
+    {
+      "from": "ci-fix-size-guard-holds-own-pr-on-one-lint-annotation",
+      "to": "autopilot",
+      "type": "relates_to"
+    },
+    {
+      "from": "ci-fix-size-guard-holds-own-pr-on-one-lint-annotation",
+      "to": "false-success",
+      "type": "relates_to"
+    },
+    {
+      "from": "ci-fix-size-guard-holds-own-pr-on-one-lint-annotation",
+      "to": "TASK-495",
+      "type": "discovered_in"
+    },
+    {
+      "from": "board-stalled-timestamp-is-created-at-after-self-upgrade-reconciliation",
+      "to": "dashboard",
+      "type": "relates_to"
+    },
+    {
+      "from": "board-stalled-timestamp-is-created-at-after-self-upgrade-reconciliation",
+      "to": "stalled",
+      "type": "relates_to"
+    },
+    {
+      "from": "board-stalled-timestamp-is-created-at-after-self-upgrade-reconciliation",
+      "to": "TASK-495",
+      "type": "discovered_in"
     }
   ],
   "concept_index": {
@@ -10381,11 +10438,11 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-07T12:44:17.365275+00:00",
+  "last_updated": "2026-09-07T15:42:28.313964+00:00",
   "stats": {
-    "total_nodes": 522,
-    "total_edges": 451,
-    "memory_count": 275
+    "total_nodes": 524,
+    "total_edges": 457,
+    "memory_count": 277
   },
   "metadata": {}
 }
