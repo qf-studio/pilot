@@ -71,7 +71,8 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 - **pilot-console#45 ready-gate decoupling** (blocked since 07-24 on headers) re-specced 22:00 → PR#272 merged 23:13 → review APPROVE-w-notes (transient github:false flips the connection to `error`; consider a separate health field).
 - **pilot-console#274** (pilot): README ECS contract wrong for the exec-form ENTRYPOINT + `latest`/dispatch guards. **#275** (pilot): `consolectl run` drops `TENANT_ROLE_BOUNDARY_ARN`, `IDLE_WINDOW`, `SECRETS_DRIVER` — boundary not applied on ECS until it merges.
 - **ECS env manifest sent to Nelya** 09-07 00:27Z (TO-BE thread): task shapes, secrets split, AWS values, task-role IAM, the two caveats.
-- **pilot#5342 executor false no-op**: PR#5345 pre-merge review **REQUEST-CHANGES** → drafted; revision issue [#5346](https://github.com/qf-studio/pilot/issues/5346) (autopilot-meta → same branch). pilot#5344 classifier OAuth 401 running.
+- **pilot#5342 executor false no-op**: PR#5345 pre-merge review **REQUEST-CHANGES** → drafted; revision [#5346](https://github.com/qf-studio/pilot/issues/5346) — first two runs classified *epic* (30 min) and timed out → 09-07 re-armed with `no-decompose` + step order in body. **pilot#5344** classifier OAuth 401 → PR#5347 merged 00:46.
+- **09-07 morning:** pilot-console #275 → PR#276 failed CI → fix #277 (old-binary body carried `Depends on: #275`; #275 closed to unblock). #274 parked on a backticked `/entrypoint.sh` → reworded, unparked. **Box rebuilt from main + restarted 09:18Z** (v2.273.0-23-ge054b01c: deadlock fix, re-adoption cutoff, classifier fix, docs sync all live); receipts digest scheduler active.
 
 ## Operator / founder items
 
