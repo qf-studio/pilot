@@ -3725,27 +3725,46 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 			// be mistaken for cascade contamination just because it has tests.
 			production, bookkeeping, test := productionAdditions(files)
 			if production > c.config.MaxCIFixPRSize {
-				c.log.Warn("CI fix size guard fired — failing PR exceeds size floor, refusing to spawn fix issue",
-					"pr", prState.PRNumber, "production_additions", production, "test_additions", test,
-					"bookkeeping_additions", bookkeeping, "limit", c.config.MaxCIFixPRSize)
-				// GH-3260: Sync board card to "Blocked/Failed" column on execution failure (size guard).
-				if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
-					if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
-						c.log.Warn("board sync on exec failure (size guard) failed", "pr", prState.PRNumber, "error", err)
-						c.alertBoardSyncScopeFailureOnce(err)
+				// GH-5360: a large PR failing CI on a small number of
+				// lint/vet/fmt annotations (PR #5356's incident: 387
+				// production additions, one golangci-lint `unused` finding)
+				// is exactly the case where an automated fix issue is
+				// cheapest and a human hold is most expensive — the size
+				// guard's purpose is to stop fix-loop churn on PRs whose
+				// failure itself is evidence of contamination, not to block
+				// a one-line lint fix on an otherwise-healthy large PR.
+				// sizeGuardAnnotationExemption only exempts when every
+				// gathered failed check is a real compiler/lint annotation
+				// on a lint/vet/fmt-named check and the total annotation
+				// count stays small — a failing `test` job or a multi-
+				// annotation failure still falls through to the guard below.
+				if exempt, annotationCount := sizeGuardAnnotationExemption(perCheckLogs); exempt {
+					c.log.Info("CI fix size guard exempted — small lint/vet/fmt annotation count overrides size floor",
+						"pr", prState.PRNumber, "production_additions", production, "limit", c.config.MaxCIFixPRSize,
+						"annotation_count", annotationCount, "max_annotations", ciFixSizeGuardAnnotationExemptionMax)
+				} else {
+					c.log.Warn("CI fix size guard fired — failing PR exceeds size floor, refusing to spawn fix issue",
+						"pr", prState.PRNumber, "production_additions", production, "test_additions", test,
+						"bookkeeping_additions", bookkeeping, "limit", c.config.MaxCIFixPRSize)
+					// GH-3260: Sync board card to "Blocked/Failed" column on execution failure (size guard).
+					if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
+						if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
+							c.log.Warn("board sync on exec failure (size guard) failed", "pr", prState.PRNumber, "error", err)
+							c.alertBoardSyncScopeFailureOnce(err)
+						}
 					}
+					// GH-4459: never self-close here — a closed PR with no fix
+					// issue to continue the work is the exact dead end that lost
+					// the GH-4415 fix twice. Hold for a human instead, PR and
+					// branch intact.
+					comment := fmt.Sprintf("CI fix size guard fired: PR has %d production additions, over limit %d%s (likely cascade contamination). No fix issue will be created. %s",
+						production, c.config.MaxCIFixPRSize, excludedAdditionsSuffix(bookkeeping, test), ciFailedChecksSummary(failedChecks))
+					c.escalateAndHold(ctx, prState, "CI fix size guard fired", []string{labelNeedsHuman}, comment)
+					c.metrics.RecordPRFailed()
+					c.metrics.RecordPRFailedClass(failureClass)
+					c.recordCIFailVerdict(failureClass)
+					return nil
 				}
-				// GH-4459: never self-close here — a closed PR with no fix
-				// issue to continue the work is the exact dead end that lost
-				// the GH-4415 fix twice. Hold for a human instead, PR and
-				// branch intact.
-				comment := fmt.Sprintf("CI fix size guard fired: PR has %d production additions, over limit %d%s (likely cascade contamination). No fix issue will be created. %s",
-					production, c.config.MaxCIFixPRSize, excludedAdditionsSuffix(bookkeeping, test), ciFailedChecksSummary(failedChecks))
-				c.escalateAndHold(ctx, prState, "CI fix size guard fired", []string{labelNeedsHuman}, comment)
-				c.metrics.RecordPRFailed()
-				c.metrics.RecordPRFailedClass(failureClass)
-				c.recordCIFailVerdict(failureClass)
-				return nil
 			}
 		}
 	}

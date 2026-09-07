@@ -218,3 +218,64 @@ func SizeFloorReason(files []*github.PRFile) string {
 	}
 	return ""
 }
+
+// ciFixSizeGuardAnnotationExemptionMax caps how many real compiler/lint
+// annotation lines the GH-5360 exemption below tolerates before deferring to
+// the CI-fix size guard as usual. GH-5360's incident (PR #5356, 387
+// production additions) failed on exactly one golangci-lint `unused`
+// finding — a single-annotation lint failure is cheap to auto-fix and not
+// the cascade-contamination shape the guard exists to catch; a handful more
+// (proposed ceiling: 3) is still cheap, but an unbounded count would let a
+// genuinely broken PR slip through disguised as "just lint".
+const ciFixSizeGuardAnnotationExemptionMax = 3
+
+// lintClassCheckNameRe matches a CI check name that looks like a lint/vet/fmt
+// job (this repo's own checks are literally named "lint"/"build"/"test", and
+// golangci-lint's default config runs `go vet` as one of its analyzers under
+// that same "lint" job — see `.golangci.yml`), as opposed to a "test" or
+// "build" job whose failure could carry a `.go:LINE:COL:` shaped annotation
+// for an entirely different, non-lint reason (e.g. a compile error blocking
+// the test binary). GH-5360's exemption must never fire for those.
+var lintClassCheckNameRe = regexp.MustCompile(`(?i)lint|vet|fmt`)
+
+// isLintClassCheckName reports whether name names a lint/vet/fmt-shaped CI
+// check, per lintClassCheckNameRe.
+func isLintClassCheckName(name string) bool {
+	return lintClassCheckNameRe.MatchString(name)
+}
+
+// sizeGuardAnnotationExemption reports whether checks collectively qualify
+// for GH-5360's small-lint-annotation exemption from the CI-fix size guard:
+// every gathered failed check must (a) classify as FailureClassCode via the
+// signalRealAnnotation tier specifically — never an ambiguous/prose/
+// structural signal, and never any other check classifying differently
+// (e.g. a failing `test` job alongside the lint failure) — and (b) run on a
+// check whose name looks like lint/vet/fmt (isLintClassCheckName). The
+// total count of real annotation lines across every qualifying check must
+// also stay at or under ciFixSizeGuardAnnotationExemptionMax. Returns
+// (false, 0) — never exempt — the moment any single check fails either
+// condition, and when checks is empty (nothing to exempt on).
+//
+// annotationCount is returned alongside the bool purely for the caller's
+// diagnostic log line, so an operator can see exactly why the guard was
+// skipped without re-deriving the count by hand.
+func sizeGuardAnnotationExemption(checks []FailedCheckLog) (exempt bool, annotationCount int) {
+	if len(checks) == 0 {
+		return false, 0
+	}
+	total := 0
+	for _, chk := range checks {
+		class, signal := classifyCheckFailureFull(chk)
+		if class != FailureClassCode || signal != signalRealAnnotation {
+			return false, 0
+		}
+		if !isLintClassCheckName(chk.CheckName) {
+			return false, 0
+		}
+		total += len(realAnnotationRe.FindAllString(chk.Logs, -1))
+	}
+	if total > ciFixSizeGuardAnnotationExemptionMax {
+		return false, total
+	}
+	return true, total
+}
