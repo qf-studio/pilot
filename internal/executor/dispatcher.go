@@ -1308,31 +1308,44 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 
 	// Try decomposition if decomposer is configured
 	if d.decomposer != nil {
-		result := d.decomposer.Decompose(task)
-		if result.Decomposed && len(result.Subtasks) > 1 {
-			return d.queueDecomposedTask(ctx, task, result)
-		}
-		// GH-4271: an epic-classified (or otherwise at/above min_complexity)
-		// task that does NOT enter decomposition previously left zero trace
-		// at this queue-time decision point — see the matching runner.go
-		// Execute() site for the direct-execution-time equivalent. execID
-		// only exists once queueSingleTask creates the executions row below,
-		// so the event write follows it rather than preceding it.
-		if d.decomposer.ReportableSkip(result) {
-			detail := d.decomposer.SkipLogDetail(result)
-			d.log.Info(detail,
+		if TaskOptsOutOfDecomposition(task) {
+			// GH-5350: short-circuit BEFORE calling Decompose() so the skip
+			// is always logged, regardless of complexity tier — mirrors the
+			// same explicit gate/log added to runner.go's Execute()-time
+			// decomposer check. Decompose()'s internal label check only
+			// surfaces via ReportableSkip below, which only fires when the
+			// task's complexity tier would otherwise have triggered
+			// decomposition.
+			d.log.Info("decomposition skipped: no-decompose label",
 				slog.String("task_id", task.ID),
-				slog.String("skip_reason", string(result.SkipReason)),
-				slog.String("complexity", result.Complexity.String()),
 			)
-			execID, err := d.queueSingleTask(ctx, task)
-			if err == nil && execID != "" {
-				// execID == "" with a nil error means queueSingleTask dropped
-				// an ErrClaimLost pickup silently — no executions row exists
-				// here to attach this stage event to (GH-4359).
-				d.recordExecutionEvent(execID, memory.StageDecompositionSkipped, detail)
+		} else {
+			result := d.decomposer.Decompose(task)
+			if result.Decomposed && len(result.Subtasks) > 1 {
+				return d.queueDecomposedTask(ctx, task, result)
 			}
-			return execID, err
+			// GH-4271: an epic-classified (or otherwise at/above min_complexity)
+			// task that does NOT enter decomposition previously left zero trace
+			// at this queue-time decision point — see the matching runner.go
+			// Execute() site for the direct-execution-time equivalent. execID
+			// only exists once queueSingleTask creates the executions row below,
+			// so the event write follows it rather than preceding it.
+			if d.decomposer.ReportableSkip(result) {
+				detail := d.decomposer.SkipLogDetail(result)
+				d.log.Info(detail,
+					slog.String("task_id", task.ID),
+					slog.String("skip_reason", string(result.SkipReason)),
+					slog.String("complexity", result.Complexity.String()),
+				)
+				execID, err := d.queueSingleTask(ctx, task)
+				if err == nil && execID != "" {
+					// execID == "" with a nil error means queueSingleTask dropped
+					// an ErrClaimLost pickup silently — no executions row exists
+					// here to attach this stage event to (GH-4359).
+					d.recordExecutionEvent(execID, memory.StageDecompositionSkipped, detail)
+				}
+				return execID, err
+			}
 		}
 	}
 

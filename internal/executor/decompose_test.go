@@ -307,6 +307,13 @@ This migration is critical for the multi-tenant feature.`,
 	}
 }
 
+// TestTaskDecomposer_AcceptanceCriteria previously asserted that a task whose
+// only splittable structure was its "## Acceptance Criteria" checklist
+// decomposed into one subtask per criterion. GH-5350 (2026-09-06/07,
+// GH-5342/GH-5348 incidents) reversed that: acceptance/done checklists are
+// verification criteria, not work units, and must never be used as a split
+// boundary. With no other splittable structure in the body, this task must
+// now report no decomposition.
 func TestTaskDecomposer_AcceptanceCriteria(t *testing.T) {
 	config := &DecomposeConfig{
 		Enabled:             true,
@@ -333,13 +340,16 @@ This is a major rewrite that requires careful planning.`,
 
 	result := decomposer.Decompose(task)
 
-	if !result.Decomposed {
-		t.Errorf("Expected task to be decomposed, reason: %s", result.Reason)
-		return
+	if result.Decomposed {
+		t.Errorf("GH-5350: expected acceptance-only checklist to NOT decompose, got %d subtasks", len(result.Subtasks))
 	}
-
-	if len(result.Subtasks) != 4 {
-		t.Errorf("Expected 4 subtasks, got %d", len(result.Subtasks))
+	if result.SkipReason != SkipReasonNoSplitPoints {
+		t.Errorf("expected SkipReasonNoSplitPoints, got %q (reason: %s)", result.SkipReason, result.Reason)
+	}
+	for _, subtask := range result.Subtasks {
+		if strings.Contains(subtask.Title, "migrated to new router") || strings.Contains(subtask.Title, "OpenAPI spec") {
+			t.Errorf("subtask title %q was derived from an acceptance criterion", subtask.Title)
+		}
 	}
 }
 
@@ -637,11 +647,16 @@ Third body.`,
 // TestTaskDecomposer_GH4390IncidentTimelineDoesNotExplode reproduces the
 // GH-4395 incident directly: #4390's issue body carried a timestamped
 // narrative timeline (two "###" numbered sections full of plain "- " bullets)
-// followed by a real "## Acceptance criteria" checklist. Before the fix, the
-// generic bullet-point strategy matched the narrative bullets first and
-// exploded the timeline into junk subtasks (subtask 1's title was a raw
-// timestamp line). After the fix, only the checklist is a valid split
-// boundary, so decomposition yields one subtask per acceptance criterion.
+// followed by a real "## Acceptance criteria" checklist. Before the GH-4395
+// fix, the generic bullet-point strategy matched the narrative bullets first
+// and exploded the timeline into junk subtasks (subtask 1's title was a raw
+// timestamp line). The GH-4395 fix made the checklist the only valid split
+// boundary, decomposing into one subtask per acceptance criterion — but
+// GH-5350 (2026-09-06/07, GH-5342/GH-5348 incidents) found that acceptance
+// checklists are verification criteria, not work units, and must never be
+// split on either. With the narrative bullets excluded (GH-4395) and the
+// acceptance checklist now also excluded (GH-5350), this body has no
+// remaining split points, so it must not decompose at all.
 func TestTaskDecomposer_GH4390IncidentTimelineDoesNotExplode(t *testing.T) {
 	config := &DecomposeConfig{
 		Enabled:             true,
@@ -680,19 +695,19 @@ func TestTaskDecomposer_GH4390IncidentTimelineDoesNotExplode(t *testing.T) {
 
 	result := decomposer.Decompose(task)
 
-	if !result.Decomposed {
-		t.Fatalf("expected checklist to decompose, reason: %s", result.Reason)
+	if result.Decomposed {
+		t.Fatalf("GH-5350: expected no decomposition (narrative bullets excluded per GH-4395, acceptance checklist excluded per GH-5350), got %d subtasks", len(result.Subtasks))
 	}
-	if len(result.Subtasks) != 4 {
-		t.Fatalf("expected 4 subtasks (one per acceptance criterion), got %d", len(result.Subtasks))
+	if result.SkipReason != SkipReasonNoSplitPoints {
+		t.Fatalf("expected SkipReasonNoSplitPoints, got %q (reason: %s)", result.SkipReason, result.Reason)
 	}
 	for i, subtask := range result.Subtasks {
 		if strings.Contains(subtask.Title, "2026-07-16") || strings.Contains(subtask.Title, "1143") {
 			t.Errorf("subtask %d: title %q looks like a narrative timeline line, not a work item", i, subtask.Title)
 		}
-	}
-	if !strings.Contains(result.Subtasks[0].Title, "RCA comment") {
-		t.Errorf("subtask 0: expected title to reference the first acceptance criterion, got %q", result.Subtasks[0].Title)
+		if strings.Contains(subtask.Title, "RCA comment") {
+			t.Errorf("subtask %d: title %q was derived from an acceptance criterion", i, subtask.Title)
+		}
 	}
 }
 
@@ -1270,5 +1285,115 @@ func TestDecomposedSubtasks_ExecutionEventsJoinParentRow(t *testing.T) {
 	}
 	if qualityGatesCount != len(result.Subtasks) {
 		t.Errorf("got %d quality_gates_passed events, want %d", qualityGatesCount, len(result.Subtasks))
+	}
+}
+
+// TestTaskOptsOutOfDecomposition_AllThreeSignalsRegardlessOfComplexity covers
+// GH-5350 item 1: TaskOptsOutOfDecomposition is the shared predicate that
+// runner.go and dispatcher.go now evaluate BEFORE calling into the
+// decomposer at all, so a task carrying any of the three no-decompose
+// signals (label, [no-plan] keyword, standalone phrase) must opt out
+// regardless of how large/epic its body looks — the predicate must not
+// depend on DetectComplexity or word count.
+func TestTaskOptsOutOfDecomposition_AllThreeSignalsRegardlessOfComplexity(t *testing.T) {
+	epicBody := strings.Repeat("Rework the entire subsystem end to end. ", 200) +
+		"\n\n## Acceptance Criteria\n" +
+		"- [ ] First criterion\n- [ ] Second criterion\n- [ ] Third criterion\n"
+
+	tests := []struct {
+		name string
+		task *Task
+	}{
+		{
+			name: "no-decompose label",
+			task: &Task{ID: "GH-A", Title: "Epic rework", Labels: []string{NoDecomposeLabel}, Description: epicBody},
+		},
+		{
+			name: "no-plan keyword in title",
+			task: &Task{ID: "GH-B", Title: "Epic rework [no-plan]", Description: epicBody},
+		},
+		{
+			name: "standalone no-decompose phrase",
+			task: &Task{ID: "GH-C", Title: "Epic rework", Description: "no-decompose\n\n" + epicBody},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if c := DetectComplexity(tt.task); c != ComplexityEpic && c != ComplexityComplex {
+				t.Fatalf("test body must classify as epic/complex to prove the opt-out isn't just a complexity-gate side effect, got %v", c)
+			}
+			if !TaskOptsOutOfDecomposition(tt.task) {
+				t.Fatalf("TaskOptsOutOfDecomposition() = false, want true for %s", tt.name)
+			}
+
+			decomposer := NewTaskDecomposer(&DecomposeConfig{
+				Enabled:             true,
+				MinComplexity:       "complex",
+				MaxSubtasks:         5,
+				MinDescriptionWords: 10,
+			})
+			result := decomposer.Decompose(tt.task)
+			if result.Decomposed {
+				t.Errorf("Decompose() split a no-decompose task (%s): %s", tt.name, result.Reason)
+			}
+		})
+	}
+
+	normal := &Task{ID: "GH-D", Title: "Epic rework", Description: epicBody}
+	if TaskOptsOutOfDecomposition(normal) {
+		t.Error("TaskOptsOutOfDecomposition() = true for a task with none of the three signals")
+	}
+}
+
+// TestAnalyzeAndSplit_ContextImplementationAcceptance covers GH-5350 item 2:
+// a body shaped exactly like a real Pilot issue (Context / Implementation /
+// Acceptance, the H2 vocabulary new-project-issue-authoring.md Rule 2
+// requires) must, if it decomposes at all, split on the Implementation
+// checklist — never on the Acceptance checklist. This is the literal
+// GH-5348/GH-5342 incident shape (minus the no-decompose label, to prove the
+// structural exclusion holds independently of the label-based opt-out
+// covered above).
+func TestAnalyzeAndSplit_ContextImplementationAcceptance(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "complex",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 10,
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	task := &Task{
+		ID:    "GH-5350-B",
+		Title: "Add rate limiting to API endpoints",
+		Description: `## Context
+
+The API currently has no rate limiting, which leaves it exposed to abuse
+from misbehaving clients during peak load.
+
+## Implementation
+
+- [ ] Add a token-bucket limiter middleware to the HTTP router
+- [ ] Wire per-client limits from config into the middleware
+- [ ] Return 429 with Retry-After when a client exceeds its bucket
+
+## Acceptance
+
+- [ ] Requests over the configured limit receive HTTP 429
+- [ ] Retry-After header reflects the correct backoff window
+- [ ] Existing endpoints are unaffected below the limit`,
+		ProjectPath: "/test/project",
+	}
+
+	result := decomposer.Decompose(task)
+
+	if result.Decomposed {
+		for i, subtask := range result.Subtasks {
+			if strings.Contains(subtask.Title, "Requests over the configured limit") ||
+				strings.Contains(subtask.Title, "Retry-After header reflects") ||
+				strings.Contains(subtask.Title, "Existing endpoints are unaffected") {
+				t.Errorf("subtask %d: title %q was derived from the Acceptance checklist, not a work item", i, subtask.Title)
+			}
+		}
 	}
 }

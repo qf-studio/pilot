@@ -2989,19 +2989,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// GH-664: Skip epic mode if task has no-decompose label
 	// GH-1687: Also skip if task title or description contains [no-plan] keyword
-	hasNoDecompose := false
-	for _, label := range task.Labels {
-		if strings.EqualFold(label, NoDecomposeLabel) {
-			hasNoDecompose = true
-			break
-		}
-	}
-	if !hasNoDecompose && HasNoPlanKeyword(task) {
-		hasNoDecompose = true
-	}
-	if !hasNoDecompose && HasNoDecomposePhrase(task) {
-		hasNoDecompose = true
-	}
+	// GH-3597: Also skip on standalone no-decompose prose
+	// GH-5350: shared predicate — the in-process decomposer check below
+	// (r.decomposer.Decompose) reuses the SAME hasNoDecompose value so a
+	// no-decompose task never splits via either path.
+	hasNoDecompose := TaskOptsOutOfDecomposition(task)
 
 	// GH-1588: Diagnostic logging for epic detection
 	r.log.Info("Epic detection check",
@@ -3361,30 +3353,44 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// GH-4052: also gated on hasNoDecompose, which the single-package epic-consolidation
 	// branch above sets — Decompose()'s internal label re-check no-ops today when labels
 	// are dropped (#4050), so the call site must not rely on it alone.
-	if r.decomposer != nil && !hasNoDecompose {
-		result := r.decomposer.Decompose(task)
-		if result.Decomposed && len(result.Subtasks) > 1 {
-			r.log.Info("Task decomposed",
+	if r.decomposer != nil {
+		if hasNoDecompose {
+			// GH-5350: explicit, unconditional trace. Decompose()'s internal
+			// label check (SkipReasonNoDecomposeLabel) only surfaces via
+			// ReportableSkip below, and ReportableSkip only fires when the
+			// task's complexity tier would otherwise have triggered
+			// decomposition — a labelled task below that bar previously
+			// skipped silently. Log it here, unconditionally, the same way
+			// the epic path's "Epic detection check" above always logs
+			// has_no_decompose regardless of complexity.
+			r.log.Info("decomposition skipped: no-decompose label",
 				slog.String("task_id", task.ID),
-				slog.Int("subtask_count", len(result.Subtasks)),
-				slog.String("reason", result.Reason),
 			)
-			return r.executeDecomposedTask(ctx, task, result.Subtasks, executionPath)
-		}
-		// GH-4271: an epic-classified (or otherwise at/above min_complexity)
-		// task that does NOT enter decomposition previously left zero trace —
-		// a canary run gated on min_description_words was indistinguishable
-		// from the TASK-401 defect class without hand-querying
-		// execution_events. Surface it as both a structured log line and an
-		// execution event so `pilot trace` shows why.
-		if r.decomposer.ReportableSkip(result) {
-			detail := r.decomposer.SkipLogDetail(result)
-			r.log.Info(detail,
-				slog.String("task_id", task.ID),
-				slog.String("skip_reason", string(result.SkipReason)),
-				slog.String("complexity", result.Complexity.String()),
-			)
-			r.recordExecutionEvent(task.LogExecutionID(), memory.StageDecompositionSkipped, detail)
+		} else {
+			result := r.decomposer.Decompose(task)
+			if result.Decomposed && len(result.Subtasks) > 1 {
+				r.log.Info("Task decomposed",
+					slog.String("task_id", task.ID),
+					slog.Int("subtask_count", len(result.Subtasks)),
+					slog.String("reason", result.Reason),
+				)
+				return r.executeDecomposedTask(ctx, task, result.Subtasks, executionPath)
+			}
+			// GH-4271: an epic-classified (or otherwise at/above min_complexity)
+			// task that does NOT enter decomposition previously left zero trace —
+			// a canary run gated on min_description_words was indistinguishable
+			// from the TASK-401 defect class without hand-querying
+			// execution_events. Surface it as both a structured log line and an
+			// execution event so `pilot trace` shows why.
+			if r.decomposer.ReportableSkip(result) {
+				detail := r.decomposer.SkipLogDetail(result)
+				r.log.Info(detail,
+					slog.String("task_id", task.ID),
+					slog.String("skip_reason", string(result.SkipReason)),
+					slog.String("complexity", result.Complexity.String()),
+				)
+				r.recordExecutionEvent(task.LogExecutionID(), memory.StageDecompositionSkipped, detail)
+			}
 		}
 	}
 

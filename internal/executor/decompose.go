@@ -137,6 +137,19 @@ func HasNoDecomposePhrase(task *Task) bool {
 	return false
 }
 
+// TaskOptsOutOfDecomposition reports whether task carries the no-decompose
+// label, the [no-plan] keyword, or standalone no-decompose prose — the exact
+// three-way predicate runner.go's epic path (hasNoDecompose) already used to
+// skip planning mode entirely (GH-664/GH-1687/GH-3597). GH-5350: call sites
+// that invoke the in-process decomposer need this SAME predicate evaluated
+// BEFORE calling Decompose(), so they can log the skip explicitly and
+// unconditionally instead of relying solely on Decompose()'s internal label
+// re-check (which only surfaces via ReportableSkip, and only when the task's
+// complexity tier would otherwise have triggered decomposition).
+func TaskOptsOutOfDecomposition(task *Task) bool {
+	return HasLabel(task, NoDecomposeLabel) || HasNoPlanKeyword(task) || HasNoDecomposePhrase(task)
+}
+
 // TaskDecomposer handles breaking complex tasks into smaller subtasks.
 type TaskDecomposer struct {
 	config     *DecomposeConfig
@@ -368,6 +381,49 @@ func (d *TaskDecomposer) SkipLogDetail(result *DecomposeResult) string {
 	}
 }
 
+// acceptanceSectionHeaderPattern matches the H2/H3 headers whose checklist
+// items are verification criteria, not implementation work units (GH-5350):
+// "## Acceptance", "## Acceptance Criteria", "### Done", etc. Mirrors the H2
+// vocabulary the spec validator requires (see
+// .agent/sops/onboarding/new-project-issue-authoring.md Rule 2) — every
+// Pilot-authored issue in this project structures its body as
+// Context/Implementation/Acceptance, so "## Acceptance" is the section
+// analyzeAndSplit must never treat as a decomposition boundary.
+var acceptanceSectionHeaderPattern = regexp.MustCompile(`(?i)^(Acceptance(\s+Criteria)?|Done)\s*$`)
+
+// stripAcceptanceSections removes the body of every "## Acceptance"/"## Done"
+// (H2 or H3) section — from its header through the next H2/H3 header or end
+// of text — so checklist-based decomposition never splits on verification
+// criteria (GH-5350). #5348/#5342 (both no-decompose labelled, but evidence
+// that the same class of body would misfire even without the label) show the
+// in-process decomposer previously exploding a "## Acceptance" checklist into
+// one "prove criterion N" subtask per bullet instead of real implementation
+// steps. Sections outside Acceptance/Done (e.g. "## Implementation") keep
+// their checklist items eligible for Strategy 1 below.
+func stripAcceptanceSections(text string) string {
+	headerLine := regexp.MustCompile(`(?m)^#{2,3}[ \t]+(.*)$`)
+	locs := headerLine.FindAllStringSubmatchIndex(text, -1)
+	if len(locs) == 0 {
+		return text
+	}
+
+	var sb strings.Builder
+	last := 0
+	for i, loc := range locs {
+		headerTitle := strings.TrimSpace(text[loc[2]:loc[3]])
+		sectionEnd := len(text)
+		if i+1 < len(locs) {
+			sectionEnd = locs[i+1][0]
+		}
+		if acceptanceSectionHeaderPattern.MatchString(headerTitle) {
+			sb.WriteString(text[last:loc[0]])
+			last = sectionEnd
+		}
+	}
+	sb.WriteString(text[last:])
+	return sb.String()
+}
+
 // analyzeAndSplit breaks a task into subtasks based on structure analysis.
 //
 // GH-4395: only explicit work-item structure is treated as a decomposition
@@ -383,11 +439,18 @@ func (d *TaskDecomposer) SkipLogDetail(result *DecomposeResult) string {
 // structural-split decision below anymore. A task with prose but no explicit
 // checklist or "## Task N" headers now falls back to no-decompose
 // (SkipReasonNoSplitPoints) rather than guessing at boundaries.
+//
+// GH-5350: Strategy 1 additionally excludes checklist items that live inside
+// "## Acceptance"/"## Done" sections (stripAcceptanceSections) — those are
+// verification criteria, not work units. If the only checklist items in the
+// description are under such a section, Strategy 1 now finds none and falls
+// through to Strategy 2 / no-split, same as if no checklist existed at all.
 func (d *TaskDecomposer) analyzeAndSplit(task *Task) []*Task {
 	desc := task.Description
 
 	// Strategy 1: Checklist / acceptance-criteria items ("- [ ] ..." or "[ ] ...")
-	parts := extractAcceptanceCriteria(desc)
+	// outside any Acceptance/Done section.
+	parts := extractAcceptanceCriteria(stripAcceptanceSections(desc))
 	if len(parts) >= 2 {
 		return d.createSubtasks(task, parts, "criteria")
 	}

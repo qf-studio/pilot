@@ -90,6 +90,14 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		Success: true,
 	}
 
+	// GH-5350: subtask IDs whose own result succeeded, tracked so their PR
+	// link can be backfilled once the parent's PR is known (see below) — a
+	// decomposed subtask's own ExecutionResult.PRUrl is almost always empty
+	// at completion time, since only the FINAL subtask carries CreatePR, and
+	// even that push+PR-create is deferred to finalizeDecomposedParentPR
+	// after every subtask has run.
+	var succeededSubtaskIDs []string
+
 	// Execute each subtask sequentially
 	for i, subtask := range subtasks {
 		subtaskNum := i + 1
@@ -148,6 +156,16 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 			)
 			aggregateResult.Success = false
 			aggregateResult.Error = fmt.Sprintf("subtask %d/%d failed: %v", subtaskNum, totalSubtasks, err)
+			// GH-5350: finalize this subtask's own Monitor entry as failed.
+			// Without this, the entry stays StatusRunning (set by
+			// executeWithOptions' Monitor.Start call) forever — the daemon's
+			// dead-owner reconciliation sweep (ReconcileDeadOwners,
+			// monitor.go) then misclassifies it as an abandoned worker ~30s
+			// later and marks it failed anyway, but with a misleading
+			// "dead-owner" error instead of the real one.
+			if r.monitor != nil {
+				r.monitor.Fail(subtask.ID, err.Error())
+			}
 			break
 		}
 
@@ -167,6 +185,13 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 					slog.Int("total", totalSubtasks),
 					slog.String("reason", subtaskResult.Error),
 				)
+				// GH-5350: no_op is a distinct, non-failure terminal status
+				// (dashboard.QueueStatusNoOp) — must not be left StatusRunning
+				// (→ eventually misread as failed by the dead-owner sweep) nor
+				// finalized as StatusFailed (a genuine failure).
+				if r.monitor != nil {
+					r.monitor.NoOp(subtask.ID, subtaskResult.Error)
+				}
 				continue
 			}
 			r.log.Warn("Subtask failed",
@@ -175,6 +200,12 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 			)
 			aggregateResult.Success = false
 			aggregateResult.Error = fmt.Sprintf("subtask %d/%d failed: %s", subtaskNum, totalSubtasks, subtaskResult.Error)
+			// GH-5350: this subtask's OWN result is the genuine failure —
+			// finalize it as failed with its own error, not the dead-owner
+			// sweep's generic reconciliation message.
+			if r.monitor != nil {
+				r.monitor.Fail(subtask.ID, subtaskResult.Error)
+			}
 			break
 		}
 
@@ -210,6 +241,15 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 			slog.Int("index", subtaskNum),
 			slog.Int("total", totalSubtasks),
 		)
+		// GH-5350: finalize this subtask's own Monitor entry as done, taking
+		// its status from ITS OWN result rather than leaving it StatusRunning
+		// for the dead-owner sweep to misclassify as failed later. subtaskResult.PRUrl
+		// is almost always empty here (see succeededSubtaskIDs' doc comment above) —
+		// backfilled with the parent's real PR link once known, below.
+		if r.monitor != nil {
+			r.monitor.Complete(subtask.ID, subtaskResult.PRUrl)
+		}
+		succeededSubtaskIDs = append(succeededSubtaskIDs, subtask.ID)
 	}
 
 	// TASK-320 B2: every subtask ran without a hard error, but none delivered a
@@ -218,7 +258,14 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 	// so a model that silently refused an explicit spec gets one firm re-prompt.
 	// Never surface an empty error string for this path (acceptance: descriptive).
 	if aggregateResult.Success && aggregateResult.CommitSHA == "" && aggregateResult.PRUrl == "" && len(subtasks) > 0 {
-		r.escalateDecomposedNoOp(ctx, parentTask, subtasks, executionPath, aggregateResult)
+		if r.escalateDecomposedNoOp(ctx, parentTask, subtasks, executionPath, aggregateResult) {
+			// GH-5350: the escalated retry recovered a commit — the final
+			// subtask's Monitor entry (marked NoOp by the original attempt,
+			// above) is now genuinely done. Include it in the PR-link
+			// backfill below the same as any subtask that succeeded on its
+			// first attempt.
+			succeededSubtaskIDs = append(succeededSubtaskIDs, subtasks[len(subtasks)-1].ID)
+		}
 	}
 
 	// GH-4028 / TASK-359 Layer 1: subtasks run with task.Branch cleared (see
@@ -229,6 +276,17 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 	// subtasks (and any no-op escalation) are done.
 	if aggregateResult.Success && parentTask.CreatePR && parentTask.Branch != "" && aggregateResult.PRUrl == "" {
 		r.finalizeDecomposedParentPR(ctx, parentTask, git, aggregateResult)
+	}
+
+	// GH-5350: backfill every successfully-completed subtask's Monitor entry
+	// with the parent's real PR link, now that finalizeDecomposedParentPR (or
+	// a subtask's own inline CreatePR, in the non-worktree/legacy shape) has
+	// resolved it. Dashboard rows for in-process subtasks then show the same
+	// PR the parent's own row links to, instead of no link at all.
+	if r.monitor != nil && aggregateResult.PRUrl != "" {
+		for _, id := range succeededSubtaskIDs {
+			r.monitor.Complete(id, aggregateResult.PRUrl)
+		}
 	}
 
 	aggregateResult.Duration = time.Since(start)
@@ -320,13 +378,15 @@ func aggregateSubtaskCost(agg, sub *ExecutionResult) {
 
 // escalateDecomposedNoOp re-runs the final subtask exactly once with the
 // evidence-backed directive when the whole decomposed task delivered no commit.
-// On recovery it folds the commit/PR into agg; otherwise it sets a descriptive
-// terminal no-op error (never empty). TASK-320 B2.
+// On recovery it folds the commit/PR into agg and returns true; otherwise it
+// sets a descriptive terminal no-op error (never empty) and returns false.
+// TASK-320 B2. The return value lets the caller (GH-5350) know whether to
+// include the final subtask's Monitor entry in the PR-link backfill.
 //
 // This lives at the decomposition layer — it re-invokes executeWithOptions rather
 // than duplicating the ghost-SHA/SHA-harvest logic inside that ~1700-line function
 // (the in-executor variant the task doc flagged as needing a structured refactor).
-func (r *Runner) escalateDecomposedNoOp(ctx context.Context, parentTask *Task, subtasks []*Task, executionPath string, agg *ExecutionResult) {
+func (r *Runner) escalateDecomposedNoOp(ctx context.Context, parentTask *Task, subtasks []*Task, executionPath string, agg *ExecutionResult) bool {
 	final := subtasks[len(subtasks)-1]
 
 	escalated := *final // shallow copy; only value fields below are mutated
@@ -358,7 +418,7 @@ func (r *Runner) escalateDecomposedNoOp(ctx context.Context, parentTask *Task, s
 			slog.String("parent_id", parentTask.ID),
 			slog.String("commit_sha", retryResult.CommitSHA),
 		)
-		return
+		return true
 	}
 
 	if retryResult != nil {
@@ -366,6 +426,7 @@ func (r *Runner) escalateDecomposedNoOp(ctx context.Context, parentTask *Task, s
 	}
 	agg.Success = false
 	agg.Error = fmt.Sprintf("no new commit produced — all %d subtask(s) were no-ops after one escalated retry (task %s)", len(subtasks), parentTask.ID)
+	return false
 }
 
 // finalizeDecomposedParentPR runs the decomposed-parent's push → PR-create →
