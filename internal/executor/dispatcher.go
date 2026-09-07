@@ -2426,13 +2426,27 @@ func (d *Dispatcher) escalateStalledTask(task *Task, gen, dropCount int, reason 
 	alreadyStalled := getErr == nil && claimedExec != nil &&
 		claimedExec.Status == string(ExecStatusStalled) && claimedExec.Error == reason
 
+	// GH-5353: skip the write entirely on the repeat (alreadyStalled) path.
+	// UpdateExecutionStatus unconditionally re-stamps completed_at =
+	// CURRENT_TIMESTAMP (store.go) even though status/error are unchanged, and
+	// the GH-5212/GH-5272 re-arm sweep (cmd/pilot/rearm_stalled.go) compares
+	// GitHub label events against exactly that timestamp to decide whether a
+	// re-arm gesture postdates the stall. The SDK poller runs on the same
+	// unsynchronized ~30s cadence as the sweep: if it re-observes this
+	// already-stalled claim and re-enters this function before the sweep's
+	// next pass, the old code's unconditional write kept re-stamping
+	// completed_at to "now" on every such pickup, permanently outrunning any
+	// re-arm label event an operator had already applied — the evidence could
+	// never become "after the stall". Only a genuinely new escalation (status
+	// or reason changed) needs the write; a byte-identical repeat has nothing
+	// to persist.
+	if alreadyStalled {
+		return
+	}
+
 	if uerr := d.store.UpdateExecutionStatus(execID, string(ExecStatusStalled), reason); uerr != nil {
 		d.log.Warn("failed to mark execution stalled after repick cap",
 			slog.String("task_id", task.ID), slog.String("execution_id", execID), slog.Any("error", uerr))
-	}
-
-	if alreadyStalled {
-		return
 	}
 
 	d.recordExecutionEvent(execID, memory.StageStalled, reason)
@@ -2575,7 +2589,7 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 		// execution is already owned elsewhere, so re-queuing here would
 		// either FK-787 (no executions row to reference) or start a
 		// genuine duplicate run.
-		d.log.Info("dispatch claim lost — decomposed parent already owned by another dispatch channel or already terminal, dropping duplicate pickup",
+		d.log.Warn("dispatch claim lost — decomposed parent already owned by another dispatch channel or already terminal, dropping duplicate pickup",
 			append([]any{
 				slog.String("task_id", parent.ID),
 				slog.String("project", parent.ProjectPath),
@@ -2642,7 +2656,7 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 		// callers (including the decomposed-subtask loop below) treat this
 		// exactly like an already-handled task, not a failure to log or
 		// retry.
-		d.log.Info("dispatch claim lost — task already owned by another dispatch channel or already terminal, dropping duplicate pickup",
+		d.log.Warn("dispatch claim lost — task already owned by another dispatch channel or already terminal, dropping duplicate pickup",
 			append([]any{
 				slog.String("task_id", task.ID),
 				slog.String("project", task.ProjectPath),
