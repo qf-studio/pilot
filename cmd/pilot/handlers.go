@@ -82,6 +82,26 @@ func parseAutopilotIteration(body string) int {
 	return 0
 }
 
+// parseAutopilotSHA extracts the original PR's full head commit SHA from an
+// autopilot-fix issue's metadata comment. Returns "" if no sha metadata is
+// found (older fix issues created before GH-5348, or issues with no resolved
+// HeadSHA at creation time).
+//
+// GH-5348: branch:X alone is not enough to recover a fix issue's original
+// diff — pilot-console #275 showed that when the PR branch is deleted (e.g.
+// on PR close), reusing the branch name just creates a fresh branch off
+// main, silently discarding the original commits. sha:X carries the full
+// commit (not the 7-char prefix in the human-readable Context section) so
+// the worktree can be recreated from that exact commit even with the branch
+// gone — see ResolveFixContinuationBaseRef.
+func parseAutopilotSHA(body string) string {
+	re := regexp.MustCompile(`<!-- autopilot-meta.*?sha:(\S+).*?-->`)
+	if m := re.FindStringSubmatch(body); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
 // resolveGitHubMemberIDByLogin resolves a GitHub login/email pair to a team member ID
 // (GH-634). Uses the global teamAdapter (set at startup); returns "" if no adapter is
 // configured or no matching member is found — callers treat "" as "skip RBAC".
@@ -773,6 +793,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	// lands on the same branch as the failed PR, and extract the PR number for
 	// --from-pr session resumption. Mirrors handleGitHubIssueWithResult (GH-4050).
 	var fromPR int
+	var fixFromSHA string
 	for _, label := range ev.Labels {
 		if label == "autopilot-fix" {
 			if parsed := parseAutopilotBranch(ev.Body); parsed != "" {
@@ -781,6 +802,11 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 			if pr := parseAutopilotPR(ev.Body); pr > 0 {
 				fromPR = pr
 			}
+			// GH-5348: recorded head SHA lets the worktree recreate this
+			// branch from the exact original commit if it was deleted,
+			// instead of silently rebuilding the fix from main (see
+			// ResolveFixContinuationBaseRef).
+			fixFromSHA = parseAutopilotSHA(ev.Body)
 			break
 		}
 	}
@@ -933,6 +959,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		Labels:             ev.Labels,                                  // GH-727: flow labels for complexity/no-decompose classifier
 		AcceptanceCriteria: github.ExtractAcceptanceCriteria(ev.Body),  // GH-920: acceptance criteria in prompts
 		FromPR:             fromPR,                                     // GH-1267: session resumption from PR context
+		FixFromSHA:         fixFromSHA,                                 // GH-5348: recreate a deleted fix branch from the original commit
 		// Propagate parent state so isParentDone() can refuse sub-issue creation
 		// when the daemon re-dispatches a closed/merged parent (GH-201 gate parity).
 		State: issueState,

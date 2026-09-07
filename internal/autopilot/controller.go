@@ -5234,6 +5234,13 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		return nil
 	}
 
+	// GH-5348 subtask 3: this PR has just landed on the default branch — if
+	// it's a CI-fix continuation, verify its diff actually overlaps the
+	// origin PR it was spawned to replace before leaving that origin's
+	// source issue parked under pilot-superseded. See
+	// verifyFixPRDeliversSourceScope's doc comment (owner_death.go).
+	c.verifyFixPRDeliversSourceScope(ctx, prState)
+
 	// GH-1015: Add pilot-done label after successful merge (not at PR creation)
 	// This prevents false positives where PRs are closed without merging
 	if prState.IssueNumber > 0 && !c.shouldDeferIssueClose(ctx, prState.IssueNumber, prState.PRNumber) {

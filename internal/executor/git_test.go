@@ -675,6 +675,166 @@ func TestRemoteBranchExists_WithRemote(t *testing.T) {
 	}
 }
 
+// TestResolveFixContinuationBaseRef_BranchExists validates that when the
+// autopilot-fix branch still exists on the remote, ResolveFixContinuationBaseRef
+// returns its origin ref (preserving any commits already on it) rather than
+// falling back to the recorded SHA.
+// GH-5348: this is the "branch still exists" half of the fix-continuation spec.
+func TestResolveFixContinuationBaseRef_BranchExists(t *testing.T) {
+	remoteDir, localDir, cleanup := newRemoteAndLocalRepo(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	_ = remoteDir
+
+	branch := "pilot/GH-9999"
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", localDir}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("checkout", "-b", branch)
+	_ = os.WriteFile(filepath.Join(localDir, "fix.txt"), []byte("fix"), 0644)
+	run("add", "fix.txt")
+	run("commit", "-m", "fix commit")
+	run("push", "-u", "origin", branch)
+
+	git := NewGitOperations(localDir)
+	got := git.ResolveFixContinuationBaseRef(ctx, branch, "")
+	want := "origin/" + branch
+	if got != want {
+		t.Errorf("ResolveFixContinuationBaseRef() = %q, want %q", got, want)
+	}
+}
+
+// TestResolveFixContinuationBaseRef_BranchDeletedShaFetchable validates that
+// when the autopilot-fix branch was deleted from the remote but the original
+// commit is still retained (not garbage-collected), the fallback SHA is
+// fetched directly and returned instead of the caller silently defaulting to
+// main.
+// GH-5348: this is the pilot-console #275 fix — the exact scenario where the
+// PR branch is gone but the original commit is recoverable.
+func TestResolveFixContinuationBaseRef_BranchDeletedShaFetchable(t *testing.T) {
+	remoteDir, localDir, cleanup := newRemoteAndLocalRepo(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Allow the bare remote to serve fetches for arbitrary reachable commits,
+	// not just ones currently pointed to by a ref -- this is the behavior
+	// GitHub's servers already support and that ResolveFixContinuationBaseRef
+	// relies on.
+	if out, err := exec.Command("git", "-C", remoteDir, "config", "uploadpack.allowReachableSHA1InWant", "true").CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure remote: %v\n%s", err, out)
+	}
+
+	branch := "pilot/GH-8888"
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", localDir}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("checkout", "-b", branch)
+	_ = os.WriteFile(filepath.Join(localDir, "fix.txt"), []byte("original diff"), 0644)
+	run("add", "fix.txt")
+	run("commit", "-m", "original fix commit")
+	sha := run("rev-parse", "HEAD")
+	run("push", "-u", "origin", branch)
+
+	// Simulate the branch being deleted on the remote (e.g. on PR close),
+	// while the commit object itself is retained by the remote.
+	run("push", "origin", "--delete", branch)
+
+	git := NewGitOperations(localDir)
+	got := git.ResolveFixContinuationBaseRef(ctx, branch, sha)
+	if got != sha {
+		t.Errorf("ResolveFixContinuationBaseRef() = %q, want fallback sha %q", got, sha)
+	}
+}
+
+// TestResolveFixContinuationBaseRef_BranchDeletedShaUnfetchable validates that
+// when the branch is gone and the fallback SHA cannot be fetched (invalid or
+// garbage-collected), ResolveFixContinuationBaseRef returns "" so the caller
+// falls back to its own default base instead of erroring or hanging.
+func TestResolveFixContinuationBaseRef_BranchDeletedShaUnfetchable(t *testing.T) {
+	_, localDir, cleanup := newRemoteAndLocalRepo(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	git := NewGitOperations(localDir)
+
+	got := git.ResolveFixContinuationBaseRef(ctx, "pilot/GH-nonexistent", "0000000000000000000000000000000000000000")
+	if got != "" {
+		t.Errorf("ResolveFixContinuationBaseRef() = %q, want \"\" for unfetchable sha", got)
+	}
+}
+
+// TestResolveFixContinuationBaseRef_BranchDeletedNoFallback validates the
+// pre-GH-5348 degraded behavior: when the branch is gone and there is no
+// recorded fallback SHA (e.g. an older fix issue created before this field
+// existed), ResolveFixContinuationBaseRef returns "" rather than fabricating
+// a ref.
+func TestResolveFixContinuationBaseRef_BranchDeletedNoFallback(t *testing.T) {
+	_, localDir, cleanup := newRemoteAndLocalRepo(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	git := NewGitOperations(localDir)
+
+	got := git.ResolveFixContinuationBaseRef(ctx, "pilot/GH-nonexistent", "")
+	if got != "" {
+		t.Errorf("ResolveFixContinuationBaseRef() = %q, want \"\" when no fallback sha recorded", got)
+	}
+}
+
+// newRemoteAndLocalRepo creates a bare "remote" repo and a local repo with an
+// initial commit already pushed to it, returning both paths and a combined
+// cleanup func. Mirrors the setup in TestRemoteBranchExists_WithRemote.
+func newRemoteAndLocalRepo(t *testing.T) (remoteDir, localDir string, cleanup func()) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	remoteDir, err := os.MkdirTemp("", "pilot-git-remote-*")
+	if err != nil {
+		t.Fatalf("failed to create remote dir: %v", err)
+	}
+	localDir, err = os.MkdirTemp("", "pilot-git-local-*")
+	if err != nil {
+		_ = os.RemoveAll(remoteDir)
+		t.Fatalf("failed to create local dir: %v", err)
+	}
+
+	ctx := context.Background()
+	_ = exec.CommandContext(ctx, "git", "-C", remoteDir, "init", "--bare").Run()
+
+	_ = exec.CommandContext(ctx, "git", "-C", localDir, "init").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", localDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", localDir, "config", "user.name", "Test User").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", localDir, "remote", "add", "origin", remoteDir).Run()
+
+	_ = os.WriteFile(filepath.Join(localDir, "test.txt"), []byte("initial"), 0644)
+	_ = exec.CommandContext(ctx, "git", "-C", localDir, "add", ".").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", localDir, "commit", "-m", "initial").Run()
+
+	currentBranch, _ := NewGitOperations(localDir).GetCurrentBranch(ctx)
+	_ = exec.CommandContext(ctx, "git", "-C", localDir, "push", "-u", "origin", currentBranch).Run()
+
+	return remoteDir, localDir, func() {
+		_ = os.RemoveAll(remoteDir)
+		_ = os.RemoveAll(localDir)
+	}
+}
+
 // initTestRepo creates a temp git repo with a user config and initial commit,
 // returning the repo path and a cleanup func.
 func initTestRepo(t *testing.T) (string, func()) {

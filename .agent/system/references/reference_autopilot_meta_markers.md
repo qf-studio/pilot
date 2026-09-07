@@ -20,13 +20,15 @@ Two distinct `<!-- autopilot-meta -->` body markers exist with different formats
 
 ## Marker 2: Feedback-loop iteration marker
 
-**Format:** `<!-- autopilot-meta branch:pilot/GH-N pr:M iteration:K -->`
+**Format:** `<!-- autopilot-meta branch:pilot/GH-N pr:M iteration:K [source:S] [sha:FULLSHA] -->`
 
-**Generated at:**
-- `internal/autopilot/feedback_loop.go:215` (CI failure cascade)
-- `internal/autopilot/feedback_loop.go:262` (review feedback cascade)
+`source:S` and `sha:FULLSHA` are optional — only appended when `PRState.IssueNumber`/`PRState.HeadSHA` are populated.
 
-**Parsed by regex:** `var iterationRe = regexp.MustCompile(\`<!-- autopilot-meta.*?iteration:(\d+).*?-->\`)` at `internal/autopilot/controller.go:28`.
+**Generated at:** both `CreateFailureIssue` (CI failure cascade) and `CreateReviewIssue` (review feedback cascade) in `internal/autopilot/feedback_loop.go` build the field list via the shared `autopilotMetaFields` helper (`feedback_loop.go:609`), so both flavors always carry identical fields.
+
+**Parsed by regex:**
+- `var iterationRe = regexp.MustCompile(\`<!-- autopilot-meta.*?iteration:(\d+).*?-->\`)` at `internal/autopilot/controller.go:28`.
+- `sha:` (GH-5348) is parsed separately by `parseAutopilotSHA` in `cmd/pilot/handlers.go`, feeding `Task.FixFromSHA`. It carries the **full** original PR head commit SHA — not the 7-char prefix already shown in the human-readable "Context" section of the issue body — so an autopilot-fix task can recreate its worktree from the exact original commit (`GitOperations.ResolveFixContinuationBaseRef`) if the original branch was deleted (e.g. on PR close). Without it, a deleted fix branch was silently rebuilt from `main`, discarding the original diff (pilot-console #275 incident).
 
 **Note:** The regex matches Marker 1's format too (because `.*?` is permissive), but Marker 1 has no `iteration:` field, so `iterationRe.FindSubmatch` returns no match. Mixing them up in mental models is easy.
 

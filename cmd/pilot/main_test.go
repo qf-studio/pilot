@@ -458,6 +458,57 @@ func TestParseAutopilotIteration(t *testing.T) {
 	}
 }
 
+// TestParseAutopilotSHA covers GH-5348's sha: field, which lets a fix
+// session recreate its branch from the exact original commit if the branch
+// was deleted rather than silently rebuilding from main.
+func TestParseAutopilotSHA(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "valid metadata with sha",
+			body: "Some body\n\n<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:0 sha:597710bc1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d -->\n",
+			want: "597710bc1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d",
+		},
+		{
+			name: "sha with source field before it",
+			body: "<!-- autopilot-meta branch:pilot/GH-99 pr:123 iteration:1 source:98 sha:abc1234 -->",
+			want: "abc1234",
+		},
+		{
+			name: "no sha field",
+			body: "<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:0 -->",
+			want: "",
+		},
+		{
+			name: "no metadata",
+			body: "just a normal issue body",
+			want: "",
+		},
+		{
+			name: "empty body",
+			body: "",
+			want: "",
+		},
+		{
+			name: "malformed - no closing comment",
+			body: "<!-- autopilot-meta branch:pilot/GH-10 sha:abc1234",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseAutopilotSHA(tt.body)
+			if got != tt.want {
+				t.Errorf("parseAutopilotSHA() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // GH-635: wireProjectAccessChecker tests
 // =============================================================================

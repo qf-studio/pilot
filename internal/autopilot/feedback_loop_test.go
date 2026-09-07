@@ -913,9 +913,64 @@ func TestFeedbackLoop_IssueBody_BranchMetadata(t *testing.T) {
 	}
 
 	// Should contain machine-readable metadata comment with branch, PR number,
-	// iteration (GH-1267, GH-1566), and source issue (GH-5336).
-	if !strings.Contains(capturedBody, "<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:0 source:10 -->") {
-		t.Error("body should contain autopilot-meta comment with branch, PR number, iteration, and source")
+	// iteration (GH-1267, GH-1566), source issue (GH-5336), and the full head
+	// SHA (GH-5348) so a fix session can recreate a deleted branch from the
+	// exact original commit instead of silently rebuilding from main.
+	if !strings.Contains(capturedBody, "<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:0 source:10 sha:abc1234567890 -->") {
+		t.Error("body should contain autopilot-meta comment with branch, PR number, iteration, source, and sha")
+	}
+}
+
+// TestFeedbackLoop_IssueBody_NoShaMetadataWhenEmpty verifies GH-5348's sha:
+// field is omitted (not emitted as "sha:") when PRState carries no HeadSHA,
+// mirroring the existing source:/no-source branching — a caller that never
+// resolved a head SHA must not embed a bogus empty value.
+func TestFeedbackLoop_IssueBody_NoShaMetadataWhenEmpty(t *testing.T) {
+	capturedBody := ""
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST" {
+			var input github.IssueInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			capturedBody = input.Body
+
+			resp := github.Issue{Number: 114}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+
+	prState := &PRState{
+		PRNumber:   42,
+		BranchName: "pilot/GH-10",
+		// HeadSHA intentionally empty
+	}
+
+	_, err := fl.CreateFailureIssue(
+		context.Background(),
+		prState,
+		FailureCIPreMerge,
+		[]string{"lint"},
+		"",
+		0,
+	)
+	if err != nil {
+		t.Fatalf("CreateFailureIssue() error = %v", err)
+	}
+
+	if !strings.Contains(capturedBody, "<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:0 -->") {
+		t.Error("body should contain autopilot-meta comment without a sha: field when HeadSHA is empty")
+	}
+	if strings.Contains(capturedBody, "sha:") {
+		t.Error("body should not contain a sha: field when PRState.HeadSHA is empty")
 	}
 }
 

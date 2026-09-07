@@ -1399,3 +1399,65 @@ func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName strin
 	// ls-remote returns non-empty output if branch exists
 	return len(strings.TrimSpace(string(output))) > 0
 }
+
+// ResolveFixContinuationBaseRef resolves the ref an autopilot-fix task's
+// worktree must be cut from (GH-5348, pilot-console #275 incident).
+//
+// Fix issues reuse the original PR's branch name (branchName) so the fix
+// session continues the original diff instead of silently rebuilding it from
+// main. This only works if the branch's actual commits are used as the
+// worktree's base:
+//
+//   - If origin/<branchName> still resolves (the PR branch wasn't deleted, or
+//     a prior fix iteration already recreated it), that branch's tip is
+//     returned — preserving any commits already on it.
+//   - Otherwise, if fallbackSHA (the original PR's recorded head commit) is
+//     set, it is fetched directly from origin — `git fetch origin <sha>`
+//     works for any commit still reachable/retained on the remote, even with
+//     no branch pointing at it — and returned so the caller recreates the
+//     branch from that exact commit instead of from main.
+//   - If neither resolves (no fallbackSHA, or the SHA itself can no longer be
+//     fetched — e.g. garbage-collected on the remote), "" is returned so the
+//     caller falls back to its own default base (origin/main).
+//
+// Callers pass "" for fallbackSHA when there is no recorded SHA to fall back
+// to (e.g. fix issues created before GH-5348); in that case this degrades to
+// the existing origin/<branchName>-or-nothing behavior.
+func (g *GitOperations) ResolveFixContinuationBaseRef(ctx context.Context, branchName, fallbackSHA string) string {
+	if branchName != "" {
+		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", branchName)
+		fetchCmd.Dir = g.projectPath
+		withGitCredentials(ctx, fetchCmd)
+		_ = fetchCmd.Run() // best-effort; fall through to the SHA (or "") if the branch is gone
+
+		verifyCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "-q", "origin/"+branchName)
+		verifyCmd.Dir = g.projectPath
+		if err := verifyCmd.Run(); err == nil {
+			return "origin/" + branchName
+		}
+	}
+
+	if fallbackSHA == "" {
+		return ""
+	}
+
+	fetchShaCmd := exec.CommandContext(ctx, "git", "fetch", "origin", fallbackSHA)
+	fetchShaCmd.Dir = g.projectPath
+	withGitCredentials(ctx, fetchShaCmd)
+	if output, err := fetchShaCmd.CombinedOutput(); err != nil {
+		slog.Warn("autopilot-fix: recorded SHA unfetchable, falling back to default worktree base",
+			slog.String("branch", branchName),
+			slog.String("sha", fallbackSHA),
+			slog.Any("error", err),
+			slog.String("output", string(output)),
+		)
+		return ""
+	}
+
+	verifyShaCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "-q", fallbackSHA)
+	verifyShaCmd.Dir = g.projectPath
+	if err := verifyShaCmd.Run(); err != nil {
+		return ""
+	}
+	return fallbackSHA
+}

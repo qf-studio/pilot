@@ -135,6 +135,121 @@ func parseFixIssuePR(body string) (int, bool) {
 	return n, true
 }
 
+// verifyFixPRDeliversSourceScope guards GH-5348 subtask 3. spawnFailureIssue
+// (controller.go) marks a source issue pilot-superseded the moment its fix
+// ISSUE is created — before that issue's own PR exists, let alone before its
+// diff is known. GH-5348 subtasks 1/2 fixed the one confirmed way that PR's
+// eventual diff could end up dropping the origin's real changes (a deleted
+// branch silently rebuilt from main); this is the belt-and-braces check for
+// every other way a fix PR could land unrelated content — a stale worktree,
+// a human pushing to the wrong branch, a future regression in the recovery
+// path. It runs once the fix PR actually merges, the one point its diff is
+// fully known, and compares its changed files against the origin PR it was
+// spawned to replace (source:N / pr:N, recorded in the fix issue body by
+// FeedbackLoop.generateBody/CreateReviewIssue). Zero file overlap means the
+// origin's real work was most likely never delivered: strip
+// pilot-superseded and escalate to pilot-needs-human instead of leaving the
+// source issue silently parked under a label that claims another PR already
+// delivered its scope.
+//
+// A no-op (fails open, logs a warning) whenever the merged PR isn't a
+// Pilot-spawned CI-fix continuation, or any GitHub read fails — this is a
+// detection backstop, not a gate that should ever block or delay a merge
+// that already landed.
+func (c *Controller) verifyFixPRDeliversSourceScope(ctx context.Context, prState *PRState) {
+	if prState.IssueNumber <= 0 {
+		return
+	}
+	fixIssue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+	if err != nil {
+		c.log.Warn("verifyFixPRDeliversSourceScope: failed to fetch fix issue, skipping (fail-open)",
+			"issue", prState.IssueNumber, "error", err)
+		return
+	}
+	sourceNum, ok := parseFixIssueSource(fixIssue.Body)
+	if !ok {
+		// Not a Pilot-spawned CI-fix issue — nothing to verify.
+		return
+	}
+	originPR, ok := parseFixIssuePR(fixIssue.Body)
+	if !ok {
+		c.log.Warn("verifyFixPRDeliversSourceScope: fix issue names a source but no origin PR, skipping",
+			"issue", prState.IssueNumber, "source", sourceNum)
+		return
+	}
+
+	fixFiles, err := c.ghClient.ListPullRequestFiles(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		c.log.Warn("verifyFixPRDeliversSourceScope: failed to list fix PR files, skipping (fail-open)",
+			"pr", prState.PRNumber, "error", err)
+		return
+	}
+	originFiles, err := c.ghClient.ListPullRequestFiles(ctx, c.owner, c.repo, originPR)
+	if err != nil {
+		c.log.Warn("verifyFixPRDeliversSourceScope: failed to list origin PR files, skipping (fail-open)",
+			"origin_pr", originPR, "error", err)
+		return
+	}
+	// GH-4284-style caution: an origin PR with no recorded files (deleted
+	// commit history unreadable, or a genuinely empty diff) can't prove
+	// non-overlap either way — skip rather than escalate on a false positive.
+	if len(originFiles) == 0 || filesOverlap(fixFiles, originFiles) {
+		return
+	}
+
+	source, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, sourceNum)
+	if err != nil {
+		c.log.Warn("verifyFixPRDeliversSourceScope: failed to fetch source issue, skipping",
+			"source", sourceNum, "error", err)
+		return
+	}
+	if source.State == github.StateClosed || !github.HasLabel(source, github.LabelSuperseded) {
+		// Already resolved some other way (closed, re-armed, previously
+		// escalated) — nothing left to correct.
+		return
+	}
+
+	reasonMsg := fmt.Sprintf(
+		"its designated fix PR #%d merged but shares no changed files with the original PR #%d it was spawned to continue",
+		prState.PRNumber, originPR,
+	)
+	if err := c.labeler.AddLabels(ctx, c.owner, c.repo, sourceNum, []string{labelNeedsHuman}); err != nil {
+		c.log.Warn("verifyFixPRDeliversSourceScope: failed to add needs-human label", "issue", sourceNum, "error", err)
+	}
+	if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, sourceNum, github.LabelSuperseded); err != nil {
+		c.log.Debug("verifyFixPRDeliversSourceScope: failed to remove pilot-superseded label (may not exist)", "issue", sourceNum, "error", err)
+	}
+	comment := fmt.Sprintf(
+		"\U0001F6A8 **Delivery mismatch detected (GH-5348)**: %s — the original changes may have been silently dropped. Marked `%s` for manual review instead of staying parked under `%s`.",
+		reasonMsg, labelNeedsHuman, github.LabelSuperseded,
+	)
+	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, sourceNum, comment); err != nil {
+		c.log.Warn("verifyFixPRDeliversSourceScope: failed to post comment", "issue", sourceNum, "error", err)
+	}
+	c.fireOwnerDeathAlert(sourceNum, reasonMsg, "escalated")
+	c.log.Warn("verifyFixPRDeliversSourceScope: fix PR shares no files with origin PR — escalated source issue",
+		"source", sourceNum, "fix_issue", prState.IssueNumber, "fix_pr", prState.PRNumber, "origin_pr", originPR)
+}
+
+// filesOverlap reports whether any filename appears in both PR file lists.
+func filesOverlap(a, b []*github.PRFile) bool {
+	seen := make(map[string]struct{}, len(a))
+	for _, f := range a {
+		if f != nil {
+			seen[f.Filename] = struct{}{}
+		}
+	}
+	for _, f := range b {
+		if f == nil {
+			continue
+		}
+		if _, ok := seen[f.Filename]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // emitOwnerDeathAlert fires an alerts.Event for an owner-death reaction
 // (rearm/escalate/replace). Shared by Controller and FeedbackLoop, which
 // each hold their own optional alertSink. Logs (rather than drops silently)
