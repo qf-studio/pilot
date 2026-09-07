@@ -9,6 +9,8 @@ A task doc that says 'the workflow edit and the file deletions ship in ONE PR' i
 ## Details
 Two lessons. (1) Atomicity across phases cannot be expressed in prose for Pilot; if two changes must land together, write them as ONE phase with one file list, or accept decomposition and make each child safe on its own (order-independent). (2) Deleting a file that CI validates by name needs the CI step removed in the SAME child; grep .github/workflows and scripts/ for the filename before authoring a deletion task (here scripts/check-gitlab-ci-yaml.py + its test).
 
+**Correction 2026-09-07:** the follow-on claim in pilot#5350 that the in-process decomposer *ignores* the `no-decompose` label was wrong. Box log for the #5348 pick: `labels="[bug pilot]" has_no_decompose=false` at 10:10:09Z; the label was added at 10:17:39Z, seven minutes after the pick. Labels are read once at pick time — apply `no-decompose` BEFORE the `pilot` label (or in the same `gh issue create`), never after. The acceptance-bullet split in #5350 was real and is fixed by PR#5352.
+
 ## Recommended Approach
 Before dispatching a multi-phase task doc: (a) ask 'is any phase unsafe alone?' — if yes, merge those phases into one; (b) for every file deletion, grep CI/Makefile/scripts for the path and include the cleanup in the same phase; (c) when a child fails, fix via the autopilot fix issue BODY (Pilot never reads comments) with the exact root cause.
 
