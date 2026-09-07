@@ -1,5 +1,8 @@
 # Pitfall: Autopilot CI-fix continuation rebuilds the branch from main when the failed PR branch was deleted — original commits dropped, original issue falsely superseded
 
+## Correction (nav-research 2026-09-07)
+Branch deletion was NOT the decisive step. The executor's `CreateWorktreeWithBranch` is called with an empty base (runner.go ~2760) and runs `git worktree add -B <branch> … origin/main` (worktree.go ~537-573): the fix branch is force-reset to main by NAME, so the original commits are discarded even when the remote branch still exists. The recorded `SHA:` in the fix body is prose that nothing parses. Second defect: the controller reads its own `handleCIFailed` close as an external close three polls later → `notifyExternalClose` labels the original `pilot-superseded` and deletes the branch. Shared cause across this week's incidents: continuation state as prose, git state re-derived by name, terminal labels on process events instead of delivery evidence. Fix = pilot#5348 (rewritten with this analysis).
+
 ## Summary
 pilot-console #275 → PR#276 failed on an unrelated flake; autopilot closed the PR (branch deleted) and spawned fix #277 recording SHA 597710b. The fix run created worktree branch=pilot/GH-275 fresh from main, fixed only the flake (PR#278 merged), #277 done, #275 labelled pilot-superseded — with zero lines of the original change on main. TASK-460 false-success class; caught only by post-merge review. Filed as a pilot bug 2026-09-07.
 

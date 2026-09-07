@@ -6191,7 +6191,7 @@
       },
       "ci-fix-continuation-rebuilds-branch-from-main-drops-original-commits": {
         "type": "pitfall",
-        "summary": "CI-fix continuation rebuilds the branch from main when the failed PR's branch was deleted: fix PR carries only the flake fix, original commits vanish, original issue falsely marked pilot-superseded (pilot-console #275/#276/#277/#278, 2026-09-07). Check file-set overlap before accepting a superseded close; recover via the dangling sha.",
+        "summary": "CI-fix continuation: executor force-resets the fix branch to origin/main by NAME (CreateWorktreeWithBranch called with empty base; -B), so the original PR's commits are discarded even if the branch exists; recorded SHA is unparsed prose; controller also reads its own close as external \u2192 original labelled pilot-superseded + branch deleted. Shared cause of this week's incidents: prose continuation state, name-based git, labels on process events. Fix pilot#5348.",
         "file": ".agent/knowledge/memories/pitfalls/ci-fix-continuation-rebuilds-branch-from-main-drops-original-commits.md",
         "concepts": [
           "autopilot",
