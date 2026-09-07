@@ -383,6 +383,13 @@ func (r *Runner) escalateDecomposedNoOp(ctx context.Context, parentTask *Task, s
 func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult) {
 	log := r.log
 
+	// GH-5342: finalization (commit count, push, PR create) must not
+	// inherit an already-exhausted task ctx — see finalizeCtx's doc comment
+	// for why (same class of bug as finalizeEpicBranchPR and the direct
+	// path's PR-creation block).
+	ctx, cancel := finalizeCtx(ctx, finalizeGitTimeout)
+	defer cancel()
+
 	// TASK-359 Shape C / GH-4022: an already-merged branch short-circuits
 	// push+CreatePR — check first, since a merged branch's remote copy may
 	// already have been deleted by autopilot.
@@ -402,7 +409,24 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 	// point with no commits vs base produced nothing on the branch — unlike
 	// the epic path (children may have shipped their own PRs), a
 	// decomposed-task branch with zero commits is a genuine failure.
-	if guardCount, _ := git.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+	//
+	// GH-5342: a count failure is NOT evidence of zero commits — the error
+	// was previously discarded here, so a "context deadline exceeded" from a
+	// stale ctx read identically to a genuinely empty branch. Only trip the
+	// guard on a confirmed zero count.
+	guardCount, guardErr := git.CountNewCommits(ctx, baseBranch)
+	if guardErr != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("failed to verify decomposed-parent branch commit count: %v", guardErr)
+		log.Warn("Decomposed-parent commit-count guard failed to verify commits",
+			slog.String("task_id", task.ID),
+			slog.String("base_branch", baseBranch),
+			slog.Any("error", guardErr),
+		)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+	if guardCount == 0 {
 		result.Success = false
 		result.Error = "decomposed-parent branch has no commits vs base branch"
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
