@@ -3,7 +3,13 @@ package executor
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // mockEffortRunner creates a test runner that returns canned effort JSON.
@@ -230,6 +236,152 @@ func TestEffortClassifier_TaskWithoutID(t *testing.T) {
 	// Without ID, should call subprocess twice (no caching)
 	if callCount != 2 {
 		t.Errorf("expected 2 subprocess calls (no cache without ID), got %d", callCount)
+	}
+}
+
+// newTestEffortClassifier builds a classifier pointed at a local test
+// server, bypassing NewEffortClassifier's env-based key discovery so tests
+// are hermetic regardless of the ambient environment.
+func newTestEffortClassifier(t *testing.T, serverURL, apiKey string, runner func(ctx context.Context, args ...string) ([]byte, error)) *EffortClassifier {
+	t.Helper()
+	return &EffortClassifier{
+		model:     "claude-haiku-4-5-20251001",
+		apiURL:    serverURL,
+		apiKey:    apiKey,
+		timeout:   5 * time.Second,
+		log:       logging.WithComponent("effort-classifier-test"),
+		cache:     make(map[string]string),
+		cmdRunner: runner,
+	}
+}
+
+func TestEffortClassifier_OAuthTokenUsesBearerAndBetaHeader(t *testing.T) {
+	var gotXAPIKey, gotAuth, gotBeta string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXAPIKey = r.Header.Get("x-api-key")
+		gotAuth = r.Header.Get("Authorization")
+		gotBeta = r.Header.Get("anthropic-beta")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"{\"effort\":\"low\",\"reason\":\"n/a\"}"}]}`))
+	}))
+	defer srv.Close()
+
+	classifier := newTestEffortClassifier(t, srv.URL, "sk-ant-oat01-test-oauth-token", mockEffortRunner("medium", "should not be used"))
+	task := &Task{ID: "GH-600", Title: "t", Description: "d"}
+
+	result := classifier.Classify(context.Background(), task)
+	if result != "low" {
+		t.Fatalf("expected direct API result 'low', got %q", result)
+	}
+	if gotXAPIKey != "" {
+		t.Errorf("x-api-key should be empty for OAuth token, got %q", gotXAPIKey)
+	}
+	if gotAuth != "Bearer sk-ant-oat01-test-oauth-token" {
+		t.Errorf("Authorization = %q, want Bearer sk-ant-oat01-test-oauth-token", gotAuth)
+	}
+	if gotBeta != anthropicOAuthBetaHeader {
+		t.Errorf("anthropic-beta = %q, want %q", gotBeta, anthropicOAuthBetaHeader)
+	}
+}
+
+func TestEffortClassifier_APIKeyUsesXAPIKeyHeader(t *testing.T) {
+	var gotXAPIKey, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXAPIKey = r.Header.Get("x-api-key")
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"{\"effort\":\"low\",\"reason\":\"n/a\"}"}]}`))
+	}))
+	defer srv.Close()
+
+	classifier := newTestEffortClassifier(t, srv.URL, "sk-ant-api03-test-key", mockEffortRunner("medium", "should not be used"))
+	task := &Task{ID: "GH-601", Title: "t", Description: "d"}
+
+	result := classifier.Classify(context.Background(), task)
+	if result != "low" {
+		t.Fatalf("expected direct API result 'low', got %q", result)
+	}
+	if gotXAPIKey != "sk-ant-api03-test-key" {
+		t.Errorf("x-api-key = %q, want sk-ant-api03-test-key", gotXAPIKey)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization should be empty for API key, got %q", gotAuth)
+	}
+}
+
+func TestEffortClassifier_OAuth401DisablesDirectModeForSubsequentCalls(t *testing.T) {
+	var apiHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&apiHits, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"API key is invalid"}}`))
+	}))
+	defer srv.Close()
+
+	var subprocessHits int32
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		atomic.AddInt32(&subprocessHits, 1)
+		return []byte(`{"effort":"low","reason":"n/a"}`), nil
+	}
+
+	classifier := newTestEffortClassifier(t, srv.URL, "sk-ant-oat01-test-oauth-token", runner)
+
+	task1 := &Task{ID: "GH-700", Title: "t1", Description: "d1"}
+	if result := classifier.Classify(context.Background(), task1); result != "low" {
+		t.Fatalf("expected subprocess fallback result 'low', got %q", result)
+	}
+	if got := atomic.LoadInt32(&apiHits); got != 1 {
+		t.Fatalf("expected 1 API hit after first call, got %d", got)
+	}
+	if got := atomic.LoadInt32(&subprocessHits); got != 1 {
+		t.Fatalf("expected 1 subprocess call after first call, got %d", got)
+	}
+	if !classifier.directModeDisabled.Load() {
+		t.Fatal("expected directModeDisabled to be true after a 401 on an OAuth token")
+	}
+
+	// Second call, different task (so cache doesn't short-circuit): direct
+	// mode must be skipped entirely — no second failing round trip.
+	task2 := &Task{ID: "GH-701", Title: "t2", Description: "d2"}
+	if result := classifier.Classify(context.Background(), task2); result != "low" {
+		t.Fatalf("expected subprocess fallback result 'low', got %q", result)
+	}
+	if got := atomic.LoadInt32(&apiHits); got != 1 {
+		t.Fatalf("expected direct mode to stay disabled (still 1 API hit), got %d", got)
+	}
+	if got := atomic.LoadInt32(&subprocessHits); got != 2 {
+		t.Fatalf("expected 2 subprocess calls total, got %d", got)
+	}
+}
+
+func TestEffortClassifier_APIKey401DoesNotDisableDirectMode(t *testing.T) {
+	// A rejected API key (not an OAuth token) is not the "OAuth token can
+	// never work" case this latch targets — direct mode should keep being
+	// attempted (e.g. a misconfigured key could be fixed via env reload in
+	// a longer-lived process, and non-OAuth 401s aren't guaranteed to be
+	// permanent in the same way).
+	var apiHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&apiHits, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"API key is invalid"}}`))
+	}))
+	defer srv.Close()
+
+	runner := mockEffortRunner("low", "n/a")
+	classifier := newTestEffortClassifier(t, srv.URL, "sk-ant-api03-bad-key", runner)
+
+	task1 := &Task{ID: "GH-702", Title: "t1", Description: "d1"}
+	classifier.Classify(context.Background(), task1)
+
+	task2 := &Task{ID: "GH-703", Title: "t2", Description: "d2"}
+	classifier.Classify(context.Background(), task2)
+
+	if got := atomic.LoadInt32(&apiHits); got != 2 {
+		t.Errorf("expected direct mode to still be attempted for a rejected API key, got %d hits", got)
+	}
+	if classifier.directModeDisabled.Load() {
+		t.Error("directModeDisabled should not latch for a non-OAuth token 401")
 	}
 }
 

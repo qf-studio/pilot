@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
@@ -34,6 +36,12 @@ type EffortClassifier struct {
 	useStructuredOutput bool
 	apiKey              string // Anthropic API key or OAuth token for direct API mode
 	apiURL              string // API endpoint URL (default: https://api.anthropic.com/v1/messages)
+
+	// directModeDisabled latches true once an OAuth-token direct call has
+	// been rejected with 401. GH-5344: a token that the Messages API won't
+	// accept isn't going to start working mid-process — remembering this
+	// avoids paying a failing HTTPS round trip on every subsequent task.
+	directModeDisabled atomic.Bool
 
 	// cmdRunner is the function that executes the claude command (subprocess mode).
 	// Can be overridden for testing.
@@ -144,9 +152,18 @@ func (c *EffortClassifier) Classify(ctx context.Context, task *Task) string {
 	// Try direct API call first (lightweight, ~1MB vs ~300MB subprocess)
 	var result string
 	var err error
-	if c.apiKey != "" {
+	if c.apiKey != "" && !c.directModeDisabled.Load() {
 		result, err = c.classifyViaAPI(ctx, task)
 		if err != nil {
+			var statusErr *anthropicAPIStatusError
+			if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized && isAnthropicOAuthToken(c.apiKey) {
+				// GH-5344: an OAuth token that the Messages API rejects once
+				// will reject every subsequent call too — stop paying for a
+				// failing round trip per task.
+				if c.directModeDisabled.CompareAndSwap(false, true) {
+					c.log.Info("direct classifier disabled: token rejected")
+				}
+			}
 			c.log.Warn("Direct API classification failed, trying subprocess",
 				slog.String("task_id", task.ID),
 				slog.Any("error", err),
@@ -241,13 +258,7 @@ func (c *EffortClassifier) classifyViaAPI(ctx context.Context, task *Task) (stri
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-
-	// Try OAuth token as API key
-	if strings.HasPrefix(c.apiKey, "sk-ant-") {
-		req.Header.Set("x-api-key", c.apiKey)
-	} else {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
+	setAnthropicAuthHeaders(req, c.apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -261,7 +272,10 @@ func (c *EffortClassifier) classifyViaAPI(ctx context.Context, task *Task) (stri
 	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 200)]))
+		return "", &anthropicAPIStatusError{
+			StatusCode: resp.StatusCode,
+			Body:       string(respBody[:min(len(respBody), 200)]),
+		}
 	}
 
 	var apiResp anthropicResponse

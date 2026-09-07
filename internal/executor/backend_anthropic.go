@@ -345,14 +345,12 @@ func (b *AnthropicBackend) callAPI(ctx context.Context, req *apiRequest) (*apiRe
 		httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
 		httpReq.Header.Set("Accept", "text/event-stream")
 
-		// All sk-ant-* tokens (API keys AND OAuth) use x-api-key header.
-		// This matches effort_classifier.go behavior — OAuth tokens work
-		// with x-api-key but NOT with Authorization: Bearer.
-		if strings.HasPrefix(b.apiKey, "sk-ant-") {
-			httpReq.Header.Set("x-api-key", b.apiKey)
-		} else {
-			httpReq.Header.Set("Authorization", "Bearer "+b.apiKey)
-		}
+		// GH-5344: OAuth tokens (sk-ant-oat...) and API keys (sk-ant-api...)
+		// share the "sk-ant-" prefix but require different auth headers —
+		// sending an OAuth token via x-api-key gets a 401 "API key is
+		// invalid". setAnthropicAuthHeaders tells them apart and adds the
+		// anthropic-beta header OAuth needs.
+		setAnthropicAuthHeaders(httpReq, b.apiKey)
 
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {
