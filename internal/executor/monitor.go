@@ -45,6 +45,15 @@ type TaskState struct {
 	IssueURL    string
 	ProjectPath string // Resolved project directory for this task (GH-2167)
 	ProjectName string // Short project name for display (GH-2167)
+
+	// ParentID is set for an in-process decomposition subtask (see
+	// RegisterSubtask) to the parent task's ID. ReconcileDeadOwners (GH-5354)
+	// uses it to treat the parent's live-worker liveness as the subtask's
+	// own — the dispatcher worker tracks only the parent ID while executing
+	// subtasks sequentially (runner_decompose.go), so a subtask never has a
+	// live-worker entry of its own even while genuinely running. Empty for
+	// every non-subtask entry.
+	ParentID string
 }
 
 // LiveWorkerChecker reports which task IDs a live executor worker is
@@ -91,6 +100,28 @@ func (m *Monitor) Register(taskID, title, issueURL string) {
 		Phase:    "Pending",
 		Progress: 0,
 		IssueURL: issueURL,
+	}
+}
+
+// RegisterSubtask registers a new in-process decomposition subtask, recording
+// parentID so ReconcileDeadOwners (GH-5354) can treat the parent's
+// live-worker liveness as the subtask's own. Otherwise identical to
+// Register. Use this instead of Register for every subtask.ID registered
+// from executeDecomposedTask (runner_decompose.go) — Register itself is left
+// untouched since its other caller (orchestrator.go) registers top-level
+// tasks that have no parent.
+func (m *Monitor) RegisterSubtask(taskID, title, issueURL, parentID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.tasks[taskID] = &TaskState{
+		ID:       taskID,
+		Title:    title,
+		Status:   StatusPending,
+		Phase:    "Pending",
+		Progress: 0,
+		IssueURL: issueURL,
+		ParentID: parentID,
 	}
 }
 
@@ -650,6 +681,19 @@ func (m *Monitor) ReconcileDeadOwners() {
 	m.mu.RLock()
 	for id, state := range m.tasks {
 		if state.Status != StatusRunning || live[id] {
+			continue
+		}
+		// GH-5354: an in-process decomposition subtask has no live-worker
+		// entry of its own — the dispatcher worker tracks only the parent
+		// task's ID while executeDecomposedTask runs subtasks sequentially
+		// (runner_decompose.go), and subtasks have no executions row
+		// (GH-4032) for the heartbeat fallback below to find either. Without
+		// this check every running subtask reads as a dead owner the moment
+		// the grace period elapses, even mid-run with a perfectly live
+		// parent (the #5350 report). Treat the parent's presence in the
+		// live-worker set as the subtask's own liveness; a subtask whose
+		// parent is genuinely gone still falls through to the checks below.
+		if state.ParentID != "" && live[state.ParentID] {
 			continue
 		}
 		if state.StartedAt != nil && now.Sub(*state.StartedAt) < deadOwnerGracePeriod {

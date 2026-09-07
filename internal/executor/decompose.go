@@ -383,13 +383,17 @@ func (d *TaskDecomposer) SkipLogDetail(result *DecomposeResult) string {
 
 // acceptanceSectionHeaderPattern matches the H2/H3 headers whose checklist
 // items are verification criteria, not implementation work units (GH-5350):
-// "## Acceptance", "## Acceptance Criteria", "### Done", etc. Mirrors the H2
+// "## Acceptance", "## Acceptance Criteria", "### Done", "## Checklist",
+// "## Verification", "## Definition of Done", etc. GH-5354: widened beyond
+// the original Acceptance/Done pair — the same misfire the #5350 fix
+// addressed applies just as much to these headers, which show up in
+// Pilot-authored issues just as often as "## Acceptance" does. Mirrors the H2
 // vocabulary the spec validator requires (see
 // .agent/sops/onboarding/new-project-issue-authoring.md Rule 2) — every
 // Pilot-authored issue in this project structures its body as
-// Context/Implementation/Acceptance, so "## Acceptance" is the section
-// analyzeAndSplit must never treat as a decomposition boundary.
-var acceptanceSectionHeaderPattern = regexp.MustCompile(`(?i)^(Acceptance(\s+Criteria)?|Done)\s*$`)
+// Context/Implementation/Acceptance, so none of these headers are sections
+// analyzeAndSplit should ever treat as a decomposition boundary.
+var acceptanceSectionHeaderPattern = regexp.MustCompile(`(?i)^(Acceptance(\s+Criteria)?|Done|Checklist|Verification|Definition\s+of\s+Done)\s*$`)
 
 // stripAcceptanceSections removes the body of every "## Acceptance"/"## Done"
 // (H2 or H3) section — from its header through the next H2/H3 header or end

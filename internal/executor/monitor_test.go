@@ -649,6 +649,66 @@ func TestMonitorReconcileDeadOwners_NoHeartbeatFinalizes(t *testing.T) {
 	}
 }
 
+// TestMonitorReconcileDeadOwners_SubtaskWithLiveParentNotFinalized_GH5354 is
+// the GH-5354 acceptance test: an in-process decomposition subtask
+// (RegisterSubtask) has no execution_events row of its own (GH-4032) and is
+// never itself in the live-worker set — executeDecomposedTask's worker
+// tracks only the parent task's ID while subtasks run sequentially
+// (runner_decompose.go). Before this fix, ReconcileDeadOwners had no way to
+// tell that apart from a genuine dead owner and flipped every running
+// subtask to failed the moment deadOwnerGracePeriod elapsed, even with a
+// perfectly live parent — the literal #5350 report symptom (a 20-minute
+// subtask rendering failed for ~19.5 minutes before flipping green). A
+// subtask whose parent is live must stay StatusRunning past the grace
+// window with no execStore wired at all.
+func TestMonitorReconcileDeadOwners_SubtaskWithLiveParentNotFinalized_GH5354(t *testing.T) {
+	m := NewMonitor()
+	m.RegisterSubtask("GH-77-1", "Subtask 1", "", "GH-77")
+	m.Start("GH-77-1")
+	// The live-worker set holds the PARENT id, never the subtask id — this
+	// is the real shape executeDecomposedTask produces.
+	m.SetLiveWorkerChecker(&fakeLiveWorkerChecker{ids: []string{"GH-77"}})
+	pastStart(t, m, "GH-77-1")
+
+	ids := m.GetRunningTaskIDs()
+	found := false
+	for _, id := range ids {
+		if id == "GH-77-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Expected in-process subtask with a live parent to remain drain-blocking, got %v", ids)
+	}
+	state, _ := m.Get("GH-77-1")
+	if state.Status != StatusRunning {
+		t.Errorf("Status = %s, want %s (subtask with a live parent must not be reconciled away)", state.Status, StatusRunning)
+	}
+}
+
+// TestMonitorReconcileDeadOwners_SubtaskWithDeadParentFinalized_GH5354 is the
+// GH-5354 acceptance test's other half: once the parent itself is no longer
+// live (e.g. the executor process died mid-decomposition), the subtask must
+// still be reconciled to failed exactly like any other dead-owner candidate
+// — the parent-liveness exclusion above must not become a permanent
+// bypass.
+func TestMonitorReconcileDeadOwners_SubtaskWithDeadParentFinalized_GH5354(t *testing.T) {
+	m := NewMonitor()
+	m.RegisterSubtask("GH-78-1", "Subtask 1", "", "GH-78")
+	m.Start("GH-78-1")
+	m.SetLiveWorkerChecker(&fakeLiveWorkerChecker{}) // neither parent nor subtask is live
+	pastStart(t, m, "GH-78-1")
+
+	ids := m.GetRunningTaskIDs()
+	if len(ids) != 0 {
+		t.Fatalf("Expected subtask with a dead parent excluded from drain, got %v", ids)
+	}
+	state, _ := m.Get("GH-78-1")
+	if state.Status != StatusFailed {
+		t.Errorf("Status = %s, want %s (subtask with a genuinely dead parent must still be reconciled)", state.Status, StatusFailed)
+	}
+}
+
 // End-to-end acceptance: WaitForTasks is the method upgrade.TaskChecker calls
 // to block self-upgrade drain (GracefulUpgrader.PerformUpgrade /
 // HotUpgrader.PerformHotUpgrade). A dead-owner entry must let it resolve

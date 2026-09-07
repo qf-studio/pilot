@@ -1397,3 +1397,68 @@ from misbehaving clients during peak load.
 		}
 	}
 }
+
+// TestAcceptanceSectionHeaderPattern_GH5354 covers the GH-5354 review note:
+// acceptanceSectionHeaderPattern must also treat "## Checklist",
+// "## Verification", and "## Definition of Done" as verification-criteria
+// headers — the same class of section "## Acceptance"/"## Acceptance
+// Criteria"/"## Done" already covers (GH-5350) — instead of letting
+// analyzeAndSplit decompose on them.
+func TestAcceptanceSectionHeaderPattern_GH5354(t *testing.T) {
+	matches := []string{
+		"Acceptance",
+		"Acceptance Criteria",
+		"Done",
+		"Checklist",
+		"Verification",
+		"Definition of Done",
+		"definition of done",
+	}
+	for _, title := range matches {
+		if !acceptanceSectionHeaderPattern.MatchString(title) {
+			t.Errorf("acceptanceSectionHeaderPattern should match header %q", title)
+		}
+	}
+
+	nonMatches := []string{
+		"Implementation",
+		"Context",
+		"Checklist Items",
+	}
+	for _, title := range nonMatches {
+		if acceptanceSectionHeaderPattern.MatchString(title) {
+			t.Errorf("acceptanceSectionHeaderPattern should not match header %q", title)
+		}
+	}
+}
+
+// TestStripAcceptanceSections_WidenedHeaders_GH5354 checks the widened
+// pattern actually feeds through stripAcceptanceSections end-to-end: a body
+// with "## Verification" and "## Definition of Done" checklists must not
+// leak those bullets into the implementation checklist analyzeAndSplit
+// extracts.
+func TestStripAcceptanceSections_WidenedHeaders_GH5354(t *testing.T) {
+	body := `## Implementation
+
+- [ ] Add the widget
+
+## Verification
+
+- [ ] Widget renders correctly
+
+## Definition of Done
+
+- [ ] Reviewed and merged`
+
+	stripped := stripAcceptanceSections(body)
+
+	if strings.Contains(stripped, "Widget renders correctly") {
+		t.Error("stripAcceptanceSections left the Verification checklist body in place")
+	}
+	if strings.Contains(stripped, "Reviewed and merged") {
+		t.Error("stripAcceptanceSections left the Definition of Done checklist body in place")
+	}
+	if !strings.Contains(stripped, "Add the widget") {
+		t.Error("stripAcceptanceSections should not touch the Implementation checklist")
+	}
+}

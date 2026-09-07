@@ -130,7 +130,7 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		// sub-issue ID as its own title instead of the planned subtask
 		// summary.
 		if r.monitor != nil {
-			r.monitor.Register(subtask.ID, subtask.Title, "")
+			r.monitor.RegisterSubtask(subtask.ID, subtask.Title, "", parentTask.ID)
 		}
 
 		// Temporarily disable decomposer to prevent recursive decomposition
