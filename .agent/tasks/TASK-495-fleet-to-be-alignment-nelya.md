@@ -38,7 +38,7 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 | Q2a inline SSM-agent statements + `PILOT_CONSOLE_FLEET_TENANT_ROLE_BOUNDARY_ARN` | [#260](https://github.com/qf-studio/pilot-console/issues/260) |
 | Q2c tags from env (`Environment`, `Relation`, `Project`) | [#261](https://github.com/qf-studio/pilot-console/issues/261) |
 | Q1 validation cache + gRPC CA/server-name | [#262](https://github.com/qf-studio/pilot-console/issues/262) |
-| Q4/Q8 consolectl in image + `prod-X.Y.Z` release → GHCR | [#263](https://github.com/qf-studio/pilot-console/issues/263) |
+| Q4/Q8 consolectl in image + `prod-X.Y.Z` release → GHCR | [#263](https://github.com/qf-studio/pilot-console/issues/263) → **PR#273 merged 09-06 23:20** (3rd run, after 2 false no-ops = pilot#5342); review APPROVE-w-notes → [#274](https://github.com/qf-studio/pilot-console/issues/274): **ECS reconciler task must use `entryPoint: ["/consolectl"], command: ["run"]`** (exec-form ENTRYPOINT; a command override silently starts a 3rd API server) · `latest`/dispatch guards · GHCR package is private on first push |
 | Q6/Q7 + SES region (later, batched) | [#264](https://github.com/qf-studio/pilot-console/issues/264) |
 | Q4 user-data `consolectl run` | [pilot-cloud-infra#49](https://github.com/qf-studio/pilot-cloud-infra/issues/49) |
 
@@ -63,7 +63,8 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 - Tenant volume + root device show `Encrypted=true` with `alias/pilot-fleet` (#265).
 - Tags `Environment=pilot-fleet`, `Relation`, `Project` on instance/volume/SG/role (#267).
 - Console → central auth: a session validates once per TTL (cache hit metric), gRPC dial with `PILOT_CONSOLE_AUTH_GRPC_CA_FILE`/`_SERVER_NAME` (#268).
-- ECS: reconciler task = `consolectl run`; API tasks have `PILOT_CONSOLE_FLEET_RECONCILE=false` (#263 image).
+- ECS: reconciler task = `entryPoint: ["/consolectl"], command: ["run"]` (NOT a command override — exec-form ENTRYPOINT); API tasks `entryPoint: ["/pilot-console"]` with `PILOT_CONSOLE_FLEET_RECONCILE=false` (#263/#274).
+- GHCR package `pilot-console` visibility/pull permission set once before the first ECS pull (created private).
 
 ## Operator / founder items
 
