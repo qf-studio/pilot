@@ -315,20 +315,36 @@ func TestIntentJudgeRetry_ExpiredTaskCtx_SkipsReinvocation(t *testing.T) {
 	}
 	runner := newGH4964Runner(backend)
 
-	// The judge subprocess is mocked to sleep past the task ctx's short
-	// deadline before returning FAIL — reproducing a judge call that
-	// legitimately took real wall-clock time (GH-4669's measured judge
-	// subprocess latency) and returns only after ctx is already done.
-	runner.intentJudge = newIntentJudgeWithRunner(func(context.Context, ...string) ([]byte, error) {
-		time.Sleep(400 * time.Millisecond)
-		return []byte("VERDICT: FAIL\nThe diff adds unrelated scope.\nCONFIDENCE: 0.9"), nil
-	})
-
 	task := newGH4964Task("GH-5342", branch, dir)
 	task.SkipQualityGates = true
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// GH-5355: everything before the intent judge runs — branch switch,
+	// the mock backend's commit, and GetDiffAgainstOrigin's git
+	// fetch/merge-base/diff spawns — is real git subprocess work, not
+	// mocked. A 200ms budget here previously raced that work: under
+	// package-level contention (`go test -short ./...` running many
+	// packages concurrently) those spawns occasionally took long enough to
+	// blow the deadline *before* the intent judge goroutine was even
+	// reached, so GetDiffAgainstOrigin failed on an already-done ctx and
+	// runIntentJudge flipped to false — skipping the intent judge
+	// entirely (not just the retry) and leaving IntentWarning empty. A
+	// generous ctx budget keeps that setup work outside the race window
+	// entirely, regardless of load.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+
+	// The judge subprocess is mocked to block until the task ctx it was
+	// handed is actually done, rather than guessing a fixed sleep duration
+	// long enough to outlast a fixed ctx timeout — that guess is exactly
+	// what raced the setup work above. Waiting on the real ctx.Done()
+	// ties "returns after ctx is done" directly to ctx's actual state, so
+	// this reproduces a judge call that legitimately took real wall-clock
+	// time (GH-4669's measured judge subprocess latency) and returns only
+	// after ctx is already done, deterministically and without a sleep.
+	runner.intentJudge = newIntentJudgeWithRunner(func(judgeCtx context.Context, _ ...string) ([]byte, error) {
+		<-judgeCtx.Done()
+		return []byte("VERDICT: FAIL\nThe diff adds unrelated scope.\nCONFIDENCE: 0.9"), nil
+	})
 
 	result, err := runner.Execute(ctx, task)
 	if err != nil {
