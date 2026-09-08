@@ -49,37 +49,130 @@ func resolveProjectBaseBranch(cfg *config.Config, projectPath string) string {
 	return cfg.FindProjectByPath(projectPath).ResolveBaseBranch()
 }
 
-// parseAutopilotBranch extracts the target branch from an autopilot-fix issue's metadata comment.
-// Returns empty string if no metadata found.
-// Supports both old format (branch:X) and new format (branch:X pr:N).
-func parseAutopilotBranch(body string) string {
-	re := regexp.MustCompile(`<!-- autopilot-meta branch:(\S+).*?-->`)
-	if m := re.FindStringSubmatch(body); len(m) > 1 {
-		return m[1]
+var (
+	// fencedCodeBlockRe strips ```...``` fenced code blocks (DOTALL) so a
+	// footer quoted inside one is never mistaken for the real trailing
+	// marker (GH-5390).
+	fencedCodeBlockRe = regexp.MustCompile("(?s)```.*?```")
+
+	// inlineCodeSpanRe strips single-line `...` inline code spans so a
+	// footer quoted inline (e.g. a bug report describing the format) is
+	// never mistaken for the real trailing marker (GH-5390).
+	inlineCodeSpanRe = regexp.MustCompile("`[^`\n]*`")
+
+	// autopilotMetaFooterLineRe matches the autopilot-meta HTML comment only
+	// when it is the *entire* content of a line (after trimming).
+	autopilotMetaFooterLineRe = regexp.MustCompile(`^<!-- autopilot-meta(.*)-->$`)
+
+	autopilotBranchFieldRe    = regexp.MustCompile(`\bbranch:(\S+)`)
+	autopilotPRFieldRe        = regexp.MustCompile(`\bpr:(\d+)`)
+	autopilotIterationFieldRe = regexp.MustCompile(`\biteration:(\d+)`)
+	autopilotSHAFieldRe       = regexp.MustCompile(`\bsha:(\S+)`)
+
+	// autopilotBranchCharsRe is the ref-safe character set a parsed branch
+	// value must be restricted to (GH-5390).
+	autopilotBranchCharsRe = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+)
+
+// extractAutopilotMetaFooter returns the raw `<!-- autopilot-meta ... -->`
+// comment text, but only when it is the last non-empty line of the body
+// (the documented placement) and lies outside any fenced code block or
+// inline code span. Returns "" otherwise.
+//
+// GH-5390: before this gate, the field regexes matched `<!-- autopilot-meta
+// ... -->` anywhere in the body with no positional or validation
+// constraints. An issue that merely quotes the documented footer format —
+// in backticks, in a fenced code block, or as a placeholder example, the
+// way a bug report or task doc naturally would — was parsed as if it
+// carried a real footer and got dispatched onto that bogus branch (this
+// issue's own body is an instance of the failure mode it describes).
+func extractAutopilotMetaFooter(body string) string {
+	stripped := fencedCodeBlockRe.ReplaceAllString(body, "")
+	stripped = inlineCodeSpanRe.ReplaceAllString(stripped, "")
+
+	lines := strings.Split(stripped, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if autopilotMetaFooterLineRe.MatchString(line) {
+			return line
+		}
+		// The last non-empty line isn't the footer — not the documented
+		// placement, so nothing earlier in the body counts either.
+		return ""
 	}
 	return ""
+}
+
+// isValidAutopilotBranch reports whether branch is a plausible pilot branch
+// name: it must start with "pilot/" and use only ref-safe characters
+// (GH-5390). Without this check, descriptive or placeholder text quoted
+// from the documented footer format (e.g. a literal "pilot/GH-<issue>" in
+// a bug report) would be accepted as a real git ref.
+func isValidAutopilotBranch(branch string) bool {
+	if !strings.HasPrefix(branch, "pilot/") {
+		return false
+	}
+	if strings.Contains(branch, "..") || strings.HasSuffix(branch, "/") || strings.HasSuffix(branch, ".lock") {
+		return false
+	}
+	return autopilotBranchCharsRe.MatchString(branch)
+}
+
+// parseAutopilotBranch extracts the target branch from an autopilot-fix issue's metadata comment.
+// Returns empty string if no metadata found, if the footer isn't the last
+// non-empty line of the body, or if the parsed branch value fails
+// isValidAutopilotBranch (logged at Warn — GH-5390).
+// Supports both old format (branch:X) and new format (branch:X pr:N).
+func parseAutopilotBranch(body string) string {
+	footer := extractAutopilotMetaFooter(body)
+	if footer == "" {
+		return ""
+	}
+	m := autopilotBranchFieldRe.FindStringSubmatch(footer)
+	if len(m) < 2 {
+		return ""
+	}
+	branch := m[1]
+	if !isValidAutopilotBranch(branch) {
+		logging.WithComponent("github").Warn("autopilot-meta footer branch failed validation, falling back to default branch",
+			slog.String("branch", branch),
+		)
+		return ""
+	}
+	return branch
 }
 
 // parseAutopilotPR extracts the PR number from an autopilot-fix issue's metadata comment.
 // Returns 0 if no PR metadata found. Used for --from-pr session resumption (GH-1267).
 func parseAutopilotPR(body string) int {
-	re := regexp.MustCompile(`<!-- autopilot-meta.*?pr:(\d+).*?-->`)
-	if m := re.FindStringSubmatch(body); len(m) > 1 {
-		n, _ := strconv.Atoi(m[1])
-		return n
+	footer := extractAutopilotMetaFooter(body)
+	if footer == "" {
+		return 0
 	}
-	return 0
+	m := autopilotPRFieldRe.FindStringSubmatch(footer)
+	if len(m) < 2 {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
 }
 
 // parseAutopilotIteration extracts the CI fix iteration counter from an issue's metadata comment.
 // Returns 0 if no iteration metadata found (GH-1566).
 func parseAutopilotIteration(body string) int {
-	re := regexp.MustCompile(`<!-- autopilot-meta.*?iteration:(\d+).*?-->`)
-	if m := re.FindStringSubmatch(body); len(m) > 1 {
-		n, _ := strconv.Atoi(m[1])
-		return n
+	footer := extractAutopilotMetaFooter(body)
+	if footer == "" {
+		return 0
 	}
-	return 0
+	m := autopilotIterationFieldRe.FindStringSubmatch(footer)
+	if len(m) < 2 {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
 }
 
 // parseAutopilotSHA extracts the original PR's full head commit SHA from an
@@ -101,8 +194,11 @@ func parseAutopilotIteration(body string) int {
 // the worktree can be recreated from that exact commit even with the branch
 // gone — see ResolveFixContinuationBaseRef.
 func parseAutopilotSHA(body string) string {
-	re := regexp.MustCompile(`<!-- autopilot-meta.*?sha:(\S+).*?-->`)
-	m := re.FindStringSubmatch(body)
+	footer := extractAutopilotMetaFooter(body)
+	if footer == "" {
+		return ""
+	}
+	m := autopilotSHAFieldRe.FindStringSubmatch(footer)
 	if len(m) < 2 {
 		return ""
 	}
@@ -782,14 +878,15 @@ func handleAzureDevOpsIssueWithResult(ctx context.Context, cfg *config.Config, e
 }
 
 // handleGithubIssueEventSDK processes a GitHub issue delivered as a studio-sdk core.IssueEvent
-// (M7 Phase 4a). It runs ALONGSIDE the legacy in-tree handleGitHubIssueWithResult (which takes a
-// *github.Issue) and is exercised only when the dormant SDK poller is enabled
-// (adapters.github.use_sdk_poller — see cmd/pilot/poller_github.go).
+// (M7 Phase 4a). The GitHub adapter always uses the studio-sdk poller now (the
+// legacy in-tree GitHub poller/handler was removed; adapters.github.use_sdk_poller
+// is deprecated and ignored — see internal/config/config.go), so this is the sole
+// GitHub issue handler.
 //
 // ev.SequenceID is already "GH-42" (prefixed by the SDK adapter) — used verbatim as the task ID to
-// avoid the GH-GH-42 double-prefix the legacy handler's fmt.Sprintf("GH-%d", ...) would create.
+// avoid a GH-GH-42 double-prefix.
 // Board sync is handled at the SDK-poller level (config-driven); the spec-guard gate runs below
-// (M7 4d.3). Sub-issue handling remains exclusive to the legacy in-tree handler until later phases.
+// (M7 4d.3).
 func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, repoFullName string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer, metrics *autopilot.Metrics) (*sdkcore.IssueResult, error) {
 	taskID := ev.SequenceID // "GH-42"; already prefixed by the SDK adapter — do NOT re-prefix
 	title := ev.Title

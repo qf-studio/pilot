@@ -340,6 +340,48 @@ func TestParseAutopilotBranch(t *testing.T) {
 			body: "<!-- autopilot-meta branch:pilot/GH-123",
 			want: "",
 		},
+		{
+			// GH-5390: a footer quoted inline in backticks mid-body (e.g. a
+			// bug report describing the format, like #5379's own body) must
+			// never be parsed as a real footer.
+			name: "footer quoted in backticks mid-body",
+			body: "This bug happens when the body contains `<!-- autopilot-meta branch:pilot/GH-999 pr:1 -->` inline.\n",
+			want: "",
+		},
+		{
+			// GH-5390: a footer quoted inside a fenced code block (e.g. a
+			// doc example) must never be parsed as a real footer.
+			name: "footer inside a fenced code block",
+			body: "Doc example of the format:\n\n```\n<!-- autopilot-meta branch:pilot/GH-999 pr:1 -->\n```\n",
+			want: "",
+		},
+		{
+			// GH-5390: the footer must be the last non-empty line, not just
+			// anywhere in the body.
+			name: "footer not on last line",
+			body: "<!-- autopilot-meta branch:pilot/GH-999 pr:1 -->\n\nSome trailing prose after the footer.\n",
+			want: "",
+		},
+		{
+			// GH-5390: a placeholder/descriptive branch value (not a real
+			// ref — contains "<" and ">") must be rejected even though it's
+			// on the documented last line.
+			name: "invalid branch value - placeholder text",
+			body: "Please fix the failing check.\n\n<!-- autopilot-meta branch:pilot/GH-<issue> pr:0 -->\n",
+			want: "",
+		},
+		{
+			// GH-5390: a branch value that doesn't start with "pilot/" is
+			// rejected even though the footer is well-formed and last.
+			name: "invalid branch value - missing pilot/ prefix",
+			body: "<!-- autopilot-meta branch:some-other-branch pr:1 -->",
+			want: "",
+		},
+		{
+			name: "valid footer as last line",
+			body: "Please fix the failing check.\n\n<!-- autopilot-meta branch:pilot/GH-5379 pr:5361 -->",
+			want: "pilot/GH-5379",
+		},
 	}
 
 	for _, tt := range tests {
@@ -349,6 +391,38 @@ func TestParseAutopilotBranch(t *testing.T) {
 				t.Errorf("parseAutopilotBranch() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestParseAutopilotBranch_InvalidValueWarns covers the GH-5390 requirement
+// that an invalid footer branch value is not just silently dropped but
+// logged at Warn with the offending value, so a bad footer is diagnosable.
+func TestParseAutopilotBranch_InvalidValueWarns(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "warn.log")
+	if err := logging.Init(&logging.Config{Level: "warn", Format: "text", Output: logPath}); err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	t.Cleanup(func() { _ = logging.Init(logging.DefaultConfig()) })
+
+	readLog := func() string {
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return ""
+			}
+			t.Fatalf("ReadFile: %v", err)
+		}
+		return string(data)
+	}
+
+	body := "Please fix the failing check.\n\n<!-- autopilot-meta branch:pilot/GH-<issue> pr:0 -->\n"
+	if got := parseAutopilotBranch(body); got != "" {
+		t.Fatalf("parseAutopilotBranch() = %q, want empty (invalid branch)", got)
+	}
+	got := readLog()
+	if !strings.Contains(got, "autopilot-meta footer branch failed validation") || !strings.Contains(got, "pilot/GH-<issue>") {
+		t.Errorf("invalid branch value should warn with the offending value, got log:\n%s", got)
 	}
 }
 
@@ -384,9 +458,12 @@ func TestParseAutopilotPR(t *testing.T) {
 			want: 0,
 		},
 		{
-			name: "multiple metadata comments - first match wins",
+			// GH-5390: only the last non-empty line of the body is honored as
+			// the footer now, so an earlier footer-shaped line is inert prose
+			// and the trailing one wins — not "first match" as before the fix.
+			name: "multiple metadata comments - only the last line counts",
 			body: "<!-- autopilot-meta branch:pilot/GH-1 pr:100 -->\nSome text\n<!-- autopilot-meta branch:pilot/GH-2 pr:200 -->",
-			want: 100,
+			want: 200,
 		},
 		{
 			name: "malformed - no closing comment",
@@ -461,6 +538,32 @@ func TestResolveAutopilotFixBranch(t *testing.T) {
 			name:        "autopilot-fix label without a footer does not match",
 			labels:      []string{"pilot", "autopilot-fix"},
 			body:        "No metadata comment here.",
+			wantMatched: false,
+		},
+		{
+			// GH-5390 regression: a `pilot`-labeled issue that merely quotes
+			// the footer format in backticks (the way this very issue's body
+			// does, to describe the bug) must not be dispatched onto that
+			// quoted branch — it must fall back to the default branch.
+			name:        "footer quoted in backticks does not match",
+			labels:      []string{"pilot"},
+			body:        "The parser matches `<!-- autopilot-meta branch:pilot/GH-5379 pr:0 -->` anywhere in the body, which is the bug.",
+			wantMatched: false,
+		},
+		{
+			// GH-5390 regression: a footer quoted inside a fenced code block
+			// (e.g. a task doc showing the format) must not match either.
+			name:        "footer inside fenced block does not match",
+			labels:      []string{"pilot"},
+			body:        "Example footer:\n\n```\n<!-- autopilot-meta branch:pilot/GH-5379 pr:0 -->\n```\n",
+			wantMatched: false,
+		},
+		{
+			// GH-5390 regression: an invalid/placeholder branch value on the
+			// documented last line is rejected, falling back to default.
+			name:        "invalid branch value falls back to default",
+			labels:      []string{"pilot"},
+			body:        "Please fix the failing check.\n\n<!-- autopilot-meta branch:pilot/GH-<issue> pr:0 -->\n",
 			wantMatched: false,
 		},
 	}
