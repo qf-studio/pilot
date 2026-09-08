@@ -114,6 +114,18 @@ func (s *scopeMismatchGHServer) hasAddLabel(issue int, label string) bool {
 	return false
 }
 
+func (s *scopeMismatchGHServer) hasRemoveLabel(issue int, label string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := fmt.Sprintf("%d:%s", issue, label)
+	for _, c := range s.removeLabelCalls {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestController_VerifyFixPRDeliversSourceScope(t *testing.T) {
 	fixIssueBody := "Fixes CI failure.\n\n<!-- autopilot-meta branch:pilot/GH-100 pr:7 iteration:1 source:100 -->"
 
@@ -225,6 +237,14 @@ func TestController_VerifyFixPRDeliversSourceScope(t *testing.T) {
 				if !srv.hasAddLabel(100, github.LabelSuperseded) {
 					t.Errorf("expected %s to be added to source #100, calls=%v", github.LabelSuperseded, srv.addLabelCalls)
 				}
+				// GH-5375: pilot-superseded and pilot/pilot-in-progress must
+				// never coexist on the source issue (GH-5298 invariant).
+				if !srv.hasRemoveLabel(100, github.LabelPilot) {
+					t.Errorf("expected %s to be removed from source #100, calls=%v", github.LabelPilot, srv.removeLabelCalls)
+				}
+				if !srv.hasRemoveLabel(100, github.LabelInProgress) {
+					t.Errorf("expected %s to be removed from source #100, calls=%v", github.LabelInProgress, srv.removeLabelCalls)
+				}
 				if len(sink.events) != 0 {
 					t.Errorf("expected no alerts on a confirmed-delivery supersede, got %d", len(sink.events))
 				}
@@ -236,6 +256,15 @@ func TestController_VerifyFixPRDeliversSourceScope(t *testing.T) {
 			case tt.wantMismatchNoSupersede:
 				if srv.hasAddLabel(100, github.LabelSuperseded) {
 					t.Errorf("expected %s NOT to be added to source #100 on zero overlap, calls=%v", github.LabelSuperseded, srv.addLabelCalls)
+				}
+				// GH-5375: the zero-overlap branch must stay unchanged — no
+				// pilot/pilot-in-progress removal, since the source issue
+				// isn't being superseded.
+				if srv.hasRemoveLabel(100, github.LabelPilot) {
+					t.Errorf("did not expect %s to be removed from source #100 on zero overlap, calls=%v", github.LabelPilot, srv.removeLabelCalls)
+				}
+				if srv.hasRemoveLabel(100, github.LabelInProgress) {
+					t.Errorf("did not expect %s to be removed from source #100 on zero overlap, calls=%v", github.LabelInProgress, srv.removeLabelCalls)
 				}
 				if len(sink.events) != 1 {
 					t.Errorf("expected exactly 1 alert, got %d", len(sink.events))

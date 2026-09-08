@@ -120,6 +120,18 @@ func (s *reviewScopeGHServer) hasAddLabel(issue int, label string) bool {
 	return false
 }
 
+func (s *reviewScopeGHServer) hasRemoveLabel(issue int, label string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	want := fmt.Sprintf("%d:%s", issue, label)
+	for _, c := range s.removeLabelCalls {
+		if c == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestController_VerifyFixPRDeliversSourceScope_ReviewRevision mirrors
 // gh5348_scope_mismatch_test.go's table for a review-revision fix issue
 // (identified by "**Failure Type**: review_requested" in the body, written by
@@ -213,6 +225,16 @@ func TestController_VerifyFixPRDeliversSourceScope_ReviewRevision(t *testing.T) 
 				if srv.hasAddLabel(100, labelNeedsHuman) {
 					t.Errorf("did not expect %s on source #100, calls=%v", labelNeedsHuman, srv.addLabelCalls)
 				}
+				// GH-5375: pilot-superseded and pilot/pilot-in-progress must
+				// never coexist on the source issue (GH-5298 invariant) — the
+				// review-revision kind used to only add pilot-superseded and
+				// leave the active labels standing on an OPEN issue.
+				if !srv.hasRemoveLabel(100, github.LabelPilot) {
+					t.Errorf("expected %s to be removed from source #100, calls=%v", github.LabelPilot, srv.removeLabelCalls)
+				}
+				if !srv.hasRemoveLabel(100, github.LabelInProgress) {
+					t.Errorf("expected %s to be removed from source #100, calls=%v", github.LabelInProgress, srv.removeLabelCalls)
+				}
 			}
 			if tt.wantEscalate {
 				if !srv.hasAddLabel(100, labelNeedsHuman) {
@@ -220,6 +242,15 @@ func TestController_VerifyFixPRDeliversSourceScope_ReviewRevision(t *testing.T) 
 				}
 				if srv.hasAddLabel(100, github.LabelSuperseded) {
 					t.Errorf("did not expect %s on source #100 — it must never have been applied in the first place, calls=%v", github.LabelSuperseded, srv.addLabelCalls)
+				}
+				// GH-5375: the zero-overlap/escalate branch must stay
+				// unchanged — no pilot/pilot-in-progress removal, since the
+				// source issue isn't being superseded.
+				if srv.hasRemoveLabel(100, github.LabelPilot) {
+					t.Errorf("did not expect %s to be removed from source #100 on escalate, calls=%v", github.LabelPilot, srv.removeLabelCalls)
+				}
+				if srv.hasRemoveLabel(100, github.LabelInProgress) {
+					t.Errorf("did not expect %s to be removed from source #100 on escalate, calls=%v", github.LabelInProgress, srv.removeLabelCalls)
 				}
 				if len(sink.events) != 1 {
 					t.Errorf("expected exactly 1 alert, got %d", len(sink.events))
@@ -237,6 +268,9 @@ func TestController_VerifyFixPRDeliversSourceScope_ReviewRevision(t *testing.T) 
 			if tt.wantLabelsUntouched {
 				if len(srv.addLabelCalls) != 0 {
 					t.Errorf("expected no label writes, got %v", srv.addLabelCalls)
+				}
+				if len(srv.removeLabelCalls) != 0 {
+					t.Errorf("expected no label removals, got %v", srv.removeLabelCalls)
 				}
 				if len(sink.events) != 0 {
 					t.Errorf("expected no alerts, got %d", len(sink.events))

@@ -251,18 +251,19 @@ func (c *Controller) verifyFixPRDeliversSourceScope(ctx context.Context, prState
 		// Confirmed overlap: the fix/revision PR's diff genuinely continues
 		// the origin PR's work — safe to mark the source issue superseded
 		// now that its scope is confirmed delivered.
-		if isReviewRevision {
-			if err := c.labeler.AddLabels(ctx, c.owner, c.repo, sourceNum, []string{github.LabelSuperseded}); err != nil {
-				c.log.Warn("verifyFixPRDeliversSourceScope: failed to add superseded label", "issue", sourceNum, "error", err)
-			}
-		} else {
-			// Mirrors the label set notifyExternalClose's supersededClose
-			// branch applies for the review-issue hand-off path.
-			c.mutateIssueLabels(ctx, sourceNum,
-				[]string{github.LabelSuperseded},
-				[]string{github.LabelPilot, github.LabelInProgress, labelNeedsManualRebase},
-			)
-		}
+		// GH-5375: both kinds must mirror the label set notifyExternalClose's
+		// supersededClose branch applies (controller.go ~9860-9868) — pilot
+		// and pilot-in-progress stripped in the same mutation that adds
+		// pilot-superseded. Before this fix the review-revision kind only
+		// added pilot-superseded, leaving pilot/pilot-in-progress standing on
+		// an OPEN source issue: the poller skips it (in-progress) so there's
+		// no double-dispatch, but the stale-label cleanup sweep and any
+		// operator reading labels see a live task that will never move
+		// (GH-5298 invariant: pilot-superseded and pilot must never coexist).
+		c.mutateIssueLabels(ctx, sourceNum,
+			[]string{github.LabelSuperseded},
+			[]string{github.LabelPilot, github.LabelInProgress, labelNeedsManualRebase},
+		)
 		c.log.Info("verifyFixPRDeliversSourceScope: fix/revision PR confirmed to deliver origin scope — source issue marked superseded",
 			"source", sourceNum, "fix_issue", prState.IssueNumber, "fix_pr", prState.PRNumber, "origin_pr", originPR, "review_revision", isReviewRevision)
 		c.cleanupOriginScope(prState.IssueNumber)
