@@ -4358,22 +4358,6 @@ func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath str
 				slog.Int("claim_lost_drops", claimLostDrops),
 			)
 		}
-		// GH-5376: name the actual underlying ledger status when it's a
-		// stalled row — the GH-5346 incident's confusing log pair
-		// ("repick-backoff cooldown, NOT a completed execution" immediately
-		// followed by the SDK's "completed execution exists") gave an
-		// operator no way to tell WHY the task was gated without a manual DB
-		// query. Best-effort/fail-open: a lookup error or no stalled row
-		// just omits the field, matching every other fail-open probe in this
-		// file.
-		if c.store != nil {
-			if exec, found, err := c.store.LatestStalledExecution(taskID, projectPath); err == nil && found {
-				attrs = append(attrs, slog.String("underlying_status", "stalled"))
-				if exec.CompletedAt != nil {
-					attrs = append(attrs, slog.Time("stalled_at", *exec.CompletedAt))
-				}
-			}
-		}
 		logging.WithComponent("dispatch").Info(
 			"skip reason: repick-backoff cooldown, NOT a completed execution — the SDK poller's next log line (\"completed execution exists\") is misleading for this task",
 			attrs...)
