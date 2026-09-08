@@ -7602,8 +7602,22 @@ func (c *Controller) escalateAndHold(ctx context.Context, prState *PRState, reas
 	// GH-4610: narrow re-adoption's re-entry scan to holds it can actually
 	// resolve (a rebase an operator fixed by pushing to the branch) rather
 	// than every StageFailed PR — other holds (CI-fix size guard, rebase-
-	// oscillation cap, CI timeout) stay parked even if their branch moves.
+	// oscillation cap, CI timeout) stay parked through a branch push alone;
+	// only a fresh escalateAndHold call (this one) or the size guard's own
+	// redrive can clear them.
 	prState.RebaseHoldActive = slices.Contains(labels, labelNeedsManualRebase)
+	// GH-5391: a fresh escalateAndHold call always supersedes any prior
+	// size-guard hold, exactly like RebaseHoldActive above — this function is
+	// the terminal rung for every unrelated hold reason (iteration cap,
+	// review cap, rebase failed, CI timeout, etc.), so leaving a stale
+	// SizeGuardHoldActive/SizeGuardHoldHeadSHA standing from an earlier hold
+	// let redriveSizeGuardHeldPR revive a later, unrelated terminal hold on
+	// the next branch push. The CI-fix size guard call site (below,
+	// controller.go ~3762) re-sets both fields immediately after this call
+	// returns, so this clear only ever removes a flag this call itself isn't
+	// setting.
+	prState.SizeGuardHoldActive = false
+	prState.SizeGuardHoldHeadSHA = ""
 
 	if prState.IssueNumber > 0 {
 		allLabels := append([]string{labelNeedsHuman}, labels...)
@@ -7659,12 +7673,14 @@ const maxReadoptAttempts = 2
 // Detection rides the existing PR poll in processAllPRs: compare the stored
 // HeadSHA against the freshly-fetched ghPR head. A changed SHA on a PR held
 // specifically via RebaseHoldActive (not any other StageFailed reason — CI-
-// fix size guard, rebase-oscillation cap, CI timeout, etc. all stay parked)
-// means someone pushed a fix, so re-enter the pipeline at StageWaitingCI for
-// fresh CI on the new head. MergeAttempts/RebaseAttempts are preserved (not
-// reset) so their own caps still apply if the PR conflicts again; the
-// external-merge scan (checkExternalMergeOrClose) remains the fallback for
-// PRs an operator merges by hand instead of pushing a fix.
+// fix size guard, rebase-oscillation cap, CI timeout, etc. all stay parked
+// through a branch push alone, though a fresh escalateAndHold call clears a
+// stale SizeGuardHoldActive flag regardless — GH-5391) means someone pushed
+// a fix, so re-enter the pipeline at StageWaitingCI for fresh CI on the new
+// head. MergeAttempts/RebaseAttempts are preserved (not reset) so their own
+// caps still apply if the PR conflicts again; the external-merge scan
+// (checkExternalMergeOrClose) remains the fallback for PRs an operator
+// merges by hand instead of pushing a fix.
 func (c *Controller) reAdoptHeldRebasePR(ctx context.Context, prState *PRState, ghPR *github.PullRequest) {
 	if ghPR == nil || prState.Stage != StageFailed || !prState.RebaseHoldActive {
 		return
@@ -7841,7 +7857,23 @@ func (c *Controller) redriveSizeGuardHeldPR(ctx context.Context, prState *PRStat
 	prState.Error = ""
 	prState.TerminalLabel = ""
 
-	c.mutateIssueLabels(ctx, prState.IssueNumber, nil, []string{labelNeedsHuman})
+	// GH-5391/GH-5099: mirror the exhaustion-outranks-close-supersedes-hold
+	// guard used at the external-close label site (controller.go ~9970) — an
+	// issue already parked at pilot-failed-retry-exhausted has a spent retry
+	// budget, a stronger signal than this hold, so a branch push that merely
+	// resolves the size-guard failure must not silently strip
+	// pilot-needs-human and un-park an issue Pilot has already given up on.
+	removeLabels := []string{labelNeedsHuman}
+	if prState.IssueNumber > 0 {
+		if issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber); err != nil {
+			c.log.Warn("redriveSizeGuardHeldPR: failed to fetch issue, leaving pilot-needs-human unchanged", "pr", prState.PRNumber, "issue", prState.IssueNumber, "error", err)
+			removeLabels = nil
+		} else if github.HasLabel(issue, github.LabelFailedRetryExhausted) {
+			c.log.Info("redriveSizeGuardHeldPR: pilot-failed-retry ladder already exhausted, leaving pilot-needs-human standing", "pr", prState.PRNumber, "issue", prState.IssueNumber)
+			removeLabels = nil
+		}
+	}
+	c.mutateIssueLabels(ctx, prState.IssueNumber, nil, removeLabels)
 
 	c.log.Info("redriveSizeGuardHeldPR: branch updated on size-guard-held PR, re-entering pipeline",
 		"pr", prState.PRNumber, "issue", prState.IssueNumber,
