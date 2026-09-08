@@ -16,7 +16,9 @@ import (
 // event list at GET .../issues/{n}/events, and fails the test if any other
 // path is hit — used to prove HasCompletedExecution makes NO GitHub calls at
 // all for genuine completed/no_op rows (only a canceled row should ever be
-// probed).
+// probed). The timeline route always returns an empty list — callers that
+// need GH-5381 Timeline "edited"-event evidence use a custom inline server
+// instead (newRearmTestServer's shared fixture has no case for it).
 func newRearmTestServer(t *testing.T, issue *github.Issue, events []*github.IssueEvent) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -26,6 +28,8 @@ func newRearmTestServer(t *testing.T, issue *github.Issue, events []*github.Issu
 			_ = json.NewEncoder(w).Encode(issue)
 		case r.URL.Path == "/repos/owner/repo/issues/5139/events" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(events)
+		case r.URL.Path == "/repos/owner/repo/issues/5139/timeline" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode([]*github.TimelineEvent{})
 		case r.URL.Path == "/repos/owner/repo/issues/5139/labels/"+github.LabelBlocked && r.Method == http.MethodDelete:
 			// Only exercised by GH-5212 stalled-rearm tests (tryRearmCanceled
 			// never removes labels) — kept here since this fixture is shared.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
@@ -115,17 +117,49 @@ func (c terminalCompletionChecker) tryRearmStalled(taskID, projectPath, backoffK
 	if err != nil {
 		return false, fmt.Errorf("listing issue #%d events: %w", issueNum, err)
 	}
-	rearmEvent := latestRearmEvent(events, *exec.CompletedAt, append([]string{c.triggerLabel}, retryReadyRearmLabels...)...)
-	if rearmEvent == nil {
-		// Open + labeled, but nothing in the timeline shows that state was
-		// reached AFTER the stall (neither a base-label relabel/reopen NOR a
-		// pilot-retry-ready/-1/-2 label add) — not a deliberate re-arm
-		// gesture.
+
+	var kind string
+	var evidenceAt time.Time
+	if rearmEvent := latestRearmEvent(events, *exec.CompletedAt, append([]string{c.triggerLabel}, retryReadyRearmLabels...)...); rearmEvent != nil {
+		kind, evidenceAt = rearmEvent.Event, rearmEvent.CreatedAt
+	} else {
+		// GH-5381: no label/reopen evidence found via the classic Events API
+		// — fall back to the Timeline API, the only endpoint that surfaces a
+		// body/title "edited" event at all (confirmed during the GH-5376
+		// incident; the classic Events API never emits one). This is
+		// deliberately NOT issue.UpdatedAt (PR #5380's approach, reverted in
+		// f8532806): UpdatedAt moves on ANY mutation, including the
+		// dispatcher's own stall comment + pilot-blocked label
+		// (surfaceStalledIssue, internal/executor/dispatcher.go), so it
+		// re-armed every stalled task on the very next sweep. An "edited"
+		// timeline event authored by anyone other than the bot itself is a
+		// much narrower, deliberate-operator-gesture signal.
+		timeline, timelineErr := c.ghClient.ListIssueTimeline(ctx, c.repoOwner, c.repoName, issueNum)
+		if timelineErr != nil {
+			return false, fmt.Errorf("listing issue #%d timeline: %w", issueNum, timelineErr)
+		}
+		// Only spend a GetAuthenticatedUser call resolving the bot login
+		// (resolveBotLogin) when there's at least one "edited" event that
+		// could possibly qualify — the common case (no edit at all since the
+		// stall) has nothing to filter by actor, so this skips an API call
+		// on every ordinary no-evidence sweep pass.
+		if hasEditedEventAfter(timeline, *exec.CompletedAt) {
+			botLogin := resolveBotLogin(ctx, c.ghClient)
+			if at, ok := stalledTimelineRearmEvidence(timeline, *exec.CompletedAt, botLogin); ok {
+				kind, evidenceAt = "edited", at
+			}
+		}
+	}
+	if kind == "" {
+		// Open + labeled, but nothing observed shows that state was reached
+		// AFTER the stall (no base-label relabel/reopen, no
+		// pilot-retry-ready/-1/-2 label add, no non-bot body/title edit) —
+		// not a deliberate re-arm gesture.
 		return false, nil
 	}
 
-	reason := fmt.Sprintf("GH-5212: re-armed by issue #%d %s event at %s (stalled at %s)",
-		issueNum, rearmEvent.Event, rearmEvent.CreatedAt.Format(time.RFC3339), exec.CompletedAt.Format(time.RFC3339))
+	reason := fmt.Sprintf("GH-5212: re-armed by issue #%d %s evidence at %s (stalled at %s)",
+		issueNum, kind, evidenceAt.Format(time.RFC3339), exec.CompletedAt.Format(time.RFC3339))
 	if err := c.store.ReclassifyStalledForRearm(taskID, projectPath, reason); err != nil {
 		return false, fmt.Errorf("reclassifying stalled row: %w", err)
 	}
@@ -146,9 +180,103 @@ func (c terminalCompletionChecker) tryRearmStalled(taskID, projectPath, backoffK
 	}
 
 	repickBackoff.recordSuccess(backoffKey)
-	logging.WithComponent("dispatch").Info("GH-5212: stalled task re-armed via GitHub reopen/relabel",
-		slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.String("event", rearmEvent.Event))
+	stalledRearmNoEvidenceStreaks.reset(backoffKey)
+	logging.WithComponent("dispatch").Info("GH-5212: stalled task re-armed via GitHub reopen/relabel/edit",
+		slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.String("evidence", kind))
 	return true, nil
+}
+
+// hasEditedEventAfter reports whether events contains any "edited" entry
+// timestamped after since, with no actor filtering — a cheap pre-check so
+// tryRearmStalled only pays for resolveBotLogin's GetAuthenticatedUser call
+// when there's actually something that could qualify as evidence.
+func hasEditedEventAfter(events []*github.TimelineEvent, since time.Time) bool {
+	for _, ev := range events {
+		if ev != nil && ev.Event == "edited" && ev.CreatedAt.After(since) {
+			return true
+		}
+	}
+	return false
+}
+
+// stalledTimelineRearmEvidence is GH-5381's real body-edit evidence check.
+// GitHub's classic Events API never emits an "edited" event for a body/title
+// edit (the GH-5376 incident and the now-reverted PR #5380 confirmed this —
+// #5380 substituted issue.UpdatedAt instead, which broke worse: the
+// dispatcher's OWN stall comment + pilot-blocked label bump UpdatedAt
+// seconds after CompletedAt, so every stalled task re-armed itself on the
+// very next sweep — see commit f8532806's revert). The Timeline API DOES
+// surface "edited" events, each with an actor, so a genuine operator body
+// edit can be told apart from the bot's own activity by actor login alone —
+// no timestamp heuristic needed.
+//
+// botLogin is the authenticated token identity (resolveBotLogin, cached); an
+// edited event whose actor matches it (case-insensitive) is excluded — it's
+// Pilot's own doing (e.g. an autopilot-meta footer rewrite), never a
+// deliberate operator re-arm gesture. An empty botLogin (resolution failed)
+// accepts NO edited-event evidence this pass — fail closed, since accepting
+// one without an actor filter risks reintroducing exactly the self-re-arm
+// bug this function exists to avoid. Label/reopen evidence (checked first,
+// unconditionally, in tryRearmStalled) is unaffected by this fallback.
+func stalledTimelineRearmEvidence(events []*github.TimelineEvent, since time.Time, botLogin string) (at time.Time, ok bool) {
+	if botLogin == "" {
+		return time.Time{}, false
+	}
+	var latest *github.TimelineEvent
+	for _, ev := range events {
+		if ev == nil || ev.Event != "edited" || !ev.CreatedAt.After(since) {
+			continue
+		}
+		if ev.Actor != nil && strings.EqualFold(ev.Actor.Login, botLogin) {
+			continue
+		}
+		if latest == nil || ev.CreatedAt.After(latest.CreatedAt) {
+			latest = ev
+		}
+	}
+	if latest == nil {
+		return time.Time{}, false
+	}
+	return latest.CreatedAt, true
+}
+
+// botLoginMu/cachedBotLogin/botLoginResolved cache the authenticated GitHub
+// login for the Pilot token, mirroring internal/autopilot.Controller's
+// getBotLogin — package-level here because terminalCompletionChecker is a
+// value type constructed fresh per call (see sweepStalledRearm's doc
+// comment), so an instance-level cache would never survive across sweep
+// passes.
+var (
+	botLoginMu       sync.Mutex
+	cachedBotLogin   string
+	botLoginResolved bool
+)
+
+// resolveBotLogin returns the authenticated GitHub login for client's token,
+// resolved lazily on first call and cached for the process lifetime. Returns
+// "" when it can't be determined (e.g. a transient GetAuthenticatedUser
+// failure); callers must treat that as "exclude nothing can be confirmed
+// safe" — see stalledTimelineRearmEvidence's fail-closed handling.
+func resolveBotLogin(ctx context.Context, client *github.Client) string {
+	botLoginMu.Lock()
+	if botLoginResolved {
+		login := cachedBotLogin
+		botLoginMu.Unlock()
+		return login
+	}
+	botLoginMu.Unlock()
+
+	user, err := client.GetAuthenticatedUser(ctx)
+	if err != nil {
+		logging.WithComponent("dispatch").Warn("GH-5381: could not resolve bot login for edited-event actor exclusion — Timeline edited-event evidence disabled until this succeeds",
+			slog.Any("error", err))
+		return ""
+	}
+	botLoginMu.Lock()
+	cachedBotLogin = user.Login
+	botLoginResolved = true
+	botLoginMu.Unlock()
+	return user.Login
 }
 
 // sweepStalledRearm scans repoOwner/repoName for open issues currently
@@ -199,6 +327,14 @@ func (c terminalCompletionChecker) sweepStalledRearm(ctx context.Context, projec
 			// this sweep needs to spend a probe on.
 			continue
 		}
+		if github.HasLabel(issue, labelPilotNeedsHumanSDK) {
+			// GH-5381: already escalated by escalateStalledRearmNoEvidence
+			// below — an operator must clear pilot-needs-human (and satisfy
+			// tryRearmStalled's evidence check) before this sweep resumes
+			// probing. Without this, the sweep would keep re-probing (and
+			// re-posting the escalation comment) on every pass forever.
+			continue
+		}
 
 		taskID := fmt.Sprintf("GH-%d", issue.Number)
 		backoffKey := repickBackoffKey(projectPath, taskID)
@@ -223,15 +359,131 @@ func (c terminalCompletionChecker) sweepStalledRearm(ctx context.Context, projec
 
 		rearmed, err := c.tryRearmStalled(taskID, projectPath, backoffKey)
 		if err != nil {
+			// GH-5381: a probe error (e.g. a persistent GitHub API outage)
+			// must count toward the no-evidence streak exactly like an
+			// ordinary "no evidence found" result — before this, only the
+			// !rearmed branch below fed the streak, so a GitHub API error
+			// repeating every sweep pass could recordClaimLostDrop forever
+			// without ever reaching the escalation backstop.
 			logging.WithComponent("dispatch").Warn("GH-5212 stalled re-arm probe failed",
 				slog.String("task_id", taskID), slog.Any("error", err))
-			repickBackoff.recordClaimLostDrop(backoffKey)
+			c.recordStalledRearmMiss(ctx, taskID, issue.Number, backoffKey)
 			continue
 		}
-		if !rearmed {
-			repickBackoff.recordClaimLostDrop(backoffKey)
+		if rearmed {
+			continue
 		}
+		c.recordStalledRearmMiss(ctx, taskID, issue.Number, backoffKey)
 	}
+}
+
+// stalledRearmNoEvidenceTracker counts, per repickBackoffKey, how many
+// consecutive sweepStalledRearm passes found no re-arm evidence for that key
+// (GH-5381, carried forward from the reverted #5380) — a probe error and an
+// ordinary "no evidence" result both count via recordStalledRearmMiss.
+// Reset on any successful re-arm (tryRearmStalled returning true) or once
+// escalateStalledRearmNoEvidence successfully applies pilot-needs-human —
+// that label is what actually stops the sweep from revisiting the issue (see
+// the candidate-filter check above); resetting the streak here just keeps
+// this counter from drifting stale if the label is ever cleared without a
+// genuine re-arm.
+//
+// A package-level var (mirroring repickBackoff) since terminalCompletionChecker
+// is constructed fresh per call by runStalledRearmSweepLoop's closure — the
+// streak has to outlive any single sweepStalledRearm call to count "in a
+// row" across sweep passes.
+type stalledRearmNoEvidenceTracker struct {
+	mu      sync.Mutex
+	streaks map[string]int
+}
+
+func newStalledRearmNoEvidenceTracker() *stalledRearmNoEvidenceTracker {
+	return &stalledRearmNoEvidenceTracker{streaks: make(map[string]int)}
+}
+
+// increment bumps key's streak and returns the new count.
+func (t *stalledRearmNoEvidenceTracker) increment(key string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.streaks[key]++
+	return t.streaks[key]
+}
+
+// reset clears key's streak, e.g. after a successful re-arm or an escalation.
+func (t *stalledRearmNoEvidenceTracker) reset(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.streaks, key)
+}
+
+var stalledRearmNoEvidenceStreaks = newStalledRearmNoEvidenceTracker()
+
+// recordStalledRearmMiss is sweepStalledRearm's shared "no evidence this
+// pass" handler — reached both when tryRearmStalled returns a hard error
+// (a GitHub API failure) and when it returns rearmed=false cleanly. Below
+// terminalDropPilotStripThreshold (GH-5297's constant, reused here)
+// consecutive misses, it behaves exactly like the pre-GH-5381 code:
+// recordClaimLostDrop arms the ordinary repick-backoff cooldown. At or past
+// the threshold, it escalates to an operator instead of growing the backoff
+// window forever (GH-5346: 76 claim-lost drops over 33h with no signal,
+// since claim_lost_drops is deliberately excluded from the dispatcher's
+// hard-cap counter).
+func (c terminalCompletionChecker) recordStalledRearmMiss(ctx context.Context, taskID string, issueNum int, backoffKey string) {
+	streak := stalledRearmNoEvidenceStreaks.increment(backoffKey)
+	if streak < terminalDropPilotStripThreshold {
+		repickBackoff.recordClaimLostDrop(backoffKey)
+		return
+	}
+	if c.escalateStalledRearmNoEvidence(ctx, taskID, issueNum, streak) {
+		stalledRearmNoEvidenceStreaks.reset(backoffKey)
+		return
+	}
+	// GH-5381: AddLabels failed — pilot-needs-human never landed, so the
+	// sweep's candidate filter won't exclude this issue and would otherwise
+	// silently resume ordinary claim-lost-drop backoff next pass. Leave the
+	// streak at/above threshold so the very next sweep retries the
+	// escalation (comment + label) instead of quietly falling back.
+}
+
+// escalateStalledRearmNoEvidence posts the explanatory comment and applies
+// pilot-needs-human once sweepStalledRearm has found no re-arm evidence
+// (probe error or clean no-evidence result alike) terminalDropPilotStripThreshold
+// times in a row for the same task_id — the operator-signal backstop the
+// GH-5346 incident (76 claim-lost drops, 33h, no signal) never had. Mirrors
+// GH-5300's stripPilotLabelAndCommentSDK shape but applies pilot-needs-human
+// instead of stripping the trigger label: the sweep's own candidate filter
+// (in sweepStalledRearm above) already excludes pilot-needs-human issues, so
+// applying it here is what makes this a one-shot escalation rather than a
+// per-sweep-pass repeat, without touching pilot-blocked/pilot-retry-ready
+// (which the documented re-arm recipe still expects to manipulate).
+//
+// Returns whether pilot-needs-human was successfully applied — callers must
+// only reset the no-evidence streak on success (see recordStalledRearmMiss):
+// on an AddLabels failure the escalation comment may already have posted,
+// so a retried pass can end up posting a second explanatory comment, an
+// accepted, visible cost against the alternative of a silently stuck
+// escalation that the sweep never retries.
+func (c terminalCompletionChecker) escalateStalledRearmNoEvidence(ctx context.Context, taskID string, issueNum int, streak int) bool {
+	comment := fmt.Sprintf(
+		"⚠️ **Pilot could not confirm this stalled task was re-armed**\n\n"+
+			"This issue was checked %d times with no evidence of a deliberate re-arm gesture since it stalled. "+
+			"Re-arm evidence is any of: re-adding the `%s` label, adding one of `%s`, reopening the issue, "+
+			"or editing the issue body/title as a human (not Pilot itself) — all timestamped after the stall.\n\n"+
+			"Applying `%s` so this stops being silently re-checked. Remove it and repeat one of the above to re-arm.",
+		streak, c.triggerLabel, strings.Join(retryReadyRearmLabels, "`, `"), labelPilotNeedsHumanSDK,
+	)
+	if _, err := c.ghClient.AddComment(ctx, c.repoOwner, c.repoName, issueNum, comment); err != nil {
+		logging.WithComponent("dispatch").Warn("GH-5381: failed to post stalled-no-evidence escalation comment",
+			slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.Any("error", err))
+	}
+	if err := c.ghClient.AddLabels(ctx, c.repoOwner, c.repoName, issueNum, []string{labelPilotNeedsHumanSDK}); err != nil {
+		logging.WithComponent("dispatch").Warn("GH-5381: failed to apply pilot-needs-human after repeated no-evidence sweeps — will retry on the next sweep pass",
+			slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.Any("error", err))
+		return false
+	}
+	logging.WithComponent("dispatch").Warn("GH-5381: stalled re-arm sweep escalated to pilot-needs-human after repeated no-evidence checks",
+		slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.Int("streak", streak))
+	return true
 }
 
 // runStalledRearmSweepLoop drives sweepStalledRearm on the same cadence as

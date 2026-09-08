@@ -306,6 +306,22 @@ type IssueEvent struct {
 	Label *Label `json:"label,omitempty"`
 }
 
+// TimelineEvent represents one entry of a GitHub issue's Timeline API (the
+// `/issues/{number}/timeline` endpoint) — a superset of IssueEvent's classic
+// Events API that additionally surfaces comments, cross-references, and,
+// critically, an "edited" event for body/title edits. GH-5381: the classic
+// Events API (ListIssueEvents/IssueEvent above) never emits "edited" at all
+// (confirmed live during the GH-5376 incident), so a genuine operator
+// body-edit re-arm gesture is only observable via this endpoint. Actor is
+// who performed the action, letting callers tell a bot's own edit (e.g. an
+// autopilot-meta footer write) apart from a deliberate operator edit.
+type TimelineEvent struct {
+	Event     string    `json:"event"`
+	CreatedAt time.Time `json:"created_at"`
+	Actor     *User     `json:"actor,omitempty"`
+	Label     *Label    `json:"label,omitempty"`
+}
+
 // doRequest performs an HTTP request to the GitHub API with automatic retry on
 // transient errors (429, 5xx, network failures). The request body is buffered
 // once before the retry loop so it can be replayed on each attempt.
@@ -421,6 +437,21 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, numb
 func (c *Client) ListIssueEvents(ctx context.Context, owner, repo string, number int) ([]*IssueEvent, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/events?per_page=100", owner, repo, number)
 	var events []*IssueEvent
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+// ListIssueTimeline returns an issue's Timeline API entries, oldest first —
+// see TimelineEvent's doc comment for why this exists alongside
+// ListIssueEvents rather than replacing it (only this endpoint emits
+// "edited"). Single page at the max per_page (100), same rationale as
+// ListIssueEvents: this is a re-arm probe call gated behind repickBackoff,
+// not a hot poll loop.
+func (c *Client) ListIssueTimeline(ctx context.Context, owner, repo string, number int) ([]*TimelineEvent, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/timeline?per_page=100", owner, repo, number)
+	var events []*TimelineEvent
 	if err := c.doRequest(ctx, http.MethodGet, path, nil, &events); err != nil {
 		return nil, err
 	}
