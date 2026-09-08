@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-07T15:42:28.313964+00:00",
+  "updated": "2026-09-08T10:08:39.972880+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6247,6 +6247,20 @@
         ],
         "confidence": 0.9,
         "created": "2026-09-07"
+      },
+      "stalled-rearm-sweep-ignores-body-edit-loops-forever": {
+        "type": "pitfall",
+        "summary": "Re-arming a stalled task by body edit does nothing: sweepStalledRearm only accepts label/reopen events newer than the stall, then recordClaimLostDrop re-arms a 16-min backoff forever with no backstop (GH-5346, 76 drops / 33 h). Re-arm with a label event; fix pilot#5376.",
+        "file": ".agent/knowledge/memories/pitfalls/stalled-rearm-sweep-ignores-body-edit-loops-forever.md",
+        "concepts": [
+          "dispatcher",
+          "retry",
+          "stalled",
+          "operations",
+          "autopilot"
+        ],
+        "confidence": 0.95,
+        "created": "2026-09-08"
       }
     }
   },
@@ -8535,6 +8549,31 @@
       "from": "board-stalled-timestamp-is-created-at-after-self-upgrade-reconciliation",
       "to": "TASK-495",
       "type": "discovered_in"
+    },
+    {
+      "from": "stalled-rearm-sweep-ignores-body-edit-loops-forever",
+      "to": "dispatcher",
+      "type": "relates_to"
+    },
+    {
+      "from": "stalled-rearm-sweep-ignores-body-edit-loops-forever",
+      "to": "retry",
+      "type": "relates_to"
+    },
+    {
+      "from": "stalled-rearm-sweep-ignores-body-edit-loops-forever",
+      "to": "stalled",
+      "type": "relates_to"
+    },
+    {
+      "from": "stalled-rearm-sweep-ignores-body-edit-loops-forever",
+      "to": "autopilot",
+      "type": "relates_to"
+    },
+    {
+      "from": "stalled-rearm-sweep-ignores-body-edit-loops-forever",
+      "to": "TASK-495",
+      "type": "discovered_in"
     }
   ],
   "concept_index": {
@@ -10438,11 +10477,11 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-07T15:42:28.313964+00:00",
+  "last_updated": "2026-09-08T10:08:39.972880+00:00",
   "stats": {
-    "total_nodes": 524,
-    "total_edges": 457,
-    "memory_count": 277
+    "total_nodes": 525,
+    "total_edges": 462,
+    "memory_count": 278
   },
   "metadata": {}
 }
