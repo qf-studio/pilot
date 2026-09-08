@@ -448,7 +448,8 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 	// inherit an already-exhausted task ctx — see finalizeCtx's doc comment
 	// for why (same class of bug as finalizeEpicBranchPR and the direct
 	// path's PR-creation block).
-	ctx, cancel := finalizeCtx(ctx, finalizeGitTimeout)
+	// GH-5346: budget is now configurable (orchestrator.execution.finalize_timeout).
+	ctx, cancel := finalizeCtx(ctx, r.finalizeTimeout())
 	defer cancel()
 
 	// TASK-359 Shape C / GH-4022: an already-merged branch short-circuits

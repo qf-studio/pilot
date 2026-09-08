@@ -291,6 +291,16 @@ orchestrator:
     poll_interval: 30s         # How often to check PR status
     pr_timeout: 1h             # Max time to wait for PR merge
 
+    # GH-5346: budget granted to post-backend finalization work (quality
+    # gates, self-review, intent judge, contract evidence, push/PR create)
+    # when the task's own ctx has already hit its deadline. Without this, a
+    # backend call that timed out after landing real commits could lose
+    # those commits entirely — finalization inherited the same expired ctx
+    # and every git/gate call failed instantly. Only takes effect once the
+    # task ctx is actually Done(); a task that finishes within its normal
+    # timeout is unaffected. Default: 15m.
+    finalize_timeout: 15m
+
   # Daily receipts digest (GH-5257): an end-of-day Telegram-only summary,
   # one line per terminal execution that day — issue ref, diff size,
   # duration, dollar cost — plus a day total. Independent schedule from any

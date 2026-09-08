@@ -554,6 +554,12 @@ Examples:
 			}
 			cfg.Executor.Version = version
 
+			// GH-5346: thread orchestrator.execution.finalize_timeout into the
+			// executor config so Runner.finalizeTimeout() sees it.
+			if cfg.Orchestrator != nil && cfg.Orchestrator.Execution != nil && cfg.Orchestrator.Execution.FinalizeTimeout > 0 {
+				cfg.Executor.FinalizeTimeout = cfg.Orchestrator.Execution.FinalizeTimeout
+			}
+
 			// Resolve project path: flag > config default > cwd
 			if projectPath == "" {
 				if defaultProj := cfg.GetDefaultProject(); defaultProj != nil {

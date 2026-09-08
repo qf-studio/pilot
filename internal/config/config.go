@@ -186,15 +186,22 @@ type ExecutionConfig struct {
 	WaitForMerge bool          `yaml:"wait_for_merge"` // Wait for PR merge before next task
 	PollInterval time.Duration `yaml:"poll_interval"`  // How often to check PR status (default: 30s)
 	PRTimeout    time.Duration `yaml:"pr_timeout"`     // Max wait time for PR merge (default: 1h)
+	// FinalizeTimeout bounds the fresh context granted to post-backend
+	// finalization (quality gates, self-review, intent judge, contract
+	// evidence, push/PR create) once the task's own timeout ctx has already
+	// expired. Copied into executor.BackendConfig.FinalizeTimeout at
+	// startup. Default: 15m. GH-5346.
+	FinalizeTimeout time.Duration `yaml:"finalize_timeout"`
 }
 
 // DefaultExecutionConfig returns sensible defaults for execution config
 func DefaultExecutionConfig() *ExecutionConfig {
 	return &ExecutionConfig{
-		Mode:         "auto",
-		WaitForMerge: true,
-		PollInterval: 30 * time.Second,
-		PRTimeout:    1 * time.Hour,
+		Mode:            "auto",
+		WaitForMerge:    true,
+		PollInterval:    30 * time.Second,
+		PRTimeout:       1 * time.Hour,
+		FinalizeTimeout: 15 * time.Minute,
 	}
 }
 

@@ -506,6 +506,24 @@ type BackendConfig struct {
 	// Version is the Pilot binary version, set at startup from the build-time version var.
 	// Used for feature matrix updates and execution reports. Not a config file field.
 	Version string `yaml:"-"`
+
+	// FinalizeTimeout bounds the fresh context finalizeCtx grants once the
+	// backend has finished and the task's own timeout ctx has already
+	// expired: quality gates, self-review, intent judge, contract-evidence
+	// verification, and push/PR creation all run on it. Mirrors
+	// orchestrator.execution.finalize_timeout (config.ExecutionConfig),
+	// which is copied here at startup. Default: 15m. GH-5346.
+	FinalizeTimeout time.Duration `yaml:"finalize_timeout,omitempty"`
+}
+
+// EffectiveFinalizeTimeout returns the post-backend finalization budget,
+// applying the 15-minute default when FinalizeTimeout is zero or unset.
+// GH-5346.
+func (c *BackendConfig) EffectiveFinalizeTimeout() time.Duration {
+	if c == nil || c.FinalizeTimeout <= 0 {
+		return 15 * time.Minute
+	}
+	return c.FinalizeTimeout
 }
 
 // EffectiveStallTimeout returns the stall detection threshold, applying the

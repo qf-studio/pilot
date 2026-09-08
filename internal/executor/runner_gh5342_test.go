@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -421,5 +423,229 @@ func TestNoCommitRetry_PostRetryExpiredCtx_NoDeadlineExceededLogNoise(t *testing
 
 	if logged := logBuf.String(); strings.Contains(logged, "context deadline exceeded") {
 		t.Errorf("daemon log must not surface \"context deadline exceeded\" from the finalization-phase git/gate calls, got:\n%s", logged)
+	}
+}
+
+// ctxRespectingBackend is a scriptable Backend for exercising the GH-5346
+// timeout-salvage path. Unlike mockGH4964Backend (which ignores the ctx it's
+// handed entirely and always returns a nil error), a real backend — a
+// subprocess wrapper watching the ctx it was given — returns a non-nil
+// error once that ctx is done. run is invoked once per Execute() call
+// (1-indexed) and is handed the real ctx so it can block on it exactly like
+// a live subprocess wrapper would.
+type ctxRespectingBackend struct {
+	mu    sync.Mutex
+	count int
+	run   func(ctx context.Context, call int, opts ExecuteOptions) (*BackendResult, error)
+}
+
+func (b *ctxRespectingBackend) Name() string      { return "mock-ctx-respecting" }
+func (b *ctxRespectingBackend) IsAvailable() bool { return true }
+
+func (b *ctxRespectingBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	b.mu.Lock()
+	b.count++
+	call := b.count
+	b.mu.Unlock()
+	return b.run(ctx, call, opts)
+}
+
+func (b *ctxRespectingBackend) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.count
+}
+
+// stubQualityChecker is a scriptable QualityChecker so the timeout-salvage
+// tests below can control the single (non-retrying) gate-check outcome
+// directly, instead of depending on a real build/test command being
+// detectable in the throwaway test repo.
+type stubQualityChecker struct {
+	outcome *QualityOutcome
+}
+
+func (s *stubQualityChecker) Check(context.Context) (*QualityOutcome, error) {
+	return s.outcome, nil
+}
+
+// writeFakeGhPRCreateAndLabel extends writeFakeGhPRCreate (runner_gh4220_test.go)
+// with a `gh issue edit ...` capture: the full argument line of any `issue
+// edit` invocation is appended to capturedLabelEditsFile, one line per call,
+// so a test can assert the pilot-needs-human hold path actually reached the
+// label/comment escalation call instead of only checking ExecutionResult.
+func writeFakeGhPRCreateAndLabel(t *testing.T, fakeBin, capturedTitleFile, capturedLabelEditsFile string) {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/sh
+case "$*" in
+  *"pr list"*) echo "[]" ;;
+  *"pr create"*)
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--title" ]; then
+        printf '%%s' "$arg" > %q
+      fi
+      prev="$arg"
+    done
+    echo "https://github.com/o/r/pull/777"
+    ;;
+  *"issue edit"*) echo "$*" >> %q ;;
+  *) echo "[]" ;;
+esac
+`, capturedTitleFile, capturedLabelEditsFile)
+	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+}
+
+// setUpFakeGhPRCreateAndLabelPATH mirrors setUpFakeGhPRCreatePATH but also
+// returns the file `gh issue edit` invocations get appended to.
+func setUpFakeGhPRCreateAndLabelPATH(t *testing.T) (capturedTitleFile, capturedLabelEditsFile string) {
+	t.Helper()
+	fakeBin := t.TempDir()
+	capturedTitleFile = filepath.Join(fakeBin, "captured-title.txt")
+	capturedLabelEditsFile = filepath.Join(fakeBin, "captured-label-edits.txt")
+	writeFakeGhPRCreateAndLabel(t, fakeBin, capturedTitleFile, capturedLabelEditsFile)
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	return capturedTitleFile, capturedLabelEditsFile
+}
+
+// TestBackendTimeoutSalvage_CommitsPresent_GatesPass_CreatesPR is the
+// GH-5346 regression guard for the "timeout + commits + gates pass" case:
+// the backend call returns only because its ctx hit the deadline (not a
+// clean success), but it left a real commit on the branch first — exactly
+// what a watchdog killing Claude Code mid-task looks like. Before GH-5346,
+// executeWithOptions's timedOut branch always fell through to a bare "task
+// failed" return, discarding that commit and leaving the branch unpushed —
+// no PR, no held branch, silent data loss. attemptBackendTimeoutSalvage must
+// instead find the commit, run quality gates exactly once (never the
+// re-invoking gate-retry loop — the backend has already burned its full
+// budget getting here), and — since they pass — push the branch and open a
+// PR.
+func TestBackendTimeoutSalvage_CommitsPresent_GatesPass_CreatesPR(t *testing.T) {
+	capturedTitleFile := setUpFakeGhPRCreatePATH(t)
+
+	const branch = "pilot/GH-5346-timeout-salvage-pass"
+	dir, _ := setupFreshnessRepo(t)
+	runGit(t, dir, "checkout", "-b", branch)
+
+	backend := &ctxRespectingBackend{
+		run: func(ctx context.Context, _ int, _ ExecuteOptions) (*BackendResult, error) {
+			// Simulate Claude Code landing a real commit before the
+			// watchdog/task-deadline kills it: commit first, then block
+			// until ctx is actually done and return its error — exactly
+			// like a ctx-respecting subprocess wrapper would.
+			writeUncommittedFile(t, dir, "salvaged.go")
+			runGit(t, dir, "add", "salvaged.go")
+			runGit(t, dir, "commit", "-m", "real work before the deadline hit")
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	runner := newGH4964Runner(backend)
+	runner.qualityCheckerFactory = func(string, string) QualityChecker {
+		return &stubQualityChecker{outcome: &QualityOutcome{Passed: true}}
+	}
+
+	task := newGH4964Task("GH-5346", branch, dir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+
+	if backend.callCount() != 1 {
+		t.Errorf("expected backend called exactly once (timeout salvage must never re-invoke Claude Code), got %d", backend.callCount())
+	}
+	if !result.Success {
+		t.Fatalf("expected Success=true, got false (error=%q)", result.Error)
+	}
+	if result.Outcome == "no_op" {
+		t.Errorf("committed work must never be recorded as no_op after a backend timeout, got Outcome=%q error=%q", result.Outcome, result.Error)
+	}
+	if result.PRUrl == "" {
+		t.Error("expected a PR URL, got none")
+	}
+	if _, statErr := os.Stat(capturedTitleFile); statErr != nil {
+		t.Errorf("gh pr create was never invoked: %v", statErr)
+	}
+
+	remoteBranches := gitOutput(t, dir, "ls-remote", "origin", branch)
+	if strings.TrimSpace(remoteBranches) == "" {
+		t.Errorf("expected branch %q to be pushed to origin, ls-remote returned nothing", branch)
+	}
+}
+
+// TestBackendTimeoutSalvage_CommitsPresent_GatesFail_HoldsBranchNoReinvocation
+// is the GH-5346 regression guard for the "timeout + commits + gates fail"
+// case: same ctx-timeout-with-a-real-commit shape as the gates-pass test
+// above, but this time the single post-timeout gate check fails. GH-5346
+// step 2 forbids re-invoking Claude Code once the backend has already
+// consumed its full budget on this timeout — there is no more time to burn
+// on a fix-it retry — so the gate failure must route straight to
+// holdPushedBranch: push the branch (so the work is not stranded only in
+// the about-to-be-cleaned-up worktree) and park the source issue under
+// pilot-needs-human, never silently drop back to a bare "task failed" with
+// an unpushed branch.
+func TestBackendTimeoutSalvage_CommitsPresent_GatesFail_HoldsBranchNoReinvocation(t *testing.T) {
+	capturedTitleFile, capturedLabelEditsFile := setUpFakeGhPRCreateAndLabelPATH(t)
+
+	const branch = "pilot/GH-5346-timeout-salvage-fail"
+	dir, _ := setupFreshnessRepo(t)
+	runGit(t, dir, "checkout", "-b", branch)
+
+	backend := &ctxRespectingBackend{
+		run: func(ctx context.Context, _ int, _ ExecuteOptions) (*BackendResult, error) {
+			writeUncommittedFile(t, dir, "salvaged.go")
+			runGit(t, dir, "add", "salvaged.go")
+			runGit(t, dir, "commit", "-m", "real work before the deadline hit")
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	runner := newGH4964Runner(backend)
+	runner.qualityCheckerFactory = func(string, string) QualityChecker {
+		return &stubQualityChecker{outcome: &QualityOutcome{Passed: false}}
+	}
+
+	task := newGH4964Task("GH-5346", branch, dir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+
+	if backend.callCount() != 1 {
+		t.Errorf("expected backend called exactly once (a timeout-with-failing-gates salvage must never re-invoke Claude Code), got %d", backend.callCount())
+	}
+	if result.Success {
+		t.Errorf("expected Success=false when post-timeout quality gates fail, got true")
+	}
+	if result.Outcome != "needs_human" {
+		t.Errorf("expected Outcome=%q, got %q (error=%q)", "needs_human", result.Outcome, result.Error)
+	}
+	if result.PRUrl != "" {
+		t.Errorf("expected no PR URL (gates failed), got %q", result.PRUrl)
+	}
+	if _, statErr := os.Stat(capturedTitleFile); statErr == nil {
+		t.Error("gh pr create must not be invoked when post-timeout quality gates fail")
+	}
+
+	remoteBranches := gitOutput(t, dir, "ls-remote", "origin", branch)
+	if strings.TrimSpace(remoteBranches) == "" {
+		t.Errorf("expected branch %q to still be pushed to origin even though gates failed, ls-remote returned nothing", branch)
+	}
+
+	labelEdits, readErr := os.ReadFile(capturedLabelEditsFile)
+	if readErr != nil {
+		t.Fatalf("expected a `gh issue edit` call applying pilot-needs-human, got no captured calls: %v", readErr)
+	}
+	if !strings.Contains(string(labelEdits), labelPilotNeedsHuman) {
+		t.Errorf("expected the captured `gh issue edit` call to add %q, got:\n%s", labelPilotNeedsHuman, labelEdits)
 	}
 }
