@@ -228,6 +228,14 @@ func (s *StateStore) migrate() error {
 		// restart landing between handleCIFailed's own close and the next
 		// poll's checkExternalMergeOrClose read. 0 means "not self-closed".
 		`ALTER TABLE autopilot_pr_state ADD COLUMN self_closed_fix_issue INTEGER NOT NULL DEFAULT 0`,
+		// GH-5378: persist the CI-fix size-guard hold flag and the head SHA
+		// recorded when it fired, mirroring rebase_hold_active/breaker_hold_active
+		// above — redriveSizeGuardHeldPR needs both to survive a daemon restart
+		// so a held PR isn't stranded forever even after a later push (that
+		// resolves the failing check without growing the PR further) makes CI
+		// green (PR #5356 sat CLEAN for 85 minutes until merged by hand).
+		`ALTER TABLE autopilot_pr_state ADD COLUMN size_guard_hold_active INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN size_guard_hold_head_sha TEXT NOT NULL DEFAULT ''`,
 		// GH-5351: durably records the origin PR's changed-file set for a
 		// newly spawned CI-fix issue, keyed by fix issue number rather than PR
 		// number — the origin PR's own autopilot_pr_state row does not
@@ -512,6 +520,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			release_backfill_abandoned INTEGER NOT NULL DEFAULT 0,
 			jira_done_notified INTEGER NOT NULL DEFAULT 0,
 			self_closed_fix_issue INTEGER NOT NULL DEFAULT 0,
+			size_guard_hold_active INTEGER NOT NULL DEFAULT 0,
+			size_guard_hold_head_sha TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -529,7 +539,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
+			size_guard_hold_active, size_guard_hold_head_sha
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -542,7 +553,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
+			size_guard_hold_active, size_guard_hold_head_sha
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -690,8 +702,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
+			size_guard_hold_active, size_guard_hold_head_sha
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -728,7 +741,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			post_merge_infra_rerun_sha = excluded.post_merge_infra_rerun_sha,
 			release_backfill_abandoned = excluded.release_backfill_abandoned,
 			jira_done_notified = excluded.jira_done_notified,
-			self_closed_fix_issue = excluded.self_closed_fix_issue
+			self_closed_fix_issue = excluded.self_closed_fix_issue,
+			size_guard_hold_active = excluded.size_guard_hold_active,
+			size_guard_hold_head_sha = excluded.size_guard_hold_head_sha
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -742,6 +757,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.BreakerHoldActive, pr.BreakerReadoptCount,
 		pr.PostMergeInfraRerunCount, pr.PostMergeInfraRerunSHA,
 		pr.ReleaseBackfillAbandoned, pr.JiraDoneNotified, pr.SelfClosedFixIssue,
+		pr.SizeGuardHoldActive, pr.SizeGuardHoldHeadSHA,
 	)
 	return err
 }
@@ -760,7 +776,8 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
+			size_guard_hold_active, size_guard_hold_head_sha
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -788,7 +805,8 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
+			size_guard_hold_active, size_guard_hold_head_sha
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -814,6 +832,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 			&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
 			&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified, &pr.SelfClosedFixIssue,
+			&pr.SizeGuardHoldActive, &pr.SizeGuardHoldHeadSHA,
 		); err != nil {
 			return nil, err
 		}
@@ -1073,6 +1092,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 		&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
 		&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified, &pr.SelfClosedFixIssue,
+		&pr.SizeGuardHoldActive, &pr.SizeGuardHoldHeadSHA,
 	)
 	if err != nil {
 		return nil, err

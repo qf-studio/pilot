@@ -1330,6 +1330,24 @@ type PRState struct {
 	// forever — it eventually stays parked for a human. Never reset
 	// (lifetime counter for the PR). Persisted.
 	BreakerReadoptCount int
+	// SizeGuardHoldActive is true while this PR is parked at StageFailed
+	// specifically because the CI-fix size guard fired (GH-5378):
+	// escalateAndHold sets StageFailed for many unrelated reasons (needs-
+	// manual-rebase, breaker hold, iteration/review caps, etc.); this flag
+	// narrows redriveSizeGuardHeldPR's re-entry scan to the one hold a later
+	// push (that resolves the failing check without growing the PR further)
+	// can actually resolve. Mirrors RebaseHoldActive/BreakerHoldActive's
+	// narrowing role. Cleared once the redrive fires (or a fresh
+	// escalateAndHold call supersedes it with a different label set).
+	// Persisted so the hold survives a daemon restart.
+	SizeGuardHoldActive bool
+	// SizeGuardHoldHeadSHA is the HeadSHA recorded at the moment the size
+	// guard fired. redriveSizeGuardHeldPR compares this against the PR's
+	// live head on every poll — a changed SHA means a new commit landed
+	// since the hold (e.g. a lint fix), which is exactly the signal GH-5378
+	// needs to re-enter the pipeline instead of sitting parked forever even
+	// after CI turns green. Persisted alongside SizeGuardHoldActive.
+	SizeGuardHoldHeadSHA string
 	// PostMergeInfraRerunCount is the post-merge analog of InfraRerunCount
 	// (GH-4813): how many times handlePostMergeCI has auto-retried this
 	// carrier's failed jobs after classifying a post-merge CI failure as a CI
@@ -1431,6 +1449,8 @@ func (ps *PRState) snapshot() *PRState {
 		PostMergeCINoWorkflowChecked: ps.PostMergeCINoWorkflowChecked,
 		BreakerHoldActive:            ps.BreakerHoldActive,
 		BreakerReadoptCount:          ps.BreakerReadoptCount,
+		SizeGuardHoldActive:          ps.SizeGuardHoldActive,
+		SizeGuardHoldHeadSHA:         ps.SizeGuardHoldHeadSHA,
 		PostMergeInfraRerunCount:     ps.PostMergeInfraRerunCount,
 		PostMergeInfraRerunSHA:       ps.PostMergeInfraRerunSHA,
 		ReleaseBackfillAbandoned:     ps.ReleaseBackfillAbandoned,

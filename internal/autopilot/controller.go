@@ -3760,6 +3760,15 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 					comment := fmt.Sprintf("CI fix size guard fired: PR has %d production additions, over limit %d%s (likely cascade contamination). No fix issue will be created. %s",
 						production, c.config.MaxCIFixPRSize, excludedAdditionsSuffix(bookkeeping, test), ciFailedChecksSummary(failedChecks))
 					c.escalateAndHold(ctx, prState, "CI fix size guard fired", []string{labelNeedsHuman}, comment)
+					// GH-5378: narrow redriveSizeGuardHeldPR's re-entry scan to
+					// exactly this hold, and record the head at hold time so a
+					// later push (that resolves the failing check without
+					// growing the PR further, e.g. a one-line lint fix) can be
+					// detected on the next poll — PR #5356 sat CLEAN for 85
+					// minutes with green checks because nothing ever looked at
+					// this PR again after the hold.
+					prState.SizeGuardHoldActive = true
+					prState.SizeGuardHoldHeadSHA = prState.HeadSHA
 					c.metrics.RecordPRFailed()
 					c.metrics.RecordPRFailedClass(failureClass)
 					c.recordCIFailVerdict(failureClass)
@@ -7788,6 +7797,68 @@ func (c *Controller) redriveFailedPRForBaseRetarget(ctx context.Context, prState
 	}
 }
 
+// redriveSizeGuardHeldPR is GH-5378: the third instance of the
+// reAdoptHeldRebasePR revival shape immediately above, for the CI-fix size
+// guard's hold (escalateAndHold's "CI fix size guard fired" reason,
+// SizeGuardHoldActive). Before this, a PR held here because it exceeded the
+// size floor while failing CI was never looked at again — not even after a
+// later push fixed the failing check (e.g. the size guard's own comment
+// suggests a small, non-growing lint fix) and every check turned green. PR
+// #5356 sat mergeStateStatus=CLEAN for 85 minutes with no autopilot
+// activity until an operator merged it by hand.
+//
+// Detection mirrors reAdoptHeldRebasePR: compare the HeadSHA recorded at
+// hold time (SizeGuardHoldHeadSHA) against the freshly-fetched ghPR head on
+// every poll tick in processAllPRs. A changed SHA on a PR held specifically
+// via SizeGuardHoldActive (not any other StageFailed reason — needs-manual-
+// rebase, breaker hold, iteration/review caps, etc. all stay parked) means a
+// new commit landed since the hold, so re-enter the pipeline at
+// StageWaitingCI for fresh CI on the new head. RebaseAttempts/MergeAttempts
+// are preserved (not reset), matching reAdoptHeldRebasePR — their own caps
+// still apply if this PR fails again downstream.
+//
+// GH-5042: escalateAndHold only ever applies labelNeedsHuman to the linked
+// issue (never the PR itself — this repo has no PR-level label convention),
+// so clearing the hold here removes it from the issue through the same
+// mutateIssueLabels label-cycle op every other label-lifecycle site uses,
+// rather than a bare RemoveLabel call that would skip the aggregate delta
+// log line GH-5028 depends on.
+func (c *Controller) redriveSizeGuardHeldPR(ctx context.Context, prState *PRState, ghPR *github.PullRequest) {
+	if ghPR == nil || prState.Stage != StageFailed || !prState.SizeGuardHoldActive {
+		return
+	}
+	newHead := ghPR.Head.SHA
+	if newHead == "" || newHead == prState.SizeGuardHoldHeadSHA {
+		return
+	}
+
+	prevHold := prState.Error
+	prState.SizeGuardHoldActive = false
+	prState.SizeGuardHoldHeadSHA = ""
+	prState.HeadSHA = newHead
+	prState.Stage = StageWaitingCI
+	prState.CIWaitStartedAt = time.Now()
+	prState.Error = ""
+	prState.TerminalLabel = ""
+
+	c.mutateIssueLabels(ctx, prState.IssueNumber, nil, []string{labelNeedsHuman})
+
+	c.log.Info("redriveSizeGuardHeldPR: branch updated on size-guard-held PR, re-entering pipeline",
+		"pr", prState.PRNumber, "issue", prState.IssueNumber,
+		"new_head", ShortSHA(newHead), "prior_hold_reason", prevHold,
+	)
+
+	if prState.IssueNumber > 0 {
+		comment := fmt.Sprintf(
+			"🔄 **Re-adopted**: branch updated (new head `%s`) while held for the CI-fix size guard — autopilot is re-entering the pipeline for fresh CI.",
+			ShortSHA(newHead),
+		)
+		if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+			c.log.Warn("redriveSizeGuardHeldPR: failed to post PR comment", "pr", prState.PRNumber, "error", err)
+		}
+	}
+}
+
 // maxBreakerReadoptAttempts caps how many times ReDriveBreakerHeldPRs
 // (GH-4792) may revive a single PR from a platform-outage breaker hold.
 // Mirrors maxReadoptAttempts's reasoning above: a PR whose own failure
@@ -9103,6 +9174,12 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 			// also run before ProcessPR for the same reason as reAdoptHeldRebasePR
 			// above.
 			c.redriveFailedPRForBaseRetarget(ctx, pr, ghPR)
+
+			// GH-5378: revive a CI-fix-size-guard hold back into the pipeline
+			// once its branch has moved — a no-op for every PR not currently
+			// held in exactly that state. Must also run before ProcessPR for
+			// the same reason as reAdoptHeldRebasePR above.
+			c.redriveSizeGuardHeldPR(ctx, pr, ghPR)
 
 			// Detect changes_requested reviews in polling mode (webhook mode uses OnReviewRequested).
 			// GH-5327: reviewTriggerEligible replaces the old two-stage exclusion with

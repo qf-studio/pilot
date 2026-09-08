@@ -9227,6 +9227,14 @@ func TestCIFixSizeGuard_OversizedPR_EscalatesInsteadOfClosing(t *testing.T) {
 	if !found {
 		t.Errorf("expected pilot-needs-human label on the issue, got labels: %v", labelsAdded)
 	}
+	// GH-5378: the hold must be tagged so redriveSizeGuardHeldPR can find it
+	// on a later poll, with the head SHA recorded at hold time.
+	if !prState.SizeGuardHoldActive {
+		t.Error("SizeGuardHoldActive should be set when the size guard fires")
+	}
+	if prState.SizeGuardHoldHeadSHA != "abc1234" {
+		t.Errorf("SizeGuardHoldHeadSHA = %q, want %q", prState.SizeGuardHoldHeadSHA, "abc1234")
+	}
 }
 
 // TestCIFixSizeGuard_SmallPR_AllowsFixIssue verifies that a small failing PR (50 additions)
