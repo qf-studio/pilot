@@ -43,10 +43,14 @@ import (
 // notifyExternalClose (so the HasSpawnedFixForPR fallback it used to
 // exercise no longer fires for this rung — it remains load-bearing only for
 // paths that still lose the marker, e.g. a crash before this earlier persist
-// point). The review-feedback rung (handleReviewRequested/spawnReviewIssue)
-// is untouched by GH-5351/GH-5361 and still designates TerminalLabel
-// eagerly with no equivalent immediate persist, so its crash-window test
-// below is unchanged.
+// point).
+//
+// GH-5377: handleReviewRequested now gets the same immediate-persist
+// treatment — it previously relied solely on ProcessPR's tail persistPRState
+// call, leaving the same crash window open that GH-5361 closed for the
+// CI-failure rung. TestGH4841_ReviewRequestedCrashWindow_RetryNotArmedAfterRestart
+// below now asserts the marker survives the simulated crash, mirroring the
+// CI-failure test above it.
 
 // TestGH4841_CIFailureCrashWindow_RetryNotArmedAfterRestart covers the
 // pre-merge CI-failure rung (handleCIFailed / spawnFailureIssue).
@@ -214,6 +218,13 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 // TestGH4841_ReviewRequestedCrashWindow_RetryNotArmedAfterRestart is the
 // review-feedback analog: handleReviewRequested must share the same
 // crash-survival property as the CI-failure rung above.
+//
+// GH-5377: handleReviewRequested now calls persistPRState immediately after
+// markSelfClosed (before the close itself), mirroring GH-5361's fix to the
+// CI-failure rung — closing the same crash window here. The assertions below
+// now expect the self-close marker to survive the simulated crash, exercising
+// the closed window rather than the notifyExternalClose fallback that used to
+// compensate for it.
 func TestGH4841_ReviewRequestedCrashWindow_RetryNotArmedAfterRestart(t *testing.T) {
 	const (
 		prNumber    = 9101
@@ -302,11 +313,18 @@ func TestGH4841_ReviewRequestedCrashWindow_RetryNotArmedAfterRestart(t *testing.
 	if seedPR.TerminalLabel != "" {
 		t.Fatalf("prState.TerminalLabel = %q, want empty (GH-5362: no longer set eagerly at spawn time)", seedPR.TerminalLabel)
 	}
-	// Simulated crash: no persistPRState call, and — since the self-close
-	// marker stamped by handleReviewRequested (GH-5362) lives only in
-	// controllerA's in-memory selfClosedPRs map — no way for controllerB
-	// (below) to see it either. Both are lost the same way a real process
-	// restart would lose them.
+	// GH-5377: the self-close marker is now durably persisted inside
+	// handleReviewRequested immediately after markSelfClosed, before the
+	// close. Assert that here, same as the CI-failure rung above.
+	if seedPR.SelfClosedFixIssue != fixIssueNum {
+		t.Fatalf("prState.SelfClosedFixIssue = %d, want %d before the simulated crash", seedPR.SelfClosedFixIssue, fixIssueNum)
+	}
+	// Deliberately do NOT call controllerA.persistPRState(seedPR) here — this
+	// is the crash. GH-5377: handleReviewRequested itself now calls
+	// persistPRState immediately after markSelfClosed (before the close), so
+	// this window no longer loses the marker — the assertions below now
+	// expect the marker to survive, exercising the closed window rather than
+	// the fallback that used to compensate for it.
 
 	controllerB := NewController(cfg, ghClient, nil, "owner", "repo")
 	controllerB.SetStateStore(store)
@@ -320,14 +338,20 @@ func TestGH4841_ReviewRequestedCrashWindow_RetryNotArmedAfterRestart(t *testing.
 	if !ok {
 		t.Fatalf("PR %d not present in controller B's activePRs after RestoreState", prNumber)
 	}
-	if restoredPR.TerminalLabel != "" {
-		t.Fatalf("restored TerminalLabel = %q, want empty — the in-memory designation must NOT have survived the simulated crash", restoredPR.TerminalLabel)
+	if restoredPR.SelfClosedFixIssue != fixIssueNum {
+		t.Fatalf("restored SelfClosedFixIssue = %d, want %d — GH-5377's immediate persist in handleReviewRequested should have survived the simulated crash", restoredPR.SelfClosedFixIssue, fixIssueNum)
 	}
 
+	// GH-5377: since the self-close marker survived, this close is correctly
+	// consumed as autopilot's own doing — checkExternalMergeOrClose
+	// short-circuits before ever reaching notifyExternalClose, so neither the
+	// old pilot-retry-ready misfire nor the GH-4841 HasSpawnedFixForPR
+	// fallback's pilot-failed label are applied; no label mutation happens on
+	// the source issue at all.
 	ghPR := &github.PullRequest{Number: prNumber, State: "closed", Merged: false}
 	externallyResolved := controllerB.checkExternalMergeOrClose(context.Background(), restoredPR, ghPR)
 	if !externallyResolved {
-		t.Fatal("expected checkExternalMergeOrClose to report the PR as externally resolved (closed)")
+		t.Fatal("expected checkExternalMergeOrClose to report the PR as resolved (self-close consumed)")
 	}
 
 	foundFailed := false
@@ -340,10 +364,10 @@ func TestGH4841_ReviewRequestedCrashWindow_RetryNotArmedAfterRestart(t *testing.
 			foundRetryReady = true
 		}
 	}
-	if !foundFailed {
-		t.Errorf("expected source issue to be labeled %q via the durable spawned-fix fallback, got labels added: %v", github.LabelFailed, issueLabelsAdded)
+	if foundFailed {
+		t.Errorf("source issue must NOT be labeled %q — the self-close marker survived (GH-5377), so this never reaches the notifyExternalClose fallback — labels added: %v", github.LabelFailed, issueLabelsAdded)
 	}
 	if foundRetryReady {
-		t.Errorf("source issue must NOT be labeled %q after a restart lost TerminalLabel while a revision issue is durably designated — labels added: %v", github.LabelRetryReady, issueLabelsAdded)
+		t.Errorf("source issue must NOT be labeled %q — the self-close marker survived (GH-5377) — labels added: %v", github.LabelRetryReady, issueLabelsAdded)
 	}
 }

@@ -4379,6 +4379,16 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	// and its commits survive.
 	c.markSelfClosed(prState, issueNum)
 
+	// GH-5377: persist the marker immediately rather than relying solely on
+	// ProcessPR's tail persistPRState call, mirroring the same fix
+	// handleCIFailed already applies (GH-5361, ~L3869). A daemon death
+	// between the markSelfClosed above and that tail persist would
+	// otherwise lose the in-memory-only marker entirely — the next
+	// restart's checkExternalMergeOrClose would then read the close GitHub
+	// already performed as external and run the destructive
+	// relabel/branch-delete path this marker exists to prevent.
+	c.persistPRState(prState)
+
 	// Close the PR. The branch is deliberately left alone (see above) — it
 	// is no longer deleted here, and checkExternalMergeOrClose's self-close
 	// path never deletes it either.
