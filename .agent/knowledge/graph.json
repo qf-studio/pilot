@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-08T10:08:39.972880+00:00",
+  "updated": "2026-09-08T12:10:50.227806+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6261,6 +6261,46 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-08"
+      },
+      "autopilot-failed-stage-revival-is-a-flag-gated-redrive-before-processpr": {
+        "type": "pattern",
+        "summary": "StageFailed PRs revive only via flag-gated redrives in processAllPRs before ProcessPR (reAdoptHeldRebasePR, redriveFailedPRForBaseRetarget): reset waiting_ci, keep attempts. OnPRCreated is registration-only; orphan reconciler skips tracked PRs; no FailureReason field. New recoverable failure classes = new hold boolean + third redrive (#5378).",
+        "file": ".agent/knowledge/memories/patterns/autopilot-failed-stage-revival-is-a-flag-gated-redrive-before-processpr.md",
+        "concepts": [
+          "autopilot",
+          "stagefailed",
+          "redrive",
+          "size-guard"
+        ],
+        "confidence": 0.9,
+        "created": "2026-09-08"
+      },
+      "autopilot-meta-footer-ignored-without-autopilot-fix-label": {
+        "type": "pitfall",
+        "summary": "handlers.go parses the autopilot-meta footer only under the autopilot-fix label; hand-filed revision issues (pilot label + footer) default to pilot/GH-<issue>, no --from-pr / SHA fallback, stray branch created (#5374). Fix pilot#5379.",
+        "file": ".agent/knowledge/memories/pitfalls/autopilot-meta-footer-ignored-without-autopilot-fix-label.md",
+        "concepts": [
+          "autopilot-meta",
+          "revision-issue",
+          "branch-mismatch",
+          "label-gating"
+        ],
+        "confidence": 0.85,
+        "created": "2026-09-08"
+      },
+      "hand-merge-leaves-pilot-needs-human-and-stale-body-capture-at-dispatch": {
+        "type": "learning",
+        "summary": "pilot-needs-human is removed only in autopilot's external-close block, so hand merges leave it (strip by hand; close revision issues by hand). Task body is captured at dispatch (handlers.go taskDesc from ev.Body) — editing a queued issue's body needs cancel-row + re-label.",
+        "file": ".agent/knowledge/memories/learnings/hand-merge-leaves-pilot-needs-human-and-stale-body-capture-at-dispatch.md",
+        "concepts": [
+          "autopilot",
+          "needs-human",
+          "label-cleanup",
+          "operations",
+          "dispatch"
+        ],
+        "confidence": 0.85,
+        "created": "2026-09-08"
       }
     }
   },
@@ -8574,6 +8614,41 @@
       "from": "stalled-rearm-sweep-ignores-body-edit-loops-forever",
       "to": "TASK-495",
       "type": "discovered_in"
+    },
+    {
+      "from": "autopilot-failed-stage-revival-is-a-flag-gated-redrive-before-processpr",
+      "to": "autopilot",
+      "type": "relates_to"
+    },
+    {
+      "from": "autopilot-failed-stage-revival-is-a-flag-gated-redrive-before-processpr",
+      "to": "TASK-495",
+      "type": "discovered_in"
+    },
+    {
+      "from": "autopilot-meta-footer-ignored-without-autopilot-fix-label",
+      "to": "TASK-495",
+      "type": "discovered_in"
+    },
+    {
+      "from": "hand-merge-leaves-pilot-needs-human-and-stale-body-capture-at-dispatch",
+      "to": "autopilot",
+      "type": "relates_to"
+    },
+    {
+      "from": "hand-merge-leaves-pilot-needs-human-and-stale-body-capture-at-dispatch",
+      "to": "needs-human",
+      "type": "relates_to"
+    },
+    {
+      "from": "hand-merge-leaves-pilot-needs-human-and-stale-body-capture-at-dispatch",
+      "to": "dispatch",
+      "type": "relates_to"
+    },
+    {
+      "from": "hand-merge-leaves-pilot-needs-human-and-stale-body-capture-at-dispatch",
+      "to": "TASK-495",
+      "type": "discovered_in"
     }
   ],
   "concept_index": {
@@ -10477,11 +10552,11 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-08T10:08:39.972880+00:00",
+  "last_updated": "2026-09-08T12:10:50.227806+00:00",
   "stats": {
-    "total_nodes": 525,
-    "total_edges": 462,
-    "memory_count": 278
+    "total_nodes": 528,
+    "total_edges": 469,
+    "memory_count": 281
   },
   "metadata": {}
 }
