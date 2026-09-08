@@ -410,6 +410,86 @@ func TestParseAutopilotPR(t *testing.T) {
 	}
 }
 
+// TestResolveAutopilotFixBranch is the regression test for GH-5379: the
+// autopilot-meta footer must be honored on any fix issue that carries it,
+// not only ones labeled "autopilot-fix" — the hand-filed revision-issue flow
+// (founder REQUEST-CHANGES, precedent #5261) only ever sets the "pilot"
+// label plus the footer.
+func TestResolveAutopilotFixBranch(t *testing.T) {
+	const footerBody = "Please fix the failing check.\n\n<!-- autopilot-meta branch:pilot/GH-5351 pr:5356 iteration:2 sha:abc1234 -->\n"
+
+	tests := []struct {
+		name           string
+		labels         []string
+		body           string
+		wantBranch     string
+		wantFromPR     int
+		wantFixFromSHA string
+		wantSource     string
+		wantMatched    bool
+	}{
+		{
+			// GH-5374/#5361 scenario: hand-filed revision issue, `pilot` label
+			// only, no `autopilot-fix` label. Before the fix, the footer was
+			// ignored entirely and the caller fell back to pilot/GH-<issue>.
+			name:           "pilot label only with valid footer",
+			labels:         []string{"pilot"},
+			body:           footerBody,
+			wantBranch:     "pilot/GH-5351",
+			wantFromPR:     5356,
+			wantFixFromSHA: "abc1234",
+			wantSource:     "autopilot-meta footer",
+			wantMatched:    true,
+		},
+		{
+			name:           "autopilot-fix label with footer is unchanged",
+			labels:         []string{"pilot", "autopilot-fix"},
+			body:           footerBody,
+			wantBranch:     "pilot/GH-5351",
+			wantFromPR:     5356,
+			wantFixFromSHA: "abc1234",
+			wantSource:     "autopilot-fix label + footer",
+			wantMatched:    true,
+		},
+		{
+			name:        "neither label nor footer falls back to default",
+			labels:      []string{"pilot"},
+			body:        "Just a regular issue body, no metadata.",
+			wantMatched: false,
+		},
+		{
+			name:        "autopilot-fix label without a footer does not match",
+			labels:      []string{"pilot", "autopilot-fix"},
+			body:        "No metadata comment here.",
+			wantMatched: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			branch, fromPR, fixFromSHA, source, matched := resolveAutopilotFixBranch(tt.labels, tt.body)
+			if matched != tt.wantMatched {
+				t.Fatalf("resolveAutopilotFixBranch() matched = %v, want %v", matched, tt.wantMatched)
+			}
+			if !matched {
+				return
+			}
+			if branch != tt.wantBranch {
+				t.Errorf("resolveAutopilotFixBranch() branch = %q, want %q", branch, tt.wantBranch)
+			}
+			if fromPR != tt.wantFromPR {
+				t.Errorf("resolveAutopilotFixBranch() fromPR = %d, want %d", fromPR, tt.wantFromPR)
+			}
+			if fixFromSHA != tt.wantFixFromSHA {
+				t.Errorf("resolveAutopilotFixBranch() fixFromSHA = %q, want %q", fixFromSHA, tt.wantFixFromSHA)
+			}
+			if source != tt.wantSource {
+				t.Errorf("resolveAutopilotFixBranch() source = %q, want %q", source, tt.wantSource)
+			}
+		})
+	}
+}
+
 func TestParseAutopilotIteration(t *testing.T) {
 	tests := []struct {
 		name string

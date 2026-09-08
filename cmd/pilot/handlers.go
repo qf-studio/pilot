@@ -119,6 +119,51 @@ func parseAutopilotSHA(body string) string {
 	return sha
 }
 
+// resolveAutopilotFixBranch determines the branch to reuse, the PR to resume
+// from, and the recorded head SHA for a fix issue, given its labels and body.
+// matched=false means neither the footer nor the label applied, so the
+// caller should keep its own default pilot/GH-<issue> branch.
+//
+// GH-5379: the footer is honored whenever it parses, regardless of the
+// autopilot-fix label. The documented hand-filed revision-issue flow
+// (founder REQUEST-CHANGES; decision memory: Pilot never reads GH comments,
+// precedent #5261) files a plain `pilot`-labeled issue carrying the footer
+// but NOT autopilot-fix — gating on the label alone silently dropped the
+// footer and left the fix on a stray pilot/GH-<issue> branch (pointing at
+// main) instead of the original PR's branch (#5361, #5374). The label is
+// kept only as a secondary signal reflected in the returned source string
+// for logging; it changes no behavior of its own, since parsing the footer
+// is a no-op when the footer is absent.
+func resolveAutopilotFixBranch(labels []string, body string) (branchName string, fromPR int, fixFromSHA string, source string, matched bool) {
+	hasLabel := false
+	for _, l := range labels {
+		if l == "autopilot-fix" {
+			hasLabel = true
+			break
+		}
+	}
+
+	parsed := parseAutopilotBranch(body)
+	if parsed == "" {
+		return "", 0, "", "", false
+	}
+
+	branchName = parsed
+	if pr := parseAutopilotPR(body); pr > 0 {
+		fromPR = pr
+	}
+	// GH-5348: recorded head SHA lets the worktree recreate this branch from
+	// the exact original commit if it was deleted, instead of silently
+	// rebuilding the fix from main (see ResolveFixContinuationBaseRef).
+	fixFromSHA = parseAutopilotSHA(body)
+
+	source = "autopilot-meta footer"
+	if hasLabel {
+		source = "autopilot-fix label + footer"
+	}
+	return branchName, fromPR, fixFromSHA, source, true
+}
+
 // resolveGitHubMemberIDByLogin resolves a GitHub login/email pair to a team member ID
 // (GH-634). Uses the global teamAdapter (set at startup); returns "" if no adapter is
 // configured or no matching member is found — callers treat "" as "skip RBAC".
@@ -806,26 +851,23 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	taskDesc := fmt.Sprintf("GitHub Issue %s: %s\n\n%s", taskID, title, ev.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
-	// GH-489/GH-1267: For autopilot-fix issues, reuse the original branch so the fix
-	// lands on the same branch as the failed PR, and extract the PR number for
-	// --from-pr session resumption. Mirrors handleGitHubIssueWithResult (GH-4050).
+	// GH-489/GH-1267/GH-5379: reuse the original branch for fix issues so the
+	// fix lands on the same branch as the failed PR, and extract the PR
+	// number for --from-pr session resumption. See resolveAutopilotFixBranch
+	// for why this keys off the autopilot-meta footer rather than the
+	// autopilot-fix label.
 	var fromPR int
 	var fixFromSHA string
-	for _, label := range ev.Labels {
-		if label == "autopilot-fix" {
-			if parsed := parseAutopilotBranch(ev.Body); parsed != "" {
-				branchName = parsed
-			}
-			if pr := parseAutopilotPR(ev.Body); pr > 0 {
-				fromPR = pr
-			}
-			// GH-5348: recorded head SHA lets the worktree recreate this
-			// branch from the exact original commit if it was deleted,
-			// instead of silently rebuilding the fix from main (see
-			// ResolveFixContinuationBaseRef).
-			fixFromSHA = parseAutopilotSHA(ev.Body)
-			break
-		}
+	if fb, fp, fs, source, matched := resolveAutopilotFixBranch(ev.Labels, ev.Body); matched {
+		branchName = fb
+		fromPR = fp
+		fixFromSHA = fs
+		logging.WithComponent("github").Info("Reusing branch from autopilot-meta footer",
+			slog.String("task_id", taskID),
+			slog.String("branch", branchName),
+			slog.Int("from_pr", fromPR),
+			slog.String("source", source),
+		)
 	}
 
 	// Resolve owner/repo. M7 4d.2c: the per-repo SDK poller passes its repo
