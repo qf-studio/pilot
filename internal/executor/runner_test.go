@@ -4219,7 +4219,14 @@ func setupPRGuardRepo(t *testing.T, branch string, addCommit bool) string {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	run("init")
+	// GH-5370: pin the initial branch name explicitly. A bare "git init"
+	// picks its default branch name from the environment's init.defaultBranch
+	// (or an even older git-version default), which is not guaranteed to be
+	// "main" in every CI runner. setupPRGuardRepoNoLocalBase (runner_gh5359_test.go)
+	// deletes the local "main" ref by name, so an unpinned default branch
+	// name made that helper fail with "branch 'main' not found" in CI even
+	// though it passed locally.
+	run("init", "-b", "main")
 	run("config", "user.email", "test@pilot.local")
 	run("config", "user.name", "Pilot Test")
 

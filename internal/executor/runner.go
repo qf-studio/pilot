@@ -2416,6 +2416,98 @@ func (r *Runner) adoptOpenBranchPR(ctx context.Context, git *GitOperations, task
 	return true
 }
 
+// resolveEmptyBranchWithFallback is the GH-5359 fix for the direct
+// (non-epic) empty-branch PR guard (~runner.go:5580 at the time of writing).
+// A bare git.CountNewCommitsAgainstOrigin call can misreport a confirmed
+// "zero" — or error outright — when git merge-base against
+// origin/<baseBranch> can't be resolved in this worktree. GH-5351 run 1
+// committed, pushed, and opened PR #5356, yet the guard still recorded
+// no_op: "could not resolve merge-base for \"main\" against origin/main"
+// fired, and the rev-list-based count the guard trusted alone read as if
+// the branch were empty even though the PR already existed.
+//
+// firstErr is whatever error (if any) the caller's own
+// CountNewCommitsAgainstOrigin call produced — nil if it succeeded and read
+// a confirmed zero. This function is only worth calling in that "zero or
+// error" case; a confirmed nonzero count needs no fallback.
+//
+// Cross-checks, in order, before agreeing the branch is empty:
+//  1. Does git merge-base even resolve against origin/<baseBranch> (or the
+//     local fallback ref)? If the first count call already succeeded with a
+//     confirmed zero AND merge-base also resolves cleanly, there is nothing
+//     to add — the branch is genuinely empty and no further git/GitHub calls
+//     are made.
+//  2. Otherwise, retry git rev-list --count origin/<base>..HEAD after a
+//     fresh git fetch origin <base> (mirrors CountNewCommitsAgainstOrigin
+//     exactly) — isolates a one-off transient failure from a structurally
+//     unresolvable base ref.
+//  3. Whether an open PR already exists for task.Branch on GitHub. A PR can
+//     only exist if a real commit was already pushed, so its existence is
+//     conclusive evidence the branch isn't empty regardless of what the
+//     local git state currently resolves to.
+//
+// Returns hasCommits=true if either git signal found commits or step 3 found
+// an open PR (prURL is set only in the latter case, so the caller can adopt
+// it directly — mirroring adoptOpenBranchPR above — instead of re-pushing or
+// racing gh CLI into a duplicate PR). Returns confirmed=false when merge-base
+// failed, the rev-list retry also errored, and no PR was found: genuinely
+// unknown, never reported as "confirmed empty" (mirrors the GH-5342 posture
+// that a count failure is not evidence of zero commits). method is for
+// caller logging only.
+func (r *Runner) resolveEmptyBranchWithFallback(ctx context.Context, git *GitOperations, task *Task, baseBranch string, firstErr error) (hasCommits bool, confirmed bool, method string, prURL string) {
+	_, mergeBaseErr := git.resolveMergeBaseSHA(ctx, baseBranch)
+	if firstErr == nil && mergeBaseErr == nil {
+		return false, true, "merge-base-resolved-zero", ""
+	}
+
+	r.log.Info("PR guard: commit-count check inconclusive, cross-checking rev-list retry and PR existence before concluding branch state",
+		slog.String("task_id", task.ID),
+		slog.String("branch", task.Branch),
+		slog.String("base_branch", baseBranch),
+		slog.Any("count_error", firstErr),
+		slog.Any("merge_base_error", mergeBaseErr),
+	)
+
+	retryCount, retryErr := git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
+	if retryErr == nil && retryCount > 0 {
+		r.log.Info("PR guard: rev-list retry found commits, branch is not empty",
+			slog.String("task_id", task.ID),
+			slog.String("branch", task.Branch),
+			slog.Int("commit_count", retryCount),
+		)
+		return true, true, "rev-list-retry", ""
+	}
+
+	if task.Branch != "" {
+		if url, prErr := git.FindOpenPRByBranch(ctx, task.Branch); prErr == nil && url != "" {
+			r.log.Info("PR guard: an open PR already exists for the branch, treating as having commits",
+				slog.String("task_id", task.ID),
+				slog.String("branch", task.Branch),
+				slog.String("base_branch", baseBranch),
+				slog.String("pr_url", url),
+			)
+			return true, true, "pr-exists", url
+		}
+	}
+
+	if retryErr != nil {
+		r.log.Warn("PR guard: merge-base, rev-list retry, and PR-existence check all inconclusive",
+			slog.String("task_id", task.ID),
+			slog.String("branch", task.Branch),
+			slog.String("base_branch", baseBranch),
+			slog.Any("rev_list_error", retryErr),
+		)
+		return false, false, "inconclusive", ""
+	}
+
+	r.log.Info("PR guard: rev-list retry and PR-existence check both confirm no commits",
+		slog.String("task_id", task.ID),
+		slog.String("branch", task.Branch),
+		slog.String("base_branch", baseBranch),
+	)
+	return false, true, "confirmed-empty-after-fallback", ""
+}
+
 // checkIssueSupersededBeforePR is the GH-4656 PR-creation preflight: it
 // refetches the task's live GitHub issue state immediately before opening a
 // PR and, if the issue is already closed, refuses to create the PR. Runs
@@ -5578,24 +5670,58 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// confirmed zero count; a real count failure is a hard failure that
 			// feeds the normal retry/escalation path instead.
 			guardCount, guardErr := git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
-			if guardErr != nil {
-				result.Success = false
-				result.Error = fmt.Sprintf("failed to verify commit count before PR creation: %v", guardErr)
-				log.Warn("Commit-count guard failed to verify commits",
-					slog.String("task_id", task.ID),
-					slog.String("base_branch", baseBranch),
-					slog.Any("error", guardErr),
-				)
-				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
-				return result, nil
-			}
-			if guardCount == 0 {
-				evaluateEmptyBranchPRGuard(false, nil, result)
-				if backendResult != nil {
-					backendResult.ErrorType = string(ErrorTypeNoChanges)
+			if guardErr != nil || guardCount == 0 {
+				// GH-5359: a merge-base failure (e.g. origin/<base> unresolvable
+				// in this worktree) can make the plain count above read a false
+				// "zero", or error outright, even though the branch already has
+				// commits — and, in GH-5351's case, an already-opened PR. Before
+				// trusting either outcome, cross-check a rev-list retry and a
+				// GitHub PR-existence lookup — see resolveEmptyBranchWithFallback's
+				// doc comment for the full three-tier rationale.
+				hasCommits, confirmed, method, prURL := r.resolveEmptyBranchWithFallback(ctx, git, task, baseBranch, guardErr)
+				switch {
+				case hasCommits && prURL != "":
+					// A PR already exists for this branch — adopt it instead of
+					// re-pushing or racing gh CLI into a duplicate (mirrors
+					// adoptOpenBranchPR above).
+					result.PRUrl = prURL
+					log.Info("PR guard: adopted existing PR found via GH-5359 fallback check",
+						slog.String("task_id", task.ID),
+						slog.String("branch", task.Branch),
+						slog.String("base_branch", baseBranch),
+						slog.String("method", method),
+						slog.String("pr_url", prURL),
+					)
+					r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("adopted existing PR (GH-5359 fallback): %s", prURL))
+					r.saveLogEntry(task.LogExecutionID(), "info", "adopted existing open PR via GH-5359 fallback: "+prURL)
+					r.recordExecutionEvent(task.LogExecutionID(), memory.StagePRCreated, "adopted existing open pr via GH-5359 fallback: "+prURL)
+					if recorder != nil {
+						recorder.SetPRUrl(prURL)
+					}
+					return result, nil
+				case hasCommits:
+					// The rev-list retry confirmed real commits after all — fall
+					// through to the normal push+CreatePR flow below exactly as
+					// if the original guard had read a nonzero count.
+				case !confirmed:
+					result.Success = false
+					result.Error = fmt.Sprintf("failed to verify commit count before PR creation: could not confirm branch state via merge-base, rev-list, or PR lookup (method=%s)", method)
+					log.Warn("Commit-count guard inconclusive after GH-5359 fallback",
+						slog.String("task_id", task.ID),
+						slog.String("base_branch", baseBranch),
+						slog.String("method", method),
+						slog.Any("error", guardErr),
+					)
+					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+					return result, nil
+				default:
+					evaluateEmptyBranchPRGuard(false, nil, result)
+					if backendResult != nil {
+						backendResult.ErrorType = string(ErrorTypeNoChanges)
+					}
+					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+					return result, nil
 				}
-				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
-				return result, nil
 			}
 
 			// GH-4286: strip any memory doc the session committed without
