@@ -201,6 +201,58 @@ func TestStateStore_ParkedAndEscalationReason_SurviveRestart(t *testing.T) {
 	}
 }
 
+// TestStateStore_SelfClosedFixIssue_SurvivesRestart is the GH-5351
+// regression test: before this, the self-close marker (markSelfClosed/
+// consumeSelfClosedMarker in controller.go) lived only in an in-memory
+// Controller.selfClosedPRs map, which the #275 incident traced to a daemon
+// restart (or simply never being wired at all) losing the marker between a
+// self-close and the next poll — checkExternalMergeOrClose then read the
+// close back as external and ran the destructive relabel/branch-delete path
+// meant for a human closing the PR. Persisting SelfClosedFixIssue on the
+// PRState row instead means it round-trips through both read paths a
+// restart actually uses: GetPRState (single-PR lookups) and
+// LoadAllPRStates (the path RestoreState calls to rehydrate activePRs).
+func TestStateStore_SelfClosedFixIssue_SurvivesRestart(t *testing.T) {
+	store := newTestStateStore(t)
+
+	pr := &PRState{
+		PRNumber:           58,
+		PRURL:              "https://github.com/owner/repo/pull/58",
+		IssueNumber:        23,
+		BranchName:         "pilot/GH-23",
+		HeadSHA:            "sha58",
+		Stage:              StageFailed,
+		SelfClosedFixIssue: 999,
+		CreatedAt:          time.Now().Truncate(time.Second),
+	}
+
+	if err := store.SavePRState("owner/repo", pr); err != nil {
+		t.Fatalf("SavePRState failed: %v", err)
+	}
+
+	loaded, err := store.GetPRState("owner/repo", 58)
+	if err != nil {
+		t.Fatalf("GetPRState failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("GetPRState returned nil")
+	}
+	if loaded.SelfClosedFixIssue != 999 {
+		t.Errorf("GetPRState: SelfClosedFixIssue = %d, want 999", loaded.SelfClosedFixIssue)
+	}
+
+	all, err := store.LoadAllPRStates("owner/repo")
+	if err != nil {
+		t.Fatalf("LoadAllPRStates failed: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("LoadAllPRStates returned %d states, want 1", len(all))
+	}
+	if all[0].SelfClosedFixIssue != 999 {
+		t.Errorf("LoadAllPRStates: SelfClosedFixIssue = %d, want 999", all[0].SelfClosedFixIssue)
+	}
+}
+
 func TestStateStore_LoadAllPRStates(t *testing.T) {
 	store := newTestStateStore(t)
 

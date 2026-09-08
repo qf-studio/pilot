@@ -14,15 +14,17 @@ import (
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
-// GH-5348 subtask 3: spawnFailureIssue (controller.go) marks a source issue
-// pilot-superseded the instant its fix ISSUE is created — before that
-// issue's own PR exists, let alone before its diff is known. Subtasks 1/2
-// fixed the one confirmed way the eventual fix PR's diff could drop the
-// origin's real changes (a deleted branch silently rebuilt from main); this
-// covers the belt-and-braces detector that runs once the fix PR actually
-// merges: if its changed files share nothing with the origin PR it claims
-// to continue, the source issue must not stay silently parked under
-// pilot-superseded.
+// GH-5348 subtask 3 originally built this as a belt-and-braces detector that
+// ran once a fix PR merged and, on zero file overlap with the origin PR,
+// stripped an already-applied pilot-superseded label. GH-5351 turns it into
+// the gate itself: spawnFailureIssue (controller.go) no longer applies
+// pilot-superseded the instant a fix ISSUE is created — the PR it replaces
+// is now closed via the self-close marker (GH-5351), so
+// checkExternalMergeOrClose skips notifyExternalClose for that close
+// entirely and pilot-superseded is never written eagerly. This test now
+// covers verifyFixPRDeliversSourceScope as the sole place pilot-superseded
+// ever gets applied: only once the fix PR actually merges, and only when its
+// changed files overlap with the origin PR it claims to continue.
 
 type scopeMismatchGHServer struct {
 	mu sync.Mutex
@@ -112,95 +114,86 @@ func (s *scopeMismatchGHServer) hasAddLabel(issue int, label string) bool {
 	return false
 }
 
-func (s *scopeMismatchGHServer) hasRemoveLabel(issue int, label string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	want := fmt.Sprintf("%d:%s", issue, label)
-	for _, c := range s.removeLabelCalls {
-		if c == want {
-			return true
-		}
-	}
-	return false
-}
-
 func TestController_VerifyFixPRDeliversSourceScope(t *testing.T) {
 	fixIssueBody := "Fixes CI failure.\n\n<!-- autopilot-meta branch:pilot/GH-100 pr:7 iteration:1 source:100 -->"
 
 	tests := []struct {
-		name                string
-		fixIssue            *github.Issue
-		sourceIssue         *github.Issue
-		fixPRFiles          []*github.PRFile
-		originPRFiles       []*github.PRFile
-		wantEscalate        bool
-		wantLabelsUntouched bool
+		name                    string
+		fixIssue                *github.Issue
+		sourceIssue             *github.Issue
+		fixPRFiles              []*github.PRFile
+		originPRFiles           []*github.PRFile
+		wantSupersede           bool // shared scope: source gets pilot-superseded applied
+		wantMismatchNoSupersede bool // zero overlap: comment + alert, no label write
+		wantNoReaction          bool // neither of the above: no label writes, no comment, no alert
 	}{
 		{
-			name:     "shared file — no escalation, source stays superseded",
+			name:     "shared file — source gets marked superseded",
 			fixIssue: &github.Issue{Number: 200, State: github.StateClosed, Body: fixIssueBody, Labels: []github.Label{{Name: github.LabelDone}}},
 			sourceIssue: &github.Issue{
 				Number: 100, State: github.StateOpen,
-				Labels: []github.Label{{Name: github.LabelSuperseded}},
+				Labels: []github.Label{{Name: github.LabelPilot}, {Name: github.LabelInProgress}},
 			},
-			fixPRFiles:          []*github.PRFile{{Filename: "internal/foo/bar.go"}},
-			originPRFiles:       []*github.PRFile{{Filename: "internal/foo/bar.go"}, {Filename: "internal/foo/baz.go"}},
-			wantLabelsUntouched: true,
+			fixPRFiles:    []*github.PRFile{{Filename: "internal/foo/bar.go"}},
+			originPRFiles: []*github.PRFile{{Filename: "internal/foo/bar.go"}, {Filename: "internal/foo/baz.go"}},
+			wantSupersede: true,
 		},
 		{
-			name:     "zero file overlap — source escalated to needs-human",
+			name:     "zero file overlap — source stays open, no supersede, flagged for review",
 			fixIssue: &github.Issue{Number: 200, State: github.StateClosed, Body: fixIssueBody, Labels: []github.Label{{Name: github.LabelDone}}},
 			sourceIssue: &github.Issue{
 				Number: 100, State: github.StateOpen,
-				Labels: []github.Label{{Name: github.LabelSuperseded}},
+				Labels: []github.Label{{Name: github.LabelPilot}, {Name: github.LabelInProgress}},
 			},
-			fixPRFiles:    []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
-			originPRFiles: []*github.PRFile{{Filename: "internal/foo/bar.go"}},
-			wantEscalate:  true,
+			fixPRFiles:              []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
+			originPRFiles:           []*github.PRFile{{Filename: "internal/foo/bar.go"}},
+			wantMismatchNoSupersede: true,
 		},
 		{
 			name:     "zero overlap but source already closed — no reaction",
 			fixIssue: &github.Issue{Number: 200, State: github.StateClosed, Body: fixIssueBody, Labels: []github.Label{{Name: github.LabelDone}}},
 			sourceIssue: &github.Issue{
 				Number: 100, State: github.StateClosed,
-				Labels: []github.Label{{Name: github.LabelSuperseded}},
+				Labels: []github.Label{{Name: github.LabelDone}},
 			},
-			fixPRFiles:          []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
-			originPRFiles:       []*github.PRFile{{Filename: "internal/foo/bar.go"}},
-			wantLabelsUntouched: true,
+			fixPRFiles:     []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
+			originPRFiles:  []*github.PRFile{{Filename: "internal/foo/bar.go"}},
+			wantNoReaction: true,
 		},
 		{
-			name:     "zero overlap but source no longer carries pilot-superseded — no reaction",
+			name:     "source already carries pilot-superseded — idempotent, no reaction",
 			fixIssue: &github.Issue{Number: 200, State: github.StateClosed, Body: fixIssueBody, Labels: []github.Label{{Name: github.LabelDone}}},
 			sourceIssue: &github.Issue{
 				Number: 100, State: github.StateOpen,
-				Labels: []github.Label{{Name: github.LabelRetryReady}},
+				Labels: []github.Label{{Name: github.LabelSuperseded}},
 			},
-			fixPRFiles:          []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
-			originPRFiles:       []*github.PRFile{{Filename: "internal/foo/bar.go"}},
-			wantLabelsUntouched: true,
+			// Overlap is present, but the gate must still no-op — a previous
+			// run (or a daemon restart mid-gate) already applied the label.
+			fixPRFiles:     []*github.PRFile{{Filename: "internal/foo/bar.go"}},
+			originPRFiles:  []*github.PRFile{{Filename: "internal/foo/bar.go"}},
+			wantNoReaction: true,
 		},
 		{
 			name:     "not a fix issue (no source: marker) — no reaction",
 			fixIssue: &github.Issue{Number: 200, State: github.StateClosed, Body: "Just a regular merged PR's issue.", Labels: []github.Label{{Name: github.LabelDone}}},
 			sourceIssue: &github.Issue{
 				Number: 100, State: github.StateOpen,
-				Labels: []github.Label{{Name: github.LabelSuperseded}},
+				Labels: []github.Label{{Name: github.LabelPilot}},
 			},
-			fixPRFiles:          []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
-			originPRFiles:       []*github.PRFile{{Filename: "internal/foo/bar.go"}},
-			wantLabelsUntouched: true,
+			fixPRFiles:     []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
+			originPRFiles:  []*github.PRFile{{Filename: "internal/foo/bar.go"}},
+			wantNoReaction: true,
 		},
 		{
-			name:     "origin PR has no recorded files — skip rather than false-positive escalate",
+			name:     "origin PR has no recorded files — skip rather than false-positive react",
 			fixIssue: &github.Issue{Number: 200, State: github.StateClosed, Body: fixIssueBody, Labels: []github.Label{{Name: github.LabelDone}}},
 			sourceIssue: &github.Issue{
 				Number: 100, State: github.StateOpen,
-				Labels: []github.Label{{Name: github.LabelSuperseded}},
+				Labels: []github.Label{{Name: github.LabelPilot}},
 			},
-			fixPRFiles:          []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
-			originPRFiles:       nil,
-			wantLabelsUntouched: true,
+			fixPRFiles:     []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
+			originPRFiles:  nil,
+			wantNoReaction: true,
 		},
 	}
 
@@ -220,15 +213,29 @@ func TestController_VerifyFixPRDeliversSourceScope(t *testing.T) {
 			sink := &fakeAlertSink{}
 			c.SetAlertsEngine(sink)
 
+			// No StateStore wired: exercises the live-fetch fallback path in
+			// originScope (the "pr:7" marker + a live ListPullRequestFiles
+			// call), same as a fix issue spawned before GH-5351's
+			// RecordOriginScope migration.
 			prState := &PRState{PRNumber: 55, IssueNumber: 200}
 			c.verifyFixPRDeliversSourceScope(context.Background(), prState)
 
-			if tt.wantEscalate {
-				if !srv.hasAddLabel(100, labelNeedsHuman) {
-					t.Errorf("expected %s to be added to source #100, calls=%v", labelNeedsHuman, srv.addLabelCalls)
+			switch {
+			case tt.wantSupersede:
+				if !srv.hasAddLabel(100, github.LabelSuperseded) {
+					t.Errorf("expected %s to be added to source #100, calls=%v", github.LabelSuperseded, srv.addLabelCalls)
 				}
-				if !srv.hasRemoveLabel(100, github.LabelSuperseded) {
-					t.Errorf("expected %s to be removed from source #100, calls=%v", github.LabelSuperseded, srv.removeLabelCalls)
+				if len(sink.events) != 0 {
+					t.Errorf("expected no alerts on a confirmed-delivery supersede, got %d", len(sink.events))
+				}
+				for _, c := range srv.comments {
+					if strings.HasPrefix(c, "100:") {
+						t.Errorf("expected no comment on a confirmed-delivery supersede, got %v", srv.comments)
+					}
+				}
+			case tt.wantMismatchNoSupersede:
+				if srv.hasAddLabel(100, github.LabelSuperseded) {
+					t.Errorf("expected %s NOT to be added to source #100 on zero overlap, calls=%v", github.LabelSuperseded, srv.addLabelCalls)
 				}
 				if len(sink.events) != 1 {
 					t.Errorf("expected exactly 1 alert, got %d", len(sink.events))
@@ -242,8 +249,7 @@ func TestController_VerifyFixPRDeliversSourceScope(t *testing.T) {
 				if !foundComment {
 					t.Errorf("expected a delivery-mismatch comment on source #100, got %v", srv.comments)
 				}
-			}
-			if tt.wantLabelsUntouched {
+			case tt.wantNoReaction:
 				if len(srv.addLabelCalls) != 0 {
 					t.Errorf("expected no label writes, got %v", srv.addLabelCalls)
 				}
@@ -252,6 +258,9 @@ func TestController_VerifyFixPRDeliversSourceScope(t *testing.T) {
 				}
 				if len(sink.events) != 0 {
 					t.Errorf("expected no alerts, got %d", len(sink.events))
+				}
+				if len(srv.comments) != 0 {
+					t.Errorf("expected no comments, got %v", srv.comments)
 				}
 			}
 		})

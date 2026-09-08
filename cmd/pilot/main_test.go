@@ -497,6 +497,26 @@ func TestParseAutopilotSHA(t *testing.T) {
 			body: "<!-- autopilot-meta branch:pilot/GH-10 sha:abc1234",
 			want: "",
 		},
+		{
+			// GH-5351: below the 7-char floor git pads its own short-SHA
+			// output to — too short to trust as a real commit reference.
+			name: "sha too short",
+			body: "<!-- autopilot-meta branch:pilot/GH-10 sha:abc12 -->",
+			want: "",
+		},
+		{
+			// GH-5351: longer than a full 40-char SHA-1 — not a real commit.
+			name: "sha too long",
+			body: "<!-- autopilot-meta branch:pilot/GH-10 sha:597710bc1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6dff -->",
+			want: "",
+		},
+		{
+			// GH-5351: non-hex characters mean corrupted metadata, not a
+			// commit hash.
+			name: "sha not hex",
+			body: "<!-- autopilot-meta branch:pilot/GH-10 sha:zzzzzzz -->",
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {

@@ -2926,7 +2926,15 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		// the branch's current remote tip if it still exists, else the
 		// recorded original commit.
 		var worktreeBaseRef string
-		if task.FixFromSHA != "" {
+		if task.FromPR > 0 {
+			// GH-5351 (defect 4): FromPR > 0 covers every autopilot-fix task,
+			// not just the ones carrying a recorded SHA — pre-#5348 fix
+			// issues, and any issue whose HeadSHA was blanked, land here with
+			// FixFromSHA == "". Call the resolver regardless so a live
+			// origin/<branch> is still preferred over defaulting straight to
+			// main (ResolveFixContinuationBaseRef checks the branch first and
+			// only falls back to fallbackSHA — a no-op when it's "" — after
+			// that).
 			mainGit := NewGitOperations(task.ProjectPath)
 			worktreeBaseRef = mainGit.ResolveFixContinuationBaseRef(ctx, task.Branch, task.FixFromSHA)
 			r.log.Info("Resolved autopilot-fix worktree base",
@@ -2935,18 +2943,34 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				slog.String("base_ref", worktreeBaseRef),
 			)
 
-			// GH-5348 (subtask 2): a recorded base SHA that resolves to ""
-			// here means ResolveFixContinuationBaseRef could neither find a
-			// live origin/<branch> nor fetch the recorded commit (e.g.
-			// garbage-collected on the remote) — task.FixFromSHA != "" is
-			// exactly the guard that makes "" unambiguous. Falling through
-			// to worktree creation would silently default the base to
-			// origin/main, reproducing the pilot-console #275 incident this
-			// task exists to close. Fail loudly instead: park the fix issue
-			// itself under pilot-needs-human and stop — the original issue
-			// is never touched by this path.
 			if worktreeBaseRef == "" {
-				return r.escalateUnfetchableFixSHA(ctx, task)
+				if task.FixFromSHA != "" {
+					// GH-5348 (subtask 2): a recorded base SHA that resolves
+					// to "" here means ResolveFixContinuationBaseRef could
+					// neither find a live origin/<branch> nor fetch the
+					// recorded commit (e.g. garbage-collected on the
+					// remote) — task.FixFromSHA != "" is exactly the guard
+					// that makes "" unambiguous. Falling through to
+					// worktree creation would silently default the base to
+					// origin/main, reproducing the pilot-console #275
+					// incident this task exists to close. Fail loudly
+					// instead: park the fix issue itself under
+					// pilot-needs-human and stop — the original issue is
+					// never touched by this path.
+					return r.escalateUnfetchableFixSHA(ctx, task)
+				}
+				// GH-5351 (defect 4): no recorded SHA to begin with (the
+				// pre-#5348 case) and the branch itself is also gone — there
+				// is no exact commit to recover, so this degrades to the
+				// worktree's normal default base (origin/main). Unlike the
+				// FixFromSHA-set case above this isn't a silent data-loss
+				// bug (there was never a recorded commit to lose), but it's
+				// still a fix continuing as a fresh branch off main, so log
+				// it loudly enough to notice.
+				r.log.Warn("autopilot-fix: no recorded SHA and branch no longer exists on origin, falling back to default worktree base",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+				)
 			}
 		}
 

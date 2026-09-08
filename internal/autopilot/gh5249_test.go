@@ -14,12 +14,20 @@ import (
 
 // TestController_HandleCIFailed_BoardSyncSkipsFailColumnOnHandoff is GH-5249's
 // regression guard for the GH-1870 board sync inside handleCIFailed: once a
-// fix issue has been spawned (spawnFailureIssue set prState.TerminalLabel to
-// github.LabelSuperseded), this is a healthy hand-off, not a failure — the
-// board card must not be moved to the fail column, mirroring the GH-5247
-// split already applied to c.metrics/c.monitor.Fail for this same branch.
-// Before this fix the card moved to Failed even on the routine-revision path
-// TestGH5247_HandleCIFailed_Classification proves is not a pipeline defect.
+// fix issue has been spawned, this is a healthy hand-off, not a failure —
+// the board card must not be moved to the fail column, mirroring the
+// GH-5247 split already applied to c.metrics/c.monitor.Fail for this same
+// branch. Before this fix the card moved to Failed even on the
+// routine-revision path TestGH5247_HandleCIFailed_Classification proves is
+// not a pipeline defect.
+//
+// GH-5351: the board-sync block this guards against read
+// prState.TerminalLabel, which spawnFailureIssue no longer sets at all — the
+// block itself was deleted from handleCIFailed rather than left to read an
+// always-empty label (which would have flipped it from "always skip" to
+// "always fire," reintroducing exactly the regression this test guards
+// against). The precondition below now checks the self-close marker
+// (prState.SelfClosedFixIssue) instead of TerminalLabel.
 func TestController_HandleCIFailed_BoardSyncSkipsFailColumnOnHandoff(t *testing.T) {
 	const codeLog = `Run golangci-lint run ./...
 internal/autopilot/controller.go:1:1: some lint error (errcheck)
@@ -70,9 +78,9 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 		t.Fatalf("handleCIFailed: %v", err)
 	}
 
-	if prState.TerminalLabel != github.LabelSuperseded {
-		t.Fatalf("TerminalLabel = %q, want %q (precondition: this must be the healthy hand-off branch)",
-			prState.TerminalLabel, github.LabelSuperseded)
+	if prState.SelfClosedFixIssue != 54003 {
+		t.Fatalf("SelfClosedFixIssue = %d, want 54003 (precondition: this must be the healthy hand-off branch)",
+			prState.SelfClosedFixIssue)
 	}
 	for _, call := range mock.calls {
 		if call.statusName == "Failed" {

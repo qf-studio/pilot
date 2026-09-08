@@ -20,21 +20,37 @@ import (
 // TASK-486) — must still be recorded exactly as before.
 //
 // Table-driven across all three shapes, each asserting:
-//   - TerminalLabel the handler leaves on prState (spawn-seam ownership)
+//   - TerminalLabel/SelfClosedFixIssue the handler leaves on prState
+//     (spawn-seam ownership)
 //   - whether c.metrics.RecordPRFailed fired during the handler itself
-//   - how notifyExternalClose routes the eventual close: which evalStore
-//     reclassify/terminate variant fires, and whether monitor.Fail fires
+//   - how checkExternalMergeOrClose (the actual production entry point,
+//     GH-4458) routes the eventual close: whether it recognizes a self-close
+//     marker and skips notifyExternalClose entirely, or falls through to it
+//     and fires the evalStore reclassify/terminate calls and monitor.Fail
 //
 // Before GH-5247 all three cases behaved identically (LabelFailed,
 // RecordPRFailed, ReclassifyCompletionAsFailed, monitor.Fail) — this test
 // would have failed to distinguish the healthy hand-off case at all.
+//
+// GH-5351: the healthy hand-off case no longer reaches notifyExternalClose
+// at all — spawnFailureIssue's self-close marker (prState.SelfClosedFixIssue)
+// makes checkExternalMergeOrClose treat this close as internal and skip
+// notifyExternalClose entirely, so pilot-superseded is applied later, once
+// the fix PR merges (verifyFixPRDeliversSourceScope, owner_death.go), not
+// here. The other two shapes never set that marker (spawn-failure never
+// closes the PR at all; limit-close closes it directly without routing
+// through spawnFailureIssue), so they still fall through to
+// notifyExternalClose exactly as before.
 func TestGH5247_HandleCIFailed_Classification(t *testing.T) {
 	type wantShape struct {
-		terminalLabel       string
-		wantPRsFailed       int64
-		wantReclassifySuper bool // Superseded variant vs the plain Failed variant
-		wantTerminateSuper  bool
-		wantMonitorFail     bool
+		terminalLabel        string
+		selfClosedFixIssue   int
+		wantPRsFailed        int64
+		wantReclassifyFailed bool
+		wantReclassifySuper  bool
+		wantTerminateFailed  bool
+		wantTerminateSuper   bool
+		wantMonitorFail      bool
 	}
 
 	tests := []struct {
@@ -97,11 +113,11 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 				return c, prState
 			},
 			want: wantShape{
-				terminalLabel:       github.LabelSuperseded,
-				wantPRsFailed:       0,
-				wantReclassifySuper: true,
-				wantTerminateSuper:  true,
-				wantMonitorFail:     false,
+				terminalLabel:      "",
+				selfClosedFixIssue: 53003,
+				wantPRsFailed:      0,
+				// Neither variant fires — checkExternalMergeOrClose consumes
+				// the self-close marker and never reaches notifyExternalClose.
 			},
 		},
 		{
@@ -153,11 +169,11 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 				return c, prState
 			},
 			want: wantShape{
-				terminalLabel:       "",
-				wantPRsFailed:       1,
-				wantReclassifySuper: false,
-				wantTerminateSuper:  false,
-				wantMonitorFail:     true,
+				terminalLabel:        "",
+				wantPRsFailed:        1,
+				wantReclassifyFailed: true,
+				wantTerminateFailed:  true,
+				wantMonitorFail:      true,
 			},
 		},
 		{
@@ -213,11 +229,11 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 				return c, prState
 			},
 			want: wantShape{
-				terminalLabel:       github.LabelFailed,
-				wantPRsFailed:       1,
-				wantReclassifySuper: false,
-				wantTerminateSuper:  false,
-				wantMonitorFail:     true,
+				terminalLabel:        github.LabelFailed,
+				wantPRsFailed:        1,
+				wantReclassifyFailed: true,
+				wantTerminateFailed:  true,
+				wantMonitorFail:      true,
 			},
 		},
 	}
@@ -229,6 +245,9 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 			if prState.TerminalLabel != tt.want.terminalLabel {
 				t.Errorf("TerminalLabel = %q, want %q", prState.TerminalLabel, tt.want.terminalLabel)
 			}
+			if prState.SelfClosedFixIssue != tt.want.selfClosedFixIssue {
+				t.Errorf("SelfClosedFixIssue = %d, want %d", prState.SelfClosedFixIssue, tt.want.selfClosedFixIssue)
+			}
 
 			snap := c.metrics.Snapshot()
 			if snap.PRsFailed != tt.want.wantPRsFailed {
@@ -236,16 +255,21 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 			}
 
 			// Wire in fresh ledger/dashboard fakes and route the PR through
-			// notifyExternalClose exactly as the external-close poll scan
-			// would once it observes this PR closed — whether Pilot itself
-			// closed it (hand-off, limit-close) or a human closed it later
-			// while it sat held open (spawn-failure).
+			// checkExternalMergeOrClose (GH-4458) exactly as the next poll
+			// tick's external-close scan would once it observes this PR
+			// closed — whether Pilot itself closed it (hand-off, limit-close)
+			// or a human closed it later while it sat held open
+			// (spawn-failure). GH-5351: this is the actual production entry
+			// point, not notifyExternalClose directly — the self-close marker
+			// it consults is what makes the healthy hand-off case skip
+			// notifyExternalClose entirely.
 			evalMock := &mockEvalStore{}
 			c.SetEvalStore(evalMock)
 			monitorMock := newMockTaskMonitor()
 			c.SetMonitor(monitorMock)
 
-			c.notifyExternalClose(context.Background(), prState)
+			ghPR := &github.PullRequest{Number: prState.PRNumber, State: "closed", Merged: false}
+			c.checkExternalMergeOrClose(context.Background(), prState, ghPR)
 
 			gotReclassifySuper := len(evalMock.reclassifiedSuperseded) == 1
 			gotReclassifyFailed := len(evalMock.reclassified) == 1
@@ -253,9 +277,9 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 				t.Errorf("ReclassifyCompletionAsSuperseded called = %v, want %v (calls: %+v)",
 					gotReclassifySuper, tt.want.wantReclassifySuper, evalMock.reclassifiedSuperseded)
 			}
-			if gotReclassifyFailed == tt.want.wantReclassifySuper {
+			if gotReclassifyFailed != tt.want.wantReclassifyFailed {
 				t.Errorf("ReclassifyCompletionAsFailed called = %v, want %v (calls: %+v)",
-					gotReclassifyFailed, !tt.want.wantReclassifySuper, evalMock.reclassified)
+					gotReclassifyFailed, tt.want.wantReclassifyFailed, evalMock.reclassified)
 			}
 
 			gotTerminateSuper := len(evalMock.terminatedSuperseded) == 1
@@ -264,9 +288,9 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 				t.Errorf("TerminateNonTerminalExecutionAsSuperseded called = %v, want %v (calls: %+v)",
 					gotTerminateSuper, tt.want.wantTerminateSuper, evalMock.terminatedSuperseded)
 			}
-			if gotTerminateFailed == tt.want.wantTerminateSuper {
+			if gotTerminateFailed != tt.want.wantTerminateFailed {
 				t.Errorf("TerminateNonTerminalExecution called = %v, want %v (calls: %+v)",
-					gotTerminateFailed, !tt.want.wantTerminateSuper, evalMock.terminated)
+					gotTerminateFailed, tt.want.wantTerminateFailed, evalMock.terminated)
 			}
 
 			taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)

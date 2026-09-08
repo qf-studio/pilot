@@ -217,7 +217,7 @@ func TestController_HandleMergeConflict_SourceFileConflictEscalatesInsteadOfClos
 	if prClosed {
 		t.Fatal("PR must NOT be closed for a non-go.mod/go.sum conflict — escalateAndHold holds it instead (GH-4459)")
 	}
-	if c.consumeSelfClosedMarker(56) {
+	if c.consumeSelfClosedMarker(pr) {
 		t.Fatal("escalateAndHold must never stamp a self-close marker — the PR was never closed")
 	}
 	if branchDeleted {

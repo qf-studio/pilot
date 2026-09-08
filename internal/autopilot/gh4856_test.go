@@ -112,7 +112,7 @@ func TestHandleReviewRequested_CreateIssueErrors_EscalatesInsteadOfClosing(t *te
 	if branchDeleted.Load() {
 		t.Error("branch must NOT be deleted when the PR is held via escalateAndHold")
 	}
-	if c.consumeSelfClosedMarker(91) {
+	if c.consumeSelfClosedMarker(prState) {
 		t.Error("escalateAndHold must never stamp a self-close marker — the PR was never closed")
 	}
 	if prState.Stage != StageFailed {
@@ -167,7 +167,7 @@ func TestHandleReviewRequested_CreateIssueErrors_EscalatesInsteadOfClosing(t *te
 	if prState.TerminalLabel != "" {
 		t.Errorf("TerminalLabel = %q, want empty (GH-5362: no longer set eagerly at spawn time)", prState.TerminalLabel)
 	}
-	if !c.consumeSelfClosedMarker(91) {
+	if !c.consumeSelfClosedMarker(prState) {
 		t.Error("expected a self-close marker to be stamped before the PR close (GH-5362) so the next external-close poll doesn't misread this as a human rejection")
 	}
 }

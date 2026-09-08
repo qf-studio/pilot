@@ -85,7 +85,13 @@ func parseAutopilotIteration(body string) int {
 // parseAutopilotSHA extracts the original PR's full head commit SHA from an
 // autopilot-fix issue's metadata comment. Returns "" if no sha metadata is
 // found (older fix issues created before GH-5348, or issues with no resolved
-// HeadSHA at creation time).
+// HeadSHA at creation time) or if the captured token isn't a plausible git
+// commit hash (GH-5351) — git accepts abbreviated hashes down to 4 chars in
+// practice but pads its own short-SHA output to 7, and a full SHA-1 is 40;
+// anything outside [7,40] hex chars is metadata corruption, not a real
+// commit, and letting it through would hand `git fetch origin <garbage>` to
+// ResolveFixContinuationBaseRef instead of failing here where the cause is
+// obvious.
 //
 // GH-5348: branch:X alone is not enough to recover a fix issue's original
 // diff — pilot-console #275 showed that when the PR branch is deleted (e.g.
@@ -96,10 +102,21 @@ func parseAutopilotIteration(body string) int {
 // gone — see ResolveFixContinuationBaseRef.
 func parseAutopilotSHA(body string) string {
 	re := regexp.MustCompile(`<!-- autopilot-meta.*?sha:(\S+).*?-->`)
-	if m := re.FindStringSubmatch(body); len(m) > 1 {
-		return m[1]
+	m := re.FindStringSubmatch(body)
+	if len(m) < 2 {
+		return ""
 	}
-	return ""
+	sha := m[1]
+	if len(sha) < 7 || len(sha) > 40 {
+		return ""
+	}
+	for _, c := range sha {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return ""
+		}
+	}
+	return sha
 }
 
 // resolveGitHubMemberIDByLogin resolves a GitHub login/email pair to a team member ID

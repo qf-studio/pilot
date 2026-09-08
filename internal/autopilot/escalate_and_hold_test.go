@@ -83,7 +83,7 @@ func TestCheckExternalMergeOrClose_SelfCloseMarker(t *testing.T) {
 	c.activePRs[42] = prState
 	c.mu.Unlock()
 
-	c.markSelfClosed(42)
+	c.markSelfClosed(prState, 999)
 
 	ghPR := &github.PullRequest{Number: 42, State: "closed", Merged: false}
 	resolved := c.checkExternalMergeOrClose(context.Background(), prState, ghPR)
@@ -105,7 +105,7 @@ func TestCheckExternalMergeOrClose_SelfCloseMarker(t *testing.T) {
 	}
 	// The marker is one-shot: a second stamped check for the same PR number
 	// (were it somehow re-checked) must not still report stamped.
-	if c.consumeSelfClosedMarker(42) {
+	if c.consumeSelfClosedMarker(prState) {
 		t.Error("self-close marker should be consumed after the first check")
 	}
 }

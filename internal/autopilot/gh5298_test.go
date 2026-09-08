@@ -31,46 +31,62 @@ import (
 // (zero-evidence decline -> notifyExternalClose's default retry-ready path)
 // to prove the new pilot-stripping logic is scoped to the superseded branch
 // only — retry-ready must keep re-adding `pilot` (GH-5042), never remove it.
+//
+// GH-5351: spawnFailureIssue no longer designates prState.TerminalLabel at
+// spawn time at all (see its doc comment) — the self-close marker it leaves
+// instead protects this exact close from ever reaching notifyExternalClose
+// in the real pipeline (TestGH4826_SpawnSuccess_MarksSourceTerminal_NotRetryReady
+// covers that). The pilot-stripping mutation this test actually exercises
+// lives inside notifyExternalClose's supersededClose branch, which is still
+// live code reached by other TerminalLabel=Superseded call sites
+// (spawnReviewIssue, closeConflictSourceIssueClosed, etc). The spawn-succeeds
+// case below simulates that downstream state directly after handleCIFailed
+// returns, mirroring
+// TestController_NotifyExternalClose_BoardSyncSkipsFailColumnOnSupersededClose
+// (gh5249_test.go), instead of relying on the CI-fail path to produce it.
 func TestNotifyExternalClose_CIFailSupersede_StripsPilotLabel(t *testing.T) {
 	const codeLog = `Run golangci-lint run ./...
 internal/autopilot/controller.go:1234:6: Error return value of c.ghClient.ClosePullRequest is not checked (errcheck)
 ##[error]Process completed with exit code 1.`
 
 	tests := []struct {
-		name              string
-		prNumber          int
-		issueNumber       int
-		headSHA           string
-		hasEvidence       bool // controls whether check-runs reports a failed check to classify
-		wantIssueCreated  bool
-		wantPRClosed      bool
-		wantTerminalLabel string
-		wantLabelAdded    string // label that must appear in the issue's add-labels call
-		wantPilotRemoved  bool   // whether `pilot` must appear in the issue's remove-labels call
+		name             string
+		prNumber         int
+		issueNumber      int
+		headSHA          string
+		hasEvidence      bool // controls whether check-runs reports a failed check to classify
+		wantIssueCreated bool
+		wantPRClosed     bool
+		wantSelfClosed   int    // GH-5351: expected prState.SelfClosedFixIssue after handleCIFailed
+		simTerminalLabel string // GH-5351: TerminalLabel to simulate before notifyExternalClose, standing in for a real non-CI-fail supersededClose call site; empty means don't simulate
+		wantLabelAdded   string // label that must appear in the issue's add-labels call
+		wantPilotRemoved bool   // whether `pilot` must appear in the issue's remove-labels call
 	}{
 		{
-			name:              "spawn succeeds: pilot-superseded applied and pilot stripped in the same mutation",
-			prNumber:          52980,
-			issueNumber:       52981,
-			headSHA:           "gh5298sha1",
-			hasEvidence:       true,
-			wantIssueCreated:  true,
-			wantPRClosed:      true,
-			wantTerminalLabel: github.LabelSuperseded,
-			wantLabelAdded:    github.LabelSuperseded,
-			wantPilotRemoved:  true,
+			name:             "spawn succeeds: pilot-superseded applied and pilot stripped in the same mutation",
+			prNumber:         52980,
+			issueNumber:      52981,
+			headSHA:          "gh5298sha1",
+			hasEvidence:      true,
+			wantIssueCreated: true,
+			wantPRClosed:     true,
+			wantSelfClosed:   52981 + 100000,
+			simTerminalLabel: github.LabelSuperseded,
+			wantLabelAdded:   github.LabelSuperseded,
+			wantPilotRemoved: true,
 		},
 		{
-			name:              "spawn declines (zero evidence): retry-ready resolution leaves pilot untouched",
-			prNumber:          52982,
-			issueNumber:       52983,
-			headSHA:           "gh5298sha2",
-			hasEvidence:       false,
-			wantIssueCreated:  false,
-			wantPRClosed:      false,
-			wantTerminalLabel: "",
-			wantLabelAdded:    github.LabelRetryReady,
-			wantPilotRemoved:  false,
+			name:             "spawn declines (zero evidence): retry-ready resolution leaves pilot untouched",
+			prNumber:         52982,
+			issueNumber:      52983,
+			headSHA:          "gh5298sha2",
+			hasEvidence:      false,
+			wantIssueCreated: false,
+			wantPRClosed:     false,
+			wantSelfClosed:   0,
+			simTerminalLabel: "",
+			wantLabelAdded:   github.LabelRetryReady,
+			wantPilotRemoved: false,
 		},
 	}
 
@@ -168,8 +184,11 @@ internal/autopilot/controller.go:1234:6: Error return value of c.ghClient.CloseP
 			if prClosed != tt.wantPRClosed {
 				t.Errorf("prClosed = %v, want %v", prClosed, tt.wantPRClosed)
 			}
-			if prState.TerminalLabel != tt.wantTerminalLabel {
-				t.Fatalf("prState.TerminalLabel = %q, want %q", prState.TerminalLabel, tt.wantTerminalLabel)
+			if prState.SelfClosedFixIssue != tt.wantSelfClosed {
+				t.Fatalf("prState.SelfClosedFixIssue = %d, want %d", prState.SelfClosedFixIssue, tt.wantSelfClosed)
+			}
+			if tt.simTerminalLabel != "" {
+				prState.TerminalLabel = tt.simTerminalLabel
 			}
 
 			// Drive the close notification — the seam that actually writes the

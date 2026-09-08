@@ -1416,9 +1416,14 @@ func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName strin
 //     works for any commit still reachable/retained on the remote, even with
 //     no branch pointing at it — and returned so the caller recreates the
 //     branch from that exact commit instead of from main.
-//   - If neither resolves (no fallbackSHA, or the SHA itself can no longer be
-//     fetched — e.g. garbage-collected on the remote), "" is returned so the
-//     caller falls back to its own default base (origin/main).
+//   - If neither resolves, "" is returned. The caller's response to that
+//     depends on why: no fallbackSHA at all (pre-GH-5348 fix issues, or a
+//     blanked HeadSHA) means there was never an exact commit to recover, so
+//     the caller degrades to its own default base (origin/main). A
+//     fallbackSHA that was supplied but could not be fetched (e.g.
+//     garbage-collected on the remote) is different — silently defaulting to
+//     main there would discard a real, identified commit, so the caller
+//     (runner.go, GH-5351) escalates instead of falling back.
 //
 // Callers pass "" for fallbackSHA when there is no recorded SHA to fall back
 // to (e.g. fix issues created before GH-5348); in that case this degrades to
@@ -1445,7 +1450,12 @@ func (g *GitOperations) ResolveFixContinuationBaseRef(ctx context.Context, branc
 	fetchShaCmd.Dir = g.projectPath
 	withGitCredentials(ctx, fetchShaCmd)
 	if output, err := fetchShaCmd.CombinedOutput(); err != nil {
-		slog.Warn("autopilot-fix: recorded SHA unfetchable, falling back to default worktree base",
+		// GH-5351: this no longer means "the caller falls back to main" — a
+		// recorded SHA existed and identified a real commit, so the caller
+		// (runner.go's escalateUnfetchableFixSHA) escalates to a human
+		// instead of silently discarding it. Only report the fetch failure
+		// here; the caller decides what "" means for its own fallbackSHA.
+		slog.Warn("autopilot-fix: recorded SHA unfetchable",
 			slog.String("branch", branchName),
 			slog.String("sha", fallbackSHA),
 			slog.Any("error", err),

@@ -639,17 +639,6 @@ type Controller struct {
 	// either condition clears. GH-4454.
 	laneStarvationStreak int
 
-	// selfClosedPRs marks PR numbers autopilot closed itself as an internal
-	// state transition rather than a human rejection, guarded by mu. Stamped
-	// via markSelfClosed, consumed (checked + deleted, one-shot) via
-	// consumeSelfClosedMarker the next time checkExternalMergeOrClose observes
-	// the PR closed on GitHub. GH-4458 foundation for the rung escalation
-	// ladder — no rung stamps this yet, but the poll path already honors it so
-	// a future rung closing a PR it intends to keep/reuse doesn't trip
-	// notifyExternalClose's reclassify + branch-delete semantics (GH-3818/D10),
-	// which must stay reserved for real external (human) closes.
-	selfClosedPRs map[int]time.Time
-
 	// alertedPersistFailures deduplicates pr_persist_failed alerts per PR
 	// number, guarded by mu — same rationale as alertedMissingReleases: a
 	// wedged PR retries every tick, and without this map the alerts engine's
@@ -3448,38 +3437,49 @@ func ciFailedChecksSummary(failedChecks []string) string {
 // pilot-retry-ready re-queue (#4817 → PR#4821) — because the branch that
 // spawned the fix issue was trusted to also remember to mark the source
 // terminal, and a sibling branch (the post-merge rung) did not. Centralizing
-// the ownership decision here, at the one place CreateFailureIssue is ever
-// called, means a call site inherits exclusivity by construction instead of
-// having to remember it on its own:
+// the create call here, at the one place CreateFailureIssue is ever called,
+// means every rung shares the same spawn behavior instead of having to
+// reimplement it.
 //
-//   - CreateFailureIssue succeeds (issueNum > 0, err == nil): the fix issue
-//     now owns recovery — prState.TerminalLabel is set to github.LabelSuperseded
-//     so notifyExternalClose (GH-3806) marks the source issue pilot-superseded
-//     instead of pilot-retry-ready, and it is never re-queued alongside the
-//     fix issue that already continues the work. GH-5247: this is a HEALTHY
-//     hand-off (the source PR is being closed by design because a fix issue
-//     now continues the work), not a terminal failure — it must not be
-//     classified or metered as one. Before GH-5247 this branch set
-//     github.LabelFailed, which fed the source PR into notifyExternalClose's
-//     failure path (ReclassifyCompletionAsFailed + monitor.Fail) even though
-//     nothing failed; every routine revision cycle was overcounted as a
-//     pipeline failure. LabelSuperseded already carries the "closed on
-//     purpose, not a defect" semantics GH-4657/GH-4701 built for the sibling
-//     conflict-close path, and notifyExternalClose already branches on it via
-//     supersededClose — reusing it here needed no new plumbing.
-//   - CreateFailureIssue declines or fails (dedup/budget claim in flight,
-//     GH-4307; or a transient create error): no fix issue exists to own the
-//     work, so prState.TerminalLabel is left untouched — the source retry
-//     chain remains the sole owner. Exactly one owner in every branch, never
-//     both, never neither.
-//
-// Callers keep their own branching on the returned (issueNum, err) for
-// messaging/comments/escalation — this seam only owns the TerminalLabel
-// decision, so a caller cannot accidentally skip it.
+// GH-5351: this used to also set prState.TerminalLabel = github.LabelSuperseded
+// the instant CreateFailureIssue succeeded, which notifyExternalClose read on
+// the very next poll to mark the source issue pilot-superseded — before the
+// fix issue's own PR existed, let alone before its diff was known. That
+// eager label write is gone: the PR this fix issue was spawned to replace is
+// now closed via markSelfClosed (GH-5351; see handleCIFailed), which makes
+// checkExternalMergeOrClose skip notifyExternalClose for this close
+// entirely, so pilot-superseded is never written here. Instead,
+// verifyFixPRDeliversSourceScope (owner_death.go) applies it later, once the
+// fix PR actually merges and its diff confirms it genuinely continues the
+// origin PR's scope — the changed-file set recorded below
+// (RecordOriginScope) is what that gate compares against.
 func (c *Controller) spawnFailureIssue(ctx context.Context, prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int) (int, error) {
 	issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, failureType, failedChecks, logs, iteration)
-	if err == nil && issueNum > 0 {
-		prState.TerminalLabel = github.LabelSuperseded
+	if err == nil && issueNum > 0 && c.stateStore != nil {
+		// GH-5351: record the origin PR's changed-file set now, while it's
+		// still cheap to fetch — the origin PR is normally closed and
+		// untracked within one poll tick of this call (removePRTracking),
+		// well before the fix PR eventually merges and
+		// verifyFixPRDeliversSourceScope needs this data. Fail open: a
+		// ListPullRequestFiles hiccup here must not block the fix-issue
+		// hand-off itself, only leave the later gate to fall back to a live
+		// re-fetch.
+		files, ferr := c.ghClient.ListPullRequestFiles(ctx, c.owner, c.repo, prState.PRNumber)
+		if ferr != nil {
+			c.log.Warn("spawnFailureIssue: failed to list origin PR files for scope recording, continuing without it",
+				"pr", prState.PRNumber, "fix_issue", issueNum, "error", ferr)
+		} else {
+			names := make([]string, 0, len(files))
+			for _, f := range files {
+				if f != nil {
+					names = append(names, f.Filename)
+				}
+			}
+			if rerr := c.stateStore.RecordOriginScope(c.repoKey(), issueNum, prState.PRNumber, names); rerr != nil {
+				c.log.Warn("spawnFailureIssue: failed to record origin scope, continuing without it",
+					"pr", prState.PRNumber, "fix_issue", issueNum, "error", rerr)
+			}
+		}
 	}
 	return issueNum, err
 }
@@ -3851,6 +3851,23 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 
 	c.log.Info("created fix issue for CI failure", "pr", prState.PRNumber, "issue", issueNum)
 
+	// GH-5351: stamp the self-close marker before the close call itself —
+	// the #275 incident was exactly this close going unmarked, so the next
+	// poll's checkExternalMergeOrClose read it back as an external close and
+	// ran the destructive relabel/branch-delete path. Stamping first (rather
+	// than only on ClosePullRequest success) means the marker is in place
+	// even if this call errors and GitHub's close still lands moments later.
+	c.markSelfClosed(prState, issueNum)
+
+	// GH-5361: persist the marker immediately rather than relying solely on
+	// ProcessPR's tail persistPRState call. A daemon death between the
+	// markSelfClosed above and that tail persist would otherwise lose the
+	// in-memory-only marker entirely — the next restart's
+	// checkExternalMergeOrClose would then read the close GitHub already
+	// performed as external and run the destructive relabel/branch-delete
+	// path this marker exists to prevent.
+	c.persistPRState(prState)
+
 	// Close the failed PR on GitHub so the sequential poller's merge waiter
 	// can unblock and pick up the fix issue. Without this, the poller stays
 	// blocked in WaitWithCallback() waiting for a PR that will never merge.
@@ -3861,27 +3878,14 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		c.log.Info("closed failed PR", "pr", prState.PRNumber, "fix_issue", issueNum)
 	}
 
-	// GH-1870/GH-5249: Sync board card to "Failed" column on CI failure —
-	// but never when this rung already handed off to a fix issue. By this
-	// point (past the err != nil || issueNum <= 0 guard above) that hand-off
-	// always succeeded, so prState.TerminalLabel is always LabelSuperseded
-	// (set by spawnFailureIssue) — moving the card to the fail column here
-	// would contradict the healthy-hand-off treatment the rest of this rung
-	// already gives it (no RecordPRFailed, no c.monitor.Fail equivalent).
-	if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" && prState.TerminalLabel != github.LabelSuperseded {
-		if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
-			c.log.Warn("board sync on CI fail failed", "pr", prState.PRNumber, "error", err)
-			c.alertBoardSyncScopeFailureOnce(err)
-		}
-	}
-
-	// GH-3806/GH-4826: name the reason (and the follow-up issue that now owns
-	// this work) so notifyExternalClose can post the audit-trail comments and
-	// mark this issue pilot-superseded instead of leaving it stranded on a
-	// stale label. prState.TerminalLabel itself was already set by
-	// spawnFailureIssue above the moment CreateFailureIssue succeeded — it is
-	// not set here, so this rung cannot forget it the way the post-merge rung
-	// once did. GH-5247: this is a healthy hand-off, not a pipeline failure —
+	// GH-3806/GH-4826: name the reason and the follow-up issue that now owns
+	// this work. GH-5351: this close is now marked via markSelfClosed above,
+	// so checkExternalMergeOrClose skips notifyExternalClose for it entirely
+	// — pilot-superseded is no longer applied here (or by spawnFailureIssue
+	// at spawn time). verifyFixPRDeliversSourceScope (owner_death.go) applies
+	// it later instead, once the fix PR this issue owns actually merges and
+	// its diff confirms it delivers this PR's origin scope. GH-5247: this is
+	// a healthy hand-off, not a pipeline failure —
 	// c.metrics.RecordPRFailed()/RecordPRFailedClass() are deliberately NOT
 	// called here (they overcounted every routine revision cycle as a
 	// defect). c.recordCIFailVerdict is kept: the CI run genuinely failed,
@@ -4373,7 +4377,7 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	// consumeSelfClosedMarker short-circuits into
 	// removePRTracking(pr, false) instead — tracking stops, but the branch
 	// and its commits survive.
-	c.markSelfClosed(prState.PRNumber)
+	c.markSelfClosed(prState, issueNum)
 
 	// Close the PR. The branch is deliberately left alone (see above) — it
 	// is no longer deleted here, and checkExternalMergeOrClose's self-close
@@ -6105,14 +6109,11 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		}
 
 		if !skipSpawn {
-			// GH-4826: route through the shared spawnFailureIssue seam rather
-			// than calling feedbackLoop.CreateFailureIssue directly — this rung
-			// is the one that used to leave prState.TerminalLabel unset even on
-			// a successful spawn. The original issue is normally already closed
-			// by handleMerging before a PR can ever reach StagePostMergeCI, so
-			// notifyExternalClose's label write is a no-op here today, but this
-			// rung must still not be the one branch that forgets the invariant
-			// if that ever changes.
+			// GH-4826/GH-5351: route through the shared spawnFailureIssue seam
+			// rather than calling feedbackLoop.CreateFailureIssue directly —
+			// this keeps origin-scope recording (RecordOriginScope, consumed
+			// later by verifyFixPRDeliversSourceScope) consistent across both
+			// rungs instead of only the pre-merge one remembering to do it.
 			issueNum, issueErr := c.spawnFailureIssue(ctx, prState, FailureCIPostMerge, failedChecks, ciLogs, iteration+1)
 			if issueErr != nil {
 				c.log.Error("failed to create post-merge fix issue", "error", issueErr)
@@ -9414,7 +9415,7 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		// delete (both reserved for real external closes, GH-3818/D10) and
 		// just stop tracking the PR. Whatever internal flow closed it may
 		// still need the branch.
-		if c.consumeSelfClosedMarker(prState.PRNumber) {
+		if c.consumeSelfClosedMarker(prState) {
 			c.log.Info("PR closed internally (self-close marker), skipping external-close handling", "pr", prState.PRNumber)
 			c.removePRTracking(prState.PRNumber, false)
 			return true
@@ -9563,51 +9564,39 @@ func (c *Controller) clearRetryLabels(ctx context.Context, issueNumber int) {
 	})
 }
 
-// selfCloseMarkerTTL bounds how long a markSelfClosed stamp stays valid.
-// A self-close should be visible as "closed" on GitHub within the very next
-// poll (CIPollInterval defaults to 30s; Run's idle backoff tier tops out at
-// 60s), so this is generous headroom for GitHub API propagation delay
-// without leaving a stale marker around indefinitely if the close never
-// actually lands (e.g. ClosePullRequest itself errored). GH-4458.
-const selfCloseMarkerTTL = 10 * time.Minute
-
-// markSelfClosed stamps prNumber as closed by autopilot itself — an internal
-// state transition, not a human rejection — so the next
-// checkExternalMergeOrClose poll that observes it closed on GitHub skips
-// notifyExternalClose's reclassify-to-failed + retry-ready relabeling and
-// removePR's branch delete (both reserved for real external closes,
-// GH-3818/D10). GH-4458 foundation for the rung escalation ladder: no rung
-// calls this yet, but the poll path already honors the stamp.
-func (c *Controller) markSelfClosed(prNumber int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.selfClosedPRs == nil {
-		c.selfClosedPRs = make(map[int]time.Time)
-	}
-	c.selfClosedPRs[prNumber] = time.Now()
+// markSelfClosed records, durably on the PR's own state row, that prState's
+// PR is about to be closed by autopilot itself (GH-5351) — specifically
+// because a continuation fix issue was just spawned to own the work. This
+// used to live only in an in-memory Controller.selfClosedPRs map with a
+// selfCloseMarkerTTL, which had zero callers wired to it (the #275
+// incident: handleCIFailed's own close was never marked, so the next
+// poll's checkExternalMergeOrClose read it back as an "external" close and
+// ran the destructive relabel/branch-delete path meant for a human closing
+// the PR). Persisting on PRState instead of the Controller map means the
+// marker survives a daemon restart landing between the close and the next
+// poll (SavePRState/LoadAllPRStates already round-trip every PRState
+// field), which the old in-memory map could not.
+//
+// Callers must already hold prState.mu — true for every current caller
+// (handleCIFailed runs inside ProcessPR's prState.mu.Lock()).
+func (c *Controller) markSelfClosed(prState *PRState, fixIssueNum int) {
+	prState.SelfClosedFixIssue = fixIssueNum
 }
 
-// consumeSelfClosedMarker reports whether prNumber carries a live
-// markSelfClosed stamp, and removes it from the set either way — a stamp is
-// only ever consulted once, at the moment the poll path sees the PR closed.
-// Opportunistically sweeps every other expired entry in the same pass so an
-// abandoned stamp (the marked close never actually completed on GitHub)
-// cannot grow the map unbounded over a long-lived daemon.
-func (c *Controller) consumeSelfClosedMarker(prNumber int) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := time.Now()
-	for pr, stampedAt := range c.selfClosedPRs {
-		if now.Sub(stampedAt) > selfCloseMarkerTTL {
-			delete(c.selfClosedPRs, pr)
-		}
-	}
-	stampedAt, ok := c.selfClosedPRs[prNumber]
-	if !ok {
+// consumeSelfClosedMarker reports whether prState carries a self-close
+// marker set by markSelfClosed, clearing it in the same call (one-shot,
+// mirrors the old map-based consume semantics). Callers use this to decide
+// whether an observed GitHub close was autopilot's own doing (skip the
+// external-close watcher entirely) rather than a human/external close.
+//
+// Callers must already hold prState.mu — true for checkExternalMergeOrClose,
+// the only caller, which runs inside its own pr.mu.Lock() in processAllPRs.
+func (c *Controller) consumeSelfClosedMarker(prState *PRState) bool {
+	if prState.SelfClosedFixIssue <= 0 {
 		return false
 	}
-	delete(c.selfClosedPRs, prNumber)
-	return now.Sub(stampedAt) <= selfCloseMarkerTTL
+	prState.SelfClosedFixIssue = 0
+	return true
 }
 
 // notifyExternalClose runs once autopilot observes a PR closed without a merge —

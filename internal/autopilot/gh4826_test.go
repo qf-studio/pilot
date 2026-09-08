@@ -107,37 +107,39 @@ internal/autopilot/controller.go:1234:6: Error return value of c.ghClient.CloseP
 		t.Fatal("expected the source PR to be closed once the fix issue was spawned")
 	}
 
-	// The core invariant: the spawn seam must have marked the source PR
-	// state terminal so the source issue is not left eligible for a
-	// competing retry re-queue. This is recorded controller state, not a
-	// mock echo. GH-5247: a successful spawn is a healthy hand-off, not a
-	// pipeline failure, so the recorded label is LabelSuperseded rather than
-	// LabelFailed.
-	if prState.TerminalLabel != github.LabelSuperseded {
-		t.Fatalf("prState.TerminalLabel = %q, want %q (fix issue now owns recovery)", prState.TerminalLabel, github.LabelSuperseded)
+	// GH-5351: the core invariant moved off an eager TerminalLabel write —
+	// spawnFailureIssue no longer sets prState.TerminalLabel at all (see its
+	// doc comment). The spawn seam now records a durable self-close marker
+	// instead, set by markSelfClosed immediately before handleCIFailed
+	// closes the PR. That marker, not a label, is what keeps the source
+	// issue out of a competing retry re-queue.
+	if prState.SelfClosedFixIssue != 4820 {
+		t.Fatalf("prState.SelfClosedFixIssue = %d, want 4820 (fix issue now owns recovery)", prState.SelfClosedFixIssue)
 	}
 
-	// Downstream: notifyExternalClose (GH-3806) must read that recorded
-	// state and label the source issue pilot-superseded, never
-	// pilot-retry-ready — the exact #4818 shape where both fix-issue and
-	// source-retry chains armed simultaneously.
-	c.notifyExternalClose(context.Background(), prState)
+	// Downstream: the next poll's checkExternalMergeOrClose (GH-4458) must
+	// consume that marker and treat this close as internal — skipping
+	// notifyExternalClose (and therefore ever labeling the source
+	// pilot-retry-ready) entirely — the exact #4818 shape where both
+	// fix-issue and source-retry chains armed simultaneously.
+	// pilot-superseded is no longer applied here at all; GH-5351 moved that
+	// to verifyFixPRDeliversSourceScope, gated on the fix PR actually
+	// merging with overlapping scope (see gh5348_scope_mismatch_test.go).
+	// checkExternalMergeOrClose returns true for both the self-close and the
+	// genuine-external-close branches (both mean "handled, stop processing
+	// this PR") — the marker's effect is visible in which branch actually
+	// ran, not the return value, so assert on the label side effect instead:
+	// notifyExternalClose must never have been reached.
+	ghPR := &github.PullRequest{Number: prState.PRNumber, State: "closed", Merged: false}
+	c.checkExternalMergeOrClose(context.Background(), prState, ghPR)
 
-	foundSuperseded := false
-	foundRetryReady := false
 	for _, l := range issueLabelsAdded {
-		if l == github.LabelSuperseded {
-			foundSuperseded = true
-		}
 		if l == github.LabelRetryReady {
-			foundRetryReady = true
+			t.Errorf("source issue must NOT be labeled %q once a fix issue owns recovery — this is the #4818 dual-arm shape; labels added: %v", github.LabelRetryReady, issueLabelsAdded)
 		}
-	}
-	if !foundSuperseded {
-		t.Errorf("expected source issue to be labeled %q, got labels added: %v", github.LabelSuperseded, issueLabelsAdded)
-	}
-	if foundRetryReady {
-		t.Errorf("source issue must NOT be labeled %q once a fix issue owns recovery — this is the #4818 dual-arm shape; labels added: %v", github.LabelRetryReady, issueLabelsAdded)
+		if l == github.LabelSuperseded {
+			t.Errorf("source issue must NOT be labeled %q at spawn time (GH-5351) — that now only happens once the fix PR merges with overlapping scope; labels added: %v", github.LabelSuperseded, issueLabelsAdded)
+		}
 	}
 }
 
@@ -286,13 +288,20 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 }
 
 // TestGH4826_TerminalLabelOwnershipLivesAtSpawnSeam is a structural
-// regression guard: the TerminalLabel-on-spawn-success decision must live
-// exactly once, inside spawnFailureIssue, and every CreateFailureIssue call
-// site in controller.go must route through that seam rather than calling
-// feedbackLoop.CreateFailureIssue directly. Without this, a future CI-failure
-// rung (a third one, or a rewrite of an existing one) could reintroduce the
-// #4818 shape by calling CreateFailureIssue directly and forgetting to mark
-// the source terminal — exactly what the post-merge rung did before this fix.
+// regression guard: every CreateFailureIssue call site in controller.go must
+// route through the spawnFailureIssue seam rather than calling
+// feedbackLoop.CreateFailureIssue directly. Without this, a future
+// CI-failure rung (a third one, or a rewrite of an existing one) could
+// reintroduce the #4818 shape by calling CreateFailureIssue directly and
+// forgetting to record the origin scope / mark the source self-closed —
+// exactly what the post-merge rung did before this fix.
+//
+// GH-5351: spawnFailureIssue no longer sets prState.TerminalLabel at all —
+// that decision moved out of the seam entirely, to a merge-time,
+// file-overlap-gated check (verifyFixPRDeliversSourceScope, owner_death.go).
+// This test now guards the opposite direction: that eager assignment must
+// NOT reappear inside spawnFailureIssue, and RecordOriginScope — the data
+// that later gate depends on — must be recorded here instead.
 func TestGH4826_TerminalLabelOwnershipLivesAtSpawnSeam(t *testing.T) {
 	src, err := os.ReadFile("controller.go")
 	if err != nil {
@@ -318,10 +327,10 @@ func TestGH4826_TerminalLabelOwnershipLivesAtSpawnSeam(t *testing.T) {
 		t.Errorf("the single direct CreateFailureIssue call must be inside spawnFailureIssue (bytes %d-%d), found at byte %d", seamStart, seamEnd, directCalls[0][0])
 	}
 
-	// The TerminalLabel = github.LabelSuperseded assignment that fires on
-	// spawn success must appear exactly once inside that same seam. GH-5247:
-	// a successful spawn is a healthy hand-off, not a pipeline failure, so
-	// the seam marks the source LabelSuperseded rather than LabelFailed.
+	// GH-5351: the TerminalLabel = github.LabelSuperseded assignment that
+	// used to fire on spawn success must NOT appear inside the seam anymore
+	// — applying pilot-superseded before the fix issue's own PR exists (let
+	// alone before its diff is known) was the root cause behind this task.
 	spawnSuccessAssignRe := regexp.MustCompile(`prState\.TerminalLabel = github\.LabelSuperseded`)
 	allAssigns := spawnSuccessAssignRe.FindAllStringIndex(text, -1)
 	inSeam := 0
@@ -330,8 +339,25 @@ func TestGH4826_TerminalLabelOwnershipLivesAtSpawnSeam(t *testing.T) {
 			inSeam++
 		}
 	}
-	if inSeam != 1 {
-		t.Errorf("expected exactly 1 `prState.TerminalLabel = github.LabelSuperseded` assignment inside spawnFailureIssue, found %d", inSeam)
+	if inSeam != 0 {
+		t.Errorf("expected 0 `prState.TerminalLabel = github.LabelSuperseded` assignments inside spawnFailureIssue (GH-5351 moved this to verifyFixPRDeliversSourceScope), found %d", inSeam)
+	}
+
+	// GH-5351: RecordOriginScope must be called exactly once, inside this
+	// same seam — it captures the origin PR's changed-file set while it's
+	// still cheap to fetch, which verifyFixPRDeliversSourceScope later
+	// compares the fix PR's diff against before ever applying
+	// pilot-superseded.
+	recordScopeRe := regexp.MustCompile(`c\.stateStore\.RecordOriginScope\(`)
+	allRecordCalls := recordScopeRe.FindAllStringIndex(text, -1)
+	inSeamRecord := 0
+	for _, m := range allRecordCalls {
+		if m[0] >= seamStart && m[0] <= seamEnd {
+			inSeamRecord++
+		}
+	}
+	if len(allRecordCalls) != 1 || inSeamRecord != 1 {
+		t.Errorf("expected exactly 1 call to c.stateStore.RecordOriginScope, inside spawnFailureIssue, found %d total (%d inside the seam)", len(allRecordCalls), inSeamRecord)
 	}
 
 	// Both known CI-failure rungs must call the seam, not the raw method.

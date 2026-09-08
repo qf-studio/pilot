@@ -1356,6 +1356,24 @@ type PRState struct {
 	// that broke it never resolved). Persisted so the skip survives a
 	// daemon restart.
 	ReleaseBackfillAbandoned bool
+	// SelfClosedFixIssue is set by markSelfClosed (GH-5351) immediately before
+	// handleCIFailed closes this PR because fix issue #SelfClosedFixIssue was
+	// just spawned to continue the work. checkExternalMergeOrClose's
+	// consumeSelfClosedMarker checks this field (and clears it, one-shot) the
+	// next time it observes the PR closed on GitHub, so that close is treated
+	// as autopilot's own internal transition rather than an external/human
+	// close — no notifyExternalClose, no pilot-superseded, no branch deletion.
+	// Zero means "not self-closed" (the common case).
+	//
+	// Persisted, unlike the map this replaced (Controller.selfClosedPRs, an
+	// in-memory map with a 10-minute TTL that had zero callers wired to it —
+	// the #275 incident: handleCIFailed's own close was never marked, so the
+	// next poll misread it as an external close and ran the destructive
+	// relabel/branch-delete path meant for a human closing the PR). Living on
+	// PRState instead means the marker survives a daemon restart landing
+	// between the close and the next poll, via the same SavePRState/
+	// LoadAllPRStates round-trip every other persisted field uses.
+	SelfClosedFixIssue int
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -1416,6 +1434,7 @@ func (ps *PRState) snapshot() *PRState {
 		PostMergeInfraRerunCount:     ps.PostMergeInfraRerunCount,
 		PostMergeInfraRerunSHA:       ps.PostMergeInfraRerunSHA,
 		ReleaseBackfillAbandoned:     ps.ReleaseBackfillAbandoned,
+		SelfClosedFixIssue:           ps.SelfClosedFixIssue,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.

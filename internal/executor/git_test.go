@@ -760,6 +760,99 @@ func TestResolveFixContinuationBaseRef_BranchDeletedShaFetchable(t *testing.T) {
 	}
 }
 
+// TestResolveFixContinuationBaseRef_WorktreeFromSHA_FilesPresent is GH-5351's
+// end-to-end guard (task spec item 4): the tests above only assert the
+// resolved ref *string* — they never prove a worktree cut from that ref
+// actually carries the original commit's files. This drives the full path a
+// real autopilot-fix task takes (runner.go's worktree-creation block): after
+// the remote branch is deleted, resolve the base ref, then actually build a
+// worktree from it via CreateWorktreeWithBranch (the same call runner.go
+// makes) and assert the file the original PR added is present both in the
+// worktree's working tree and in a diff against the default branch —
+// proving the worktree was cut from the real commit rather than silently
+// rebuilt from main (the pilot-console #275 failure mode).
+func TestResolveFixContinuationBaseRef_WorktreeFromSHA_FilesPresent(t *testing.T) {
+	remoteDir, localDir, cleanup := newRemoteAndLocalRepo(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Allow the bare remote to serve fetches for arbitrary reachable commits,
+	// not just ones currently pointed to by a ref (mirrors GitHub's server
+	// behavior and TestResolveFixContinuationBaseRef_BranchDeletedShaFetchable).
+	if out, err := exec.Command("git", "-C", remoteDir, "config", "uploadpack.allowReachableSHA1InWant", "true").CombinedOutput(); err != nil {
+		t.Fatalf("failed to configure remote: %v\n%s", err, out)
+	}
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", localDir}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	mainBranch, err := NewGitOperations(localDir).GetCurrentBranch(ctx)
+	if err != nil {
+		t.Fatalf("GetCurrentBranch: %v", err)
+	}
+
+	branch := "pilot/GH-7777"
+	const fixContent = "original PR content GH-7777"
+	run("checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(localDir, "fix.txt"), []byte(fixContent), 0644); err != nil {
+		t.Fatalf("write fix.txt: %v", err)
+	}
+	run("add", "fix.txt")
+	run("commit", "-m", "original fix commit")
+	sha := run("rev-parse", "HEAD")
+	run("push", "-u", "origin", branch)
+
+	// Simulate the branch being deleted on the remote (e.g. on PR close),
+	// while the commit object itself is retained by the remote.
+	run("push", "origin", "--delete", branch)
+
+	// Switch the local repo off the fix branch — `git worktree add` refuses
+	// to check out a branch that's already checked out elsewhere, and
+	// CreateWorktreeWithBranch force-resets `branch` with -B, which would
+	// otherwise collide with the branch still being checked out here.
+	run("checkout", mainBranch)
+
+	git := NewGitOperations(localDir)
+	baseRef := git.ResolveFixContinuationBaseRef(ctx, branch, sha)
+	if baseRef != sha {
+		t.Fatalf("ResolveFixContinuationBaseRef() = %q, want fallback sha %q", baseRef, sha)
+	}
+
+	worktreePath, worktreeCleanup, err := CreateWorktreeWithBranch(ctx, localDir, "gh5351-worktree-test", branch, baseRef)
+	if err != nil {
+		t.Fatalf("CreateWorktreeWithBranch: %v", err)
+	}
+	defer worktreeCleanup()
+
+	gotContent, err := os.ReadFile(filepath.Join(worktreePath, "fix.txt"))
+	if err != nil {
+		t.Fatalf("fix.txt missing from worktree cut from SHA base: %v", err)
+	}
+	if string(gotContent) != fixContent {
+		t.Errorf("fix.txt content = %q, want %q", gotContent, fixContent)
+	}
+
+	diffCmd := exec.Command("git", "-C", worktreePath, "diff", mainBranch, "--", "fix.txt")
+	diffOut, err := diffCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git diff %s -- fix.txt: %v\n%s", mainBranch, err, diffOut)
+	}
+	if !strings.Contains(string(diffOut), "fix.txt") {
+		t.Errorf("expected fix.txt to appear in diff against %s, got: %q", mainBranch, diffOut)
+	}
+	if !strings.Contains(string(diffOut), fixContent) {
+		t.Errorf("expected diff against %s to contain the original fix content, got: %q", mainBranch, diffOut)
+	}
+}
+
 // TestResolveFixContinuationBaseRef_BranchDeletedShaUnfetchable validates that
 // when the branch is gone and the fallback SHA cannot be fetched (invalid or
 // garbage-collected), ResolveFixContinuationBaseRef returns "" so the caller

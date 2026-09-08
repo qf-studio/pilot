@@ -222,6 +222,28 @@ func (s *StateStore) migrate() error {
 		// leave a restart free to re-enter the merged branch and re-fire the
 		// Jira completion comment.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN jira_done_notified INTEGER NOT NULL DEFAULT 0`,
+		// GH-5351: persist the self-close marker (markSelfClosed/
+		// consumeSelfClosedMarker in controller.go) on the PR's own state row
+		// instead of an in-memory Controller map, so it survives a daemon
+		// restart landing between handleCIFailed's own close and the next
+		// poll's checkExternalMergeOrClose read. 0 means "not self-closed".
+		`ALTER TABLE autopilot_pr_state ADD COLUMN self_closed_fix_issue INTEGER NOT NULL DEFAULT 0`,
+		// GH-5351: durably records the origin PR's changed-file set for a
+		// newly spawned CI-fix issue, keyed by fix issue number rather than PR
+		// number — the origin PR's own autopilot_pr_state row does not
+		// survive long enough (removePRTracking deletes it within one poll
+		// tick of the self-close) for verifyFixPRDeliversSourceScope to read
+		// it back at fix-PR-merge time, which can be hours or days later.
+		// origin_files is a newline-joined filename list (filenames cannot
+		// contain newlines).
+		`CREATE TABLE IF NOT EXISTS autopilot_origin_scope (
+			repo TEXT NOT NULL,
+			fix_issue_number INTEGER NOT NULL,
+			origin_pr_number INTEGER NOT NULL DEFAULT 0,
+			origin_files TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (repo, fix_issue_number)
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -489,6 +511,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			post_merge_infra_rerun_sha TEXT NOT NULL DEFAULT '',
 			release_backfill_abandoned INTEGER NOT NULL DEFAULT 0,
 			jira_done_notified INTEGER NOT NULL DEFAULT 0,
+			self_closed_fix_issue INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -506,7 +529,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -519,7 +542,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -667,8 +690,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -704,7 +727,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			post_merge_infra_rerun_count = excluded.post_merge_infra_rerun_count,
 			post_merge_infra_rerun_sha = excluded.post_merge_infra_rerun_sha,
 			release_backfill_abandoned = excluded.release_backfill_abandoned,
-			jira_done_notified = excluded.jira_done_notified
+			jira_done_notified = excluded.jira_done_notified,
+			self_closed_fix_issue = excluded.self_closed_fix_issue
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -717,7 +741,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.Parked, pr.EscalationReason, pr.RebaseHoldActive, pr.ReadoptCount,
 		pr.BreakerHoldActive, pr.BreakerReadoptCount,
 		pr.PostMergeInfraRerunCount, pr.PostMergeInfraRerunSHA,
-		pr.ReleaseBackfillAbandoned, pr.JiraDoneNotified,
+		pr.ReleaseBackfillAbandoned, pr.JiraDoneNotified, pr.SelfClosedFixIssue,
 	)
 	return err
 }
@@ -736,7 +760,7 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -764,7 +788,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
-			release_backfill_abandoned, jira_done_notified
+			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -789,7 +813,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 			&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 			&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
-			&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified,
+			&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified, &pr.SelfClosedFixIssue,
 		); err != nil {
 			return nil, err
 		}
@@ -1048,7 +1072,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 		&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 		&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
-		&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified,
+		&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified, &pr.SelfClosedFixIssue,
 	)
 	if err != nil {
 		return nil, err
@@ -1281,6 +1305,55 @@ func (s *StateStore) HasSpawnedFixForPR(repo string, prNumber int) (int, error) 
 		return 0, err
 	}
 	return issueNumber, nil
+}
+
+// RecordOriginScope durably records the origin PR's changed-file set for a
+// newly spawned CI-fix issue (GH-5351), keyed by fix issue number. Written by
+// spawnFailureIssue immediately after the fix issue is created — before the
+// origin PR is closed and untracked, since removePRTracking deletes its
+// autopilot_pr_state row within one poll tick of the self-close, well before
+// the fix PR eventually merges and verifyFixPRDeliversSourceScope needs this
+// data. INSERT OR REPLACE so a re-spawn (e.g. a retried CreateFailureIssue
+// call after a transient error) overwrites rather than errors on the
+// (repo, fix_issue_number) primary key.
+func (s *StateStore) RecordOriginScope(repo string, fixIssueNumber, originPRNumber int, files []string) error {
+	_, err := s.db.Exec(`
+		INSERT OR REPLACE INTO autopilot_origin_scope (repo, fix_issue_number, origin_pr_number, origin_files)
+		VALUES (?, ?, ?, ?)
+	`, repo, fixIssueNumber, originPRNumber, strings.Join(files, "\n"))
+	return err
+}
+
+// GetOriginScope returns the recorded origin PR number and changed-file set
+// for fixIssueNumber. found=false means spawnFailureIssue never recorded one
+// (a fix issue spawned before GH-5351, or the ListPullRequestFiles call at
+// spawn time itself failed) — callers should fall back to a live GitHub
+// fetch of the origin PR's files in that case.
+func (s *StateStore) GetOriginScope(repo string, fixIssueNumber int) (originPRNumber int, files []string, found bool, err error) {
+	var filesRaw string
+	err = s.db.QueryRow(`
+		SELECT origin_pr_number, origin_files FROM autopilot_origin_scope
+		WHERE repo = ? AND fix_issue_number = ?
+	`, repo, fixIssueNumber).Scan(&originPRNumber, &filesRaw)
+	if err == sql.ErrNoRows {
+		return 0, nil, false, nil
+	}
+	if err != nil {
+		return 0, nil, false, err
+	}
+	if filesRaw != "" {
+		files = strings.Split(filesRaw, "\n")
+	}
+	return originPRNumber, files, true, nil
+}
+
+// DeleteOriginScope removes the recorded origin-scope row for fixIssueNumber
+// once verifyFixPRDeliversSourceScope has consumed it (match or mismatch) —
+// one-shot use, mirroring ReleaseSpawnedFix's cleanup role so this table
+// doesn't grow unbounded across the daemon's lifetime.
+func (s *StateStore) DeleteOriginScope(repo string, fixIssueNumber int) error {
+	_, err := s.db.Exec(`DELETE FROM autopilot_origin_scope WHERE repo = ? AND fix_issue_number = ?`, repo, fixIssueNumber)
+	return err
 }
 
 // GetScopeRelease returns one scope-release row by repo+scopeKey, or nil, nil
