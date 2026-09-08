@@ -15,11 +15,24 @@ func setupFreshnessRepo(t *testing.T) (string, string) {
 
 	bareDir := t.TempDir()
 	runGit(t, bareDir, "init", "--bare", "-b", "main")
+	// GH-5386: a push into this bare repo can trip git's auto-gc, which
+	// backgrounds itself (receive-pack forks "git gc --auto" and detaches,
+	// redirecting its inherited stdout/stderr away — so Wait() on the
+	// pushing "git push" process returns before gc actually finishes). That
+	// leaves a detached process still writing/renaming pack files under
+	// bareDir after the test function returns, racing t.TempDir's
+	// os.RemoveAll cleanup and intermittently failing it with "directory
+	// not empty" (observed in CI: PR #5383 post-merge run). Disabling
+	// auto-gc on both repos removes the race; it's test-only scoped via
+	// local config, not a change to production git invocations.
+	runGit(t, bareDir, "config", "gc.auto", "0")
+	runGit(t, bareDir, "config", "receive.autogc", "false")
 
 	repoDir := t.TempDir()
 	runGit(t, repoDir, "init", "-b", "main")
 	runGit(t, repoDir, "config", "user.email", "test@test.com")
 	runGit(t, repoDir, "config", "user.name", "Test User")
+	runGit(t, repoDir, "config", "gc.auto", "0")
 	runGit(t, repoDir, "commit", "--allow-empty", "-m", "initial")
 	runGit(t, repoDir, "remote", "add", "origin", bareDir)
 	runGit(t, repoDir, "push", "-u", "origin", "main")
