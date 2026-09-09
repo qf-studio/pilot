@@ -92,13 +92,14 @@ func (c terminalCompletionChecker) tryRearmCanceled(taskID, projectPath, backoff
 }
 
 // latestRearmEvent scans events (as returned by ListIssueEvents, oldest
-// first) for the most recent "reopened" event, or "labeled" event naming any
-// of labels, whose CreatedAt is strictly after since (the terminal-state
-// timestamp). Either event type alone is sufficient evidence of a deliberate
-// operator gesture post-terminal-state — the caller separately confirms
-// whatever "currently open (+labeled)" state it requires, so this only needs
-// to establish that one of those state changes happened after the terminal
-// timestamp, not both.
+// first) for the most recent "reopened" event, "renamed" event (a title
+// edit — GH-5398: unlike a body edit, the classic Events API DOES emit this
+// one), or "labeled" event naming any of labels, whose CreatedAt is strictly
+// after since (the terminal-state timestamp). Any of those event types alone
+// is sufficient evidence of a deliberate operator gesture post-terminal-state
+// — the caller separately confirms whatever "currently open (+labeled)"
+// state it requires, so this only needs to establish that one of those state
+// changes happened after the terminal timestamp, not all of them.
 //
 // labels is variadic so tryRearmStalled (GH-5272) can accept re-arm evidence
 // from any label in the pilot-retry-ready/-1/-2 family, on top of the base
@@ -113,6 +114,7 @@ func latestRearmEvent(events []*github.IssueEvent, since time.Time, labels ...st
 		}
 		switch ev.Event {
 		case "reopened":
+		case "renamed":
 		case "labeled":
 			if ev.Label == nil || !containsLabelFold(labels, ev.Label.Name) {
 				continue

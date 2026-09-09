@@ -15,28 +15,6 @@ import (
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
-// resetBotLoginCacheForTest clears resolveBotLogin's package-level cache —
-// without this, whichever test in this package resolves a bot login first
-// would leak that login into every later test's resolveBotLogin call
-// (cachedBotLogin/botLoginResolved are cached for the process lifetime by
-// design, since terminalCompletionChecker has no field to hold it — see
-// resolveBotLogin's doc comment). Each test that exercises Timeline
-// edited-event evidence must start from a clean cache so it only ever talks
-// to its own mock server.
-func resetBotLoginCacheForTest(t *testing.T) {
-	t.Helper()
-	botLoginMu.Lock()
-	cachedBotLogin = ""
-	botLoginResolved = false
-	botLoginMu.Unlock()
-	t.Cleanup(func() {
-		botLoginMu.Lock()
-		cachedBotLogin = ""
-		botLoginResolved = false
-		botLoginMu.Unlock()
-	})
-}
-
 // TestTryRearmStalled_BotCommentAndLabelOnly_NotRearmed is GH-5381's core
 // regression test for the reverted PR #5380: the ONLY post-stall activity on
 // the issue is exactly what the dispatcher's own stall surfacing produces
@@ -46,8 +24,9 @@ func resetBotLoginCacheForTest(t *testing.T) {
 // treated issue.UpdatedAt moving past the stall as re-arm evidence, so this
 // exact fixture re-armed itself every single sweep pass (GH-5381's incident).
 // Neither event qualifies as real evidence: the labeled event names
-// pilot-blocked, not the trigger label or a retry-ready label, and nothing
-// in the (empty) Timeline shows an "edited" event.
+// pilot-blocked, not the trigger label or a retry-ready label, and GraphQL
+// reports no lastEditedAt at all (newRearmTestServer's default /graphql
+// response).
 func TestTryRearmStalled_BotCommentAndLabelOnly_NotRearmed(t *testing.T) {
 	store := newTerminalCompletionCheckerTestStore(t)
 	stallTime := time.Now().Add(-time.Hour)
@@ -92,44 +71,45 @@ func TestTryRearmStalled_BotCommentAndLabelOnly_NotRearmed(t *testing.T) {
 	}
 }
 
-// TestTryRearmStalled_TimelineEditByOperator_Rearms is GH-5381's real
-// body-edit evidence acceptance test: a Timeline "edited" event authored by
-// someone other than the bot, timestamped after the stall, counts as
-// evidence even with zero label/reopen events — the classic Events API
-// (ListIssueEvents) never emits "edited" at all, so this is only observable
-// via ListIssueTimeline.
-func TestTryRearmStalled_TimelineEditByOperator_Rearms(t *testing.T) {
-	resetBotLoginCacheForTest(t)
-	store := newTerminalCompletionCheckerTestStore(t)
-	stallTime := time.Now().Add(-time.Hour)
-	editTime := stallTime.Add(30 * time.Minute)
-
+// graphQLLastEditServer serves a fixed Issue at GET .../issues/{n}, a fixed
+// classic event list at GET .../issues/{n}/events, and a GraphQL
+// lastEditedAt/editor response derived from lastEditedAt (nil means "never
+// edited") at POST /graphql — GH-5398's real evidence source, replacing the
+// GH-5381 Timeline-based approach the ListIssueTimeline endpoint never
+// actually supported for body/title edits.
+func graphQLLastEditServer(t *testing.T, issueNum int, issue *github.Issue, events []*github.IssueEvent, lastEditedAt *time.Time, editorLogin string, blockedLabelRemoved *bool) *httptest.Server {
+	t.Helper()
+	issuePath := "/repos/owner/repo/issues/" + strconv.Itoa(issueNum)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Path == "/user" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(&github.User{Login: "pilot-bot"})
-		case r.URL.Path == "/repos/owner/repo/issues/5139" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(&github.Issue{
-				Number: 5139, State: "open",
-				Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelRetry1}},
-			})
-		case r.URL.Path == "/repos/owner/repo/issues/5139/events" && r.Method == http.MethodGet:
-			// No labeled/reopened event after the stall — a body edit alone
-			// is not surfaced as a labeled/reopened classic event.
-			_ = json.NewEncoder(w).Encode([]*github.IssueEvent{
-				{Event: "labeled", CreatedAt: stallTime.Add(-24 * time.Hour), Label: &github.Label{Name: "pilot"}},
-				{Event: "labeled", CreatedAt: stallTime.Add(-23 * time.Hour), Label: &github.Label{Name: github.LabelRetry1}},
-			})
-		case r.URL.Path == "/repos/owner/repo/issues/5139/timeline" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode([]*github.TimelineEvent{
-				{Event: "edited", CreatedAt: editTime, Actor: &github.User{Login: "operator-jane"}},
-			})
-		case r.URL.Path == "/repos/owner/repo/issues/5139/labels/"+github.LabelBlocked && r.Method == http.MethodDelete:
-			// A successful re-arm always tries to clear pilot-blocked,
-			// regardless of which evidence type triggered it (this fixture
-			// carries pilot-retry-1, not pilot-blocked, but the removal call
-			// still fires unconditionally — see tryRearmStalled).
+		case r.URL.Path == issuePath && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(issue)
+		case r.URL.Path == issuePath+"/events" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(events)
+		case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
+			resp := map[string]interface{}{
+				"data": map[string]interface{}{
+					"repository": map[string]interface{}{
+						"issue": map[string]interface{}{
+							"lastEditedAt": nil,
+							"editor":       nil,
+						},
+					},
+				},
+			}
+			if lastEditedAt != nil {
+				issueData := resp["data"].(map[string]interface{})["repository"].(map[string]interface{})["issue"].(map[string]interface{})
+				issueData["lastEditedAt"] = lastEditedAt.Format(time.RFC3339)
+				if editorLogin != "" {
+					issueData["editor"] = map[string]interface{}{"login": editorLogin}
+				}
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == issuePath+"/labels/"+github.LabelBlocked && r.Method == http.MethodDelete:
+			if blockedLabelRemoved != nil {
+				*blockedLabelRemoved = true
+			}
 			w.WriteHeader(http.StatusOK)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -137,14 +117,42 @@ func TestTryRearmStalled_TimelineEditByOperator_Rearms(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestTryRearmStalled_GraphQLLastEditedAtAfterStall_Rearms is GH-5398's real
+// body-edit evidence acceptance test: GitHub's GraphQL lastEditedAt,
+// timestamped after the stall, counts as evidence even with zero
+// label/reopen events — the classic Events API and the Timeline API both
+// never emit anything for a body edit at all (verified read-only against
+// real issues with confirmed GraphQL userContentEdits history).
+func TestTryRearmStalled_GraphQLLastEditedAtAfterStall_Rearms(t *testing.T) {
+	store := newTerminalCompletionCheckerTestStore(t)
+	stallTime := time.Now().Add(-time.Hour)
+	editTime := stallTime.Add(30 * time.Minute)
+
+	var blockedLabelRemoved bool
+	srv := graphQLLastEditServer(t, 5139,
+		&github.Issue{
+			Number: 5139, State: "open",
+			Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelRetry1}},
+		},
+		// No labeled/reopened event after the stall — a body edit alone is
+		// not surfaced as a labeled/reopened/renamed classic event.
+		[]*github.IssueEvent{
+			{Event: "labeled", CreatedAt: stallTime.Add(-24 * time.Hour), Label: &github.Label{Name: "pilot"}},
+			{Event: "labeled", CreatedAt: stallTime.Add(-23 * time.Hour), Label: &github.Label{Name: github.LabelRetry1}},
+		},
+		&editTime, "operator-jane", &blockedLabelRemoved,
+	)
 
 	checker := terminalCompletionChecker{
 		store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
 		repoOwner: "owner", repoName: "repo", triggerLabel: "pilot",
 	}
 
-	taskID, projectPath := "GH-5139", "/project-gh5381-timeline-edit"
-	seedStalledRow(t, store, "exec-stalled-timeline-edit", taskID, projectPath, stallTime)
+	taskID, projectPath := "GH-5139", "/project-gh5398-lastedited"
+	seedStalledRow(t, store, "exec-stalled-lastedited", taskID, projectPath, stallTime)
 	key := repickBackoffKey(projectPath, taskID)
 	t.Cleanup(func() { repickBackoff.recordSuccess(key) })
 	t.Cleanup(func() { stalledRearmNoEvidenceStreaks.reset(key) })
@@ -154,10 +162,17 @@ func TestTryRearmStalled_TimelineEditByOperator_Rearms(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !rearmed {
-		t.Fatal("expected rearmed=true — a non-bot Timeline 'edited' event postdates the stall")
+		t.Fatal("expected rearmed=true — GraphQL lastEditedAt postdates the stall")
+	}
+	// A successful re-arm always tries to clear pilot-blocked, regardless of
+	// which evidence type triggered it (this fixture carries pilot-retry-1,
+	// not pilot-blocked, but the removal call still fires unconditionally —
+	// see tryRearmStalled).
+	if !blockedLabelRemoved {
+		t.Error("expected the pilot-blocked label removal to be invoked")
 	}
 
-	exec, err := store.GetExecution("exec-stalled-timeline-edit")
+	exec, err := store.GetExecution("exec-stalled-lastedited")
 	if err != nil {
 		t.Fatalf("GetExecution: %v", err)
 	}
@@ -166,50 +181,34 @@ func TestTryRearmStalled_TimelineEditByOperator_Rearms(t *testing.T) {
 	}
 }
 
-// TestTryRearmStalled_TimelineEditByBot_NotRearmed proves the actor filter:
-// an "edited" event authored by the bot account itself (e.g. an
-// autopilot-meta footer rewrite) must NOT count as re-arm evidence — this is
-// exactly the class of self-inflicted signal GH-5381 fixes forward from
-// (PR #5380 used issue.UpdatedAt, which can't distinguish the bot's own
-// edits from an operator's).
-func TestTryRearmStalled_TimelineEditByBot_NotRearmed(t *testing.T) {
-	resetBotLoginCacheForTest(t)
+// TestTryRearmStalled_GraphQLLastEditedAtBeforeStall_NotRearmed proves the
+// timestamp comparison direction: an issue that was edited at some point in
+// its history, but not since the stall, must not re-arm — an edit is only
+// evidence of a deliberate post-stall operator gesture when it postdates
+// exec.CompletedAt.
+func TestTryRearmStalled_GraphQLLastEditedAtBeforeStall_NotRearmed(t *testing.T) {
 	store := newTerminalCompletionCheckerTestStore(t)
 	stallTime := time.Now().Add(-time.Hour)
-	editTime := stallTime.Add(30 * time.Minute)
+	editTime := stallTime.Add(-2 * time.Hour)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/user" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(&github.User{Login: "pilot-bot"})
-		case r.URL.Path == "/repos/owner/repo/issues/5139" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(&github.Issue{
-				Number: 5139, State: "open",
-				Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelBlocked}},
-			})
-		case r.URL.Path == "/repos/owner/repo/issues/5139/events" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode([]*github.IssueEvent{
-				{Event: "labeled", CreatedAt: stallTime.Add(-24 * time.Hour), Label: &github.Label{Name: "pilot"}},
-			})
-		case r.URL.Path == "/repos/owner/repo/issues/5139/timeline" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode([]*github.TimelineEvent{
-				{Event: "edited", CreatedAt: editTime, Actor: &github.User{Login: "pilot-bot"}},
-			})
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	t.Cleanup(srv.Close)
+	srv := graphQLLastEditServer(t, 5139,
+		&github.Issue{
+			Number: 5139, State: "open",
+			Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelBlocked}},
+		},
+		[]*github.IssueEvent{
+			{Event: "labeled", CreatedAt: stallTime.Add(-24 * time.Hour), Label: &github.Label{Name: "pilot"}},
+		},
+		&editTime, "operator-jane", nil,
+	)
 
 	checker := terminalCompletionChecker{
 		store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
 		repoOwner: "owner", repoName: "repo", triggerLabel: "pilot",
 	}
 
-	taskID, projectPath := "GH-5139", "/project-gh5381-timeline-bot-edit"
-	seedStalledRow(t, store, "exec-stalled-timeline-bot-edit", taskID, projectPath, stallTime)
+	taskID, projectPath := "GH-5139", "/project-gh5398-stale-edit"
+	seedStalledRow(t, store, "exec-stalled-stale-edit", taskID, projectPath, stallTime)
 	key := repickBackoffKey(projectPath, taskID)
 	t.Cleanup(func() { repickBackoff.recordSuccess(key) })
 	t.Cleanup(func() { stalledRearmNoEvidenceStreaks.reset(key) })
@@ -219,7 +218,56 @@ func TestTryRearmStalled_TimelineEditByBot_NotRearmed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if rearmed {
-		t.Fatal("expected rearmed=false — the 'edited' event was authored by the bot account itself, not an operator")
+		t.Fatal("expected rearmed=false — lastEditedAt predates the stall, so it isn't evidence of a post-stall gesture")
+	}
+}
+
+// TestTryRearmStalled_RenamedEventAfterStall_Rearms is GH-5398's title-edit
+// evidence test: unlike a body edit, a title edit DOES surface as a classic
+// Events "renamed" event, so it's evidence via latestRearmEvent without ever
+// needing the GraphQL fallback.
+func TestTryRearmStalled_RenamedEventAfterStall_Rearms(t *testing.T) {
+	store := newTerminalCompletionCheckerTestStore(t)
+	stallTime := time.Now().Add(-time.Hour)
+	renameTime := stallTime.Add(15 * time.Minute)
+
+	srv := graphQLLastEditServer(t, 5139,
+		&github.Issue{
+			Number: 5139, State: "open",
+			Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelBlocked}},
+		},
+		[]*github.IssueEvent{
+			{Event: "labeled", CreatedAt: stallTime.Add(-24 * time.Hour), Label: &github.Label{Name: "pilot"}},
+			{Event: "renamed", CreatedAt: renameTime},
+		},
+		nil, "", nil,
+	)
+
+	checker := terminalCompletionChecker{
+		store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
+		repoOwner: "owner", repoName: "repo", triggerLabel: "pilot",
+	}
+
+	taskID, projectPath := "GH-5139", "/project-gh5398-renamed"
+	seedStalledRow(t, store, "exec-stalled-renamed", taskID, projectPath, stallTime)
+	key := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+	t.Cleanup(func() { stalledRearmNoEvidenceStreaks.reset(key) })
+
+	rearmed, err := checker.tryRearmStalled(taskID, projectPath, key)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !rearmed {
+		t.Fatal("expected rearmed=true — a 'renamed' event postdates the stall on an open, labeled issue")
+	}
+
+	exec, err := store.GetExecution("exec-stalled-renamed")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected the stalled row to be reclassified to status=failed, got %q", exec.Status)
 	}
 }
 
@@ -296,8 +344,8 @@ func newGH5381EscalationServer(t *testing.T, issueNum int, initialLabels []strin
 			})
 		case r.URL.Path == issuePath+"/events" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(state.events)
-		case r.URL.Path == issuePath+"/timeline" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode([]*github.TimelineEvent{})
+		case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"data":{"repository":{"issue":{"lastEditedAt":null,"editor":null}}}}`))
 		case r.URL.Path == issuePath+"/comments" && r.Method == http.MethodPost:
 			state.commentCalls++
 			_ = json.NewEncoder(w).Encode(&github.Comment{ID: 1})
@@ -326,7 +374,6 @@ func newGH5381EscalationServer(t *testing.T, issueNum int, initialLabels []strin
 // escalate to pilot-needs-human with an explanatory comment instead, and
 // never repeat the escalation or resume probing on subsequent passes.
 func TestSweepStalledRearm_NoEvidenceThreeTimes_EscalatesAndStops(t *testing.T) {
-	resetBotLoginCacheForTest(t)
 	store := newTerminalCompletionCheckerTestStore(t)
 	stallTime := time.Now().Add(-time.Hour)
 
@@ -427,7 +474,6 @@ func TestSweepStalledRearm_NoEvidenceThreeTimes_EscalatesAndStops(t *testing.T) 
 // escalate to pilot-needs-human exactly like three consecutive no-evidence
 // sweeps, rather than calling recordClaimLostDrop forever with no backstop.
 func TestSweepStalledRearm_ProbeErrorThreeTimes_EscalatesLikeNoEvidence(t *testing.T) {
-	resetBotLoginCacheForTest(t)
 	store := newTerminalCompletionCheckerTestStore(t)
 	stallTime := time.Now().Add(-time.Hour)
 

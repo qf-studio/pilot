@@ -123,37 +123,40 @@ func (c terminalCompletionChecker) tryRearmStalled(taskID, projectPath, backoffK
 	if rearmEvent := latestRearmEvent(events, *exec.CompletedAt, append([]string{c.triggerLabel}, retryReadyRearmLabels...)...); rearmEvent != nil {
 		kind, evidenceAt = rearmEvent.Event, rearmEvent.CreatedAt
 	} else {
-		// GH-5381: no label/reopen evidence found via the classic Events API
-		// — fall back to the Timeline API, the only endpoint that surfaces a
-		// body/title "edited" event at all (confirmed during the GH-5376
-		// incident; the classic Events API never emits one). This is
-		// deliberately NOT issue.UpdatedAt (PR #5380's approach, reverted in
-		// f8532806): UpdatedAt moves on ANY mutation, including the
-		// dispatcher's own stall comment + pilot-blocked label
-		// (surfaceStalledIssue, internal/executor/dispatcher.go), so it
-		// re-armed every stalled task on the very next sweep. An "edited"
-		// timeline event authored by anyone other than the bot itself is a
-		// much narrower, deliberate-operator-gesture signal.
-		timeline, timelineErr := c.ghClient.ListIssueTimeline(ctx, c.repoOwner, c.repoName, issueNum)
-		if timelineErr != nil {
-			return false, fmt.Errorf("listing issue #%d timeline: %w", issueNum, timelineErr)
+		// GH-5398: no label/reopen/renamed evidence found via the classic
+		// Events API — query GraphQL for lastEditedAt, the only reliable
+		// signal for a body edit. GH-5381 originally tried the Timeline API
+		// (`/issues/{n}/timeline`) here on the assumption that it surfaces an
+		// "edited" event for body edits; verified read-only against real
+		// issues with confirmed body-edit history (via GraphQL
+		// userContentEdits) and zero matching Timeline "edited" entries —
+		// that assumption was wrong, and the Timeline lookup was dead code
+		// that could never match. This is deliberately NOT issue.UpdatedAt
+		// (PR #5380's approach, reverted in f8532806): UpdatedAt moves on ANY
+		// mutation, including the dispatcher's own stall comment +
+		// pilot-blocked label (surfaceStalledIssue,
+		// internal/executor/dispatcher.go), so it re-armed every stalled
+		// task on the very next sweep.
+		//
+		// No actor filtering here (unlike the reverted Timeline approach):
+		// nothing in this codebase ever edits an issue body or title — the
+		// dispatcher only adds comments/labels — so a body/title edit is an
+		// operator gesture by definition. Filtering by actor would also be
+		// unsound on a same-account deployment (the founder box runs Pilot
+		// on the operator's own PAT, so resolveBotLogin's token identity IS
+		// the operator's login).
+		editInfo, editErr := c.ghClient.GetIssueLastEdit(ctx, c.repoOwner, c.repoName, issueNum)
+		if editErr != nil {
+			return false, fmt.Errorf("querying issue #%d last edit: %w", issueNum, editErr)
 		}
-		// Only spend a GetAuthenticatedUser call resolving the bot login
-		// (resolveBotLogin) when there's at least one "edited" event that
-		// could possibly qualify — the common case (no edit at all since the
-		// stall) has nothing to filter by actor, so this skips an API call
-		// on every ordinary no-evidence sweep pass.
-		if hasEditedEventAfter(timeline, *exec.CompletedAt) {
-			botLogin := resolveBotLogin(ctx, c.ghClient)
-			if at, ok := stalledTimelineRearmEvidence(timeline, *exec.CompletedAt, botLogin); ok {
-				kind, evidenceAt = "edited", at
-			}
+		if editInfo.LastEditedAt != nil && editInfo.LastEditedAt.After(*exec.CompletedAt) {
+			kind, evidenceAt = "edited", *editInfo.LastEditedAt
 		}
 	}
 	if kind == "" {
 		// Open + labeled, but nothing observed shows that state was reached
 		// AFTER the stall (no base-label relabel/reopen, no
-		// pilot-retry-ready/-1/-2 label add, no non-bot body/title edit) —
+		// pilot-retry-ready/-1/-2 label add, no renamed/edited body/title) —
 		// not a deliberate re-arm gesture.
 		return false, nil
 	}
@@ -184,99 +187,6 @@ func (c terminalCompletionChecker) tryRearmStalled(taskID, projectPath, backoffK
 	logging.WithComponent("dispatch").Info("GH-5212: stalled task re-armed via GitHub reopen/relabel/edit",
 		slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.String("evidence", kind))
 	return true, nil
-}
-
-// hasEditedEventAfter reports whether events contains any "edited" entry
-// timestamped after since, with no actor filtering — a cheap pre-check so
-// tryRearmStalled only pays for resolveBotLogin's GetAuthenticatedUser call
-// when there's actually something that could qualify as evidence.
-func hasEditedEventAfter(events []*github.TimelineEvent, since time.Time) bool {
-	for _, ev := range events {
-		if ev != nil && ev.Event == "edited" && ev.CreatedAt.After(since) {
-			return true
-		}
-	}
-	return false
-}
-
-// stalledTimelineRearmEvidence is GH-5381's real body-edit evidence check.
-// GitHub's classic Events API never emits an "edited" event for a body/title
-// edit (the GH-5376 incident and the now-reverted PR #5380 confirmed this —
-// #5380 substituted issue.UpdatedAt instead, which broke worse: the
-// dispatcher's OWN stall comment + pilot-blocked label bump UpdatedAt
-// seconds after CompletedAt, so every stalled task re-armed itself on the
-// very next sweep — see commit f8532806's revert). The Timeline API DOES
-// surface "edited" events, each with an actor, so a genuine operator body
-// edit can be told apart from the bot's own activity by actor login alone —
-// no timestamp heuristic needed.
-//
-// botLogin is the authenticated token identity (resolveBotLogin, cached); an
-// edited event whose actor matches it (case-insensitive) is excluded — it's
-// Pilot's own doing (e.g. an autopilot-meta footer rewrite), never a
-// deliberate operator re-arm gesture. An empty botLogin (resolution failed)
-// accepts NO edited-event evidence this pass — fail closed, since accepting
-// one without an actor filter risks reintroducing exactly the self-re-arm
-// bug this function exists to avoid. Label/reopen evidence (checked first,
-// unconditionally, in tryRearmStalled) is unaffected by this fallback.
-func stalledTimelineRearmEvidence(events []*github.TimelineEvent, since time.Time, botLogin string) (at time.Time, ok bool) {
-	if botLogin == "" {
-		return time.Time{}, false
-	}
-	var latest *github.TimelineEvent
-	for _, ev := range events {
-		if ev == nil || ev.Event != "edited" || !ev.CreatedAt.After(since) {
-			continue
-		}
-		if ev.Actor != nil && strings.EqualFold(ev.Actor.Login, botLogin) {
-			continue
-		}
-		if latest == nil || ev.CreatedAt.After(latest.CreatedAt) {
-			latest = ev
-		}
-	}
-	if latest == nil {
-		return time.Time{}, false
-	}
-	return latest.CreatedAt, true
-}
-
-// botLoginMu/cachedBotLogin/botLoginResolved cache the authenticated GitHub
-// login for the Pilot token, mirroring internal/autopilot.Controller's
-// getBotLogin — package-level here because terminalCompletionChecker is a
-// value type constructed fresh per call (see sweepStalledRearm's doc
-// comment), so an instance-level cache would never survive across sweep
-// passes.
-var (
-	botLoginMu       sync.Mutex
-	cachedBotLogin   string
-	botLoginResolved bool
-)
-
-// resolveBotLogin returns the authenticated GitHub login for client's token,
-// resolved lazily on first call and cached for the process lifetime. Returns
-// "" when it can't be determined (e.g. a transient GetAuthenticatedUser
-// failure); callers must treat that as "exclude nothing can be confirmed
-// safe" — see stalledTimelineRearmEvidence's fail-closed handling.
-func resolveBotLogin(ctx context.Context, client *github.Client) string {
-	botLoginMu.Lock()
-	if botLoginResolved {
-		login := cachedBotLogin
-		botLoginMu.Unlock()
-		return login
-	}
-	botLoginMu.Unlock()
-
-	user, err := client.GetAuthenticatedUser(ctx)
-	if err != nil {
-		logging.WithComponent("dispatch").Warn("GH-5381: could not resolve bot login for edited-event actor exclusion — Timeline edited-event evidence disabled until this succeeds",
-			slog.Any("error", err))
-		return ""
-	}
-	botLoginMu.Lock()
-	cachedBotLogin = user.Login
-	botLoginResolved = true
-	botLoginMu.Unlock()
-	return user.Login
 }
 
 // sweepStalledRearm scans repoOwner/repoName for open issues currently
@@ -468,7 +378,7 @@ func (c terminalCompletionChecker) escalateStalledRearmNoEvidence(ctx context.Co
 		"⚠️ **Pilot could not confirm this stalled task was re-armed**\n\n"+
 			"This issue was checked %d times with no evidence of a deliberate re-arm gesture since it stalled. "+
 			"Re-arm evidence is any of: re-adding the `%s` label, adding one of `%s`, reopening the issue, "+
-			"or editing the issue body/title as a human (not Pilot itself) — all timestamped after the stall.\n\n"+
+			"or editing the issue body or title — all timestamped after the stall.\n\n"+
 			"Applying `%s` so this stops being silently re-checked. Remove it and repeat one of the above to re-arm.",
 		streak, c.triggerLabel, strings.Join(retryReadyRearmLabels, "`, `"), labelPilotNeedsHumanSDK,
 	)

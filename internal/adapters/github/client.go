@@ -1455,6 +1455,59 @@ func (c *Client) GetIssueNodeID(ctx context.Context, owner, repo string, number 
 	return issue.NodeID, nil
 }
 
+// IssueEditInfo is GH-5398's real body/title-edit evidence: GitHub's
+// lastEditedAt/editor fields, only available via GraphQL. LastEditedAt is
+// nil when the issue has never been edited since creation. EditorLogin is
+// the login of whoever made the most recent edit ("" when LastEditedAt is
+// nil, or when GitHub omits editor for some other reason).
+type IssueEditInfo struct {
+	LastEditedAt *time.Time
+	EditorLogin  string
+}
+
+// GetIssueLastEdit queries lastEditedAt/editor for an issue via GraphQL.
+// GH-5398: the classic Events API (ListIssueEvents) never emits an "edited"
+// event for a body/title edit at all, and neither does the Timeline API
+// (`/issues/{n}/timeline`) — verified read-only against real issues with
+// confirmed GraphQL userContentEdits history and zero matching Timeline
+// "edited" entries at those timestamps (the GH-5381 fix that introduced the
+// Timeline lookup was built on an incorrect assumption about what that
+// endpoint surfaces). lastEditedAt/editor are the only fields GitHub
+// actually populates for this.
+func (c *Client) GetIssueLastEdit(ctx context.Context, owner, repo string, number int) (*IssueEditInfo, error) {
+	const query = `query($owner: String!, $repo: String!, $number: Int!) {
+		repository(owner: $owner, name: $repo) {
+			issue(number: $number) {
+				lastEditedAt
+				editor { login }
+			}
+		}
+	}`
+
+	var result struct {
+		Repository struct {
+			Issue struct {
+				LastEditedAt *time.Time `json:"lastEditedAt"`
+				Editor       *struct {
+					Login string `json:"login"`
+				} `json:"editor"`
+			} `json:"issue"`
+		} `json:"repository"`
+	}
+
+	if err := c.ExecuteGraphQL(ctx, query, map[string]interface{}{
+		"owner": owner, "repo": repo, "number": number,
+	}, &result); err != nil {
+		return nil, fmt.Errorf("query last edit for %s/%s#%d: %w", owner, repo, number, err)
+	}
+
+	info := &IssueEditInfo{LastEditedAt: result.Repository.Issue.LastEditedAt}
+	if result.Repository.Issue.Editor != nil {
+		info.EditorLogin = result.Repository.Issue.Editor.Login
+	}
+	return info, nil
+}
+
 // LinkSubIssue links a child issue to a parent issue using the addSubIssue GraphQL mutation.
 // Both issue numbers are resolved to node IDs first.
 func (c *Client) LinkSubIssue(ctx context.Context, owner, repo string, parentNum, childNum int) error {
