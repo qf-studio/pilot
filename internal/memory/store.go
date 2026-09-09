@@ -1330,6 +1330,17 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 // Without this, a needs_human row (which TerminalStatus/terminalExecutionStatuses
 // now also treat as terminal) would still look "not done" here and could be
 // handed a brand new generation on top of the held branch.
+//
+// GH-5414: like 'canceled'/'superseded' above, 'needs_human' here is a
+// default, not an unconditional forever — cmd/pilot's terminalCompletionChecker
+// independently probes for genuine re-arm evidence (issue open + trigger
+// label present + pilot-needs-human label removed + a qualifying event after
+// the hold) and, when found, calls ReclassifyNeedsHumanForRearm to demote the
+// row to 'failed' BEFORE this ever runs again — restoring the re-admission
+// path that counting needs_human as terminal here removed. This function
+// itself never consults GitHub state and keeps treating a still-held row as
+// done, which is the correct default for every caller with no re-arm
+// evidence of its own.
 func (s *Store) HasTerminalCompletion(taskID, projectPath string) (bool, error) {
 	completed, err := s.HasCompletedExecution(taskID, projectPath)
 	if err != nil {
@@ -1534,6 +1545,67 @@ func (s *Store) ReclassifySupersededForRearm(taskID, projectPath, reason string)
 			UPDATE executions
 			SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
 			WHERE task_id = ? AND project_path = ? AND status = 'superseded'
+		`, reason, taskID, projectPath)
+		return err
+	})
+}
+
+// LatestNeedsHumanExecution returns the most recent status='needs_human' row
+// for taskID/projectPath — GH-5414's counterpart to LatestCanceledExecution,
+// extending the GH-5139 re-arm pattern to holdPushedBranch's hand-off status
+// (GH-5399/PR#5402). Exact task_id + status match, same as
+// LatestCanceledExecution: filtering on the literal status='needs_human'
+// column is what keeps this safe against the GH-4347 ordering trap (a fresh
+// 'queued' row for the same task_id sitting alongside the old needs_human
+// one). found=false when no needs_human row exists.
+//
+// completed_at on the returned row is the hold timestamp
+// (UpdateExecutionStatusIfNotTerminal stamps it CURRENT_TIMESTAMP on every
+// terminal transition, needs_human included) — the reference point GH-5414's
+// re-arm probe compares GitHub issue-event timestamps against to decide
+// whether a label-clear/relabel/reopen happened AFTER the hold, not before
+// it.
+func (s *Store) LatestNeedsHumanExecution(taskID, projectPath string) (exec *Execution, found bool, err error) {
+	row := s.db.QueryRow(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE task_id = ? AND project_path = ? AND status = 'needs_human'
+		ORDER BY completed_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, projectPath)
+	exec, err = scanExecutionDetail(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return exec, true, nil
+}
+
+// ReclassifyNeedsHumanForRearm demotes every status='needs_human' row for
+// taskID/projectPath to 'failed' with reason recorded — GH-5414's
+// counterpart to ReclassifyCanceledForRearm, same "demote, don't delete"
+// idiom: the row (and its history) stays visible to `pilot trace`, but a
+// 'failed' row is not terminal per HasTerminalCompletion, so the ordinary
+// nextRetryGeneration retry-with-backoff/hard-cap path
+// (internal/executor/dispatcher.go) grants the next generation exactly the
+// way it would for any other post-failure retry — no bespoke bypass of those
+// invariants. The UPDATE's own `status = 'needs_human'` filter is what
+// protects against the GH-4347 ordering trap (see LatestNeedsHumanExecution):
+// a fresh 'queued' row for the same task_id is never touched by this call.
+//
+// Callers must independently confirm GitHub-side re-arm evidence (issue open
+// + carries the trigger label + does NOT carry pilot-needs-human + a
+// labeled/reopened/unlabeled(pilot-needs-human) event after the hold
+// timestamp LatestNeedsHumanExecution returned) before calling this — it
+// does not itself decide re-arm eligibility.
+func (s *Store) ReclassifyNeedsHumanForRearm(taskID, projectPath, reason string) error {
+	return s.withRetry("ReclassifyNeedsHumanForRearm", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
+			WHERE task_id = ? AND project_path = ? AND status = 'needs_human'
 		`, reason, taskID, projectPath)
 		return err
 	})

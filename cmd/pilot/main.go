@@ -4345,9 +4345,10 @@ type terminalCompletionChecker struct {
 // HasCompletedExecutionReason implements sdkCore.ExecutionCheckerV2
 // (studio-sdk v0.38.2+): same skip verdict as HasCompletedExecution, plus a
 // reason string classified at the point of decision so the poller's skip
-// log line names the real cause (repick-backoff cooldown, a stalled task
-// still awaiting GH-5139/GH-5249 re-arm evidence, or a genuinely completed
-// execution) instead of a single generic message.
+// log line names the real cause (repick-backoff cooldown, a canceled/
+// superseded task still awaiting GH-5139/GH-5249 re-arm evidence, a
+// needs_human task still awaiting GH-5414 re-arm evidence, or a genuinely
+// completed execution) instead of a single generic message.
 func (c terminalCompletionChecker) HasCompletedExecutionReason(taskID, projectPath string) (bool, string, error) {
 	key := repickBackoffKey(projectPath, taskID)
 	if gated, shouldLog := repickBackoff.gateStatus(key); gated {
@@ -4384,13 +4385,15 @@ func (c terminalCompletionChecker) HasCompletedExecutionReason(taskID, projectPa
 		return done, "", err
 	}
 
-	// GH-5139/GH-5249: `done` may be a genuine completed/no_op row (never
-	// re-arm — no GitHub probe, no throttling change), an operator cancel, or
-	// a hand-off supersede — the latter two alone among the terminal reasons
-	// are documented as re-armable via GitHub reopen/relabel.
-	// tryRearmCanceled/tryRearmSuperseded each tell their case apart
-	// internally (via LatestCanceledExecution/LatestSupersededExecution) and
-	// only spend an API call when their own row type is present.
+	// GH-5139/GH-5249/GH-5414: `done` may be a genuine completed/no_op row
+	// (never re-arm — no GitHub probe, no throttling change), an operator
+	// cancel, a hand-off supersede, or a needs_human hold — the latter three
+	// alone among the terminal reasons are documented as re-armable via
+	// GitHub reopen/relabel(/label-clear). tryRearmCanceled/tryRearmSuperseded/
+	// tryRearmNeedsHuman each tell their case apart internally (via
+	// LatestCanceledExecution/LatestSupersededExecution/
+	// LatestNeedsHumanExecution) and only spend an API call when their own
+	// row type is present.
 	if c.ghClient == nil {
 		return true, "completed execution exists", nil
 	}
@@ -4411,17 +4414,34 @@ func (c terminalCompletionChecker) HasCompletedExecutionReason(taskID, projectPa
 		repickBackoff.recordClaimLostDrop(key)
 		return true, "completed execution exists", nil
 	}
-	if !rearmed {
-		// Neither probe found a matching row + fresh re-arm evidence — a
-		// canceled/superseded task sitting open+labeled (or not yet
-		// relabeled at all) without a qualifying reopen/relabel event since
-		// its terminal transition. Throttle via the same repick-backoff
-		// window GH-4469 already built, so this doesn't pay for a
-		// GetIssue+ListIssueEvents call on every ~30s poll tick.
-		repickBackoff.recordClaimLostDrop(key)
-		return true, "stalled: awaiting re-arm evidence", nil
+	if rearmed {
+		return false, "", nil
 	}
-	return false, "", nil
+	rearmed, probeErr = c.tryRearmNeedsHuman(taskID, projectPath, key)
+	if probeErr != nil {
+		logging.WithComponent("dispatch").Warn("GH-5414 re-arm probe failed — treating needs_human task as still terminal",
+			slog.String("task_id", taskID), slog.Any("error", probeErr))
+		repickBackoff.recordClaimLostDrop(key)
+		return true, "completed execution exists", nil
+	}
+	if rearmed {
+		return false, "", nil
+	}
+
+	// None of the three probes found a matching row + fresh re-arm evidence
+	// — a canceled/superseded/needs_human task sitting open+labeled (or not
+	// yet relabeled/uncleared at all) without a qualifying event since its
+	// terminal transition. Throttle via the same repick-backoff window
+	// GH-4469 already built, so this doesn't pay for up to three
+	// GetIssue+ListIssueEvents call pairs on every ~30s poll tick.
+	repickBackoff.recordClaimLostDrop(key)
+	if _, found, lookupErr := c.store.LatestNeedsHumanExecution(taskID, projectPath); lookupErr == nil && found {
+		// GH-5414: name the parked state explicitly rather than the generic
+		// stalled text below, so the poller's skip log line tells the
+		// operator what to do — clear pilot-needs-human.
+		return true, reasonNeedsHumanAwaitingRearm, nil
+	}
+	return true, "stalled: awaiting re-arm evidence", nil
 }
 
 // HasCompletedExecution implements sdkCore.ExecutionChecker. Delegates to

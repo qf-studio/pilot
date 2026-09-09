@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // newTerminalCompletionCheckerTestStore creates a real on-disk store (no
@@ -188,5 +190,80 @@ func TestTerminalCompletionChecker_HasCompletedExecutionReason_GenuineCompletion
 	}
 	if reason != "completed execution exists" {
 		t.Fatalf("expected reason %q, got %q", "completed execution exists", reason)
+	}
+}
+
+// TestTerminalCompletionChecker_HasCompletedExecutionReason_NeedsHumanAwaitingRearm
+// is GH-5414's regression test: a needs_human row whose issue still carries
+// pilot-needs-human must report skip=true with the distinct
+// reasonNeedsHumanAwaitingRearm text — not the generic "stalled: awaiting
+// re-arm evidence" canceled/superseded fall through to — so the poller's
+// skip log line names the parked state and tells the operator what to do.
+func TestTerminalCompletionChecker_HasCompletedExecutionReason_NeedsHumanAwaitingRearm(t *testing.T) {
+	store := newTerminalCompletionCheckerTestStore(t)
+	holdTime := time.Now().Add(-time.Hour)
+
+	srv := newRearmNeedsHumanTestServer(t,
+		&github.Issue{Number: 5414, State: "open", Labels: []github.Label{{Name: "pilot"}, {Name: labelPilotNeedsHumanSDK}}},
+		nil,
+	)
+	checker := terminalCompletionChecker{
+		store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
+		repoOwner: "owner", repoName: "repo", triggerLabel: "pilot",
+	}
+
+	taskID, projectPath := "GH-5414", "/project-needs-human-reason"
+	seedNeedsHumanRow(t, store, "exec-needs-human-reason", taskID, projectPath, holdTime)
+	key := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+
+	skip, reason, err := checker.HasCompletedExecutionReason(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !skip {
+		t.Fatal("expected skip=true — pilot-needs-human is still on the issue")
+	}
+	if reason != reasonNeedsHumanAwaitingRearm {
+		t.Fatalf("expected reason %q, got %q", reasonNeedsHumanAwaitingRearm, reason)
+	}
+}
+
+// TestTerminalCompletionChecker_HasCompletedExecutionReason_NeedsHumanRearmed
+// is the AC1 integration-style regression test through the full
+// HasCompletedExecutionReason chain: clearing pilot-needs-human on an open,
+// pilot-labeled issue after the hold must report skip=false (i.e. re-admit
+// the task_id) on the very next poll tick.
+func TestTerminalCompletionChecker_HasCompletedExecutionReason_NeedsHumanRearmed(t *testing.T) {
+	store := newTerminalCompletionCheckerTestStore(t)
+	holdTime := time.Now().Add(-time.Hour)
+	clearTime := holdTime.Add(30 * time.Minute)
+
+	srv := newRearmNeedsHumanTestServer(t,
+		&github.Issue{Number: 5414, State: "open", Labels: []github.Label{{Name: "pilot"}}},
+		[]*github.IssueEvent{
+			{Event: "labeled", CreatedAt: holdTime.Add(-24 * time.Hour), Label: &github.Label{Name: labelPilotNeedsHumanSDK}},
+			{Event: "unlabeled", CreatedAt: clearTime, Label: &github.Label{Name: labelPilotNeedsHumanSDK}},
+		},
+	)
+	checker := terminalCompletionChecker{
+		store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
+		repoOwner: "owner", repoName: "repo", triggerLabel: "pilot",
+	}
+
+	taskID, projectPath := "GH-5414", "/project-needs-human-full-rearm"
+	seedNeedsHumanRow(t, store, "exec-needs-human-full-rearm", taskID, projectPath, holdTime)
+	key := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+
+	skip, reason, err := checker.HasCompletedExecutionReason(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip {
+		t.Fatal("expected skip=false — the task was re-armed by clearing pilot-needs-human after the hold")
+	}
+	if reason != "" {
+		t.Fatalf("expected an empty reason on re-arm, got %q", reason)
 	}
 }
