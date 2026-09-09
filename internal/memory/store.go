@@ -2527,8 +2527,26 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 // collide — "canceled" means "operator terminated this on purpose, never
 // re-pick", the opposite intent of "cancelled"'s historical retry-worthy
 // connotation.
+//
+// GH-5408: "needs_human" (holdPushedBranch's hand-off status, GH-5399) was
+// added to executor/dispatcher.go's terminalExecutionStatuses and
+// adapters/github/cleanup.go's pilotTerminalExecutionStatuses but never
+// landed here, so UpdateExecutionStatusIfNotTerminal(id, "needs_human", ...)
+// left completed_at NULL and a later terminal write (e.g. "failed") could
+// still overwrite the row through this package's own CAS guard — the exact
+// clobber GH-4423 built that guard to prevent. "superseded" had the same gap
+// (present in dispatcher.go's set, absent here) — it happened not to bite in
+// practice because every production writer of status='superseded' uses the
+// raw UPDATE queries in ReclassifyCompletionAsSuperseded /
+// TerminateNonTerminalExecutionAsSuperseded rather than the CAS-guarded
+// UpdateExecutionStatusIfNotTerminal, but closing it keeps this list an
+// honest superset instead of relying on every future superseded-writer
+// remembering to bypass the guard too. executor's
+// TestTerminalExecutionStatusSets_Match parses this list, dispatcher.go's,
+// and cleanup.go's out of their source and asserts they stay identical so
+// the three copies can't drift apart again.
 var terminalExecutionStatuses = []string{
-	"completed", "failed", "cancelled", "canceled", "declined", "stalled", "no_op", "rate_limited", "infra", "skipped",
+	"completed", "failed", "cancelled", "canceled", "declined", "stalled", "no_op", "rate_limited", "infra", "skipped", "needs_human", "superseded",
 }
 
 func isTerminalExecutionStatus(status string) bool {

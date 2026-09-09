@@ -21,8 +21,17 @@ import (
 // this codebase deliberately avoids elsewhere (see the cycle-avoidance
 // comment in internal/executor/contract_evidence.go). Duplicated here
 // rather than imported, same pattern.
+//
+// GH-5408: includes "needs_human" (holdPushedBranch's hand-off status,
+// GH-5399) and "superseded" — without them, isPilotTerminalStatus below
+// would not recognize a needs_human-parked or superseded issue's latest
+// execution as terminal, and the pilot-in-progress staleness gate above
+// (GH-5299) could wrongly treat the parked/superseded hand-off as a crash
+// orphan and re-admit it. Kept in sync with memory.terminalExecutionStatuses
+// and executor.terminalExecutionStatuses by
+// TestTerminalExecutionStatusSets_Match (internal/executor).
 var pilotTerminalExecutionStatuses = []string{
-	"completed", "failed", "cancelled", "canceled", "declined", "stalled", "no_op", "rate_limited", "infra", "skipped",
+	"completed", "failed", "cancelled", "canceled", "declined", "stalled", "no_op", "rate_limited", "infra", "skipped", "needs_human", "superseded",
 }
 
 func isPilotTerminalStatus(status string) bool {

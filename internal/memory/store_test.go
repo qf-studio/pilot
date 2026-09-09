@@ -6255,6 +6255,63 @@ func TestUpdateExecutionStatusIfNotTerminal_RejectsWhenAlreadyCanceled(t *testin
 	}
 }
 
+// TestUpdateExecutionStatusIfNotTerminal_NeedsHuman is the GH-5408
+// regression test: "needs_human" (holdPushedBranch's hand-off status,
+// GH-5399) was added to executor/dispatcher.go's terminalExecutionStatuses
+// but not to this package's own terminalExecutionStatuses, so writing
+// needs_human through the CAS-guarded path left completed_at NULL and a
+// later terminal write (e.g. "failed") silently clobbered the row — the
+// exact clobber GH-4423 built this guard to prevent. Asserts both halves:
+// the write itself stamps completed_at, and a subsequent terminal write is
+// rejected.
+func TestUpdateExecutionStatusIfNotTerminal_NeedsHuman(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "cas-needs-human", TaskID: "GH-5408-CAS", ProjectPath: "/proj", Status: "running"})
+
+	applied, err := store.UpdateExecutionStatusIfNotTerminal("cas-needs-human", "needs_human", "quality gates failed after the task deadline passed")
+	if err != nil {
+		t.Fatalf("UpdateExecutionStatusIfNotTerminal: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected applied=true — a running row must accept the needs_human hand-off write")
+	}
+
+	exec, err := store.GetExecution("cas-needs-human")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "needs_human" {
+		t.Fatalf("expected status 'needs_human', got %q", exec.Status)
+	}
+	if exec.CompletedAt == nil {
+		t.Error("expected completed_at to be stamped on the needs_human write — a nil completed_at is the GH-5408 symptom (needs_human missing from terminalExecutionStatuses)")
+	}
+
+	// A later terminal write (e.g. a salvage-path "failed" landing after the
+	// hand-off already happened) must be rejected, not silently overwrite
+	// the parked row.
+	applied, err = store.UpdateExecutionStatusIfNotTerminal("cas-needs-human", "failed", "unrelated later write")
+	if err != nil {
+		t.Fatalf("UpdateExecutionStatusIfNotTerminal (second write): %v", err)
+	}
+	if applied {
+		t.Error("expected applied=false — a needs_human row must never be resurrected/overwritten by a later terminal write")
+	}
+
+	exec, err = store.GetExecution("cas-needs-human")
+	if err != nil {
+		t.Fatalf("GetExecution (after second write): %v", err)
+	}
+	if exec.Status != "needs_human" {
+		t.Errorf("expected status to remain 'needs_human', got %q", exec.Status)
+	}
+}
+
 // TestLatestCanceledExecution_FindsMostRecentCanceledRow is GH-5139's coverage
 // for the lookup the re-arm probe (cmd/pilot/rearm_canceled.go) uses to find
 // the cancel timestamp it compares GitHub issue-event times against.

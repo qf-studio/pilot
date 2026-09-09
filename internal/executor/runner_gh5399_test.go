@@ -23,10 +23,26 @@ import (
 // gate-retry loop and re-invoke the backend via a fresh context.Background()
 // timeout — exactly the unbounded second invocation GH-5346 closed for the
 // error path. This test drives that exact shape: a backend that ignores ctx,
-// sleeps past the task's deadline, commits real work, and returns success;
-// paired with a quality checker that always fails with ShouldRetry:true. The
-// backend must be invoked exactly once, and the salvaged commit must be
-// pushed and held under pilot-needs-human rather than retried.
+// commits real work, and returns success only after the task ctx has
+// already been canceled; paired with a quality checker that always fails
+// with ShouldRetry:true. The backend must be invoked exactly once, and the
+// salvaged commit must be pushed and held under pilot-needs-human rather
+// than retried.
+//
+// GH-5408: the deadline is an explicitly-canceled context.WithCancel,
+// canceled from inside the backend's own call, rather than a fixed-duration
+// context.WithTimeout the backend had to out-sleep. The prior version used a
+// 50ms timeout and had the backend sleep 150ms past it, racing that fixed
+// budget against however long setupFreshnessRepo/checkout takes on the test
+// host — on macOS the branch switch alone routinely exceeded 50ms, so the
+// ctx (derived from the same 50ms parent inside executeWithOptions, which
+// keeps a parent's already-elapsed deadline) was sometimes already Done()
+// before the backend was even invoked, failing 6/6 locally while passing on
+// (faster) Linux CI. Canceling from inside the mock backend — which ignores
+// ctx entirely (mockGH4964Backend.Execute takes `_ context.Context`), so
+// cancellation here has no side effect beyond flipping ctx.Err() — makes
+// "the deadline elapses after the backend was called but before it
+// returned" a deterministic ordering instead of a wall-clock race.
 func TestSuccessPath_TaskCtxExpired_GatesFail_HoldsBranchNoReinvocation(t *testing.T) {
 	capturedTitleFile, capturedLabelEditsFile := setUpFakeGhPRCreateAndLabelPATH(t)
 
@@ -34,15 +50,17 @@ func TestSuccessPath_TaskCtxExpired_GatesFail_HoldsBranchNoReinvocation(t *testi
 	dir, _ := setupFreshnessRepo(t)
 	runGit(t, dir, "checkout", "-b", branch)
 
+	var cancel context.CancelFunc
 	backend := &mockGH4964Backend{
 		perCall: func(_ int, _ ExecuteOptions) *BackendResult {
 			// Simulate a backend that ignores the ctx it was handed (e.g.
 			// already mid an uninterruptible tool call) and only returns
-			// once the task's own deadline has already elapsed.
+			// once the task's own deadline has already elapsed — deterministically,
+			// by canceling that deadline from here rather than out-sleeping a timer.
 			writeUncommittedFile(t, dir, "salvaged.go")
 			runGit(t, dir, "add", "salvaged.go")
 			runGit(t, dir, "commit", "-m", "real work landed after the task deadline elapsed")
-			time.Sleep(150 * time.Millisecond)
+			cancel()
 			return &BackendResult{Success: true}
 		},
 	}
@@ -53,9 +71,8 @@ func TestSuccessPath_TaskCtxExpired_GatesFail_HoldsBranchNoReinvocation(t *testi
 
 	task := newGH4964Task("GH-5399", branch, dir)
 
-	// A short deadline that will have elapsed by the time the ctx-ignoring
-	// backend above returns (it sleeps 150ms past its call).
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	var ctx context.Context
+	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
 	result, err := runner.Execute(ctx, task)
@@ -90,6 +107,77 @@ func TestSuccessPath_TaskCtxExpired_GatesFail_HoldsBranchNoReinvocation(t *testi
 	}
 	if !strings.Contains(string(labelEdits), labelPilotNeedsHuman) {
 		t.Errorf("expected the captured `gh issue edit` call to add %q, got:\n%s", labelPilotNeedsHuman, labelEdits)
+	}
+}
+
+// TestSuccessPath_TaskCtxExpired_GatesFail_NoPR_FailsNormally is the GH-5408
+// regression guard for Fix 3: the success-path hold above (Fix 1 of GH-5399)
+// called holdPushedBranch whenever taskCtxWasDone was true, without the
+// error path's precondition (attemptBackendTimeoutSalvage, ~2776: git == nil
+// || task.Branch == "" || task.DirectCommit || !task.CreatePR). A task with
+// CreatePR=false (LocalMode and other non-PR code tasks) has no PR-driven
+// issue hand-off for holdPushedBranch's pilot-needs-human comment/label to
+// mean anything, but was parked there anyway — hiding it from the ordinary
+// failure ladder (TaskFailed alert, webhook, recorder.Finish("failed")) that
+// every other exhausted-retries task goes through. This drives the same
+// ctx-expired-mid-backend-call, gates-keep-failing shape as
+// TestSuccessPath_TaskCtxExpired_GatesFail_HoldsBranchNoReinvocation above,
+// but with CreatePR=false: the backend must still be invoked exactly once
+// (taskCtxWasDone forbids the retry regardless of whether the hold
+// precondition holds), but the task must fail normally instead of being
+// parked needs_human.
+func TestSuccessPath_TaskCtxExpired_GatesFail_NoPR_FailsNormally(t *testing.T) {
+	capturedTitleFile, capturedLabelEditsFile := setUpFakeGhPRCreateAndLabelPATH(t)
+
+	const branch = "pilot/GH-5408-taskctx-expired-nopr"
+	dir, _ := setupFreshnessRepo(t)
+	runGit(t, dir, "checkout", "-b", branch)
+
+	var cancel context.CancelFunc
+	backend := &mockGH4964Backend{
+		perCall: func(_ int, _ ExecuteOptions) *BackendResult {
+			writeUncommittedFile(t, dir, "salvaged.go")
+			runGit(t, dir, "add", "salvaged.go")
+			runGit(t, dir, "commit", "-m", "real work landed after the task deadline elapsed")
+			cancel()
+			return &BackendResult{Success: true}
+		},
+	}
+	runner := newGH4964Runner(backend)
+	runner.qualityCheckerFactory = func(string, string) QualityChecker {
+		return &stubQualityChecker{outcome: &QualityOutcome{Passed: false, ShouldRetry: true}}
+	}
+
+	task := newGH4964Task("GH-5408", branch, dir)
+	task.CreatePR = false // no-PR task: nothing for holdPushedBranch to hand off
+
+	var ctx context.Context
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+
+	if backend.callCount() != 1 {
+		t.Errorf("expected backend called exactly once (taskCtxWasDone must still forbid re-invocation even when the hold precondition fails), got %d", backend.callCount())
+	}
+	if result.Success {
+		t.Errorf("expected Success=false when post-deadline quality gates fail, got true")
+	}
+	if result.Outcome == "needs_human" {
+		t.Errorf("expected a no-PR task never to be parked needs_human, got Outcome=%q (error=%q)", result.Outcome, result.Error)
+	}
+	if result.PRUrl != "" {
+		t.Errorf("expected no PR URL (gates failed), got %q", result.PRUrl)
+	}
+	if _, statErr := os.Stat(capturedTitleFile); statErr == nil {
+		t.Error("gh pr create must not be invoked when post-deadline quality gates fail")
+	}
+	if _, statErr := os.Stat(capturedLabelEditsFile); statErr == nil {
+		labelEdits, _ := os.ReadFile(capturedLabelEditsFile)
+		t.Errorf("expected no pilot-needs-human label edit for a no-PR task, got:\n%s", labelEdits)
 	}
 }
 

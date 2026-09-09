@@ -2873,9 +2873,17 @@ const holdPushBudget = 5 * time.Minute
 //
 // executionPath is included in the hold comment (and preserveWorktree is set)
 // when the push itself fails, so a human reviewing the parked issue — and
-// executeWithOptions's worktree-cleanup defer — both know the commits survive
-// only in that local worktree. Both may be zero-value (""/nil) for callers
-// that have no worktree to preserve (e.g. direct-commit-mode tasks).
+// executeWithOptions's worktree-cleanup defer — both know where to look for
+// the commits before the worktree is gone. GH-5408: the worktree is NOT the
+// durable copy, despite preserveWorktree's name — CleanupOrphanedWorktrees
+// (worktree.go) wipes every pilot-worktree-* directory unconditionally on
+// the next daemon start (it has no marker distinguishing "preserved for
+// human triage" from ordinary startup staleness), so the worktree only
+// survives until then. task.Branch — part of the repo's own .git, untouched
+// by that cleanup — is what actually survives long-term; the worktree path
+// is only a head start for triage that happens before the daemon restarts.
+// Both may be zero-value (""/nil) for callers that have no worktree to
+// preserve (e.g. direct-commit-mode tasks).
 func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger, reason string, executionPath string, preserveWorktree *bool) {
 	pushCtx, pushCancel := context.WithTimeout(context.WithoutCancel(ctx), holdPushBudget)
 	defer pushCancel()
@@ -2924,8 +2932,11 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 				// GH-5399: the push failed and the worktree cleanup defer has
 				// been told to preserve it — name both so a human can recover
 				// the commits directly from the Pilot host instead of assuming
-				// they're gone.
-				outcomeNote = fmt.Sprintf("The branch could not be pushed either — the commits are preserved only in the local worktree at `%s` (branch `%s`) on the Pilot host; check the worktree/logs before retrying.", executionPath, task.Branch)
+				// they're gone. GH-5408: branch `%s` (not the worktree) is the
+				// durable copy — CleanupOrphanedWorktrees wipes the worktree
+				// unconditionally on the next Pilot restart, so it's only a
+				// head start for triage before then.
+				outcomeNote = fmt.Sprintf("The branch could not be pushed either — the commits are on branch `%s` (the durable copy) and still on disk in the worktree at `%s` on the Pilot host, but that worktree is wiped on the next Pilot restart; check the worktree/logs before retrying, ideally before any restart.", task.Branch, executionPath)
 			}
 			commentBody := fmt.Sprintf("Pilot parked this task under `pilot-needs-human`: %s\n\n%s", reason, outcomeNote)
 			if commentErr := ghIssueComment(holdCtx, task.ProjectPath, issueNum, commentBody); commentErr != nil {
@@ -3490,7 +3501,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	if cleanupWorktree != nil {
 		defer func() {
 			if preserveWorktreeOnPushFailure {
-				r.log.Warn("GH-5399: preserving worktree and local branch after a push failure during timeout salvage — commits exist only here",
+				r.log.Warn("GH-5399: preserving worktree and local branch after a push failure during timeout salvage — branch is the durable copy, worktree is a head start for triage only until the next Pilot restart (GH-5408)",
 					slog.String("task_id", task.ID),
 					slog.String("worktree", executionPath),
 					slog.String("branch", task.Branch),
@@ -5506,15 +5517,31 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					// recorder.Finish call here — matches attemptBackendTimeoutSalvage's
 					// call site (line ~4698), which also returns bare after a
 					// successful hold/salvage and lets the caller finalize.
-					if taskCtxWasDone {
+					//
+					// GH-5408: only take the hold branch when there is actually
+					// something for holdPushedBranch to push/park — the same
+					// precondition attemptBackendTimeoutSalvage applies on the error
+					// path (~2776: git == nil || task.Branch == "" || task.DirectCommit
+					// || !task.CreatePR). A LocalMode/direct-commit/no-PR task has no
+					// branch worth pushing or a PR-driven issue to hand off under
+					// pilot-needs-human; without this guard it was parked there anyway,
+					// hiding it from the ordinary failure ladder below (TaskFailed
+					// alert, webhook, recorder.Finish("failed")) that every other
+					// exhausted-retries task goes through.
+					canHoldBranch := git != nil && task.Branch != "" && !task.DirectCommit && task.CreatePR
+					if taskCtxWasDone && canHoldBranch {
 						r.holdPushedBranch(ctx, task, git, result, log,
 							"quality gates failed and the task's deadline had already passed before the backend returned, so Pilot will not re-invoke Claude Code for a retry",
 							executionPath, &preserveWorktreeOnPushFailure)
 						return result, nil
 					}
 
-					// Check if we should retry with Claude Code
-					if outcome.ShouldRetry && retryAttempt < maxAutoRetries {
+					// Check if we should retry with Claude Code. GH-5408: taskCtxWasDone
+					// still forbids re-invoking Claude Code even when canHoldBranch was
+					// false above — the deadline already passed, so falling through here
+					// must skip straight to the unconditional "no more retries" fail
+					// block below rather than looping.
+					if !taskCtxWasDone && outcome.ShouldRetry && retryAttempt < maxAutoRetries {
 						totalQualityRetries++ // Track total retries across all gates (GH-209)
 						r.recordRetryAttemptEvent(task.LogExecutionID(), "quality_gate_retry", totalQualityRetries)
 						r.reportProgress(task.ID, "Quality Retry", 92,
