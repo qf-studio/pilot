@@ -4314,14 +4314,17 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 // the old "canceled is permanent" behavior — see the nil-ghClient branch in
 // HasCompletedExecution.
 //
-// GH-5230: "looks identical to the poller" above is deliberate and stays
-// that way — dispatch behavior (this function still returns true, still
-// gates the same tasks) is unchanged. What changed is the OPERATOR-facing
-// side: the backoff branch now also emits its own unconditional INFO log
-// line naming the real reason (cooldown, not completion) before returning,
-// so the SDK's "completed execution exists" message is never the only
-// explanation on offer. See the backoff branch below for the log line
-// itself.
+// GH-5230/GH-142: "looks identical to the poller" above is deliberate and
+// stays that way — dispatch behavior (this function still returns true,
+// still gates the same tasks) is unchanged. What changed is the
+// OPERATOR-facing side: studio-sdk v0.38.2 (studio-sdk#142/PR#143) added
+// core.ExecutionCheckerV2, letting a host hand back a reason string
+// alongside the skip verdict — the vendored poller now logs
+// "Skipping re-dispatch reason=<host reason>" verbatim instead of always
+// claiming "completed execution exists". HasCompletedExecutionReason below
+// implements that interface and supersedes the old GH-5230 workaround INFO
+// line (kept at Debug for the extra backoff/drop-count detail the SDK's
+// plain reason string doesn't carry — see the backoff branch below).
 type terminalCompletionChecker struct {
 	store *memory.Store
 
@@ -4331,27 +4334,25 @@ type terminalCompletionChecker struct {
 	triggerLabel string
 }
 
-func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath string) (bool, error) {
+// HasCompletedExecutionReason implements sdkCore.ExecutionCheckerV2
+// (studio-sdk v0.38.2+): same skip verdict as HasCompletedExecution, plus a
+// reason string classified at the point of decision so the poller's skip
+// log line names the real cause (repick-backoff cooldown, a stalled task
+// still awaiting GH-5139/GH-5249 re-arm evidence, or a genuinely completed
+// execution) instead of a single generic message.
+func (c terminalCompletionChecker) HasCompletedExecutionReason(taskID, projectPath string) (bool, string, error) {
 	key := repickBackoffKey(projectPath, taskID)
 	if gated, shouldLog := repickBackoff.gateStatus(key); gated {
 		if shouldLog {
 			logging.WithComponent("dispatch").Debug("task in repick backoff window, skipping poller candidacy entirely",
 				slog.String("task_id", taskID))
 		}
-		// GH-5230: returning true here makes the vendored SDK poller log
-		// "Skipping re-dispatch — completed execution exists" on THIS tick
-		// and every tick until the window expires — that message is false;
-		// there is no completed execution row, only a cooldown. The debug
-		// line above fires once per window and never says how long the gate
-		// lasts, so an operator reading only the poller's log sees a
-		// misleading "completed" verdict repeated with nothing to correct
-		// it (confirmed on pilot-cloud-infra GH-33: three ledger rows —
-		// stalled, failed, stalled — no commit, no PR, no completed status,
-		// yet the misleading message was the only thing in the log). Emit
-		// an unconditional INFO line, every gated tick, naming the real
-		// reason plus the remaining cooldown and drop counts, so the truth
-		// always precedes the SDK's misleading message rather than being
-		// buried in a once-per-window DEBUG line.
+		// GH-5230: the SDK poller's own skip log line now carries this same
+		// "repick-backoff cooldown" reason (returned below), so the
+		// once-misleading "completed execution exists" message is no longer
+		// the only explanation on offer. This Debug line just adds the
+		// remaining cooldown and drop counts the SDK's plain reason string
+		// doesn't carry.
 		remaining, consecutiveDrops, claimLostDrops, ok := repickBackoff.gateDetail(key)
 		attrs := []any{
 			slog.String("task_id", taskID),
@@ -4364,15 +4365,15 @@ func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath str
 				slog.Int("claim_lost_drops", claimLostDrops),
 			)
 		}
-		logging.WithComponent("dispatch").Info(
-			"skip reason: repick-backoff cooldown, NOT a completed execution — the SDK poller's next log line (\"completed execution exists\") is misleading for this task",
+		logging.WithComponent("dispatch").Debug(
+			"skip reason: repick-backoff cooldown, NOT a completed execution",
 			attrs...)
-		return true, nil
+		return true, "repick-backoff cooldown", nil
 	}
 
 	done, err := executor.HasTerminalCompletion(c.store, taskID, projectPath)
 	if err != nil || !done {
-		return done, err
+		return done, "", err
 	}
 
 	// GH-5139/GH-5249: `done` may be a genuine completed/no_op row (never
@@ -4383,35 +4384,44 @@ func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath str
 	// internally (via LatestCanceledExecution/LatestSupersededExecution) and
 	// only spend an API call when their own row type is present.
 	if c.ghClient == nil {
-		return true, nil
+		return true, "completed execution exists", nil
 	}
 	rearmed, probeErr := c.tryRearmCanceled(taskID, projectPath, key)
 	if probeErr != nil {
 		logging.WithComponent("dispatch").Warn("GH-5139 re-arm probe failed — treating canceled task as still terminal",
 			slog.String("task_id", taskID), slog.Any("error", probeErr))
 		repickBackoff.recordClaimLostDrop(key)
-		return true, nil
+		return true, "completed execution exists", nil
 	}
 	if rearmed {
-		return false, nil
+		return false, "", nil
 	}
 	rearmed, probeErr = c.tryRearmSuperseded(taskID, projectPath, key)
 	if probeErr != nil {
 		logging.WithComponent("dispatch").Warn("GH-5249 re-arm probe failed — treating superseded task as still terminal",
 			slog.String("task_id", taskID), slog.Any("error", probeErr))
 		repickBackoff.recordClaimLostDrop(key)
-		return true, nil
+		return true, "completed execution exists", nil
 	}
 	if !rearmed {
-		// Neither probe found a matching row + fresh re-arm evidence.
-		// Throttle via the same repick-backoff window GH-4469 already built,
-		// so an open+labeled-but-not-yet-relabeled canceled/superseded issue
-		// does not pay for a GetIssue+ListIssueEvents call on every ~30s poll
-		// tick.
+		// Neither probe found a matching row + fresh re-arm evidence — a
+		// canceled/superseded task sitting open+labeled (or not yet
+		// relabeled at all) without a qualifying reopen/relabel event since
+		// its terminal transition. Throttle via the same repick-backoff
+		// window GH-4469 already built, so this doesn't pay for a
+		// GetIssue+ListIssueEvents call on every ~30s poll tick.
 		repickBackoff.recordClaimLostDrop(key)
-		return true, nil
+		return true, "stalled: awaiting re-arm evidence", nil
 	}
-	return false, nil
+	return false, "", nil
+}
+
+// HasCompletedExecution implements sdkCore.ExecutionChecker. Delegates to
+// HasCompletedExecutionReason and discards the reason for callers (e.g.
+// pre-v0.38.2 SDK code paths, direct unit tests) that only need the verdict.
+func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath string) (bool, error) {
+	skip, _, err := c.HasCompletedExecutionReason(taskID, projectPath)
+	return skip, err
 }
 
 // InvalidateCompletion delegates to the store unchanged — GH-4347 only
@@ -4422,6 +4432,13 @@ func (c terminalCompletionChecker) HasCompletedExecution(taskID, projectPath str
 func (c terminalCompletionChecker) InvalidateCompletion(taskID, projectPath string) error {
 	return c.store.InvalidateCompletion(taskID, projectPath)
 }
+
+// var _ sdkCore.ExecutionCheckerV2 assertion: fail the build if
+// terminalCompletionChecker ever stops satisfying ExecutionCheckerV2 (GH-142/
+// PR#143), so the vendored poller's type-assert (poller.go
+// hasCompletedExecution) can never silently regress to the reason-blind
+// ExecutionChecker fallback.
+var _ sdkCore.ExecutionCheckerV2 = terminalCompletionChecker{}
 
 // storeExecutionSaver adapts *memory.Store to the sdk core.ExecutionSaver /
 // core.ExecutionSaverV2 interfaces. GH-2802: Persists pre-flight rejection

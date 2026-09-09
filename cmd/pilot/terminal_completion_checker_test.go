@@ -130,3 +130,63 @@ func TestTerminalCompletionChecker_GenuineCompletion_StillReportsTrue(t *testing
 		t.Fatal("expected a genuinely completed task to still report true")
 	}
 }
+
+// TestTerminalCompletionChecker_HasCompletedExecutionReason_BackoffCooldown is
+// the GH-142/PR#143 regression test: studio-sdk v0.38.2's ExecutionCheckerV2
+// lets the poller log the real skip reason instead of always claiming
+// "completed execution exists". A task gated purely by repick backoff (no
+// completed row at all) must report skip=true with reason="repick-backoff
+// cooldown" — never the generic completed-execution message.
+func TestTerminalCompletionChecker_HasCompletedExecutionReason_BackoffCooldown(t *testing.T) {
+	store := newTerminalCompletionCheckerTestStore(t)
+	checker := terminalCompletionChecker{store: store}
+
+	taskID := "GH-142-BACKOFF"
+	projectPath := "/tmp/pilot-gh-142-backoff-reason-test-does-not-exist"
+	key := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+
+	repickBackoff.recordDrop(key)
+
+	skip, reason, err := checker.HasCompletedExecutionReason(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !skip {
+		t.Fatal("expected skip=true while the repick backoff is armed")
+	}
+	if reason != "repick-backoff cooldown" {
+		t.Fatalf("expected reason %q, got %q", "repick-backoff cooldown", reason)
+	}
+}
+
+// TestTerminalCompletionChecker_HasCompletedExecutionReason_GenuineCompletion
+// verifies a genuinely terminal completed row (a real commit/PR deliverable,
+// no backoff involved) reports skip=true with reason="completed execution
+// exists" — the SDK poller's fallback message is still correct for this
+// case, it's just no longer the ONLY message on offer for other cases.
+func TestTerminalCompletionChecker_HasCompletedExecutionReason_GenuineCompletion(t *testing.T) {
+	store := newTerminalCompletionCheckerTestStore(t)
+	checker := terminalCompletionChecker{store: store}
+
+	taskID := "GH-142-GENUINE"
+	projectPath := "/tmp/pilot-gh-142-genuine-reason-test-does-not-exist"
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-gh-142-genuine", TaskID: taskID, ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/qf-studio/pilot-canary-sandbox/pull/1",
+	}); err != nil {
+		t.Fatalf("failed to seed completed execution: %v", err)
+	}
+
+	skip, reason, err := checker.HasCompletedExecutionReason(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !skip {
+		t.Fatal("expected skip=true for a genuinely completed task")
+	}
+	if reason != "completed execution exists" {
+		t.Fatalf("expected reason %q, got %q", "completed execution exists", reason)
+	}
+}

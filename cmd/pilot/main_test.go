@@ -1452,19 +1452,19 @@ func TestTerminalCompletionChecker_RecognizesNoOp(t *testing.T) {
 	}
 }
 
-// TestHasCompletedExecution_SkipReasonDiffersByCause is the GH-5230
+// TestHasCompletedExecution_SkipReasonDiffersByCause is the GH-5230/GH-142
 // regression: HasCompletedExecution returns true (bool) for two very
 // different underlying reasons — a genuine completed/no_op execution row,
-// and a task merely cooling down in the repick-backoff window — and the
-// vendored SDK poller logs the SAME "completed execution exists" message for
-// both. Diagnosing a stalled task cost real operator time (pilot-cloud-infra
-// GH-33: ledger showed stalled/failed/stalled, no commit, no PR, no
-// completed status, yet the log insisted a completed execution existed)
-// because the two cases were indistinguishable in the logs. This pins that
-// the backoff-gated branch now emits its own INFO line naming the real
-// reason plus the remaining cooldown and drop counts, and that a genuine
-// completion does NOT emit that line — so the two causes are distinguishable
-// by grepping the log, without changing what HasCompletedExecution returns.
+// and a task merely cooling down in the repick-backoff window. Since
+// studio-sdk v0.38.2 (GH-142/PR#143) the primary distinguishing signal is
+// the reason string HasCompletedExecutionReason now returns (see
+// terminal_completion_checker_test.go), which the vendored poller logs
+// verbatim instead of always claiming "completed execution exists". The
+// old GH-5230 workaround INFO line that used to be the only source of this
+// distinction is now redundant supplementary detail and lives at Debug —
+// this test pins that it still fires (with the remaining cooldown and drop
+// counts the SDK's plain reason string doesn't carry) for the backoff case,
+// and does NOT fire for a genuine completion.
 func TestHasCompletedExecution_SkipReasonDiffersByCause(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1522,7 +1522,7 @@ func TestHasCompletedExecution_SkipReasonDiffersByCause(t *testing.T) {
 			tc.setup(t, store, taskID, projectPath, key)
 
 			logPath := filepath.Join(tmpDir, "skip-reason.log")
-			if err := logging.Init(&logging.Config{Level: "info", Format: "json", Output: logPath}); err != nil {
+			if err := logging.Init(&logging.Config{Level: "debug", Format: "json", Output: logPath}); err != nil {
 				t.Fatalf("logging.Init: %v", err)
 			}
 			t.Cleanup(func() { _ = logging.Init(logging.DefaultConfig()) })
