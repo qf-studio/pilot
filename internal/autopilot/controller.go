@@ -1017,6 +1017,30 @@ func resolveIssueNumFromPR(pr *github.PullRequest) int {
 	return issueNum
 }
 
+// parsePilotGHBranch extracts the issue number encoded in a Pilot-owned
+// branch name of the form "pilot/GH-<n>". Returns (0, false) if branchName
+// does not follow this convention at all — that is NOT treated as evidence
+// of anything wrong (many legitimate branch names don't follow it, e.g.
+// non-GitHub adapters), only the absence of a verifiable signal.
+//
+// GH-5409: used by OnPRCreated as a network-free proxy for the PR's own
+// "GH-<n>: " title prefix (title.go's prTitle and the branch name are both
+// derived from the same task.ID in lockstep — see runner.go/dispatcher.go),
+// so a branch/issueNumber mismatch is just as strong a signal as a
+// title/issueNumber mismatch would be, without requiring OnPRCreated to
+// fetch the PR over the network (which would make every existing unit test
+// that constructs a real, non-mocked github.Client issue live API calls).
+func parsePilotGHBranch(branchName string) (int, bool) {
+	if !strings.HasPrefix(branchName, "pilot/GH-") {
+		return 0, false
+	}
+	var n int
+	if _, err := fmt.Sscanf(branchName, "pilot/GH-%d", &n); err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 // selfHealForPR promotes any prior "failed" execution rows for the merged PR's
 // issue — and its parent epic, if it is a sub-issue — to "completed", stamping the
 // PR URL so the dashboard reflects the merged outcome. Safe to call from any merge
@@ -2556,6 +2580,25 @@ func (c *Controller) SetAlertsEngine(engine alertSink) {
 // therefore be idempotent at the source of truth (the activePRs map, under
 // c.mu), not just at each caller's pre-check.
 func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
+	// GH-5409: defence in depth against a caller trusting a foreign/wrong
+	// issueNumber for this PR (e.g. a race elsewhere mis-pairs a PR event
+	// with the wrong issue). Every issue this PR could legitimately close or
+	// comment on downstream (handleMerging, closeParentNow, etc.) hangs off
+	// prState.IssueNumber, which is set from this parameter — refuse to
+	// register a confirmed mismatch rather than let autopilot act on the
+	// wrong issue when this PR later merges.
+	if issueNumber != 0 {
+		if branchIssue, ok := parsePilotGHBranch(branchName); ok && branchIssue != issueNumber {
+			c.log.Warn("OnPRCreated: branch encodes a different issue than the caller claims — skipping registration",
+				"pr", prNumber,
+				"claimed_issue", issueNumber,
+				"branch", branchName,
+				"branch_issue", branchIssue,
+			)
+			return
+		}
+	}
+
 	c.mu.Lock()
 	if _, exists := c.activePRs[prNumber]; exists {
 		c.mu.Unlock()
@@ -5325,11 +5368,17 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		// describe a hold on work that just shipped, not a finished issue
 		// (GH-5030/#5022: closed-completed issues were observed retaining
 		// pilot-needs-human with no PR left to hold it against).
+		// GH-5409: a spec-guard decline that lands after this PR was already
+		// created is promoted to completed here (the PRUrl rule in
+		// lifecycle.go), so pilot-done and pilot-needs-clarification could
+		// otherwise coexist forever — the work shipped, so the clarification
+		// hold is moot; strip it alongside the other stale escalation labels.
 		c.mutateIssueLabels(ctx, prState.IssueNumber, []string{github.LabelDone}, []string{
 			github.LabelInProgress,
 			github.LabelFailed,
 			labelNeedsHuman,
 			labelNeedsManualRebase,
+			github.LabelNeedsClarification,
 		})
 		// GH-4021: A pilot-retry-* label from an earlier PR-closed-without-merge
 		// cycle must not survive a later successful merge — left in place it
@@ -8074,6 +8123,30 @@ func (c *Controller) GetPRState(prNumber int) (*PRState, bool) {
 	return pr, ok
 }
 
+// HasActivePRForTask reports whether an autopilot-tracked PR already exists
+// for the GitHub issue task taskID names (e.g. "GH-5409"). GH-5409: used to
+// decide whether a late spec-guard decline should cancel the in-flight
+// execution — once a PR exists the work is real and must not be canceled
+// out from under it; only the stale pilot-needs-clarification label should
+// be cleared instead (handled by handleMerging's label-strip on merge).
+// Returns false for a taskID that doesn't follow the "GH-<n>" convention
+// (nothing to check against) and false if no active PR is tracked for that
+// issue.
+func (c *Controller) HasActivePRForTask(taskID string) bool {
+	var issueNum int
+	if _, err := fmt.Sscanf(taskID, "GH-%d", &issueNum); err != nil || issueNum <= 0 {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, pr := range c.activePRs {
+		if pr.IssueNumber == issueNum {
+			return true
+		}
+	}
+	return false
+}
+
 // isPRCircuitOpen checks if the per-PR circuit breaker is open.
 // A PR's circuit breaker opens when it has >= MaxFailures consecutive failures.
 // The counter auto-resets after FailureResetTimeout since the last failure.
@@ -9414,11 +9487,14 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			// also shed any escalation hold (pilot-needs-human,
 			// needs-manual-rebase) — same terminal-state hygiene as the
 			// polled-merge finalization path above.
+			// GH-5409: same pilot-done/pilot-needs-clarification coexistence
+			// fix as the polled-merge finalization path above.
 			c.mutateIssueLabels(ctx, prState.IssueNumber, []string{github.LabelDone}, []string{
 				github.LabelInProgress,
 				github.LabelFailed,
 				labelNeedsHuman,
 				labelNeedsManualRebase,
+				github.LabelNeedsClarification,
 			})
 			// GH-4021: same stale-label cleanup as the polled-merge path.
 			c.clearRetryLabels(ctx, prState.IssueNumber)

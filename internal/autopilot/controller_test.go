@@ -358,6 +358,47 @@ func TestController_OnPRCreated(t *testing.T) {
 	}
 }
 
+// TestController_OnPRCreated_ForeignIssueNumberIgnored covers GH-5409: a
+// caller passing an issueNumber that doesn't match the PR's own
+// "pilot/GH-<n>" branch must not be registered — otherwise autopilot would
+// eventually close/comment on the wrong issue when this PR merges.
+func TestController_OnPRCreated_ForeignIssueNumberIgnored(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Branch says GH-10, but the caller claims issue 99 — mismatch.
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 99, "abc123", "pilot/GH-10", "")
+
+	prs := c.GetActivePRs()
+	if len(prs) != 0 {
+		t.Fatalf("expected 0 PRs registered for a foreign issue number, got %d", len(prs))
+	}
+	if _, ok := c.GetPRState(42); ok {
+		t.Error("PR 42 should not be registered when branch/issueNumber mismatch")
+	}
+}
+
+// TestController_OnPRCreated_UnverifiableBranchStillRegisters ensures the
+// GH-5409 guard only blocks a CONFIRMED branch/issueNumber mismatch, not the
+// mere absence of a "pilot/GH-<n>" branch (e.g. non-GitHub-adapter tasks, or
+// any other legitimate branch naming) — there's no evidence of wrongdoing in
+// that case, just no verifiable signal either way.
+func TestController_OnPRCreated_UnverifiableBranchStillRegisters(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "some-other-branch", "")
+
+	prs := c.GetActivePRs()
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 PR registered when branch doesn't follow the pilot/GH-N convention, got %d", len(prs))
+	}
+}
+
 func TestController_GetPRState(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()
@@ -4113,6 +4154,85 @@ func TestController_handleMerging_Success_RemovesFailedLabel(t *testing.T) {
 	}
 	if prState.Stage != StageMerged {
 		t.Errorf("Stage = %s, want %s", prState.Stage, StageMerged)
+	}
+}
+
+// TestController_handleMerging_Success_RemovesNeedsClarificationLabel is the
+// GH-5409 regression test for gap #3: a spec-guard decline that lands after
+// a PR already exists is promoted to "completed" by the PRUrl rule
+// (lifecycle.go), so pilot-done and pilot-needs-clarification could
+// otherwise coexist forever on a merged, closed issue. The clarification
+// hold must be stripped alongside the other stale escalation labels when the
+// PR merges.
+func TestController_handleMerging_Success_RemovesNeedsClarificationLabel(t *testing.T) {
+	pilotDoneAdded := false
+	needsClarificationRemoved := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "success"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/repos/owner/repo/pulls/42/merge" && r.Method == http.MethodPut:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"sha":     "merged123",
+				"merged":  true,
+				"message": "Pull Request successfully merged",
+			})
+		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == http.MethodGet:
+			pr := github.PullRequest{
+				Number: 42,
+				State:  "open",
+				Head: github.PRRef{
+					Ref: "pilot/GH-10",
+					SHA: "abc1234",
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(pr)
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+			pilotDoneAdded = true
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{{Name: github.LabelDone}})
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels/pilot-needs-clarification" && r.Method == http.MethodDelete:
+			needsClarificationRemoved = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+	prState, _ := c.GetPRState(42)
+	prState.Stage = StageMerging
+	prState.TargetBranch = "main"
+
+	ctx := context.Background()
+
+	if err := c.ProcessPR(ctx, 42, nil); err != nil {
+		t.Fatalf("ProcessPR returned error: %v", err)
+	}
+
+	if !pilotDoneAdded {
+		t.Error("pilot-done label should have been added")
+	}
+	if !needsClarificationRemoved {
+		t.Error("pilot-needs-clarification label should have been removed (GH-5409) — a merged PR must not leave a stale clarification hold behind")
 	}
 }
 

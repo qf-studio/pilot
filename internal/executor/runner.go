@@ -980,23 +980,47 @@ type Runner struct {
 	tokenMu           sync.RWMutex                // Protects tokenCallbacks
 	mu                sync.Mutex
 	running           map[string]*exec.Cmd
-	// execCancel holds the context.CancelFunc for each task.ID currently
-	// inside executeWithOptions, guarded by mu alongside running. GH-5400:
-	// `running` is populated only by direct exec.Cmd tracking, which nothing
-	// in the current Claude Code / OpenCode / etc. backend path ever writes
-	// to (ClaudeCodeBackend.executeWithFromPR owns its *exec.Cmd entirely
-	// internally) — Cancel/IsRunning were therefore always no-ops for a real
-	// execution despite reading like they worked (see lifecycle.go's Cancel,
-	// which documents the same gap: "no PID/handle is tracked anywhere for a
-	// running row"). execCancel closes that gap without touching the Backend
-	// interface: executeWithOptions wraps its ctx in context.WithCancel and
-	// registers the cancel func here for the lifetime of the call, so
-	// canceling it propagates down through backendExecute's ctx into
-	// exec.CommandContext, which SIGKILLs the whole process group (see
-	// cmd.Cancel override in backend_claudecode.go). Cancel/IsRunning check
-	// this map first and fall back to the legacy running map so any existing
-	// caller that does populate running directly keeps working unchanged.
-	execCancel             map[string]context.CancelFunc
+	// execCancel holds a STACK of context.CancelFunc for each task.ID
+	// currently inside executeWithOptions, guarded by mu alongside running.
+	// GH-5400: `running` is populated only by direct exec.Cmd tracking, which
+	// nothing in the current Claude Code / OpenCode / etc. backend path ever
+	// writes to (ClaudeCodeBackend.executeWithFromPR owns its *exec.Cmd
+	// entirely internally) — Cancel/IsRunning were therefore always no-ops
+	// for a real execution despite reading like they worked (see
+	// lifecycle.go's Cancel, which documents the same gap: "no PID/handle is
+	// tracked anywhere for a running row"). execCancel closes that gap
+	// without touching the Backend interface: executeWithOptions wraps its
+	// ctx in context.WithCancel and registers the cancel func here for the
+	// lifetime of the call, so canceling it propagates down through
+	// backendExecute's ctx into exec.CommandContext, which SIGKILLs the
+	// whole process group (see cmd.Cancel override in backend_claudecode.go).
+	// Cancel/IsRunning check this map first and fall back to the legacy
+	// running map so any existing caller that does populate running directly
+	// keeps working unchanged.
+	//
+	// GH-5409: a plain single-slot map (taskID -> one CancelFunc) broke when
+	// escalateDecomposedNoOp (runner_decompose.go) invoked executeWithOptions
+	// a second time with the SAME task ID while the outer call for that ID
+	// was still in flight — the inner call's registration overwrote the
+	// outer's, and its defer then deleted the entry entirely on return,
+	// making IsRunning report false for the rest of the outer call even
+	// though it was still actively executing (exactly the false-negative the
+	// stale-label cleanup's liveness check depends on being accurate). A
+	// stack fixes this: register pushes, unregister pops only the top, so
+	// the outer's entry survives until the outer call itself returns —
+	// LIFO unregistration is guaranteed by nesting (the inner call's own
+	// defer always runs, and completes, before the outer call's tail
+	// resumes).
+	execCancel map[string][]context.CancelFunc
+	// declinedCancel records the reason a task's execCancel was invoked by
+	// CancelDeclined rather than a plain Cancel, keyed by task.ID. GH-5409:
+	// a spec-guard decline that lands while the task is still mid-execution
+	// must classify as "declined", not the generic "failed" the plain
+	// ctx.Err()==context.Canceled path defaults to (that stacked
+	// pilot-failed on top of pilot-needs-clarification). executeWithOptions
+	// consults and clears this via takeDeclinedCancelReason once its own
+	// ctx observes the cancellation. Guarded by mu alongside execCancel.
+	declinedCancel         map[string]string
 	log                    *slog.Logger
 	recordingsPath         string                                                          // Path to recordings directory (empty = default)
 	enableRecording        bool                                                            // Whether to record executions
@@ -1158,7 +1182,7 @@ func NewRunner() *Runner {
 	return &Runner{
 		backend:           NewClaudeCodeBackend(nil),
 		running:           make(map[string]*exec.Cmd),
-		execCancel:        make(map[string]context.CancelFunc),
+		execCancel:        make(map[string][]context.CancelFunc),
 		progressCallbacks: make(map[string]ProgressCallback),
 		tokenCallbacks:    make(map[string]TokenCallback),
 		taskProgress:      make(map[string]int),
@@ -1179,7 +1203,7 @@ func NewRunnerWithBackend(backend Backend) *Runner {
 	return &Runner{
 		backend:           backend,
 		running:           make(map[string]*exec.Cmd),
-		execCancel:        make(map[string]context.CancelFunc),
+		execCancel:        make(map[string][]context.CancelFunc),
 		progressCallbacks: make(map[string]ProgressCallback),
 		tokenCallbacks:    make(map[string]TokenCallback),
 		taskProgress:      make(map[string]int),
@@ -4558,6 +4582,24 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			return result, nil
 		}
 
+		// GH-5409: a spec-guard decline that arrives while this task is
+		// still executing calls CancelDeclined (see its doc), which cancels
+		// this ctx via the same execCancel path Cancel(taskID) uses
+		// (GH-5400) and stashes the decline reason for pickup here. Without
+		// this check, that cancellation fell straight into the generic
+		// ctx.Err()==context.Canceled handling below (part of the GH-917
+		// classified-error path), which has no decline concept and defaults
+		// to "failed" — stacking pilot-failed on top of
+		// pilot-needs-clarification. CancelDeclined callers only reach here
+		// when no PR exists yet for the task (Controller.HasActivePRForTask
+		// gates that) — once a PR exists the work is real and is never
+		// canceled, only completed with the clarification label cleared on
+		// merge (handleMerging).
+		if declinedReason, declined := r.takeDeclinedCancelReason(task.ID); declined {
+			r.finishDeclined(task, result, backendResult, recorder, state, log, declinedReason)
+			return result, nil
+		}
+
 		// Check if this was a timeout
 		timedOut := ctx.Err() == context.DeadlineExceeded
 		if timedOut {
@@ -6790,23 +6832,33 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 	return result, nil
 }
 
-// registerExecCancel records cancel as the way to abort taskID's in-flight
-// executeWithOptions call. GH-5400. Guarded by mu alongside running/execCancel.
+// registerExecCancel pushes cancel onto taskID's stack as a way to abort an
+// in-flight executeWithOptions call. GH-5400. A stack (not a single slot)
+// because a nested call with the same task ID (GH-5409, see the execCancel
+// field doc) must not clobber an outer call's entry. Guarded by mu alongside
+// running/execCancel.
 func (r *Runner) registerExecCancel(taskID string, cancel context.CancelFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.execCancel == nil {
-		r.execCancel = make(map[string]context.CancelFunc)
+		r.execCancel = make(map[string][]context.CancelFunc)
 	}
-	r.execCancel[taskID] = cancel
+	r.execCancel[taskID] = append(r.execCancel[taskID], cancel)
 }
 
-// unregisterExecCancel removes taskID's cancel func once its
-// executeWithOptions call returns. GH-5400.
+// unregisterExecCancel pops taskID's most-recently-registered cancel func
+// once its executeWithOptions call returns. GH-5400/GH-5409: only the top of
+// the stack is removed, so a still-in-flight OUTER call's entry survives a
+// nested inner call with the same task ID (see the execCancel field doc).
 func (r *Runner) unregisterExecCancel(taskID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.execCancel, taskID)
+	stack := r.execCancel[taskID]
+	if len(stack) <= 1 {
+		delete(r.execCancel, taskID)
+		return
+	}
+	r.execCancel[taskID] = stack[:len(stack)-1]
 }
 
 // Cancel terminates a running task, aborting its execution and killing its
@@ -6823,12 +6875,16 @@ func (r *Runner) unregisterExecCancel(taskID string) {
 // subprocess, not just the Go-level call.
 func (r *Runner) Cancel(taskID string) error {
 	r.mu.Lock()
-	cancel, execOK := r.execCancel[taskID]
+	stack := r.execCancel[taskID]
 	cmd, cmdOK := r.running[taskID]
 	r.mu.Unlock()
 
-	if execOK {
-		cancel()
+	if len(stack) > 0 {
+		// GH-5409: cancel the innermost (most recently registered) call —
+		// for a nested executeWithOptions invocation this is the one
+		// actually still doing work; in the common non-nested case it's
+		// simply the only entry.
+		stack[len(stack)-1]()
 		return nil
 	}
 
@@ -6839,6 +6895,48 @@ func (r *Runner) Cancel(taskID string) error {
 	// GH-4503: signal the whole process group, not just the tracked PID, so
 	// backgrounded grandchildren die with it.
 	return killProcessGroup(cmd, syscall.SIGKILL)
+}
+
+// CancelDeclined aborts taskID's in-flight execution the same way Cancel
+// does, but records reason first so executeWithOptions's error path (via
+// takeDeclinedCancelReason) classifies the resulting ctx cancellation as a
+// decline, not a generic failure. GH-5409: a spec-guard decline landing
+// after dispatch but before a PR exists means the work should stop, but it
+// is not a code failure — TerminalStatus must report "declined" so
+// pilot-failed never stacks on top of pilot-needs-clarification. Callers
+// (e.g. SaveDeclinedExecutionRecord) must first confirm no PR already
+// exists for this task (Controller.HasActivePRForTask) — once a PR exists
+// the work is real and must not be canceled at all.
+func (r *Runner) CancelDeclined(taskID, reason string) error {
+	r.mu.Lock()
+	if r.declinedCancel == nil {
+		r.declinedCancel = make(map[string]string)
+	}
+	r.declinedCancel[taskID] = reason
+	r.mu.Unlock()
+
+	if err := r.Cancel(taskID); err != nil {
+		// Not running (already finished or never started) — nothing to
+		// classify, so don't leave a stale reason behind for a future,
+		// unrelated run of the same task ID.
+		r.mu.Lock()
+		delete(r.declinedCancel, taskID)
+		r.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// takeDeclinedCancelReason returns and clears the decline reason recorded
+// for taskID by CancelDeclined, if any. GH-5409.
+func (r *Runner) takeDeclinedCancelReason(taskID string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	reason, ok := r.declinedCancel[taskID]
+	if ok {
+		delete(r.declinedCancel, taskID)
+	}
+	return reason, ok
 }
 
 // recordLearning records the execution outcome for pattern learning.
@@ -7039,7 +7137,7 @@ func (r *Runner) CancelAll() {
 func (r *Runner) IsRunning(taskID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.execCancel[taskID]; ok {
+	if stack, ok := r.execCancel[taskID]; ok && len(stack) > 0 {
 		return true
 	}
 	_, ok := r.running[taskID]

@@ -82,6 +82,18 @@ type Cleaner struct {
 	// misrepresent the queue as still needing a re-pick.
 	OnRetryReadyCleaned func(issueNumber int)
 
+	// IsRunningChecker, if set, is consulted alongside the memory store's
+	// active-executions snapshot before any pilot-in-progress/failed/blocked
+	// label is stripped. GH-5409: the store's GetActiveExecutions() row can
+	// lag or miss an in-flight run entirely (e.g. a decomposed subtask whose
+	// row hasn't landed yet), and the cleanup previously trusted that row
+	// alone — which is what stripped pilot-in-progress from #5386/#5385
+	// while their runs were still live ("no active execution found") and
+	// caused them to be re-picked. The runner's execCancel-backed IsRunning
+	// is the authoritative liveness signal; a task is only treated as
+	// stale/orphaned if BOTH the store and the runner agree it isn't active.
+	IsRunningChecker func(taskID string) bool
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -142,6 +154,18 @@ func WithOnBlockedCleaned(fn func(issueNumber int)) CleanerOption {
 func WithOnStartupRecovered(fn func(issueNumber int)) CleanerOption {
 	return func(c *Cleaner) {
 		c.OnStartupRecovered = fn
+	}
+}
+
+// WithIsRunningChecker sets a function consulted alongside the memory
+// store's active-executions snapshot before a pilot-in-progress/failed/
+// blocked label is stripped as stale. GH-5409: pass the runner's IsRunning
+// method so the cleanup never strips a label from a task the runner itself
+// reports as actively executing, even if the store's row is stale or
+// missing.
+func WithIsRunningChecker(fn func(taskID string) bool) CleanerOption {
+	return func(c *Cleaner) {
+		c.IsRunningChecker = fn
 	}
 }
 
@@ -312,6 +336,17 @@ func (c *Cleaner) Cleanup(ctx context.Context) error {
 	return nil
 }
 
+// isRunning reports whether taskID is reported as actively executing by the
+// runner's IsRunningChecker (GH-5409). Returns false when no checker is
+// configured (e.g. in tests that don't wire one), preserving prior
+// store-only behavior for callers that don't set it.
+func (c *Cleaner) isRunning(taskID string) bool {
+	if c.IsRunningChecker == nil {
+		return false
+	}
+	return c.IsRunningChecker(taskID)
+}
+
 // cleanupLabel cleans up a specific label type and returns count of cleaned issues
 func (c *Cleaner) cleanupLabel(ctx context.Context, label string, threshold time.Duration, activeTaskIDs map[string]bool) (int, error) {
 	issues, err := c.client.ListIssues(ctx, c.owner, c.repo, &ListIssuesOptions{
@@ -336,7 +371,7 @@ func (c *Cleaner) cleanupLabel(ctx context.Context, label string, threshold time
 	for _, issue := range issues {
 		// Check if there's an active execution for this issue
 		taskID := fmt.Sprintf("GH-%d", issue.Number)
-		if activeTaskIDs[taskID] {
+		if activeTaskIDs[taskID] || c.isRunning(taskID) {
 			c.logger.Debug("Issue has active execution, skipping",
 				slog.Int("issue", issue.Number),
 				slog.String("task_id", taskID),
@@ -510,7 +545,7 @@ func (c *Cleaner) cleanupClosedLabel(ctx context.Context, label string, onCleane
 		}
 
 		taskID := fmt.Sprintf("GH-%d", issue.Number)
-		if activeTaskIDs[taskID] {
+		if activeTaskIDs[taskID] || c.isRunning(taskID) {
 			c.logger.Debug("Closed issue has active execution, skipping",
 				slog.Int("issue", issue.Number),
 				slog.String("task_id", taskID),
@@ -590,7 +625,7 @@ func (c *Cleaner) StartupRecover(ctx context.Context) (int, error) {
 	cleaned := 0
 	for _, issue := range issues {
 		taskID := fmt.Sprintf("GH-%d", issue.Number)
-		if liveByTaskID[taskID] {
+		if liveByTaskID[taskID] || c.isRunning(taskID) {
 			c.logger.Debug("startup recover: live execution found, skipping",
 				slog.String("task_id", taskID),
 			)

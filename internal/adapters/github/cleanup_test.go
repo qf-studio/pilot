@@ -491,6 +491,66 @@ func TestCleaner_Cleanup_ActiveExecutionsSkipped(t *testing.T) {
 	}
 }
 
+// TestCleaner_Cleanup_IsRunningCheckerSkipped covers GH-5409: the store's
+// GetActiveExecutions() row can lag or be missing entirely for a task the
+// runner still reports as live (this is what stripped pilot-in-progress from
+// #5386/#5385 mid-run and caused their re-picks). No execution row exists in
+// the store here — only IsRunningChecker reports the task as live — and the
+// label must still survive.
+func TestCleaner_Cleanup_IsRunningCheckerSkipped(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	// Deliberately do NOT save any execution row for GH-789 — the store has
+	// no active-execution evidence at all.
+
+	staleTime := time.Now().Add(-2 * time.Hour)
+	issues := []*Issue{
+		{
+			Number:    789,
+			Title:     "Issue Live Per Runner Only",
+			Labels:    []Label{{Name: LabelInProgress}},
+			UpdatedAt: staleTime,
+		},
+	}
+
+	removeLabelCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			_ = json.NewEncoder(w).Encode(issues)
+			return
+		}
+
+		if r.Method == http.MethodDelete {
+			removeLabelCalled = true
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:   true,
+		Interval:  30 * time.Minute,
+		Threshold: 1 * time.Hour,
+	}, WithIsRunningChecker(func(taskID string) bool {
+		return taskID == "GH-789"
+	}))
+
+	err := cleaner.Cleanup(context.Background())
+	if err != nil {
+		t.Errorf("Cleanup() error = %v", err)
+	}
+
+	if removeLabelCalled {
+		t.Error("RemoveLabel should NOT have been called for issue the runner reports as running")
+	}
+}
+
 func TestCleaner_Cleanup_APIError(t *testing.T) {
 	store := createTestStore(t)
 	defer func() { _ = store.Close() }()
@@ -1169,6 +1229,54 @@ func TestCleaner_Cleanup_ClosedInProgressWithActiveExecutionSkipped(t *testing.T
 	}
 }
 
+// TestCleaner_Cleanup_ClosedInProgressIsRunningCheckerSkipped covers GH-5409
+// for the closed-issue path: no store row exists for the task, but the
+// IsRunningChecker reports it as live, so the label must survive.
+func TestCleaner_Cleanup_ClosedInProgressIsRunningCheckerSkipped(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	closedIssues := []*Issue{
+		{Number: 2352, Title: "Closed but still running per runner", Labels: []Label{{Name: LabelInProgress}}, State: StateClosed, UpdatedAt: time.Now()},
+	}
+
+	removeLabelHit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			if r.URL.Query().Get("state") == "closed" {
+				_ = json.NewEncoder(w).Encode(closedIssues)
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]*Issue{})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			removeLabelHit = true
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	callbackFired := false
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
+	}, WithOnInProgressCleaned(func(int) { callbackFired = true }),
+		WithIsRunningChecker(func(taskID string) bool { return taskID == "GH-2352" }))
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	if removeLabelHit {
+		t.Error("RemoveLabel must NOT be called for closed issue the runner reports as running")
+	}
+	if callbackFired {
+		t.Error("OnInProgressCleaned must NOT fire for closed issue the runner reports as running")
+	}
+}
+
 // GH-4794: pilot-retry-ready label on externally-closed issues should be
 // cleaned up immediately (a superseded/canceled execution can leave this
 // label on an issue that closed out from under it), and the callback should
@@ -1426,6 +1534,56 @@ func TestCleaner_StartupRecover_LiveExecutionSkipped(t *testing.T) {
 	}
 	if removeLabelCalled {
 		t.Error("RemoveLabel must NOT be called for issue with live execution")
+	}
+	if n != 0 {
+		t.Errorf("StartupRecover() returned %d, want 0", n)
+	}
+}
+
+// TestCleaner_StartupRecover_IsRunningCheckerSkipped covers GH-5409: no
+// execution row exists in the store at all (e.g. it hasn't landed yet, or
+// the daemon restarted mid-write), but IsRunningChecker reports the task as
+// live — StartupRecover must not strip pilot-in-progress in that case.
+func TestCleaner_StartupRecover_IsRunningCheckerSkipped(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	issues := []*Issue{
+		{
+			Number:    2590,
+			Title:     "In-flight issue per runner only",
+			State:     StateOpen,
+			Labels:    []Label{{Name: LabelInProgress}},
+			UpdatedAt: time.Now().Add(-5 * time.Minute),
+		},
+	}
+
+	removeLabelCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			_ = json.NewEncoder(w).Encode(issues)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			removeLabelCalled = true
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
+	}, WithIsRunningChecker(func(taskID string) bool { return taskID == "GH-2590" }))
+
+	n, err := cleaner.StartupRecover(context.Background())
+	if err != nil {
+		t.Fatalf("StartupRecover() error = %v", err)
+	}
+	if removeLabelCalled {
+		t.Error("RemoveLabel must NOT be called for issue the runner reports as running")
 	}
 	if n != 0 {
 		t.Errorf("StartupRecover() returned %d, want 0", n)

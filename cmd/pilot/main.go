@@ -3618,6 +3618,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							monitor.Remove(fmt.Sprintf("GH-%d", issueNumber))
 						}))
 					}
+					// GH-5409: consult the runner's execCancel-backed IsRunning as an
+					// authoritative liveness check, in addition to the memory store's
+					// active-executions snapshot. Prevents the cleanup from stripping
+					// pilot-in-progress off a task the runner still reports as live
+					// (the #5386/#5385 false-close pattern).
+					if runner != nil {
+						cleanerOpts = append(cleanerOpts, github.WithIsRunningChecker(runner.IsRunning))
+					}
 					cleaner, cleanerErr := github.NewCleaner(client, store, cfg.Adapters.GitHub.Repo, cfg.Adapters.GitHub.StaleLabelCleanup, cleanerOpts...)
 					if cleanerErr != nil {
 						if !dashboardMode {
@@ -4528,8 +4536,20 @@ func (s storeExecutionSaver) SaveDeclinedExecutionRecord(rec sdkCore.DeclinedExe
 	// sitting on the issue the whole time (the exact defect this guards). Kill
 	// the live subprocess so the decline is authoritative — this hook runs
 	// in-process with the Runner it cancels, unlike the CLI cancel path.
-	if rec.Status == "declined-preflight" && s.runner != nil && s.runner.IsRunning(rec.TaskID) {
-		if cancelErr := s.runner.Cancel(rec.TaskID); cancelErr != nil {
+	//
+	// GH-5409: but a decline that lands AFTER a PR already exists for this
+	// task means the work is real (the PRUrl rule in lifecycle.go promotes
+	// it to completed regardless) — canceling here would kill an execution
+	// that's already past the point of no return, for no benefit, and race
+	// its own PR-creation/push bookkeeping. Skip the cancel entirely in that
+	// case; handleMerging strips any stale pilot-needs-clarification label
+	// once the PR merges instead. When a cancel IS warranted (no PR yet),
+	// use CancelDeclined so executeWithOptions classifies the resulting
+	// termination as "declined", not "failed" — a decline is not a code
+	// failure and must not stack pilot-failed on pilot-needs-clarification.
+	hasActivePR := s.controller != nil && s.controller.HasActivePRForTask(rec.TaskID)
+	if rec.Status == "declined-preflight" && s.runner != nil && s.runner.IsRunning(rec.TaskID) && !hasActivePR {
+		if cancelErr := s.runner.CancelDeclined(rec.TaskID, rec.Reason); cancelErr != nil {
 			slog.Warn("preflight decline: task was reported running but cancel failed",
 				slog.String("task_id", rec.TaskID), slog.String("execution_id", execID), slog.Any("error", cancelErr))
 		} else {
