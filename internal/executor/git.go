@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -973,6 +975,51 @@ func parseFirstPRURL(jsonOutput []byte) string {
 		return ""
 	}
 	return prs[0].URL
+}
+
+// prURLNumberRe extracts the numeric PR id from a GitHub PR URL
+// (".../pull/123" or ".../pulls/123"). Mirrors adapters/github.ExtractPRNumber
+// byte-for-byte; duplicated locally because internal/executor cannot import
+// internal/adapters/github without an import cycle (see issue_state.go's
+// doc comment for the same constraint on this package).
+var prURLNumberRe = regexp.MustCompile(`/pulls?/(\d+)`)
+
+// extractPRNumberFromURL parses the PR number out of a GitHub pull-request
+// URL, returning ok=false if none could be found.
+func extractPRNumberFromURL(prURL string) (num int, ok bool) {
+	m := prURLNumberRe.FindStringSubmatch(prURL)
+	if len(m) < 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// isBorrowedOriginPR reports whether prURL points at task.FromPR — the
+// origin PR whose branch a fix-issue task is continuing (resolveAutopilotFixBranch
+// in cmd/pilot/handlers.go reuses the origin PR's branch name and records its
+// number as FromPR for --from-pr session resumption, GH-1267/GH-5379).
+//
+// GH-5400: FindMergedPRByBranch/FindOpenPRByBranch key purely on branch name.
+// For a fresh dispatch of a fix issue that has not yet pushed a single commit
+// of its own, that reused branch's merged/open PR is still task.FromPR itself
+// — evidence the ORIGIN issue's work shipped, not this fix issue's. Treating
+// it as "my own work is already done" (the pre-GH-5400 behavior of every
+// FindMergedPRByBranch/FindOpenPRByBranch call site in this file) let a fix
+// issue with no PR of its own short-circuit to "Completed" on its very first
+// dispatch tick and get closed citing the origin PR — the incident behind
+// fix issue #5385 closing "done" against PR #5384's merge. A merged/open PR
+// found on the branch that is NOT task.FromPR is still trusted as evidence of
+// this task's own (possibly retried) work, unchanged from prior behavior.
+func isBorrowedOriginPR(task *Task, prURL string) bool {
+	if task == nil || task.FromPR <= 0 {
+		return false
+	}
+	num, ok := extractPRNumberFromURL(prURL)
+	return ok && num == task.FromPR
 }
 
 // GetCurrentBranch returns the current branch name

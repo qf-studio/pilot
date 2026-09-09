@@ -971,15 +971,32 @@ type Runner struct {
 	// that assigns ExecuteOptions.ProjectPath and guards against it
 	// silently collapsing to task.ProjectPath when worktree isolation was
 	// expected. A direct r.backend.Execute call bypasses that guard.
-	backend                Backend // AI execution backend
-	config                 *BackendConfig
-	onProgress             ProgressCallback
-	progressCallbacks      map[string]ProgressCallback // Named callbacks for multi-listener support
-	progressMu             sync.RWMutex                // Protects progressCallbacks
-	tokenCallbacks         map[string]TokenCallback    // Named callbacks for token usage updates
-	tokenMu                sync.RWMutex                // Protects tokenCallbacks
-	mu                     sync.Mutex
-	running                map[string]*exec.Cmd
+	backend           Backend // AI execution backend
+	config            *BackendConfig
+	onProgress        ProgressCallback
+	progressCallbacks map[string]ProgressCallback // Named callbacks for multi-listener support
+	progressMu        sync.RWMutex                // Protects progressCallbacks
+	tokenCallbacks    map[string]TokenCallback    // Named callbacks for token usage updates
+	tokenMu           sync.RWMutex                // Protects tokenCallbacks
+	mu                sync.Mutex
+	running           map[string]*exec.Cmd
+	// execCancel holds the context.CancelFunc for each task.ID currently
+	// inside executeWithOptions, guarded by mu alongside running. GH-5400:
+	// `running` is populated only by direct exec.Cmd tracking, which nothing
+	// in the current Claude Code / OpenCode / etc. backend path ever writes
+	// to (ClaudeCodeBackend.executeWithFromPR owns its *exec.Cmd entirely
+	// internally) — Cancel/IsRunning were therefore always no-ops for a real
+	// execution despite reading like they worked (see lifecycle.go's Cancel,
+	// which documents the same gap: "no PID/handle is tracked anywhere for a
+	// running row"). execCancel closes that gap without touching the Backend
+	// interface: executeWithOptions wraps its ctx in context.WithCancel and
+	// registers the cancel func here for the lifetime of the call, so
+	// canceling it propagates down through backendExecute's ctx into
+	// exec.CommandContext, which SIGKILLs the whole process group (see
+	// cmd.Cancel override in backend_claudecode.go). Cancel/IsRunning check
+	// this map first and fall back to the legacy running map so any existing
+	// caller that does populate running directly keeps working unchanged.
+	execCancel             map[string]context.CancelFunc
 	log                    *slog.Logger
 	recordingsPath         string                                                          // Path to recordings directory (empty = default)
 	enableRecording        bool                                                            // Whether to record executions
@@ -1141,6 +1158,7 @@ func NewRunner() *Runner {
 	return &Runner{
 		backend:           NewClaudeCodeBackend(nil),
 		running:           make(map[string]*exec.Cmd),
+		execCancel:        make(map[string]context.CancelFunc),
 		progressCallbacks: make(map[string]ProgressCallback),
 		tokenCallbacks:    make(map[string]TokenCallback),
 		taskProgress:      make(map[string]int),
@@ -1161,6 +1179,7 @@ func NewRunnerWithBackend(backend Backend) *Runner {
 	return &Runner{
 		backend:           backend,
 		running:           make(map[string]*exec.Cmd),
+		execCancel:        make(map[string]context.CancelFunc),
 		progressCallbacks: make(map[string]ProgressCallback),
 		tokenCallbacks:    make(map[string]TokenCallback),
 		taskProgress:      make(map[string]int),
@@ -2279,7 +2298,10 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 
 	// TASK-359 Layer 1 (Shape C): if this branch's work is already merged, do not
 	// open a duplicate PR. Record the existing merged PR's URL and finish.
-	if mergedURL, mergedErr := git.FindMergedPRByBranch(ctx, task.Branch); mergedErr == nil && mergedURL != "" {
+	// GH-5400: skip when the merged PR found is task.FromPR itself — that's
+	// the origin PR this fix-issue branch was continued from, not evidence
+	// this epic's own work already shipped (see isBorrowedOriginPR).
+	if mergedURL, mergedErr := git.FindMergedPRByBranch(ctx, task.Branch); mergedErr == nil && mergedURL != "" && !isBorrowedOriginPR(task, mergedURL) {
 		result.PRUrl = mergedURL
 		r.log.Info("Epic branch already merged, skipping duplicate PR",
 			slog.String("task_id", task.ID),
@@ -2402,6 +2424,23 @@ func (r *Runner) checkAlreadyMergedBranch(ctx context.Context, git *GitOperation
 	if mergedErr != nil || mergedURL == "" {
 		return false
 	}
+	// GH-5400: a fix-issue task's branch is often borrowed from the origin
+	// PR it continues (task.FromPR) via resolveAutopilotFixBranch. That
+	// origin PR being merged already is not evidence THIS task's own work
+	// shipped — it's the reason this fix issue exists in the first place.
+	// Without this check, a fresh fix-issue dispatch that hasn't pushed a
+	// single commit yet short-circuited here on tick one, reported the
+	// origin PR as its own deliverable, and got closed "done" citing
+	// someone else's merge (incident behind fix issue #5385 / PR #5384).
+	if isBorrowedOriginPR(task, mergedURL) {
+		r.log.Info("Branch's merged PR is the origin PR this fix-issue branch was continued from, not this task's own deliverable — proceeding with push+PR creation",
+			slog.String("task_id", task.ID),
+			slog.String("branch", task.Branch),
+			slog.Int("from_pr", task.FromPR),
+			slog.String("origin_pr_url", mergedURL),
+		)
+		return false
+	}
 	result.PRUrl = mergedURL
 	r.log.Info("Branch already merged, skipping push and PR creation",
 		slog.String("task_id", task.ID),
@@ -2428,6 +2467,19 @@ func (r *Runner) checkAlreadyMergedBranch(ctx context.Context, git *GitOperation
 func (r *Runner) adoptOpenBranchPR(ctx context.Context, git *GitOperations, task *Task, result *ExecutionResult, recorder *replay.Recorder) bool {
 	openURL, openErr := git.FindOpenPRByBranch(ctx, task.Branch)
 	if openErr != nil || openURL == "" {
+		return false
+	}
+	// GH-5400: an open PR still equal to task.FromPR is the origin PR this
+	// fix-issue branch was continued from (see isBorrowedOriginPR /
+	// checkAlreadyMergedBranch above), not evidence this task already has
+	// its own PR — do not adopt it.
+	if isBorrowedOriginPR(task, openURL) {
+		r.log.Info("Branch's open PR is the origin PR this fix-issue branch was continued from, not this task's own PR — not adopting",
+			slog.String("task_id", task.ID),
+			slog.String("branch", task.Branch),
+			slog.Int("from_pr", task.FromPR),
+			slog.String("origin_pr_url", openURL),
+		)
 		return false
 	}
 	result.PRUrl = openURL
@@ -2508,7 +2560,7 @@ func (r *Runner) resolveEmptyBranchWithFallback(ctx context.Context, git *GitOpe
 	}
 
 	if task.Branch != "" {
-		if url, prErr := git.FindOpenPRByBranch(ctx, task.Branch); prErr == nil && url != "" {
+		if url, prErr := git.FindOpenPRByBranch(ctx, task.Branch); prErr == nil && url != "" && !isBorrowedOriginPR(task, url) {
 			r.log.Info("PR guard: an open PR already exists for the branch, treating as having commits",
 				slog.String("task_id", task.ID),
 				slog.String("branch", task.Branch),
@@ -2930,8 +2982,9 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 
 	// TASK-359 Layer 1 (Shape C) parity: don't open a duplicate PR for work
 	// that is already merged (e.g. a retried dispatch of a branch salvaged
-	// once already).
-	if mergedURL, mergedErr := git.FindMergedPRByBranch(ctx, task.Branch); mergedErr == nil && mergedURL != "" {
+	// once already). GH-5400: excludes a match on task.FromPR — the origin
+	// PR this fix-issue branch was continued from, not this task's own work.
+	if mergedURL, mergedErr := git.FindMergedPRByBranch(ctx, task.Branch); mergedErr == nil && mergedURL != "" && !isBorrowedOriginPR(task, mergedURL) {
 		result.PRUrl = mergedURL
 		result.Success = true
 		log.Info("timeout salvage: branch already merged, adopting existing PR",
@@ -3207,6 +3260,23 @@ func (r *Runner) resumeDecomposedParent(ctx context.Context, task *Task, executi
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
 func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (outResult *ExecutionResult, outErr error) {
 	start := time.Now()
+
+	// GH-5400: make this task's execution externally cancelable via
+	// Cancel(task.ID) (see execCancel field doc). Every ctx derived from
+	// this one below (backendExecute's stallExecutionCtx/retryCtx/
+	// reviewCtx, git operations, ...) is a child of it, so canceling here
+	// reaches all of them, including the live backend subprocess via
+	// exec.CommandContext's cmd.Cancel override (backend_claudecode.go) —
+	// this is what actually stops a task whose preflight was declined
+	// after dispatch instead of letting it run straight through.
+	var execCtxCancel context.CancelFunc
+	ctx, execCtxCancel = context.WithCancel(ctx)
+	r.registerExecCancel(task.ID, execCtxCancel)
+	defer func() {
+		r.unregisterExecCancel(task.ID)
+		execCtxCancel()
+	}()
+
 	defer func() {
 		// GH-4240: canary executions are still fully logged, just excluded
 		// from the live Prometheus metrics they'd otherwise pollute.
@@ -6693,14 +6763,49 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 	return result, nil
 }
 
-// Cancel terminates a running task by killing its Claude Code process.
-// Returns an error if the task is not currently running.
+// registerExecCancel records cancel as the way to abort taskID's in-flight
+// executeWithOptions call. GH-5400. Guarded by mu alongside running/execCancel.
+func (r *Runner) registerExecCancel(taskID string, cancel context.CancelFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.execCancel == nil {
+		r.execCancel = make(map[string]context.CancelFunc)
+	}
+	r.execCancel[taskID] = cancel
+}
+
+// unregisterExecCancel removes taskID's cancel func once its
+// executeWithOptions call returns. GH-5400.
+func (r *Runner) unregisterExecCancel(taskID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.execCancel, taskID)
+}
+
+// Cancel terminates a running task, aborting its execution and killing its
+// Claude Code process. Returns an error if the task is not currently running.
+//
+// GH-5400: prefers the execCancel context-cancel path (registered by
+// executeWithOptions for every real execution, including sub-tasks/decomposed
+// children) over the legacy running exec.Cmd map, which nothing in the
+// current backend path (ClaudeCodeBackend et al.) ever populates — see the
+// execCancel field doc for why that map alone was never sufficient. Canceling
+// the execCtx propagates into backendExecute's ctx and from there into
+// exec.CommandContext, which SIGKILLs the whole process group via the
+// cmd.Cancel override in backend_claudecode.go, so this still kills the
+// subprocess, not just the Go-level call.
 func (r *Runner) Cancel(taskID string) error {
 	r.mu.Lock()
-	cmd, ok := r.running[taskID]
+	cancel, execOK := r.execCancel[taskID]
+	cmd, cmdOK := r.running[taskID]
 	r.mu.Unlock()
 
-	if !ok {
+	if execOK {
+		cancel()
+		return nil
+	}
+
+	if !cmdOK {
 		return fmt.Errorf("task %s is not running", taskID)
 	}
 
@@ -6901,10 +7006,15 @@ func (r *Runner) CancelAll() {
 	})
 }
 
-// IsRunning returns true if the specified task is currently being executed.
+// IsRunning reports whether taskID is currently inside executeWithOptions
+// (GH-5400: checks execCancel, the map that is actually populated by real
+// executions) or has a directly-tracked exec.Cmd in the legacy running map.
 func (r *Runner) IsRunning(taskID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, ok := r.execCancel[taskID]; ok {
+		return true
+	}
 	_, ok := r.running[taskID]
 	return ok
 }

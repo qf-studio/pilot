@@ -4441,6 +4441,16 @@ type storeExecutionSaver struct {
 	// reacts via the owner-death path (GH-4842) instead of only being
 	// recorded for observability.
 	controller *autopilot.Controller
+	// runner is optional (nil for a repo with no in-process runner wired) —
+	// when set, a preflight decline that fires while taskID is still actively
+	// executing kills that execution (GH-5400) instead of letting it run
+	// straight through to a PR while pilot-needs-clarification sits on the
+	// issue. Safe only because this hook runs in the same daemon process as
+	// the Runner it cancels — unlike the standalone `pilot task cancel` CLI
+	// (ExecutionLifecycle.Cancel, commands.go), which refuses a running row
+	// because a separate CLI invocation has no handle on the daemon's live
+	// subprocess.
+	runner *executor.Runner
 }
 
 // ownerDeathReactTimeout bounds the synchronous owner-death reaction
@@ -4477,8 +4487,9 @@ func (s storeExecutionSaver) SaveDeclinedExecutionRecord(rec sdkCore.DeclinedExe
 		}
 	}
 
+	execID := fmt.Sprintf("%s-preflight-%d", rec.TaskID, now.UnixNano())
 	err := s.store.SaveExecution(&memory.Execution{
-		ID:          fmt.Sprintf("%s-preflight-%d", rec.TaskID, now.UnixNano()),
+		ID:          execID,
 		TaskID:      rec.TaskID,
 		ProjectPath: rec.ProjectPath,
 		Status:      rec.Status,
@@ -4487,6 +4498,28 @@ func (s storeExecutionSaver) SaveDeclinedExecutionRecord(rec sdkCore.DeclinedExe
 		CompletedAt: &now,
 		IsCanary:    isCanary,
 	})
+
+	// GH-5400: the SDK poller's admission loop calls its pre-flight judge
+	// synchronously before dispatch, so under ordinary operation a decline
+	// here always precedes any execution for taskID. But a stale-label/rearm
+	// race (e.g. an in-progress label wrongly stripped mid-run, GH-5386's
+	// #5386 timeline) can make the same task_id look admissible again while
+	// its original dispatch is still alive — the poller then re-evaluates
+	// and declines an issue that already has a live execution running.
+	// Without this, that execution runs straight through the decline: it can
+	// still commit, open a PR, and land pilot-done with pilot-needs-clarification
+	// sitting on the issue the whole time (the exact defect this guards). Kill
+	// the live subprocess so the decline is authoritative — this hook runs
+	// in-process with the Runner it cancels, unlike the CLI cancel path.
+	if rec.Status == "declined-preflight" && s.runner != nil && s.runner.IsRunning(rec.TaskID) {
+		if cancelErr := s.runner.Cancel(rec.TaskID); cancelErr != nil {
+			slog.Warn("preflight decline: task was reported running but cancel failed",
+				slog.String("task_id", rec.TaskID), slog.String("execution_id", execID), slog.Any("error", cancelErr))
+		} else {
+			slog.Warn("preflight decline: canceled in-flight execution to prevent a declined issue from shipping",
+				slog.String("task_id", rec.TaskID), slog.String("execution_id", execID), slog.String("reason", rec.Reason))
+		}
+	}
 
 	// GH-4842: a preflight decline is owner death for a Pilot-spawned fix
 	// issue — react (re-arm/escalate its source) using the same signal the

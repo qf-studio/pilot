@@ -611,7 +611,11 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 				// GH-4842: wire the per-repo controller (may be nil) so a
 				// preflight decline of a Pilot-spawned fix issue can react
 				// via the owner-death path.
-				pollerDeps.ExecutionSaver = storeExecutionSaver{store: deps.Store, cfg: deps.Cfg, controller: controller}
+				// GH-5400: also wire the in-process Runner (may be nil) so a
+				// decline that fires against a task_id with a live execution
+				// (stale-label/rearm race) cancels it instead of letting it
+				// run straight through to a PR.
+				pollerDeps.ExecutionSaver = storeExecutionSaver{store: deps.Store, cfg: deps.Cfg, controller: controller, runner: deps.Runner}
 			}
 		}
 	}
