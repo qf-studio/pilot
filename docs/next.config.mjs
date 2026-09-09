@@ -5,7 +5,9 @@ const withNextra = nextra({})
 export default withNextra({
   output: 'standalone',
   poweredByHeader: false,
-  // Compression is handled by the Traefik compress middleware; standalone
+  // pilot.quantflow.studio is served through CloudFront (since 2026-09-06);
+  // the edge only compresses uncompressed origin responses, so leaving Next's
+  // own compression off is what lets CloudFront apply Brotli. standalone
   // server.js does not honour this flag anyway (Next.js self-hosting docs §2.5).
   compress: false,
   // Docs ship static, pre-sized assets — the on-server image optimizer adds no
@@ -19,12 +21,19 @@ export default withNextra({
     return [
       {
         // All routes except /_next/static (immutable, content-hashed by Next)
-        // and favicon paths: force browser revalidation on every visit.
-        // ETag already set by Next saves the body on unchanged pages (→ 304).
+        // and favicon paths: force browser revalidation on every visit
+        // (max-age=0 — ETag already set by Next saves the body on unchanged
+        // pages via 304), while letting the CloudFront edge cache the page
+        // for a day (s-maxage=86400) and serve stale for an hour during
+        // revalidation. Deploys invalidate CloudFront's cache anyway, so this
+        // doesn't risk serving outdated content after a release.
         // Image/font rules below override Cache-Control for those asset types.
         source: '/((?!_next/static|_next/image|favicon).*)',
         headers: [
-          { key: 'Cache-Control', value: 'public, max-age=0, must-revalidate' },
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=0, s-maxage=86400, stale-while-revalidate=3600',
+          },
         ],
       },
       {
