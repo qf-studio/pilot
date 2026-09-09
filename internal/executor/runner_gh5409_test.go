@@ -143,3 +143,40 @@ func TestRunner_FinishDeclined_TerminalStatusIsDeclinedNotFailed(t *testing.T) {
 		t.Errorf("TerminalStatus() = %q, want %q", got, "declined")
 	}
 }
+
+// TestRunner_UnregisterExecCancel_ClearsStaleDeclinedReason is the GH-5415
+// regression test: CancelDeclined stashes a decline reason for the failure
+// path to consume via takeDeclinedCancelReason, but that consumption only
+// happens on the err != nil branch. If the backend races the cancel and
+// returns success (subprocess finished cleanly just before the cancel
+// landed, or the backend swallows the ctx cancellation), the reason is never
+// taken by that execution. Before this fix, it survived in the runner's
+// declinedCancel map and the NEXT execution of the same task ID — even one
+// that fails for a completely ordinary reason — would be misclassified as
+// "declined" instead of "failed". unregisterExecCancel must clear the entry
+// unconditionally so no reason outlives the execution it was raised against.
+func TestRunner_UnregisterExecCancel_ClearsStaleDeclinedReason(t *testing.T) {
+	r := newSilentRunnerTask359()
+	const taskID = "GH-104"
+
+	// First execution: CancelDeclined is invoked (races a backend that is
+	// about to finish cleanly), but the mock backend "returns success" —
+	// i.e. the error path (and its takeDeclinedCancelReason call) never
+	// runs, so the reason is left sitting in the map.
+	r.registerExecCancel(taskID, func() {})
+	if err := r.CancelDeclined(taskID, "spec-guard: scope changed after dispatch"); err != nil {
+		t.Fatalf("CancelDeclined returned error: %v", err)
+	}
+	// Simulate the backend returning err == nil: the success path does not
+	// call takeDeclinedCancelReason. executeWithOptions's defer still runs.
+	r.unregisterExecCancel(taskID)
+
+	// Second, unrelated execution of the same task ID fails for an ordinary
+	// reason. Its error path calls takeDeclinedCancelReason to decide
+	// declined vs. failed — it must find nothing.
+	r.registerExecCancel(taskID, func() {})
+	if reason, declined := r.takeDeclinedCancelReason(taskID); declined {
+		t.Errorf("expected no stale declinedCancel reason to survive into the next execution, got %q", reason)
+	}
+	r.unregisterExecCancel(taskID)
+}

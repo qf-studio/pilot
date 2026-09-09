@@ -6850,9 +6850,22 @@ func (r *Runner) registerExecCancel(taskID string, cancel context.CancelFunc) {
 // once its executeWithOptions call returns. GH-5400/GH-5409: only the top of
 // the stack is removed, so a still-in-flight OUTER call's entry survives a
 // nested inner call with the same task ID (see the execCancel field doc).
+//
+// GH-5415: this is also the safety net for declinedCancel. CancelDeclined
+// stashes a reason for executeWithOptions's error path to consume via
+// takeDeclinedCancelReason, but that consumption only happens on the
+// err != nil branch — if the backend races the cancel and returns err == nil
+// (subprocess finished cleanly just before the cancel landed, or the backend
+// swallows the ctx cancellation), the reason is never taken and would
+// otherwise survive in the map. The NEXT genuine failure of the same task ID
+// (a retry generation, a re-pick, a decomposed subtask sharing the parent
+// ID) would then be misclassified as "declined" instead of "failed". Clear
+// it unconditionally here — once this execution's defer runs, no later,
+// unrelated run of the same task ID may inherit its decline reason.
 func (r *Runner) unregisterExecCancel(taskID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	delete(r.declinedCancel, taskID)
 	stack := r.execCancel[taskID]
 	if len(stack) <= 1 {
 		delete(r.execCancel, taskID)
