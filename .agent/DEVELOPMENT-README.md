@@ -151,7 +151,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** box runs **v2.273.2** (tagged by hand 2026-09-09 09:07Z on `718fd676` after the 09-08 train's tag was cancelled to keep the reverted #5380 loop off the box; hot self-upgrade 09:11Z). Carries #5363–#5396 (re-arm race + revert + Timeline fix-forward, subtask paint, size-guard exemption + redrive, sdk v0.38.1 pin, review-path gate, autopilot-meta footer, finalization ctx). **pilot-console `prod-0.1.0` released 09-08 10:06Z** (first ECS image). Prior context in the archived markers.
+**Current Version:** box runs **v2.274.0** (train 2026-09-09 14:16Z; carries #5398–#5405: GraphQL body-edit re-arm, needs_human outcome + salvage-push fixes, preflight-decline abort, docs edge cache). Earlier today **v2.273.2** (tagged by hand 2026-09-09 09:07Z on `718fd676` after the 09-08 train's tag was cancelled to keep the reverted #5380 loop off the box; hot self-upgrade 09:11Z). Carries #5363–#5396 (re-arm race + revert + Timeline fix-forward, subtask paint, size-guard exemption + redrive, sdk v0.38.1 pin, review-path gate, autopilot-meta footer, finalization ctx). **pilot-console `prod-0.1.0` released 09-08 10:06Z** (first ECS image). Prior context in the archived markers.
 
 **PRIORITY (founder directive 2026-07-26 — supersedes 07-17):** **SaaS/platform UNPARKED — TASK-405 is active work again.** The 07-17 ordering (pointer delivery → pilot reliability → SaaS parked) held while the dispatch-reliability chain was open; that chain closed with v2.246.0 on 07-25. Pointer and pilot reliability remain live tracks but no longer gate S-milestone dispatch. Memory: `founder-priority-pointer-first-saas-parked` (superseded).
 
