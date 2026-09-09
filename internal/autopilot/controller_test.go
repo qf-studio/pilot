@@ -399,6 +399,40 @@ func TestController_OnPRCreated_UnverifiableBranchStillRegisters(t *testing.T) {
 	}
 }
 
+// TestController_OnPRCreatedForFixIssue_RegistersUnderFixIssue covers GH-5413
+// (PR #5412 follow-up): a fix issue F dispatched via resolveAutopilotFixBranch
+// runs on its origin PR's branch, which encodes the ORIGIN issue O, not F. A
+// caller that has independently confirmed this is a legitimate
+// borrowed-branch dispatch calls OnPRCreatedForFixIssue, which must register
+// the PR under F (so merging closes F, not O) while preserving the O-encoded
+// branch name unchanged.
+func TestController_OnPRCreatedForFixIssue_RegistersUnderFixIssue(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	const originIssue = 10
+	const fixIssue = 20
+	c.OnPRCreatedForFixIssue(42, "https://github.com/owner/repo/pull/42", fixIssue, originIssue, "abc123", "pilot/GH-10", "")
+
+	prs := c.GetActivePRs()
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 PR registered under the fix issue, got %d", len(prs))
+	}
+
+	state, ok := c.GetPRState(42)
+	if !ok {
+		t.Fatal("PR 42 should be registered")
+	}
+	if state.IssueNumber != fixIssue {
+		t.Errorf("IssueNumber = %d, want %d (fix issue, not origin issue %d)", state.IssueNumber, fixIssue, originIssue)
+	}
+	if state.BranchName != "pilot/GH-10" {
+		t.Errorf("BranchName = %q, want %q (borrowed origin branch preserved unchanged)", state.BranchName, "pilot/GH-10")
+	}
+}
+
 func TestController_GetPRState(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()

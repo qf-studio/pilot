@@ -2587,6 +2587,14 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 	// prState.IssueNumber, which is set from this parameter — refuse to
 	// register a confirmed mismatch rather than let autopilot act on the
 	// wrong issue when this PR later merges.
+	//
+	// GH-5413: this guard assumes the branch always encodes the SAME issue as
+	// the caller's issueNumber. Fix/revision issues break that assumption by
+	// design — resolveAutopilotFixBranch (cmd/pilot/handlers.go) makes a fix
+	// issue F run on its origin PR's branch, which is named after the ORIGIN
+	// issue O. A caller that has independently verified this is a legitimate
+	// borrowed-branch dispatch (not a mis-paired event) must call
+	// OnPRCreatedForFixIssue instead, which bypasses this check on purpose.
 	if issueNumber != 0 {
 		if branchIssue, ok := parsePilotGHBranch(branchName); ok && branchIssue != issueNumber {
 			c.log.Warn("OnPRCreated: branch encodes a different issue than the caller claims — skipping registration",
@@ -2599,6 +2607,35 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		}
 	}
 
+	c.registerPR(prNumber, prURL, issueNumber, headSHA, branchName, issueNodeID)
+}
+
+// OnPRCreatedForFixIssue registers prNumber under fixIssue even though
+// branchName encodes originIssue's number, not fixIssue's — GH-5413 (PR
+// #5412 follow-up). resolveAutopilotFixBranch (cmd/pilot/handlers.go) makes a
+// fix/revision issue continue its origin PR's branch on purpose (the
+// autopilot-meta footer flow, decision memory "Pilot never reads GH
+// comments", precedent #5261), so a branch/issue mismatch here is expected,
+// not evidence of a mis-paired event the way it is for OnPRCreated's guard
+// (GH-5409). Callers must only use this entry point when they have
+// independently verified the borrowed-branch dispatch (e.g. the dispatched
+// task carried FromPR > 0) — it intentionally skips OnPRCreated's mismatch
+// check. originIssue is accepted purely for logging/traceability; the PR is
+// always tracked under fixIssue, with branchName recorded unchanged.
+func (c *Controller) OnPRCreatedForFixIssue(prNumber int, prURL string, fixIssue int, originIssue int, headSHA string, branchName string, issueNodeID string) {
+	c.log.Info("OnPRCreatedForFixIssue: registering PR under fix issue on a borrowed origin branch",
+		"pr", prNumber,
+		"fix_issue", fixIssue,
+		"origin_issue", originIssue,
+		"branch", branchName,
+	)
+	c.registerPR(prNumber, prURL, fixIssue, headSHA, branchName, issueNodeID)
+}
+
+// registerPR holds the shared registration body for OnPRCreated and
+// OnPRCreatedForFixIssue (GH-5413) — every check below applies identically
+// regardless of which caller verified issueNumber is correct for this PR.
+func (c *Controller) registerPR(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
 	c.mu.Lock()
 	if _, exists := c.activePRs[prNumber]; exists {
 		c.mu.Unlock()
@@ -8533,6 +8570,34 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 			"branch", pr.Head.Ref,
 			"issue", issueNum,
 		)
+
+		// GH-5413: issueNum above is derived purely from the branch name, but a
+		// fix/revision issue intentionally runs on its ORIGIN issue's branch
+		// (resolveAutopilotFixBranch), so an orphaned PR here can actually
+		// belong to a fix issue F even though the branch encodes origin issue
+		// O. Prefer F when the durable spawned-fix claim (recorded
+		// synchronously by CreateFailureIssue/CreateReviewIssue, so it
+		// survives the restarts that create these orphans in the first
+		// place) names a different issue than the branch does — otherwise a
+		// merge here would close O instead of F. If the lookup itself fails,
+		// fall back to the branch-derived issue rather than blocking the
+		// sweep, but say so.
+		if c.stateStore != nil {
+			if fixIssue, err := c.stateStore.HasSpawnedFixForPR(c.repoKey(), pr.Number); err != nil {
+				c.log.Warn("reconciler: spawned-fix lookup failed, registering under branch-derived issue",
+					"pr", pr.Number, "branch", pr.Head.Ref, "branch_issue", issueNum, "error", err)
+			} else if fixIssue > 0 && fixIssue != issueNum {
+				c.log.Info("reconciler: orphan PR belongs to a fix issue on a borrowed origin branch — registering under the fix issue",
+					"pr", pr.Number, "branch", pr.Head.Ref, "origin_issue", issueNum, "fix_issue", fixIssue,
+				)
+				c.OnPRCreatedForFixIssue(pr.Number, pr.HTMLURL, fixIssue, issueNum, pr.Head.SHA, pr.Head.Ref, "")
+				if updatedAt, err := time.Parse(time.RFC3339, pr.UpdatedAt); err == nil {
+					c.seedAdoptedCIWaitClock(pr.Number, updatedAt)
+				}
+				c.metrics.RecordOrphanPRRegistered("reconciler")
+				continue
+			}
+		}
 		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA, pr.Head.Ref, "")
 		if updatedAt, err := time.Parse(time.RFC3339, pr.UpdatedAt); err == nil {
 			c.seedAdoptedCIWaitClock(pr.Number, updatedAt)

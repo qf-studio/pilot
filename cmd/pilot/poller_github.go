@@ -79,6 +79,85 @@ func githubOnPRCreatedHandler(ctrl *autopilot.Controller) func(sdkcore.PRCreated
 	}
 }
 
+// githubRetryCallback builds the rate-limit-retry callback for the GitHub SDK
+// poller: it re-fetches the issue and re-enters the SDK handler path, then
+// forwards any resulting PR to autopilot the same way the primary path does
+// (GH-797). Extracted to its own function (GH-4211: test the handler
+// production wires up, not a lower-level method called directly) so a test
+// can drive this exact callback the scheduler invokes.
+//
+// GH-5413: pendingTask.Task.FromPR > 0 means this task was dispatched by
+// resolveAutopilotFixBranch onto its origin PR's branch — the branch is named
+// after the ORIGIN issue, not the fix issue in pendingTask.Task.ID/issue.Number.
+// Controller.OnPRCreated's branch/issue guard (GH-5409) would silently drop
+// registration in that case, so route through OnPRCreatedForFixIssue instead,
+// which records the PR under the fix issue while preserving the (borrowed)
+// branch name.
+func githubRetryCallback(deps *PollerDeps, target githubSDKPollerTarget, sdkClient *githubSDK.Client, repoOwner, repoName string, controller *autopilot.Controller) func(context.Context, *executor.PendingTask) error {
+	return func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
+		var issueNum int
+		if _, err := fmt.Sscanf(pendingTask.Task.ID, "GH-%d", &issueNum); err != nil {
+			return fmt.Errorf("invalid task ID format: %s", pendingTask.Task.ID)
+		}
+
+		issue, err := sdkClient.GetIssue(retryCtx, repoOwner, repoName, issueNum)
+		if err != nil {
+			return fmt.Errorf("failed to fetch issue for retry: %w", err)
+		}
+
+		logging.WithComponent("scheduler").Info("Retrying rate-limited issue (SDK path)",
+			slog.Int("issue", issueNum),
+			slog.Int("attempt", pendingTask.Attempts),
+			slog.String("repo", target.repoFullName),
+		)
+
+		labelNames := make([]string, 0, len(issue.Labels))
+		for _, l := range issue.Labels {
+			labelNames = append(labelNames, l.Name)
+		}
+		ev := sdkcore.IssueEvent{
+			Action:     "created",
+			IssueID:    strconv.Itoa(issue.Number),
+			SequenceID: pendingTask.Task.ID,
+			Title:      issue.Title,
+			Body:       issue.Body,
+			Labels:     labelNames,
+			ProjectID:  repoName,
+		}
+
+		result, err := handleGithubIssueEventSDK(retryCtx, deps.Cfg, ev, target.projectPath, target.repoFullName, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer, resolveRepoMetrics(deps, target.repoFullName))
+
+		// GH-797: surface retried-issue PRs to autopilot so their merge gates run.
+		githubRetryOnPRCreated(controller, result, issue.Number, issue.NodeID, pendingTask.Task.FromPR)
+
+		return err
+	}
+}
+
+// githubRetryOnPRCreated routes a retried issue's resulting PR (if any) to the
+// autopilot controller, extracted out of githubRetryCallback (GH-4211: test
+// the handler production wires up) so this decision can be driven directly
+// without also having to fetch a real issue and run the full executor
+// pipeline through handleGithubIssueEventSDK.
+//
+// GH-5413: fromPR > 0 means this task was dispatched by
+// resolveAutopilotFixBranch onto its origin PR's branch — that branch is
+// named after the ORIGIN issue, not issueNumber (the fix issue). Plain
+// Controller.OnPRCreated's branch/issue guard (GH-5409) would silently drop
+// registration in that case, so route through OnPRCreatedForFixIssue instead,
+// which records the PR under the fix issue while preserving the (borrowed)
+// branch name unchanged.
+func githubRetryOnPRCreated(controller *autopilot.Controller, result *sdkcore.IssueResult, issueNumber int, issueNodeID string, fromPR int) {
+	if result == nil || result.PRNumber <= 0 || controller == nil {
+		return
+	}
+	if fromPR > 0 {
+		controller.OnPRCreatedForFixIssue(result.PRNumber, result.PRURL, issueNumber, fromPR, result.HeadSHA, result.BranchName, issueNodeID)
+	} else {
+		controller.OnPRCreated(result.PRNumber, result.PRURL, issueNumber, result.HeadSHA, result.BranchName, issueNodeID)
+	}
+}
+
 // sdkPollerVerifyTimeout bounds the one-off authenticated call made before
 // the SDK poller starts (GH-3917), matching preflightVerifyTimeout's budget
 // for the equivalent in-tree adapter checks (adapter_preflight.go).
@@ -227,10 +306,18 @@ func (s sdkRateLimitScheduler) QueueRetryIfRateLimited(taskID, title, body, errT
 	if !ok {
 		return false
 	}
+	// GH-5413: a fix/revision issue runs on its origin PR's (borrowed) branch —
+	// resolveAutopilotFixBranch recovers that from the autopilot-meta footer in
+	// body alone (labels only affect its logged source string). Without FromPR
+	// set here, the retry callback below has no way to tell a borrowed-branch
+	// dispatch from a mis-paired PR event once the rate-limited task is
+	// re-queued and replayed.
+	_, fromPR, _, _, _ := resolveAutopilotFixBranch(nil, body)
 	s.scheduler.QueueTask(&executor.Task{
 		ID:          taskID,
 		Title:       title,
 		Description: body,
+		FromPR:      fromPR,
 	}, rlInfo)
 	return true
 }
@@ -628,46 +715,7 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	// in by the caller (one client per fan-out, not per repo).
 	sdkClient := client
 	rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
-	rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
-		var issueNum int
-		if _, err := fmt.Sscanf(pendingTask.Task.ID, "GH-%d", &issueNum); err != nil {
-			return fmt.Errorf("invalid task ID format: %s", pendingTask.Task.ID)
-		}
-
-		issue, err := sdkClient.GetIssue(retryCtx, repoOwner, repoName, issueNum)
-		if err != nil {
-			return fmt.Errorf("failed to fetch issue for retry: %w", err)
-		}
-
-		logging.WithComponent("scheduler").Info("Retrying rate-limited issue (SDK path)",
-			slog.Int("issue", issueNum),
-			slog.Int("attempt", pendingTask.Attempts),
-			slog.String("repo", target.repoFullName),
-		)
-
-		labelNames := make([]string, 0, len(issue.Labels))
-		for _, l := range issue.Labels {
-			labelNames = append(labelNames, l.Name)
-		}
-		ev := sdkcore.IssueEvent{
-			Action:     "created",
-			IssueID:    strconv.Itoa(issue.Number),
-			SequenceID: pendingTask.Task.ID,
-			Title:      issue.Title,
-			Body:       issue.Body,
-			Labels:     labelNames,
-			ProjectID:  repoName,
-		}
-
-		result, err := handleGithubIssueEventSDK(retryCtx, deps.Cfg, ev, target.projectPath, target.repoFullName, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer, resolveRepoMetrics(deps, target.repoFullName))
-
-		// GH-797: surface retried-issue PRs to autopilot so their merge gates run.
-		if result != nil && result.PRNumber > 0 && controller != nil {
-			controller.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName, issue.NodeID)
-		}
-
-		return err
-	})
+	rateLimitScheduler.SetRetryCallback(githubRetryCallback(deps, target, sdkClient, repoOwner, repoName, controller))
 	rateLimitScheduler.SetExpiredCallback(func(expiredCtx context.Context, pendingTask *executor.PendingTask) {
 		logging.WithComponent("scheduler").Error("Task exceeded max retry attempts",
 			slog.String("task_id", pendingTask.Task.ID),
