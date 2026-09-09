@@ -1322,6 +1322,14 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 // row alongside an earlier no_op row — the fresh row would be "latest" and
 // would wrongly hide the terminal no_op if this used the same latest-only
 // definition. Scanning every row for the task avoids that ordering trap.
+//
+// GH-5399: 'needs_human' counts as terminal here too. A holdPushedBranch
+// row means salvaged work was pushed and handed off for manual review —
+// there is nothing left for a fresh retry generation to redo, and
+// nextRetryGeneration consults this function precisely to decide that.
+// Without this, a needs_human row (which TerminalStatus/terminalExecutionStatuses
+// now also treat as terminal) would still look "not done" here and could be
+// handed a brand new generation on top of the held branch.
 func (s *Store) HasTerminalCompletion(taskID, projectPath string) (bool, error) {
 	completed, err := s.HasCompletedExecution(taskID, projectPath)
 	if err != nil {
@@ -1338,6 +1346,7 @@ func (s *Store) HasTerminalCompletion(taskID, projectPath string) (bool, error) 
 			(status = 'no_op' AND (error IS NULL OR error = ''))
 			OR status = 'canceled'
 			OR status = 'superseded'
+			OR status = 'needs_human'
 		)
 	`, taskID, projectPath).Scan(&count)
 	if err != nil {

@@ -471,6 +471,8 @@ func TerminalStatus(result *ExecutionResult) string {
 		return "skipped"
 	case "superseded":
 		return "superseded"
+	case "needs_human":
+		return "needs_human"
 	}
 	for _, c := range outcomeClassifiers {
 		if containsAny(result.Error, c.signatures) {
@@ -869,12 +871,15 @@ type ExecutionResult struct {
 	// DeclinedReason is the human-readable reason Claude provided for the decline.
 	DeclinedReason string
 	// Outcome is a fine-grained terminal classification ("declined", "no_op",
-	// "no_commits", "stalled", "budget_exceeded", "superseded") used by the
-	// dispatcher to pick the persisted execution status instead of collapsing
-	// every !Success result into "failed". Empty means "classify from
-	// Success/Declined/Error". TASK-358. "superseded" (GH-4656): the
+	// "no_commits", "stalled", "budget_exceeded", "superseded", "needs_human")
+	// used by the dispatcher to pick the persisted execution status instead of
+	// collapsing every !Success result into "failed". Empty means "classify
+	// from Success/Declined/Error". TASK-358. "superseded" (GH-4656): the
 	// PR-creation preflight found the task's GitHub issue already closed —
-	// another run delivered this scope first.
+	// another run delivered this scope first. "needs_human" (GH-5399): set by
+	// holdPushedBranch when salvaged work was pushed but automated gates
+	// couldn't run/pass without re-invoking the backend past its deadline —
+	// a human needs to review the held branch.
 	Outcome string
 	// PeakRSSMB is the peak subprocess RSS in MiB collected by the RSS sampler. GH-3028.
 	// Zero on non-Linux/darwin platforms or when the sampler had no data.
@@ -2715,7 +2720,7 @@ func (r *Runner) ensureQualityCheckerFactory(executionPath string, log *slog.Log
 // caller in executeWithOptions should return immediately). Returns false if
 // there was nothing to salvage (no commits on the branch) — the caller
 // should fall through to its normal "task failed" return.
-func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, executionPath string, log *slog.Logger, recorder *replay.Recorder) bool {
+func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, executionPath string, log *slog.Logger, recorder *replay.Recorder, preserveWorktree *bool) bool {
 	if git == nil || task.Branch == "" || task.DirectCommit || !task.CreatePR {
 		// Direct-commit tasks push straight to main with no branch/PR to
 		// salvage this way, and a task that never wanted a PR/branch has
@@ -2743,7 +2748,8 @@ func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, g
 	}
 	if countErr != nil {
 		r.holdPushedBranch(finCtx, task, git, result, log,
-			fmt.Sprintf("task ended by %v and commit count could not be verified after a retry: %v", ctx.Err(), countErr))
+			fmt.Sprintf("task ended by %v and commit count could not be verified after a retry: %v", ctx.Err(), countErr),
+			executionPath, preserveWorktree)
 		return true
 	}
 	if commitCount == 0 {
@@ -2767,11 +2773,13 @@ func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, g
 			switch {
 			case qErr != nil:
 				r.holdPushedBranch(finCtx, task, git, result, log,
-					fmt.Sprintf("timeout salvage: quality gate error: %v", qErr))
+					fmt.Sprintf("timeout salvage: quality gate error: %v", qErr),
+					executionPath, preserveWorktree)
 				return true
 			case outcome == nil || !outcome.Passed:
 				r.holdPushedBranch(finCtx, task, git, result, log,
-					"timeout salvage: quality gates failed after task timeout")
+					"timeout salvage: quality gates failed after task timeout",
+					executionPath, preserveWorktree)
 				return true
 			default:
 				result.QualityGates = r.buildQualityGatesResult(outcome, 0)
@@ -2780,9 +2788,20 @@ func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, g
 		}
 	}
 
-	r.pushAndCreatePRAfterTimeout(finCtx, task, git, result, recorder, log)
+	r.pushAndCreatePRAfterTimeout(finCtx, task, git, result, recorder, log, executionPath, preserveWorktree)
 	return true
 }
+
+// holdPushBudget is the push-specific timeout holdPushedBranch gives
+// git.Push, separate from (and much longer than) the comment/label window
+// that follows it. GH-5399: a 30s window sized for a couple of GitHub API
+// calls previously also had to cover the push itself — a large salvaged
+// diff can legitimately take longer than that, and timing it out there
+// produced a false "push failed" that then let the worktree cleanup defer
+// force-delete the local branch, destroying the only remaining copy of the
+// work. 5 minutes comfortably covers realistic salvage-diff pushes without
+// blocking the run indefinitely.
+const holdPushBudget = 5 * time.Minute
 
 // holdPushedBranch pushes task.Branch (if it is not already on the remote)
 // and parks the source issue under pilot-needs-human instead of silently
@@ -2791,21 +2810,32 @@ func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, g
 // above, which uses the same push/comment/label idiom for a "no more
 // automatic progress possible" state. GH-5346.
 //
-// Uses a fresh, value-preserving 30s window for the push/comment/label calls
-// (context.WithoutCancel(ctx), not ctx directly) — by the time this runs,
-// ctx itself is very often already exhausted (that is frequently WHY this is
-// being called), and building the escalation calls on a dead ctx would fail
-// them before they start.
-func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger, reason string) {
-	holdCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
+// The push and the comment/label calls run on two separate fresh,
+// value-preserving contexts (context.WithoutCancel(ctx), not ctx directly) —
+// by the time this runs, ctx itself is very often already exhausted (that is
+// frequently WHY this is being called), and building the escalation calls on
+// a dead ctx would fail them before they start. GH-5399: they are separate
+// budgets (holdPushBudget for the push, 30s for comment/label) rather than
+// one shared window, so a slow-but-successful push can no longer starve the
+// comment/label calls (or vice versa) of time.
+//
+// executionPath is included in the hold comment (and preserveWorktree is set)
+// when the push itself fails, so a human reviewing the parked issue — and
+// executeWithOptions's worktree-cleanup defer — both know the commits survive
+// only in that local worktree. Both may be zero-value (""/nil) for callers
+// that have no worktree to preserve (e.g. direct-commit-mode tasks).
+func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger, reason string, executionPath string, preserveWorktree *bool) {
+	pushCtx, pushCancel := context.WithTimeout(context.WithoutCancel(ctx), holdPushBudget)
+	defer pushCancel()
 
 	pushed := false
+	pushFailed := false
 	if git != nil && task.Branch != "" {
-		if pushErr := git.Push(holdCtx, task.Branch); pushErr != nil {
-			if git.RemoteBranchExists(holdCtx, task.Branch) {
+		if pushErr := git.Push(pushCtx, task.Branch); pushErr != nil {
+			if git.RemoteBranchExists(pushCtx, task.Branch) {
 				pushed = true
 			} else {
+				pushFailed = true
 				log.Warn("timeout salvage: failed to push branch for human hold",
 					slog.String("task_id", task.ID),
 					slog.String("branch", task.Branch),
@@ -2818,6 +2848,10 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 		}
 	}
 
+	if pushFailed && preserveWorktree != nil {
+		*preserveWorktree = true
+	}
+
 	log.Warn("timeout salvage: holding branch for human triage",
 		slog.String("task_id", task.ID),
 		slog.String("branch", task.Branch),
@@ -2825,11 +2859,21 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 		slog.String("reason", reason),
 	)
 
+	holdCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+
 	if task.SourceAdapter == "" || task.SourceAdapter == "github" {
 		if issueNum := task.GHIssueRef(); issueNum != "" {
 			outcomeNote := "The branch could not be pushed either — check the worktree/logs before retrying."
-			if pushed {
+			switch {
+			case pushed:
 				outcomeNote = fmt.Sprintf("Branch `%s` was pushed with the commits Pilot completed before this happened — review and finish it manually, or clear the label to let Pilot retry.", task.Branch)
+			case executionPath != "":
+				// GH-5399: the push failed and the worktree cleanup defer has
+				// been told to preserve it — name both so a human can recover
+				// the commits directly from the Pilot host instead of assuming
+				// they're gone.
+				outcomeNote = fmt.Sprintf("The branch could not be pushed either — the commits are preserved only in the local worktree at `%s` (branch `%s`) on the Pilot host; check the worktree/logs before retrying.", executionPath, task.Branch)
 			}
 			commentBody := fmt.Sprintf("Pilot parked this task under `pilot-needs-human`: %s\n\n%s", reason, outcomeNote)
 			if commentErr := ghIssueComment(holdCtx, task.ProjectPath, issueNum, commentBody); commentErr != nil {
@@ -2860,7 +2904,7 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 // call already burned its full budget, not the place to add more
 // finalization work. Any failure here falls back to holdPushedBranch so the
 // commits are never silently lost. GH-5346.
-func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, recorder *replay.Recorder, log *slog.Logger) {
+func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, recorder *replay.Recorder, log *slog.Logger, executionPath string, preserveWorktree *bool) {
 	baseBranch := task.BaseBranch
 	if baseBranch == "" {
 		baseBranch, _ = git.GetDefaultBranch(ctx)
@@ -2872,7 +2916,8 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 	if err := git.Push(ctx, task.Branch); err != nil {
 		if !git.RemoteBranchExists(ctx, task.Branch) {
 			r.holdPushedBranch(ctx, task, git, result, log,
-				fmt.Sprintf("timeout salvage: branch push failed: %v", err))
+				fmt.Sprintf("timeout salvage: branch push failed: %v", err),
+				executionPath, preserveWorktree)
 			return
 		}
 		log.Warn("timeout salvage: push reported error but branch exists on remote, continuing",
@@ -2902,7 +2947,8 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 	normalizedTitle, titleErr := normalizeTitle(task.Title, task.Labels, diffStats)
 	if titleErr != nil {
 		r.holdPushedBranch(ctx, task, git, result, log,
-			fmt.Sprintf("timeout salvage: PR title normalization failed: %v", titleErr))
+			fmt.Sprintf("timeout salvage: PR title normalization failed: %v", titleErr),
+			executionPath, preserveWorktree)
 		return
 	}
 	prTitle := fmt.Sprintf("%s: %s", task.ID, normalizedTitle)
@@ -2931,7 +2977,8 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 	}
 	if createErr != nil {
 		r.holdPushedBranch(ctx, task, git, result, log,
-			fmt.Sprintf("timeout salvage: PR creation failed: %v", createErr))
+			fmt.Sprintf("timeout salvage: PR creation failed: %v", createErr),
+			executionPath, preserveWorktree)
 		return
 	}
 
@@ -3354,11 +3401,32 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		r.reportProgress(task.ID, "Worktree", 2, "Worktree ready")
 	}
 
+	// GH-5399: set to true by holdPushedBranch when it could not push the
+	// salvaged branch to the remote even after its own extended push budget
+	// — in that case the worktree (and its local branch) hold the ONLY copy
+	// of the salvaged commits, and cleanupWorktreeAndBranch's `git branch -D`
+	// would destroy them. Declared here, before the cleanup defer below,
+	// because Go resolves a defer closure's free variables by lexical
+	// position at compile time: a variable declared later in this function's
+	// source (e.g. the `result` returned near the bottom) cannot be read by
+	// a defer written above it, even though the defer itself runs after that
+	// later declaration executes. Threaded by pointer through
+	// attemptBackendTimeoutSalvage/pushAndCreatePRAfterTimeout/holdPushedBranch.
+	preserveWorktreeOnPushFailure := false
+
 	// Ensure worktree cleanup on exit (handles panic, early return, success).
 	// before_remove hook fires just before worktree teardown (TASK-305).
 	var beforeRemoveHookFn func()
 	if cleanupWorktree != nil {
 		defer func() {
+			if preserveWorktreeOnPushFailure {
+				r.log.Warn("GH-5399: preserving worktree and local branch after a push failure during timeout salvage — commits exist only here",
+					slog.String("task_id", task.ID),
+					slog.String("worktree", executionPath),
+					slog.String("branch", task.Branch),
+				)
+				return
+			}
 			if beforeRemoveHookFn != nil {
 				beforeRemoveHookFn()
 			}
@@ -4690,7 +4758,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		// unconditionally. Only reachable via the timedOut branch above —
 		// ordinary classified backend failures (rate limit, API error,
 		// refusal, ...) always fall through here exactly as before.
-		if timedOut && r.attemptBackendTimeoutSalvage(ctx, task, git, result, executionPath, log, recorder) {
+		if timedOut && r.attemptBackendTimeoutSalvage(ctx, task, git, result, executionPath, log, recorder, &preserveWorktreeOnPushFailure) {
 			return result, nil
 		}
 
@@ -5355,6 +5423,25 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						slog.Int("attempt", outcome.Attempt),
 						slog.Int("retry_attempt", retryAttempt),
 					)
+
+					// GH-5399: taskCtxWasDone (captured before finalizeCtx ran, at the
+					// top of this block) means the task's own deadline had already
+					// passed before the backend even returned from its first pass —
+					// re-invoking it here for a quality-gate retry would be exactly
+					// the unbounded second invocation GH-5346 closed for the error
+					// path (attemptBackendTimeoutSalvage never re-invokes either).
+					// Run gates only once in that case: push whatever this single
+					// pass produced and hand it to a human instead of looping,
+					// mirroring holdPushedBranch's role on the error path. No
+					// recorder.Finish call here — matches attemptBackendTimeoutSalvage's
+					// call site (line ~4698), which also returns bare after a
+					// successful hold/salvage and lets the caller finalize.
+					if taskCtxWasDone {
+						r.holdPushedBranch(ctx, task, git, result, log,
+							"quality gates failed and the task's deadline had already passed before the backend returned, so Pilot will not re-invoke Claude Code for a retry",
+							executionPath, &preserveWorktreeOnPushFailure)
+						return result, nil
+					}
 
 					// Check if we should retry with Claude Code
 					if outcome.ShouldRetry && retryAttempt < maxAutoRetries {

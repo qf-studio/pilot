@@ -6653,6 +6653,46 @@ func TestHasTerminalCompletion_CountsSupersededRow(t *testing.T) {
 	}
 }
 
+// TestHasTerminalCompletion_CountsNeedsHumanRow is GH-5399's coverage: a
+// row parked under status='needs_human' by holdPushedBranch (salvaged work
+// pushed and handed off for manual review after a backend timeout) must
+// count as terminal here too, mirroring the canceled/superseded cases above
+// — otherwise nextRetryGeneration (dispatcher.go), which consults this
+// function to decide whether a task is "already done", would grant a fresh
+// retry generation on top of a held branch a human is meant to review.
+func TestHasTerminalCompletion_CountsNeedsHumanRow(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID, projectPath := "GH-5399-HTC", "/project-htc-needs-human"
+
+	done, err := store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (before any row): %v", err)
+	}
+	if done {
+		t.Fatal("expected done=false before any execution row exists")
+	}
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-needs-human", TaskID: taskID, ProjectPath: projectPath,
+		Status: "needs_human", Error: "quality gates failed and the task's deadline had already passed",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	done, err = store.HasTerminalCompletion(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasTerminalCompletion (after needs_human): %v", err)
+	}
+	if !done {
+		t.Error("expected done=true once a needs_human row exists — GH-5399: no fresh retry generation should be granted on top of a held branch")
+	}
+}
+
 // TestLatestSupersededExecution_FindsMostRecentSupersededRow is GH-5249's
 // coverage for the lookup the re-arm probe (cmd/pilot/rearm_superseded.go)
 // uses to find the supersede timestamp it compares GitHub issue-event times

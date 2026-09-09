@@ -67,6 +67,17 @@ const (
 	// (GH-4655 was cancel-by-abusing-"stalled", which does the opposite:
 	// grants fresh generations exempt from the repick hard cap forever).
 	ExecStatusCanceled Status = "canceled"
+	// ExecStatusNeedsHuman marks an execution whose salvaged work was pushed
+	// and held for manual review by holdPushedBranch (GH-5399), because the
+	// backend timed out (or the task's own deadline had already passed) and
+	// automated quality gates could not be satisfied without re-invoking the
+	// backend past its deadline. Terminal like ExecStatusCanceled/Superseded:
+	// nextRetryGeneration never grants a fresh generation for it, and it
+	// counts as done for HasTerminalCompletion — but unlike ExecStatusFailed
+	// it must NOT stack a pilot-failed label on top of pilot-needs-human,
+	// since the work is not a genuine failure awaiting retry, it's a
+	// deliberate hand-off awaiting a human.
+	ExecStatusNeedsHuman Status = "needs_human"
 )
 
 // ErrExecutionNotFound is returned by Cancel when taskID has no execution

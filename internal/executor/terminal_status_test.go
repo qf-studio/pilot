@@ -22,6 +22,7 @@ func TestTerminalStatus(t *testing.T) {
 		{"rate_limited outcome", &ExecutionResult{Outcome: "rate_limited"}, "rate_limited"},
 		{"infra outcome", &ExecutionResult{Outcome: "infra"}, "infra"},
 		{"skipped outcome", &ExecutionResult{Outcome: "skipped"}, "skipped"},
+		{"needs_human outcome (GH-5399)", &ExecutionResult{Outcome: "needs_human"}, "needs_human"},
 		{
 			"no-op via error signature (phantom no-op, work already on base)",
 			&ExecutionResult{Error: "no new commit produced — post-push SHA matches base branch"},
@@ -140,11 +141,12 @@ func TestTerminalStatus(t *testing.T) {
 // TestTerminalPhaseLabel verifies the dashboard progress phase matches the status.
 func TestTerminalPhaseLabel(t *testing.T) {
 	cases := map[string]string{
-		"no_op":    "No-op",
-		"stalled":  "Stalled",
-		"declined": "Declined",
-		"failed":   "Failed",
-		"anything": "Failed",
+		"no_op":       "No-op",
+		"stalled":     "Stalled",
+		"declined":    "Declined",
+		"needs_human": "Needs Human",
+		"failed":      "Failed",
+		"anything":    "Failed",
 	}
 	for status, want := range cases {
 		if got := terminalPhaseLabel(status); got != want {

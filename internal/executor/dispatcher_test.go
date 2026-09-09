@@ -5461,6 +5461,65 @@ func TestNextRetryGeneration_CanceledVsStalled(t *testing.T) {
 	})
 }
 
+// TestNextRetryGeneration_NeedsHuman is the GH-5399 regression guard for Fix
+// 2: a needs_human row (holdPushedBranch's hand-off — salvaged work already
+// pushed and parked for manual review) must never be handed a fresh retry
+// generation, exactly like canceled/superseded. Before terminalExecutionStatuses
+// and HasTerminalCompletion both learned about needs_human, this status fell
+// through to the "not terminal" default: a live owner check that (once the
+// claim's own execution row aged out) would eventually treat it as a dead,
+// not-done owner and re-arm a fresh generation on top of a branch a human is
+// already supposed to be reviewing.
+func TestNextRetryGeneration_NeedsHuman(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-5399-NEEDS-HUMAN", ProjectPath: "/project-needs-human"}
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+	if _, err := store.UpdateExecutionStatusIfNotTerminal(execID, "needs_human", "quality gates failed after the task deadline passed"); err != nil {
+		t.Fatalf("setup needs_human: %v", err)
+	}
+
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	for i := 0; i < 5; i++ {
+		gen, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+		if err != nil {
+			t.Fatalf("nextRetryGeneration (cycle %d): %v", i, err)
+		}
+		if retry {
+			t.Fatalf("cycle %d: expected retry=false for a needs_human execution, got retry=true (generation %d)", i, gen)
+		}
+		if gen != 0 {
+			t.Errorf("cycle %d: expected generation 0 (no growth) for a needs_human execution, got %d", i, gen)
+		}
+	}
+
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "needs_human" {
+		t.Fatalf("expected status 'needs_human', got %q", exec.Status)
+	}
+}
+
+// TestIsTerminalByDesignStatus_NeedsHuman verifies the GH-5399 labeling
+// invariant directly at its source: a needs_human outcome must be classified
+// terminal-by-design so per-adapter handlers apply only pilot-needs-human and
+// never stack pilot-failed on top of it (mirroring canceled/superseded, which
+// this same map already protected before GH-5399).
+func TestIsTerminalByDesignStatus_NeedsHuman(t *testing.T) {
+	if !IsTerminalByDesignStatus("needs_human") {
+		t.Error("expected needs_human to be terminal-by-design (no pilot-failed stacking, no duplicate TaskFailed alert)")
+	}
+	if IsTerminalByDesignStatus("failed") {
+		t.Error("a genuine 'failed' status must NOT be terminal-by-design — it still needs the ordinary pilot-failed/retry-ladder path")
+	}
+}
+
 // TestStore_GetQueuedProjectPaths verifies the distinct-project query backing
 // restart adoption: only queued/pending rows count, duplicates collapse, and
 // completed/running rows are excluded. GH-3732.

@@ -49,6 +49,9 @@ var terminalExecutionStatuses = map[string]bool{
 	// by ExecutionLifecycle.Cancel. Distinct from the dead "cancelled"
 	// (double-L) above — see ExecStatusCanceled's doc comment.
 	"canceled": true,
+	// "needs_human" (GH-5399): holdPushedBranch's hand-off status — salvaged
+	// work was pushed and is awaiting manual review. No longer in flight.
+	"needs_human": true,
 }
 
 // isTerminalExecutionStatus reports whether status is one of
@@ -68,14 +71,22 @@ func isTerminalExecutionStatus(status string) bool {
 // per-adapter translations in cmd/pilot/handlers.go) consults this so these
 // statuses never produce a failure report/alert or trigger a vendored-SDK
 // poller's "no PR, unmarking for retry" branch.
+//
+// GH-5399: needs_human joins this set for the same reason. holdPushedBranch
+// already pushed the salvaged branch and posted its own hand-off comment —
+// treating it as a genuine failure here would stack a duplicate
+// "❌ Pilot execution failed" comment/TaskFailed alert on top of that, and
+// would let the vendored SDK poller unmark the issue for a retry that
+// HasTerminalCompletion/nextRetryGeneration have already decided not to grant.
 var terminalByDesignExecutionStatuses = map[string]bool{
 	string(ExecStatusSuperseded): true,
 	string(ExecStatusCanceled):   true,
+	string(ExecStatusNeedsHuman): true,
 }
 
 // IsTerminalByDesignStatus reports whether status is a terminal-by-design
-// non-failure (superseded or canceled) rather than a genuine completion or
-// failure.
+// non-failure (superseded, canceled, or needs_human) rather than a genuine
+// completion or failure.
 func IsTerminalByDesignStatus(status string) bool {
 	return terminalByDesignExecutionStatuses[status]
 }
@@ -3950,6 +3961,10 @@ func dispatchSuccessStage(prURL string) (memory.Stage, bool) {
 // regardless of the underlying stage (internal/dashboard/stage_strip.go), so
 // reusing it produces no behavior change there. declined/rate_limited still
 // have no Stage enum equivalent, so they're skipped rather than mismapped.
+// needs_human (GH-5399) is deliberately left unmapped here too, for the same
+// reason as stalled: holdPushedBranch already writes its own StageFailed
+// ledger event directly at its detection site in runner.go, so adding a case
+// here would double-write the event.
 func dispatchTerminalStage(status string) (memory.Stage, bool) {
 	switch status {
 	case "no_op":
@@ -4011,6 +4026,8 @@ func terminalPhaseLabel(status string) string {
 		return "Declined"
 	case "superseded":
 		return "Superseded"
+	case "needs_human":
+		return "Needs Human"
 	default:
 		return "Failed"
 	}

@@ -601,9 +601,12 @@ func classifyWaitedExecution(taskID string, exec *memory.Execution) (result *exe
 // GH-4794: a terminal-by-design execution (superseded or canceled) is the
 // success path for "this work is no longer wanted" — it must not produce a
 // TaskFailed alert (it isn't a failure) or a TaskCompleted one (no PR/commit
-// exists), so the terminalByDesign case falls through to nil. A hard
-// execErr (queue/wait failure) always pages regardless of terminalByDesign,
-// since that's a pipeline failure, not a classified execution status.
+// exists), so the terminalByDesign case falls through to nil. GH-5399:
+// needs_human joins this set for the same reason — holdPushedBranch already
+// posted its own hand-off comment/label, so this must not page a duplicate
+// failure alert on top of it. A hard execErr (queue/wait failure) always
+// pages regardless of terminalByDesign, since that's a pipeline failure, not
+// a classified execution status.
 func classifyResultAlert(taskID, title, projectPath string, execErr error, result *executor.ExecutionResult, terminalByDesign bool) *alerts.Event {
 	now := time.Now()
 	switch {
