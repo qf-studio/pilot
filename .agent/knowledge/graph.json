@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-08T12:10:50.227806+00:00",
+  "updated": "2026-09-09T18:10:18.424098+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6301,6 +6301,19 @@
         ],
         "confidence": 0.85,
         "created": "2026-09-08"
+      },
+      "terminal-status-without-rearm-probe-kills-operator-recovery": {
+        "type": "pitfall",
+        "summary": "Adding a status to HasTerminalCompletion without a matching re-arm probe silently deletes the operator recovery path (PR#5402 made needs_human terminal; clearing pilot-needs-human no longer re-admits; filed #5414, 2026-09-09).",
+        "file": ".agent/knowledge/memories/pitfalls/terminal-status-without-rearm-probe-kills-operator-recovery.md",
+        "concepts": [
+          "dispatch",
+          "executor",
+          "retry",
+          "autopilot"
+        ],
+        "confidence": 0.95,
+        "created": "2026-09-09"
       }
     }
   },
@@ -8947,7 +8960,8 @@
       "stagefailed-conflates-healthy-handoff-with-terminal-failure",
       "close-rationale-cites-mode-the-component-cannot-see",
       "review-limit-close-keeps-branch-normal-close-deletes-it",
-      "pilot-never-reads-gh-comments-by-design"
+      "pilot-never-reads-gh-comments-by-design",
+      "terminal-status-without-rearm-probe-kills-operator-recovery"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -9425,7 +9439,8 @@
       "poller-labels-removed-log-means-never-applied",
       "sequential-gates-on-execution-not-merge-fastfollow-misbase",
       "stall-status-reused-as-hold-marker",
-      "pilot-never-reads-gh-comments-by-design"
+      "pilot-never-reads-gh-comments-by-design",
+      "terminal-status-without-rearm-probe-kills-operator-recovery"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -9546,7 +9561,8 @@
       "shared-oauth-session-strands-second-machine",
       "stream-reader-silent-exit-on-oversized-line",
       "tui-subtask-ghost-rows",
-      "workflow-yaml-requires-front-matter"
+      "workflow-yaml-requires-front-matter",
+      "terminal-status-without-rearm-probe-kills-operator-recovery"
     ],
     "external-contributor": [
       "external-fork-pr-sweeps-stale-agent-state"
@@ -10046,7 +10062,8 @@
       "mem-176",
       "nextretrygeneration-blind-to-dead-owner-nonterminal-claims",
       "poller-labels-in-progress-before-dispatcher-claim-wedge",
-      "sequential-gates-on-execution-not-merge-fastfollow-misbase"
+      "sequential-gates-on-execution-not-merge-fastfollow-misbase",
+      "terminal-status-without-rearm-probe-kills-operator-recovery"
     ],
     "saas": [
       "console-ssm-paths-work-locally-proxy-does-not",
@@ -10552,11 +10569,11 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-08T12:10:50.227806+00:00",
+  "last_updated": "2026-09-09T18:10:18.424098+00:00",
   "stats": {
-    "total_nodes": 528,
+    "total_nodes": 529,
     "total_edges": 469,
-    "memory_count": 281
+    "memory_count": 282
   },
   "metadata": {}
 }
