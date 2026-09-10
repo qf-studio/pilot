@@ -1,6 +1,6 @@
 # TASK-496: Resume pilot-console execution — S5 legs after the Nelya hand-over
 
-**Created**: 2026-09-10 · **Status**: 🚀 B7 DECIDED + DISPATCHED 2026-09-10 (option A) — console **#282** filed (`pilot bug no-decompose`), PR#222 closed unmerged, #215 closed as superseded. Usage rollup dispatched 2026-09-10 → console **#283** → PR#285 REQUEST-CHANGES (migration 0018 collision with #284 + cumulative-counter summing) → revision **#286** in flight. B7: **PR#284 MERGED 10:12Z + reviewed APPROVE-w-notes** → follow-ups #287, #288, pilot#5426. Gate `idle_sleep_enabled` is OFF by default; keep it off until every tenant carries the dashboard-scope flag (re-bootstrap/AMI roll).
+**Created**: 2026-09-10 · **Status**: 🚀 B7 DECIDED + DISPATCHED 2026-09-10 (option A) — console **#282** filed (`pilot bug no-decompose`), PR#222 closed unmerged, #215 closed as superseded. Usage rollup dispatched 2026-09-10 → console **#283** → PR#285 REQUEST-CHANGES (migration 0018 collision with #284 + cumulative-counter summing) → revision **#286 DONE** (head 48b8990: 0019 renumber, per-hour deltas + 3 tests, observed-running filter) → **revision APPROVED, PR#285 un-drafted, autopilot re-adopted it (redrive path live) and holds at `awaiting_approval` → founder approves via Slack DM card.** B7: **PR#284 MERGED 10:12Z + reviewed APPROVE-w-notes** → follow-ups #287, #288, pilot#5426. Gate `idle_sleep_enabled` is OFF by default; keep it off until every tenant carries the dashboard-scope flag (re-bootstrap/AMI roll).
 
 ## Where console execution stopped (GitHub is authoritative)
 
@@ -19,6 +19,13 @@ Options as evaluated:
 | **A. Close PR#222 + #215, file a fresh issue on a new branch (recommended)** | one issue body | Branch is 11 files stale against main; the two review items are unimplemented anyway. New issue = #215's design + the `--dashboard-scope` fix + reader kill switch. No autopilot-meta footer (nothing worth continuing). Clears the box's `222 failed pending` residue. |
 | B. Rebase PR#222 by hand in a worktree, then file a revision issue with footer + `autopilot-fix` | ~1 h human + one issue | Preserves review history on the PR; still needs (a)+(b) implemented. |
 | C. Defer B7 entirely | none | B7 is cost control, not the S5 hard gate. Reasonable if SaaS tenants stay at 1–3 for weeks. |
+
+## Next after PR#285 merges
+
+1. **pilot-console-ui usage page** (5-line stub in the 09-10 research: new route beside settings-billing, `getUsage()` in the http + mock adapters reading GET usage). Blocked only on #285 merge.
+2. #287 (config floor / wiring pin / operator note) running · #288 (reader active-only + full-page guard) queued · pilot#5426 (daemon active-only filter) queued. Review each PR.
+3. Keep `idle_sleep_enabled` OFF until every tenant has the dashboard-scope flag (re-bootstrap / AMI roll) — then a founder go to enable.
+4. Remaining S5 items stay founder/Nelya-gated (Stripe lifecycle, domain, egress allowlist, infra#35 human author, pricing).
 
 ## Ready dispatch (no founder / Nelya dependency)
 
