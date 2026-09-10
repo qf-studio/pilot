@@ -66,15 +66,40 @@ func (a githubPollerMetricsAdapter) RecordUnsourcedLabeledIssues(repo string, co
 	a.metrics.SetUnsourcedLabeledIssues(repo, int64(count))
 }
 
+// borrowedBranchReader is the narrow seam githubOnPRCreatedHandler needs to
+// detect a fix issue whose task was dispatched onto a borrowed origin branch
+// (GH-5421) — satisfied by *executor.Runner's BorrowedBranch method. A
+// separate interface (rather than depending on *executor.Runner directly)
+// lets tests supply a minimal fake without constructing a real Runner.
+type borrowedBranchReader interface {
+	BorrowedBranch(taskID string) (branch string, fromPR int, ok bool)
+}
+
 // githubOnPRCreatedHandler builds the callback wired into pollerDeps.OnPRCreated:
 // it forwards the SDK's PRCreatedEvent into Controller.OnPRCreated, the sole live
 // entry point for the GH-4130 throughput-histogram observation. Extracted to its
 // own function (GH-4211) so a regression test can drive the real handler that
 // production wires up, instead of calling ctrl.OnPRCreated directly — the gap
 // that let GH-4130's observation ship false-green in the first place.
-func githubOnPRCreatedHandler(ctrl *autopilot.Controller) func(sdkcore.PRCreatedEvent) {
+//
+// GH-5421: borrowed (may be nil) is consulted first. GH-5413 added
+// OnPRCreatedForFixIssue for a fix/revision issue dispatched onto its origin
+// PR's branch (resolveAutopilotFixBranch, cmd/pilot/handlers.go) but only
+// wired the routing into the rate-limit retry path (githubRetryCallback
+// below) — this primary path, which fires on every non-rate-limited run,
+// kept calling plain OnPRCreated, whose branch/issue guard (GH-5409) then
+// silently dropped the registration. handlers.go's RecordBorrowedBranch call
+// is what populates borrowed for this lookup to find.
+func githubOnPRCreatedHandler(ctrl *autopilot.Controller, borrowed borrowedBranchReader) func(sdkcore.PRCreatedEvent) {
 	return func(prEv sdkcore.PRCreatedEvent) {
 		issueNumber, _ := strconv.Atoi(prEv.IssueID)
+		if borrowed != nil {
+			taskID := fmt.Sprintf("GH-%d", issueNumber)
+			if branch, fromPR, ok := borrowed.BorrowedBranch(taskID); ok && fromPR > 0 && branch == prEv.BranchName {
+				ctrl.OnPRCreatedForFixIssue(prEv.PRNumber, prEv.PRURL, issueNumber, fromPR, prEv.HeadSHA, prEv.BranchName, prEv.IssueNodeID)
+				return
+			}
+		}
 		ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, issueNumber, prEv.HeadSHA, prEv.BranchName, prEv.IssueNodeID)
 	}
 }
@@ -616,8 +641,16 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 		ctrl := controller
 		// GitHub's IssueID is the numeric issue number; forwarded (with the node ID)
 		// so the autopilot controller's post-merge gates and board-sync-to-Review work.
-		pollerDeps.OnPRCreated = githubOnPRCreatedHandler(ctrl)
+		pollerDeps.OnPRCreated = githubOnPRCreatedHandler(ctrl, deps.Runner)
 		pollerDeps.IssueMetricsRecorder = ctrl.Metrics()
+		// GH-5421: wire the same in-process registry into the reconciler so
+		// reconcileOrphanPRs's fallback path can find a fix issue driving an
+		// untracked PR's branch, not just the durable-but-differently-keyed
+		// HasSpawnedFixForPR claim (see controller.go's reconcileOrphanPRs
+		// doc for why that lookup alone misses this case).
+		if deps.Runner != nil {
+			ctrl.SetBorrowedBranchLookup(deps.Runner)
+		}
 		// GH-5336: wire poller skip/dispatch counters for the GitHub SDK path
 		// too — unlike the in-tree GitLab/AzureDevOps pollers, this was never
 		// hooked up, so recordSkip calls inside the SDK poller (poller.go:962)

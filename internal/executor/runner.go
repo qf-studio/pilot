@@ -1020,7 +1020,35 @@ type Runner struct {
 	// pilot-failed on top of pilot-needs-clarification). executeWithOptions
 	// consults and clears this via takeDeclinedCancelReason once its own
 	// ctx observes the cancellation. Guarded by mu alongside execCancel.
-	declinedCancel         map[string]string
+	declinedCancel map[string]string
+	// borrowedBranch maps task ID -> the borrowed origin branch/PR it was
+	// dispatched onto by resolveAutopilotFixBranch (cmd/pilot/handlers.go),
+	// recorded via RecordBorrowedBranch — GH-5421. The primary SDK
+	// OnPRCreated hook (poller_github.go's githubOnPRCreatedHandler) has no
+	// other way to tell a fix/revision issue's borrowed-branch dispatch
+	// apart from a plain issue running on its own default branch; without
+	// this record it silently drops the PR via Controller.OnPRCreated's
+	// branch/issue guard (GH-5413 only fixed the rate-limit retry path, not
+	// this primary path). In-memory only — does not survive a daemon
+	// restart, which is out of scope for GH-5421; a restart mid-execution
+	// just falls back to the pre-existing (broken) drop behavior, not a new
+	// regression.
+	//
+	// Lifetime: entries are deliberately NOT cleared by unregisterExecCancel.
+	// The SDK poller's OnPRCreated hook fires after handleGithubIssueEventSDK
+	// returns, which is after this call's unregisterExecCancel has already
+	// run — clearing there would erase the record before its one consumer
+	// ever reads it. Instead an entry simply gets overwritten the next time
+	// the same task ID is dispatched via RecordBorrowedBranch; a stale entry
+	// left behind by a task that never runs again is harmless (looked up by
+	// exact task ID / exact branch match only). Guarded by mu alongside
+	// execCancel/declinedCancel.
+	borrowedBranch map[string]borrowedBranchRecord
+	// borrowedBranchByBranch is the reverse index (branch -> task ID) kept in
+	// lockstep with borrowedBranch, used by FixIssueForBranch so the
+	// autopilot reconciler (internal/autopilot Controller.reconcileOrphanPRs)
+	// can find which fix issue, if any, is driving a given borrowed branch.
+	borrowedBranchByBranch map[string]string
 	log                    *slog.Logger
 	recordingsPath         string                                                          // Path to recordings directory (empty = default)
 	enableRecording        bool                                                            // Whether to record executions
@@ -6950,6 +6978,74 @@ func (r *Runner) takeDeclinedCancelReason(taskID string) (string, bool) {
 		delete(r.declinedCancel, taskID)
 	}
 	return reason, ok
+}
+
+// borrowedBranchRecord captures the branch/origin-PR pair a task was
+// dispatched with when resolveAutopilotFixBranch (cmd/pilot/handlers.go) put
+// it on another issue's branch instead of its own default
+// "pilot/<taskID>" branch — GH-5421.
+type borrowedBranchRecord struct {
+	branch string
+	fromPR int
+}
+
+// RecordBorrowedBranch records that taskID's dispatch put it on branch
+// (named after a different, origin issue), continuing origin PR fromPR —
+// GH-5421. Callers should only record when fromPR > 0 and branch differs
+// from taskID's own default branch; see the borrowedBranch field doc for the
+// in-memory-only lifetime and why entries are not cleared on unregister.
+func (r *Runner) RecordBorrowedBranch(taskID, branch string, fromPR int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.borrowedBranch == nil {
+		r.borrowedBranch = make(map[string]borrowedBranchRecord)
+	}
+	if r.borrowedBranchByBranch == nil {
+		r.borrowedBranchByBranch = make(map[string]string)
+	}
+	// A task ID borrows at most one branch at a time — drop any stale
+	// reverse-index entry for its previously recorded branch first, so
+	// FixIssueForBranch never returns this task ID for a branch it no
+	// longer runs on.
+	if prev, ok := r.borrowedBranch[taskID]; ok && prev.branch != branch {
+		if r.borrowedBranchByBranch[prev.branch] == taskID {
+			delete(r.borrowedBranchByBranch, prev.branch)
+		}
+	}
+	r.borrowedBranch[taskID] = borrowedBranchRecord{branch: branch, fromPR: fromPR}
+	r.borrowedBranchByBranch[branch] = taskID
+}
+
+// BorrowedBranch returns the borrowed branch/origin-PR recorded for taskID by
+// RecordBorrowedBranch, if any — GH-5421.
+func (r *Runner) BorrowedBranch(taskID string) (branch string, fromPR int, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.borrowedBranch[taskID]
+	if !ok {
+		return "", 0, false
+	}
+	return rec.branch, rec.fromPR, true
+}
+
+// FixIssueForBranch returns the fix-issue number of the task currently
+// recorded (via RecordBorrowedBranch) as running on branch, if any —
+// GH-5421. Used by the autopilot reconciler (Controller.reconcileOrphanPRs)
+// to avoid re-homing an untracked PR under a closed origin issue when a fix
+// issue actually drove that branch. Task IDs are expected in "GH-<N>" form
+// (cmd/pilot's GitHub task ID convention); any other form yields ok=false
+// since there is no issue number to report.
+func (r *Runner) FixIssueForBranch(branch string) (fixIssue int, ok bool) {
+	r.mu.Lock()
+	taskID, found := r.borrowedBranchByBranch[branch]
+	r.mu.Unlock()
+	if !found {
+		return 0, false
+	}
+	if _, err := fmt.Sscanf(taskID, "GH-%d", &fixIssue); err != nil {
+		return 0, false
+	}
+	return fixIssue, true
 }
 
 // recordLearning records the execution outcome for pattern learning.

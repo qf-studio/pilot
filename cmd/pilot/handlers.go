@@ -966,6 +966,19 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 			slog.String("source", source),
 		)
 	}
+	// GH-5421: record the borrowed branch/origin-PR before dispatch so the
+	// primary SDK OnPRCreated hook (githubOnPRCreatedHandler in
+	// poller_github.go) can route this task's resulting PR to
+	// OnPRCreatedForFixIssue instead of losing it to
+	// Controller.OnPRCreated's branch/issue guard (GH-5409) — GH-5413 only
+	// wired that routing into the rate-limit retry path, not this primary
+	// one, which is the gap this issue closes. Only recorded when the
+	// resolved branch actually differs from this task's own default branch
+	// (fromPR > 0 alone isn't enough — resolveAutopilotFixBranch's fallback
+	// sources can in principle resolve back to the task's own branch).
+	if fromPR > 0 && branchName != fmt.Sprintf("pilot/%s", taskID) && runner != nil {
+		runner.RecordBorrowedBranch(taskID, branchName, fromPR)
+	}
 
 	// Resolve owner/repo. M7 4d.2c: the per-repo SDK poller passes its repo
 	// explicitly (repoFullName) because resolveGithubRepo matches by repo NAME only

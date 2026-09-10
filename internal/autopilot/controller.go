@@ -537,6 +537,13 @@ type Controller struct {
 	owner string
 	repo  string
 
+	// borrowedBranchLookup is the optional in-process registry
+	// (*executor.Runner, wired via SetBorrowedBranchLookup) reconcileOrphanPRs
+	// consults to find a fix issue driving a borrowed origin branch when the
+	// durable-but-differently-keyed HasSpawnedFixForPR claim doesn't match —
+	// GH-5421. Nil means the reconciler falls back to pre-GH-5421 behavior.
+	borrowedBranchLookup BorrowedBranchLookup
+
 	// projectPath is the absolute filesystem path the executor stored in
 	// executions.project_path. Used to scope self-heal to this project's rows.
 	// Empty = match by task_id only (single-repo / tests). TASK-352.
@@ -1253,6 +1260,26 @@ func (c *Controller) SetDispatcherLiveness(d DispatcherLiveness) {
 // exists — reconcileLaneStarvation is a no-op (skips silently) while nil.
 func (c *Controller) SetLaneQueueStatus(s LaneQueueStatus) {
 	c.laneQueueStatus = s
+}
+
+// BorrowedBranchLookup is the narrow seam reconcileOrphanPRs uses to find out
+// whether an untracked PR's branch is actually driven by a fix issue running
+// on a borrowed origin branch (GH-5421) — satisfied by *executor.Runner's
+// FixIssueForBranch. A local interface (rather than importing
+// internal/executor's concrete type here) keeps this package's dependency
+// surface narrow and matches the pattern of DispatcherLiveness/LaneQueueStatus
+// above.
+type BorrowedBranchLookup interface {
+	FixIssueForBranch(branch string) (fixIssue int, ok bool)
+}
+
+// SetBorrowedBranchLookup wires the in-process borrowed-branch registry
+// (normally *executor.Runner) so reconcileOrphanPRs can find a live fix issue
+// for an untracked PR's branch instead of relying solely on the
+// durable-but-differently-keyed HasSpawnedFixForPR claim — GH-5421. Optional:
+// nil (the default) keeps pre-GH-5421 behavior.
+func (c *Controller) SetBorrowedBranchLookup(lookup BorrowedBranchLookup) {
+	c.borrowedBranchLookup = lookup
 }
 
 // SetStateStore sets the persistent state store for crash recovery.
@@ -8582,22 +8609,59 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 		// merge here would close O instead of F. If the lookup itself fails,
 		// fall back to the branch-derived issue rather than blocking the
 		// sweep, but say so.
+		var fixIssue int
 		if c.stateStore != nil {
-			if fixIssue, err := c.stateStore.HasSpawnedFixForPR(c.repoKey(), pr.Number); err != nil {
-				c.log.Warn("reconciler: spawned-fix lookup failed, registering under branch-derived issue",
+			if fi, err := c.stateStore.HasSpawnedFixForPR(c.repoKey(), pr.Number); err != nil {
+				c.log.Warn("reconciler: spawned-fix lookup failed, will try the borrowed-branch registry",
 					"pr", pr.Number, "branch", pr.Head.Ref, "branch_issue", issueNum, "error", err)
-			} else if fixIssue > 0 && fixIssue != issueNum {
-				c.log.Info("reconciler: orphan PR belongs to a fix issue on a borrowed origin branch — registering under the fix issue",
-					"pr", pr.Number, "branch", pr.Head.Ref, "origin_issue", issueNum, "fix_issue", fixIssue,
-				)
-				c.OnPRCreatedForFixIssue(pr.Number, pr.HTMLURL, fixIssue, issueNum, pr.Head.SHA, pr.Head.Ref, "")
-				if updatedAt, err := time.Parse(time.RFC3339, pr.UpdatedAt); err == nil {
-					c.seedAdoptedCIWaitClock(pr.Number, updatedAt)
-				}
-				c.metrics.RecordOrphanPRRegistered("reconciler")
-				continue
+			} else if fi > 0 && fi != issueNum {
+				fixIssue = fi
 			}
 		}
+		// GH-5421: HasSpawnedFixForPR is keyed by the ORIGIN PR that CI-fix
+		// spawning closed, not by this (new) PR's own number, so it never
+		// matches the normal CI-fix flow (origin PR closed -> fix issue spawned
+		// -> fix run opens a NEW PR on the same branch). Fall back to the
+		// in-process borrowed-branch registry (SetBorrowedBranchLookup), which
+		// is keyed by branch name and populated by the exact same
+		// RecordBorrowedBranch call the primary OnPRCreated path (GH-5421)
+		// reads — catching the case that lookup misses.
+		if fixIssue == 0 && c.borrowedBranchLookup != nil {
+			if fi, ok := c.borrowedBranchLookup.FixIssueForBranch(pr.Head.Ref); ok && fi > 0 && fi != issueNum {
+				fixIssue = fi
+			}
+		}
+		if fixIssue > 0 {
+			c.log.Info("reconciler: orphan PR belongs to a fix issue on a borrowed origin branch — registering under the fix issue",
+				"pr", pr.Number, "branch", pr.Head.Ref, "origin_issue", issueNum, "fix_issue", fixIssue,
+			)
+			c.OnPRCreatedForFixIssue(pr.Number, pr.HTMLURL, fixIssue, issueNum, pr.Head.SHA, pr.Head.Ref, "")
+			if updatedAt, err := time.Parse(time.RFC3339, pr.UpdatedAt); err == nil {
+				c.seedAdoptedCIWaitClock(pr.Number, updatedAt)
+			}
+			c.metrics.RecordOrphanPRRegistered("reconciler")
+			continue
+		}
+
+		// GH-5421: neither lookup found a fix issue for this branch. Before
+		// registering under the branch-derived origin issue O, confirm O is
+		// still open — a closed O with no fix record is exactly the second
+		// gap this issue closes (a daemon restart can lose the in-process
+		// registry between spawn and this sweep, and HasSpawnedFixForPR never
+		// matches this PR's own number). Registering here would attach the
+		// eventual merge comment to a closed, unrelated issue while the real
+		// fix issue (if one exists) stays stuck in-progress — better to skip
+		// and let a human investigate than silently mis-attribute the PR.
+		if issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, issueNum); err != nil {
+			c.log.Warn("reconciler: failed to verify origin issue state, registering under branch-derived issue",
+				"pr", pr.Number, "branch", pr.Head.Ref, "origin_issue", issueNum, "error", err)
+		} else if issue != nil && issue.State == github.StateClosed {
+			c.log.Warn("reconciler: origin issue is closed and no fix-issue record exists — skipping registration rather than attaching this PR to a closed issue",
+				"pr", pr.Number, "branch", pr.Head.Ref, "origin_issue", issueNum,
+			)
+			continue
+		}
+
 		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA, pr.Head.Ref, "")
 		if updatedAt, err := time.Parse(time.RFC3339, pr.UpdatedAt); err == nil {
 			c.seedAdoptedCIWaitClock(pr.Number, updatedAt)

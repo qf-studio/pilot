@@ -77,7 +77,7 @@ func TestGithubOnPRCreatedHandler_ObservesThroughputHistograms(t *testing.T) {
 
 	// This is the exact function production wires into pollerDeps.OnPRCreated
 	// (poller_github.go), not a re-implementation of it.
-	handler := githubOnPRCreatedHandler(ctrl)
+	handler := githubOnPRCreatedHandler(ctrl, nil)
 	handler(sdkcore.PRCreatedEvent{
 		PRNumber:   4212,
 		PRURL:      "https://github.com/owner/repo/pull/4212",
@@ -124,7 +124,7 @@ func TestGithubOnPRCreatedHandler_MissingStartedAt_SkipsObservation(t *testing.T
 	ghClient := githubSDK.NewClient(testutil.FakeGitHubToken)
 	ctrl := autopilot.NewController(cfg, ghClient, nil, "owner", "repo", autopilot.WithMemoryStore(store))
 
-	handler := githubOnPRCreatedHandler(ctrl)
+	handler := githubOnPRCreatedHandler(ctrl, nil)
 	handler(sdkcore.PRCreatedEvent{
 		PRNumber:   4213,
 		PRURL:      "https://github.com/owner/repo/pull/4213",
