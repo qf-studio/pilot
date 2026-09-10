@@ -1,5 +1,5 @@
 {
-  "version": "7.2.0",
+  "version": "7.3.0",
   "project_management": "none",
   "task_prefix": "TASK",
   "team_chat": "none",
@@ -87,5 +87,19 @@
   },
   "setup_hook": {
     "enabled": true
+  },
+  "deep_research": {
+    "enabled": false,
+    "max_sources": 30,
+    "min_sources": 8,
+    "fetchers": 4,
+    "max_full_reads": 10,
+    "critic_enabled": true,
+    "models": {
+      "fetcher": "sonnet",
+      "writer": "opus",
+      "critic": "opus",
+      "patcher": "opus"
+    }
   }
 }
