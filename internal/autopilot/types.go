@@ -1392,6 +1392,19 @@ type PRState struct {
 	// between the close and the next poll, via the same SavePRState/
 	// LoadAllPRStates round-trip every other persisted field uses.
 	SelfClosedFixIssue int
+	// RegisteredViaFixIssue is true when this PR was registered through
+	// OnPRCreatedForFixIssue — i.e. BranchName encodes a different, origin
+	// issue than IssueNumber (the fix issue) — rather than the plain
+	// OnPRCreated path. In-memory only, set once at registration and never
+	// mutated after. GH-5430: evictPersistFailedPR reads this to decide
+	// whether a persist failure that evicts this PR must also re-record the
+	// runner's borrowed-branch registry entry (BranchName -> IssueNumber).
+	// Without that re-record, the entry is already gone — FixIssueForBranch
+	// consumes it destructively at match time, before this field's PR was
+	// even registered — so a later reconciler tick could never rediscover
+	// the fix issue for this branch again, orphaning the PR permanently
+	// (PR #5427 follow-up).
+	RegisteredViaFixIssue bool
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -1455,6 +1468,7 @@ func (ps *PRState) snapshot() *PRState {
 		PostMergeInfraRerunSHA:       ps.PostMergeInfraRerunSHA,
 		ReleaseBackfillAbandoned:     ps.ReleaseBackfillAbandoned,
 		SelfClosedFixIssue:           ps.SelfClosedFixIssue,
+		RegisteredViaFixIssue:        ps.RegisteredViaFixIssue,
 	}
 	// DiscoveredChecks and ScopeMemberPRs are slices — copy the backing arrays
 	// so consumers can't mutate the live PR's slice through the snapshot.

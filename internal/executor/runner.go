@@ -1057,6 +1057,12 @@ type Runner struct {
 	//     let a later, unrelated PR on the same branch (a manual push, or a
 	//     fresh re-run of the origin issue) get mis-attributed to a
 	//     long-closed fix issue.
+	//
+	// GH-5430: recordedAt starts at dispatch time (RecordBorrowedBranch,
+	// before the task is even admitted into the queue), but
+	// touchBorrowedBranchStart re-stamps it to the queued→running transition
+	// (executeWithOptions) — so borrowedBranchTTL bounds queue-wait once plus
+	// run time, not queue-wait plus run time added together from dispatch.
 	// Guarded by mu alongside execCancel/declinedCancel.
 	borrowedBranch map[string]borrowedBranchRecord
 	// borrowedBranchByBranch is the reverse index (branch -> task ID) kept in
@@ -3367,6 +3373,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	if r.monitor != nil {
 		r.monitor.Start(task.ID)
 	}
+
+	// GH-5430: re-stamp any borrowed-branch entry's recordedAt to this
+	// queued→running transition, the one moment the runner reliably observes
+	// execution actually starting. RecordBorrowedBranch (cmd/pilot/handlers.go)
+	// runs at dispatch time, before the task is admitted into the queue — a
+	// task that then waits in the queue, or itself runs, for more than
+	// borrowedBranchTTL reaches the PR-created hook with an entry the TTL
+	// already considers expired, dropping the registration (the GH-5421 shape,
+	// now for long-queued/long-running tasks only — PR #5427 follow-up gap #2).
+	r.touchBorrowedBranchStart(task.ID)
 
 	// GH-1599: Log task started milestone
 	r.saveLogEntry(task.LogExecutionID(), "info", "Task started: "+task.Title)
@@ -7044,6 +7060,30 @@ func (r *Runner) RecordBorrowedBranch(taskID, branch string, fromPR int) {
 	}
 	r.borrowedBranch[taskID] = borrowedBranchRecord{branch: branch, fromPR: fromPR, recordedAt: time.Now()}
 	r.borrowedBranchByBranch[branch] = taskID
+}
+
+// touchBorrowedBranchStart re-stamps taskID's borrowed-branch entry (if any)
+// with recordedAt = now — GH-5430. RecordBorrowedBranch is called at dispatch
+// time (cmd/pilot/handlers.go), before the task is admitted into the queue,
+// so borrowedBranchTTL's clock previously started counting down queue wait
+// time as well as run time. A fix task that waits in the queue, or itself
+// runs, for more than six hours would then reach the PR-created hook with an
+// entry the TTL already treats as expired, falling back to the guarded
+// OnPRCreated path and dropping the registration — the same GH-5421 shape
+// this whole registry exists to fix, now specifically for long-queued or
+// long-running tasks (PR #5427 follow-up gap #2). Called once execution
+// transitions from queued to running (executeWithOptions), the one moment the
+// runner reliably observes that boundary. A no-op if taskID never recorded a
+// borrowed branch.
+func (r *Runner) touchBorrowedBranchStart(taskID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.borrowedBranch[taskID]
+	if !ok {
+		return
+	}
+	rec.recordedAt = time.Now()
+	r.borrowedBranch[taskID] = rec
 }
 
 // BorrowedBranch returns the borrowed branch/origin-PR recorded for taskID by

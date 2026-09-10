@@ -3,26 +3,55 @@ package autopilot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
+// recordedBorrowedBranch captures one RecordBorrowedBranch call observed by
+// fakeBorrowedBranchLookup — GH-5430.
+type recordedBorrowedBranch struct {
+	taskID string
+	branch string
+	fromPR int
+}
+
 // fakeBorrowedBranchLookup is a minimal BorrowedBranchLookup fake for
-// reconcileOrphanPRs tests — GH-5421.
+// reconcileOrphanPRs tests — GH-5421. GH-5430 extends it with
+// RecordBorrowedBranch so it can also stand in for evictPersistFailedPR's
+// re-record path: a RecordBorrowedBranch call updates branch/fixIssue the
+// same way the real registry would, so a later FixIssueForBranch call on the
+// same branch reflects it — and every call is recorded for assertions.
 type fakeBorrowedBranchLookup struct {
+	mu       sync.Mutex
 	branch   string
 	fixIssue int
+	recorded []recordedBorrowedBranch
 }
 
 func (f *fakeBorrowedBranchLookup) FixIssueForBranch(branch string) (int, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if branch == f.branch && f.fixIssue > 0 {
 		return f.fixIssue, true
 	}
 	return 0, false
+}
+
+func (f *fakeBorrowedBranchLookup) RecordBorrowedBranch(taskID, branch string, fromPR int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recorded = append(f.recorded, recordedBorrowedBranch{taskID: taskID, branch: branch, fromPR: fromPR})
+	var fixIssue int
+	if _, err := fmt.Sscanf(taskID, "GH-%d", &fixIssue); err == nil {
+		f.branch = branch
+		f.fixIssue = fixIssue
+	}
 }
 
 // TestController_ReconcileOrphanPRs_ClosedOriginIssueNoFixRecord_SkipsRegistration

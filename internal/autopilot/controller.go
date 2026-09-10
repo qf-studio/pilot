@@ -675,6 +675,11 @@ type Controller struct {
 	// legitimate registration is never blocked by a stale memo, and the map
 	// never grows past the current count of open pilot/ PRs.
 	closedOriginSkip map[int]closedOriginSkipRecord
+	// reconcileTick counts reconcileOrphanPRs invocations, guarded by mu.
+	// GH-5430: gates closedOriginRecheckCadence — see that constant's doc for
+	// why closedOriginSkip memos need periodic revalidation against GitHub's
+	// current issue state, not just pruning against the open-PR list.
+	reconcileTick uint64
 
 	// alertedApprovalFailures deduplicates approval-submit-failure alerts and
 	// PR-comment fallbacks per PR number, guarded by mu — same rationale as
@@ -1286,6 +1291,15 @@ func (c *Controller) SetLaneQueueStatus(s LaneQueueStatus) {
 // above.
 type BorrowedBranchLookup interface {
 	FixIssueForBranch(branch string) (fixIssue int, ok bool)
+	// RecordBorrowedBranch (re-)records that taskID's branch/fix-issue
+	// pairing should be reported by a later FixIssueForBranch(branch) call —
+	// satisfied by *executor.Runner's RecordBorrowedBranch. GH-5430:
+	// evictPersistFailedPR calls this to restore an entry that
+	// FixIssueForBranch already consumed destructively at match time, when
+	// the registration that consume enabled later fails to persist and the
+	// PR is evicted — without restoring it, no later reconciler tick could
+	// ever rediscover the fix issue for this branch again.
+	RecordBorrowedBranch(taskID, branch string, fromPR int)
 }
 
 // SetBorrowedBranchLookup wires the in-process borrowed-branch registry
@@ -2319,8 +2333,21 @@ func (c *Controller) alertUnresolvableBaseOnce(prNumber, issueNumber int, readEr
 // expected to succeed even when the upsert path that got the PR into this
 // state cannot — clearing the stuck row is the same one-time reconciliation
 // a human would otherwise run by hand.
+//
+// GH-5430: a PR registered via OnPRCreatedForFixIssue already consumed its
+// runner-side borrowed-branch registry entry destructively the moment
+// FixIssueForBranch matched it (see that method's doc) — well before this
+// eviction, and well before persistence ever had a chance to succeed. If
+// eviction is the only outcome, that entry is gone for good and no later
+// reconciler tick could ever rediscover the fix issue for this branch again,
+// orphaning the PR permanently (PR #5427 follow-up gap #1). Re-recording it
+// here — keyed the same way RecordBorrowedBranch's original caller keyed it,
+// "GH-<fix issue>" -> BranchName — restores exactly what a later
+// FixIssueForBranch(BranchName) needs to re-adopt this PR once
+// persistFailureReadoptCooldown lets reconcileOrphanPRs try again.
 func (c *Controller) evictPersistFailedPR(prNumber int) {
 	c.mu.Lock()
+	prState := c.activePRs[prNumber]
 	delete(c.activePRs, prNumber)
 	delete(c.prFailures, prNumber)
 	delete(c.recordedMerges, prNumber)
@@ -2332,6 +2359,14 @@ func (c *Controller) evictPersistFailedPR(prNumber int) {
 
 	c.persistRemovePR(prNumber)
 	c.removePRFailures(prNumber)
+
+	if prState != nil && prState.RegisteredViaFixIssue && c.borrowedBranchLookup != nil {
+		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+		c.borrowedBranchLookup.RecordBorrowedBranch(taskID, prState.BranchName, 0)
+		c.log.Info("evictPersistFailedPR: re-recorded borrowed-branch registry entry so a later reconciler tick can re-adopt this fix-issue PR",
+			"pr", prNumber, "fix_issue", prState.IssueNumber, "branch", prState.BranchName)
+	}
+
 	c.log.Error("evicted PR after repeated persist failures — state store cannot save this PR's row",
 		"pr", prNumber, "repo", c.repoKey(), "threshold", persistFailureEvictThreshold)
 }
@@ -2403,6 +2438,47 @@ func (c *Controller) pruneClosedOriginSkip(openPRs map[int]struct{}) {
 	for prNumber := range c.closedOriginSkip {
 		if _, ok := openPRs[prNumber]; !ok {
 			delete(c.closedOriginSkip, prNumber)
+		}
+	}
+}
+
+// closedOriginRecheckCadence bounds how often reconcileOrphanPRs revalidates
+// each closedOriginSkip memo entry against GitHub's current issue state —
+// GH-5430 (PR #5427 follow-up gap #3). The memo (GH-5425) intentionally never
+// expires on its own — pruneClosedOriginSkip only drops it once the PR itself
+// closes — so a PR memoized while its origin issue was closed stays skipped
+// forever even if a human later reopens that issue to continue the work by
+// hand. Revalidating every tick would defeat the whole point of the memo (the
+// GetIssue call + Warn log it exists to avoid), so instead every 30th tick —
+// about 30 minutes at the reconciler's 60s sweep interval — pays that cost
+// once per memoized PR to check whether it should be dropped.
+const closedOriginRecheckCadence = 30
+
+// revalidateClosedOriginSkip re-fetches the origin issue for every memoized
+// closedOriginSkip entry and drops the memo if that issue is open again —
+// GH-5430. Called by reconcileOrphanPRs every closedOriginRecheckCadence
+// ticks, before it iterates the current open-PR list, so a dropped memo is
+// re-evaluated for registration in the very same tick that revalidated it.
+func (c *Controller) revalidateClosedOriginSkip(ctx context.Context) {
+	c.mu.RLock()
+	origins := make(map[int]int, len(c.closedOriginSkip))
+	for prNumber, rec := range c.closedOriginSkip {
+		origins[prNumber] = rec.originIssue
+	}
+	c.mu.RUnlock()
+
+	for prNumber, originIssue := range origins {
+		issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, originIssue)
+		if err != nil {
+			c.log.Warn("reconciler: closed-origin memo revalidation failed to fetch origin issue, leaving memo in place",
+				"pr", prNumber, "origin_issue", originIssue, "error", err)
+			continue
+		}
+		if issue != nil && issue.State == github.StateOpen {
+			c.log.Info("reconciler: origin issue was reopened — dropping closed-origin skip memo so this PR is re-checked for registration",
+				"pr", prNumber, "origin_issue", originIssue,
+			)
+			c.clearClosedOriginSkip(prNumber)
 		}
 	}
 }
@@ -2705,7 +2781,7 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		}
 	}
 
-	c.registerPR(prNumber, prURL, issueNumber, headSHA, branchName, issueNodeID)
+	c.registerPR(prNumber, prURL, issueNumber, headSHA, branchName, issueNodeID, false)
 }
 
 // OnPRCreatedForFixIssue registers prNumber under fixIssue even though
@@ -2727,13 +2803,16 @@ func (c *Controller) OnPRCreatedForFixIssue(prNumber int, prURL string, fixIssue
 		"origin_issue", originIssue,
 		"branch", branchName,
 	)
-	c.registerPR(prNumber, prURL, fixIssue, headSHA, branchName, issueNodeID)
+	c.registerPR(prNumber, prURL, fixIssue, headSHA, branchName, issueNodeID, true)
 }
 
 // registerPR holds the shared registration body for OnPRCreated and
 // OnPRCreatedForFixIssue (GH-5413) — every check below applies identically
 // regardless of which caller verified issueNumber is correct for this PR.
-func (c *Controller) registerPR(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
+// viaFixIssue records whether the caller is OnPRCreatedForFixIssue, so a
+// later persist failure knows whether to re-record the borrowed-branch
+// registry entry on eviction (see PRState.RegisteredViaFixIssue, GH-5430).
+func (c *Controller) registerPR(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string, viaFixIssue bool) {
 	c.mu.Lock()
 	if _, exists := c.activePRs[prNumber]; exists {
 		c.mu.Unlock()
@@ -2745,16 +2824,17 @@ func (c *Controller) registerPR(prNumber int, prURL string, issueNumber int, hea
 		return
 	}
 	prState := &PRState{
-		PRNumber:        prNumber,
-		PRURL:           prURL,
-		IssueNumber:     issueNumber,
-		BranchName:      branchName,
-		HeadSHA:         headSHA,
-		Stage:           StagePRCreated,
-		CIStatus:        CIPending,
-		CreatedAt:       time.Now(),
-		EnvironmentName: c.config.EnvironmentName(),
-		IssueNodeID:     issueNodeID,
+		PRNumber:              prNumber,
+		PRURL:                 prURL,
+		IssueNumber:           issueNumber,
+		BranchName:            branchName,
+		HeadSHA:               headSHA,
+		Stage:                 StagePRCreated,
+		CIStatus:              CIPending,
+		CreatedAt:             time.Now(),
+		EnvironmentName:       c.config.EnvironmentName(),
+		IssueNodeID:           issueNodeID,
+		RegisteredViaFixIssue: viaFixIssue,
 	}
 	c.activePRs[prNumber] = prState
 	c.mu.Unlock()
@@ -8646,6 +8726,18 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 	openPRs := make(map[int]struct{}, len(prs))
 	for _, pr := range prs {
 		openPRs[pr.Number] = struct{}{}
+	}
+
+	// GH-5430: revalidate closedOriginSkip memos every closedOriginRecheckCadence
+	// ticks, before the main loop below, so a memo dropped here (origin issue
+	// reopened) is re-evaluated for registration in this same tick rather than
+	// waiting for the next one.
+	c.mu.Lock()
+	c.reconcileTick++
+	tick := c.reconcileTick
+	c.mu.Unlock()
+	if tick%closedOriginRecheckCadence == 0 {
+		c.revalidateClosedOriginSkip(ctx)
 	}
 
 	for _, pr := range prs {
