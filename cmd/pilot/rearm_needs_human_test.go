@@ -71,14 +71,25 @@ func TestTryRearmNeedsHuman_NoNeedsHumanRow_NoGitHubCallMade(t *testing.T) {
 // TestTryRearmNeedsHuman_LabelStillPresent_NotRearmed covers the "operator
 // hasn't (yet) cleared pilot-needs-human" case: the issue is open and
 // trigger-labeled, but still carries pilot-needs-human — the re-arm gesture
-// is not complete yet, regardless of any other timeline evidence.
+// is not complete yet, regardless of any other timeline evidence. GH-5420:
+// the timeline below is NOT empty — it carries a reopened event timestamped
+// after the hold, which is exactly the shape latestNeedsHumanRearmEvent
+// treats as re-arm evidence. That's deliberate: with an empty timeline
+// (PR#5417's original fixture), latestNeedsHumanRearmEvent short-circuits to
+// nil regardless of labels, so deleting the HasLabel(pilot-needs-human)
+// guard at tryRearmNeedsHuman's return-false gate would leave this test green
+// for the wrong reason. Giving it real rearm-shaped evidence means the
+// not-rearmed verdict can only come from the label guard itself.
 func TestTryRearmNeedsHuman_LabelStillPresent_NotRearmed(t *testing.T) {
 	store := newTerminalCompletionCheckerTestStore(t)
 	holdTime := time.Now().Add(-time.Hour)
+	reopenTime := holdTime.Add(30 * time.Minute)
 
 	srv := newRearmNeedsHumanTestServer(t,
 		&github.Issue{Number: 5414, State: "open", Labels: []github.Label{{Name: "pilot"}, {Name: labelPilotNeedsHumanSDK}}},
-		nil,
+		[]*github.IssueEvent{
+			{Event: "reopened", CreatedAt: reopenTime},
+		},
 	)
 	checker := terminalCompletionChecker{
 		store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
@@ -231,6 +242,56 @@ func TestTryRearmNeedsHuman_UnlabeledBeforeHold_NotRearmed(t *testing.T) {
 	}
 
 	exec, err := store.GetExecution("exec-stale-unlabel")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "needs_human" {
+		t.Errorf("expected the row to remain status=needs_human (not reclassified), got %q", exec.Status)
+	}
+}
+
+// TestTryRearmNeedsHuman_UnlabeledBeforeHoldThenRelabeled_NotRearmed is
+// GH-5420's second label-guard case: an operator cleared pilot-needs-human
+// once, but Pilot re-parked the task on a later run (re-adding the label),
+// so the hold this row actually records (holdTime) postdates both the stale
+// unlabeled event AND the label's return. The label is back on the issue
+// right now, so this must not re-arm — same as
+// TestTryRearmNeedsHuman_LabelStillPresent_NotRearmed, but exercised via a
+// timeline that has genuine (if stale) pilot-needs-human history instead of
+// a single reopened event, so a mutant that only breaks on empty-vs-nonempty
+// timelines can't hide behind this fixture either.
+func TestTryRearmNeedsHuman_UnlabeledBeforeHoldThenRelabeled_NotRearmed(t *testing.T) {
+	store := newTerminalCompletionCheckerTestStore(t)
+	holdTime := time.Now().Add(-time.Hour)
+	staleClearTime := holdTime.Add(-24 * time.Hour)
+	staleRelabelTime := staleClearTime.Add(time.Minute)
+
+	srv := newRearmNeedsHumanTestServer(t,
+		&github.Issue{Number: 5414, State: "open", Labels: []github.Label{{Name: "pilot"}, {Name: labelPilotNeedsHumanSDK}}},
+		[]*github.IssueEvent{
+			{Event: "unlabeled", CreatedAt: staleClearTime, Label: &github.Label{Name: labelPilotNeedsHumanSDK}},
+			{Event: "labeled", CreatedAt: staleRelabelTime, Label: &github.Label{Name: labelPilotNeedsHumanSDK}},
+		},
+	)
+	checker := terminalCompletionChecker{
+		store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
+		repoOwner: "owner", repoName: "repo", triggerLabel: "pilot",
+	}
+
+	taskID, projectPath := "GH-5414", "/project-stale-unlabel-relabeled"
+	seedNeedsHumanRow(t, store, "exec-stale-unlabel-relabeled", taskID, projectPath, holdTime)
+	key := repickBackoffKey(projectPath, taskID)
+	t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+
+	rearmed, err := checker.tryRearmNeedsHuman(taskID, projectPath, key)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rearmed {
+		t.Fatal("expected rearmed=false — pilot-needs-human is back on the issue and both timeline events predate the hold")
+	}
+
+	exec, err := store.GetExecution("exec-stale-unlabel-relabeled")
 	if err != nil {
 		t.Fatalf("GetExecution: %v", err)
 	}

@@ -199,13 +199,20 @@ func TestTerminalCompletionChecker_HasCompletedExecutionReason_GenuineCompletion
 // reasonNeedsHumanAwaitingRearm text — not the generic "stalled: awaiting
 // re-arm evidence" canceled/superseded fall through to — so the poller's
 // skip log line names the parked state and tells the operator what to do.
+// GH-5420: the timeline carries a labeled(trigger) event timestamped after
+// the hold — real rearm-shaped evidence — rather than being empty, so a
+// mutant that deletes the HasLabel(pilot-needs-human) guard in
+// tryRearmNeedsHuman can't hide behind "no evidence to evaluate anyway".
 func TestTerminalCompletionChecker_HasCompletedExecutionReason_NeedsHumanAwaitingRearm(t *testing.T) {
 	store := newTerminalCompletionCheckerTestStore(t)
 	holdTime := time.Now().Add(-time.Hour)
+	relabelTime := holdTime.Add(30 * time.Minute)
 
 	srv := newRearmNeedsHumanTestServer(t,
 		&github.Issue{Number: 5414, State: "open", Labels: []github.Label{{Name: "pilot"}, {Name: labelPilotNeedsHumanSDK}}},
-		nil,
+		[]*github.IssueEvent{
+			{Event: "labeled", CreatedAt: relabelTime, Label: &github.Label{Name: "pilot"}},
+		},
 	)
 	checker := terminalCompletionChecker{
 		store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
