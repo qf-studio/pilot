@@ -22,8 +22,8 @@ Options as evaluated:
 
 ## Next after PR#285 merges
 
-1. ~~pilot-console-ui usage page~~ DISPATCHED → **ui#150** (2026-09-10 10:58Z). Review its PR.
-2. ~~#287~~ → PR#289 APPROVE + merged · #288 (reader active-only + full-page guard) queued · pilot#5426 (daemon active-only filter) queued. Review each PR.
+1. ~~pilot-console-ui usage page~~ → PR#151 merged 11:44Z, APPROVE-w-defects → **ui#152** (value-aware y-scale, zero-filled sorted days). Review its PR.
+2. ~~#287~~ → PR#289 APPROVE + merged · ~~#288~~ → PR#290 APPROVE · ~~pilot#5426~~ → PR#5428 APPROVE. **Once the box runs a train with #5428, the reader gets the filtered queue; until then the full-page guard covers it.**
 3. Keep `idle_sleep_enabled` OFF until every tenant has the dashboard-scope flag (re-bootstrap / AMI roll) — then a founder go to enable.
 4. Remaining S5 items stay founder/Nelya-gated (Stripe lifecycle, domain, egress allowlist, infra#35 human author, pricing).
 
