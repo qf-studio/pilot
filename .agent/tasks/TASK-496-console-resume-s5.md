@@ -1,6 +1,6 @@
 # TASK-496: Resume pilot-console execution — S5 legs after the Nelya hand-over
 
-**Created**: 2026-09-10 · **Status**: 🚀 B7 DECIDED + DISPATCHED 2026-09-10 (option A) — console **#282** filed (`pilot bug no-decompose`), PR#222 closed unmerged, #215 closed as superseded. Usage rollup dispatched 2026-09-10 → console **#283** (`pilot no-decompose`).
+**Created**: 2026-09-10 · **Status**: 🚀 B7 DECIDED + DISPATCHED 2026-09-10 (option A) — console **#282** filed (`pilot bug no-decompose`), PR#222 closed unmerged, #215 closed as superseded. Usage rollup dispatched 2026-09-10 → console **#283** → PR#285 REQUEST-CHANGES (migration 0018 collision with #284 + cumulative-counter summing) → revision **#286** in flight. B7: **PR#284 MERGED 10:12Z + reviewed APPROVE-w-notes** → follow-ups #287, #288, pilot#5426. Gate `idle_sleep_enabled` is OFF by default; keep it off until every tenant carries the dashboard-scope flag (re-bootstrap/AMI roll).
 
 ## Where console execution stopped (GitHub is authoritative)
 
