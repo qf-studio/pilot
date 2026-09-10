@@ -1,6 +1,6 @@
 # TASK-496: Resume pilot-console execution — S5 legs after the Nelya hand-over
 
-**Created**: 2026-09-10 · **Status**: 📋 PREPARED — one founder decision (B7 path) + one ready dispatch (usage rollup). Nothing filed yet.
+**Created**: 2026-09-10 · **Status**: 🚀 B7 DECIDED + DISPATCHED 2026-09-10 (option A) — console **#282** filed (`pilot bug no-decompose`), PR#222 closed unmerged, #215 closed as superseded. Usage-rollup dispatch still awaiting founder go.
 
 ## Where console execution stopped (GitHub is authoritative)
 
@@ -8,7 +8,11 @@
 - **Only open console item: #215 / draft PR#222 (B7 sleep redo).** `mergeable=CONFLICTING`, 11 files, conflicts in `cmd/consolectl/run.go`, `internal/fleet/reconciler.go`, `internal/fleet/store.go`, `main.go` (exactly the files the ECS legs rewrote after the branch was cut). Labels `pilot-needs-human` + `needs-manual-rebase`. Box autopilot shows it as `222 failed pending`. The 08-26 review verdict was REQUEST-CHANGES: D1–D4 fixed, but (a) the exec reader polls project-scoped `/api/v1/queue` while the tenant unit omits `--dashboard-scope` → blind to every repo but #0; (b) no kill switch for the two readers. Draft was the merge block; then a restart re-armed #215 and Pilot began re-executing over the reviewed branch; human unlabeled to stop it; five 405 "still a draft" merge attempts → needs-human.
 - pilot-console-ui: no open issues/PRs. TASK-478 build+verify complete.
 
-## Decision needed (founder): B7 sleep path
+## B7 sleep path — DECIDED 2026-09-10: option A (founder: "go recommended, close")
+
+Filed console **#282** from [`drafts/console-b7-idle-sleep-refile.md`](drafts/console-b7-idle-sleep-refile.md): #215's design + the 08-26 blockers (fleet-wide execution scope via the dashboard-scope flag rendered into the tenant unit; `idle_sleep_enabled` gate default off + `idle_window` field) + N2 (terminal-status allowlist, unknown = active) · N3 (one 10 s per-instance deadline over token+describe+GET, 5-min sampling throttle) · N4 (in-flight branch deletes idleSince) + housekeeping (second board pool, label index, test margins). Review PR#\<n\> when it lands against every acceptance box; the dashboard-scope flag is CLI-only on the pilot side, so already-bootstrapped tenants need a re-bootstrap or AMI roll.
+
+Options as evaluated:
 
 | Option | Cost | Notes |
 |---|---|---|
