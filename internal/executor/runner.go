@@ -1061,8 +1061,11 @@ type Runner struct {
 	// GH-5430: recordedAt starts at dispatch time (RecordBorrowedBranch,
 	// before the task is even admitted into the queue), but
 	// touchBorrowedBranchStart re-stamps it to the queued→running transition
-	// (executeWithOptions) — so borrowedBranchTTL bounds queue-wait once plus
-	// run time, not queue-wait plus run time added together from dispatch.
+	// (executeWithOptions) — so once execution actually starts, the original
+	// dispatch-time stamp is overwritten and borrowedBranchTTL bounds run
+	// time only, not queue-wait time at all (GH-5432 follow-up: this comment
+	// previously said the TTL bounds queue-wait plus run time, which was the
+	// pre-re-stamp behavior this very change replaced).
 	// Guarded by mu alongside execCancel/declinedCancel.
 	borrowedBranch map[string]borrowedBranchRecord
 	// borrowedBranchByBranch is the reverse index (branch -> task ID) kept in
@@ -7036,10 +7039,18 @@ const borrowedBranchTTL = 6 * time.Hour
 
 // RecordBorrowedBranch records that taskID's dispatch put it on branch
 // (named after a different, origin issue), continuing origin PR fromPR —
-// GH-5421. Callers should only record when fromPR > 0 and branch differs
-// from taskID's own default branch; see the borrowedBranch field doc for the
-// in-memory-only lifetime, the TTL fallback, and why entries are not cleared
-// on unregister.
+// GH-5421. The primary caller (handlers.go, at dispatch time) should only
+// record when fromPR > 0 and branch differs from taskID's own default
+// branch, since fromPR > 0 is what githubOnPRCreatedHandler's BorrowedBranch
+// gate (poller_github.go) requires to route a brand-new PR-created event
+// through OnPRCreatedForFixIssue. GH-5432: evictPersistFailedPR
+// (internal/autopilot/controller.go) is a second caller that re-records an
+// entry consumed only by FixIssueForBranch's destructive read (the
+// reconciler's orphan-PR sweep) — that path never inspects fromPR, so it
+// deliberately passes 0 when the origin PR number isn't available at
+// eviction time; see the call site for why that is still correct there. See
+// the borrowedBranch field doc for the in-memory-only lifetime, the TTL
+// fallback, and why entries are not cleared on unregister.
 func (r *Runner) RecordBorrowedBranch(taskID, branch string, fromPR int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

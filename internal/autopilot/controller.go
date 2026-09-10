@@ -2362,6 +2362,19 @@ func (c *Controller) evictPersistFailedPR(prNumber int) {
 
 	if prState != nil && prState.RegisteredViaFixIssue && c.borrowedBranchLookup != nil {
 		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+		// GH-5432: fromPR is passed as 0 here, not the real origin PR number
+		// — PRState doesn't carry it (OnPRCreatedForFixIssue's originIssue
+		// param is an *issue* number, kept for logging only, and is never
+		// stored on PRState). That's safe for this call specifically: the
+		// re-recorded entry's only intended consumer is
+		// reconcileOrphanPRs -> FixIssueForBranch(BranchName) (see the
+		// doc comment above), whose destructive-read implementation
+		// (runner.go) never inspects fromPR — only RecordBorrowedBranch's
+		// *other* caller (handlers.go, at original dispatch time) needs
+		// fromPR > 0, to satisfy githubOnPRCreatedHandler's BorrowedBranch
+		// gate for a brand-new PR-created webhook event. This PR's
+		// PR-created event already fired once before eviction, so that gate
+		// will not see this entry again.
 		c.borrowedBranchLookup.RecordBorrowedBranch(taskID, prState.BranchName, 0)
 		c.log.Info("evictPersistFailedPR: re-recorded borrowed-branch registry entry so a later reconciler tick can re-adopt this fix-issue PR",
 			"pr", prNumber, "fix_issue", prState.IssueNumber, "branch", prState.BranchName)

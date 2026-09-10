@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -52,5 +53,63 @@ func TestTouchBorrowedBranchStart_NoEntry(t *testing.T) {
 
 	if _, _, ok := r.BorrowedBranch("GH-999"); ok {
 		t.Error("BorrowedBranch(\"GH-999\") = found after touching an unrecorded task ID, want not-found")
+	}
+}
+
+// TestExecuteWithOptions_TouchesBorrowedBranchStart is the GH-5432 wiring
+// pin: TestTouchBorrowedBranchStart_RearmsExpiredEntry above exercises
+// touchBorrowedBranchStart directly, so it would keep passing even if the
+// r.touchBorrowedBranchStart(task.ID) call were deleted from
+// executeWithOptions (runner.go) — the exact PR #5431 mutation-testing gap
+// this test closes. This one drives the real Runner.Execute -> executeWithOptions
+// path (mirroring the setupPRGuardRepo/mockFixedBackend pattern used by the
+// GH-5359 tests) for a task whose borrowed-branch entry was recorded more
+// than borrowedBranchTTL ago, then asserts the entry still resolves once
+// execution has started — which is only true if executeWithOptions actually
+// calls touchBorrowedBranchStart at the queued→running transition.
+func TestExecuteWithOptions_TouchesBorrowedBranchStart(t *testing.T) {
+	const taskID = "GH-5432"
+	const branch = "pilot/GH-5432-branch"
+	// No additional commit: the PR guard's fast confirmed-empty no_op path
+	// resolves without shelling out to gh, keeping this test hermetic while
+	// still exercising the real executeWithOptions entry sequence.
+	dir := setupPRGuardRepo(t, branch, false)
+
+	backend := &mockFixedBackend{
+		result: &BackendResult{Success: true, Output: "analysis complete"},
+	}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	runner.RecordBorrowedBranch(taskID, "pilot/GH-100", 5364)
+	// Backdate recordedAt past borrowedBranchTTL, as if this task's own
+	// dispatch-time record sat unrefreshed for longer than the TTL window.
+	runner.mu.Lock()
+	rec := runner.borrowedBranch[taskID]
+	rec.recordedAt = time.Now().Add(-borrowedBranchTTL - time.Hour)
+	runner.borrowedBranch[taskID] = rec
+	runner.mu.Unlock()
+
+	task := &Task{
+		ID:          taskID,
+		Title:       "test: pin touchBorrowedBranchStart wiring in executeWithOptions",
+		Description: "GH-5432 regression: deleting the touch call must fail this test",
+		ProjectPath: dir,
+		Branch:      branch,
+		CreatePR:    true,
+	}
+
+	if _, err := runner.Execute(context.Background(), task); err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+
+	gotBranch, fromPR, ok := runner.BorrowedBranch(taskID)
+	if !ok {
+		t.Fatal("BorrowedBranch(taskID) = not found after Execute() ran a pre-expired entry through it — executeWithOptions did not re-stamp recordedAt via touchBorrowedBranchStart")
+	}
+	if gotBranch != "pilot/GH-100" || fromPR != 5364 {
+		t.Errorf("BorrowedBranch(taskID) = (%q, %d), want (%q, %d)", gotBranch, fromPR, "pilot/GH-100", 5364)
 	}
 }
