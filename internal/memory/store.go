@@ -2004,6 +2004,59 @@ func (s *Store) GetRecentExecutions(limit int, projectPath string) ([]*Execution
 	return executions, rows.Err()
 }
 
+// GetNonTerminalExecutions returns every execution whose status is not in
+// terminalExecutionStatuses (i.e. still queued/pending/running), with no
+// LIMIT and regardless of age — the active-only counterpart to
+// GetRecentExecutions's most-recent-N window (GH-5426). A long-running
+// execution can otherwise be hidden behind 50 newer terminal rows, which is
+// invisible to a consumer (e.g. an idle-sleep reader) that needs to know
+// "is anything still running or queued" rather than "what happened recently".
+// If projectPath is non-empty, only executions for that project are
+// returned; empty scopes across all projects, matching GetRecentExecutions.
+// Canary sandbox executions are excluded (GH-4240), also matching
+// GetRecentExecutions.
+func (s *Store) GetNonTerminalExecutions(projectPath string) ([]*Execution, error) {
+	notTerminal, notTerminalArgs := notTerminalClause()
+
+	base := `
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
+			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
+			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
+			COALESCE(peak_rss_mb, 0), COALESCE(final_rss_mb, 0)
+		FROM executions
+		WHERE COALESCE(is_canary, 0) = 0 AND status NOT IN (` + notTerminal + `)`
+
+	var rows *sql.Rows
+	var err error
+	if projectPath != "" {
+		args := append(append([]interface{}{}, notTerminalArgs...), projectPath)
+		rows, err = s.db.Query(base+` AND project_path = ? ORDER BY created_at DESC`, args...)
+	} else {
+		rows, err = s.db.Query(base+` ORDER BY created_at DESC`, notTerminalArgs...)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
+			&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
+			&exec.PeakRSSMB, &exec.FinalRSSMB); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, rows.Err()
+}
+
 // Pattern represents a learned pattern from project executions.
 // Patterns capture recurring code structures, workflows, or solutions
 // that can be applied to future similar tasks.

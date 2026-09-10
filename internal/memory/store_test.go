@@ -138,6 +138,92 @@ func TestGetRecentExecutions_ExcludesCanary(t *testing.T) {
 	}
 }
 
+// TestGetNonTerminalExecutions covers GH-5426: the active-only counterpart
+// to GetRecentExecutions. It must return every non-terminal row (queued,
+// pending, running) regardless of age, exclude terminal rows regardless of
+// age, honour the is_canary exclusion (GH-4240, matching GetRecentExecutions),
+// and support the empty-project-path "all projects" case.
+func TestGetNonTerminalExecutions(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	old := time.Now().Add(-72 * time.Hour)
+
+	// A running row older than every terminal row below — must still surface
+	// with no LIMIT truncating it out.
+	if err := store.SaveExecution(&Execution{
+		ID: "nte-running-old", TaskID: "TASK-RUNNING", ProjectPath: "/path",
+		Status: "running", CreatedAt: old,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	// A queued row (also non-terminal).
+	if err := store.SaveExecution(&Execution{
+		ID: "nte-queued", TaskID: "TASK-QUEUED", ProjectPath: "/path",
+		Status: "queued",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	// Terminal rows of various statuses — none should appear.
+	for _, st := range []string{"completed", "failed", "no_op", "skipped"} {
+		if err := store.SaveExecution(&Execution{
+			ID: "nte-" + st, TaskID: "TASK-" + st, ProjectPath: "/path", Status: st,
+		}); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", st, err)
+		}
+	}
+	// A canary running row — must be excluded like GetRecentExecutions.
+	if err := store.SaveExecution(&Execution{
+		ID: "nte-canary-running", TaskID: "TASK-CANARY", ProjectPath: "/canary-sandbox",
+		Status: "running", IsCanary: true,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	got, err := store.GetNonTerminalExecutions("")
+	if err != nil {
+		t.Fatalf("GetNonTerminalExecutions: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("GetNonTerminalExecutions(\"\") = %d rows, want 2 (running+queued): %v", len(got), got)
+	}
+	gotIDs := map[string]bool{}
+	for _, e := range got {
+		gotIDs[e.ID] = true
+		if e.ID == "nte-canary-running" {
+			t.Error("canary running row must be excluded")
+		}
+	}
+	if !gotIDs["nte-running-old"] {
+		t.Error("expected old running row to be present regardless of age")
+	}
+	if !gotIDs["nte-queued"] {
+		t.Error("expected queued row to be present")
+	}
+
+	// Empty project path scopes across all projects — already exercised
+	// above; now confirm project-path scoping narrows the result.
+	scoped, err := store.GetNonTerminalExecutions("/path")
+	if err != nil {
+		t.Fatalf("GetNonTerminalExecutions(/path): %v", err)
+	}
+	if len(scoped) != 2 {
+		t.Errorf("GetNonTerminalExecutions(/path) = %d rows, want 2", len(scoped))
+	}
+
+	noneForOtherProject, err := store.GetNonTerminalExecutions("/other-project")
+	if err != nil {
+		t.Fatalf("GetNonTerminalExecutions(/other-project): %v", err)
+	}
+	if len(noneForOtherProject) != 0 {
+		t.Errorf("GetNonTerminalExecutions(/other-project) = %d rows, want 0", len(noneForOtherProject))
+	}
+}
+
 func TestGetLatestExecutionByTaskID(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()

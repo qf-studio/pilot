@@ -3,6 +3,7 @@ package gateway
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,12 +23,18 @@ type mockDashboardStore struct {
 	activeExecs    []*memory.Execution
 	logEntries     []*memory.LogEntry
 
+	// nonTerminalExecs backs GetNonTerminalExecutions (GH-5426 active-only
+	// queue filter) — kept separate from executions/GetRecentExecutions so
+	// tests can assert the handler routes to the right store method.
+	nonTerminalExecs []*memory.Execution
+
 	// Capture last projectPath arg passed to each scoped method.
 	gotTokensPath         string
 	gotTaskCountsPath     string
 	gotWindowedStatsPath  string
 	gotWindowedStatsSince time.Time
 	gotExecsPaths         []string // appended on each GetRecentExecutions call
+	gotNonTerminalPaths   []string // appended on each GetNonTerminalExecutions call
 
 	// Approvals API test hooks (GH-4748).
 	pendingApprovals         []*memory.PendingApproval
@@ -70,6 +77,11 @@ func (m *mockDashboardStore) GetDailyMetrics(_ memory.MetricsQuery) ([]*memory.D
 func (m *mockDashboardStore) GetRecentExecutions(_ int, projectPath string) ([]*memory.Execution, error) {
 	m.gotExecsPaths = append(m.gotExecsPaths, projectPath)
 	return m.executions, nil
+}
+
+func (m *mockDashboardStore) GetNonTerminalExecutions(projectPath string) ([]*memory.Execution, error) {
+	m.gotNonTerminalPaths = append(m.gotNonTerminalPaths, projectPath)
+	return m.nonTerminalExecs, nil
 }
 
 func (m *mockDashboardStore) GetQueuedTasks(_ int) ([]*memory.Execution, error) {
@@ -347,6 +359,80 @@ func TestHandleDashboardQueue(t *testing.T) {
 				tt.checkBody(t, w.Body.Bytes())
 			}
 		})
+	}
+}
+
+// TestHandleDashboardQueue_ActiveOnly is the GH-5426 handler test: 60
+// terminal rows plus one running row older than all of them. Without the
+// "active" parameter the response is unchanged (routes to GetRecentExecutions,
+// the running row absent). With active=1 the response routes to
+// GetNonTerminalExecutions instead, returning only the running row and no
+// terminal rows — regardless of age.
+func TestHandleDashboardQueue_ActiveOnly(t *testing.T) {
+	now := time.Now()
+
+	terminalExecs := make([]*memory.Execution, 60)
+	for i := range terminalExecs {
+		terminalExecs[i] = &memory.Execution{
+			ID:        fmt.Sprintf("term-%d", i),
+			TaskID:    fmt.Sprintf("GH-%d", i),
+			Status:    "completed",
+			CreatedAt: now.Add(-time.Duration(i) * time.Minute),
+		}
+	}
+	runningExec := &memory.Execution{
+		ID:        "running-old",
+		TaskID:    "GH-999",
+		Status:    "running",
+		CreatedAt: now.Add(-24 * time.Hour), // older than all 60 terminal rows
+	}
+
+	store := &mockDashboardStore{
+		executions:       terminalExecs,                    // what GetRecentExecutions returns (non-active path)
+		nonTerminalExecs: []*memory.Execution{runningExec}, // what GetNonTerminalExecutions returns (active path)
+	}
+
+	s := newTestServerWithDashboard(store)
+
+	// Without the parameter: unchanged from today, running row absent.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/queue", nil)
+	w := httptest.NewRecorder()
+	s.handleDashboardQueue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var tasks []queueTaskResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &tasks); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(tasks) != 60 {
+		t.Fatalf("expected 60 tasks without active param, got %d", len(tasks))
+	}
+	for _, task := range tasks {
+		if task.ID == runningExec.ID {
+			t.Fatalf("running row must be absent without the active parameter")
+		}
+	}
+
+	// With active=1: only the running row, no terminal rows.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/queue?active=1", nil)
+	w = httptest.NewRecorder()
+	s.handleDashboardQueue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	tasks = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &tasks); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task with active param, got %d", len(tasks))
+	}
+	if tasks[0].ID != runningExec.ID {
+		t.Errorf("expected running row %q, got %q", runningExec.ID, tasks[0].ID)
+	}
+	if tasks[0].Status != "running" {
+		t.Errorf("expected status 'running', got %q", tasks[0].Status)
 	}
 }
 

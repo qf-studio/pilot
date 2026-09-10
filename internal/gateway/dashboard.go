@@ -23,6 +23,11 @@ type DashboardStore interface {
 	GetWindowedStats(projectPath string, since time.Time) (memory.WindowedStats, error)
 	GetDailyMetrics(query memory.MetricsQuery) ([]*memory.DailyMetrics, error)
 	GetRecentExecutions(limit int, projectPath string) ([]*memory.Execution, error)
+	// GetNonTerminalExecutions backs the queue endpoint's active-only filter
+	// (GH-5426): every execution whose status is not terminal, regardless of
+	// age, so a long-running execution older than the 50-newest window isn't
+	// invisible to an idle-detection consumer.
+	GetNonTerminalExecutions(projectPath string) ([]*memory.Execution, error)
 	GetQueuedTasks(limit int) ([]*memory.Execution, error)
 	GetActiveExecutions() ([]*memory.Execution, error)
 	GetRecentLogs(limit int) ([]*memory.LogEntry, error)
@@ -236,7 +241,21 @@ func (s *Server) handleDashboardQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	execs, err := store.GetRecentExecutions(50, projectPath)
+	// GH-5426: the "active" query parameter switches the queue endpoint from
+	// the default 50-newest-by-created_at window (which can hide a
+	// long-running execution behind 50 newer terminal rows) to every
+	// non-terminal execution regardless of age. Absent (or falsy), the
+	// response is byte-identical to before this parameter existed, so older
+	// consumers are unaffected.
+	active, _ := strconv.ParseBool(r.URL.Query().Get("active"))
+
+	var execs []*memory.Execution
+	var err error
+	if active {
+		execs, err = store.GetNonTerminalExecutions(projectPath)
+	} else {
+		execs, err = store.GetRecentExecutions(50, projectPath)
+	}
 	if err != nil {
 		http.Error(w, "failed to fetch queue", http.StatusInternalServerError)
 		return
