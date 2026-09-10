@@ -1,3 +1,8 @@
+---
+title: "Linear integration: labels, priorities, webhooks"
+description: "Connect Pilot to Linear: API key, label-based pickup, priority mapping (0 none, 1 urgent, 2 high, 3 medium, 4 low) and webhook setup."
+---
+
 import { Callout } from 'nextra/components'
 
 # Linear Integration
@@ -165,6 +170,18 @@ Pilot also supports real-time issue detection via Linear webhooks.
 
 When using multiple workspaces, Pilot routes incoming webhooks to the correct workspace handler based on the `team.id` field in the payload. If the team ID is missing, Pilot falls back to trying each workspace handler in sequence.
 
+## Priority mapping
+
+Linear's numeric issue priority maps directly to Pilot's priority system:
+
+| Value | Linear Priority | Pilot Priority |
+|-------|-----------------|-----------------|
+| 0 | No Priority | None |
+| 1 | Urgent | Urgent |
+| 2 | High | High |
+| 3 | Medium | Medium |
+| 4 | Low | Low |
+
 ## Issue States and Priority
 
 ### State Types
@@ -178,18 +195,6 @@ Pilot filters issues by state type during polling:
 | `started` | In progress | Yes |
 | `completed` | Done | No |
 | `canceled` | Canceled | No |
-
-### Priority Levels
-
-Linear priorities map directly to Pilot's priority system:
-
-| Linear Priority | Value | Pilot Priority |
-|----------------|-------|---------------|
-| Urgent | 1 | Urgent |
-| High | 2 | High |
-| Medium | 3 | Medium |
-| Low | 4 | Low |
-| No Priority | 0 | None |
 
 ## Status Notifications
 

@@ -8,12 +8,14 @@ import './globals.css'
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://pilot.quantflow.studio'),
-  title: 'Pilot — AI That Ships Your Tickets',
+  title: { default: 'Pilot — AI That Ships Your Tickets', template: '%s | Pilot' },
   description: 'Autonomous AI development pipeline that turns tickets into pull requests',
   openGraph: {
+    // title/description intentionally omitted: Next.js auto-fills them from
+    // the resolved per-page `title`/`description` above (see
+    // postProcessMetadata's inheritFromMetadata in next/dist/lib/metadata),
+    // so every docs page gets its own og:title instead of this site default.
     type: 'website',
-    title: 'Pilot — AI That Ships Your Tickets',
-    description: 'Autonomous AI development pipeline. Label a ticket, get a PR. Self-hosted, source-available.',
     url: 'https://pilot.quantflow.studio',
     images: [
       {
@@ -26,8 +28,6 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Pilot — AI That Ships Your Tickets',
-    description: 'Autonomous AI development pipeline. Label a ticket, get a PR. Self-hosted, source-available.',
     images: ['https://pilot.quantflow.studio/pilot-preview.png'],
   },
 }

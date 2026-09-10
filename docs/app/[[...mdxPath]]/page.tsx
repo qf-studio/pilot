@@ -6,6 +6,15 @@ export const generateStaticParams = generateStaticParamsFor('mdxPath')
 export async function generateMetadata(props: PageProps) {
   const params = await props.params
   const { metadata } = await importPage(params.mdxPath)
+
+  // The root page has no frontmatter `title` and no H1, so Nextra falls back
+  // to a filename-derived title ("Index") that would otherwise clobber the
+  // site default from app/layout.tsx once a title.template is in play.
+  // `absolute` bypasses the template so it renders exactly as the default.
+  if (!params.mdxPath || params.mdxPath.length === 0) {
+    return { ...metadata, title: { absolute: 'Pilot — AI That Ships Your Tickets' } }
+  }
+
   return metadata
 }
 
