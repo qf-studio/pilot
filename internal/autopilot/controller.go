@@ -662,6 +662,20 @@ type Controller struct {
 	// adopt-fail-evict cycle forever (GH-4053).
 	persistFailedPRs map[int]time.Time
 
+	// closedOriginSkip memoizes reconcileOrphanPRs's decision to skip
+	// registering an orphan PR under a closed origin issue, keyed by PR
+	// number. Guarded by mu. Without this, a stale untracked PR (branch
+	// origin issue closed, no fix-issue record found) triggers a fresh
+	// GetIssue call and a Warn log on every 60s reconciler tick until the PR
+	// itself closes — roughly 1,440 API calls and log lines per day for one
+	// wedged PR (GH-5425, PR #5423 follow-up). Entries are removed the
+	// instant the PR leaves the untracked set — becomes tracked (a later
+	// borrowed-branch registration succeeds) or closes (no longer present in
+	// the open-PR list reconcileOrphanPRs fetches each tick) — so a later
+	// legitimate registration is never blocked by a stale memo, and the map
+	// never grows past the current count of open pilot/ PRs.
+	closedOriginSkip map[int]closedOriginSkipRecord
+
 	// alertedApprovalFailures deduplicates approval-submit-failure alerts and
 	// PR-comment fallbacks per PR number, guarded by mu — same rationale as
 	// alertedPersistFailures: handleAwaitApproval retries submitAsyncApprovalRequest
@@ -865,6 +879,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		scopeDeferLogAt:         make(map[string]time.Time),
 		alertedPersistFailures:  make(map[int]bool),
 		persistFailedPRs:        make(map[int]time.Time),
+		closedOriginSkip:        make(map[int]closedOriginSkipRecord),
 		alertedApprovalFailures: make(map[int]bool),
 		epicVeto:                make(map[int]*epicCloseVetoTracking),
 		epicResolvedParents:     make(map[int]bool),
@@ -2334,6 +2349,62 @@ func (c *Controller) recentlyEvictedForPersistFailure(prNumber int) bool {
 		return false
 	}
 	return time.Since(evictedAt) < persistFailureReadoptCooldown
+}
+
+// closedOriginSkipRecord is the memoized value for Controller.closedOriginSkip
+// — see that field's doc for the GetIssue/Warn cost it exists to avoid
+// (GH-5425).
+type closedOriginSkipRecord struct {
+	originIssue int
+	decidedAt   time.Time
+}
+
+// closedOriginSkipDecision reports whether prNumber's closed-origin skip was
+// already memoized by a prior reconcileOrphanPRs tick, so the caller can log
+// at Debug and skip the GetIssue call instead of repeating the Warn every
+// tick (GH-5425).
+func (c *Controller) closedOriginSkipDecision(prNumber int) (rec closedOriginSkipRecord, ok bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	rec, ok = c.closedOriginSkip[prNumber]
+	return rec, ok
+}
+
+// recordClosedOriginSkip memoizes prNumber's closed-origin skip decision so
+// later reconcileOrphanPRs ticks don't re-issue the GetIssue call or the Warn
+// log for the same PR (GH-5425).
+func (c *Controller) recordClosedOriginSkip(prNumber, originIssue int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closedOriginSkip == nil {
+		c.closedOriginSkip = make(map[int]closedOriginSkipRecord)
+	}
+	c.closedOriginSkip[prNumber] = closedOriginSkipRecord{originIssue: originIssue, decidedAt: time.Now()}
+}
+
+// clearClosedOriginSkip drops prNumber's memoized skip decision, if any. It
+// is called the moment a PR leaves the untracked set the memo applies to —
+// either a later tick registers it (e.g. under a fix issue found via the
+// borrowed-branch registry) or the PR itself closes — so a stale memo can
+// never block a legitimate registration (GH-5425).
+func (c *Controller) clearClosedOriginSkip(prNumber int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.closedOriginSkip, prNumber)
+}
+
+// pruneClosedOriginSkip drops every memoized skip decision whose PR is not
+// in openPRs, the set of currently open pilot/ PR numbers reconcileOrphanPRs
+// just fetched. A PR absent from that set has closed since it was memoized,
+// so the entry is stale — bounds closedOriginSkip to open PRs only (GH-5425).
+func (c *Controller) pruneClosedOriginSkip(openPRs map[int]struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for prNumber := range c.closedOriginSkip {
+		if _, ok := openPRs[prNumber]; !ok {
+			delete(c.closedOriginSkip, prNumber)
+		}
+	}
 }
 
 // persistRemovePR removes a PR state from the store if available.
@@ -8568,6 +8639,15 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 		return
 	}
 
+	// GH-5425: openPRs is the set of currently open PR numbers, used below to
+	// prune closedOriginSkip entries for PRs that have since closed — without
+	// this the memo map would grow forever instead of staying bounded to
+	// open PRs.
+	openPRs := make(map[int]struct{}, len(prs))
+	for _, pr := range prs {
+		openPRs[pr.Number] = struct{}{}
+	}
+
 	for _, pr := range prs {
 		if !strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
 			continue
@@ -8577,6 +8657,10 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 		_, tracked := c.activePRs[pr.Number]
 		c.mu.RUnlock()
 		if tracked {
+			// GH-5425: the PR left the untracked set this memo applies to —
+			// drop it so a future untracked PR reusing this number is never
+			// blocked by a stale skip decision.
+			c.clearClosedOriginSkip(pr.Number)
 			continue
 		}
 		if c.recentlyEvictedForPersistFailure(pr.Number) {
@@ -8640,6 +8724,22 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 				c.seedAdoptedCIWaitClock(pr.Number, updatedAt)
 			}
 			c.metrics.RecordOrphanPRRegistered("reconciler")
+			// GH-5425: this PR just became tracked — drop any stale skip
+			// memo from an earlier tick so a future untracked reuse of this
+			// PR number isn't blocked by it.
+			c.clearClosedOriginSkip(pr.Number)
+			continue
+		}
+
+		// GH-5425: a prior tick already confirmed the branch-derived origin
+		// issue is closed and no fix-issue record exists for this PR — skip
+		// the GetIssue call and the Warn log this tick, logging at Debug
+		// instead, so a wedged PR costs one GetIssue call and one Warn for
+		// its entire lifetime rather than one of each every 60s.
+		if rec, ok := c.closedOriginSkipDecision(pr.Number); ok {
+			c.log.Debug("reconciler: origin issue is closed and no fix-issue record exists — skip decision already memoized, not re-querying GitHub",
+				"pr", pr.Number, "branch", pr.Head.Ref, "origin_issue", rec.originIssue, "decided_at", rec.decidedAt,
+			)
 			continue
 		}
 
@@ -8659,6 +8759,9 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 			c.log.Warn("reconciler: origin issue is closed and no fix-issue record exists — skipping registration rather than attaching this PR to a closed issue",
 				"pr", pr.Number, "branch", pr.Head.Ref, "origin_issue", issueNum,
 			)
+			// GH-5425: memoize the decision so later ticks skip straight to
+			// the Debug log above instead of repeating this GetIssue+Warn.
+			c.recordClosedOriginSkip(pr.Number, issueNum)
 			continue
 		}
 
@@ -8667,7 +8770,13 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 			c.seedAdoptedCIWaitClock(pr.Number, updatedAt)
 		}
 		c.metrics.RecordOrphanPRRegistered("reconciler")
+		c.clearClosedOriginSkip(pr.Number)
 	}
+
+	// GH-5425: bound closedOriginSkip to currently open PRs — a memoized PR
+	// that has since closed is no longer in openPRs, so its entry would
+	// otherwise linger forever.
+	c.pruneClosedOriginSkip(openPRs)
 }
 
 // backstopCheckReleaseMissing is the scanner-side counterpart to afterTagCreated's

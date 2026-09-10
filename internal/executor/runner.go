@@ -1034,15 +1034,30 @@ type Runner struct {
 	// just falls back to the pre-existing (broken) drop behavior, not a new
 	// regression.
 	//
-	// Lifetime: entries are deliberately NOT cleared by unregisterExecCancel.
-	// The SDK poller's OnPRCreated hook fires after handleGithubIssueEventSDK
-	// returns, which is after this call's unregisterExecCancel has already
-	// run — clearing there would erase the record before its one consumer
-	// ever reads it. Instead an entry simply gets overwritten the next time
-	// the same task ID is dispatched via RecordBorrowedBranch; a stale entry
-	// left behind by a task that never runs again is harmless (looked up by
-	// exact task ID / exact branch match only). Guarded by mu alongside
-	// execCancel/declinedCancel.
+	// Lifetime (GH-5425 revises the original GH-5421 "never cleared" design):
+	// entries are deliberately NOT cleared by unregisterExecCancel/the task's
+	// own terminal-state defer — the SDK poller's OnPRCreated hook fires
+	// after handleGithubIssueEventSDK returns, which is always after this
+	// call's unregisterExecCancel has already run, so a terminal-state
+	// delete there would erase the record before its consumer ever reads it
+	// (that ordering can't be changed, so a Finish-path hook gated on "has
+	// the PR-created hook already fired" would never actually fire). Instead:
+	//   - FixIssueForBranch (the reconciler's fallback consumer) deletes the
+	//     entry the moment it returns a match — from the reconciler's
+	//     perspective that read IS the PR-created hook firing for this task,
+	//     and the resulting PR becomes tracked immediately after, so the
+	//     entry is never needed again.
+	//   - BorrowedBranch (the primary SDK-hook consumer) stays a
+	//     non-destructive peek, since the SDK poller can redeliver the same
+	//     PRCreatedEvent and a destructive read there would break the retry.
+	//   - Both consumers additionally expire (and prune) entries older than
+	//     borrowedBranchTTL, so a task that ends without ever creating a PR
+	//     (declined, failed, or the hook simply never fires) doesn't leave
+	//     the mapping around indefinitely — that staleness is exactly what
+	//     let a later, unrelated PR on the same branch (a manual push, or a
+	//     fresh re-run of the origin issue) get mis-attributed to a
+	//     long-closed fix issue.
+	// Guarded by mu alongside execCancel/declinedCancel.
 	borrowedBranch map[string]borrowedBranchRecord
 	// borrowedBranchByBranch is the reverse index (branch -> task ID) kept in
 	// lockstep with borrowedBranch, used by FixIssueForBranch so the
@@ -6985,15 +7000,30 @@ func (r *Runner) takeDeclinedCancelReason(taskID string) (string, bool) {
 // it on another issue's branch instead of its own default
 // "pilot/<taskID>" branch — GH-5421.
 type borrowedBranchRecord struct {
-	branch string
-	fromPR int
+	branch     string
+	fromPR     int
+	recordedAt time.Time
 }
+
+// borrowedBranchTTL bounds how long an unconsumed borrowedBranch entry can
+// survive — GH-5425. FixIssueForBranch deletes an entry the instant it
+// consumes it (see that method's doc), so this TTL only matters for entries
+// that are never consumed at all: the recording task declined, failed, or
+// otherwise ended without ever opening a PR on the borrowed branch. Without
+// it such an entry would linger forever (the pre-GH-5425 behavior), and a
+// later, unrelated PR pushed to the same branch (a manual push, or a fresh
+// re-run of the origin issue) would be mis-attributed to that long-dead fix
+// issue by a subsequent reconciler sweep. Six hours is generous relative to
+// a normal task's runtime (minutes) plus the 60s reconciler tick, while still
+// bounding the mis-attribution window to hours instead of indefinitely.
+const borrowedBranchTTL = 6 * time.Hour
 
 // RecordBorrowedBranch records that taskID's dispatch put it on branch
 // (named after a different, origin issue), continuing origin PR fromPR —
 // GH-5421. Callers should only record when fromPR > 0 and branch differs
 // from taskID's own default branch; see the borrowedBranch field doc for the
-// in-memory-only lifetime and why entries are not cleared on unregister.
+// in-memory-only lifetime, the TTL fallback, and why entries are not cleared
+// on unregister.
 func (r *Runner) RecordBorrowedBranch(taskID, branch string, fromPR int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -7012,17 +7042,29 @@ func (r *Runner) RecordBorrowedBranch(taskID, branch string, fromPR int) {
 			delete(r.borrowedBranchByBranch, prev.branch)
 		}
 	}
-	r.borrowedBranch[taskID] = borrowedBranchRecord{branch: branch, fromPR: fromPR}
+	r.borrowedBranch[taskID] = borrowedBranchRecord{branch: branch, fromPR: fromPR, recordedAt: time.Now()}
 	r.borrowedBranchByBranch[branch] = taskID
 }
 
 // BorrowedBranch returns the borrowed branch/origin-PR recorded for taskID by
-// RecordBorrowedBranch, if any — GH-5421.
+// RecordBorrowedBranch, if any — GH-5421. Deliberately a non-destructive peek
+// (unlike FixIssueForBranch): the SDK poller can redeliver the same
+// PRCreatedEvent, and a destructive read here would break that retry by
+// silently falling through to the plain OnPRCreated path on redelivery. An
+// entry older than borrowedBranchTTL is treated as expired and pruned —
+// GH-5425.
 func (r *Runner) BorrowedBranch(taskID string) (branch string, fromPR int, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec, ok := r.borrowedBranch[taskID]
 	if !ok {
+		return "", 0, false
+	}
+	if time.Since(rec.recordedAt) > borrowedBranchTTL {
+		delete(r.borrowedBranch, taskID)
+		if r.borrowedBranchByBranch[rec.branch] == taskID {
+			delete(r.borrowedBranchByBranch, rec.branch)
+		}
 		return "", 0, false
 	}
 	return rec.branch, rec.fromPR, true
@@ -7035,16 +7077,47 @@ func (r *Runner) BorrowedBranch(taskID string) (branch string, fromPR int, ok bo
 // issue actually drove that branch. Task IDs are expected in "GH-<N>" form
 // (cmd/pilot's GitHub task ID convention); any other form yields ok=false
 // since there is no issue number to report.
+//
+// GH-5425: unlike BorrowedBranch, a successful match here is destructive —
+// the entry is deleted before returning. From this method's caller's
+// perspective (the reconciler), this lookup IS the PR-created hook firing
+// for the task: the caller is about to register the orphan PR under
+// fixIssue, which makes that PR number tracked from then on, so no later
+// reconciler tick will consult this branch/task pairing again. Deleting here
+// — rather than waiting on the recording task's own terminal-state signal —
+// sidesteps the ordering problem documented on the borrowedBranch field: that
+// signal unavoidably fires before any PR-created hook has run, so a
+// terminal-state delete would erase the record before this lookup, the one
+// hook that actually needs it, ever ran. A match older than borrowedBranchTTL
+// is instead treated as an expired, never-consumed entry: also deleted, but
+// reported as not found.
 func (r *Runner) FixIssueForBranch(branch string) (fixIssue int, ok bool) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	taskID, found := r.borrowedBranchByBranch[branch]
-	r.mu.Unlock()
 	if !found {
 		return 0, false
 	}
-	if _, err := fmt.Sscanf(taskID, "GH-%d", &fixIssue); err != nil {
+	rec, recOK := r.borrowedBranch[taskID]
+	if !recOK {
+		// Reverse index pointed at a taskID with no forward record. Should
+		// not happen — RecordBorrowedBranch keeps both in lockstep — but
+		// clean up the dangling reverse entry defensively.
+		delete(r.borrowedBranchByBranch, branch)
 		return 0, false
 	}
+	expired := time.Since(rec.recordedAt) > borrowedBranchTTL
+	if _, err := fmt.Sscanf(taskID, "GH-%d", &fixIssue); err != nil || expired {
+		// Either the task ID can't name an issue (nothing to report), or the
+		// entry is stale and was never consumed within the TTL — in both
+		// cases delete it so it stops accumulating (GH-5425) and report not
+		// found.
+		delete(r.borrowedBranch, taskID)
+		delete(r.borrowedBranchByBranch, branch)
+		return 0, false
+	}
+	delete(r.borrowedBranch, taskID)
+	delete(r.borrowedBranchByBranch, branch)
 	return fixIssue, true
 }
 
