@@ -1,6 +1,6 @@
 # TASK-496: Resume pilot-console execution — S5 legs after the Nelya hand-over
 
-**Created**: 2026-09-10 · **Status**: 🚀 B7 DECIDED + DISPATCHED 2026-09-10 (option A) — console **#282** filed (`pilot bug no-decompose`), PR#222 closed unmerged, #215 closed as superseded. Usage-rollup dispatch still awaiting founder go.
+**Created**: 2026-09-10 · **Status**: 🚀 B7 DECIDED + DISPATCHED 2026-09-10 (option A) — console **#282** filed (`pilot bug no-decompose`), PR#222 closed unmerged, #215 closed as superseded. Usage rollup dispatched 2026-09-10 → console **#283** (`pilot no-decompose`).
 
 ## Where console execution stopped (GitHub is authoritative)
 
@@ -22,7 +22,7 @@ Options as evaluated:
 
 ## Ready dispatch (no founder / Nelya dependency)
 
-1. **pilot-console · usage rollup (fleet design item 16) + GET /api/v1/usage** — body drafted and gate-checked at [`drafts/console-usage-rollup-issue.md`](drafts/console-usage-rollup-issue.md). Research facts behind it: instance-proxy recipe `internal/proxy/proxy.go` (console); daemon `/api/v1/metrics` JSON has `totalCostUSD` (pilot `internal/gateway/dashboard.go:75-102`), so no blocker; latest console migration 0017, RLS down-test pins absolute versions so 0018 is safe; **no advisory lock / leader election exists in the console** — the reconciler is single-replica only because it runs in `consolectl`; the draft makes the poller follow that and makes an advisory lock in-scope if a shared loop is chosen. UI leg (pilot-console-ui usage page) is a 5-line follow-on blocked on the API issue.
+1. **pilot-console · usage rollup (fleet design item 16) + GET /api/v1/usage → FILED as console #283 (2026-09-10)** — body and gate-checked at [`drafts/console-usage-rollup-issue.md`](drafts/console-usage-rollup-issue.md). Research facts behind it: instance-proxy recipe `internal/proxy/proxy.go` (console); daemon `/api/v1/metrics` JSON has `totalCostUSD` (pilot `internal/gateway/dashboard.go:75-102`), so no blocker; latest console migration 0017, RLS down-test pins absolute versions so 0018 is safe; **no advisory lock / leader election exists in the console** — the reconciler is single-replica only because it runs in `consolectl`; the draft makes the poller follow that and makes an advisory lock in-scope if a shared loop is chosen. UI leg (pilot-console-ui usage page) is a 5-line follow-on blocked on the API issue.
 
 ## NOT ready (corrections to the 09-10 research brief)
 
