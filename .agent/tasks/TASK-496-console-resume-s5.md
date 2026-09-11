@@ -27,6 +27,9 @@ Options as evaluated:
 3. Keep `idle_sleep_enabled` OFF until every tenant has the dashboard-scope flag (re-bootstrap / AMI roll) — then a founder go to enable.
 4. Remaining S5 items stay founder/Nelya-gated (Stripe lifecycle, domain, egress allowlist, infra#35 human author, pricing).
 
+## Dispatched 2026-09-10 evening
+- **console **#291**** — consolectl single-writer advisory lock (standby/takeover for ECS rolling deploys, lock-loss detection, both entrypoints, status line).
+
 ## Ready dispatch (no founder / Nelya dependency)
 
 1. **pilot-console · usage rollup (fleet design item 16) + GET /api/v1/usage → FILED as console #283 (2026-09-10)** — body and gate-checked at [`drafts/console-usage-rollup-issue.md`](drafts/console-usage-rollup-issue.md). Research facts behind it: instance-proxy recipe `internal/proxy/proxy.go` (console); daemon `/api/v1/metrics` JSON has `totalCostUSD` (pilot `internal/gateway/dashboard.go:75-102`), so no blocker; latest console migration 0017, RLS down-test pins absolute versions so 0018 is safe; **no advisory lock / leader election exists in the console** — the reconciler is single-replica only because it runs in `consolectl`; the draft makes the poller follow that and makes an advisory lock in-scope if a shared loop is chosen. UI leg (pilot-console-ui usage page) is a 5-line follow-on blocked on the API issue.
@@ -34,7 +37,7 @@ Options as evaluated:
 ## NOT ready (corrections to the 09-10 research brief)
 
 - **infra#36 (isolation harness cleanup) is not Pilot-executable.** Declined twice by the executor's model (`stop_reason: refusal`, `category: cyber`) even with zero probe content (08-26). The package is off-limits to the executor; needs a human author or a different repo layout. infra#35 same, unlabeled. Memory: `model-refusal-looks-like-exit-status-1`.
-- Billing lifecycle (suspend on past_due) — code is ready but wired to the Stripe portal → founder payment-processor decision.
+- Billing lifecycle — **DECIDED 2026-09-10: Paddle, not Stripe** (founder: location/regulations). Existing Stripe scaffolding (#60/#71/#72/#73) is dead-end. Next: `/nav-task` a Paddle Billing design (overlay checkout from settings-billing, webhook HMAC verify, subscription/transaction events → billingStatus → suspend on past_due), then dispatch. Memory `payment-processor-is-paddle-not-stripe`.
 - Egress allowlist proxy, pricing from COGS, S6 cutover — founder decisions.
 - EBS restore drill — operator work, runbook exists in pilot-cloud-infra.
 
@@ -44,7 +47,7 @@ Options as evaluated:
 - Domain: `pilot.build` $720/yr vs `pilot.engineering` $83 — since 08-26
 - infra#35 authorized framing / human author for the isolation harness — since 08-26
 - Egress-allowlist scope — since 08-26
-- Payment processor / Stripe inputs (gates billing lifecycle + CON-5 copy) — since 07-13
+- ~~Payment processor~~ DECIDED → Paddle (2026-09-10). Still needed from founder: Paddle account/sandbox credentials, product + price ids, plan copy for CON-5.
 - Branch protection on `qf-studio/pilot` main — since 08-03, still none
 - pilot-console tag ruleset (none; `prod-0.1.0` is out) — since 09-08
 
