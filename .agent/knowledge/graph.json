@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-11T12:13:52.013065+00:00",
+  "updated": "2026-09-11T16:03:37.250138+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6329,6 +6329,18 @@
         "contradiction": "compliance/eligibility vs sunk Stripe scaffolding",
         "separation": "system",
         "principle": "keep the domain contract, replace the vendor adapter"
+      },
+      "issue-body-literal-migration-version-collides-with-sibling-leg": {
+        "type": "pitfall",
+        "summary": "Two same-morning console legs both told to add migration 0018 collided (#284 merged first, PR#285 red at migrate-load, size guard refused a fix, task parked). Issue bodies must say 'next free migration version at merge time', never a literal.",
+        "file": ".agent/knowledge/memories/pitfalls/issue-body-literal-migration-version-collides-with-sibling-leg.md",
+        "concepts": [
+          "workflow-discipline",
+          "dispatch",
+          "saas"
+        ],
+        "confidence": 0.95,
+        "created": "2026-09-10"
       }
     }
   },
@@ -9455,7 +9467,8 @@
       "sequential-gates-on-execution-not-merge-fastfollow-misbase",
       "stall-status-reused-as-hold-marker",
       "pilot-never-reads-gh-comments-by-design",
-      "terminal-status-without-rearm-probe-kills-operator-recovery"
+      "terminal-status-without-rearm-probe-kills-operator-recovery",
+      "issue-body-literal-migration-version-collides-with-sibling-leg"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -10088,7 +10101,8 @@
       "no-stripe-local-first-s3-testing",
       "s3-exit-three-tenant-pass-proven",
       "s4-dashboard-only-clause-blocks-local-console",
-      "payment-processor-is-paddle-not-stripe"
+      "payment-processor-is-paddle-not-stripe",
+      "issue-body-literal-migration-version-collides-with-sibling-leg"
     ],
     "scheduler": [
       "mem-101",
@@ -10518,7 +10532,8 @@
       "no-stripe-local-first-s3-testing",
       "review-before-approval-ordering",
       "s6-lite-cutover-recipe",
-      "pilot-never-reads-gh-comments-by-design"
+      "pilot-never-reads-gh-comments-by-design",
+      "issue-body-literal-migration-version-collides-with-sibling-leg"
     ],
     "worktree": [
       "drift-gate-red-means-worktree-deleted-memories",
@@ -10587,11 +10602,11 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-11T12:13:52.013065+00:00",
+  "last_updated": "2026-09-11T16:03:37.250138+00:00",
   "stats": {
-    "total_nodes": 530,
+    "total_nodes": 531,
     "total_edges": 469,
-    "memory_count": 283
+    "memory_count": 284
   },
   "metadata": {}
 }
