@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-09T18:10:18.424098+00:00",
+  "updated": "2026-09-11T12:13:52.013065+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6314,6 +6314,21 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-09"
+      },
+      "payment-processor-is-paddle-not-stripe": {
+        "type": "decision",
+        "summary": "Founder decision 2026-09-10: Pilot Cloud billing uses Paddle (merchant of record), not Stripe (unavailable for the founder's location/regulations). Existing flag-gated Stripe scaffolding in pilot-console is dead-end; S5 billing-lifecycle leg targets Paddle Billing behind the same billingStatus contract.",
+        "file": ".agent/knowledge/memories/decisions/payment-processor-is-paddle-not-stripe.md",
+        "concepts": [
+          "saas",
+          "billing",
+          "decision"
+        ],
+        "confidence": 0.95,
+        "created": "2026-09-10",
+        "contradiction": "compliance/eligibility vs sunk Stripe scaffolding",
+        "separation": "system",
+        "principle": "keep the domain contract, replace the vendor adapter"
       }
     }
   },
@@ -10070,7 +10085,8 @@
       "mem-160",
       "no-stripe-local-first-s3-testing",
       "s3-exit-three-tenant-pass-proven",
-      "s4-dashboard-only-clause-blocks-local-console"
+      "s4-dashboard-only-clause-blocks-local-console",
+      "payment-processor-is-paddle-not-stripe"
     ],
     "scheduler": [
       "mem-101",
@@ -10567,13 +10583,19 @@
     ],
     "needs-human": [
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
+    ],
+    "billing": [
+      "payment-processor-is-paddle-not-stripe"
+    ],
+    "decision": [
+      "payment-processor-is-paddle-not-stripe"
     ]
   },
-  "last_updated": "2026-09-09T18:10:18.424098+00:00",
+  "last_updated": "2026-09-11T12:13:52.013065+00:00",
   "stats": {
-    "total_nodes": 529,
+    "total_nodes": 530,
     "total_edges": 469,
-    "memory_count": 282
+    "memory_count": 283
   },
   "metadata": {}
 }
