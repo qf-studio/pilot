@@ -657,6 +657,29 @@ executor:
   #   enabled: true        # Master switch; false disables the block entirely
   #   max_memories: 5       # Cap on ranked memories included (also capped at ~1500 chars total)
 
+  # Acceptance-checklist evidence gate (GH-5435). Default: enabled — set
+  # enabled: false to restore byte-identical pre-GH-5435 PR bodies.
+  #
+  # When enabled, the executor scans the issue's acceptance checklist for
+  # two kinds of evidence-requiring items and appends the results to the PR
+  # body as "## Evidence" (or "## Not verified" when evidence couldn't be
+  # produced):
+  #   - paste-output items: recognised by the phrases "pasted into the PR
+  #     body", "paste the output", or "terminal output". Any inline
+  #     `command` in the item text is run in the task's worktree; its
+  #     trimmed output (capped at 60 lines) is embedded verbatim.
+  #   - mutation items: recognised by an edit cue ("change"/"delete"/
+  #     "remove") followed by "->"/"→" and a "... fails" assertion, e.g.
+  #     "delete line 42 in foo.go -> TestFoo fails". Only the deterministic
+  #     "delete/remove line N in <file>" shape is applied automatically —
+  #     the file is mutated, the named test/package is run, the result
+  #     (including a mutation that fails no test, which is reported rather
+  #     than omitted) is recorded, and the file is reverted byte-for-byte.
+  #     Freeform mutation descriptions that don't match this shape are
+  #     reported under "## Not verified" instead of guessed at.
+  # acceptance_evidence:
+  #   enabled: true
+
   # Stagnation detection (GH-925) - detect and recover from stuck tasks
   # stagnation:
   #   enabled: true
