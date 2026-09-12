@@ -1,6 +1,6 @@
 # TASK-497: Paddle Billing integration for pilot-console — vendor swap behind the `billing_status` contract
 
-**Status**: 🚧 In Progress — L1 dispatched 2026-09-12 ([console#297](https://github.com/qf-studio/pilot-console/issues/297)); L2 next after L1 merges (no Paddle credentials needed for unit-tested legs); sandbox smoke and flag-on gated on founder inputs (§ Founder inputs)
+**Status**: 🚀 Dispatched to Pilot — L1 ([console#297](https://github.com/qf-studio/pilot-console/issues/297)) and L3 ([ui#156](https://github.com/qf-studio/pilot-console-ui/issues/156)) in flight 2026-09-12; L2 after L1 merges (no Paddle credentials needed for unit-tested legs); sandbox smoke and flag-on gated on founder inputs (§ Founder inputs)
 **Created**: 2026-09-12
 **Assignee**: Navigator (design) → Pilot (legs) · founder (Paddle account)
 **Parent**: [TASK-405](TASK-405-pilot-saas-platform.md) S5 billing lifecycle · [TASK-496](TASK-496-console-resume-s5.md) § billing
@@ -160,7 +160,7 @@ Issue-body rules at dispatch: H2 headers `## Problem / ## Fix / ## Acceptance`, 
 - **Acceptance**: all above green · handler does no outbound HTTP (fake client asserts zero calls) · **mutation**: removing the `ON CONFLICT DO NOTHING` path or the `occurred_at` guard each fails a named test; swapping `hmac.Equal` for `==` fails the vector test that checks constant-time compare is used (or a lint guard).
 - Depends on L1 (columns + DTOs).
 
-### L3 — ui: checkout route + settings-billing actions
+### L3 — ui: checkout route + settings-billing actions — 🚀 DISPATCHED 2026-09-12 → [ui#156](https://github.com/qf-studio/pilot-console-ui/issues/156) (parallel to L1; package.json additions approved by the founder)
 - **Scope** (Vue 3): add `@paddle/paddle-js` dependency (package.json change → needs approval per project rules; call it out in the issue); route `/billing/checkout` reading `_ptxn`, fetching `GET /api/v1/billing/config`, `initializePaddle`, `Paddle.Checkout.open({transactionId, settings})`, error state if `_ptxn` missing or Paddle.js fails to load; `src/views/SettingsBillingView.vue` — Subscribe (status ∉ {active, past_due}) → checkout-session → `navigateTo(url)`; Manage subscription (active/past_due) → portal-session → open in new tab; Update payment method (past_due) → `update_payment_method_url`; `?checkout=success` → poll status 2 s × 30 → chip flips or "payment received, activation pending — refresh in a minute"; `src/lib/api/httpAdapter.ts` + `mockAdapter.ts` + `types.ts` gain `getBillingConfig`, `createPortalSession`; chip states unchanged, `past_due` label becomes "payment failed — update your card within N days" using `past_due_grace_hours`; portal URLs are fetched per click, never stored.
 - **Acceptance**: unit tests for the route (missing `_ptxn`, load failure, open called with the transaction id and `allowLogout:false`), polling stops on `active` and on timeout, mock adapter parity, `npm run build` green · **mutation**: removing `transactionId` from the open call fails a test.
 - Depends on L1 (config endpoint) · parallel with L4 · L4's endpoint may be stubbed in mock adapter first.
@@ -262,6 +262,7 @@ npm test && npm run build
 - Console review lineage for the wiring-pin rule: console PR#292 → #293 → PR#294 → #295
 - Roadmap: `system/saas-roadmap.md` S5 row; item 10 (termination/retention) for the follow-on task
 - Dead-end Stripe scaffolding: console #60 / #71 / #72 / #73
+- Pilot issues: L1 https://github.com/qf-studio/pilot-console/issues/297 · L3 https://github.com/qf-studio/pilot-console-ui/issues/156
 
 ---
 
