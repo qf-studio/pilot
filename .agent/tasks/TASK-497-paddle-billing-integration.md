@@ -1,6 +1,6 @@
 # TASK-497: Paddle Billing integration for pilot-console — vendor swap behind the `billing_status` contract
 
-**Status**: 🚧 In Progress — design written 2026-09-12, legs not yet dispatched; L1+L2 dispatchable now (no Paddle credentials needed for unit-tested legs); sandbox smoke and flag-on gated on founder inputs (§ Founder inputs)
+**Status**: 🚧 In Progress — L1 dispatched 2026-09-12 ([console#297](https://github.com/qf-studio/pilot-console/issues/297)); L2 next after L1 merges (no Paddle credentials needed for unit-tested legs); sandbox smoke and flag-on gated on founder inputs (§ Founder inputs)
 **Created**: 2026-09-12
 **Assignee**: Navigator (design) → Pilot (legs) · founder (Paddle account)
 **Parent**: [TASK-405](TASK-405-pilot-saas-platform.md) S5 billing lifecycle · [TASK-496](TASK-496-console-resume-s5.md) § billing
@@ -151,7 +151,7 @@ Destination subscribes to: all `subscription.*` + `transaction.completed` + `tra
 
 Issue-body rules at dispatch: H2 headers `## Problem / ## Fix / ## Acceptance`, inline `Depends on: #N`, backticked paths only if present on the target repo's `origin/main` (run the path check), no migration version literals, `no-decompose` label, mutation command in acceptance.
 
-### L1 — console: Paddle provider core (config, client, customer, transaction checkout, schema rename, stripe-go removal)
+### L1 — console: Paddle provider core (config, client, customer, transaction checkout, schema rename, stripe-go removal) — 🚀 DISPATCHED 2026-09-12 → [console#297](https://github.com/qf-studio/pilot-console/issues/297)
 - **Scope**: `internal/config/config.go` billing block per D6 (+ environment/key-prefix cross-check, stale-Stripe-var refusal); `internal/billing/service.go` — `OrgStore` gains `UpdateBillingStatusByCustomer` → vendor-neutral names, new `PaddleClient` interface (create customer, create transaction, create portal session) implemented over paddle-go-sdk v5, faked in tests; `internal/billing/handlers.go` checkout handler per D1; `GET /api/v1/billing/config`; new migration per D7; `internal/orgs/store.go` methods renamed; `main.go` `registerBilling` + adapter; `go.mod` swap; `README.md` config section; handler DTOs become structs with json tags so `scripts/check-wire-contract-tests.sh` covers them.
 - **Acceptance**: flag off → zero billing routes (existing test kept) · flag on with sandbox env + live-prefixed key → `Load` error · checkout-session creates customer once then reuses id (fake client asserts call counts) · transaction request carries `custom_data.org_id` and `price_id` · `{url}` is the fake's `checkout.url` verbatim · `go.mod` has no stripe module · wire-contract gate now fires on the billing handler DTOs · **mutation**: deleting the `custom_data` field from the transaction request fails a test; removing the `registerBilling` call fails `main_test.go`.
 
