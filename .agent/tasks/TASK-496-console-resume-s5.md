@@ -37,7 +37,7 @@ Options as evaluated:
 ## NOT ready (corrections to the 09-10 research brief)
 
 - **infra#36 (isolation harness cleanup) is not Pilot-executable.** Declined twice by the executor's model (`stop_reason: refusal`, `category: cyber`) even with zero probe content (08-26). The package is off-limits to the executor; needs a human author or a different repo layout. infra#35 same, unlabeled. Memory: `model-refusal-looks-like-exit-status-1`.
-- Billing lifecycle — **DECIDED 2026-09-10: Paddle, not Stripe** (founder: location/regulations). Existing Stripe scaffolding (#60/#71/#72/#73) is dead-end. Next: `/nav-task` a Paddle Billing design (overlay checkout from settings-billing, webhook HMAC verify, subscription/transaction events → billingStatus → suspend on past_due), then dispatch. Memory `payment-processor-is-paddle-not-stripe`.
+- Billing lifecycle — **DECIDED 2026-09-10: Paddle, not Stripe** (founder: location/regulations). Existing Stripe scaffolding (#60/#71/#72/#73) is dead-end. **Design DONE 2026-09-12 → [TASK-497](TASK-497-paddle-billing-integration.md)** (6 legs; L1+L2 dispatchable without credentials; sandbox smoke + flag-on gated on founder inputs). Memory `payment-processor-is-paddle-not-stripe`.
 - Egress allowlist proxy, pricing from COGS, S6 cutover — founder decisions.
 - EBS restore drill — operator work, runbook exists in pilot-cloud-infra.
 
@@ -47,7 +47,7 @@ Options as evaluated:
 - Domain: `pilot.build` $720/yr vs `pilot.engineering` $83 — since 08-26
 - infra#35 authorized framing / human author for the isolation harness — since 08-26
 - Egress-allowlist scope — since 08-26
-- ~~Payment processor~~ DECIDED → Paddle (2026-09-10). Still needed from founder: Paddle account/sandbox credentials, product + price ids, plan copy for CON-5.
+- ~~Payment processor~~ DECIDED → Paddle (2026-09-10); design in [TASK-497](TASK-497-paddle-billing-integration.md) § Founder inputs (sandbox API key + client token → SSM, price id, default payment link, notification destination secret, dunning end action, live verification, CON-5 copy).
 - Branch protection on `qf-studio/pilot` main — since 08-03, still none
 - pilot-console tag ruleset (none; `prod-0.1.0` is out) — since 09-08
 
