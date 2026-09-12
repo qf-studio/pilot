@@ -31,7 +31,7 @@ Sandbox → live mapping: `pro_01m2b1xhwtvnmh5atk6zpdagdb` → `pro_01m2az5r1fm3
 
 ## Sandbox settings (2026-09-12)
 - **Default payment link**: `https://localhost:5173/billing/checkout` (entered as http, Paddle forced https). Consequence for L6: the local Vite dev server must serve HTTPS for `/billing/checkout` (Vite basic-ssl plugin) or the link gets pointed at a tunnel. Sandbox approves any domain.
-- **Client-side token** `pilot-console-ui` (Active, value ends `78350`; copy it from Developer tools → Authentication → Client-side tokens when L3 needs `PILOT_CONSOLE_BILLING_PADDLE_CLIENT_TOKEN`).
+- **Client-side token** `pilot-console-ui` (Active): `test_05a1a67b5e1f7ce4cead5778350` — public-safe by design (Paddle.js browser token); value for `PILOT_CONSOLE_BILLING_PADDLE_CLIENT_TOKEN` in sandbox.
 - **API key**: NOT created; founder creates it (1-year expiry, scoped) and puts it into `/plugin configure paddle@claude-community` + SSM.
 - **Notification destination**: NOT created; needs the public webhook URL (tunnel or staging). Create once, capture the secret once.
 - Payment methods enabled by default: PayPal, Apple Pay, Bancontact (cards always on). Business name in sandbox has a typo "Quntflow" (Account settings; cosmetic).
