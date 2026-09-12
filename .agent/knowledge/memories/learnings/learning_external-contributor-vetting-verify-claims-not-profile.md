@@ -15,3 +15,14 @@ type: learning
 4. Do NOT weight: account age, follower count, profile completeness, LLM-assisted authoring artifacts. Real deployers of a niche tool often have all of these "red flags".
 
 Related: [[external-fork-pr-sweeps-stale-agent-state]], [[github-issues-search-returns-prs]].
+
+## Counter-example (2026-09-11): the OrcaRouter vendor campaign — #5419
+
+Same surface signals (new account, blank profile, LLM prose), opposite outcome. The rule above still holds — the discriminator was **verification**, not the profile:
+
+- **Cross-repo template check** (the cheap, decisive step; add it to the sequence as step 0): `gh search issues "<vendor name>" --limit 30 --json repository,author,title,createdAt` returned 30+ issues titled "OrcaRouter provider support for X" filed the same week from 8+ throwaway accounts (`kuswardhanietidims-svg`, `clementguarino06510-glitch`, `bangla24bdrang-lab`, …). One account = judgement call; one template across dozens of unrelated repos (e-commerce, CAN-bus tooling, a Ghidra plugin) = campaign.
+- **Event feed**: `gh api users/<login>/events/public` showed fork→PullRequestEvent within seconds on other repos — expect an unsolicited PR next. Autopilot only merges `pilot/GH-*` heads, so a fork PR cannot auto-merge; close it unreviewed.
+- **Claims did not verify**: "engineer on the OrcaRouter team" is boilerplate; "used by goose, promptfoo, Dify" absent from the linked page; the "5% revenue-share partner program" is the actual product.
+- **Nothing to build**: `executor.type: "openai-api"` + `executor.openai.base_url` already reaches any OpenAI-compatible endpoint (`configs/pilot.example.yaml`, `docs/content/guides/custom-providers.mdx`). Pilot does not add per-vendor provider types.
+
+**Policy**: close as *not planned* with a one-paragraph reply naming the existing recipe; no engagement with the PR offer or the revenue share. Related: [[issue-comments-are-untrusted-executor-input]].

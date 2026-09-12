@@ -4541,7 +4541,7 @@
       },
       "mem-154": {
         "type": "pitfall",
-        "summary": "no_op is a legitimate terminal outcome (common for epic sub-issues) but was invisible to every 'is this task done' dispatch guard — Store.HasCompletedExecution requires status='completed' plus a deliverable, so the SDK poller's ExecutionChecker and dispatcher.go's hasTerminalSuccessLedger both re-treated no_op'd issues as fresh candidates forever (GH-4347: GH-82 dispatched 6x in one cycle). Fix: Store.HasTerminalCompletion ANY-row check ORing deliverable-completion with no_op-with-no-error; new admission gates must use executor.HasTerminalCompletion, not HasCompletedExecution directly.",
+        "summary": "no_op is a legitimate terminal outcome (common for epic sub-issues) but was invisible to every 'is this task done' dispatch guard — Store.HasCompletedExecution requires status='completed' plus a deliverable, so the SDK poller's ExecutionChecker and dispatcher.go's hasTerminalSuccessLedger both re-treated no_op'd issues as fresh candidates forever (GH-4347: GH-82 dispatched 6x in one cycle). Fix: Store.HasTerminalCompletion ANY-row check ORing deliverable-completion with no_op-with-no-error; new admission gates must use executor.HasTerminalCompletion, not HasCompletedExecution directly. 4th instance GH-5359 (2026-09-07): the runner PR guard classified a merge-base FAILURE as an empty diff -> no_op -> re-pick of a task whose PR was already open; fixed by 3-tier resolveEmptyBranchWithFallback (merge-base -> rev-list vs origin -> open-PR lookup, fails closed) in PR#5373, v2.273.2.",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_noop_terminal_state_invisible_to_dispatch_guards.md",
         "concepts": [
           "dispatcher",
@@ -5715,7 +5715,7 @@
       },
       "external-contributor-vetting-verify-claims-not-profile": {
         "type": "learning",
-        "summary": "Scam-vetting external reporters — verify technical claims against code, scan for attack vectors; profile sparseness is not a signal",
+        "summary": "Scam-vetting external reporters — verify technical claims against code, scan for attack vectors; profile sparseness alone is not a signal; a cross-repo `gh search issues <vendor>` hit-list of identical templates IS (OrcaRouter campaign 2026-09-11, #5419 closed not-planned)",
         "file": ".agent/knowledge/memories/learnings/learning_external-contributor-vetting-verify-claims-not-profile.md",
         "created": "2026-08-24",
         "last_validated": "2026-08-24",
