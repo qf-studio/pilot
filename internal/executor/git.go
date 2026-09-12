@@ -69,6 +69,14 @@ func NewGitOperations(projectPath string) *GitOperations {
 	return &GitOperations{projectPath: projectPath}
 }
 
+// ProjectPath returns the working-tree directory these operations act on
+// (GH-5435: needed by the acceptance-evidence runner to execute paste-output
+// commands and apply/revert mutations in the same worktree the PR is being
+// created from, rather than the process's ambient CWD).
+func (g *GitOperations) ProjectPath() string {
+	return g.projectPath
+}
+
 // CreateBranch creates a new branch
 func (g *GitOperations) CreateBranch(ctx context.Context, branchName string) error {
 	cmd := exec.CommandContext(ctx, "git", "checkout", "-b", branchName)

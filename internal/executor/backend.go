@@ -408,6 +408,11 @@ type BackendConfig struct {
 	// executor prompts (TASK-387).
 	MemoryInjection *MemoryInjectionConfig `yaml:"memory_injection,omitempty"`
 
+	// AcceptanceEvidence controls the acceptance-checklist evidence gate
+	// (GH-5435): running "paste the output" / mutation-style acceptance
+	// items and recording their results in the PR body. Default: enabled.
+	AcceptanceEvidence *AcceptanceEvidenceConfig `yaml:"acceptance_evidence,omitempty"`
+
 	// Navigator contains Navigator auto-init settings
 	Navigator *NavigatorConfig `yaml:"navigator,omitempty"`
 
@@ -763,6 +768,37 @@ type PreFlightJudgeConfig struct {
 	Timeout string `yaml:"timeout,omitempty"`
 }
 
+// AcceptanceEvidenceConfig controls the acceptance-checklist evidence gate
+// (GH-5435). When enabled, the executor recognises acceptance items asking
+// for a command's output to be "pasted into the PR body" (patterns:
+// "pasted into the PR body", "paste the output", "terminal output") and
+// mutation-style items ("change/delete/remove … -> TestY fails"), runs
+// them against the task's own worktree after implementation, and appends
+// "## Evidence" / "## Not verified" sections to the PR body. Default:
+// enabled — see DefaultBackendConfig.
+//
+// Example YAML configuration:
+//
+//	executor:
+//	  acceptance_evidence:
+//	    enabled: true
+type AcceptanceEvidenceConfig struct {
+	// Enabled controls whether the gate runs at all. When false, PR-body
+	// assembly is byte-identical to the pre-GH-5435 behavior — no commands
+	// are run and no sections are appended.
+	Enabled *bool `yaml:"enabled,omitempty"`
+}
+
+// IsEnabled reports whether the acceptance-evidence gate should run,
+// treating a nil config or nil Enabled pointer as enabled (the documented
+// default) — only an explicit `enabled: false` turns the gate off.
+func (c *AcceptanceEvidenceConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
 // MemoryInjectionConfig controls whether relevant knowledge-graph memories
 // (pitfalls, patterns, decisions, learnings) are appended to executor
 // prompts. Recall is pure local computation over .agent/knowledge/graph.json
@@ -959,12 +995,14 @@ func DefaultBackendConfig() *BackendConfig {
 	autoCreatePR := true
 	detectEphemeral := true
 	prePushLint := true
+	acceptanceEvidenceEnabled := true
 	return &BackendConfig{
-		Type:            "claude-code",
-		AutoCreatePR:    &autoCreatePR,
-		DetectEphemeral: &detectEphemeral,
-		PrePushLint:     &prePushLint,
-		PlanningTimeout: 2 * time.Minute,
+		Type:               "claude-code",
+		AutoCreatePR:       &autoCreatePR,
+		DetectEphemeral:    &detectEphemeral,
+		PrePushLint:        &prePushLint,
+		AcceptanceEvidence: &AcceptanceEvidenceConfig{Enabled: &acceptanceEvidenceEnabled},
+		PlanningTimeout:    2 * time.Minute,
 		ClaudeCode: &ClaudeCodeConfig{
 			Command:      "claude",
 			AllowedTools: DefaultAllowedToolsExecution(),
