@@ -47,15 +47,39 @@ status set, and (2) scan every row for the task, never just the row a plain
 `ORDER BY created_at DESC LIMIT 1` returns — a fresh duplicate row can always
 sort ahead of an older terminal one.
 
+## Fourth instance (GH-5359, 2026-09-07) — the guard that *produces* no_op was wrong
+
+Not a missing consumer of `no_op` this time but a false producer: the runner's
+PR guard (`internal/executor/runner.go`) treated a failed `git merge-base`
+against `origin/main` as "no commits relative to base" and ended the run
+`no_op` — for GH-5351 run 1 that happened *after* the run had committed, pushed
+and opened PR #5356 (autopilot had already adopted it). The dispatcher then
+re-picked the issue as generation 1 as if nothing had been delivered; only the
+prior adoption prevented a duplicate Claude run.
+
+Fix (#5359 → PR#5369 died on a CI-only fixture bug → #5370 → **PR#5373 merged
+2026-09-08, v2.273.2**): `resolveEmptyBranchWithFallback` (`runner.go:2614`)
+distinguishes "diff computed and empty" from "diff could not be computed" with
+three tiers — merge-base, then `CountNewCommitsAgainstOrigin` after a fresh
+fetch, then `FindOpenPRByBranch`. Commits + open PR → adopt the PR, end
+`completed`; nothing confirmable by all three → hard failure, never `no_op`.
+Each tier logs at Info with branch/base/PR. Tests: `runner_gh5359_test.go`.
+
+**Updated rule (producer side)**: a terminal `no_op` may only be written when
+emptiness was *positively established*; an error while measuring emptiness must
+fail closed (error status), because every downstream guard treats `no_op` as
+"legitimately nothing to do" and will not re-examine it.
+
 ## Related
 - `internal/memory/store.go`
 - `internal/executor/dispatcher.go`
 - `internal/executor/epic.go` (`reconcileChildOutcome`, `findTerminalChildExecution`)
 - `internal/executor/terminal_status_inventory_test.go`
-- GH-4347, GH-4381
+- GH-4347, GH-4381, GH-5359 (PR#5373)
+- `internal/executor/runner.go` (`resolveEmptyBranchWithFallback`), `internal/executor/runner_gh5359_test.go`
 
 ---
-**Captured**: 2026-07-15 (updated 2026-07-16 with 3rd instance, GH-4381)
+**Captured**: 2026-07-15 (updated 2026-07-16 with 3rd instance, GH-4381; 2026-09-12 with 4th instance, GH-5359)
 **Confidence**: 90%
 **Concepts**: dispatcher, sdk-poller, ledger, canary, epic-reconcile
 
