@@ -2248,6 +2248,39 @@ func (d *Dispatcher) stallTaskAfterInfraCap(task *Task, gen, infraDrops int) {
 	})
 }
 
+// parseAutoPreservedSHABranch extracts the preserved commit sha and branch
+// name embedded in a GH-4517 auto-preserve error string of the form
+// "...auto-preserved as <sha> on branch <branch>; needs manual review...".
+// Both auto-preserve producers (git_freshness.go's no-op-classification path
+// and runner.go's preserveDirtyOrFail dirty-worktree path) share this exact
+// shape. GH-5445: escalateDeterministicFailure's operator-attention comment
+// uses this to name the preserved sha/branch explicitly rather than making
+// an operator dig the daemon log for them. Returns ok=false if the marker
+// isn't present or the text after it doesn't match the expected shape.
+func parseAutoPreservedSHABranch(errStr string) (sha, branch string, ok bool) {
+	idx := strings.Index(errStr, autoPreservedFailureMarker)
+	if idx == -1 {
+		return "", "", false
+	}
+	rest := errStr[idx+len(autoPreservedFailureMarker):]
+	const onBranch = " on branch "
+	sepIdx := strings.Index(rest, onBranch)
+	if sepIdx == -1 {
+		return "", "", false
+	}
+	sha = rest[:sepIdx]
+	rest = rest[sepIdx+len(onBranch):]
+	semiIdx := strings.Index(rest, ";")
+	if semiIdx == -1 {
+		return "", "", false
+	}
+	branch = rest[:semiIdx]
+	if sha == "" || branch == "" {
+		return "", "", false
+	}
+	return sha, branch, true
+}
+
 // escalateDeterministicFailure routes a task whose prior claim failed with a
 // deterministic error class (priorClaimWasDeterministicFailure) straight to
 // the operator-attention path via escalateStalledTask, without granting a
@@ -2538,13 +2571,7 @@ func (d *Dispatcher) surfaceStalledIssue(task *Task, reason string) {
 		return
 	}
 
-	comment := fmt.Sprintf(
-		"Pilot stopped retrying (repick hard cap): %s\n\n"+
-			"Labeled `pilot-blocked` so this issue stops winning scope-overlap "+
-			"dispatch priority over sibling issues that touch the same files. "+
-			"To re-arm after fixing the underlying blocker:\n```\ngh issue edit %d --remove-label pilot-blocked --remove-label pilot-failed --add-label pilot-retry-ready\n```",
-		reason, parsed,
-	)
+	comment := stalledIssueComment(reason, parsed)
 	if err := ghIssueComment(ctx, task.ProjectPath, issueNum, comment); err != nil {
 		d.log.Warn("stalled-issue surfacing: failed to post comment",
 			slog.String("task_id", task.ID), slog.Any("error", err))
@@ -2553,6 +2580,34 @@ func (d *Dispatcher) surfaceStalledIssue(task *Task, reason string) {
 		d.log.Warn("stalled-issue surfacing: failed to update labels",
 			slog.String("task_id", task.ID), slog.Any("error", err))
 	}
+}
+
+// stalledIssueComment builds surfaceStalledIssue's operator-attention
+// comment body. GH-5445: when reason carries a GH-4517 auto-preserve error
+// (parseAutoPreservedSHABranch succeeds), it appends explicit next-step
+// guidance naming the preserved sha and branch — without this, the only
+// record of what got preserved and where is the daemon log, and a re-pick
+// would have silently reset past it (CreateWorktreeWithBranch always
+// rebases -B onto origin/main) or failed to push over it (non-fast-forward
+// against the already-pushed preserved sha).
+func stalledIssueComment(reason string, issueNum int) string {
+	comment := fmt.Sprintf(
+		"Pilot stopped retrying (repick hard cap): %s\n\n"+
+			"Labeled `pilot-blocked` so this issue stops winning scope-overlap "+
+			"dispatch priority over sibling issues that touch the same files. "+
+			"To re-arm after fixing the underlying blocker:\n```\ngh issue edit %d --remove-label pilot-blocked --remove-label pilot-failed --add-label pilot-retry-ready\n```",
+		reason, issueNum,
+	)
+	if sha, branch, ok := parseAutoPreservedSHABranch(reason); ok {
+		comment += fmt.Sprintf(
+			"\n\n**Preserved work found**: the worktree had uncommitted changes that were "+
+				"auto-committed and pushed as `%s` on branch `%s` instead of being discarded. "+
+				"This may be complete, real work — fetch the branch, review the commit, and "+
+				"either open a PR from it or file a continuation issue that cherry-picks it.",
+			sha, branch,
+		)
+	}
+	return comment
 }
 
 // blockingClaimLogAttrs returns slog attributes describing the claim that
