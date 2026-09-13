@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-13T11:59:17.337606+00:00",
+  "updated": "2026-09-13T16:27:07.561021+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6622,6 +6622,19 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-13"
+      },
+      "auto-preserved-wip-recover-by-cherry-pick-continuation": {
+        "type": "pitfall",
+        "summary": "Executor auto-preserved WIP ('auto-preserved as <sha>') is usually complete work; the dispatcher re-picks from origin/main and the plain push then collides with the preserved branch. Recover: unlabel, pin sha under preserve/ ref, verify, file a cherry-pick continuation issue. Size one-PR specs ~500 lines for the 1 h complex budget.",
+        "file": ".agent/knowledge/memories/pitfalls/auto-preserved-wip-recover-by-cherry-pick-continuation.md",
+        "concepts": [
+          "executor",
+          "dispatch",
+          "issue-authoring",
+          "worktree"
+        ],
+        "confidence": 0.95,
+        "created": "2026-09-13"
       }
     }
   },
@@ -9900,6 +9913,7 @@
       "mem-194"
     ],
     "dispatch": [
+      "auto-preserved-wip-recover-by-cherry-pick-continuation",
       "board-sourced-repo-ignores-labeled-issues",
       "claim-lost-drops-count-toward-hard-cap",
       "founder-priority-pointer-first-saas-parked",
@@ -9985,6 +9999,7 @@
       "TASK-321",
       "TASK-358",
       "TASK-379",
+      "auto-preserved-wip-recover-by-cherry-pick-continuation",
       "bare-exit-137-mislabeled-oom",
       "ci-infra-failure-misclassified-as-code",
       "claude-cli-refuses-root-hosted-units",
@@ -10223,6 +10238,7 @@
       "mem-077"
     ],
     "issue-authoring": [
+      "auto-preserved-wip-recover-by-cherry-pick-continuation",
       "commit-message-hyphenated-close-keyword-autocloses-issues",
       "decomposer-narrative-bullets-as-subtask-boundaries",
       "hardening-issue-wording-triggers-model-refusal",
@@ -11030,6 +11046,7 @@
       "issue-body-literal-migration-version-collides-with-sibling-leg"
     ],
     "worktree": [
+      "auto-preserved-wip-recover-by-cherry-pick-continuation",
       "drift-gate-red-means-worktree-deleted-memories",
       "localmode-tasks-never-get-worktree-qdocs-in-root",
       "mem-023",
@@ -11109,11 +11126,11 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-13T11:59:17.337606+00:00",
+  "last_updated": "2026-09-13T16:27:07.561021+00:00",
   "stats": {
-    "total_nodes": 545,
+    "total_nodes": 546,
     "total_edges": 490,
-    "memory_count": 297
+    "memory_count": 298
   },
   "metadata": {}
 }
