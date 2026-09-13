@@ -137,6 +137,124 @@ func TestRunPasteOutputItem(t *testing.T) {
 	})
 }
 
+// GH-5442: the allowlist previously checked only the first whitespace-
+// delimited token, and the runner handed the whole line to `sh -c` — so an
+// allowlisted first token with a shell operator anywhere else in the line
+// ran through a real shell. These three commands (from the GH-5442 issue,
+// verified on main to pass the pre-fix allowlist) must now be refused with
+// the shell-operator reason and never reach the command runner at all.
+func TestRunPasteOutputItem_ShellOperatorRefusal(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+	}{
+		{"command sequencing with &&", "go test ./... && echo second"},
+		{"command substitution with $(...)", "make $(echo build)"},
+		{"pipe to another command", "npm test | tee out.txt"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeAcceptanceCommandRunner{}
+			item := ClassifyAcceptanceItem("paste the output of `" + tc.command + "`")
+			result := runPasteOutputItem(context.Background(), runner, "/tmp/whatever", item, defaultTestAllowedCommands)
+
+			if len(runner.calls) != 0 {
+				t.Fatalf("expected zero calls to the command runner, got %v", runner.calls)
+			}
+			if result.NotVerifiedReason != shellOperatorNotVerifiedReason {
+				t.Fatalf("NotVerifiedReason = %q, want %q", result.NotVerifiedReason, shellOperatorNotVerifiedReason)
+			}
+		})
+	}
+
+	t.Run("allowed commands with plain arguments still run", func(t *testing.T) {
+		plain := []string{
+			"go test ./internal/executor/ -run TestX -v",
+			"make check-secrets",
+			"bun run test",
+		}
+		for _, command := range plain {
+			runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+				command: {output: "ok"},
+			}}
+			item := ClassifyAcceptanceItem("paste the output of `" + command + "`")
+			result := runPasteOutputItem(context.Background(), runner, "/tmp/whatever", item, defaultTestAllowedCommands)
+			if result.NotVerifiedReason != "" {
+				t.Fatalf("command %q: unexpected NotVerifiedReason: %s", command, result.NotVerifiedReason)
+			}
+			if len(runner.calls) != 1 {
+				t.Fatalf("command %q: expected exactly 1 call, got %v", command, runner.calls)
+			}
+		}
+	})
+}
+
+// --- Shell-operator detection and argv splitting ---
+
+func TestHasDisallowedShellOperators(t *testing.T) {
+	cases := []struct {
+		command string
+		want    bool
+	}{
+		{"go test ./...", false},
+		{"go test ./internal/executor/ -run TestX -v", false},
+		{"make check-secrets", false},
+		{"bun run test", false},
+		{"go test -run '^TestMain$' ./...", false},
+		{"go test ./... && echo second", true},
+		{"make $(echo build)", true},
+		{"npm test | tee out.txt", true},
+		{"go test ./...; rm -rf /", true},
+		{"go test `whoami`", true},
+		{"make ${HOME}", true},
+		{"go test ./... > out.txt", true},
+		{"go test ./... < input.txt", true},
+		{"go test ./...\nrm -rf /", true},
+		{"# a comment", true},
+		{"go test ./... # trailing comment", true},
+		{"go test ./...#not-a-comment", false}, // no preceding whitespace
+	}
+	for _, c := range cases {
+		if got := hasDisallowedShellOperators(c.command); got != c.want {
+			t.Errorf("hasDisallowedShellOperators(%q) = %v, want %v", c.command, got, c.want)
+		}
+	}
+}
+
+func TestSplitCommandFields(t *testing.T) {
+	cases := []struct {
+		command string
+		want    []string
+	}{
+		{"go test ./...", []string{"go", "test", "./..."}},
+		{"go test -run '^TestMain$' ./...", []string{"go", "test", "-run", "^TestMain$", "./..."}},
+		{`go test -run "^TestMain$" ./...`, []string{"go", "test", "-run", "^TestMain$", "./..."}},
+		{"  make   check-secrets  ", []string{"make", "check-secrets"}},
+		{"", nil},
+	}
+	for _, c := range cases {
+		got, err := splitCommandFields(c.command)
+		if err != nil {
+			t.Fatalf("splitCommandFields(%q) unexpected error: %v", c.command, err)
+		}
+		if len(got) != len(c.want) {
+			t.Fatalf("splitCommandFields(%q) = %v, want %v", c.command, got, c.want)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("splitCommandFields(%q)[%d] = %q, want %q", c.command, i, got[i], c.want[i])
+			}
+		}
+	}
+
+	t.Run("unterminated quote is an error", func(t *testing.T) {
+		if _, err := splitCommandFields("go test 'unterminated"); err == nil {
+			t.Fatal("expected an error for an unterminated quote")
+		}
+	})
+}
+
 func TestRunMutationItem_DeleteLineMutation(t *testing.T) {
 	dir := t.TempDir()
 	targetFile := "main.go"
@@ -551,6 +669,72 @@ func TestRedactOutputForEvidence(t *testing.T) {
 			t.Fatalf("got %q, want empty", got)
 		}
 	})
+}
+
+// GH-5442: TestRedactOutputForEvidence above pins redactOutputForEvidence in
+// isolation, but nothing asserted the *runner* actually applies it before
+// output reaches the PR body — a refactor of finalizeEvidenceOutput
+// (acceptance_evidence_run.go) that dropped the redactOutputForEvidence call
+// left the whole executor suite green. These two tests go through the real
+// pipeline — RunAcceptanceEvidence -> RenderAcceptanceEvidenceSections — with
+// a fake runner returning secret-shaped output, and assert the rendered
+// section contains [REDACTED] and neither raw value:
+//   - skip redactOutputForEvidence in finalizeEvidenceOutput -> these fail
+//     (the raw secret would appear in the rendered section)
+//   - restore `sh -c` with the shell-operator check removed -> the sibling
+//     TestRunPasteOutputItem_ShellOperatorRefusal fails instead
+func TestRenderAcceptanceEvidenceSections_RedactsSecrets_PasteOutputItem(t *testing.T) {
+	ghpToken := "ghp_" + strings.Repeat("a1B2c3", 6) // 36 chars, matches secretpatterns' ghp_ shape
+	t.Setenv("PILOT_PARENT_SECRET", "leaked-parent-env-value")
+
+	runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+		"go test ./...": {output: "Authorization: Bearer " + ghpToken + "\nparent secret: leaked-parent-env-value\nok"},
+	}}
+	criteria := []string{"paste the output of `go test ./...`"}
+
+	results := RunAcceptanceEvidence(context.Background(), runner, "/tmp/whatever", criteria, defaultTestAllowedCommands)
+	section := RenderAcceptanceEvidenceSections(results)
+
+	if !strings.Contains(section, "[REDACTED]") {
+		t.Fatalf("expected rendered section to contain [REDACTED], got %q", section)
+	}
+	if strings.Contains(section, ghpToken) {
+		t.Fatalf("rendered section leaked the raw ghp_ token: %q", section)
+	}
+	if strings.Contains(section, "leaked-parent-env-value") {
+		t.Fatalf("rendered section leaked the raw parent env secret value: %q", section)
+	}
+}
+
+func TestRenderAcceptanceEvidenceSections_RedactsSecrets_MutationItem(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatalf("failed to seed test file: %v", err)
+	}
+
+	ghpToken := "ghp_" + strings.Repeat("d4E5f6", 6)
+	t.Setenv("PILOT_PARENT_SECRET", "leaked-mutation-env-value")
+
+	runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+		"go test -run '^TestMain$' ./...": {
+			output: "--- FAIL: TestMain (0.00s)\ntoken leaked: " + ghpToken + "\nparent secret: leaked-mutation-env-value\nFAIL",
+			err:    &exec.ExitError{},
+		},
+	}}
+	criteria := []string{"delete line 3 in main.go -> TestMain fails"}
+
+	results := RunAcceptanceEvidence(context.Background(), runner, dir, criteria, defaultTestAllowedCommands)
+	section := RenderAcceptanceEvidenceSections(results)
+
+	if !strings.Contains(section, "[REDACTED]") {
+		t.Fatalf("expected rendered section to contain [REDACTED], got %q", section)
+	}
+	if strings.Contains(section, ghpToken) {
+		t.Fatalf("rendered section leaked the raw ghp_ token: %q", section)
+	}
+	if strings.Contains(section, "leaked-mutation-env-value") {
+		t.Fatalf("rendered section leaked the raw parent env secret value: %q", section)
+	}
 }
 
 // --- Flag-off byte-identical PR body ---

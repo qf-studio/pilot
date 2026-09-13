@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-// AcceptanceCommandRunner runs a shell command in dir and returns its
+// AcceptanceCommandRunner runs an evidence command in dir and returns its
 // combined stdout+stderr. Injected (rather than calling exec.Command
 // directly) so pattern-detection callers can unit-test the paste-output and
-// mutation harnesses with a fake double instead of a real shell.
+// mutation harnesses with a fake double instead of a real subprocess.
 type AcceptanceCommandRunner interface {
 	RunCommand(ctx context.Context, dir, command string) (output string, err error)
 }
@@ -72,6 +72,125 @@ func isCommandAllowed(command string, allowed []string) bool {
 	return false
 }
 
+// shellOperatorNotVerifiedReason is the Not-verified reason reported when an
+// evidence command contains a shell control character or expansion sequence
+// (GH-5442).
+const shellOperatorNotVerifiedReason = "Not verified: shell operators are not allowed in evidence commands"
+
+// disallowedShellOperatorBytes are the single-byte shell control characters
+// GH-5442 refuses outright: `;` `&` `|` (sequencing/piping), a backtick
+// (command substitution), `>` `<` (redirection), and a literal newline.
+var disallowedShellOperatorBytes = []byte{';', '&', '|', '`', '>', '<', '\n'}
+
+// disallowedShellOperatorSequences are the multi-byte expansion sequences
+// GH-5442 refuses outright: `$(` (command substitution) and `${`
+// (parameter expansion).
+var disallowedShellOperatorSequences = []string{"$(", "${"}
+
+// hasDisallowedShellOperators reports whether command contains any shell
+// control character or expansion sequence GH-5442 refuses to run.
+//
+// GH-5442: isCommandAllowed only ever checked the first whitespace-delimited
+// token, and the runner then handed the whole line to `sh -c` — so
+// `go test ./... && echo second`, `make $(echo build)`, and
+// `npm test | tee out.txt` all passed the allowlist and ran through a real
+// shell, which interpreted everything after the allowlisted first token.
+// This check runs before the allowlist check and before the command is ever
+// tokenized, so a rejected command is never spawned.
+func hasDisallowedShellOperators(command string) bool {
+	for _, b := range disallowedShellOperatorBytes {
+		if strings.IndexByte(command, b) >= 0 {
+			return true
+		}
+	}
+	for _, seq := range disallowedShellOperatorSequences {
+		if strings.Contains(command, seq) {
+			return true
+		}
+	}
+	return hasShellCommentStart(command)
+}
+
+// hasShellCommentStart reports whether command contains a `#` that would
+// start a shell comment: at the very start of command, or preceded by a
+// space or tab.
+func hasShellCommentStart(command string) bool {
+	if strings.HasPrefix(command, "#") {
+		return true
+	}
+	for i := 1; i < len(command); i++ {
+		if command[i] != '#' {
+			continue
+		}
+		if prev := command[i-1]; prev == ' ' || prev == '\t' {
+			return true
+		}
+	}
+	return false
+}
+
+// validateEvidenceCommand checks command against the GH-5442 shell-operator
+// refusal and then the GH-5437 command allowlist, in that order, before it
+// is ever tokenized or handed to the injected AcceptanceCommandRunner.
+// Returns "" when command is clear to run, or the Not-verified reason to
+// report instead.
+func validateEvidenceCommand(command string, allowed []string) string {
+	if hasDisallowedShellOperators(command) {
+		return shellOperatorNotVerifiedReason
+	}
+	if !isCommandAllowed(command, allowed) {
+		return "command not in allowlist"
+	}
+	return ""
+}
+
+// splitCommandFields splits command into argv fields the way a POSIX shell
+// would for a simple word list: whitespace-separated tokens, with single-
+// and double-quoted spans kept intact and their quotes stripped (so
+// `go test -run '^TestMain$' ./...` keeps `^TestMain$` as one argument).
+// Deliberately not a full shell parser: no variable/command expansion, no
+// globbing, and no backslash escapes are interpreted — GH-5442 already
+// refuses any command containing an expansion sequence or control character
+// via hasDisallowedShellOperators before this ever runs, so the only syntax
+// left to understand is quoting and whitespace.
+func splitCommandFields(command string) ([]string, error) {
+	var fields []string
+	var current strings.Builder
+	hasCurrent := false
+	var quote byte
+
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			} else {
+				current.WriteByte(c)
+			}
+		case c == '\'' || c == '"':
+			quote = c
+			hasCurrent = true
+		case c == ' ' || c == '\t':
+			if hasCurrent {
+				fields = append(fields, current.String())
+				current.Reset()
+				hasCurrent = false
+			}
+		default:
+			current.WriteByte(c)
+			hasCurrent = true
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated %c quote in command", quote)
+	}
+	if hasCurrent {
+		fields = append(fields, current.String())
+	}
+	return fields, nil
+}
+
 // acceptanceCommandTimeoutError is returned by shellAcceptanceCommandRunner
 // when a command is killed for exceeding its per-command timeout, so
 // callers can report the GH-5437-specified "timed out after <d>" reason
@@ -88,9 +207,11 @@ func (e *acceptanceCommandTimeoutError) Error() string {
 // production. Commands are the issue author's own acceptance-criteria text
 // (untrusted — GH-5437 is precisely about not trusting it), so unlike
 // pre-GH-5437 this runner (a) only ever receives commands the caller has
-// already allowlist-checked, (b) never inherits the daemon's process
-// environment, and (c) enforces its own timeout independent of the task's
-// remaining context budget.
+// already validated (GH-5442: no shell operators, GH-5437: allowlisted
+// first token), (b) never inherits the daemon's process environment, and
+// (c) enforces its own timeout independent of the task's remaining context
+// budget. Its name predates GH-5442 (no shell is involved any more) but is
+// kept to avoid a mechanical rename across every call site.
 type shellAcceptanceCommandRunner struct {
 	// timeout bounds a single command's runtime. <= 0 falls back to
 	// defaultAcceptanceEvidenceCommandTimeout.
@@ -98,6 +219,22 @@ type shellAcceptanceCommandRunner struct {
 }
 
 func (r shellAcceptanceCommandRunner) RunCommand(ctx context.Context, dir, command string) (string, error) {
+	// GH-5442: no shell. Commands used to run through `sh -c`, so an
+	// allowlisted first token ("go") with a shell operator anywhere else in
+	// the line ("go test ./... && echo second") was interpreted by the
+	// shell. Callers already refuse operator-bearing commands before this
+	// is ever invoked (validateEvidenceCommand); splitting into argv here
+	// and exec'ing directly means even a command that slipped past that
+	// check would be spawned as a single literal argument list, never
+	// interpreted.
+	argv, err := splitCommandFields(command)
+	if err != nil {
+		return "", err
+	}
+	if len(argv) == 0 {
+		return "", errors.New("empty command")
+	}
+
 	timeout := r.timeout
 	if timeout <= 0 {
 		timeout = defaultAcceptanceEvidenceCommandTimeout
@@ -105,7 +242,7 @@ func (r shellAcceptanceCommandRunner) RunCommand(ctx context.Context, dir, comma
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "sh", "-c", command) // #nosec G204 -- command's first token was already allowlist-checked by the caller; sh -c is required to support the shell syntax (pipes, args) real acceptance commands use.
+	cmd := exec.CommandContext(cctx, argv[0], argv[1:]...) // #nosec G204 -- argv[0] was already allowlist-checked by the caller, and no shell is invoked, so no operator or expansion sequence in the remaining arguments can be interpreted.
 	cmd.Dir = dir
 	cmd.Env = sanitizedAcceptanceEnv()
 
@@ -154,8 +291,8 @@ func runPasteOutputItem(ctx context.Context, runner AcceptanceCommandRunner, dir
 	}
 
 	for _, command := range item.Commands {
-		if !isCommandAllowed(command, allowedCommands) {
-			result.NotVerifiedReason = "command not in allowlist"
+		if reason := validateEvidenceCommand(command, allowedCommands); reason != "" {
+			result.NotVerifiedReason = reason
 			return result
 		}
 	}
@@ -249,10 +386,10 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	testCmd := buildMutationTestCommand(item.MutationTarget)
 	var output string
 	var testErr error
-	if isCommandAllowed(testCmd, allowedCommands) {
+	if reason := validateEvidenceCommand(testCmd, allowedCommands); reason == "" {
 		output, testErr = runner.RunCommand(ctx, dir, testCmd)
 	} else {
-		testErr = errors.New("command not in allowlist")
+		testErr = errors.New(reason)
 	}
 
 	// Always attempt to revert, whatever the run above returned — never
