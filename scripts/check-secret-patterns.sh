@@ -20,20 +20,23 @@ set -e
 echo "Scanning all tracked files for realistic secret patterns..."
 
 # Patterns that look like real secrets (will trigger GitHub push protection).
-# Add new patterns here when GitHub adds support for new providers.
-PATTERNS=(
-    'xoxb-[0-9]{10,}-[0-9]{10,}'                  # Slack bot token
-    'xoxa-[0-9]{10,}-[0-9]{10,}'                  # Slack app token
-    'xoxp-[0-9]{10,}-[0-9]{10,}'                  # Slack user token
-    'sk-[a-zA-Z0-9]{32,}'                         # OpenAI / Anthropic-style API key
-    'ghp_[a-zA-Z0-9]{36}'                         # GitHub PAT
-    'gho_[a-zA-Z0-9]{36}'                         # GitHub OAuth token
-    'ghu_[a-zA-Z0-9]{36}'                         # GitHub user-to-server token
-    'ghs_[a-zA-Z0-9]{36}'                         # GitHub server-to-server token
-    'github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}'  # GitHub fine-grained PAT
-    'AKIA[0-9A-Z]{16}'                            # AWS access key ID
-    'lin_api_[a-zA-Z0-9]{40}'                     # Linear API key
-)
+#
+# GH-5437: the pattern list itself now lives in a single canonical file
+# (internal/executor/secretpatterns/patterns.txt) shared with the Go
+# executor's acceptance-evidence output redaction, so the two never drift
+# apart. Add new patterns there, not here.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATTERNS_FILE="$SCRIPT_DIR/../internal/executor/secretpatterns/patterns.txt"
+PATTERNS=()
+while IFS= read -r pattern_line; do
+    [[ -z "$pattern_line" || "$pattern_line" == \#* ]] && continue
+    PATTERNS+=("$pattern_line")
+done < "$PATTERNS_FILE"
+
+if [ "${#PATTERNS[@]}" -eq 0 ]; then
+    echo "❌ ERROR: no patterns loaded from $PATTERNS_FILE"
+    exit 2
+fi
 
 # Files allowlisted from the scan because they intentionally show secret
 # patterns for educational purposes (teach contributors what NOT to use).
@@ -48,6 +51,9 @@ ALLOWLIST=(
     'internal/testutil/tokens.go'                     # safe-token constants module, comments show what NOT to do
     '.agent/tasks/archive/TASK-41-test-secret-patterns.md'  # postmortem documenting the original incident
     'scripts/check-secret-patterns.sh'                # this script literally contains the patterns it detects
+    'internal/executor/secretpatterns/patterns.txt'   # canonical pattern list (GH-5437) — same rationale
+    'internal/executor/secretpatterns/patterns_test.go'      # asserts regexes match known secret *shapes* (GH-5437)
+    'internal/executor/acceptance_evidence_run_test.go'      # asserts redaction strips known secret *shapes* (GH-5437)
 )
 
 # Build a temp file of files to scan: tracked files minus the allowlist.

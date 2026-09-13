@@ -1,0 +1,27 @@
+# Canonical secret-pattern regexes.
+#
+# Single source of truth shared by two consumers that must never drift
+# apart (GH-5437):
+#   - scripts/check-secret-patterns.sh (CI "Check Secret Patterns" step +
+#     the `make install-hooks` pre-commit hook)
+#   - internal/executor's acceptance-evidence output redaction
+#     (internal/executor/acceptance_evidence_redact.go), which must not let
+#     a real credential leak into a PR body via evidence command output.
+#
+# One pattern per line, POSIX-ERE syntax (grep -E) that is also valid RE2
+# syntax (Go's regexp) — every pattern below is a plain literal prefix plus
+# a bracket-expression/quantifier, which both engines interpret the same
+# way. Blank lines and lines starting with "#" are ignored by both
+# consumers. Add new patterns here only — do not fork a second copy.
+xoxb-[0-9]{10,}-[0-9]{10,}
+xoxa-[0-9]{10,}-[0-9]{10,}
+xoxp-[0-9]{10,}-[0-9]{10,}
+sk-[a-zA-Z0-9]{32,}
+ghp_[a-zA-Z0-9]{36}
+gho_[a-zA-Z0-9]{36}
+ghu_[a-zA-Z0-9]{36}
+ghs_[a-zA-Z0-9]{36}
+github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}
+AKIA[0-9A-Z]{16}
+lin_api_[a-zA-Z0-9]{40}
+pdl_[a-zA-Z0-9_]{20,}
