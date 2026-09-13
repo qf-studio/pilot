@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Acceptance-evidence gate (GH-5435, revised by GH-5437).
+// Acceptance-evidence gate (GH-5435, revised by GH-5437 and GH-5438).
 //
 // Six consecutive Pilot PRs shipped with an acceptance checklist item of the
 // form "paste the output of `cmd`" or "delete line L -> TestY fails" left
@@ -37,9 +37,11 @@ const (
 	// to be pasted into the PR body ("pasted into the PR body", "paste the
 	// output", "terminal output").
 	AcceptanceItemPasteOutput AcceptanceItemKind = "paste_output"
-	// AcceptanceItemMutation matches items describing a mutation ("change
-	// …", "delete line …", "remove …") that must cause a named test/package
-	// to fail.
+	// AcceptanceItemMutation matches any "<description> -> <outcome>" item
+	// whose outcome asserts a failure (GH-5438: classification no longer
+	// requires an edit-cue verb like "change"/"delete"/"remove" on the
+	// description half — "drop …", "replace …", "swap …", "disable …",
+	// "move …" and freeform phrasings all qualify equally).
 	AcceptanceItemMutation AcceptanceItemKind = "mutation"
 	// AcceptanceItemOther is every acceptance item that isn't an
 	// evidence-requiring paste-output or mutation item — left untouched.
@@ -88,12 +90,6 @@ var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
 // mutationArrowRe splits a mutation-style item into its change description
 // and expected outcome across a "->" or "→" separator.
 var mutationArrowRe = regexp.MustCompile(`(?s)^(.*?)(?:->|→)\s*(.+)$`)
-
-// mutationCueRe requires the description half of a mutation item to
-// actually describe an edit ("change …", "delete …", "remove …") —
-// otherwise an unrelated item that happens to contain an arrow would be
-// misclassified.
-var mutationCueRe = regexp.MustCompile(`(?i)\b(change|delete|remove)\b`)
 
 // mutationFailsRe requires the outcome half to actually assert a failure
 // ("… fails", "… fail").
@@ -162,9 +158,21 @@ func extractInlineCommands(text string) []string {
 // extractMutation splits a mutation-style item ("delete line 42 in foo.go
 // -> TestFoo fails") into its change description and target test/package.
 // ok is false when text doesn't match the mutation shape at all (no
-// arrow/separator, no edit cue on the description half, or no "fails"
-// assertion on the outcome half) — callers fall back to AcceptanceItemOther
-// rather than guessing.
+// arrow/separator, or no "fails" assertion on the outcome half) — callers
+// fall back to AcceptanceItemOther rather than guessing.
+//
+// GH-5438: PR #5436's classifier additionally required the description half
+// to match an edit-cue regex ("change|delete|remove"), so real mutation
+// items phrased as "drop `transactionId` from the `open` call -> TestX
+// fails", "replace `hmac.Equal` with `==` -> …", "swap …", "disable …", or
+// "move … after the await -> …" fell through to AcceptanceItemOther —
+// neither run nor listed under Not-verified, the exact silence GH-5435 was
+// filed about. The description shape is now unconstrained; only the arrow
+// separator and a "fails"/"fail" outcome are required. The description text
+// itself still flows into parseLineMutation (acceptance_evidence.go below)
+// to decide whether the edit is the deterministic "delete/remove line N in
+// <file>" shape this gate can apply automatically — anything else is
+// reported under Not-verified as a freeform mutation.
 func extractMutation(text string) (desc, target string, ok bool) {
 	m := mutationArrowRe.FindStringSubmatch(text)
 	if m == nil {
@@ -172,7 +180,7 @@ func extractMutation(text string) (desc, target string, ok bool) {
 	}
 	desc = strings.TrimSpace(m[1])
 	outcome := strings.TrimSpace(m[2])
-	if desc == "" || !mutationCueRe.MatchString(desc) {
+	if desc == "" {
 		return "", "", false
 	}
 	if !mutationFailsRe.MatchString(outcome) {
@@ -336,8 +344,11 @@ func extractFailingTests(output string) []string {
 // from a mutation description of the shape "delete line 42 in foo.go" /
 // "remove line 42 from internal/foo.go" — the deterministic mutation shape
 // this gate can apply and revert without LLM assistance. Freeform mutation
-// descriptions that don't match either pattern report a "could not parse"
-// Not-verified reason instead of guessing at an edit.
+// descriptions that don't match either pattern (GH-5438: "drop …", "replace
+// …", "make … skip …", "swap …", "disable …", "move …", and any other
+// phrasing that isn't the "delete/remove line N in <file>" shape) report a
+// "freeform mutation, run manually" Not-verified reason instead of guessing
+// at an edit — see runMutationItem in acceptance_evidence_run.go.
 var deleteLineRe = regexp.MustCompile(`(?i)\bdelete\s+line\s+(\d+)\b(?:\s+(?:in|from|of)\s+([^\s,]+))?`)
 var removeLineRe = regexp.MustCompile(`(?i)\bremove\s+line\s+(\d+)\b(?:\s+(?:in|from|of)\s+([^\s,]+))?`)
 

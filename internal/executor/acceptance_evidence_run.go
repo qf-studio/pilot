@@ -190,8 +190,11 @@ func runPasteOutputItem(ctx context.Context, runner AcceptanceCommandRunner, dir
 // file it names, runs the target test/package, records the outcome, and
 // reverts the file byte-for-byte. Only the deterministic "delete/remove
 // line N in <file>" mutation shape is applied automatically; anything else
-// is reported as Not-verified with the reason, per GH-5435's "record the
-// gap, never omit it" requirement.
+// (GH-5438: classification no longer requires an edit-cue verb, so items
+// like "drop …", "replace …", "swap …", "disable …", "move … -> TestX
+// fails" now reach here as AcceptanceItemMutation too) is reported as
+// Not-verified with reason "freeform mutation, run manually", per GH-5435's
+// "record the gap, never omit it" requirement.
 //
 // GH-5437: the target file is resolved through resolveWorktreeConfinedPath
 // before anything is read or written — a relative "..", an absolute path,
@@ -208,10 +211,11 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 
 	file, line, ok := parseLineMutation(item.MutationDescription)
 	if !ok {
-		result.NotVerifiedReason = fmt.Sprintf(
-			"mutation %q does not match a recognised deterministic edit (\"delete/remove line N in <file>\"); freeform mutations require manual verification",
-			item.MutationDescription,
-		)
+		// GH-5438: the item's full text (item.Text) is what
+		// RenderAcceptanceEvidenceSections lists under "## Not verified" —
+		// this reason is deliberately terse since the text alongside it
+		// already shows the reviewer exactly what wasn't verified.
+		result.NotVerifiedReason = "freeform mutation, run manually"
 		return result
 	}
 
