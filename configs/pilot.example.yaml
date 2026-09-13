@@ -657,6 +657,29 @@ executor:
   #   enabled: true        # Master switch; false disables the block entirely
   #   max_memories: 5       # Cap on ranked memories included (also capped at ~1500 chars total)
 
+  # Acceptance-evidence gate (GH-5437) - after implementing a task, run
+  # issue acceptance-checklist items (paste-output commands and deterministic
+  # file mutations) in the task's worktree and append the results as
+  # ## Evidence / ## Not verified sections to the PR body. Commands run
+  # through an allowlist with a fresh, sanitised environment (never the
+  # executor's own env), captured output is redacted before it is pasted
+  # into the (public) PR body, mutation file paths are confined to the
+  # worktree, and each command is subject to a per-command timeout.
+  # acceptance_evidence:
+  #   enabled: true                 # Master switch; false = PR body unchanged (default true)
+  #   allowed_commands:             # First-token allowlist; anything else -> "Not verified: command not in allowlist"
+  #     - go
+  #     - make
+  #     - npm
+  #     - npx
+  #     - bun
+  #     - bunx
+  #     - pnpm
+  #     - yarn
+  #     - pytest
+  #     - cargo
+  #   command_timeout: 10m          # Per-command timeout; expiry kills the process group
+
   # Stagnation detection (GH-925) - detect and recover from stuck tasks
   # stagnation:
   #   enabled: true
