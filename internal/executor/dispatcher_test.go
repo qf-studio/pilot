@@ -4601,6 +4601,23 @@ func TestDispatcher_BeginWithGenerationRetry_DeterministicAndTransientFailures(t
 			wantAlertCount: 1,
 			wantReasonHas:  "deterministic failure",
 		},
+		// GH-5445: an auto-preserved worktree (either producer) must escalate
+		// straight to the operator-attention path — a repick can neither see
+		// nor land over the already-pushed preserved commit.
+		{
+			name:           "auto-preserved (no-op classification) is not re-picked",
+			priorError:     "worktree had uncommitted work at no-op classification — auto-preserved as 0e704c0 on branch pilot/GH-308; needs manual review, not a genuine no-op",
+			wantRePicked:   false,
+			wantAlertCount: 1,
+			wantReasonHas:  "deterministic failure",
+		},
+		{
+			name:           "auto-preserved (dirty worktree) is not re-picked",
+			priorError:     "worktree had uncommitted work post-retry — auto-preserved as abcdef1 on branch pilot/GH-1234; needs manual review, not a genuine no-op",
+			wantRePicked:   false,
+			wantAlertCount: 1,
+			wantReasonHas:  "deterministic failure",
+		},
 		{
 			name:           "transient failure IS re-picked",
 			priorError:     "connection reset by peer while cloning repo",
@@ -6525,5 +6542,95 @@ func TestDispatcher_ReapOrphanedClaims_LeavesFreshClaimWedgedForDuplicatePickup_
 	}
 	if !found || gen != 0 || execID != "exec-fresh-owner" {
 		t.Fatalf("expected the fresh claim to survive the reap untouched under a non-UTC time.Local, got gen=%d execID=%q found=%v", gen, execID, found)
+	}
+}
+
+// TestParseAutoPreservedSHABranch covers both GH-4517 auto-preserve error
+// producers (git_freshness.go's no-op-classification path and runner.go's
+// preserveDirtyOrFail dirty-worktree path) plus negative cases — GH-5445.
+func TestParseAutoPreservedSHABranch(t *testing.T) {
+	tests := []struct {
+		name       string
+		errStr     string
+		wantSHA    string
+		wantBranch string
+		wantOK     bool
+	}{
+		{
+			name:       "no-op classification producer (git_freshness.go)",
+			errStr:     "worktree had uncommitted work at no-op classification — auto-preserved as 0e704c0 on branch pilot/GH-308; needs manual review, not a genuine no-op",
+			wantSHA:    "0e704c0",
+			wantBranch: "pilot/GH-308",
+			wantOK:     true,
+		},
+		{
+			name:       "dirty worktree producer (runner.go preserveDirtyOrFail)",
+			errStr:     "worktree had uncommitted work post-retry — auto-preserved as abcdef1 on branch pilot/GH-1234; needs manual review, not a genuine no-op",
+			wantSHA:    "abcdef1",
+			wantBranch: "pilot/GH-1234",
+			wantOK:     true,
+		},
+		{
+			name:   "unrelated failure carries no marker",
+			errStr: "task timed out",
+			wantOK: false,
+		},
+		{
+			name:   "empty string",
+			errStr: "",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sha, branch, ok := parseAutoPreservedSHABranch(tt.errStr)
+			if ok != tt.wantOK {
+				t.Fatalf("parseAutoPreservedSHABranch(%q) ok = %v, want %v", tt.errStr, ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if sha != tt.wantSHA || branch != tt.wantBranch {
+				t.Errorf("parseAutoPreservedSHABranch(%q) = (%q, %q), want (%q, %q)",
+					tt.errStr, sha, branch, tt.wantSHA, tt.wantBranch)
+			}
+		})
+	}
+}
+
+// TestStalledIssueComment_AutoPreservedNamesSHABranch is the GH-5445
+// acceptance test for the escalation comment: when the stalled reason
+// carries a GH-4517 auto-preserve error, the comment body surfaceStalledIssue
+// posts must name the preserved sha and branch and tell the operator what to
+// do next, instead of leaving that only in the daemon log.
+func TestStalledIssueComment_AutoPreservedNamesSHABranch(t *testing.T) {
+	reason := deterministicFailureReasonPrefix +
+		"worktree had uncommitted work at no-op classification — auto-preserved as 0e704c0 on branch pilot/GH-308; needs manual review, not a genuine no-op"
+
+	comment := stalledIssueComment(reason, 308)
+
+	if !strings.Contains(comment, "0e704c0") {
+		t.Errorf("expected comment to name the preserved sha 0e704c0, got: %s", comment)
+	}
+	if !strings.Contains(comment, "pilot/GH-308") {
+		t.Errorf("expected comment to name the preserved branch pilot/GH-308, got: %s", comment)
+	}
+	if !strings.Contains(comment, "fetch the branch") {
+		t.Errorf("expected comment to instruct fetching the branch, got: %s", comment)
+	}
+	if !strings.Contains(comment, "cherry-pick") {
+		t.Errorf("expected comment to mention a cherry-pick continuation option, got: %s", comment)
+	}
+}
+
+// TestStalledIssueComment_NonAutoPreservedOmitsGuidance guards against the
+// GH-5445 guidance block firing on ordinary stalled reasons that never
+// mention an auto-preserve outcome (e.g. the plain repick-hard-cap path).
+func TestStalledIssueComment_NonAutoPreservedOmitsGuidance(t *testing.T) {
+	comment := stalledIssueComment("consecutive failed re-picks: 3 (cap=3)", 999)
+
+	if strings.Contains(comment, "Preserved work found") {
+		t.Errorf("expected no auto-preserve guidance for a non-auto-preserve reason, got: %s", comment)
 	}
 }
