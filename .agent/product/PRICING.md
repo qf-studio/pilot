@@ -6,7 +6,8 @@
 > that no longer exist. The shipped model is **one flat plan at USD 500/month,
 > no trial, no annual, no ticket cap, with model tokens billed by Anthropic
 > directly to the customer on their own key**.
-> See [`UNIT-ECONOMICS.md`](UNIT-ECONOMICS.md) for measured cost and margin.
+> See [`PRICING-MODEL.md`](PRICING-MODEL.md) for the model we actually charge on,
+> and [`UNIT-ECONOMICS.md`](UNIT-ECONOMICS.md) for measured cost and margin.
 > Kept for the positioning and competitor sections, which are still useful.
 
 ## Pricing Philosophy

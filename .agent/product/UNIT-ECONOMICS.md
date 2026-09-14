@@ -11,6 +11,13 @@ the Paddle decision, and still describes a per-ticket value metric with
 Free/Solo/Team/Enterprise tiers that no longer exist. **Treat it as historical
 until it is rewritten.**
 
+> **Model decided 2026-09-14** — see [`PRICING-MODEL.md`](PRICING-MODEL.md).
+> Flat fee for box + Pilot, tokens bring-your-own, default `claude-sonnet-5`
+> with a customer switch. The findings below informed that decision; finding 1
+> (flat-fee shape) was resolved in favour of keeping flat, because our cost does
+> not scale with tickets and the customer's own token bill already meters usage.
+> **All token figures here are Sonnet-only** and understate an Opus-routed tenant.
+
 ## The model in one line
 
 The customer pays **us $500/month** for a dedicated box and the orchestration
