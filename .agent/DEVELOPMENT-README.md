@@ -144,6 +144,7 @@ Disable via config: `executor.navigator.auto_init: false`
 | `.agent/system/FEATURE-MATRIX.md` | What's implemented vs not |
 | `.agent/system/ARCHITECTURE.md` | System design, data flow |
 | `.agent/system/PR-CHECKLIST.md` | Before merging PRs in `--env=prod` mode |
+| `.agent/product/UNIT-ECONOMICS.md` | Cost, margin, break-even and customer TCO per tenant — measured, not modelled. Read before any pricing/packaging conversation |
 | `.agent/tasks/TASK-XX.md` | Active task details |
 | `.agent/sops/*.md` | Before modifying integrations |
 | `.agent/system/references/reference_slack_notifications_routing.md` | Before touching Slack/alert/approval destinations on the box (which channel gets what, the 3 keys, restart rule) |
