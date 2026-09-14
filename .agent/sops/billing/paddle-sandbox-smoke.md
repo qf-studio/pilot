@@ -86,17 +86,33 @@ price id, client token, `PAST_DUE_GRACE=1m`, `ENFORCE_ENABLED=0`).
    curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8090/api/v1/billing/webhook -d '{}'   # 403, not 404
    ```
 
-   403 means the routes registered and signature verification is live. A 404
-   means the flag did not take.
+   **400**, not 403, is the success signal here: the route registered and the
+   signature check ran (`webhook signature verification failed`,
+   `header_present: false`). A 404 means the flag did not take.
 
 ## Step 4 — checkout (happy path)
 
-Run the UI against the stack. The sandbox default payment link points at
-`https://localhost:5173/billing/checkout`, so the dev server must serve HTTPS:
+**Tunnel the UI, not the console.** Vite proxies `/api` to the console, so one
+tunnel gives both an https origin for the overlay and a public webhook path:
 
 ```bash
-cd ~/Projects/startups/pilot-console-ui && VITE_API_MODE=http bun run dev:https
+cd ~/Projects/startups/pilot-console-ui && VITE_API_MODE=http bun run dev
+ngrok http 5173 --host-header=localhost:5173      # host rewrite, else Vite 6 blocks the host
 ```
+
+Point the notification destination at `<tunnel>/api/v1/billing/webhook` and
+**update** it if the tunnel URL changes; never create a second one.
+
+Two things that do not work, both learned the hard way on 2026-09-14:
+
+- **Plain http on localhost is not enough.** Paddle's overlay needs an https
+  parent origin; on http it loads Paddle.js and then reports a CSP violation to
+  Paddle's own Sentry instead of rendering. Use the tunnel origin.
+- **`bun run dev:https` (Vite basic-ssl) produces an untrusted certificate.**
+  Chrome shows an interstitial that browser automation cannot click through, so
+  the Subscribe redirect dies there. Either click it through by hand once, or
+  install `mkcert` (a system trust-store change — ask the operator first), or
+  use the tunnel, which has a real certificate.
 
 Sign in as the demo user, open Settings -> Billing, press Subscribe. Pay with
 the sandbox test card `4242 4242 4242 4242`, any future expiry, any CVC.
@@ -120,8 +136,20 @@ carries `Cache-Control: no-store`. Both open in a new tab, never an iframe.
 
 ## Step 6 — past_due, grace, dry-run suspend (L5)
 
-In the Paddle sandbox dashboard, use Simulations to send `subscription.past_due`
-for the subscription.
+Use Simulations. **The notification destination must have `traffic_source` set
+to `all`** or the simulation is rejected with "Notification setting cannot be
+used for 'simulation' traffic" — a destination is created as `platform` only.
+Patch it once:
+
+```
+PATCH https://sandbox-api.paddle.com/notification-settings/{id}   {"traffic_source":"all"}
+```
+
+Simulated events carry synthetic customer ids, so they resolve to no
+organization: they are ledgered with a null `org_id` and acked 200, with one
+Warn each. That is the designed behaviour and worth asserting — an
+unresolvable event must be recorded, never dropped. To move a real org's
+status, use `consolectl billing set-status` (step 8) or a real checkout.
 
 Expect: `billing_status` -> `past_due`, `billing_status_event_at` set, the UI
 shows "payment failed" plus the grace note sourced from `past_due_grace_hours`.
@@ -171,6 +199,15 @@ Leave the sandbox notification destination in place for the next run, but
 remember its URL dies with the tunnel. Nothing in the live account is touched by
 any step here.
 
+## What the local stack cannot prove
+
+The enforcement sweep runs on the fleet reconciler tick, and fleet is off in the
+local stack, so steps 6 and 7 exercise the status transitions and the config
+endpoint but **not** the sweep itself. The sweep's decision table, its
+conditional writers and its tick wiring are covered by the unit and
+Postgres-backed tests merged with it. Proving it live needs a staging
+deployment with fleet enabled and at least one instance row.
+
 ## Known traps
 
 - A chip that never flips is a webhook problem, not a UI problem. Check ngrok's
@@ -180,6 +217,11 @@ any step here.
   every delivery arrives from the tunnel's address.
 - Sandbox only emails the registered account address.
 - The sandbox business name has a cosmetic typo, "Quntflow".
+- ngrok's free tier shows a one-time interstitial to browsers. Click "Visit
+  Site" once per session, or send an `ngrok-skip-browser-warning` header.
+- The Vite dev server must be started as a durable background process. Started
+  from a shell that then exits, it dies and the page reports
+  "server connection lost" a few seconds after each load.
 
 ## Refs
 
