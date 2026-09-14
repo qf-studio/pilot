@@ -3859,6 +3859,21 @@ func TestIsPermanentFailure(t *testing.T) {
 		{"no-op post-push SHA", "no new commit produced — post-push SHA matches base branch", true},
 		// GH-4586: the GH-4496 memory-doc deletion hard veto is deterministic too.
 		{"memory-doc deletion veto", "blocked: execution deleted memory doc(s) outside its lane: [.agent/knowledge/memories/patterns/foo.md]", true},
+		// GH-5445: both GH-4517 auto-preserve producers are deterministic — a
+		// re-pick can never see the preserved commit (CreateWorktreeWithBranch
+		// always rebases -B onto origin/main) and can't push over it either
+		// (non-fast-forward against the already-pushed preserved sha).
+		{
+			"auto-preserved (no-op classification, git_freshness.go)",
+			"worktree had uncommitted work at no-op classification — auto-preserved as 0e704c0 on branch pilot/GH-308; needs manual review, not a genuine no-op",
+			true,
+		},
+		{
+			"auto-preserved (dirty worktree, runner.go preserveDirtyOrFail)",
+			"worktree had uncommitted work post-retry — auto-preserved as abcdef1 on branch pilot/GH-1234; needs manual review, not a genuine no-op",
+			true,
+		},
+		{"generic timeout is still transient", "task timed out", false},
 	}
 
 	for _, tt := range tests {

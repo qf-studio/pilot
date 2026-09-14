@@ -44,7 +44,33 @@ var permanentFailurePatterns = []string{
 	// duplicating its text) keeps this pattern from drifting out of sync with
 	// git.go if the wording ever changes there.
 	ErrMemoryDocDeletionVetoed.Error(),
+	// GH-5445: an auto-preserve outcome — fired from either
+	// git_freshness.go's no-op-classification path (applyGhostSHAGuard) or
+	// this file's preserveDirtyOrFail dirty-worktree path — means the
+	// worktree's real uncommitted work was already auto-committed and pushed
+	// onto the task branch under a wip(...) commit. Re-picking is not just
+	// wasteful here, it's actively destructive: CreateWorktreeWithBranch
+	// always resets -B to origin/main, so a fresh retry generation can never
+	// see the preserved commit, and that generation's own `git push -u`
+	// can't land over it either (non-fast-forward against the sha already
+	// pushed to the same branch). Observed on console GH-308
+	// (2026-09-13, daemon.log 16:21:35Z–16:22:20Z): the preserved commit was
+	// complete, test-passing work that a blind repick would have stranded.
+	// Classify terminal so the dispatcher escalates to a human with the
+	// preserved sha/branch instead of burning a retry generation.
+	autoPreservedFailureMarker,
 }
+
+// autoPreservedFailureMarker is the substring shared by both GH-4517
+// auto-preserve error producers — git_freshness.go's
+// "worktree had uncommitted work at no-op classification — auto-preserved
+// as <sha> on branch <branch>; ..." and this file's preserveDirtyOrFail
+// "worktree had uncommitted work <stage> — auto-preserved as <sha> on
+// branch <branch>; ..." — that IsPermanentFailure above keys off to
+// terminal-classify an auto-preserve outcome (GH-5445). dispatcher.go's
+// parseAutoPreservedSHABranch scans for the same marker to pull the sha and
+// branch out for the escalation comment.
+const autoPreservedFailureMarker = "auto-preserved as "
 
 // IsPermanentFailure reports whether an error message represents a
 // deterministic failure that won't change between retries. Callers should
