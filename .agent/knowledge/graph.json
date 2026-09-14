@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-13T16:27:07.561021+00:00",
+  "updated": "2026-09-14T18:25:17.660452+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6635,6 +6635,18 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-13"
+      },
+      "pricing-flat-fee-byo-tokens-sonnet-default": {
+        "type": "decision",
+        "summary": "Pilot Cloud pricing 2026-09-14: flat monthly fee for box+Pilot, tokens BYO billed by Anthropic directly, default claude-sonnet-5 with a settings switch. Usage-based rejected: our cost doesn't scale with tickets and the customer's own token bill already meters usage. Price open, $299 recommended; Paddle prices immutable once used.",
+        "file": ".agent/knowledge/memories/decisions/pricing-flat-fee-byo-tokens-sonnet-default.md",
+        "concepts": [
+          "pilot-console",
+          "deployment",
+          "api"
+        ],
+        "confidence": 0.95,
+        "created": "2026-09-14"
       }
     }
   },
@@ -9209,6 +9221,15 @@
       "TASK-482",
       "TASK-484",
       "TASK-485",
+      "TASK-486",
+      "TASK-488",
+      "TASK-489",
+      "TASK-490",
+      "TASK-492",
+      "TASK-493",
+      "TASK-494",
+      "TASK-495",
+      "TASK-497",
       "consumer-docblock-trusted-over-producer-wire-source",
       "github-issues-search-returns-prs",
       "graphql-mock-tests-cannot-catch-schema-validation",
@@ -9228,18 +9249,9 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "TASK-486",
-      "TASK-488",
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-489",
-      "TASK-490",
-      "TASK-493",
-      "TASK-494",
-      "TASK-492",
-      "TASK-495",
-      "TASK-497",
       "mem-183",
       "mem-184",
       "mem-185",
@@ -9251,7 +9263,8 @@
       "mem-191",
       "mem-192",
       "mem-193",
-      "mem-194"
+      "mem-194",
+      "pricing-flat-fee-byo-tokens-sonnet-default"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -9848,6 +9861,16 @@
       "TASK-483",
       "TASK-484",
       "TASK-485",
+      "TASK-486",
+      "TASK-487",
+      "TASK-488",
+      "TASK-489",
+      "TASK-490",
+      "TASK-492",
+      "TASK-493",
+      "TASK-494",
+      "TASK-495",
+      "TASK-497",
       "cdk-merged-not-deployed-rots",
       "claude-cli-refuses-root-hosted-units",
       "hot-restart-preserves-pid-uptime-false-mismatch",
@@ -9882,23 +9905,9 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "nextretrygeneration-blind-to-dead-owner-nonterminal-claims",
-      "oauth-ssm-params-rot-live-credentials-source-of-truth",
-      "ready-gate-couples-credential-validity",
-      "shared-oauth-session-strands-second-machine",
-      "TASK-486",
-      "TASK-487",
-      "TASK-488",
-      "TASK-489",
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-490",
-      "TASK-493",
-      "TASK-494",
-      "TASK-492",
-      "TASK-495",
-      "TASK-497",
       "mem-183",
       "mem-184",
       "mem-185",
@@ -9910,7 +9919,12 @@
       "mem-191",
       "mem-192",
       "mem-193",
-      "mem-194"
+      "mem-194",
+      "nextretrygeneration-blind-to-dead-owner-nonterminal-claims",
+      "oauth-ssm-params-rot-live-credentials-source-of-truth",
+      "pricing-flat-fee-byo-tokens-sonnet-default",
+      "ready-gate-couples-credential-validity",
+      "shared-oauth-session-strands-second-machine"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -10505,6 +10519,7 @@
       "consumer-docblock-trusted-over-producer-wire-source",
       "mem-160",
       "oauth-ssm-params-rot-live-credentials-source-of-truth",
+      "pricing-flat-fee-byo-tokens-sonnet-default",
       "ready-gate-couples-credential-validity",
       "s4-dashboard-only-clause-blocks-local-console",
       "shared-oauth-session-strands-second-machine",
@@ -11126,11 +11141,11 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-13T16:27:07.561021+00:00",
+  "last_updated": "2026-09-14T18:25:17.660452+00:00",
   "stats": {
-    "total_nodes": 546,
+    "total_nodes": 547,
     "total_edges": 490,
-    "memory_count": 298
+    "memory_count": 299
   },
   "metadata": {}
 }
