@@ -1,5 +1,14 @@
 # Pilot: Pricing Strategy
 
+> ⚠️ **SUPERSEDED for anything cost- or margin-related (2026-09-14).**
+> This document predates hosted COGS and the Paddle decision. It describes a
+> per-ticket value metric and Free/Solo/Team/Enterprise tiers ($0/$29/$149/$1500)
+> that no longer exist. The shipped model is **one flat plan at USD 500/month,
+> no trial, no annual, no ticket cap, with model tokens billed by Anthropic
+> directly to the customer on their own key**.
+> See [`UNIT-ECONOMICS.md`](UNIT-ECONOMICS.md) for measured cost and margin.
+> Kept for the positioning and competitor sections, which are still useful.
+
 ## Pricing Philosophy
 
 **Value metric:** Tickets completed (not seats, not tokens)
