@@ -1,6 +1,6 @@
 # fix(controlplane): the in-VPC console can never proxy a tenant — instance role lacks tenant-secret read and ec2:DescribeInstances
 
-**Status**: 📋 PLANNED — IAM leg ready to dispatch; operator legs below are founder work, not code.
+**Status**: 🚀 DISPATCHED 2026-09-15 — IAM leg is [infra#51](https://github.com/qf-studio/pilot-cloud-infra/issues/51); operator legs below are founder work, not code.
 **Created**: 2026-09-15
 **Last Updated**: 2026-09-15
 **Target repo**: qf-studio/pilot-cloud-infra
@@ -164,6 +164,8 @@ debug sessions (2026-08-19, 2026-09-15). A startup check or a named error class 
 `pilot-console` would have collapsed both to a one-line diagnosis.
 
 ## Refs
+
+- Pilot issue: https://github.com/qf-studio/pilot-cloud-infra/issues/51
 
 - Parent: `.agent/tasks/TASK-466-console-docs-page.md`
 - Runbook: `pilot-cloud-infra/docs/CONTROLPLANE-DEPLOY.md` § Minimal mode (in-VPC console)
