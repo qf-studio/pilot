@@ -1,6 +1,8 @@
 # fix(controlplane): the in-VPC console can never proxy a tenant — instance role lacks tenant-secret read and ec2:DescribeInstances
 
-**Status**: 🚀 DISPATCHED 2026-09-15 — IAM leg is [infra#51](https://github.com/qf-studio/pilot-cloud-infra/issues/51); operator legs below are founder work, not code.
+**Status**: ⏸️ WITHDRAWN FROM QUEUE 2026-09-15 — dispatched as [infra#51](https://github.com/qf-studio/pilot-cloud-infra/issues/51) at 10:28Z, then pulled at 11:02Z on founder call. All labels removed from the issue and the queued execution row cancelled via `pilot task cancel` (never started; no worker, no worktree). Issue left OPEN with the full spec intact.
+
+> **To re-run**: re-adding the `pilot` label is enough — per GH-5139 the poller re-arms a cancelled GH task only on a reopen/label *event dated after the cancel*, and a fresh label add produces exactly that. Do NOT hand-write `status='stalled'` (GH-4655).
 **Created**: 2026-09-15
 **Last Updated**: 2026-09-15
 **Target repo**: qf-studio/pilot-cloud-infra
