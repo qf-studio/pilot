@@ -1,6 +1,6 @@
 # TASK-497: Paddle Billing integration for pilot-console — vendor swap behind the `billing_status` contract
 
-**Status**: 🚀 In flight — L1, L2, L3 and follow-ups merged + reviewed 2026-09-12; #303 PR#304 reviewed, awaiting merge; L4/L5/L6 next (no Paddle credentials needed for unit-tested legs); sandbox smoke and flag-on gated on founder inputs (§ Founder inputs)
+**Status**: 🟢 **Code complete — L1–L5 all merged + reviewed; L6 smoke passed 2026-09-14.** Enforcement is wired but **dormant** (`PILOT_CONSOLE_BILLING_ENFORCE_ENABLED` default off). Remaining: **L7 go-live** (founder items — domain approval, Terms/Refund/Privacy pages, verification, payouts, live notification destination + SSM) and the **price decision** (see `product/PRICING-MODEL.md`; changing the number needs a NEW Paddle price object — prices are immutable once used). Two smoke-found defects fixed same-day (console#313→PR#314, console#315→PR#316 + ui#162→PR#163). Known gap carried to L7: the console renders no model config, so tenants inherit a routing default that sends complex work to Opus rather than Sonnet 5.
 **Created**: 2026-09-12
 **Assignee**: Navigator (design) → Pilot (legs) · founder (Paddle account)
 **Parent**: [TASK-405](TASK-405-pilot-saas-platform.md) S5 billing lifecycle · [TASK-496](TASK-496-console-resume-s5.md) § billing
