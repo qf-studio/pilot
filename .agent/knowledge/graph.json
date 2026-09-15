@@ -2461,6 +2461,20 @@
           "knowledge",
           "context"
         ]
+      },
+      "TASK-498": {
+        "path": ".agent/tasks/TASK-498-controlplane-instance-role-tenant-proxy-grants.md",
+        "title": "In-VPC console cannot proxy a tenant — control-plane instance role grants",
+        "status": "planned",
+        "concepts": [
+          "deployment",
+          "testing",
+          "theory of mind",
+          "authentication",
+          "database",
+          "api",
+          "context"
+        ]
       }
     },
     "memories": {
@@ -9100,6 +9114,36 @@
       "from": "TASK-497",
       "to": "skills",
       "type": "implements"
+    },
+    {
+      "from": "TASK-498",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-498",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-498",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-498",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-498",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-498",
+      "to": "context",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -9264,7 +9308,8 @@
       "mem-192",
       "mem-193",
       "mem-194",
-      "pricing-flat-fee-byo-tokens-sonnet-default"
+      "pricing-flat-fee-byo-tokens-sonnet-default",
+      "TASK-498"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -9361,7 +9406,8 @@
       "mem-191",
       "mem-192",
       "mem-193",
-      "mem-194"
+      "mem-194",
+      "TASK-498"
     ],
     "auto-merge": [
       "mem-103"
@@ -9635,7 +9681,8 @@
       "mem-191",
       "mem-192",
       "mem-193",
-      "mem-194"
+      "mem-194",
+      "TASK-498"
     ],
     "conversational-bot": [
       "mem-036",
@@ -9755,7 +9802,8 @@
       "mem-191",
       "mem-192",
       "mem-193",
-      "mem-194"
+      "mem-194",
+      "TASK-498"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -9924,7 +9972,8 @@
       "oauth-ssm-params-rot-live-credentials-source-of-truth",
       "pricing-flat-fee-byo-tokens-sonnet-default",
       "ready-gate-couples-credential-validity",
-      "shared-oauth-session-strands-second-machine"
+      "shared-oauth-session-strands-second-machine",
+      "TASK-498"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -10865,7 +10914,8 @@
       "mem-191",
       "mem-192",
       "mem-193",
-      "mem-194"
+      "mem-194",
+      "TASK-498"
     ],
     "testing-quality": [
       "TASK-384",
@@ -11100,7 +11150,8 @@
       "mem-191",
       "mem-192",
       "mem-193",
-      "mem-194"
+      "mem-194",
+      "TASK-498"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -11141,10 +11192,10 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-14T18:25:17.660452+00:00",
+  "last_updated": "2026-09-15T10:23:18.363803+00:00",
   "stats": {
-    "total_nodes": 547,
-    "total_edges": 490,
+    "total_nodes": 548,
+    "total_edges": 496,
     "memory_count": 299
   },
   "metadata": {}
