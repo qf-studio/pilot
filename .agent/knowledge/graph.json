@@ -6661,6 +6661,18 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-14"
+      },
+      "fleet-env-doubles-as-environment-tag-value": {
+        "type": "pitfall",
+        "summary": "PILOT_CONSOLE_FLEET_ENV is also the Environment cost-allocation tag value on every tenant resource (GH-261); Nelya's pilot-fleet task boundary keys RunInstances/Terminate/SendCommand on Environment=pilot-fleet, so the manifest's `prod` is a hard IAM deny at first provision (2026-09-18) — set pilot-fleet; decouple the tag from the env name",
+        "file": ".agent/knowledge/memories/pitfalls/fleet-env-doubles-as-environment-tag-value.md",
+        "concepts": [
+          "deployment",
+          "fleet",
+          "iam",
+          "aws"
+        ],
+        "confidence": 0.95
       }
     }
   },
@@ -9480,7 +9492,8 @@
       "cdk-untagged-estate-invisible-to-cost-view",
       "mem-126",
       "rlimit-as-breaks-node-subprocesses",
-      "ssm-runs-as-root-cli-reads-empty-ledger"
+      "ssm-runs-as-root-cli-reads-empty-ledger",
+      "fleet-env-doubles-as-environment-tag-value"
     ],
     "bake-test": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
@@ -9973,7 +9986,8 @@
       "pricing-flat-fee-byo-tokens-sonnet-default",
       "ready-gate-couples-credential-validity",
       "shared-oauth-session-strands-second-machine",
-      "TASK-498"
+      "TASK-498",
+      "fleet-env-doubles-as-environment-tag-value"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -10138,7 +10152,8 @@
       "cdk-tenant-role-not-an-instance-role",
       "console-ssm-paths-work-locally-proxy-does-not",
       "s3-exit-three-tenant-pass-proven",
-      "s4-dashboard-only-clause-blocks-local-console"
+      "s4-dashboard-only-clause-blocks-local-console",
+      "fleet-env-doubles-as-environment-tag-value"
     ],
     "forensics": [
       "apply-script-silent-rollback-causes",
@@ -10276,7 +10291,8 @@
       "mem-092"
     ],
     "iam": [
-      "cdk-tenant-role-not-an-instance-role"
+      "cdk-tenant-role-not-an-instance-role",
+      "fleet-env-doubles-as-environment-tag-value"
     ],
     "incident-response": [
       "bare-exit-137-mislabeled-oom",
@@ -11192,11 +11208,11 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-15T10:23:18.363803+00:00",
+  "last_updated": "2026-09-18T08:28:30.459226+00:00",
   "stats": {
-    "total_nodes": 548,
+    "total_nodes": 549,
     "total_edges": 496,
-    "memory_count": 299
+    "memory_count": 300
   },
   "metadata": {}
 }
