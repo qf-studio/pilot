@@ -68,6 +68,7 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 
 ## Late 09-06 / 09-07 additions
 
+- **09-18 — TO-BE review against her DEPLOYED stacks + manifest correction sent** ([thread](https://quantflowstudio.slack.com/archives/C0BV37L87C1/p1789720014754879?thread_ts=1788706191.406399)). Her `pilot-fleet-*` stacks (8/12 live since 09-07) already cover every call the console proxy makes (`TenantSecrets`, `KmsEnvironmentKey`, `Ec2Describe`; tenant key policy names `pilot-fleet-task-console-*`); SG/NACL path console→tenant:9090 verified. **Four alignment points sent:** (1) `PILOT_CONSOLE_FLEET_ENV` must be `pilot-fleet` — our 09-07 manifest said `prod`, which her boundary denies at first `RunInstances` (pitfall `fleet-env-doubles-as-environment-tag-value`; decouple issue on pilot-console **unfiled**); (2) task-role prefix `pilot-fleet-task-console-` or the KMS key policy silently misses; (3) `DATABASE_URL` composed by an entrypoint wrapper must still `exec /consolectl run` for the reconciler; (4) boundary ≠ grant. **Ours:** MFA on `aleks` (none enrolled; her port-forward policy requires it) · fresh golden AMI (2.259.3) · port-forward SOP for the dynamic ECS host port · CDK retirement after her 3-step validation. Nelya silent since 09-07 in every channel. infra#51 (Opus-authored, targets the retiring CDK role) de-labelled + cancelled 09-15, close-as-superseded pending founder go.
 - **pilot-console#45 ready-gate decoupling** (blocked since 07-24 on headers) re-specced 22:00 → PR#272 merged 23:13 → review APPROVE-w-notes (transient github:false flips the connection to `error`; consider a separate health field).
 - **pilot-console#274** (pilot): README ECS contract wrong for the exec-form ENTRYPOINT + `latest`/dispatch guards. **#275** (pilot): `consolectl run` drops `TENANT_ROLE_BOUNDARY_ARN`, `IDLE_WINDOW`, `SECRETS_DRIVER` — boundary not applied on ECS until it merges.
 - **ECS env manifest sent to Nelya** 09-07 00:27Z (TO-BE thread): task shapes, secrets split, AWS values, task-role IAM, the two caveats.
@@ -121,4 +122,4 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 
 ---
 
-**Last Updated**: 2026-09-06
+**Last Updated**: 2026-09-18
