@@ -256,7 +256,8 @@ in the plugin's hook runtime, not in prose in this file. Off-switches live in
 `.agent/.nav-config.json`: every hook block has `enabled` (e.g.
 `workflow_enforcer_hook.enabled: false`), gating blocks also take
 `strict_block: false` to warn instead of block, Tier-1 instant answers toggle
-per rule under `tier1.rules`, and forced continuation stays off unless
+per rule under `tier1.rules` (feature-wide: `tier1.enabled`), and forced
+continuation stays off unless
 `stop_completion.continue_enabled: true`. Setting the `PILOT_EXECUTOR`
 environment variable disables interactive/blocking hook behavior for
 non-interactive executors (Pilot-executor sessions). Load task/system/SOP docs
