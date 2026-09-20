@@ -101,5 +101,8 @@
       "critic": "opus",
       "patcher": "opus"
     }
+  },
+  "judge": {
+    "enabled": true
   }
 }
