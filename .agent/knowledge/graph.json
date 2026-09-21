@@ -6684,6 +6684,27 @@
           "aws"
         ],
         "confidence": 0.95
+      },
+      "domain-pilotcloud-dev-keep-pilot-name": {
+        "type": "decision",
+        "summary": "Founder 2026-09-21: hosted product = Pilot Cloud on pilotcloud.dev (console./api.); marketing+docs stay on pilot.quantflow.studio; OSS name Pilot kept; pilot.build ($720) rejected — no domain buys search for a generic word Pilot.com owns; pilothq.dev rejected (Pilot.com's handle); polsia 'Pilot' is an AI-generated placeholder, not a competitor",
+        "file": ".agent/knowledge/memories/decisions/domain-pilotcloud-dev-keep-pilot-name.md",
+        "concepts": [
+          "deployment",
+          "aws",
+          "saas"
+        ],
+        "confidence": 0.95
+      },
+      "trademark-clearance-pilot-us-2026-09": {
+        "type": "learning",
+        "summary": "US TM search 2026-09-21: PILOT live in cl 42 for Pilot.com (bookkeeping, Reg 5550048), Pilot Inc. (mentoring, 6931080), Charter (ad-tech, 5808371) — none for dev tooling; bare PILOT filing by us likely refused; use-risk low-moderate; house-mark compound would register; EU/UK unchecked (registers blocked)",
+        "file": ".agent/knowledge/memories/learnings/trademark-clearance-pilot-us-2026-09.md",
+        "concepts": [
+          "saas",
+          "deployment"
+        ],
+        "confidence": 0.95
       }
     }
   },
@@ -9505,7 +9526,8 @@
       "rlimit-as-breaks-node-subprocesses",
       "ssm-runs-as-root-cli-reads-empty-ledger",
       "fleet-env-doubles-as-environment-tag-value",
-      "cfn-typed-parameter-validates-with-deployer-credentials"
+      "cfn-typed-parameter-validates-with-deployer-credentials",
+      "domain-pilotcloud-dev-keep-pilot-name"
     ],
     "bake-test": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
@@ -10000,7 +10022,9 @@
       "shared-oauth-session-strands-second-machine",
       "TASK-498",
       "fleet-env-doubles-as-environment-tag-value",
-      "cfn-typed-parameter-validates-with-deployer-credentials"
+      "cfn-typed-parameter-validates-with-deployer-credentials",
+      "domain-pilotcloud-dev-keep-pilot-name",
+      "trademark-clearance-pilot-us-2026-09"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -10692,7 +10716,9 @@
       "s3-exit-three-tenant-pass-proven",
       "s4-dashboard-only-clause-blocks-local-console",
       "payment-processor-is-paddle-not-stripe",
-      "issue-body-literal-migration-version-collides-with-sibling-leg"
+      "issue-body-literal-migration-version-collides-with-sibling-leg",
+      "domain-pilotcloud-dev-keep-pilot-name",
+      "trademark-clearance-pilot-us-2026-09"
     ],
     "scheduler": [
       "mem-101",
@@ -11222,11 +11248,11 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ]
   },
-  "last_updated": "2026-09-21T09:15:30.917436+00:00",
+  "last_updated": "2026-09-21T11:13:26.807714+00:00",
   "stats": {
-    "total_nodes": 550,
+    "total_nodes": 552,
     "total_edges": 496,
-    "memory_count": 301
+    "memory_count": 303
   },
   "metadata": {}
 }
