@@ -65,6 +65,7 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 - Console → central auth: a session validates once per TTL (cache hit metric), gRPC dial with `PILOT_CONSOLE_AUTH_GRPC_CA_FILE`/`_SERVER_NAME` (#268).
 - ECS: reconciler task = `entryPoint: ["/consolectl"], command: ["run"]` (NOT a command override — exec-form ENTRYPOINT); API tasks `entryPoint: ["/pilot-console"]` with `PILOT_CONSOLE_FLEET_RECONCILE=false` (#263/#274).
 - GHCR package `pilot-console` visibility/pull permission set once before the first ECS pull (created private).
+- **Docs page renders a real `.agent` tree** for a fleet-provisioned tenant (login via gRPC :4002 → Tenants → Docs). This is the end-to-end proof TASK-466 never got; carried here from the superseded [infra#51](https://github.com/qf-studio/pilot-cloud-infra/issues/51) / TASK-498 (closed 2026-09-21 — task role `pilot-fleet-task-console-api` already has `ec2:DescribeInstances` + `/tenants/*` read + KMS decrypt).
 
 ## Late 09-06 / 09-07 additions
 

@@ -1,6 +1,6 @@
 # fix(controlplane): the in-VPC console can never proxy a tenant — instance role lacks tenant-secret read and ec2:DescribeInstances
 
-**Status**: ⏸️ WITHDRAWN FROM QUEUE 2026-09-15 — dispatched as [infra#51](https://github.com/qf-studio/pilot-cloud-infra/issues/51) at 10:28Z, then pulled at 11:02Z on founder call. All labels removed from the issue and the queued execution row cancelled via `pilot task cancel` (never started; no worker, no worktree). Issue left OPEN with the full spec intact.
+**Status**: ❌ **CLOSED SUPERSEDED 2026-09-21** — [infra#51](https://github.com/qf-studio/pilot-cloud-infra/issues/51) closed not-planned. The CDK `ControlPlaneStack` this targeted is retiring; the console now runs as ECS `console-api` in the fleet VPC on task role `pilot-fleet-task-console-api`, which already carries both grants (`ec2:DescribeInstances` on `*`; `ssm:GetParameter*` on `parameter/tenants/*` + `kms:Decrypt` on the tenant-secrets key — verified live). The end-to-end Docs-page proof moved to TASK-495 § First-deploy validation checklist. Original spec kept below for the record.
 
 > **To re-run**: re-adding the `pilot` label is enough — per GH-5139 the poller re-arms a cancelled GH task only on a reopen/label *event dated after the cancel*, and a fresh label add produces exactly that. Do NOT hand-write `status='stalled'` (GH-4655).
 **Created**: 2026-09-15
