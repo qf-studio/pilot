@@ -6705,6 +6705,19 @@
           "deployment"
         ],
         "confidence": 0.95
+      },
+      "console-email-transport-ses-not-email-service-repo": {
+        "type": "decision",
+        "summary": "Founder 2026-09-22: console email stays on SES (eu-central-1, console@quantflow.studio). qf-studio/email-service stays undeployed (rejected 07-13: unauthenticated API, at-most-once Redis queue, no DLQ) — its SES+Resend transports are already vendored in pilot-console internal/email behind /send-email, which auth-service calls. Resend not adopted: same DKIM DNS work for Nelya plus a secret and a vendor.",
+        "file": ".agent/knowledge/memories/decisions/console-email-transport-ses-not-email-service-repo.md",
+        "concepts": [
+          "pilot-console",
+          "aws",
+          "deployment",
+          "authentication",
+          "saas"
+        ],
+        "confidence": 0.95
       }
     }
   },
@@ -9451,7 +9464,8 @@
       "mem-192",
       "mem-193",
       "mem-194",
-      "TASK-498"
+      "TASK-498",
+      "console-email-transport-ses-not-email-service-repo"
     ],
     "auto-merge": [
       "mem-103"
@@ -9527,7 +9541,8 @@
       "ssm-runs-as-root-cli-reads-empty-ledger",
       "fleet-env-doubles-as-environment-tag-value",
       "cfn-typed-parameter-validates-with-deployer-credentials",
-      "domain-pilotcloud-dev-keep-pilot-name"
+      "domain-pilotcloud-dev-keep-pilot-name",
+      "console-email-transport-ses-not-email-service-repo"
     ],
     "bake-test": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
@@ -10024,7 +10039,8 @@
       "fleet-env-doubles-as-environment-tag-value",
       "cfn-typed-parameter-validates-with-deployer-credentials",
       "domain-pilotcloud-dev-keep-pilot-name",
-      "trademark-clearance-pilot-us-2026-09"
+      "trademark-clearance-pilot-us-2026-09",
+      "console-email-transport-ses-not-email-service-repo"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -10626,7 +10642,8 @@
       "ready-gate-couples-credential-validity",
       "s4-dashboard-only-clause-blocks-local-console",
       "shared-oauth-session-strands-second-machine",
-      "workflow-yaml-requires-front-matter"
+      "workflow-yaml-requires-front-matter",
+      "console-email-transport-ses-not-email-service-repo"
     ],
     "pilot-task-command": [
       "TASK-03",
@@ -10718,7 +10735,8 @@
       "payment-processor-is-paddle-not-stripe",
       "issue-body-literal-migration-version-collides-with-sibling-leg",
       "domain-pilotcloud-dev-keep-pilot-name",
-      "trademark-clearance-pilot-us-2026-09"
+      "trademark-clearance-pilot-us-2026-09",
+      "console-email-transport-ses-not-email-service-repo"
     ],
     "scheduler": [
       "mem-101",
