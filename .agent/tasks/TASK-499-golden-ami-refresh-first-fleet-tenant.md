@@ -1,6 +1,6 @@
 # TASK-499: Golden AMI refresh (pilot 2.276.1) → first fleet tenant → Docs real-tree proof
 
-**Status**: 🚀 L1 DISPATCHED 2026-09-23 → [infra#10](https://github.com/qf-studio/aws-infrastructure-pilot/issues/10) (`pilot`; repo is a Pilot project on the box). L2 bake + L3 first tenant follow after merge. Gate to the first customer after login passed (TASK-495).
+**Status**: 🟡 L1 MERGED 2026-09-23 (infra#10 → PR#11, squash `118182ef`, review APPROVE-w-notes → follow-up [infra#12](https://github.com/qf-studio/aws-infrastructure-pilot/issues/12)); **L2 bake attempt 1 (run 35849443228) FAILED at staging: `mgmt-infra-admin` has no `s3:PutObject` on `pilot-s3-agent-data/binaries/pilot/*`** (download + sha256 OK). Asked Nelya for the grant; #12 makes staging best-effort. Re-run after either lands. Gate to the first customer after login passed (TASK-495).
 **Created**: 2026-09-22
 **Owner**: founder session (bake dispatch + console redeploy) · Nelya (SSM param + S3 staging or workflow tweak)
 **Parent**: TASK-405 · **Follows**: TASK-495 (login gate open 09-22)
@@ -40,6 +40,10 @@ Fleet tenants launch from the golden AMI. The current one (`ami-01ed3bb9600200ce
 - Reconciler running with the new `AmiId`; `tenant_factory=true` deploy green.
 - One fleet tenant RUNNING from the new AMI; Docs page shows its real tree through `console.pilotcloud.dev`.
 - `internal/config/config.go` AMI comment updated (follow-up console issue, docs-only).
+
+## Log
+- **09-23 10:20Z** Pilot's PR#11 branched from an **August** base: the box clone of this repo had never been fetched since 08-03 and the pre-branch `git fetch` lost a ref-lock race; executor warned and fell back to stale `origin/main` → 100 commits behind, conflict on `scripts/validate-golden-ami.sh`, autopilot `needs-manual-rebase`. Rebased by hand in a temp clone (kept main's `go version` assert, no `pilot doctor`), merged 10:32Z. Executor defect filed on pilot (fetch failure must use FETCH_HEAD / retry / fail closed). Pilot picked infra#12 at 10:30Z from pre-merge main → expect one more rebase.
+- **09-23 10:33Z** bake run 35849443228: release download + checksum verified, S3 staging **AccessDenied** for the mgmt runner role → Slack ask to Nelya (grant in her template).
 
 ## Risks / notes
 - pilot 2.276.1 on AL2023 via the AMI's systemd unit: bootstrap sets `User=pilot` + `HOME` (pitfall `claude-cli-refuses-root-hosted-units`); `pilot doctor` in validation catches most drift.
