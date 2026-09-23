@@ -371,6 +371,36 @@ func TestSliceLogByStepWindow(t *testing.T) {
 			t.Error("expected false when step has no StartedAt/CompletedAt")
 		}
 	})
+
+	// GH-5454: the jobs API floors completed_at to whole-second granularity,
+	// but `go test ./...` typically flushes a failing package's buffered
+	// output right when the package finishes — commonly landing in the same
+	// second as (or a fraction after) the step's floored completed_at. A log
+	// line stamped at T.5 or T.9, where T is the whole-second completed_at,
+	// must still be included in the window rather than dropped by an
+	// exclusive end bound.
+	t.Run("includes lines stamped within the completion second", func(t *testing.T) {
+		const log = `2026-09-23T11:50:50.0000000Z Run go test ./...
+2026-09-23T11:50:52.5000000Z --- FAIL: TestSomething (0.00s)
+2026-09-23T11:50:52.9000000Z FAIL	github.com/qf-studio/pilot/internal/forecast	0.004s
+`
+		floorStep := ghadapter.JobStep{
+			Name:        "Test",
+			StartedAt:   "2026-09-23T11:43:27Z",
+			CompletedAt: "2026-09-23T11:50:52Z",
+		}
+
+		window, ok := sliceLogByStepWindow(log, floorStep)
+		if !ok {
+			t.Fatal("expected a matching window")
+		}
+		if !strings.Contains(window, "--- FAIL: TestSomething") {
+			t.Errorf("expected window to contain the --- FAIL line, got:\n%s", window)
+		}
+		if !strings.Contains(window, "FAIL\tgithub.com/qf-studio/pilot/internal/forecast") {
+			t.Errorf("expected window to contain the FAIL summary line, got:\n%s", window)
+		}
+	})
 }
 
 // TestCIMonitor_GetFailedCheckExcerpts_MidStepFailureSurvivesNoise covers
