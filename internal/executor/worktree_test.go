@@ -1281,3 +1281,210 @@ func TestWorktreePoolSizeZeroDisabled(t *testing.T) {
 		t.Errorf("expected branch pilot/no-pool, got %q", strings.TrimSpace(string(output)))
 	}
 }
+
+// pushNewCommitToRemote clones remoteDir into a scratch directory, commits a
+// new change, and pushes it to main — simulating another writer advancing
+// the remote after the caller's local clone last updated its origin/main
+// tracking ref. Returns the SHA of the new commit.
+//
+// GH-5449: used to give a stale-ref fetch (e.g. one blocked by a ref lock) a
+// real update to attempt, so the failure looks like the reported incident
+// instead of a no-op "already up to date" fetch.
+func pushNewCommitToRemote(t *testing.T, remoteDir string) string {
+	t.Helper()
+
+	scratchDir, err := os.MkdirTemp("", "worktree-remote-push-*")
+	if err != nil {
+		t.Fatalf("failed to create scratch dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(scratchDir) }()
+
+	if output, err := exec.Command("git", "clone", "-b", "main", remoteDir, scratchDir).CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone remote: %v: %s", err, output)
+	}
+	_ = exec.Command("git", "-C", scratchDir, "config", "user.email", "test@example.com").Run()
+	_ = exec.Command("git", "-C", scratchDir, "config", "user.name", "Test User").Run()
+
+	newFile := filepath.Join(scratchDir, "new-remote-commit.txt")
+	if err := os.WriteFile(newFile, []byte("advance remote\n"), 0644); err != nil {
+		t.Fatalf("failed to write new file: %v", err)
+	}
+	if output, err := exec.Command("git", "-C", scratchDir, "add", ".").CombinedOutput(); err != nil {
+		t.Fatalf("failed to git add: %v: %s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", scratchDir, "commit", "-m", "advance remote").CombinedOutput(); err != nil {
+		t.Fatalf("failed to commit: %v: %s", err, output)
+	}
+
+	if output, err := exec.Command("git", "-C", scratchDir, "push", "origin", "HEAD:main").CombinedOutput(); err != nil {
+		t.Fatalf("failed to push: %v: %s", err, output)
+	}
+
+	shaOutput, err := exec.Command("git", "-C", scratchDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("failed to resolve new commit SHA: %v", err)
+	}
+	return strings.TrimSpace(string(shaOutput))
+}
+
+// lockOriginMainRef simulates another git process holding the ref-update
+// lock for refs/remotes/origin/main in repoDir, reproducing the
+// "cannot lock ref 'refs/remotes/origin/main'" failure observed on the
+// hosted daemon (aws-infrastructure-pilot#11, GH-5449). Returns a cleanup
+// func that removes the lock file.
+func lockOriginMainRef(t *testing.T, repoDir string) func() {
+	t.Helper()
+
+	lockPath := filepath.Join(repoDir, ".git", "refs", "remotes", "origin", "main.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+		t.Fatalf("failed to mkdir for ref lock: %v", err)
+	}
+	if err := os.WriteFile(lockPath, nil, 0644); err != nil {
+		t.Fatalf("failed to create ref lock file: %v", err)
+	}
+	return func() { _ = os.Remove(lockPath) }
+}
+
+// TestFetchOriginMainForWorktree covers the three fetch outcomes GH-5449
+// requires CreateWorktreeWithBranch to handle instead of silently basing the
+// worktree on a stale local origin/main:
+//  1. fetch succeeds -> base is "origin/main"
+//  2. fetch fails on a ref-lock race but still wrote FETCH_HEAD -> base is
+//     "FETCH_HEAD"
+//  3. fetch fails outright (no FETCH_HEAD written, e.g. unreachable remote)
+//     -> error, so the caller fails closed
+func TestFetchOriginMainForWorktree(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, repoDir, remoteDir string)
+		wantBaseRef string
+		wantErr     bool
+	}{
+		{
+			name:        "fetch ok",
+			setup:       func(t *testing.T, repoDir, remoteDir string) {},
+			wantBaseRef: "origin/main",
+		},
+		{
+			name: "ref-lock failure with FETCH_HEAD updated",
+			setup: func(t *testing.T, repoDir, remoteDir string) {
+				pushNewCommitToRemote(t, remoteDir)
+				t.Cleanup(lockOriginMainRef(t, repoDir))
+			},
+			wantBaseRef: "FETCH_HEAD",
+		},
+		{
+			name: "network failure",
+			setup: func(t *testing.T, repoDir, remoteDir string) {
+				cmd := exec.Command("git", "-C", repoDir, "remote", "set-url", "origin", "/nonexistent/path/does-not-exist")
+				if err := cmd.Run(); err != nil {
+					t.Fatalf("failed to set bogus remote url: %v", err)
+				}
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localRepo, remoteRepo := setupTestRepoWithRemote(t)
+			defer func() { _ = os.RemoveAll(localRepo) }()
+			defer func() { _ = os.RemoveAll(remoteRepo) }()
+
+			tt.setup(t, localRepo, remoteRepo)
+
+			ctx := context.Background()
+			baseRef, err := fetchOriginMainForWorktree(ctx, localRepo)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil (baseRef=%q)", baseRef)
+				}
+				if !strings.Contains(err.Error(), "worktree base fetch failed") {
+					t.Errorf("expected 'worktree base fetch failed' error, got: %v", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if baseRef != tt.wantBaseRef {
+				t.Errorf("expected baseRef %q, got %q", tt.wantBaseRef, baseRef)
+			}
+		})
+	}
+}
+
+// TestCreateWorktreeWithBranch_RefLockFallsBackToFetchHead is the
+// end-to-end version of the "ref-lock failure" case: it verifies the
+// resulting worktree is actually built on the fresh remote commit (via
+// FETCH_HEAD) rather than the stale local origin/main, closing the gap that
+// produced a ~100-commits-behind PR in aws-infrastructure-pilot#11.
+func TestCreateWorktreeWithBranch_RefLockFallsBackToFetchHead(t *testing.T) {
+	localRepo, remoteRepo := setupTestRepoWithRemote(t)
+	defer func() { _ = os.RemoveAll(localRepo) }()
+	defer func() { _ = os.RemoveAll(remoteRepo) }()
+
+	newSHA := pushNewCommitToRemote(t, remoteRepo)
+	defer lockOriginMainRef(t, localRepo)()
+
+	ctx := context.Background()
+	manager := NewWorktreeManager(localRepo)
+
+	result, err := manager.CreateWorktreeWithBranch(ctx, "GH-5449", "pilot/gh-5449", "")
+	if err != nil {
+		t.Fatalf("CreateWorktreeWithBranch failed: %v", err)
+	}
+	defer result.Cleanup()
+
+	shaOutput, err := exec.Command("git", "-C", result.Path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("failed to resolve worktree HEAD: %v", err)
+	}
+	gotSHA := strings.TrimSpace(string(shaOutput))
+	if gotSHA != newSHA {
+		t.Errorf("worktree built on stale base: HEAD = %s, want fresh remote commit %s", gotSHA, newSHA)
+	}
+}
+
+// TestCreateWorktreeWithBranch_HardFetchFailureFailsClosed verifies a fetch
+// that fails without writing FETCH_HEAD (e.g. an unreachable remote) fails
+// the whole call with a clear error, and leaves no worktree directory
+// behind — instead of silently building on an unknown/stale base.
+func TestCreateWorktreeWithBranch_HardFetchFailureFailsClosed(t *testing.T) {
+	localRepo, remoteRepo := setupTestRepoWithRemote(t)
+	defer func() { _ = os.RemoveAll(localRepo) }()
+	defer func() { _ = os.RemoveAll(remoteRepo) }()
+
+	cmd := exec.Command("git", "-C", localRepo, "remote", "set-url", "origin", "/nonexistent/path/does-not-exist")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to set bogus remote url: %v", err)
+	}
+
+	ctx := context.Background()
+	manager := NewWorktreeManager(localRepo)
+
+	taskID := "GH-5449-fail"
+	result, err := manager.CreateWorktreeWithBranch(ctx, taskID, "pilot/gh-5449-fail", "")
+	if err == nil {
+		defer result.Cleanup()
+		t.Fatalf("expected error from hard fetch failure, got success (path=%s)", result.Path)
+	}
+	if !strings.Contains(err.Error(), "worktree base fetch failed") {
+		t.Errorf("expected 'worktree base fetch failed' error, got: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result on failure, got %+v", result)
+	}
+
+	entries, readErr := os.ReadDir(os.TempDir())
+	if readErr != nil {
+		t.Fatalf("failed to read temp dir: %v", readErr)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), taskID) {
+			t.Errorf("worktree directory leaked despite fetch failure: %s", e.Name())
+		}
+	}
+}
