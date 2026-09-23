@@ -6718,6 +6718,61 @@
           "saas"
         ],
         "confidence": 0.95
+      },
+      "s3-accessdenied-from-admin-role-is-bucket-policy-condition": {
+        "type": "pitfall",
+        "summary": "S3 PutObject AccessDenied for an AdministratorAccess role = a bucket-policy condition (SSE-KMS/TLS), not IAM — check get-bucket-policy before asking for grants (AMI bake 2026-09-23)",
+        "file": ".agent/knowledge/memories/pitfalls/s3-accessdenied-from-admin-role-is-bucket-policy-condition.md",
+        "concepts": [
+          "aws",
+          "deployment",
+          "review"
+        ],
+        "confidence": 0.9
+      },
+      "ecs-az-rebalancing-requires-az-spread-placement-first": {
+        "type": "pitfall",
+        "summary": "ECS AvailabilityZoneRebalancing ENABLED is rejected (400) unless the service's first placement strategy is spread on attribute:ecs.availability-zone — a binpack-only singleton rolls the CFN stack back (console-reconciler 2026-09-23)",
+        "file": ".agent/knowledge/memories/pitfalls/ecs-az-rebalancing-requires-az-spread-placement-first.md",
+        "concepts": [
+          "aws",
+          "deployment",
+          "pilot-console"
+        ],
+        "confidence": 0.9
+      },
+      "dead-cdk-stack-carried-live-founder-box-backup-policy": {
+        "type": "pitfall",
+        "summary": "A 'dead' estate stack can carry a live cross-estate control: DataLifecycleStack (old CDK 10.30) owned the tag-targeted DLM policy that was the founder box's only nightly backup — check DLM TargetTags / tag-scoped resources before deleting an estate",
+        "file": ".agent/knowledge/memories/pitfalls/dead-cdk-stack-carried-live-founder-box-backup-policy.md",
+        "concepts": [
+          "aws",
+          "deployment",
+          "operations"
+        ],
+        "confidence": 0.9
+      },
+      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid": {
+        "type": "learning",
+        "summary": "Founder-box data volume swap to encrypted (2026-09-23, ~4 min pause): snapshot copies keep the XFS UUID → side-by-side restore test needs `-o ro,nouuid`, in-place swap needs no fstab change; runbook stop → fuser/umount → detach/attach → mount -a → start → verify (integrity, counts, version, queue metric)",
+        "file": ".agent/knowledge/memories/learnings/ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid.md",
+        "concepts": [
+          "aws",
+          "operations",
+          "ledger"
+        ],
+        "confidence": 0.9
+      },
+      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb": {
+        "type": "learning",
+        "summary": "Hand-added inline policies on CloudFormation-managed roles vanish on the next stack deploy — record every grant we need on Nelya's stacks as a template change through her pipeline (pilot-agent-tenant-secrets drift, 07-23 → found 09-23)",
+        "file": ".agent/knowledge/memories/learnings/hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb.md",
+        "concepts": [
+          "aws",
+          "deployment",
+          "authentication"
+        ],
+        "confidence": 0.9
       }
     }
   },
@@ -9465,7 +9520,8 @@
       "mem-193",
       "mem-194",
       "TASK-498",
-      "console-email-transport-ses-not-email-service-repo"
+      "console-email-transport-ses-not-email-service-repo",
+      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb"
     ],
     "auto-merge": [
       "mem-103"
@@ -9542,7 +9598,12 @@
       "fleet-env-doubles-as-environment-tag-value",
       "cfn-typed-parameter-validates-with-deployer-credentials",
       "domain-pilotcloud-dev-keep-pilot-name",
-      "console-email-transport-ses-not-email-service-repo"
+      "console-email-transport-ses-not-email-service-repo",
+      "s3-accessdenied-from-admin-role-is-bucket-policy-condition",
+      "ecs-az-rebalancing-requires-az-spread-placement-first",
+      "dead-cdk-stack-carried-live-founder-box-backup-policy",
+      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
+      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb"
     ],
     "bake-test": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
@@ -10040,7 +10101,11 @@
       "cfn-typed-parameter-validates-with-deployer-credentials",
       "domain-pilotcloud-dev-keep-pilot-name",
       "trademark-clearance-pilot-us-2026-09",
-      "console-email-transport-ses-not-email-service-repo"
+      "console-email-transport-ses-not-email-service-repo",
+      "s3-accessdenied-from-admin-role-is-bucket-policy-condition",
+      "ecs-az-rebalancing-requires-az-spread-placement-first",
+      "dead-cdk-stack-carried-live-founder-box-backup-policy",
+      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -10506,7 +10571,8 @@
       "ssm-runs-as-root-cli-reads-empty-ledger",
       "stale-ledger-misdiagnosis",
       "stall-status-reused-as-hold-marker",
-      "tui-subtask-ghost-rows"
+      "tui-subtask-ghost-rows",
+      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid"
     ],
     "m7": [
       "mem-143",
@@ -10643,7 +10709,8 @@
       "s4-dashboard-only-clause-blocks-local-console",
       "shared-oauth-session-strands-second-machine",
       "workflow-yaml-requires-front-matter",
-      "console-email-transport-ses-not-email-service-repo"
+      "console-email-transport-ses-not-email-service-repo",
+      "ecs-az-rebalancing-requires-az-spread-placement-first"
     ],
     "pilot-task-command": [
       "TASK-03",
@@ -11264,6 +11331,13 @@
     ],
     "needs-human": [
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
+    ],
+    "review": [
+      "s3-accessdenied-from-admin-role-is-bucket-policy-condition"
+    ],
+    "operations": [
+      "dead-cdk-stack-carried-live-founder-box-backup-policy",
+      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid"
     ]
   },
   "last_updated": "2026-09-21T11:13:26.807714+00:00",
