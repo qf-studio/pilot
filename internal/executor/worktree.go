@@ -237,19 +237,25 @@ func (m *WorktreeManager) createPooledWorktree(ctx context.Context, index int) (
 	pruneCmd.Dir = m.repoPath
 	_ = pruneCmd.Run()
 
-	// Fetch latest origin/main to ensure fresh base
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
-	fetchCmd.Dir = m.repoPath
-	withGitCredentials(ctx, fetchCmd)
-	_, _ = fetchCmd.CombinedOutput() // Non-fatal if this fails
+	// Fetch latest origin/main to ensure fresh base.
+	// GH-5449: same fallback rule as CreateWorktreeWithBranch — a fetch that
+	// fails to update refs/remotes/origin/main must not be silently treated
+	// as non-fatal, since this worktree is later reset onto a task branch by
+	// preparePooledWorktree.
+	baseRef, err := fetchOriginMainForWorktree(ctx, m.repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare pooled worktree base: %w", err)
+	}
 
-	// Create worktree in detached HEAD state at origin/main
-	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", worktreePath, "origin/main")
+	// Create worktree in detached HEAD state at the resolved base
+	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", worktreePath, baseRef)
 	cmd.Dir = m.repoPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pooled worktree: %w: %s", err, output)
 	}
+
+	logWorktreeBaseResolved(fmt.Sprintf("pool-warm-%d", index), "(detached)", worktreePath, baseRef)
 
 	return &PooledWorktree{
 		Path:      worktreePath,
@@ -514,6 +520,114 @@ func sanitizeBranchName(taskID string) string {
 	return string(result)
 }
 
+// worktreeFetchRetryDelay is the pause before retrying a failed origin/main
+// fetch when FETCH_HEAD wasn't updated by the first attempt.
+// GH-5449: ref-lock contention between concurrent fetches (e.g. two Pilot
+// tasks fetching the same clone) typically clears within a second.
+const worktreeFetchRetryDelay = 500 * time.Millisecond
+
+// fetchHeadWasWritten reports whether a `git fetch` invocation's combined
+// output shows it wrote FETCH_HEAD (a "* branch ... -> FETCH_HEAD" line),
+// even if the fetch went on to fail updating refs/remotes/origin/main (e.g.
+// a ref-lock race). GH-5449: when true, FETCH_HEAD reflects the fetch that
+// was just run and is safe to use as a base ref even though the local
+// origin/main tracking ref update lost the race.
+func fetchHeadWasWritten(output string) bool {
+	return strings.Contains(output, "-> FETCH_HEAD")
+}
+
+// fetchOriginMainForWorktree fetches origin/main in repoDir and resolves the
+// ref that should be used as the freshest available base for a new
+// worktree.
+//
+// GH-5449: a fetch that fails to update refs/remotes/origin/main (e.g. a
+// ref-lock race losing to a concurrent fetch) must not be silently treated
+// as non-fatal and fall back to the stale local origin/main — that produced
+// a worktree ~100 commits behind main whose PR failed to merge
+// (aws-infrastructure-pilot#11, observed 2026-09-23). Resolution order:
+//
+//  1. Fetch succeeds outright -> use "origin/main".
+//  2. Fetch fails but wrote FETCH_HEAD (visible in the fetch output as
+//     "-> FETCH_HEAD") -> use "FETCH_HEAD" as the base; it reflects this
+//     fetch even though the refs/remotes/origin/main update lost a lock race.
+//  3. Fetch fails and FETCH_HEAD wasn't written -> retry once after a short
+//     delay (lock races typically clear within a second).
+//  4. Still failing -> return an error so the caller fails closed instead of
+//     guessing at a base.
+func fetchOriginMainForWorktree(ctx context.Context, repoDir string) (string, error) {
+	runFetch := func() (output string, headWritten bool, err error) {
+		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
+		fetchCmd.Dir = repoDir
+		withGitCredentials(ctx, fetchCmd)
+		out, fetchErr := fetchCmd.CombinedOutput()
+		return string(out), fetchHeadWasWritten(string(out)), fetchErr
+	}
+
+	output, headWritten, err := runFetch()
+	if err == nil {
+		return "origin/main", nil
+	}
+
+	slog.Warn("Failed to fetch origin/main before worktree creation",
+		slog.Any("error", err),
+		slog.String("output", output),
+	)
+
+	if headWritten {
+		return "FETCH_HEAD", nil
+	}
+
+	// FETCH_HEAD wasn't written at all (e.g. transient network failure) —
+	// retry once before failing closed.
+	time.Sleep(worktreeFetchRetryDelay)
+
+	output, headWritten, err = runFetch()
+	if err == nil {
+		return "origin/main", nil
+	}
+	if headWritten {
+		slog.Warn("Retried fetch of origin/main also failed but wrote FETCH_HEAD, using it as base",
+			slog.Any("error", err),
+			slog.String("output", output),
+		)
+		return "FETCH_HEAD", nil
+	}
+
+	return "", fmt.Errorf("worktree base fetch failed: %w: %s", err, output)
+}
+
+// logWorktreeBaseResolved logs the resolved base commit SHA and commit date
+// for a newly created worktree at INFO level.
+// GH-5449: makes a stale base visible directly in the daemon log without
+// having to cross-reference the intent judge's "diff base resolved" line.
+func logWorktreeBaseResolved(taskID, branchName, worktreePath, baseRef string) {
+	shaCmd := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD")
+	shaOutput, err := shaCmd.Output()
+	if err != nil {
+		slog.Warn("Failed to resolve worktree base SHA for logging",
+			slog.String("task_id", taskID),
+			slog.String("path", worktreePath),
+			slog.Any("error", err),
+		)
+		return
+	}
+	baseSHA := strings.TrimSpace(string(shaOutput))
+
+	dateCmd := exec.Command("git", "-C", worktreePath, "log", "-1", "--format=%cI", "HEAD")
+	baseDate := ""
+	if dateOutput, dateErr := dateCmd.Output(); dateErr == nil {
+		baseDate = strings.TrimSpace(string(dateOutput))
+	}
+
+	slog.Info("Created worktree with branch",
+		slog.String("task_id", taskID),
+		slog.String("branch", branchName),
+		slog.String("base_ref", baseRef),
+		slog.String("base_sha", baseSHA),
+		slog.String("base_commit_date", baseDate),
+	)
+}
+
 // CreateWorktreeWithBranch creates an isolated worktree with a proper branch (not detached HEAD).
 // This is the preferred method when the worktree needs to push to remote, as detached HEAD
 // makes push operations more complex.
@@ -547,21 +661,20 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 
 	// GH-1211: Always fetch origin before creating worktree to prevent branching
 	// from stale local main. This avoids conflicts when local main diverges from origin.
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
-	fetchCmd.Dir = m.repoPath
-	withGitCredentials(ctx, fetchCmd)
-	if output, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
-		slog.Warn("Failed to fetch origin/main before worktree creation",
-			slog.Any("error", fetchErr),
-			slog.String("output", string(output)),
-		)
-		// Non-fatal: proceed with local HEAD as fallback
-	}
-
-	// Determine base ref — prefer origin/main for freshest base
-	baseRef := "origin/main"
-	if baseBranch != "" {
-		baseRef = baseBranch
+	//
+	// GH-5449: when baseBranch is empty we're about to build on "origin/main",
+	// so a fetch that fails to update the local tracking ref must not be
+	// treated as non-fatal — see fetchOriginMainForWorktree for the fallback
+	// order. When an explicit baseBranch is supplied (e.g. a fix-continuation
+	// SHA/branch resolved by ResolveFixContinuationBaseRef), that ref already
+	// carries its own freshness guarantee, so no fetch is needed here.
+	baseRef := baseBranch
+	if baseRef == "" {
+		resolvedRef, fetchErr := fetchOriginMainForWorktree(ctx, m.repoPath)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		baseRef = resolvedRef
 	}
 
 	// GH-963: Clean up any stale worktree for this branch before creating.
@@ -578,6 +691,10 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create worktree with branch: %w: %s", err, output)
 	}
+
+	// GH-5449: log the resolved base SHA/date so a stale base is visible in
+	// the daemon log without inspecting the intent judge's diff-base output.
+	logWorktreeBaseResolved(taskID, branchName, worktreePath, baseRef)
 
 	// Success - track and return
 	m.mu.Lock()
