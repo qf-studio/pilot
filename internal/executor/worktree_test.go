@@ -1299,8 +1299,8 @@ func pushNewCommitToRemote(t *testing.T, remoteDir string) string {
 	}
 	defer func() { _ = os.RemoveAll(scratchDir) }()
 
-	if err := exec.Command("git", "clone", remoteDir, scratchDir).Run(); err != nil {
-		t.Fatalf("failed to clone remote: %v", err)
+	if output, err := exec.Command("git", "clone", remoteDir, scratchDir).CombinedOutput(); err != nil {
+		t.Fatalf("failed to clone remote: %v: %s", err, output)
 	}
 	_ = exec.Command("git", "-C", scratchDir, "config", "user.email", "test@example.com").Run()
 	_ = exec.Command("git", "-C", scratchDir, "config", "user.name", "Test User").Run()
@@ -1309,14 +1309,27 @@ func pushNewCommitToRemote(t *testing.T, remoteDir string) string {
 	if err := os.WriteFile(newFile, []byte("advance remote\n"), 0644); err != nil {
 		t.Fatalf("failed to write new file: %v", err)
 	}
-	if err := exec.Command("git", "-C", scratchDir, "add", ".").Run(); err != nil {
-		t.Fatalf("failed to git add: %v", err)
+	if output, err := exec.Command("git", "-C", scratchDir, "add", ".").CombinedOutput(); err != nil {
+		t.Fatalf("failed to git add: %v: %s", err, output)
 	}
-	if err := exec.Command("git", "-C", scratchDir, "commit", "-m", "advance remote").Run(); err != nil {
-		t.Fatalf("failed to commit: %v", err)
+	if output, err := exec.Command("git", "-C", scratchDir, "commit", "-m", "advance remote").CombinedOutput(); err != nil {
+		t.Fatalf("failed to commit: %v: %s", err, output)
 	}
-	if err := exec.Command("git", "-C", scratchDir, "push", "origin", "HEAD:main").Run(); err != nil {
-		t.Fatalf("failed to push: %v", err)
+
+	// GH-5451: on a loaded CI runner this push (a real subprocess writing to
+	// a local bare "remote") occasionally fails transiently under resource
+	// contention from the rest of the package's git-subprocess-heavy suite
+	// running alongside it. Retry once before failing the test, mirroring
+	// the same transient-failure tolerance fetchOriginMainForWorktree itself
+	// applies to the production fetch this test exists to exercise.
+	output, err := exec.Command("git", "-C", scratchDir, "push", "origin", "HEAD:main").CombinedOutput()
+	if err != nil {
+		time.Sleep(worktreeFetchRetryDelay)
+		var retryOutput []byte
+		retryOutput, err = exec.Command("git", "-C", scratchDir, "push", "origin", "HEAD:main").CombinedOutput()
+		if err != nil {
+			t.Fatalf("failed to push (retried once): %v: %s (first attempt: %s)", err, retryOutput, output)
+		}
 	}
 
 	shaOutput, err := exec.Command("git", "-C", scratchDir, "rev-parse", "HEAD").Output()
