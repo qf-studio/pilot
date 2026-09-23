@@ -1,6 +1,6 @@
 # TASK-499: Golden AMI refresh (pilot 2.276.1) → first fleet tenant → Docs real-tree proof
 
-**Status**: 📋 PLANNED 2026-09-22 — research done, three legs, ready to run. Gate to the first customer after login passed (TASK-495).
+**Status**: 🚀 L1 DISPATCHED 2026-09-23 → [infra#10](https://github.com/qf-studio/aws-infrastructure-pilot/issues/10) (`pilot`; repo is a Pilot project on the box). L2 bake + L3 first tenant follow after merge. Gate to the first customer after login passed (TASK-495).
 **Created**: 2026-09-22
 **Owner**: founder session (bake dispatch + console redeploy) · Nelya (SSM param + S3 staging or workflow tweak)
 **Parent**: TASK-405 · **Follows**: TASK-495 (login gate open 09-22)
@@ -19,7 +19,7 @@ Fleet tenants launch from the golden AMI. The current one (`ami-01ed3bb9600200ce
 
 ## Legs
 
-### L1 — stage the binary + make the bake fleet-aware (Nelya's repo, small; ours to author since we have admin)
+### L1 — stage the binary + make the bake fleet-aware — 🚀 [infra#10](https://github.com/qf-studio/aws-infrastructure-pilot/issues/10) dispatched 2026-09-23 (releases are public → plain curl + sha256 verify; her `deploy-pilot-fleet.yml` already copies `/pilot/GOLDEN_AMI_ID` → fleet param on fleet ECS deploys, so the bake writing both is idempotent with hers)
 1. `build-ami.yml`: make `pilot_binary_s3_uri` optional; when empty, **download `pilot-linux-amd64.tar.gz` from the GitHub release `v${pilot_version}`**, verify against `checksums.txt`, extract to `/tmp/pilot-binary`, and also copy it to `s3://pilot-s3-agent-data/binaries/pilot/v${pilot_version}/pilot-linux-amd64` for the record (runner already has bucket access).
 2. "Store AMI ID" step: write **both** `/pilot/GOLDEN_AMI_ID` and `/pilot-fleet/console/GOLDEN_AMI_ID` (needs `ssm:PutParameter` on the second path for the `aws-infra-admin` runner role — Nelya confirms/grants).
 3. Validation script unchanged. PR reviewed by Nelya (her repo, her runner role).
