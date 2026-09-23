@@ -48,6 +48,8 @@ Fleet tenants launch from the golden AMI. The current one (`ami-01ed3bb9600200ce
 
 - **09-23 11:12Z** bake attempt 2 **GREEN**: `ami-01ecd7cefa1e6f316`; throwaway validation `pilot (pinned 2.276.1)` OK; `/pilot/GOLDEN_AMI_ID` + `/pilot-fleet/console/GOLDEN_AMI_ID` written by the bake. Console redeploy dispatched for the reconciler `AmiId` pickup.
 
+- **09-23 11:17Z** console redeploy 35853276663 for the AMI pickup: console-api OK, **reconciler stack UPDATE_ROLLBACK_COMPLETE** — ECS rejects `AvailabilityZoneRebalancing: ENABLED` (Nelya's 1ebdd93, 09-22) because the reconciler's placement is `binpack memory` only (console-api has `spread attribute:ecs.availability-zone` first, so it passed). Service still 1/1 on the old task def / old AMI; nothing down. Asked Nelya to fix the reconciler template (spread first, or rebalancing off for the singleton — recommended). Re-run after.
+
 ## Risks / notes
 - pilot 2.276.1 on AL2023 via the AMI's systemd unit: bootstrap sets `User=pilot` + `HOME` (pitfall `claude-cli-refuses-root-hosted-units`); `pilot doctor` in validation catches most drift.
 - Bake runner is the **mgmt** runner, not the fleet deployer — different role; SSM write to `/pilot-fleet/*` is the one new grant.
