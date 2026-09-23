@@ -105,6 +105,18 @@ func sliceLogByStepWindow(jobLog string, step ghadapter.JobStep) (string, bool) 
 	if err != nil {
 		return "", false
 	}
+	// GH-5454: the jobs API's step timestamps have whole-second granularity
+	// (floored), while raw job-log lines carry nanosecond timestamps. When
+	// completed_at has no fractional component, any log line stamped later
+	// in that same second — which is exactly where `go test ./...`
+	// typically flushes a failing package's buffered output, since it
+	// prints when the package finishes and the failing package is usually
+	// the last to finish — would be past `end` and silently dropped. Widen
+	// the bound to cover the whole completion second so those lines are
+	// still included.
+	if end.Nanosecond() == 0 {
+		end = end.Add(time.Second)
+	}
 
 	lines := strings.Split(jobLog, "\n")
 	matched := make([]string, 0, len(lines))
