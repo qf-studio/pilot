@@ -6773,6 +6773,22 @@
           "authentication"
         ],
         "confidence": 0.9
+      },
+      "mem-195": {
+        "type": "pitfall",
+        "summary": "Production UI build shipped the mock adapter (VITE_API_MODE unset → mock, HTTP adapter tree-shaken): two days of 'passed' browser milestones were fixtures; guard prod bundles for /api/v1/ and forbid fixture markers; demand one wire proof per browser milestone",
+        "path": "memories/pitfalls/mem-195.md",
+        "confidence": 0.98,
+        "concepts": [
+          "deployment",
+          "frontend",
+          "testing",
+          "api"
+        ],
+        "created": "2026-09-24",
+        "last_validated": "2026-09-24",
+        "source": "TASK-495",
+        "provisional": false
       }
     }
   },
@@ -9256,6 +9272,16 @@
       "from": "TASK-498",
       "to": "context",
       "type": "implements"
+    },
+    {
+      "from": "mem-195",
+      "to": "TASK-495",
+      "type": "related_to"
+    },
+    {
+      "from": "mem-195",
+      "to": "TASK-460",
+      "type": "related_to"
     }
   ],
   "concept_index": {
@@ -11340,11 +11366,11 @@
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid"
     ]
   },
-  "last_updated": "2026-09-21T11:13:26.807714+00:00",
+  "last_updated": "2026-09-24T06:44:27.006016+00:00",
   "stats": {
-    "total_nodes": 552,
-    "total_edges": 496,
-    "memory_count": 303
+    "total_nodes": 558,
+    "total_edges": 499,
+    "memory_count": 309
   },
   "metadata": {}
 }

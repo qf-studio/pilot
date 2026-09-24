@@ -22,3 +22,6 @@ Nelya: SES domain identity quantflow.studio in eu-central-1 with Easy DKIM, sand
 **Captured**: 2026-09-22
 **Confidence**: 95%
 **Concepts**: ses, email, email-service, resend, pilot-console, nelya, auth-service
+
+## Correction 2026-09-24
+The 09-22 observation "unverified login succeeded, so email verification is not enforced" came from the MOCK UI build (see pitfall `production-ui-build-ships-mock-adapter-false-success`). Whether auth-service enforces verification on login is UNVERIFIED. Re-test after ui#170 deploys before treating email as a non-gate.
