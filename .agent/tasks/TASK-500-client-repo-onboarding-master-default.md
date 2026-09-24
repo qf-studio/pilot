@@ -1,9 +1,9 @@
 # TASK-500: Client-owned repo onboarding — `master`-default base, per-project branch template, CLI dispatch flags, per-project autopilot off
 
-**Status**: 📋 Planned 2026-09-24 (research done; nothing dispatched; first consumer = `client-org/client-repo` for the client engagement, see `<client-workspace>/.agent/system/pilot-setup-client-repo.md`)
+**Status**: 📋 Planned 2026-09-24 (research done; nothing dispatched; first consumer = a client-owned repo; per-project setup notes live in that client's private workspace)
 **Created**: 2026-09-24
 **Assignee**: Aleks (plan) → Pilot (legs, via `nav-pilot`, one issue per leg)
-**Priority**: blocks the first Pilot dry run on a client repo (TASK-06 in the client Navigator)
+**Priority**: blocks the first Pilot dry run on a client repo (tracked in the client's private workspace)
 
 ---
 
@@ -31,9 +31,9 @@
 ## Acceptance Criteria
 
 - [ ] A project with `default_branch: master` and no `main` ref runs end to end: worktree created from `origin/master`, PR opened against `master`. Unit test with a bare repo whose HEAD is `master`.
-- [ ] `projects[].branch_template` (e.g. `KEY-{id}-{slug}`) and `pr_title_template` (e.g. `{id}: {summary}`) honoured by CLI and poller paths; `validatePRTitle` accepts the configured template; default templates unchanged for existing projects.
+- [ ] `projects[].branch_template` (e.g. `CLIENT-{id}-{slug}`) and `pr_title_template` (e.g. `{id}: {summary}`) honoured by CLI and poller paths; `validatePRTitle` accepts the configured template; default templates unchanged for existing projects.
 - [ ] `pilot task` gains `--task-id`, `--branch`, `--base-branch`, `--body-file`, `--title`; `--project` also accepts a config project **name**.
-- [ ] **No history rewrite on client repos**: with `autopilot.enabled: false` the executor never force-pushes, never `-B`-resets an existing branch, never rebases pushed commits (the ci-fix continuation path does exactly that today — pitfall pilot#5348 class). Test: existing remote branch with one commit → a second run appends, never replaces. Origin: client D-026 (Aleks, 2026-09-24: «it's not our repo»).
+- [ ] **No history rewrite on client repos**: with `autopilot.enabled: false` the executor never force-pushes, never `-B`-resets an existing branch, never rebases pushed commits (the ci-fix continuation path does exactly that today — pitfall pilot#5348 class). Test: existing remote branch with one commit → a second run appends, never replaces. Origin: client-engagement rule, 2026-09-24: it is not our repo.
 - [ ] `projects[].autopilot: {enabled: false}` (or `mode: pr_only`) makes the controller ignore the project's PRs entirely (no CI wait, no merge, no branch delete, no ci-fix, no fix issues, no labels/comments), independent of the global flag and `--env`. Test: tracked PR for such a project passes CI → nothing happens.
 - [ ] `projects[].env` map injected into the model subprocess and gate commands for that project only; not visible to other projects' subprocesses. Test: two projects, one with `NPM_TOKEN`.
 - [ ] `projects[].bootstrap` (command list run in the worktree before the model starts; failure = task fails before any model call); `sync_main_after_task` overridable per project and forced off when `autopilot.enabled: false`.
@@ -68,13 +68,13 @@
 - [ ] `ProjectConfig.Env map[string]string` merged only for that project's subprocess/gates; `Bootstrap []string`; `PRBodyTemplate string` (`repo|none`).
 **Files**: `internal/executor/{model_env,backend_claudecode,git}.go`, `internal/config/config.go`, `configs/pilot.example.yaml`, `docs/`.
 
-Order: Leg 1 (bug, smallest) → Leg 4 (safety) → Leg 3 → Leg 2 → Leg 5. Legs 1, 3, 4 are enough for the first dry run on `client-repo` if the branch name is accepted as `pilot/KEY-<n>` for that run.
+Order: Leg 1 (bug, smallest) → Leg 4 (safety) → Leg 3 → Leg 2 → Leg 5. Legs 1, 3, 4 are enough for the first dry run on the client repo if the branch name is accepted as `pilot/KEY-<n>` for that run.
 
 ---
 
 ## Out of Scope
 - Linear webhook ingestion for a foreign workspace (needs their admin); Linear polling adapter may cover it later.
-- Cloning repos onto the box (operator step, documented in the client SOP).
+- Cloning repos onto the box (operator step, documented in the the client's private setup SOP (outside this repo).
 - Toolchain managers (nvm/mise) inside Pilot; the box PATH stays the contract.
 
 ## Technical Decisions
@@ -89,14 +89,14 @@ Order: Leg 1 (bug, smallest) → Leg 4 (safety) → Leg 3 → Leg 2 → Leg 5. L
 make test && make lint
 go test ./internal/executor -run 'Worktree|BaseBranch|Template' -v
 go test ./internal/autopilot -run 'ProjectDisabled|Adoption' -v
-pilot task --project client-repo --task-id KEY-1 --branch KEY-1-dry-run --body-file /tmp/body.md --dry-run
+pilot task --project client-repo --task-id CLIENT-1 --branch CLIENT-1-dry-run --body-file /tmp/body.md --dry-run
 ```
 
 ## Done
-- [ ] All five legs merged; example config + docs page; a dry run on `client-repo` produced one branch from `origin/master` and one draft PR against `master`, no other remote writes (verified with `gh api` event list).
+- [ ] All five legs merged; example config + docs page; a dry run on the client repo produced one branch from `origin/master` and one draft PR against `master`, no other remote writes (verified with `gh api` event list).
 
 ## Refs
-- client SOP: `<client-workspace>/.agent/system/pilot-setup-client-repo.md`; client decisions D-010, D-022, `pilot-execution-rules.md` P5–P7.
+- the client's private setup SOP (outside this repo).
 - PR#5457 (fetch fail-closed), GH-4001 (release opt-in), GH-2290 (`branch_from`), GH-3716 (per-project quality gates), pitfalls `runselfreview-runs-in-repo-root-phantom-reimplementation`, `poller-branch-lookup-marks-issue-done-from-another-issues-pr`.
 
 ---
