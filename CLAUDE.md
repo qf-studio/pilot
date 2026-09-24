@@ -270,6 +270,7 @@ on demand from `.agent/DEVELOPMENT-README.md`, not upfront.
 - ❌ No bulk doc loading (use Navigator lazy loading)
 - ❌ No Claude Code mentions in commits
 - ❌ No `git checkout`/`git switch` in the repo root — work in a worktree (see "Git & Worktree Discipline")
+- ❌ **No client-engagement material in this repo — it is PUBLIC.** Client names, their repos and ticket keys, contract prices, PR links, and paths into client workspaces never enter `.agent/`, code, commits or PR bodies. Client work runs from the client's own workspace (its own Navigator + `clients/<Name>/` in QuantFlow OS); this repo only ever sees generic product gaps ("a client repo with `master` default"). A private denylist gate (`scripts/check-secret-patterns.sh`, list outside the repo) enforces it on commit and push. Incident 2026-09-24.
 
 ## Development Workflow
 

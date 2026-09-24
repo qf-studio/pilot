@@ -108,5 +108,31 @@ if [ $FOUND_SECRETS -eq 1 ]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Private denylist (2026-09-24): this repository is PUBLIC. Client-engagement
+# identifiers (client names, their repos, ticket prefixes, prices) must never
+# land here — they belong in the private client workspace. The list itself is
+# private by construction: it lives OUTSIDE the repo and is read only if
+# present. Override the path with PILOT_PRIVATE_DENYLIST.
+# ---------------------------------------------------------------------------
+DENYLIST="${PILOT_PRIVATE_DENYLIST:-$HOME/.config/quantflow/private-denylist.txt}"
+if [ -f "$DENYLIST" ]; then
+    DENY_HITS=0
+    while IFS= read -r needle; do
+        [[ -z "$needle" || "$needle" == \#* ]] && continue
+        HITS=$(xargs grep -HniF -- "$needle" < "$TMPFILE" 2>/dev/null || true)
+        if [ -n "$HITS" ]; then
+            echo "❌ private-denylist hit (string not echoed):"
+            echo "$HITS" | cut -d: -f1,2 | sed 's/^/   /' | head -20
+            DENY_HITS=$((DENY_HITS + 1))
+        fi
+    done < "$DENYLIST"
+    if [ "$DENY_HITS" -gt 0 ]; then
+        echo "❌ ERROR: $DENY_HITS private-denylist string(s) found in tracked files. This repo is public; move that content to the private client workspace."
+        exit 1
+    fi
+    echo "✓ No private-denylist strings found"
+fi
+
 echo "✓ No realistic secret patterns found in $SCAN_COUNT scanned files"
 exit 0
