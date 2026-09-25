@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -187,15 +188,17 @@ func TestWriteClaudeSettings(t *testing.T) {
 
 func TestMergeWithExisting(t *testing.T) {
 	tests := []struct {
-		name           string
-		existingJSON   string
-		pilotSettings  map[string]interface{}
-		expectError    bool
-		validateResult func(t *testing.T, settingsPath string, restoreFunc func() error)
+		name             string
+		existingJSON     string
+		pilotSettings    map[string]interface{}
+		expectError      bool
+		expectPreExisted bool
+		validateResult   func(t *testing.T, settingsPath string, restoreFunc func() error)
 	}{
 		{
-			name:         "no existing file",
-			existingJSON: "",
+			name:             "no existing file",
+			expectPreExisted: false,
+			existingJSON:     "",
 			pilotSettings: map[string]interface{}{
 				"hooks": map[string][]HookMatcherEntry{
 					"Stop": {
@@ -225,8 +228,9 @@ func TestMergeWithExisting(t *testing.T) {
 			},
 		},
 		{
-			name:         "existing file with old format hooks - replace",
-			existingJSON: `{"other": "value", "hooks": {"Existing": {"command": "/existing.sh"}}}`,
+			name:             "existing file with old format hooks - replace",
+			expectPreExisted: true,
+			existingJSON:     `{"other": "value", "hooks": {"Existing": {"command": "/existing.sh"}}}`,
 			pilotSettings: map[string]interface{}{
 				"hooks": map[string][]HookMatcherEntry{
 					"Stop": {
@@ -256,9 +260,10 @@ func TestMergeWithExisting(t *testing.T) {
 			},
 		},
 		{
-			name:          "empty pilot settings is no-op",
-			existingJSON:  `{"other": "value"}`,
-			pilotSettings: map[string]interface{}{},
+			name:             "empty pilot settings is no-op",
+			expectPreExisted: true,
+			existingJSON:     `{"other": "value"}`,
+			pilotSettings:    map[string]interface{}{},
 			validateResult: func(t *testing.T, settingsPath string, _ func() error) {
 				data, _ := os.ReadFile(settingsPath)
 				if string(data) != `{"other": "value"}` {
@@ -282,12 +287,15 @@ func TestMergeWithExisting(t *testing.T) {
 				}
 			}
 
-			restoreFunc, err := MergeWithExisting(settingsPath, tt.pilotSettings)
+			restoreFunc, preExisted, err := MergeWithExisting(settingsPath, tt.pilotSettings)
 			if tt.expectError && err == nil {
 				t.Error("Expected error but got none")
 			}
 			if !tt.expectError && err != nil {
 				t.Errorf("Unexpected error: %v", err)
+			}
+			if !tt.expectError && preExisted != tt.expectPreExisted {
+				t.Errorf("preExisted = %v, want %v", preExisted, tt.expectPreExisted)
 			}
 			if !tt.expectError && tt.validateResult != nil {
 				tt.validateResult(t, settingsPath, restoreFunc)
@@ -721,7 +729,7 @@ func TestRestoreUsesCleanupInsteadOfBlindRestore(t *testing.T) {
 	hookSettings := GenerateClaudeSettings(config, scriptDir)
 
 	// Merge (this captures the stale originalData internally)
-	_, mergeErr := MergeWithExisting(settingsPath, hookSettings)
+	_, _, mergeErr := MergeWithExisting(settingsPath, hookSettings)
 	if mergeErr != nil {
 		t.Fatalf("MergeWithExisting: %v", mergeErr)
 	}
@@ -793,9 +801,12 @@ func TestMergeWithExisting_PreservesUserHooksUnderDefaultConfig(t *testing.T) {
 	config := DefaultHooksConfig()
 	pilotSettings := GenerateClaudeSettings(config, scriptDir)
 
-	restoreFunc, err := MergeWithExisting(settingsPath, pilotSettings)
+	restoreFunc, preExisted, err := MergeWithExisting(settingsPath, pilotSettings)
 	if err != nil {
 		t.Fatalf("MergeWithExisting: %v", err)
+	}
+	if !preExisted {
+		t.Error("Expected preExisted to be true for a settings.json that existed before the merge")
 	}
 
 	data, err := os.ReadFile(settingsPath)
@@ -859,6 +870,149 @@ func TestMergeWithExisting_PreservesUserHooksUnderDefaultConfig(t *testing.T) {
 	}
 	if string(restoredData) != existingJSON {
 		t.Error("Expected restore to return the original settings with the user hook intact")
+	}
+}
+
+// TestRestoreHookSettings_NoPreExisting_RemovesFileAndDir covers GH-5460's
+// AC1: after a task finishes in root mode with hooks enabled and no
+// pre-existing .claude/settings.json, nothing pilot-created should remain —
+// neither the settings file nor the (now empty) .claude directory.
+func TestRestoreHookSettings_NoPreExisting_RemovesFileAndDir(t *testing.T) {
+	tempDir := t.TempDir()
+	settingsPath := filepath.Join(tempDir, ".claude", "settings.json")
+
+	scriptDir := t.TempDir()
+	if err := WriteEmbeddedScripts(scriptDir); err != nil {
+		t.Fatalf("WriteEmbeddedScripts: %v", err)
+	}
+
+	config := &HooksConfig{Enabled: true}
+	pilotSettings := GenerateClaudeSettings(config, scriptDir)
+
+	restoreFunc, preExisted, err := MergeWithExisting(settingsPath, pilotSettings)
+	if err != nil {
+		t.Fatalf("MergeWithExisting: %v", err)
+	}
+	if preExisted {
+		t.Fatal("Expected preExisted to be false — no settings.json existed before the merge")
+	}
+	if _, err := os.Stat(settingsPath); err != nil {
+		t.Fatalf("Expected settings.json to exist after merge: %v", err)
+	}
+
+	if err := RestoreHookSettings(settingsPath, scriptDir, restoreFunc, preExisted); err != nil {
+		t.Fatalf("RestoreHookSettings: %v", err)
+	}
+
+	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
+		t.Errorf("Expected settings.json to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(settingsPath)); !os.IsNotExist(err) {
+		t.Errorf("Expected empty .claude directory to be removed, got err=%v", err)
+	}
+	if _, err := os.Stat(scriptDir); !os.IsNotExist(err) {
+		t.Errorf("Expected script directory to be removed, got err=%v", err)
+	}
+}
+
+// TestRestoreHookSettings_PreExisting_ByteIdentical covers GH-5460's AC2: with
+// a pre-existing user .claude/settings.json, the user's content must come
+// back byte-identical and the Pilot entry must be gone.
+func TestRestoreHookSettings_PreExisting_ByteIdentical(t *testing.T) {
+	tempDir := t.TempDir()
+	settingsPath := filepath.Join(tempDir, ".claude", "settings.json")
+
+	userScriptDir := t.TempDir()
+	userHookPath := filepath.Join(userScriptDir, "my-custom-hook.sh")
+	if err := os.WriteFile(userHookPath, []byte("#!/bin/sh\necho user hook\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	existingJSON := `{"otherUserSetting":"keep-me","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"` +
+		userHookPath + `"}]}]}}`
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(existingJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	scriptDir := t.TempDir()
+	if err := WriteEmbeddedScripts(scriptDir); err != nil {
+		t.Fatalf("WriteEmbeddedScripts: %v", err)
+	}
+	pilotSettings := GenerateClaudeSettings(&HooksConfig{Enabled: true}, scriptDir)
+
+	restoreFunc, preExisted, err := MergeWithExisting(settingsPath, pilotSettings)
+	if err != nil {
+		t.Fatalf("MergeWithExisting: %v", err)
+	}
+	if !preExisted {
+		t.Fatal("Expected preExisted to be true — settings.json existed before the merge")
+	}
+
+	if err := RestoreHookSettings(settingsPath, scriptDir, restoreFunc, preExisted); err != nil {
+		t.Fatalf("RestoreHookSettings: %v", err)
+	}
+
+	restoredData, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile after restore: %v", err)
+	}
+	if string(restoredData) != existingJSON {
+		t.Errorf("Expected byte-identical restore.\nwant: %s\ngot:  %s", existingJSON, restoredData)
+	}
+	// The directory itself must survive — it's the user's, not ours.
+	if _, err := os.Stat(filepath.Dir(settingsPath)); err != nil {
+		t.Errorf("Expected .claude directory to survive restore: %v", err)
+	}
+	if _, err := os.Stat(scriptDir); !os.IsNotExist(err) {
+		t.Errorf("Expected script directory to be removed, got err=%v", err)
+	}
+}
+
+// TestRestoreHookSettings_EntriesUnderScriptDirRemoved_EvenWhenDirStillExists
+// covers GH-5460's AC3: the restore path must drop this run's hook entries
+// even when scriptDir (and the script files under it) still exist at
+// cleanup time. This is the exact bug: the old hookRestoreFunc called
+// CleanStalePilotHooks (which only drops entries whose script file is
+// already gone) before deleting scriptDir, so the entry it had just added
+// was never "stale" yet and survived the task.
+func TestRestoreHookSettings_EntriesUnderScriptDirRemoved_EvenWhenDirStillExists(t *testing.T) {
+	tempDir := t.TempDir()
+	settingsPath := filepath.Join(tempDir, ".claude", "settings.json")
+
+	scriptDir := t.TempDir()
+	if err := WriteEmbeddedScripts(scriptDir); err != nil {
+		t.Fatalf("WriteEmbeddedScripts: %v", err)
+	}
+
+	pilotSettings := GenerateClaudeSettings(&HooksConfig{Enabled: true}, scriptDir)
+	restoreFunc, preExisted, err := MergeWithExisting(settingsPath, pilotSettings)
+	if err != nil {
+		t.Fatalf("MergeWithExisting: %v", err)
+	}
+
+	// Sanity check: the pilot entry (pointing at scriptDir, which still
+	// exists on disk right now) is actually present before cleanup.
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), scriptDir) {
+		t.Fatalf("Expected merged settings to reference scriptDir %s, got: %s", scriptDir, data)
+	}
+	if _, err := os.Stat(filepath.Join(scriptDir, "pilot-bash-guard.sh")); err != nil {
+		t.Fatalf("Expected script to still exist on disk at cleanup time: %v", err)
+	}
+
+	// Restore while scriptDir and its scripts are still present.
+	if err := RestoreHookSettings(settingsPath, scriptDir, restoreFunc, preExisted); err != nil {
+		t.Fatalf("RestoreHookSettings: %v", err)
+	}
+
+	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
+		t.Errorf("Expected settings.json to be removed (no pre-existing file), got err=%v", err)
 	}
 }
 

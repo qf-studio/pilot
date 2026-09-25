@@ -4392,7 +4392,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 				// Merge with existing settings.json (worktree-safe path)
 				settingsPath := filepath.Join(executionPath, ".claude", "settings.json")
-				_, mergeErr := MergeWithExisting(settingsPath, hookSettings)
+				restoreFunc, preExisted, mergeErr := MergeWithExisting(settingsPath, hookSettings)
 				if mergeErr != nil {
 					log.Error("Failed to setup Claude hooks", slog.Any("error", mergeErr))
 					// Clean up script directory
@@ -4401,14 +4401,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 					}
 				} else {
 					hookRestoreFunc = func() error {
-						// Instead of blind restoreFunc() (which may write back stale entries
-						// from a previous crash), use targeted cleanup (GH-1884).
-						if cleanErr := CleanStalePilotHooks(settingsPath); cleanErr != nil {
-							log.Warn("Failed to clean pilot hooks from settings", slog.Any("error", cleanErr))
-						}
-						// Clean up script directory
-						if rmErr := os.RemoveAll(scriptDir); rmErr != nil {
-							log.Warn("Failed to clean up hook scripts", slog.Any("error", rmErr))
+						// GH-5460: RestoreHookSettings reverts settingsPath to its
+						// pre-merge state (byte-identical restore, or removal when
+						// Pilot created the file this run) instead of the old
+						// CleanStalePilotHooks-then-RemoveAll(scriptDir) order, which
+						// left a dangling pilot-bash-guard entry behind every task in
+						// root-mode execution (no worktree to discard it).
+						if err := RestoreHookSettings(settingsPath, scriptDir, restoreFunc, preExisted); err != nil {
+							log.Warn("Failed to restore Claude hook settings", slog.Any("error", err))
 						}
 						return nil
 					}

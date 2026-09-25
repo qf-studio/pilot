@@ -187,9 +187,12 @@ func WriteClaudeSettings(settingsPath string, settings map[string]interface{}) e
 }
 
 // MergeWithExisting merges Pilot hooks with existing .claude/settings.json
-// Returns a restore function to revert changes and any error
-// Handles both old format (map[string]HookDefinition) and new format (map[string][]HookMatcherEntry)
-func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}) (restoreFunc func() error, err error) {
+// Returns a restore function to revert changes, whether settingsPath existed
+// before this call (GH-5460 — callers use this to decide whether they're
+// allowed to delete the file entirely once Pilot's own entries are gone), and
+// any error. Handles both old format (map[string]HookDefinition) and new
+// format (map[string][]HookMatcherEntry).
+func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}) (restoreFunc func() error, preExisted bool, err error) {
 	var originalData []byte
 	var originalExists bool
 
@@ -198,12 +201,12 @@ func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}
 		originalData = data
 		originalExists = true
 	} else if !os.IsNotExist(readErr) {
-		return nil, fmt.Errorf("failed to read existing settings: %w", readErr)
+		return nil, false, fmt.Errorf("failed to read existing settings: %w", readErr)
 	}
 
 	// If no Pilot hooks to add, no-op
 	if len(pilotSettings) == 0 {
-		return func() error { return nil }, nil
+		return func() error { return nil }, originalExists, nil
 	}
 
 	var merged map[string]interface{}
@@ -212,7 +215,7 @@ func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}
 		// Parse existing settings
 		var existing map[string]interface{}
 		if err := json.Unmarshal(originalData, &existing); err != nil {
-			return nil, fmt.Errorf("failed to parse existing settings: %w", err)
+			return nil, originalExists, fmt.Errorf("failed to parse existing settings: %w", err)
 		}
 
 		// Deep merge hooks section
@@ -250,13 +253,17 @@ func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}
 
 	// Write merged settings
 	if err := WriteClaudeSettings(settingsPath, merged); err != nil {
-		return nil, fmt.Errorf("failed to write merged settings: %w", err)
+		return nil, originalExists, fmt.Errorf("failed to write merged settings: %w", err)
 	}
 
 	// Return restore function
 	restoreFunc = func() error {
 		if originalExists {
-			// Restore original file
+			// Restore original file byte-for-byte. GH-5460: this must stay a
+			// literal byte restore, not a re-marshal of a cleaned struct —
+			// WriteClaudeSettings already reformatted the file once during the
+			// merge above, so a JSON round-trip on the way back out would keep
+			// losing the caller's original formatting/key order.
 			return os.WriteFile(settingsPath, originalData, 0644)
 		} else {
 			// Remove file we created
@@ -267,7 +274,68 @@ func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}
 		return nil
 	}
 
-	return restoreFunc, nil
+	return restoreFunc, originalExists, nil
+}
+
+// removeClaudeDirIfEmpty removes the .claude directory containing
+// settingsPath when it is now empty. Used after Pilot's own settings.json
+// (one it created for this run, per MergeWithExisting's preExisted flag) has
+// been removed, so an empty directory doesn't linger in the project root
+// (GH-5460). Not required for `git status --porcelain` cleanliness — git
+// doesn't track empty directories — but keeps the filesystem tidy.
+func removeClaudeDirIfEmpty(settingsPath string) error {
+	dir := filepath.Dir(settingsPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read %s: %w", dir, err)
+	}
+	if len(entries) != 0 {
+		return nil
+	}
+	if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove empty %s: %w", dir, err)
+	}
+	return nil
+}
+
+// RestoreHookSettings reverts the effects of a MergeWithExisting call and
+// removes the hook script directory once a task finishes (GH-5460).
+//
+// It restores settingsPath to its pre-merge state via restoreFunc — byte-
+// identical to the caller's original file when preExisted is true, or
+// removed entirely when Pilot created it for this run. This drops this run's
+// hook entries unconditionally, independent of whether scriptDir has been
+// deleted yet: the earlier hookRestoreFunc called CleanStalePilotHooks
+// (which only removes entries whose script file is gone) before deleting
+// scriptDir, so the entry it had just added was never "stale" at that point
+// and survived every task in root-mode execution (no worktree to discard the
+// leftover file).
+//
+// When Pilot created settingsPath for this run, the now-empty .claude
+// directory is also removed. CleanStalePilotHooks runs once more as a
+// defensive no-op catching any stale pilot entry left by an unrelated,
+// earlier crash on this exact path (GH-1884) — normally redundant since
+// restoreFunc already reverted to the pre-merge state, but cheap insurance
+// if that invariant is ever violated by a future change.
+func RestoreHookSettings(settingsPath, scriptDir string, restoreFunc func() error, preExisted bool) error {
+	if restoreErr := restoreFunc(); restoreErr != nil {
+		return fmt.Errorf("failed to restore claude settings: %w", restoreErr)
+	}
+	if !preExisted {
+		if err := removeClaudeDirIfEmpty(settingsPath); err != nil {
+			return fmt.Errorf("failed to remove empty .claude directory: %w", err)
+		}
+	}
+	if err := CleanStalePilotHooks(settingsPath); err != nil {
+		return fmt.Errorf("failed to clean stale pilot hooks: %w", err)
+	}
+	if err := os.RemoveAll(scriptDir); err != nil {
+		return fmt.Errorf("failed to remove hook script directory: %w", err)
+	}
+	return nil
 }
 
 // isOldHookFormat checks if the hooks map is in old format (e.g., "Stop": {"command": "..."})
