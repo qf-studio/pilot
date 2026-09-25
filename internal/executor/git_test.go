@@ -514,6 +514,43 @@ func TestExtractPRURL(t *testing.T) {
 	}
 }
 
+// TestParseCreatePROutput covers GH-5459: gh pr create's CombinedOutput()
+// interleaves stderr warnings with the stdout URL on success, so the
+// success-path parser must extract the URL rather than returning the raw
+// combined output verbatim.
+func TestParseCreatePROutput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "warning before URL",
+			input: "Warning: 1 uncommitted change\nhttps://github.com/o/r/pull/4\n",
+			want:  "https://github.com/o/r/pull/4",
+		},
+		{
+			name:  "plain URL unchanged",
+			input: "https://github.com/o/r/pull/4\n",
+			want:  "https://github.com/o/r/pull/4",
+		},
+		{
+			name:  "no URL falls back to trimmed text",
+			input: "  some unexpected gh output with no url  \n",
+			want:  "some unexpected gh output with no url",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCreatePROutput(tt.input)
+			if got != tt.want {
+				t.Errorf("parseCreatePROutput(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestSwitchToDefaultBranchAndPull_FailsOnNonGitDir validates that
 // SwitchToDefaultBranchAndPull returns an error for non-git directories.
 // GH-836: This error MUST cause execution to abort (hard fail) rather than
