@@ -905,9 +905,24 @@ func (g *GitOperations) CreatePR(ctx context.Context, title, body, baseBranch st
 		return "", fmt.Errorf("failed to create PR: %w: %s", err, output)
 	}
 
-	// Extract PR URL from output
-	prURL := strings.TrimSpace(outputStr)
-	return prURL, nil
+	return parseCreatePROutput(outputStr), nil
+}
+
+// parseCreatePROutput extracts the PR URL from `gh pr create`'s combined
+// stdout+stderr on the success path. GH-5459: `gh` can print warnings (e.g.
+// "Warning: 1 uncommitted change") to stderr ahead of the URL on stdout, and
+// CombinedOutput() interleaves both streams — returning the raw output
+// verbatim leaks those warnings into pr_url wherever it's stored or
+// displayed. Prefer the extracted URL; fall back to the trimmed raw output
+// (with a warning log) only when no URL pattern is found.
+func parseCreatePROutput(outputStr string) string {
+	if url := extractPRURL(outputStr); url != "" {
+		return url
+	}
+	trimmed := strings.TrimSpace(outputStr)
+	slog.Warn("CreatePR: no PR URL found in gh output, returning raw output",
+		slog.String("output", trimmed))
+	return trimmed
 }
 
 // extractPRURL extracts a GitHub PR URL from text
