@@ -1,6 +1,9 @@
 package autopilot
 
 import (
+	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -185,5 +188,82 @@ func TestTripTracker_ThresholdCustomizable(t *testing.T) {
 	tracker.recordTrip()
 	if !tracker.shouldEscalate() {
 		t.Error("should escalate after 5 trips with threshold of 5")
+	}
+}
+
+// fleetSnapshot stands in for the fleet-wide metrics source (GH-4068), whose
+// total_active_prs can be nonzero while this controller has nothing in flight.
+type fleetSnapshot struct{ activePRs int }
+
+func (f fleetSnapshot) Snapshot() MetricsSnapshot {
+	return MetricsSnapshot{TotalActivePRs: f.activePRs}
+}
+
+// alertCapture records dispatched alerts for assertions.
+type alertCapture struct{ alerts chan *alerts.Alert }
+
+func (c alertCapture) Name() string { return "capture" }
+func (c alertCapture) Type() string { return "webhook" }
+func (c alertCapture) Send(_ context.Context, a *alerts.Alert) error {
+	c.alerts <- a
+	return nil
+}
+
+// TestMetricsAlerter_Evaluate_IdleIsNotDeadlock is the GH-5448 regression pin:
+// an idle controller reports no stall (even when a fleet-wide metrics source
+// counts PRs in other repos), and the first PR registered after a long idle
+// stretch does not inherit the idle time as its stall. A real stall still
+// fires, exactly once.
+func TestMetricsAlerter_Evaluate_IdleIsNotDeadlock(t *testing.T) {
+	config := &alerts.AlertConfig{
+		Enabled:  true,
+		Channels: []alerts.ChannelConfig{{Name: "capture", Type: "webhook", Enabled: true}},
+		Rules: []alerts.AlertRule{
+			{Name: "autopilot_deadlock", Type: alerts.AlertTypeDeadlock, Enabled: true, Severity: alerts.SeverityCritical},
+		},
+	}
+	capture := alertCapture{alerts: make(chan *alerts.Alert, 4)}
+	dispatcher := alerts.NewDispatcher(config)
+	dispatcher.RegisterChannel(capture)
+	engine := alerts.NewEngine(config, alerts.WithDispatcher(dispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := engine.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	controller := &Controller{
+		owner:          "test",
+		repo:           "repo",
+		config:         &Config{},
+		log:            slog.Default(),
+		activePRs:      map[int]*PRState{},
+		lastProgressAt: time.Now().Add(-2 * time.Hour),
+	}
+	ma := NewMetricsAlerter(controller, engine)
+	ma.SetMetricsSource(fleetSnapshot{activePRs: 3})
+
+	ma.evaluate() // idle for two hours: must not fire
+
+	controller.registerPR(7, "", 0, "", "", "", false)
+	ma.evaluate() // PR 7 just registered: must not fire
+
+	// Now PR 7 genuinely stalls. Events and dispatches are both handled in
+	// order, so if either earlier tick had fired, its alert would arrive first.
+	controller.mu.Lock()
+	controller.lastProgressAt = time.Now().Add(-3 * time.Hour)
+	controller.mu.Unlock()
+	ma.evaluate()
+
+	select {
+	case a := <-capture.alerts:
+		if !strings.Contains(a.Message, "PR #7") || !strings.Contains(a.Message, "180 minutes") {
+			t.Fatalf("first deadlock alert was not the PR #7 stall: %q", a.Message)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled active PR did not fire a deadlock alert")
+	}
+	if !controller.IsDeadlockAlertSent() {
+		t.Error("deadlock alert not marked sent after a real stall")
 	}
 }

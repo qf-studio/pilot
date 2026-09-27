@@ -164,6 +164,14 @@ func (ma *MetricsAlerter) evaluate() {
 	// GH-849: Deadlock detection - time since last progress
 	lastProgressAt := ma.controller.GetLastProgressAt()
 	noProgressMin := time.Since(lastProgressAt).Minutes()
+	if len(activePRs) == 0 {
+		// GH-5448: an idle autopilot makes no state transitions, so the stall
+		// clock would grow without bound. With nothing in flight it is not a
+		// deadlock, and restarting the clock keeps the next PR from inheriting
+		// the idle time as its stall.
+		ma.controller.ResetProgressClock()
+		noProgressMin = 0
+	}
 	deadlockAlertSent := ma.controller.IsDeadlockAlertSent()
 
 	// Find the last known state for deadlock context

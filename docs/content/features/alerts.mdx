@@ -111,7 +111,7 @@ These events detect complex failure scenarios and trigger escalation workflows.
 
 | Event Type | Default Severity | Default Cooldown | Description |
 |------------|------------------|------------------|-------------|
-| `deadlock` | critical | 1h | Fires when autopilot has no state transitions for the configured duration (default: 1 hour). Indicates the system may be stuck. |
+| `deadlock` | critical | 1h | Fires when autopilot has PRs in flight but no state transitions for the configured duration (default: 1 hour). Indicates the system may be stuck. An idle autopilot with no active PRs never fires. |
 | `escalation` | critical | 1h | Fires after repeated failures for the same source (default: 3 retries). Routes to PagerDuty or on-call channels. |
 | `heartbeat_timeout` | critical | 5m | Fires when the executor process misses its heartbeat signal, indicating a crash or hang. |
 
