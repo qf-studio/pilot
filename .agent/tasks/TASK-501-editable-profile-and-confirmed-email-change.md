@@ -1,6 +1,6 @@
 # TASK-501: Editable Profile — display name now, confirmed email change behind the email transport
 
-**Status**: 🚀 LEG A DISPATCHED 2026-09-28 — [auth-service#516](https://github.com/qf-studio/auth-service/issues/516) (PUT /auth/me) · [console#335](https://github.com/qf-studio/pilot-console/issues/335) (PATCH /api/v1/me + GET freshness) · [ui#182](https://github.com/qf-studio/pilot-console-ui/issues/182) (inline name edit). Deploy order: auth-service release (Nelya's quantflow stack) → console → UI. Leg B gated on Leg C. Founder ask 2026-09-28.
+**Status**: ✅ **LEG A LIVE 2026-09-28 ~12:30Z** — auth PR#517 → **v0.74.0 deployed** (PUT /auth/me answers 401, not 404) · console PR#337 → **prod-0.1.2** (PATCH /api/v1/me + GET freshness) · ui PR#183 live (inline name edit). Founder verification of the edit pending. Fast-follows: ui#184 (a11y), console#339 (wire-contract gate). Leg B still gated on Leg C. Originally dispatched 2026-09-28 — [auth-service#516](https://github.com/qf-studio/auth-service/issues/516) (PUT /auth/me) · [console#335](https://github.com/qf-studio/pilot-console/issues/335) (PATCH /api/v1/me + GET freshness) · [ui#182](https://github.com/qf-studio/pilot-console-ui/issues/182) (inline name edit). Deploy order: auth-service release (Nelya's quantflow stack) → console → UI. Leg B gated on Leg C. Founder ask 2026-09-28.
 **Owner**: Navigator plans, Pilot executes per repo.
 **Repos**: `qf-studio/auth-service` · `qf-studio/pilot-console` · `qf-studio/pilot-console-ui`
 
