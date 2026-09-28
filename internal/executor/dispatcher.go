@@ -3407,7 +3407,14 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// populate it) — identical to the pre-GH-5193 behavior in that case.
 		presenceCheckBody := task.Description
 		if task.SourceAdapter == "" || task.SourceAdapter == "github" {
-			if state, ghErr := fetchIssueState(ctx, w.runner, task, exec.ProjectPath); ghErr != nil {
+			// GH-5469: fetch+fallback resolution factored into
+			// resolveLiveIssueBody (issue_state.go) so this revalidation and
+			// the GH-5466 diff-coverage check can't drift apart on what
+			// "live body" means. state is still returned here (rather than
+			// just the body) since the Closed check below needs it too —
+			// this stays a single fetchIssueState call, no extra round trip.
+			body, state, source, ghErr := resolveLiveIssueBody(ctx, w.runner, task, exec.ProjectPath, task.Description)
+			if ghErr != nil {
 				w.log.Warn("Failed to revalidate issue state before pickup; proceeding (fail-open)",
 					slog.String("execution_id", exec.ID),
 					slog.String("task_id", exec.TaskID),
@@ -3437,10 +3444,14 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				}
 				w.currentTaskID.Store("")
 				continue
-			} else if state.Body != "" {
+			} else {
 				// GH-5193: prefer the live body just fetched above over the
 				// queue-time snapshot for this tick's ref/path extraction.
-				presenceCheckBody = state.Body
+				presenceCheckBody = body
+				w.log.Debug("resolved issue body for base-presence revalidation",
+					slog.String("execution_id", exec.ID),
+					slog.String("task_id", exec.TaskID),
+					slog.String("source", string(source)))
 			}
 		}
 

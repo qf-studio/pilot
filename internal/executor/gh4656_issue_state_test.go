@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -306,5 +307,71 @@ func TestProcessQueue_IssueStateFetchError_FailsOpenAtPickup(t *testing.T) {
 
 	if !strings.Contains(logBuf.String(), "Failed to revalidate issue state before pickup") {
 		t.Errorf("expected a fail-open warning naming the pickup-time lookup failure, got log: %q", logBuf.String())
+	}
+}
+
+// TestResolveLiveIssueBody is the GH-5469 table-driven test for the shared
+// "live body, fall back to snapshot" resolution both the dispatcher's
+// base-presence revalidation and the GH-5466 diff-coverage check now call,
+// so the two gates cannot drift apart on what "live body" means again.
+func TestResolveLiveIssueBody(t *testing.T) {
+	fetchErr := errors.New("GitHub API: 503 Service Unavailable")
+
+	tests := []struct {
+		name        string
+		fetchResult IssueState
+		fetchErr    error
+		snapshot    string
+		wantBody    string
+		wantSource  issueBodySource
+		wantErr     error
+	}{
+		{
+			name:        "fetch succeeds with a non-empty body: live body wins",
+			fetchResult: IssueState{Body: "## Change\n\nlive body\n"},
+			snapshot:    "## Change\n\nsnapshot body\n",
+			wantBody:    "## Change\n\nlive body\n",
+			wantSource:  issueBodySourceLive,
+		},
+		{
+			name:        "fetch succeeds but body is empty: falls back to snapshot",
+			fetchResult: IssueState{Body: ""},
+			snapshot:    "## Change\n\nsnapshot body\n",
+			wantBody:    "## Change\n\nsnapshot body\n",
+			wantSource:  issueBodySourceSnapshot,
+		},
+		{
+			name:        "fetch fails: falls back to snapshot",
+			fetchResult: IssueState{Body: "## Change\n\nshould be ignored\n"},
+			fetchErr:    fetchErr,
+			snapshot:    "## Change\n\nsnapshot body\n",
+			wantBody:    "## Change\n\nsnapshot body\n",
+			wantSource:  issueBodySourceSnapshot,
+			wantErr:     fetchErr,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubFetchIssueState(t, func(_ context.Context, _ *Runner, _ *Task, _ string) (IssueState, error) {
+				return tt.fetchResult, tt.fetchErr
+			})
+
+			task := &Task{ID: "GH-5469-test"}
+			body, state, source, err := resolveLiveIssueBody(context.Background(), nil, task, "/project", tt.snapshot)
+
+			if body != tt.wantBody {
+				t.Errorf("body = %q, want %q", body, tt.wantBody)
+			}
+			if source != tt.wantSource {
+				t.Errorf("source = %q, want %q", source, tt.wantSource)
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("err = %v, want %v", err, tt.wantErr)
+			}
+			if !reflect.DeepEqual(state, tt.fetchResult) {
+				t.Errorf("state = %#v, want the raw fetched state %#v", state, tt.fetchResult)
+			}
+		})
 	}
 }
