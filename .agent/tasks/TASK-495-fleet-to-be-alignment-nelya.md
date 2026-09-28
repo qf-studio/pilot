@@ -136,6 +136,14 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 
 - **09-23 13:21 CEST — OLD ESTATE CLOSED.** Nelya's summary (`1790162354.977609`): TenantBase/ControlPlane/FleetVpc stacks + VPC 10.30 deleted, dead-tenant SG/role/params gone, orphan + RDS final snapshots deleted, key `a0e6dc65` scheduled 09-30; her duplicate backup policy removed (single owner `policy-01ba06ee281502274`, 01:30 UTC, keep 7); deletion queue tagged `pilot:delete-after`: 09-26 old rollback volume `vol-068f78767202b20aa` + its snapshots + test volume, 10-01 the encrypted migration snapshots. **pilot-cloud-infra ARCHIVED 13:21 CEST (founder call)** after closing infra#35/#36 (isolation harness, superseded); `CDKToolkit` released to her. Hygiene: the box config still lists `pilot-cloud-infra` as a Pilot project — drop it at the next config edit/restart (poller on an archived repo is harmless but noise).
 
+## 09-25 → 09-28 log (first tenant proven, split decided)
+
+- **09-25 12:40 CEST** first fleet tenant `i-0289111000cebcee9` provisioned by the reconciler and shipped `pilot-ship-test-go#3`/`#5` end-to-end (4m35s / 4m28s). Board empty → sync-worker flags never set in the prod task def (infra#14→PR#15, deployed from our side, rev 11) → fresh connections never backfill (console#326).
+- **09-25 17:22 CEST** proof posted in `#infrastructure` (tenant id, both runs, deploy chain, infra#16 ask).
+- **09-25 17:51 CEST Nelya**: tenant verified from the account side (tenant subnet, no public IP, IMDSv2, boundary-scoped role, encrypted volumes). Backup role lacked the fleet-key grant → fixed live. **Keep `ami-01ed3bb9600200ce4`** (pilot-agent warm-pool launch template still uses it). **#16 declined**: she wants console-api ×2 with `SYNC_INGEST`/`SYNC_OUTBOUND`/`APPROVAL_INGEST` OFF and a new single-replica `console-workers` service (no LB) with them ON; her side = template + flags; ours = one deploy job for `pilot-fleet-svc-console-workers`, same ImageTag. Watch the board for doubled actions until the split lands.
+- **09-28 09:5x CEST** our response: PR#17 (DesiredCount 1, hand-merged 09-25, never deployed) reverted via PR#20; #16 closed superseded; console#329 → **PR#330 merged** (deploy-workers job, green-with-notice until her template is in the S3 template base; assumes params ImageTag/JobId/AlertsTopicArn, no OriginVerifySecret — confirm against her Parameters block). WAF ask infra#18 → **PR#19 merged 09-28**, needs her deploy of `-domain-config` + `-cdn-us-east-1`. Reply posted 09-28 in the same thread. **Waiting on Nelya**: console-workers template, WAF deploy, warm-pool AMI move.
+- Tenant GitHub token rotated 09-28 via Connections PUT: SSM v4 09:51:14 CEST → unit restarted 07:51:58Z → the unit's secrets fetch rewrote the env file 07:51:59Z → token validated 07:52:02Z. Config file untouched by design (env refs). See mem-200.
+
 ## Operator / founder items
 
 - ~~Domain pick~~ **DECIDED 2026-09-21: `pilotcloud.dev`** (memory `domain-pilotcloud-dev-keep-pilot-name`); sent to Nelya `1789989147.511449` → she registers + starts phase 2. Marketing/docs stay on pilot.quantflow.studio.
@@ -159,4 +167,4 @@ Nelya's artifact "Pilot Fleet TO-BE" (Slack `#infrastructure` msg `1788706191.40
 
 ---
 
-**Last Updated**: 2026-09-21
+**Last Updated**: 2026-09-28

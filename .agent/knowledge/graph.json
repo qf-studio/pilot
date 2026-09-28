@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-25T15:51:51.922833+00:00",
+  "updated": "2026-09-28T08:00:50.081810+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6883,6 +6883,22 @@
         ],
         "created": "2026-09-25",
         "last_validated": "2026-09-25"
+      },
+      "mem-200": {
+        "type": "learning",
+        "summary": "Tenant secret rotation proof chain: SSM version advanced → pilot.service restart → /run/pilot/env rewritten by fetch-secrets.sh → 'token validated' log. Config file mtime never moves (env refs). Founder saves tokens in the console UI; Claude only verifies (no kms:Decrypt for user/aleks).",
+        "path": "memories/learnings/mem-200.md",
+        "confidence": 0.95,
+        "concepts": [
+          "tenant",
+          "secrets",
+          "reconciler",
+          "config-push",
+          "pilot-console",
+          "operations"
+        ],
+        "created": "2026-09-28",
+        "last_validated": "2026-09-28"
       }
     }
   },
@@ -9401,6 +9417,16 @@
       "from": "mem-199",
       "to": "TASK-495",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-200",
+      "to": "TASK-495",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-200",
+      "to": "TASK-405",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -9814,7 +9840,8 @@
     ],
     "config-push": [
       "apply-script-silent-rollback-causes",
-      "mem-198"
+      "mem-198",
+      "mem-200"
     ],
     "context": [
       "TASK-368",
@@ -10862,7 +10889,8 @@
       "mem-196",
       "mem-197",
       "mem-198",
-      "mem-199"
+      "mem-199",
+      "mem-200"
     ],
     "pilot-task-command": [
       "TASK-03",
@@ -10906,7 +10934,8 @@
     "reconciler": [
       "mem-100",
       "merged-feature-dead-callback-not-bridged-onprcreated",
-      "mem-198"
+      "mem-198",
+      "mem-200"
     ],
     "release": [
       "approvals-off-stage-auto-merge",
@@ -10975,7 +11004,8 @@
     ],
     "secrets": [
       "apply-script-silent-rollback-causes",
-      "mem-131"
+      "mem-131",
+      "mem-200"
     ],
     "security": [
       "guard-research-framing-parity-not-bypass",
@@ -11490,7 +11520,8 @@
     ],
     "operations": [
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
-      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid"
+      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
+      "mem-200"
     ],
     "deploy-gates": [
       "mem-196"
@@ -11511,7 +11542,8 @@
       "mem-197"
     ],
     "tenant": [
-      "mem-198"
+      "mem-198",
+      "mem-200"
     ],
     "waf": [
       "mem-199"
@@ -11526,11 +11558,11 @@
       "mem-199"
     ]
   },
-  "last_updated": "2026-09-25T15:51:51.922833+00:00",
+  "last_updated": "2026-09-28T08:00:50.081810+00:00",
   "stats": {
-    "total_nodes": 570,
-    "total_edges": 503,
-    "memory_count": 314
+    "total_nodes": 571,
+    "total_edges": 505,
+    "memory_count": 315
   },
   "metadata": {}
 }
