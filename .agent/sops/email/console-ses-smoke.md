@@ -1,6 +1,6 @@
 # SOP: Console email transport smoke (auth-service → console relay → SES)
 
-**When**: after Nelya deploys the two template changes for TASK-501 leg C (console-api `PILOT_CONSOLE_EMAIL_ENABLED=true` + `PILOT_CONSOLE_EMAIL_TOKEN`; auth-service `EMAIL_*` set, `EMAIL_SERVICE_URL=https://console.pilotcloud.dev/api/v1`), and after any later change to the relay, the token, or SES.
+**When**: after Nelya's template edits for TASK-501 leg C are on S3 (console-api `EmailEnabled` true + `PILOT_CONSOLE_EMAIL_TOKEN` secret; auth-service `EMAIL_ENABLED` true + `EMAIL_SERVICE_URL=https://console.pilotcloud.dev/api/v1`, sender, both URL bases, `EMAIL_API_KEY` secret) and **we** have redeployed console-api (Deploy QuantFlow AWS, dispatch with `tenant_factory=true`) and then auth-service (its own Deploy QuantFlow AWS workflow, `image_tag=v0.74.0`), and after any later change to the relay, the token, or SES.
 **Preconditions**: console PR#342 (relay under `/api/v1/send-email`, public verify/reset relays) and ui PR#187/#189 (landing pages) in prod. SES identity `console@quantflow.studio` verified, production access granted.
 
 ## 1. Relay is up and locked (no mail sent)
