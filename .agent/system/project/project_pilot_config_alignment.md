@@ -51,3 +51,19 @@ After Claude subprocess exits, before PR creation:
 Single line if quality drops: `model_routing.complex: claude-opus-4-7`. Or `cp ~/.pilot/config.yaml.bak-20260430-100726 ~/.pilot/config.yaml` for full revert.
 
 **Restart required:** `pilot start` reads config once at boot.
+
+## 2026-09-28 — default model → Claude Sonnet 5.5 (box config, live)
+
+Sonnet 5.5 released 2026-09-28 (`claude-sonnet-5-5`, $2/$10 per MTok, same as Sonnet 5; adaptive thinking, default effort `high`; breaking vs Sonnet 5: forced `tool_choice` any/tool → 400, `thinking.disabled` → use `between_tools`, thinking blocks model-bound — none touch Pilot's claude-code backend path). Box (`i-0e0c1ca34e7b561f9`) `~/.pilot/config.yaml` edited via SSM and daemon restarted 20:41Z (queue was idle, 0 in-flight). Claude Code CLI on the box 2.1.104 passes the model string through.
+
+| Setting | Before | After |
+|---|---|---|
+| `orchestrator.model` | `claude-sonnet-5` | `claude-sonnet-5-5` |
+| `executor.model_routing.simple/medium/complex` | `claude-sonnet-5` | `claude-sonnet-5-5` |
+| `executor.default_model` | `claude-sonnet-5` | `claude-sonnet-5-5` |
+| `bot.answer_model` | `claude-sonnet-5` | `claude-sonnet-5-5` |
+| `executor.opencode.model` (unused backend) | `anthropic/claude-sonnet-5` | `anthropic/claude-sonnet-5-5` |
+
+Unchanged: `model_routing.trivial`, `bot.model`, classifiers on `claude-haiku-4-5-20251001`; `effort_routing` (low/medium/high/high). Boot log confirms `LLM effort classifier initialized model=claude-sonnet-5-5` (it followed the executor default before, too). First executor run on the new model still to be observed: look for `Using routed model model=claude-sonnet-5-5` in `daemon.log`.
+
+**Rollback:** on the box `cp /home/ec2-user/.pilot/config.yaml.bak-sonnet55-202609282040 /home/ec2-user/.pilot/config.yaml` then restart (safe-daemon-restart SOP). The laptop `~/.pilot/config.yaml` copy still says `claude-sonnet-5` — update it before any future "ship config verbatim" step.
