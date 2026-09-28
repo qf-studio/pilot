@@ -952,6 +952,21 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 			overlay.CIChecks = c.projectCIChecks.CIChecks
 		}
 		ciMonitorCfg = &overlay
+	} else if inherited := effectiveRequiredChecksForLint(cfg); len(inherited) > 0 {
+		// GH-5468: a project with no ci_checks/WithCIChecksOverride block
+		// silently inherits the shared global Config's required-checks
+		// allowlist (the exact class of bug GH-4478 fixed per-project but
+		// left open here) — that allowlist is very likely tuned for a
+		// different repo's check-run names. This is not itself an error (the
+		// unlisted-failure gate in checkRequiredChecks now blocks on any
+		// unlisted check that fails regardless), but it's worth surfacing
+		// loudly at startup so an operator can add an explicit override
+		// instead of relying on inheritance.
+		c.log.Warn("project has no ci_checks override; inheriting the global required-checks allowlist tuned for a possibly different repo (GH-5468)",
+			"owner", owner,
+			"repo", repo,
+			"inherited_required_checks", inherited,
+		)
 	}
 	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, ciMonitorCfg)
 	if c.stepLogClient != nil {

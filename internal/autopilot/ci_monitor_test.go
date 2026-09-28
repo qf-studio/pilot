@@ -255,14 +255,18 @@ func TestCIMonitor_WaitForCI_ContextCancelled(t *testing.T) {
 }
 
 func TestCIMonitor_RequiredChecksOnly(t *testing.T) {
-	// Verify only configured checks are monitored
+	// Verify the allowlist scopes which checks are WAITED on (a still-running,
+	// unrequired check must not hold up the gate), while a completed,
+	// unrequired FAILURE still blocks (GH-5468 — see
+	// TestCIMonitor_UnlistedCheckFailure_GH5468 for the dedicated regression
+	// coverage of that override).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := github.CheckRunsResponse{
 			TotalCount: 4,
 			CheckRuns: []github.CheckRun{
 				{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
 				{Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
-				{Name: "lint", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure}, // Fails but not required
+				{Name: "lint", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess}, // Not required, but green
 				{Name: "coverage", Status: github.CheckRunInProgress, Conclusion: ""},                  // Still running but not required
 			},
 		}
@@ -288,7 +292,7 @@ func TestCIMonitor_RequiredChecksOnly(t *testing.T) {
 		t.Fatalf("WaitForCI() error = %v", err)
 	}
 	if status != CISuccess {
-		t.Errorf("WaitForCI() status = %s, want %s (unrequired checks should be ignored)", status, CISuccess)
+		t.Errorf("WaitForCI() status = %s, want %s (a still-running unrequired check must not hold up the gate)", status, CISuccess)
 	}
 }
 
@@ -1087,11 +1091,18 @@ func TestCIMonitor_GH4310_ScheduledCanaryExcludedFromFailedChecks(t *testing.T) 
 // TestCIMonitor_AutoMode_RequiredChecksOverrideDiscovery is the GH-4307
 // regression guard: a scheduled canary check (e.g. "epic-lifecycle / run")
 // can attach a failing check run to the same merge SHA a post-merge monitor
-// is watching. Before this fix, an explicit Required allowlist was only
+// is watching. Before GH-4307, an explicit Required allowlist was only
 // honored in manual mode, so auto-discovery aggregated every check —
 // including the unrelated canary — and a single always-red scheduled check
-// flipped status to CIFailure. With Required set, auto mode must scope
-// status to exactly those checks and ignore the rest.
+// flipped status to CIFailure.
+//
+// GH-5468 changed what "out of scope" means: a check merely absent from
+// Required is no longer silently ignored on failure (see
+// TestCIMonitor_UnlistedCheckFailure_GH5468) — it must be named in
+// ci_checks.exclude to be treated as genuinely unrelated. This test's canary
+// is therefore excluded explicitly, which is also the correct operator fix
+// for a real scheduled canary: name it once in Exclude rather than relying on
+// it happening to be absent from Required.
 func TestCIMonitor_AutoMode_RequiredChecksOverrideDiscovery(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := github.CheckRunsResponse{
@@ -1114,6 +1125,7 @@ func TestCIMonitor_AutoMode_RequiredChecksOverrideDiscovery(t *testing.T) {
 	cfg.CIChecks = &CIChecksConfig{
 		Mode:                 "auto",
 		Required:             []string{"test", "lint"},
+		Exclude:              []string{"epic-lifecycle / run"},
 		DiscoveryGracePeriod: 10 * time.Millisecond,
 	}
 
@@ -1124,7 +1136,7 @@ func TestCIMonitor_AutoMode_RequiredChecksOverrideDiscovery(t *testing.T) {
 		t.Fatalf("CheckCI() error = %v", err)
 	}
 	if status != CISuccess {
-		t.Errorf("CheckCI() status = %s, want %s (unrelated canary check should be ignored)", status, CISuccess)
+		t.Errorf("CheckCI() status = %s, want %s (excluded canary check should be ignored)", status, CISuccess)
 	}
 
 	failed, err := monitor.GetFailedChecks(context.Background(), "abc1234")
@@ -1132,7 +1144,7 @@ func TestCIMonitor_AutoMode_RequiredChecksOverrideDiscovery(t *testing.T) {
 		t.Fatalf("GetFailedChecks() error = %v", err)
 	}
 	if len(failed) != 0 {
-		t.Errorf("GetFailedChecks() = %v, want none (canary is out of the required-checks scope)", failed)
+		t.Errorf("GetFailedChecks() = %v, want none (canary is excluded via ci_checks.exclude)", failed)
 	}
 }
 
