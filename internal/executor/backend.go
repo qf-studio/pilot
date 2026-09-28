@@ -793,6 +793,12 @@ const defaultAcceptanceEvidenceCommandTimeout = 10 * time.Minute
 // output") and mutation-style items ("change/delete/remove … -> TestY
 // fails"), runs them against the task's own worktree after implementation,
 // and appends "## Evidence" / "## Not verified" sections to the PR body.
+// Same Enabled flag also gates the GH-5466 diff-coverage check
+// (acceptance_evidence_diff_coverage.go / runDiffCoverageCheck in
+// acceptance_evidence_run.go): a file path named under the issue's Change/
+// Changes/Implementation/Fix/Acceptance sections that the PR's own diff
+// against base never touches is appended into the same "## Not verified"
+// section, one bullet per uncovered path.
 // Default: enabled — see DefaultBackendConfig.
 //
 // Example YAML configuration:
