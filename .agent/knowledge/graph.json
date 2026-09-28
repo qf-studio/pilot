@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-28T08:10:36.294742+00:00",
+  "updated": "2026-09-28T09:29:44.053722+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -983,6 +983,21 @@
       },
       "process": {
         "label": "Process",
+        "description": "",
+        "related": []
+      },
+      "deploy": {
+        "label": "deploy",
+        "description": "",
+        "related": []
+      },
+      "pilot-console-ui": {
+        "label": "pilot-console-ui",
+        "description": "",
+        "related": []
+      },
+      "operations": {
+        "label": "operations",
         "description": "",
         "related": []
       }
@@ -6936,6 +6951,22 @@
         ],
         "created": "2026-09-28",
         "last_validated": "2026-09-28"
+      },
+      "mem-202": {
+        "type": "pitfall",
+        "summary": "Merged is not live on the hosted console: UI deploy is dispatch-only, console prod-* tag never cut; autopilot-merged PRs sit undeployed (09-28: UI at 09-24 build, PR#328 not in prod). Check live stamp vs main before saying 'shipped'. Automation: ui#178, console#331.",
+        "path": "memories/pitfalls/mem-202.md",
+        "confidence": 0.95,
+        "concepts": [
+          "deploy",
+          "pilot-console",
+          "pilot-console-ui",
+          "release",
+          "false-success",
+          "operations"
+        ],
+        "created": "2026-09-28",
+        "last_validated": "2026-09-28"
       }
     }
   },
@@ -10470,7 +10501,8 @@
     ],
     "false-success": [
       "bake-workflow-tee-masked-failure-promoted-source-ami",
-      "mem-196"
+      "mem-196",
+      "mem-202"
     ],
     "flag-cutover": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -10927,7 +10959,8 @@
       "mem-197",
       "mem-198",
       "mem-199",
-      "mem-200"
+      "mem-200",
+      "mem-202"
     ],
     "pilot-task-command": [
       "TASK-03",
@@ -10994,7 +11027,8 @@
       "mem-139",
       "mem-140",
       "mem-159",
-      "release-tick-retry-with-backoff-and-alert"
+      "release-tick-retry-with-backoff-and-alert",
+      "mem-202"
     ],
     "repo-onboarding-x": [
       "config-env-expansion-eats-dollar-vars-in-commands",
@@ -11558,7 +11592,8 @@
     "operations": [
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
-      "mem-200"
+      "mem-200",
+      "mem-202"
     ],
     "deploy-gates": [
       "mem-196"
@@ -11614,13 +11649,19 @@
     ],
     "process": [
       "mem-201"
+    ],
+    "deploy": [
+      "mem-202"
+    ],
+    "pilot-console-ui": [
+      "mem-202"
     ]
   },
-  "last_updated": "2026-09-28T08:10:36.294742+00:00",
+  "last_updated": "2026-09-28T09:29:44.053722+00:00",
   "stats": {
-    "total_nodes": 576,
+    "total_nodes": 580,
     "total_edges": 505,
-    "memory_count": 316
+    "memory_count": 317
   },
   "metadata": {}
 }
