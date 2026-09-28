@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -473,7 +474,7 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 	// distinct section) keeps every existing acceptance-evidence test
 	// green, since that function's behavior and tests are untouched by this
 	// change.
-	results = append(results, runDiffCoverageCheck(ctx, task, workDir)...)
+	results = append(results, runDiffCoverageCheck(ctx, r, task, workDir)...)
 
 	section := RenderAcceptanceEvidenceSections(results)
 	if section == "" {
@@ -489,23 +490,49 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 // each one under "## Not verified" exactly like a classified acceptance
 // item that couldn't be verified.
 //
-// Returns nil without any git shellout when the issue body names no
-// candidate paths at all (ExtractDiffCoveragePaths empty) — this keeps the
-// flag-off / no-acceptance-criteria / nil-task byte-identical PR-body tests
-// git-free, since workDir there is not always even a git repository.
+// Returns nil without any git shellout when task.Description (the queue-time
+// snapshot) names no candidate paths at all (ExtractDiffCoveragePaths
+// empty) — this keeps the flag-off / no-acceptance-criteria / nil-task
+// byte-identical PR-body tests git-free, since workDir there is not always
+// even a git repository. The snapshot — not the live body — gates this
+// short-circuit deliberately: fetching the live body first would mean
+// resolveLiveIssueBody's git-remote-resolution shellout runs even for a
+// workDir that was never meant to see git at all.
+//
+// GH-5469: once that cheap gate passes, the body actually checked against
+// the diff is resolved via resolveLiveIssueBody (issue_state.go) — the same
+// "live body, fall back to snapshot on fetch failure or empty body"
+// resolution the dispatcher's base-presence revalidation uses (GH-5193) —
+// rather than task.Description directly. Before this fix, a path an operator
+// corrected or removed from the issue body after dispatch was still
+// reported as "named in the issue but the PR does not modify it", the same
+// class of bug GH-5193 already fixed for base-presence.
 //
 // Fails open on any git error (unresolvable merge-base, no such branch,
 // worktree not yet pushed): a diff-coverage probe failure must never block
 // or corrupt PR-body assembly, matching base_presence.go's
 // "pipeline availability outranks the guard" stance for this same class of
 // git/GitHub probe.
-func runDiffCoverageCheck(ctx context.Context, task *Task, workDir string) []AcceptanceEvidenceResult {
+func runDiffCoverageCheck(ctx context.Context, runner *Runner, task *Task, workDir string) []AcceptanceEvidenceResult {
 	if task == nil {
 		return nil
 	}
 	paths := ExtractDiffCoveragePaths(task.Description)
 	if len(paths) == 0 {
 		return nil
+	}
+
+	body := task.Description
+	if task.SourceAdapter == "" || task.SourceAdapter == "github" {
+		resolved, _, source, err := resolveLiveIssueBody(ctx, runner, task, workDir, task.Description)
+		body = resolved
+		if runner != nil && runner.log != nil {
+			runner.log.Debug("diff-coverage check: resolved issue body",
+				slog.String("task_id", task.ID),
+				slog.String("source", string(source)),
+				slog.Any("fetch_error", err),
+			)
+		}
 	}
 
 	baseBranch := task.BaseBranch
@@ -519,7 +546,7 @@ func runDiffCoverageCheck(ctx context.Context, task *Task, workDir string) []Acc
 		return nil
 	}
 
-	uncovered := CheckDiffCoverage(task.Description, changedFiles, func(path string) bool {
+	uncovered := CheckDiffCoverage(body, changedFiles, func(path string) bool {
 		return git.FileExistsAtRef(ctx, baseSHA, path)
 	})
 

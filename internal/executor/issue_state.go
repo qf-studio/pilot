@@ -149,6 +149,44 @@ func (r *Runner) issueStateCheckerFor(key string) IssueStateChecker {
 	return r.issueStateCheckers[key]
 }
 
+// issueBodySource identifies which body resolveLiveIssueBody returned, for
+// debug logging at call sites (GH-5469).
+type issueBodySource string
+
+const (
+	issueBodySourceLive     issueBodySource = "live"
+	issueBodySourceSnapshot issueBodySource = "snapshot"
+)
+
+// resolveLiveIssueBody fetches task's live GitHub issue state via
+// fetchIssueState and returns the body callers should use for ref/path
+// extraction: the live body when the fetch succeeded and returned a
+// non-empty body, snapshot (the caller's queue-time task.Description or
+// equivalent cached text) otherwise. Also returns the raw fetched IssueState
+// (zero value when err != nil) so a caller that also needs other state
+// fields — the dispatcher's Closed check — doesn't have to fetch twice, and
+// the source ("live"/"snapshot") for debug logging.
+//
+// GH-5193 first established this "prefer live, fall back to snapshot" rule
+// for the dispatcher's base-presence revalidation, after an operator's issue
+// body edit went unnoticed because that check re-parsed the frozen
+// queue-time snapshot forever. GH-5469: the GH-5466 diff-coverage check
+// (runDiffCoverageCheck, acceptance_evidence_run.go) reintroduced the exact
+// same bug by reading task.Description directly. Both call sites now share
+// this one function so the two gates cannot drift apart again.
+//
+// Callers must gate on task.SourceAdapter themselves before calling this
+// (identical to the pre-existing dispatcher check) — non-GitHub adapters
+// have no fetchIssueState implementation, so calling this unconditionally
+// would just burn a doomed GitHub lookup on every tick.
+func resolveLiveIssueBody(ctx context.Context, runner *Runner, task *Task, projectPath, snapshot string) (body string, state IssueState, source issueBodySource, err error) {
+	state, err = fetchIssueState(ctx, runner, task, projectPath)
+	if err != nil || state.Body == "" {
+		return snapshot, state, issueBodySourceSnapshot, err
+	}
+	return state.Body, state, issueBodySourceLive, nil
+}
+
 // fetchIssueState resolves task's GitHub issue (owner/repo/number) and
 // fetches its live state. Both GH-4656 call sites (dispatcher.go's
 // pickup-time guard, runner.go's PR-creation preflight) call this exact var

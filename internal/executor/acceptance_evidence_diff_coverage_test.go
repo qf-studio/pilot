@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -232,7 +233,7 @@ func TestRunDiffCoverageCheck_GitBacked(t *testing.T) {
 		Description: "## Change\n\nEdit `internal/executor/touched.go` and `internal/executor/untouched.go`.\n",
 	}
 
-	results := runDiffCoverageCheck(ctx, task, dir)
+	results := runDiffCoverageCheck(ctx, nil, task, dir)
 	if len(results) != 1 {
 		t.Fatalf("runDiffCoverageCheck() = %#v, want exactly 1 result", results)
 	}
@@ -266,7 +267,7 @@ func TestRunDiffCoverageCheck_PathNotOnBase_NotReported(t *testing.T) {
 		Description: "## Change\n\nEdit `internal/executor/never_existed.go`.\n",
 	}
 
-	results := runDiffCoverageCheck(ctx, task, dir)
+	results := runDiffCoverageCheck(ctx, nil, task, dir)
 	if len(results) != 0 {
 		t.Errorf("runDiffCoverageCheck() = %#v, want empty (path absent from base is base-presence's class)", results)
 	}
@@ -277,9 +278,90 @@ func TestRunDiffCoverageCheck_PathNotOnBase_NotReported(t *testing.T) {
 // scoped section never touches git at all, so a non-git workDir is safe.
 func TestRunDiffCoverageCheck_NoCandidatePaths_NoGitShellout(t *testing.T) {
 	task := &Task{ID: "GH-1", Description: "## Problem\n\nno paths named anywhere useful\n"}
-	results := runDiffCoverageCheck(context.Background(), task, t.TempDir())
+	results := runDiffCoverageCheck(context.Background(), nil, task, t.TempDir())
 	if results != nil {
 		t.Errorf("runDiffCoverageCheck() = %#v, want nil", results)
+	}
+}
+
+// TestRunDiffCoverageCheck_LiveBodyNarrowsScope is the GH-5469 acceptance
+// scenario: the queue-time snapshot names a.go and b.go under "## Change",
+// but the issue's live body (as fetchIssueState would return it) has since
+// been edited to name only a.go. The PR only touches a.go, so nothing
+// should be reported — checking the frozen snapshot instead of the live
+// body would wrongly report b.go as named-but-untouched, reintroducing the
+// class of bug GH-5193 already fixed for base-presence.
+func TestRunDiffCoverageCheck_LiveBodyNarrowsScope(t *testing.T) {
+	dir, _ := initTestRepo(t)
+	ctx := context.Background()
+
+	base := "main"
+	runGitDiffCoverage(t, dir, "branch", "-m", base)
+
+	writeFileDiffCoverage(t, dir, "internal/executor/a.go", "package executor\n")
+	writeFileDiffCoverage(t, dir, "internal/executor/b.go", "package executor\n")
+	runGitDiffCoverage(t, dir, "add", ".")
+	runGitDiffCoverage(t, dir, "commit", "-m", "seed both files on base")
+
+	runGitDiffCoverage(t, dir, "checkout", "-b", "pilot/GH-5469-test")
+	writeFileDiffCoverage(t, dir, "internal/executor/a.go", "package executor\n\nfunc a() {}\n")
+	runGitDiffCoverage(t, dir, "add", ".")
+	runGitDiffCoverage(t, dir, "commit", "-m", "only touch a.go, matching the corrected live body")
+
+	liveBody := "## Change\n\nEdit `internal/executor/a.go`.\n"
+	stubFetchIssueState(t, func(_ context.Context, _ *Runner, _ *Task, _ string) (IssueState, error) {
+		return IssueState{Body: liveBody}, nil
+	})
+
+	task := &Task{
+		ID:          "GH-5469",
+		BaseBranch:  base,
+		Description: "## Change\n\nEdit `internal/executor/a.go` and `internal/executor/b.go`.\n",
+	}
+
+	results := runDiffCoverageCheck(ctx, nil, task, dir)
+	if len(results) != 0 {
+		t.Errorf("runDiffCoverageCheck() = %#v, want empty (live body only names a.go, which the PR touches)", results)
+	}
+}
+
+// TestRunDiffCoverageCheck_FetchFailure_FallsBackToSnapshot confirms the
+// fail-open contract: when fetchIssueState errors, the check falls back to
+// the queue-time snapshot exactly as before GH-5469 — the snapshot names
+// a.go and b.go, the PR only touches a.go, so b.go is still reported.
+func TestRunDiffCoverageCheck_FetchFailure_FallsBackToSnapshot(t *testing.T) {
+	dir, _ := initTestRepo(t)
+	ctx := context.Background()
+
+	base := "main"
+	runGitDiffCoverage(t, dir, "branch", "-m", base)
+
+	writeFileDiffCoverage(t, dir, "internal/executor/a.go", "package executor\n")
+	writeFileDiffCoverage(t, dir, "internal/executor/b.go", "package executor\n")
+	runGitDiffCoverage(t, dir, "add", ".")
+	runGitDiffCoverage(t, dir, "commit", "-m", "seed both files on base")
+
+	runGitDiffCoverage(t, dir, "checkout", "-b", "pilot/GH-5469-test2")
+	writeFileDiffCoverage(t, dir, "internal/executor/a.go", "package executor\n\nfunc a() {}\n")
+	runGitDiffCoverage(t, dir, "add", ".")
+	runGitDiffCoverage(t, dir, "commit", "-m", "only touch a.go")
+
+	stubFetchIssueState(t, func(_ context.Context, _ *Runner, _ *Task, _ string) (IssueState, error) {
+		return IssueState{}, errors.New("GitHub API: 503 Service Unavailable")
+	})
+
+	task := &Task{
+		ID:          "GH-5469",
+		BaseBranch:  base,
+		Description: "## Change\n\nEdit `internal/executor/a.go` and `internal/executor/b.go`.\n",
+	}
+
+	results := runDiffCoverageCheck(ctx, nil, task, dir)
+	if len(results) != 1 {
+		t.Fatalf("runDiffCoverageCheck() = %#v, want exactly 1 result", results)
+	}
+	if results[0].Item.Text != "internal/executor/b.go" {
+		t.Errorf("reported path = %q, want %q", results[0].Item.Text, "internal/executor/b.go")
 	}
 }
 
