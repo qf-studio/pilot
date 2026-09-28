@@ -5103,7 +5103,7 @@
       },
       "required-checks-allowlist-makes-other-gates-decorative": {
         "type": "pitfall",
-        "summary": "With autopilot.required_checks set to an allowlist, CIMonitor.isScopedCheck (ci_monitor.go:562-570) reports ONLY those checks — every other gate can fail red and auto-merge proceeds. On pilot (required_checks: [test, lint]) that makes Knowledge Graph Drift Gate, Check Secret Patterns and Box Scripts decorative; PR #4534 merged with the drift gate failing and deleted 5 indexed memory files. UNFIXED as of 2026-07-25 (founder config decision).",
+        "summary": "With autopilot.required_checks set to an allowlist, CIMonitor.isScopedCheck (ci_monitor.go:562-570) reports ONLY those checks — every other gate can fail red and auto-merge proceeds. On pilot (required_checks: [test, lint]) that makes Knowledge Graph Drift Gate, Check Secret Patterns and Box Scripts decorative; PR #4534 merged with the drift gate failing and deleted 5 indexed memory files. FIXED by GH-5468/PR#5470 (2026-09-28): CIMonitor.checkRequiredChecks now also calls failedUnlistedChecks (ci_monitor.go:394) — a completed failure on any check-run outside `required` and not matched by `ci_checks.exclude` blocks the merge. `required` now means \"what we wait for,\" not \"what we're shielded from\"; use `exclude` to suppress a flaky/unrelated check. configs/pilot.example.yaml comment block updated (GH-5472) with migration guidance to move ignored checks from `required` to `exclude`.",
         "file": ".agent/knowledge/memories/pitfalls/required-checks-allowlist-makes-other-gates-decorative.md",
         "concepts": [
           "autopilot",
@@ -5113,7 +5113,8 @@
           "config"
         ],
         "confidence": 0.95,
-        "created": "2026-07-25"
+        "created": "2026-07-25",
+        "last_validated": "2026-09-28"
       },
       "mem-160": {
         "type": "pitfall",
