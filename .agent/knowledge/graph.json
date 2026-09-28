@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-28T09:29:44.053722+00:00",
+  "updated": "2026-09-28T10:35:44.972968+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -998,6 +998,21 @@
       },
       "operations": {
         "label": "operations",
+        "description": "",
+        "related": []
+      },
+      "pilot-dispatch": {
+        "label": "pilot-dispatch",
+        "description": "",
+        "related": []
+      },
+      "acceptance-evidence": {
+        "label": "acceptance-evidence",
+        "description": "",
+        "related": []
+      },
+      "review": {
+        "label": "review",
         "description": "",
         "related": []
       }
@@ -6967,6 +6982,22 @@
         ],
         "created": "2026-09-28",
         "last_validated": "2026-09-28"
+      },
+      "mem-203": {
+        "type": "learning",
+        "summary": "Pilot implements the '## Acceptance' list and copies issue-body claims verbatim: put every required file change under Acceptance; never assert unverified facts in an issue (PR#332/#334 left the named deploy-workflow fix untouched; false 'per PR#332' claim propagated into code comments). Evidence gate sees command items only; diff-coverage check filed on pilot. Review pre-merge PRs first: autopilot merges on green in minutes; revision issue, not draft flip.",
+        "path": "memories/learnings/mem-203.md",
+        "confidence": 0.95,
+        "concepts": [
+          "pilot-dispatch",
+          "issue-authoring",
+          "acceptance-evidence",
+          "false-success",
+          "review",
+          "process"
+        ],
+        "created": "2026-09-28",
+        "last_validated": "2026-09-28"
       }
     }
   },
@@ -10502,7 +10533,8 @@
     "false-success": [
       "bake-workflow-tee-masked-failure-promoted-source-ami",
       "mem-196",
-      "mem-202"
+      "mem-202",
+      "mem-203"
     ],
     "flag-cutover": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -10690,7 +10722,8 @@
       "mem-178",
       "model-refusal-looks-like-exit-status-1",
       "no-decompose-spec-sizing-one-subsystem",
-      "pilot-issue-missing-no-decompose-fragments-single-fix"
+      "pilot-issue-missing-no-decompose-fragments-single-fix",
+      "mem-203"
     ],
     "knowledge": [
       "TASK-368",
@@ -11587,7 +11620,8 @@
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
     ],
     "review": [
-      "s3-accessdenied-from-admin-role-is-bucket-policy-condition"
+      "s3-accessdenied-from-admin-role-is-bucket-policy-condition",
+      "mem-203"
     ],
     "operations": [
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
@@ -11648,20 +11682,27 @@
       "mem-201"
     ],
     "process": [
-      "mem-201"
+      "mem-201",
+      "mem-203"
     ],
     "deploy": [
       "mem-202"
     ],
     "pilot-console-ui": [
       "mem-202"
+    ],
+    "pilot-dispatch": [
+      "mem-203"
+    ],
+    "acceptance-evidence": [
+      "mem-203"
     ]
   },
-  "last_updated": "2026-09-28T09:29:44.053722+00:00",
+  "last_updated": "2026-09-28T10:35:44.972968+00:00",
   "stats": {
-    "total_nodes": 580,
+    "total_nodes": 584,
     "total_edges": 505,
-    "memory_count": 317
+    "memory_count": 318
   },
   "metadata": {}
 }
