@@ -321,7 +321,12 @@ func (m *CIMonitor) checkStatus(ctx context.Context, sha string, skipGrace bool)
 }
 
 // checkRequiredChecks aggregates status from only the checks named in
-// m.requiredChecks, ignoring every other check run on the SHA.
+// m.requiredChecks, ignoring every other check run on the SHA — except for
+// one override (GH-5468): the allowlist says which checks we WAIT for, not
+// which failures BLOCK. Any discovered check-run outside the allowlist (and
+// not in ci_checks.exclude) that has already completed with a failing
+// conclusion still fails the gate, regardless of what the allowlisted
+// checks themselves report.
 //
 // GH-4646: a required name that never appears among the SHA's check-runs at
 // all stays CIPending forever in requiredStatus above — indistinguishable
@@ -345,6 +350,24 @@ func (m *CIMonitor) checkRequiredChecks(checkRuns *github.CheckRunsResponse) CIS
 	}
 
 	status := m.aggregateStatus(requiredStatus)
+
+	// GH-5468: pilot-console PR#337 (2026-09-28) squash-merged with "Check
+	// Wire-Contract Tests" red — the inherited global allowlist [test, lint]
+	// only ever populated requiredStatus for those two names, so a third,
+	// unlisted check-run's failure was invisible to aggregateStatus above no
+	// matter how red it was. A pending unlisted check does NOT block (the
+	// allowlist still decides what to wait for); only a completed failure
+	// does.
+	if unlisted := m.failedUnlistedChecks(checkRuns, requiredStatus); len(unlisted) > 0 {
+		m.log.Warn("CI gate held: check-run(s) outside the required-checks allowlist failed — the allowlist controls which checks we wait for, not which failures block a merge (GH-5468)",
+			"owner", m.owner,
+			"repo", m.repo,
+			"required_checks", m.requiredChecks,
+			"failed_unlisted_checks", unlisted,
+		)
+		return CIFailure
+	}
+
 	if status != CIPending {
 		return status
 	}
@@ -360,6 +383,47 @@ func (m *CIMonitor) checkRequiredChecks(checkRuns *github.CheckRunsResponse) CIS
 	}
 
 	return status
+}
+
+// failedUnlistedChecks returns the names of check-runs on the SHA that are
+// outside the required-checks allowlist (requiredStatus, keyed by name) and
+// not matched by ci_checks.exclude, whose GitHub conclusion is one
+// isCIFailureConclusion treats as a failure. A check-run that hasn't
+// completed yet is never reported here — see checkRequiredChecks (GH-5468):
+// only a completed failure overrides the allowlist's own verdict.
+func (m *CIMonitor) failedUnlistedChecks(checkRuns *github.CheckRunsResponse, requiredStatus map[string]CIStatus) []string {
+	var failed []string
+	for _, run := range checkRuns.CheckRuns {
+		if _, listed := requiredStatus[run.Name]; listed {
+			continue
+		}
+		if m.matchesExclude(run.Name) {
+			continue
+		}
+		if run.Status != github.CheckRunCompleted {
+			continue
+		}
+		if isCIFailureConclusion(run.Conclusion) {
+			failed = append(failed, run.Name)
+		}
+	}
+	return failed
+}
+
+// effectiveRequiredChecksForLint mirrors NewCIMonitor's ci_checks.required /
+// legacy required_checks precedence (without the config-mutation and
+// default-mode side effects that function has), for the GH-5468 startup
+// lint in Controller.NewController: it needs to know, read-only, whether a
+// project inheriting the shared global Config has a required-checks
+// allowlist at all before deciding whether to warn about that inheritance.
+func effectiveRequiredChecksForLint(cfg *Config) []string {
+	if cfg.CIChecks != nil && len(cfg.CIChecks.Required) > 0 {
+		return cfg.CIChecks.Required
+	}
+	if len(cfg.RequiredChecks) > 0 {
+		return cfg.RequiredChecks
+	}
+	return nil
 }
 
 // requiredCheckMismatch reports whether any of m.requiredChecks never

@@ -775,6 +775,53 @@ func TestAutoMerger_VerifyCIBeforeMerge(t *testing.T) {
 	}
 }
 
+// TestAutoMerger_VerifyCIBeforeMerge_UnlistedCheckFailure_GH5468 proves the
+// auto-merger's own pre-merge gate — not just CIMonitor — refuses to merge
+// when a check-run outside the required-checks allowlist has failed. This is
+// the auto_merger-level half of the GH-5468 fix: verifyCIBeforeMerge calls
+// CIMonitor.GetCIStatus, which shares checkStatus/checkRequiredChecks with
+// every other caller, so the fix there is inherited here for free — this
+// test exists to pin that inheritance rather than re-derive the logic.
+func TestAutoMerger_VerifyCIBeforeMerge_UnlistedCheckFailure_GH5468(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/qf-studio/pilot-console/commits/deadbeef/check-runs" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		resp := github.CheckRunsResponse{
+			TotalCount: 3,
+			CheckRuns: []github.CheckRun{
+				{Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "lint", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "Check Wire-Contract Tests", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+			},
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.RequiredChecks = []string{"test", "lint"} // inherited global allowlist, no per-project override
+
+	ciMonitor := NewCIMonitor(ghClient, "qf-studio", "pilot-console", cfg)
+	merger := NewAutoMerger(ghClient, nil, ciMonitor, "qf-studio", "pilot-console", cfg)
+
+	prState := &PRState{
+		PRNumber: 337,
+		HeadSHA:  "deadbeef",
+	}
+
+	err := merger.verifyCIBeforeMerge(context.Background(), prState)
+	if err == nil {
+		t.Fatal("verifyCIBeforeMerge() error = nil, want an error — an unlisted check-run failure must block the merge (GH-5468)")
+	}
+	if !containsStr(err.Error(), "CI checks failing") {
+		t.Errorf("verifyCIBeforeMerge() error = %v, want error containing %q", err, "CI checks failing")
+	}
+}
+
 func TestAutoMerger_VerifyCIBeforeMerge_NoCIMonitor(t *testing.T) {
 	// When CI monitor is nil, verification should be skipped (no error)
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
