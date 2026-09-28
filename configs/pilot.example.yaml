@@ -467,19 +467,36 @@ orchestrator:
     # CI Check Discovery (v0.34+)
     ci_checks:
       mode: auto                    # auto | manual (default: auto)
-      exclude:                      # Check names to ignore in auto mode
-        - "codecov/*"              # Glob patterns supported
-        - "*-optional"
-      # required: []                # Allowlist; when non-empty, scopes status/failure
-      #                              # attribution to exactly these checks even in auto
-      #                              # mode (GH-4307) — use this to shield against
-      #                              # unrelated scheduled/canary checks landing on the
-      #                              # same SHA instead of enumerating them in `exclude`.
-      #                              # Precedence (GH-4333): a non-empty `required` here
-      #                              # always wins. If empty, the deprecated top-level
-      #                              # `required_checks` is used as a fallback (with a
-      #                              # startup WARN). If both are empty, no allowlist is
-      #                              # active and ALL non-excluded checks gate CI status.
+      exclude:                      # Checks whose outcome is ignored entirely —
+        - "codecov/*"              # neither their pending state nor a failed
+        - "*-optional"             # conclusion ever affects the merge gate.
+                                     # Glob patterns supported. This is the only
+                                     # way to suppress a flaky/unrelated check —
+                                     # see GH-5468 below.
+      # required: []                # Allowlist of checks we WAIT for before
+      #                              # proceeding (their status drives the
+      #                              # pending/success aggregate) — it is NOT a
+      #                              # shield against other checks' failures.
+      #                              # As of GH-5468/PR#5470, any check-run that
+      #                              # is neither in `required` nor matched by
+      #                              # `exclude` and completes with a failing
+      #                              # conclusion BLOCKS the merge anyway — it
+      #                              # is named in the autopilot log
+      #                              # ("failed_unlisted_checks"). To scope out
+      #                              # a check you don't want to gate on
+      #                              # (flaky, unrelated, scheduled/canary),
+      #                              # put its exact name in `exclude`, not
+      #                              # just omit it from `required`.
+      #                              # Precedence (GH-4333): a non-empty `required`
+      #                              # here always wins. If empty, the deprecated
+      #                              # top-level `required_checks` is used as a
+      #                              # fallback (with a startup WARN). If both are
+      #                              # empty, no allowlist is active and ALL
+      #                              # non-excluded checks gate CI status.
+      #                              # MIGRATION (post v2.276.6 / GH-5468): review
+      #                              # every project's `required` list and move
+      #                              # any check you intended to ignore — not just
+      #                              # not wait for — into `exclude`.
       discovery_grace_period: 60s   # Wait for CI to start
 
     # Test-evidence gate (GH-4329): escalate-only, same pattern as the

@@ -66,3 +66,30 @@ remains for repos without an override.
 Related: [[global-required-checks-leak-across-projects]] (same config, the
 cross-project leak), [[ci-infra-failure-misclassified-as-code]] (also lives in
 `isScopedCheck`'s scoping decisions).
+
+## Resolution (GH-5468, PR#5470, 2026-09-28)
+
+The core defect described above — `ci_checks.required`/`required_checks`
+silently swallowing failures on every check-run outside the allowlist — is
+**fixed**. `CIMonitor.checkRequiredChecks` (`internal/autopilot/ci_monitor.go:340`)
+now also calls `failedUnlistedChecks` (`ci_monitor.go:394`): any check-run
+that is neither in `required` nor matched by `ci_checks.exclude` and
+completes with a failing conclusion returns `CIFailure` and blocks the
+merge, logged as `failed_unlisted_checks`. A pending unlisted check still
+does not block — only a completed failure does.
+
+This changes the operator-facing semantics: `required` is now purely "what
+we wait for," not "what we're shielded to." The only way to suppress a
+check you don't want to gate on is to name it in `exclude`. GH-5472 updated
+the `ci_checks` comment block in `configs/pilot.example.yaml` to describe
+the three cases (listed, excluded, unlisted-red) consistently with this
+code, with a migration note to review each project's `required` list after
+the release that carries GH-5468 lands and move intentionally-ignored
+checks into `exclude`.
+
+The **cross-project leak** described in
+[[global-required-checks-leak-across-projects]] (global `[test, lint]`
+allowlist inherited by projects without an override) is a separate,
+still-open concern — GH-5468 makes an unlisted failure block instead of
+being invisible, but does not change which projects inherit which
+allowlist.
