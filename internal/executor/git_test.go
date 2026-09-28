@@ -1748,3 +1748,104 @@ func TestCreateRecoveryRef(t *testing.T) {
 func trimNewline(s string) string {
 	return strings.TrimRight(s, "\n")
 }
+
+// TestGetDiffStats covers GitOperations.GetDiffStats against real temp repos
+// (init, commit base, push so origin/<base> exists, commit changes on a branch).
+func TestGetDiffStats(t *testing.T) {
+	tests := []struct {
+		name        string
+		baseFiles   map[string]string // committed on main and pushed to origin
+		branchFiles map[string]string // written and committed on the task branch
+		baseBranch  string
+		wantFiles   []string
+		wantAdded   int
+		wantRemoved int
+		wantErr     bool
+	}{
+		{
+			name:        "added only",
+			branchFiles: map[string]string{"a.txt": "one\ntwo\nthree\n"},
+			baseBranch:  "main",
+			wantFiles:   []string{"a.txt"},
+			wantAdded:   3,
+		},
+		{
+			name:        "added and removed",
+			baseFiles:   map[string]string{"a.txt": "one\ntwo\nthree\nfour\n"},
+			branchFiles: map[string]string{"a.txt": "one\nTWO\nthree\n"},
+			baseBranch:  "main",
+			wantFiles:   []string{"a.txt"},
+			wantAdded:   1,
+			wantRemoved: 2,
+		},
+		{
+			name:        "multiple files",
+			baseFiles:   map[string]string{"a.txt": "x\ny\n"},
+			branchFiles: map[string]string{"a.txt": "x\n", "b.txt": "1\n2\n", "c.txt": "z\n"},
+			baseBranch:  "main",
+			wantFiles:   []string{"a.txt", "b.txt", "c.txt"},
+			wantAdded:   3,
+			wantRemoved: 1,
+		},
+		{
+			name:        "binary line dropped",
+			branchFiles: map[string]string{"a.txt": "one\ntwo\n", "bin.dat": "\x00\x01\x02\x03"},
+			baseBranch:  "main",
+			wantFiles:   []string{"a.txt"},
+			wantAdded:   2,
+		},
+		{
+			name:       "empty diff",
+			baseBranch: "main",
+		},
+		{
+			name:        "missing origin ref returns error",
+			branchFiles: map[string]string{"a.txt": "one\n"},
+			baseBranch:  "does-not-exist",
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, _ := setupFreshnessRepo(t)
+			commitFiles := func(msg string, files map[string]string) {
+				for name, content := range files {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+						t.Fatalf("write %s: %v", name, err)
+					}
+				}
+				runGit(t, dir, "add", "-A")
+				runGit(t, dir, "commit", "-m", msg)
+			}
+			if len(tt.baseFiles) > 0 {
+				commitFiles("base", tt.baseFiles)
+				runGit(t, dir, "push", "origin", "main")
+			}
+			runGit(t, dir, "checkout", "-b", "pilot/GH-diffstats")
+			if len(tt.branchFiles) > 0 {
+				commitFiles("branch work", tt.branchFiles)
+			}
+
+			diff, err := NewGitOperations(dir).GetDiffStats(context.Background(), tt.baseBranch)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got diff %+v", diff)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetDiffStats: %v", err)
+			}
+			if strings.Join(diff.Files, ",") != strings.Join(tt.wantFiles, ",") {
+				t.Errorf("Files = %v, want %v", diff.Files, tt.wantFiles)
+			}
+			if diff.Added != tt.wantAdded {
+				t.Errorf("Added = %d, want %d", diff.Added, tt.wantAdded)
+			}
+			if diff.Removed != tt.wantRemoved {
+				t.Errorf("Removed = %d, want %d", diff.Removed, tt.wantRemoved)
+			}
+		})
+	}
+}

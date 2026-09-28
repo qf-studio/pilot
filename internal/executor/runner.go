@@ -1922,6 +1922,35 @@ func (r *Runner) recordExecutionEvent(executionID string, stage memory.Stage, de
 	}
 }
 
+// fillDiffMetrics populates LinesAdded, LinesRemoved and FilesChanged on the
+// result from `git diff --numstat origin/<base>...HEAD`. Best-effort: on a
+// diff error or an empty diff the fields are left as the caller set them
+// (FilesChanged keeps its Write-tool-call fallback; line counts stay zero).
+// It never fails the task.
+func fillDiffMetrics(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) {
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch, _ = git.GetDefaultBranch(ctx)
+		if baseBranch == "" {
+			baseBranch = "main"
+		}
+	}
+	diff, err := git.GetDiffStats(ctx, baseBranch)
+	if err != nil {
+		log.Debug("diff stats unavailable; leaving line metrics at zero",
+			slog.String("task_id", task.ID),
+			slog.Any("error", err),
+		)
+		return
+	}
+	if len(diff.Files) == 0 {
+		return
+	}
+	result.LinesAdded = diff.Added
+	result.LinesRemoved = diff.Removed
+	result.FilesChanged = len(diff.Files)
+}
+
 // applyGhostSHAGuardWithPreserve wraps the free applyGhostSHAGuard so a
 // GH-4517 dirty-worktree auto-preserve is also recorded to the
 // execution_events audit trail — without this, the only trace of a
@@ -5086,6 +5115,11 @@ retrySucceeded:
 
 	// Fill in additional metrics from state
 	result.FilesChanged = state.filesWrite
+	// Decision: diff-derived counts are filled at this seam (not at PR
+	// creation) because every path reaches it — DirectCommit, LocalMode and
+	// the PR early-returns included — after CommitSHA and the ghost-SHA guard
+	// are settled.
+	fillDiffMetrics(ctx, task, git, result, log)
 	result.CacheCreationInputTokens = state.cacheCreationInputTokens
 	result.CacheReadInputTokens = state.cacheReadInputTokens
 	if result.ModelName == "" {
