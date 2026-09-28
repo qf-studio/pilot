@@ -432,15 +432,22 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 
 // appendAcceptanceEvidence appends the "## Evidence" / "## Not verified"
 // sections to prBody when the acceptance-evidence gate is enabled and task
-// has evidence-requiring acceptance criteria (GH-5435). Called once per PR-
-// body-assembly site, right before the corresponding CreatePR call, with
-// workDir set to the same worktree the branch was pushed from (git.ProjectPath()).
+// has evidence-requiring acceptance criteria, and/or the GH-5466
+// diff-coverage check (below) finds a path the issue names but the PR's
+// diff doesn't touch. Called once per PR-body-assembly site, right before
+// the corresponding CreatePR call, with workDir set to the same worktree
+// the branch was pushed from (git.ProjectPath()).
 //
-// Returns prBody unchanged (byte-identical) when the gate is disabled, when
-// task has no acceptance criteria, or when none of them are evidence-
-// requiring — this is the flag-off / no-op contract GH-5435 requires.
+// Returns prBody unchanged (byte-identical) when the gate is disabled, or
+// when task has no acceptance criteria AND the diff-coverage check finds
+// nothing to report — this is the flag-off / no-op contract GH-5435
+// requires, extended to cover the new check without weakening it: a task
+// with acceptance criteria but no named Change/Acceptance-section paths
+// still produces a byte-identical result when nothing else is reported,
+// since runDiffCoverageCheck below shells out to git only when
+// ExtractDiffCoveragePaths finds a candidate path at all.
 func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workDir, prBody string) string {
-	if r == nil || task == nil || len(task.AcceptanceCriteria) == 0 {
+	if r == nil || task == nil {
 		return prBody
 	}
 
@@ -452,13 +459,78 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 		return prBody
 	}
 
-	runner := shellAcceptanceCommandRunner{timeout: cfg.EffectiveCommandTimeout()}
-	results := RunAcceptanceEvidence(ctx, runner, workDir, task.AcceptanceCriteria, cfg.EffectiveAllowedCommands())
+	var results []AcceptanceEvidenceResult
+	if len(task.AcceptanceCriteria) > 0 {
+		runner := shellAcceptanceCommandRunner{timeout: cfg.EffectiveCommandTimeout()}
+		results = RunAcceptanceEvidence(ctx, runner, workDir, task.AcceptanceCriteria, cfg.EffectiveAllowedCommands())
+	}
+
+	// GH-5466: merged into the same "## Not verified" section as the
+	// classified acceptance items above, appended after them — a reviewer
+	// scanning "Not verified" shouldn't have to check two separate PR-body
+	// sections for the same class of gap. Reusing
+	// RenderAcceptanceEvidenceSections unchanged (rather than rendering a
+	// distinct section) keeps every existing acceptance-evidence test
+	// green, since that function's behavior and tests are untouched by this
+	// change.
+	results = append(results, runDiffCoverageCheck(ctx, task, workDir)...)
+
 	section := RenderAcceptanceEvidenceSections(results)
 	if section == "" {
 		return prBody
 	}
 	return strings.TrimRight(prBody, "\n") + "\n\n" + section
+}
+
+// runDiffCoverageCheck runs the GH-5466 diff-coverage check against task's
+// issue body and the PR branch's actual diff, returning one synthetic
+// AcceptanceEvidenceResult (NotVerifiedReason set, Item.Text the bare path)
+// per uncovered path — shaped so RenderAcceptanceEvidenceSections lists
+// each one under "## Not verified" exactly like a classified acceptance
+// item that couldn't be verified.
+//
+// Returns nil without any git shellout when the issue body names no
+// candidate paths at all (ExtractDiffCoveragePaths empty) — this keeps the
+// flag-off / no-acceptance-criteria / nil-task byte-identical PR-body tests
+// git-free, since workDir there is not always even a git repository.
+//
+// Fails open on any git error (unresolvable merge-base, no such branch,
+// worktree not yet pushed): a diff-coverage probe failure must never block
+// or corrupt PR-body assembly, matching base_presence.go's
+// "pipeline availability outranks the guard" stance for this same class of
+// git/GitHub probe.
+func runDiffCoverageCheck(ctx context.Context, task *Task, workDir string) []AcceptanceEvidenceResult {
+	if task == nil {
+		return nil
+	}
+	paths := ExtractDiffCoveragePaths(task.Description)
+	if len(paths) == 0 {
+		return nil
+	}
+
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	git := NewGitOperations(workDir)
+	changedFiles, baseSHA, err := git.ChangedFilesAgainstOrigin(ctx, baseBranch)
+	if err != nil {
+		return nil
+	}
+
+	uncovered := CheckDiffCoverage(task.Description, changedFiles, func(path string) bool {
+		return git.FileExistsAtRef(ctx, baseSHA, path)
+	})
+
+	results := make([]AcceptanceEvidenceResult, 0, len(uncovered))
+	for _, path := range uncovered {
+		results = append(results, AcceptanceEvidenceResult{
+			Item:              AcceptanceItem{Text: path, Kind: AcceptanceItemOther},
+			NotVerifiedReason: DiffCoverageNotVerifiedReason(path),
+		})
+	}
+	return results
 }
 
 // RunAcceptanceEvidence classifies criteria and runs every evidence-

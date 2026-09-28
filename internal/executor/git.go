@@ -1456,6 +1456,60 @@ func (g *GitOperations) GetDiffStats(ctx context.Context, baseBranch string) (Gi
 	return diff, nil
 }
 
+// ChangedFilesAgainstOrigin returns the set of file paths changed on the
+// current branch relative to a freshly fetched origin/<baseBranch> (GH-5466
+// diff-coverage check), plus the merge-base SHA the comparison was made
+// against (so callers can also run FileExistsAtRef against the exact same
+// base). Mirrors GetDiffAgainstOrigin's freshness handling — fetch best-
+// effort, then merge-base, then diff from there — so a stale local
+// <baseBranch> ref can't make the diff-coverage check see a file that
+// already landed on origin as still "not modified". Uses --name-only
+// (rather than reusing GetDiffStats' --numstat parsing) because numstat
+// reports "-\t-\t<path>" for binary files, which GetDiffStats' Sscanf-based
+// parser silently drops from Files — this check must see every changed
+// path, binary or not.
+func (g *GitOperations) ChangedFilesAgainstOrigin(ctx context.Context, baseBranch string) (files []string, baseSHA string, err error) {
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
+	fetchCmd.Dir = g.projectPath
+	withGitCredentials(ctx, fetchCmd)
+	_ = fetchCmd.Run() // best-effort; fall back to whatever origin/<baseBranch> already resolves to locally
+
+	baseSHA, err = g.resolveMergeBaseSHA(ctx, baseBranch)
+	if err != nil {
+		return nil, "", err
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", baseSHA+"...HEAD")
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, baseSHA, fmt.Errorf("git diff --name-only failed: %w", err)
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, baseSHA, nil
+}
+
+// FileExistsAtRef reports whether path exists in the tree at ref (typically
+// a merge-base SHA resolved by ChangedFilesAgainstOrigin) — a local,
+// network-free existence check, distinct from base_presence.go's
+// FileExistsOnDefaultBranch (which probes GitHub's API and is used at
+// dispatch time, before a worktree exists). Any git error (path absent,
+// ref unresolvable) reports false rather than distinguishing the two —
+// callers only use this to decide whether an absent path is base-presence's
+// class of finding rather than this check's, so "false" is the correct
+// answer for both cases.
+func (g *GitOperations) FileExistsAtRef(ctx context.Context, ref, path string) bool {
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "-e", ref+":"+path)
+	cmd.Dir = g.projectPath
+	return cmd.Run() == nil
+}
+
 // RemoteBranchExists checks if a branch exists on the remote (origin).
 // GH-1389: Used to verify if push actually succeeded despite worktree chdir errors.
 func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName string) bool {
