@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-28T08:00:50.081810+00:00",
+  "updated": "2026-09-28T08:10:36.294742+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -965,6 +965,26 @@
         "name": "Tenant",
         "aliases": [],
         "domain": "general"
+      },
+      "infrastructure": {
+        "label": "Infrastructure",
+        "description": "",
+        "related": []
+      },
+      "ownership": {
+        "label": "Ownership",
+        "description": "",
+        "related": []
+      },
+      "template-first": {
+        "label": "Template-first",
+        "description": "",
+        "related": []
+      },
+      "process": {
+        "label": "Process",
+        "description": "",
+        "related": []
       }
     },
     "tasks": {
@@ -6899,6 +6919,23 @@
         ],
         "created": "2026-09-28",
         "last_validated": "2026-09-28"
+      },
+      "mem-201": {
+        "type": "decision",
+        "summary": "aws-infrastructure-pilot is Nelya's repo (founder 2026-09-28): we never push, merge, revert or dispatch Pilot there. Template changes are ASKS (issue or #infrastructure post: purpose -> exists -> build -> verify). Our 11 self-merged PRs 08-03..09-28 cost her two corrective commits (#17 superseded by the console-workers split, #19 replaced by her narrower WAF fix). Ours: our repos' deploy workflows that consume her templates with overrides matched to her Parameters block.",
+        "path": "memories/decisions/mem-201.md",
+        "confidence": 0.95,
+        "concepts": [
+          "infrastructure",
+          "ownership",
+          "nelya",
+          "aws-infrastructure-pilot",
+          "template-first",
+          "pilot-fleet",
+          "process"
+        ],
+        "created": "2026-09-28",
+        "last_validated": "2026-09-28"
       }
     }
   },
@@ -11556,13 +11593,34 @@
     ],
     "alb": [
       "mem-199"
+    ],
+    "infrastructure": [
+      "mem-201"
+    ],
+    "ownership": [
+      "mem-201"
+    ],
+    "nelya": [
+      "mem-201"
+    ],
+    "aws-infrastructure-pilot": [
+      "mem-201"
+    ],
+    "template-first": [
+      "mem-201"
+    ],
+    "pilot-fleet": [
+      "mem-201"
+    ],
+    "process": [
+      "mem-201"
     ]
   },
-  "last_updated": "2026-09-28T08:00:50.081810+00:00",
+  "last_updated": "2026-09-28T08:10:36.294742+00:00",
   "stats": {
-    "total_nodes": 571,
+    "total_nodes": 576,
     "total_edges": 505,
-    "memory_count": 315
+    "memory_count": 316
   },
   "metadata": {}
 }
