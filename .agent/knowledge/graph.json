@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-28T10:35:44.972968+00:00",
+  "updated": "2026-09-28T19:53:52.702136+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -6999,6 +6999,20 @@
         ],
         "created": "2026-09-28",
         "last_validated": "2026-09-28"
+      },
+      "main-history-rewritten-2026-09-24-internal-notes-purge": {
+        "type": "learning",
+        "summary": "2026-09-24: main history + tag v2.276.3 rewritten (7 commits re-hashed, trees unchanged) to purge internal notes; PR #5458 deleted by GitHub Support. Forks/worktrees fetched before 09-24 21:45 CEST must rebase onto current main; old SHAs in logs/receipts are historical, not corruption.",
+        "file": ".agent/knowledge/memories/learnings/main-history-rewritten-2026-09-24-internal-notes-purge.md",
+        "concepts": [
+          "git-history",
+          "public-repo",
+          "incident",
+          "secrets-hygiene",
+          "worktrees"
+        ],
+        "confidence": 0.95,
+        "created": "2026-09-28"
       }
     }
   },
@@ -11697,13 +11711,28 @@
     ],
     "acceptance-evidence": [
       "mem-203"
+    ],
+    "git-history": [
+      "main-history-rewritten-2026-09-24-internal-notes-purge"
+    ],
+    "public-repo": [
+      "main-history-rewritten-2026-09-24-internal-notes-purge"
+    ],
+    "incident": [
+      "main-history-rewritten-2026-09-24-internal-notes-purge"
+    ],
+    "secrets-hygiene": [
+      "main-history-rewritten-2026-09-24-internal-notes-purge"
+    ],
+    "worktrees": [
+      "main-history-rewritten-2026-09-24-internal-notes-purge"
     ]
   },
-  "last_updated": "2026-09-28T10:35:44.972968+00:00",
+  "last_updated": "2026-09-28T19:53:52.702136+00:00",
   "stats": {
-    "total_nodes": 584,
+    "total_nodes": 585,
     "total_edges": 505,
-    "memory_count": 318
+    "memory_count": 319
   },
   "metadata": {}
 }
