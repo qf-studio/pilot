@@ -6876,7 +6876,7 @@
       },
       "mem-198": {
         "type": "learning",
-        "summary": "Console repo switch in the UI is inert on a live tenant: PATCH /connections never bumps config_generation (only PUT connection/credential do), so the reconciler sees no drift and the box keeps the old repo. Workaround re-save the token; fix console#323. Hosted render also omits use_worktree/sync_main_after_task (console#324).",
+        "summary": "CORRECTED 09-28: repo switch DID reach the box on 09-25 via Reconciler.syncRepos (repos_synced gen4 10:09:21Z, pushed 10:10:33Z), 10 min after the PATCH. The PATCH bump (console PR#328) cannot carry repos: BumpConfigGenerationForOrg re-inserts old params, Push renders stored YAML. Unknown: why syncRepos saw no diff for ~8 ticks then bumped 15 s after the token PUT. Read GET /api/v1/instances/{id}/events before diagnosing a stuck repo switch.",
         "path": "memories/learnings/mem-198.md",
         "confidence": 1.0,
         "concepts": [
@@ -6886,7 +6886,7 @@
           "tenant"
         ],
         "created": "2026-09-25",
-        "last_validated": "2026-09-25"
+        "last_validated": "2026-09-28"
       },
       "mem-199": {
         "type": "pitfall",
