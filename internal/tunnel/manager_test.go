@@ -893,6 +893,7 @@ func TestCloudflareProviderStatus(t *testing.T) {
 
 func TestNgrokProviderStatus(t *testing.T) {
 	p := NewNgrokProvider(&Config{}, slog.Default())
+	p.apiEndpoint = unroutableNgrokEndpoint
 
 	ctx := context.Background()
 	status, err := p.Status(ctx)
@@ -1017,8 +1018,15 @@ func TestNgrokProviderConstants(t *testing.T) {
 	if ngrokBin != "ngrok" {
 		t.Errorf("ngrokBin = %q, want %q", ngrokBin, "ngrok")
 	}
-	if ngrokAPIEndpoint != "http://127.0.0.1:4040/api/tunnels" {
-		t.Errorf("ngrokAPIEndpoint = %q, want %q", ngrokAPIEndpoint, "http://127.0.0.1:4040/api/tunnels")
+	if ngrokAPIEndpoint == "" {
+		t.Error("ngrokAPIEndpoint must not be empty")
+	}
+
+	// NewNgrokProvider must default apiEndpoint to the package constant so
+	// production behaviour is unchanged by the injectable field.
+	p := NewNgrokProvider(&Config{}, slog.Default())
+	if p.apiEndpoint != ngrokAPIEndpoint {
+		t.Errorf("NewNgrokProvider default apiEndpoint = %q, want %q", p.apiEndpoint, ngrokAPIEndpoint)
 	}
 }
 
@@ -1045,10 +1053,13 @@ func TestCloudflareProviderStatusWithURL(t *testing.T) {
 }
 
 func TestNgrokProviderStatusWithURL(t *testing.T) {
+	server := ngrokFixtureServer(t, "https://test.ngrok.io")
+
 	p := &NgrokProvider{
-		config: &Config{Domain: "test.example.com"},
-		url:    "https://test.ngrok.io",
-		logger: slog.Default(),
+		config:      &Config{Domain: "test.example.com"},
+		url:         "https://test.ngrok.io",
+		logger:      slog.Default(),
+		apiEndpoint: server.URL,
 	}
 
 	ctx := context.Background()
@@ -1249,12 +1260,12 @@ func TestManagerStartWithCancelledContext(t *testing.T) {
 
 func TestNgrokProviderGetURLFromAPINoServer(t *testing.T) {
 	p := NewNgrokProvider(&Config{}, slog.Default())
+	p.apiEndpoint = unroutableNgrokEndpoint
 
-	// Without ngrok running, should fail
+	// No agent reachable: getURLFromAPI must error.
 	_, err := p.getURLFromAPI()
 	if err == nil {
-		// If ngrok is actually running on this system, skip
-		t.Log("ngrok API responded - ngrok might be running")
+		t.Error("expected error when no ngrok agent is reachable")
 	}
 }
 
