@@ -26,13 +26,20 @@ type NgrokProvider struct {
 	cmd    *exec.Cmd
 	url    string
 	mu     sync.Mutex
+
+	// apiEndpoint is the ngrok local API URL queried by getURLFromAPI.
+	// Defaults to ngrokAPIEndpoint; overridable (tests point it at an
+	// httptest server or an unroutable address so status checks never
+	// depend on a real ngrok agent being present on the machine).
+	apiEndpoint string
 }
 
 // NewNgrokProvider creates a new ngrok provider
 func NewNgrokProvider(cfg *Config, logger *slog.Logger) *NgrokProvider {
 	return &NgrokProvider{
-		config: cfg,
-		logger: logger,
+		config:      cfg,
+		logger:      logger,
+		apiEndpoint: ngrokAPIEndpoint,
 	}
 }
 
@@ -191,7 +198,12 @@ func (p *NgrokProvider) waitForURL(ctx context.Context) (string, error) {
 
 // getURLFromAPI retrieves the tunnel URL from ngrok's local API
 func (p *NgrokProvider) getURLFromAPI() (string, error) {
-	resp, err := http.Get(ngrokAPIEndpoint)
+	endpoint := p.apiEndpoint
+	if endpoint == "" {
+		endpoint = ngrokAPIEndpoint
+	}
+
+	resp, err := http.Get(endpoint)
 	if err != nil {
 		return "", err
 	}

@@ -9,6 +9,25 @@ import (
 	"time"
 )
 
+// unroutableNgrokEndpoint simulates "no ngrok agent running": connecting to
+// port 0 fails immediately without ever touching a real local API, so tests
+// using it are deterministic regardless of whether ngrok is actually
+// installed and running on the host.
+const unroutableNgrokEndpoint = "http://127.0.0.1:0/api/tunnels"
+
+// ngrokFixtureServer starts an httptest server that serves a fixed ngrok
+// local-API response containing a single tunnel with the given URL.
+func ngrokFixtureServer(t *testing.T, publicURL string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"tunnels":[{"public_url":"` + publicURL + `","proto":"https"}]}`))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
 func TestNgrokProviderSetupNotConfigured(t *testing.T) {
 	// Skip if ngrok is actually installed and configured
 	if _, ok := CheckCLI(ngrokBin); ok {
@@ -58,8 +77,9 @@ func TestNgrokProviderStopWhenNotRunning(t *testing.T) {
 
 func TestNgrokProviderStatusNotRunning(t *testing.T) {
 	p := &NgrokProvider{
-		config: &Config{},
-		logger: slog.Default(),
+		config:      &Config{},
+		logger:      slog.Default(),
+		apiEndpoint: unroutableNgrokEndpoint,
 	}
 
 	ctx := context.Background()
@@ -74,10 +94,13 @@ func TestNgrokProviderStatusNotRunning(t *testing.T) {
 }
 
 func TestNgrokProviderStatusWithURLSet(t *testing.T) {
+	server := ngrokFixtureServer(t, "https://abc123.ngrok.io")
+
 	p := &NgrokProvider{
-		config: &Config{},
-		url:    "https://abc123.ngrok.io",
-		logger: slog.Default(),
+		config:      &Config{},
+		url:         "https://abc123.ngrok.io",
+		logger:      slog.Default(),
+		apiEndpoint: server.URL,
 	}
 
 	ctx := context.Background()
@@ -117,7 +140,8 @@ func TestNgrokProviderName2(t *testing.T) {
 }
 
 func TestNgrokProviderGetURLFromAPIMockServer(t *testing.T) {
-	// Create a mock ngrok API server
+	// Create a mock ngrok API server with an http and an https tunnel;
+	// getURLFromAPI should prefer the https one.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response := `{
 			"tunnels": [
@@ -137,28 +161,26 @@ func TestNgrokProviderGetURLFromAPIMockServer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// We can't easily override ngrokAPIEndpoint constant,
-	// but we can test the response parsing logic
-	// by verifying our understanding of the API format
-
-	// Instead, let's test getURLFromAPI with actual ngrok API not running
 	p := NewNgrokProvider(&Config{}, slog.Default())
-	_, err := p.getURLFromAPI()
-	// Should fail since ngrok isn't running
-	if err == nil {
-		t.Log("ngrok API is running - test environment has ngrok active")
+	p.apiEndpoint = server.URL
+
+	url, err := p.getURLFromAPI()
+	if err != nil {
+		t.Fatalf("getURLFromAPI failed: %v", err)
+	}
+	if url != "https://abc123.ngrok.io" {
+		t.Errorf("getURLFromAPI() = %q, want %q", url, "https://abc123.ngrok.io")
 	}
 }
 
 func TestNgrokProviderGetURLFromAPIEmpty(t *testing.T) {
-	// Test with no ngrok running (common case)
+	// No ngrok agent reachable: getURLFromAPI must error.
 	p := NewNgrokProvider(&Config{}, slog.Default())
+	p.apiEndpoint = unroutableNgrokEndpoint
 
 	_, err := p.getURLFromAPI()
-	// Should error since ngrok isn't running
 	if err == nil {
-		// If ngrok is actually running, we can't test this
-		t.Log("ngrok appears to be running - skipping no-server test")
+		t.Error("expected error when no ngrok agent is reachable")
 	}
 }
 
@@ -313,10 +335,16 @@ func TestNgrokProviderStatusBranches(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			apiEndpoint := unroutableNgrokEndpoint
+			if tt.url != "" {
+				apiEndpoint = ngrokFixtureServer(t, tt.url).URL
+			}
+
 			p := &NgrokProvider{
-				config: &Config{},
-				url:    tt.url,
-				logger: slog.Default(),
+				config:      &Config{},
+				url:         tt.url,
+				logger:      slog.Default(),
+				apiEndpoint: apiEndpoint,
 			}
 
 			ctx := context.Background()
@@ -352,9 +380,8 @@ func TestNgrokProviderWaitForURLTimeout(t *testing.T) {
 }
 
 func TestNgrokProviderGetURLFromAPIHTTPSPreference(t *testing.T) {
-	// Create a mock HTTP server to test getURLFromAPI
+	// Return tunnels with both HTTP and HTTPS; getURLFromAPI must prefer https.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return tunnels with both HTTP and HTTPS
 		response := `{
 			"tunnels": [
 				{"public_url": "http://test.ngrok.io", "proto": "http"},
@@ -367,28 +394,32 @@ func TestNgrokProviderGetURLFromAPIHTTPSPreference(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// We can't easily inject the server URL into the provider
-	// But we can test the actual getURLFromAPI against real ngrok or fail gracefully
 	p := NewNgrokProvider(&Config{}, slog.Default())
+	p.apiEndpoint = server.URL
 
 	url, err := p.getURLFromAPI()
 	if err != nil {
-		// Expected if ngrok isn't running
-		t.Logf("getURLFromAPI error (expected without ngrok): %v", err)
-	} else {
-		t.Logf("getURLFromAPI returned URL: %s", url)
+		t.Fatalf("getURLFromAPI failed: %v", err)
+	}
+	if url != "https://test.ngrok.io" {
+		t.Errorf("getURLFromAPI() = %q, want %q", url, "https://test.ngrok.io")
 	}
 }
 
 func TestNgrokProviderGetURLFromAPINoTunnels(t *testing.T) {
-	// Test behavior when API returns empty tunnels
-	// Without ngrok running, we can't test this easily
-	// but we can verify the function handles errors properly
+	// API reachable but reports zero tunnels: getURLFromAPI must error.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"tunnels": []}`))
+	}))
+	defer server.Close()
+
 	p := NewNgrokProvider(&Config{}, slog.Default())
+	p.apiEndpoint = server.URL
 
 	_, err := p.getURLFromAPI()
-	// Should error since ngrok isn't running (most likely)
 	if err == nil {
-		t.Log("getURLFromAPI succeeded - ngrok might be running")
+		t.Error("expected error when API reports no tunnels")
 	}
 }
