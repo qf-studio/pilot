@@ -140,3 +140,37 @@ func TestClassifyAcceptanceItem_MutationPhrasings(t *testing.T) {
 		})
 	}
 }
+
+// GH-5479: pilot#5477's "Evidence in the PR body: one `go test -run` output
+// line per new test." matched none of the original paste-output phrasings, so
+// it classified as other and the gate said nothing. Each new phrase must now
+// classify as paste_output; a bare "PR body" or "evidence" must not.
+func TestClassifyAcceptanceItem_PasteOutputEvidencePhrasings(t *testing.T) {
+	const issue5477 = "Evidence in the PR body: one `go test -run` output line per new test."
+	tests := []struct {
+		name         string
+		text         string
+		want         AcceptanceItemKind
+		wantCommands int
+	}{
+		{"#5477 sentence", issue5477, AcceptanceItemPasteOutput, 0},
+		{"#5477 sentence with checkbox", "- [ ] " + issue5477, AcceptanceItemPasteOutput, 0},
+		{"evidence in the pr body", "Evidence in the PR body for the new tests.", AcceptanceItemPasteOutput, 0},
+		{"into the pr body", "Include the test results into the PR body.", AcceptanceItemPasteOutput, 0},
+		{"output line", "One output line per new test.", AcceptanceItemPasteOutput, 0},
+		{"output line with runnable command", "One output line of `go test ./pkg/` per package.", AcceptanceItemPasteOutput, 1},
+		{"described in the pr body stays other", "The change is described in the PR body.", AcceptanceItemOther, 0},
+		{"evidence screenshot stays other", "evidence: screenshot attached", AcceptanceItemOther, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := ClassifyAcceptanceItem(tt.text)
+			if item.Kind != tt.want {
+				t.Fatalf("Kind = %q, want %q", item.Kind, tt.want)
+			}
+			if len(item.Commands) != tt.wantCommands {
+				t.Errorf("Commands = %v, want length %d", item.Commands, tt.wantCommands)
+			}
+		})
+	}
+}

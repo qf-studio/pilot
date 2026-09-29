@@ -80,7 +80,15 @@ func (i AcceptanceItem) RequiresEvidence() bool {
 // Deliberately permissive (recall-oriented): any of these phrases anywhere
 // in the item text is enough to classify it as paste-output, since a false
 // negative here silently drops the gate for a real evidence requirement.
-var pasteOutputPatternRe = regexp.MustCompile(`(?i)pasted into the pr body|paste the output|terminal output`)
+//
+// GH-5479: "Evidence in the PR body: one `go test -run` output line per new
+// test." (pilot#5477) matched none of the original three phrasings, so the item
+// classified as other and was never run nor listed under Not-verified. The
+// phrases "evidence in the pr body", "into the pr body" and "output line" are
+// now recognised too. A bare "pr body" or "evidence" is deliberately NOT
+// matched ("described in the PR body", "evidence: screenshot attached" stay
+// other).
+var pasteOutputPatternRe = regexp.MustCompile(`(?i)pasted into the pr body|paste the output|terminal output|evidence in the pr body|into the pr body|output line`)
 
 // inlineCodeRe extracts inline `code span` segments, the convention used by
 // every observed paste-output acceptance item ("paste the output of `go
@@ -142,17 +150,35 @@ func ParseAcceptanceItems(criteria []string) []AcceptanceItem {
 }
 
 // extractInlineCommands returns the trimmed contents of every inline `code
-// span` in text, in order, skipping empty spans.
+// span` in text, in order, skipping empty spans and command fragments.
 func extractInlineCommands(text string) []string {
 	matches := inlineCodeRe.FindAllStringSubmatch(text, -1)
 	cmds := make([]string, 0, len(matches))
 	for _, m := range matches {
 		c := strings.TrimSpace(m[1])
-		if c != "" {
+		if c != "" && !isDanglingFlagFragment(c) {
 			cmds = append(cmds, c)
 		}
 	}
 	return cmds
+}
+
+// valueTakingGoTestFlags are `go test` flags that require a value argument.
+var valueTakingGoTestFlags = map[string]bool{
+	"-run": true, "-bench": true, "-skip": true, "-count": true,
+	"-timeout": true, "-tags": true, "-cpu": true, "-parallel": true,
+}
+
+// isDanglingFlagFragment reports whether a `go test` code span ends in a
+// value-taking flag with no value ("go test -run"). Such a span names a flag
+// as prose, not a runnable command, and running it would only produce a
+// misleading usage error as "evidence" (GH-5479).
+func isDanglingFlagFragment(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) < 3 || fields[0] != "go" || fields[1] != "test" {
+		return false
+	}
+	return valueTakingGoTestFlags[fields[len(fields)-1]]
 }
 
 // extractMutation splits a mutation-style item ("delete line 42 in foo.go

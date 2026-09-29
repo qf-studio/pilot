@@ -466,6 +466,29 @@ func TestRunAcceptanceEvidence_EndToEnd(t *testing.T) {
 	}
 }
 
+// GH-5479: a widened paste-output item with no runnable inline command must
+// land under "## Not verified" with the "no commands parsed" reason instead of
+// vanishing.
+func TestRunAcceptanceEvidence_EvidenceInPRBodyItemIsNotVerified(t *testing.T) {
+	const text = "Evidence in the PR body: one `go test -run` output line per new test."
+	runner := &fakeAcceptanceCommandRunner{}
+
+	results := RunAcceptanceEvidence(context.Background(), runner, "/tmp/whatever", []string{text}, defaultTestAllowedCommands)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 evidence-requiring result, got %d", len(results))
+	}
+	if !strings.Contains(results[0].NotVerifiedReason, "no commands parsed") {
+		t.Errorf("NotVerifiedReason = %q, want it to contain %q", results[0].NotVerifiedReason, "no commands parsed")
+	}
+
+	section := RenderAcceptanceEvidenceSections(results)
+	for _, want := range []string{"## Not verified", text, "no commands parsed"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("rendered section = %q, want it to contain %q", section, want)
+		}
+	}
+}
+
 // --- Command allowlist ---
 
 func TestIsCommandAllowed(t *testing.T) {
