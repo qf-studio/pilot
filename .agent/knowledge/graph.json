@@ -5818,7 +5818,7 @@
       },
       "mem-175": {
         "type": "pitfall",
-        "summary": "Base-presence hold caches referenced paths on the execution row at CREATION — editing a wedged issue's body does NOT clear the hold. On 2026-08-23 #5145 wedged because its body had backtick-quoted example paths (q-<epoch>.md, q-1786987124.md) the base-presence guard (internal/executor/base_presence.go) extracted and probed on main; not found -> permanent 'prerequisite not on main' hold, hold_count climbed, escalated pilot-needs-human, execution marked skipped/terminal, poller then 'Skipping re-dispatch — completed execution exists'. Rewriting the body + label-cycle did NOT help: dispatcher kept holding the SAME execution_id citing the OLD cached path. Recovery that works: CLOSE the issue and REFILE fresh (new issue = new execution, reads the corrected body) — verified, #5147 dispatched clean. IMPORTANT: v2.267 glob-exclusion only spares wildcard paths (q-*.md); a literal/placeholder backtick path with no wildcard (q-<epoch>.md) still wedges. Never put backtick-quoted non-existent example paths in an issue body. UPDATE 2026-09-22 (v2.276.1): the hold is no longer permanent: dispatcher releases after ~3 ticks (~8 min) even without a body edit (ui#164 and ui#167 same day, same execution_id) — close+refile no longer needed. New false-positive class: backticked env assignments/URLs with a dot-suffix (SITE=https://console.pilotcloud.dev, inputs.ref, dist/index.html) are read as repo paths; un-backtick every non-path dotted token before filing.",
+        "summary": "Base-presence hold caches referenced paths on the execution row at CREATION — editing a wedged issue's body does NOT clear the hold. On 2026-08-23 #5145 wedged because its body had backtick-quoted example paths (q-<epoch>.md, q-1786987124.md) the base-presence guard (internal/executor/base_presence.go) extracted and probed on main; not found -> permanent 'prerequisite not on main' hold, hold_count climbed, escalated pilot-needs-human, execution marked skipped/terminal, poller then 'Skipping re-dispatch — completed execution exists'. Rewriting the body + label-cycle did NOT help: dispatcher kept holding the SAME execution_id citing the OLD cached path. Recovery that works: CLOSE the issue and REFILE fresh (new issue = new execution, reads the corrected body) — verified, #5147 dispatched clean. IMPORTANT: v2.267 glob-exclusion only spares wildcard paths (q-*.md); a literal/placeholder backtick path with no wildcard (q-<epoch>.md) still wedges. Never put backtick-quoted non-existent example paths in an issue body. UPDATE 2026-09-22 (v2.276.1): the hold is no longer permanent: dispatcher releases after ~3 ticks (~8 min) even without a body edit (ui#164 and ui#167 same day, same execution_id) — close+refile no longer needed. New false-positive class: backticked env assignments/URLs with a dot-suffix (SITE=https://console.pilotcloud.dev, inputs.ref, dist/index.html) are read as repo paths; un-backtick every non-path dotted token before filing. UPDATE 09-29: a backticked path for a file the PR will CREATE holds too (ui#193, 3 ticks); write new-file names as prose. Size-guard threshold is per project (ui +986 held, console +686 not).",
         "path": "memories/pitfalls/mem-175.md",
         "confidence": 0.9,
         "concepts": [
@@ -6986,7 +6986,7 @@
       },
       "mem-203": {
         "type": "learning",
-        "summary": "Pilot implements the '## Acceptance' list and copies issue-body claims verbatim: put every required file change under Acceptance; never assert unverified facts in an issue (PR#332/#334 left the named deploy-workflow fix untouched; false 'per PR#332' claim propagated into code comments). Evidence gate sees command items only; diff-coverage check filed on pilot. Review pre-merge PRs first: autopilot merges on green in minutes; revision issue, not draft flip.",
+        "summary": "Pilot implements the '## Acceptance' list and copies issue-body claims verbatim: put every required file change under Acceptance; never assert unverified facts in an issue (PR#332/#334 left the named deploy-workflow fix untouched; false 'per PR#332' claim propagated into code comments). Evidence gate sees command items only; diff-coverage check filed on pilot. Review pre-merge PRs first: autopilot merges on green in minutes; revision issue, not draft flip. UPDATE 09-29: the gate recognises exactly three phrasings ('pasted into the pr body', 'paste the output', 'terminal output'); 'Evidence in the PR body: one `go test -run` line per test' (#5477) classified as other and was silently skipped. Until pilot#5479 lands, write evidence items as 'Paste the output of `<full allowlisted command>` into the PR body'.",
         "path": "memories/learnings/mem-203.md",
         "confidence": 0.95,
         "concepts": [
@@ -7013,6 +7013,20 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-28"
+      },
+      "mem-204": {
+        "type": "learning",
+        "summary": "Founder-token PRs (pilot-console, pilot-console-ui, auth-service) refuse APPROVE and REQUEST_CHANGES from the same token: post the verdict as a COMMENT review with the verdict on the first line (7x on 2026-09-29). Autopilot ignores the review event and merges on green, so a REQUEST-CHANGES comment holds nothing: file the revision issue in the same minute.",
+        "path": "memories/learnings/mem-204.md",
+        "confidence": 0.95,
+        "concepts": [
+          "review",
+          "github",
+          "pilot-dispatch",
+          "process"
+        ],
+        "created": "2026-09-29",
+        "last_validated": "2026-09-29"
       }
     }
   },
@@ -10658,7 +10672,8 @@
       "mem-173",
       "mem-175",
       "merged-feature-dead-callback-not-bridged-onprcreated",
-      "required-checks-allowlist-makes-other-gates-decorative"
+      "required-checks-allowlist-makes-other-gates-decorative",
+      "mem-204"
     ],
     "github-adapter": [
       "TASK-379",
@@ -11636,7 +11651,8 @@
     ],
     "review": [
       "s3-accessdenied-from-admin-role-is-bucket-policy-condition",
-      "mem-203"
+      "mem-203",
+      "mem-204"
     ],
     "operations": [
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
@@ -11698,7 +11714,8 @@
     ],
     "process": [
       "mem-201",
-      "mem-203"
+      "mem-203",
+      "mem-204"
     ],
     "deploy": [
       "mem-202"
@@ -11707,7 +11724,8 @@
       "mem-202"
     ],
     "pilot-dispatch": [
-      "mem-203"
+      "mem-203",
+      "mem-204"
     ],
     "acceptance-evidence": [
       "mem-203"
@@ -11728,11 +11746,11 @@
       "main-history-rewritten-2026-09-24-internal-notes-purge"
     ]
   },
-  "last_updated": "2026-09-28T19:53:52.702136+00:00",
+  "last_updated": "2026-09-29T10:35:13.140098+00:00",
   "stats": {
-    "total_nodes": 585,
-    "total_edges": 505,
-    "memory_count": 319
+    "total_nodes": 586,
+    "total_edges": 506,
+    "memory_count": 320
   },
   "metadata": {}
 }
