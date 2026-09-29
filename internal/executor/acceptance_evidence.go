@@ -123,16 +123,21 @@ func ClassifyAcceptanceItem(text string) AcceptanceItem {
 	clean := strings.TrimSpace(checklistPrefixRe.ReplaceAllString(text, ""))
 	item := AcceptanceItem{Text: clean, Kind: AcceptanceItemOther}
 
-	if pasteOutputPatternRe.MatchString(clean) {
-		item.Kind = AcceptanceItemPasteOutput
-		item.Commands = extractInlineCommands(clean)
-		return item
-	}
-
+	// GH-5486: the mutation shape (arrow + "fails" outcome) is tested before the
+	// paste-output pattern. The paste-output regex is deliberately permissive
+	// ("output line" etc.), so a mutation item that merely mentions an output
+	// line ("delete the output line in foo.go line 42 -> TestFoo fails") would
+	// otherwise be hijacked as paste_output and never applied.
 	if desc, target, ok := extractMutation(clean); ok {
 		item.Kind = AcceptanceItemMutation
 		item.MutationDescription = desc
 		item.MutationTarget = target
+		return item
+	}
+
+	if pasteOutputPatternRe.MatchString(clean) {
+		item.Kind = AcceptanceItemPasteOutput
+		item.Commands = extractInlineCommands(clean)
 		return item
 	}
 

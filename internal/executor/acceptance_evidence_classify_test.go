@@ -174,3 +174,45 @@ func TestClassifyAcceptanceItem_PasteOutputEvidencePhrasings(t *testing.T) {
 		})
 	}
 }
+
+// GH-5486: a mutation item that also mentions a paste-output phrase ("output
+// line") must classify as mutation, not paste_output.
+func TestClassifyAcceptanceItem_MutationBeatsPasteOutput(t *testing.T) {
+	item := ClassifyAcceptanceItem("delete the output line in `foo.go` line 42 -> TestFoo fails")
+	if item.Kind != AcceptanceItemMutation {
+		t.Fatalf("Kind = %q, want %q", item.Kind, AcceptanceItemMutation)
+	}
+	if item.MutationTarget != "TestFoo" {
+		t.Errorf("MutationTarget = %q, want TestFoo", item.MutationTarget)
+	}
+	if len(item.Commands) != 0 {
+		t.Errorf("Commands = %v, want none", item.Commands)
+	}
+
+	paste := ClassifyAcceptanceItem("Paste the output of `go test ./...` into the PR body")
+	if paste.Kind != AcceptanceItemPasteOutput {
+		t.Errorf("paste item Kind = %q, want %q", paste.Kind, AcceptanceItemPasteOutput)
+	}
+}
+
+func TestIsDanglingFlagFragment(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{"go test -run", true},
+		{"go test ./pkg -bench", true},
+		{"go test ./internal/executor -run TestFoo", false},
+		{"go test ./...", false},
+		{"go test", false},
+		{"make test", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			if got := isDanglingFlagFragment(tt.command); got != tt.want {
+				t.Errorf("isDanglingFlagFragment(%q) = %v, want %v", tt.command, got, tt.want)
+			}
+		})
+	}
+}
