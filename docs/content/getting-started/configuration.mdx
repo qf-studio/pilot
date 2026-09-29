@@ -200,7 +200,7 @@ The fast conversational path. When enabled, chat, greeting, question, and issue-
 bot:
   enabled: true                          # master switch for the conversational path
   model: "claude-haiku-4-5-20251001"     # chat / greeting model (fast, cheap)
-  answer_model: "claude-sonnet-4-6"      # grounded Q&A model; defaults to `model` when empty
+  answer_model: "claude-sonnet-5-5"      # grounded Q&A model; defaults to `model` when empty
   api_key: ${ANTHROPIC_API_KEY}          # optional — falls back to ANTHROPIC_API_KEY env var
   persona: ""                            # optional — prepended to the system prompt (Pilot's voice)
 
@@ -261,8 +261,8 @@ executor:
   model_routing:
     enabled: false
     trivial: "claude-haiku"
-    simple: "claude-sonnet-4-6"
-    medium: "claude-sonnet-4-6"
+    simple: "claude-sonnet-5-5"
+    medium: "claude-sonnet-5-5"
     complex: "claude-opus-4-6"
 
   effort_routing:
@@ -304,8 +304,8 @@ executor:
 | `qwen_code.use_session_resume` | bool | `false` | Reuse sessions for self-review |
 | `model_routing.enabled` | bool | `false` | Route tasks to different models by complexity |
 | `model_routing.trivial` | string | `"claude-haiku"` | Model for trivial tasks |
-| `model_routing.simple` | string | `"claude-sonnet-4-6"` | Model for simple tasks |
-| `model_routing.medium` | string | `"claude-sonnet-4-6"` | Model for medium tasks |
+| `model_routing.simple` | string | `"claude-sonnet-5-5"` | Model for simple tasks |
+| `model_routing.medium` | string | `"claude-sonnet-5-5"` | Model for medium tasks |
 | `model_routing.complex` | string | `"claude-opus-4-6"` | Model for complex tasks |
 | `effort_routing.enabled` | bool | `false` | Route thinking effort by complexity |
 | `effort_routing.trivial` | string | `"low"` | Effort for trivial tasks |
@@ -338,7 +338,7 @@ executor:
   type: "opencode"
   opencode:
     server_url: "http://127.0.0.1:4096"
-    model: "anthropic/claude-sonnet-4-6"
+    model: "anthropic/claude-sonnet-5-5"
     provider: "anthropic"
     auto_start_server: false
     server_command: "opencode serve"
@@ -352,7 +352,7 @@ executor:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `opencode.server_url` | string | `"http://127.0.0.1:4096"` | OpenCode server URL |
-| `opencode.model` | string | `"anthropic/claude-sonnet-4-6"` | Model identifier in `provider/model` format |
+| `opencode.model` | string | `"anthropic/claude-sonnet-5-5"` | Model identifier in `provider/model` format |
 | `opencode.provider` | string | `"anthropic"` | LLM provider name |
 | `opencode.auto_start_server` | bool | `true` | Auto-start OpenCode server if not running |
 | `opencode.server_command` | string | `"opencode serve"` | Command to start the server |
@@ -1114,7 +1114,7 @@ Controls task execution strategy and scheduling.
 
 ```yaml
 orchestrator:
-  model: "claude-sonnet-4-6"              # default model for planning
+  model: "claude-sonnet-5-5"              # default model for planning
   max_concurrent: 2                       # max parallel tasks
 
   execution:
@@ -1140,7 +1140,7 @@ orchestrator:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model` | string | `"claude-sonnet-4-6"` | Default model for planning |
+| `model` | string | `"claude-sonnet-5-5"` | Default model for planning |
 | `max_concurrent` | int | `2` | Max parallel task executions |
 | `execution.mode` | string | `"sequential"` | `sequential` — wait for PR merge before next task; `parallel` — dispatch all tasks concurrently; `auto` — parallel dispatch with scope-overlap guard; issues targeting different directories run concurrently, overlapping scopes are serialized |
 | `execution.wait_for_merge` | bool | `true` | Wait for PR merge before next task |
@@ -1895,8 +1895,8 @@ executor:
   model_routing:
     enabled: true
     trivial: "claude-haiku"
-    simple: "claude-sonnet-4-6"
-    medium: "claude-sonnet-4-6"
+    simple: "claude-sonnet-5-5"
+    medium: "claude-sonnet-5-5"
     complex: "claude-opus-4-6"
   timeout:
     default: "30m"

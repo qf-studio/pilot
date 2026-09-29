@@ -589,7 +589,7 @@ func DefaultConfig() *Config {
 			Chat:        web.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{
-			Model:         "claude-sonnet-4-6",
+			Model:         executor.DefaultSonnetModel,
 			MaxConcurrent: 2,
 			DailyBrief: &DailyBriefConfig{
 				Enabled:  false,

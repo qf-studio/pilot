@@ -1486,7 +1486,7 @@ func (r *Runner) selfReviewTimeout() time.Duration {
 // the backend stream did not surface a model field. Used to distinguish
 // "telemetry-missing" from "true-zero" runs in execution_metrics. Resolution:
 //  1. config.DefaultModel (set when running via OpenCode/GLM/etc.)
-//  2. OpenCode config.Model (e.g. "anthropic/claude-sonnet-4-6")
+//  2. OpenCode config.Model (e.g. "anthropic/claude-sonnet-5-5")
 //  3. Backend type prefix (e.g. "claude-code", "opencode") — never empty.
 //
 // GH-2428: previously runner.go hardcoded "claude-opus-4-6" as the fallback,

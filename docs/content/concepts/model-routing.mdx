@@ -121,7 +121,7 @@ Pilot runs two distinct subprocesses per task: a **planning** pass that decompos
 | Phase | Default Model | Why |
 |-------|---------------|-----|
 | Planning (epic decomposition) | `claude-opus-4-7` | Stronger reasoning produces better subtask boundaries; runs once per epic |
-| Execution (every subtask, including `complex`) | `claude-sonnet-4-6` | Cheaper per token, near-Opus quality on focused implementation work |
+| Execution (every subtask, including `complex`) | `claude-sonnet-5-5` | Cheaper per token, near-Opus quality on focused implementation work |
 
 Planning runs once and emits a structured plan; execution runs many times per task across self-review, retry, and feedback loops. Reserving Opus for planning and pinning execution to Sonnet (including the `complex` complexity tier) cuts the per-task token spend by roughly **70%** versus running everything on Opus.
 
@@ -131,7 +131,7 @@ executor:
     model: "claude-opus-4-7"   # default; override per deployment
   model_routing:
     enabled: true
-    complex: "claude-sonnet-4-6"  # GH-2432: Opus reserved for planning
+    complex: "claude-sonnet-5-5"  # GH-2432: Opus reserved for planning
 ```
 
 See [Configuration → Executor](/getting-started/configuration#executor) for the full key list and `executor.allowed_tools` / `executor.mcp_config_path` knobs that complement the split. Tracked under [GH-2432](https://github.com/qf-studio/pilot/issues/2432) (v2.100.5).
@@ -145,12 +145,12 @@ Maps complexity to the AI model used for execution.
 | Complexity | Default Model | Pricing (input/output) | Rationale |
 |------------|---------------|------------------------|-----------|
 | Trivial | `claude-haiku-4-5` | $0.80 / $4 per 1M tokens | Speed over depth — mechanical changes don't need reasoning |
-| Simple | `claude-sonnet-4-6` | $3 / $15 per 1M tokens | Near-Opus quality at 40% lower cost |
-| Medium | `claude-sonnet-4-6` | $3 / $15 per 1M tokens | Standard feature work, near-Opus quality |
-| Complex | `claude-sonnet-4-6` | $3 / $15 per 1M tokens | Sonnet handles architectural work; Opus is reserved for the planning pass (GH-2432) |
+| Simple | `claude-sonnet-5-5` | $3 / $15 per 1M tokens | Near-Opus quality at 40% lower cost |
+| Medium | `claude-sonnet-5-5` | $3 / $15 per 1M tokens | Standard feature work, near-Opus quality |
+| Complex | `claude-sonnet-5-5` | $3 / $15 per 1M tokens | Sonnet handles architectural work; Opus is reserved for the planning pass (GH-2432) |
 
 <Callout type="info">
-Sonnet 4.6 is the default across simple, medium, *and* complex execution tiers. Opus is invoked once per epic during the planning pass (`executor.planning.model`), not on the execution path. Epic tasks are decomposed before execution, so each subtask routes independently.
+Sonnet 5.5 is the default across simple, medium, *and* complex execution tiers. Opus is invoked once per epic during the planning pass (`executor.planning.model`), not on the execution path. Epic tasks are decomposed before execution, so each subtask routes independently.
 </Callout>
 
 ### Timeout Routing
@@ -229,7 +229,7 @@ Every task execution records an outcome in the `model_outcomes` SQLite table:
 Before each execution, `ShouldEscalate()` checks the last 10 outcomes for the current task type and model. If the failure rate exceeds the configured threshold (default 30%), Pilot escalates to the next model tier:
 
 ```
-claude-haiku-4-5 → claude-sonnet-4-6 → claude-opus-4-6
+claude-haiku-4-5 → claude-sonnet-5-5 → claude-opus-4-6
 ```
 
 Escalation is logged with the task type, original model, escalated model, and observed failure rate.
@@ -260,14 +260,14 @@ All routing is configured under the `executor` key in `~/.pilot/config.yaml`.
 ```yaml
 executor:
   model_routing:
-    enabled: true                  # false by default
+    enabled: true                  # true by default
     trivial: "claude-haiku-4-5"     # fastest, cheapest
-    simple: "claude-sonnet-4-6"    # near-Opus quality, 40% cheaper
-    medium: "claude-sonnet-4-6"
-    complex: "claude-sonnet-4-6"  # Opus is reserved for planning (see above)
+    simple: "claude-sonnet-5-5"    # near-Opus quality, 40% cheaper
+    medium: "claude-sonnet-5-5"
+    complex: "claude-sonnet-5-5"  # Opus is reserved for planning (see above)
 ```
 
-When `enabled: false` (default), all tasks use the backend's default model — no routing occurs.
+When `enabled: false`, all tasks use the backend's default model — no routing occurs.
 
 ### Timeout Configuration
 
@@ -321,9 +321,9 @@ executor:
   model_routing:
     enabled: true
     trivial: "claude-haiku-4-5"
-    simple: "claude-sonnet-4-6"
-    medium: "claude-sonnet-4-6"
-    complex: "claude-sonnet-4-6"  # Opus is reserved for planning (see above)
+    simple: "claude-sonnet-5-5"
+    medium: "claude-sonnet-5-5"
+    complex: "claude-sonnet-5-5"  # Opus is reserved for planning (see above)
     escalation:
       enabled: true
       threshold: 0.3
@@ -370,7 +370,7 @@ Issue arrives
            │ No
      ┌─────┴──────────────┐
      │ ModelRouter         │
-     │  .SelectModel()     │──→ "claude-haiku-4-5", "claude-sonnet-4-6", or "claude-opus-4-6"
+     │  .SelectModel()     │──→ "claude-haiku-4-5", "claude-sonnet-5-5", or "claude-opus-4-6"
      │  .SelectTimeout()   │──→ 5m / 10m / 30m / 60m
      │  .SelectEffort()    │──→ "low" / "medium" / "high" / "max"
      └──────────┬─────────┘
