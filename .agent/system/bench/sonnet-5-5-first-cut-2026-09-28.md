@@ -56,3 +56,7 @@ Reading: the win is mostly **fewer tokens per delivered line** (less exploration
 
 ## Re-cut
 Same aggregation (script in the 09-28/29 session: `executions` rows by `model_name` + PR additions) after a week; add failure rate, ci-fix loops and review verdicts, not just duration. `lines_added` will be native after the next train.
+
+## Tally 2026-09-29 (running count for the week-later re-cut)
+
+Twelve runs on `claude-sonnet-5-5` since the switch (GH-345, 191, 5477, 193, 195, 521 on 09-28; GH-5479, 347, 5481, 5484, 5485, 5486 on 09-29): 12/12 first-try green, zero ci-fix loops, 5–16 min per PR. Reviewer verdicts on the 09-29 six: 4× APPROVE-w-notes, 1× APPROVE, 1× REQUEST-CHANGES (PR#5487: tautological test + docs left inconsistent). Speed is real; the review step still catches acceptance gaps, so the cut compares defect rate after review, not merge rate. Founder verdict 09-29: "ships like a machine gun". Note the evidence gate never ran on any of these (mem-203), so PR bodies carry no self-verification for either model.
