@@ -2,28 +2,30 @@
 
 Box default model `claude-sonnet-5` → `claude-sonnet-5-5` since 2026-09-28 20:41Z. Source: `executions` on the box (`model_name`, `duration_ms`, `tokens_total`, `estimated_cost_usd`; `duration_ms` includes quality gates) + PR additions via `gh` (the `lines_added` column was empty until pilot#5477 shipped 09-28 22:55Z; rows after the next train will carry it natively).
 
-## Like-for-like table (same day, same four repos, same issue author, all `complex`; sorted by PR size)
+## Like-for-like table (same day, same four repos, same issue author, all `complex`; Sonnet 5 first, then Sonnet 5.5, each by PR size)
 
 | run | model | PR lines + | minutes | lines/min | tokens/line | $/100 lines |
 |---|---|---|---|---|---|---|
 | ui#179 | sonnet-5 | 20 | 3.6 | 6 | 379 | 2.35 |
 | console#344 | sonnet-5 | 46 | 4.0 | 12 | 180 | 1.61 |
-| **ui#194** | **sonnet-5-5** | 54 | 6.2 | **9** | **94** | **0.61** |
 | ui#185 | sonnet-5 | 74 | 6.9 | 11 | 184 | 0.99 |
 | console#332 | sonnet-5 | 118 | 6.4 | 18 | 104 | 0.44 |
 | console#340 | sonnet-5 | 134 | 6.6 | 20 | 166 | 0.84 |
-| **ui#196** | **sonnet-5-5** | 178 | 6.6 | **27** | **43** | **0.21** |
 | ui#190 | sonnet-5 | 208 | 12.1 | 17 | 196 | 1.10 |
-| **pilot#5478** | **sonnet-5-5** | 233 | 22.4 | **10** | **44** | **0.28** |
-| **auth#522** | **sonnet-5-5** | 256 | 6.3 | **41** | **49** | **0.21** |
 | ui#183 | sonnet-5 | 311 | 18.6 | 17 | 122 | 1.03 |
 | auth#517 | sonnet-5 | 371 | 14.4 | 26 | 75 | 0.88 |
 | console#337 | sonnet-5 | 537 | 14.7 | 37 | 80 | 0.40 |
 | ui#187 | sonnet-5 | 648 | 13.8 | 47 | 59 | 0.50 |
-| **console#346** | **sonnet-5-5** | 686 | 5.2 | **132** | **29** | **0.16** |
 | console#342 | sonnet-5 | 821 | 17.1 | 48 | 69 | 0.49 |
-| **ui#192** | **sonnet-5-5** | 986 | 6.4 | **154** | **24** | **0.11** |
 | auth#519 | sonnet-5 | 2185 | 44.2 | 49 | 55 | 0.47 |
+| *Sonnet 5 median (n=12)* | | | *12.9* | *18* | *113* | *0.86* |
+| **ui#194** | **sonnet-5-5** | 54 | 6.2 | 9 | 94 | 0.61 |
+| **ui#196** | **sonnet-5-5** | 178 | 6.6 | 27 | 43 | 0.21 |
+| **pilot#5478** | **sonnet-5-5** | 233 | 22.4 | 10 | 44 | 0.28 |
+| **auth#522** | **sonnet-5-5** | 256 | 6.3 | 41 | 49 | 0.21 |
+| **console#346** | **sonnet-5-5** | 686 | 5.2 | 132 | 29 | 0.16 |
+| **ui#192** | **sonnet-5-5** | 986 | 6.4 | 154 | 24 | 0.11 |
+| *Sonnet 5.5 median (n=6)* | | | *6.4* | *34* | *44* | *0.21* |
 
 pilot#5478 runs in the pilot repo whose Go suite dominates the gate time (22 min for 233 lines); tokens/line and $/line are unaffected by that. **Sonnet 5.5: 6 of 6 first-try green, 0 failed, 0 retries, 0 ci-fix loops.** Sonnet 5 since 09-14: 7 failed of 52 (13%).
 
