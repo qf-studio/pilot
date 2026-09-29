@@ -11,6 +11,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/transcription"
 	"github.com/spf13/cobra"
 )
@@ -397,7 +398,7 @@ func setupBriefs(reader *bufio.Reader, cfg *config.Config) error {
 	// Initialize config
 	if cfg.Orchestrator == nil {
 		cfg.Orchestrator = &config.OrchestratorConfig{
-			Model:         "claude-sonnet-4-6",
+			Model:         executor.DefaultSonnetModel,
 			MaxConcurrent: 2,
 		}
 	}

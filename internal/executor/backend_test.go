@@ -298,3 +298,15 @@ func TestDefaultModelRoutingConfig_TierValues(t *testing.T) {
 		t.Error("Enabled = false, want true")
 	}
 }
+
+// TestDefaultSonnetModel_Value pins the shared default Sonnet id and checks
+// that every executor default derived from it stays in sync.
+func TestDefaultSonnetModel_Value(t *testing.T) {
+	if DefaultSonnetModel != "claude-sonnet-5-5" {
+		t.Errorf("DefaultSonnetModel = %q, want %q", DefaultSonnetModel, "claude-sonnet-5-5")
+	}
+	cfg := DefaultBackendConfig()
+	if want := "anthropic/" + DefaultSonnetModel; cfg.OpenCode.Model != want {
+		t.Errorf("OpenCode.Model = %q, want %q", cfg.OpenCode.Model, want)
+	}
+}

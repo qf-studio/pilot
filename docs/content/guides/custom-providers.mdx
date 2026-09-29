@@ -78,7 +78,7 @@ All three fields live under the top-level `executor:` block.
 |-------|------|---------|-------------|
 | `api_base_url` | string | `""` (Anthropic) | Base URL of an Anthropic-compatible endpoint. Example: `https://api.z.ai/api/anthropic`. |
 | `api_auth_token` | string | `""` | Bearer token for the provider. Supports `${ENV_VAR}` expansion. |
-| `default_model` | string | `""` (use Pilot defaults) | Model name the provider recognises (e.g. `glm-4.6`, `openrouter/anthropic/claude-sonnet-4-6`). |
+| `default_model` | string | `""` (use Pilot defaults) | Model name the provider recognises (e.g. `glm-4.6`, `openrouter/anthropic/claude-sonnet-5-5`). |
 
 All three are optional. Leave empty for default Anthropic behavior — Pilot uses OAuth, `~/.claude/settings.json`, or `ANTHROPIC_API_KEY` as before.
 
@@ -115,7 +115,7 @@ The endpoint must expose the Anthropic Messages API shape. Known-good providers:
 | Provider | `api_base_url` | Notes |
 |----------|----------------|-------|
 | **Z.AI (GLM)** | `https://api.z.ai/api/anthropic` | GLM-4.6 / GLM-5.1. MAX subscription has no session caps. |
-| **OpenRouter (Anthropic-compat)** | `https://openrouter.ai/api/v1` | Prefix model names (e.g. `anthropic/claude-sonnet-4-6`). |
+| **OpenRouter (Anthropic-compat)** | `https://openrouter.ai/api/v1` | Prefix model names (e.g. `anthropic/claude-sonnet-5-5`). |
 | **LiteLLM proxy** | `http://your-proxy:4000` | Self-hosted gateway that translates to OpenAI / Bedrock / Gemini. |
 | **Anthropic (default)** | *(leave empty)* | First-party. |
 | **AWS Bedrock / Vertex** | *(use CC native env)* | Use `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1` instead. |
@@ -173,7 +173,7 @@ The token isn't being passed. Check:
 Providers use their own naming. Cross-check:
 
 - Z.AI: `glm-4.6`, `glm-5.1` — not `claude-*`.
-- OpenRouter: needs provider prefix — `anthropic/claude-sonnet-4-6`.
+- OpenRouter: needs provider prefix — `anthropic/claude-sonnet-5-5`.
 - LiteLLM: depends on your proxy's model mapping.
 
 ### Effort routing unexpectedly enabled or silent

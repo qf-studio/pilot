@@ -7,6 +7,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // onboardOptionalSetup handles the automation/optional features stage.
@@ -54,7 +55,7 @@ func onboardAutopilot(state *OnboardState) error {
 	// Initialize autopilot config if needed
 	if cfg.Orchestrator == nil {
 		cfg.Orchestrator = &config.OrchestratorConfig{
-			Model:         "claude-sonnet-4-6",
+			Model:         executor.DefaultSonnetModel,
 			MaxConcurrent: 2,
 		}
 	}
@@ -268,7 +269,7 @@ func onboardDailyBrief(state *OnboardState) error {
 	// Initialize daily brief config
 	if cfg.Orchestrator == nil {
 		cfg.Orchestrator = &config.OrchestratorConfig{
-			Model:         "claude-sonnet-4-6",
+			Model:         executor.DefaultSonnetModel,
 			MaxConcurrent: 2,
 		}
 	}

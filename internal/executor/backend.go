@@ -1070,7 +1070,7 @@ func DefaultBackendConfig() *BackendConfig {
 		},
 		OpenCode: &OpenCodeConfig{
 			ServerURL:       "http://127.0.0.1:4096",
-			Model:           "anthropic/claude-sonnet-4-6",
+			Model:           "anthropic/" + DefaultSonnetModel,
 			Provider:        "anthropic",
 			AutoStartServer: true,
 			ServerCommand:   "opencode serve",
@@ -1093,6 +1093,12 @@ func DefaultBackendConfig() *BackendConfig {
 	}
 }
 
+// DefaultSonnetModel is the single source of truth for the default Sonnet model
+// id. It feeds the model routing defaults, the OpenCode default (with an
+// "anthropic/" provider prefix), and the orchestrator default in
+// internal/config and the setup/onboard wizards.
+const DefaultSonnetModel = "claude-sonnet-5-5"
+
 // DefaultModelRoutingConfig returns default model routing configuration.
 // Model routing is enabled by default: Haiku for trivial tasks (speed) and
 // Sonnet 5.5 for simple, medium and complex tasks. Opus is planning-only
@@ -1107,10 +1113,10 @@ func DefaultModelRoutingConfig() *ModelRoutingConfig {
 	return &ModelRoutingConfig{
 		Enabled: true,
 		Trivial: "claude-haiku",
-		Simple:  "claude-sonnet-5-5",
-		Medium:  "claude-sonnet-5-5",
+		Simple:  DefaultSonnetModel,
+		Medium:  DefaultSonnetModel,
 		// GH-2432: Sonnet for "complex" too — Opus is reserved for planning only.
-		Complex: "claude-sonnet-5-5",
+		Complex: DefaultSonnetModel,
 	}
 }
 

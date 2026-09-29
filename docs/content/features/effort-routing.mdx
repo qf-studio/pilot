@@ -18,11 +18,11 @@ Effort routing selects the right Claude model and API effort level for each task
 | Tier | Complexity | Default Model | API Effort |
 |------|-----------|---------------|------------|
 | Trivial | Typos, log additions, renames | `claude-haiku` | `low` |
-| Simple / Medium | New fields, small fixes, features | `claude-sonnet-4-6` | `medium` |
-| Complex | Architecture changes, multi-file refactors | `claude-sonnet-4-6` | `high` |
+| Simple / Medium | New fields, small fixes, features | `claude-sonnet-5-5` | `medium` |
+| Complex | Architecture changes, multi-file refactors | `claude-sonnet-5-5` | `high` |
 
 <Callout type="warning">
-  Opus is reserved for **planning** (epic decomposition), not execution. The `complex` execution tier uses Sonnet 4.6 — see [GH-2432](https://github.com/qf-studio/pilot/issues/2432) for the reasoning.
+  Opus is reserved for **planning** (epic decomposition), not execution. The `complex` execution tier uses Sonnet 5.5 — see [GH-2432](https://github.com/qf-studio/pilot/issues/2432) for the reasoning.
 </Callout>
 
 ## How Classification Works
@@ -41,9 +41,9 @@ executor:
   model_routing:
     enabled: true          # default: true (GH-2807)
     trivial: "claude-haiku"
-    simple: "claude-sonnet-4-6"
-    medium: "claude-sonnet-4-6"
-    complex: "claude-sonnet-4-6"   # Opus reserved for planning
+    simple: "claude-sonnet-5-5"
+    medium: "claude-sonnet-5-5"
+    complex: "claude-sonnet-5-5"   # Opus reserved for planning
 
   effort_routing:
     enabled: true
@@ -66,7 +66,7 @@ To opt out of routing entirely and use a fixed model for all tasks:
 executor:
   model_routing:
     enabled: false
-  default_model: "claude-sonnet-4-6"
+  default_model: "claude-sonnet-5-5"
 ```
 
 ## Cost Telemetry

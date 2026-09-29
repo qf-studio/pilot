@@ -68,7 +68,7 @@ Code questions are answered against **bounded file retrieval** — the bot score
 If a question is **too broad** (e.g. "explain the whole repo"), retrieval surfaces too many candidates and the bot automatically **falls back to the executor**, which has full codebase tools and a longer budget. You don't have to choose the path — the bot decides.
 
 <Callout type="info">
-Grounded Q&A defaults to the bot's `model`. For higher-quality code answers, set `answer_model: "claude-sonnet-4-6"` — Sonnet handles reasoning-heavy questions better while greetings stay cheap on Haiku.
+Grounded Q&A defaults to the bot's `model`. For higher-quality code answers, set `answer_model: "claude-sonnet-5-5"` — Sonnet handles reasoning-heavy questions better while greetings stay cheap on Haiku.
 </Callout>
 
 ### 3. Conversational Issue Intake
@@ -94,7 +94,7 @@ Issue intake files to the repo configured under `adapters.github.repo`, **not** 
 bot:
   enabled: true                          # master switch for the fast conversational path
   model: "claude-haiku-4-5-20251001"     # chat / greeting model (fast, cheap)
-  answer_model: "claude-sonnet-4-6"      # grounded Q&A model; defaults to `model` when empty
+  answer_model: "claude-sonnet-5-5"      # grounded Q&A model; defaults to `model` when empty
   api_key: ${ANTHROPIC_API_KEY}          # optional — falls back to ANTHROPIC_API_KEY env var
   persona: ""                            # optional — prepended to the system prompt (Pilot's voice)
 
