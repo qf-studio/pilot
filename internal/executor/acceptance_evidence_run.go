@@ -462,7 +462,10 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 
 	var results []AcceptanceEvidenceResult
 	if len(task.AcceptanceCriteria) > 0 {
-		runner := shellAcceptanceCommandRunner{timeout: cfg.EffectiveCommandTimeout()}
+		var runner AcceptanceCommandRunner = shellAcceptanceCommandRunner{timeout: cfg.EffectiveCommandTimeout()}
+		if r.acceptanceRunner != nil {
+			runner = r.acceptanceRunner
+		}
 		results = RunAcceptanceEvidence(ctx, runner, workDir, task.AcceptanceCriteria, cfg.EffectiveAllowedCommands())
 	}
 

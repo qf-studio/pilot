@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/qf-studio/pilot/internal/acceptance"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/text"
 )
@@ -115,8 +116,6 @@ func filterLabels(labels []string) []string {
 
 // ExtractAcceptanceCriteria extracts acceptance criteria from issue body
 func ExtractAcceptanceCriteria(body string) []string {
-	var criteria []string
-
 	// Jira-style patterns (wiki markup)
 	jiraPatterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)h[23]\.\s*acceptance criteria\s*\n([\s\S]*?)(?:\nh[123]\.|\z)`),
@@ -127,42 +126,19 @@ func ExtractAcceptanceCriteria(body string) []string {
 	mdPatterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)###?\s*acceptance criteria\s*\n([\s\S]*?)(?:\n###?|\z)`),
 		regexp.MustCompile(`(?i)###?\s*criteria\s*\n([\s\S]*?)(?:\n###?|\z)`),
-		// House-style heading: exactly "Acceptance" (optional trailing colon),
-		// captured until the next heading of the same or higher level.
-		regexp.MustCompile(`(?im)^##[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,2}[ \t]|\z)`),
-		regexp.MustCompile(`(?im)^###[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,3}[ \t]|\z)`),
 	}
+	// House-style "## Acceptance" headings come from the shared extractor.
+	mdPatterns = append(mdPatterns, acceptance.MarkdownPatterns()[3:]...)
 
 	allPatterns := append(jiraPatterns, mdPatterns...)
-
-	for _, pattern := range allPatterns {
-		matches := pattern.FindStringSubmatch(body)
-		if len(matches) > 1 {
-			// Extract checkbox items (Jira uses [] or [x])
-			checkboxPattern := regexp.MustCompile(`[*-]\s*\[[ x]?\]\s*(.+)`)
-			items := checkboxPattern.FindAllStringSubmatch(matches[1], -1)
-			for _, item := range items {
-				if len(item) > 1 {
-					criteria = append(criteria, strings.TrimSpace(item[1]))
-				}
-			}
-
-			// Also extract plain list items
-			if len(criteria) == 0 {
-				listPattern := regexp.MustCompile(`[*-]\s+(.+)`)
-				items = listPattern.FindAllStringSubmatch(matches[1], -1)
-				for _, item := range items {
-					if len(item) > 1 {
-						criteria = append(criteria, strings.TrimSpace(item[1]))
-					}
-				}
-			}
-			break
-		}
-	}
-
-	return criteria
+	// Jira uses [] or [x] checkboxes and * or - bullets.
+	return acceptance.ExtractWith(body, allPatterns, jiraCheckboxItemRe, jiraListItemRe)
 }
+
+var (
+	jiraCheckboxItemRe = regexp.MustCompile(`[*-]\s*\[[ x]?\]\s*(.+)`)
+	jiraListItemRe     = regexp.MustCompile(`[*-]\s+(.+)`)
+)
 
 // BuildTaskPrompt creates a prompt for Claude Code from the task info
 func BuildTaskPrompt(task *TaskInfo) string {

@@ -6634,3 +6634,49 @@ func TestStalledIssueComment_NonAutoPreservedOmitsGuidance(t *testing.T) {
 		t.Errorf("expected no auto-preserve guidance for a non-auto-preserve reason, got: %s", comment)
 	}
 }
+
+// TestBuildTaskFromExecution_RecoversAcceptanceCriteria pins GH-5491: the
+// executions row carries no acceptance criteria, so buildTaskFromExecution
+// must re-extract them from the stored description (the issue body headings
+// survive in it). Before the fix the runner always saw an empty list.
+func TestBuildTaskFromExecution_RecoversAcceptanceCriteria(t *testing.T) {
+	tests := []struct {
+		name string
+		desc string
+		want []string
+	}{
+		{
+			name: "house-style Acceptance section with three bullets",
+			desc: "GitHub Issue GH-5491: title\n\n## Context\n\nsome text\n\n## Acceptance\n\n- first item\n- second item\n- third item\n\n## Refs\n\n- #1\n",
+			want: []string{"first item", "second item", "third item"},
+		},
+		{
+			name: "Acceptance Criteria checkbox section",
+			desc: "GitHub Issue GH-1: t\n\n## Acceptance Criteria\n\n- [ ] a\n- [x] b\n- [ ] c\n",
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "no acceptance section",
+			desc: "GitHub Issue GH-2: t\n\n## Context\n\n- just a bullet\n",
+			want: nil,
+		},
+		{
+			name: "empty description",
+			desc: "",
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := buildTaskFromExecution(&memory.Execution{ID: "e1", TaskID: "GH-1", TaskDescription: tt.desc})
+			if len(task.AcceptanceCriteria) != len(tt.want) {
+				t.Fatalf("AcceptanceCriteria = %v, want %v", task.AcceptanceCriteria, tt.want)
+			}
+			for i := range tt.want {
+				if task.AcceptanceCriteria[i] != tt.want[i] {
+					t.Errorf("criteria[%d] = %q, want %q", i, task.AcceptanceCriteria[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

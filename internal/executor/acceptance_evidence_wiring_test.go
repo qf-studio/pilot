@@ -1,12 +1,16 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // GH-5438: wiring pin for the PR-body evidence hook. GH-5437 (#5439) added
@@ -218,5 +222,41 @@ func f(r *Runner, useSDK bool) string {
 				t.Errorf("expected no failures, got: %v", failures)
 			}
 		})
+	}
+}
+
+// GH-5491: the dispatcher rebuilds every task from the persisted executions
+// row, which carries no acceptance criteria, so appendAcceptanceEvidence saw an
+// empty list on every production run. This pins the real path: execution row
+// -> buildTaskFromExecution -> appendAcceptanceEvidence, with a fake command
+// runner (no hand-built Task).
+func TestAcceptanceEvidenceWiring_ExecutionRowReachesEvidenceGate(t *testing.T) {
+	const cmd = "go version"
+	exec := &memory.Execution{
+		ID:     "22222222-2222-2222-2222-222222222222",
+		TaskID: "GH-5491",
+		TaskDescription: "GitHub Issue GH-5491: title\n\n## Context\n\nsomething\n\n## Acceptance\n\n" +
+			"- Paste the output of `" + cmd + "` into the PR body\n\n## Refs\n\n- GH-1\n",
+	}
+
+	task := buildTaskFromExecution(exec)
+
+	fake := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+		cmd: {output: "go version fake-output-marker\n"},
+	}}
+	r := NewRunner()
+	r.acceptanceRunner = fake
+
+	prBody := "## Summary\n\nsome PR body"
+	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody)
+
+	if !strings.Contains(got, "## Evidence") {
+		t.Fatalf("PR body has no Evidence section; the execution-row path dropped the criteria: %q", got)
+	}
+	if !strings.Contains(got, "fake-output-marker") {
+		t.Errorf("Evidence section missing command output: %q", got)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != cmd {
+		t.Errorf("fake runner calls = %v, want [%q]", fake.calls, cmd)
 	}
 }
