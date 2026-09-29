@@ -11,7 +11,7 @@ import (
 
 func TestDefaultBackendConfig_SonnetForComplex(t *testing.T) {
 	cfg := DefaultBackendConfig()
-	if got, want := cfg.ModelRouting.Complex, "claude-sonnet-4-6"; got != want {
+	if got, want := cfg.ModelRouting.Complex, "claude-sonnet-5-5"; got != want {
 		t.Errorf("ModelRouting.Complex = %q, want %q (GH-2432: Opus reserved for planning only)", got, want)
 	}
 }

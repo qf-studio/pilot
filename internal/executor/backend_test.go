@@ -267,3 +267,34 @@ func TestBackendConfigAPIAuthToken(t *testing.T) {
 		t.Errorf("APIAuthToken = %q, want %q", cfg.APIAuthToken, "zai-fake-token")
 	}
 }
+
+// TestDefaultModelRoutingConfig_TierValues pins the default model for every tier
+// and the enabled flag (GH-5481). Hosted tenants inherit these values.
+func TestDefaultModelRoutingConfig_TierValues(t *testing.T) {
+	cfg := DefaultModelRoutingConfig()
+	if cfg == nil {
+		t.Fatal("DefaultModelRoutingConfig returned nil")
+	}
+
+	tests := []struct {
+		tier string
+		got  string
+		want string
+	}{
+		{"trivial", cfg.Trivial, "claude-haiku"},
+		{"simple", cfg.Simple, "claude-sonnet-5-5"},
+		{"medium", cfg.Medium, "claude-sonnet-5-5"},
+		{"complex", cfg.Complex, "claude-sonnet-5-5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tier, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("%s model = %q, want %q", tt.tier, tt.got, tt.want)
+			}
+		})
+	}
+
+	if !cfg.Enabled {
+		t.Error("Enabled = false, want true")
+	}
+}

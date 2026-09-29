@@ -1094,9 +1094,9 @@ func DefaultBackendConfig() *BackendConfig {
 }
 
 // DefaultModelRoutingConfig returns default model routing configuration.
-// Model routing is disabled by default; when enabled, uses Haiku for trivial
-// tasks (speed), Sonnet 4.6 for simple/medium tasks (near-Opus quality at 40%
-// lower cost), and Opus 4.6 for complex tasks (highest capability).
+// Model routing is enabled by default: Haiku for trivial tasks (speed) and
+// Sonnet 5.5 for simple, medium and complex tasks. Opus is planning-only
+// (GH-2432) and is never selected by complexity routing.
 //
 // Complexity detection criteria:
 //   - Trivial: Single-file changes, typos, logging, renames
@@ -1107,10 +1107,10 @@ func DefaultModelRoutingConfig() *ModelRoutingConfig {
 	return &ModelRoutingConfig{
 		Enabled: true,
 		Trivial: "claude-haiku",
-		Simple:  "claude-sonnet-4-6",
-		Medium:  "claude-sonnet-4-6",
+		Simple:  "claude-sonnet-5-5",
+		Medium:  "claude-sonnet-5-5",
 		// GH-2432: Sonnet for "complex" too — Opus is reserved for planning only.
-		Complex: "claude-sonnet-4-6",
+		Complex: "claude-sonnet-5-5",
 	}
 }
 

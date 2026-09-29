@@ -624,9 +624,9 @@ executor:
   # model_routing:
   #   enabled: true
   #   trivial: "claude-haiku"           # Typos, renames ($1/$5 per MTok)
-  #   simple: "claude-sonnet-4-6"       # Small fixes, config ($3/$15 per MTok)
-  #   medium: "claude-sonnet-4-6"       # Features, endpoints ($3/$15 per MTok)
-  #   complex: "claude-opus-4-6"        # Refactors, migrations ($5/$25 per MTok)
+  #   simple: "claude-sonnet-5-5"       # Small fixes, config
+  #   medium: "claude-sonnet-5-5"       # Features, endpoints
+  #   complex: "claude-sonnet-5-5"      # Refactors, migrations (Opus is planning-only, GH-2432)
 
   # Smart retry (GH-920) - retry on transient errors with backoff
   # retry:
