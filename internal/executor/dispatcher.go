@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/acceptance"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -4051,6 +4052,13 @@ func dispatchTerminalStage(status string) (memory.Stage, bool) {
 // UUID (exec.ID) through Execute() so log/diagnostic/learning writes can join
 // against executions.id — task.ID (the human-readable "GH-123" label) is kept
 // as a separate field rather than replaced, since WS live-tail filters key on it.
+//
+// GH-5491: AcceptanceCriteria is re-extracted from exec.TaskDescription (the
+// "GitHub Issue GH-N: title" header plus the full issue body). It is set once
+// at dispatch in cmd/pilot/handlers.go but never persisted on the executions
+// row, so without this the runner always saw an empty list and the
+// acceptance-evidence gate and GH-920 prompt section never ran. No schema
+// change: the headings survive inside the stored description.
 func buildTaskFromExecution(exec *memory.Execution) *Task {
 	return &Task{
 		ID:            exec.TaskID,
@@ -4066,6 +4074,8 @@ func buildTaskFromExecution(exec *memory.Execution) *Task {
 		SourceIssueID: exec.TaskSourceIssueID,
 		Labels:        exec.TaskLabels,
 		IsCanary:      exec.IsCanary,
+
+		AcceptanceCriteria: acceptance.Extract(exec.TaskDescription),
 	}
 }
 

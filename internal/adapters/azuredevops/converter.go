@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/qf-studio/pilot/internal/acceptance"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/text"
 )
@@ -171,50 +172,18 @@ func extractTagNames(tags []string) []string {
 
 // ExtractAcceptanceCriteria extracts acceptance criteria from work item description
 func ExtractAcceptanceCriteria(body string) []string {
-	var criteria []string
-
 	// First strip HTML if present
 	body = stripHTML(body)
 
-	// Look for common acceptance criteria patterns
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)### acceptance criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
-		regexp.MustCompile(`(?i)### criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
-		regexp.MustCompile(`(?i)## acceptance criteria\s*\n([\s\S]*?)(?:\n##|\z)`),
-		// House-style heading: exactly "Acceptance" (optional trailing colon),
-		// captured until the next heading of the same or higher level.
-		regexp.MustCompile(`(?im)^##[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,2}[ \t]|\z)`),
-		regexp.MustCompile(`(?im)^###[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,3}[ \t]|\z)`),
-		regexp.MustCompile(`(?i)acceptance criteria:?\s*\n([\s\S]*?)(?:\n[A-Z]|\z)`),
-	}
-
-	for _, pattern := range patterns {
-		matches := pattern.FindStringSubmatch(body)
-		if len(matches) > 1 {
-			// Extract checkbox items
-			checkboxPattern := regexp.MustCompile(`- \[[ x]\] (.+)`)
-			items := checkboxPattern.FindAllStringSubmatch(matches[1], -1)
-			for _, item := range items {
-				if len(item) > 1 {
-					criteria = append(criteria, strings.TrimSpace(item[1]))
-				}
-			}
-			// Also extract plain list items
-			if len(criteria) == 0 {
-				listPattern := regexp.MustCompile(`- (.+)`)
-				items = listPattern.FindAllStringSubmatch(matches[1], -1)
-				for _, item := range items {
-					if len(item) > 1 {
-						criteria = append(criteria, strings.TrimSpace(item[1]))
-					}
-				}
-			}
-			break
-		}
-	}
-
-	return criteria
+	patterns := append(acceptance.MarkdownPatterns(),
+		regexp.MustCompile(`(?i)acceptance criteria:?\s*\n([\s\S]*?)(?:\n[A-Z]|\z)`))
+	return acceptance.ExtractWith(body, patterns, azureCheckboxItemRe, azureListItemRe)
 }
+
+var (
+	azureCheckboxItemRe = regexp.MustCompile(`- \[[ x]\] (.+)`)
+	azureListItemRe     = regexp.MustCompile(`- (.+)`)
+)
 
 // BuildTaskPrompt creates a prompt for Claude Code from the task info
 func BuildTaskPrompt(task *TaskInfo) string {

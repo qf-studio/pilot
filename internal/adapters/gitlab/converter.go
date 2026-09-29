@@ -3,9 +3,9 @@ package gitlab
 import (
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 
+	"github.com/qf-studio/pilot/internal/acceptance"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/text"
 )
@@ -141,47 +141,10 @@ func extractLabelNames(labels []string) []string {
 	return names
 }
 
-// ExtractAcceptanceCriteria extracts acceptance criteria from issue body
+// ExtractAcceptanceCriteria extracts acceptance criteria from issue body.
+// The extractor lives in internal/acceptance so the executor can share it.
 func ExtractAcceptanceCriteria(body string) []string {
-	var criteria []string
-
-	// Look for common acceptance criteria patterns
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)### acceptance criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
-		regexp.MustCompile(`(?i)### criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
-		regexp.MustCompile(`(?i)## acceptance criteria\s*\n([\s\S]*?)(?:\n##|\z)`),
-		// House-style heading: exactly "Acceptance" (optional trailing colon),
-		// captured until the next heading of the same or higher level.
-		regexp.MustCompile(`(?im)^##[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,2}[ \t]|\z)`),
-		regexp.MustCompile(`(?im)^###[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,3}[ \t]|\z)`),
-	}
-
-	for _, pattern := range patterns {
-		matches := pattern.FindStringSubmatch(body)
-		if len(matches) > 1 {
-			// Extract checkbox items (GitLab uses same format)
-			checkboxPattern := regexp.MustCompile(`- \[[ x]\] (.+)`)
-			items := checkboxPattern.FindAllStringSubmatch(matches[1], -1)
-			for _, item := range items {
-				if len(item) > 1 {
-					criteria = append(criteria, strings.TrimSpace(item[1]))
-				}
-			}
-			// Also extract plain list items
-			if len(criteria) == 0 {
-				listPattern := regexp.MustCompile(`- (.+)`)
-				items = listPattern.FindAllStringSubmatch(matches[1], -1)
-				for _, item := range items {
-					if len(item) > 1 {
-						criteria = append(criteria, strings.TrimSpace(item[1]))
-					}
-				}
-			}
-			break
-		}
-	}
-
-	return criteria
+	return acceptance.Extract(body)
 }
 
 // BuildTaskPrompt creates a prompt for Claude Code from the task info

@@ -1232,6 +1232,9 @@ type Runner struct {
 	// tests can supply fake evidence without shelling out to the real
 	// `claude` CLI. nil uses the real getContractEvidence implementation.
 	contractEvidenceFetchFn func(ctx context.Context, dir string, fields []string) ([]ContractEvidence, error)
+	// acceptanceRunner overrides the shell runner for acceptance-evidence
+	// commands. nil in production; tests inject a fake command runner.
+	acceptanceRunner AcceptanceCommandRunner
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
