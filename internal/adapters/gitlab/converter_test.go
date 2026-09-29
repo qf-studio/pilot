@@ -433,3 +433,28 @@ func TestASCIISmuggling_GitLabConvertStripsInvisible(t *testing.T) {
 		t.Errorf("GitLab Title visible content mangled: got %q, want %q", task.Title, "Fix typo")
 	}
 }
+
+func TestExtractAcceptanceCriteria_HouseStyleAcceptanceHeading(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"## Acceptance", "## Context\n\ntext\n\n## Acceptance\n\n- one\n- two\n\n## Refs\n\n- GH-1\n", []string{"one", "two"}},
+		{"### Acceptance", "### Acceptance:\n\n- one\n- two\n\n### Notes\n\n- no\n", []string{"one", "two"}},
+		{"different heading text", "## Acceptance tests\n\n- one\n- two\n", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractAcceptanceCriteria(tt.body)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("item %d: got %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

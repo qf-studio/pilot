@@ -127,6 +127,10 @@ func ExtractAcceptanceCriteria(body string) []string {
 	mdPatterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)###?\s*acceptance criteria\s*\n([\s\S]*?)(?:\n###?|\z)`),
 		regexp.MustCompile(`(?i)###?\s*criteria\s*\n([\s\S]*?)(?:\n###?|\z)`),
+		// House-style heading: exactly "Acceptance" (optional trailing colon),
+		// captured until the next heading of the same or higher level.
+		regexp.MustCompile(`(?im)^##[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,2}[ \t]|\z)`),
+		regexp.MustCompile(`(?im)^###[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,3}[ \t]|\z)`),
 	}
 
 	allPatterns := append(jiraPatterns, mdPatterns...)

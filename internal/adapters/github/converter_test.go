@@ -150,6 +150,76 @@ Some notes here.`,
 			want: []string{"First item", "Second item"},
 		},
 		{
+			name: "house-style ## Acceptance with five plain bullets",
+			body: `## Context
+
+Something is broken.
+
+## Acceptance
+
+- one
+- two
+- three
+- four
+- five
+`,
+			want: []string{"one", "two", "three", "four", "five"},
+		},
+		{
+			name: "## Acceptance Criteria still works",
+			body: `## Acceptance Criteria
+
+- [ ] alpha
+- [ ] beta
+`,
+			want: []string{"alpha", "beta"},
+		},
+		{
+			name: "### Acceptance works",
+			body: `## Change
+
+text
+
+### Acceptance
+
+- [ ] gamma
+- [x] delta
+
+### Notes
+
+- not a criterion
+`,
+			want: []string{"gamma", "delta"},
+		},
+		{
+			name: "## Acceptance with trailing colon and mixed case",
+			body: "## ACCEPTANCE:\n\n- one\n- two\n",
+			want: []string{"one", "two"},
+		},
+		{
+			name: "## Acceptance tests is a different heading",
+			body: `## Acceptance tests
+
+- should not be captured
+- nor this
+`,
+			want: nil,
+		},
+		{
+			name: "## Acceptance followed by ## Refs captures only Acceptance bullets",
+			body: `## Acceptance
+
+- first
+- second
+
+## Refs
+
+- GH-1
+- GH-2
+`,
+			want: []string{"first", "second"},
+		},
+		{
 			name: "no acceptance criteria",
 			body: "Just a simple description without criteria.",
 			want: nil,

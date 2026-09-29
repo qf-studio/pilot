@@ -181,6 +181,10 @@ func ExtractAcceptanceCriteria(body string) []string {
 		regexp.MustCompile(`(?i)### acceptance criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
 		regexp.MustCompile(`(?i)### criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
 		regexp.MustCompile(`(?i)## acceptance criteria\s*\n([\s\S]*?)(?:\n##|\z)`),
+		// House-style heading: exactly "Acceptance" (optional trailing colon),
+		// captured until the next heading of the same or higher level.
+		regexp.MustCompile(`(?im)^##[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,2}[ \t]|\z)`),
+		regexp.MustCompile(`(?im)^###[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,3}[ \t]|\z)`),
 		regexp.MustCompile(`(?i)acceptance criteria:?\s*\n([\s\S]*?)(?:\n[A-Z]|\z)`),
 	}
 
