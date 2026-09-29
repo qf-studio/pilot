@@ -87,7 +87,7 @@ cost-does-not-scale argument was made explicit.
 
 ## Model policy
 
-**Default: `claude-sonnet-5` for every complexity tier. Changeable by the
+**Default: `claude-sonnet-5-5` for every non-trivial complexity tier (raised from `claude-sonnet-5` on 2026-09-29 after six first-try-green runs on the founder box at ~3-4x lower cost per line; bench note `system/bench/sonnet-5-5-first-cut-2026-09-28.md`). Changeable by the
 customer in settings.**
 
 Sonnet 5 is what our own box has run for all 8,046 routed executions in the
@@ -95,9 +95,13 @@ measured window, and it works well across trivial through complex work.
 
 Two things make this a decision rather than a description of today:
 
-1. **The shipped daemon default is not Sonnet everywhere.** Its routing table
-   sends trivial to Haiku, simple and medium to Sonnet, and **complex to
-   Opus**. A provisioned tenant inherits that unless we pin it.
+1. **The shipped daemon default is a stale Sonnet.** Verified 2026-09-29
+   against `internal/executor/backend.go`: routing is enabled by default and
+   sends trivial to Haiku and simple, medium **and complex to
+   `claude-sonnet-4-6`** (GH-2432 reserved Opus for planning only; the earlier
+   claim here that complex goes to Opus was wrong, it came from the stale doc
+   comment). A provisioned tenant inherits that unless we pin it, so today a
+   tenant would run two Sonnet generations behind the founder box.
 2. **The console renders no model configuration at all.** The tenant config it
    generates carries org, environment, gateway port, repos and trackers, and
    nothing else. There is no switch today, and no way for a customer to choose.
