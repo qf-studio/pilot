@@ -1,32 +1,44 @@
-# Sonnet 5.5 on the box — first cut (2026-09-28, n=2)
+# Sonnet 5.5 on the box — running cut (updated 2026-09-29, n=6)
 
-Box default model switched `claude-sonnet-5` → `claude-sonnet-5-5` at 20:41Z (config edit + restart). Source: `executions` table on the box (`model_name`, `duration_ms`, `tokens_total`, `estimated_cost_usd`) + PR additions via `gh`. Same day, same three repos, same issue author, all `complex`.
+Box default model `claude-sonnet-5` → `claude-sonnet-5-5` since 2026-09-28 20:41Z. Source: `executions` on the box (`model_name`, `duration_ms`, `tokens_total`, `estimated_cost_usd`; `duration_ms` includes quality gates) + PR additions via `gh` (the `lines_added` column was empty until pilot#5477 shipped 09-28 22:55Z; rows after the next train will carry it natively).
 
-## Like-for-like (same-day Sonnet 5 PRs over 500 lines vs the two Sonnet 5.5 runs)
+## All Sonnet 5.5 runs so far
 
-| run | model | PR lines + | minutes | lines/min | tokens/line | $/100 lines |
-|---|---|---|---|---|---|---|
-| GH-335 console#337 | sonnet-5 | 537 | 14.7 | 37 | 80 | 0.40 |
-| GH-186 ui#187 | sonnet-5 | 648 | 13.8 | 47 | 59 | 0.50 |
-| GH-341 console#342 | sonnet-5 | 821 | 17.1 | 48 | 69 | 0.49 |
-| GH-518 auth#519 | sonnet-5 | 2185 | 44.2 | 49 | 55 | 0.47 |
-| **GH-345 console#346** | **sonnet-5-5** | 686 | 5.2 | **132** | **29** | **0.16** |
-| **GH-191 ui#192** | **sonnet-5-5** | 986 | 6.4 | **154** | **24** | **0.11** |
+| run | repo | PR lines + | minutes | lines/min | tokens/line | $/100 lines | outcome |
+|---|---|---|---|---|---|---|---|
+| GH-345 console#346 | pilot-console | 686 | 5.2 | 132 | 29 | 0.16 | first-try green, APPROVE-w-notes |
+| GH-191 ui#192 | pilot-console-ui | 986 | 6.4 | 154 | 24 | 0.11 | first-try green, APPROVE-w-notes |
+| GH-5477 pilot#5478 | pilot | 233 | 22.4 | 10 | 44 | 0.28 | first-try green, APPROVE-w-notes (pilot repo: heavy Go suite dominates wall clock; classified `epic`) |
+| GH-193 ui#194 | pilot-console-ui | 54 | 6.2 | 9 | 94 | 0.61 | first-try green, APPROVE-w-notes |
+| GH-195 ui#196 | pilot-console-ui | 178 | 6.6 | 27 | 43 | 0.21 | first-try green, APPROVE-w-notes |
+| GH-521 auth#522 | auth-service | 256 | 6.3 | 41 | 49 | 0.21 | first-try green, APPROVE-w-notes |
 
-- Wall-clock per line of diff: **~3× faster** (≈47 → ≈140 lines/min).
-- Token throughput: 3.8k tok/min vs Sonnet 5 median 2.4k (complex, 3 repos, since 09-14, n=33) — 1.6×. The rest of the speedup is fewer tokens per line (≈2.4× fewer), i.e. less exploration/retry churn, not just faster output.
-- Cost per 100 lines: **~3–4× cheaper** ($0.47 → $0.13).
-- Quality: both first-try CI green, both reviewed APPROVE-w-notes, no ci-fix loops, no retries. Sonnet 5 the same day: 1 of 4 big PRs needed a revision issue (#520).
+**6 of 6 completed, 0 failed, 0 retries, 0 ci-fix loops.** Sonnet 5 since 09-14: 7 failed of 52 (13%).
 
-## September baseline (Sonnet 5, completed, non-canary, since 09-01, n=168)
-median 15.0 min · mean 19.8 · p90 32.7 · median 31.5k tokens · median $2.13 · failed 13 / 174 completed (7%).
-Sonnet 5.5 (n=2): 5.8 min · 22k tokens · $1.11.
+## Like-for-like by PR size (same four repos, same issue author, all `complex`)
+
+Wall-clock has a 4–6 min floor (worktree, gates, PR) whichever model, so lines/min only separates the models once the PR is big enough. Sonnet 5 figures are same-day (09-28) runs; tokens/line uses all 15 same-day Sonnet 5 PRs.
+
+| PR size | Sonnet 5 lines/min (median) | Sonnet 5.5 lines/min | speedup |
+|---|---|---|---|
+| under 100 lines | 9 (n=6) | 9 (n=1) | none — overhead-bound |
+| 100–400 lines | 18 (n=5) | 27 (n=3; 41 excluding the pilot-repo run) | ~1.5–2× |
+| over 500 lines | 47 (n=4) | 143 (n=2) | ~3× |
+
+| metric | Sonnet 5 | Sonnet 5.5 | ratio |
+|---|---|---|---|
+| tokens per line of diff (median) | ~136 | ~44 | 3× fewer |
+| $ per 100 lines (median) | ~0.90 | ~0.21 | ~4× cheaper |
+| token throughput, complex runs (median) | 2.1k tok/min (n=44) | 3.8k tok/min | 1.8× |
+| duration, complex runs (median) | 11.7 min (n=44) | 6.3 min (n=6) | 1.9× (mix differs) |
+
+Reading: the win is mostly **fewer tokens per delivered line** (less exploration and retry churn), with a smaller raw-throughput gain on top. On small fixes the fixed pipeline cost hides it; on feature-sized PRs it is a clear 3×.
 
 ## Caveats
-- n=2. Both tasks had unusually precise specs (verified ground-truth line refs). Do not generalise before ~20 runs.
-- `lines_added` in `executions` is 0 for every row — the column is not populated; PR additions were fetched from GitHub instead. Candidate fix.
-- Effort classifier hit a 429 on the direct API on the first 5.5 run, fell back to subprocess (7 s). Not model-related.
-- Complexity classifier said `medium` for GH-345, execution recorded `complex` (workflow override). Unexplained.
+- n=6, all with unusually precise specs (verified ground-truth line refs). Reassess at ~20 runs.
+- Two GH-5477 quirks, not model-related: classified `epic` for a single-file fix, and the pilot repo's own test suite makes its wall clock incomparable.
+- Effort classifier hit one 429 on the direct API (first run) and fell back to subprocess in 7 s.
+- The 09-28 first cut (n=2) is superseded by this table; numbers there stand.
 
 ## Re-cut
-Re-run the same aggregation (script in the 09-28 session: tokens/min + PR additions) after a week on 5.5; compare failure rate and ci-fix loop count, not just duration.
+Same aggregation (script in the 09-28/29 session: `executions` rows by `model_name` + PR additions) after a week; add failure rate, ci-fix loops and review verdicts, not just duration. `lines_added` will be native after the next train.
