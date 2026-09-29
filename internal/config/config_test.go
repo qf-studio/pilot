@@ -75,8 +75,11 @@ func TestDefaultConfig(t *testing.T) {
 		if config.Orchestrator == nil {
 			t.Fatal("Orchestrator config is nil")
 		}
-		if config.Orchestrator.Model != executor.DefaultSonnetModel {
-			t.Errorf("Orchestrator.Model = %q, want %q", config.Orchestrator.Model, executor.DefaultSonnetModel)
+		// Literal on purpose: comparing against executor.DefaultSonnetModel would stay
+		// green for any constant value. Changing the default must be a deliberate edit
+		// here and in TestDefaultSonnetModel_Value (internal/executor/backend_test.go).
+		if config.Orchestrator.Model != "claude-sonnet-5-5" {
+			t.Errorf("Orchestrator.Model = %q, want %q", config.Orchestrator.Model, "claude-sonnet-5-5")
 		}
 		if config.Orchestrator.MaxConcurrent != 2 {
 			t.Errorf("Orchestrator.MaxConcurrent = %d, want %d", config.Orchestrator.MaxConcurrent, 2)

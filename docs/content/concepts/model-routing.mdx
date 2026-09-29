@@ -142,12 +142,12 @@ See [Configuration → Executor](/getting-started/configuration#executor) for th
 
 Maps complexity to the AI model used for execution.
 
-| Complexity | Default Model | Pricing (input/output) | Rationale |
-|------------|---------------|------------------------|-----------|
-| Trivial | `claude-haiku-4-5` | $0.80 / $4 per 1M tokens | Speed over depth — mechanical changes don't need reasoning |
-| Simple | `claude-sonnet-5-5` | $3 / $15 per 1M tokens | Near-Opus quality at 40% lower cost |
-| Medium | `claude-sonnet-5-5` | $3 / $15 per 1M tokens | Standard feature work, near-Opus quality |
-| Complex | `claude-sonnet-5-5` | $3 / $15 per 1M tokens | Sonnet handles architectural work; Opus is reserved for the planning pass (GH-2432) |
+| Complexity | Default Model | Rationale |
+|------------|---------------|-----------|
+| Trivial | `claude-haiku-4-5` | Speed over depth — mechanical changes don't need reasoning |
+| Simple | `claude-sonnet-5-5` | Fast, cheap, and strong on focused implementation work |
+| Medium | `claude-sonnet-5-5` | Standard feature work, near-Opus quality |
+| Complex | `claude-sonnet-5-5` | Sonnet handles architectural work; Opus is reserved for the planning pass (GH-2432) |
 
 <Callout type="info">
 Sonnet 5.5 is the default across simple, medium, *and* complex execution tiers. Opus is invoked once per epic during the planning pass (`executor.planning.model`), not on the execution path. Epic tasks are decomposed before execution, so each subtask routes independently.
@@ -262,7 +262,7 @@ executor:
   model_routing:
     enabled: true                  # true by default
     trivial: "claude-haiku-4-5"     # fastest, cheapest
-    simple: "claude-sonnet-5-5"    # near-Opus quality, 40% cheaper
+    simple: "claude-sonnet-5-5"    # default Sonnet
     medium: "claude-sonnet-5-5"
     complex: "claude-sonnet-5-5"  # Opus is reserved for planning (see above)
 ```

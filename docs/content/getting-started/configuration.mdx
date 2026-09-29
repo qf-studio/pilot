@@ -259,11 +259,11 @@ executor:
     planning_timeout: 2m                  # max time for epic planning before fallback to direct mode
 
   model_routing:
-    enabled: false
+    enabled: true
     trivial: "claude-haiku"
     simple: "claude-sonnet-5-5"
     medium: "claude-sonnet-5-5"
-    complex: "claude-opus-4-6"
+    complex: "claude-sonnet-5-5"       # Opus is reserved for planning
 
   effort_routing:
     enabled: false
@@ -302,11 +302,11 @@ executor:
 | `claude_code.planning_timeout` | duration | `2m` | Maximum time for epic planning before fallback to direct execution. Affects Slack `/plan` and Telegram planning commands. |
 | `qwen_code.command` | string | `"qwen"` | Path to the Qwen Code CLI binary |
 | `qwen_code.use_session_resume` | bool | `false` | Reuse sessions for self-review |
-| `model_routing.enabled` | bool | `false` | Route tasks to different models by complexity |
+| `model_routing.enabled` | bool | `true` | Route tasks to different models by complexity |
 | `model_routing.trivial` | string | `"claude-haiku"` | Model for trivial tasks |
 | `model_routing.simple` | string | `"claude-sonnet-5-5"` | Model for simple tasks |
 | `model_routing.medium` | string | `"claude-sonnet-5-5"` | Model for medium tasks |
-| `model_routing.complex` | string | `"claude-opus-4-6"` | Model for complex tasks |
+| `model_routing.complex` | string | `"claude-sonnet-5-5"` | Model for complex tasks |
 | `effort_routing.enabled` | bool | `false` | Route thinking effort by complexity |
 | `effort_routing.trivial` | string | `"low"` | Effort for trivial tasks |
 | `effort_routing.simple` | string | `"medium"` | Effort for simple tasks |
@@ -1897,7 +1897,7 @@ executor:
     trivial: "claude-haiku"
     simple: "claude-sonnet-5-5"
     medium: "claude-sonnet-5-5"
-    complex: "claude-opus-4-6"
+    complex: "claude-sonnet-5-5"
   timeout:
     default: "30m"
     complex: "60m"
