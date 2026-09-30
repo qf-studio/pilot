@@ -742,6 +742,13 @@ executor:
   #   # logged. Default: empty (no exceptions).
   #   env_passthrough:
   #     - MY_REPO_API_KEY
+  #   # result_exit_grace (GH-5530): how long to wait for the subprocess to exit
+  #   # after a successful `result` event. An orphaned Bash tool shell can keep
+  #   # the process alive after the model reported completion; when the grace
+  #   # expires the process group is killed and the run completes as a success
+  #   # (counter pilot_executor_result_exit_grace_kills_total). Default: 30s;
+  #   # negative disables.
+  #   result_exit_grace: 30s
 
   # Claude Code hooks (executor.hooks) - inline quality gates during execution
   # (Stop/PreToolUse/PostToolUse), distinct from the after-the-fact `quality:`

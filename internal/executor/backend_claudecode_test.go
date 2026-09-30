@@ -2176,3 +2176,133 @@ exit 1
 		t.Errorf("StdoutTail is %d bytes, expected it to stay close to the %d-byte cap", len(result.StdoutTail), MaxStdoutTailBufferBytes)
 	}
 }
+
+// resultExitGraceScript writes a fake `claude` that emits a success result
+// event and then runs tail. pidFile receives the script's own PID.
+func resultExitGraceScript(t *testing.T, dir, tail string) (script, pidFile string) {
+	t.Helper()
+	script = dir + "/fake-claude"
+	pidFile = dir + "/pid"
+	body := `#!/bin/sh
+echo $$ > ` + pidFile + `
+echo '{"type":"result","subtype":"success","is_error":false,"result":"all done"}'
+` + tail + "\n"
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	return script, pidFile
+}
+
+// TestResultExitGrace_KillsOrphanedProcessAfterSuccessResult covers GH-5530: a
+// success result followed by a process that never exits (an orphaned tool
+// shell holding the pipes) must complete as success with the parsed result
+// once the grace expires, with the process group killed.
+func TestResultExitGrace_KillsOrphanedProcessAfterSuccessResult(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("fake-CLI test relies on shell scripts and /proc; linux only")
+	}
+	tmpDir := t.TempDir()
+	// A backgrounded child inherits the pipes, like the orphaned `bash -c`.
+	script, pidFile := resultExitGraceScript(t, tmpDir, "sleep 120 &\nwait")
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script, ResultExitGrace: 300 * time.Millisecond})
+	before := ResultExitGraceKillsTotal()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	res, err := backend.Execute(ctx, ExecuteOptions{
+		Prompt:       "hello",
+		ProjectPath:  tmpDir,
+		TaskID:       "GH-5530",
+		EventHandler: func(BackendEvent) {},
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want success (elapsed %v)", err, elapsed)
+	}
+	if res == nil || !res.Success || res.Output != "all done" {
+		t.Fatalf("result = %+v, want Success with Output %q", res, "all done")
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("finalized after %v; grace kill should land well under 10s", elapsed)
+	}
+	if got := ResultExitGraceKillsTotal() - before; got != 1 {
+		t.Errorf("kills counter delta = %d, want 1", got)
+	}
+
+	data, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatalf("read pid: %v", readErr)
+	}
+	if _, statErr := os.Stat("/proc/" + strings.TrimSpace(string(data))); statErr == nil {
+		t.Errorf("process %s still alive after grace kill", strings.TrimSpace(string(data)))
+	}
+}
+
+// TestResultExitGrace_ExitInsideWindowIsNotKilled: a process that exits on its
+// own within the grace window is left alone — no kill, no counter bump.
+func TestResultExitGrace_ExitInsideWindowIsNotKilled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+	tmpDir := t.TempDir()
+	script, _ := resultExitGraceScript(t, tmpDir, "sleep 0.2\nexit 0")
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script, ResultExitGrace: 10 * time.Second})
+	before := ResultExitGraceKillsTotal()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	res, err := backend.Execute(ctx, ExecuteOptions{
+		Prompt:       "hello",
+		ProjectPath:  tmpDir,
+		EventHandler: func(BackendEvent) {},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !res.Success || res.Output != "all done" {
+		t.Fatalf("result = %+v, want Success with Output %q", res, "all done")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("run took %v; it should exit on its own in ~0.2s", time.Since(start))
+	}
+	if got := ResultExitGraceKillsTotal() - before; got != 0 {
+		t.Errorf("kills counter delta = %d, want 0", got)
+	}
+}
+
+func TestClaudeCodeConfig_ResultExitGraceResolution(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *ClaudeCodeConfig
+		want time.Duration
+	}{
+		{"nil config", nil, DefaultResultExitGrace},
+		{"unset", &ClaudeCodeConfig{}, DefaultResultExitGrace},
+		{"explicit", &ClaudeCodeConfig{ResultExitGrace: 5 * time.Second}, 5 * time.Second},
+		{"negative disables", &ClaudeCodeConfig{ResultExitGrace: -1}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.resultExitGrace(); got != tt.want {
+				t.Errorf("resultExitGrace() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatSurvivorCmdline(t *testing.T) {
+	raw := []byte("bash\x00-c\x00until pgrep -f \"go test\"; do sleep 1; done\x00")
+	got := formatSurvivorCmdline(raw)
+	if want := `bash -c until pgrep -f "go test"; do sleep 1; done`; got != want {
+		t.Errorf("formatSurvivorCmdline() = %q, want %q", got, want)
+	}
+	long := formatSurvivorCmdline([]byte(strings.Repeat("a", 1000)))
+	if len(long) != maxSurvivorCmdlineCh+3 {
+		t.Errorf("long cmdline len = %d, want %d", len(long), maxSurvivorCmdlineCh+3)
+	}
+}
