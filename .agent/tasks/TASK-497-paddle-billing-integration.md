@@ -71,7 +71,7 @@ Digests with verbatim quotes + URLs live in `.agent/research/paddle-billing-docs
 | UI 402 → redirect to `{url}` | yes | yes | none |
 | UI `/billing/checkout` route | — | loads Paddle.js, opens overlay for `_ptxn` | new |
 | UI settings-billing | chip only | chip (`past_due` label → "payment failed" + grace notice) + Subscribe / Manage / Update card + post-checkout polling | label + new actions |
-| Env `PILOT_CONSOLE_BILLING_*` | STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET, CANCEL_URL | PADDLE_ENVIRONMENT, PADDLE_API_KEY, PADDLE_WEBHOOK_SECRET, PADDLE_CLIENT_TOKEN, ENFORCE_ENABLED, WEBHOOK_TOLERANCE | renamed/added; CHECKOUT_ENABLED, PRICE_ID, SUCCESS_URL kept |
+| Env `PILOT_CONSOLE_BILLING_*` | STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET, CANCEL_URL | PADDLE_ENVIRONMENT, PADDLE_API_KEY, PADDLE_WEBHOOK_SECRET, PADDLE_CLIENT_TOKEN, ENFORCE_ENABLED, WEBHOOK_TOLERANCE | renamed/added; CHECKOUT_ENABLED, PRICE_ID kept (SUCCESS_URL never existed; derived in code) |
 | `go.mod` | stripe-go v81 | paddle-go-sdk v5 | swap |
 
 ---
@@ -133,7 +133,7 @@ Destination subscribes to: all `subscription.*` + `transaction.completed` + `tra
 | `PILOT_CONSOLE_BILLING_PADDLE_WEBHOOK_SECRET` | flag on | `pdl_ntfset_…`; accepts a comma-separated pair during rotation |
 | `PILOT_CONSOLE_BILLING_PADDLE_CLIENT_TOKEN` | flag on | public-safe; served by `GET /api/v1/billing/config`; must match environment (`test_` / `live_`) |
 | `PILOT_CONSOLE_BILLING_PRICE_ID` | flag on | kept; `pri_…` |
-| `PILOT_CONSOLE_BILLING_SUCCESS_URL` | flag on | kept; `https://<console>/settings/billing?checkout=success` |
+| ~~`PILOT_CONSOLE_BILLING_SUCCESS_URL`~~ | — | **removed 2026-09-30: the binary reads no such env; success URL is derived in code from the request origin** |
 | `PILOT_CONSOLE_BILLING_WEBHOOK_TOLERANCE` | optional | default `5m` |
 | `PILOT_CONSOLE_BILLING_PAST_DUE_GRACE` | optional | default `72h`; served as `past_due_grace_hours` on `GET /api/v1/billing/config` (L5) |
 | `PILOT_CONSOLE_BILLING_WEBHOOK_IP_ALLOWLIST` | optional | default `false`; enforce Paddle's published egress IPs from `GET /ips` (D2 step 0) |
