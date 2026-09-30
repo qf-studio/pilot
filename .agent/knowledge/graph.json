@@ -7114,6 +7114,13 @@
         ],
         "created": "2026-09-30",
         "last_validated": "2026-09-30"
+      },
+      "file-pilot-issues-via-nav-pilot-skill-only": {
+        "type": "learning",
+        "summary": "Founder instruction 2026-09-30 \u2014 every Pilot issue is filed through the nav-pilot skill from a Navigator task doc (nav-task authors .agent/tasks/TASK-N-slug.md with H2 Context/Implementation/Acceptance; nav-pilot dispatches it with the H1 as title and the doc as --body-file, records the URL under Refs). Never raw gh issue create with an inline or /tmp body.",
+        "file": ".agent/knowledge/memories/learnings/file-pilot-issues-via-nav-pilot-skill-only.md",
+        "created": "2026-09-30",
+        "last_validated": "2026-09-30"
       }
     }
   },
