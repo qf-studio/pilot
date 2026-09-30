@@ -144,6 +144,7 @@ Disable via config: `executor.navigator.auto_init: false`
 | `.agent/system/FEATURE-MATRIX.md` | What's implemented vs not |
 | `.agent/system/ARCHITECTURE.md` | System design, data flow |
 | `.agent/system/PR-CHECKLIST.md` | Before merging PRs in `--env=prod` mode |
+| `.agent/system/jev-gates-roadmap.md` | Before adding a Jev/TypeSafe classifier to any gate: triage rule, UPGRADE vs SKIP verdict per gate, sequencing, shadow rollout protocol |
 | `.agent/product/PRICING-MODEL.md` | **What we charge for and why** — flat fee + BYO tokens + Sonnet 5 default. Canonical; read before any pricing conversation |
 | `.agent/product/UNIT-ECONOMICS.md` | Cost, margin, break-even and customer TCO per tenant — measured, not modelled |
 | `.agent/tasks/TASK-XX.md` | Active task details |

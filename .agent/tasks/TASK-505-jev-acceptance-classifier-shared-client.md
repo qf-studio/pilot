@@ -151,6 +151,7 @@ go vet ./internal/typesafe/ ./internal/executor/ ./internal/config/
 
 ## Refs
 
+- Roadmap across gates (which get Jev, which are skipped, order, rollout): `.agent/system/jev-gates-roadmap.md`
 - Pilot issue: https://github.com/qf-studio/pilot/issues/5509 (body to be replaced by this document before the `pilot` label is added)
 - Research 2026-09-30: nav-research passes on the classifier seam and on the gate inventory (this session); ranked gates recorded in the session marker.
 - TypeSafe docs: https://docs.typesafe.ai/api.md · https://docs.typesafe.ai/primitives/choice.md · https://docs.typesafe.ai/confidence.md · https://docs.typesafe.ai/cookbooks/pre_parsed_value_extraction_cookbook.md
