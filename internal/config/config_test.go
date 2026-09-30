@@ -14,6 +14,8 @@ import (
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/typesafe"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -2682,6 +2684,40 @@ func TestTypeSafe_TopLevelBlockReachesExecutor(t *testing.T) {
 	}
 	if got := cfg.Executor.TypeSafe.EffectiveTimeout(); got != 2*time.Second {
 		t.Errorf("timeout = %v, want 2s", got)
+	}
+}
+
+func TestTypeSafe_NestedExecutorBlockIgnored(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "version: \"1.0\"\nexecutor:\n  typesafe:\n    model: jev-nested\n"
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Executor != nil && cfg.Executor.TypeSafe != nil {
+		t.Errorf("nested executor.typesafe must be ignored, got %+v", cfg.Executor.TypeSafe)
+	}
+
+	// Pin the tag itself: the nested shape must never bind on BackendConfig
+	// (Load's copy would otherwise mask a regression by overwriting it), and
+	// a marshalled BackendConfig must not emit the block.
+	var bc executor.BackendConfig
+	if err := yamlv3.Unmarshal([]byte("typesafe:\n  model: jev-nested\n"), &bc); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if bc.TypeSafe != nil {
+		t.Errorf("BackendConfig.TypeSafe bound from YAML; tag must be yaml:\"-\"")
+	}
+	bc.TypeSafe = &typesafe.Config{Model: "jev-x"}
+	out, err := yamlv3.Marshal(&bc)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "typesafe") {
+		t.Errorf("BackendConfig marshalled typesafe block: %s", out)
 	}
 }
 

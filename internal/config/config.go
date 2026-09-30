@@ -852,6 +852,8 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
+	warnNestedExecutorTypeSafe(expanded)
+
 	// Expand paths
 	if config.Memory != nil {
 		config.Memory.Path = expandPath(config.Memory.Path)
@@ -896,6 +898,25 @@ func Load(path string) (*Config, error) {
 	}
 
 	return config, nil
+}
+
+// warnNestedExecutorTypeSafe warns when the raw YAML carries an
+// `executor.typesafe:` block (GH-5525). BackendConfig.TypeSafe is tagged
+// yaml:"-", so the nested shape is never bound; the top-level `typesafe:` key
+// is the only canonical placement. Probe failures are ignored — the main
+// Unmarshal already reported any syntax error.
+func warnNestedExecutorTypeSafe(expanded string) {
+	var probe struct {
+		Executor struct {
+			TypeSafe yaml.Node `yaml:"typesafe"`
+		} `yaml:"executor"`
+	}
+	if err := yaml.Unmarshal([]byte(expanded), &probe); err != nil {
+		return
+	}
+	if !probe.Executor.TypeSafe.IsZero() {
+		log.Printf("WARNING: config: `executor.typesafe:` block is ignored — move it to the top-level `typesafe:` key")
+	}
 }
 
 // liftTopLevelAutopilot detects a documented-but-misplaced top-level
