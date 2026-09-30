@@ -8624,6 +8624,15 @@ func (c *Controller) GetLastProgressAt() time.Time {
 	return c.lastProgressAt
 }
 
+// ResetProgressClock restarts the deadlock stall clock and clears the sent
+// flag. The metrics alerter calls it while no PRs are active (GH-5448).
+func (c *Controller) ResetProgressClock() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastProgressAt = time.Now()
+	c.deadlockAlertSent = false
+}
+
 // IsDeadlockAlertSent returns whether a deadlock alert has been sent since the last progress.
 // Used by MetricsAlerter to avoid alert spam (GH-849).
 func (c *Controller) IsDeadlockAlertSent() bool {
