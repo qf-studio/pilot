@@ -100,8 +100,18 @@ var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
 var mutationArrowRe = regexp.MustCompile(`(?s)^(.*?)(?:->|→)\s*(.+)$`)
 
 // mutationFailsRe requires the outcome half to actually assert a failure
-// ("… fails", "… fail").
-var mutationFailsRe = regexp.MustCompile(`(?i)\bfails?\b`)
+// ("… fails", "… fail", "… failing"). Negated outcomes are excluded via
+// mutationNegatedFailsRe: "-> TestFoo must not fail" asserts the OPPOSITE
+// polarity of a mutation pin, and treating it as one made the gate report
+// the pin satisfied when TestFoo fails (GH-5506).
+var mutationFailsRe = regexp.MustCompile(`(?i)\bfail(?:s|ing)?\b`)
+
+// mutationNegatedFailsRe matches a negation cue ("not", "never", "no",
+// "neither", "without", "n't") that precedes the fail word within the same
+// clause ("must not fail", "doesn't fail", "no test fails", "without
+// failing"). A cue after the fail word ("TestX fails with 'not found'") or in
+// a later clause does not match.
+var mutationNegatedFailsRe = regexp.MustCompile(`(?i)(?:\b(?:not|never|no|neither|without)\b|n't\b)[^.;]*\bfail(?:s|ing)?\b`)
 
 // testNameRe extracts a Go test function name from the outcome half of a
 // mutation item ("TestY fails" -> "TestY").
@@ -214,7 +224,7 @@ func extractMutation(text string) (desc, target string, ok bool) {
 	if desc == "" {
 		return "", "", false
 	}
-	if !mutationFailsRe.MatchString(outcome) {
+	if !mutationFailsRe.MatchString(outcome) || mutationNegatedFailsRe.MatchString(outcome) {
 		return "", "", false
 	}
 
