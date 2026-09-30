@@ -45,3 +45,10 @@ func capItem(s string, n int) string {
 	}
 	return string(r[:n])
 }
+
+// RedactAndCap redacts credential-shaped spans from s and then caps the result
+// at maxChars characters. It is the only way text should enter a System One
+// state: redact first so a secret cut in half by the cap cannot survive.
+func RedactAndCap(s string, maxChars int) string {
+	return capItem(redactSecrets(s), maxChars)
+}

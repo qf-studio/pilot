@@ -466,7 +466,13 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 		if r.acceptanceRunner != nil {
 			runner = r.acceptanceRunner
 		}
-		results = RunAcceptanceEvidence(ctx, runner, workDir, task.AcceptanceCriteria, cfg.EffectiveAllowedCommands())
+		var classifier AcceptanceClassifier = regexAcceptanceClassifier{}
+		if r.acceptanceClassifier != nil {
+			classifier = r.acceptanceClassifier
+		}
+		items, stats := classifier.Classify(ctx, task.AcceptanceCriteria)
+		r.logAcceptanceClassification(task, stats)
+		results = RunAcceptanceEvidenceItems(ctx, runner, workDir, items, cfg.EffectiveAllowedCommands())
 	}
 
 	// GH-5466: merged into the same "## Not verified" section as the
@@ -484,6 +490,27 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 		return prBody
 	}
 	return strings.TrimRight(prBody, "\n") + "\n\n" + section
+}
+
+// logAcceptanceClassification emits the one per-task info line whose counters
+// (agreed / overrode / low_confidence / errors) decide the shadow-to-live flip.
+// In shadow mode overrode counts would-be overrides.
+func (r *Runner) logAcceptanceClassification(task *Task, stats AcceptanceClassifyStats) {
+	if r == nil || r.log == nil {
+		return
+	}
+	r.log.Info("Acceptance classification",
+		slog.String("task_id", task.ID),
+		slog.String("classifier", stats.Classifier),
+		slog.Int("items", stats.Items),
+		slog.Int("regex_only", stats.RegexOnly),
+		slog.Int("agreed", stats.Agreed),
+		slog.Int("overrode", stats.Overrode),
+		slog.Int("low_confidence", stats.LowConfidence),
+		slog.Int("errors", stats.Errors),
+		slog.Bool("shadow", stats.Shadow),
+		slog.Int64("latency_ms", stats.Latency.Milliseconds()),
+	)
 }
 
 // runDiffCoverageCheck runs the GH-5466 diff-coverage check against task's
@@ -570,7 +597,14 @@ func runDiffCoverageCheck(ctx context.Context, runner *Runner, task *Task, workD
 // function's return value is exactly the set RenderAcceptanceEvidenceSections
 // and the completion gate need.
 func RunAcceptanceEvidence(ctx context.Context, runner AcceptanceCommandRunner, dir string, criteria []string, allowedCommands []string) []AcceptanceEvidenceResult {
-	items := ParseAcceptanceItems(criteria)
+	return RunAcceptanceEvidenceItems(ctx, runner, dir, ParseAcceptanceItems(criteria), allowedCommands)
+}
+
+// RunAcceptanceEvidenceItems is RunAcceptanceEvidence for items that were
+// already classified (by the regex floor or an AcceptanceClassifier). It runs
+// every evidence-requiring item against dir in encounter order and skips
+// "other" items.
+func RunAcceptanceEvidenceItems(ctx context.Context, runner AcceptanceCommandRunner, dir string, items []AcceptanceItem, allowedCommands []string) []AcceptanceEvidenceResult {
 	results := make([]AcceptanceEvidenceResult, 0, len(items))
 	for _, item := range items {
 		switch item.Kind {
