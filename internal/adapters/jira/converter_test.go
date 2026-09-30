@@ -352,6 +352,7 @@ func TestExtractAcceptanceCriteria_HouseStyleAcceptanceHeading(t *testing.T) {
 	}{
 		{"## Acceptance", "## Context\n\ntext\n\n## Acceptance\n\n- one\n- two\n\n## Refs\n\n- GH-1\n", []string{"one", "two"}},
 		{"### Acceptance", "### Acceptance:\n\n- one\n- two\n\n### Notes\n\n- no\n", []string{"one", "two"}},
+		{"## Acceptance with star bullets", "## Acceptance\n* alpha\n* beta\n", []string{"alpha", "beta"}},
 		{"different heading text", "## Acceptance tests\n\n- one\n- two\n", nil},
 	}
 	for _, tt := range tests {
