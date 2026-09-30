@@ -51,6 +51,26 @@ func TestClassifyAcceptanceItem_MutationPhrasings(t *testing.T) {
 			wantTarget:        "TestFoo",
 			wantDeterministic: true,
 		},
+		// GH-5513: an unrelated negation cue earlier in the outcome half must
+		// not downgrade a positive pin to other.
+		{
+			name:       "unrelated not before fail word",
+			text:       "delete the guard -> TestFoo, not TestBar, fails",
+			wantDesc:   "delete the guard",
+			wantTarget: "TestFoo",
+		},
+		{
+			name:       "does not panic and fails",
+			text:       "delete the guard -> does not panic and TestFoo fails",
+			wantDesc:   "delete the guard",
+			wantTarget: "TestFoo",
+		},
+		{
+			name:       "no config clause then fails",
+			text:       "delete the guard -> when no config is set, TestFoo fails",
+			wantDesc:   "delete the guard",
+			wantTarget: "TestFoo",
+		},
 		// The six phrasings GH-5438 was filed about — real issue-authored
 		// mutation items that PR #5436's edit-cue gate silently dropped to
 		// AcceptanceItemOther.
@@ -210,6 +230,7 @@ func TestClassifyAcceptanceItem_NegatedOutcomeIsNotMutation(t *testing.T) {
 		{"never fails", "add the guard for X -> TestFoo never fails"},
 		{"no test fails", "add the guard for X -> no test fails"},
 		{"without failing", "add the guard for X -> TestFoo passes without failing"},
+		{"no longer fails", "add the guard for X -> TestFoo no longer fails"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
