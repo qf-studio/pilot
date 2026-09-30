@@ -239,11 +239,17 @@ func TestMetricsAlerter_Evaluate_IdleIsNotDeadlock(t *testing.T) {
 		log:            slog.Default(),
 		activePRs:      map[int]*PRState{},
 		lastProgressAt: time.Now().Add(-2 * time.Hour),
+		// A stale sent flag from a previous stall must be cleared by the idle
+		// tick (ResetProgressClock), otherwise the next real stall never alerts.
+		deadlockAlertSent: true,
 	}
 	ma := NewMetricsAlerter(controller, engine)
 	ma.SetMetricsSource(fleetSnapshot{activePRs: 3})
 
 	ma.evaluate() // idle for two hours: must not fire
+	if controller.IsDeadlockAlertSent() {
+		t.Fatal("idle evaluate() did not clear deadlockAlertSent")
+	}
 
 	controller.registerPR(7, "", 0, "", "", "", false)
 	ma.evaluate() // PR 7 just registered: must not fire

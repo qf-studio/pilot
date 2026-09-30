@@ -3938,45 +3938,6 @@ func TestController_DeadlockDetection(t *testing.T) {
 	}
 }
 
-// TestController_DeadlockDetection_StaleProgress tests that stale progress is detected.
-func TestController_DeadlockDetection_StaleProgress(t *testing.T) {
-	ghClient := github.NewClient(testutil.FakeGitHubToken)
-	cfg := DefaultConfig()
-
-	c := NewController(cfg, ghClient, nil, "owner", "repo")
-
-	// Manually set lastProgressAt to 2 hours ago
-	c.mu.Lock()
-	c.lastProgressAt = time.Now().Add(-2 * time.Hour)
-	c.mu.Unlock()
-
-	// Check that GetLastProgressAt returns the stale time
-	progress := c.GetLastProgressAt()
-	if time.Since(progress) < 1*time.Hour {
-		t.Error("lastProgressAt should be more than 1 hour ago")
-	}
-
-	// Add a PR to simulate active work
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
-
-	// The MetricsAlerter would check: noProgressMin >= 60 && len(activePRs) > 0
-	noProgressMin := time.Since(c.GetLastProgressAt()).Minutes()
-	activePRs := c.GetActivePRs()
-
-	if noProgressMin < 60 {
-		t.Errorf("noProgressMin = %.1f, expected >= 60", noProgressMin)
-	}
-	if len(activePRs) == 0 {
-		t.Error("expected active PRs")
-	}
-
-	// This is the condition that would trigger a deadlock alert
-	deadlockDetected := noProgressMin >= 60 && !c.IsDeadlockAlertSent() && len(activePRs) > 0
-	if !deadlockDetected {
-		t.Error("deadlock condition should be detected")
-	}
-}
-
 // TestController_handleMerging_ConflictClearsLabel tests GH-880:
 // When merge fails due to conflict, handleMergeConflict should be called
 // which removes pilot-in-progress label so the issue can be retried.
