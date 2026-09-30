@@ -505,6 +505,25 @@ func (s *Store) migrate() error {
 			updated_at DATETIME NOT NULL,
 			PRIMARY KEY (rule_name, source)
 		)`,
+		// GH-5494: PR review verdicts, so the bench can report defect rate per
+		// model — reviewer verdicts previously lived only in GitHub review
+		// bodies. review_id is GitHub's globally unique review id, so it alone
+		// is the primary key (idempotent upsert); project_path + pr_number
+		// scope the "which reviews do we already have" lookup, and
+		// execution_id joins a review to the executions row of the PR's task
+		// ('' when no execution row could be resolved).
+		`CREATE TABLE IF NOT EXISTS pr_reviews (
+			review_id INTEGER PRIMARY KEY,
+			project_path TEXT NOT NULL DEFAULT '',
+			pr_number INTEGER NOT NULL,
+			execution_id TEXT NOT NULL DEFAULT '',
+			reviewer TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL DEFAULT '',
+			verdict TEXT NOT NULL DEFAULT '',
+			submitted_at DATETIME
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pr_reviews_execution ON pr_reviews(execution_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr ON pr_reviews(project_path, pr_number)`,
 	}
 
 	for _, migration := range migrations {
