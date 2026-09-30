@@ -518,6 +518,9 @@ type Controller struct {
 	// Execution-level approval persistence (optional, nil = audit trail disabled)
 	memoryStore approvalPersister
 
+	// GH-5494: PR review-verdict collection state (see review_ledger.go).
+	reviews reviewCollectorState
+
 	// Per-PR circuit breaker: each PR has independent failure tracking.
 	// A failure on one PR does not block other PRs.
 	prFailures map[int]*prFailureState
@@ -890,6 +893,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		epicResolvedParents:     make(map[int]bool),
 		warnedUnsourcedIssues:   make(map[int]bool),
 	}
+	c.reviews.pollInterval = defaultReviewPollInterval
 
 	// Options must apply before the releaser is constructed below: the
 	// per-project release overlay (WithReleaseOverride) needs c.projectRelease
@@ -9549,6 +9553,11 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 		return
 	}
 
+	// GH-5494: merged PRs have left the active set, but post-merge reviews are
+	// the common case — sweep them (throttled) on every tick, including ticks
+	// with no active PRs.
+	defer c.sweepMergedPRReviews(ctx)
+
 	prs := c.GetActivePRs()
 
 	// Update active PR gauges every tick
@@ -9610,6 +9619,10 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 			pr.mu.Lock()
 			pr.NotFoundCount = 0
 			pr.mu.Unlock()
+
+			// GH-5494: record any new review verdicts before the merge check
+			// below can remove the PR from tracking.
+			c.collectActivePRReviews(ctx, pr)
 
 			// TASK-324: hold pr.mu around the external-merge/close check and the
 			// polling-mode changes-requested read-modify-write + persist. Release it
