@@ -2571,6 +2571,16 @@
           "authentication",
           "testing"
         ]
+      },
+      "TASK-504": {
+        "path": ".agent/tasks/TASK-504-revise-pr-5510-negation-clause-boundary.md",
+        "title": "fix(executor): revise PR #5510 \u2014 negation regex must not reject positive pins with an unrelated earlier \"not\"",
+        "status": "in-progress",
+        "concepts": [
+          "api",
+          "testing",
+          "context"
+        ]
       }
     },
     "memories": {
@@ -9680,6 +9690,21 @@
       "from": "TASK-503",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-504",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-504",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-504",
+      "to": "context",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -9850,7 +9875,8 @@
       "mem-193",
       "mem-194",
       "pricing-flat-fee-byo-tokens-sonnet-default",
-      "TASK-498"
+      "TASK-498",
+      "TASK-504"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -10239,7 +10265,8 @@
       "mem-193",
       "mem-194",
       "TASK-498",
-      "TASK-503"
+      "TASK-503",
+      "TASK-504"
     ],
     "conversational-bot": [
       "mem-036",
@@ -11516,7 +11543,8 @@
       "mem-194",
       "TASK-498",
       "executor-alert-event-strings-must-equal-alerts-eventtype",
-      "TASK-503"
+      "TASK-503",
+      "TASK-504"
     ],
     "testing-quality": [
       "TASK-384",
@@ -11892,10 +11920,10 @@
       "main-history-rewritten-2026-09-24-internal-notes-purge"
     ]
   },
-  "last_updated": "2026-09-30T12:05:45.492443+00:00",
+  "last_updated": "2026-09-30T13:09:39.981621+00:00",
   "stats": {
-    "total_nodes": 595,
-    "total_edges": 509,
+    "total_nodes": 596,
+    "total_edges": 512,
     "memory_count": 328
   },
   "metadata": {}
