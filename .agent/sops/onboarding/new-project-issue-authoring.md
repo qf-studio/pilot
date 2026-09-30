@@ -70,6 +70,11 @@ Two shapes are recognised today:
   required, positive polarity only (negated outcomes are not pins):
   `- delete the `|| mutationNegatedFailsRe.MatchString(outcome)` clause -> TestClassifyAcceptanceItem_NegatedOutcomeIsNotMutation fails`
 
+**No shell operators in the command, even quoted.** The runner is argv-exec and
+refuses `|`, `;`, `&&`, `>` anywhere in the span: `go test ./x -run 'A|B'` renders
+"Not verified: shell operators are not allowed in evidence commands" (PR #5515,
+PR #5510 revision, 2026-09-30). Use a prefix pattern instead: `-run Acceptance`.
+
 Not recognised (renders nothing): `go test ./x passes`, `CI green`,
 `tests pass`, `the new test fails when X is reverted` (no arrow), `state the
 pin in the evidence block`. Put at least one bullet of each shape in every
