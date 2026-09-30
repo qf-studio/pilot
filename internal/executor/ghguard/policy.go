@@ -853,6 +853,12 @@ type JournalEntry struct {
 	// (GH-4968). Reason itself distinguishes GH_HOST from --hostname.
 	EnvRepo string `json:"env_repo,omitempty"`
 	EnvHost string `json:"env_host,omitempty"`
+
+	// TestOrigin is set when the denied `gh` call came from a Go test
+	// binary (the repo's own unit tests running during the quality gates)
+	// rather than the model's tool call (GH-5542). The denial itself is
+	// unchanged; the runner-side audit just doesn't journal/alert on it.
+	TestOrigin bool `json:"test_origin,omitempty"`
 }
 
 // AppendJournal appends one entry to the JSONL journal at path, creating it

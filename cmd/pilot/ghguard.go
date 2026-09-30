@@ -88,6 +88,8 @@ func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdo
 			TaskRepo:  id.TaskRepo,
 			EnvRepo:   decision.EnvRepo,
 			EnvHost:   decision.EnvHost,
+			// GH-5542: tests run by the quality gates hit the shim too.
+			TestOrigin: ghguard.ParentIsTestProcess(),
 		}
 		// Best-effort: the journal is evidence for the GH-4670 audit to pick
 		// up later, never a reason to change the deny decision itself.

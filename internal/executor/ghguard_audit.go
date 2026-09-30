@@ -12,6 +12,7 @@ package executor
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -28,7 +29,28 @@ func (r *Runner) ingestGhGuardDenials(task *Task, result *BackendResult) {
 		return
 	}
 
+	suppressed := 0
+	defer func() {
+		if suppressed > 0 {
+			r.recordExecutionEvent(task.LogExecutionID(), memory.StageGhGuardTestDenialsSuppressed,
+				fmt.Sprintf(`{"count":%d}`, suppressed))
+		}
+	}()
+
 	for _, denial := range result.GhGuardDenials {
+		// GH-5542: denials raised by the repo's own unit tests during the
+		// quality gates are expected noise, not model behaviour. Drop with
+		// a debug line; the count is kept in one summary execution event.
+		if denial.TestOrigin {
+			suppressed++
+			slog.Debug("gh_guard_denied suppressed: test-binary origin",
+				slog.String("component", "executor.ghguard_audit"),
+				slog.String("task_id", task.ID),
+				slog.String("args", ghguard.FormatArgsForLog(denial.Args)),
+			)
+			continue
+		}
+
 		detail, marshalErr := json.Marshal(struct {
 			Args      []string `json:"args"`
 			Reason    string   `json:"reason"`
