@@ -34,6 +34,7 @@ import (
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/tunnel"
+	"github.com/qf-studio/pilot/internal/typesafe"
 	"github.com/qf-studio/pilot/internal/webhooks"
 )
 
@@ -47,6 +48,7 @@ type Config struct {
 	Adapters       *AdaptersConfig         `yaml:"adapters"`
 	Orchestrator   *OrchestratorConfig     `yaml:"orchestrator"`
 	Executor       *executor.BackendConfig `yaml:"executor"`
+	TypeSafe       *typesafe.Config        `yaml:"typesafe,omitempty"` // Shared Jev connection; Load copies it to Executor.TypeSafe. Key: TYPESAFE_API_KEY env only
 	Memory         *MemoryConfig           `yaml:"memory"`
 	Projects       []*ProjectConfig        `yaml:"projects"`
 	DefaultProject string                  `yaml:"default_project"`
@@ -885,6 +887,13 @@ func Load(path string) (*Config, error) {
 	}
 
 	applyLedgerStalenessThreshold(config)
+
+	// Decision: a top-level `typesafe:` block binds to Config.TypeSafe, but the
+	// runner only sees BackendConfig. Copy the pointer explicitly (mem-160:
+	// an unwired top-level block is silently dead).
+	if config.Executor != nil {
+		config.Executor.TypeSafe = config.TypeSafe
+	}
 
 	return config, nil
 }

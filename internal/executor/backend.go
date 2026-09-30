@@ -2,9 +2,11 @@ package executor
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/executor/ghguard"
+	"github.com/qf-studio/pilot/internal/typesafe"
 )
 
 // Backend defines the interface for AI execution backends.
@@ -413,6 +415,11 @@ type BackendConfig struct {
 	// acceptance items in the task worktree and recording their (redacted)
 	// results in the PR body. Default: enabled.
 	AcceptanceEvidence *AcceptanceEvidenceConfig `yaml:"acceptance_evidence,omitempty"`
+
+	// TypeSafe is the shared TypeSafe (Jev) connection block. It is populated
+	// by config.Load from the top-level `typesafe:` YAML key; the runner reads
+	// it from here. The API key comes from TYPESAFE_API_KEY only.
+	TypeSafe *typesafe.Config `yaml:"typesafe,omitempty"`
 
 	// Navigator contains Navigator auto-init settings
 	Navigator *NavigatorConfig `yaml:"navigator,omitempty"`
@@ -823,6 +830,69 @@ type AcceptanceEvidenceConfig struct {
 	// "10m". Empty/invalid falls back to
 	// defaultAcceptanceEvidenceCommandTimeout (10 minutes).
 	CommandTimeout string `yaml:"command_timeout,omitempty"`
+
+	// Classifier optionally layers a TypeSafe (Jev) classifier on top of the
+	// regex classifier, which stays the floor and fallback.
+	Classifier *AcceptanceClassifierConfig `yaml:"classifier,omitempty"`
+}
+
+const (
+	// AcceptanceClassifierRegex is the deterministic, offline classifier.
+	AcceptanceClassifierRegex = "regex"
+	// AcceptanceClassifierJev is the optional TypeSafe Jev classifier.
+	AcceptanceClassifierJev = "jev"
+
+	defaultAcceptanceClassifierMinConfidence = 0.8
+)
+
+// AcceptanceClassifierConfig configures the optional model classifier for
+// acceptance items. Only checklist text leaves the machine, and only when
+// provider is "jev" and TYPESAFE_API_KEY is set.
+type AcceptanceClassifierConfig struct {
+	// Provider is "regex" (default) or "jev".
+	Provider string `yaml:"provider,omitempty"`
+	// MinConfidence is the confidence (0..1) a model verdict needs to override
+	// the regex verdict. Default 0.8; out-of-range falls back.
+	MinConfidence *float64 `yaml:"min_confidence,omitempty"`
+	// Shadow, when true (default), records what the model would have decided
+	// without changing behaviour.
+	Shadow *bool `yaml:"shadow,omitempty"`
+}
+
+// EffectiveClassifierProvider returns "regex" unless provider is "jev" and
+// TYPESAFE_API_KEY is non-empty. Safe on nil receivers.
+func (c *AcceptanceEvidenceConfig) EffectiveClassifierProvider() string {
+	if c == nil || c.Classifier == nil {
+		return AcceptanceClassifierRegex
+	}
+	if strings.EqualFold(strings.TrimSpace(c.Classifier.Provider), AcceptanceClassifierJev) {
+		if key, _ := typesafe.APIKeyFromEnv(); key != "" {
+			return AcceptanceClassifierJev
+		}
+	}
+	return AcceptanceClassifierRegex
+}
+
+// EffectiveMinConfidence returns the configured minimum confidence, or 0.8
+// when unset or outside 0..1. Safe on nil receivers.
+func (c *AcceptanceEvidenceConfig) EffectiveMinConfidence() float64 {
+	if c == nil || c.Classifier == nil || c.Classifier.MinConfidence == nil {
+		return defaultAcceptanceClassifierMinConfidence
+	}
+	v := *c.Classifier.MinConfidence
+	if !(v >= 0 && v <= 1) { // also rejects NaN
+		return defaultAcceptanceClassifierMinConfidence
+	}
+	return v
+}
+
+// EffectiveShadow returns whether the classifier runs in shadow mode; default
+// true. Safe on nil receivers.
+func (c *AcceptanceEvidenceConfig) EffectiveShadow() bool {
+	if c == nil || c.Classifier == nil || c.Classifier.Shadow == nil {
+		return true
+	}
+	return *c.Classifier.Shadow
 }
 
 // IsEnabled reports whether the acceptance-evidence gate should run,
