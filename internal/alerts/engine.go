@@ -1768,6 +1768,20 @@ func (e *Engine) handleAutopilotMetrics(ctx context.Context, event Event) {
 				e.fireAlert(ctx, rule, alert)
 			}
 
+		// GH-5541: the PR-processing loop stopped ticking (one blocked stage
+		// held every other PR for 57 minutes with no alert). MetricsAlerter
+		// decides staleness against 3x the poll interval; the rule cooldown
+		// keeps a long stall from re-alerting every evaluation.
+		case AlertTypeTickStale:
+			if event.Metadata["tick_stale"] == "true" && e.shouldFire(rule) {
+				age := event.Metadata["tick_age_seconds"]
+				limit := event.Metadata["tick_stale_threshold_seconds"]
+				alert := e.createAlert(rule, event,
+					fmt.Sprintf("Autopilot PR loop has not ticked for %ss (alert threshold %ss, 3x poll interval). A stage handler is likely blocked.",
+						age, limit))
+				e.fireAlert(ctx, rule, alert)
+			}
+
 		// GH-849: Deadlock detection
 		case AlertTypeDeadlock:
 			timeout := rule.Condition.DeadlockTimeout

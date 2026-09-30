@@ -330,6 +330,9 @@ func (c *Controller) scopeReleaseCommits(ctx context.Context, owner, repo string
 	seen := make(map[string]bool)
 	var commits []*github.Commit
 	for _, member := range prState.ScopeMemberPRs {
+		if ctx.Err() != nil {
+			break // GH-5541: stage deadline hit — stop issuing serial per-member calls
+		}
 		memberCommits, err := c.ghClient.GetPRCommits(ctx, owner, repo, member)
 		if err != nil {
 			c.log.Warn("scope release: failed to fetch member PR commits",
@@ -354,6 +357,10 @@ func (c *Controller) scopeReleaseCommits(ctx context.Context, owner, repo string
 	return c.ghClient.CompareCommits(ctx, owner, repo, lastTag, prState.HeadSHA)
 }
 
+// scopeNotesBudget bounds how long handleReleasing spends gathering per-member
+// attribution for a scope carrier's release notes inside the PR loop (GH-5541).
+const scopeNotesBudget = 60 * time.Second
+
 // buildScopeMembers resolves each member PR's own commits and, best-effort,
 // the GitHub issue it closed (parsed from the PR body via closesIssueRegex)
 // so BuildScopeReleaseNotes can render exact per-entry "(#PR, GH-Issue)"
@@ -365,6 +372,13 @@ func (c *Controller) buildScopeMembers(ctx context.Context, owner, repo string, 
 	members := make([]ScopeMember, 0, len(memberPRs))
 	for _, pr := range memberPRs {
 		member := ScopeMember{PR: pr}
+
+		// GH-5541: budget spent (or the stage deadline hit) — keep the
+		// remaining members attribution-free rather than blocking the loop.
+		if ctx.Err() != nil {
+			members = append(members, member)
+			continue
+		}
 
 		if commits, err := c.ghClient.GetPRCommits(ctx, owner, repo, pr); err != nil {
 			c.log.Warn("buildScopeMembers: failed to fetch member PR commits", "pr", pr, "error", err)

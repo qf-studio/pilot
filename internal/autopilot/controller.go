@@ -530,6 +530,18 @@ type Controller struct {
 	lastProgressAt    time.Time
 	deadlockAlertSent bool
 
+	// GH-5541: per-PR stage handlers currently running inside the tick. An
+	// entry marked abandoned outlived the per-stage deadline: the loop skips
+	// that PR until the handler returns (ProcessPR holds pr.mu for its whole
+	// body, so a second pass would block the loop on that mutex — the exact
+	// stall the deadline exists to prevent), and GetActivePRs serves the
+	// entry's pre-handler snapshot instead of locking pr.mu. Guarded by c.mu.
+	stageInflight map[int]*stageRun
+
+	// processPRFn overrides ProcessPR inside the active-PR loop. Test seam
+	// only (GH-5541): lets a test inject a stage handler that blocks.
+	processPRFn func(ctx context.Context, prNumber int, ghPR *github.PullRequest) error
+
 	// Release summary generator (optional, nil = no LLM enrichment)
 	releaseSummary *ReleaseSummaryGenerator
 
@@ -6865,12 +6877,19 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	// round trip per member PR regardless of publish mode.
 	var scopeNotesBody string
 	if isScope {
+		// GH-5541: buildScopeMembers costs two serial GitHub calls per member
+		// PR, and this runs synchronously inside the tick — a large train with
+		// the client's retry/backoff could hold the whole PR loop for an hour.
+		// The notes are best-effort (see buildScopeMembers), so cap the time
+		// spent on them and ship with whatever attribution was gathered.
+		notesCtx, cancelNotes := context.WithTimeout(ctx, scopeNotesBudget)
+		defer cancelNotes()
 		scopeNotesBody = BuildScopeReleaseNotes(ScopeNotesInput{
 			Owner:      owner,
 			Repo:       repo,
 			ScopeKey:   prState.ScopeKey,
 			ScopeTitle: prState.ScopeTitle,
-			Members:    c.buildScopeMembers(ctx, owner, repo, prState.ScopeMemberPRs),
+			Members:    c.buildScopeMembers(notesCtx, owner, repo, prState.ScopeMemberPRs),
 			LastTag:    currentVersion.String(rel.TagPrefix),
 			NewTag:     tagName,
 		})
@@ -8421,16 +8440,30 @@ func (c *Controller) removePRTracking(prNumber int, deleteBranch bool) {
 func (c *Controller) GetActivePRs() []*PRState {
 	c.mu.RLock()
 	live := make([]*PRState, 0, len(c.activePRs))
-	for _, pr := range c.activePRs {
+	var abandoned map[int]*PRState
+	for n, pr := range c.activePRs {
+		// GH-5541: an abandoned stage handler still holds pr.mu, so locking it
+		// here would re-stall the caller (the tick itself) behind that handler.
+		// Serve the snapshot taken when the handler started instead.
+		if run := c.stageInflight[n]; run != nil && run.abandoned {
+			if abandoned == nil {
+				abandoned = make(map[int]*PRState)
+			}
+			abandoned[n] = run.snap
+			continue
+		}
 		live = append(live, pr)
 	}
 	c.mu.RUnlock()
 
-	prs := make([]*PRState, 0, len(live))
+	prs := make([]*PRState, 0, len(live)+len(abandoned))
 	for _, pr := range live {
 		pr.mu.Lock()
 		prs = append(prs, pr.snapshot())
 		pr.mu.Unlock()
+	}
+	for _, snap := range abandoned {
+		prs = append(prs, snap)
 	}
 	return prs
 }
@@ -9469,6 +9502,10 @@ func (c *Controller) Run(ctx context.Context) error {
 		"release_enabled", c.resolvedRelease() != nil && c.resolvedRelease().Enabled,
 	)
 
+	// GH-5541: stamp liveness at loop start so the tick-stale alert measures
+	// from here even if the first tick never completes.
+	c.metrics.RecordTick(time.Now())
+
 	// Dynamic poll interval settings
 	basePollInterval := c.config.CIPollInterval
 	fastPollInterval := 10 * time.Second
@@ -9646,6 +9683,10 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 	// Update active PR gauges every tick
 	c.metrics.UpdateActivePRs(prs)
 
+	// GH-5541: liveness stamp — at tick start, and again after every PR below,
+	// so a long tick of healthy PRs is not mistaken for a wedged loop.
+	c.metrics.RecordTick(time.Now())
+
 	if len(prs) == 0 {
 		return
 	}
@@ -9653,120 +9694,233 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 	c.log.Info("processing active PRs", "count", len(prs))
 
 	for _, snap := range prs {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		default:
-			c.log.Debug("checking PR",
-				"pr", snap.PRNumber,
-				"stage", snap.Stage,
-				"ci_status", snap.CIStatus,
+		}
+		if c.processPRWithDeadline(ctx, snap) {
+			return
+		}
+		c.metrics.RecordTick(time.Now())
+	}
+}
+
+// stageRun tracks one in-flight per-PR stage handler (GH-5541).
+type stageRun struct {
+	snap      *PRState // detached snapshot taken before the handler started
+	abandoned bool     // the per-stage deadline fired; handler still running
+}
+
+// processPRWithDeadline runs processOnePR for one PR under the per-stage
+// deadline (Config.StageTimeout), so a single blocked handler can no longer
+// hold every other PR in the tick — GH-5541: a releasing-stage call stalled
+// the loop for 57 minutes on 2026-09-30 while the rest of the controller ran.
+//
+// Decision: the work runs in its own goroutine and the loop stops WAITING at
+// the deadline rather than trusting the handler to honor ctx. Handlers do
+// honor the cancelled ctx when they make context-aware calls, but a handler
+// stuck in a call that ignores it would otherwise wedge the loop all over
+// again. The abandoned goroutine is tracked in stageInflight so the PR is not
+// re-entered (and pr.mu not contended) until it actually returns.
+//
+// On expiry: one WARN naming PR, stage and elapsed time, one
+// autopilot_stage_timeouts_total{stage} increment, then move on. The PR keeps
+// its stage and is retried next tick. Returns true when the tick should stop
+// (GitHub rate-limit cooldown entered).
+func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (stopTick bool) {
+	prNumber := snap.PRNumber
+
+	c.mu.Lock()
+	if _, busy := c.stageInflight[prNumber]; busy {
+		c.mu.Unlock()
+		c.log.Debug("processAllPRs: stage handler from an earlier tick still running, skipping PR",
+			"pr", prNumber, "stage", snap.Stage)
+		return false
+	}
+	if c.stageInflight == nil {
+		c.stageInflight = make(map[int]*stageRun)
+	}
+	run := &stageRun{snap: snap}
+	c.stageInflight[prNumber] = run
+	c.mu.Unlock()
+
+	timeout := c.config.EffectiveStageTimeout()
+	stageCtx, cancel := context.WithTimeout(ctx, timeout)
+	started := time.Now()
+
+	type result struct {
+		stop     bool
+		panicked any
+	}
+	done := make(chan result, 1) // buffered: an abandoned goroutine must never block on send
+	go func() {
+		defer func() {
+			cancel()
+			c.mu.Lock()
+			delete(c.stageInflight, prNumber)
+			c.mu.Unlock()
+		}()
+		defer func() {
+			if r := recover(); r != nil {
+				done <- result{panicked: r}
+			}
+		}()
+		done <- result{stop: c.processOnePR(stageCtx, snap)}
+	}()
+
+	finish := func(r result) bool {
+		if r.panicked != nil {
+			// Same outcome as before the goroutine split: a handler panic
+			// propagates out of the tick.
+			panic(r.panicked)
+		}
+		return r.stop
+	}
+
+	select {
+	case r := <-done:
+		return finish(r)
+	case <-stageCtx.Done():
+	}
+
+	// Deadline and completion can race; prefer a finished result.
+	select {
+	case r := <-done:
+		return finish(r)
+	default:
+	}
+	if ctx.Err() != nil {
+		return false // parent context cancelled (daemon stopping), not a stage timeout
+	}
+
+	c.mu.Lock()
+	run.abandoned = true
+	c.mu.Unlock()
+
+	c.log.Warn("autopilot stage exceeded deadline, moving on to next PR",
+		"pr", prNumber,
+		"stage", snap.Stage,
+		"elapsed", time.Since(started).Round(time.Millisecond),
+		"stage_timeout", timeout,
+	)
+	c.metrics.RecordStageTimeout(string(snap.Stage))
+	return false
+}
+
+// processOnePR is the per-PR body of one processAllPRs tick: fetch the PR,
+// run the external-merge/close and revive checks, then ProcessPR. Returns true
+// when the whole tick should stop (GitHub rate-limit cooldown entered).
+func (c *Controller) processOnePR(ctx context.Context, snap *PRState) (stopTick bool) {
+	c.log.Debug("checking PR",
+		"pr", snap.PRNumber,
+		"stage", snap.Stage,
+		"ci_status", snap.CIStatus,
+	)
+
+	// TASK-324: `snap` is a detached snapshot from GetActivePRs. Re-fetch the
+	// LIVE pointer by number so the pre-ProcessPR mutations below (and
+	// checkExternalMergeOrClose) operate on the shared state under its mutex.
+	c.mu.RLock()
+	pr, ok := c.activePRs[snap.PRNumber]
+	c.mu.RUnlock()
+	if !ok {
+		// PR was removed between snapshot and now — skip.
+		return false
+	}
+
+	// Fetch PR once, use twice - cache to avoid redundant API calls
+	ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, pr.PRNumber)
+	if err != nil {
+		var rlErr *github.RateLimitError
+		if errors.As(err, &rlErr) {
+			wait := c.enterRateLimitCooldown(rlErr.RetryAfter)
+			c.log.Warn("processAllPRs: GitHub rate limit hit, pausing PR processing until cooldown elapses",
+				"pr", pr.PRNumber, "cooldown", wait, "error", err)
+			return true
+		}
+		if isNotFoundError(err) {
+			pr.mu.Lock()
+			pr.NotFoundCount++
+			notFoundCount := pr.NotFoundCount
+			pr.mu.Unlock()
+			if notFoundCount >= notFoundEvictionThreshold {
+				c.evictNotFoundPR(pr.PRNumber)
+				return false
+			}
+			c.log.Warn("failed to fetch PR", "pr", pr.PRNumber, "error", err, "not_found_count", notFoundCount)
+			return false
+		}
+		c.log.Warn("failed to fetch PR", "pr", pr.PRNumber, "error", err)
+		return false
+	}
+	pr.mu.Lock()
+	pr.NotFoundCount = 0
+	pr.mu.Unlock()
+
+	// GH-5494: record any new review verdicts before the merge check
+	// below can remove the PR from tracking.
+	c.collectActivePRReviews(ctx, pr)
+
+	// TASK-324: hold pr.mu around the external-merge/close check and the
+	// polling-mode changes-requested read-modify-write + persist. Release it
+	// BEFORE calling ProcessPR, which re-acquires pr.mu for its whole body
+	// (Go's sync.Mutex is non-reentrant). Lock ordering preserved: pr.mu is
+	// taken before any c.mu that checkExternalMergeOrClose→removePR acquires.
+	pr.mu.Lock()
+	externallyResolved := c.checkExternalMergeOrClose(ctx, pr, ghPR)
+	if externallyResolved {
+		pr.mu.Unlock()
+		return false
+	}
+
+	// GH-4610: revive a needs-manual-rebase hold back into the pipeline
+	// once its branch has moved (operator pushed a fix) — a no-op for
+	// every PR not currently held in exactly that state. Must run before
+	// ProcessPR, which treats StageFailed as terminal and would never
+	// look at this PR again otherwise.
+	c.reAdoptHeldRebasePR(ctx, pr, ghPR)
+
+	// GH-5066 leg 2b: revive a StageFailed PR whose failure implicated
+	// a non-default base once GitHub has retargeted it back to the
+	// default branch — a no-op for every PR whose TargetBranch was
+	// already the default (a genuine, unrelated terminal failure). Must
+	// also run before ProcessPR for the same reason as reAdoptHeldRebasePR
+	// above.
+	c.redriveFailedPRForBaseRetarget(ctx, pr, ghPR)
+
+	// GH-5378: revive a CI-fix-size-guard hold back into the pipeline
+	// once its branch has moved — a no-op for every PR not currently
+	// held in exactly that state. Must also run before ProcessPR for
+	// the same reason as reAdoptHeldRebasePR above.
+	c.redriveSizeGuardHeldPR(ctx, pr, ghPR)
+
+	// Detect changes_requested reviews in polling mode (webhook mode uses OnReviewRequested).
+	// GH-5327: reviewTriggerEligible replaces the old two-stage exclusion with
+	// the same include-list guard OnReviewRequested uses.
+	if reviewTriggerEligible(pr.Stage) &&
+		c.config.ReviewFeedback != nil && c.config.ReviewFeedback.Enabled {
+		// GH-5266: ghPR is the same live fetch used above for
+		// checkExternalMergeOrClose/reAdoptHeldRebasePR — reuse it so the
+		// review-hold cutoff anchors on the PR's own GitHub creation time,
+		// which stays correct across a reconciler re-adoption (unlike
+		// pr.CreatedAt, which the reconciler resets to time.Now()).
+		if c.hasChangesRequested(ctx, pr, ghPR) {
+			c.log.Info("detected changes_requested review in polling mode",
+				"pr", pr.PRNumber,
+				"stage", pr.Stage,
 			)
-
-			// TASK-324: `snap` is a detached snapshot from GetActivePRs. Re-fetch the
-			// LIVE pointer by number so the pre-ProcessPR mutations below (and
-			// checkExternalMergeOrClose) operate on the shared state under its mutex.
-			c.mu.RLock()
-			pr, ok := c.activePRs[snap.PRNumber]
-			c.mu.RUnlock()
-			if !ok {
-				// PR was removed between snapshot and now — skip.
-				continue
-			}
-
-			// Fetch PR once, use twice - cache to avoid redundant API calls
-			ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, pr.PRNumber)
-			if err != nil {
-				var rlErr *github.RateLimitError
-				if errors.As(err, &rlErr) {
-					wait := c.enterRateLimitCooldown(rlErr.RetryAfter)
-					c.log.Warn("processAllPRs: GitHub rate limit hit, pausing PR processing until cooldown elapses",
-						"pr", pr.PRNumber, "cooldown", wait, "error", err)
-					return
-				}
-				if isNotFoundError(err) {
-					pr.mu.Lock()
-					pr.NotFoundCount++
-					notFoundCount := pr.NotFoundCount
-					pr.mu.Unlock()
-					if notFoundCount >= notFoundEvictionThreshold {
-						c.evictNotFoundPR(pr.PRNumber)
-						continue
-					}
-					c.log.Warn("failed to fetch PR", "pr", pr.PRNumber, "error", err, "not_found_count", notFoundCount)
-					continue
-				}
-				c.log.Warn("failed to fetch PR", "pr", pr.PRNumber, "error", err)
-				continue
-			}
-			pr.mu.Lock()
-			pr.NotFoundCount = 0
-			pr.mu.Unlock()
-
-			// GH-5494: record any new review verdicts before the merge check
-			// below can remove the PR from tracking.
-			c.collectActivePRReviews(ctx, pr)
-
-			// TASK-324: hold pr.mu around the external-merge/close check and the
-			// polling-mode changes-requested read-modify-write + persist. Release it
-			// BEFORE calling ProcessPR, which re-acquires pr.mu for its whole body
-			// (Go's sync.Mutex is non-reentrant). Lock ordering preserved: pr.mu is
-			// taken before any c.mu that checkExternalMergeOrClose→removePR acquires.
-			pr.mu.Lock()
-			externallyResolved := c.checkExternalMergeOrClose(ctx, pr, ghPR)
-			if externallyResolved {
-				pr.mu.Unlock()
-				continue
-			}
-
-			// GH-4610: revive a needs-manual-rebase hold back into the pipeline
-			// once its branch has moved (operator pushed a fix) — a no-op for
-			// every PR not currently held in exactly that state. Must run before
-			// ProcessPR, which treats StageFailed as terminal and would never
-			// look at this PR again otherwise.
-			c.reAdoptHeldRebasePR(ctx, pr, ghPR)
-
-			// GH-5066 leg 2b: revive a StageFailed PR whose failure implicated
-			// a non-default base once GitHub has retargeted it back to the
-			// default branch — a no-op for every PR whose TargetBranch was
-			// already the default (a genuine, unrelated terminal failure). Must
-			// also run before ProcessPR for the same reason as reAdoptHeldRebasePR
-			// above.
-			c.redriveFailedPRForBaseRetarget(ctx, pr, ghPR)
-
-			// GH-5378: revive a CI-fix-size-guard hold back into the pipeline
-			// once its branch has moved — a no-op for every PR not currently
-			// held in exactly that state. Must also run before ProcessPR for
-			// the same reason as reAdoptHeldRebasePR above.
-			c.redriveSizeGuardHeldPR(ctx, pr, ghPR)
-
-			// Detect changes_requested reviews in polling mode (webhook mode uses OnReviewRequested).
-			// GH-5327: reviewTriggerEligible replaces the old two-stage exclusion with
-			// the same include-list guard OnReviewRequested uses.
-			if reviewTriggerEligible(pr.Stage) &&
-				c.config.ReviewFeedback != nil && c.config.ReviewFeedback.Enabled {
-				// GH-5266: ghPR is the same live fetch used above for
-				// checkExternalMergeOrClose/reAdoptHeldRebasePR — reuse it so the
-				// review-hold cutoff anchors on the PR's own GitHub creation time,
-				// which stays correct across a reconciler re-adoption (unlike
-				// pr.CreatedAt, which the reconciler resets to time.Now()).
-				if c.hasChangesRequested(ctx, pr, ghPR) {
-					c.log.Info("detected changes_requested review in polling mode",
-						"pr", pr.PRNumber,
-						"stage", pr.Stage,
-					)
-					pr.Stage = StageReviewRequested
-					c.persistPRState(pr)
-				}
-			}
-			pr.mu.Unlock()
-
-			if err := c.ProcessPR(ctx, pr.PRNumber, ghPR); err != nil {
-				// Error already logged in ProcessPR
-				continue
-			}
+			pr.Stage = StageReviewRequested
+			c.persistPRState(pr)
 		}
 	}
+	pr.mu.Unlock()
+
+	process := c.ProcessPR
+	if c.processPRFn != nil {
+		process = c.processPRFn
+	}
+	// Error already logged in ProcessPR
+	_ = process(ctx, pr.PRNumber, ghPR)
+	return false
 }
 
 // isNotFoundError reports whether err represents a GitHub API 404 response.

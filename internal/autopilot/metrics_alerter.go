@@ -189,6 +189,18 @@ func (ma *MetricsAlerter) evaluate() {
 		}
 	}
 
+	// GH-5541: tick liveness. LastTickAt is zero until the first tick, so a
+	// controller that hasn't started its loop yet never reads as stale.
+	var lastTick time.Time
+	if m := ma.controller.Metrics(); m != nil {
+		lastTick = m.Snapshot().LastTickAt
+	}
+	var pollInterval time.Duration
+	if ma.controller.config != nil {
+		pollInterval = ma.controller.config.CIPollInterval
+	}
+	tickAgeSec, tickLimitSec, tickStale := tickStaleness(lastTick, pollInterval, time.Now())
+
 	event := alerts.Event{
 		Type:      alerts.EventTypeAutopilotMetrics,
 		TaskID:    "autopilot",
@@ -208,6 +220,10 @@ func (ma *MetricsAlerter) evaluate() {
 			"deadlock_alert_sent": fmt.Sprintf("%t", deadlockAlertSent),
 			"last_known_state":    lastKnownState,
 			"last_known_pr":       fmt.Sprintf("%d", lastKnownPR),
+			// GH-5541: tick liveness
+			"tick_age_seconds":             fmt.Sprintf("%.0f", tickAgeSec),
+			"tick_stale_threshold_seconds": fmt.Sprintf("%.0f", tickLimitSec),
+			"tick_stale":                   fmt.Sprintf("%t", tickStale),
 		},
 		Timestamp: time.Now(),
 	}
@@ -220,6 +236,31 @@ func (ma *MetricsAlerter) evaluate() {
 	if noProgressMin >= 60 && !deadlockAlertSent && len(activePRs) > 0 {
 		ma.controller.MarkDeadlockAlertSent()
 	}
+}
+
+// tickStaleFactor is how many poll intervals the PR loop may go without
+// progress before the tick-liveness alert fires (GH-5541).
+const tickStaleFactor = 3
+
+// idlePollIntervalFloor is the slowest interval Controller.Run's ticker uses
+// (idle backoff), so it is the floor for the staleness threshold — otherwise an
+// idle controller polling every 60s would read as stale against a 10s config.
+const idlePollIntervalFloor = 60 * time.Second
+
+// tickStaleness reports the age of the last PR-loop tick, the staleness
+// threshold (3x the longest interval the loop legitimately uses), and whether
+// the tick is stale. A zero lastTick (loop not started) is never stale.
+func tickStaleness(lastTick time.Time, pollInterval time.Duration, now time.Time) (ageSec, limitSec float64, stale bool) {
+	interval := pollInterval
+	if interval < idlePollIntervalFloor {
+		interval = idlePollIntervalFloor
+	}
+	limit := tickStaleFactor * interval
+	if lastTick.IsZero() {
+		return 0, limit.Seconds(), false
+	}
+	age := now.Sub(lastTick)
+	return age.Seconds(), limit.Seconds(), age > limit
 }
 
 // RecordCircuitBreakerTrip records a circuit breaker trip and checks if escalation is needed.

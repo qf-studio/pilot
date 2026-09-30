@@ -58,6 +58,7 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		APIErrors:                  make(map[string]int64),
 		LabelCleanups:              make(map[string]int64),
 		ApprovalPersistMisses:      make(map[string]int64),
+		StageTimeouts:              make(map[string]int64),
 		TokensConsumed:             make(map[tokenKey]int64),
 		ExecutionCostUSD:           make(map[string]float64),
 		ExecutionsByResult:         make(map[execKey]int64),
@@ -133,6 +134,14 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		}
 		for k, v := range s.ApprovalPersistMisses {
 			agg.ApprovalPersistMisses[k] += v
+		}
+		for k, v := range s.StageTimeouts {
+			agg.StageTimeouts[k] += v
+		}
+		// GH-5541: the fleet-wide liveness gauge is the STALEST controller's
+		// tick — a single wedged PR loop must not be masked by healthy peers.
+		if !s.LastTickAt.IsZero() && (agg.LastTickAt.IsZero() || s.LastTickAt.Before(agg.LastTickAt)) {
+			agg.LastTickAt = s.LastTickAt
 		}
 		for k, v := range s.TokensConsumed {
 			agg.TokensConsumed[k] += v

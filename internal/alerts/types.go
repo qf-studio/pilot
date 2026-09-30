@@ -40,6 +40,10 @@ const (
 	// Deadlock detection (GH-849)
 	AlertTypeDeadlock AlertType = "deadlock"
 
+	// Autopilot PR-loop liveness (GH-5541): the tick itself stopped, distinct
+	// from deadlock (ticks run but no PR changes stage).
+	AlertTypeTickStale AlertType = "autopilot_tick_stale"
+
 	// Escalation alerts (GH-848)
 	AlertTypeEscalation AlertType = "escalation"
 
@@ -470,6 +474,19 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    1 * time.Hour,
 			Description: "Alert when autopilot has no state transitions for 1 hour",
+		},
+		// Tick liveness (GH-5541): the PR-processing loop itself stopped. The
+		// threshold (3x the poll interval) is computed by MetricsAlerter from
+		// the controller's own config and arrives in the event metadata.
+		{
+			Name:        "autopilot_tick_stale",
+			Type:        AlertTypeTickStale,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when the autopilot PR-processing loop has not ticked for 3x the poll interval",
 		},
 		// Eval regression detection (GH-2065)
 		{
