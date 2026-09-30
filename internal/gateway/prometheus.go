@@ -11,6 +11,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -475,6 +476,13 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 			writeCounter(w, "pilot_panics_total", count, "component", component)
 		}
 	}
+
+	// pilot_executor_result_exit_grace_kills_total (GH-5530): process-group kills
+	// issued because the Claude Code subprocess outlived its grace after a
+	// successful result event (orphaned tool shell holding the pipes).
+	writeHelp(w, "pilot_executor_result_exit_grace_kills_total", "Total Claude Code process-group kills issued because the process outlived executor.claude_code.result_exit_grace after a successful result event. Resets to 0 on restart")
+	writeType(w, "pilot_executor_result_exit_grace_kills_total", "counter")
+	writeCounter(w, "pilot_executor_result_exit_grace_kills_total", executor.ResultExitGraceKillsTotal())
 
 	// --- Eval metrics (optional; only emitted when an EvalMetricsSource is wired) ---
 	// pilot_eval_tasks_total / pilot_eval_pass_ratio (GH-4922): replaces the

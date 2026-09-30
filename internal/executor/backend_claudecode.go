@@ -755,6 +755,55 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	// without this flag they were silently mislabeled oom_killed.
 	var heartbeatKilled, watchdogKilled atomic.Bool
 
+	// GH-5530: after a successful result event the session is finished; if the
+	// process is still alive when the grace expires (an orphaned Bash tool
+	// shell keeping the pipes open), kill the process group and finalize as
+	// the success the model already reported — not as a failure or timeout.
+	var resultGraceKilled atomic.Bool
+	var resultGraceOnce sync.Once
+	armResultExitGrace := func() {
+		grace := b.config.resultExitGrace()
+		if grace <= 0 {
+			return
+		}
+		resultGraceOnce.Do(func() {
+			logging.SafeGo("executor-backend-claudecode", func() {
+				timer := time.NewTimer(grace)
+				defer timer.Stop()
+				select {
+				case <-cmdDone:
+					return
+				case <-timer.C:
+				}
+				pid := cmd.Process.Pid
+				b.log.Warn("Process still alive after successful result event; killing process group (GH-5530)",
+					slog.String("task_id", opts.TaskID),
+					slog.Int("pid", pid),
+					slog.Duration("result_exit_grace", grace),
+					slog.Any("surviving_children", survivingChildCmdlines(pid)),
+				)
+				if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
+					b.log.Error("Failed to kill process group after result-exit grace",
+						slog.String("task_id", opts.TaskID),
+						slog.Int("pid", pid),
+						slog.Any("error", err),
+					)
+					return
+				}
+				resultGraceKilled.Store(true)
+				resultExitGraceKills.Add(1)
+				// A survivor outside the group could still hold the pipes and
+				// block the readers; force-close them after a short drain.
+				select {
+				case <-cmdDone:
+				case <-time.After(resultExitGraceDrain):
+					_ = stdout.Close()
+					_ = stderr.Close()
+				}
+			})
+		})
+	}
+
 	// Heartbeat tracking: store last event time as Unix nano (atomic int64)
 	var lastEventAt atomic.Int64
 	lastEventAt.Store(time.Now().UnixNano())
@@ -973,6 +1022,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 						} else {
 							result.Output = event.Message
 							result.SawSuccessResult = true // GH-2107: track successful result for timeout recovery
+							armResultExitGrace()           // GH-5530
 						}
 						// Cancel heartbeat — process is finishing, don't kill it
 						cancelHeartbeat()
@@ -1127,6 +1177,18 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	}
 
 	if err != nil {
+		// GH-5530: our own grace-timer kill after a success result — the work
+		// is done, so this is a completion, never a failure.
+		if resultGraceKilled.Load() && result.SawSuccessResult {
+			b.log.Info("Completing run: process group killed after result-exit grace (GH-5530)",
+				slog.String("task_id", opts.TaskID),
+				slog.String("output_preview", truncate(result.Output, 200)),
+			)
+			result.Success = true
+			result.Stderr = stderrOutput.String()
+			return result, nil
+		}
+
 		// GH-2107: If a successful result event was seen before the process exited with
 		// an error, the work was completed but Claude Code timed out on a subsequent turn
 		// (e.g., writing final summary). Recover as success.

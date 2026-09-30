@@ -1031,6 +1031,30 @@ type ClaudeCodeConfig struct {
 	// project's own test suite legitimately reads). Names only — never
 	// logged with values. Default: empty (no exceptions).
 	EnvPassthrough []string `yaml:"env_passthrough,omitempty"`
+
+	// ResultExitGrace bounds how long the backend waits for the subprocess to
+	// exit after a successful stream-json `result` event (GH-5530). A Bash
+	// tool call that outlived its tool timeout can keep the process — and the
+	// stdout/stderr pipes — alive after the model already reported completion;
+	// once the grace expires the process group is killed and the run is
+	// finalized as a success with the parsed result. Zero means the default
+	// (DefaultResultExitGrace); a negative value disables the kill.
+	ResultExitGrace time.Duration `yaml:"result_exit_grace,omitempty"`
+}
+
+// DefaultResultExitGrace is the default ClaudeCodeConfig.ResultExitGrace (GH-5530).
+const DefaultResultExitGrace = 30 * time.Second
+
+// resultExitGrace resolves the effective grace: 0 → default, <0 → disabled
+// (returned as 0, meaning "never arm the timer").
+func (c *ClaudeCodeConfig) resultExitGrace() time.Duration {
+	if c == nil || c.ResultExitGrace == 0 {
+		return DefaultResultExitGrace
+	}
+	if c.ResultExitGrace < 0 {
+		return 0
+	}
+	return c.ResultExitGrace
 }
 
 // GhGuardEnabled reports whether the gh-guard shim (GH-4671) should be
