@@ -2560,6 +2560,17 @@
           "api",
           "context"
         ]
+      },
+      "TASK-503": {
+        "path": ".agent/tasks/TASK-503-evidence-classifier-command-passes-phrasing.md",
+        "title": "fix(executor): acceptance-evidence classifier treats \"`<allowlisted command>` passes\" as a paste-output item",
+        "status": "in-progress",
+        "concepts": [
+          "deployment",
+          "context",
+          "authentication",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -9649,6 +9660,26 @@
       "from": "mem-200",
       "to": "TASK-405",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-503",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-503",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-503",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-503",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -9919,7 +9950,8 @@
       "mem-194",
       "TASK-498",
       "console-email-transport-ses-not-email-service-repo",
-      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb"
+      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb",
+      "TASK-503"
     ],
     "auto-merge": [
       "mem-103"
@@ -10206,7 +10238,8 @@
       "mem-192",
       "mem-193",
       "mem-194",
-      "TASK-498"
+      "TASK-498",
+      "TASK-503"
     ],
     "conversational-bot": [
       "mem-036",
@@ -10507,7 +10540,8 @@
       "s3-accessdenied-from-admin-role-is-bucket-policy-condition",
       "ecs-az-rebalancing-requires-az-spread-placement-first",
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
-      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb"
+      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb",
+      "TASK-503"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -11481,7 +11515,8 @@
       "mem-193",
       "mem-194",
       "TASK-498",
-      "executor-alert-event-strings-must-equal-alerts-eventtype"
+      "executor-alert-event-strings-must-equal-alerts-eventtype",
+      "TASK-503"
     ],
     "testing-quality": [
       "TASK-384",
@@ -11857,11 +11892,11 @@
       "main-history-rewritten-2026-09-24-internal-notes-purge"
     ]
   },
-  "last_updated": "2026-09-30T10:59:18.478964+00:00",
+  "last_updated": "2026-09-30T12:05:45.492443+00:00",
   "stats": {
-    "total_nodes": 593,
-    "total_edges": 505,
-    "memory_count": 327
+    "total_nodes": 595,
+    "total_edges": 509,
+    "memory_count": 328
   },
   "metadata": {}
 }
