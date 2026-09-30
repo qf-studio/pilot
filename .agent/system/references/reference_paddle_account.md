@@ -25,10 +25,11 @@ Decisions NOT taken (founder, 2026-09-12): no 7-day trial, no annual price, no G
 |---|---|---|
 | Product | `pro_01m2b1xhwtvnmh5atk6zpdagdb` | "Pilot Cloud — Design Partner", tax category SaaS, Active |
 | Price | `pri_01m2b1zrqvpp1388t77wqystqt` | "Design Partner — monthly", internal `design-partner-monthly-usd`, USD 500.00 / month, recurring, no trial, quantity 1–1, Active (used by the 09-14 smoke → immutable) |
-| Price | `pri_01m3ppe0ec65bq7312dpyf1mtg` | **created 2026-09-29 via API** (Navigator, L7): name "Design Partner", internal `design-partner-monthly-usd-299`, **USD 299.00 / month**, recurring, tax mode account default, no trial, quantity 1–1, `custom_data.plan=design-partner`, Active. Not yet used by any transaction. Candidate `PILOT_CONSOLE_BILLING_PRICE_ID` once $299 is confirmed. |
+| Price | `pri_01m3ppe0ec65bq7312dpyf1mtg` | **created 2026-09-29 via API** (Navigator, L7): name "Design Partner", internal `design-partner-monthly-usd-299`, **USD 299.00 / month**, recurring, tax mode account default, no trial, quantity 1–1, `custom_data.plan=design-partner`, **ARCHIVED 2026-09-30** (superseded by the $499 decision, never used). |
+| Price | `pri_01m3rf7qws3gzscj9fttg4aywe` | **created 2026-09-30 via API** (Navigator, L7): name "Pilot Console", internal `pilot-console-monthly-usd-499`, **USD 499.00 / month**, recurring, tax mode account default, no trial, quantity 1–1, `custom_data.plan=pilot-console`, Active, unused. **This is the `PILOT_CONSOLE_BILLING_PRICE_ID` candidate**; live twin pending. |
 | (archived) | `pro_01m2b1xhwfc50f3c344awy8pj9` | duplicate from a double submit, archived immediately, no prices |
 
-Sandbox → live mapping: `pro_01m2b1xhwtvnmh5atk6zpdagdb` → `pro_01m2az5r1fm3pm71f3hpdyh704`; `pri_01m2b1zrqvpp1388t77wqystqt` → `pri_01m2azamdhj869n9vg6hc1wy85` ($500); `pri_01m3ppe0ec65bq7312dpyf1mtg` ($299) → **no live twin yet** (create additively in live after the price decision; never edit the $500 one).
+Sandbox → live mapping: `pro_01m2b1xhwtvnmh5atk6zpdagdb` → `pro_01m2az5r1fm3pm71f3hpdyh704`; `pri_01m2b1zrqvpp1388t77wqystqt` → `pri_01m2azamdhj869n9vg6hc1wy85` ($500); `pri_01m3ppe0ec65bq7312dpyf1mtg` ($299) archived 09-30, no twin; `pri_01m3rf7qws3gzscj9fttg4aywe` ($499, decided 09-30) → **no live twin yet** (create additively in live; never edit the $500 one).
 
 ## Sandbox settings (2026-09-12)
 - **Default payment link**: `https://localhost:5173/billing/checkout` (entered as http, Paddle forced https). Consequence for L6: the local Vite dev server must serve HTTPS for `/billing/checkout` (Vite basic-ssl plugin) or the link gets pointed at a tunnel. Sandbox approves any domain.

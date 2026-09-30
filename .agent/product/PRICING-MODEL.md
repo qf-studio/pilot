@@ -7,6 +7,8 @@ positioning and competitor sections only.
 
 ## The model
 
+> **DECISION 2026-09-30 (founder): Pilot Console is USD 499/month, with a Sonnet 5.5 token volume INCLUDED; usage beyond the included volume runs on the customer's own Anthropic API key.** This supersedes the bring-your-own-tokens model and the $299 recommendation below (kept for the reasoning). Included volume: number pending (recommendation in `UNIT-ECONOMICS.md` § "$499 with included tokens"). Sandbox price object `pri_01m3rf7qws3gzscj9fttg4aywe` ($499); the $299 sandbox price is archived; live twin pending.
+
 > **One flat monthly fee for the box and Pilot itself. Model tokens are the
 > customer's own, billed by Anthropic directly on their key. We default to
 > Sonnet 5 and let them change it in settings.**

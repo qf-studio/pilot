@@ -161,3 +161,27 @@ At a $50/hour loaded developer rate:
 - `system/references/reference_paddle_account.md` — USD 500.00/month catalog
 - Founder box ledger (`~/.pilot/data/pilot.db`, `executions`) — all measured values
 - `product/PRICING.md` — superseded tier model, kept for history
+
+## $499 with included tokens (added 2026-09-30 after the founder's price decision)
+
+The tables above assume tokens are bring-your-own (token COGS zero). The decided plan is **$499/month with a Sonnet 5.5 token volume included**, overage on the customer's own key, so token COGS is now ours up to the cap. Fixed lines at $499: Paddle 5% + $0.50 = **$25.45**; infra typical **$52** (savings plan $40). Margin before tokens: **$421.55** (84.5%).
+
+Measured token cost per shipped task, box ledger, 30 days to 2026-09-30, completed executions only:
+
+| Model | tasks | $ per shipped task | note |
+|---|---|---|---|
+| `claude-sonnet-5` | 177 | **$3.15** | full mix of ticket sizes |
+| `claude-sonnet-5-5` | 15 | **$0.64** | small-PR-biased sample; bench says ~4x cheaper per line than Sonnet 5, so plan on **~$1.00** for a mixed workload until n grows |
+
+Margin at $499 by included volume (typical infra, Sonnet 5.5 at the planning figure $1.00/ticket; the Sonnet 5 column is the stress case if the model regresses or the mix is heavy):
+
+| Included volume | Token COGS @ $1.00 | Margin | % | Token COGS @ $3.15 | Margin | % |
+|---|---|---|---|---|---|---|
+| 50 tickets | $50 | $372 | 74% | $158 | $264 | 53% |
+| 100 tickets | $100 | $322 | 64% | $315 | $107 | 21% |
+| 150 tickets | $150 | $272 | 54% | $473 | -$51 | -10% |
+| 200 tickets | $200 | $222 | 44% | $630 | -$208 | -42% |
+
+**Recommendation: include 100 tickets/month, enforced internally as a $100 token allowance at Anthropic list price**, hard cap, then the tenant's own key takes over (the old `PRICING.md` Team tier already framed the plan in tickets; customers read tickets, we meter dollars). 100 tickets covers the 20/50/100 rows of the intensity table above, so most design partners never pay a second bill, and the stress case still clears break-even. Revisit once 30 days of 5.5 data exist.
+
+What this changes in the product (not in the tables): the tenant box must run on a platform-owned Anthropic key with a per-tenant allowance, the console must meter spend against it (the S5 usage rollup exists), and onboarding must make the customer key optional instead of mandatory. Tracked as TASK-502.
