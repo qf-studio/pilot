@@ -227,6 +227,17 @@ const (
 	// executor string straight to EventType. Metadata carries pid,
 	// last_event_age, idle_minutes and heartbeat_timeout.
 	EventTypeHeartbeatTimeout EventType = "heartbeat_timeout"
+
+	// Task timeout and watchdog kill events (GH-5500): emitted by the executor
+	// runner when a task exceeds its configured timeout (task_timeout) or the
+	// watchdog kills a runaway subprocess (watchdog_kill). The strings must
+	// equal executor.AlertEventTypeTaskTimeout / AlertEventTypeWatchdogKill
+	// because EngineAdapter casts the executor string straight to EventType.
+	// task_timeout metadata carries complexity, timeout and duration_ms;
+	// watchdog_kill metadata carries pid, watchdog_timeout, configured_timeout
+	// and complexity.
+	EventTypeTaskTimeout  EventType = "task_timeout"
+	EventTypeWatchdogKill EventType = "watchdog_kill"
 )
 
 const (
@@ -722,6 +733,10 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleEnvClassFailureStreak(ctx, event)
 	case EventTypeHeartbeatTimeout:
 		e.handleHeartbeatTimeout(ctx, event)
+	case EventTypeTaskTimeout:
+		e.handleTaskTimeout(ctx, event)
+	case EventTypeWatchdogKill:
+		e.handleWatchdogKill(ctx, event)
 	case EventTypeDeadManAttempt:
 		e.handleDeadManAttempt(event)
 	case EventTypeDeadManSuccess:
@@ -1177,6 +1192,55 @@ func (e *Engine) handleHeartbeatTimeout(ctx context.Context, event Event) {
 	}
 	if !matched {
 		e.logger.Warn("heartbeat timeout event has no matching rule — alert dropped silently",
+			slog.String("task_id", event.TaskID),
+			slog.String("pid", event.Metadata["pid"]))
+	}
+}
+
+// handleTaskTimeout fires AlertTypeTaskTimeout rules when the executor reports
+// that a task exceeded its configured timeout (GH-5500). The executor already
+// applied the timeout, so no Condition-based counting happens here. The task
+// also fails separately (task_failed) by design; this is the specific alert.
+func (e *Engine) handleTaskTimeout(ctx context.Context, event Event) {
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeTaskTimeout {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			message := fmt.Sprintf("Task timeout: task %s exceeded its %s timeout (project %s)",
+				event.TaskID, event.Metadata["timeout"], event.Project)
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("task timeout event has no matching rule — alert dropped silently",
+			slog.String("task_id", event.TaskID),
+			slog.String("timeout", event.Metadata["timeout"]))
+	}
+}
+
+// handleWatchdogKill fires AlertTypeWatchdogKill rules when the executor's
+// watchdog kills a runaway subprocess (GH-5500). The task also fails
+// separately (task_failed) by design; this is the specific alert.
+func (e *Engine) handleWatchdogKill(ctx context.Context, event Event) {
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeWatchdogKill {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			message := fmt.Sprintf("Watchdog kill: process %s killed after %s (task %s, project %s)",
+				event.Metadata["pid"], event.Metadata["watchdog_timeout"], event.TaskID, event.Project)
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("watchdog kill event has no matching rule — alert dropped silently",
 			slog.String("task_id", event.TaskID),
 			slog.String("pid", event.Metadata["pid"]))
 	}
