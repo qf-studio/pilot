@@ -1239,6 +1239,9 @@ type Runner struct {
 	// evidence runner executes them. Set in NewRunnerWithConfig; nil means
 	// the regex classifier.
 	acceptanceClassifier AcceptanceClassifier
+	// basePresenceClassifier optionally filters the dispatch base-presence
+	// gate's extracted path spans (TASK-506). nil means regex only.
+	basePresenceClassifier BasePresenceClassifier
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
@@ -1331,6 +1334,7 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 	runner := NewRunnerWithBackend(backend)
 	runner.config = config
 	runner.acceptanceClassifier = newAcceptanceClassifier(config, runner.log)
+	runner.basePresenceClassifier = newBasePresenceClassifier(config, runner.log)
 
 	// Configure model routing, timeouts, and effort from config
 	if config != nil {

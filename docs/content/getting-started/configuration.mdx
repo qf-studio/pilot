@@ -1522,7 +1522,7 @@ data:
 
 ## TypeSafe (Jev)
 
-Shared connection settings for optional TypeSafe System One (Jev) classifiers, such as `executor.acceptance_evidence.classifier`. The block is top-level and entirely optional.
+Shared connection settings for optional TypeSafe System One (Jev) classifiers, such as `executor.acceptance_evidence.classifier` and `executor.base_presence.classifier`. The block is top-level and entirely optional.
 
 ```yaml
 typesafe:
@@ -1538,8 +1538,29 @@ typesafe:
 | `typesafe.timeout` | duration | `5s` | Bound on a single call; unset, invalid or non-positive values fall back to `5s`. Gates fall back to their regex floor on timeout or error |
 
 <Callout type="warning">
-The API key is read **only** from the `TYPESAFE_API_KEY` environment variable, never from the config file. Only short gate inputs (for example acceptance-checklist item text, secret-redacted and length-capped) are sent; no source code or diffs leave the machine.
+The API key is read **only** from the `TYPESAFE_API_KEY` environment variable, never from the config file. Only short gate inputs (for example acceptance-checklist item text, or a path span plus one sentence of context, secret-redacted and length-capped) are sent; no source code, diffs or whole issue bodies leave the machine.
 </Callout>
+
+### Base-presence path classifier
+
+The dispatch base-presence gate holds a task when a backticked span in the issue body looks like a repo path and is missing from the default branch. Spans that are not existing prerequisites (a file the task will create, a git range such as `origin/main..HEAD`, a home-directory path, a Go type) cause false holds. With `executor.base_presence.classifier.provider: jev`, Jev classifies each extracted span as `existing_prerequisite`, `to_be_created` or `not_a_repo_file`. The regex extractor always runs first and stays the floor; Jev can only remove spans from the probe list.
+
+```yaml
+executor:
+  base_presence:
+    classifier:
+      provider: regex       # regex | jev
+      min_confidence: 0.8   # 0..1
+      shadow: true          # log would-be skips, don't change behaviour
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `base_presence.classifier.provider` | string | `regex` | `regex` or `jev`. `jev` takes effect only when `TYPESAFE_API_KEY` is set; otherwise Pilot warns once and stays regex. The default never constructs a client |
+| `base_presence.classifier.min_confidence` | float | `0.8` | Confidence (0..1) needed to remove a span in live mode; out-of-range values fall back to `0.8` |
+| `base_presence.classifier.shadow` | bool | `true` | Gate behaves exactly as without the classifier; set `false` to drop spans Jev classifies `to_be_created` or `not_a_repo_file` at or above `min_confidence` |
+
+In shadow mode one per-task info line (`Base-presence classifier`) logs `spans`, `agreed`, `would_skip`, `low_confidence`, `errors` and `latency_ms`. Low confidence, missing or invalid answers and any API error keep every span. Only each span plus one redacted, length-capped sentence of surrounding text is sent, never the whole body.
 
 ---
 

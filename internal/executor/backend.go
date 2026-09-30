@@ -416,6 +416,10 @@ type BackendConfig struct {
 	// results in the PR body. Default: enabled.
 	AcceptanceEvidence *AcceptanceEvidenceConfig `yaml:"acceptance_evidence,omitempty"`
 
+	// BasePresence holds the optional TypeSafe (Jev) classifier for the
+	// dispatch base-presence gate (TASK-506/GH-5543). Nil means regex only.
+	BasePresence *BasePresenceConfig `yaml:"base_presence,omitempty"`
+
 	// TypeSafe is the shared TypeSafe (Jev) connection block. It is populated
 	// by config.Load from the top-level `typesafe:` YAML key; the runner reads
 	// it from here. The API key comes from TYPESAFE_API_KEY only.
@@ -898,6 +902,49 @@ func (c *AcceptanceEvidenceConfig) EffectiveShadow() bool {
 		return true
 	}
 	return *c.Classifier.Shadow
+}
+
+// BasePresenceConfig configures the dispatch base-presence gate's optional
+// model classifier (TASK-506/GH-5543). The regex extractor
+// (ExtractReferencedPaths) always runs first and stays the floor.
+//
+//	executor:
+//	  base_presence:
+//	    classifier:
+//	      provider: regex   # regex (default) | jev
+//	      min_confidence: 0.8
+//	      shadow: true
+type BasePresenceConfig struct {
+	// Classifier mirrors acceptance_evidence.classifier: same keys, same
+	// defaults, same TYPESAFE_API_KEY requirement.
+	Classifier *AcceptanceClassifierConfig `yaml:"classifier,omitempty"`
+}
+
+// EffectiveClassifierProvider returns "regex" unless provider is "jev" and
+// TYPESAFE_API_KEY is non-empty. Safe on nil receivers.
+func (c *BasePresenceConfig) EffectiveClassifierProvider() string {
+	if c == nil {
+		return AcceptanceClassifierRegex
+	}
+	return (&AcceptanceEvidenceConfig{Classifier: c.Classifier}).EffectiveClassifierProvider()
+}
+
+// EffectiveMinConfidence returns the configured minimum confidence, or 0.8
+// when unset or outside 0..1. Safe on nil receivers.
+func (c *BasePresenceConfig) EffectiveMinConfidence() float64 {
+	if c == nil {
+		return defaultAcceptanceClassifierMinConfidence
+	}
+	return (&AcceptanceEvidenceConfig{Classifier: c.Classifier}).EffectiveMinConfidence()
+}
+
+// EffectiveShadow returns whether the classifier runs in shadow mode; default
+// true. Safe on nil receivers.
+func (c *BasePresenceConfig) EffectiveShadow() bool {
+	if c == nil {
+		return true
+	}
+	return (&AcceptanceEvidenceConfig{Classifier: c.Classifier}).EffectiveShadow()
 }
 
 // IsEnabled reports whether the acceptance-evidence gate should run,
