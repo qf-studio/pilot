@@ -178,10 +178,19 @@ func TestAcceptanceClassifier_JevMerge(t *testing.T) {
 		},
 		{
 			name:       "regex mutation shape is never overridden to paste_output (#5486)",
-			criteria:   "delete the output line in foo.go line 42 -> TestFoo fails",
+			criteria:   "delete the output line in `foo.go` line 42 -> TestFoo fails",
 			answers:    map[string]typesafe.Answer{"kind_1": choice("paste_output", 0.99)},
 			wantKind:   AcceptanceItemMutation,
 			wantTarget: "TestFoo",
+			wantReason: typesafe.ReasonLowConfidence,
+			wantWould:  typesafe.ReasonLowConfidence,
+		},
+		{
+			name:       "regex mutation with a backtick span stays mutation with no commands at high-confidence paste_output (#5486)",
+			criteria:   "delete the nil check in `internal/executor/lifecycle.go` -> TestX fails",
+			answers:    map[string]typesafe.Answer{"kind_1": choice("paste_output", 0.99)},
+			wantKind:   AcceptanceItemMutation,
+			wantTarget: "TestX",
 			wantReason: typesafe.ReasonLowConfidence,
 			wantWould:  typesafe.ReasonLowConfidence,
 		},
@@ -221,6 +230,9 @@ func TestAcceptanceClassifier_JevMerge(t *testing.T) {
 			}
 			if got.MutationTarget != tt.wantTarget {
 				t.Errorf("MutationTarget = %q, want %q", got.MutationTarget, tt.wantTarget)
+			}
+			if tt.wantKind == AcceptanceItemMutation && len(got.Commands) != 0 {
+				t.Errorf("Commands = %v, want none for a mutation item", got.Commands)
 			}
 			if stats.Reasons[0] != tt.wantReason {
 				t.Errorf("Reason = %q, want %q", stats.Reasons[0], tt.wantReason)
