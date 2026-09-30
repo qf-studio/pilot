@@ -44,6 +44,10 @@ The class is broader than fake fixtures — everything backticked that is not li
 
 Recovery depends on state: if no execution row exists yet, `gh issue edit` clears it next poll (GH-5216 healed live). Once the gate has escalated (label churn + `pilot-needs-human`, execution finalized `skipped`), the paths are cached on the execution row and a body edit does NOT clear it — **close + refile** (mem-175; GH-5145, GH-5246). A gate-held task also shows a done-looking `skipped` row in the queue history — that row is the hold finalization, not delivered work.
 
+### Rule 3c — Single-fix issues with `##` headings and >200 words get epic-decomposed (2026-09-30)
+
+`detectEpic` (`internal/executor/complexity.go`) fires on structural markers (`##`, "phase", "stage", "step") plus >200 words even with zero checkboxes; GH-5527/5529/5530 (bug reports in the Problem/Fix/Acceptance/Refs shape) were all classified `epic` and entered planning mode. For any issue meant to ship as ONE PR: add the `no-decompose` label at creation (`gh issue create --label pilot --label no-decompose`), or keep the body under 200 words. Recovery when it already fired: `pilot task cancel` refuses running rows — kill the Claude child, let the row go terminal, add `no-decompose`, then cycle the `pilot` label (a fresh label event re-arms a canceled/failed GH task; the retry reads live labels and logs `decomposition skipped: no-decompose label`).
+
 ## Rule 4 — Serialize anything that touches shared root files
 
 The parallel scope-overlap guard keys on **directories** named in issue bodies; two issues that both create root files (`package.json`, `tsconfig.json`, lockfiles) are NOT detected as overlapping. Until that's fixed in code, chain such issues with `Blocked by: #N` so they run one at a time.
