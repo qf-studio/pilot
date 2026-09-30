@@ -50,6 +50,31 @@ The parallel scope-overlap guard keys on **directories** named in issue bodies; 
 
 `type(scope): description` — autopilot rejects PR creation otherwise.
 
+## Rule 5b — Write acceptance bullets in the evidence gate's dialect (2026-09-30)
+
+The acceptance-evidence gate (`internal/executor/acceptance_evidence.go`) only
+produces a `## Evidence` block for bullets it can classify. Everything else is
+`other` and renders nothing — the PR body then has NO evidence section and it
+looks like the gate did not run (PR #5512 on v2.276.8: gate ran, five bullets,
+all `other`, zero output).
+
+Two shapes are recognised today:
+
+- **Paste-output** — the bullet contains one of `pasted into the PR body`,
+  `paste the output`, `terminal output`, `evidence in the PR body`,
+  `into the PR body`, `output line`, and the command is in backticks and on
+  the allowlist (`go`, `make`, `npm`, `npx`, `bun`, `bunx`, `pnpm`, `yarn`,
+  `pytest`, `cargo`):
+  `- `go test -race ./internal/alerts/` passes; paste the output into the PR body.`
+- **Mutation pin** — `<change description> -> <TestName> fails`, arrow
+  required, positive polarity only (negated outcomes are not pins):
+  `- delete the `|| mutationNegatedFailsRe.MatchString(outcome)` clause -> TestClassifyAcceptanceItem_NegatedOutcomeIsNotMutation fails`
+
+Not recognised (renders nothing): `go test ./x passes`, `CI green`,
+`tests pass`, `the new test fails when X is reverted` (no arrow), `state the
+pin in the evidence block`. Put at least one bullet of each shape in every
+issue that adds or changes a test.
+
 ## Rule 6 — Per-project config before the first run
 
 In `~/.pilot/config.yaml` for the new project:
