@@ -177,13 +177,8 @@ func ExtractAcceptanceCriteria(body string) []string {
 
 	patterns := append(acceptance.MarkdownPatterns(),
 		regexp.MustCompile(`(?i)acceptance criteria:?\s*\n([\s\S]*?)(?:\n[A-Z]|\z)`))
-	return acceptance.ExtractWith(body, patterns, azureCheckboxItemRe, azureListItemRe)
+	return acceptance.ExtractWith(body, patterns, acceptance.CheckboxItemRe, acceptance.ListItemRe)
 }
-
-var (
-	azureCheckboxItemRe = regexp.MustCompile(`- \[[ x]\] (.+)`)
-	azureListItemRe     = regexp.MustCompile(`- (.+)`)
-)
 
 // BuildTaskPrompt creates a prompt for Claude Code from the task info
 func BuildTaskPrompt(task *TaskInfo) string {

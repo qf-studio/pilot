@@ -128,7 +128,7 @@ func ExtractAcceptanceCriteria(body string) []string {
 		regexp.MustCompile(`(?i)###?\s*criteria\s*\n([\s\S]*?)(?:\n###?|\z)`),
 	}
 	// House-style "## Acceptance" headings come from the shared extractor.
-	mdPatterns = append(mdPatterns, acceptance.MarkdownPatterns()[3:]...)
+	mdPatterns = append(mdPatterns, acceptance.HouseStylePatterns()...)
 
 	allPatterns := append(jiraPatterns, mdPatterns...)
 	// Jira uses [] or [x] checkboxes and * or - bullets.

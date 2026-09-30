@@ -13,30 +13,46 @@ import (
 )
 
 var (
-	checkboxItemRe = regexp.MustCompile(`- \[[ x]\] (.+)`)
-	listItemRe     = regexp.MustCompile(`- (.+)`)
+	// CheckboxItemRe matches a markdown "- [ ] item" / "- [x] item" line and
+	// captures the item text in group 1.
+	CheckboxItemRe = regexp.MustCompile(`- \[[ x]\] (.+)`)
+	// ListItemRe matches a plain markdown "- item" line and captures the item
+	// text in group 1.
+	ListItemRe = regexp.MustCompile(`- (.+)`)
 
-	markdownPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)### acceptance criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
-		regexp.MustCompile(`(?i)### criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
-		regexp.MustCompile(`(?i)## acceptance criteria\s*\n([\s\S]*?)(?:\n##|\z)`),
-		// House-style heading: exactly "Acceptance" (optional trailing colon),
-		// captured until the next heading of the same or higher level.
+	// houseStylePatterns is the "## Acceptance" / "### Acceptance" heading
+	// family: exactly "Acceptance" (optional trailing colon), captured until
+	// the next heading of the same or higher level.
+	houseStylePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?im)^##[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,2}[ \t]|\z)`),
 		regexp.MustCompile(`(?im)^###[ \t]+acceptance:?[ \t]*\r?\n([\s\S]*?)(?:\n#{1,3}[ \t]|\z)`),
 	}
+
+	markdownPatterns = append([]*regexp.Regexp{
+		regexp.MustCompile(`(?i)### acceptance criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
+		regexp.MustCompile(`(?i)### criteria\s*\n([\s\S]*?)(?:\n###|\z)`),
+		regexp.MustCompile(`(?i)## acceptance criteria\s*\n([\s\S]*?)(?:\n##|\z)`),
+	}, houseStylePatterns...)
 )
 
 // MarkdownPatterns returns a copy of the shared markdown heading patterns,
 // so adapters with extra patterns can append to them and call ExtractWith.
+// It includes HouseStylePatterns; adapters that need only that family must
+// use HouseStylePatterns rather than slicing this list by position.
 func MarkdownPatterns() []*regexp.Regexp {
 	return append([]*regexp.Regexp(nil), markdownPatterns...)
+}
+
+// HouseStylePatterns returns a copy of the "## Acceptance" / "### Acceptance"
+// heading patterns, a named subset of MarkdownPatterns.
+func HouseStylePatterns() []*regexp.Regexp {
+	return append([]*regexp.Regexp(nil), houseStylePatterns...)
 }
 
 // Extract returns the acceptance criteria listed under the first matching
 // markdown acceptance heading in body (checkbox items, else plain "- " items).
 func Extract(body string) []string {
-	return ExtractWith(body, markdownPatterns, checkboxItemRe, listItemRe)
+	return ExtractWith(body, markdownPatterns, CheckboxItemRe, ListItemRe)
 }
 
 // ExtractWith is Extract with caller-supplied heading patterns and item
