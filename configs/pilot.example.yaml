@@ -323,6 +323,11 @@ orchestrator:
     merge_method: "squash"
     ci_wait_timeout: 30m
     ci_poll_interval: 30s
+    # GH-5541: per-PR deadline on each stage-handler call in the PR loop. On
+    # expiry autopilot logs a WARN, bumps autopilot_stage_timeouts_total{stage}
+    # and moves on to the next PR (the PR keeps its stage, retried next tick).
+    # Default 5m.
+    stage_timeout: 5m
     approval_source: "telegram"   # telegram, slack, or github-review
 
     # GH-4391: shared GitHub rate-limit budget. The GitHub primary rate limit

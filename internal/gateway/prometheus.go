@@ -226,6 +226,24 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeType(w, "pilot_rate_limit_floor_engaged_total", "counter")
 	writeCounter(w, "pilot_rate_limit_floor_engaged_total", snap.RateLimitFloorEngagements)
 
+	// autopilot_stage_timeouts_total (GH-5541): per-PR stage-handler calls
+	// abandoned by the per-stage deadline. Any nonzero rate means one PR's
+	// stage was blocking the shared PR loop.
+	writeHelp(w, "autopilot_stage_timeouts_total", "Total per-PR stage handler calls abandoned by the per-stage deadline (orchestrator.autopilot.stage_timeout), by stage")
+	writeType(w, "autopilot_stage_timeouts_total", "counter")
+	for stage, count := range snap.StageTimeouts {
+		writeCounter(w, "autopilot_stage_timeouts_total", count, "stage", stage)
+	}
+
+	// autopilot_last_tick_timestamp_seconds (GH-5541): unix time of the PR loop's
+	// last progress. time() minus this value growing past ~3x the poll interval
+	// means the loop is wedged. Omitted until the first tick.
+	writeHelp(w, "autopilot_last_tick_timestamp_seconds", "Unix timestamp of the autopilot PR-processing loop's last progress (tick start or a PR finishing); stalest controller when several run")
+	writeType(w, "autopilot_last_tick_timestamp_seconds", "gauge")
+	if !snap.LastTickAt.IsZero() {
+		writeGauge(w, "autopilot_last_tick_timestamp_seconds", float64(snap.LastTickAt.UnixNano())/1e9)
+	}
+
 	// pilot_api_errors_total
 	writeHelp(w, "pilot_api_errors_total", "Total API errors by endpoint")
 	writeType(w, "pilot_api_errors_total", "counter")

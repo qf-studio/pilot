@@ -84,6 +84,16 @@ type Metrics struct {
 	// poller's pre-flight gate previously failed open on every judge crash
 	// with no visible signal that the judge was effectively dead.
 	IntentJudgeFailures map[string]int64
+	// StageTimeouts counts per-PR stage-handler calls abandoned by the
+	// per-stage deadline (Config.StageTimeout), keyed by the PR's stage when
+	// the deadline fired — GH-5541. Exported as
+	// autopilot_stage_timeouts_total{stage}.
+	StageTimeouts map[string]int64
+	// LastTickAt is when the PR-processing loop last made progress (tick start,
+	// or a PR finishing within a tick). Zero until the first tick. Exported as
+	// autopilot_last_tick_timestamp_seconds and compared against the poll
+	// interval by MetricsAlerter to detect a wedged loop — GH-5541.
+	LastTickAt time.Time
 	// ApprovalSubmitFailures counts Manager.SubmitApprovalRequest errors — an
 	// unregistered/misrouted approval channel, distinct from a normal timeout
 	// or rejection decision (GH-4380).
@@ -191,6 +201,7 @@ func NewMetrics() *Metrics {
 		LabelCleanups:              make(map[string]int64),
 		ApprovalPersistMisses:      make(map[string]int64),
 		IntentJudgeFailures:        make(map[string]int64),
+		StageTimeouts:              make(map[string]int64),
 		TokensConsumed:             make(map[tokenKey]int64),
 		ExecutionCostUSD:           make(map[string]float64),
 		ExecutionsByResult:         make(map[execKey]int64),
@@ -384,6 +395,20 @@ func (m *Metrics) RecordIntentJudgeFailure(cause string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.IntentJudgeFailures[cause]++
+}
+
+// RecordStageTimeout increments the per-stage deadline counter — GH-5541.
+func (m *Metrics) RecordStageTimeout(stage string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.StageTimeouts[stage]++
+}
+
+// RecordTick stamps the PR-processing loop liveness gauge — GH-5541.
+func (m *Metrics) RecordTick(at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.LastTickAt = at
 }
 
 // RecordApprovalSubmitFailure increments the counter for SubmitApprovalRequest
@@ -642,6 +667,8 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		LabelCleanups:                 copyStringIntMap(m.LabelCleanups),
 		ApprovalPersistMisses:         copyStringIntMap(m.ApprovalPersistMisses),
 		IntentJudgeFailures:           copyStringIntMap(m.IntentJudgeFailures),
+		StageTimeouts:                 copyStringIntMap(m.StageTimeouts),
+		LastTickAt:                    m.LastTickAt,
 		ApprovalSubmitFailures:        m.ApprovalSubmitFailures,
 		TokensConsumed:                copyTokenKeyMap(m.TokensConsumed),
 		ExecutionCostUSD:              copyStringFloatMap(m.ExecutionCostUSD),
@@ -732,6 +759,8 @@ type MetricsSnapshot struct {
 	ApprovalPersistMisses     map[string]int64
 	ApprovalSubmitFailures    int64
 	IntentJudgeFailures       map[string]int64 // GH-4377: cause → count
+	StageTimeouts             map[string]int64 // GH-5541: stage → per-stage deadline expiries
+	LastTickAt                time.Time        // GH-5541: last PR-loop progress; zero before the first tick
 	TokensConsumed            map[tokenKey]int64
 	ExecutionCostUSD          map[string]float64
 	ExecutionsByResult        map[execKey]int64

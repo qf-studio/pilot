@@ -224,6 +224,15 @@ type Config struct {
 	// scanned on every boot.
 	StartupMergedPRScanWindow time.Duration `yaml:"startup_merged_pr_scan_window"`
 
+	// StageTimeout bounds each per-PR stage-handler call inside the active-PR
+	// loop (GH-5541). One PR's handler blocking (a slow GitHub call, a wedged
+	// release step) used to hold every other PR for the duration — 57 minutes
+	// on 2026-09-30. On expiry the loop logs one WARN, bumps
+	// autopilot_stage_timeouts_total{stage}, and moves on; the PR keeps its
+	// stage and is retried next tick. Default 5m; zero or negative uses the
+	// default.
+	StageTimeout time.Duration `yaml:"stage_timeout"`
+
 	// RateLimitFloorPct is the fraction of the GitHub primary rate limit
 	// (X-RateLimit-Remaining / X-RateLimit-Limit) below which background
 	// GitHub API consumers — merged-PR scans, orphan-PR sweeps, reconciler
@@ -676,10 +685,23 @@ func DefaultConfig() *Config {
 		Release:                   nil, // Disabled by default
 		MergedPRScanWindow:        30 * time.Minute,
 		StartupMergedPRScanWindow: 72 * time.Hour, // GH-4391: down from the previous hardcoded 720h
+		StageTimeout:              DefaultStageTimeout,
 		RateLimitFloorPct:         ghbudget.DefaultFloorPct,
 		ScanStaggerInterval:       3 * time.Second,
 		Environments:              defaultEnvironments(),
 	}
+}
+
+// DefaultStageTimeout is the per-PR stage-handler deadline when
+// Config.StageTimeout is unset (GH-5541).
+const DefaultStageTimeout = 5 * time.Minute
+
+// EffectiveStageTimeout returns StageTimeout, or DefaultStageTimeout when unset.
+func (c *Config) EffectiveStageTimeout() time.Duration {
+	if c == nil || c.StageTimeout <= 0 {
+		return DefaultStageTimeout
+	}
+	return c.StageTimeout
 }
 
 // ReleaseConfig holds configuration for automatic release creation.

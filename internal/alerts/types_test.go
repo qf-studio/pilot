@@ -58,6 +58,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypePRStuckWaitingCI:   {"pr_stuck_waiting_ci", true},
 		// Deadlock detection (GH-849)
 		AlertTypeDeadlock: {"autopilot_deadlock", true},
+		// Autopilot PR-loop tick liveness (GH-5541)
+		AlertTypeTickStale: {"autopilot_tick_stale", true},
 		// Eval regression (GH-2065)
 		AlertTypeEvalRegression: {"eval_regression", true},
 		// Escalation (GH-848)
