@@ -100,8 +100,30 @@ var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
 var mutationArrowRe = regexp.MustCompile(`(?s)^(.*?)(?:->|→)\s*(.+)$`)
 
 // mutationFailsRe requires the outcome half to actually assert a failure
-// ("… fails", "… fail").
-var mutationFailsRe = regexp.MustCompile(`(?i)\bfails?\b`)
+// ("… fails", "… fail", "… failing"). "failing" is matched on purpose: an
+// author who writes "delete the guard -> TestFoo is failing" is pinning the
+// same mutation outcome as "TestFoo fails", so it classifies as a mutation.
+// Negated outcomes are excluded via mutationNegatedFailsRe: "-> TestFoo must
+// not fail" asserts the OPPOSITE polarity of a mutation pin, and treating it
+// as one made the gate report the pin satisfied when TestFoo fails (GH-5506).
+var mutationFailsRe = regexp.MustCompile(`(?i)\bfail(?:s|ing)?\b`)
+
+// mutationNegatedFailsRe matches a negation cue only when it is adjacent to
+// the fail word, so it governs that word and nothing else:
+//
+//   - "not"/"never"/"n't" directly before the fail word, with at most one
+//     adverb between ("must not fail", "does not fail", "doesn't fail",
+//     "never fails", "should not ever fail");
+//   - the two-word forms "no longer fails", "no test(s) fails" and "no other
+//     test(s) fail";
+//   - "without failing".
+//
+// An unrelated earlier cue does not match, however long the sentence is:
+// "TestFoo, not TestBar, fails", "does not panic and TestFoo fails" and
+// "when no config is set, TestFoo fails" are all positive pins (GH-5513). A
+// cue after the fail word ("TestX fails with 'not found'") does not match
+// either.
+var mutationNegatedFailsRe = regexp.MustCompile(`(?i)(?:\b(?:not|never)|n't)\s+(?:(?:ever|also|then|really|still|now)\s+)?fail(?:s|ing)?\b|\bno\s+(?:longer|(?:other\s+)?tests?)\s+fail(?:s|ing)?\b|\bwithout\s+fail(?:s|ing)?\b`)
 
 // testNameRe extracts a Go test function name from the outcome half of a
 // mutation item ("TestY fails" -> "TestY").
@@ -214,7 +236,7 @@ func extractMutation(text string) (desc, target string, ok bool) {
 	if desc == "" {
 		return "", "", false
 	}
-	if !mutationFailsRe.MatchString(outcome) {
+	if !mutationFailsRe.MatchString(outcome) || mutationNegatedFailsRe.MatchString(outcome) {
 		return "", "", false
 	}
 

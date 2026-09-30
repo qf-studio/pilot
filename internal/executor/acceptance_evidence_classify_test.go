@@ -51,6 +51,26 @@ func TestClassifyAcceptanceItem_MutationPhrasings(t *testing.T) {
 			wantTarget:        "TestFoo",
 			wantDeterministic: true,
 		},
+		// GH-5513: an unrelated negation cue earlier in the outcome half must
+		// not downgrade a positive pin to other.
+		{
+			name:       "unrelated not before fail word",
+			text:       "delete the guard -> TestFoo, not TestBar, fails",
+			wantDesc:   "delete the guard",
+			wantTarget: "TestFoo",
+		},
+		{
+			name:       "does not panic and fails",
+			text:       "delete the guard -> does not panic and TestFoo fails",
+			wantDesc:   "delete the guard",
+			wantTarget: "TestFoo",
+		},
+		{
+			name:       "no config clause then fails",
+			text:       "delete the guard -> when no config is set, TestFoo fails",
+			wantDesc:   "delete the guard",
+			wantTarget: "TestFoo",
+		},
 		// The six phrasings GH-5438 was filed about — real issue-authored
 		// mutation items that PR #5436's edit-cue gate silently dropped to
 		// AcceptanceItemOther.
@@ -192,6 +212,50 @@ func TestClassifyAcceptanceItem_MutationBeatsPasteOutput(t *testing.T) {
 	paste := ClassifyAcceptanceItem("Paste the output of `go test ./...` into the PR body")
 	if paste.Kind != AcceptanceItemPasteOutput {
 		t.Errorf("paste item Kind = %q, want %q", paste.Kind, AcceptanceItemPasteOutput)
+	}
+}
+
+// GH-5506: a bullet whose outcome half is negated ("-> TestFoo must not
+// fail") asserts the opposite polarity of a mutation pin and must not be
+// classified as one.
+func TestClassifyAcceptanceItem_NegatedOutcomeIsNotMutation(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"must not fail", "add the guard for X -> TestFoo must not fail"},
+		{"should not fail", "add the guard for X -> TestFoo should not fail"},
+		{"does not fail", "add the guard for X -> TestFoo does not fail"},
+		{"doesn't fail", "add the guard for X -> TestFoo doesn't fail"},
+		{"never fails", "add the guard for X -> TestFoo never fails"},
+		{"no test fails", "add the guard for X -> no test fails"},
+		{"without failing", "add the guard for X -> TestFoo passes without failing"},
+		{"no longer fails", "add the guard for X -> TestFoo no longer fails"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := ClassifyAcceptanceItem(tt.text)
+			if item.Kind == AcceptanceItemMutation {
+				t.Errorf("Kind = %q for %q, want anything but %q", item.Kind, tt.text, AcceptanceItemMutation)
+			}
+			if item.MutationTarget != "" {
+				t.Errorf("MutationTarget = %q, want empty", item.MutationTarget)
+			}
+		})
+	}
+
+	positives := []string{
+		"change X -> TestFoo fails",
+		"change X -> TestFoo must fail",
+		"change X -> TestFoo should fail",
+		"change X -> TestFoo now fails",
+		"change X -> fails",
+		"change X -> TestFoo fails with 'not found'",
+	}
+	for _, text := range positives {
+		if got := ClassifyAcceptanceItem(text).Kind; got != AcceptanceItemMutation {
+			t.Errorf("Kind for %q = %q, want %q", text, got, AcceptanceItemMutation)
+		}
 	}
 }
 
