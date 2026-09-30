@@ -112,24 +112,26 @@ func (s *Store) UpsertPRReview(r *PRReview) error {
 	})
 }
 
-// ListPRReviewIDs returns the review ids already recorded for a PR, so the
-// collector only upserts reviews it has not seen.
-func (s *Store) ListPRReviewIDs(projectPath string, prNumber int) (map[int64]struct{}, error) {
-	rows, err := s.db.Query(`SELECT review_id FROM pr_reviews WHERE project_path = ? AND pr_number = ?`, projectPath, prNumber)
+// ListPRReviewIDs returns the review ids already recorded for a PR mapped to
+// their stored verdict, so the collector can skip unchanged reviews and
+// re-upsert ones whose re-parsed verdict differs.
+func (s *Store) ListPRReviewIDs(projectPath string, prNumber int) (map[int64]string, error) {
+	rows, err := s.db.Query(`SELECT review_id, COALESCE(verdict, '') FROM pr_reviews WHERE project_path = ? AND pr_number = ?`, projectPath, prNumber)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	ids := make(map[int64]struct{})
+	verdicts := make(map[int64]string)
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var verdict string
+		if err := rows.Scan(&id, &verdict); err != nil {
 			return nil, err
 		}
-		ids[id] = struct{}{}
+		verdicts[id] = verdict
 	}
-	return ids, rows.Err()
+	return verdicts, rows.Err()
 }
 
 // ListPRReviewsByExecution returns the reviews joined to an execution,

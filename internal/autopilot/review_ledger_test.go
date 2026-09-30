@@ -192,3 +192,60 @@ func TestPRNumberFromURL_Review(t *testing.T) {
 		}
 	}
 }
+
+// upsertCountingStore counts UpsertPRReview calls; every other method is the
+// embedded real store's.
+type upsertCountingStore struct {
+	*memory.Store
+	upserts atomic.Int32
+}
+
+func (s *upsertCountingStore) UpsertPRReview(r *memory.PRReview) error {
+	s.upserts.Add(1)
+	return s.Store.UpsertPRReview(r)
+}
+
+func TestController_ReviewVerdictReparsedForKnownIDs_Review(t *testing.T) {
+	tests := []struct {
+		name        string
+		storedVerd  string
+		body        string
+		wantVerdict string
+		wantUpserts int32
+	}{
+		{"empty verdict picks up edited body", "", "**APPROVE** (edited to the accepted vocabulary)", memory.VerdictApprove, 1},
+		{"verdict changed by body edit", memory.VerdictApproveWNotes, "**REQUEST-CHANGES** (edited)", memory.VerdictRequestChanges, 1},
+		{"unchanged body is not re-upserted", memory.VerdictApproveWNotes, "**APPROVE-w-notes** (post-merge review)", memory.VerdictApproveWNotes, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newReviewFake(t, true, time.Now().Add(-2*time.Hour), []map[string]any{
+				{"id": 3001, "user": map[string]any{"login": "reviewer"}, "state": "COMMENTED",
+					"body": tt.body, "submitted_at": "2026-09-29T10:00:00Z"},
+			})
+			c, store := newReviewController(t, f)
+			saveReviewExecution(t, store, "exec-42", "GH-10")
+			if err := store.UpsertPRReview(&memory.PRReview{
+				ReviewID: 3001, ProjectPath: reviewTestProject, PRNumber: 42, ExecutionID: "exec-42",
+				Reviewer: "reviewer", State: "COMMENTED", Verdict: tt.storedVerd,
+			}); err != nil {
+				t.Fatalf("seed UpsertPRReview: %v", err)
+			}
+			counting := &upsertCountingStore{Store: store}
+			c.memoryStore = counting
+
+			c.processAllPRs(context.Background())
+
+			if got := counting.upserts.Load(); got != tt.wantUpserts {
+				t.Errorf("upserts = %d, want %d", got, tt.wantUpserts)
+			}
+			rows := countReviewRows(t, store, "exec-42")
+			if len(rows) != 1 {
+				t.Fatalf("rows = %d, want 1", len(rows))
+			}
+			if rows[0].Verdict != tt.wantVerdict {
+				t.Errorf("verdict = %q, want %q", rows[0].Verdict, tt.wantVerdict)
+			}
+		})
+	}
+}

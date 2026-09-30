@@ -38,7 +38,7 @@ const (
 // existing approvalPersister fakes keep compiling.
 type reviewLedger interface {
 	UpsertPRReview(r *memory.PRReview) error
-	ListPRReviewIDs(projectPath string, prNumber int) (map[int64]struct{}, error)
+	ListPRReviewIDs(projectPath string, prNumber int) (map[int64]string, error)
 	ListRecentPRExecutions(projectPath string, since time.Time) ([]*memory.Execution, error)
 }
 
@@ -201,7 +201,9 @@ func (c *Controller) sweepMergedPRReviews(ctx context.Context) {
 }
 
 // collectPRReviews lists a PR's reviews and upserts the ones whose ids are not
-// yet in the ledger. Pending (unsubmitted) reviews are skipped.
+// yet in the ledger or whose verdict, re-parsed from the freshly fetched body,
+// differs from the stored one (edited reviews). Pending (unsubmitted) reviews
+// are skipped.
 func (c *Controller) collectPRReviews(ctx context.Context, ledger reviewLedger, prNumber int, executionID string) {
 	known, err := ledger.ListPRReviewIDs(c.projectPath, prNumber)
 	if err != nil {
@@ -217,7 +219,9 @@ func (c *Controller) collectPRReviews(ctx context.Context, ledger reviewLedger, 
 		if r == nil || r.ID == 0 || strings.EqualFold(r.State, "PENDING") {
 			continue
 		}
-		if _, ok := known[r.ID]; ok {
+		verdict := memory.ParseReviewVerdict(r.Body, r.State)
+		stored, isKnown := known[r.ID]
+		if isKnown && stored == verdict {
 			continue
 		}
 		rec := &memory.PRReview{
@@ -227,7 +231,7 @@ func (c *Controller) collectPRReviews(ctx context.Context, ledger reviewLedger, 
 			ExecutionID: executionID,
 			Reviewer:    r.User.Login,
 			State:       r.State,
-			Verdict:     memory.ParseReviewVerdict(r.Body, r.State),
+			Verdict:     verdict,
 		}
 		if t, err := time.Parse(time.RFC3339, r.SubmittedAt); err == nil {
 			rec.SubmittedAt = t
@@ -237,7 +241,8 @@ func (c *Controller) collectPRReviews(ctx context.Context, ledger reviewLedger, 
 			continue
 		}
 		c.log.Info("recorded PR review verdict",
-			"pr", prNumber, "review_id", r.ID, "state", r.State, "verdict", rec.Verdict)
+			"pr", prNumber, "review_id", r.ID, "state", r.State, "verdict", rec.Verdict,
+			"previous_verdict", stored, "updated", isKnown)
 	}
 }
 
