@@ -24,13 +24,17 @@ var goTestIdentRe = regexp.MustCompile(`\bTest[A-Z]\w*`)
 // Question rubrics. Source: the stream demo script jev-classify-demo.sh
 // (b4 paste_output 1.00, b5 mutation 1.00, b2 other 0.42 vs mutation 0.39).
 const (
-	kindInstructions = "Classify the checklist item in state.items at this question's index: " +
-		"does it ask for evidence of a command run, assert a named test fails after a described change, or neither?"
+	// kindInstructionsFmt and targetInstructionsFmt take the item index and the
+	// redacted, capped item text. The index and text must appear in every
+	// instruction: a shared constant makes all kind_<i> questions byte-identical
+	// over the same state, so Jev returns one distribution for every item.
+	kindInstructionsFmt = "Classify checklist item %s (state.items[%q]): %q. " +
+		"Does it ask for evidence of a command run, assert a named test fails after a described change, or neither?"
 	kindRubricMutation = "The item names a change to make and asserts that a named test FAILS as a result. " +
 		"Items saying a test must NOT fail are not this."
 	kindRubricPasteOutput = "The item asks to run a command and show its output, or names a runnable command that must pass."
 	kindRubricOther       = "Everything else."
-	targetInstructions    = "Which test named in the checklist item at this index is the one that must FAIL after the described change?"
+	targetInstructionsFmt = "Which test named in checklist item %s (state.items[%q]): %q is the one that must FAIL after the described change?"
 	targetRubricNone      = "None of these is the test that must fail."
 )
 
@@ -67,7 +71,7 @@ func (c *jevAcceptanceClassifier) Classify(ctx context.Context, criteria []strin
 		text := typesafe.RedactAndCap(it.Text, maxAcceptanceItemChars)
 		texts[idx] = text
 
-		questions["kind_"+idx] = typesafe.ChoiceQuestion(kindInstructions, map[string]any{
+		questions["kind_"+idx] = typesafe.ChoiceQuestion(fmt.Sprintf(kindInstructionsFmt, idx, idx, text), map[string]any{
 			string(AcceptanceItemMutation):    kindRubricMutation,
 			string(AcceptanceItemPasteOutput): kindRubricPasteOutput,
 			string(AcceptanceItemOther):       kindRubricOther,
@@ -83,7 +87,7 @@ func (c *jevAcceptanceClassifier) Classify(ctx context.Context, criteria []strin
 				opts[t] = nil
 			}
 			opts[targetNone] = targetRubricNone
-			questions["target_"+idx] = typesafe.ChoiceQuestion(targetInstructions, opts)
+			questions["target_"+idx] = typesafe.ChoiceQuestion(fmt.Sprintf(targetInstructionsFmt, idx, idx, text), opts)
 		}
 	}
 
