@@ -442,6 +442,8 @@ executor:
 
 The acceptance-evidence gate (`executor.acceptance_evidence`) runs recognised acceptance-checklist items in the task worktree and appends `## Evidence` / `## Not verified` sections to the PR body. It recognises three shapes: a phrase-triggered paste ("paste the output of `go test ./pkg/`"), a backticked allowlisted command followed by passes / succeeds / is green / exits 0 (``"`go test ./pkg/` passes"``), and a mutation arrow (`change -> TestName fails`).
 
+The regex classifier remains the floor: it always runs, offline, and its verdict stands whenever anything else is unavailable. Jev (TypeSafe) can optionally act as a second classifier (`executor.acceptance_evidence.classifier.provider: jev`), but only when `TYPESAFE_API_KEY` is set in the environment; without the key the provider silently stays `regex`. Shadow mode (`classifier.shadow`) is on by default, so the first days record how often Jev agreed with or would have overridden the regex verdict without changing any behaviour. A Jev verdict only overrides regex at or above `classifier.min_confidence` (default `0.8`), and only redacted checklist text leaves the machine. The per-task info log line (`task_id`, `agreed`, `overrode`, ...) is the signal for deciding when to flip shadow off.
+
 ### Claude Code SDK Features
 
 Advanced Claude Code backend features for session management and structured output.
