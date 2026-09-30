@@ -7192,6 +7192,20 @@
         ],
         "created": "2026-09-30",
         "last_validated": "2026-09-30"
+      },
+      "jev-identical-questions-return-identical-answers": {
+        "type": "pitfall",
+        "summary": "Jev/TypeSafe questions with byte-identical instructions over a shared state return the same distribution for every item; name the item key and redacted text inside each instruction (found 2026-09-30, #5535)",
+        "file": ".agent/knowledge/memories/pitfalls/jev-identical-questions-return-identical-answers.md",
+        "created": "2026-09-30",
+        "last_validated": "2026-09-30",
+        "concepts": [
+          "jev",
+          "typesafe",
+          "acceptance-evidence",
+          "classifier"
+        ],
+        "confidence": 0.95
       }
     }
   },
