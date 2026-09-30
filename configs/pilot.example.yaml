@@ -697,6 +697,15 @@ executor:
   #     - pytest
   #     - cargo
   #   command_timeout: 10m          # Per-command timeout; expiry kills the process group
+  #   # Optional Jev (TypeSafe) classifier layered over the regex classifier, which
+  #   # stays the floor and fallback. Needs the top-level `typesafe:` block's key:
+  #   # TYPESAFE_API_KEY (env only, never in this file). Without it, regex is used.
+  #   # Privacy boundary: only the acceptance-checklist item text (secret-redacted,
+  #   # capped) leaves the machine; no code, diffs or file contents.
+  #   classifier:
+  #     provider: regex             # regex (default) | jev
+  #     min_confidence: 0.8         # 0..1; model verdict must reach this to override regex
+  #     shadow: true                # default true: record would-be decisions, don't change behaviour
 
   # Stagnation detection (GH-925) - detect and recover from stuck tasks
   # stagnation:
@@ -780,6 +789,16 @@ executor:
 #     approvers: []
 #     timeout: 1h
 #     default_action: rejected
+
+# TypeSafe (Jev) shared connection block. Used by optional model classifiers
+# (e.g. executor.acceptance_evidence.classifier). The API key is read ONLY from
+# the TYPESAFE_API_KEY environment variable - never put it in this file.
+# Privacy boundary: only short gate inputs (e.g. acceptance-checklist item text,
+# secret-redacted and length-capped) are sent; no source code or diffs.
+# typesafe:
+#   endpoint: https://api.typesafe.ai/v1/systemone
+#   model: jev-latest
+#   timeout: 5s
 
 # Daily briefs configuration
 briefs:

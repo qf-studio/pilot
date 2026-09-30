@@ -34,6 +34,7 @@ import (
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/tunnel"
+	"github.com/qf-studio/pilot/internal/typesafe"
 	"github.com/qf-studio/pilot/internal/webhooks"
 )
 
@@ -41,28 +42,32 @@ import (
 // It includes settings for the gateway, adapters, orchestrator, memory, projects, and more.
 // Use Load to read from a file or DefaultConfig for sensible defaults.
 type Config struct {
-	Version        string                  `yaml:"version"`
-	Gateway        *gateway.Config         `yaml:"gateway"`
-	Auth           *gateway.AuthConfig     `yaml:"auth"`
-	Adapters       *AdaptersConfig         `yaml:"adapters"`
-	Orchestrator   *OrchestratorConfig     `yaml:"orchestrator"`
-	Executor       *executor.BackendConfig `yaml:"executor"`
-	Memory         *MemoryConfig           `yaml:"memory"`
-	Projects       []*ProjectConfig        `yaml:"projects"`
-	DefaultProject string                  `yaml:"default_project"`
-	Dashboard      *DashboardConfig        `yaml:"dashboard"`
-	Alerts         *AlertsConfig           `yaml:"alerts"`
-	Budget         *budget.Config          `yaml:"budget"`
-	Logging        *logging.Config         `yaml:"logging"`
-	Approval       *approval.Config        `yaml:"approval"`
-	Quality        *quality.Config         `yaml:"quality"`
-	Tunnel         *tunnel.Config          `yaml:"tunnel"`
-	Webhooks       *webhooks.Config        `yaml:"webhooks"`
-	TeamID         string                  `yaml:"team_id"` // Optional team ID for scoping execution
-	Team           *TeamConfig             `yaml:"team"`
-	Bot            *BotConfig              `yaml:"bot"`
-	Upgrade        *UpgradeConfig          `yaml:"upgrade"`
-	Ledger         *LedgerConfig           `yaml:"ledger"`
+	Version      string                  `yaml:"version"`
+	Gateway      *gateway.Config         `yaml:"gateway"`
+	Auth         *gateway.AuthConfig     `yaml:"auth"`
+	Adapters     *AdaptersConfig         `yaml:"adapters"`
+	Orchestrator *OrchestratorConfig     `yaml:"orchestrator"`
+	Executor     *executor.BackendConfig `yaml:"executor"`
+	// TypeSafe is the shared TypeSafe (Jev) connection block. Load copies the
+	// pointer into Executor.TypeSafe so the runner reads one place. The API key
+	// is never configured here; it comes from TYPESAFE_API_KEY only.
+	TypeSafe       *typesafe.Config `yaml:"typesafe,omitempty"`
+	Memory         *MemoryConfig    `yaml:"memory"`
+	Projects       []*ProjectConfig `yaml:"projects"`
+	DefaultProject string           `yaml:"default_project"`
+	Dashboard      *DashboardConfig `yaml:"dashboard"`
+	Alerts         *AlertsConfig    `yaml:"alerts"`
+	Budget         *budget.Config   `yaml:"budget"`
+	Logging        *logging.Config  `yaml:"logging"`
+	Approval       *approval.Config `yaml:"approval"`
+	Quality        *quality.Config  `yaml:"quality"`
+	Tunnel         *tunnel.Config   `yaml:"tunnel"`
+	Webhooks       *webhooks.Config `yaml:"webhooks"`
+	TeamID         string           `yaml:"team_id"` // Optional team ID for scoping execution
+	Team           *TeamConfig      `yaml:"team"`
+	Bot            *BotConfig       `yaml:"bot"`
+	Upgrade        *UpgradeConfig   `yaml:"upgrade"`
+	Ledger         *LedgerConfig    `yaml:"ledger"`
 }
 
 // LedgerConfig controls staleness detection for the executions ledger
@@ -885,6 +890,13 @@ func Load(path string) (*Config, error) {
 	}
 
 	applyLedgerStalenessThreshold(config)
+
+	// Decision: a top-level `typesafe:` block binds to Config.TypeSafe, but the
+	// runner only sees BackendConfig. Copy the pointer explicitly (mem-160:
+	// an unwired top-level block is silently dead).
+	if config.Executor != nil {
+		config.Executor.TypeSafe = config.TypeSafe
+	}
 
 	return config, nil
 }

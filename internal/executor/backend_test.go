@@ -310,3 +310,84 @@ func TestDefaultSonnetModel_Value(t *testing.T) {
 		t.Errorf("OpenCode.Model = %q, want %q", cfg.OpenCode.Model, want)
 	}
 }
+
+func TestAcceptanceClassifier_Defaults(t *testing.T) {
+	t.Setenv("TYPESAFE_API_KEY", "")
+	var nilCfg *AcceptanceEvidenceConfig
+	for name, c := range map[string]*AcceptanceEvidenceConfig{
+		"nil":            nilCfg,
+		"no classifier":  {},
+		"empty provider": {Classifier: &AcceptanceClassifierConfig{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := c.EffectiveClassifierProvider(); got != "regex" {
+				t.Errorf("provider = %q, want regex", got)
+			}
+			if got := c.EffectiveMinConfidence(); got != 0.8 {
+				t.Errorf("min confidence = %v, want 0.8", got)
+			}
+			if !c.EffectiveShadow() {
+				t.Error("shadow should default to true")
+			}
+		})
+	}
+}
+
+func TestAcceptanceClassifier_ProviderNeedsKey(t *testing.T) {
+	c := &AcceptanceEvidenceConfig{Classifier: &AcceptanceClassifierConfig{Provider: "jev"}}
+
+	t.Setenv("TYPESAFE_API_KEY", "")
+	if got := c.EffectiveClassifierProvider(); got != "regex" {
+		t.Errorf("jev without key = %q, want regex", got)
+	}
+	t.Setenv("TYPESAFE_API_KEY", "   ")
+	if got := c.EffectiveClassifierProvider(); got != "regex" {
+		t.Errorf("jev with blank key = %q, want regex", got)
+	}
+	t.Setenv("TYPESAFE_API_KEY", "fake-api-key")
+	if got := c.EffectiveClassifierProvider(); got != "jev" {
+		t.Errorf("jev with key = %q, want jev", got)
+	}
+
+	// Key alone never enables jev.
+	r := &AcceptanceEvidenceConfig{Classifier: &AcceptanceClassifierConfig{Provider: "regex"}}
+	if got := r.EffectiveClassifierProvider(); got != "regex" {
+		t.Errorf("regex provider with key = %q, want regex", got)
+	}
+	if got := (&AcceptanceEvidenceConfig{Classifier: &AcceptanceClassifierConfig{Provider: "bogus"}}).EffectiveClassifierProvider(); got != "regex" {
+		t.Errorf("unknown provider = %q, want regex", got)
+	}
+}
+
+func TestAcceptanceClassifier_MinConfidenceAndShadow(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	b := func(v bool) *bool { return &v }
+	nan := func() float64 { z := 0.0; return z / z }()
+
+	tests := []struct {
+		name string
+		in   *float64
+		want float64
+	}{
+		{"valid", f(0.6), 0.6},
+		{"zero", f(0), 0},
+		{"one", f(1), 1},
+		{"negative", f(-0.1), 0.8},
+		{"above one", f(1.5), 0.8},
+		{"nan", f(nan), 0.8},
+		{"unset", nil, 0.8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &AcceptanceEvidenceConfig{Classifier: &AcceptanceClassifierConfig{MinConfidence: tt.in}}
+			if got := c.EffectiveMinConfidence(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	off := &AcceptanceEvidenceConfig{Classifier: &AcceptanceClassifierConfig{Shadow: b(false)}}
+	if off.EffectiveShadow() {
+		t.Error("explicit shadow:false should be honoured")
+	}
+}

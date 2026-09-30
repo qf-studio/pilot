@@ -2660,3 +2660,63 @@ func TestToAlertConfigNilReturnsNil(t *testing.T) {
 		t.Errorf("ToAlertConfig() on nil = %v, want nil", got)
 	}
 }
+
+func TestTypeSafe_TopLevelBlockReachesExecutor(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "version: \"1.0\"\ntypesafe:\n  model: jev-test\n  timeout: 2s\n"
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TypeSafe == nil || cfg.Executor == nil || cfg.Executor.TypeSafe == nil {
+		t.Fatalf("typesafe block not wired: top=%v executor=%v", cfg.TypeSafe, cfg.Executor)
+	}
+	if cfg.Executor.TypeSafe != cfg.TypeSafe {
+		t.Error("Executor.TypeSafe should be the same pointer as Config.TypeSafe")
+	}
+	if got := cfg.Executor.TypeSafe.EffectiveModel(); got != "jev-test" {
+		t.Errorf("model = %q, want jev-test", got)
+	}
+	if got := cfg.Executor.TypeSafe.EffectiveTimeout(); got != 2*time.Second {
+		t.Errorf("timeout = %v, want 2s", got)
+	}
+}
+
+func TestTypeSafe_AbsentBlockIsNil(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("version: \"1.0\"\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TypeSafe != nil || (cfg.Executor != nil && cfg.Executor.TypeSafe != nil) {
+		t.Error("absent typesafe block should leave both pointers nil")
+	}
+}
+
+func TestTypeSafe_Defaults(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "version: \"1.0\"\ntypesafe:\n  timeout: not-a-duration\n"
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ts := cfg.Executor.TypeSafe
+	if ts == nil {
+		t.Fatal("Executor.TypeSafe is nil")
+	}
+	if got := ts.EffectiveTimeout(); got != 5*time.Second {
+		t.Errorf("unparsable timeout = %v, want 5s", got)
+	}
+	if got := ts.EffectiveModel(); got != "jev-latest" {
+		t.Errorf("model = %q, want jev-latest", got)
+	}
+}
