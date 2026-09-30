@@ -7371,7 +7371,13 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 		prState.CIWaitStartedAt = time.Now()
 		return nil
 	}
-	c.log.Warn("auto-rebase failed, attempting mechanical go.mod/go.sum resolution", "pr", prState.PRNumber, "error", err)
+	c.log.Warn("auto-rebase failed, checking for stacked-branch inherited commits", "pr", prState.PRNumber, "error", err)
+
+	if c.attemptStackedRebase(ctx, prState) {
+		return nil
+	}
+
+	c.log.Warn("attempting mechanical go.mod/go.sum resolution", "pr", prState.PRNumber)
 
 	resolved, conflictedFiles := c.attemptMechanicalConflictResolution(ctx, prState)
 	if resolved {
@@ -7398,6 +7404,57 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 
 	comment := "Merge conflict detected. Auto-rebase failed — closing PR so the issue can be re-executed from updated main."
 	return c.closeAndReexecute(ctx, prState, comment, "merge conflict with base branch")
+}
+
+// attemptStackedRebase is the GH-5527 rung of handleMergeConflict, tried after
+// GitHub's server-side update fails and before mechanical go.mod/go.sum
+// resolution. When the PR branch is a stacked epic sub-issue branch that still
+// carries predecessor commits main has already squash-merged, it replays only
+// the branch's own commits onto the base and force-pushes. Returns true when
+// the branch was rebased and prState advanced; false in every other case
+// (not stacked, replay conflicted, git error) so the existing ladder proceeds.
+func (c *Controller) attemptStackedRebase(ctx context.Context, prState *PRState) bool {
+	if c.projectPath == "" || prState.BranchName == "" {
+		return false
+	}
+
+	res, err := rebaseStackedBranch(ctx, c.projectPath, prState.BranchName, c.resolveMainBranchName(), prState.IssueNumber)
+	if err != nil {
+		c.log.Warn("stacked rebase failed, falling through", "pr", prState.PRNumber, "error", err)
+		return false
+	}
+	if res == nil {
+		return false
+	}
+
+	c.log.Info("stacked rebase: dropped inherited predecessor commits",
+		"pr", prState.PRNumber, "inherited", res.Inherited, "replayed", res.Replayed)
+
+	// GH-3715: share the rebase oscillation counter and cap with the other
+	// conflict rungs.
+	prState.RebaseAttempts++
+	if prState.RebaseAttempts >= c.config.MaxRebaseAttempts {
+		errMsg := fmt.Sprintf("stacked-rebase oscillation: %d successful rebases without a clean merge — manual intervention required",
+			prState.RebaseAttempts)
+		if prState.IssueNumber > 0 {
+			comment := fmt.Sprintf(
+				"⚠️ **Rebase escalation**: PR #%d has been auto-rebased %d times but keeps hitting merge conflicts.\n\nManual intervention is required — no further automatic rebases will be made.",
+				prState.PRNumber, prState.RebaseAttempts)
+			if _, cerr := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); cerr != nil {
+				c.log.Warn("failed to post rebase escalation comment", "pr", prState.PRNumber, "error", cerr)
+			}
+		}
+		prState.Stage = StageFailed
+		prState.Error = errMsg
+		c.metrics.RecordPRFailed()
+		c.metrics.RecordIssueProcessed("failed")
+		return true
+	}
+
+	prState.Stage = StageWaitingCI // force-push triggers new CI
+	prState.HeadSHA = ""           // force refresh on next tick
+	prState.CIWaitStartedAt = time.Now()
+	return true
 }
 
 // attemptMechanicalConflictResolution is the middle rung of handleMergeConflict
