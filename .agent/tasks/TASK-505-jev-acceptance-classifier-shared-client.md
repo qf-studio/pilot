@@ -149,6 +149,10 @@ go vet ./internal/typesafe/ ./internal/executor/ ./internal/config/
 
 ---
 
+## Baseline before Jev (harvested 2026-09-30 19:20Z, before the key was live)
+
+The regex gate writes no per-task log line, so the only "before" is PR bodies. Pilot PRs merged on `pilot/*` branches since v2.276.1 (09-14): 31. PRs carrying an `## Evidence` or `## Not verified` section: 6. Evidence blocks with a command run and pasted: 0. Not-verified rows: 7. PR#5515's own body records the mechanism: on #5500 all five acceptance bullets classified `other` and the PR carried no Evidence section. Baseline therefore is "almost every checklist item is `other`; the gate renders nothing." The after-metric is the per-task `Acceptance classification` log line (#5520): `items`, `regex_only`, `agreed`, `overrode`, `low_confidence`, `errors`, `shadow`, plus Evidence-section presence per PR. Same 31-PR window size for the comparison; label a sample of `overrode` items by hand to turn counts into precision.
+
 ## Refs
 
 - Roadmap across gates (which get Jev, which are skipped, order, rollout): `.agent/system/jev-gates-roadmap.md`
