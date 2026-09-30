@@ -1962,6 +1962,118 @@ func TestHandleEnvClassFailureStreak(t *testing.T) {
 	})
 }
 
+// TestHandleHeartbeatTimeout covers GH-5498: the executor's heartbeat kill
+// emits heartbeat_timeout and the engine must turn it into a critical alert.
+func TestHandleHeartbeatTimeout(t *testing.T) {
+	newEvent := func(taskID string) Event {
+		return Event{
+			Type:   EventTypeHeartbeatTimeout,
+			TaskID: taskID,
+			Metadata: map[string]string{
+				"pid":          "4242",
+				"idle_minutes": "6",
+			},
+			Timestamp: time.Now(),
+		}
+	}
+	newEngine := func(rules []AlertRule) (*Engine, *mockChannel) {
+		config := &AlertConfig{
+			Enabled:  true,
+			Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+			Rules:    rules,
+		}
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		return NewEngine(config, WithDispatcher(dispatcher)), mockCh
+	}
+	rule := func(enabled bool, cooldown time.Duration) AlertRule {
+		return AlertRule{
+			Name:     "heartbeat_timeout",
+			Type:     AlertTypeHeartbeatTimeout,
+			Enabled:  enabled,
+			Severity: SeverityCritical,
+			Channels: []string{"test-channel"},
+			Cooldown: cooldown,
+		}
+	}
+
+	t.Run("fires once with expected message", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{rule(true, 5*time.Minute)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5498-TASK"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].Type != AlertTypeHeartbeatTimeout {
+			t.Errorf("expected alert type %s, got %s", AlertTypeHeartbeatTimeout, alerts[0].Type)
+		}
+		if alerts[0].Severity != SeverityCritical {
+			t.Errorf("expected severity critical, got %s", alerts[0].Severity)
+		}
+		want := "Executor heartbeat timeout: no stream events for 6m, process 4242 killed (task GH-5498-TASK)"
+		if alerts[0].Message != want {
+			t.Errorf("message = %q, want %q", alerts[0].Message, want)
+		}
+	})
+
+	t.Run("second event inside cooldown does not fire", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{rule(true, 5*time.Minute)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5498-TASK"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		engine.ProcessEvent(newEvent("GH-5498-TASK-2"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 1 {
+			t.Errorf("expected 1 alert (second suppressed by cooldown), got %d", got)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{rule(false, 0)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5498-TASK"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+
+	t.Run("no matching rule does not fire", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{{
+			Name:     "unrelated_rule",
+			Type:     AlertTypeTaskFailed,
+			Enabled:  true,
+			Severity: SeverityWarning,
+			Channels: []string{"test-channel"},
+		}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5498-TASK"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (no matching rule), got %d", got)
+		}
+	})
+}
+
 // TestHandleLaneStarvation covers the GH-4454 lane-starvation rule: the
 // emitting side (autopilot.Controller.reconcileLaneStarvation) does no
 // threshold filtering of its own and sends the raw streak on every starved

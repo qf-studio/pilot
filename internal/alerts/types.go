@@ -646,5 +646,19 @@ func defaultRules() []AlertRule {
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when a task accumulates N+ consecutive env-class (credential/environment) failures without any attempt reaching the model backend",
 		},
+		// GH-5498: emitted by the executor's HeartbeatCallback right before it
+		// kills a Claude subprocess that produced no stream events for longer
+		// than executor.heartbeat_timeout. The executor config drives the
+		// kill, so no RuleCondition field is needed.
+		{
+			Name:        "heartbeat_timeout",
+			Type:        AlertTypeHeartbeatTimeout,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    5 * time.Minute,
+			Description: "Alert when the executor's Claude subprocess produces no stream events for longer than executor.heartbeat_timeout and is killed",
+		},
 	}
 }

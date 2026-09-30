@@ -4512,20 +4512,21 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	watchdogTimeout := 2 * timeout
 	allowedTools, mcpConfigPath := r.executionToolOptions()
 	backendResult, err := r.backendExecute(stallExecutionCtx, task, executionPath, ExecuteOptions{
-		Prompt:          prompt,
-		TaskID:          task.ID,
-		Verbose:         task.Verbose,
-		Model:           selectedModel,
-		Effort:          selectedEffort,
-		MaxTurns:        workflowMaxTurns, // TASK-304: per-repo .pilot/workflow.yaml override
-		FromPR:          task.FromPR,      // GH-1267: session resumption from PR context
-		WatchdogTimeout: watchdogTimeout,
-		LivenessPolicy:  policy, // GH-4691/GH-4715
-		AllowedTools:    allowedTools,
-		MCPConfigPath:   mcpConfigPath,
-		SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
-		SourceIssueID:   task.SourceIssueID, // GH-4671
-		Branch:          task.Branch,        // GH-4671
+		Prompt:            prompt,
+		TaskID:            task.ID,
+		Verbose:           task.Verbose,
+		Model:             selectedModel,
+		Effort:            selectedEffort,
+		MaxTurns:          workflowMaxTurns, // TASK-304: per-repo .pilot/workflow.yaml override
+		FromPR:            task.FromPR,      // GH-1267: session resumption from PR context
+		WatchdogTimeout:   watchdogTimeout,
+		LivenessPolicy:    policy, // GH-4691/GH-4715
+		AllowedTools:      allowedTools,
+		MCPConfigPath:     mcpConfigPath,
+		SourceRepo:        task.SourceRepo,                  // GH-4671: gh-guard task identity
+		SourceIssueID:     task.SourceIssueID,               // GH-4671
+		Branch:            task.Branch,                      // GH-4671
+		HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
 		WatchdogCallback: func(pid int, watchdogDuration time.Duration) {
 			log.Warn("Watchdog killed subprocess",
 				slog.Int("pid", pid),
@@ -4902,18 +4903,19 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 						smartAllowed, smartMCP := r.executionToolOptions()
 						retryResult, retryErr := r.backendExecute(retryCtx, task, executionPath, ExecuteOptions{
-							Prompt:          prompt,
-							TaskID:          task.ID,
-							Verbose:         task.Verbose,
-							Model:           selectedModel,
-							Effort:          selectedEffort,
-							WatchdogTimeout: 2 * retryTimeout,
-							LivenessPolicy:  policy, // GH-4691/GH-4715
-							AllowedTools:    smartAllowed,
-							MCPConfigPath:   smartMCP,
-							SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
-							SourceIssueID:   task.SourceIssueID, // GH-4671
-							Branch:          task.Branch,        // GH-4671
+							Prompt:            prompt,
+							TaskID:            task.ID,
+							Verbose:           task.Verbose,
+							Model:             selectedModel,
+							Effort:            selectedEffort,
+							WatchdogTimeout:   2 * retryTimeout,
+							LivenessPolicy:    policy, // GH-4691/GH-4715
+							AllowedTools:      smartAllowed,
+							MCPConfigPath:     smartMCP,
+							SourceRepo:        task.SourceRepo,                  // GH-4671: gh-guard task identity
+							SourceIssueID:     task.SourceIssueID,               // GH-4671
+							Branch:            task.Branch,                      // GH-4671
+							HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
 							EventHandler: func(event BackendEvent) {
 								if recorder != nil {
 									_ = recorder.RecordEvent(event.Raw)
@@ -5344,18 +5346,19 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// Execute retry
 				noopRetryAllowed, noopRetryMCP := r.executionToolOptions()
 				retryResult, retryErr := r.backendExecute(ctx, task, executionPath, ExecuteOptions{
-					Prompt:          retryPrompt,
-					TaskID:          task.ID,
-					Verbose:         task.Verbose,
-					Model:           selectedModel,
-					Effort:          selectedEffort,
-					WatchdogTimeout: watchdogTimeout,
-					LivenessPolicy:  policy, // GH-4691/GH-4715
-					AllowedTools:    noopRetryAllowed,
-					MCPConfigPath:   noopRetryMCP,
-					SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
-					SourceIssueID:   task.SourceIssueID, // GH-4671
-					Branch:          task.Branch,        // GH-4671
+					Prompt:            retryPrompt,
+					TaskID:            task.ID,
+					Verbose:           task.Verbose,
+					Model:             selectedModel,
+					Effort:            selectedEffort,
+					WatchdogTimeout:   watchdogTimeout,
+					LivenessPolicy:    policy, // GH-4691/GH-4715
+					AllowedTools:      noopRetryAllowed,
+					MCPConfigPath:     noopRetryMCP,
+					SourceRepo:        task.SourceRepo,                  // GH-4671: gh-guard task identity
+					SourceIssueID:     task.SourceIssueID,               // GH-4671
+					Branch:            task.Branch,                      // GH-4671
+					HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
 					EventHandler: func(event BackendEvent) {
 						// Track tokens from retry
 						state.tokensInput += event.TokensInput
@@ -5817,17 +5820,18 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						feedbackAllowed, feedbackMCP := r.executionToolOptions()
 						retryCtx, retryCancel := context.WithTimeout(context.Background(), timeout)
 						retryResult, retryErr := r.backendExecute(retryCtx, task, executionPath, ExecuteOptions{
-							Prompt:         retryPrompt,
-							TaskID:         task.ID,
-							Verbose:        task.Verbose,
-							Model:          selectedModel,
-							Effort:         selectedEffort,
-							LivenessPolicy: policy, // GH-4691/GH-4715
-							AllowedTools:   feedbackAllowed,
-							MCPConfigPath:  feedbackMCP,
-							SourceRepo:     task.SourceRepo,    // GH-4671: gh-guard task identity
-							SourceIssueID:  task.SourceIssueID, // GH-4671
-							Branch:         task.Branch,        // GH-4671
+							Prompt:            retryPrompt,
+							TaskID:            task.ID,
+							Verbose:           task.Verbose,
+							Model:             selectedModel,
+							Effort:            selectedEffort,
+							LivenessPolicy:    policy, // GH-4691/GH-4715
+							AllowedTools:      feedbackAllowed,
+							MCPConfigPath:     feedbackMCP,
+							SourceRepo:        task.SourceRepo,                  // GH-4671: gh-guard task identity
+							SourceIssueID:     task.SourceIssueID,               // GH-4671
+							Branch:            task.Branch,                      // GH-4671
+							HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
 							EventHandler: func(event BackendEvent) {
 								if recorder != nil {
 									if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
@@ -6167,17 +6171,18 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 					intentAllowed, intentMCP := r.executionToolOptions()
 					intentRetryResult, retryErr := r.backendExecute(ctx, task, executionPath, ExecuteOptions{
-						Prompt:         retryPrompt,
-						TaskID:         task.ID,
-						Verbose:        task.Verbose,
-						Model:          selectedModel,
-						Effort:         selectedEffort,
-						LivenessPolicy: policy, // GH-4691/GH-4715
-						AllowedTools:   intentAllowed,
-						MCPConfigPath:  intentMCP,
-						SourceRepo:     task.SourceRepo,    // GH-4671: gh-guard task identity
-						SourceIssueID:  task.SourceIssueID, // GH-4671
-						Branch:         task.Branch,        // GH-4671
+						Prompt:            retryPrompt,
+						TaskID:            task.ID,
+						Verbose:           task.Verbose,
+						Model:             selectedModel,
+						Effort:            selectedEffort,
+						LivenessPolicy:    policy, // GH-4691/GH-4715
+						AllowedTools:      intentAllowed,
+						MCPConfigPath:     intentMCP,
+						SourceRepo:        task.SourceRepo,                  // GH-4671: gh-guard task identity
+						SourceIssueID:     task.SourceIssueID,               // GH-4671
+						Branch:            task.Branch,                      // GH-4671
+						HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
 						EventHandler: func(event BackendEvent) {
 							state.tokensInput += event.TokensInput
 							state.tokensOutput += event.TokensOutput
@@ -7511,18 +7516,19 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 
 	reviewAllowed, reviewMCP := r.executionToolOptions()
 	result, err := r.backendExecute(reviewCtx, task, executionPath, ExecuteOptions{
-		Prompt:          reviewPrompt,
-		TaskID:          task.ID,
-		Verbose:         task.Verbose,
-		Model:           selectedModel,
-		Effort:          selectedEffort,
-		ResumeSessionID: resumeSessionID,
-		LivenessPolicy:  reviewPolicy, // GH-4691/GH-4715
-		AllowedTools:    reviewAllowed,
-		MCPConfigPath:   reviewMCP,
-		SourceRepo:      task.SourceRepo,    // GH-4671: gh-guard task identity
-		SourceIssueID:   task.SourceIssueID, // GH-4671
-		Branch:          task.Branch,        // GH-4671
+		Prompt:            reviewPrompt,
+		TaskID:            task.ID,
+		Verbose:           task.Verbose,
+		Model:             selectedModel,
+		Effort:            selectedEffort,
+		ResumeSessionID:   resumeSessionID,
+		LivenessPolicy:    reviewPolicy, // GH-4691/GH-4715
+		AllowedTools:      reviewAllowed,
+		MCPConfigPath:     reviewMCP,
+		SourceRepo:        task.SourceRepo,                  // GH-4671: gh-guard task identity
+		SourceIssueID:     task.SourceIssueID,               // GH-4671
+		Branch:            task.Branch,                      // GH-4671
+		HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
 		EventHandler: func(event BackendEvent) {
 			// Track tokens from self-review
 			state.tokensInput += event.TokensInput
@@ -8367,6 +8373,41 @@ func (r *Runner) emitAlertEvent(event AlertEvent) {
 		return
 	}
 	r.alertProcessor.ProcessEvent(event)
+}
+
+// heartbeatTimeoutCallback returns the ExecuteOptions.HeartbeatCallback that
+// the backend invokes just before it kills a subprocess that produced no
+// stream events for longer than executor.heartbeat_timeout (GH-5498). It
+// surfaces the documented heartbeat_timeout alert; the task itself still
+// fails separately via task_failed. idle_minutes is rounded to whole minutes
+// so the alert engine's SuppressDuplicates sees a stable message.
+func (r *Runner) heartbeatTimeoutCallback(task *Task) func(pid int, lastEventAge time.Duration) {
+	return func(pid int, lastEventAge time.Duration) {
+		idleMinutes := int(lastEventAge.Round(time.Minute) / time.Minute)
+		heartbeatTimeout := r.config.EffectiveHeartbeatTimeout()
+		r.log.Warn("Heartbeat timeout killed subprocess",
+			slog.String("task_id", task.ID),
+			slog.Int("pid", pid),
+			slog.Duration("last_event_age", lastEventAge),
+			slog.Duration("heartbeat_timeout", heartbeatTimeout),
+		)
+		r.reportProgress(task.ID, "Heartbeat Timeout", 100, fmt.Sprintf("Process killed after %dm without stream events", idleMinutes))
+
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeHeartbeatTimeout,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Error:     fmt.Sprintf("Executor heartbeat timeout: no stream events for %dm, process %d killed (task %s)", idleMinutes, pid, task.ID),
+			Metadata: map[string]string{
+				"pid":               fmt.Sprintf("%d", pid),
+				"last_event_age":    lastEventAge.String(),
+				"idle_minutes":      fmt.Sprintf("%d", idleMinutes),
+				"heartbeat_timeout": heartbeatTimeout.String(),
+			},
+			Timestamp: time.Now(),
+		})
+	}
 }
 
 // EmitAlertEvent exposes emitAlertEvent to callers outside this package's own

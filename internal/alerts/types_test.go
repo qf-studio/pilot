@@ -81,6 +81,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypePushRetryExhaustedFailureStreak: {"push_retry_exhausted_failure_streak", true},
 		// Env-class failure streak (GH-5217)
 		AlertTypeEnvClassFailureStreak: {"env_class_failure_streak", true},
+		// Executor heartbeat timeout (GH-5498)
+		AlertTypeHeartbeatTimeout: {"heartbeat_timeout", true},
 	}
 
 	if len(rules) != len(expectedRules) {
@@ -101,6 +103,26 @@ func TestDefaultRules(t *testing.T) {
 		if rule.Enabled != expected.enabled {
 			t.Errorf("rule %s: expected enabled=%v, got %v", rule.Type, expected.enabled, rule.Enabled)
 		}
+	}
+}
+
+func TestDefaultRules_HeartbeatTimeout(t *testing.T) {
+	var rule *AlertRule
+	rules := defaultRules()
+	for i := range rules {
+		if rules[i].Type == AlertTypeHeartbeatTimeout {
+			rule = &rules[i]
+			break
+		}
+	}
+	if rule == nil {
+		t.Fatal("heartbeat_timeout rule not found")
+	}
+	if rule.Severity != SeverityCritical {
+		t.Errorf("expected severity critical, got %s", rule.Severity)
+	}
+	if rule.Cooldown != 5*time.Minute {
+		t.Errorf("expected cooldown 5m, got %v", rule.Cooldown)
 	}
 }
 
