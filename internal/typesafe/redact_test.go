@@ -63,3 +63,13 @@ func TestCapItem_600(t *testing.T) {
 		t.Errorf("len = %d", len([]rune(got)))
 	}
 }
+
+func TestRedactAndCap(t *testing.T) {
+	got := RedactAndCap("keep token=abc123secret tail", 600)
+	if got != "keep [redacted] tail" {
+		t.Errorf("RedactAndCap = %q", got)
+	}
+	if got := RedactAndCap("abcdef", 3); got != "abc" {
+		t.Errorf("cap = %q, want abc", got)
+	}
+}

@@ -1235,6 +1235,10 @@ type Runner struct {
 	// acceptanceRunner overrides the shell runner for acceptance-evidence
 	// commands. nil in production; tests inject a fake command runner.
 	acceptanceRunner AcceptanceCommandRunner
+	// acceptanceClassifier classifies acceptance-checklist items before the
+	// evidence runner executes them. Set in NewRunnerWithConfig; nil means
+	// the regex classifier.
+	acceptanceClassifier AcceptanceClassifier
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
@@ -1326,6 +1330,7 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 	}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = config
+	runner.acceptanceClassifier = newAcceptanceClassifier(config, runner.log)
 
 	// Configure model routing, timeouts, and effort from config
 	if config != nil {
