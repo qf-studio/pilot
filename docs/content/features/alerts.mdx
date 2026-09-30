@@ -114,6 +114,8 @@ These events detect complex failure scenarios and trigger escalation workflows.
 | `deadlock` | critical | 1h | Fires when autopilot has PRs in flight but no state transitions for the configured duration (default: 1 hour). Indicates the system may be stuck. An idle autopilot with no active PRs never fires. |
 | `escalation` | critical | 1h | Fires after repeated failures for the same source (default: 3 retries). Routes to PagerDuty or on-call channels. |
 | `heartbeat_timeout` | critical | 5m | Fires when the executor's Claude subprocess produces no stream events for longer than `executor.heartbeat_timeout` (default 5m) and is killed. The task also fails with `shutdown_terminated`. |
+| `task_timeout` | critical | 5m | Fires when a task exceeds its configured timeout. A `task_failed` alert also fires for the same task by design. |
+| `watchdog_kill` | critical | 5m | Fires when the executor watchdog kills a runaway Claude subprocess. A `task_failed` alert also fires for the same task by design. |
 
 ## Alert Channels
 
@@ -783,6 +785,24 @@ alerts:
       channels: []
       cooldown: 5m
       description: "Alert when the executor's Claude subprocess produces no stream events for longer than executor.heartbeat_timeout and is killed"
+
+    - name: task_timeout
+      type: task_timeout
+      enabled: true
+      condition: {}
+      severity: critical
+      channels: []
+      cooldown: 5m
+      description: "Alert when a task exceeds its configured timeout"
+
+    - name: watchdog_kill
+      type: watchdog_kill
+      enabled: true
+      condition: {}
+      severity: critical
+      channels: []
+      cooldown: 5m
+      description: "Alert when the executor watchdog kills a runaway Claude subprocess"
 ```
 
 <Callout type="warning">

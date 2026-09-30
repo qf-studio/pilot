@@ -16,3 +16,22 @@ func TestHeartbeatTimeoutEventTypeMatchesExecutor(t *testing.T) {
 			executor.AlertEventTypeHeartbeatTimeout, EventTypeHeartbeatTimeout)
 	}
 }
+
+// TestTaskTimeoutAndWatchdogKillEventTypesMatchExecutor pins the GH-5500
+// contract for the same EngineAdapter string cast: editing either side alone
+// makes the events silently drop.
+func TestTaskTimeoutAndWatchdogKillEventTypesMatchExecutor(t *testing.T) {
+	pairs := []struct {
+		name     string
+		executor executor.AlertEventType
+		engine   EventType
+	}{
+		{"task_timeout", executor.AlertEventTypeTaskTimeout, EventTypeTaskTimeout},
+		{"watchdog_kill", executor.AlertEventTypeWatchdogKill, EventTypeWatchdogKill},
+	}
+	for _, p := range pairs {
+		if string(p.executor) != string(p.engine) {
+			t.Errorf("%s: executor = %q, alerts = %q", p.name, p.executor, p.engine)
+		}
+	}
+}

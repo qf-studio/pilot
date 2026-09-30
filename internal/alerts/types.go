@@ -46,6 +46,10 @@ const (
 	// Heartbeat timeout (GH-884)
 	AlertTypeHeartbeatTimeout AlertType = "heartbeat_timeout"
 
+	// Task timeout and watchdog kill (GH-5500)
+	AlertTypeTaskTimeout  AlertType = "task_timeout"
+	AlertTypeWatchdogKill AlertType = "watchdog_kill"
+
 	// Eval regression detection (GH-2065)
 	AlertTypeEvalRegression AlertType = "eval_regression"
 
@@ -659,6 +663,31 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    5 * time.Minute,
 			Description: "Alert when the executor's Claude subprocess produces no stream events for longer than executor.heartbeat_timeout and is killed",
+		},
+		// GH-5500: emitted by the executor runner when a task exceeds its
+		// configured timeout. The executor config drives the timeout, so no
+		// RuleCondition field is needed.
+		{
+			Name:        "task_timeout",
+			Type:        AlertTypeTaskTimeout,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    5 * time.Minute,
+			Description: "Alert when a task exceeds its configured timeout",
+		},
+		// GH-5500: emitted by the executor watchdog when it kills a runaway
+		// Claude subprocess.
+		{
+			Name:        "watchdog_kill",
+			Type:        AlertTypeWatchdogKill,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    5 * time.Minute,
+			Description: "Alert when the executor watchdog kills a runaway Claude subprocess",
 		},
 	}
 }

@@ -2074,6 +2074,186 @@ func TestHandleHeartbeatTimeout(t *testing.T) {
 	})
 }
 
+// TestHandleTaskTimeout covers GH-5500: the executor's runner reports a task exceeding its timeout
+// emits task_timeout and the engine must turn it into a critical alert.
+func TestHandleTaskTimeout(t *testing.T) {
+	newEvent := func(taskID string) Event {
+		return Event{
+			Type:      EventTypeTaskTimeout,
+			TaskID:    taskID,
+			Project:   "/tmp/proj",
+			Metadata:  map[string]string{"timeout": "30m0s", "complexity": "medium"},
+			Timestamp: time.Now(),
+		}
+	}
+	rule := func(enabled bool, cooldown time.Duration) AlertRule {
+		return AlertRule{
+			Name:     "task_timeout",
+			Type:     AlertTypeTaskTimeout,
+			Enabled:  enabled,
+			Severity: SeverityCritical,
+			Channels: []string{"test-channel"},
+			Cooldown: cooldown,
+		}
+	}
+	newEngine := func(rules []AlertRule) (*Engine, *mockChannel) {
+		config := &AlertConfig{
+			Enabled:  true,
+			Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+			Rules:    rules,
+		}
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		return NewEngine(config, WithDispatcher(dispatcher)), mockCh
+	}
+
+	t.Run("fires once with expected message", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{rule(true, 5*time.Minute)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5500-TASK"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].Type != AlertTypeTaskTimeout {
+			t.Errorf("expected alert type %s, got %s", AlertTypeTaskTimeout, alerts[0].Type)
+		}
+		if alerts[0].Severity != SeverityCritical {
+			t.Errorf("expected severity critical, got %s", alerts[0].Severity)
+		}
+		want := "Task timeout: task GH-5500-TASK exceeded its 30m0s timeout (project /tmp/proj)"
+		if alerts[0].Message != want {
+			t.Errorf("message = %q, want %q", alerts[0].Message, want)
+		}
+	})
+
+	t.Run("second event inside cooldown does not fire", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{rule(true, 5*time.Minute)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5500-TASK"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		engine.ProcessEvent(newEvent("GH-5500-TASK-2"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 1 {
+			t.Errorf("expected 1 alert (second suppressed by cooldown), got %d", got)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{rule(false, 0)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5500-TASK"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+}
+
+// TestHandleWatchdogKill covers GH-5500: the executor's watchdog kills a runaway subprocess
+// emits watchdog_kill and the engine must turn it into a critical alert.
+func TestHandleWatchdogKill(t *testing.T) {
+	newEvent := func(taskID string) Event {
+		return Event{
+			Type:      EventTypeWatchdogKill,
+			TaskID:    taskID,
+			Project:   "/tmp/proj",
+			Metadata:  map[string]string{"pid": "4242", "watchdog_timeout": "45m0s"},
+			Timestamp: time.Now(),
+		}
+	}
+	rule := func(enabled bool, cooldown time.Duration) AlertRule {
+		return AlertRule{
+			Name:     "watchdog_kill",
+			Type:     AlertTypeWatchdogKill,
+			Enabled:  enabled,
+			Severity: SeverityCritical,
+			Channels: []string{"test-channel"},
+			Cooldown: cooldown,
+		}
+	}
+	newEngine := func(rules []AlertRule) (*Engine, *mockChannel) {
+		config := &AlertConfig{
+			Enabled:  true,
+			Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+			Rules:    rules,
+		}
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		return NewEngine(config, WithDispatcher(dispatcher)), mockCh
+	}
+
+	t.Run("fires once with expected message", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{rule(true, 5*time.Minute)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5500-TASK"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+		alerts := mockCh.getAlerts()
+		if len(alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(alerts))
+		}
+		if alerts[0].Type != AlertTypeWatchdogKill {
+			t.Errorf("expected alert type %s, got %s", AlertTypeWatchdogKill, alerts[0].Type)
+		}
+		if alerts[0].Severity != SeverityCritical {
+			t.Errorf("expected severity critical, got %s", alerts[0].Severity)
+		}
+		want := "Watchdog kill: process 4242 killed after 45m0s (task GH-5500-TASK, project /tmp/proj)"
+		if alerts[0].Message != want {
+			t.Errorf("message = %q, want %q", alerts[0].Message, want)
+		}
+	})
+
+	t.Run("second event inside cooldown does not fire", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{rule(true, 5*time.Minute)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5500-TASK"))
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		engine.ProcessEvent(newEvent("GH-5500-TASK-2"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 1 {
+			t.Errorf("expected 1 alert (second suppressed by cooldown), got %d", got)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		engine, mockCh := newEngine([]AlertRule{rule(false, 0)})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("GH-5500-TASK"))
+		engine.flushForTest()
+
+		if got := len(mockCh.getAlerts()); got != 0 {
+			t.Errorf("expected 0 alerts (rule disabled), got %d", got)
+		}
+	})
+}
+
 // TestHandleLaneStarvation covers the GH-4454 lane-starvation rule: the
 // emitting side (autopilot.Controller.reconcileLaneStarvation) does no
 // threshold filtering of its own and sends the raw streak on every starved
