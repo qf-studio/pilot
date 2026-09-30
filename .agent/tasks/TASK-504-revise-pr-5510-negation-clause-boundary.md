@@ -1,6 +1,6 @@
 # TASK-504: fix(executor): revise PR #5510 — negation regex must not reject positive pins with an unrelated earlier "not"
 
-**Status**: 🚧 In Progress
+**Status**: 🚀 Dispatched to Pilot
 **Created**: 2026-09-30
 **Assignee**: Pilot
 
@@ -64,6 +64,7 @@ Tighten the negation check so a cue only counts when it governs the fail word, a
 
 ## Refs
 
+- Pilot issue: https://github.com/qf-studio/pilot/issues/5513
 - PR #5510 review (REQUEST-CHANGES) and issue #5506 (original spec).
 - #5486 mutation-before-paste ordering · #5438 · #5479.
 

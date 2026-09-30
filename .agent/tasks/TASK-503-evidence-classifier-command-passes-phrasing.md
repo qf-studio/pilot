@@ -1,6 +1,6 @@
 # TASK-503: fix(executor): acceptance-evidence classifier treats "`<allowlisted command>` passes" as a paste-output item
 
-**Status**: 🚧 In Progress
+**Status**: 🚀 Dispatched to Pilot
 **Created**: 2026-09-30
 **Assignee**: Pilot
 
@@ -100,6 +100,7 @@ go vet ./internal/executor/
 
 ## Refs
 
+- Pilot issue: https://github.com/qf-studio/pilot/issues/5514
 - #5512 / #5500: the production run that proved the gap (gate ran, five bullets classified other).
 - #5435 gate · #5438 description half relaxed · #5479 phrase recall · #5486 mutation precedence · #5488 heading · #5493 criteria carried · #5506 / PR #5510 negation · #5509 optional Jev classifier.
 - SOP: `.agent/sops/onboarding/new-project-issue-authoring.md` Rule 5b (evidence dialect for authors).
