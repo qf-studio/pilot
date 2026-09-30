@@ -153,6 +153,7 @@ go vet ./internal/typesafe/ ./internal/executor/ ./internal/config/
 
 - Roadmap across gates (which get Jev, which are skipped, order, rollout): `.agent/system/jev-gates-roadmap.md`
 - Pilot issue: https://github.com/qf-studio/pilot/issues/5509 (body to be replaced by this document before the `pilot` label is added)
+- Epic sub-issues (decomposed 2026-09-30): #5518 typesafe pkg → PR#5522 merged, reviewed APPROVE-w-notes · #5519 config → PR#5523 merged, reviewed APPROVE-w-notes (follow-up #5525: nested `executor.typesafe:` dropped by unconditional copy) · #5520 classifier+seam → PR#5524 · #5521 docs.
 - Research 2026-09-30: nav-research passes on the classifier seam and on the gate inventory (this session); ranked gates recorded in the session marker.
 - TypeSafe docs: https://docs.typesafe.ai/api.md · https://docs.typesafe.ai/primitives/choice.md · https://docs.typesafe.ai/confidence.md · https://docs.typesafe.ai/cookbooks/pre_parsed_value_extraction_cookbook.md
 - Reference implementation: Navigator plugin hooks/nav_hook_lib/judge.py (v7.7.0, TASK-79/80): env-then-file key, redaction, fuse, fail-open, opener injection.
