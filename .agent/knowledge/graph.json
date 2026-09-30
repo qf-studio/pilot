@@ -2581,6 +2581,21 @@
           "testing",
           "context"
         ]
+      },
+      "TASK-505": {
+        "path": ".agent/tasks/TASK-505-jev-acceptance-classifier-shared-client.md",
+        "title": "feat(executor): optional Jev (TypeSafe) classifier behind the acceptance-evidence regex floor \u2014 shared client, shadow mode, per-gate merge contract",
+        "status": "backlog",
+        "concepts": [
+          "knowledge",
+          "api",
+          "context",
+          "testing",
+          "markers",
+          "skills",
+          "deployment",
+          "authentication"
+        ]
       }
     },
     "memories": {
@@ -9705,6 +9720,46 @@
       "from": "TASK-504",
       "to": "context",
       "type": "implements"
+    },
+    {
+      "from": "TASK-505",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-505",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-505",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-505",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-505",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-505",
+      "to": "skills",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-505",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-505",
+      "to": "authentication",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -9876,7 +9931,8 @@
       "mem-194",
       "pricing-flat-fee-byo-tokens-sonnet-default",
       "TASK-498",
-      "TASK-504"
+      "TASK-504",
+      "TASK-505"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -9977,7 +10033,8 @@
       "TASK-498",
       "console-email-transport-ses-not-email-service-repo",
       "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb",
-      "TASK-503"
+      "TASK-503",
+      "TASK-505"
     ],
     "auto-merge": [
       "mem-103"
@@ -10266,7 +10323,8 @@
       "mem-194",
       "TASK-498",
       "TASK-503",
-      "TASK-504"
+      "TASK-504",
+      "TASK-505"
     ],
     "conversational-bot": [
       "mem-036",
@@ -10568,7 +10626,8 @@
       "ecs-az-rebalancing-requires-az-spread-placement-first",
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
       "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb",
-      "TASK-503"
+      "TASK-503",
+      "TASK-505"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -11018,7 +11077,8 @@
       "mem-191",
       "mem-192",
       "mem-193",
-      "mem-194"
+      "mem-194",
+      "TASK-505"
     ],
     "labels": [
       "mem-100",
@@ -11081,7 +11141,8 @@
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-489"
+      "TASK-489",
+      "TASK-505"
     ],
     "memory": [
       "TASK-358",
@@ -11340,7 +11401,8 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "TASK-497"
+      "TASK-497",
+      "TASK-505"
     ],
     "social-engineering": [
       "mem-125"
@@ -11544,7 +11606,8 @@
       "TASK-498",
       "executor-alert-event-strings-must-equal-alerts-eventtype",
       "TASK-503",
-      "TASK-504"
+      "TASK-504",
+      "TASK-505"
     ],
     "testing-quality": [
       "TASK-384",
@@ -11920,10 +11983,10 @@
       "main-history-rewritten-2026-09-24-internal-notes-purge"
     ]
   },
-  "last_updated": "2026-09-30T13:09:39.981621+00:00",
+  "last_updated": "2026-09-30T17:17:59.561522+00:00",
   "stats": {
-    "total_nodes": 596,
-    "total_edges": 512,
+    "total_nodes": 597,
+    "total_edges": 520,
     "memory_count": 328
   },
   "metadata": {}
