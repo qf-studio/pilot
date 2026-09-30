@@ -707,6 +707,17 @@ executor:
   #     min_confidence: 0.8         # 0..1; model verdict must reach this to override regex
   #     shadow: true                # default true: record would-be decisions, don't change behaviour
 
+  # Optional Jev classifier for backticked path spans in the dispatch base-presence
+  # gate (TASK-506). The regex extractor stays the floor; Jev can only remove spans
+  # (to_be_created / not_a_repo_file) from the probe list, and only when shadow is
+  # false and confidence >= min_confidence. Needs TYPESAFE_API_KEY (env only).
+  # Privacy boundary: each span plus one redacted, capped sentence; never the body.
+  # base_presence:
+  #   classifier:
+  #     provider: regex             # regex (default) | jev
+  #     min_confidence: 0.8
+  #     shadow: true
+
   # Stagnation detection (GH-925) - detect and recover from stuck tasks
   # stagnation:
   #   enabled: true

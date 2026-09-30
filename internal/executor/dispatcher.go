@@ -3472,7 +3472,14 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// when available, set above), not the raw task.Description, so a
 		// body edit that removes the offending ref/path is honored on this
 		// very tick instead of the queue-time snapshot forever re-matching.
-		if refs, paths := ExtractDependencyRefs(presenceCheckBody), ExtractReferencedPaths(presenceCheckBody); len(refs) > 0 || len(paths) > 0 {
+		//
+		// TASK-506/GH-5543: the optional Jev classifier sits between extraction
+		// and Check. In shadow mode (default) it returns paths unchanged; in
+		// live mode it drops spans Jev is confident are not existing
+		// prerequisites. Any classifier failure keeps every path.
+		refs, paths := ExtractDependencyRefs(presenceCheckBody), ExtractReferencedPaths(presenceCheckBody)
+		paths = w.runner.classifyBasePresencePaths(ctx, exec.TaskID, presenceCheckBody, paths)
+		if len(refs) > 0 || len(paths) > 0 {
 			key := repickBackoffKey(exec.ProjectPath, exec.TaskID)
 			hold, checkErr := checkBasePresence(ctx, w.runner, task, exec.ProjectPath, refs, paths)
 			if checkErr != nil {
