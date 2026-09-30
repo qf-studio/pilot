@@ -1,6 +1,6 @@
 # TASK-504: fix(executor): revise PR #5510 — negation regex must not reject positive pins with an unrelated earlier "not"
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ Shipped 2026-09-30 — #5513 revision landed on PR#5510, merged 15:02Z, in v2.276.10; #5513 closed 17:2xZ
 **Created**: 2026-09-30
 **Assignee**: Pilot
 

@@ -1,6 +1,6 @@
 # TASK-503: fix(executor): acceptance-evidence classifier treats "`<allowlisted command>` passes" as a paste-output item
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ Shipped 2026-09-30 — #5514 → PR#5515 merged 15:05Z, in v2.276.10 (review APPROVE-w-notes)
 **Created**: 2026-09-30
 **Assignee**: Pilot
 
