@@ -438,6 +438,10 @@ executor:
 | `stagnation.grace_period` | duration | `30s` | Grace period after intervention |
 | `stagnation.commit_partial_work` | bool | `true` | Commit partial progress before aborting |
 
+### Acceptance Evidence
+
+The acceptance-evidence gate (`executor.acceptance_evidence`) runs recognised acceptance-checklist items in the task worktree and appends `## Evidence` / `## Not verified` sections to the PR body. It recognises three shapes: a phrase-triggered paste ("paste the output of `go test ./pkg/`"), a backticked allowlisted command followed by passes / succeeds / is green / exits 0 (``"`go test ./pkg/` passes"``), and a mutation arrow (`change -> TestName fails`).
+
 ### Claude Code SDK Features
 
 Advanced Claude Code backend features for session management and structured output.

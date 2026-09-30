@@ -88,12 +88,23 @@ func (i AcceptanceItem) RequiresEvidence() bool {
 // now recognised too. A bare "pr body" or "evidence" is deliberately NOT
 // matched ("described in the PR body", "evidence: screenshot attached" stay
 // other).
+//
+// GH-5514: a second paste-output trigger lives in ClassifyAcceptanceItem,
+// deliberately NOT in this phrase list: a backticked command whose first token
+// is a default-allowlisted tool, plus an outcome word ("`go test ./x/` passes",
+// "`make build` succeeds"; see commandOutcomeRe). PR #5512 (2026-09-30) showed
+// the gate running with every such bullet classified other, so no ## Evidence
+// block was rendered. Anchoring on the allowlisted command keeps "`Store`
+// passes the org id through" other.
 var pasteOutputPatternRe = regexp.MustCompile(`(?i)pasted into the pr body|paste the output|terminal output|evidence in the pr body|into the pr body|output line`)
 
 // inlineCodeRe extracts inline `code span` segments, the convention used by
 // every observed paste-output acceptance item ("paste the output of `go
 // test -run TestX ./pkg/`").
 var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
+
+// commandOutcomeRe matches a whole-word passing-outcome phrase (GH-5514).
+var commandOutcomeRe = regexp.MustCompile(`(?i)\b(?:passes|pass|succeeds|is green|green|exits 0|exit code 0|returns 0)\b`)
 
 // mutationArrowRe splits a mutation-style item into its change description
 // and expected outcome across a "->" or "→" separator.
@@ -163,7 +174,37 @@ func ClassifyAcceptanceItem(text string) AcceptanceItem {
 		return item
 	}
 
+	// GH-5514: "`<allowlisted cmd>` passes" is a paste-output item whose
+	// commands are exactly the qualifying spans (a file path in the same
+	// sentence is not run). Placed after the phrase branch so phrase-triggered
+	// items keep their Commands extraction unchanged.
+	if commandOutcomeRe.MatchString(clean) {
+		if cmds := extractAllowlistedCommandSpans(clean); len(cmds) > 0 {
+			item.Kind = AcceptanceItemPasteOutput
+			item.Commands = cmds
+			return item
+		}
+	}
+
 	return item
+}
+
+// extractAllowlistedCommandSpans returns the inline code spans of text whose
+// first whitespace-delimited token is in DefaultAcceptanceEvidenceAllowedCommands.
+// The classifier stays pure and uses the default list only for shape
+// detection; the runtime allowlist is enforced later by the runner.
+func extractAllowlistedCommandSpans(text string) []string {
+	allowed := make(map[string]bool)
+	for _, c := range DefaultAcceptanceEvidenceAllowedCommands() {
+		allowed[c] = true
+	}
+	var cmds []string
+	for _, c := range extractInlineCommands(text) {
+		if fields := strings.Fields(c); len(fields) > 0 && allowed[fields[0]] {
+			cmds = append(cmds, c)
+		}
+	}
+	return cmds
 }
 
 // ParseAcceptanceItems classifies every entry in an acceptance-criteria
