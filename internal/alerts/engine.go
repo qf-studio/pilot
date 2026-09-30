@@ -218,6 +218,15 @@ const (
 	// silently forever. Metadata carries task_id, project,
 	// consecutive_failures, and credential_signature.
 	EventTypeEnvClassFailureStreak EventType = "env_class_failure_streak"
+
+	// Heartbeat timeout events (GH-5498): fired by the executor's
+	// HeartbeatCallback (Runner.heartbeatTimeoutCallback) just before the
+	// Claude subprocess is killed for producing no stream events for longer
+	// than executor.heartbeat_timeout. The string must equal
+	// executor.AlertEventTypeHeartbeatTimeout because EngineAdapter casts the
+	// executor string straight to EventType. Metadata carries pid,
+	// last_event_age, idle_minutes and heartbeat_timeout.
+	EventTypeHeartbeatTimeout EventType = "heartbeat_timeout"
 )
 
 const (
@@ -711,6 +720,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleIntentJudgeFailureStreak(ctx, event)
 	case EventTypeEnvClassFailureStreak:
 		e.handleEnvClassFailureStreak(ctx, event)
+	case EventTypeHeartbeatTimeout:
+		e.handleHeartbeatTimeout(ctx, event)
 	case EventTypeDeadManAttempt:
 		e.handleDeadManAttempt(event)
 	case EventTypeDeadManSuccess:
@@ -1140,6 +1151,34 @@ func (e *Engine) handleEnvClassFailureStreak(ctx context.Context, event Event) {
 		e.logger.Warn("env-class failure streak event has no matching rule — alert dropped silently",
 			slog.String("task_id", event.TaskID),
 			slog.String("consecutive_failures", event.Metadata["consecutive_failures"]))
+	}
+}
+
+// handleHeartbeatTimeout fires AlertTypeHeartbeatTimeout rules when the
+// executor kills a Claude subprocess that produced no stream events for
+// longer than executor.heartbeat_timeout (GH-5498). The executor already
+// applied the timeout, so no Condition-based counting happens here. The task
+// still fails separately (task_failed); this is the specific, documented
+// alert. idle_minutes is whole minutes so SuppressDuplicates can dedupe on a
+// stable message.
+func (e *Engine) handleHeartbeatTimeout(ctx context.Context, event Event) {
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeHeartbeatTimeout {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			message := fmt.Sprintf("Executor heartbeat timeout: no stream events for %sm, process %s killed (task %s)",
+				event.Metadata["idle_minutes"], event.Metadata["pid"], event.TaskID)
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("heartbeat timeout event has no matching rule — alert dropped silently",
+			slog.String("task_id", event.TaskID),
+			slog.String("pid", event.Metadata["pid"]))
 	}
 }
 
