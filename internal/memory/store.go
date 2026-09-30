@@ -1144,6 +1144,11 @@ const (
 	// operator to judge whether the attempted call indicates a prompt/task
 	// problem worth investigating.
 	StageGhGuardDenied Stage = "executor.gh_guard_denied"
+	// StageGhGuardTestDenialsSuppressed records (GH-5542) how many gh-guard
+	// denials in one execution came from Go test binaries (the repo's own
+	// unit tests run by the quality gates) and were therefore not journaled
+	// individually or alerted. Detail: {"count":N}.
+	StageGhGuardTestDenialsSuppressed Stage = "executor.gh_guard_test_denials_suppressed"
 	// StageBasePresenceHeld records a GH-5045/GH-5052 claim-path hold: the
 	// task's issue body referenced a prerequisite (an explicit "Depends on:
 	// #N" ref that is either an open PR or an issue whose attached PR is
