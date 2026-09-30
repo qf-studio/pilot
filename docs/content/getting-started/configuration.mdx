@@ -442,7 +442,30 @@ executor:
 
 The acceptance-evidence gate (`executor.acceptance_evidence`) runs recognised acceptance-checklist items in the task worktree and appends `## Evidence` / `## Not verified` sections to the PR body. It recognises three shapes: a phrase-triggered paste ("paste the output of `go test ./pkg/`"), a backticked allowlisted command followed by passes / succeeds / is green / exits 0 (``"`go test ./pkg/` passes"``), and a mutation arrow (`change -> TestName fails`).
 
-The regex classifier remains the floor: it always runs, offline, and its verdict stands whenever anything else is unavailable. Jev (TypeSafe) can optionally act as a second classifier (`executor.acceptance_evidence.classifier.provider: jev`), but only when `TYPESAFE_API_KEY` is set in the environment; without the key the provider silently stays `regex`. Shadow mode (`classifier.shadow`) is on by default, so the first days record how often Jev agreed with or would have overridden the regex verdict without changing any behaviour. A Jev verdict only overrides regex at or above `classifier.min_confidence` (default `0.8`), and only redacted checklist text leaves the machine. The per-task info log line (`task_id`, `agreed`, `overrode`, ...) is the signal for deciding when to flip shadow off.
+The regex classifier remains the floor: it always runs, offline, and its verdict stands whenever anything else is unavailable. Jev (TypeSafe) can optionally act as a second classifier (`executor.acceptance_evidence.classifier.provider: jev`), but only when `TYPESAFE_API_KEY` is set in the environment; without the key Pilot logs a warning at startup (Runner construction) naming the `TYPESAFE_API_KEY` env var and falls back to `regex`. Shadow mode (`classifier.shadow`) is on by default, so the first days record how often Jev agreed with or would have overridden the regex verdict without changing any behaviour. A Jev verdict only overrides regex at or above `classifier.min_confidence` (default `0.8`), and only redacted checklist text leaves the machine. The per-task info log line (`task_id`, `agreed`, `overrode`, ...) is the signal for deciding when to flip shadow off.
+
+```yaml
+executor:
+  acceptance_evidence:
+    enabled: true
+    allowed_commands: [go, make, npm, npx, bun, bunx, pnpm, yarn, pytest, cargo]
+    command_timeout: 10m
+    classifier:
+      provider: regex       # regex | jev
+      min_confidence: 0.8   # 0..1
+      shadow: true          # record would-be decisions, don't change behaviour
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `acceptance_evidence.enabled` | bool | `true` | Master switch; only an explicit `false` turns the gate off and leaves the PR body unchanged |
+| `acceptance_evidence.allowed_commands` | list | `go, make, npm, npx, bun, bunx, pnpm, yarn, pytest, cargo` | First-token allowlist; any other command is reported under `## Not verified` |
+| `acceptance_evidence.command_timeout` | duration | `10m` | Per-command timeout; empty, invalid or non-positive values fall back to the default |
+| `acceptance_evidence.classifier.provider` | string | `regex` | `regex` or `jev`. `jev` takes effect only when `TYPESAFE_API_KEY` is set; otherwise `regex` is used |
+| `acceptance_evidence.classifier.min_confidence` | float | `0.8` | Confidence (0..1) a Jev verdict needs to override the regex verdict; out-of-range values fall back to `0.8` |
+| `acceptance_evidence.classifier.shadow` | bool | `true` | Record what Jev would have decided without changing behaviour; set `false` to let Jev overrides apply |
+
+The `jev` provider uses the top-level [`typesafe:` connection block](#typesafe-jev).
 
 ### Claude Code SDK Features
 
@@ -1494,6 +1517,29 @@ data:
         token: "${GITHUB_TOKEN}"
         repo: "your-org/your-repo"
 ```
+
+---
+
+## TypeSafe (Jev)
+
+Shared connection settings for optional TypeSafe System One (Jev) classifiers, such as `executor.acceptance_evidence.classifier`. The block is top-level and entirely optional.
+
+```yaml
+typesafe:
+  endpoint: https://api.typesafe.ai/v1/systemone
+  model: jev-latest
+  timeout: 5s
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `typesafe.endpoint` | string | `https://api.typesafe.ai/v1/systemone` | System One API endpoint |
+| `typesafe.model` | string | `jev-latest` | Jev model alias |
+| `typesafe.timeout` | duration | `5s` | Bound on a single call; unset, invalid or non-positive values fall back to `5s`. Gates fall back to their regex floor on timeout or error |
+
+<Callout type="warning">
+The API key is read **only** from the `TYPESAFE_API_KEY` environment variable, never from the config file. Only short gate inputs (for example acceptance-checklist item text, secret-redacted and length-capped) are sent; no source code or diffs leave the machine.
+</Callout>
 
 ---
 
