@@ -216,3 +216,34 @@ func TestIsDanglingFlagFragment(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyAcceptanceItem_CommandPassesIsPasteOutput(t *testing.T) {
+	tests := []struct {
+		name         string
+		text         string
+		wantKind     AcceptanceItemKind
+		wantCommands []string
+	}{
+		{"go test passes", "`go test -race ./internal/alerts/` passes", AcceptanceItemPasteOutput, []string{"go test -race ./internal/alerts/"}},
+		{"make build succeeds", "`make build` succeeds", AcceptanceItemPasteOutput, []string{"make build"}},
+		{"npm test is green", "`npm test` is green", AcceptanceItemPasteOutput, []string{"npm test"}},
+		{"exits 0", "`go test ./internal/alerts/` exits 0", AcceptanceItemPasteOutput, []string{"go test ./internal/alerts/"}},
+		{"file path not captured", "`cargo test` passes and `internal/alerts/types.go` gets two rows", AcceptanceItemPasteOutput, []string{"cargo test"}},
+		{"non-command span", "`Store` passes the org id through", AcceptanceItemOther, nil},
+		{"file path span", "`internal/alerts/types.go` default-rule table covers the two new types", AcceptanceItemOther, nil},
+		{"no outcome word", "`go vet ./...`", AcceptanceItemOther, nil},
+		{"CI green", "CI green", AcceptanceItemOther, nil},
+		{"tests pass", "tests pass", AcceptanceItemOther, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyAcceptanceItem(tt.text)
+			if got.Kind != tt.wantKind {
+				t.Fatalf("Kind = %q, want %q", got.Kind, tt.wantKind)
+			}
+			if strings.Join(got.Commands, "|") != strings.Join(tt.wantCommands, "|") {
+				t.Errorf("Commands = %q, want %q", got.Commands, tt.wantCommands)
+			}
+		})
+	}
+}

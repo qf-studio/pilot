@@ -682,6 +682,7 @@ executor:
   # executor's own env), captured output is redacted before it is pasted
   # into the (public) PR body, mutation file paths are confined to the
   # worktree, and each command is subject to a per-command timeout.
+  # A backticked allowlisted command followed by passes / succeeds / is green / exits 0 is run and pasted.
   # acceptance_evidence:
   #   enabled: true                 # Master switch; false = PR body unchanged (default true)
   #   allowed_commands:             # First-token allowlist; anything else -> "Not verified: command not in allowlist"
