@@ -330,6 +330,49 @@ func TestAcceptanceClassifier_JevQuestionsAndRedactedState(t *testing.T) {
 	}
 }
 
+func TestAcceptanceClassifier_JevInstructionsNameIndexAndText(t *testing.T) {
+	asker := &fakeAsker{answers: map[string]typesafe.Answer{}}
+	c := &jevAcceptanceClassifier{asker: asker, minConfidence: 0.8, shadow: true}
+	c.Classify(context.Background(), []string{
+		"pass token=abc123secret and TestA must fail",
+		"paste the output of go vet for secret2=zzz999hidden and TestB must fail",
+	})
+
+	instr := func(key string) string {
+		s, _ := asker.gotQuests[key].Instructions.(string)
+		if s == "" {
+			t.Fatalf("%s has no string instructions", key)
+		}
+		return s
+	}
+	for _, prefix := range []string{"kind_", "target_"} {
+		i1, i2 := instr(prefix+"1"), instr(prefix+"2")
+		if i1 == i2 {
+			t.Errorf("%s1 and %s2 instructions are identical: %q", prefix, prefix, i1)
+		}
+		if !strings.Contains(i1, `"1"`) || strings.Contains(i1, `"2"`) {
+			t.Errorf("%s1 must name index 1 only: %q", prefix, i1)
+		}
+		if !strings.Contains(i2, `"2"`) || strings.Contains(i2, `"1"`) {
+			t.Errorf("%s2 must name index 2 only: %q", prefix, i2)
+		}
+		if !strings.Contains(i1, "TestA must fail") || strings.Contains(i1, "TestB") {
+			t.Errorf("%s1 must contain its own text only: %q", prefix, i1)
+		}
+		if !strings.Contains(i2, "TestB must fail") || strings.Contains(i2, "TestA") {
+			t.Errorf("%s2 must contain its own text only: %q", prefix, i2)
+		}
+		for _, i := range []string{i1, i2} {
+			if strings.Contains(i, "abc123secret") || strings.Contains(i, "zzz999hidden") {
+				t.Errorf("%s instruction leaks unredacted secret: %q", prefix, i)
+			}
+			if !strings.Contains(i, "[redacted]") {
+				t.Errorf("%s instruction missing redacted text: %q", prefix, i)
+			}
+		}
+	}
+}
+
 func TestAcceptanceClassifier_Regex(t *testing.T) {
 	items, stats := regexAcceptanceClassifier{}.Classify(context.Background(), []string{pasteItemText, "other thing"})
 	if len(items) != 2 || stats.Classifier != "regex" || stats.RegexOnly != 2 {
