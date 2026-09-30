@@ -419,7 +419,12 @@ type BackendConfig struct {
 	// TypeSafe is the shared TypeSafe (Jev) connection block. It is populated
 	// by config.Load from the top-level `typesafe:` YAML key; the runner reads
 	// it from here. The API key comes from TYPESAFE_API_KEY only.
-	TypeSafe *typesafe.Config `yaml:"typesafe,omitempty"`
+	//
+	// Decision: yaml:"-" makes the top-level `typesafe:` block the single
+	// canonical shape. A bindable tag let a nested `executor.typesafe:` block
+	// unmarshal, only for Load's unconditional copy to overwrite it with nil
+	// (GH-5525) — and would double-emit the block when marshalled.
+	TypeSafe *typesafe.Config `yaml:"-"`
 
 	// Navigator contains Navigator auto-init settings
 	Navigator *NavigatorConfig `yaml:"navigator,omitempty"`
