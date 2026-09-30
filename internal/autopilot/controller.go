@@ -7406,6 +7406,23 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 	return c.closeAndReexecute(ctx, prState, comment, "merge conflict with base branch")
 }
 
+// issueHasMergedPilotPR reports whether issue n was delivered by a merged PR.
+// It uses the strongly-consistent head-branch lookup on the conventional
+// pilot/GH-N branch (the same evidence verifyChildrenShippedForClose trusts),
+// not the lagging Search API. GH-5538.
+func (c *Controller) issueHasMergedPilotPR(ctx context.Context, n int) (bool, error) {
+	prs, err := c.findPRsByBranch(ctx, fmt.Sprintf("pilot/GH-%d", n))
+	if err != nil {
+		return false, err
+	}
+	for _, pr := range prs {
+		if pr.Merged {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // attemptStackedRebase is the GH-5527 rung of handleMergeConflict, tried after
 // GitHub's server-side update fails and before mechanical go.mod/go.sum
 // resolution. When the PR branch is a stacked epic sub-issue branch that still
@@ -7418,7 +7435,7 @@ func (c *Controller) attemptStackedRebase(ctx context.Context, prState *PRState)
 		return false
 	}
 
-	res, err := rebaseStackedBranch(ctx, c.projectPath, prState.BranchName, c.resolveMainBranchName(), prState.IssueNumber)
+	res, err := rebaseStackedBranch(ctx, c.projectPath, prState.BranchName, c.resolveMainBranchName(), prState.IssueNumber, c.issueHasMergedPilotPR)
 	if err != nil {
 		c.log.Warn("stacked rebase failed, falling through", "pr", prState.PRNumber, "error", err)
 		return false
