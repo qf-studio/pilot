@@ -229,7 +229,7 @@ Every task execution records an outcome in the `model_outcomes` SQLite table:
 Before each execution, `ShouldEscalate()` checks the last 10 outcomes for the current task type and model. If the failure rate exceeds the configured threshold (default 30%), Pilot escalates to the next model tier:
 
 ```
-claude-haiku-4-5 → claude-sonnet-5-5 → claude-opus-4-6
+claude-haiku-4-5 → claude-sonnet-5-5 → claude-opus-5-5
 ```
 
 Escalation is logged with the task type, original model, escalated model, and observed failure rate.
@@ -370,7 +370,7 @@ Issue arrives
            │ No
      ┌─────┴──────────────┐
      │ ModelRouter         │
-     │  .SelectModel()     │──→ "claude-haiku-4-5", "claude-sonnet-5-5", or "claude-opus-4-6"
+     │  .SelectModel()     │──→ "claude-haiku-4-5", "claude-sonnet-5-5", or "claude-opus-5-5"
      │  .SelectTimeout()   │──→ 5m / 10m / 30m / 60m
      │  .SelectEffort()    │──→ "low" / "medium" / "high" / "max"
      └──────────┬─────────┘
