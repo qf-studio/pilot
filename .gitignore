@@ -126,3 +126,4 @@ deploy/grafana/*.bak
 # Navigator 7.8.0 (GH-30/GH-33): personal config override + per-person onboarding state
 .agent/.nav-config.local.json
 .agent/onboarding/
+.stream/
