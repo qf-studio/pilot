@@ -7262,6 +7262,33 @@
         ],
         "created": "2026-10-01",
         "last_validated": "2026-10-01"
+      },
+      "box-start-script-exec-kills-tmux-on-stop": {
+        "type": "pitfall",
+        "summary": "start-pilot.sh execs the daemon: stopping Pilot closes the tmux pane and server; relaunch with tmux new-session -d -s pilot ... ./start-pilot.sh",
+        "path": "memories/pitfalls/box-start-script-exec-kills-tmux-on-stop.md",
+        "confidence": 0.9,
+        "concepts": [
+          "box-operations",
+          "restart",
+          "tmux"
+        ],
+        "created": "2026-10-01",
+        "last_validated": "2026-10-01"
+      },
+      "held-task-at-queue-head-starves-serial-project-worker": {
+        "type": "pitfall",
+        "summary": "A prerequisite-held task at the queue head re-occupies the serial ProjectWorker every cycle; runnable tasks behind it starve until the head is fixed or the daemon restarts (GH-5566, 2026-10-01).",
+        "path": "memories/pitfalls/held-task-at-queue-head-starves-serial-project-worker.md",
+        "confidence": 0.85,
+        "concepts": [
+          "dispatcher",
+          "queue",
+          "starvation",
+          "base-presence"
+        ],
+        "created": "2026-10-01",
+        "last_validated": "2026-10-01"
       }
     }
   },
@@ -10824,7 +10851,8 @@
       "poller-labels-in-progress-before-dispatcher-claim-wedge",
       "reconcile-timeout-counts-queue-wait",
       "stall-status-reused-as-hold-marker",
-      "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits"
+      "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits",
+      "held-task-at-queue-head-starves-serial-project-worker"
     ],
     "docs-site-infra": [
       "mem-067"
@@ -12034,7 +12062,8 @@
       "runselfreview-runs-in-repo-root-phantom-reimplementation"
     ],
     "box-operations": [
-      "runselfreview-runs-in-repo-root-phantom-reimplementation"
+      "runselfreview-runs-in-repo-root-phantom-reimplementation",
+      "box-start-script-exec-kills-tmux-on-stop"
     ],
     "needs-human": [
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human"
@@ -12167,13 +12196,28 @@
     ],
     "github-cleanup": [
       "completed-row-without-live-execution-polled-forever-as-stalled"
+    ],
+    "restart": [
+      "box-start-script-exec-kills-tmux-on-stop"
+    ],
+    "tmux": [
+      "box-start-script-exec-kills-tmux-on-stop"
+    ],
+    "queue": [
+      "held-task-at-queue-head-starves-serial-project-worker"
+    ],
+    "starvation": [
+      "held-task-at-queue-head-starves-serial-project-worker"
+    ],
+    "base-presence": [
+      "held-task-at-queue-head-starves-serial-project-worker"
     ]
   },
-  "last_updated": "2026-10-01T11:44:47.037509+00:00",
+  "last_updated": "2026-10-01T13:21:15.634837+00:00",
   "stats": {
-    "total_nodes": 607,
+    "total_nodes": 609,
     "total_edges": 528,
-    "memory_count": 333
+    "memory_count": 335
   },
   "metadata": {}
 }
