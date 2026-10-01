@@ -499,7 +499,7 @@ func TestResolveLinearProjectPath_NoMatchSkips(t *testing.T) {
 	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"pilot", "repo:nonexistent"}}
 
 	dispatched := false
-	res, err := routeLinearIssue(context.Background(), cfg, ev, nil, &fakeLinearIssueFetcher{projectID: "lp-unmapped"},
+	res, err := routeLinearIssue(context.Background(), cfg, ev, nil, &fakeLinearIssueFetcher{projectID: "lp-unmapped"}, nil,
 		func(string) (*sdkcore.IssueResult, error) {
 			dispatched = true
 			return &sdkcore.IssueResult{Success: true}, nil
@@ -518,7 +518,7 @@ func TestResolveLinearProjectPath_NoMatchSkips(t *testing.T) {
 func TestRouteLinearIssue_DispatchesToResolvedPath(t *testing.T) {
 	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"repo:linearinvoices-client"}}
 	var got string
-	res, err := routeLinearIssue(context.Background(), linearRoutingConfig(), ev, nil, nil,
+	res, err := routeLinearIssue(context.Background(), linearRoutingConfig(), ev, nil, nil, nil,
 		func(p string) (*sdkcore.IssueResult, error) {
 			got = p
 			return &sdkcore.IssueResult{Success: true}, nil
