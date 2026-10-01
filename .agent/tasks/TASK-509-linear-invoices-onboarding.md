@@ -1,6 +1,6 @@
 # TASK-509: Linear Invoices onboarding — two repos, one Linear project, Linear polling routing gap
 
-**Status**: 🚀 LIVE ON GITHUB PATH 2026-10-01 13:15Z — daemon restarted with both repos; first tickets running (service#1, client#3→#4). Linear polling still OFF until [#5570](https://github.com/qf-studio/pilot/issues/5570) is on the box (running since 13:17Z). Key already in `start-pilot.sh` (founder accepted the exposure; key expires soon).
+**Status**: 🤝 HANDED OFF 2026-10-01 15:00Z to the next agent (founder: previous agent stops here; no reverts). LIVE ON GITHUB PATH since 13:15Z — daemon restarted with both repos; first tickets running (service#1, client#3→#4). Linear polling still OFF until [#5570](https://github.com/qf-studio/pilot/issues/5570) is on the box (running since 13:17Z). Key already in `start-pilot.sh` (founder accepted the exposure; key expires soon).
 **Created**: 2026-10-01 · **Owner**: Navigator plans, Pilot executes · **Related**: TASK-508 (same day)
 
 ## Decisions
@@ -31,7 +31,8 @@ On the SDK polling path every Linear issue goes to `deps.ProjectPath` (the defau
 - client: build + lint OK; `pnpm test:ci` FAILS — 11 cases in EditInvoiceForm (status/due-date/currency/items/totals).
 - Both repos last pushed 2025-10/11 and 2026-02. The `test` gate is required, so the first ticket in each repo is "make the unit suite green on the box" or the gate must be relaxed.
 
-## Flip checklist (after #5570 is on the box)
+## Flip checklist (after v2.277.1 with #5573 is on the box) — NEXT AGENT
+0. Verify `pilot-board` ver ≥ 2.277.1; the key is already exported in `start-pilot.sh`.
 1. In the box config under `adapters.linear`: add `api_key: "${LINEAR_API_KEY}"` (the env var is already exported by `start-pilot.sh`) and set `enabled: true`. Adapter init happens at start → restart: `tmux send-keys -t pilot:0.0 C-c`, wait for pgrep to clear, then `tmux new-session -d -s pilot -x 220 -y 50 'cd /home/ec2-user && ./start-pilot.sh'` (pitfall `box-start-script-exec-kills-tmux-on-stop`).
 2. Label Linear issues `repo:linearinvoices-service` / `repo:linearinvoices-client` (114 open; backend-dev/frontend-dev hints in bodies), then `pilot` on the ones to run.
 3. Restart via `start-pilot.sh` in the tmux session (operator). Startup proof: "Linear polling enabled … 1 workspace(s)".

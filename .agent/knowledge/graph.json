@@ -7304,6 +7304,20 @@
         ],
         "created": "2026-10-01",
         "last_validated": "2026-10-01"
+      },
+      "connect-means-wire-the-integration-not-create-work-in-product-repos": {
+        "type": "learning",
+        "summary": "Connect Pilot to X = wire the integration only. Do not file tickets, merge PRs or push commits in the founder product repos unless asked (founder feedback 2026-10-01, Linear Invoices onboarding).",
+        "path": "memories/learnings/connect-means-wire-the-integration-not-create-work-in-product-repos.md",
+        "confidence": 0.95,
+        "concepts": [
+          "scope",
+          "founder-feedback",
+          "onboarding",
+          "product-repos"
+        ],
+        "created": "2026-10-01",
+        "last_validated": "2026-10-01"
       }
     }
   },
@@ -12239,13 +12253,25 @@
     ],
     "sdk-migration": [
       "linear-sdk-poller-migration-dropped-project-routing"
+    ],
+    "scope": [
+      "connect-means-wire-the-integration-not-create-work-in-product-repos"
+    ],
+    "founder-feedback": [
+      "connect-means-wire-the-integration-not-create-work-in-product-repos"
+    ],
+    "onboarding": [
+      "connect-means-wire-the-integration-not-create-work-in-product-repos"
+    ],
+    "product-repos": [
+      "connect-means-wire-the-integration-not-create-work-in-product-repos"
     ]
   },
-  "last_updated": "2026-10-01T14:25:34.531790+00:00",
+  "last_updated": "2026-10-01T14:49:04.673952+00:00",
   "stats": {
-    "total_nodes": 610,
+    "total_nodes": 611,
     "total_edges": 528,
-    "memory_count": 336
+    "memory_count": 337
   },
   "metadata": {}
 }
