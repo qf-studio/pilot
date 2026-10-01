@@ -108,7 +108,7 @@ func TestWorktreePathIntegration(t *testing.T) {
 
 		// Test the pattern that would be used in real execution
 		var receivedPath string
-		mockFactory := func(taskID, projectPath string) QualityChecker {
+		mockFactory := func(taskID, projectPath, _ string) QualityChecker {
 			receivedPath = projectPath
 
 			// Verify we can detect project type in this path
@@ -123,7 +123,7 @@ func TestWorktreePathIntegration(t *testing.T) {
 		}
 
 		// Simulate calling the factory with worktree path
-		checker := mockFactory("quality-test", result.Path)
+		checker := mockFactory("quality-test", result.Path, result.Path)
 		if receivedPath != result.Path {
 			t.Errorf("Factory received wrong path: got %q, expected %q", receivedPath, result.Path)
 		}

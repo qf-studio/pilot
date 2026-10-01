@@ -81,7 +81,7 @@ func TestRunnerSetQualityCheckerFactory(t *testing.T) {
 	}
 
 	// Set factory
-	factory := func(taskID, projectPath string) QualityChecker {
+	factory := func(taskID, projectPath, _ string) QualityChecker {
 		return &mockQualityChecker{
 			outcome: &QualityOutcome{Passed: true},
 		}
@@ -93,7 +93,7 @@ func TestRunnerSetQualityCheckerFactory(t *testing.T) {
 	}
 
 	// Test factory creates checker
-	checker := runner.qualityCheckerFactory("task-1", "/tmp/project")
+	checker := runner.qualityCheckerFactory("task-1", "/tmp/project", "/tmp/project")
 	if checker == nil {
 		t.Error("Expected factory to create a checker")
 	}

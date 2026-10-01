@@ -42,4 +42,10 @@ type QualityChecker interface {
 // the correct task context without knowing about the quality package.
 // The factory is typically implemented in main.go where both packages
 // can be imported.
-type QualityCheckerFactory func(taskID, projectPath string) QualityChecker
+//
+// GH-5577: projectPath is the task's project root (Task.ProjectPath) and is
+// what per-project config lookups (e.g. a project's `quality:` override) must
+// key on; executionPath is the directory the gates actually run in, which for
+// an isolated-worktree execution is a throwaway worktree that matches no
+// configured project. The two are equal when the task runs in place.
+type QualityCheckerFactory func(taskID, projectPath, executionPath string) QualityChecker

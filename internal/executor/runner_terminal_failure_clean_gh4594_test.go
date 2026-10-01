@@ -85,7 +85,7 @@ func TestRunner_DirectMode_TerminalFailure_LeavesCloneClean(t *testing.T) {
 	runner.config = &BackendConfig{UseWorktree: false} // direct mode: no worktree isolation
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return &terminallyFailingQualityChecker{}
 	})
 

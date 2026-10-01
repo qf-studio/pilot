@@ -542,7 +542,7 @@ func TestBackendTimeoutSalvage_CommitsPresent_GatesPass_CreatesPR(t *testing.T) 
 		},
 	}
 	runner := newGH4964Runner(backend)
-	runner.qualityCheckerFactory = func(string, string) QualityChecker {
+	runner.qualityCheckerFactory = func(string, string, string) QualityChecker {
 		return &stubQualityChecker{outcome: &QualityOutcome{Passed: true}}
 	}
 
@@ -606,7 +606,7 @@ func TestBackendTimeoutSalvage_CommitsPresent_GatesFail_HoldsBranchNoReinvocatio
 		},
 	}
 	runner := newGH4964Runner(backend)
-	runner.qualityCheckerFactory = func(string, string) QualityChecker {
+	runner.qualityCheckerFactory = func(string, string, string) QualityChecker {
 		return &stubQualityChecker{outcome: &QualityOutcome{Passed: false}}
 	}
 

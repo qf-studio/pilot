@@ -2845,6 +2845,18 @@ func (r *Runner) escalateUnfetchableFixSHA(ctx context.Context, task *Task) (*Ex
 	}, fmt.Errorf("autopilot-fix: %s", detail)
 }
 
+// qualityLookupPath returns the project root a QualityCheckerFactory must use
+// for per-project config lookups (GH-5577). task.ProjectPath is the registered
+// project root; executionPath may be an isolated worktree that matches no
+// configured project. Falls back to executionPath when the task carries no
+// project path.
+func qualityLookupPath(task *Task, executionPath string) string {
+	if task != nil && task.ProjectPath != "" {
+		return task.ProjectPath
+	}
+	return executionPath
+}
+
 // ensureQualityCheckerFactory auto-enables a minimal build (and, when
 // detectable, test) gate when no quality checker has been configured (GH-363).
 // This ensures broken code never becomes a PR even without explicit quality
@@ -2887,10 +2899,10 @@ func (r *Runner) ensureQualityCheckerFactory(executionPath string, log *slog.Log
 		})
 	}
 
-	r.qualityCheckerFactory = func(taskID, projectPath string) QualityChecker {
+	r.qualityCheckerFactory = func(taskID, _, executionPath string) QualityChecker {
 		return &simpleQualityChecker{
 			config:      minimalConfig,
-			projectPath: projectPath,
+			projectPath: executionPath,
 			taskID:      taskID,
 		}
 	}
@@ -2964,7 +2976,7 @@ func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, g
 	if !task.SkipQualityGates {
 		r.ensureQualityCheckerFactory(executionPath, log)
 		if r.qualityCheckerFactory != nil {
-			checker := r.qualityCheckerFactory(task.ID, executionPath)
+			checker := r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath)
 			outcome, qErr := checker.Check(finCtx)
 			switch {
 			case qErr != nil:
@@ -5591,7 +5603,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
 					r.saveLogEntry(task.LogExecutionID(), "info", "Running tests...")
 
-					checker := r.qualityCheckerFactory(task.ID, executionPath)
+					checker := r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath)
 
 					// GH-5060/GH-5346: the first-pass gate check (retryAttempt == 0)
 					// runs on ctx, which by this point is the finalization ctx set up

@@ -3590,7 +3590,7 @@ func TestLocalModeRunsQualityGates(t *testing.T) {
 	runner.skipPreflightChecks = true
 
 	qualityGateCalled := false
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		qualityGateCalled = true
 		return &mockQualityChecker{
 			outcome: &QualityOutcome{Passed: true},

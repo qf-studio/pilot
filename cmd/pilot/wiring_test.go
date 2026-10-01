@@ -582,7 +582,7 @@ func TestNewProjectQualityCheckerFactory_ProjectOverrideWinsOverGlobal(t *testin
 	}
 
 	factory := newProjectQualityCheckerFactory(cfg)
-	checker := factory("task-1", projectPath)
+	checker := factory("task-1", projectPath, projectPath)
 
 	outcome, err := checker.Check(context.Background())
 	if err != nil {
@@ -607,7 +607,7 @@ func TestNewProjectQualityCheckerFactory_FallsBackToGlobal(t *testing.T) {
 	}
 
 	factory := newProjectQualityCheckerFactory(cfg)
-	checker := factory("task-1", projectPath)
+	checker := factory("task-1", projectPath, projectPath)
 
 	outcome, err := checker.Check(context.Background())
 	if err != nil {
@@ -627,7 +627,7 @@ func TestNewProjectQualityCheckerFactory_AutoDetectsWhenUnconfigured(t *testing.
 	cfg := &config.Config{}
 
 	factory := newProjectQualityCheckerFactory(cfg)
-	checker := factory("task-1", projectPath)
+	checker := factory("task-1", projectPath, projectPath)
 
 	outcome, err := checker.Check(context.Background())
 	if err != nil {
@@ -649,7 +649,7 @@ func TestNewProjectQualityCheckerFactory_AutoDetectsGoProject(t *testing.T) {
 	cfg := &config.Config{}
 
 	factory := newProjectQualityCheckerFactory(cfg)
-	checker := factory("task-1", projectPath)
+	checker := factory("task-1", projectPath, projectPath)
 
 	// Sanity check the resolution picked the Go build command rather than
 	// silently disabling gates, without actually invoking `go build`.

@@ -232,7 +232,7 @@ func TestRunner_Integration_QualityGates(t *testing.T) {
 
 	// Quality checker that passes
 	qualityCheckerCalls := int32(0)
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return &testQualityChecker{
 			checkFunc: func(ctx context.Context) (*QualityOutcome, error) {
 				atomic.AddInt32(&qualityCheckerCalls, 1)
@@ -287,7 +287,7 @@ func TestRunner_Integration_QualityGatesRetry(t *testing.T) {
 
 	// Quality checker: fail first, pass second
 	callCount := int32(0)
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return &testQualityChecker{
 			checkFunc: func(ctx context.Context) (*QualityOutcome, error) {
 				n := atomic.AddInt32(&callCount, 1)

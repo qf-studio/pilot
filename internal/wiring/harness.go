@@ -60,7 +60,7 @@ func NewPollingHarness(t *testing.T, cfg *config.Config) *Harness {
 
 	// Quality checker factory
 	if cfg.Quality != nil && cfg.Quality.Enabled {
-		h.Runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+		h.Runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) executor.QualityChecker {
 			return nil // stub for wiring tests
 		})
 	}
@@ -175,7 +175,7 @@ func NewGatewayHarness(t *testing.T, cfg *config.Config) *Harness {
 
 	// Quality checker factory
 	if cfg.Quality != nil && cfg.Quality.Enabled {
-		h.Runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+		h.Runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) executor.QualityChecker {
 			return nil
 		})
 	}

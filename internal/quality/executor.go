@@ -35,6 +35,12 @@ func NewExecutor(cfg *ExecutorConfig) *Executor {
 	}
 }
 
+// Config returns the resolved gate configuration this executor runs.
+func (e *Executor) Config() *Config { return e.config }
+
+// ProjectDir returns the working directory the gates execute in.
+func (e *Executor) ProjectDir() string { return e.runner.projectDir }
+
 // CheckResult represents the quality gate check outcome
 type ExecutionOutcome struct {
 	Passed        bool
