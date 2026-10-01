@@ -281,7 +281,7 @@ func (c *ciFailureClassifier) classify(ctx context.Context, checks []FailedCheck
 			if ans != nil {
 				jevChoice, conf = ans.Choice, ans.Confidence
 			}
-			c.log.Debug("CI failure classifier check",
+			c.log.Info("CI failure classifier check",
 				slog.String("scope", scope),
 				slog.String("check", chk.CheckName),
 				slog.String("regex_class", string(regex)),
