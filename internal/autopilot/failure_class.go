@@ -214,6 +214,7 @@ const (
 	signalStructural     classificationSignal = "structural"      // GH-4779 synthetic step / zero repo steps / startup_failure|stale
 	signalProse          classificationSignal = "prose"           // TASK-418's legacy hardcoded log signatures
 	signalNone           classificationSignal = "none"            // no positive signal either way; fail-safe code
+	signalJev            classificationSignal = "jev"             // TASK-507: Jev moved a regex code verdict toward retry
 )
 
 // classifyCheckFailureFull is classifyCheckFailure extended with GH-4591's
@@ -281,13 +282,38 @@ func classifyPRFailure(checks []FailedCheckLog) FailureClass {
 	if len(checks) == 0 {
 		return FailureClassUnknown
 	}
+	return aggregateCheckVerdicts(regexCheckVerdicts(checks))
+}
+
+// checkVerdict is one failed check's classification and the detection tier
+// that produced it. classifyPRFailure builds these from the regex tiers alone;
+// the TASK-507 Jev classifier may move a code verdict to an infra-family one
+// before aggregation.
+type checkVerdict struct {
+	class  FailureClass
+	signal classificationSignal
+}
+
+// regexCheckVerdicts runs classifyCheckFailureFull over every check.
+func regexCheckVerdicts(checks []FailedCheckLog) []checkVerdict {
+	out := make([]checkVerdict, len(checks))
+	for i, chk := range checks {
+		class, signal := classifyCheckFailureFull(chk)
+		out[i] = checkVerdict{class: class, signal: signal}
+	}
+	return out
+}
+
+// aggregateCheckVerdicts folds per-check verdicts into the PR-level class with
+// classifyPRFailure's rules; per must be non-empty (callers short-circuit the
+// zero-evidence case to FailureClassUnknown first).
+func aggregateCheckVerdicts(per []checkVerdict) FailureClass {
 	sawBilling := false
-	for _, chk := range checks {
-		class, _ := classifyCheckFailureFull(chk)
-		if !class.IsInfra() {
+	for _, v := range per {
+		if !v.class.IsInfra() {
 			return FailureClassCode
 		}
-		if class == FailureClassInfraBilling {
+		if v.class == FailureClassInfraBilling {
 			sawBilling = true
 		}
 	}
@@ -312,11 +338,17 @@ func classifyPRFailure(checks []FailedCheckLog) FailureClass {
 // returns Unknown when checks is empty, in which case there is nothing here
 // to name (callers use NewUnknownVerdict directly instead of calling this).
 func ciFailureVerdictEvidence(checks []FailedCheckLog, class FailureClass) string {
+	return ciFailureEvidenceFor(checks, regexCheckVerdicts(checks), class)
+}
+
+// ciFailureEvidenceFor is ciFailureVerdictEvidence over already-computed
+// per-check verdicts (per[i] belongs to checks[i]).
+func ciFailureEvidenceFor(checks []FailedCheckLog, per []checkVerdict, class FailureClass) string {
 	var parts []string
-	for _, chk := range checks {
-		chkClass, signal := classifyCheckFailureFull(chk)
-		if chkClass.IsInfra() == class.IsInfra() {
-			parts = append(parts, fmt.Sprintf("%s:%s(%s)", chk.CheckName, chkClass, signal))
+	for i, chk := range checks {
+		v := per[i]
+		if v.class.IsInfra() == class.IsInfra() {
+			parts = append(parts, fmt.Sprintf("%s:%s(%s)", chk.CheckName, v.class, v.signal))
 		}
 	}
 	return strings.Join(parts, "; ")
@@ -339,10 +371,17 @@ func ciFailureVerdictEvidence(checks []FailedCheckLog, class FailureClass) strin
 // contract with a SHA field unless a future call site is found to actually
 // carry a verdict across a tick boundary.
 func newCIFailureVerdict(class FailureClass, checks []FailedCheckLog, scope string) Verdict {
+	return newCIFailureVerdictFor(class, checks, regexCheckVerdicts(checks), "classifyPRFailure", scope)
+}
+
+// newCIFailureVerdictFor is newCIFailureVerdict over already-computed
+// per-check verdicts, with an explicit source — the TASK-507 path names the
+// classifier there when Jev changed the outcome.
+func newCIFailureVerdictFor(class FailureClass, checks []FailedCheckLog, per []checkVerdict, source, scope string) Verdict {
 	if class == FailureClassUnknown {
-		return NewUnknownVerdict("classifyPRFailure", scope)
+		return NewUnknownVerdict(source, scope)
 	}
-	return NewVerdict(class, ciFailureVerdictEvidence(checks, class), "classifyPRFailure", scope)
+	return NewVerdict(class, ciFailureEvidenceFor(checks, per, class), source, scope)
 }
 
 // Verdict is the typed, evidence-carrying result of a classification that

@@ -504,6 +504,20 @@ orchestrator:
       #                              # not wait for — into `exclude`.
       discovery_grace_period: 60s   # Wait for CI to start
 
+    # CI failure classification (TASK-507). Regex classifies each failed check as
+    # code | infra | infra_billing; only an all-infra result is retried instead of
+    # closing the PR. Optional Jev (TypeSafe) classifier behind the regex floor: it
+    # may only move a `code` check to infra / infra_billing (the retry direction)
+    # when shadow is false and confidence >= min_confidence. Needs TYPESAFE_API_KEY
+    # (env only) and the top-level `typesafe:` block for connection settings.
+    # Privacy boundary: per failed check, the annotation text plus the last 1500
+    # characters of the job log, secret-redacted; never the full log.
+    # ci_failure:
+    #   classifier:
+    #     provider: regex             # regex (default) | jev
+    #     min_confidence: 0.8
+    #     shadow: true
+
     # Test-evidence gate (GH-4329): escalate-only, same pattern as the
     # scope-drift/size-floor gates above. Green CI proves a check concluded
     # "success" — it does NOT prove tests actually ran. When enabled, autopilot

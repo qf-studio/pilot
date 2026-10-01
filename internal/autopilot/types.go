@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/ghbudget"
+	"github.com/qf-studio/pilot/internal/typesafe"
 )
 
 // Environment defines deployment environment behavior.
@@ -131,6 +132,19 @@ type Config struct {
 	RequiredChecks []string `yaml:"required_checks"`
 	// CIChecks holds CI check discovery configuration.
 	CIChecks *CIChecksConfig `yaml:"ci_checks"`
+
+	// CIFailure configures how a failed CI run is classified (TASK-507). The
+	// regex classifier is always the floor; ci_failure.classifier optionally
+	// layers a TypeSafe (Jev) classifier on top in the retry direction only.
+	CIFailure *CIFailureConfig `yaml:"ci_failure,omitempty"`
+	// TypeSafe is the shared TypeSafe (Jev) connection block, populated by
+	// config.Load from the top-level `typesafe:` YAML key (mem-160: an unwired
+	// top-level block is silently dead). The API key comes from
+	// TYPESAFE_API_KEY only.
+	//
+	// Decision: yaml:"-" keeps the top-level `typesafe:` block the single
+	// canonical shape, exactly as executor.BackendConfig.TypeSafe does.
+	TypeSafe *typesafe.Config `yaml:"-"`
 
 	// Feedback Loop
 	// AutoCreateIssues enables automatic issue creation for CI failures.

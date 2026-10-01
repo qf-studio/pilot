@@ -48,7 +48,7 @@ type Config struct {
 	Adapters       *AdaptersConfig         `yaml:"adapters"`
 	Orchestrator   *OrchestratorConfig     `yaml:"orchestrator"`
 	Executor       *executor.BackendConfig `yaml:"executor"`
-	TypeSafe       *typesafe.Config        `yaml:"typesafe,omitempty"` // Shared Jev connection; Load copies it to Executor.TypeSafe. Key: TYPESAFE_API_KEY env only
+	TypeSafe       *typesafe.Config        `yaml:"typesafe,omitempty"` // Shared Jev connection; Load copies it to Executor.TypeSafe and Orchestrator.Autopilot.TypeSafe. Key: TYPESAFE_API_KEY env only
 	Memory         *MemoryConfig           `yaml:"memory"`
 	Projects       []*ProjectConfig        `yaml:"projects"`
 	DefaultProject string                  `yaml:"default_project"`
@@ -895,6 +895,11 @@ func Load(path string) (*Config, error) {
 	// an unwired top-level block is silently dead).
 	if config.Executor != nil {
 		config.Executor.TypeSafe = config.TypeSafe
+	}
+	// TASK-507: the autopilot CI-failure classifier is the second consumer of
+	// the shared block and needs the same explicit copy.
+	if config.Orchestrator != nil && config.Orchestrator.Autopilot != nil {
+		config.Orchestrator.Autopilot.TypeSafe = config.TypeSafe
 	}
 
 	return config, nil
