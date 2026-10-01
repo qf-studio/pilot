@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/typesafe"
 )
 
 // DependencyReason identifies why a sub-issue is treated as depending on a
@@ -195,6 +197,13 @@ func ExtractReferencedPaths(body string) []string {
 
 		stripped := pathLineRefSuffixRe.ReplaceAllString(candidate, "")
 		if !hasFileExtension(stripped) {
+			continue
+		}
+
+		// GH-5557: no repo file has "=" in a segment, and a credential-shaped
+		// span is never a path. Checked on the line-ref-stripped form so
+		// `internal/auth.go:42` is not mistaken for an `auth: 42` pair.
+		if strings.Contains(stripped, "=") || typesafe.ContainsSecret(stripped) {
 			continue
 		}
 

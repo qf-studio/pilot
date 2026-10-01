@@ -10,8 +10,14 @@ const redactedPlaceholder = "[redacted]"
 var secretPatterns = []*regexp.Regexp{
 	// JWT: three base64url segments, first two start with eyJ.
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`),
-	// key=value / key: value where the key name looks secret-shaped.
-	regexp.MustCompile(`(?i)\b[\w.-]*(?:token|secret|passwd|password|api[_-]?key|apikey|credential|auth)[\w.-]*\s*[=:]\s*\S+`),
+	// key=value / key: value where the key name looks secret-shaped. The value
+	// is bounded to the token (an optional opening quote, then a run that stops
+	// at whitespace, backtick, quote, closing bracket or "/") so surrounding
+	// prose and path remainders survive: `cmd/token=abc/x.go` redacts to
+	// `cmd/[redacted]/x.go`, and a backticked pair keeps its closing backtick.
+	// Decision: "/" ends the value so the filename survives for the classifier;
+	// the cost is that a secret value containing "/" leaves its tail visible.
+	regexp.MustCompile(`(?i)\b[\w.-]*(?:token|secret|passwd|password|api[_-]?key|apikey|credential|auth)[\w.-]*\s*[=:]\s*["']?[^\s` + "`" + `'")\]}>/]+`),
 	// OpenAI / Anthropic style.
 	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`),
 	// GitHub tokens.
@@ -32,6 +38,17 @@ func redactSecrets(s string) string {
 		s = re.ReplaceAllString(s, redactedPlaceholder)
 	}
 	return s
+}
+
+// ContainsSecret reports whether s contains any credential-shaped span, i.e.
+// whether redactSecrets would change it.
+func ContainsSecret(s string) bool {
+	for _, re := range secretPatterns {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // capItem truncates s to at most n characters (runes).
