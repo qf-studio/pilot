@@ -15,6 +15,9 @@ func TestRedactSecrets(t *testing.T) {
 	}{
 		{"key=value", "token=abc123secret", "[redacted]"},
 		{"key=value in sentence", "run it with api_key=zzz123 then verify", "run it with [redacted] then verify"},
+		{"key=value mid-path keeps filename (GH-5557)", "cmd/token=abc123secret/x.go", "cmd/[redacted]/x.go"},
+		{"backticked key=value keeps closing backtick and paren (GH-5557)", "(set `token=abc123secret`) and rerun", "(set `[redacted]`) and rerun"},
+		{"quoted value redacted", `api_key="zzz123" next`, `[redacted]" next`},
 		{"password colon", "password: hunter22", "[redacted]"},
 		{"sk prefix", "use sk-" + strings.Repeat("a", 24) + " here", "use [redacted] here"},
 		{"ghp prefix", "gh " + "ghp_" + strings.Repeat("b", 30), "gh [redacted]"},
@@ -71,5 +74,22 @@ func TestRedactAndCap(t *testing.T) {
 	}
 	if got := RedactAndCap("abcdef", 3); got != "abc" {
 		t.Errorf("cap = %q, want abc", got)
+	}
+}
+
+func TestContainsSecret(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"cmd/token=abc123secret/x.go", true},
+		{"internal/" + strings.Repeat("ab12", 10) + "/x.go", true},
+		{"internal/executor/runner.go", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := ContainsSecret(tt.in); got != tt.want {
+			t.Errorf("ContainsSecret(%q) = %v, want %v", tt.in, got, tt.want)
+		}
 	}
 }

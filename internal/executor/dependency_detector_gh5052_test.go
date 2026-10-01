@@ -2,6 +2,7 @@ package executor
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -160,6 +161,26 @@ func TestExtractReferencedPaths(t *testing.T) {
 			name: "excludes a character-class glob",
 			body: "Applies to `file[0-9].go` variants.",
 			want: nil,
+		},
+		{
+			name: "GH-5557: excludes a credential-shaped key=value segment",
+			body: "Example path `cmd/token=abc123secret/x.go` in the body.",
+			want: nil,
+		},
+		{
+			name: "GH-5557: excludes a segment that is a 40-hex secret shape",
+			body: "Example `internal/" + strings.Repeat("ab12", 10) + "/x.go` here.",
+			want: nil,
+		},
+		{
+			name: "GH-5557: excludes any segment containing '='",
+			body: "See `cmd/a=b/x.go`.",
+			want: nil,
+		},
+		{
+			name: "GH-5557: plain path with auth in its name and a line ref still extracts",
+			body: "See `internal/auth.go:42` and `internal/executor/runner.go`.",
+			want: []string{"internal/auth.go", "internal/executor/runner.go"},
 		},
 		{
 			name: "glob and real path together: only the real path is extracted",
