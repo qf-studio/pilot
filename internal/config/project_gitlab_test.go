@@ -59,7 +59,7 @@ func TestConfig_Validate_ProjectGitLab(t *testing.T) {
 				&ProjectConfig{Name: "both", Path: "/srv/both",
 					GitHub: &ProjectGitHubConfig{Owner: "o", Repo: "r"},
 					GitLab: &ProjectGitLabConfig{Project: "grp/both"}}),
-			errContains: "may not declare both github: and gitlab:",
+			errContains: "may not declare both a github and a gitlab block",
 		},
 		{
 			name: "empty adapters.gitlab.token names the project",

@@ -421,7 +421,7 @@ func (c *Config) validateProjectGitLab() error {
 			return fmt.Errorf("projects[%d] (%s): gitlab.project must be namespace/path, got %q", i, name, p.GitLab.Project)
 		}
 		if p.GitHub != nil {
-			return fmt.Errorf("projects[%d] (%s): a project may not declare both github: and gitlab:", i, name)
+			return fmt.Errorf("projects[%d] (%s): a project may not declare both a github and a gitlab block", i, name)
 		}
 		if c.Adapters == nil || c.Adapters.GitLab == nil || c.Adapters.GitLab.Token == "" {
 			return fmt.Errorf("projects[%d] (%s): gitlab: block requires adapters.gitlab.token to be set", i, name)
