@@ -89,6 +89,9 @@ type Metrics struct {
 	// the deadline fired — GH-5541. Exported as
 	// autopilot_stage_timeouts_total{stage}.
 	StageTimeouts map[string]int64
+	// StagePanics counts panics recovered from per-PR stage handlers (GH-5547),
+	// keyed by the PR's stage. Exported as autopilot_stage_panics_total{stage}.
+	StagePanics map[string]int64
 	// LastTickAt is when the PR-processing loop last made progress (tick start,
 	// or a PR finishing within a tick). Zero until the first tick. Exported as
 	// autopilot_last_tick_timestamp_seconds and compared against the poll
@@ -202,6 +205,7 @@ func NewMetrics() *Metrics {
 		ApprovalPersistMisses:      make(map[string]int64),
 		IntentJudgeFailures:        make(map[string]int64),
 		StageTimeouts:              make(map[string]int64),
+		StagePanics:                make(map[string]int64),
 		TokensConsumed:             make(map[tokenKey]int64),
 		ExecutionCostUSD:           make(map[string]float64),
 		ExecutionsByResult:         make(map[execKey]int64),
@@ -402,6 +406,13 @@ func (m *Metrics) RecordStageTimeout(stage string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.StageTimeouts[stage]++
+}
+
+// RecordStagePanic increments the recovered-handler-panic counter — GH-5547.
+func (m *Metrics) RecordStagePanic(stage string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.StagePanics[stage]++
 }
 
 // RecordTick stamps the PR-processing loop liveness gauge — GH-5541.
@@ -668,6 +679,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		ApprovalPersistMisses:         copyStringIntMap(m.ApprovalPersistMisses),
 		IntentJudgeFailures:           copyStringIntMap(m.IntentJudgeFailures),
 		StageTimeouts:                 copyStringIntMap(m.StageTimeouts),
+		StagePanics:                   copyStringIntMap(m.StagePanics),
 		LastTickAt:                    m.LastTickAt,
 		ApprovalSubmitFailures:        m.ApprovalSubmitFailures,
 		TokensConsumed:                copyTokenKeyMap(m.TokensConsumed),
@@ -760,6 +772,7 @@ type MetricsSnapshot struct {
 	ApprovalSubmitFailures    int64
 	IntentJudgeFailures       map[string]int64 // GH-4377: cause → count
 	StageTimeouts             map[string]int64 // GH-5541: stage → per-stage deadline expiries
+	StagePanics               map[string]int64 // GH-5547: stage → panics recovered from stage handlers
 	LastTickAt                time.Time        // GH-5541: last PR-loop progress; zero before the first tick
 	TokensConsumed            map[tokenKey]int64
 	ExecutionCostUSD          map[string]float64

@@ -235,6 +235,14 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		writeCounter(w, "autopilot_stage_timeouts_total", count, "stage", stage)
 	}
 
+	// autopilot_stage_panics_total (GH-5547): panics recovered from per-PR stage
+	// handlers that were running in the background goroutine.
+	writeHelp(w, "autopilot_stage_panics_total", "Total panics recovered from per-PR autopilot stage handlers, by stage")
+	writeType(w, "autopilot_stage_panics_total", "counter")
+	for stage, count := range snap.StagePanics {
+		writeCounter(w, "autopilot_stage_panics_total", count, "stage", stage)
+	}
+
 	// autopilot_last_tick_timestamp_seconds (GH-5541): unix time of the PR loop's
 	// last progress. time() minus this value growing past ~3x the poll interval
 	// means the loop is wedged. Omitted until the first tick.

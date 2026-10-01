@@ -199,7 +199,7 @@ func (ma *MetricsAlerter) evaluate() {
 	if ma.controller.config != nil {
 		pollInterval = ma.controller.config.CIPollInterval
 	}
-	tickAgeSec, tickLimitSec, tickStale := tickStaleness(lastTick, pollInterval, time.Now())
+	tickAgeSec, tickLimitSec, tickStale := tickStaleness(lastTick, pollInterval, ma.controller.config.EffectiveStageTimeout(), time.Now())
 
 	event := alerts.Event{
 		Type:      alerts.EventTypeAutopilotMetrics,
@@ -248,14 +248,24 @@ const tickStaleFactor = 3
 const idlePollIntervalFloor = 60 * time.Second
 
 // tickStaleness reports the age of the last PR-loop tick, the staleness
-// threshold (3x the longest interval the loop legitimately uses), and whether
-// the tick is stale. A zero lastTick (loop not started) is never stale.
-func tickStaleness(lastTick time.Time, pollInterval time.Duration, now time.Time) (ageSec, limitSec float64, stale bool) {
+// threshold, and whether the tick is stale. A zero lastTick (loop not started)
+// is never stale.
+//
+// Decision (GH-5547): the threshold is the larger of 3x the longest interval
+// the loop legitimately uses and stageTimeout + one interval. A PR stage may
+// legitimately hold the loop for a full stageTimeout before the deadline
+// abandons it; with the default 5m stage_timeout against a 180s threshold every
+// ordinary stage timeout also raised autopilot_tick_stale. The alert now fires
+// only when the loop is stuck beyond what the stage deadline can explain.
+func tickStaleness(lastTick time.Time, pollInterval, stageTimeout time.Duration, now time.Time) (ageSec, limitSec float64, stale bool) {
 	interval := pollInterval
 	if interval < idlePollIntervalFloor {
 		interval = idlePollIntervalFloor
 	}
 	limit := tickStaleFactor * interval
+	if withStage := stageTimeout + interval; withStage > limit {
+		limit = withStage
+	}
 	if lastTick.IsZero() {
 		return 0, limit.Seconds(), false
 	}
