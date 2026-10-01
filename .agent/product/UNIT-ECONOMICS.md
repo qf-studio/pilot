@@ -184,4 +184,6 @@ Margin at $499 by included volume (typical infra, Sonnet 5.5 at the planning fig
 
 **Recommendation: include 100 tickets/month, enforced internally as a $100 token allowance at Anthropic list price**, hard cap, then the tenant's own key takes over (the old `PRICING.md` Team tier already framed the plan in tickets; customers read tickets, we meter dollars). 100 tickets covers the 20/50/100 rows of the intensity table above, so most design partners never pay a second bill, and the stress case still clears break-even. Revisit once 30 days of 5.5 data exist.
 
+**DECIDED 2026-10-01 (founder): recommendation accepted as-is — 100 tickets / $100 allowance / hard cap / own-key overage. The allowance is a configurable plan setting (TASK-502 leg 0), so this table is re-runnable against whatever number is in force.**
+
 What this changes in the product (not in the tables): the tenant box must run on a platform-owned Anthropic key with a per-tenant allowance, the console must meter spend against it (the S5 usage rollup exists), and onboarding must make the customer key optional instead of mandatory. Tracked as TASK-502.
