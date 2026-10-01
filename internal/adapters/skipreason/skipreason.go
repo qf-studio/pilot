@@ -29,6 +29,11 @@ const (
 	// per-issue backoff window, or that the chokepoint's own
 	// HasTerminalCompletion re-check caught independently of the poller.
 	ReasonRepickStormBackoff = "repick_storm_backoff"
+	// ReasonNoProjectMapping (GH-5570) is the SkipReason for a polled Linear
+	// issue that carries neither a repo:<project-name> label nor a Linear
+	// project id paired to a Pilot project — it is never dispatched to a
+	// default project.
+	ReasonNoProjectMapping = "no_project_mapping"
 )
 
 // PollerMetricsRecorder records poller dispatch/skip counters.

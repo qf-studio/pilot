@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
 	linearSDK "github.com/qf-studio/studio-sdk/sdk/integrations/linear"
 
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/logging"
 )
@@ -99,6 +101,101 @@ func preflightLinearLabels(ctx context.Context, log *slog.Logger, classifier lin
 	}
 }
 
+// linearRepoLabelPrefix is the Linear label prefix that routes a polled issue
+// to a Pilot project by name (repo:<pilot-project-name>), GH-5570.
+const linearRepoLabelPrefix = "repo:"
+
+// linearIssueFetcher abstracts the one SDK client call the project resolver
+// needs (the Linear project id is not on the poll event), so tests can supply
+// a fake. *linearSDK.Client satisfies it.
+type linearIssueFetcher interface {
+	GetIssue(ctx context.Context, id string) (*linearSDK.Issue, error)
+}
+
+// resolveLinearProjectPath picks the Pilot project a polled Linear issue
+// belongs to (GH-5570). It never falls back to the daemon's default project.
+// Signals, in order:
+//  1. a repo:<pilot-project-name> label, matched case-insensitively against
+//     the project's name — this is what splits one Linear project across repos;
+//  2. the issue's Linear project id via cfg.GetProjectByLinearID (first
+//     project in config order wins; ambiguity is WARN-logged once per issue).
+//
+// On success it returns (path, ""). When neither signal resolves it returns
+// ("", skipreason.ReasonNoProjectMapping) after a WARN naming the issue and
+// both missing signals. A fetch error is logged and treated as "no project id".
+func resolveLinearProjectPath(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, client linearIssueFetcher) (path string, reason string) {
+	log := logging.WithComponent("linear")
+
+	// Signal 1: repo:<name> label.
+	for _, label := range ev.Labels {
+		l := strings.TrimSpace(label)
+		if len(l) <= len(linearRepoLabelPrefix) || !strings.EqualFold(l[:len(linearRepoLabelPrefix)], linearRepoLabelPrefix) {
+			continue
+		}
+		name := strings.TrimSpace(l[len(linearRepoLabelPrefix):])
+		if proj := cfg.GetProjectByName(name); proj != nil && proj.Path != "" {
+			return proj.Path, ""
+		}
+		log.Warn("Linear repo label names no configured Pilot project; falling through to project id",
+			slog.String("issue", ev.SequenceID),
+			slog.String("label", label),
+		)
+	}
+
+	// Signal 2: the issue's Linear project id.
+	var projectID string
+	if client != nil && ev.IssueID != "" {
+		issue, err := client.GetIssue(ctx, ev.IssueID)
+		switch {
+		case err != nil:
+			log.Warn("Failed to fetch Linear issue for project pairing; treating as no project id",
+				slog.String("issue", ev.SequenceID),
+				slog.Any("error", err),
+			)
+		case issue != nil && issue.Project != nil:
+			projectID = issue.Project.ID
+		}
+	}
+	if projectID != "" {
+		matches := 0
+		for _, p := range cfg.Projects {
+			if p.Linear != nil && p.Linear.ProjectID == projectID {
+				matches++
+			}
+		}
+		if proj := cfg.GetProjectByLinearID(projectID); proj != nil && proj.Path != "" {
+			if matches > 1 {
+				log.Warn("Multiple Pilot projects share this Linear project id; using the first in config order",
+					slog.String("issue", ev.SequenceID),
+					slog.String("linear_project_id", projectID),
+					slog.String("project", proj.Name),
+					slog.Int("matches", matches),
+				)
+			}
+			return proj.Path, ""
+		}
+	}
+
+	log.Warn("Linear issue skipped: no Pilot project mapping",
+		slog.String("issue", ev.SequenceID),
+		slog.String("missing_repo_label", linearRepoLabelPrefix+"<project-name>"),
+		slog.String("missing_project_id_pairing", "linear.project_id"),
+		slog.String("linear_project_id", projectID),
+	)
+	return "", skipreason.ReasonNoProjectMapping
+}
+
+// routeLinearIssue resolves the issue's Pilot project and calls dispatch with
+// its path. An unmapped issue returns a Skipped IssueResult (so the poller's
+// processed-store treats it as handled) and dispatch is never called.
+func routeLinearIssue(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, client linearIssueFetcher, dispatch func(projectPath string) (*sdkcore.IssueResult, error)) (*sdkcore.IssueResult, error) {
+	projectPath, skipReason := resolveLinearProjectPath(ctx, cfg, ev, client)
+	if projectPath == "" {
+		return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: skipReason}, nil
+	}
+	return dispatch(projectPath)
+}
+
 func newSDKLinearWorkspace(name, apiKey, teamID, triggerLabel string, projectIDs, projects []string, interval time.Duration) *linearSDK.WorkspaceConfig {
 	return &linearSDK.WorkspaceConfig{
 		Name:         name,
@@ -136,6 +233,9 @@ func linearPollerRegistration() PollerRegistration {
 			internalWss := deps.Cfg.Adapters.Linear.GetWorkspaces()
 			sdkWorkspaces := make([]*linearSDK.WorkspaceConfig, 0, len(internalWss))
 			notifiersByTeamID := make(map[string]*linearSDK.Notifier, len(internalWss))
+			// GH-5570: per-workspace SDK client (keyed by team ID, like the
+			// notifier) used to fetch the issue's Linear project id.
+			clientsByTeamID := make(map[string]*linearSDK.Client, len(internalWss))
 			for _, ws := range internalWss {
 				triggerLabel := ws.PilotLabel
 				if triggerLabel == "" {
@@ -153,6 +253,7 @@ func linearPollerRegistration() PollerRegistration {
 
 				sdkWorkspaces = append(sdkWorkspaces, newSDKLinearWorkspace(ws.Name, ws.APIKey, ws.TeamID, triggerLabel, ws.ProjectIDs, ws.Projects, wsInterval))
 				notifiersByTeamID[ws.TeamID] = linearSDK.NewNotifier(linearSDK.NewClient(ws.APIKey))
+				clientsByTeamID[ws.TeamID] = linearSDK.NewClient(ws.APIKey)
 			}
 
 			sdkCfg := &linearSDK.Config{
@@ -166,23 +267,32 @@ func linearPollerRegistration() PollerRegistration {
 
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
-					// GH-4717: notify Linear the task has started, mirroring
-					// GH-2132's Plane wiring (poller_plane.go). ev.ProjectID
-					// carries the Linear team ID for this adapter (see
-					// linearSDK's toIssueEvent), which selects the
-					// per-workspace notifier authenticated with that
-					// workspace's own API key. Failure is WARN-logged only —
-					// a comment failure must never abort dispatch.
-					if notifier := notifiersByTeamID[ev.ProjectID]; notifier != nil {
-						if err := notifier.NotifyTaskStarted(issueCtx, ev.IssueID, ev.SequenceID); err != nil {
-							logging.WithComponent("linear").Warn("Failed to notify task started",
-								slog.String("issue_id", ev.IssueID),
-								slog.Any("error", err),
-							)
-						}
+					// GH-5570: route to the project the issue belongs to (repo
+					// label, then Linear project id) — never deps.ProjectPath.
+					// Unmapped issues are skipped before any "started" comment.
+					var fetcher linearIssueFetcher
+					if c := clientsByTeamID[ev.ProjectID]; c != nil {
+						fetcher = c
 					}
+					return routeLinearIssue(issueCtx, deps.Cfg, ev, fetcher, func(projectPath string) (*sdkcore.IssueResult, error) {
+						// GH-4717: notify Linear the task has started, mirroring
+						// GH-2132's Plane wiring (poller_plane.go). ev.ProjectID
+						// carries the Linear team ID for this adapter (see
+						// linearSDK's toIssueEvent), which selects the
+						// per-workspace notifier authenticated with that
+						// workspace's own API key. Failure is WARN-logged only —
+						// a comment failure must never abort dispatch.
+						if notifier := notifiersByTeamID[ev.ProjectID]; notifier != nil {
+							if err := notifier.NotifyTaskStarted(issueCtx, ev.IssueID, ev.SequenceID); err != nil {
+								logging.WithComponent("linear").Warn("Failed to notify task started",
+									slog.String("issue_id", ev.IssueID),
+									slog.Any("error", err),
+								)
+							}
+						}
 
-					return handleLinearIssueWithResult(issueCtx, deps.Cfg, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+						return handleLinearIssueWithResult(issueCtx, deps.Cfg, ev, projectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+					})
 				}),
 			}
 
