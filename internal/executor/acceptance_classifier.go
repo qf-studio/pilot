@@ -34,6 +34,9 @@ type AcceptanceClassifyStats struct {
 	// WouldBe is the reason per item the live (non-shadow) path produces. It
 	// equals Reasons outside shadow mode.
 	WouldBe []typesafe.Reason
+	// Details is one entry per item (same order) for the per-item debug lines
+	// that let low_confidence items be labelled. Empty for the regex classifier.
+	Details []AcceptanceItemDetail
 	// Counters below are tallied from WouldBe, so in shadow mode Overrode is
 	// the number of would-be overrides — the flip signal.
 	RegexOnly     int
@@ -44,6 +47,15 @@ type AcceptanceClassifyStats struct {
 	// whose answer was missing or invalid.
 	Errors  int
 	Latency time.Duration
+}
+
+// AcceptanceItemDetail is what Jev saw and answered for one item. Text is the
+// redacted, capped text sent to the API, never the raw item.
+type AcceptanceItemDetail struct {
+	Text       string
+	RegexKind  AcceptanceItemKind
+	JevChoice  string
+	Confidence float64
 }
 
 // tally fills the per-reason counters from WouldBe.

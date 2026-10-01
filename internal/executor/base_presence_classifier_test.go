@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -135,7 +136,11 @@ func TestBasePresenceClassifier_ShadowKeepsAllAndCounts(t *testing.T) {
 	}
 	want := BasePresenceClassifyStats{Spans: 4, Shadow: true, Agreed: 1, WouldSkip: 1, LowConfidence: 1, Errors: 1}
 	stats.Latency = 0
-	if stats != want {
+	if len(stats.Details) != len(paths) {
+		t.Errorf("details = %d, want %d", len(stats.Details), len(paths))
+	}
+	stats.Details = nil
+	if !reflect.DeepEqual(stats, want) {
 		t.Errorf("stats = %+v, want %+v", stats, want)
 	}
 }
@@ -339,3 +344,68 @@ func TestBasePresenceConfig_Effective(t *testing.T) {
 }
 
 func ptrAnswer(a typesafe.Answer) *typesafe.Answer { return &a }
+
+// debugRecords parses a JSON slog buffer and returns the records whose msg matches.
+func debugRecords(t *testing.T, buf *bytes.Buffer, msg string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			t.Fatalf("bad log line %q: %v", l, err)
+		}
+		if m["msg"] == msg {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func TestClassifyBasePresencePaths_DebugLinePerSpanRedactedWithReason(t *testing.T) {
+	var buf bytes.Buffer
+	asker := &recordingAsker{answers: map[string]typesafe.Answer{
+		"span_1": choice(spanExistingPrerequisite, 0.95),
+		"span_2": choice(spanToBeCreated, 0.5),
+	}}
+	r := &Runner{
+		log:                    slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		basePresenceClassifier: newTestBasePresenceClassifier(asker, true),
+	}
+	r.classifyBasePresencePaths(context.Background(), "GH-9", basePresenceBody,
+		[]string{"internal/foo/real.go", "internal/foo/secret.go"})
+
+	recs := debugRecords(t, &buf, "Base-presence classifier span")
+	if len(recs) != 2 {
+		t.Fatalf("debug records = %d, want 2: %s", len(recs), buf.String())
+	}
+	want := []struct {
+		span, choice, reason string
+		conf                 float64
+	}{
+		{"internal/foo/real.go", spanExistingPrerequisite, "agreed", 0.95},
+		{"internal/foo/secret.go", spanToBeCreated, "low_confidence", 0.5},
+	}
+	for i, w := range want {
+		m := recs[i]
+		if m["level"] != "DEBUG" || m["task_id"] != "GH-9" || m["index"] != float64(i+1) ||
+			m["span"] != w.span || m["jev_choice"] != w.choice || m["confidence"] != w.conf || m["reason"] != w.reason {
+			t.Errorf("record %d = %v, want %+v", i, m, w)
+		}
+	}
+	if strings.Contains(buf.String(), "fake-secret-value-123") {
+		t.Errorf("raw secret leaked into log: %s", buf.String())
+	}
+}
+
+func TestClassifyBasePresencePaths_DebugLinesSuppressedAtInfo(t *testing.T) {
+	var buf bytes.Buffer
+	asker := &recordingAsker{answers: map[string]typesafe.Answer{"span_1": choice(spanToBeCreated, 0.95)}}
+	r := &Runner{
+		log:                    slog.New(slog.NewJSONHandler(&buf, nil)),
+		basePresenceClassifier: newTestBasePresenceClassifier(asker, true),
+	}
+	r.classifyBasePresencePaths(context.Background(), "GH-9", "`a/b.go`", []string{"a/b.go"})
+	if n := len(debugRecords(t, &buf, "Base-presence classifier span")); n != 0 {
+		t.Errorf("debug records at info level = %d", n)
+	}
+}

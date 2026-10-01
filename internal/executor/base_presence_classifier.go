@@ -67,6 +67,18 @@ type BasePresenceClassifyStats struct {
 	// missing or invalid.
 	Errors  int
 	Latency time.Duration
+	// Details is one entry per span (same order as the input paths) for the
+	// per-span debug lines that let low_confidence spans be labelled.
+	Details []BasePresenceSpanDetail
+}
+
+// BasePresenceSpanDetail is what Jev saw and answered for one span. Span is the
+// redacted, capped text sent to the API, never the raw path.
+type BasePresenceSpanDetail struct {
+	Span       string
+	JevChoice  string
+	Confidence float64
+	Reason     typesafe.Reason
 }
 
 // jevBasePresenceClassifier asks Jev one choice question per span, in a single
@@ -125,6 +137,7 @@ func (c *jevBasePresenceClassifier) Classify(ctx context.Context, body string, p
 	if n == 0 {
 		return paths, stats
 	}
+	stats.Details = make([]BasePresenceSpanDetail, n)
 
 	// State carries only the redacted, capped spans; the context sentence
 	// travels inside each question's instruction. Never the whole body.
@@ -135,6 +148,7 @@ func (c *jevBasePresenceClassifier) Classify(ctx context.Context, body string, p
 		span := typesafe.RedactAndCap(p, maxBasePresenceSpanChars)
 		sentence := spanContextSentence(body, p, maxBasePresenceContextChars)
 		spans[idx] = span
+		stats.Details[i].Span = span
 		questions["span_"+idx] = typesafe.ChoiceQuestion(
 			fmt.Sprintf(basePresenceInstructionsFmt, idx, idx, span, sentence),
 			map[string]any{
@@ -152,6 +166,9 @@ func (c *jevBasePresenceClassifier) Classify(ctx context.Context, body string, p
 				slog.String("error", err.Error()))
 		}
 		stats.Errors = 1
+		for i := range stats.Details {
+			stats.Details[i].Reason = typesafe.ReasonError
+		}
 		return paths, stats
 	}
 
@@ -159,6 +176,11 @@ func (c *jevBasePresenceClassifier) Classify(ctx context.Context, body string, p
 	for i, p := range paths {
 		ans := validBasePresenceAnswer(answers, fmt.Sprintf("span_%d", i+1))
 		_, reason := typesafe.Resolve(spanExistingPrerequisite, ans, c.minConfidence, false)
+		stats.Details[i].Reason = reason
+		if ans != nil {
+			stats.Details[i].JevChoice = ans.Choice
+			stats.Details[i].Confidence = ans.Confidence
+		}
 		switch reason {
 		case typesafe.ReasonAgreed:
 			stats.Agreed++
@@ -286,6 +308,18 @@ func (r *Runner) classifyBasePresencePaths(ctx context.Context, taskID, body str
 			slog.Int("errors", stats.Errors),
 			slog.Int64("latency_ms", stats.Latency.Milliseconds()),
 		)
+		// One debug line per span so low_confidence spans can be labelled; the
+		// span is the redacted, capped text sent to the API.
+		for i, d := range stats.Details {
+			r.log.Debug("Base-presence classifier span",
+				slog.String("task_id", taskID),
+				slog.Int("index", i+1),
+				slog.String("span", d.Span),
+				slog.String("jev_choice", d.JevChoice),
+				slog.Float64("confidence", d.Confidence),
+				slog.String("reason", string(d.Reason)),
+			)
+		}
 	}
 	return kept
 }

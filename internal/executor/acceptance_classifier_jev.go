@@ -57,6 +57,7 @@ func (c *jevAcceptanceClassifier) Classify(ctx context.Context, criteria []strin
 		Shadow:     c.shadow,
 		Reasons:    make([]typesafe.Reason, n),
 		WouldBe:    make([]typesafe.Reason, n),
+		Details:    make([]AcceptanceItemDetail, n),
 	}
 	if n == 0 {
 		return regexItems, stats
@@ -70,6 +71,7 @@ func (c *jevAcceptanceClassifier) Classify(ctx context.Context, criteria []strin
 		idx := fmt.Sprintf("%d", i+1)
 		text := typesafe.RedactAndCap(it.Text, maxAcceptanceItemChars)
 		texts[idx] = text
+		stats.Details[i] = AcceptanceItemDetail{Text: text, RegexKind: it.Kind}
 
 		questions["kind_"+idx] = typesafe.ChoiceQuestion(fmt.Sprintf(kindInstructionsFmt, idx, idx, text), map[string]any{
 			string(AcceptanceItemMutation):    kindRubricMutation,
@@ -110,6 +112,10 @@ func (c *jevAcceptanceClassifier) Classify(ctx context.Context, criteria []strin
 	for i, rx := range regexItems {
 		idx := fmt.Sprintf("%d", i+1)
 		kindAns := validKindAnswer(answers, "kind_"+idx)
+		if kindAns != nil {
+			stats.Details[i].JevChoice = kindAns.Choice
+			stats.Details[i].Confidence = kindAns.Confidence
+		}
 		item, reason, wouldBe := c.mergeItem(rx, kindAns, answers, "target_"+idx, targets[i])
 		out[i] = item
 		stats.Reasons[i] = reason
