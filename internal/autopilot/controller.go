@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -3134,6 +3135,13 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 	}
 
 	previousStage := prState.Stage
+	// GH-5547: attempt counters the stage handlers bump up front. A handler cut
+	// short by the per-stage deadline made no real attempt, so these are rolled
+	// back below when the error is just the stage context expiring.
+	mergeAttemptsBefore := prState.MergeAttempts
+	rebaseAttemptsBefore := prState.RebaseAttempts
+	releasingAttemptsBefore := prState.ReleasingAttempts
+	releasingFirstAtBefore := prState.ReleasingFirstAt
 	var err error
 
 	switch prState.Stage {
@@ -3185,7 +3193,19 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 		}
 	}
 
-	if err != nil {
+	if isStageCtxError(ctx, err) {
+		// GH-5547: the per-stage deadline (or a daemon stop) cancelled ctx and
+		// the handler surfaced that. It is a timeout, not a PR failure: no
+		// circuit-breaker strike, no error recorded on the PR, no attempt
+		// counted toward a retry cap. processPRWithDeadline already WARNs and
+		// bumps autopilot_stage_timeouts_total; the PR retries next tick.
+		prState.MergeAttempts = mergeAttemptsBefore
+		prState.RebaseAttempts = rebaseAttemptsBefore
+		prState.ReleasingAttempts = releasingAttemptsBefore
+		prState.ReleasingFirstAt = releasingFirstAtBefore
+		c.log.Debug("autopilot stage interrupted by context, not counted as failure",
+			"pr", prNumber, "stage", prState.Stage, "error", err)
+	} else if err != nil {
 		c.recordPRFailure(prNumber)
 		prState.Error = err.Error()
 		c.log.Error("autopilot stage failed", "pr", prNumber, "stage", prState.Stage, "error", err)
@@ -3215,6 +3235,17 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 	c.persistPRState(prState)
 
 	return err
+}
+
+// isStageCtxError reports whether err is the stage context's own expiry or
+// cancellation surfacing through a handler. Requires ctx itself to be done so a
+// DeadlineExceeded from an inner, shorter-lived timeout (a real failure of that
+// call) is still treated as a failure.
+func isStageCtxError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() == nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // handlePRCreated starts CI monitoring for all environments.
@@ -7040,6 +7071,12 @@ func (c *Controller) ensureReleasePublished(ctx context.Context, rel *ReleaseCon
 // ReleasingAttempts has reached MaxReleasingAttempts; otherwise returns err so the caller
 // retries on the next poll.
 func (c *Controller) checkReleasingRetryOrEscalate(ctx context.Context, prState *PRState, err error) error {
+	// GH-5547: a stage-deadline expiry must never escalate — the escalation
+	// comment would be posted on the already-dead ctx and fail, leaving the PR
+	// in StageFailed with no explanation. ProcessPR rolls the attempt back.
+	if isStageCtxError(ctx, err) {
+		return err
+	}
 	if prState.ReleasingAttempts >= c.config.MaxReleasingAttempts {
 		msg := fmt.Sprintf("release failed after %d/%d attempts: %v — manual intervention required",
 			prState.ReleasingAttempts, c.config.MaxReleasingAttempts, err)
@@ -9761,6 +9798,17 @@ func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (
 		}()
 		defer func() {
 			if r := recover(); r != nil {
+				// GH-5547: always log + count here. When the loop already
+				// abandoned this run nobody reads done, so without this the
+				// panic would vanish; when the loop is still waiting it
+				// re-panics via finish(), as before the goroutine split.
+				c.log.Error("autopilot stage handler panicked",
+					"pr", prNumber,
+					"stage", snap.Stage,
+					"panic", fmt.Sprint(r),
+					"stack", string(debug.Stack()),
+				)
+				c.metrics.RecordStagePanic(string(snap.Stage))
 				done <- result{panicked: r}
 			}
 		}()

@@ -178,19 +178,24 @@ func TestTickStaleness(t *testing.T) {
 		name      string
 		lastTick  time.Time
 		poll      time.Duration
+		stage     time.Duration
 		wantStale bool
 		wantLimit float64
 	}{
-		{"never ticked is not stale", time.Time{}, 30 * time.Second, false, 180},
-		{"fresh", now.Add(-10 * time.Second), 30 * time.Second, false, 180},
-		{"idle backoff floor: 30s config, 2m old", now.Add(-2 * time.Minute), 30 * time.Second, false, 180},
-		{"older than 3x floor", now.Add(-4 * time.Minute), 30 * time.Second, true, 180},
-		{"long poll interval scales", now.Add(-4 * time.Minute), 2 * time.Minute, false, 360},
-		{"57 minute freeze", now.Add(-57 * time.Minute), 30 * time.Second, true, 180},
+		{"never ticked is not stale", time.Time{}, 30 * time.Second, 0, false, 180},
+		{"fresh", now.Add(-10 * time.Second), 30 * time.Second, 0, false, 180},
+		{"idle backoff floor: 30s config, 2m old", now.Add(-2 * time.Minute), 30 * time.Second, 0, false, 180},
+		{"older than 3x floor", now.Add(-4 * time.Minute), 30 * time.Second, 0, true, 180},
+		{"long poll interval scales", now.Add(-4 * time.Minute), 2 * time.Minute, 0, false, 360},
+		{"57 minute freeze", now.Add(-57 * time.Minute), 30 * time.Second, 0, true, 180},
+		// GH-5547: a full default stage_timeout (5m) must not read as a stale tick.
+		{"default stage timeout: 5m old is not stale", now.Add(-5 * time.Minute), 30 * time.Second, 5 * time.Minute, false, 360},
+		{"default stage timeout: past stage+interval is stale", now.Add(-7 * time.Minute), 30 * time.Second, 5 * time.Minute, true, 360},
+		{"short stage timeout keeps 3x floor", now.Add(-2 * time.Minute), 30 * time.Second, 30 * time.Second, false, 180},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, limit, stale := tickStaleness(tt.lastTick, tt.poll, now)
+			_, limit, stale := tickStaleness(tt.lastTick, tt.poll, tt.stage, now)
 			if stale != tt.wantStale || limit != tt.wantLimit {
 				t.Errorf("tickStaleness = (limit %v, stale %v), want (limit %v, stale %v)", limit, stale, tt.wantLimit, tt.wantStale)
 			}

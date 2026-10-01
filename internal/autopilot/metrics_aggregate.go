@@ -59,6 +59,7 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		LabelCleanups:              make(map[string]int64),
 		ApprovalPersistMisses:      make(map[string]int64),
 		StageTimeouts:              make(map[string]int64),
+		StagePanics:                make(map[string]int64),
 		TokensConsumed:             make(map[tokenKey]int64),
 		ExecutionCostUSD:           make(map[string]float64),
 		ExecutionsByResult:         make(map[execKey]int64),
@@ -137,6 +138,9 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		}
 		for k, v := range s.StageTimeouts {
 			agg.StageTimeouts[k] += v
+		}
+		for k, v := range s.StagePanics {
+			agg.StagePanics[k] += v
 		}
 		// GH-5541: the fleet-wide liveness gauge is the STALEST controller's
 		// tick — a single wedged PR loop must not be masked by healthy peers.
