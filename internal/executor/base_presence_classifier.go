@@ -308,10 +308,10 @@ func (r *Runner) classifyBasePresencePaths(ctx context.Context, taskID, body str
 			slog.Int("errors", stats.Errors),
 			slog.Int64("latency_ms", stats.Latency.Milliseconds()),
 		)
-		// One debug line per span so low_confidence spans can be labelled; the
+		// One info line per span so low_confidence spans can be labelled; the
 		// span is the redacted, capped text sent to the API.
 		for i, d := range stats.Details {
-			r.log.Debug("Base-presence classifier span",
+			r.log.Info("Base-presence classifier span",
 				slog.String("task_id", taskID),
 				slog.Int("index", i+1),
 				slog.String("span", d.Span),

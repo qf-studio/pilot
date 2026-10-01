@@ -513,7 +513,7 @@ func (r *Runner) logAcceptanceClassification(task *Task, stats AcceptanceClassif
 		slog.Bool("shadow", stats.Shadow),
 		slog.Int64("latency_ms", stats.Latency.Milliseconds()),
 	)
-	// One debug line per item so low_confidence items can be labelled. The text
+	// One info line per item so low_confidence items can be labelled. The text
 	// is the redacted, capped text sent to the API, never the raw item.
 	for i, d := range stats.Details {
 		var reason, wouldBe typesafe.Reason
@@ -523,7 +523,7 @@ func (r *Runner) logAcceptanceClassification(task *Task, stats AcceptanceClassif
 		if i < len(stats.WouldBe) {
 			wouldBe = stats.WouldBe[i]
 		}
-		r.log.Debug("Acceptance classification item",
+		r.log.Info("Acceptance classification item",
 			slog.String("task_id", task.ID),
 			slog.Int("index", i+1),
 			slog.String("regex_kind", string(d.RegexKind)),
