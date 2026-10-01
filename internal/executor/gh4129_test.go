@@ -365,7 +365,7 @@ func TestDirectPath_QualityGateRetryEndToEnd(t *testing.T) {
 	runner.SetLogStore(store)
 
 	checker := &statefulQualityChecker{}
-	runner.SetQualityCheckerFactory(func(_, _ string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(_, _, _ string) QualityChecker {
 		return checker
 	})
 

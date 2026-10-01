@@ -146,7 +146,7 @@ func TestQualityGatesHappyPath(t *testing.T) {
 	runner.SetSkipPreflightChecks(true) // Skip preflight checks (no Claude CLI in CI)
 
 	// Set quality checker factory
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) executor.QualityChecker {
 		return qualityChecker
 	})
 
@@ -232,7 +232,7 @@ func TestQualityGatesRetrySuccess(t *testing.T) {
 	runner.SetRecordingEnabled(false)
 	runner.SetSkipPreflightChecks(true) // Skip preflight checks (no Claude CLI in CI)
 
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) executor.QualityChecker {
 		return qualityChecker
 	})
 
@@ -293,7 +293,7 @@ func TestQualityGatesMaxRetriesExhausted(t *testing.T) {
 	runner.SetRecordingEnabled(false)
 	runner.SetSkipPreflightChecks(true) // Skip preflight checks (no Claude CLI in CI)
 
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) executor.QualityChecker {
 		return qualityChecker
 	})
 
@@ -409,7 +409,7 @@ func TestQualityGatesNoRetryOnNoShouldRetry(t *testing.T) {
 	runner.SetRecordingEnabled(false)
 	runner.SetSkipPreflightChecks(true) // Skip preflight checks (no Claude CLI in CI)
 
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) executor.QualityChecker {
 		return qualityChecker
 	})
 
@@ -461,7 +461,7 @@ func TestQualityGatesOrchestratorWiring(t *testing.T) {
 	var passedTaskID, passedProjectPath string
 
 	// Set quality checker factory on orchestrator
-	orch.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+	orch.SetQualityCheckerFactory(func(taskID, projectPath, _ string) executor.QualityChecker {
 		factoryCalled = true
 		passedTaskID = taskID
 		passedProjectPath = projectPath
@@ -479,7 +479,7 @@ func TestQualityGatesOrchestratorWiring(t *testing.T) {
 	}
 
 	// Test that factory produces valid checker
-	checker := orch.qualityCheckerFactory("TEST-TASK", "/test/path")
+	checker := orch.qualityCheckerFactory("TEST-TASK", "/test/path", "/test/path")
 	if checker == nil {
 		t.Error("Expected factory to produce a checker")
 	}
@@ -536,7 +536,7 @@ func TestQualityGatesRetryFeedbackPropagation(t *testing.T) {
 	runner.SetRecordingEnabled(false)
 	runner.SetSkipPreflightChecks(true) // Skip preflight checks (no Claude CLI in CI)
 
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) executor.QualityChecker {
 		return qualityChecker
 	})
 

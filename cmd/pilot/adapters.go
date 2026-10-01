@@ -205,17 +205,28 @@ type qualityCheckerWrapper struct {
 // auto-detected minimal build/test gate. This lets one Pilot deployment mix
 // stacks (e.g. Go/Makefile + pnpm/Node) without a global config tuned for
 // one stack forcing the wrong commands onto another.
-func newProjectQualityCheckerFactory(cfg *config.Config) func(taskID, taskProjectPath string) executor.QualityChecker {
-	return func(taskID, taskProjectPath string) executor.QualityChecker {
+func newProjectQualityCheckerFactory(cfg *config.Config) executor.QualityCheckerFactory {
+	return func(taskID, taskProjectPath, executionPath string) executor.QualityChecker {
+		// GH-5577: the override is looked up by the task's project root
+		// (exact match against the configured project path), while the gates
+		// run in executionPath — an isolated worktree that never matches a
+		// configured project. Keying the lookup on executionPath silently
+		// fell back to the global gates for every worktree execution.
 		var projectQuality *quality.Config
-		if proj := cfg.FindProjectByPath(taskProjectPath); proj != nil {
+		proj := cfg.FindProjectByPath(taskProjectPath)
+		if proj != nil {
 			projectQuality = proj.Quality
 		}
-		resolved := quality.ResolveConfig(projectQuality, cfg.Quality, taskProjectPath)
+		logging.WithComponent("quality").Info("Resolved quality gate config",
+			slog.String("task_id", taskID),
+			slog.String("project_path", taskProjectPath),
+			slog.Bool("project_found", proj != nil),
+			slog.Bool("project_override", projectQuality != nil))
+		resolved := quality.ResolveConfig(projectQuality, cfg.Quality, executionPath)
 		return &qualityCheckerWrapper{
 			executor: quality.NewExecutor(&quality.ExecutorConfig{
 				Config:      resolved,
-				ProjectPath: taskProjectPath,
+				ProjectPath: executionPath,
 				TaskID:      taskID,
 			}),
 		}

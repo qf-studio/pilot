@@ -90,7 +90,7 @@ func TestRunner_QualityRetry_WorktreeMode_AttemptsStackAcrossRetries(t *testing.
 	runner.config = &BackendConfig{UseWorktree: true} // worktree mode: must behave exactly as before GH-4594
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return &failingQualityChecker{}
 	})
 
@@ -161,7 +161,7 @@ func TestRunner_WorktreeMode_TerminalFailure_LeavesProjectRepoUntouched(t *testi
 	runner.config = &BackendConfig{UseWorktree: true} // worktree mode: no direct-mode cleanup should apply
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return &terminallyFailingQualityChecker{}
 	})
 

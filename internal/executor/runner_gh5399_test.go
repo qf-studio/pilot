@@ -65,7 +65,7 @@ func TestSuccessPath_TaskCtxExpired_GatesFail_HoldsBranchNoReinvocation(t *testi
 		},
 	}
 	runner := newGH4964Runner(backend)
-	runner.qualityCheckerFactory = func(string, string) QualityChecker {
+	runner.qualityCheckerFactory = func(string, string, string) QualityChecker {
 		return &stubQualityChecker{outcome: &QualityOutcome{Passed: false, ShouldRetry: true}}
 	}
 
@@ -144,7 +144,7 @@ func TestSuccessPath_TaskCtxExpired_GatesFail_NoPR_FailsNormally(t *testing.T) {
 		},
 	}
 	runner := newGH4964Runner(backend)
-	runner.qualityCheckerFactory = func(string, string) QualityChecker {
+	runner.qualityCheckerFactory = func(string, string, string) QualityChecker {
 		return &stubQualityChecker{outcome: &QualityOutcome{Passed: false, ShouldRetry: true}}
 	}
 
@@ -224,7 +224,7 @@ func TestBackendTimeoutSalvage_PushFailure_PreservesWorktreeAndBranch(t *testing
 	}
 	runner := newGH4964Runner(backend)
 	runner.config.UseWorktree = true
-	runner.qualityCheckerFactory = func(string, string) QualityChecker {
+	runner.qualityCheckerFactory = func(string, string, string) QualityChecker {
 		return &stubQualityChecker{outcome: &QualityOutcome{Passed: true}}
 	}
 

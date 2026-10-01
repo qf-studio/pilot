@@ -73,7 +73,7 @@ func TestRunner_QualityRetry_DirectMode_ResetsToCleanPreAttemptState(t *testing.
 	runner.config = &BackendConfig{UseWorktree: false} // direct mode: no worktree isolation
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return &failingQualityChecker{}
 	})
 

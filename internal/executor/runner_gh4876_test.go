@@ -46,7 +46,7 @@ func TestQualityGatesRespectSkipQualityGates(t *testing.T) {
 			runner.skipPreflightChecks = true
 
 			gateCalled := false
-			runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+			runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 				gateCalled = true
 				return &mockQualityChecker{outcome: &QualityOutcome{Passed: true}}
 			})
@@ -166,7 +166,7 @@ func TestQualityGateRetry_UsesFreshContextForResetAndReinvoke(t *testing.T) {
 	runner.SetRecordingEnabled(false)
 
 	checker := &sleepThenFailQualityChecker{sleep: 1200 * time.Millisecond}
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return checker
 	})
 
@@ -256,7 +256,7 @@ func TestQualityGateRetry_AbortsOnFailedReset(t *testing.T) {
 	runner.config = &BackendConfig{UseWorktree: false}
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return &failingQualityChecker{}
 	})
 

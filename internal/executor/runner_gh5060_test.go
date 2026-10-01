@@ -80,7 +80,7 @@ func TestQualityGateRetry_RecheckUsesFreshContext(t *testing.T) {
 	runner.SetRecordingEnabled(false)
 
 	checker := &ctxRespectingQualityChecker{sleep: 1200 * time.Millisecond}
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return checker
 	})
 

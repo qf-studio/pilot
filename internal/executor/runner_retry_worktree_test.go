@@ -154,7 +154,7 @@ func TestRunner_QualityRetry_RunsInWorktree(t *testing.T) {
 	runner.config = &BackendConfig{UseWorktree: true} // enable worktree isolation
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
-	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
 		return &failingQualityChecker{}
 	})
 
