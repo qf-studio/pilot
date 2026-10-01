@@ -3614,6 +3614,27 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 					slog.String("task_id", exec.TaskID),
 					slog.String("pr_url", mergedURL),
 				)
+				// GH-5564: a fix task that BORROWED the branch of its origin PR
+				// (RecordBorrowedBranch) and finds that very PR already merged
+				// did no work and delivered nothing — the origin PR's merge is
+				// not this task's delivery. Supersede it (and close the issue)
+				// instead of completing it with the origin PR's URL, which
+				// bypassed the lifecycle and either left the issue polled
+				// forever or let checkExternalMergeOrClose close it as
+				// delivered. A DIFFERENT merged PR on the same branch (GH-5400)
+				// keeps today's completed path below.
+				//
+				// Known limit: BorrowedBranch is in-memory with a TTL, so after
+				// a daemon restart this guard is silent and the completed path
+				// runs. Acceptable: the emitter no longer writes branch: into
+				// post-merge footers, so the borrow is never recorded for them.
+				if _, fromPR, ok := w.runner.BorrowedBranch(exec.TaskID); ok && fromPR > 0 {
+					if mergedNum, numOK := extractPRNumberFromURL(mergedURL); numOK && mergedNum == fromPR {
+						w.supersedeMergedOriginBorrow(ctx, exec, task, fromPR, mergedURL)
+						w.currentTaskID.Store("")
+						continue
+					}
+				}
 				if err := w.store.MarkExecutionCompleted(exec.ID, mergedURL, "", 0); err != nil {
 					w.log.Error("Failed to mark pre-execute merged-PR short-circuit completed", slog.Any("error", err))
 				}
@@ -3770,6 +3791,47 @@ func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.St
 			slog.String("stage", string(stage)),
 			slog.Any("error", err))
 	}
+}
+
+// supersedeMergedOriginBorrow finalizes a queued fix task whose borrowed origin
+// PR (fromPR) is already merged — GH-5564. The execution is finished as
+// superseded with an empty pr_url (the origin PR is not this task's delivery),
+// and, for github-sourced tasks, the issue is labeled pilot-superseded (shedding
+// pilot-in-progress/pilot-failed) and closed with an explanatory comment so the
+// poller never re-admits it. Deliberately does NOT call recordExternalMerge:
+// the origin PR's merge was already counted when it merged. Label/close
+// failures are logged, not fatal — the superseded row is the durable truth.
+func (w *ProjectWorker) supersedeMergedOriginBorrow(ctx context.Context, exec *memory.Execution, task *Task, fromPR int, mergedURL string) {
+	detail := fmt.Sprintf("pre-execute short-circuit: borrowed origin PR #%d already merged (%s); no work performed", fromPR, mergedURL)
+	// GH-4259: record the event before Finish persists the terminal status.
+	w.recordExecutionEvent(exec.ID, memory.StageSuperseded, detail)
+	if _, finErr := w.lifecycle.Finish(exec.ID, nil, nil, 0, ExecStatusSuperseded); finErr != nil {
+		w.log.Error("Failed to finalize superseded merged-origin-borrow execution",
+			slog.String("execution_id", exec.ID), slog.Any("error", finErr))
+	}
+
+	if task.SourceAdapter == "" || task.SourceAdapter == "github" {
+		issueNum := strings.TrimPrefix(task.ID, "GH-")
+		if task.SourceIssueID != "" {
+			issueNum = task.SourceIssueID
+		}
+		var parsed int
+		if _, err := fmt.Sscanf(issueNum, "%d", &parsed); err == nil && parsed > 0 {
+			ghCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			if err := ghEditLabels(ghCtx, exec.ProjectPath, issueNum, []string{labelPilotSuperseded}, []string{"pilot-in-progress", labelPilotFailed}); err != nil {
+				w.log.Warn("merged-origin-borrow supersede: failed to update labels",
+					slog.String("task_id", exec.TaskID), slog.Any("error", err))
+			}
+			comment := fmt.Sprintf("No work performed: this fix issue inherited the branch of PR #%d, which was already merged. Closing as superseded.", fromPR)
+			if err := w.runner.CloseIssueWithComment(ghCtx, exec.ProjectPath, issueNum, comment); err != nil {
+				w.log.Warn("merged-origin-borrow supersede: failed to comment/close issue",
+					slog.String("task_id", exec.TaskID), slog.Any("error", err))
+			}
+		}
+	}
+
+	w.runner.EmitProgress(exec.TaskID, "Superseded", 100, detail)
 }
 
 // escalateBasePresenceHold applies the pilot-needs-human label once a held

@@ -4428,6 +4428,22 @@ func (c terminalCompletionChecker) HasCompletedExecutionReason(taskID, projectPa
 		return false, "", nil
 	}
 
+	// GH-5564: a probe miss only means "no fresh re-arm evidence" when a
+	// re-armable row (canceled/superseded/needs_human) actually exists. If none
+	// of the three finds a row, `done` came from a genuine completed/no_op row
+	// — never re-armable, so it must neither be throttled nor arm the repick
+	// backoff (before this, every poll tick recorded a claim-lost drop and the
+	// issue was reported "stalled: awaiting re-arm evidence" forever).
+	_, canceledFound, canceledErr := c.store.LatestCanceledExecution(taskID, projectPath)
+	_, supersededFound, supersededErr := c.store.LatestSupersededExecution(taskID, projectPath)
+	_, needsHumanFound, needsHumanErr := c.store.LatestNeedsHumanExecution(taskID, projectPath)
+	rearmable := (canceledErr == nil && canceledFound) ||
+		(supersededErr == nil && supersededFound) ||
+		(needsHumanErr == nil && needsHumanFound)
+	if !rearmable && canceledErr == nil && supersededErr == nil && needsHumanErr == nil {
+		return true, "completed execution exists", nil
+	}
+
 	// None of the three probes found a matching row + fresh re-arm evidence
 	// — a canceled/superseded/needs_human task sitting open+labeled (or not
 	// yet relabeled/uncleared at all) without a qualifying event since its
@@ -4435,7 +4451,7 @@ func (c terminalCompletionChecker) HasCompletedExecutionReason(taskID, projectPa
 	// GH-4469 already built, so this doesn't pay for up to three
 	// GetIssue+ListIssueEvents call pairs on every ~30s poll tick.
 	repickBackoff.recordClaimLostDrop(key)
-	if _, found, lookupErr := c.store.LatestNeedsHumanExecution(taskID, projectPath); lookupErr == nil && found {
+	if needsHumanErr == nil && needsHumanFound {
 		// GH-5414: name the parked state explicitly rather than the generic
 		// stalled text below, so the poller's skip log line tells the
 		// operator what to do — clear pilot-needs-human.

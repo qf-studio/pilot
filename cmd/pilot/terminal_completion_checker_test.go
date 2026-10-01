@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -272,5 +274,54 @@ func TestTerminalCompletionChecker_HasCompletedExecutionReason_NeedsHumanRearmed
 	}
 	if reason != "" {
 		t.Fatalf("expected an empty reason on re-arm, got %q", reason)
+	}
+}
+
+// TestTerminalCompletionChecker_HasCompletedExecutionReason_GenuineCompletion_WithGHClient
+// is GH-5564's regression test: with a live ghClient configured, a genuinely
+// completed (or no_op) row — none of canceled/superseded/needs_human — must
+// report "completed execution exists" WITHOUT hitting GitHub and WITHOUT
+// arming the repick backoff. Before, the fall-through recorded a claim-lost
+// drop on every poll tick and reported "stalled: awaiting re-arm evidence"
+// forever (#5551).
+func TestTerminalCompletionChecker_HasCompletedExecutionReason_GenuineCompletion_WithGHClient(t *testing.T) {
+	for _, status := range []string{"completed", "no_op"} {
+		t.Run(status, func(t *testing.T) {
+			store := newTerminalCompletionCheckerTestStore(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("GitHub must not be hit for a genuine %s row, got %s %s", status, r.Method, r.URL.Path)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+			checker := terminalCompletionChecker{
+				store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
+				repoOwner: "owner", repoName: "repo", triggerLabel: "pilot",
+			}
+
+			taskID, projectPath := "GH-5564-"+status, "/project-gh-5564-genuine-"+status
+			key := repickBackoffKey(projectPath, taskID)
+			t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+
+			if err := store.SaveExecution(&memory.Execution{
+				ID: "exec-gh-5564-" + status, TaskID: taskID, ProjectPath: projectPath, Status: status,
+				PRUrl: "https://github.com/qf-studio/pilot-canary-sandbox/pull/1",
+			}); err != nil {
+				t.Fatalf("failed to seed %s execution: %v", status, err)
+			}
+
+			skip, reason, err := checker.HasCompletedExecutionReason(taskID, projectPath)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !skip {
+				t.Fatal("expected skip=true for a genuine terminal row")
+			}
+			if reason != "completed execution exists" {
+				t.Fatalf("expected reason %q, got %q", "completed execution exists", reason)
+			}
+			if _, _, claimLost, _ := repickBackoff.gateDetail(key); claimLost != 0 {
+				t.Fatalf("expected zero claim-lost drops for a genuine completion, got %d", claimLost)
+			}
+		})
 	}
 }

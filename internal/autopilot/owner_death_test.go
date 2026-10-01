@@ -95,6 +95,12 @@ func TestParseFixIssueSource(t *testing.T) {
 			wantOK:  false,
 		},
 		{
+			name:    "GH-5564 branchless post-merge footer still yields source:N",
+			body:    "Some intro text.\n\n<!-- autopilot-meta iteration:1 source:123 -->\n",
+			wantNum: 123,
+			wantOK:  true,
+		},
+		{
 			name:    "autopilot-meta present but no source: and no Depends-on line",
 			body:    "Some fix issue body.\n\n<!-- autopilot-meta branch:pilot/GH-42 pr:42 iteration:1 -->",
 			wantNum: 0,
