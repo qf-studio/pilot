@@ -250,16 +250,16 @@ func TestCIFailureClassifier_LogLines(t *testing.T) {
 	}, "o/r")
 
 	var info []string
-	debugLines := 0
+	checkLines := 0
 	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
 		switch {
 		case strings.Contains(line, "level=INFO") && strings.Contains(line, `msg="CI failure classifier"`):
 			info = append(info, line)
-		case strings.Contains(line, "level=DEBUG") && strings.Contains(line, `msg="CI failure classifier check"`):
-			debugLines++
+		case strings.Contains(line, "level=INFO") && strings.Contains(line, `msg="CI failure classifier check"`):
+			checkLines++
 			for _, key := range []string{"excerpt_head=", "jev_choice=", "confidence=", "reason="} {
 				if !strings.Contains(line, key) {
-					t.Errorf("debug line missing %s: %s", key, line)
+					t.Errorf("check line missing %s: %s", key, line)
 				}
 			}
 		}
@@ -272,8 +272,37 @@ func TestCIFailureClassifier_LogLines(t *testing.T) {
 			t.Errorf("info line missing %s: %s", key, info[0])
 		}
 	}
-	if debugLines != 2 {
-		t.Errorf("debug lines = %d, want one per check", debugLines)
+	if checkLines != 2 {
+		t.Errorf("check lines = %d, want one per check", checkLines)
+	}
+}
+
+// TestCIFailureClassifier_CheckLineEmittedAtInfo pins the per-check shadow line
+// at INFO: the box logs at INFO and never writes DEBUG, so a Debug call would
+// leave gate 3 with no flip data (same defect as #5556 for gates 1 and 2).
+func TestCIFailureClassifier_CheckLineEmittedAtInfo(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	asker := &ciFailureFakeAsker{answers: map[string]typesafe.Answer{"check_1": ciAnswer("infra", 0.95)}}
+	c := newTestCIFailureClassifier(asker, true, log)
+	c.classify(context.Background(), []FailedCheckLog{ciCodeCheck("build")}, "o/r")
+
+	var line string
+	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if strings.Contains(l, `msg="CI failure classifier check"`) {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("per-check line not captured by an Info-level handler:\n%s", buf.String())
+	}
+	if !strings.Contains(line, "level=INFO") {
+		t.Errorf("per-check line level is not INFO: %s", line)
+	}
+	for _, want := range []string{"check=build", "jev_choice=infra", "confidence=0.95", "outcome="} {
+		if !strings.Contains(line, want) {
+			t.Errorf("per-check line missing %s: %s", want, line)
+		}
 	}
 }
 
