@@ -52,12 +52,27 @@ func ParentIsTestProcess() bool {
 }
 
 // processArgv returns the command line of pid: /proc on Linux, `ps` as the
-// fallback (macOS). `ps` output is whitespace-split, which is sufficient for
-// the prefix/suffix checks in IsTestProcessArgv.
+// fallback (macOS).
 func processArgv(pid int) []string {
-	if data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline"); err == nil && len(data) > 0 {
-		return strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+	if argv := procArgv(pid); argv != nil {
+		return argv
 	}
+	return psArgv(pid)
+}
+
+// procArgv reads the NUL-separated command line from /proc/<pid>/cmdline.
+// It returns nil when /proc is unavailable or the entry is empty.
+func procArgv(pid int) []string {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	return strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+}
+
+// psArgv shells out to `ps`. Output is whitespace-split, which is sufficient
+// for the prefix/suffix checks in IsTestProcessArgv.
+func psArgv(pid int) []string {
 	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid is our own parent pid
 	if err != nil {
 		return nil
