@@ -943,6 +943,16 @@ projects:
     # github:
     #   owner: "my-org"
     #   repo: "my-app"
+    # GitLab-hosted repository (GH-5583) - mutually exclusive with `github:`.
+    # Registers a project-keyed MR creator at startup, so tasks from ANY source
+    # adapter (e.g. Linear) on this project open GitLab MRs instead of falling
+    # through to `gh pr create`. Independent of adapters.gitlab.enabled /
+    # polling.enabled (those only govern issue intake). The token is shared:
+    # adapters.gitlab.token must be set. MR bodies carry `Closes #<iid>` only
+    # for GitLab-sourced tasks; other sources get a `Source: <issue URL>` line.
+    # gitlab:
+    #   project: "my-group/my-app"                # namespace/path (required)
+    #   base_url: "https://gitlab.example.com"    # optional; default adapters.gitlab.base_url, then https://gitlab.com
     # Linear project pairing (GH-1684) - maps Linear project to this Pilot project
     # Precedence: project-level linear.project_id > workspace-level > default_project
     # Polled Linear issues are dispatched to exactly one project, never to

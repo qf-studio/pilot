@@ -1762,6 +1762,13 @@ func (r *Runner) prCreatorFor(key string) PRCreator {
 	return r.prCreators[key]
 }
 
+// HasPRCreator reports whether a creator is registered under key
+// (RegisterPRCreator). Lets wiring code and tests assert startup registration
+// without reaching into the unexported registry.
+func (r *Runner) HasPRCreator(key string) bool {
+	return r.prCreatorFor(key) != nil
+}
+
 // SetSubIssueLinker sets the linker for native GitHub sub-issue linking (GH-2211).
 // When set, createSubIssuesViaGitHub will call LinkSubIssue after each child issue is
 // created to establish the native parent→child relationship. Failures are non-fatal
@@ -3183,16 +3190,16 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 	// opened through their own creator, not just `gh pr create`.
 	var prURL string
 	var createErr error
-	switch {
-	case task.SourceAdapter == "github" && task.SourceRepo != "" && r.prCreatorFor("github:"+task.SourceRepo) != nil:
-		prURL, createErr = r.prCreatorFor("github:"+task.SourceRepo).CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
-	case r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github":
-		closeKeyword := ""
-		if task.SourceIssueID != "" {
-			closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
-		}
-		mrBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot after a task timeout (GH-5346 salvage path) for %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
-		prURL, createErr = r.prCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, mrBody)
+	// GH-5583: resolve by project first (project-keyed registration), then the
+	// pre-existing github-sdk / shared-slot / gh-CLI ladder.
+	creator, creatorKind := r.resolvePRCreator(task)
+	log.Info("PR creator resolved", slog.String("task_id", task.ID), slog.String("kind", creatorKind))
+	switch creatorKind {
+	case prCreatorKindGitHubSDK:
+		prURL, createErr = creator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+	case prCreatorKindProject, prCreatorKindShared:
+		mrBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot after a task timeout (GH-5346 salvage path) for %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, creatorKind), task.Description)
+		prURL, createErr = creator.CreatePR(ctx, task.Branch, baseBranch, prTitle, mrBody)
 	default:
 		prURL, createErr = git.CreatePR(ctx, prTitle, prBody, baseBranch)
 	}
@@ -6723,17 +6730,17 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// M7 4d.4: SDK-managed github repos register a per-repo creator at
 			// startup; everything else keeps its existing path (shared prCreator
 			// slot for non-github adapters, gh CLI for github).
-			ghSDKCreator := PRCreator(nil)
-			if task.SourceAdapter == "github" && task.SourceRepo != "" {
-				ghSDKCreator = r.prCreatorFor("github:" + task.SourceRepo)
-			}
-			if ghSDKCreator != nil {
+			// GH-5583: a project-keyed registration (per-project `gitlab:`
+			// block) is resolved first, ahead of the source-adapter ladder.
+			creator, creatorKind := r.resolvePRCreator(task)
+			log.Info("PR creator resolved", slog.String("task_id", task.ID), slog.String("kind", creatorKind))
+			if creatorKind == prCreatorKindGitHubSDK {
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody)
 				var createErr error
 				for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
-					prURL, createErr = ghSDKCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+					prURL, createErr = creator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
 					if createErr == nil {
 						break
 					}
@@ -6753,26 +6760,24 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 					return result, nil
 				}
-			} else if r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github" {
-				// Non-GitHub adapter: use PRCreator (e.g., GitLab MR API)
+			} else if creatorKind == prCreatorKindProject || creatorKind == prCreatorKindShared {
+				// Non-GitHub adapter or project-keyed creator: use PRCreator (e.g., GitLab MR API)
 				// Include "Closes #N" keyword so GitLab auto-closes the source issue on merge.
 				// GH-5191: deliberately skip extraFixesKeyword here — it emits
 				// GitHub closing-keyword syntax ("Fixes #N"), and any extra
 				// issue numbers named in the description aren't guaranteed to
 				// be same-project GitLab IIDs (or valid at all for whatever
 				// non-GitHub adapter is wired to r.prCreator).
-				closeKeyword := ""
-				if task.SourceIssueID != "" {
-					closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
-				}
-				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
+				// GH-5583: on the project-keyed path "Closes #" is emitted only
+				// for gitlab-sourced tasks (see mrSourceSuffix).
+				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, creatorKind), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody)
 				// Retry MR creation before giving up (GH-3785): the branch is
 				// already pushed at this point, so a transient API failure here
 				// must not strand delivered commits behind a bare error.
 				var createErr error
 				for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
-					prURL, createErr = r.prCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+					prURL, createErr = creator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
 					if createErr == nil {
 						break
 					}

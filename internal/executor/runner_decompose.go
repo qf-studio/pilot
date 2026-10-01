@@ -625,15 +625,14 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 	// PRCreator → gh CLI fallback order (runner.go ~line 3967).
 	var prURL string
 	var createErr error
-	ghSDKCreator := PRCreator(nil)
-	if task.SourceAdapter == "github" && task.SourceRepo != "" {
-		ghSDKCreator = r.prCreatorFor("github:" + task.SourceRepo)
-	}
-	switch {
-	case ghSDKCreator != nil:
+	// GH-5583: project-keyed registration first, then the pre-existing ladder.
+	creator, creatorKind := r.resolvePRCreator(task)
+	log.Info("PR creator resolved", slog.String("task_id", task.ID), slog.String("kind", creatorKind))
+	switch creatorKind {
+	case prCreatorKindGitHubSDK:
 		prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 		for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
-			prURL, createErr = ghSDKCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+			prURL, createErr = creator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
 			if createErr == nil {
 				break
 			}
@@ -647,16 +646,12 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 				time.Sleep(prCreateRetryDelay)
 			}
 		}
-	case r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github":
+	case prCreatorKindProject, prCreatorKindShared:
 		// GH-5191: no extraFixesKeyword here — see the comment on the
 		// sibling non-GitHub branch in executeWithOptions (runner.go).
-		closeKeyword := ""
-		if task.SourceIssueID != "" {
-			closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
-		}
-		prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
+		prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, creatorKind), task.Description)
 		for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
-			prURL, createErr = r.prCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+			prURL, createErr = creator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
 			if createErr == nil {
 				break
 			}

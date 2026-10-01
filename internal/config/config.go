@@ -288,7 +288,12 @@ type ProjectConfig struct {
 	Reviewers     []string             `yaml:"reviewers,omitempty"`
 	TeamReviewers []string             `yaml:"team_reviewers,omitempty"`
 	GitHub        *ProjectGitHubConfig `yaml:"github,omitempty"`
-	Linear        *ProjectLinearConfig `yaml:"linear,omitempty"`
+	// GitLab marks this project's repository as GitLab-hosted (GH-5583).
+	// Startup registers a project-keyed MR creator for it so a task from any
+	// source adapter (e.g. Linear) opens a GitLab MR instead of falling through
+	// to `gh pr create`. Mutually exclusive with GitHub.
+	GitLab *ProjectGitLabConfig `yaml:"gitlab,omitempty"`
+	Linear *ProjectLinearConfig `yaml:"linear,omitempty"`
 	// Quality overrides the global quality gate config for this project
 	// (GH-3716). Takes precedence over the top-level Config.Quality — lets a
 	// pnpm/yarn/bun or other non-Go project define its own build/test/lint
@@ -352,6 +357,77 @@ type ProjectGitHubConfig struct {
 	// board. Nil means this project gets no board wiring of its own; the
 	// default repo still falls back to adapters.github.project_board.
 	ProjectBoard *github.ProjectBoardConfig `yaml:"project_board,omitempty"`
+}
+
+// ProjectGitLabConfig holds GitLab-specific project configuration for MR
+// creation (GH-5583). The access token stays global (adapters.gitlab.token),
+// mirroring how adapters.github.token is shared by every projects[].github.
+type ProjectGitLabConfig struct {
+	// Project is the GitLab project path in "namespace/path" form (required).
+	Project string `yaml:"project"`
+	// BaseURL is the GitLab instance URL. Optional: defaults to
+	// adapters.gitlab.base_url, then https://gitlab.com.
+	BaseURL string `yaml:"base_url,omitempty"`
+}
+
+// DefaultGitLabBaseURL is the GitLab instance used when neither
+// projects[].gitlab.base_url nor adapters.gitlab.base_url is set.
+const DefaultGitLabBaseURL = "https://gitlab.com"
+
+// ResolveGitLabBaseURL returns the effective GitLab base URL for a project's
+// gitlab block: its own base_url, else adapters.gitlab.base_url, else
+// DefaultGitLabBaseURL (GH-5583).
+func (c *Config) ResolveGitLabBaseURL(p *ProjectGitLabConfig) string {
+	if p != nil && p.BaseURL != "" {
+		return p.BaseURL
+	}
+	if c != nil && c.Adapters != nil && c.Adapters.GitLab != nil && c.Adapters.GitLab.BaseURL != "" {
+		return c.Adapters.GitLab.BaseURL
+	}
+	return DefaultGitLabBaseURL
+}
+
+// validGitLabProjectPath reports whether s is a "namespace/path" GitLab
+// project path: at least two non-empty, whitespace-free segments (subgroups
+// allowed), no leading/trailing slash.
+func validGitLabProjectPath(s string) bool {
+	parts := strings.Split(s, "/")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || strings.ContainsAny(part, " \t\r\n") {
+			return false
+		}
+	}
+	return true
+}
+
+// validateProjectGitLab checks every projects[].gitlab block (GH-5583):
+// project must be namespace/path, a project may not declare both github: and
+// gitlab:, and a gitlab: project needs the global adapters.gitlab.token (fail
+// loud at startup, naming the project, rather than at MR-create time after the
+// branch is already pushed).
+func (c *Config) validateProjectGitLab() error {
+	for i, p := range c.Projects {
+		if p == nil || p.GitLab == nil {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", i)
+		}
+		if !validGitLabProjectPath(p.GitLab.Project) {
+			return fmt.Errorf("projects[%d] (%s): gitlab.project must be namespace/path, got %q", i, name, p.GitLab.Project)
+		}
+		if p.GitHub != nil {
+			return fmt.Errorf("projects[%d] (%s): a project may not declare both a github and a gitlab block", i, name)
+		}
+		if c.Adapters == nil || c.Adapters.GitLab == nil || c.Adapters.GitLab.Token == "" {
+			return fmt.Errorf("projects[%d] (%s): gitlab: block requires adapters.gitlab.token to be set", i, name)
+		}
+	}
+	return nil
 }
 
 // ProjectLinearConfig holds Linear-specific project configuration for project pairing.
@@ -1296,6 +1372,11 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("projects[%d].contract_dependencies[%d]: %w", i, j, err)
 			}
 		}
+	}
+
+	// GH-5583: Validate each project's gitlab block.
+	if err := c.validateProjectGitLab(); err != nil {
+		return err
 	}
 
 	// Validate quality on_failure max_retries in [0, 10]

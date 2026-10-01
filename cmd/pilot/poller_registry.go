@@ -73,6 +73,11 @@ func adapterPollerRegistrations() []PollerRegistration {
 
 // StartAdapterPollers iterates registrations and starts each enabled poller.
 func StartAdapterPollers(ctx context.Context, deps *PollerDeps, registrations []PollerRegistration) {
+	// GH-5583: per-project gitlab: MR creators are registered unconditionally
+	// (not gated on adapters.gitlab.enabled / polling.enabled, which only govern
+	// issue intake), before any poller can dispatch a task.
+	registerProjectGitLabPRCreators(deps.Cfg, deps.Runner)
+
 	for _, reg := range registrations {
 		if reg.Enabled(deps.Cfg) {
 			logging.WithComponent("start").Info("Starting adapter poller",
