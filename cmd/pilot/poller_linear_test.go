@@ -369,6 +369,12 @@ func TestResolveLinearProjectPath(t *testing.T) {
 			wantReason: skipreason.ReasonNoProjectMapping,
 		},
 		{
+			name:       "blank repo label name never matches an unnamed project",
+			labels:     []string{"repo: "},
+			fetcher:    &fakeLinearIssueFetcher{},
+			wantReason: skipreason.ReasonNoProjectMapping,
+		},
+		{
 			name:       "fetch error treated as no project id, skips",
 			labels:     []string{"pilot"},
 			fetcher:    &fakeLinearIssueFetcher{err: errors.New("boom")},

@@ -133,6 +133,9 @@ func resolveLinearProjectPath(ctx context.Context, cfg *config.Config, ev sdkcor
 			continue
 		}
 		name := strings.TrimSpace(l[len(linearRepoLabelPrefix):])
+		if name == "" {
+			continue
+		}
 		if proj := cfg.GetProjectByName(name); proj != nil && proj.Path != "" {
 			return proj.Path, ""
 		}
