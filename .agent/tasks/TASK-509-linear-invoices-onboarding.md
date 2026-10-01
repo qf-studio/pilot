@@ -19,6 +19,13 @@ On the SDK polling path every Linear issue goes to `deps.ProjectPath` (the defau
 - Queue incident: #5566 (my body had a backticked fake path) was held and starved #5567/#5568/#5570 for 54 min → body fixed, #5567/#5568 unlabeled (re-label after #5570 lands), bug filed [#5572](https://github.com/qf-studio/pilot/issues/5572), pitfall `held-task-at-queue-head-starves-serial-project-worker`.
 - Restart via SSM killed the tmux server (exec in start script) → relaunched with `tmux new-session`; pitfall `box-start-script-exec-kills-tmux-on-stop`.
 
+## 14:00–15:00Z: first runs, two Pilot defects found
+- **service#1 → PR#2 hand-merged 14:31Z** (test-only; on-box gates passed; the repo's own CI is red on main since 2025-10-26: `go mod tidy` drift + govulncheck toolchain → [service#3](https://github.com/alekspetrov/linearinvoices-service/issues/3) filed, queued). Required check name corrected to `Test & Lint` (display name, not job id).
+- **client#3 failed its gates 3× in 22 s**: the daemon ran the GLOBAL `make build`/`make test` (exit 2) — the per-project `quality:` override is never applied in isolated worktrees because `runner.go` hands the factory the worktree path and `FindProjectByPath` is an exact match → [#5577](https://github.com/qf-studio/pilot/issues/5577). Workaround on client main: `Makefile` mapping build/test/lint to pnpm (commit 819a14779). client#3 closed, folded into [client#4](https://github.com/alekspetrov/linearinvoices-client/issues/4) (one PR must turn `make test` green to pass the gate).
+- Box self-upgrade to v2.277.0 waits on GH-5566 (admission paused since 14:27Z); #5573 (Linear routing) is held for the 15:00Z train → v2.277.1 → then the Linear flip.
+- #5573 reviewed APPROVE-w-notes → follow-ups [#5575](https://github.com/qf-studio/pilot/issues/5575) (workspace `projects:` tier) and [#5576](https://github.com/qf-studio/pilot/issues/5576) (no_project_mapping skip is persisted + silent).
+- Operating rule for Linear issues once live: add `repo:linearinvoices-client` BEFORE `pilot` on client issues; service issues need no label (pairing picks the first project = service).
+
 ## Repo state found (first tickets after restart)
 - service: `make build` OK; `make test` FAILS — `TestPostgresRepository_Create`, `_GetByUserID_Authorization`, `_Update_Authorization` (DB-backed tests run under `-short`).
 - client: build + lint OK; `pnpm test:ci` FAILS — 11 cases in EditInvoiceForm (status/due-date/currency/items/totals).
