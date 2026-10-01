@@ -1,6 +1,6 @@
 # TASK-509: Linear Invoices onboarding — two repos, one Linear project, Linear polling routing gap
 
-**Status**: 🤝 HANDED OFF 2026-10-01 15:00Z to the next agent (founder: previous agent stops here; no reverts). LIVE ON GITHUB PATH since 13:15Z — daemon restarted with both repos; first tickets running (service#1, client#3→#4). Linear polling still OFF until [#5570](https://github.com/qf-studio/pilot/issues/5570) is on the box (running since 13:17Z). Key already in `start-pilot.sh` (founder accepted the exposure; key expires soon).
+**Status**: ⚠️ FORGE SUPERSEDED 2026-10-01 pm by [TASK-510](TASK-510-linear-invoices-gitlab-cutover.md) (repos move from the GitHub mirrors to GitLab; GitHub frozen). Linear routing, quality-gate and flip-checklist findings below still apply. Previously: 🤝 HANDED OFF 2026-10-01 15:00Z to the next agent (founder: previous agent stops here; no reverts). LIVE ON GITHUB PATH since 13:15Z — daemon restarted with both repos; first tickets running (service#1, client#3→#4). Linear polling still OFF until [#5570](https://github.com/qf-studio/pilot/issues/5570) is on the box (running since 13:17Z). Key already in `start-pilot.sh` (founder accepted the exposure; key expires soon).
 **Created**: 2026-10-01 · **Owner**: Navigator plans, Pilot executes · **Related**: TASK-508 (same day)
 
 ## Decisions
