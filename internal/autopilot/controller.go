@@ -468,25 +468,26 @@ func WithPlatformBreaker(b *PlatformBreaker) ControllerOption {
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
-	config           *Config
-	ghClient         *github.Client
-	labeler          IssueLabeler // TASK-441 L6: narrow label-lifecycle seam over ghClient (AddLabels/RemoveLabel only)
-	approvalMgr      *approval.Manager
-	ciMonitor        *CIMonitor
-	autoMerger       *AutoMerger
-	feedbackLoop     *FeedbackLoop
-	releaser         *Releaser
-	deployer         *Deployer
-	notifier         Notifier
-	jiraDoneNotifier JiraDoneNotifier   // GH-4987: merge-side done leg for JIRA-* tasks (optional, nil = no Jira notify)
-	monitor          TaskMonitor        // GH-1336: sync dashboard state on merge
-	dispatcherLive   DispatcherLiveness // GH-4412: always-on live-worker signal (unlike monitor, dashboard-only)
-	laneQueueStatus  LaneQueueStatus    // GH-4454: project-scoped queued/running count for lane-starvation detection
-	boardSync        projectBoardSyncer
-	doneStatus       string
-	failStatus       string
-	reviewStatus     string // GH-3260: board column for PR-created (In Progress → Review)
-	inProgressStatus string // GH-3260: reserved for symmetry; not yet emitted
+	config              *Config
+	ghClient            *github.Client
+	labeler             IssueLabeler // TASK-441 L6: narrow label-lifecycle seam over ghClient (AddLabels/RemoveLabel only)
+	approvalMgr         *approval.Manager
+	ciMonitor           *CIMonitor
+	ciFailureClassifier *ciFailureClassifier // TASK-507: nil = regex only (default)
+	autoMerger          *AutoMerger
+	feedbackLoop        *FeedbackLoop
+	releaser            *Releaser
+	deployer            *Deployer
+	notifier            Notifier
+	jiraDoneNotifier    JiraDoneNotifier   // GH-4987: merge-side done leg for JIRA-* tasks (optional, nil = no Jira notify)
+	monitor             TaskMonitor        // GH-1336: sync dashboard state on merge
+	dispatcherLive      DispatcherLiveness // GH-4412: always-on live-worker signal (unlike monitor, dashboard-only)
+	laneQueueStatus     LaneQueueStatus    // GH-4454: project-scoped queued/running count for lane-starvation detection
+	boardSync           projectBoardSyncer
+	doneStatus          string
+	failStatus          string
+	reviewStatus        string // GH-3260: board column for PR-created (In Progress → Review)
+	inProgressStatus    string // GH-3260: reserved for symmetry; not yet emitted
 
 	// boardSource is the GH-4488 poll-cycle audit source: when non-nil (wired
 	// via WithProjectBoardSource, only when project_board.source_enabled is
@@ -986,6 +987,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		)
 	}
 	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, ciMonitorCfg)
+	c.ciFailureClassifier = newCIFailureClassifier(cfg, c.log)
 	if c.stepLogClient != nil {
 		c.ciMonitor.SetStepLogClient(c.stepLogClient)
 	}
@@ -3881,8 +3883,11 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	// optional human-readable reason (currently only set on budget
 	// exhaustion) folded into prState.Error if this falls through anyway.
 	perCheckLogs := c.ciMonitor.GetFailedCheckLogsByCheck(ctx, prState.HeadSHA)
-	failureClass := classifyPRFailure(perCheckLogs)
-	c.logCIFailureClassification(prState, perCheckLogs, failureClass)
+	// TASK-507: classify through the shared seam so the optional Jev
+	// classifier (shadow by default) sits behind the regex floor.
+	classification := c.classifyCIFailure(ctx, perCheckLogs)
+	failureClass := classification.Class
+	c.logCIFailureClassification(prState, perCheckLogs, classification.PerCheck, failureClass)
 
 	// TASK-459 Phase 2: construct the evidence-carrying Verdict once, right
 	// at the classification boundary. Every destructive rung below (close on
@@ -3891,7 +3896,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	// directly — failureClass itself stays in scope for metrics/logging and
 	// the platform-breaker correlation gate below, which are observational,
 	// not decision points this task migrates.
-	verdict := newCIFailureVerdict(failureClass, perCheckLogs, c.repoKey())
+	verdict := classification.Verdict
 
 	// GH-4791: record this observation for cross-PR platform-outage
 	// correlation before anything else — even PRs that end up auto-retried
@@ -4438,14 +4443,14 @@ func (c *Controller) recordCIFailVerdict(class FailureClass) {
 // prState.Error/metrics elsewhere, so a future incident whose log prose
 // doesn't match any known signature is still diagnosable from logs alone,
 // without re-deriving classifyCheckFailureFull's decision by hand.
-func (c *Controller) logCIFailureClassification(prState *PRState, checks []FailedCheckLog, aggregate FailureClass) {
+func (c *Controller) logCIFailureClassification(prState *PRState, checks []FailedCheckLog, per []checkVerdict, aggregate FailureClass) {
 	if len(checks) == 0 {
 		c.log.Warn("CI failure classification: zero evidence gathered",
 			"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA), "class", aggregate)
 		return
 	}
-	for _, chk := range checks {
-		class, signal := classifyCheckFailureFull(chk)
+	for i, chk := range checks {
+		class, signal := per[i].class, per[i].signal
 		c.log.Info("CI failure classification",
 			"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA),
 			"check", chk.CheckName, "conclusion", chk.Conclusion,
@@ -6378,8 +6383,9 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		// shape GH-4779 fixed pre-merge (family 3 of the irreversible-action
 		// inventory).
 		postMergePerCheckLogs := c.ciMonitor.GetFailedCheckLogsByCheck(ctx, mainSHA)
-		postMergeClass := classifyPRFailure(postMergePerCheckLogs)
-		postMergeVerdict := newCIFailureVerdict(postMergeClass, postMergePerCheckLogs, c.repoKey())
+		postMergeClassification := c.classifyCIFailure(ctx, postMergePerCheckLogs)
+		postMergeClass := postMergeClassification.Class
+		postMergeVerdict := postMergeClassification.Verdict
 
 		iteration := 0
 		skipSpawn := false

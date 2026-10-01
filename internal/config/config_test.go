@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -2684,6 +2685,73 @@ func TestTypeSafe_TopLevelBlockReachesExecutor(t *testing.T) {
 	}
 	if got := cfg.Executor.TypeSafe.EffectiveTimeout(); got != 2*time.Second {
 		t.Errorf("timeout = %v, want 2s", got)
+	}
+}
+
+// TestTypeSafe_TopLevelBlockReachesAutopilot pins TASK-507: the top-level
+// `typesafe:` block must reach orchestrator.autopilot the same way it reaches
+// the executor, and orchestrator.autopilot.ci_failure.classifier must bind.
+func TestTypeSafe_TopLevelBlockReachesAutopilot(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "version: \"1.0\"\ntypesafe:\n  model: jev-test\n  timeout: 2s\n" +
+		"orchestrator:\n  autopilot:\n    ci_failure:\n      classifier:\n        provider: jev\n        min_confidence: 0.9\n        shadow: false\n"
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TypeSafe == nil || cfg.Orchestrator == nil || cfg.Orchestrator.Autopilot == nil || cfg.Orchestrator.Autopilot.TypeSafe == nil {
+		t.Fatalf("typesafe block not wired to autopilot: top=%v", cfg.TypeSafe)
+	}
+	ap := cfg.Orchestrator.Autopilot
+	if ap.TypeSafe != cfg.TypeSafe {
+		t.Error("Autopilot.TypeSafe should be the same pointer as Config.TypeSafe")
+	}
+	if got := ap.TypeSafe.EffectiveModel(); got != "jev-test" {
+		t.Errorf("model = %q, want jev-test", got)
+	}
+	if got := ap.TypeSafe.EffectiveTimeout(); got != 2*time.Second {
+		t.Errorf("timeout = %v, want 2s", got)
+	}
+	if ap.CIFailure == nil || ap.CIFailure.Classifier == nil {
+		t.Fatalf("ci_failure.classifier not bound: %+v", ap.CIFailure)
+	}
+	if got := ap.CIFailure.EffectiveMinConfidence(); got != 0.9 {
+		t.Errorf("min_confidence = %v, want 0.9", got)
+	}
+	if ap.CIFailure.EffectiveShadow() {
+		t.Error("shadow: false must bind")
+	}
+
+	// A nested autopilot.typesafe block must not bind (yaml:"-").
+	var apCfg autopilot.Config
+	if err := yamlv3.Unmarshal([]byte("typesafe:\n  model: jev-nested\n"), &apCfg); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if apCfg.TypeSafe != nil {
+		t.Error("autopilot.Config.TypeSafe bound from YAML; tag must be yaml:\"-\"")
+	}
+}
+
+// TestCIFailureClassifier_DefaultConfigIsRegexShadow pins that an unconfigured
+// load yields no classifier block, so nothing is ever constructed by default.
+func TestCIFailureClassifier_DefaultConfigIsRegexShadow(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("version: \"1.0\"\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	ap := cfg.Orchestrator.Autopilot
+	if ap.CIFailure != nil {
+		t.Errorf("ci_failure should be unset by default, got %+v", ap.CIFailure)
+	}
+	if ap.CIFailure.EffectiveClassifierProvider() != autopilot.CIFailureClassifierRegex || !ap.CIFailure.EffectiveShadow() {
+		t.Error("default must be regex + shadow")
 	}
 }
 
