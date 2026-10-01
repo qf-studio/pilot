@@ -584,11 +584,34 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 	// GH-5336: Include source:N (the original issue this fix supersedes) so
 	// owner-death tracking can still trace this fix issue back to its source
 	// without a "Depends on:" line.
-	if prState.BranchName != "" {
+	//
+	// GH-5564: a post-merge failure's PR is by definition already merged and
+	// its branch deleted, so the footer carries ONLY iteration:N (cascade
+	// cap) and source:M (owner-death tracing) — never branch:/pr:/sha:.
+	// resolveAutopilotFixBranch keys purely on branch: and cannot tell
+	// post-merge from pre-merge, so emitting it here made the fix task
+	// borrow the merged branch and short-circuit as "already merged"
+	// without Claude ever running. A footer without branch: yields the
+	// default pilot/GH-<fix> branch from main. Emitted regardless of
+	// BranchName because the cascade cap reads iteration: from the body.
+	if failureType == FailureCIPostMerge {
+		fmt.Fprintf(&sb, "\n<!-- autopilot-meta %s -->\n", postMergeMetaFields(prState, iteration))
+	} else if prState.BranchName != "" {
 		fmt.Fprintf(&sb, "\n<!-- autopilot-meta %s -->\n", autopilotMetaFields(prState, iteration))
 	}
 
 	return sb.String()
+}
+
+// postMergeMetaFields renders the autopilot-meta field list for post-merge CI
+// fix issues: iteration always, source only when the origin issue is known.
+// See the GH-5564 note in generateBody for why branch/pr/sha are omitted.
+func postMergeMetaFields(prState *PRState, iteration int) string {
+	meta := fmt.Sprintf("iteration:%d", iteration)
+	if prState.IssueNumber > 0 {
+		meta += fmt.Sprintf(" source:%d", prState.IssueNumber)
+	}
+	return meta
 }
 
 // autopilotMetaFields renders the space-separated field list embedded in a

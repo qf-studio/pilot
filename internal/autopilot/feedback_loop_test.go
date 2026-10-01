@@ -1738,3 +1738,65 @@ func mustFLJSON(t *testing.T, v any) []byte {
 	}
 	return b
 }
+
+// postMergeIssueBody drives CreateFailureIssue for a FailureCIPostMerge and
+// returns the captured issue body.
+func postMergeIssueBody(t *testing.T, prState *PRState) string {
+	t.Helper()
+	capturedBody := ""
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST" {
+			var input github.IssueInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			capturedBody = input.Body
+
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(github.Issue{Number: 120})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", DefaultConfig())
+
+	if _, err := fl.CreateFailureIssue(context.Background(), prState, FailureCIPostMerge, []string{"test"}, "", 1); err != nil {
+		t.Fatalf("CreateFailureIssue() error = %v", err)
+	}
+	return capturedBody
+}
+
+// TestFeedbackLoop_IssueBody_PostMergeOmitsBranchPRSHA pins GH-5564: a
+// post-merge fix issue's footer must not carry branch:/pr:/sha: — the PR is
+// already merged and its branch deleted, so a fix task that borrowed it would
+// short-circuit as "already merged" without Claude ever running.
+func TestFeedbackLoop_IssueBody_PostMergeOmitsBranchPRSHA(t *testing.T) {
+	body := postMergeIssueBody(t, &PRState{
+		PRNumber:    42,
+		HeadSHA:     "abc1234567890",
+		IssueNumber: 10,
+		BranchName:  "pilot/GH-10",
+	})
+
+	if !strings.Contains(body, "\n<!-- autopilot-meta iteration:1 source:10 -->\n") {
+		t.Errorf("body should end with footer exactly `<!-- autopilot-meta iteration:1 source:10 -->`, got:\n%s", body)
+	}
+	for _, banned := range []string{"branch:", "pr:", "sha:"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("post-merge body must not contain %q", banned)
+		}
+	}
+}
+
+// TestFeedbackLoop_IssueBody_PostMergeFooterEmittedWithoutBranch verifies the
+// post-merge footer is emitted even with no BranchName: the cascade cap reads
+// iteration: from the body.
+func TestFeedbackLoop_IssueBody_PostMergeFooterEmittedWithoutBranch(t *testing.T) {
+	body := postMergeIssueBody(t, &PRState{PRNumber: 42})
+
+	if !strings.Contains(body, "<!-- autopilot-meta iteration:1 -->") {
+		t.Errorf("post-merge body without BranchName should still carry an iteration footer, got:\n%s", body)
+	}
+}

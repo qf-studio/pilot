@@ -566,6 +566,16 @@ func TestResolveAutopilotFixBranch(t *testing.T) {
 			body:        "Please fix the failing check.\n\n<!-- autopilot-meta branch:pilot/GH-<issue> pr:0 -->\n",
 			wantMatched: false,
 		},
+		{
+			// GH-5564: post-merge CI fix issues emit a branchless footer
+			// (iteration:/source: only). It must not match, so the task gets the
+			// default pilot/GH-<fix> branch from main rather than borrowing the
+			// already-merged origin PR's branch.
+			name:        "branchless post-merge footer does not match",
+			labels:      []string{"pilot", "autopilot-fix"},
+			body:        "The PR was merged but CI failed afterward.\n\n<!-- autopilot-meta iteration:1 source:10 -->\n",
+			wantMatched: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -575,6 +585,9 @@ func TestResolveAutopilotFixBranch(t *testing.T) {
 				t.Fatalf("resolveAutopilotFixBranch() matched = %v, want %v", matched, tt.wantMatched)
 			}
 			if !matched {
+				if branch != "" {
+					t.Errorf("resolveAutopilotFixBranch() unmatched branch = %q, want empty", branch)
+				}
 				return
 			}
 			if branch != tt.wantBranch {
