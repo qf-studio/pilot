@@ -133,13 +133,18 @@ func TestLinearPollerRegistration_NotifyTaskStartedWired(t *testing.T) {
 }
 
 // TestLinearPollerRegistration_NotifierPerWorkspace is a source-level guard
-// proving the notifier is built per workspace (keyed by team ID), not as a
-// single global notifier — Linear supports multiple workspaces, each with
-// its own API key.
+// proving the notifier is built per workspace from that workspace's own client
+// (and API key) inside the workspace loop, not as a single global notifier —
+// Linear supports multiple workspaces, each with its own API key. Since GH-5576
+// the handler (and so the notifier it closes over) is per workspace rather than
+// looked up by team ID.
 func TestLinearPollerRegistration_NotifierPerWorkspace(t *testing.T) {
 	body := githubFuncBody(t, "poller_linear.go", "func linearPollerRegistration() PollerRegistration {")
 
-	if !strings.Contains(body, "notifiersByTeamID[ws.TeamID] = linearSDK.NewNotifier(linearSDK.NewClient(ws.APIKey))") {
-		t.Error("linearPollerRegistration must construct one SDK notifier per workspace client, keyed by team ID, inside the sdkWorkspaces loop")
+	loopIdx := strings.Index(body, "for _, ws := range internalWss {")
+	clientIdx := strings.Index(body, "client := linearSDK.NewClient(ws.APIKey)")
+	notifierIdx := strings.Index(body, "notifier := linearSDK.NewNotifier(client)")
+	if loopIdx < 0 || clientIdx < loopIdx || notifierIdx < clientIdx {
+		t.Error("linearPollerRegistration must construct one SDK notifier per workspace, from that workspace's own client, inside the workspace loop")
 	}
 }
