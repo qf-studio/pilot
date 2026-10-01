@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
+	linearSDK "github.com/qf-studio/studio-sdk/sdk/integrations/linear"
 
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/config"
 )
 
@@ -281,5 +285,181 @@ func TestNewSDKLinearWorkspace(t *testing.T) {
 				t.Errorf("Polling interval = %v, want %v", got.Polling, tt.interval)
 			}
 		})
+	}
+}
+
+// fakeLinearIssueFetcher is a stub linearIssueFetcher returning a fixed Linear
+// project id (or error) and counting calls.
+type fakeLinearIssueFetcher struct {
+	projectID string
+	err       error
+	calls     int
+}
+
+func (f *fakeLinearIssueFetcher) GetIssue(_ context.Context, id string) (*linearSDK.Issue, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	issue := &linearSDK.Issue{ID: id}
+	if f.projectID != "" {
+		issue.Project = &linearSDK.Project{ID: f.projectID}
+	}
+	return issue, nil
+}
+
+func linearRoutingConfig() *config.Config {
+	return &config.Config{Projects: []*config.ProjectConfig{
+		{Name: "linearinvoices-api", Path: "/repos/api", Linear: &config.ProjectLinearConfig{ProjectID: "lp-1"}},
+		{Name: "linearinvoices-client", Path: "/repos/client", Linear: &config.ProjectLinearConfig{ProjectID: "lp-1"}},
+		{Name: "other", Path: "/repos/other", Linear: &config.ProjectLinearConfig{ProjectID: "lp-2"}},
+		{Name: "unpaired", Path: "/repos/unpaired"},
+	}}
+}
+
+func TestResolveLinearProjectPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		labels     []string
+		fetcher    *fakeLinearIssueFetcher
+		wantPath   string
+		wantReason string
+	}{
+		{
+			name:     "project id pairing used when no label",
+			labels:   []string{"pilot"},
+			fetcher:  &fakeLinearIssueFetcher{projectID: "lp-2"},
+			wantPath: "/repos/other",
+		},
+		{
+			name:     "shared project id: first in config order wins",
+			labels:   []string{"pilot"},
+			fetcher:  &fakeLinearIssueFetcher{projectID: "lp-1"},
+			wantPath: "/repos/api",
+		},
+		{
+			name:     "repo label splits a shared project id",
+			labels:   []string{"pilot", "repo:linearinvoices-client"},
+			fetcher:  &fakeLinearIssueFetcher{projectID: "lp-1"},
+			wantPath: "/repos/client",
+		},
+		{
+			name:     "repo label match is case-insensitive",
+			labels:   []string{"Repo:LinearInvoices-Client"},
+			fetcher:  &fakeLinearIssueFetcher{},
+			wantPath: "/repos/client",
+		},
+		{
+			name:       "unknown repo label falls through to project id",
+			labels:     []string{"repo:nonexistent"},
+			fetcher:    &fakeLinearIssueFetcher{projectID: "lp-2"},
+			wantPath:   "/repos/other",
+			wantReason: "",
+		},
+		{
+			name:       "unknown repo label and unmapped project id skips",
+			labels:     []string{"repo:nonexistent"},
+			fetcher:    &fakeLinearIssueFetcher{projectID: "lp-unmapped"},
+			wantReason: skipreason.ReasonNoProjectMapping,
+		},
+		{
+			name:       "no label and no project on issue skips",
+			labels:     []string{"pilot"},
+			fetcher:    &fakeLinearIssueFetcher{},
+			wantReason: skipreason.ReasonNoProjectMapping,
+		},
+		{
+			name:       "blank repo label name never matches an unnamed project",
+			labels:     []string{"repo: "},
+			fetcher:    &fakeLinearIssueFetcher{},
+			wantReason: skipreason.ReasonNoProjectMapping,
+		},
+		{
+			name:       "fetch error treated as no project id, skips",
+			labels:     []string{"pilot"},
+			fetcher:    &fakeLinearIssueFetcher{err: errors.New("boom")},
+			wantReason: skipreason.ReasonNoProjectMapping,
+		},
+		{
+			name:     "fetch error does not break the label path",
+			labels:   []string{"repo:other"},
+			fetcher:  &fakeLinearIssueFetcher{err: errors.New("boom")},
+			wantPath: "/repos/other",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: tt.labels}
+			path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, tt.fetcher)
+			if path != tt.wantPath {
+				t.Errorf("path = %q, want %q", path, tt.wantPath)
+			}
+			if reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestResolveLinearProjectPath_NilFetcherUsesLabelOnly(t *testing.T) {
+	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"repo:other"}}
+	if path, _ := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, nil); path != "/repos/other" {
+		t.Errorf("path = %q, want /repos/other", path)
+	}
+	ev.Labels = nil
+	if path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, nil); path != "" || reason != skipreason.ReasonNoProjectMapping {
+		t.Errorf("got (%q, %q), want skip", path, reason)
+	}
+}
+
+// TestResolveLinearProjectPath_LabelWins: a repo label beats a differing
+// Linear project id, and the project-id fetch is not even needed.
+func TestResolveLinearProjectPath_LabelWins(t *testing.T) {
+	f := &fakeLinearIssueFetcher{projectID: "lp-2"} // would pair with /repos/other
+	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"repo:linearinvoices-client"}}
+	path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, f)
+	if path != "/repos/client" || reason != "" {
+		t.Errorf("got (%q, %q), want (/repos/client, \"\")", path, reason)
+	}
+	if f.calls != 0 {
+		t.Errorf("GetIssue called %d times; label match should not need a fetch", f.calls)
+	}
+}
+
+// TestResolveLinearProjectPath_NoMatchSkips: nothing matches → Skipped result
+// with the reason, and the dispatcher is never called (never a default path).
+func TestResolveLinearProjectPath_NoMatchSkips(t *testing.T) {
+	cfg := linearRoutingConfig()
+	cfg.DefaultProject = "other"
+	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"pilot", "repo:nonexistent"}}
+
+	dispatched := false
+	res, err := routeLinearIssue(context.Background(), cfg, ev, &fakeLinearIssueFetcher{projectID: "lp-unmapped"},
+		func(string) (*sdkcore.IssueResult, error) {
+			dispatched = true
+			return &sdkcore.IssueResult{Success: true}, nil
+		})
+	if err != nil {
+		t.Fatalf("err = %v, want nil (a plain error would be retried every tick)", err)
+	}
+	if dispatched {
+		t.Error("dispatcher called for an unmapped issue")
+	}
+	if res == nil || !res.Skipped || res.SkipReason != skipreason.ReasonNoProjectMapping {
+		t.Errorf("result = %+v, want Skipped with %q", res, skipreason.ReasonNoProjectMapping)
+	}
+}
+
+func TestRouteLinearIssue_DispatchesToResolvedPath(t *testing.T) {
+	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"repo:linearinvoices-client"}}
+	var got string
+	res, err := routeLinearIssue(context.Background(), linearRoutingConfig(), ev, nil,
+		func(p string) (*sdkcore.IssueResult, error) {
+			got = p
+			return &sdkcore.IssueResult{Success: true}, nil
+		})
+	if err != nil || res == nil || !res.Success || got != "/repos/client" {
+		t.Errorf("got (%+v, %v) path %q, want success at /repos/client", res, err, got)
 	}
 }

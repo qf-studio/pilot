@@ -938,6 +938,13 @@ projects:
     #   repo: "my-app"
     # Linear project pairing (GH-1684) - maps Linear project to this Pilot project
     # Precedence: project-level linear.project_id > workspace-level > default_project
+    # Polled Linear issues are dispatched to exactly one project, never to
+    # default_project (GH-5570). Resolution order:
+    #   1. Linear label "repo:<project name>" (case-insensitive match on this
+    #      project's `name`) - use it to split one Linear project across repos.
+    #   2. The issue's Linear project id == linear.project_id. If several
+    #      projects share an id, the first in config order wins (WARN logged).
+    #   3. Otherwise the issue is skipped (WARN with the issue identifier).
     # linear:
     #   project_id: "proj-abc123"   # Linear project UUID
     # Per-project quality gates (GH-3716) - overrides the top-level `quality:`
