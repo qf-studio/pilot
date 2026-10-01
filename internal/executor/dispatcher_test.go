@@ -6680,3 +6680,107 @@ func TestBuildTaskFromExecution_RecoversAcceptanceCriteria(t *testing.T) {
 		})
 	}
 }
+
+// TestProcessQueue_HeldTaskDoesNotStarveRunnableTasks pins GH-5572: a task
+// held by the base-presence gate is a wait, not work. Before the fix the
+// held row stayed the queue head and processQueue returned after holding it,
+// so on every poll it was re-picked and the runnable tasks queued behind it
+// were never started (54 minutes on the founder box, 2026-10-01).
+func TestProcessQueue_HeldTaskDoesNotStarveRunnableTasks(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const projectPath = "/project-gh5572-held-starvation"
+	const heldID, runnableB, runnableC = "GH-9501", "GH-9502", "GH-9503"
+
+	// Queue order: held A first, then runnable B and C.
+	for i, spec := range []struct{ id, desc string }{
+		{heldID, "Depends on: #1"},
+		{runnableB, "No dependency markers here."},
+		{runnableC, "No dependency markers here."},
+	} {
+		exec := &memory.Execution{
+			ID:              "exec-gh5572-" + spec.id,
+			TaskID:          spec.id,
+			ProjectPath:     projectPath,
+			Status:          "queued",
+			TaskDescription: spec.desc,
+		}
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", spec.id, err)
+		}
+		if i < 2 {
+			time.Sleep(1100 * time.Millisecond) // keep created_at ordering deterministic
+		}
+	}
+
+	stubFetchIssueState(t, func(_ context.Context, _ *Runner, _ *Task, _ string) (IssueState, error) {
+		return IssueState{Closed: false}, nil
+	})
+	origMergedPR := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	t.Cleanup(func() { mergedPRPreflightCheck = origMergedPR })
+
+	var mu sync.Mutex
+	heldChecks := 0
+	stubCheckBasePresence(t, func(_ context.Context, _ *Runner, task *Task, _ string, _ []int, _ []string) (BasePresenceHold, error) {
+		if task.ID != heldID {
+			t.Errorf("checkBasePresence unexpectedly called for runnable task %q", task.ID)
+			return BasePresenceHold{}, nil
+		}
+		mu.Lock()
+		heldChecks++
+		mu.Unlock()
+		return BasePresenceHold{Held: true, Reason: "referenced issue #1's attached PR is still open (not merged)"}, nil
+	})
+
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "done"}}
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
+
+	// One cycle: A is held, then B and C (runnable) are processed in the same
+	// cycle instead of being starved behind A.
+	worker.processQueue(context.Background())
+
+	status := func(execID string) string {
+		t.Helper()
+		got, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution(%s): %v", execID, err)
+		}
+		return got.Status
+	}
+
+	if got := status("exec-gh5572-" + heldID); got != "queued" {
+		t.Errorf("held task status = %q, want it still queued (held)", got)
+	}
+	for _, id := range []string{runnableB, runnableC} {
+		if got := status("exec-gh5572-" + id); got == "queued" || got == "pending" || got == "running" {
+			t.Errorf("runnable task %s status = %q, want it processed past the held head", id, got)
+		}
+	}
+	backend.mu.Lock()
+	execCount := backend.execCount
+	backend.mu.Unlock()
+	if execCount != 2 {
+		t.Errorf("backend invocations = %d, want 2 (B and C)", execCount)
+	}
+	mu.Lock()
+	if heldChecks != 1 {
+		t.Errorf("held task checked %d times in one cycle, want exactly 1", heldChecks)
+	}
+	mu.Unlock()
+
+	// Next cycle: B and C are done, so only A remains and it is re-checked.
+	worker.processQueue(context.Background())
+	mu.Lock()
+	if heldChecks != 2 {
+		t.Errorf("held task checked %d times after second cycle, want 2 (re-checked every poll)", heldChecks)
+	}
+	mu.Unlock()
+	if got := status("exec-gh5572-" + heldID); got != "queued" {
+		t.Errorf("held task status after re-check = %q, want still queued", got)
+	}
+}
