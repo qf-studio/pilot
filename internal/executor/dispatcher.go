@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3258,6 +3259,10 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 	}
 	defer w.processing.Store(false)
 
+	// heldThisCycle maps execution ID -> task ID for rows the base-presence
+	// gate held during this processQueue call (GH-5572).
+	heldThisCycle := make(map[string]string)
+
 	for {
 		// Check if we should stop
 		select {
@@ -3278,19 +3283,41 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			return
 		}
 
-		// Get next queued task for THIS project
-		tasks, err := w.store.GetQueuedTasksForProject(w.projectPath, 1)
+		// Get next queued task for THIS project, skipping rows already held
+		// earlier in this cycle (GH-5572): a held task is a wait, not work, so
+		// it must not re-occupy the head and starve runnable tasks behind it.
+		// Held rows stay queued/pending in the store, so the next processQueue
+		// cycle (every poll / wakeHeldWorkers tick) re-checks them first —
+		// hold semantics (re-check per poll, escalation count) are unchanged.
+		tasks, err := w.store.GetQueuedTasksForProject(w.projectPath, len(heldThisCycle)+1)
 		if err != nil {
 			w.log.Error("Failed to get queued tasks", slog.Any("error", err))
 			return
 		}
 
-		if len(tasks) == 0 {
-			return // Queue empty
+		var exec *memory.Execution
+		for _, cand := range tasks {
+			if _, held := heldThisCycle[cand.ID]; !held {
+				exec = cand
+				break
+			}
 		}
-
-		exec := tasks[0]
+		if exec == nil {
+			return // Queue empty, or only held tasks remain
+		}
 		w.currentTaskID.Store(exec.TaskID)
+
+		if len(heldThisCycle) > 0 {
+			heldTaskIDs := make([]string, 0, len(heldThisCycle))
+			for _, id := range heldThisCycle {
+				heldTaskIDs = append(heldTaskIDs, id)
+			}
+			sort.Strings(heldTaskIDs)
+			w.log.Info("Held task skipped in favour of runnable task",
+				slog.String("runnable_task_id", exec.TaskID),
+				slog.Any("held_task_ids", heldTaskIDs),
+			)
+		}
 
 		// GH-4184: consult the TASK-394 execution ledger at pickup time, not
 		// just at poll time. The 17:48->18:12 incident: the poller's re-arm
@@ -3546,9 +3573,14 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				w.currentTaskID.Store("")
 				// Not yet escalated: the row stays queued/pending unchanged,
 				// so GetQueuedTasksForProject would hand back this exact same
-				// row again immediately — returning (rather than continuing)
-				// ends this tick here instead of busy-looping on it.
-				return
+				// row again immediately. GH-5572: remember it for the rest of
+				// this cycle and move on to the next queued row instead of
+				// returning — returning made the held row the queue head on
+				// every cycle and starved runnable tasks behind it for hours.
+				// Once only held rows remain the selection above ends the
+				// cycle, so there is still no busy-loop.
+				heldThisCycle[exec.ID] = exec.TaskID
+				continue
 			} else {
 				// GH-5052: natural release. The task was previously held
 				// (count > 0) but is not held this tick — reset the counter

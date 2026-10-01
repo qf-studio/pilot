@@ -414,19 +414,20 @@ func TestProcessQueue_BasePresence_EscalatesOnceThenQueueHeadAdvances(t *testing
 	// returns after a not-yet-escalated hold to avoid busy-looping.
 	worker.processQueue(context.Background())
 
+	// GH-5572: the held head no longer starves the runnable task behind it —
+	// the second task executes in this same cycle while the held row waits.
 	backend.mu.Lock()
 	count := backend.execCount
 	backend.mu.Unlock()
-	if count != 0 {
-		t.Fatalf("expected zero backend invocations before escalation, got %d", count)
+	if count == 0 {
+		t.Fatalf("expected the runnable task behind the held head to execute in tick 1, got %d backend invocations", count)
 	}
+	countAfterTick1 := count
 	if data, err := os.ReadFile(logFile); err == nil && strings.Contains(string(data), "issue edit") {
 		t.Fatalf("expected no escalation before the max-cycles threshold, got gh CLI log: %q", string(data))
 	}
 
-	// Tick 2: count reaches 2 == max, escalates, parks the row, then the SAME
-	// tick (same processQueue call, via `continue` not `return`) advances to
-	// the second queued task and executes it.
+	// Tick 2: count reaches 2 == max, escalates and parks the row.
 	worker.processQueue(context.Background())
 
 	data, err := os.ReadFile(logFile)
@@ -453,8 +454,8 @@ func TestProcessQueue_BasePresence_EscalatesOnceThenQueueHeadAdvances(t *testing
 	count = backend.execCount
 	gotProjectPath := backend.gotProjectPath
 	backend.mu.Unlock()
-	if count == 0 {
-		t.Errorf("expected the queue head to advance to the second task within the same tick and execute it, got %d backend invocations", count)
+	if count != countAfterTick1 {
+		t.Errorf("expected no further backend invocations in tick 2 (second task already ran in tick 1): %d -> %d", countAfterTick1, count)
 	}
 	if gotProjectPath != projectPath {
 		t.Errorf("expected the second task's execution to use project path %q, got %q", projectPath, gotProjectPath)
@@ -567,19 +568,21 @@ func TestProcessQueue_BasePresence_NeverSatisfiablePathEscalatesWithinBoundedHol
 	// Tick 1: held, not yet escalated (count reaches 1 < max=2).
 	worker.processQueue(context.Background())
 
+	// GH-5572: the held head no longer starves the runnable task behind it —
+	// the second task executes in this same cycle while the held row waits.
 	backend.mu.Lock()
 	count := backend.execCount
 	backend.mu.Unlock()
-	if count != 0 {
-		t.Fatalf("expected zero backend invocations before escalation, got %d", count)
+	if count == 0 {
+		t.Fatalf("expected the runnable task behind the held head to execute in tick 1, got %d backend invocations", count)
 	}
+	countAfterTick1 := count
 	if data, err := os.ReadFile(logFile); err == nil && strings.Contains(string(data), "issue edit") {
 		t.Fatalf("expected no escalation before the max-cycles threshold, got gh CLI log: %q", string(data))
 	}
 
-	// Tick 2: count reaches 2 == max, escalates, parks the row, then the SAME
-	// tick advances to the second queued task and executes it — the queue
-	// head must not wedge on a never-satisfiable path forever.
+	// Tick 2: count reaches 2 == max, escalates and parks the row — a
+	// never-satisfiable path must not wedge the queue head forever.
 	worker.processQueue(context.Background())
 
 	data, err := os.ReadFile(logFile)
@@ -605,8 +608,8 @@ func TestProcessQueue_BasePresence_NeverSatisfiablePathEscalatesWithinBoundedHol
 	backend.mu.Lock()
 	count = backend.execCount
 	backend.mu.Unlock()
-	if count == 0 {
-		t.Errorf("expected the queue head to advance to the second task within the same tick and execute it, got %d backend invocations", count)
+	if count != countAfterTick1 {
+		t.Errorf("expected no further backend invocations in tick 2 (second task already ran in tick 1): %d -> %d", countAfterTick1, count)
 	}
 
 	secondExec, err := store.GetExecution(second.ID)
