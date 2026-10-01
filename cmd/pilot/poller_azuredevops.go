@@ -86,6 +86,7 @@ func azuredevopsPollerRegistration() PollerRegistration {
 			if deps.Cfg.Orchestrator.MaxConcurrent > 0 {
 				pollerDeps.MaxConcurrent = deps.Cfg.Orchestrator.MaxConcurrent
 			}
+			// GH-5584: intentionally single-project today — Azure DevOps PRs are registered with the default repo's controller; Linear resolves per-repo (see resolvePRController).
 			if deps.AutopilotController != nil {
 				ctrl := deps.AutopilotController
 				pollerDeps.OnPRCreated = func(prEv sdkcore.PRCreatedEvent) {

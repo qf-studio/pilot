@@ -414,11 +414,11 @@ func linearPollerRegistration() PollerRegistration {
 			if deps.Cfg.Orchestrator.MaxConcurrent > 0 {
 				pollerDeps.MaxConcurrent = deps.Cfg.Orchestrator.MaxConcurrent
 			}
-			if deps.AutopilotController != nil {
-				ctrl := deps.AutopilotController
-				pollerDeps.OnPRCreated = func(prEv sdkcore.PRCreatedEvent) {
-					ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, 0, prEv.HeadSHA, prEv.BranchName, "")
-				}
+			// GH-5584: Linear routes issues per project, so the PR may live in a
+			// repo other than the default one — register it with the controller
+			// of the repo it was actually opened in, never blindly the default's.
+			if deps.AutopilotController != nil || len(deps.AutopilotControllers) > 0 {
+				pollerDeps.OnPRCreated = newLinearOnPRCreated(deps.Cfg, deps.AutopilotController, deps.AutopilotControllers)
 			}
 
 			pollers := make([]sdkcore.Poller, 0, len(internalWss))
