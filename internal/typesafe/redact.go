@@ -1,6 +1,9 @@
 package typesafe
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 const redactedPlaceholder = "[redacted]"
 
@@ -12,12 +15,16 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`),
 	// key=value / key: value where the key name looks secret-shaped. The value
 	// is bounded to the token (an optional opening quote, then a run that stops
-	// at whitespace, backtick, quote, closing bracket or "/") so surrounding
-	// prose and path remainders survive: `cmd/token=abc/x.go` redacts to
-	// `cmd/[redacted]/x.go`, and a backticked pair keeps its closing backtick.
-	// Decision: "/" ends the value so the filename survives for the classifier;
-	// the cost is that a secret value containing "/" leaves its tail visible.
-	regexp.MustCompile(`(?i)\b[\w.-]*(?:token|secret|passwd|password|api[_-]?key|apikey|credential|auth)[\w.-]*\s*[=:]\s*["']?[^\s` + "`" + `'")\]}>/]+`),
+	// at whitespace, backtick, quote or closing bracket) so surrounding prose
+	// survives; a backticked pair keeps its closing backtick.
+	// Decision: "/" ends the value only in path context, i.e. when the pair is
+	// directly preceded by "/" (alternative 1: `cmd/token=abc/x.go` redacts to
+	// `cmd/[redacted]/x.go`, filename intact). Everywhere else (alternative 2)
+	// "/" belongs to the value, so AWS-style base64 secrets and URLs are
+	// redacted whole. RE2 has no lookbehind, so alternative 1 consumes the
+	// leading "/" and redactSecrets restores it.
+	regexp.MustCompile(`(?i)/[\w.-]*(?:token|secret|passwd|password|api[_-]?key|apikey|credential|auth)[\w.-]*\s*[=:]\s*["']?[^\s` + "`" + `'")\]}>/]+` +
+		`|\b[\w.-]*(?:token|secret|passwd|password|api[_-]?key|apikey|credential|auth)[\w.-]*\s*[=:]\s*["']?[^\s` + "`" + `'")\]}>]+`),
 	// OpenAI / Anthropic style.
 	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`),
 	// GitHub tokens.
@@ -35,7 +42,13 @@ var secretPatterns = []*regexp.Regexp{
 // "[redacted]". Only redacted text may leave the machine.
 func redactSecrets(s string) string {
 	for _, re := range secretPatterns {
-		s = re.ReplaceAllString(s, redactedPlaceholder)
+		s = re.ReplaceAllStringFunc(s, func(m string) string {
+			if strings.HasPrefix(m, "/") {
+				// Path-context key=value match: keep the leading separator.
+				return "/" + redactedPlaceholder
+			}
+			return redactedPlaceholder
+		})
 	}
 	return s
 }

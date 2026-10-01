@@ -16,6 +16,11 @@ func TestRedactSecrets(t *testing.T) {
 		{"key=value", "token=abc123secret", "[redacted]"},
 		{"key=value in sentence", "run it with api_key=zzz123 then verify", "run it with [redacted] then verify"},
 		{"key=value mid-path keeps filename (GH-5557)", "cmd/token=abc123secret/x.go", "cmd/[redacted]/x.go"},
+		{"slash inside value is part of the value (GH-5566)", "token=abc/def", "[redacted]"},
+		{"url value fully redacted (GH-5566)", "token=https://x.io/abc", "[redacted]"},
+		{"aws-style base64 secret with slashes fully redacted (GH-5566)", "aws_secret_access_key=" + strings.Repeat("A", 12) + "/" + strings.Repeat("b", 13) + "/" + strings.Repeat("C", 13), "[redacted]"},
+		{"slash value in sentence keeps trailing prose (GH-5566)", "set token=abc/def then rerun", "set [redacted] then rerun"},
+		{"path-context incident span keeps filename (GH-5557)", "internal/executor/token=abc123secret/dependency_detector.go", "internal/executor/[redacted]/dependency_detector.go"},
 		{"backticked key=value keeps closing backtick and paren (GH-5557)", "(set `token=abc123secret`) and rerun", "(set `[redacted]`) and rerun"},
 		{"quoted value redacted", `api_key="zzz123" next`, `[redacted]" next`},
 		{"password colon", "password: hunter22", "[redacted]"},
@@ -74,6 +79,27 @@ func TestRedactAndCap(t *testing.T) {
 	}
 	if got := RedactAndCap("abcdef", 3); got != "abc" {
 		t.Errorf("cap = %q, want abc", got)
+	}
+}
+
+func TestRedactAndCap_SlashInsideValueIsRedacted(t *testing.T) {
+	// 40-char standard-base64 value (AWS secret access key shape) with two slashes.
+	secret := strings.Repeat("A", 10) + "/" + strings.Repeat("b", 14) + "/" + strings.Repeat("C", 14)
+	if len(secret) != 40 {
+		t.Fatalf("fixture len = %d, want 40", len(secret))
+	}
+	for _, in := range []string{
+		"token=abc/def",
+		"token=https://x.io/abc",
+		"AWS_SECRET_ACCESS_KEY=" + secret,
+	} {
+		got := RedactAndCap(in, 600)
+		if got != "[redacted]" {
+			t.Errorf("RedactAndCap(%q) = %q, want fully redacted", in, got)
+		}
+	}
+	if got := RedactAndCap("x token=abc/def y", 600); strings.Contains(got, "def") {
+		t.Errorf("tail after slash leaked: %q", got)
 	}
 }
 
