@@ -185,6 +185,13 @@ adapters:
     team_id: "your-team-id"
     pilot_label: "pilot"    # Issues with this label are picked up
     auto_assign: true        # Auto-assign issues to Pilot
+    # Polled issues are routed to one Pilot project, never to default_project
+    # (GH-5570, GH-5575). Resolution order:
+    #   1. label "repo:<pilot project name>" on the issue
+    #   2. the issue's Linear project id == a project's linear.project_id
+    #   3. this workspace's `projects:` list, when it names exactly one project
+    #      (multi-workspace form: adapters.linear.workspaces[].projects)
+    #   4. otherwise the issue is skipped (no_project_mapping)
     # webhook_public_key: |  # Ed25519 public key from Linear workspace settings → API → Webhooks
     #   -----BEGIN PUBLIC KEY-----
     #   MCowBQYDK2VwAyEA...
@@ -944,7 +951,10 @@ projects:
     #      project's `name`) - use it to split one Linear project across repos.
     #   2. The issue's Linear project id == linear.project_id. If several
     #      projects share an id, the first in config order wins (WARN logged).
-    #   3. Otherwise the issue is skipped (WARN with the issue identifier).
+    #   3. The Linear workspace's `projects:` list (adapters.linear.workspaces[])
+    #      names exactly one Pilot project (GH-5575) - route there. Two or more
+    #      names are ambiguous: not used (WARN names them), falls to 4.
+    #   4. Otherwise the issue is skipped (WARN with the issue identifier).
     # linear:
     #   project_id: "proj-abc123"   # Linear project UUID
     # Per-project quality gates (GH-3716) - overrides the top-level `quality:`
