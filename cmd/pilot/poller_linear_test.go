@@ -212,7 +212,7 @@ func TestLinearHandlerSubIssueCreatorDirectInject(t *testing.T) {
 func TestNewSDKLinearWorkspace(t *testing.T) {
 	tests := []struct {
 		name           string
-		ws             *linear.WorkspaceConfig
+		ws             *linearSDK.WorkspaceConfig
 		triggerLabel   string
 		interval       time.Duration
 		wantProjectIDs []string
@@ -220,7 +220,7 @@ func TestNewSDKLinearWorkspace(t *testing.T) {
 	}{
 		{
 			name: "project filter is handed to the SDK",
-			ws: &linear.WorkspaceConfig{
+			ws: &linearSDK.WorkspaceConfig{
 				Name:       "acme",
 				APIKey:     "test-linear-key",
 				TeamID:     "ENG",
@@ -234,7 +234,7 @@ func TestNewSDKLinearWorkspace(t *testing.T) {
 		},
 		{
 			name: "unset filter stays nil so the unfiltered path is unchanged",
-			ws: &linear.WorkspaceConfig{
+			ws: &linearSDK.WorkspaceConfig{
 				Name:   "acme",
 				APIKey: "test-linear-key",
 				TeamID: "ENG",
@@ -322,6 +322,7 @@ func TestResolveLinearProjectPath(t *testing.T) {
 		name       string
 		labels     []string
 		fetcher    *fakeLinearIssueFetcher
+		ws         *linearSDK.WorkspaceConfig
 		wantPath   string
 		wantReason string
 	}{
@@ -381,6 +382,48 @@ func TestResolveLinearProjectPath(t *testing.T) {
 			wantReason: skipreason.ReasonNoProjectMapping,
 		},
 		{
+			name:     "tier 3: single workspace project mapping routes",
+			labels:   []string{"pilot"},
+			fetcher:  &fakeLinearIssueFetcher{},
+			ws:       &linearSDK.WorkspaceConfig{Name: "ws", Projects: []string{"other"}},
+			wantPath: "/repos/other",
+		},
+		{
+			name:     "tier 3: workspace mapping name match is case-insensitive",
+			labels:   []string{"pilot"},
+			fetcher:  &fakeLinearIssueFetcher{},
+			ws:       &linearSDK.WorkspaceConfig{Name: "ws", Projects: []string{"Other"}},
+			wantPath: "/repos/other",
+		},
+		{
+			name:       "tier 3: two workspace project names is ambiguous and skips",
+			labels:     []string{"pilot"},
+			fetcher:    &fakeLinearIssueFetcher{},
+			ws:         &linearSDK.WorkspaceConfig{Name: "ws", Projects: []string{"other", "unpaired"}},
+			wantReason: skipreason.ReasonNoProjectMapping,
+		},
+		{
+			name:       "tier 3: single name naming no configured project skips",
+			labels:     []string{"pilot"},
+			fetcher:    &fakeLinearIssueFetcher{},
+			ws:         &linearSDK.WorkspaceConfig{Name: "ws", Projects: []string{"nonexistent"}},
+			wantReason: skipreason.ReasonNoProjectMapping,
+		},
+		{
+			name:     "tier 3 does not override a project id pairing",
+			labels:   []string{"pilot"},
+			fetcher:  &fakeLinearIssueFetcher{projectID: "lp-2"},
+			ws:       &linearSDK.WorkspaceConfig{Name: "ws", Projects: []string{"unpaired"}},
+			wantPath: "/repos/other",
+		},
+		{
+			name:     "tier 3 does not override a repo label",
+			labels:   []string{"repo:linearinvoices-client"},
+			fetcher:  &fakeLinearIssueFetcher{},
+			ws:       &linearSDK.WorkspaceConfig{Name: "ws", Projects: []string{"unpaired"}},
+			wantPath: "/repos/client",
+		},
+		{
 			name:     "fetch error does not break the label path",
 			labels:   []string{"repo:other"},
 			fetcher:  &fakeLinearIssueFetcher{err: errors.New("boom")},
@@ -391,7 +434,7 @@ func TestResolveLinearProjectPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: tt.labels}
-			path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, tt.fetcher)
+			path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, tt.ws, tt.fetcher)
 			if path != tt.wantPath {
 				t.Errorf("path = %q, want %q", path, tt.wantPath)
 			}
@@ -402,13 +445,34 @@ func TestResolveLinearProjectPath(t *testing.T) {
 	}
 }
 
+// TestResolveLinearProjectPath_WorkspaceProjectsMapping pins tier 3 (GH-5575):
+// a workspace whose projects: names exactly one Pilot project routes there
+// when neither the label nor the project id pairing resolves; two names skip.
+func TestResolveLinearProjectPath_WorkspaceProjectsMapping(t *testing.T) {
+	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"pilot"}}
+
+	single := &linearSDK.WorkspaceConfig{Name: "ws", Projects: []string{"unpaired"}}
+	if path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, single, &fakeLinearIssueFetcher{}); path != "/repos/unpaired" || reason != "" {
+		t.Errorf("single mapping: got (%q, %q), want (/repos/unpaired, \"\")", path, reason)
+	}
+
+	two := &linearSDK.WorkspaceConfig{Name: "ws", Projects: []string{"unpaired", "other"}}
+	if path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, two, &fakeLinearIssueFetcher{}); path != "" || reason != skipreason.ReasonNoProjectMapping {
+		t.Errorf("two names: got (%q, %q), want skip with %q", path, reason, skipreason.ReasonNoProjectMapping)
+	}
+
+	if path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, nil, &fakeLinearIssueFetcher{}); path != "" || reason != skipreason.ReasonNoProjectMapping {
+		t.Errorf("nil workspace: got (%q, %q), want skip", path, reason)
+	}
+}
+
 func TestResolveLinearProjectPath_NilFetcherUsesLabelOnly(t *testing.T) {
 	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"repo:other"}}
-	if path, _ := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, nil); path != "/repos/other" {
+	if path, _ := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, nil, nil); path != "/repos/other" {
 		t.Errorf("path = %q, want /repos/other", path)
 	}
 	ev.Labels = nil
-	if path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, nil); path != "" || reason != skipreason.ReasonNoProjectMapping {
+	if path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, nil, nil); path != "" || reason != skipreason.ReasonNoProjectMapping {
 		t.Errorf("got (%q, %q), want skip", path, reason)
 	}
 }
@@ -418,7 +482,7 @@ func TestResolveLinearProjectPath_NilFetcherUsesLabelOnly(t *testing.T) {
 func TestResolveLinearProjectPath_LabelWins(t *testing.T) {
 	f := &fakeLinearIssueFetcher{projectID: "lp-2"} // would pair with /repos/other
 	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"repo:linearinvoices-client"}}
-	path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, f)
+	path, reason := resolveLinearProjectPath(context.Background(), linearRoutingConfig(), ev, nil, f)
 	if path != "/repos/client" || reason != "" {
 		t.Errorf("got (%q, %q), want (/repos/client, \"\")", path, reason)
 	}
@@ -435,7 +499,7 @@ func TestResolveLinearProjectPath_NoMatchSkips(t *testing.T) {
 	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"pilot", "repo:nonexistent"}}
 
 	dispatched := false
-	res, err := routeLinearIssue(context.Background(), cfg, ev, &fakeLinearIssueFetcher{projectID: "lp-unmapped"},
+	res, err := routeLinearIssue(context.Background(), cfg, ev, nil, &fakeLinearIssueFetcher{projectID: "lp-unmapped"},
 		func(string) (*sdkcore.IssueResult, error) {
 			dispatched = true
 			return &sdkcore.IssueResult{Success: true}, nil
@@ -454,7 +518,7 @@ func TestResolveLinearProjectPath_NoMatchSkips(t *testing.T) {
 func TestRouteLinearIssue_DispatchesToResolvedPath(t *testing.T) {
 	ev := sdkcore.IssueEvent{IssueID: "uuid-1", SequenceID: "LIN-1", Labels: []string{"repo:linearinvoices-client"}}
 	var got string
-	res, err := routeLinearIssue(context.Background(), linearRoutingConfig(), ev, nil,
+	res, err := routeLinearIssue(context.Background(), linearRoutingConfig(), ev, nil, nil,
 		func(p string) (*sdkcore.IssueResult, error) {
 			got = p
 			return &sdkcore.IssueResult{Success: true}, nil

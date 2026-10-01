@@ -118,12 +118,15 @@ type linearIssueFetcher interface {
 //  1. a repo:<pilot-project-name> label, matched case-insensitively against
 //     the project's name — this is what splits one Linear project across repos;
 //  2. the issue's Linear project id via cfg.GetProjectByLinearID (first
-//     project in config order wins; ambiguity is WARN-logged once per issue).
+//     project in config order wins; ambiguity is WARN-logged once per issue);
+//  3. the workspace's projects: mapping, when ws is non-nil and it names
+//     exactly one Pilot project (GH-5575) — resolved via GetProjectByName.
+//     More than one name is ambiguous and falls through to the skip.
 //
-// On success it returns (path, ""). When neither signal resolves it returns
+// On success it returns (path, ""). When no signal resolves it returns
 // ("", skipreason.ReasonNoProjectMapping) after a WARN naming the issue and
-// both missing signals. A fetch error is logged and treated as "no project id".
-func resolveLinearProjectPath(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, client linearIssueFetcher) (path string, reason string) {
+// the missing signals. A fetch error is logged and treated as "no project id".
+func resolveLinearProjectPath(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, ws *linearSDK.WorkspaceConfig, client linearIssueFetcher) (path string, reason string) {
 	log := logging.WithComponent("linear")
 
 	// Signal 1: repo:<name> label.
@@ -179,10 +182,38 @@ func resolveLinearProjectPath(ctx context.Context, cfg *config.Config, ev sdkcor
 		}
 	}
 
+	// Signal 3: the workspace's projects: mapping, only when unambiguous.
+	if ws != nil {
+		var names []string
+		for _, n := range ws.Projects {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+		switch {
+		case len(names) == 1:
+			if proj := cfg.GetProjectByName(names[0]); proj != nil && proj.Path != "" {
+				return proj.Path, ""
+			}
+			log.Warn("Linear workspace projects mapping names no configured Pilot project",
+				slog.String("issue", ev.SequenceID),
+				slog.String("workspace", ws.Name),
+				slog.String("project", names[0]),
+			)
+		case len(names) > 1:
+			log.Warn("Linear workspace projects mapping is ambiguous (names more than one Pilot project); not routing by it",
+				slog.String("issue", ev.SequenceID),
+				slog.String("workspace", ws.Name),
+				slog.String("projects", strings.Join(names, ",")),
+			)
+		}
+	}
+
 	log.Warn("Linear issue skipped: no Pilot project mapping",
 		slog.String("issue", ev.SequenceID),
 		slog.String("missing_repo_label", linearRepoLabelPrefix+"<project-name>"),
 		slog.String("missing_project_id_pairing", "linear.project_id"),
+		slog.String("missing_workspace_projects_mapping", "single-name projects:"),
 		slog.String("linear_project_id", projectID),
 	)
 	return "", skipreason.ReasonNoProjectMapping
@@ -191,8 +222,8 @@ func resolveLinearProjectPath(ctx context.Context, cfg *config.Config, ev sdkcor
 // routeLinearIssue resolves the issue's Pilot project and calls dispatch with
 // its path. An unmapped issue returns a Skipped IssueResult (so the poller's
 // processed-store treats it as handled) and dispatch is never called.
-func routeLinearIssue(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, client linearIssueFetcher, dispatch func(projectPath string) (*sdkcore.IssueResult, error)) (*sdkcore.IssueResult, error) {
-	projectPath, skipReason := resolveLinearProjectPath(ctx, cfg, ev, client)
+func routeLinearIssue(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, ws *linearSDK.WorkspaceConfig, client linearIssueFetcher, dispatch func(projectPath string) (*sdkcore.IssueResult, error)) (*sdkcore.IssueResult, error) {
+	projectPath, skipReason := resolveLinearProjectPath(ctx, cfg, ev, ws, client)
 	if projectPath == "" {
 		return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: skipReason}, nil
 	}
@@ -239,6 +270,9 @@ func linearPollerRegistration() PollerRegistration {
 			// GH-5570: per-workspace SDK client (keyed by team ID, like the
 			// notifier) used to fetch the issue's Linear project id.
 			clientsByTeamID := make(map[string]*linearSDK.Client, len(internalWss))
+			// GH-5575: per-workspace config (keyed by team ID) so the resolver
+			// can honour the workspace's projects: mapping as tier 3.
+			workspacesByTeamID := make(map[string]*linearSDK.WorkspaceConfig, len(internalWss))
 			for _, ws := range internalWss {
 				triggerLabel := ws.PilotLabel
 				if triggerLabel == "" {
@@ -254,9 +288,11 @@ func linearPollerRegistration() PollerRegistration {
 				// own (opaque) label lookups run.
 				preflightLinearLabels(ctx, logging.WithComponent("linear"), linearSDK.NewClient(ws.APIKey), ws.TeamID, triggerLabel, linearStatusLabels)
 
-				sdkWorkspaces = append(sdkWorkspaces, newSDKLinearWorkspace(ws.Name, ws.APIKey, ws.TeamID, triggerLabel, ws.ProjectIDs, ws.Projects, wsInterval))
+				sdkWS := newSDKLinearWorkspace(ws.Name, ws.APIKey, ws.TeamID, triggerLabel, ws.ProjectIDs, ws.Projects, wsInterval)
+				sdkWorkspaces = append(sdkWorkspaces, sdkWS)
 				notifiersByTeamID[ws.TeamID] = linearSDK.NewNotifier(linearSDK.NewClient(ws.APIKey))
 				clientsByTeamID[ws.TeamID] = linearSDK.NewClient(ws.APIKey)
+				workspacesByTeamID[ws.TeamID] = sdkWS
 			}
 
 			sdkCfg := &linearSDK.Config{
@@ -271,13 +307,13 @@ func linearPollerRegistration() PollerRegistration {
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
 					// GH-5570: route to the project the issue belongs to (repo
-					// label, then Linear project id) — never deps.ProjectPath.
+					// label, Linear project id, workspace projects mapping) — never deps.ProjectPath.
 					// Unmapped issues are skipped before any "started" comment.
 					var fetcher linearIssueFetcher
 					if c := clientsByTeamID[ev.ProjectID]; c != nil {
 						fetcher = c
 					}
-					return routeLinearIssue(issueCtx, deps.Cfg, ev, fetcher, func(projectPath string) (*sdkcore.IssueResult, error) {
+					return routeLinearIssue(issueCtx, deps.Cfg, ev, workspacesByTeamID[ev.ProjectID], fetcher, func(projectPath string) (*sdkcore.IssueResult, error) {
 						// GH-4717: notify Linear the task has started, mirroring
 						// GH-2132's Plane wiring (poller_plane.go). ev.ProjectID
 						// carries the Linear team ID for this adapter (see
