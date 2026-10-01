@@ -9790,29 +9790,41 @@ func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (
 	}
 	done := make(chan result, 1) // buffered: an abandoned goroutine must never block on send
 	go func() {
-		defer func() {
-			cancel()
-			c.mu.Lock()
-			delete(c.stageInflight, prNumber)
-			c.mu.Unlock()
+		var res result
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// GH-5547: always log + count here. When the loop already
+					// abandoned this run nobody reads done, so without this the
+					// panic would vanish; when the loop is still waiting it
+					// re-panics via finish(), as before the goroutine split.
+					c.log.Error("autopilot stage handler panicked",
+						"pr", prNumber,
+						"stage", snap.Stage,
+						"panic", fmt.Sprint(r),
+						"stack", string(debug.Stack()),
+					)
+					c.metrics.RecordStagePanic(string(snap.Stage))
+					res = result{panicked: r}
+				}
+			}()
+			res = result{stop: c.processOnePR(stageCtx, snap)}
 		}()
-		defer func() {
-			if r := recover(); r != nil {
-				// GH-5547: always log + count here. When the loop already
-				// abandoned this run nobody reads done, so without this the
-				// panic would vanish; when the loop is still waiting it
-				// re-panics via finish(), as before the goroutine split.
-				c.log.Error("autopilot stage handler panicked",
-					"pr", prNumber,
-					"stage", snap.Stage,
-					"panic", fmt.Sprint(r),
-					"stack", string(debug.Stack()),
-				)
-				c.metrics.RecordStagePanic(string(snap.Stage))
-				done <- result{panicked: r}
-			}
-		}()
-		done <- result{stop: c.processOnePR(stageCtx, snap)}
+
+		// GH-5554: release the in-flight guard BEFORE signalling done. With the
+		// delete in a defer (running after the send), a caller that received
+		// the result could start the next tick while the guard was still set,
+		// so processPRWithDeadline skipped the PR as "busy" and per-PR counters
+		// (e.g. the 404-eviction count) silently missed a tick.
+		//
+		// cancel() must come AFTER the send: cancelling stageCtx first lets the
+		// waiting loop wake on stageCtx.Done() before done is readable and
+		// misreport a finished handler as a stage timeout.
+		c.mu.Lock()
+		delete(c.stageInflight, prNumber)
+		c.mu.Unlock()
+		done <- res
+		cancel()
 	}()
 
 	finish := func(r result) bool {

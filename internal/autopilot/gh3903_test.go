@@ -300,6 +300,11 @@ func TestController_ProcessAllPRs_EvictsAfterRepeatedNotFound(t *testing.T) {
 		c.processAllPRs(context.Background())
 	}
 
+	// GH-5554: each processAllPRs call must actually run the handler. The
+	// handler runs in a per-PR goroutine behind the stageInflight guard; it
+	// used to clear that guard after signalling done, so a back-to-back tick
+	// could skip the PR, the 404 count missed the threshold, and these
+	// assertions flaked. See TestController_ProcessAllPRs_ReleasesInflightGuardBeforeReturning.
 	if _, ok := c.GetPRState(74); ok {
 		t.Error("PR should be evicted from in-memory tracking after repeated 404s")
 	}
@@ -372,5 +377,38 @@ func TestController_ProcessAllPRs_NotFoundCountResetsOnSuccess(t *testing.T) {
 	}
 	if pr.NotFoundCount != 0 {
 		t.Errorf("NotFoundCount after a successful fetch = %d, want 0", pr.NotFoundCount)
+	}
+}
+
+// TestController_ProcessAllPRs_ReleasesInflightGuardBeforeReturning pins the
+// GH-5554 interleaving: when a stage handler finishes inside its deadline, the
+// stageInflight guard must already be cleared by the time processAllPRs
+// returns. Previously the goroutine signalled done first and deleted the guard
+// in a trailing defer, so an immediately following tick could see the PR as
+// "busy", skip it, and per-PR counters (404 eviction) missed a tick — a
+// post-merge CI flake on 2026-10-01.
+func TestController_ProcessAllPRs_ReleasesInflightGuardBeforeReturning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+	c.OnPRCreated(74, "https://github.com/owner/repo/pull/74", 500, "sha74", "pilot/GH-500", "")
+
+	for i := 0; i < 200; i++ {
+		c.processAllPRs(context.Background())
+		c.mu.RLock()
+		_, busy := c.stageInflight[74]
+		c.mu.RUnlock()
+		if busy {
+			t.Fatalf("tick %d: stageInflight still set after processAllPRs returned; next tick would skip the PR", i)
+		}
+		// Keep the PR tracked so every iteration exercises the handler.
+		if _, ok := c.GetPRState(74); !ok {
+			c.OnPRCreated(74, "https://github.com/owner/repo/pull/74", 500, "sha74", "pilot/GH-500", "")
+		}
 	}
 }
