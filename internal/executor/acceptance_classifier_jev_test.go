@@ -507,14 +507,14 @@ func TestAppendAcceptanceEvidence_LogsClassificationLine(t *testing.T) {
 	}
 }
 
-func TestAcceptanceClassification_DebugLinePerItemRedactedWithReason(t *testing.T) {
+func TestAcceptanceClassification_ItemLinePerItemRedactedWithReason(t *testing.T) {
 	var buf bytes.Buffer
 	asker := &fakeAsker{answers: map[string]typesafe.Answer{
 		"kind_1": choice("paste_output", 0.95),
 		"kind_2": choice("mutation", 0.4),
 	}}
 	r := &Runner{
-		log:                  slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		log:                  slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		acceptanceClassifier: &jevAcceptanceClassifier{asker: asker, minConfidence: 0.8, shadow: true},
 	}
 	task := &Task{ID: "GH-9"}
@@ -529,9 +529,9 @@ func TestAcceptanceClassification_DebugLinePerItemRedactedWithReason(t *testing.
 
 	recs := debugRecords(t, &buf, "Acceptance classification item")
 	if len(recs) != 2 {
-		t.Fatalf("debug records = %d, want 2: %s", len(recs), buf.String())
+		t.Fatalf("item records = %d, want 2: %s", len(recs), buf.String())
 	}
-	if recs[0]["level"] != "DEBUG" || recs[0]["task_id"] != "GH-9" || recs[0]["index"] != float64(1) ||
+	if recs[0]["level"] != "INFO" || recs[0]["task_id"] != "GH-9" || recs[0]["index"] != float64(1) ||
 		recs[0]["jev_choice"] != "paste_output" || recs[0]["confidence"] != 0.95 || recs[0]["regex_kind"] == "" {
 		t.Errorf("record 1 = %v", recs[0])
 	}

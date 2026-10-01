@@ -222,9 +222,15 @@ func TestClassifyBasePresencePaths_LogsOneInfoLine(t *testing.T) {
 	if !reflect.DeepEqual(got, paths) {
 		t.Errorf("shadow must not change paths: %v", got)
 	}
-	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	// One summary line per task; the per-span line is a separate message.
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if strings.Contains(l, `"msg":"Base-presence classifier"`) {
+			lines = append(lines, l)
+		}
+	}
 	if len(lines) != 1 {
-		t.Fatalf("log lines = %d, want 1: %s", len(lines), buf.String())
+		t.Fatalf("summary lines = %d, want 1: %s", len(lines), buf.String())
 	}
 	for _, key := range []string{`"level":"INFO"`, `"task_id":"GH-9"`, `"spans":1`, `"agreed":0`, `"would_skip":1`, `"low_confidence":0`, `"errors":0`, `"latency_ms":`} {
 		if !strings.Contains(lines[0], key) {
@@ -361,14 +367,14 @@ func debugRecords(t *testing.T, buf *bytes.Buffer, msg string) []map[string]any 
 	return out
 }
 
-func TestClassifyBasePresencePaths_DebugLinePerSpanRedactedWithReason(t *testing.T) {
+func TestClassifyBasePresencePaths_SpanLinePerSpanRedactedWithReason(t *testing.T) {
 	var buf bytes.Buffer
 	asker := &recordingAsker{answers: map[string]typesafe.Answer{
 		"span_1": choice(spanExistingPrerequisite, 0.95),
 		"span_2": choice(spanToBeCreated, 0.5),
 	}}
 	r := &Runner{
-		log:                    slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		log:                    slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		basePresenceClassifier: newTestBasePresenceClassifier(asker, true),
 	}
 	r.classifyBasePresencePaths(context.Background(), "GH-9", basePresenceBody,
@@ -376,7 +382,7 @@ func TestClassifyBasePresencePaths_DebugLinePerSpanRedactedWithReason(t *testing
 
 	recs := debugRecords(t, &buf, "Base-presence classifier span")
 	if len(recs) != 2 {
-		t.Fatalf("debug records = %d, want 2: %s", len(recs), buf.String())
+		t.Fatalf("span records = %d, want 2: %s", len(recs), buf.String())
 	}
 	want := []struct {
 		span, choice, reason string
@@ -387,7 +393,7 @@ func TestClassifyBasePresencePaths_DebugLinePerSpanRedactedWithReason(t *testing
 	}
 	for i, w := range want {
 		m := recs[i]
-		if m["level"] != "DEBUG" || m["task_id"] != "GH-9" || m["index"] != float64(i+1) ||
+		if m["level"] != "INFO" || m["task_id"] != "GH-9" || m["index"] != float64(i+1) ||
 			m["span"] != w.span || m["jev_choice"] != w.choice || m["confidence"] != w.conf || m["reason"] != w.reason {
 			t.Errorf("record %d = %v, want %+v", i, m, w)
 		}
@@ -398,20 +404,20 @@ func TestClassifyBasePresencePaths_DebugLinePerSpanRedactedWithReason(t *testing
 }
 
 // The logged span is the redacted text sent to the API, never the raw path:
-// a secret-shaped path segment must appear as [redacted] in the debug record.
-func TestClassifyBasePresencePaths_DebugLineSpanIsRedactedPath(t *testing.T) {
+// a secret-shaped path segment must appear as [redacted] in the info record.
+func TestClassifyBasePresencePaths_SpanLineSpanIsRedactedPath(t *testing.T) {
 	const rawPath = "cmd/token=abc123secret/x.go"
 	var buf bytes.Buffer
 	asker := &recordingAsker{answers: map[string]typesafe.Answer{"span_1": choice(spanToBeCreated, 0.95)}}
 	r := &Runner{
-		log:                    slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		log:                    slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		basePresenceClassifier: newTestBasePresenceClassifier(asker, true),
 	}
 	r.classifyBasePresencePaths(context.Background(), "GH-9", "Create `"+rawPath+"` for the helper.", []string{rawPath})
 
 	recs := debugRecords(t, &buf, "Base-presence classifier span")
 	if len(recs) != 1 {
-		t.Fatalf("debug records = %d, want 1: %s", len(recs), buf.String())
+		t.Fatalf("span records = %d, want 1: %s", len(recs), buf.String())
 	}
 	span, _ := recs[0]["span"].(string)
 	if !strings.Contains(span, "[redacted]") || strings.Contains(span, "abc123secret") {
@@ -422,7 +428,8 @@ func TestClassifyBasePresencePaths_DebugLineSpanIsRedactedPath(t *testing.T) {
 	}
 }
 
-func TestClassifyBasePresencePaths_DebugLinesSuppressedAtInfo(t *testing.T) {
+// The box runs logging.level=info; the per-span lines must land there.
+func TestClassifyBasePresencePaths_SpanLinesEmittedAtInfo(t *testing.T) {
 	var buf bytes.Buffer
 	asker := &recordingAsker{answers: map[string]typesafe.Answer{"span_1": choice(spanToBeCreated, 0.95)}}
 	r := &Runner{
@@ -430,7 +437,11 @@ func TestClassifyBasePresencePaths_DebugLinesSuppressedAtInfo(t *testing.T) {
 		basePresenceClassifier: newTestBasePresenceClassifier(asker, true),
 	}
 	r.classifyBasePresencePaths(context.Background(), "GH-9", "`a/b.go`", []string{"a/b.go"})
-	if n := len(debugRecords(t, &buf, "Base-presence classifier span")); n != 0 {
-		t.Errorf("debug records at info level = %d", n)
+	recs := debugRecords(t, &buf, "Base-presence classifier span")
+	if len(recs) != 1 {
+		t.Fatalf("span records at info level = %d, want 1: %s", len(recs), buf.String())
+	}
+	if recs[0]["level"] != "INFO" {
+		t.Errorf("span record level = %v, want INFO", recs[0]["level"])
 	}
 }
