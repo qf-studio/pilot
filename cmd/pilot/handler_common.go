@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -477,7 +478,13 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			hr.PRURL = result.PRUrl
 			// GH-2293: Use adapter-specific PR/MR number extraction.
 			// Each forge has a different URL format for pull/merge requests.
-			switch info.Adapter {
+			// GH-5583: a project-keyed GitLab creator can open an MR for a
+			// task from any adapter (e.g. Linear), so key off the URL shape.
+			adapter := info.Adapter
+			if isGitLabMRURL(result.PRUrl) {
+				adapter = "gitlab"
+			}
+			switch adapter {
 			case "gitlab":
 				if mrNum, err := gitlab.ExtractMRNumber(result.PRUrl); err == nil {
 					hr.PRNumber = mrNum
@@ -497,6 +504,14 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	}
 
 	return hr, execErr
+}
+
+// gitlabMRURLPattern matches a GitLab merge-request URL path.
+var gitlabMRURLPattern = regexp.MustCompile(`/-/merge_requests/\d+`)
+
+// isGitLabMRURL reports whether u is a GitLab MR URL ("/-/merge_requests/<iid>").
+func isGitLabMRURL(u string) bool {
+	return gitlabMRURLPattern.MatchString(u)
 }
 
 // fireLoopBreakerAlert emits an escalation exactly once per storm — the tick
