@@ -7206,6 +7206,19 @@
           "classifier"
         ],
         "confidence": 0.95
+      },
+      "box-logs-info-debug-lines-never-land": {
+        "type": "pitfall",
+        "summary": "The founder box daemon runs logging.level info and has never written a DEBUG line; any observability that matters (shadow-mode per-item data, flip decisions) must log at INFO or it does not exist in production (found 2026-10-01, #5556)",
+        "file": ".agent/knowledge/memories/pitfalls/box-logs-info-debug-lines-never-land.md",
+        "created": "2026-10-01",
+        "last_validated": "2026-10-01",
+        "concepts": [
+          "jev",
+          "observability",
+          "alerts"
+        ],
+        "confidence": 0.95
       }
     }
   },
