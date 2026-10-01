@@ -397,6 +397,31 @@ func TestClassifyBasePresencePaths_DebugLinePerSpanRedactedWithReason(t *testing
 	}
 }
 
+// The logged span is the redacted text sent to the API, never the raw path:
+// a secret-shaped path segment must appear as [redacted] in the debug record.
+func TestClassifyBasePresencePaths_DebugLineSpanIsRedactedPath(t *testing.T) {
+	const rawPath = "cmd/token=abc123secret/x.go"
+	var buf bytes.Buffer
+	asker := &recordingAsker{answers: map[string]typesafe.Answer{"span_1": choice(spanToBeCreated, 0.95)}}
+	r := &Runner{
+		log:                    slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		basePresenceClassifier: newTestBasePresenceClassifier(asker, true),
+	}
+	r.classifyBasePresencePaths(context.Background(), "GH-9", "Create `"+rawPath+"` for the helper.", []string{rawPath})
+
+	recs := debugRecords(t, &buf, "Base-presence classifier span")
+	if len(recs) != 1 {
+		t.Fatalf("debug records = %d, want 1: %s", len(recs), buf.String())
+	}
+	span, _ := recs[0]["span"].(string)
+	if !strings.Contains(span, "[redacted]") || strings.Contains(span, "abc123secret") {
+		t.Errorf("logged span not redacted: %q", span)
+	}
+	if strings.Contains(buf.String(), "abc123secret") {
+		t.Errorf("raw secret leaked into log: %s", buf.String())
+	}
+}
+
 func TestClassifyBasePresencePaths_DebugLinesSuppressedAtInfo(t *testing.T) {
 	var buf bytes.Buffer
 	asker := &recordingAsker{answers: map[string]typesafe.Answer{"span_1": choice(spanToBeCreated, 0.95)}}

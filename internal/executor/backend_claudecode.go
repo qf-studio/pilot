@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor/ghguard"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -1171,9 +1172,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	// failure classification below.
 	if denials := readGhGuardJournal(ghGuardJournalPath); len(denials) > 0 {
 		result.GhGuardDenials = denials
-		b.log.Warn("gh-guard denied gh invocation(s) during execution",
-			slog.Int("count", len(denials)),
-		)
+		b.warnGhGuardDenials(denials)
 	}
 
 	if err != nil {
@@ -1474,4 +1473,23 @@ func (b *ClaudeCodeBackend) parseStreamEvent(line string) BackendEvent {
 	}
 
 	return event
+}
+
+// warnGhGuardDenials emits the per-run gh-guard WARN. Denials stamped
+// TestOrigin (raised by the repo's own unit tests during the quality gates)
+// are excluded from the count — ingestGhGuardDenials suppresses them too
+// (GH-5542) — and when only test-origin denials exist no WARN is emitted.
+func (b *ClaudeCodeBackend) warnGhGuardDenials(denials []ghguard.JournalEntry) {
+	count := 0
+	for _, d := range denials {
+		if !d.TestOrigin {
+			count++
+		}
+	}
+	if count == 0 {
+		return
+	}
+	b.log.Warn("gh-guard denied gh invocation(s) during execution",
+		slog.Int("count", count),
+	)
 }

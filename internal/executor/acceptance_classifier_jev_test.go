@@ -538,7 +538,7 @@ func TestAcceptanceClassification_DebugLinePerItemRedactedWithReason(t *testing.
 	if text, _ := recs[0]["text"].(string); strings.Contains(text, "abc123secret") || !strings.Contains(text, "[redacted]") {
 		t.Errorf("record 1 text not redacted: %q", text)
 	}
-	if recs[1]["index"] != float64(2) || recs[1]["jev_choice"] != "mutation" || recs[1]["reason"] != string(typesafe.ReasonLowConfidence) ||
+	if recs[1]["index"] != float64(2) || recs[1]["jev_choice"] != "mutation" || recs[1]["confidence"] != 0.4 || recs[1]["reason"] != string(typesafe.ReasonLowConfidence) ||
 		recs[1]["text"] != "another item with no command" {
 		t.Errorf("record 2 = %v", recs[1])
 	}
