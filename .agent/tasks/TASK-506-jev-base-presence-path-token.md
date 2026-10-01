@@ -1,6 +1,6 @@
 # TASK-506: feat(executor): Jev classifier for backticked path spans in the base-presence gate, shadow mode, regex floor kept
 
-**Status**: 🚀 Dispatched 2026-09-30 21:5xZ as [#5543](https://github.com/qf-studio/pilot/issues/5543) (`pilot`, `no-decompose`), queued behind #5541 and #5542
+**Status**: ✅ SHIPPED 2026-09-30 23:18Z → PR#5546 (merged by autopilot), post-merge review 10-01 APPROVE-w-notes (5 mutation pins; live smoke 5/5 at 0.99–1.00). Box config block staged 10-01 (shadow); activates with the 10-01 train. Follow-up #5548 (per-item debug lines, shared with gate 1).
 
 ## Context
 
