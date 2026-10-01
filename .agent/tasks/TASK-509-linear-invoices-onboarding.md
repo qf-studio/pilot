@@ -9,7 +9,8 @@
 - Client gates (per-project `quality:`): `pnpm install --frozen-lockfile && pnpm build` · `pnpm test:ci` · `pnpm lint` (soft). Service uses the global `make build/test/lint`. pnpm installed via bun; `~/go/bin` (golangci-lint 2.12.2) and `~/.bun/bin` added to PATH in `start-pilot.sh`.
 - API key: the founder pasted it in chat → treated as exposed, NOT written to the box. Rotate; the new key goes into `start-pilot.sh` as `LINEAR_API_KEY` at flip time, and `api_key: "${LINEAR_API_KEY}"` is added to the config then (the loader pre-scans raw text for `${VAR}` and warns when unset — do not reference it earlier).
 
-## Blocking gap → #5570
+## Blocking gap → #5570 (a regression since 2026-06-08, PR #3485)
+Founder: Linear was connected in spring (laptop config 2026-04-07: one workspace, `project_ids` + `projects: [one project]`) and disabled before the summer. It worked on the legacy in-process handler (three-tier routing). The SDK poller migration dropped the routing; pitfall `linear-sdk-poller-migration-dropped-project-routing`. #5570 restores it under a new `repo:<name>` label tier (comment posted on the issue with the exact tiers).
 On the SDK polling path every Linear issue goes to `deps.ProjectPath` (the default project = pilot repo on the box). `linear.project_id` pairing only works on the legacy webhook path; the SDK event's ProjectID is the team id. Fix: route by Linear label `repo:<pilot-project-name>` > `project_id` pairing > skip, never default. One Linear project across two repos needs the label.
 
 ## Also done 13:00–13:25Z

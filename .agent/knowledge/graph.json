@@ -7289,6 +7289,21 @@
         ],
         "created": "2026-10-01",
         "last_validated": "2026-10-01"
+      },
+      "linear-sdk-poller-migration-dropped-project-routing": {
+        "type": "pitfall",
+        "summary": "PR #3485 (2026-06-08) migrated the Linear poll path to the SDK poller and dropped the three-tier per-issue project routing of the legacy handler; polled Linear issues all go to default_project. Fix #5570. Switching default_project is not a workaround (GitHub default repo takes the same path).",
+        "path": "memories/pitfalls/linear-sdk-poller-migration-dropped-project-routing.md",
+        "confidence": 0.9,
+        "concepts": [
+          "linear",
+          "poller",
+          "routing",
+          "regression",
+          "sdk-migration"
+        ],
+        "created": "2026-10-01",
+        "last_validated": "2026-10-01"
       }
     }
   },
@@ -11455,7 +11470,8 @@
       "mem-150",
       "poller-labels-in-progress-before-dispatcher-claim-wedge",
       "poller-labels-removed-log-means-never-applied",
-      "completed-row-without-live-execution-polled-forever-as-stalled"
+      "completed-row-without-live-execution-polled-forever-as-stalled",
+      "linear-sdk-poller-migration-dropped-project-routing"
     ],
     "pre-push-gate": [
       "mem-161",
@@ -12211,13 +12227,25 @@
     ],
     "base-presence": [
       "held-task-at-queue-head-starves-serial-project-worker"
+    ],
+    "linear": [
+      "linear-sdk-poller-migration-dropped-project-routing"
+    ],
+    "routing": [
+      "linear-sdk-poller-migration-dropped-project-routing"
+    ],
+    "regression": [
+      "linear-sdk-poller-migration-dropped-project-routing"
+    ],
+    "sdk-migration": [
+      "linear-sdk-poller-migration-dropped-project-routing"
     ]
   },
-  "last_updated": "2026-10-01T13:21:15.634837+00:00",
+  "last_updated": "2026-10-01T14:25:34.531790+00:00",
   "stats": {
-    "total_nodes": 609,
+    "total_nodes": 610,
     "total_edges": 528,
-    "memory_count": 335
+    "memory_count": 336
   },
   "metadata": {}
 }
