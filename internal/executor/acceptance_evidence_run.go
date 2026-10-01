@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/typesafe"
 )
 
 // AcceptanceCommandRunner runs an evidence command in dir and returns its
@@ -511,6 +513,27 @@ func (r *Runner) logAcceptanceClassification(task *Task, stats AcceptanceClassif
 		slog.Bool("shadow", stats.Shadow),
 		slog.Int64("latency_ms", stats.Latency.Milliseconds()),
 	)
+	// One debug line per item so low_confidence items can be labelled. The text
+	// is the redacted, capped text sent to the API, never the raw item.
+	for i, d := range stats.Details {
+		var reason, wouldBe typesafe.Reason
+		if i < len(stats.Reasons) {
+			reason = stats.Reasons[i]
+		}
+		if i < len(stats.WouldBe) {
+			wouldBe = stats.WouldBe[i]
+		}
+		r.log.Debug("Acceptance classification item",
+			slog.String("task_id", task.ID),
+			slog.Int("index", i+1),
+			slog.String("regex_kind", string(d.RegexKind)),
+			slog.String("jev_choice", d.JevChoice),
+			slog.Float64("confidence", d.Confidence),
+			slog.String("reason", string(reason)),
+			slog.String("would_be", string(wouldBe)),
+			slog.String("text", d.Text),
+		)
+	}
 }
 
 // runDiffCoverageCheck runs the GH-5466 diff-coverage check against task's

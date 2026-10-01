@@ -506,3 +506,43 @@ func TestAppendAcceptanceEvidence_LogsClassificationLine(t *testing.T) {
 		t.Errorf("unexpected field values: %v", line)
 	}
 }
+
+func TestAcceptanceClassification_DebugLinePerItemRedactedWithReason(t *testing.T) {
+	var buf bytes.Buffer
+	asker := &fakeAsker{answers: map[string]typesafe.Answer{
+		"kind_1": choice("paste_output", 0.95),
+		"kind_2": choice("mutation", 0.4),
+	}}
+	r := &Runner{
+		log:                  slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		acceptanceClassifier: &jevAcceptanceClassifier{asker: asker, minConfidence: 0.8, shadow: true},
+	}
+	task := &Task{ID: "GH-9"}
+	stats := func() AcceptanceClassifyStats {
+		_, s := r.acceptanceClassifier.Classify(context.Background(), []string{
+			"pass token=abc123secret and run `go vet ./...`",
+			"another item with no command",
+		})
+		return s
+	}()
+	r.logAcceptanceClassification(task, stats)
+
+	recs := debugRecords(t, &buf, "Acceptance classification item")
+	if len(recs) != 2 {
+		t.Fatalf("debug records = %d, want 2: %s", len(recs), buf.String())
+	}
+	if recs[0]["level"] != "DEBUG" || recs[0]["task_id"] != "GH-9" || recs[0]["index"] != float64(1) ||
+		recs[0]["jev_choice"] != "paste_output" || recs[0]["confidence"] != 0.95 || recs[0]["regex_kind"] == "" {
+		t.Errorf("record 1 = %v", recs[0])
+	}
+	if text, _ := recs[0]["text"].(string); strings.Contains(text, "abc123secret") || !strings.Contains(text, "[redacted]") {
+		t.Errorf("record 1 text not redacted: %q", text)
+	}
+	if recs[1]["index"] != float64(2) || recs[1]["jev_choice"] != "mutation" || recs[1]["reason"] != string(typesafe.ReasonLowConfidence) ||
+		recs[1]["text"] != "another item with no command" {
+		t.Errorf("record 2 = %v", recs[1])
+	}
+	if strings.Contains(buf.String(), "abc123secret") {
+		t.Errorf("raw secret leaked into log: %s", buf.String())
+	}
+}
