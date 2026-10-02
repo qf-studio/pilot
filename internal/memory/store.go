@@ -1941,6 +1941,12 @@ func (s *Store) SetApprovalDecision(ctx context.Context, requestID string, decis
 // row for the given task. Must be called after SubmitApprovalRequest succeeds so
 // that SetApprovalDecision's WHERE clause can later match the row.
 // Returns sql.ErrNoRows when no execution row exists for taskID yet.
+//
+// GH-5599: a NEW request ID clears any decision left on the row by a previous
+// request. A PR can be re-escalated (rebase / infra retry → CI re-pass → hold
+// again) and the same execution row then carries the second request; without
+// the reset, SetApprovalDecision's empty-decision guard would reject
+// the fresh decision as already-decided. Re-recording the same ID keeps the row.
 func (s *Store) SetApprovalRequestID(ctx context.Context, taskID, requestID string) error {
 	if taskID == "" || requestID == "" {
 		return nil
@@ -1948,14 +1954,17 @@ func (s *Store) SetApprovalRequestID(ctx context.Context, taskID, requestID stri
 	return s.withRetry("SetApprovalRequestID", func() error {
 		result, err := s.db.ExecContext(ctx, `
 			UPDATE executions
-			SET approval_request_id = ?
+			SET approval_decision    = CASE WHEN COALESCE(approval_request_id, '') = ? THEN approval_decision ELSE '' END,
+			    approval_decision_at = CASE WHEN COALESCE(approval_request_id, '') = ? THEN approval_decision_at ELSE NULL END,
+			    approval_decision_by = CASE WHEN COALESCE(approval_request_id, '') = ? THEN approval_decision_by ELSE '' END,
+			    approval_request_id  = ?
 			WHERE id = (
 				SELECT id FROM executions
 				WHERE task_id = ?
 				ORDER BY created_at DESC
 				LIMIT 1
 			)
-		`, requestID, taskID)
+		`, requestID, requestID, requestID, requestID, taskID)
 		if err != nil {
 			return fmt.Errorf("SetApprovalRequestID: %w", err)
 		}

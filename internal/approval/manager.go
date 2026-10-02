@@ -327,6 +327,17 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 	m.mu.Unlock()
 
 	defaultAction := stageConfig.DefaultAction
+	if req.FailsClosedOnTimeout() && defaultAction != DecisionRejected {
+		// GH-5599: a hold that exists to force a human act (live-smoke
+		// Not-verified) must never be released by the clock, even when the
+		// stage is configured with default_action: approved.
+		m.log.Warn("async approval timeout fails closed — overriding default_action",
+			slog.String("request_id", req.ID),
+			slog.String("task_id", req.TaskID),
+			slog.String("configured_default_action", string(defaultAction)),
+			slog.String("effective_default_action", string(DecisionRejected)))
+		defaultAction = DecisionRejected
+	}
 	logging.SafeGo("approval-manager", func() {
 		defer cancel()
 		select {

@@ -777,6 +777,14 @@ func (h *TelegramHandler) formatApprovalMessage(req *Request) string {
 	if errorMsg, ok := req.Metadata["error"].(string); ok && errorMsg != "" {
 		text += fmt.Sprintf("\n\nError: %s", truncateForTelegram(errorMsg, 200))
 	}
+	// GH-5599: name why this gate fired and what approving means.
+	reason, note := approvalContextLines(req)
+	if reason != "" {
+		text += fmt.Sprintf("\n\nReason: %s", truncateForTelegram(reason, 600))
+	}
+	if note != "" {
+		text += fmt.Sprintf("\n\n%s", truncateForTelegram(note, 400))
+	}
 
 	// Add timeout info
 	timeLeft := time.Until(req.ExpiresAt).Round(time.Minute)

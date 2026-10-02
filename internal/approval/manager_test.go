@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -987,5 +988,86 @@ func TestManager_NotifyMerged_HandlerErrorIsNonFatal(t *testing.T) {
 
 	if len(notifying.getCalls()) != 1 {
 		t.Errorf("expected the handler to still be called once despite returning an error")
+	}
+}
+
+// TestManager_AsyncTimeout_FailClosedOverridesApprovedDefault covers GH-5599: a
+// request flagged MetaFailClosedOnTimeout (the live-smoke Not-verified hold)
+// resolves as rejected on timeout even when pre_merge.default_action is
+// "approved"; an unflagged request still honours the configured default.
+func TestManager_AsyncTimeout_FailClosedOverridesApprovedDefault(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata map[string]interface{}
+		want     Decision
+	}{
+		{"flagged request fails closed", map[string]interface{}{MetaFailClosedOnTimeout: true}, DecisionRejected},
+		{"unflagged request keeps default_action", map[string]interface{}{"pr_number": 1}, DecisionApproved},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := DefaultConfig()
+			config.Enabled = true
+			config.PreMerge.Enabled = true
+			config.PreMerge.Timeout = 20 * time.Millisecond
+			config.PreMerge.DefaultAction = DecisionApproved
+
+			m := NewManager(config)
+			writer := &mockPRStateWriter{}
+			m.WithStateWriter(writer)
+			m.RegisterHandler(&mockHandler{name: "test"}) // never responds
+
+			req := &Request{
+				ID: "req-failclosed", TaskID: "GH-5599", Stage: StagePreMerge,
+				Title: "Merge approval", CreatedAt: time.Now(), Metadata: tt.metadata,
+			}
+			if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+				t.Fatalf("SubmitApprovalRequest: %v", err)
+			}
+
+			deadline := time.Now().Add(2 * time.Second)
+			for len(writer.getCalls()) == 0 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			calls := writer.getCalls()
+			if len(calls) != 1 {
+				t.Fatalf("SetApprovalDecision calls = %d, want 1", len(calls))
+			}
+			if calls[0].decision != string(tt.want) || calls[0].by != "system" {
+				t.Errorf("timeout decision = %q by %q, want %q by system", calls[0].decision, calls[0].by, tt.want)
+			}
+		})
+	}
+}
+
+// TestChatHandlers_RenderApprovalContext covers GH-5599: the Telegram and Slack
+// approval messages carry the escalation reason and the approval note.
+func TestChatHandlers_RenderApprovalContext(t *testing.T) {
+	req := &Request{
+		ID: "req-ctx", TaskID: "GH-5599", Stage: StagePreMerge, Title: "Merge approval for PR #5561",
+		ExpiresAt: time.Now().Add(time.Hour),
+		Metadata: map[string]interface{}{
+			MetaEscalationReason: "Not verified list names a key-gated / live-service check: Live smoke on excerpts",
+			MetaApprovalNote:     "Approving means YOU ran the check",
+		},
+	}
+	tg := (&TelegramHandler{}).formatApprovalMessage(req)
+	sl := (&SlackHandler{}).buildApprovalBlocks(req)
+	slackJSON, err := json.Marshal(sl)
+	if err != nil {
+		t.Fatalf("marshal slack blocks: %v", err)
+	}
+	for name, text := range map[string]string{"telegram": tg, "slack": string(slackJSON)} {
+		if !strings.Contains(text, "Live smoke on excerpts") {
+			t.Errorf("%s message missing escalation reason: %q", name, text)
+		}
+		if !strings.Contains(text, "Approving means YOU ran the check") {
+			t.Errorf("%s message missing approval note: %q", name, text)
+		}
+	}
+
+	plain := &Request{ID: "r", TaskID: "t", Stage: StagePreMerge, Title: "x", ExpiresAt: time.Now().Add(time.Hour)}
+	if strings.Contains((&TelegramHandler{}).formatApprovalMessage(plain), "Reason:") {
+		t.Error("request without escalation reason must not render a Reason line")
 	}
 }
