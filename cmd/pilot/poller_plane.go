@@ -98,12 +98,9 @@ func planePollerRegistration() PollerRegistration {
 				slog.Int("projects", len(deps.Cfg.Adapters.Plane.ProjectIDs)),
 				slog.Duration("interval", interval),
 			)
+			// GH-5588: retry a failed Start with backoff instead of going dark.
 			deps.SafeAdapterGo(ctx, "plane", func() {
-				if err := planePoller.Start(ctx); err != nil {
-					logging.WithComponent("plane").Error("Plane poller failed",
-						slog.Any("error", err),
-					)
-				}
+				deps.SuperviseStart(ctx, "plane", "plane", planePoller.Start)
 			})
 		},
 	}
