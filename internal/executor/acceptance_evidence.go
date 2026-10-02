@@ -292,13 +292,28 @@ func extractMutation(text string) (desc, target string, ok bool) {
 	return desc, target, true
 }
 
-// maxEvidenceOutputLines caps how many lines of a single command/test-run's
-// output are embedded per fenced block in the PR body (GH-5435 spec: "cap
-// per block, e.g. 60 lines").
-const maxEvidenceOutputLines = 60
+// Evidence output line budget per fenced block. GH-5568: the head AND the tail
+// are kept — the verdict of a `go test ./...` run (the per-package `ok`/`FAIL`
+// lines and the final `PASS`/`FAIL`) is at the END of the output, so trimming
+// from the top only (the GH-5435 behaviour) showed FAIL noise, cut the verdict
+// and left a block headed "passes" that proved nothing (PR #5558, 2772 lines
+// truncated).
+//
+// Sizing: this module has ~59 packages, so a full `go test ./...` prints ~59
+// package status lines (plus a few failure/summary lines). The tail must hold
+// all of them, so evidenceTailLines is 80; the head only needs the first few
+// lines (build errors, first test names), so evidenceHeadLines is 20.
+const (
+	evidenceHeadLines = 20
+	evidenceTailLines = 80
+	// maxEvidenceOutputLines is the most lines of a single command/test-run's
+	// output embedded per fenced block, before the omission marker.
+	maxEvidenceOutputLines = evidenceHeadLines + evidenceTailLines
+)
 
-// trimOutputForEvidence trims output to at most maxEvidenceOutputLines
-// lines, appending a truncation marker noting how many lines were dropped.
+// trimOutputForEvidence trims output to at most maxEvidenceOutputLines lines.
+// Over the cap it emits the first evidenceHeadLines lines, a
+// "... <k> lines omitted ..." marker, and the last evidenceTailLines lines.
 func trimOutputForEvidence(output string) string {
 	output = strings.TrimRight(output, "\n")
 	if output == "" {
@@ -309,8 +324,111 @@ func trimOutputForEvidence(output string) string {
 		return strings.Join(lines, "\n")
 	}
 	omitted := len(lines) - maxEvidenceOutputLines
-	kept := strings.Join(lines[:maxEvidenceOutputLines], "\n")
-	return fmt.Sprintf("%s\n... [truncated: %d line(s) omitted]", kept, omitted)
+	head := strings.Join(lines[:evidenceHeadLines], "\n")
+	tail := strings.Join(lines[len(lines)-evidenceTailLines:], "\n")
+	return fmt.Sprintf("%s\n... %d lines omitted ...\n%s", head, omitted, tail)
+}
+
+// evidenceFailLineRe matches a Go test failure line anywhere in captured
+// output: "--- FAIL: TestX" or a bare "FAIL" / "FAIL\tpkg ..." status line.
+var evidenceFailLineRe = regexp.MustCompile(`(?m)^\s*(?:--- FAIL\b|FAIL\b)`)
+
+// evidencePassWordRe matches the "passes"/"passed"/"pass" verdict word in an
+// acceptance-item heading.
+var evidencePassWordRe = regexp.MustCompile(`(?i)\bpass(?:es|ed)?\b`)
+
+// evidenceHeading returns the "###" heading text for a paste-output item. When
+// any command's (trimmed) output still contains a FAIL line the heading must
+// not claim success (GH-5568): the "passes" verdict word is replaced, or a
+// failure note is appended when the heading carries no verdict word.
+func evidenceHeading(text string, commands []AcceptanceCommandResult) string {
+	failed := false
+	for _, c := range commands {
+		if evidenceFailLineRe.MatchString(c.Output) {
+			failed = true
+			break
+		}
+	}
+	if !failed {
+		return text
+	}
+	if loc := evidencePassWordRe.FindStringIndex(text); loc != nil {
+		return text[:loc[0]] + "FAILS (FAIL lines in output)" + text[loc[1]:]
+	}
+	return text + " (FAIL lines in output)"
+}
+
+// liveSmokePatterns is the extendable table of Not-verified bullet shapes that
+// name a key-gated or live-service check the gate cannot run (GH-5568: PR #5561
+// listed #5555's live smoke under Not verified and autopilot merged on green).
+// A Not-verified bullet matching any row carries an explicit reason and holds
+// the PR for a human instead of merging. Add a row to extend; no other code
+// changes.
+var liveSmokePatterns = []struct {
+	name string
+	re   *regexp.Regexp
+}{
+	{"live smoke / live check", regexp.MustCompile(`(?i)\blive[\s-]*(?:smoke|test|run|check|call|api|service)`)},
+	{"smoke test", regexp.MustCompile(`(?i)\bsmoke[\s-]*tests?\b`)},
+	{"API key", regexp.MustCompile(`(?i)\bapi[\s_-]*keys?\b`)},
+	{"real credential", regexp.MustCompile(`(?i)\b(?:real|valid|live)\s+(?:api\s+)?(?:keys?|tokens?|credentials?)\b`)},
+	{"against the box / prod", regexp.MustCompile(`(?i)\bagainst\s+(?:the\s+)?(?:box|prod(?:uction)?|staging|live)\b`)},
+	{"real/external service", regexp.MustCompile(`(?i)\b(?:real|external|third[\s-]party)\s+(?:service|api|endpoint)s?\b`)},
+}
+
+// liveSmokeHoldNote is appended to the reason of a matching Not-verified
+// bullet so the PR body says why the PR is held rather than merging silently.
+const liveSmokeHoldNote = "key-gated / live-service check the gate cannot run; PR is held for a human (pilot-needs-human) to run it before merge"
+
+// IsLiveSmokeBullet reports whether text names a key-gated or live-service
+// check per liveSmokePatterns.
+func IsLiveSmokeBullet(text string) bool {
+	for _, p := range liveSmokePatterns {
+		if p.re.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+// LiveSmokeNotVerifiedBullets returns the first line of every bullet in the
+// PR body's "## Not verified" section that matches liveSmokePatterns. Autopilot
+// holds a PR for a human when this is non-empty (GH-5568). It parses the body
+// rather than gate state so a hand-written Not-verified list (PR #5561's) is
+// held the same as a gate-rendered one.
+func LiveSmokeNotVerifiedBullets(prBody string) []string {
+	idx := strings.Index(prBody, "## Not verified")
+	if idx < 0 {
+		return nil
+	}
+	section := prBody[idx+len("## Not verified"):]
+	var bullets []string
+	var cur []string
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		if IsLiveSmokeBullet(strings.Join(cur, "\n")) {
+			bullets = append(bullets, strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(cur[0]), "-* ")))
+		}
+		cur = nil
+	}
+	for _, line := range strings.Split(section, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "# ") {
+			break
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			flush()
+			cur = []string{trimmed}
+			continue
+		}
+		if cur != nil && trimmed != "" {
+			cur = append(cur, trimmed)
+		}
+	}
+	flush()
+	return bullets
 }
 
 // AcceptanceCommandResult is the outcome of running one paste-output
@@ -319,7 +437,7 @@ type AcceptanceCommandResult struct {
 	// Command is the command that was run, verbatim.
 	Command string
 	// Output is the command's combined stdout+stderr, redacted (GH-5437)
-	// and trimmed to maxEvidenceOutputLines.
+	// and trimmed to the head+tail line budget (see trimOutputForEvidence).
 	Output string
 	// Err is set when the command could not be executed at all (binary not
 	// found, context deadline, not in the command allowlist, etc.) — NOT
@@ -370,14 +488,18 @@ func RenderAcceptanceEvidenceSections(results []AcceptanceEvidenceResult) string
 	for _, r := range results {
 		if r.NotVerifiedReason != "" {
 			hasNotVerified = true
-			fmt.Fprintf(&notVerified, "- **%s**\n  Reason: %s\n\n", r.Item.Text, r.NotVerifiedReason)
+			reason := r.NotVerifiedReason
+			if IsLiveSmokeBullet(r.Item.Text) {
+				reason += "; " + liveSmokeHoldNote
+			}
+			fmt.Fprintf(&notVerified, "- **%s**\n  Reason: %s\n\n", r.Item.Text, reason)
 			continue
 		}
 
 		switch r.Item.Kind {
 		case AcceptanceItemPasteOutput:
 			hasEvidence = true
-			fmt.Fprintf(&evidence, "### %s\n\n", r.Item.Text)
+			fmt.Fprintf(&evidence, "### %s\n\n", evidenceHeading(r.Item.Text, r.Commands))
 			for _, c := range r.Commands {
 				fmt.Fprintf(&evidence, "```\n$ %s\n%s\n```\n\n", c.Command, c.Output)
 			}
