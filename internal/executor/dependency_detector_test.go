@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -223,5 +224,30 @@ func TestExecuteSubIssuesTracked_ExplicitDependency_WaitsAndSyncs(t *testing.T) 
 	}
 	if !strings.Contains(logOutput, "target_pr=8000") {
 		t.Errorf("expected wait decision log to record target_pr=8000, got: %s", logOutput)
+	}
+}
+
+// TestExtractReferencedPaths_SkipsEqualsOnStrippedForm pins the GH-5557 "="
+// guard on the line-ref-stripped form: `cmd/a=b/x.go:12` has the suffix removed
+// before the check, and must still be rejected because no repo file has "=" in
+// a segment. A plain path with a line suffix next to it must still extract.
+func TestExtractReferencedPaths_SkipsEqualsOnStrippedForm(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"equals segment with line suffix", "see `cmd/a=b/x.go:12`", nil},
+		{"equals segment with line range suffix", "see `cmd/a=b/x.go:12-20`", nil},
+		{"equals segment without suffix", "see `cmd/a=b/x.go`", nil},
+		{"equals-free path with line suffix still extracts", "see `cmd/ab/x.go:12`", []string{"cmd/ab/x.go"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractReferencedPaths(tt.body)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ExtractReferencedPaths(%q) = %#v, want %#v", tt.body, got, tt.want)
+			}
+		})
 	}
 }

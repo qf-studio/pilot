@@ -2193,6 +2193,23 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"all done"}
 	return script, pidFile
 }
 
+// waitForResultExitGraceKills waits for ResultExitGraceKillsTotal()-before to
+// reach want, then fails if it overshoots. It is a synchronisation point on the
+// counter, not a timing assumption: the grace window itself is untouched.
+func waitForResultExitGraceKills(t *testing.T, before, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for ResultExitGraceKillsTotal()-before < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("kills counter delta = %d, want %d", ResultExitGraceKillsTotal()-before, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := ResultExitGraceKillsTotal() - before; got != want {
+		t.Errorf("kills counter delta = %d, want %d", got, want)
+	}
+}
+
 // TestResultExitGrace_KillsOrphanedProcessAfterSuccessResult covers GH-5530: a
 // success result followed by a process that never exits (an orphaned tool
 // shell holding the pipes) must complete as success with the parsed result
@@ -2228,9 +2245,12 @@ func TestResultExitGrace_KillsOrphanedProcessAfterSuccessResult(t *testing.T) {
 	if elapsed > 10*time.Second {
 		t.Errorf("finalized after %v; grace kill should land well under 10s", elapsed)
 	}
-	if got := ResultExitGraceKillsTotal() - before; got != 1 {
-		t.Errorf("kills counter delta = %d, want 1", got)
-	}
+	// The kill goroutine bumps the counter after killProcessGroup returns, which
+	// races with Execute observing the exit and returning — so a bare read here
+	// can see the pre-increment value (the off-by-one seen on the box under
+	// load). Wait for the increment to land; this also keeps a late Add from
+	// leaking into the next test's before/after delta.
+	waitForResultExitGraceKills(t, before, 1)
 
 	data, readErr := os.ReadFile(pidFile)
 	if readErr != nil {
