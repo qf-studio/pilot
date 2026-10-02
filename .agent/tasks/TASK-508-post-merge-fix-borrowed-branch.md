@@ -1,6 +1,6 @@
 # TASK-508: Post-merge CI fix issues borrow the merged PR branch and short-circuit as delivered
 
-**Status**: 🚀 DISPATCHED 2026-10-01 → [#5564](https://github.com/qf-studio/pilot/issues/5564) (`pilot`, `no-decompose`, `bug`). One PR, three changes (A emitter, B dispatcher safety net, C host-checker reason).
+**Status**: 🚀 DISPATCHED 2026-10-01 → [#5564](https://github.com/qf-studio/pilot/issues/5564) (`pilot`, `no-decompose`, `bug`). One PR, three changes (A emitter, B dispatcher safety net, C host-checker reason). **Post-merge review of PR#5569 DONE 2026-10-02: APPROVE-w-notes** (legs A/B/C verified on main; notes: two other merged-PR short-circuits in dispatcher.go unguarded for a borrowed origin · close/label failures only logged · supersede path GitHub-only · borrow is in-memory, lost on restart).
 **Created**: 2026-10-01 · **Owner**: Navigator plans, Pilot executes · **Related**: TASK-460 (false-success class), TASK-507 (Jev gate 3 reads post-merge failures)
 
 ## Why
