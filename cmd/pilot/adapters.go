@@ -369,6 +369,11 @@ func (a *adapterHealthProviderAdapter) AdapterHealthSnapshot() []gateway.Adapter
 	return result
 }
 
+// PollerUpSnapshot satisfies gateway.PollerUpSource (GH-5588).
+func (a *adapterHealthProviderAdapter) PollerUpSnapshot() map[string]bool {
+	return a.registry.PollerUpSnapshot()
+}
+
 // resolveOwnerRepo determines the GitHub owner and repo from config or git remote.
 func resolveOwnerRepo(cfg *config.Config) (string, string, error) {
 	// Try config first

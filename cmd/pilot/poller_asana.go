@@ -93,12 +93,9 @@ func asanaPollerRegistration() PollerRegistration {
 				slog.String("tag", pilotTag),
 				slog.Duration("interval", interval),
 			)
+			// GH-5588: retry a failed Start with backoff instead of going dark.
 			deps.SafeAdapterGo(ctx, "asana", func() {
-				if err := asanaPoller.Start(ctx); err != nil {
-					logging.WithComponent("asana").Error("Asana poller failed",
-						slog.Any("error", err),
-					)
-				}
+				deps.SuperviseStart(ctx, "asana", "asana", asanaPoller.Start)
 			})
 		},
 	}

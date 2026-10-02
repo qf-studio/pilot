@@ -52,11 +52,15 @@ type OnPanic func(name, message string)
 type Registry struct {
 	mu       sync.RWMutex
 	statuses map[string]*Status
+	// pollers[adapter][instance] is whether that poller's Start is currently
+	// up (GH-5588). Separate from statuses: a poller whose Start returns an
+	// error never panics, so panic health says nothing about it.
+	pollers map[string]map[string]bool
 }
 
 // NewRegistry creates an empty adapter health registry.
 func NewRegistry() *Registry {
-	return &Registry{statuses: make(map[string]*Status)}
+	return &Registry{statuses: make(map[string]*Status), pollers: make(map[string]map[string]bool)}
 }
 
 // Snapshot returns a stable-ordered copy of every tracked adapter's status.
@@ -68,6 +72,38 @@ func (r *Registry) Snapshot() []Status {
 		out = append(out, *st)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// SetPollerUp records whether one poller instance (e.g. a Linear workspace) of
+// an adapter is up (GH-5588). Safe on a nil Registry.
+func (r *Registry) SetPollerUp(adapter, instance string, up bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pollers[adapter] == nil {
+		r.pollers[adapter] = make(map[string]bool)
+	}
+	r.pollers[adapter][instance] = up
+}
+
+// PollerUpSnapshot returns adapter -> up, where an adapter is up only when
+// every one of its registered poller instances is up.
+func (r *Registry) PollerUpSnapshot() map[string]bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]bool, len(r.pollers))
+	for adapter, instances := range r.pollers {
+		up := len(instances) > 0
+		for _, v := range instances {
+			if !v {
+				up = false
+			}
+		}
+		out[adapter] = up
+	}
 	return out
 }
 
