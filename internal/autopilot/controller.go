@@ -3686,6 +3686,30 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		}
 	}
 
+	// GH-5568/GH-5597: a PR whose "## Not verified" list names a key-gated /
+	// live-service check (live smoke, real API key, "against the box") must not
+	// auto-merge on green — the acceptance-evidence gate cannot run those, and
+	// merging with the bullet silently unverified is how PR #5561 merged without
+	// #5555's live smoke. Route to StageAwaitApproval like the other gates:
+	// approving the PR means "I ran the key-gated check". Runs regardless of
+	// earlier escalations (their approval does not cover this check) and fails
+	// open on a GetPullRequest error, like the gates above.
+	var liveSmokeBullets []string
+	if ghPR, prErr := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber); prErr != nil {
+		c.log.Warn("handleCIPassed: GetPullRequest failed, skipping live-smoke hold (fail-open)",
+			"pr", prState.PRNumber, "error", prErr)
+	} else if ghPR != nil {
+		liveSmokeBullets = executor.LiveSmokeNotVerifiedBullets(ghPR.Body)
+	}
+	if len(liveSmokeBullets) > 0 {
+		reason := "Not verified list names a key-gated / live-service check: " + strings.Join(liveSmokeBullets, "; ")
+		if escalateReason != "" {
+			escalateReason += "; " + reason
+		} else {
+			escalateReason = reason
+		}
+	}
+
 	if escalateReason != "" {
 		c.log.Warn("merge gate escalated: requiring human approval",
 			"pr", prState.PRNumber, "reason", escalateReason)
@@ -3698,6 +3722,9 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 			if err := c.notifier.NotifyApprovalRequired(ctx, prState); err != nil {
 				c.log.Warn("failed to send approval notification", "error", err)
 			}
+		}
+		if len(liveSmokeBullets) > 0 {
+			c.postLiveSmokeHoldComment(ctx, prState, liveSmokeBullets)
 		}
 		if testEvidenceHeld {
 			c.postTestEvidenceHoldComment(ctx, prState, escalateReason)
@@ -3745,6 +3772,17 @@ func (c *Controller) postTestEvidenceHoldComment(ctx context.Context, prState *P
 		"approval via the usual approve/reject flow.", reason)
 	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.PRNumber, body); err != nil {
 		c.log.Warn("test-evidence gate: failed to post PR comment", "pr", prState.PRNumber, "error", err)
+	}
+}
+
+// postLiveSmokeHoldComment explains why the live-smoke Not-verified hold
+// (GH-5568) parked the PR in StageAwaitApproval and how to release it.
+// Best-effort: the PR is already safely parked regardless.
+func (c *Controller) postLiveSmokeHoldComment(ctx context.Context, prState *PRState, bullets []string) {
+	body := fmt.Sprintf("Holding PR #%d for human approval: its **Not verified** section lists a check the acceptance-evidence gate cannot run (live smoke / real API key / external service):\n\n- %s\n\nRun it, then approve the PR through the usual approval flow — approving means the check was run.",
+		prState.PRNumber, strings.Join(bullets, "\n- "))
+	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.PRNumber, body); err != nil {
+		c.log.Warn("live-smoke hold: failed to post PR comment", "pr", prState.PRNumber, "error", err)
 	}
 }
 
@@ -5393,21 +5431,10 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		return nil
 	}
 
-	// GH-5568: never auto-merge a PR whose "## Not verified" list names a
-	// key-gated / live-service check (live smoke, real API key, "against the
-	// box"). The acceptance-evidence gate cannot run those, and merging on green
-	// with the bullet silently unverified is how PR #5561 merged without #5555's
-	// live smoke. Hold for a human via the existing needs-human escalation.
-	// Fails open with the draft/review checks above: no fetched PR, no hold.
-	if ghPRForHold != nil {
-		if bullets := executor.LiveSmokeNotVerifiedBullets(ghPRForHold.Body); len(bullets) > 0 {
-			reason := "Not verified list names a key-gated / live-service check: " + strings.Join(bullets, "; ")
-			comment := fmt.Sprintf("Holding PR #%d for a human: its **Not verified** section lists a check the acceptance-evidence gate cannot run (live smoke / real API key / external service):\n\n- %s\n\nRun it, then merge manually (or edit the PR body once the check is done).",
-				prState.PRNumber, strings.Join(bullets, "\n- "))
-			c.escalateAndHold(ctx, prState, reason, []string{labelNeedsHuman}, comment)
-			return nil
-		}
-	}
+	// GH-5597: the GH-5568 live-smoke Not-verified hold lives in handleCIPassed
+	// (routes to StageAwaitApproval) so a human approval releases it. It must
+	// not be re-checked here: DecisionApproved lands in this handler, and a
+	// second hold would discard the approval and fail the PR.
 
 	// GH-4477: re-validate CI live at the merge chokepoint instead of trusting
 	// the ci_status frozen by handleCIPassed/handleWaitingCI. Once a PR

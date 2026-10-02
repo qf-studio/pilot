@@ -141,4 +141,39 @@ func TestAcceptanceEvidence_LiveSmokeNotVerifiedHoldsPR(t *testing.T) {
 			t.Fatalf("live-smoke Not-verified bullet must hold the PR, body:\n%s", body)
 		}
 	})
+
+	// GH-5597: the note is appended to the reason, which autopilot also
+	// matches — it must not match the table itself.
+	t.Run("hold note does not self-match", func(t *testing.T) {
+		if IsLiveSmokeBullet(liveSmokeHoldNote) {
+			t.Fatalf("liveSmokeHoldNote must not match liveSmokePatterns: %q", liveSmokeHoldNote)
+		}
+		body := "## Not verified\n\n- **corpus replay**\n  Reason: freeform mutation, run manually; " + liveSmokeHoldNote + "\n"
+		if got := LiveSmokeNotVerifiedBullets(body); len(got) != 0 {
+			t.Fatalf("unrelated bullet carrying the note must not be held, got %v", got)
+		}
+	})
+
+	t.Run("reason-only match gets the hold note", func(t *testing.T) {
+		section := RenderAcceptanceEvidenceSections([]AcceptanceEvidenceResult{{
+			Item:              AcceptanceItem{Text: "Replay the corpus", Kind: AcceptanceItemOther},
+			NotVerifiedReason: "needs a real API key",
+		}})
+		if !strings.Contains(section, liveSmokeHoldNote) {
+			t.Errorf("reason-only match must carry the hold note, got:\n%s", section)
+		}
+		if got := LiveSmokeNotVerifiedBullets(section); len(got) != 1 {
+			t.Errorf("want 1 held bullet, got %v", got)
+		}
+	})
+
+	t.Run("unrelated bullet gets no note", func(t *testing.T) {
+		section := RenderAcceptanceEvidenceSections([]AcceptanceEvidenceResult{{
+			Item:              AcceptanceItem{Text: "Replay the corpus", Kind: AcceptanceItemOther},
+			NotVerifiedReason: "freeform mutation, run manually",
+		}})
+		if strings.Contains(section, liveSmokeHoldNote) {
+			t.Errorf("unrelated bullet must not carry the note, got:\n%s", section)
+		}
+	})
 }
