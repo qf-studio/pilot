@@ -652,6 +652,14 @@ func (h *SlackHandler) buildApprovalBlocks(req *Request) []interface{} {
 	if errorMsg, ok := req.Metadata["error"].(string); ok && errorMsg != "" {
 		headerText += fmt.Sprintf("\n\n*Error:* ```%s```", truncateForSlack(errorMsg, 200))
 	}
+	// GH-5599: name why this gate fired and what approving means.
+	reason, note := approvalContextLines(req)
+	if reason != "" {
+		headerText += fmt.Sprintf("\n\n*Reason:* %s", truncateForSlack(reason, 600))
+	}
+	if note != "" {
+		headerText += fmt.Sprintf("\n\n*%s*", truncateForSlack(note, 400))
+	}
 
 	// Add timeout info
 	timeLeft := time.Until(req.ExpiresAt).Round(time.Minute)

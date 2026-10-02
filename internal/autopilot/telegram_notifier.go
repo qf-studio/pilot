@@ -48,6 +48,34 @@ func prDetail(prState *PRState) string {
 	return "\n" + strings.Join(parts, "\n")
 }
 
+// escapeLegacyMarkdown escapes only the characters that are special in
+// Telegram's legacy "Markdown" parse mode (the mode NotifyApprovalRequired
+// sends with); the V2-style escapeMarkdown would leave literal backslashes.
+func escapeLegacyMarkdown(s string) string {
+	return strings.NewReplacer("_", "\\_", "*", "\\*", "`", "\\`", "[", "\\[").Replace(s)
+}
+
+// approvalReasonDetail renders why the PR is gated (EscalationReason) and, for
+// a live-smoke Not-verified hold, the bullets plus what approving means, so the
+// chat message does not read as the routine require_approval gate (GH-5599).
+// Returns "" when there is no reason, otherwise a block ending in a newline.
+func approvalReasonDetail(prState *PRState) string {
+	if prState.EscalationReason == "" {
+		return ""
+	}
+	if !isLiveSmokeHold(prState) {
+		return fmt.Sprintf("Reason: %s\n", escapeLegacyMarkdown(prState.EscalationReason))
+	}
+	var b strings.Builder
+	b.WriteString("⚠️ *Held: key-gated / live-service check not run*\n")
+	for _, bullet := range liveSmokeBulletsFromReason(prState.EscalationReason) {
+		fmt.Fprintf(&b, "  • %s\n", escapeLegacyMarkdown(bullet))
+	}
+	b.WriteString(escapeLegacyMarkdown(liveSmokeApprovalNote))
+	b.WriteString("\n")
+	return b.String()
+}
+
 // NotifyMerged sends notification when a PR is successfully merged.
 func (n *TelegramNotifier) NotifyMerged(ctx context.Context, prState *PRState) error {
 	msg := fmt.Sprintf("%s✅ *PR #%d merged*%s\n\n"+
@@ -80,9 +108,9 @@ func (n *TelegramNotifier) NotifyCIFailed(ctx context.Context, prState *PRState,
 // NotifyApprovalRequired sends notification when a PR requires human approval.
 func (n *TelegramNotifier) NotifyApprovalRequired(ctx context.Context, prState *PRState) error {
 	msg := fmt.Sprintf("%s⏳ *Approval Required*\n\n"+
-		"PR #%d is ready for production merge.%s\n"+
+		"PR #%d is ready for production merge.%s\n%s"+
 		"Reply `/approve %d` or `/reject %d`",
-		envPrefix(prState), prState.PRNumber, prDetail(prState),
+		envPrefix(prState), prState.PRNumber, prDetail(prState), approvalReasonDetail(prState),
 		prState.PRNumber, prState.PRNumber)
 
 	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)

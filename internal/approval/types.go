@@ -29,6 +29,23 @@ const (
 	DecisionTimeout  Decision = "timeout"
 )
 
+// Metadata keys the approval package interprets or renders. Callers (autopilot)
+// populate them on Request.Metadata; the keys are strings so they survive the
+// JSON round-trip through the persisted pending-approval row.
+const (
+	// MetaEscalationReason is why the request exists (the gate that escalated
+	// the PR). Rendered by the chat handlers so the approver sees the real
+	// trigger, not just the routine pre-merge gate wording (GH-5599).
+	MetaEscalationReason = "escalation_reason"
+	// MetaApprovalNote states what approving this request commits the approver
+	// to (e.g. "you ran the key-gated check"). Rendered verbatim (GH-5599).
+	MetaApprovalNote = "approval_note"
+	// MetaFailClosedOnTimeout (bool) makes a timeout resolve as rejected
+	// regardless of the stage's default_action: a hold that exists to force a
+	// human act must never be released by the clock (GH-5599).
+	MetaFailClosedOnTimeout = "fail_closed_on_timeout"
+)
+
 // Request represents an approval request
 type Request struct {
 	ID               string                 // Unique request identifier
@@ -178,4 +195,22 @@ func DefaultConfig() *Config {
 			DefaultAction: DecisionRejected,
 		},
 	}
+}
+
+// FailsClosedOnTimeout reports whether req must resolve as rejected on timeout
+// regardless of the configured default_action (MetaFailClosedOnTimeout).
+func (r *Request) FailsClosedOnTimeout() bool {
+	if r == nil {
+		return false
+	}
+	v, _ := r.Metadata[MetaFailClosedOnTimeout].(bool)
+	return v
+}
+
+// approvalContextLines returns the escalation reason and approval note carried
+// on req.Metadata (empty strings when absent), for the chat handlers to render.
+func approvalContextLines(req *Request) (reason, note string) {
+	reason, _ = req.Metadata[MetaEscalationReason].(string)
+	note, _ = req.Metadata[MetaApprovalNote].(string)
+	return reason, note
 }

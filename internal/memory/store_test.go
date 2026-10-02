@@ -3719,6 +3719,56 @@ func TestStore_SetApprovalRequestID_HappyPath(t *testing.T) {
 	}
 }
 
+// TestStore_SetApprovalRequestID_NewIDClearsPriorDecision covers GH-5599: a
+// re-escalated PR submits a second approval request on the same execution row;
+// the first request's decision must not make the second one's decision fail as
+// already-decided, while re-recording the SAME id must not erase a decision.
+func TestStore_SetApprovalRequestID_NewIDClearsPriorDecision(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+
+	if err := store.SaveExecution(&Execution{ID: "exec-reesc", TaskID: "GH-5599", ProjectPath: "/proj", Status: "completed"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.SetApprovalRequestID(ctx, "GH-5599", "req-1"); err != nil {
+		t.Fatalf("SetApprovalRequestID req-1: %v", err)
+	}
+	if err := store.SetApprovalDecision(ctx, "req-1", "approved", "founder"); err != nil {
+		t.Fatalf("SetApprovalDecision req-1: %v", err)
+	}
+
+	// Same id again: decision kept.
+	if err := store.SetApprovalRequestID(ctx, "GH-5599", "req-1"); err != nil {
+		t.Fatalf("SetApprovalRequestID req-1 again: %v", err)
+	}
+	got, err := store.GetExecution("exec-reesc")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if got.ApprovalDecision != "approved" {
+		t.Errorf("same-id re-record cleared decision: %q", got.ApprovalDecision)
+	}
+
+	// New id: decision cleared, fresh decision accepted.
+	if err := store.SetApprovalRequestID(ctx, "GH-5599", "req-2"); err != nil {
+		t.Fatalf("SetApprovalRequestID req-2: %v", err)
+	}
+	got, err = store.GetExecution("exec-reesc")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if got.ApprovalDecision != "" || got.ApprovalDecisionBy != "" {
+		t.Errorf("new request id kept stale decision %q by %q", got.ApprovalDecision, got.ApprovalDecisionBy)
+	}
+	if err := store.SetApprovalDecision(ctx, "req-2", "rejected", "founder"); err != nil {
+		t.Errorf("fresh decision on second request rejected: %v", err)
+	}
+}
+
 func TestStore_SetApprovalRequestID_ZeroRowCase(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

@@ -3702,7 +3702,7 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		liveSmokeBullets = executor.LiveSmokeNotVerifiedBullets(ghPR.Body)
 	}
 	if len(liveSmokeBullets) > 0 {
-		reason := "Not verified list names a key-gated / live-service check: " + strings.Join(liveSmokeBullets, "; ")
+		reason := liveSmokeReasonPrefix + strings.Join(liveSmokeBullets, "; ")
 		if escalateReason != "" {
 			escalateReason += "; " + reason
 		} else {
@@ -3713,6 +3713,14 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 	if escalateReason != "" {
 		c.log.Warn("merge gate escalated: requiring human approval",
 			"pr", prState.PRNumber, "reason", escalateReason)
+		// GH-5599: the hold comment is posted once per distinct reason — a
+		// re-entry (fix push, rebase, infra retry) with the same bullets must not
+		// repeat it. Compared BEFORE EscalationReason is overwritten below.
+		liveSmokeAlreadyAnnounced := prState.EscalationReason == escalateReason
+		// GH-5599: every (re)escalation waits for a fresh decision — a decision
+		// recorded for an earlier hold (before a rebase / retry re-drove the PR)
+		// must not release this one on the next tick.
+		c.resetApprovalForReescalation(ctx, prState)
 		prState.Stage = StageAwaitApproval
 		// GH-3569: record WHY this PR awaits approval so downstream reporting
 		// (misconfig error, PR comment) names the actual trigger instead of
@@ -3723,7 +3731,7 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 				c.log.Warn("failed to send approval notification", "error", err)
 			}
 		}
-		if len(liveSmokeBullets) > 0 {
+		if len(liveSmokeBullets) > 0 && !liveSmokeAlreadyAnnounced {
 			c.postLiveSmokeHoldComment(ctx, prState, liveSmokeBullets)
 		}
 		if testEvidenceHeld {
@@ -3736,6 +3744,7 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 
 	if c.resolvedRequireApproval {
 		c.log.Info("awaiting approval before merge", "pr", prState.PRNumber)
+		c.resetApprovalForReescalation(ctx, prState)
 		prState.Stage = StageAwaitApproval
 		prState.EscalationReason = c.requireApprovalReason()
 
@@ -3753,6 +3762,59 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		prState.Stage = StageMerging
 	}
 	return nil
+}
+
+// liveSmokeReasonPrefix starts the EscalationReason segment that names a
+// live-smoke Not-verified hold (GH-5568/GH-5597). Approval handling keys off it
+// (isLiveSmokeHold): such a hold must fail closed on timeout (GH-5599).
+const liveSmokeReasonPrefix = "Not verified list names a key-gated / live-service check: "
+
+// liveSmokeApprovalNote is shown to the approver in the chat approval request:
+// approving a live-smoke hold is a statement that the check was run by a human.
+const liveSmokeApprovalNote = "Approving means YOU ran the key-gated / live-service check(s) listed above — Pilot could not run them. If the approval times out the PR is rejected, never merged."
+
+// isLiveSmokeHold reports whether the PR's current escalation includes the
+// live-smoke Not-verified hold.
+func isLiveSmokeHold(prState *PRState) bool {
+	return strings.Contains(prState.EscalationReason, liveSmokeReasonPrefix)
+}
+
+// liveSmokeBulletsFromReason recovers the bullet list from an EscalationReason
+// built by handleCIPassed (the live-smoke segment is always appended last).
+// Returns nil when the reason carries no live-smoke segment.
+func liveSmokeBulletsFromReason(reason string) []string {
+	_, after, found := strings.Cut(reason, liveSmokeReasonPrefix)
+	if !found {
+		return nil
+	}
+	return strings.Split(after, "; ")
+}
+
+// resetApprovalForReescalation clears all approval state so a PR (re)entering
+// StageAwaitApproval waits for a fresh decision (GH-5599). Only
+// rescindApprovalOnCIRegression used to do this; every other re-escalation
+// (rebase / infra retry / base retarget → CI re-pass → hold again) inherited
+// the previous hold's DecisionApproved and merged a head nobody approved.
+// The pending request is cancelled AFTER the ID is cleared so the manager's
+// cancel-triggered timeout write cannot match this PR.
+func (c *Controller) resetApprovalForReescalation(ctx context.Context, prState *PRState) {
+	staleRequestID := prState.ApprovalRequestID
+	if staleRequestID == "" && prState.ApprovalDecision == "" && prState.ApprovalRequestedAt.IsZero() {
+		return
+	}
+	c.log.Info("re-escalation: resetting stale approval state so a fresh decision is required",
+		"pr", prState.PRNumber, "stale_request_id", staleRequestID, "stale_decision", prState.ApprovalDecision)
+	prState.ApprovalRequestID = ""
+	prState.ApprovalDecision = ""
+	prState.ApprovalDecisionBy = ""
+	prState.ApprovalRequestedAt = time.Time{}
+	if c.approvalMgr != nil && staleRequestID != "" {
+		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+		if prState.IssueNumber == 0 {
+			taskID = fmt.Sprintf("PR-%d", prState.PRNumber)
+		}
+		c.approvalMgr.CancelPending(ctx, taskID)
+	}
 }
 
 // testEvidenceLogMaxLen bounds how much combined CI job log text the
@@ -4997,6 +5059,15 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 	timeout := c.approvalMgr.PreMergeTimeout()
 	if !prState.ApprovalRequestedAt.IsZero() && time.Since(prState.ApprovalRequestedAt) > timeout {
 		defaultAction := c.approvalMgr.PreMergeDefaultAction()
+		if defaultAction != approval.DecisionRejected && isLiveSmokeHold(prState) {
+			// GH-5599: a live-smoke hold exists to force a human to run the
+			// check — the clock must never release it, whatever default_action says.
+			c.log.Warn("approval timeout fails closed for live-smoke hold — overriding default_action",
+				"pr", prState.PRNumber,
+				"configured_default_action", defaultAction,
+				"effective_default_action", approval.DecisionRejected)
+			defaultAction = approval.DecisionRejected
+		}
 		c.log.Warn("approval request expired in controller (post-restart guard)",
 			"pr", prState.PRNumber,
 			"request_id", prState.ApprovalRequestID,
@@ -5074,17 +5145,29 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 	if prState.IssueNumber == 0 {
 		taskID = fmt.Sprintf("PR-%d", prState.PRNumber)
 	}
+	metadata := map[string]interface{}{
+		"pr_url":    prState.PRURL,
+		"pr_title":  prState.PRTitle,
+		"pr_number": prState.PRNumber,
+	}
+	// GH-5599: tell the approver WHY this PR is gated and, for a live-smoke
+	// hold, what approving now means — the routine pre-merge wording alone
+	// reads like the require_approval gate.
+	if prState.EscalationReason != "" {
+		metadata[approval.MetaEscalationReason] = prState.EscalationReason
+	}
+	if isLiveSmokeHold(prState) {
+		metadata["live_smoke_bullets"] = liveSmokeBulletsFromReason(prState.EscalationReason)
+		metadata[approval.MetaApprovalNote] = liveSmokeApprovalNote
+		metadata[approval.MetaFailClosedOnTimeout] = true
+	}
 	req := &approval.Request{
 		ID:          fmt.Sprintf("pr-%d-%d", prState.PRNumber, time.Now().UnixNano()),
 		TaskID:      taskID,
 		Stage:       approval.StagePreMerge,
 		Title:       fmt.Sprintf("Merge approval for PR #%d", prState.PRNumber),
 		ReleasePlan: releasePlanMessage(c.resolvedRelease(), time.Now()),
-		Metadata: map[string]interface{}{
-			"pr_url":    prState.PRURL,
-			"pr_title":  prState.PRTitle,
-			"pr_number": prState.PRNumber,
-		},
+		Metadata:    metadata,
 		// GH-4380: route to the channel the operator actually configured.
 		// Before this, PreferredChannel was never set on this path, so
 		// Manager.SubmitApprovalRequest always fell through to whichever
