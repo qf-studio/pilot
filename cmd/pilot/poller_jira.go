@@ -112,12 +112,9 @@ func jiraPollerRegistration() PollerRegistration {
 				slog.String("label", pilotLabel),
 				slog.Duration("interval", interval),
 			)
+			// GH-5588: retry a failed Start with backoff instead of going dark.
 			deps.SafeAdapterGo(ctx, "jira", func() {
-				if err := jiraPoller.Start(ctx); err != nil {
-					logging.WithComponent("jira").Error("Jira poller failed",
-						slog.Any("error", err),
-					)
-				}
+				deps.SuperviseStart(ctx, "jira", "jira", jiraPoller.Start)
 			})
 		},
 	}

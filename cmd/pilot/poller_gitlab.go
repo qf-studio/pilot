@@ -109,12 +109,9 @@ func gitlabPollerRegistration() PollerRegistration {
 				slog.String("label", pilotLabel),
 				slog.Duration("interval", interval),
 			)
+			// GH-5588: retry a failed Start with backoff instead of going dark.
 			deps.SafeAdapterGo(ctx, "gitlab", func() {
-				if err := gitlabPoller.Start(ctx); err != nil {
-					logging.WithComponent("gitlab").Error("GitLab poller failed",
-						slog.Any("error", err),
-					)
-				}
+				deps.SuperviseStart(ctx, "gitlab", "gitlab", gitlabPoller.Start)
 			})
 		},
 	}

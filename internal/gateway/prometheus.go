@@ -70,6 +70,7 @@ type PrometheusExporter struct {
 	metricsSource MetricsSource
 	alertsSource  AlertMetricsSource
 	evalSource    EvalMetricsSource // GH-4922: optional, set via SetEvalMetricsSource
+	pollerSource  PollerUpSource    // GH-5588: optional, set via SetPollerSource
 	panicCtr      *goPanicCounter
 	version       string // GH-4864: running process's compiled-in version, set via SetBuildInfo
 	commit        string // GH-4864: VCS commit parsed from version, set via SetBuildInfo
@@ -108,6 +109,11 @@ func (e *PrometheusExporter) SetAlertsSource(s AlertMetricsSource) {
 // SetEvalSource wires an eval metrics source into the exporter (GH-4922).
 func (e *PrometheusExporter) SetEvalSource(s EvalMetricsSource) {
 	e.evalSource = s
+}
+
+// SetPollerSource wires per-adapter poller up/down state into the exporter (GH-5588).
+func (e *PrometheusExporter) SetPollerSource(s PollerUpSource) {
+	e.pollerSource = s
 }
 
 // SetBuildInfo records the running process's version/commit for the
@@ -500,6 +506,27 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	if e.panicCtr != nil {
 		for component, count := range e.panicCtr.snapshot() {
 			writeCounter(w, "pilot_panics_total", count, "component", component)
+		}
+	}
+
+	// pilot_poller_up (GH-5588): 1 while an adapter's poller Start is running,
+	// 0 while it is failing/retrying. A poller that failed once at startup
+	// otherwise leaves intake dead with nothing on the board.
+	if e.pollerSource != nil {
+		writeHelp(w, "pilot_poller_up", "Whether an adapter poller is running (1) or failing/retrying its Start (0)")
+		writeType(w, "pilot_poller_up", "gauge")
+		pollers := e.pollerSource.PollerUpSnapshot()
+		adapters := make([]string, 0, len(pollers))
+		for a := range pollers {
+			adapters = append(adapters, a)
+		}
+		sort.Strings(adapters)
+		for _, a := range adapters {
+			v := 0.0
+			if pollers[a] {
+				v = 1
+			}
+			writeGaugeLabeled(w, "pilot_poller_up", v, "adapter", a)
 		}
 	}
 

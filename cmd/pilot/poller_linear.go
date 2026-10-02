@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -421,7 +420,7 @@ func linearPollerRegistration() PollerRegistration {
 				pollerDeps.OnPRCreated = newLinearOnPRCreated(deps.Cfg, deps.AutopilotController, deps.AutopilotControllers)
 			}
 
-			pollers := make([]sdkcore.Poller, 0, len(internalWss))
+			pollers := make([]linearWorkspacePoller, 0, len(internalWss))
 			for _, ws := range internalWss {
 				triggerLabel := ws.PilotLabel
 				if triggerLabel == "" {
@@ -481,45 +480,33 @@ func linearPollerRegistration() PollerRegistration {
 						slog.String("workspace", ws.Name),
 					)
 				}
-				pollers = append(pollers, poller)
+				pollers = append(pollers, linearWorkspacePoller{name: ws.Name, poller: poller})
 			}
-
-			linearPoller := &linearMultiPoller{pollers: pollers}
 
 			logging.WithComponent("start").Info("Linear polling enabled",
 				slog.String("workspaces", fmt.Sprintf("%d workspace(s)", len(internalWss))),
 				slog.Duration("interval", interval),
 			)
-			deps.SafeAdapterGo(ctx, "linear", func() {
-				if err := linearPoller.Start(ctx); err != nil {
-					logging.WithComponent("linear").Error("Linear poller failed",
-						slog.Any("error", err),
-					)
-				}
-			})
+			// GH-5588: each workspace poller runs under its own supervisor so a
+			// transient Start error (the SDK only returns one before its ticker
+			// loop) is retried with backoff instead of ending Linear intake for
+			// the daemon's lifetime; one failing workspace never stops the others.
+			for _, wp := range pollers {
+				wp := wp
+				deps.SafeAdapterGo(ctx, "linear:"+wp.name, func() {
+					deps.SuperviseStart(ctx, "linear", wp.name, wp.poller.Start)
+				})
+			}
 		},
 	}
 }
 
-// linearMultiPoller runs one poller per workspace; a failing workspace must
-// not stop the others (the studio-sdk's own multi-workspace poller is
-// unexported, and we need one concrete *linearSDK.Poller per workspace).
-type linearMultiPoller struct {
-	pollers []sdkcore.Poller
-}
-
-func (m *linearMultiPoller) Start(ctx context.Context) error {
-	var wg sync.WaitGroup
-	errs := make([]error, len(m.pollers))
-	for i, p := range m.pollers {
-		wg.Add(1)
-		go func(i int, p sdkcore.Poller) {
-			defer wg.Done()
-			errs[i] = p.Start(ctx)
-		}(i, p)
-	}
-	wg.Wait()
-	return errors.Join(errs...)
+// linearWorkspacePoller is one workspace's SDK poller (the studio-sdk's own
+// multi-workspace poller is unexported, and we need one concrete
+// *linearSDK.Poller per workspace).
+type linearWorkspacePoller struct {
+	name   string
+	poller sdkcore.Poller
 }
 
 // newLinearWorkspaceHandler builds one workspace's issue handler (GH-5570,

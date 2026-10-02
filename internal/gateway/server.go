@@ -76,6 +76,13 @@ type AdapterHealthSource interface {
 	AdapterHealthSnapshot() []AdapterHealthStatus
 }
 
+// PollerUpSource exposes per-adapter poller up/down state for the
+// pilot_poller_up Prometheus gauge (GH-5588). An AdapterHealthSource that also
+// implements it is wired into the exporter automatically.
+type PollerUpSource interface {
+	PollerUpSnapshot() map[string]bool
+}
+
 // Server is the main gateway server handling WebSocket and HTTP connections.
 // It provides a control plane for managing Pilot via WebSocket, receives webhooks
 // from external services (Linear, GitHub, Jira, Asana), and exposes REST APIs for status
@@ -341,6 +348,9 @@ func (s *Server) SetMetricsSource(source MetricsSource) {
 	defer s.mu.Unlock()
 	s.prometheusExporter = NewPrometheusExporter(source)
 	s.prometheusExporter.SetBuildInfo(s.version, s.commit)
+	if ps, ok := s.adapterHealthSource.(PollerUpSource); ok {
+		s.prometheusExporter.SetPollerSource(ps)
+	}
 	if s.alertsSource != nil {
 		s.prometheusExporter.SetAlertsSource(s.alertsSource)
 	}
@@ -403,6 +413,11 @@ func (s *Server) SetAdapterHealthSource(source AdapterHealthSource) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.adapterHealthSource = source
+	if s.prometheusExporter != nil {
+		if ps, ok := source.(PollerUpSource); ok {
+			s.prometheusExporter.SetPollerSource(ps)
+		}
+	}
 }
 
 // SetGitGraphPath sets the project path used by the /api/v1/gitgraph endpoint.
