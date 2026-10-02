@@ -16,6 +16,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/ghbudget"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -5390,6 +5391,22 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		c.log.Info("handleMerging: PR has an outstanding changes-requested review — holding merge until re-reviewed or dismissed",
 			"pr", prState.PRNumber)
 		return nil
+	}
+
+	// GH-5568: never auto-merge a PR whose "## Not verified" list names a
+	// key-gated / live-service check (live smoke, real API key, "against the
+	// box"). The acceptance-evidence gate cannot run those, and merging on green
+	// with the bullet silently unverified is how PR #5561 merged without #5555's
+	// live smoke. Hold for a human via the existing needs-human escalation.
+	// Fails open with the draft/review checks above: no fetched PR, no hold.
+	if ghPRForHold != nil {
+		if bullets := executor.LiveSmokeNotVerifiedBullets(ghPRForHold.Body); len(bullets) > 0 {
+			reason := "Not verified list names a key-gated / live-service check: " + strings.Join(bullets, "; ")
+			comment := fmt.Sprintf("Holding PR #%d for a human: its **Not verified** section lists a check the acceptance-evidence gate cannot run (live smoke / real API key / external service):\n\n- %s\n\nRun it, then merge manually (or edit the PR body once the check is done).",
+				prState.PRNumber, strings.Join(bullets, "\n- "))
+			c.escalateAndHold(ctx, prState, reason, []string{labelNeedsHuman}, comment)
+			return nil
+		}
 	}
 
 	// GH-4477: re-validate CI live at the merge chokepoint instead of trusting
