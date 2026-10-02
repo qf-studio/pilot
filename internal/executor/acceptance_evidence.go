@@ -378,7 +378,11 @@ var liveSmokePatterns = []struct {
 
 // liveSmokeHoldNote is appended to the reason of a matching Not-verified
 // bullet so the PR body says why the PR is held rather than merging silently.
-const liveSmokeHoldNote = "key-gated / live-service check the gate cannot run; PR is held for a human (pilot-needs-human) to run it before merge"
+//
+// GH-5597: the note must NOT match liveSmokePatterns — it is appended to the
+// reason, and autopilot matches text+reason, so a self-matching note would hold
+// every gate-rendered bullet that carries it regardless of its text.
+const liveSmokeHoldNote = "a check the gate cannot run; PR is held for human approval, which means you ran it"
 
 // IsLiveSmokeBullet reports whether text names a key-gated or live-service
 // check per liveSmokePatterns.
@@ -489,7 +493,9 @@ func RenderAcceptanceEvidenceSections(results []AcceptanceEvidenceResult) string
 		if r.NotVerifiedReason != "" {
 			hasNotVerified = true
 			reason := r.NotVerifiedReason
-			if IsLiveSmokeBullet(r.Item.Text) {
+			// Match text+reason, as LiveSmokeNotVerifiedBullets does on the
+			// rendered body, so a reason-only match is explained too (GH-5597).
+			if IsLiveSmokeBullet(r.Item.Text + "\n" + reason) {
 				reason += "; " + liveSmokeHoldNote
 			}
 			fmt.Fprintf(&notVerified, "- **%s**\n  Reason: %s\n\n", r.Item.Text, reason)
