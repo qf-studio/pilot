@@ -2462,8 +2462,19 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	}
 
 	// Create the parent PR with a GitHub auto-close keyword.
+	// GH-5589: resolve the creator first (same four-tier order as the direct
+	// path) so an epic on a GitLab-hosted project opens an MR, not `gh pr create`.
+	epicCreator, epicCreatorKind := r.resolvePRCreator(task)
+	r.log.Info("PR creator resolved", slog.String("task_id", task.ID), slog.String("kind", epicCreatorKind))
 	epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
-	prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, extraFixesKeyword(task.Description, epicIssueNum), task.Description)
+	var prBody string
+	if epicCreatorKind == prCreatorKindProject || epicCreatorKind == prCreatorKindShared {
+		// GH-5191/GH-5589: no extraFixesKeyword on MR paths; "Closes #" only
+		// for gitlab-sourced tasks, "Source:" line otherwise (mrSourceSuffix).
+		prBody = fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for epic task %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, epicCreatorKind), task.Description)
+	} else {
+		prBody = fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, extraFixesKeyword(task.Description, epicIssueNum), task.Description)
+	}
 	prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody)
 
 	// GH-4220 (b): route the epic parent's title through the same
@@ -2494,7 +2505,13 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	}
 	r.clearTitleRejectionState(task)
 	epicPRTitle := fmt.Sprintf("%s: %s", task.ID, normalizedEpicTitle)
-	prURL, prErr := git.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
+	var prURL string
+	var prErr error
+	if epicCreator != nil {
+		prURL, prErr = epicCreator.CreatePR(ctx, task.Branch, baseBranch, epicPRTitle, prBody)
+	} else {
+		prURL, prErr = git.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
+	}
 	if prErr != nil {
 		// GH-4566 backstop: the origin-relative guard above (line ~1666) should
 		// already have caught an empty umbrella branch before we ever pushed.
