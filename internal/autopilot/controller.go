@@ -9796,6 +9796,10 @@ func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (
 	}
 	done := make(chan result, 1) // buffered: an abandoned goroutine must never block on send
 	go func() {
+		// Deferred so an early return added later cannot leak the timeout
+		// context. It runs after the send on done below, preserving the
+		// ordering guard-delete → send → cancel (GH-5559).
+		defer cancel()
 		var res result
 		func() {
 			defer func() {
@@ -9823,14 +9827,13 @@ func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (
 		// so processPRWithDeadline skipped the PR as "busy" and per-PR counters
 		// (e.g. the 404-eviction count) silently missed a tick.
 		//
-		// cancel() must come AFTER the send: cancelling stageCtx first lets the
-		// waiting loop wake on stageCtx.Done() before done is readable and
-		// misreport a finished handler as a stage timeout.
+		// The deferred cancel() above runs AFTER this send: cancelling stageCtx
+		// first lets the waiting loop wake on stageCtx.Done() before done is
+		// readable and misreport a finished handler as a stage timeout.
 		c.mu.Lock()
 		delete(c.stageInflight, prNumber)
 		c.mu.Unlock()
 		done <- res
-		cancel()
 	}()
 
 	finish := func(r result) bool {

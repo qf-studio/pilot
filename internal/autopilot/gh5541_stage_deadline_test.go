@@ -249,3 +249,37 @@ func TestMetricsAlerter_StaleTickFiresWarning(t *testing.T) {
 		t.Fatal("stale tick raised no alert")
 	}
 }
+
+// TestProcessPRWithDeadline_CancelAfterSendKeepsStageTimeoutZero pins the
+// GH-5559 ordering in the stage handler goroutine: guard-delete → send on done
+// → cancel(). If cancel() ran before the send, the waiting loop could wake on
+// stageCtx.Done() while done was still empty and record a false stage timeout
+// for a handler that had in fact finished. Many instant handlers across
+// parallel workers make that window overwhelmingly likely to be hit, so the
+// metric must stay at exactly zero.
+func TestProcessPRWithDeadline_CancelAfterSendKeepsStageTimeoutZero(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StageTimeout = time.Minute // never legitimately expires
+	cfg.ReviewFeedback = nil
+	c := NewController(cfg, github.NewClient(testutil.FakeGitHubToken), nil, "owner", "repo")
+
+	const workers, perWorker = 8, 1000
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(prNumber int) {
+			defer wg.Done()
+			// Not in activePRs: processOnePR returns immediately, so the
+			// handler completes as fast as possible.
+			for i := 0; i < perWorker; i++ {
+				c.processPRWithDeadline(context.Background(), &PRState{PRNumber: prNumber, Stage: StageReleasing})
+			}
+		}(1000 + w)
+	}
+	wg.Wait()
+
+	if got := c.Metrics().Snapshot().StageTimeouts[string(StageReleasing)]; got != 0 {
+		t.Fatalf("StageTimeouts[releasing] = %d after %d instant handlers, want 0 — cancel() ran before the done send",
+			got, workers*perWorker)
+	}
+}
