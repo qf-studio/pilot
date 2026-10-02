@@ -222,3 +222,63 @@ func TestFinalizeDecomposedParentPR_ProjectKeyedCreatorWinsOverSharedSlot(t *tes
 		t.Errorf("PRUrl = %q, want %q", result.PRUrl, project.url)
 	}
 }
+
+// TestFinalizeEpicBranchPR_RoutesThroughResolvePRCreator (GH-5589): the epic
+// parent PR must use the resolved creator — never `gh pr create` — so an epic on
+// a GitLab-hosted project opens an MR. The fake gh binary records any
+// `pr create` invocation, so a leaked gh call is detected.
+func TestFinalizeEpicBranchPR_RoutesThroughResolvePRCreator(t *testing.T) {
+	tests := []struct {
+		name          string
+		adapter       string
+		issueID       string
+		wantInBody    string
+		wantNotInBody string
+	}{
+		{"linear-sourced gets Source line, no Closes", "linear", "uuid-77", "Source: https://linear.app/issue/APP-77", "Closes #"},
+		{"gitlab-sourced keeps Closes #<iid>", "gitlab", "12", "Closes #12", "Source:"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capturedTitleFile := setUpFakeGhPRCreatePATH(t)
+			branch := "pilot/APP-77"
+			dir := initRepoWithRemoteAndFeatureBranch(t, branch)
+
+			r := newSilentRunnerTask359()
+			stale := &recordingPRCreator{url: "https://gitlab.example.com/wrong/repo/-/merge_requests/1"}
+			r.SetPRCreator(stale)
+			project := &recordingPRCreator{url: "https://gitlab.example.com/example-group/service/-/merge_requests/42"}
+			r.RegisterPRCreator(ProjectPRCreatorKey(dir), project)
+
+			task := &Task{
+				ID: "APP-77", Title: "add feature", Description: "d", Branch: branch,
+				BaseBranch: "main", CreatePR: true, ProjectPath: dir,
+				SourceAdapter: tt.adapter, SourceIssueID: tt.issueID,
+			}
+			result := &ExecutionResult{TaskID: task.ID, Success: true, IsEpic: true}
+			r.finalizeEpicBranchPR(context.Background(), task, NewGitOperations(dir), result, nil)
+
+			if !result.Success {
+				t.Fatalf("Success=false: %s", result.Error)
+			}
+			if _, err := os.Stat(capturedTitleFile); err == nil {
+				t.Error("gh pr create was invoked; epic must route through the project creator")
+			}
+			if stale.calls != 0 {
+				t.Errorf("stale shared creator called %d times, want 0", stale.calls)
+			}
+			if project.calls != 1 || project.source != branch || project.target != "main" {
+				t.Errorf("project creator calls=%d source=%q target=%q", project.calls, project.source, project.target)
+			}
+			if !strings.HasPrefix(project.title, "APP-77: ") {
+				t.Errorf("title = %q, want APP-77: prefix", project.title)
+			}
+			if !strings.Contains(project.body, tt.wantInBody) || strings.Contains(project.body, tt.wantNotInBody) {
+				t.Errorf("body = %q, want %q and no %q", project.body, tt.wantInBody, tt.wantNotInBody)
+			}
+			if result.PRUrl != project.url {
+				t.Errorf("PRUrl = %q, want %q", result.PRUrl, project.url)
+			}
+		})
+	}
+}
