@@ -1,6 +1,6 @@
 # TASK-510: Linear Invoices — move the Pilot integration from the GitHub mirrors to the canonical GitLab repos
 
-**Status**: 🟢 BOX FLIPPED 2026-10-02 08:35Z — fine-grained PAT (group `linear-invoices`, 90d) installed on the box (`GITLAB_TOKEN` export + git credential store), both repos re-cloned from GitLab (GitHub clones archived as `*.gh-archive-20261002-*`), config: `adapters.gitlab.token: "${GITLAB_TOKEN}"` (polling stays off), `adapters.linear.enabled: true` + `api_key: "${LINEAR_API_KEY}"`; `pilot config validate` OK with the daemon env and fails without it (refs live). **Not active until the daemon restarts** — rides the 14:00Z self-upgrade to v2.277.1 (carries #5583/#5584). Code legs MERGED: #5583 → PR#5585, #5584 → PR#5586 (post-merge reviews owed). GitHub mirrors frozen by founder decision.
+**Status**: ✅ LIVE 2026-10-02 08:46Z — **v2.277.1 cut by hand (tag at `7e4d5f167`, GoReleaser 08:43Z)** and running on the box; startup proof: `Registered project MR creator` for `linearinvoices-service` and `linearinvoices-client` (gitlab.com, `project:<path>` keys). Fine-grained PAT (group `linear-invoices`, expires 2026-11-29) in `GITLAB_TOKEN` + git credential store; both repos cloned from GitLab (GitHub clones archived `*.gh-archive-20261002-*`); `adapters.linear.enabled: true`. Both GitLab `main` branches locked to MR-only (push: No one, merge: Maintainers) — verified with the token. Founder scope 10-02: **configure only; no tickets labelled from this side.** Code legs merged: #5583 → PR#5585, #5584 → PR#5586 (post-merge reviews owed). GitHub mirrors frozen.
 **Created**: 2026-10-01 · **Owner**: Navigator plans, Pilot executes · **Supersedes the forge half of**: TASK-509 (its Linear routing + quality-gate findings still apply)
 
 ## Why
@@ -61,6 +61,9 @@ Then restart per `pilot-aws` (tmux C-c → wait → `tmux new-session -d -s pilo
 
 ## Token probe 2026-10-02 (local, before install)
 Passed: project read (both), clone, `pilot/*` push, branch delete, MR create/read/update/close (!2, closed). MR note → 403 (Note category not granted; Pilot does not note MRs for Linear-sourced tasks). **Incident:** the "push to protected main must fail" check SUCCEEDED — protection allows Maintainers and the PAT acts as the group Owner — leaving empty commit `2134169` on service `main` and starting pipeline #75 (`build`); cancelled in the build stage; `deploy-prod` only runs on `prod-*` tags, prod untouched. **Recommendation (founder):** set protected `main` on both repos to "Allowed to push and merge: No one" so every change goes through an MR. Flip script updated: credential proof is `ls-remote`, never a push.
+
+## Restart lesson 2026-10-02
+The daemon's self-upgrade (08:44:23Z, 2.277.0 → v2.277.1) re-execs with the OLD process env, so the new `${GITLAB_TOKEN}` reference in config killed it at load ("environment variable GITLAB_TOKEN … unset") — procs=0 until the wrapper restart at 08:45:5xZ loaded `start-pilot.sh`. Rule: any new sensitive env var in config needs a wrapper restart BEFORE the next release lands, or the self-upgrade restart fails closed.
 
 ## Incident log (this session)
 - 21:50Z: first cutover script ran with an empty token (shell globbing broke the mint): service clone archived, re-clone failed, loop aborted before client. Restored 21:58Z from `linearinvoices-service.gh-archive-20261001-215023`; empty `export GITLAB_TOKEN=` and empty credential entry removed. Lesson: never let a remote mutation script run without asserting the secret is non-empty **before** sending it (`[ -n "$TOK" ] || exit`).
