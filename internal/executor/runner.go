@@ -1157,6 +1157,9 @@ type Runner struct {
 	// Used by checkBasePresence for the dispatch claim-path guard.
 	basePresenceProbes   map[string]BasePresenceProbe
 	basePresenceProbesMu sync.RWMutex
+	// GH-5608: baseRefCache holds the per-project fetched default-branch ref
+	// for the local (non-GitHub) base-presence probe.
+	baseRefCache baseRefCache
 	// GH-2211: SubIssueLinker for native GitHub sub-issue API linking
 	subIssueLinker SubIssueLinker // Optional linker for native GitHub parent→child wiring
 	// GH-1599: Execution log store for milestone entries

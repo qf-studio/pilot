@@ -404,8 +404,22 @@ var checkBasePresence = func(ctx context.Context, runner *Runner, task *Task, pr
 	}
 	probe := selectBasePresenceProbe(ctx, runner, task, projectPath, owner, repo)
 
-	return basePresenceChecker{probe: probe, log: log}.Check(ctx, owner, repo, refs, paths), nil
+	hold := basePresenceChecker{probe: probe, log: log}.Check(ctx, owner, repo, refs, paths)
+	if hold.Held && task.SourceAdapter != "" && task.SourceAdapter != "github" {
+		hold.Reason += nonGitHubHoldReleaseNote
+	}
+	return hold, nil
 }
+
+// nonGitHubHoldReleaseNote is appended to the hold reason for tasks from a
+// non-GitHub adapter (GH-5608). Decision: the live-body refresh in the
+// dispatcher is gated to the github adapter and the hold-cap escalation labels
+// through GitHub issue APIs, so for a Linear/GitLab-sourced task neither
+// "edit the issue body" nor "clear the hold label" releases the hold — only
+// the path landing on the default branch does. Stating that in the reason puts
+// it in the log line, the execution event and the tracker comment, instead of
+// leaving the operator to discover it.
+const nonGitHubHoldReleaseNote = "; editing the issue body or clearing a hold label does not release this hold for a non-GitHub task — it releases when the path lands on the default branch"
 
 // selectBasePresenceProbe picks the probe for a task's project (GH-5601).
 // Probes are only ever registered by the GitHub poller, so for a project whose
@@ -415,17 +429,23 @@ var checkBasePresence = func(ctx context.Context, runner *Runner, task *Task, pr
 // "prerequisite not on main" hold. Order:
 //
 //  1. SourceRepo populated (a GitHub-sourced task) → GitHub behavior, unchanged.
-//  2. origin remote on a non-GitHub host → localCheckoutBasePresenceProbe
+//  2. origin remote on a non-GitHub host, or an origin URL whose host cannot be
+//     parsed (file://, bare path, local mirror — GH-5608: the gh fallback maps
+//     404 to "absent", the original phantom-hold bug) → localCheckoutBasePresenceProbe
 //     (works for every forge, no API quota, never shells out to gh).
-//  3. otherwise → registered "github:owner/repo" probe, else the gh-CLI fallback.
+//  3. otherwise (no origin URL, or a parseable GitHub host) → registered
+//     "github:owner/repo" probe, else the gh-CLI fallback.
 func selectBasePresenceProbe(ctx context.Context, runner *Runner, task *Task, projectPath, owner, repo string) BasePresenceProbe {
 	if task.SourceRepo == "" && projectPath != "" {
-		if host := originHost(ctx, projectPath); host != "" && !isGitHubHost(host) {
-			var log *slog.Logger
-			if runner != nil {
-				log = runner.log
+		if url := originURL(ctx, projectPath); url != "" {
+			if host := parseRemoteHost(url); host == "" || !isGitHubHost(host) {
+				p := &localCheckoutBasePresenceProbe{dir: projectPath}
+				if runner != nil {
+					p.log = runner.log
+					p.cache = &runner.baseRefCache
+				}
+				return p
 			}
-			return &localCheckoutBasePresenceProbe{dir: projectPath, log: log}
 		}
 	}
 	if runner != nil {
@@ -441,11 +461,11 @@ func isGitHubHost(host string) bool {
 	return strings.Contains(strings.ToLower(host), "github")
 }
 
-// originHost returns the host of dir's `origin` remote ("" when it cannot be
-// determined). It reads the raw configured URL (not `git remote get-url`,
-// which expands url.<base>.insteadOf rewrites) so host classification reflects
-// what the operator configured.
-func originHost(ctx context.Context, dir string) string {
+// originURL returns dir's raw `origin` remote URL ("" when it cannot be
+// determined). It reads the configured URL (not `git remote get-url`, which
+// expands url.<base>.insteadOf rewrites) so host classification reflects what
+// the operator configured.
+func originURL(ctx context.Context, dir string) string {
 	out, err := exec.CommandContext(ctx, "git", "-C", dir, "config", "--get", "remote.origin.url").Output()
 	if err != nil {
 		out, err = exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin").Output()
@@ -453,7 +473,7 @@ func originHost(ctx context.Context, dir string) string {
 			return ""
 		}
 	}
-	return parseRemoteHost(strings.TrimSpace(string(out)))
+	return strings.TrimSpace(string(out))
 }
 
 // parseRemoteHost extracts the host from a git remote URL (https, ssh://, or
@@ -483,18 +503,71 @@ func parseRemoteHost(url string) string {
 	return ""
 }
 
+// baseRefCacheTTL bounds how long a fetched default-branch ref is reused per
+// project (GH-5608). The probe is constructed per checkBasePresence call, so
+// without a runner-level cache every queued task in a project fetched origin
+// on every tick (a 60s-capped network round trip, serialized in the project
+// worker). 90s keeps it to one round trip per project per tick while a landed
+// path is still seen within about one extra tick.
+const baseRefCacheTTL = 90 * time.Second
+
+// localProbeFetchTimeout caps the origin fetch. The fetch deliberately runs
+// outside withGitCredentials.
+const localProbeFetchTimeout = 60 * time.Second
+
+// localProbeFetchOrigin fetches origin in dir. Package-level seam so tests can
+// count fetches without a network.
+var localProbeFetchOrigin = func(ctx context.Context, dir string) error {
+	fctx, cancel := context.WithTimeout(ctx, localProbeFetchTimeout)
+	defer cancel()
+	if out, err := exec.CommandContext(fctx, "git", "-C", dir, "fetch", "-q", "origin").CombinedOutput(); err != nil {
+		return fmt.Errorf("git fetch origin in %s: %w (output: %s)", dir, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// baseRefCache caches the resolved default-branch ref (or the resolve error)
+// per project path for baseRefCacheTTL. The zero value is ready to use.
+type baseRefCache struct {
+	mu      sync.Mutex
+	entries map[string]*baseRefEntry
+}
+
+type baseRefEntry struct {
+	mu  sync.Mutex // held across the fetch so concurrent callers share one
+	ref string
+	err error
+	at  time.Time
+}
+
+func (c *baseRefCache) entry(dir string) *baseRefEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]*baseRefEntry)
+	}
+	e := c.entries[dir]
+	if e == nil {
+		e = &baseRefEntry{}
+		c.entries[dir] = e
+	}
+	return e
+}
+
 // localCheckoutBasePresenceProbe is the forge-agnostic probe for non-GitHub
-// projects (GH-5601): it fetches origin once and answers path existence from
-// the local object store (`git cat-file -e origin/<default>:<path>`). Issue/PR
-// dependency refs ("Depends on: #N") are GitHub numbers and cannot be resolved
-// without a forge API, so they are reported as unknown (no hold).
+// projects (GH-5601): it fetches origin (cached per project, GH-5608) and
+// answers path existence from the local object store
+// (`git cat-file -e origin/<default>:<path>`). Issue/PR dependency refs
+// ("Depends on: #N") are GitHub numbers and cannot be resolved without a forge
+// API, so they are reported as unknown (no hold).
 type localCheckoutBasePresenceProbe struct {
 	dir string
 	log *slog.Logger
+	// cache is shared across probes (the runner's); nil falls back to a
+	// probe-local cache.
+	cache *baseRefCache
 
-	once sync.Once
-	ref  string // resolved "origin/<default>", empty when unresolvable
-	err  error
+	ownCache baseRefCache
 }
 
 func (p *localCheckoutBasePresenceProbe) IssueOrPRState(context.Context, string, string, int) (string, string, error) {
@@ -505,36 +578,62 @@ func (p *localCheckoutBasePresenceProbe) LinkedPRNumbers(context.Context, string
 	return nil, nil
 }
 
-// prepare fetches origin and resolves the default-branch ref, once per probe.
+// prepare fetches origin and resolves the default-branch ref, at most once per
+// project per baseRefCacheTTL. A done context is returned as an error and is
+// never cached or mistaken for an answer about the repo (GH-5608).
 func (p *localCheckoutBasePresenceProbe) prepare(ctx context.Context) (string, error) {
-	p.once.Do(func() {
-		fctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		if out, err := exec.CommandContext(fctx, "git", "-C", p.dir, "fetch", "-q", "origin").CombinedOutput(); err != nil {
-			p.err = fmt.Errorf("git fetch origin in %s: %w (output: %s)", p.dir, err, strings.TrimSpace(string(out)))
-			return
+	c := p.cache
+	if c == nil {
+		c = &p.ownCache
+	}
+	e := c.entry(p.dir)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.at.IsZero() && time.Since(e.at) < baseRefCacheTTL {
+		return e.ref, e.err
+	}
+
+	ref, err := p.resolve(ctx)
+	if ctx.Err() != nil {
+		if err == nil {
+			err = ctx.Err()
 		}
-		candidates := []string{}
-		if out, err := exec.CommandContext(ctx, "git", "-C", p.dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output(); err == nil {
-			if ref := strings.TrimSpace(string(out)); ref != "" {
-				candidates = append(candidates, ref)
-			}
+		return "", err
+	}
+	e.ref, e.err, e.at = ref, err, time.Now()
+	return ref, err
+}
+
+func (p *localCheckoutBasePresenceProbe) resolve(ctx context.Context) (string, error) {
+	if err := localProbeFetchOrigin(ctx, p.dir); err != nil {
+		return "", err
+	}
+	candidates := []string{}
+	out, err := exec.CommandContext(ctx, "git", "-C", p.dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
+	if err == nil {
+		if ref := strings.TrimSpace(string(out)); ref != "" {
+			candidates = append(candidates, ref)
 		}
-		candidates = append(candidates, "origin/main", "origin/master")
-		for _, ref := range candidates {
-			if exec.CommandContext(ctx, "git", "-C", p.dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Run() == nil {
-				p.ref = ref
-				return
-			}
+	} else if ctx.Err() != nil {
+		return "", fmt.Errorf("git symbolic-ref in %s: %w", p.dir, ctx.Err())
+	}
+	candidates = append(candidates, "origin/main", "origin/master")
+	for _, ref := range candidates {
+		rerr := exec.CommandContext(ctx, "git", "-C", p.dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Run()
+		if rerr == nil {
+			return ref, nil
 		}
-		p.err = fmt.Errorf("cannot resolve origin default branch in %s", p.dir)
-	})
-	return p.ref, p.err
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("git rev-parse %s in %s: %w", ref, p.dir, ctx.Err())
+		}
+	}
+	return "", fmt.Errorf("cannot resolve origin default branch in %s", p.dir)
 }
 
 // FileExistsOnDefaultBranch implements BasePresenceProbe. A failure to fetch or
-// to resolve the default branch is a lookup error (the checker fails open);
-// once the ref resolves, a failing cat-file means the path is genuinely absent.
+// to resolve the default branch, or a done context, is a lookup error (the
+// checker fails open); once the ref resolves, a cat-file exit error on a live
+// context means the path is genuinely absent.
 func (p *localCheckoutBasePresenceProbe) FileExistsOnDefaultBranch(ctx context.Context, _, _, path string) (bool, error) {
 	ref, err := p.prepare(ctx)
 	if err != nil {
@@ -543,6 +642,11 @@ func (p *localCheckoutBasePresenceProbe) FileExistsOnDefaultBranch(ctx context.C
 	err = exec.CommandContext(ctx, "git", "-C", p.dir, "cat-file", "-e", ref+":"+path).Run()
 	if err == nil {
 		return true, nil
+	}
+	// A process killed by context cancellation also yields an *exec.ExitError
+	// ("signal: killed"), so the context must be checked before classifying.
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("git cat-file -e %s:%s: %w", ref, path, ctx.Err())
 	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {

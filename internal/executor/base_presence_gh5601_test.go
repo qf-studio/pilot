@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -148,5 +149,138 @@ func TestLocalCheckoutBasePresenceProbe_FetchFailureIsLookupError(t *testing.T) 
 	exists, err := probe.FileExistsOnDefaultBranch(context.Background(), "", "", "docker/entrypoint.sh")
 	if err == nil || exists {
 		t.Errorf("unreachable origin must be a lookup error (fail-open upstream), got exists=%v err=%v", exists, err)
+	}
+}
+
+// GH-5608: a done context is a lookup error, never "path absent".
+func TestLocalCheckoutBasePresenceProbe_CancelledContextIsLookupError(t *testing.T) {
+	proj := newForgeProject(t, "https://gitlab.com/acme/widgets.git")
+
+	// Cancel exactly between prepare (fetch + ref resolve) and cat-file by
+	// cancelling from inside the fetch seam's follow-up: resolve once with a
+	// live context, then probe with a context that is already done.
+	probe := &localCheckoutBasePresenceProbe{dir: proj}
+	if _, err := probe.prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exists, err := probe.FileExistsOnDefaultBranch(ctx, "", "", "does/not/exist.sh")
+	if err == nil || exists {
+		t.Errorf("cancelled context must be a lookup error, got exists=%v err=%v", exists, err)
+	}
+
+	// Through the checker: a lookup error fails open (no hold).
+	hold := basePresenceChecker{probe: probe}.Check(ctx, "", "", nil, []string{"does/not/exist.sh"})
+	if hold.Held {
+		t.Errorf("cancelled context must not produce a hold, got %+v", hold)
+	}
+
+	// Cancelled before prepare: error, and nothing is cached for later calls.
+	fresh := &localCheckoutBasePresenceProbe{dir: proj}
+	if exists, err := fresh.FileExistsOnDefaultBranch(ctx, "", "", "docker/entrypoint.sh"); err == nil || exists {
+		t.Errorf("cancelled prepare must be a lookup error, got exists=%v err=%v", exists, err)
+	}
+	if exists, err := fresh.FileExistsOnDefaultBranch(context.Background(), "", "", "docker/entrypoint.sh"); err != nil || !exists {
+		t.Errorf("cancellation must not poison the cache, got exists=%v err=%v", exists, err)
+	}
+}
+
+// GH-5608: two checks on the same project within the TTL fetch once.
+func TestCheckBasePresence_FetchCachedPerProject(t *testing.T) {
+	proj := newForgeProject(t, "https://gitlab.com/acme/widgets.git")
+	var fetches int
+	orig := localProbeFetchOrigin
+	localProbeFetchOrigin = func(ctx context.Context, dir string) error {
+		fetches++
+		return orig(ctx, dir)
+	}
+	t.Cleanup(func() { localProbeFetchOrigin = orig })
+
+	runner := &Runner{}
+	task := &Task{ID: "LIN-1", SourceAdapter: "linear"}
+	for i := 0; i < 3; i++ {
+		hold, err := checkBasePresence(context.Background(), runner, task, proj, nil, []string{"docker/entrypoint.sh"})
+		if err != nil || hold.Held {
+			t.Fatalf("tick %d: hold=%+v err=%v", i, hold, err)
+		}
+	}
+	if fetches != 1 {
+		t.Errorf("fetches = %d, want 1 across 3 checks within the TTL", fetches)
+	}
+
+	// Expired entry refetches.
+	e := runner.baseRefCache.entry(proj)
+	e.at = e.at.Add(-2 * baseRefCacheTTL)
+	if _, err := checkBasePresence(context.Background(), runner, task, proj, nil, []string{"docker/entrypoint.sh"}); err != nil {
+		t.Fatal(err)
+	}
+	if fetches != 2 {
+		t.Errorf("fetches = %d after TTL expiry, want 2", fetches)
+	}
+}
+
+// GH-5608: an unresolvable default branch is a lookup error (fail open).
+func TestCheckBasePresence_UnresolvableDefaultBranchFailsOpen(t *testing.T) {
+	proj := newForgeProject(t, "https://gitlab.com/acme/widgets.git")
+	// Rename the only branch so neither origin/HEAD, origin/main nor origin/master resolve.
+	bare := filepath.Join(filepath.Dir(proj), "origin.git")
+	gitRun(t, bare, "branch", "-m", "main", "trunk")
+	gitRun(t, bare, "symbolic-ref", "HEAD", "refs/heads/unborn") // fetch cannot re-create origin/HEAD
+	gitRun(t, proj, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	gitRun(t, proj, "update-ref", "-d", "refs/remotes/origin/main")
+
+	hold, err := checkBasePresence(context.Background(), &Runner{}, &Task{SourceAdapter: "linear"}, proj, nil, []string{"docker/entrypoint.sh", "nope/missing.sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hold.Held {
+		t.Errorf("unresolvable default branch must fail open, got %+v", hold)
+	}
+	probe := &localCheckoutBasePresenceProbe{dir: proj}
+	if _, err := probe.FileExistsOnDefaultBranch(context.Background(), "", "", "docker/entrypoint.sh"); err == nil {
+		t.Error("want lookup error for unresolvable default branch")
+	}
+}
+
+// GH-5608: an unparseable origin host (file://, bare path) uses the local
+// probe, never the gh fallback; an unregistered non-GitHub project never
+// reaches the gh probe.
+func TestSelectBasePresenceProbe_UnparseableOriginUsesLocalProbe(t *testing.T) {
+	ctx := context.Background()
+	for _, url := range []string{"file:///srv/mirrors/widgets.git", "/srv/mirrors/widgets.git"} {
+		proj := newForgeProject(t, url)
+		if p := selectBasePresenceProbe(ctx, &Runner{}, &Task{}, proj, "x", "y"); !isLocalProbe(p) {
+			t.Errorf("origin %q: got %T, want *localCheckoutBasePresenceProbe", url, p)
+		}
+	}
+	// No origin at all keeps the gh fallback.
+	noOrigin := t.TempDir()
+	gitRun(t, noOrigin, "init", "-q", "-b", "main")
+	if p := selectBasePresenceProbe(ctx, &Runner{}, &Task{}, noOrigin, "x", "y"); p != BasePresenceProbe(ghCLIBasePresenceProbe{}) {
+		t.Errorf("no origin: got %T, want ghCLIBasePresenceProbe", p)
+	}
+}
+
+func TestCheckBasePresence_UnregisteredNonGitHubNeverCallsGhProbe(t *testing.T) {
+	proj := newForgeProject(t, "https://gitlab.com/acme/widgets.git")
+	runner := &Runner{}
+	// Nothing registered for this repo; a probe registered under the same key
+	// shape must not be reached, and the gh fallback must not be selected.
+	if p := selectBasePresenceProbe(context.Background(), runner, &Task{SourceAdapter: "linear"}, proj, "acme", "widgets"); p == BasePresenceProbe(ghCLIBasePresenceProbe{}) {
+		t.Fatal("unregistered non-GitHub project selected the gh probe")
+	}
+	hold, err := checkBasePresence(context.Background(), runner, &Task{SourceAdapter: "linear"}, proj, nil, []string{"nope/missing.sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hold.Held || !strings.Contains(hold.Reason, "does not release this hold for a non-GitHub task") {
+		t.Errorf("want a hold carrying the release-path note, got %+v", hold)
+	}
+
+	// A GitHub-adapter task's reason is unchanged.
+	hold, _ = checkBasePresence(context.Background(), runner, &Task{SourceAdapter: "github"}, proj, nil, []string{"nope/missing.sh"})
+	if !hold.Held || strings.Contains(hold.Reason, "non-GitHub") {
+		t.Errorf("github-adapter reason must not carry the note, got %+v", hold)
 	}
 }
