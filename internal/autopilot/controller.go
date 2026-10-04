@@ -3713,10 +3713,11 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 	if escalateReason != "" {
 		c.log.Warn("merge gate escalated: requiring human approval",
 			"pr", prState.PRNumber, "reason", escalateReason)
-		// GH-5599: the hold comment is posted once per distinct reason — a
-		// re-entry (fix push, rebase, infra retry) with the same bullets must not
-		// repeat it. Compared BEFORE EscalationReason is overwritten below.
-		liveSmokeAlreadyAnnounced := prState.EscalationReason == escalateReason
+		// GH-5599/GH-5602: the hold comment is posted once per PR — a re-entry
+		// (fix push, rebase, infra retry) must not repeat it, even when the
+		// combined reason differs by a dropped non-live-smoke segment. Keyed on
+		// the live-smoke prefix, read BEFORE EscalationReason is overwritten below.
+		liveSmokeAlreadyAnnounced := isLiveSmokeHold(prState) || prState.LiveSmokeHoldAnnounced
 		// GH-5599: every (re)escalation waits for a fresh decision — a decision
 		// recorded for an earlier hold (before a rebase / retry re-drove the PR)
 		// must not release this one on the next tick.
@@ -3733,6 +3734,7 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		}
 		if len(liveSmokeBullets) > 0 && !liveSmokeAlreadyAnnounced {
 			c.postLiveSmokeHoldComment(ctx, prState, liveSmokeBullets)
+			prState.LiveSmokeHoldAnnounced = true
 		}
 		if testEvidenceHeld {
 			c.postTestEvidenceHoldComment(ctx, prState, escalateReason)

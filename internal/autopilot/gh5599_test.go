@@ -253,3 +253,72 @@ func TestHandleCIPassed_LiveSmokeHoldCommentOncePerHold(t *testing.T) {
 		t.Errorf("hold comments posted = %d, want 1", got)
 	}
 }
+
+// TestNotifyApprovalRequired_CombinedReasonCarriesEveryGate covers GH-5602: a
+// live-smoke hold combined with another gate (size floor) must show BOTH in the
+// chat message — the approver releases every gate, not just the smoke run.
+func TestNotifyApprovalRequired_CombinedReasonCarriesEveryGate(t *testing.T) {
+	var sent string
+	notifier, tgServer := newTestNotifier(t, &sent)
+	defer tgServer.Close()
+
+	const sizeFloor = "diff below size floor"
+	prState := &PRState{
+		PRNumber:         5561,
+		EscalationReason: sizeFloor + "; " + liveSmokeReasonPrefix + "Live smoke on four labelled excerpts",
+	}
+	if err := notifier.NotifyApprovalRequired(context.Background(), prState); err != nil {
+		t.Fatalf("NotifyApprovalRequired: %v", err)
+	}
+	for _, want := range []string{sizeFloor, "Live smoke on four labelled excerpts", "Held: key-gated", "Approving means YOU ran"} {
+		if !strings.Contains(sent, want) {
+			t.Errorf("notification missing %q:\n%s", want, sent)
+		}
+	}
+}
+
+// TestHandleCIPassed_LiveSmokeHoldCommentSurvivesDroppedSegment covers GH-5602
+// problem 3: re-entry whose combined reason differs only by a dropped
+// non-live-smoke segment (size floor cleared by a fix push) posts no second
+// hold comment; neither does re-entry after a rescind emptied EscalationReason.
+func TestHandleCIPassed_LiveSmokeHoldCommentSurvivesDroppedSegment(t *testing.T) {
+	var comments atomic.Int32
+	var mergeAttempted, commented atomic.Bool
+	innerServer := liveSmokeServer(t, liveSmokeBody, &mergeAttempted, &commented)
+	defer innerServer.Close()
+	inner := innerServer.Config.Handler
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments") {
+			comments.Add(1)
+		}
+		inner.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	c := newLiveSmokeController(server)
+
+	// Previous hold carried an extra segment (e.g. reloaded from the state store).
+	prState := &PRState{
+		PRNumber: 5561, HeadSHA: "sha5561", Stage: StageCIPassed, TargetBranch: "main",
+		EscalationReason: "diff below size floor; " + liveSmokeReasonPrefix + "Live smoke on four labelled excerpts",
+	}
+	if err := c.handleCIPassed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIPassed #1: %v", err)
+	}
+	if got := comments.Load(); got != 0 {
+		t.Fatalf("hold comments after re-entry with dropped segment = %d, want 0", got)
+	}
+
+	// A rescind clears EscalationReason; the in-memory announced flag still dedupes.
+	prState2 := &PRState{PRNumber: 5561, HeadSHA: "sha5561", Stage: StageCIPassed, TargetBranch: "main"}
+	if err := c.handleCIPassed(context.Background(), prState2); err != nil {
+		t.Fatalf("handleCIPassed #2: %v", err)
+	}
+	prState2.EscalationReason = "" // rescindApprovalOnCIRegression
+	prState2.Stage = StageCIPassed
+	if err := c.handleCIPassed(context.Background(), prState2); err != nil {
+		t.Fatalf("handleCIPassed #3: %v", err)
+	}
+	if got := comments.Load(); got != 1 {
+		t.Errorf("hold comments = %d, want 1", got)
+	}
+}
