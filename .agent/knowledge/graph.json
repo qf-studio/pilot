@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-09-28T19:53:52.702136+00:00",
+  "updated": "2026-10-04T20:07:23.657378+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -7454,6 +7454,31 @@
         ],
         "created": "2026-10-02",
         "last_validated": "2026-10-02"
+      },
+      "linear-invoices-tickets-founder-owned-hands-off": {
+        "type": "learning",
+        "summary": "Founder directive 2026-10-02: Linear Invoices tickets (LIN-QF-*) are the founder's own queue; Navigator never labels/reviews/comments/re-routes/reports on them. Pilot-repo work only.",
+        "file": ".agent/knowledge/memories/learnings/linear-invoices-tickets-founder-owned-hands-off.md",
+        "concepts": [
+          "workflow-discipline",
+          "linear",
+          "founder-scope"
+        ],
+        "confidence": 0.95,
+        "created": "2026-10-02"
+      },
+      "canary-cron-outlives-sandbox-deonboard-skip-guard-reports-green": {
+        "type": "pitfall",
+        "summary": "Canary sandbox de-onboarded 2026-08-14 but pilot-canary.yml cron stayed on; open-issue guard skipped behind stale sandbox issues and reported success for 7 weeks until the CANARY_GH_TOKEN PAT expired and the guard failed, reopening #4265/#4366. Disarm = disable the cron; a skip must not report green.",
+        "file": ".agent/knowledge/memories/pitfalls/canary-cron-outlives-sandbox-deonboard-skip-guard-reports-green.md",
+        "concepts": [
+          "canary",
+          "github-actions",
+          "tokens",
+          "workflow-discipline"
+        ],
+        "confidence": 0.95,
+        "created": "2026-10-04"
       }
     }
   },
@@ -10197,6 +10222,16 @@
       "from": "TASK-508",
       "to": "deployment",
       "type": "implements"
+    },
+    {
+      "from": "linear-invoices-tickets-founder-owned-hands-off",
+      "to": "TASK-510",
+      "type": "relates_to"
+    },
+    {
+      "from": "canary-cron-outlives-sandbox-deonboard-skip-guard-reports-green",
+      "to": "TASK-403",
+      "type": "relates_to"
     }
   ],
   "concept_index": {
@@ -12541,11 +12576,11 @@
       "mem-209"
     ]
   },
-  "last_updated": "2026-10-02T13:38:29.297893+00:00",
+  "last_updated": "2026-10-04T20:07:23.657378+00:00",
   "stats": {
-    "total_nodes": 625,
-    "total_edges": 548,
-    "memory_count": 342
+    "total_nodes": 627,
+    "total_edges": 550,
+    "memory_count": 344
   },
   "metadata": {}
 }
