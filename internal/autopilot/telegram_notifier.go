@@ -63,10 +63,13 @@ func approvalReasonDetail(prState *PRState) string {
 	if prState.EscalationReason == "" {
 		return ""
 	}
-	if !isLiveSmokeHold(prState) {
-		return fmt.Sprintf("Reason: %s\n", escapeLegacyMarkdown(prState.EscalationReason))
-	}
+	// The full combined reason is always shown: size-floor, scope-drift and
+	// test-evidence segments are gates the approver also releases (GH-5602).
 	var b strings.Builder
+	fmt.Fprintf(&b, "Reason: %s\n", escapeLegacyMarkdown(prState.EscalationReason))
+	if !isLiveSmokeHold(prState) {
+		return b.String()
+	}
 	b.WriteString("⚠️ *Held: key-gated / live-service check not run*\n")
 	for _, bullet := range liveSmokeBulletsFromReason(prState.EscalationReason) {
 		fmt.Fprintf(&b, "  • %s\n", escapeLegacyMarkdown(bullet))

@@ -1,9 +1,11 @@
 package approval
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -1070,4 +1072,71 @@ func TestChatHandlers_RenderApprovalContext(t *testing.T) {
 	if strings.Contains((&TelegramHandler{}).formatApprovalMessage(plain), "Reason:") {
 		t.Error("request without escalation reason must not render a Reason line")
 	}
+}
+
+// TestManager_CancelPending_NoTimeoutDecision covers GH-5602: cancelling a
+// pending request removes it from m.pending and the waiter goroutine does NOT
+// record a "system" timeout decision (or log "timed out") for a request that was
+// cancelled, not expired.
+func TestManager_CancelPending_NoTimeoutDecision(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreMerge.Enabled = true
+	config.PreMerge.Timeout = time.Minute
+	config.PreMerge.DefaultAction = DecisionRejected
+
+	m := NewManager(config)
+	var logBuf syncBuffer
+	m.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	writer := &mockPRStateWriter{}
+	m.WithStateWriter(writer)
+	handler := &mockHandler{name: "test"} // never responds
+	m.RegisterHandler(handler)
+
+	req := &Request{ID: "req-cancel", TaskID: "GH-5602", Stage: StagePreMerge, Title: "Merge approval", CreatedAt: time.Now()}
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("SubmitApprovalRequest: %v", err)
+	}
+
+	m.CancelPending(context.Background(), "GH-5602")
+
+	m.mu.RLock()
+	_, stillPending := m.pending[req.ID]
+	m.mu.RUnlock()
+	if stillPending {
+		t.Error("cancelled request still in m.pending")
+	}
+
+	// The waiter goroutine logs "cancelled" once it observes the cancel; wait for it.
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logBuf.String(), "async approval cancelled") && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(logBuf.String(), "async approval cancelled") {
+		t.Fatalf("waiter never observed the cancel; log:\n%s", logBuf.String())
+	}
+	if calls := writer.getCalls(); len(calls) != 0 {
+		t.Errorf("SetApprovalDecision calls = %+v, want none", calls)
+	}
+	if strings.Contains(logBuf.String(), "timed out") {
+		t.Errorf("cancel logged as a timeout:\n%s", logBuf.String())
+	}
+}
+
+// syncBuffer is a goroutine-safe bytes.Buffer for capturing slog output.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -186,9 +187,13 @@ func (m *Manager) checkRuleTriggers(req *Request) *Rule {
 func (m *Manager) CancelPending(ctx context.Context, taskID string) {
 	m.mu.Lock()
 	toCancel := make([]*pendingRequest, 0)
-	for _, pr := range m.pending {
+	for id, pr := range m.pending {
 		if pr.Request.TaskID == taskID {
 			toCancel = append(toCancel, pr)
+			// Remove under the lock before cancelling (mirrors RecordDecision) so
+			// the waiter goroutine sees wasPending == false and does not record a
+			// "system" timeout decision for a request that was cancelled, not expired.
+			delete(m.pending, id)
 		}
 	}
 	m.mu.Unlock()
@@ -371,6 +376,13 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 				delete(m.pending, req.ID)
 			}
 			m.mu.Unlock()
+			if errors.Is(dispatchCtx.Err(), context.Canceled) {
+				// Cancelled (CancelPending / RecordDecision), not expired: only a
+				// real deadline writes the default decision.
+				m.log.Debug("async approval cancelled, no timeout decision recorded",
+					slog.String("request_id", req.ID))
+				return
+			}
 			// Skip write if RecordDecision already resolved this request.
 			if wasPending {
 				if m.stateWriter != nil {

@@ -1206,6 +1206,11 @@ type PRState struct {
 	// reload of an already-parked PR must see the actual gate reason rather
 	// than degrading to the generic env-based fallback wording.
 	EscalationReason string
+	// LiveSmokeHoldAnnounced is set once the live-smoke hold comment has been
+	// posted for this PR (GH-5602). In-memory only: it survives
+	// rescindApprovalOnCIRegression clearing EscalationReason; across restarts
+	// the persisted EscalationReason prefix (isLiveSmokeHold) covers dedupe.
+	LiveSmokeHoldAnnounced bool
 	// Parked is true once submitAsyncApprovalRequest has determined a gate
 	// demands approval but no approval channel is wired (approvalMgr is nil,
 	// or approval.pre_merge.enabled=false) — GH-4596. Before this field
