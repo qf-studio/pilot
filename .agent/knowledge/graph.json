@@ -1100,6 +1100,26 @@
         "name": "Design-Verification",
         "aliases": [],
         "domain": "general"
+      },
+      "duplicate-post": {
+        "name": "Duplicate-Post",
+        "aliases": [],
+        "domain": "general"
+      },
+      "multi-session": {
+        "name": "Multi-Session",
+        "aliases": [],
+        "domain": "general"
+      },
+      "ops-asks": {
+        "name": "Ops-Asks",
+        "aliases": [],
+        "domain": "general"
+      },
+      "nelya": {
+        "name": "Nelya",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -7543,6 +7563,21 @@
         ],
         "created": "2026-10-05",
         "last_validated": "2026-10-05"
+      },
+      "mem-213": {
+        "type": "pitfall",
+        "summary": "Two Claude sessions (claude.ai Navigator chat with the Slack connector, and Claude Code in the repo) posted the same ops ask to Nelya in #infrastructure 16 s apart (2026-10-05 10:52 CEST, TASK-502 leg 1 wiring). Both read the same TASK doc, both decided the ask was owed, neither read the channel first; the 'POSTED' line in the TASK doc only landed after sending. Rule: before any outward Slack/email post, read the destination's last 10 messages and search for the topic in the past 2 h; write the 'ask POSTED <ts>' line into the TASK doc (and push) BEFORE sending, not after; and only one session owns outward comms for a task \u2014 the founder says which. Also the correct ECS service name for the reconciler is console-workers (split 09-28), not 'reconciler task def'.",
+        "path": "memories/pitfalls/mem-213.md",
+        "confidence": 0.95,
+        "concepts": [
+          "adapters",
+          "duplicate-post",
+          "multi-session",
+          "ops-asks",
+          "nelya"
+        ],
+        "created": "2026-10-05",
+        "last_validated": "2026-10-05"
       }
     }
   },
@@ -10306,6 +10341,11 @@
       "from": "mem-212",
       "to": "TASK-502",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-213",
+      "to": "TASK-502",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -10319,7 +10359,8 @@
       "mem-144",
       "mem-149",
       "slack-approval-socket-mode-unroutable",
-      "slack-routing-three-keys-alerts-vs-approvals-vs-chat"
+      "slack-routing-three-keys-alerts-vs-approvals-vs-chat",
+      "mem-213"
     ],
     "alerts": [
       "TASK-379",
@@ -12517,7 +12558,8 @@
       "mem-201"
     ],
     "nelya": [
-      "mem-201"
+      "mem-201",
+      "mem-213"
     ],
     "aws-infrastructure-pilot": [
       "mem-201"
@@ -12671,13 +12713,22 @@
     ],
     "design-verification": [
       "mem-212"
+    ],
+    "duplicate-post": [
+      "mem-213"
+    ],
+    "multi-session": [
+      "mem-213"
+    ],
+    "ops-asks": [
+      "mem-213"
     ]
   },
-  "last_updated": "2026-10-05T08:43:04.908549+00:00",
+  "last_updated": "2026-10-05T08:53:36.994080+00:00",
   "stats": {
-    "total_nodes": 636,
-    "total_edges": 552,
-    "memory_count": 346
+    "total_nodes": 641,
+    "total_edges": 553,
+    "memory_count": 347
   },
   "metadata": {}
 }
