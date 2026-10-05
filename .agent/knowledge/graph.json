@@ -1075,6 +1075,31 @@
         "name": "Live-Postgres-Tests",
         "aliases": [],
         "domain": "general"
+      },
+      "anthropic-admin-api": {
+        "name": "Anthropic-Admin-Api",
+        "aliases": [],
+        "domain": "general"
+      },
+      "api-keys": {
+        "name": "Api-Keys",
+        "aliases": [],
+        "domain": "general"
+      },
+      "platform-key": {
+        "name": "Platform-Key",
+        "aliases": [],
+        "domain": "general"
+      },
+      "tenant-provisioning": {
+        "name": "Tenant-Provisioning",
+        "aliases": [],
+        "domain": "general"
+      },
+      "design-verification": {
+        "name": "Design-Verification",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -7503,6 +7528,21 @@
         ],
         "created": "2026-10-05",
         "last_validated": "2026-10-05"
+      },
+      "mem-212": {
+        "type": "learning",
+        "summary": "Anthropic Admin API cannot mint API keys: /v1/organizations/api_keys is list/retrieve/update only and no endpoint ever returns a key value (partial_key_hint only); keys are created in the Claude Console by a human. Verified 2026-10-05 on the live reference while specing TASK-502 leg 1, whose plan said 'workspace + key per org via Admin API'. Workspaces CAN be created/archived and keys CAN be deactivated (status=inactive) programmatically, so a per-tenant key design must be a human-minted pool (console assigns, deactivates, warns on low) or Workload Identity Federation (service accounts + federation rules, OAuth org:admin only, needs an OIDC issuer). Founder chose the pool (console#353/#354/#355). Check the live Admin API reference before any plan that says 'create a key programmatically'.",
+        "path": "memories/learnings/mem-212.md",
+        "confidence": 0.95,
+        "concepts": [
+          "anthropic-admin-api",
+          "api-keys",
+          "platform-key",
+          "tenant-provisioning",
+          "design-verification"
+        ],
+        "created": "2026-10-05",
+        "last_validated": "2026-10-05"
       }
     }
   },
@@ -10261,6 +10301,11 @@
       "from": "mem-211",
       "to": "TASK-502",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-212",
+      "to": "TASK-502",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -12611,13 +12656,28 @@
     ],
     "live-postgres-tests": [
       "mem-211"
+    ],
+    "anthropic-admin-api": [
+      "mem-212"
+    ],
+    "api-keys": [
+      "mem-212"
+    ],
+    "platform-key": [
+      "mem-212"
+    ],
+    "tenant-provisioning": [
+      "mem-212"
+    ],
+    "design-verification": [
+      "mem-212"
     ]
   },
-  "last_updated": "2026-10-05T08:22:21.730333+00:00",
+  "last_updated": "2026-10-05T08:43:04.908549+00:00",
   "stats": {
-    "total_nodes": 630,
-    "total_edges": 551,
-    "memory_count": 345
+    "total_nodes": 636,
+    "total_edges": 552,
+    "memory_count": 346
   },
   "metadata": {}
 }
