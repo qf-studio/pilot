@@ -140,4 +140,10 @@ bun run test src/views/__tests__/InstancesView.spec.ts src/views/__tests__/Conne
 
 ---
 
+## Notes
+
+- 2026-10-05 evidence-gate finding: all nine `bun run test <spec>` paste-output bullets on PR#200/#201/#202 were classified "command not in allowlist". Root cause is code, not config: the "paste the output" phrase branch collects EVERY inline code span of the bullet as a command, so the first non-command span (`warning`, `pool-03`, …) fails the allowlist and the valid command never runs; GH-5514 fixed this only for the "`cmd` passes" shape. Fix filed as pilot#5617 (#5616 refiled: it named a non-existent test file). Authoring rule until it ships: a paste-output bullet may contain no inline code span other than the command(s); write other identifiers in plain text or quotes (SOP Rule 5b updated).
+
+---
+
 **Last Updated**: 2026-10-05

@@ -72,6 +72,12 @@ Two shapes are recognised today:
   the allowlist (`go`, `make`, `npm`, `npx`, `bun`, `bunx`, `pnpm`, `yarn`,
   `pytest`, `cargo`):
   `- `go test -race ./internal/alerts/` passes; paste the output into the PR body.`
+  **The command(s) must be the only inline code spans in the bullet.** The
+  phrase branch takes every backticked span as a command, so a bullet that also
+  backticks an identifier (`warning`, `pool-03`, a type name) is reported
+  "command not in allowlist" and the real command never runs — seen on nine
+  `bun run test …` bullets, console-ui PR#200–#202, 2026-10-05 (fix: pilot#5617).
+  Put other identifiers in plain text or quotes until that ships.
 - **Mutation pin** — `<change description> -> <TestName> fails`, arrow
   required, positive polarity only (negated outcomes are not pins):
   `- delete the `|| mutationNegatedFailsRe.MatchString(outcome)` clause -> TestClassifyAcceptanceItem_NegatedOutcomeIsNotMutation fails`
