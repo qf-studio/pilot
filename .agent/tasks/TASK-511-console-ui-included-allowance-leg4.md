@@ -1,6 +1,6 @@
 # TASK-511: console-ui Plan & Billing — included allowance, exhausted state, own-key prompt, provision gating (TASK-502 leg 4)
 
-**Status**: 🚀 DISPATCHED 2026-10-05 — [ui#197](https://github.com/qf-studio/pilot-console-ui/issues/197) leg 4a (adapter) → [ui#198](https://github.com/qf-studio/pilot-console-ui/issues/198) leg 4b (billing card) + [ui#199](https://github.com/qf-studio/pilot-console-ui/issues/199) leg 4c (connections/instances); all three `pilot` + `no-decompose`, #198/#199 `Depends on: #197`
+**Status**: ✅ **ALL THREE MERGED + REVIEWED 2026-10-05** — ui#197 → PR#200 (15:45Z) · ui#198 → PR#201 (15:59Z) · ui#199 → PR#202 (16:08Z); merge commits verified at the head of main; post-merge reviews APPROVE-w-notes on all three (~16:30Z). **NOT LIVE YET**: UI deploy dispatch + real-stack verify (SOP) + screenshots are the founder's Phase 4. Review notes: two windows in the "Last 30 days" card · soft-cap subtitle edge · RouterLink-wrapping-BaseButton a11y · Configure link stays when a pool key is assigned · "required" badge only when already satisfied. Gate finding: `bun run test …` acceptance bullets rendered "command not in allowlist" on all three PRs (SOP says bun is allowed) — see Notes.
 **Created**: 2026-10-05
 **Assignee**: Pilot (console-ui) · Navigator plans · founder reviews copy + dispatches the UI deploy
 **Parent**: TASK-502 (leg 4) · **Plan**: approved 2026-10-05 (3 nav-research agents + plan critique)
