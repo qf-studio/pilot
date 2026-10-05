@@ -24,6 +24,8 @@ Today the tenant box runs only on the customer's key (BYO enforced at onboarding
 
 Dispatch order: **0 → 2 (console, parallel-safe) → 1 → 3 → 4 → 5**. Leg 1 needs the Anthropic Admin API key in Doppler `prd` first (founder step).
 
+**Leg 1 prerequisite DONE 2026-10-05 ~09:00Z**: founder created an org-level Anthropic Admin API key and stored it as `ANTHROPIC_ADMIN_API_KEY` in Doppler project `pilot-console`, config `prd` (the only non-Doppler-meta secret there). Verified live via `doppler run … curl /v1/organizations/workspaces` → 200, 2 workspaces (QuantFlow, Claude Code). Prod consumption (Doppler `prd` → SSM `/pilot-fleet/console/ANTHROPIC_ADMIN_API_KEY` → console-api task def) is Nelya's side per decision `secrets-live-in-doppler-pilot-console-project` — ask, do not build.
+
 ## Research findings that shaped the issues (nav-research 2026-10-01, console @ 9e68a9c)
 - `billing.Register` only mounts when `PILOT_CONSOLE_BILLING_CHECKOUT_ENABLED` is set → the allowance endpoint is registered ungated (new `registerAllowance` beside `registerUsage`).
 - `billing.OrgStore` has three implementations (fake, main adapter, consolectl duplicate) → allowance methods live on `orgs.Store`, not on that interface.
