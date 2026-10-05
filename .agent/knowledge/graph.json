@@ -2752,6 +2752,19 @@
           "api",
           "deployment"
         ]
+      },
+      "TASK-511": {
+        "path": ".agent/tasks/TASK-511-console-ui-included-allowance-leg4.md",
+        "title": "console-ui Plan & Billing \u2014 included allowance, exhausted state, own-key prompt, provision gating (TASK-502 leg 4)",
+        "status": "dispatched",
+        "concepts": [
+          "deployment",
+          "testing",
+          "api",
+          "theory of mind",
+          "context",
+          "frontend"
+        ]
       }
     },
     "memories": {
@@ -10346,6 +10359,31 @@
       "from": "mem-213",
       "to": "TASK-502",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-511",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-511",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-511",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-511",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-511",
+      "to": "frontend",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -10523,7 +10561,8 @@
       "TASK-502",
       "TASK-510",
       "TASK-509",
-      "TASK-508"
+      "TASK-508",
+      "TASK-511"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -10921,7 +10960,8 @@
       "TASK-504",
       "TASK-505",
       "TASK-502",
-      "TASK-510"
+      "TASK-510",
+      "TASK-511"
     ],
     "conversational-bot": [
       "mem-036",
@@ -11230,7 +11270,8 @@
       "TASK-502",
       "TASK-510",
       "TASK-509",
-      "TASK-508"
+      "TASK-508",
+      "TASK-511"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -11462,7 +11503,8 @@
       "mem-192",
       "mem-193",
       "mem-194",
-      "TASK-509"
+      "TASK-509",
+      "TASK-511"
     ],
     "gateway": [
       "TASK-01",
@@ -12223,7 +12265,8 @@
       "TASK-502",
       "TASK-510",
       "TASK-509",
-      "TASK-508"
+      "TASK-508",
+      "TASK-511"
     ],
     "testing-quality": [
       "TASK-384",
@@ -12463,7 +12506,8 @@
       "mem-193",
       "mem-194",
       "TASK-498",
-      "TASK-502"
+      "TASK-502",
+      "TASK-511"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -12724,10 +12768,10 @@
       "mem-213"
     ]
   },
-  "last_updated": "2026-10-05T08:53:36.994080+00:00",
+  "last_updated": "2026-10-05T15:32:54.169660+00:00",
   "stats": {
-    "total_nodes": 641,
-    "total_edges": 553,
+    "total_nodes": 642,
+    "total_edges": 558,
     "memory_count": 347
   },
   "metadata": {}
