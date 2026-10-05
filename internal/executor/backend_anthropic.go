@@ -345,8 +345,8 @@ func (b *AnthropicBackend) callAPI(ctx context.Context, req *apiRequest) (*apiRe
 		httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
 		httpReq.Header.Set("Accept", "text/event-stream")
 
-		// GH-5344: OAuth tokens (sk-ant-oat...) and API keys (sk-ant-api...)
-		// share the "sk-ant-" prefix but require different auth headers —
+		// GH-5344: OAuth tokens (sk-ant-oat...) and API keys (sk-ant-api...,
+		// sk-ant-usr..., service-account keys) share the "sk-ant-" prefix but require different auth headers —
 		// sending an OAuth token via x-api-key gets a 401 "API key is
 		// invalid". setAnthropicAuthHeaders tells them apart and adds the
 		// anthropic-beta header OAuth needs.

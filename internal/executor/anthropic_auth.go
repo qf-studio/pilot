@@ -25,15 +25,22 @@ func (e *anthropicAPIStatusError) Error() string {
 const anthropicOAuthBetaHeader = "oauth-2025-04-20"
 
 // isAnthropicOAuthToken reports whether key is a Claude Code subscription
-// OAuth token (e.g. "sk-ant-oat01-...") rather than an Anthropic API key
-// (e.g. "sk-ant-api03-..."). Both share the "sk-ant-" prefix, so the two
-// must be told apart by the segment that follows it.
+// OAuth token rather than an Anthropic API key. All Anthropic credentials
+// share the "sk-ant-" prefix, so they are told apart by the segment after it.
 //
-// GH-5344: the effort classifier and the direct Anthropic backend both used
-// to treat every "sk-ant-" value as an API key and send it via x-api-key.
-// OAuth tokens rejected that header with 401 "API key is invalid" on every
-// call — direct mode never worked on hosts where only
-// CLAUDE_CODE_OAUTH_TOKEN is set (the founder box).
+// OAuth is classified positively — exactly one shape:
+//   - "sk-ant-oat..." (e.g. "sk-ant-oat01-...") — Claude Code OAuth token
+//
+// Everything else under "sk-ant-" is an API key sent via x-api-key:
+//   - "sk-ant-api..." (e.g. "sk-ant-api03-...") — classic Console API key
+//   - "sk-ant-usr..." (e.g. "sk-ant-usr-...")   — identity-backed personal key
+//   - service-account keys (any other "sk-ant-<shape>")
+//
+// GH-5344: OAuth tokens sent via x-api-key get 401 "API key is invalid", so
+// direct mode must send them as Bearer + the oauth beta header.
+// GH-5612: the original rule was "not sk-ant-api", which misclassified the
+// newer identity-backed API key shapes as OAuth and made them 401 on the
+// Bearer path. Decision: only the known OAuth prefix is OAuth.
 func isAnthropicOAuthToken(key string) bool {
 	rest := strings.TrimPrefix(key, "sk-ant-")
 	if rest == key {
@@ -41,14 +48,15 @@ func isAnthropicOAuthToken(key string) bool {
 		// of either kind (e.g. a bare bearer token from a proxy).
 		return false
 	}
-	return !strings.HasPrefix(rest, "api")
+	return strings.HasPrefix(rest, "oat")
 }
 
 // setAnthropicAuthHeaders sets the appropriate authentication header(s) on
 // req for apiKey, distinguishing Anthropic API keys from Claude Code OAuth
 // tokens:
-//   - "sk-ant-api..." (API key)         -> x-api-key
 //   - "sk-ant-oat..." (OAuth token)      -> Authorization: Bearer + anthropic-beta
+//   - any other "sk-ant-..." (API keys:
+//     api, usr, service account)         -> x-api-key
 //   - anything else (e.g. proxy tokens) -> Authorization: Bearer
 func setAnthropicAuthHeaders(req *http.Request, apiKey string) {
 	switch {
