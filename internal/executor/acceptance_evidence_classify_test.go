@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -190,6 +191,45 @@ func TestClassifyAcceptanceItem_PasteOutputEvidencePhrasings(t *testing.T) {
 			}
 			if len(item.Commands) != tt.wantCommands {
 				t.Errorf("Commands = %v, want length %d", item.Commands, tt.wantCommands)
+			}
+		})
+	}
+}
+
+// GH-5617: a phrase-triggered paste-output bullet runs only its allowlisted
+// command spans; prose spans (`warning`, `MissingConnectionsError(...)`) must
+// not be treated as commands. With no allowlisted span, every span is kept so
+// the runner reports today's reason.
+func TestClassifyAcceptanceItem_PasteOutputPhraseAllowlistedSpans(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{
+			"one allowlisted span among prose spans",
+			"`bun run test src/views/__tests__/InstancesView.spec.ts` passes with cases: anthropic row has a `warning` dot, `provisionInstance` rejecting with `MissingConnectionsError(['anthropic'])` — paste the output into the PR body",
+			[]string{"bun run test src/views/__tests__/InstancesView.spec.ts"},
+		},
+		{
+			"all spans are commands",
+			"`make build`, `make test`, `make lint` green — paste the output into the PR body",
+			[]string{"make build", "make test", "make lint"},
+		},
+		{
+			"no allowlisted span keeps every span",
+			"the `warning` and `provisionInstance` output — paste the output into the PR body",
+			[]string{"warning", "provisionInstance"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			item := ClassifyAcceptanceItem(tt.text)
+			if item.Kind != AcceptanceItemPasteOutput {
+				t.Fatalf("Kind = %q, want %q", item.Kind, AcceptanceItemPasteOutput)
+			}
+			if !reflect.DeepEqual(item.Commands, tt.want) {
+				t.Errorf("Commands = %q, want %q", item.Commands, tt.want)
 			}
 		})
 	}

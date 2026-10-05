@@ -170,14 +170,22 @@ func ClassifyAcceptanceItem(text string) AcceptanceItem {
 
 	if pasteOutputPatternRe.MatchString(clean) {
 		item.Kind = AcceptanceItemPasteOutput
-		item.Commands = extractInlineCommands(clean)
+		// GH-5617: prefer the allowlisted spans so prose spans in the same bullet
+		// (`warning`, `MissingConnectionsError(...)`) neither run nor fail the item.
+		// With no allowlisted span, keep every span so the runner still reports
+		// the allowlist / "no commands parsed" reason.
+		if cmds := extractAllowlistedCommandSpans(clean); len(cmds) > 0 {
+			item.Commands = cmds
+		} else {
+			item.Commands = extractInlineCommands(clean)
+		}
 		return item
 	}
 
 	// GH-5514: "`<allowlisted cmd>` passes" is a paste-output item whose
 	// commands are exactly the qualifying spans (a file path in the same
-	// sentence is not run). Placed after the phrase branch so phrase-triggered
-	// items keep their Commands extraction unchanged.
+	// sentence is not run). Placed after the phrase branch, which applies the
+	// same filter (GH-5617) but falls back to all spans when none qualify.
 	if commandOutcomeRe.MatchString(clean) {
 		if cmds := extractAllowlistedCommandSpans(clean); len(cmds) > 0 {
 			item.Kind = AcceptanceItemPasteOutput
@@ -193,6 +201,8 @@ func ClassifyAcceptanceItem(text string) AcceptanceItem {
 // first whitespace-delimited token is in DefaultAcceptanceEvidenceAllowedCommands.
 // The classifier stays pure and uses the default list only for shape
 // detection; the runtime allowlist is enforced later by the runner.
+// Both paste-output branches of ClassifyAcceptanceItem (phrase and
+// "passes" outcome) use it.
 func extractAllowlistedCommandSpans(text string) []string {
 	allowed := make(map[string]bool)
 	for _, c := range DefaultAcceptanceEvidenceAllowedCommands() {

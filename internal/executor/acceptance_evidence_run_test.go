@@ -111,7 +111,13 @@ func TestRunPasteOutputItem(t *testing.T) {
 		runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
 			"go test ./...": {output: "ok"},
 		}}
-		item := ClassifyAcceptanceItem("paste the output of `go test ./...` and `cat ~/.pilot/config.yaml`")
+		// GH-5617: the classifier now drops non-allowlisted prose spans, so
+		// build the item directly to keep pinning the runner's first-failure
+		// semantics for a Commands list that contains a disallowed entry.
+		item := AcceptanceItem{
+			Kind:     AcceptanceItemPasteOutput,
+			Commands: []string{"go test ./...", "cat ~/.pilot/config.yaml"},
+		}
 		result := runPasteOutputItem(context.Background(), runner, "/tmp/whatever", item, defaultTestAllowedCommands)
 
 		if len(runner.calls) != 0 {
@@ -135,6 +141,30 @@ func TestRunPasteOutputItem(t *testing.T) {
 			t.Fatalf("unexpected NotVerifiedReason: %s", result.NotVerifiedReason)
 		}
 	})
+}
+
+// GH-5617: the pilot-console-ui GH-199 bullet carries prose code spans
+// (`warning`, `provisionInstance`, `MissingConnectionsError(...)`) next to the
+// real `bun run test ...` command. Only the command may be run, and the item
+// must not fall to "command not in allowlist".
+func TestRunPasteOutputItem_ProseSpansDoNotBlockAllowlistedCommand(t *testing.T) {
+	const cmd = "bun run test src/views/__tests__/InstancesView.spec.ts"
+	const bullet = "`" + cmd + "` passes with cases: anthropic row has a `warning` dot ... `provisionInstance` rejecting with `MissingConnectionsError(['anthropic'])` ... — paste the output into the PR body"
+	runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+		cmd: {output: "4 passed"},
+	}}
+	items := ParseAcceptanceItems([]string{bullet})
+	results := RunAcceptanceEvidenceItems(context.Background(), runner, "/tmp/whatever", items, defaultTestAllowedCommands)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].NotVerifiedReason != "" {
+		t.Fatalf("unexpected NotVerifiedReason: %s", results[0].NotVerifiedReason)
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != cmd {
+		t.Fatalf("runner calls = %q, want exactly [%q]", runner.calls, cmd)
+	}
 }
 
 // GH-5442: the allowlist previously checked only the first whitespace-
