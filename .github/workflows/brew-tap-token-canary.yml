@@ -3,6 +3,7 @@ name: Brew Tap Token Canary
 on:
   schedule:
     - cron: '0 8 * * *'  # daily at 08:00 UTC
+  workflow_dispatch:  # on-demand verification, e.g. after rotating the secret
 
 # No push trigger — canary only, not part of release runs.
 
@@ -19,11 +20,34 @@ jobs:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+          HEADERS_FILE=$(mktemp)
+          HTTP_STATUS=$(curl -sS -D "$HEADERS_FILE" -o /dev/null -w "%{http_code}" \
             -H "Authorization: token $HOMEBREW_TAP_GITHUB_TOKEN" \
             "https://api.github.com/repos/qf-studio/homebrew-pilot")
 
           echo "Homebrew tap API status: $HTTP_STATUS"
+
+          # GitHub reports a PAT's expiry in this response header (absent for
+          # tokens without an expiry). Informational only — never fails the run.
+          EXPIRY=$(grep -i '^github-authentication-token-expiration:' "$HEADERS_FILE" \
+            | head -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//; s/ *$//' || true)
+          rm -f "$HEADERS_FILE"
+
+          if [ -n "$EXPIRY" ]; then
+            echo "Token expires: $EXPIRY"
+            echo "HOMEBREW_TAP_GITHUB_TOKEN expires: \`$EXPIRY\`" >> "$GITHUB_STEP_SUMMARY"
+            if EXPIRY_EPOCH=$(date -u -d "$EXPIRY" +%s 2>/dev/null); then
+              DAYS_LEFT=$(( (EXPIRY_EPOCH - $(date -u +%s)) / 86400 ))
+              if [ "$DAYS_LEFT" -le 7 ]; then
+                echo "::warning title=Brew tap token expiring::HOMEBREW_TAP_GITHUB_TOKEN expires $EXPIRY (in $DAYS_LEFT days) — rotate it."
+              fi
+            else
+              echo "::warning::Could not parse token expiry date: $EXPIRY"
+            fi
+          else
+            echo "No token expiry header returned."
+            echo "HOMEBREW_TAP_GITHUB_TOKEN: no expiry header returned" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           if [ "$HTTP_STATUS" != "200" ]; then
             TITLE="chore(release): brew tap token expired — rotate \`HOMEBREW_TAP_GITHUB_TOKEN\`"
