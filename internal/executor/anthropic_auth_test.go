@@ -14,7 +14,9 @@ func TestIsAnthropicOAuthToken(t *testing.T) {
 	}{
 		{"oauth token", "sk-ant-oat01-abc123", true},
 		{"api key", "sk-ant-api03-abc123", false},
-		{"bare sk-ant- prefix, no api segment", "sk-ant-somethingelse", true},
+		{"identity-backed personal key", "sk-ant-usr-abc123", false},
+		{"hypothetical service-account key", "sk-ant-sa-abc123", false},
+		{"bare sk-ant- prefix, no oat segment", "sk-ant-somethingelse", false},
 		{"non anthropic bearer token", "some-proxy-token", false},
 		{"empty string", "", false},
 	}
@@ -40,6 +42,21 @@ func TestSetAnthropicAuthHeaders(t *testing.T) {
 			name:        "API key uses x-api-key",
 			apiKey:      "sk-ant-api03-abc123",
 			wantXAPIKey: "sk-ant-api03-abc123",
+		},
+		{
+			name:        "identity-backed usr key uses x-api-key",
+			apiKey:      "sk-ant-usr-abc123",
+			wantXAPIKey: "sk-ant-usr-abc123",
+		},
+		{
+			name:        "hypothetical service-account key uses x-api-key",
+			apiKey:      "sk-ant-sa-abc123",
+			wantXAPIKey: "sk-ant-sa-abc123",
+		},
+		{
+			name:     "bearer-from-proxy unchanged",
+			apiKey:   "bearer-from-proxy",
+			wantAuth: "Bearer bearer-from-proxy",
 		},
 		{
 			name:           "OAuth token uses Authorization Bearer + beta header",
