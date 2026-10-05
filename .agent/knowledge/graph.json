@@ -1065,6 +1065,16 @@
         "name": "Env",
         "aliases": [],
         "domain": "general"
+      },
+      "delivery-evidence": {
+        "name": "Delivery-Evidence",
+        "aliases": [],
+        "domain": "general"
+      },
+      "live-postgres-tests": {
+        "name": "Live-Postgres-Tests",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -7479,6 +7489,20 @@
         ],
         "confidence": 0.95,
         "created": "2026-10-04"
+      },
+      "mem-211": {
+        "type": "pitfall",
+        "summary": "Pasted 'ok pkg 0.00Xs' for live-Postgres (DATABASE_URL-gated) tests is a SKIP, not a PASS. Found 2026-10-05 reviewing pilot-console PR#351/#352 (TASK-502 legs 0+2): both bodies pasted ok internal/db 0.004s, ok internal/orgs 0.007s, ok internal/fleet 0.037s as proof for TestMigrateUpDownUp / Allowance / MeteredUsage, which skip without DATABASE_URL (the executor worktree has none). CI (postgres service + hard-fail gate) ran them for real and was green, so nothing shipped broken, but the pasted evidence was worthless. Rule: acceptance for DB-gated tests must say 'paste go test -v -run <Name> output showing --- PASS lines; an ok <pkg> 0.00Xs line alone is a skip and fails this acceptance'. Reviewers: read the timing on any pasted ok line for a live-DB package before trusting it.",
+        "path": "memories/pitfalls/mem-211.md",
+        "confidence": 0.95,
+        "concepts": [
+          "false-success",
+          "issue-authoring",
+          "delivery-evidence",
+          "live-postgres-tests"
+        ],
+        "created": "2026-10-05",
+        "last_validated": "2026-10-05"
       }
     }
   },
@@ -10232,6 +10256,11 @@
       "from": "canary-cron-outlives-sandbox-deonboard-skip-guard-reports-green",
       "to": "TASK-403",
       "type": "relates_to"
+    },
+    {
+      "from": "mem-211",
+      "to": "TASK-502",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -11278,7 +11307,8 @@
       "mem-196",
       "mem-202",
       "mem-203",
-      "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits"
+      "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits",
+      "mem-211"
     ],
     "flag-cutover": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -11469,7 +11499,8 @@
       "model-refusal-looks-like-exit-status-1",
       "no-decompose-spec-sizing-one-subsystem",
       "pilot-issue-missing-no-decompose-fragments-single-fix",
-      "mem-203"
+      "mem-203",
+      "mem-211"
     ],
     "knowledge": [
       "TASK-368",
@@ -12574,13 +12605,19 @@
     ],
     "env": [
       "mem-209"
+    ],
+    "delivery-evidence": [
+      "mem-211"
+    ],
+    "live-postgres-tests": [
+      "mem-211"
     ]
   },
-  "last_updated": "2026-10-04T20:07:23.657378+00:00",
+  "last_updated": "2026-10-05T08:22:21.730333+00:00",
   "stats": {
-    "total_nodes": 627,
-    "total_edges": 550,
-    "memory_count": 344
+    "total_nodes": 630,
+    "total_edges": 551,
+    "memory_count": 345
   },
   "metadata": {}
 }
