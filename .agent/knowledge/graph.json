@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-10-04T20:07:23.657378+00:00",
+  "updated": "2026-10-06T09:38:48.766119+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -7615,6 +7615,20 @@
         ],
         "created": "2026-10-05",
         "last_validated": "2026-10-05"
+      },
+      "mem-216": {
+        "type": "pitfall",
+        "summary": "pilot-console's untracked docker-compose.override.yml runs the local console on the prod SSM driver; a local platform-key assign would write a real pool key into prod SSM while prod platform_keys still says free (double-lend). Use COMPOSE_FILE=docker-compose.yml for pool work.",
+        "path": "memories/pitfalls/mem-216.md",
+        "confidence": 0.95,
+        "concepts": [
+          "pilot-console",
+          "secrets",
+          "operations",
+          "deployment"
+        ],
+        "created": "2026-10-06",
+        "last_validated": "2026-10-06"
       }
     }
   },
@@ -10418,6 +10432,16 @@
       "from": "mem-215",
       "to": "TASK-502",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-216",
+      "to": "TASK-502",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-216",
+      "to": "TASK-511",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -11308,7 +11332,8 @@
       "TASK-509",
       "TASK-508",
       "TASK-511",
-      "mem-215"
+      "mem-215",
+      "mem-216"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -11940,7 +11965,8 @@
       "mem-199",
       "mem-200",
       "mem-202",
-      "secrets-live-in-doppler-pilot-console-project"
+      "secrets-live-in-doppler-pilot-console-project",
+      "mem-216"
     ],
     "pilot-task-command": [
       "TASK-03",
@@ -12059,7 +12085,8 @@
       "apply-script-silent-rollback-causes",
       "mem-131",
       "mem-200",
-      "secrets-live-in-doppler-pilot-console-project"
+      "secrets-live-in-doppler-pilot-console-project",
+      "mem-216"
     ],
     "security": [
       "guard-research-framing-parity-not-bypass",
@@ -12597,7 +12624,8 @@
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
       "mem-200",
-      "mem-202"
+      "mem-202",
+      "mem-216"
     ],
     "deploy-gates": [
       "mem-196"
@@ -12806,11 +12834,11 @@
       "mem-213"
     ]
   },
-  "last_updated": "2026-10-05T16:38:52.535037+00:00",
+  "last_updated": "2026-10-06T09:38:48.766119+00:00",
   "stats": {
-    "total_nodes": 644,
-    "total_edges": 560,
-    "memory_count": 349
+    "total_nodes": 645,
+    "total_edges": 562,
+    "memory_count": 350
   },
   "metadata": {}
 }

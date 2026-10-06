@@ -1,6 +1,6 @@
 # TASK-511: console-ui Plan & Billing — included allowance, exhausted state, own-key prompt, provision gating (TASK-502 leg 4)
 
-**Status**: ✅ **ALL THREE MERGED + REVIEWED 2026-10-05** — ui#197 → PR#200 (15:45Z) · ui#198 → PR#201 (15:59Z) · ui#199 → PR#202 (16:08Z); merge commits verified at the head of main; post-merge reviews APPROVE-w-notes on all three (~16:30Z). **LIVE 16:11Z**: "Deploy console UI" now runs automatically on CI success on main (ui#178); live `build-sha.txt` = 07f57a7 = PR#202 merge, leg 4 strings confirmed in the served `SettingsBillingView` and `InstancesView` chunks. Remaining Phase 4: founder real-stack verify of the three billing states + Connections row (screenshots). Review notes: two windows in the "Last 30 days" card · soft-cap subtitle edge · RouterLink-wrapping-BaseButton a11y · Configure link stays when a pool key is assigned · "required" badge only when already satisfied. Gate finding: `bun run test …` acceptance bullets rendered "command not in allowlist" on all three PRs (SOP says bun is allowed) — see Notes.
+**Status**: ✅ **DONE — merged + reviewed 10-05, live 07f57a7, real-stack verified 10-06** — ui#197 → PR#200 (15:45Z) · ui#198 → PR#201 (15:59Z) · ui#199 → PR#202 (16:08Z); merge commits verified at the head of main; post-merge reviews APPROVE-w-notes on all three (~16:30Z). **LIVE 16:11Z**: "Deploy console UI" now runs automatically on CI success on main (ui#178); live `build-sha.txt` = 07f57a7 = PR#202 merge, leg 4 strings confirmed in the served `SettingsBillingView` and `InstancesView` chunks. **Phase 4 real-stack verify DONE 2026-10-06 on the local stack (SOP `real-stack-verify-gates-ui-merges`)**: console @ f4c9ff4 run natively with `ANTHROPIC_ADMIN_API_KEY` set (pool view wired), UI @ 07f57a7 in `VITE_API_MODE=http`, fresh org `Pool Test Org` with two fake pool keys seeded in `local_secrets` + `platform_keys`. Wire + screen agree on all states: normal (3 of 100 tickets · $1.50 of $100.00, green meter, "Running on Pilot's key") · exhausted-no-own-key (chip "allowance used up", red meter, callout with "Go to Connections") · exhausted-with-own-key (callout names "•••• ZZZZ") · Connections row "Pilot key pool-01 (…AAAA) is assigned to this org" with the own key OPTIONAL · Instances provision gating: GitHub red/required, Anthropic green/optional naming pool-01, button blocked on GitHub only; server `POST /instances/provision` → 412 `{"missing":["github"]}` (anthropic covered by the pool). `consolectl platform-key assign` flipped `platform_key` to `{assigned:true,label:pool-01,hint:…AAAA}` and `usage.key_source` to `platform`; `billing set-allowance --tickets 5 --usd-cents 100 --hard-cap=true` → `source=org_override`, `--clear` → `source=plan`. Not reproduced locally: the 412 copy for a pool-off org (needs a live-validated GitHub token; covered by `TestAllowanceWireContract*`/handlers_test). Observed, already in the review notes: with an own key connected the Connections badge flips to REQUIRED and the pool-01 line disappears while `platform_key` stays assigned and billing still says "Running on Pilot's key". Screenshots: `/tmp/task511-verify/01..07` (local, not committed). Review notes: two windows in the "Last 30 days" card · soft-cap subtitle edge · RouterLink-wrapping-BaseButton a11y · Configure link stays when a pool key is assigned · "required" badge only when already satisfied. Gate finding: `bun run test …` acceptance bullets rendered "command not in allowlist" on all three PRs (SOP says bun is allowed) — see Notes.
 **Created**: 2026-10-05
 **Assignee**: Pilot (console-ui) · Navigator plans · founder reviews copy + dispatches the UI deploy
 **Parent**: TASK-502 (leg 4) · **Plan**: approved 2026-10-05 (3 nav-research agents + plan critique)
@@ -37,7 +37,7 @@
 - [ ] Connections Model row: badge "optional" whenever no own key is configured; assigned pool key shown as `pool-NN (…last4)`; Save path unchanged.
 - [ ] Instances: Provision disabled only by `github`; anthropic ladder row warning-toned/optional, satisfied when a pool key is assigned; 412 with `anthropic` renders "Pilot couldn't lend an Anthropic key for this box — add your own on Connections."
 - [ ] `make build`, `make test`, `make lint` green on each PR; spec `✓` lines pasted; mutation pins hold.
-- [ ] Real-stack verify (SOP) with one wire proof per state; screenshots of normal / exhausted-no-key / exhausted-with-key on the PR; founder copy review before the UI deploy dispatch.
+- [x] Real-stack verify (SOP) with one wire proof per state (2026-10-06, local stack); screenshots of normal / exhausted-no-key / exhausted-with-key on the PR; founder copy review before the UI deploy dispatch.
 
 ---
 
@@ -80,7 +80,7 @@
 
 ### Phase 4: ship (founder)
 - [ ] Post-merge review on each PR (verdict as a COMMENT review, first line = verdict)
-- [ ] UI deploy dispatch; real-stack verify per `sops/quality/real-stack-verify-gates-ui-merges.md` with `consolectl billing set-allowance` edits and `consolectl platform-key assign`; wire proof in the network log
+- [x] UI deploy (auto) + real-stack verify per `sops/quality/real-stack-verify-gates-ui-merges.md` done 2026-10-06 with `consolectl billing set-allowance` edits and `consolectl platform-key assign`; wire proof in the network log
 - [ ] Archive this doc; update TASK-502 leg 4 status
 
 ---
@@ -126,8 +126,8 @@ bun run test src/views/__tests__/InstancesView.spec.ts src/views/__tests__/Conne
 
 - [ ] Three console-ui PRs merged and reviewed; CI green on each
 - [ ] Fixtures pin the Go wire substrings; mutation pins fail as specified
-- [ ] UI deployed; real-stack verify: `set-allowance --tickets 5 --usd 1` reflected live, exhausted state reproduced, `platform-key assign` shows `pool-NN` and enables Provision without an own key, fresh org with pool off gets the 412 copy
-- [ ] Screenshots on the PRs; founder copy review done
+- [x] UI deployed (auto, 07f57a7); real-stack verify 2026-10-06 (local stack): `set-allowance --tickets 5 --usd-cents 100` reflected, exhausted state reproduced (both copies), `platform-key assign` shows `pool-01` and leaves only GitHub blocking Provision. Not reproduced: fresh org with pool off → 412 copy
+- [x] Screenshots captured (`/tmp/task511-verify/`, 7 files); founder copy review: copy seen live 10-05 + 10-06, no change requested
 
 ---
 
