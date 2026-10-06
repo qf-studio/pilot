@@ -78,6 +78,12 @@ Two shapes are recognised today:
   "command not in allowlist" and the real command never runs — seen on nine
   `bun run test …` bullets, console-ui PR#200–#202, 2026-10-05 (fix: pilot#5617).
   Put other identifiers in plain text or quotes until that ships.
+- **Rule 5c — no shell-operator characters inside the command span** (2026-10-06,
+  console PR#363): the evidence runner rejects a command whose span contains
+  `|`, `&`, `;`, `>` or `<` ("shell operators are not allowed in evidence
+  commands") — a Go `-run 'Allowance|PlatformKey'` regex alternation counts.
+  Write one bullet per `-run` pattern, or use a prefix pattern
+  (`-run 'TestAllowance'`), never `|` inside the span.
 - **Mutation pin** — `<change description> -> <TestName> fails`, arrow
   required, positive polarity only (negated outcomes are not pins):
   `- delete the `|| mutationNegatedFailsRe.MatchString(outcome)` clause -> TestClassifyAcceptanceItem_NegatedOutcomeIsNotMutation fails`
