@@ -28,6 +28,11 @@ type WorktreeManager struct {
 	active   map[string]string // taskID -> worktreePath
 	createMu sync.Mutex        // GH-1312: Serializes worktree creation to avoid git race conditions
 
+	// baseBranch is the configured branch new worktrees are based on (the
+	// project's default_branch / branch_from, as carried by Task.BaseBranch).
+	// Empty means "detect it from the repo"; see resolveBaseBranch. Guarded by mu.
+	baseBranch string
+
 	// Pool support (GH-1078)
 	pool     []*PooledWorktree // Pre-created worktrees for reuse
 	poolSize int               // Configured pool size (0 = disabled)
@@ -54,6 +59,59 @@ func NewWorktreeManagerWithPool(repoPath string, poolSize int) *WorktreeManager 
 		pool:     make([]*PooledWorktree, 0, poolSize),
 		poolSize: poolSize,
 	}
+}
+
+// SetBaseBranch sets the branch new worktrees are based on when the caller
+// does not pass an explicit base ref. It is the project's configured
+// default_branch / branch_from (Task.BaseBranch); an empty or blank value
+// restores auto-detection from the repository.
+func (m *WorktreeManager) SetBaseBranch(branch string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.baseBranch = strings.TrimSpace(branch)
+}
+
+// defaultWorktreeBaseBranch is what the worktree base falls back to when
+// nothing is configured and the repository does not say what its default
+// branch is. It is the historical behaviour, so repos that never needed
+// anything else are unaffected.
+const defaultWorktreeBaseBranch = "main"
+
+// resolveBaseBranch returns the branch name (without the "origin/" prefix)
+// that worktrees are based on and fetched from. Resolution order:
+//
+//  1. The configured branch (SetBaseBranch).
+//  2. The branch refs/remotes/origin/HEAD points at, which `git clone` sets.
+//  3. "main".
+//
+// Previously every worktree was hardcoded to origin/main, so a repository
+// whose default branch is anything else (master, mainline, develop, ...)
+// failed every task at worktree creation with "couldn't find remote ref main".
+func (m *WorktreeManager) resolveBaseBranch(ctx context.Context) string {
+	m.mu.Lock()
+	configured := m.baseBranch
+	m.mu.Unlock()
+	if configured != "" {
+		return configured
+	}
+
+	if detected := detectOriginDefaultBranch(ctx, m.repoPath); detected != "" {
+		return detected
+	}
+	return defaultWorktreeBaseBranch
+}
+
+// detectOriginDefaultBranch returns the branch refs/remotes/origin/HEAD points
+// at, or "" when it is unset. It keeps any slashes in the branch name
+// ("release/1.x"), which a split on "/" would lose.
+func detectOriginDefaultBranch(ctx context.Context, repoDir string) string {
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	cmd.Dir = repoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
 }
 
 // WorktreeResult contains the worktree path and cleanup function.
@@ -184,7 +242,7 @@ func (m *WorktreeManager) ActiveCount() int {
 
 // WarmPool pre-creates poolSize worktrees for fast acquisition.
 // GH-1078: Called at Runner startup when worktree pooling is enabled.
-// Each pooled worktree is created in detached HEAD state at origin/main.
+// Each pooled worktree is created in detached HEAD state at origin/<base branch>.
 func (m *WorktreeManager) WarmPool(ctx context.Context) error {
 	if m.poolSize <= 0 {
 		return nil // Pooling disabled
@@ -237,12 +295,12 @@ func (m *WorktreeManager) createPooledWorktree(ctx context.Context, index int) (
 	pruneCmd.Dir = m.repoPath
 	_ = pruneCmd.Run()
 
-	// Fetch latest origin/main to ensure fresh base.
+	// Fetch latest origin/<base branch> to ensure fresh base.
 	// GH-5449: same fallback rule as CreateWorktreeWithBranch — a fetch that
-	// fails to update refs/remotes/origin/main must not be silently treated
+	// fails to update refs/remotes/origin/<base branch> must not be silently treated
 	// as non-fatal, since this worktree is later reset onto a task branch by
 	// preparePooledWorktree.
-	baseRef, err := fetchOriginMainForWorktree(ctx, m.repoPath)
+	baseRef, err := fetchOriginBranchForWorktree(ctx, m.repoPath, m.resolveBaseBranch(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare pooled worktree base: %w", err)
 	}
@@ -335,13 +393,14 @@ func (m *WorktreeManager) Acquire(ctx context.Context, taskID, branchName, baseB
 // Runs: git clean -fd && git checkout -B <branch> <base>
 func (m *WorktreeManager) preparePooledWorktree(ctx context.Context, wt *PooledWorktree, branchName, baseBranch string) error {
 	// Determine base ref
-	baseRef := "origin/main"
+	branch := m.resolveBaseBranch(ctx)
+	baseRef := "origin/" + branch
 	if baseBranch != "" {
 		baseRef = baseBranch
 	}
 
 	// Fetch latest to ensure we have fresh refs
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", branch)
 	fetchCmd.Dir = wt.Path
 	withGitCredentials(ctx, fetchCmd)
 	_, _ = fetchCmd.CombinedOutput() // Non-fatal
@@ -520,7 +579,7 @@ func sanitizeBranchName(taskID string) string {
 	return string(result)
 }
 
-// worktreeFetchRetryDelay is the pause before retrying a failed origin/main
+// worktreeFetchRetryDelay is the pause before retrying a failed origin/<branch>
 // fetch when FETCH_HEAD wasn't updated by the first attempt.
 // GH-5449: ref-lock contention between concurrent fetches (e.g. two Pilot
 // tasks fetching the same clone) typically clears within a second.
@@ -528,35 +587,41 @@ const worktreeFetchRetryDelay = 500 * time.Millisecond
 
 // fetchHeadWasWritten reports whether a `git fetch` invocation's combined
 // output shows it wrote FETCH_HEAD (a "* branch ... -> FETCH_HEAD" line),
-// even if the fetch went on to fail updating refs/remotes/origin/main (e.g.
+// even if the fetch went on to fail updating refs/remotes/origin/<branch> (e.g.
 // a ref-lock race). GH-5449: when true, FETCH_HEAD reflects the fetch that
 // was just run and is safe to use as a base ref even though the local
-// origin/main tracking ref update lost the race.
+// origin/<branch> tracking ref update lost the race.
 func fetchHeadWasWritten(output string) bool {
 	return strings.Contains(output, "-> FETCH_HEAD")
 }
 
-// fetchOriginMainForWorktree fetches origin/main in repoDir and resolves the
-// ref that should be used as the freshest available base for a new
+// fetchOriginBranchForWorktree fetches origin/<branch> in repoDir and resolves
+// the ref that should be used as the freshest available base for a new
 // worktree.
 //
-// GH-5449: a fetch that fails to update refs/remotes/origin/main (e.g. a
+// GH-5449: a fetch that fails to update refs/remotes/origin/<branch> (e.g. a
 // ref-lock race losing to a concurrent fetch) must not be silently treated
-// as non-fatal and fall back to the stale local origin/main — that produced
+// as non-fatal and fall back to the stale local origin/<branch> — that produced
 // a worktree ~100 commits behind main whose PR failed to merge
 // (aws-infrastructure-pilot#11, observed 2026-09-23). Resolution order:
 //
-//  1. Fetch succeeds outright -> use "origin/main".
+//  1. Fetch succeeds outright -> use "origin/<branch>".
 //  2. Fetch fails but wrote FETCH_HEAD (visible in the fetch output as
 //     "-> FETCH_HEAD") -> use "FETCH_HEAD" as the base; it reflects this
-//     fetch even though the refs/remotes/origin/main update lost a lock race.
+//     fetch even though the refs/remotes/origin/<branch> update lost a lock race.
 //  3. Fetch fails and FETCH_HEAD wasn't written -> retry once after a short
 //     delay (lock races typically clear within a second).
 //  4. Still failing -> return an error so the caller fails closed instead of
 //     guessing at a base.
-func fetchOriginMainForWorktree(ctx context.Context, repoDir string) (string, error) {
+//
+// branch is the repository's base branch (see WorktreeManager.resolveBaseBranch),
+// not necessarily "main"; a branch that does not exist on the remote is a hard
+// failure (step 4), never a fallback to some other branch.
+func fetchOriginBranchForWorktree(ctx context.Context, repoDir, branch string) (string, error) {
+	baseRef := "origin/" + branch
+
 	runFetch := func() (output string, headWritten bool, err error) {
-		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
+		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", branch)
 		fetchCmd.Dir = repoDir
 		withGitCredentials(ctx, fetchCmd)
 		out, fetchErr := fetchCmd.CombinedOutput()
@@ -565,10 +630,10 @@ func fetchOriginMainForWorktree(ctx context.Context, repoDir string) (string, er
 
 	output, headWritten, err := runFetch()
 	if err == nil {
-		return "origin/main", nil
+		return baseRef, nil
 	}
 
-	slog.Warn("Failed to fetch origin/main before worktree creation",
+	slog.Warn(fmt.Sprintf("Failed to fetch %s before worktree creation", baseRef),
 		slog.Any("error", err),
 		slog.String("output", output),
 	)
@@ -583,10 +648,10 @@ func fetchOriginMainForWorktree(ctx context.Context, repoDir string) (string, er
 
 	output, headWritten, err = runFetch()
 	if err == nil {
-		return "origin/main", nil
+		return baseRef, nil
 	}
 	if headWritten {
-		slog.Warn("Retried fetch of origin/main also failed but wrote FETCH_HEAD, using it as base",
+		slog.Warn(fmt.Sprintf("Retried fetch of %s also failed but wrote FETCH_HEAD, using it as base", baseRef),
 			slog.Any("error", err),
 			slog.String("output", output),
 		)
@@ -632,8 +697,10 @@ func logWorktreeBaseResolved(taskID, branchName, worktreePath, baseRef string) {
 // This is the preferred method when the worktree needs to push to remote, as detached HEAD
 // makes push operations more complex.
 //
-// The branch is created from the specified baseBranch (e.g., "main").
-// If baseBranch is empty, HEAD is used.
+// The branch is created from the specified baseBranch (e.g., "main"), an explicit
+// ref that is used as-is without fetching. If baseBranch is empty, the worktree is
+// based on a fresh fetch of origin/<base branch>, where the base branch is the one
+// set with SetBaseBranch, else the repo's origin/HEAD, else "main".
 //
 // GH-1016: Uses atomic creation with retry to handle race conditions when two Pilots
 // try to create the same branch simultaneously. Uses git worktree add -B to force
@@ -662,15 +729,15 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 	// GH-1211: Always fetch origin before creating worktree to prevent branching
 	// from stale local main. This avoids conflicts when local main diverges from origin.
 	//
-	// GH-5449: when baseBranch is empty we're about to build on "origin/main",
+	// GH-5449: when baseBranch is empty we're about to build on "origin/<base branch>",
 	// so a fetch that fails to update the local tracking ref must not be
-	// treated as non-fatal — see fetchOriginMainForWorktree for the fallback
+	// treated as non-fatal — see fetchOriginBranchForWorktree for the fallback
 	// order. When an explicit baseBranch is supplied (e.g. a fix-continuation
 	// SHA/branch resolved by ResolveFixContinuationBaseRef), that ref already
 	// carries its own freshness guarantee, so no fetch is needed here.
 	baseRef := baseBranch
 	if baseRef == "" {
-		resolvedRef, fetchErr := fetchOriginMainForWorktree(ctx, m.repoPath)
+		resolvedRef, fetchErr := fetchOriginBranchForWorktree(ctx, m.repoPath, m.resolveBaseBranch(ctx))
 		if fetchErr != nil {
 			return nil, fetchErr
 		}

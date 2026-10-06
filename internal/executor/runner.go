@@ -3626,10 +3626,17 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		var err error
 
 		// GH-1078: Use pool if available, otherwise fall back to direct creation
+		//
+		// task.BaseBranch (project default_branch / branch_from, else the repo's
+		// default branch — resolved above) is what a worktree with no explicit
+		// worktreeBaseRef is based on. Without it the manager assumed "main",
+		// so a repo whose default branch is anything else failed every task
+		// here with "couldn't find remote ref main".
 		if r.worktreeManager != nil && r.worktreeManager.PoolSize() > 0 {
 			r.log.Debug("Using worktree pool",
 				slog.Int("pool_available", r.worktreeManager.PoolAvailable()),
 			)
+			r.worktreeManager.SetBaseBranch(task.BaseBranch)
 			var result *WorktreeResult
 			result, err = r.worktreeManager.Acquire(ctx, task.ID, task.Branch, worktreeBaseRef)
 			if err == nil {
@@ -3637,8 +3644,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				cleanup = result.Cleanup
 			}
 		} else {
-			worktreePath, cleanup, err = CreateWorktreeWithBranch(
-				ctx, task.ProjectPath, task.ID, task.Branch, worktreeBaseRef)
+			manager := NewWorktreeManager(task.ProjectPath)
+			manager.SetBaseBranch(task.BaseBranch)
+			var result *WorktreeResult
+			result, err = manager.CreateWorktreeWithBranch(ctx, task.ID, task.Branch, worktreeBaseRef)
+			if err == nil {
+				worktreePath = result.Path
+				cleanup = result.Cleanup
+			}
 		}
 
 		if err != nil {
