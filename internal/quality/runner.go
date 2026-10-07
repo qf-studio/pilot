@@ -25,6 +25,12 @@ type Runner struct {
 	projectDir string
 	log        *slog.Logger
 	onProgress ProgressCallback
+
+	// lookPath resolves a binary on PATH; exec.LookPath unless a test overrides it.
+	lookPath func(string) (string, error)
+	// fallbackWarned dedups the toolchain-fallback WARN to once per gate per Runner.
+	fallbackMu     sync.Mutex
+	fallbackWarned map[string]bool
 }
 
 // NewRunner creates a new quality gate runner
@@ -33,6 +39,7 @@ func NewRunner(config *Config, projectDir string) *Runner {
 		config:     config,
 		projectDir: projectDir,
 		log:        logging.WithComponent("quality"),
+		lookPath:   exec.LookPath,
 	}
 }
 
@@ -132,6 +139,9 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 		StartedAt: time.Now(),
 	}
 
+	command := r.resolveCommand(gate)
+	result.Command = command
+
 	r.reportProgress(gate.Name, StatusRunning, fmt.Sprintf("Running %s gate...", gate.Name))
 
 	maxAttempts := gate.MaxRetries + 1
@@ -165,7 +175,7 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 			slog.Int("attempt", attempt+1),
 		)
 
-		exitCode, output, err := r.executeCommand(ctx, gate)
+		exitCode, output, err := r.executeCommand(ctx, gate, command)
 
 		result.ExitCode = exitCode
 		result.Output = output
@@ -199,6 +209,16 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 			break
 		}
 
+		// Exit 127 is "command not found": the gate's runner binary is missing, which
+		// no amount of retrying (here or via Claude) can fix. Fail fast, distinctly.
+		if exitCode == exitCodeCommandNotFound {
+			result.Err = fmt.Errorf("%w: %q exited with code %d (command not found)", ErrGateRunnerMissing, command, exitCode)
+			result.Error = result.Err.Error()
+			result.Status = StatusFailed
+			r.reportProgress(gate.Name, StatusFailed, fmt.Sprintf("%s gate failed: %s", gate.Name, result.Error))
+			break
+		}
+
 		// Exit code != 0
 		result.Error = fmt.Sprintf("command exited with code %d", exitCode)
 
@@ -215,14 +235,62 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 	return result
 }
 
+// resolveCommand returns the command to execute for gate. When the gate runs
+// through `make` and make is not installed (e.g. the hosted-tenant AMI ships go
+// but not make), it substitutes the language-native build/test command for the
+// project and logs the substitution once per gate. With no native equivalent the
+// original command is returned and fails with exit 127 (ErrGateRunnerMissing).
+func (r *Runner) resolveCommand(gate *Gate) string {
+	fields := strings.Fields(gate.Command)
+	if len(fields) == 0 || fields[0] != "make" {
+		return gate.Command
+	}
+	if _, err := r.lookPath("make"); err == nil {
+		return gate.Command
+	}
+	native := nativeFallbackCommand(r.projectDir, gate)
+	if native == "" {
+		return gate.Command
+	}
+
+	r.fallbackMu.Lock()
+	first := !r.fallbackWarned[gate.Name]
+	if r.fallbackWarned == nil {
+		r.fallbackWarned = make(map[string]bool)
+	}
+	r.fallbackWarned[gate.Name] = true
+	r.fallbackMu.Unlock()
+	if first {
+		r.log.Warn("make not found on PATH; running native toolchain command for quality gate",
+			slog.String("gate", gate.Name),
+			slog.String("configured_command", gate.Command),
+			slog.String("fallback_command", native),
+		)
+	}
+	return native
+}
+
+// nativeFallbackCommand returns the language-native command equivalent to a
+// `make`-based gate of the given type, or "" when none can be determined.
+func nativeFallbackCommand(projectDir string, gate *Gate) string {
+	switch gate.Type {
+	case GateBuild:
+		return DetectBuildCommand(projectDir)
+	case GateTest:
+		return detectNativeTestCommand(projectDir)
+	default:
+		return ""
+	}
+}
+
 // executeCommand runs the gate command
-func (r *Runner) executeCommand(ctx context.Context, gate *Gate) (int, string, error) {
+func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string) (int, string, error) {
 	timeout := gate.DefaultTimeout()
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Use shell to execute command (supports pipes, redirects, etc.)
-	cmd := exec.CommandContext(cmdCtx, "sh", "-c", gate.Command)
+	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
 	cmd.Dir = r.projectDir
 
 	var stdout, stderr bytes.Buffer
@@ -398,5 +466,31 @@ func ShouldRetry(config *Config, results *CheckResults, attempt int) bool {
 		return false
 	}
 
+	// A missing runner binary is not something Claude can fix by editing code.
+	// Only skip the retry when no failed required gate is fixable.
+	if RunnerMissingOnly(config, results) {
+		return false
+	}
+
 	return attempt < config.OnFailure.MaxRetries
+}
+
+// RunnerMissingOnly reports whether a required gate failed because its runner
+// binary is missing and no other required gate failed for a fixable reason.
+func RunnerMissingOnly(config *Config, results *CheckResults) bool {
+	runnerMissing, fixable := false, false
+	for i, res := range results.Results {
+		if res == nil || res.Status != StatusFailed {
+			continue
+		}
+		if i < len(config.Gates) && !config.Gates[i].Required {
+			continue
+		}
+		if res.RunnerMissing() {
+			runnerMissing = true
+		} else {
+			fixable = true
+		}
+	}
+	return runnerMissing && !fixable
 }

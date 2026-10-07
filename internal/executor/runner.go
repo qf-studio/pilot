@@ -463,6 +463,10 @@ var outcomeClassifiers = []struct {
 	{"infra", infraErrorSignatures},
 }
 
+// OutcomeQualityGateFailed tags a result whose quality gates failed. The error
+// text quotes raw gate output, so TerminalStatus must not substring-classify it.
+const OutcomeQualityGateFailed = "quality_gate_failed"
+
 // TerminalStatus maps a finished ExecutionResult to the status persisted in the
 // executions table so the dashboard's "failed" count reflects genuine task
 // failures only. Non-failure outcomes (no-op / rate-limited / skipped / stalled /
@@ -499,6 +503,10 @@ func TerminalStatus(result *ExecutionResult) string {
 		return "superseded"
 	case "needs_human":
 		return "needs_human"
+	case OutcomeQualityGateFailed:
+		// Genuine failure; its Error quotes gate output, which must not be
+		// scanned for the non-failure signatures below (GH-5622).
+		return "failed"
 	}
 	for _, c := range outcomeClassifiers {
 		if containsAny(result.Error, c.signatures) {
@@ -812,6 +820,14 @@ type QualityGateResult struct {
 	RetryCount int
 	// Error contains the error message if the gate failed
 	Error string
+	// Command is the command that actually ran (after any toolchain fallback)
+	Command string
+	// ExitCode is the gate command's exit status
+	ExitCode int
+	// Output is the combined stdout+stderr of the final attempt
+	Output string
+	// RunnerMissing is true when the gate's runner binary was not found (exit 127)
+	RunnerMissing bool
 }
 
 // QualityGatesResult represents the aggregate quality gate results.
@@ -5990,11 +6006,19 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 					// No more retries allowed - fail the task
 					result.Success = false
-					if retryAttempt >= maxAutoRetries {
-						result.Error = fmt.Sprintf("quality gates failed after %d auto-retries", maxAutoRetries)
-					} else {
-						result.Error = "quality gates failed, max retries exhausted"
+					// GH-5622: name each failed gate's command + exit code and quote its
+					// output so the issue comment shows the cause. A missing runner
+					// (exit 127) is not retried, so it must not claim "N auto-retries".
+					gateHeadline := "quality gates failed, max retries exhausted"
+					switch {
+					case outcomeRunnerMissing(outcome):
+						gateHeadline = "quality gates failed: a gate command was not found (exit 127)"
+					case retryAttempt >= maxAutoRetries:
+						gateHeadline = fmt.Sprintf("quality gates failed after %d auto-retries", maxAutoRetries)
 					}
+					gatePlainErr, gateFullErr := formatQualityGateFailure(gateHeadline, outcome)
+					result.Error = gateFullErr
+					result.Outcome = OutcomeQualityGateFailed
 
 					r.reportProgress(task.ID, "Quality Failed", 100, "Quality gates did not pass")
 
@@ -6004,7 +6028,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						TaskID:    task.ID,
 						TaskTitle: task.Title,
 						Project:   task.ProjectPath,
-						Error:     result.Error,
+						Error:     gatePlainErr,
 						Timestamp: time.Now(),
 					})
 
@@ -6014,7 +6038,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						Title:    task.Title,
 						Project:  task.ProjectPath,
 						Duration: time.Since(start),
-						Error:    result.Error,
+						Error:    gatePlainErr,
 						Phase:    "Quality Gates",
 					})
 
@@ -8692,7 +8716,7 @@ func (c *simpleQualityChecker) Check(ctx context.Context) (*QualityOutcome, erro
 	// Convert to QualityOutcome
 	outcome := &QualityOutcome{
 		Passed:        results.AllPassed,
-		ShouldRetry:   !results.AllPassed && c.config.OnFailure.Action == quality.ActionRetry,
+		ShouldRetry:   !results.AllPassed && c.config.OnFailure.Action == quality.ActionRetry && !quality.RunnerMissingOnly(c.config, results),
 		TotalDuration: results.TotalTime,
 		GateDetails:   make([]QualityGateDetail, 0, len(results.Results)),
 	}
@@ -8704,11 +8728,15 @@ func (c *simpleQualityChecker) Check(ctx context.Context) (*QualityOutcome, erro
 
 	for _, r := range results.Results {
 		outcome.GateDetails = append(outcome.GateDetails, QualityGateDetail{
-			Name:       r.GateName,
-			Passed:     r.Status == quality.StatusPassed,
-			Duration:   r.Duration,
-			RetryCount: r.RetryCount,
-			Error:      r.Error,
+			Name:          r.GateName,
+			Passed:        r.Status == quality.StatusPassed,
+			Duration:      r.Duration,
+			RetryCount:    r.RetryCount,
+			Error:         r.Error,
+			Command:       r.Command,
+			ExitCode:      r.ExitCode,
+			Output:        r.Output,
+			RunnerMissing: r.RunnerMissing(),
 		})
 	}
 
@@ -8836,4 +8864,18 @@ func runWorkflowHook(ctx context.Context, name string, scripts workflow.HookValu
 	if err := workflow.RunHook(ctx, name, scripts, dir, env, 0, logFn); err != nil {
 		log.Warn("workflow hook failed", slog.String("hook", name), slog.Any("error", err))
 	}
+}
+
+// outcomeRunnerMissing reports whether any failed gate in outcome failed because
+// its runner binary was not found.
+func outcomeRunnerMissing(outcome *QualityOutcome) bool {
+	if outcome == nil {
+		return false
+	}
+	for _, g := range outcome.GateDetails {
+		if !g.Passed && g.RunnerMissing {
+			return true
+		}
+	}
+	return false
 }
