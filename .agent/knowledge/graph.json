@@ -2767,16 +2767,15 @@
         ]
       },
       "TASK-512": {
-        "path": "tasks/TASK-512-allowance-enforcement-leg3.md",
+        "path": ".agent/tasks/TASK-512-allowance-enforcement-leg3.md",
         "title": "TASK-512: Allowance enforcement at exhaustion — own-key switch, suspend without one, per-period state (TASK-502 leg 3)",
         "status": "shipped",
         "concepts": [
           "deployment",
-          "testing",
-          "api",
-          "theory of mind",
-          "context",
-          "frontend"
+          "billing",
+          "allowance",
+          "reconciler",
+          "pilot-console"
         ]
       }
     },
@@ -11367,7 +11366,8 @@
       "TASK-511",
       "mem-215",
       "mem-216",
-      "mem-217"
+      "mem-217",
+      "TASK-512"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -12001,7 +12001,8 @@
       "mem-202",
       "secrets-live-in-doppler-pilot-console-project",
       "mem-216",
-      "mem-217"
+      "mem-217",
+      "TASK-512"
     ],
     "pilot-task-command": [
       "TASK-03",
@@ -12048,7 +12049,8 @@
       "mem-100",
       "merged-feature-dead-callback-not-bridged-onprcreated",
       "mem-198",
-      "mem-200"
+      "mem-200",
+      "TASK-512"
     ],
     "release": [
       "approvals-off-stage-auto-merge",
@@ -12868,6 +12870,12 @@
     ],
     "ops-asks": [
       "mem-213"
+    ],
+    "billing": [
+      "TASK-512"
+    ],
+    "allowance": [
+      "TASK-512"
     ]
   },
   "last_updated": "2026-10-07T08:00:49.670015+00:00",
