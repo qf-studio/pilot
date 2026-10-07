@@ -2767,9 +2767,9 @@
         ]
       },
       "TASK-512": {
-        "path": ".agent/tasks/TASK-512-allowance-enforcement-leg3.md",
+        "path": ".agent/tasks/archive/TASK-512-allowance-enforcement-leg3.md",
         "title": "TASK-512: Allowance enforcement at exhaustion — own-key switch, suspend without one, per-period state (TASK-502 leg 3)",
-        "status": "shipped",
+        "status": "done",
         "concepts": [
           "deployment",
           "billing",
