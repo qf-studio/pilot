@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-10-06T09:38:48.766119+00:00",
+  "updated": "2026-10-07T08:00:49.670015+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -2757,6 +2757,19 @@
         "path": ".agent/tasks/TASK-511-console-ui-included-allowance-leg4.md",
         "title": "console-ui Plan & Billing — included allowance, exhausted state, own-key prompt, provision gating (TASK-502 leg 4)",
         "status": "dispatched",
+        "concepts": [
+          "deployment",
+          "testing",
+          "api",
+          "theory of mind",
+          "context",
+          "frontend"
+        ]
+      },
+      "TASK-512": {
+        "path": "tasks/TASK-512-allowance-enforcement-leg3.md",
+        "title": "TASK-512: Allowance enforcement at exhaustion — own-key switch, suspend without one, per-period state (TASK-502 leg 3)",
+        "status": "shipped",
         "concepts": [
           "deployment",
           "testing",
@@ -7629,6 +7642,20 @@
         ],
         "created": "2026-10-06",
         "last_validated": "2026-10-06"
+      },
+      "mem-217": {
+        "type": "pitfall",
+        "summary": "Cancelling a console deploy run mid-job leaves the CloudFormation update running with the cancelled image; the next dispatch fails on UPDATE_IN_PROGRESS. Read the newest prod tag and the last run before a manual dispatch; never cancel, let it finish and redeploy.",
+        "path": "memories/pitfalls/mem-217.md",
+        "confidence": 0.95,
+        "concepts": [
+          "deployment",
+          "pilot-console",
+          "operations",
+          "aws"
+        ],
+        "created": "2026-10-07",
+        "last_validated": "2026-10-07"
       }
     }
   },
@@ -10442,6 +10469,11 @@
       "from": "mem-216",
       "to": "TASK-511",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-217",
+      "to": "TASK-512",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -10809,7 +10841,8 @@
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
       "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb",
-      "mem-215"
+      "mem-215",
+      "mem-217"
     ],
     "bake-test": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
@@ -11333,7 +11366,8 @@
       "TASK-508",
       "TASK-511",
       "mem-215",
-      "mem-216"
+      "mem-216",
+      "mem-217"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -11966,7 +12000,8 @@
       "mem-200",
       "mem-202",
       "secrets-live-in-doppler-pilot-console-project",
-      "mem-216"
+      "mem-216",
+      "mem-217"
     ],
     "pilot-task-command": [
       "TASK-03",
@@ -12625,7 +12660,8 @@
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
       "mem-200",
       "mem-202",
-      "mem-216"
+      "mem-216",
+      "mem-217"
     ],
     "deploy-gates": [
       "mem-196"
@@ -12834,11 +12870,11 @@
       "mem-213"
     ]
   },
-  "last_updated": "2026-10-06T09:38:48.766119+00:00",
+  "last_updated": "2026-10-07T08:00:49.670015+00:00",
   "stats": {
-    "total_nodes": 645,
-    "total_edges": 562,
-    "memory_count": 350
+    "total_nodes": 647,
+    "total_edges": 563,
+    "memory_count": 351
   },
   "metadata": {}
 }
